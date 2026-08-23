@@ -7,8 +7,10 @@
 #include "power_control.h"
 #include "keypad.h"
 #include "device_status.h"
-#include "ui.h"
 #include "wifi_manager.h"
+#include "web_server.h"
+#include "ui.h"
+
 
 static const char *TAG = "APP";
 
@@ -29,14 +31,29 @@ void app_main(void)
     ESP_ERROR_CHECK(
         device_status_init()
     );
-	
-	ESP_ERROR_CHECK(
-	    wifi_manager_init()
-	);
-	
-	ESP_ERROR_CHECK(
-	    wifi_manager_start()
-	);
+
+
+    /*
+     * Start the local Wi-Fi network first.
+     */
+    ESP_ERROR_CHECK(
+        wifi_manager_init()
+    );
+
+
+    ESP_ERROR_CHECK(
+        wifi_manager_start()
+    );
+
+
+    /*
+     * Start the HTTP server after the Wi-Fi interface
+     * is initialized and running.
+     */
+    ESP_ERROR_CHECK(
+        web_server_start()
+    );
+
 
     ESP_ERROR_CHECK(
         keypad_init()
@@ -55,6 +72,7 @@ void app_main(void)
     ESP_ERROR_CHECK(
         sd_card_mount()
     );
+
 
     ESP_ERROR_CHECK(
         sd_card_test()
@@ -86,7 +104,10 @@ void app_main(void)
     ESP_LOGI(TAG, "Display: OK");
     ESP_LOGI(TAG, "SD card: OK");
     ESP_LOGI(TAG, "Keypad: OK");
+    ESP_LOGI(TAG, "Wi-Fi: OK");
+    ESP_LOGI(TAG, "Web server: OK");
     ESP_LOGI(TAG, "UI: OK");
+
 
     ESP_LOGI(
         TAG,
@@ -107,10 +128,40 @@ void app_main(void)
 
 
     /*
-     * Stop all UI activity before touching the SD card
-     * or clearing the display.
+     * Stop all UI activity first.
      */
     keypad_stop_event_monitor();
+
+
+    /*
+     * Stop network services before Wi-Fi itself.
+     */
+    esp_err_t web_err =
+        web_server_stop();
+
+
+    if (web_err != ESP_OK) {
+
+        ESP_LOGW(
+            TAG,
+            "Failed to stop web server: %s",
+            esp_err_to_name(web_err)
+        );
+    }
+
+
+    esp_err_t wifi_err =
+        wifi_manager_stop();
+
+
+    if (wifi_err != ESP_OK) {
+
+        ESP_LOGW(
+            TAG,
+            "Failed to stop Wi-Fi: %s",
+            esp_err_to_name(wifi_err)
+        );
+    }
 
 
     sd_card_unmount();
@@ -133,9 +184,7 @@ void app_main(void)
         ESP_LOGW(
             TAG,
             "Failed to clear display: %s",
-            esp_err_to_name(
-                display_err
-            )
+            esp_err_to_name(display_err)
         );
     }
 
@@ -144,6 +193,7 @@ void app_main(void)
         TAG,
         "Display off"
     );
+
 
     ESP_LOGI(
         TAG,
