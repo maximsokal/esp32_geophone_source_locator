@@ -9,6 +9,8 @@ idf_component_register(
         spi_bus
         display
         sd_card
+        power_control
+        freertos
         log
     
     PRIV_REQUIRES       # optional, list the private requirements
