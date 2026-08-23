@@ -20,5 +20,6 @@ idf_component_register(
         keypad
         device_status
         app_config
+        wifi_qr
         log
 )

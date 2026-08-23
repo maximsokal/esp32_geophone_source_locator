@@ -1,7 +1,8 @@
 #include "display.h"
 
-#include <stdlib.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "font5x7.h"
 
@@ -19,6 +20,7 @@
 
 
 static const char *TAG = "DISPLAY";
+
 
 #define DISPLAY_TRANSFER_ROWS       20
 
@@ -40,7 +42,7 @@ static uint16_t *s_transfer_buffer = NULL;
 /*
  * The SPI LCD color transfer is asynchronous.
  *
- * The transfer-done callback allows the drawing functions to wait
+ * The transfer-done callback allows drawing functions to wait
  * until DMA has finished using the current pixel buffer.
  */
 static bool display_color_transfer_done(
@@ -55,7 +57,8 @@ static bool display_color_transfer_done(
     SemaphoreHandle_t semaphore =
         (SemaphoreHandle_t)user_context;
 
-    BaseType_t higher_priority_task_woken = pdFALSE;
+    BaseType_t higher_priority_task_woken =
+        pdFALSE;
 
     xSemaphoreGiveFromISR(
         semaphore,
@@ -66,6 +69,10 @@ static bool display_color_transfer_done(
 }
 
 
+/*
+ * Send one already prepared DMA-capable pixel block
+ * and wait until the SPI transfer is complete.
+ */
 static esp_err_t display_draw_bitmap_sync(
     int x_start,
     int y_start,
@@ -74,44 +81,61 @@ static esp_err_t display_draw_bitmap_sync(
     const uint16_t *pixels
 )
 {
-    if (s_panel_handle == NULL ||
+    if (
+        s_panel_handle == NULL ||
         s_transfer_done == NULL ||
-        pixels == NULL) {
-
+        pixels == NULL
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
+
 
     /*
      * Remove a stale completion signal if one exists.
      */
-    while (xSemaphoreTake(s_transfer_done, 0) == pdTRUE) {
+    while (
+        xSemaphoreTake(
+            s_transfer_done,
+            0
+        ) == pdTRUE
+    ) {
     }
 
-    esp_err_t err = esp_lcd_panel_draw_bitmap(
-        s_panel_handle,
-        x_start,
-        y_start,
-        x_end,
-        y_end,
-        pixels
-    );
+
+    esp_err_t err =
+        esp_lcd_panel_draw_bitmap(
+            s_panel_handle,
+            x_start,
+            y_start,
+            x_end,
+            y_end,
+            pixels
+        );
+
 
     if (err != ESP_OK) {
         return err;
     }
 
+
     /*
-     * The buffer must remain valid until SPI DMA completes.
+     * The pixel buffer must remain valid until
+     * SPI DMA finishes the transfer.
      */
-    if (xSemaphoreTake(
+    if (
+        xSemaphoreTake(
             s_transfer_done,
             pdMS_TO_TICKS(1000)
-        ) != pdTRUE) {
-
-        ESP_LOGE(TAG, "LCD transfer timeout");
+        ) != pdTRUE
+    ) {
+        ESP_LOGE(
+            TAG,
+            "LCD transfer timeout"
+        );
 
         return ESP_ERR_TIMEOUT;
     }
+
 
     return ESP_OK;
 }
@@ -120,16 +144,30 @@ static esp_err_t display_draw_bitmap_sync(
 esp_err_t display_init(void)
 {
     if (s_panel_handle != NULL) {
-        ESP_LOGW(TAG, "Display already initialized");
+
+        ESP_LOGW(
+            TAG,
+            "Display already initialized"
+        );
+
         return ESP_OK;
     }
 
-    s_transfer_done = xSemaphoreCreateBinary();
+
+    s_transfer_done =
+        xSemaphoreCreateBinary();
+
 
     if (s_transfer_done == NULL) {
-        ESP_LOGE(TAG, "Failed to create transfer semaphore");
+
+        ESP_LOGE(
+            TAG,
+            "Failed to create transfer semaphore"
+        );
+
         return ESP_ERR_NO_MEM;
     }
+
 
     /*
      * One reusable DMA-capable drawing buffer.
@@ -137,23 +175,41 @@ esp_err_t display_init(void)
      * 320 * 20 * 2 bytes = 12.8 KiB.
      */
     const size_t transfer_pixel_count =
-        DISPLAY_WIDTH * DISPLAY_TRANSFER_ROWS;
+        DISPLAY_WIDTH *
+        DISPLAY_TRANSFER_ROWS;
 
-    s_transfer_buffer = heap_caps_malloc(
-        transfer_pixel_count * sizeof(uint16_t),
-        MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
-    );
+
+    s_transfer_buffer =
+        heap_caps_malloc(
+            transfer_pixel_count *
+                sizeof(uint16_t),
+            MALLOC_CAP_DMA |
+                MALLOC_CAP_INTERNAL
+        );
+
 
     if (s_transfer_buffer == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate LCD transfer buffer");
 
-        vSemaphoreDelete(s_transfer_done);
+        ESP_LOGE(
+            TAG,
+            "Failed to allocate LCD transfer buffer"
+        );
+
+        vSemaphoreDelete(
+            s_transfer_done
+        );
+
         s_transfer_done = NULL;
 
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Creating SPI LCD IO");
+
+    ESP_LOGI(
+        TAG,
+        "Creating SPI LCD IO"
+    );
+
 
     const esp_lcd_panel_io_spi_config_t io_config =
         ILI9341_PANEL_IO_SPI_CONFIG(
@@ -163,13 +219,18 @@ esp_err_t display_init(void)
             NULL
         );
 
-    esp_err_t err = esp_lcd_new_panel_io_spi(
-        (esp_lcd_spi_bus_handle_t)app_spi_bus_get_host(),
-        &io_config,
-        &s_io_handle
-    );
+
+    esp_err_t err =
+        esp_lcd_new_panel_io_spi(
+            (esp_lcd_spi_bus_handle_t)
+                app_spi_bus_get_host(),
+            &io_config,
+            &s_io_handle
+        );
+
 
     if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Failed to create LCD IO: %s",
@@ -179,17 +240,23 @@ esp_err_t display_init(void)
         goto fail;
     }
 
+
     const esp_lcd_panel_io_callbacks_t callbacks = {
-        .on_color_trans_done = display_color_transfer_done,
+        .on_color_trans_done =
+            display_color_transfer_done,
     };
 
-    err = esp_lcd_panel_io_register_event_callbacks(
-        s_io_handle,
-        &callbacks,
-        s_transfer_done
-    );
+
+    err =
+        esp_lcd_panel_io_register_event_callbacks(
+            s_io_handle,
+            &callbacks,
+            s_transfer_done
+        );
+
 
     if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Failed to register LCD callbacks: %s",
@@ -199,21 +266,34 @@ esp_err_t display_init(void)
         goto fail;
     }
 
-    ESP_LOGI(TAG, "Creating ILI9341 panel");
+
+    ESP_LOGI(
+        TAG,
+        "Creating ILI9341 panel"
+    );
+
 
     const esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = BOARD_TFT_RESET_GPIO,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .reset_gpio_num =
+            BOARD_TFT_RESET_GPIO,
+
+        .rgb_ele_order =
+            LCD_RGB_ELEMENT_ORDER_RGB,
+
         .bits_per_pixel = 16,
     };
 
-    err = esp_lcd_new_panel_ili9341(
-        s_io_handle,
-        &panel_config,
-        &s_panel_handle
-    );
+
+    err =
+        esp_lcd_new_panel_ili9341(
+            s_io_handle,
+            &panel_config,
+            &s_panel_handle
+        );
+
 
     if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Failed to create ILI9341 panel: %s",
@@ -223,11 +303,21 @@ esp_err_t display_init(void)
         goto fail;
     }
 
-    ESP_LOGI(TAG, "Resetting display");
 
-    err = esp_lcd_panel_reset(s_panel_handle);
+    ESP_LOGI(
+        TAG,
+        "Resetting display"
+    );
+
+
+    err =
+        esp_lcd_panel_reset(
+            s_panel_handle
+        );
+
 
     if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Display reset failed: %s",
@@ -237,11 +327,21 @@ esp_err_t display_init(void)
         goto fail;
     }
 
-    ESP_LOGI(TAG, "Initializing display");
 
-    err = esp_lcd_panel_init(s_panel_handle);
+    ESP_LOGI(
+        TAG,
+        "Initializing display"
+    );
+
+
+    err =
+        esp_lcd_panel_init(
+            s_panel_handle
+        );
+
 
     if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Display init failed: %s",
@@ -251,33 +351,43 @@ esp_err_t display_init(void)
         goto fail;
     }
 
-	/*
-	 * Rotate the native 240x320 panel into 320x240 landscape.
-	 *
-	 * No mirroring matches the final physical mounting orientation.
-	 */
-	err = esp_lcd_panel_swap_xy(
-	    s_panel_handle,
-	    true
-	);
-	
-	if (err != ESP_OK) {
-	    ESP_LOGE(
-	        TAG,
-	        "Failed to swap display axes: %s",
-	        esp_err_to_name(err)
-	    );
-	
-	    goto fail;
-	}
-	
-	err = esp_lcd_panel_mirror(
-	    s_panel_handle,
-	    false,
-	    false
-	);
+
+    /*
+     * Rotate the native 240x320 panel into
+     * the final 320x240 physical orientation.
+     */
+    err =
+        esp_lcd_panel_swap_xy(
+            s_panel_handle,
+            true
+        );
+
 
     if (err != ESP_OK) {
+
+        ESP_LOGE(
+            TAG,
+            "Failed to swap display axes: %s",
+            esp_err_to_name(err)
+        );
+
+        goto fail;
+    }
+
+
+    /*
+     * No mirroring matches the final physical mounting.
+     */
+    err =
+        esp_lcd_panel_mirror(
+            s_panel_handle,
+            false,
+            false
+        );
+
+
+    if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Failed to mirror display: %s",
@@ -287,12 +397,16 @@ esp_err_t display_init(void)
         goto fail;
     }
 
-    err = esp_lcd_panel_disp_on_off(
-        s_panel_handle,
-        true
-    );
+
+    err =
+        esp_lcd_panel_disp_on_off(
+            s_panel_handle,
+            true
+        );
+
 
     if (err != ESP_OK) {
+
         ESP_LOGE(
             TAG,
             "Failed to enable display: %s",
@@ -302,12 +416,14 @@ esp_err_t display_init(void)
         goto fail;
     }
 
+
     ESP_LOGI(
         TAG,
         "ILI9341 initialized: %dx%d landscape RGB565",
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT
     );
+
 
     return ESP_OK;
 
@@ -328,15 +444,18 @@ esp_err_t display_fill_rect(
     uint16_t color
 )
 {
-    if (s_panel_handle == NULL ||
-        s_transfer_buffer == NULL) {
-
+    if (
+        s_panel_handle == NULL ||
+        s_transfer_buffer == NULL
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
+
 
     if (width <= 0 || height <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
+
 
     /*
      * Clip the rectangle to the visible display area.
@@ -346,53 +465,84 @@ esp_err_t display_fill_rect(
         x = 0;
     }
 
+
     if (y < 0) {
         height += y;
         y = 0;
     }
 
-    if (x >= DISPLAY_WIDTH ||
+
+    if (
+        x >= DISPLAY_WIDTH ||
         y >= DISPLAY_HEIGHT ||
         width <= 0 ||
-        height <= 0) {
-
+        height <= 0
+    ) {
         return ESP_OK;
     }
 
+
     if (x + width > DISPLAY_WIDTH) {
-        width = DISPLAY_WIDTH - x;
+        width =
+            DISPLAY_WIDTH - x;
     }
+
 
     if (y + height > DISPLAY_HEIGHT) {
-        height = DISPLAY_HEIGHT - y;
+        height =
+            DISPLAY_HEIGHT - y;
     }
 
-    int remaining_height = height;
-    int current_y = y;
+
+    int remaining_height =
+        height;
+
+    int current_y =
+        y;
+
 
     while (remaining_height > 0) {
-        int chunk_height = remaining_height;
 
-        if (chunk_height > DISPLAY_TRANSFER_ROWS) {
-            chunk_height = DISPLAY_TRANSFER_ROWS;
+        int chunk_height =
+            remaining_height;
+
+
+        if (
+            chunk_height >
+            DISPLAY_TRANSFER_ROWS
+        ) {
+            chunk_height =
+                DISPLAY_TRANSFER_ROWS;
         }
+
 
         const size_t pixel_count =
-            (size_t)width * chunk_height;
+            (size_t)width *
+            chunk_height;
 
-        for (size_t i = 0; i < pixel_count; ++i) {
-            s_transfer_buffer[i] = color;
+
+        for (
+            size_t i = 0;
+            i < pixel_count;
+            ++i
+        ) {
+            s_transfer_buffer[i] =
+                color;
         }
 
-        esp_err_t err = display_draw_bitmap_sync(
-            x,
-            current_y,
-            x + width,
-            current_y + chunk_height,
-            s_transfer_buffer
-        );
+
+        esp_err_t err =
+            display_draw_bitmap_sync(
+                x,
+                current_y,
+                x + width,
+                current_y + chunk_height,
+                s_transfer_buffer
+            );
+
 
         if (err != ESP_OK) {
+
             ESP_LOGE(
                 TAG,
                 "Rectangle draw failed: %s",
@@ -402,15 +552,22 @@ esp_err_t display_fill_rect(
             return err;
         }
 
-        current_y += chunk_height;
-        remaining_height -= chunk_height;
+
+        current_y +=
+            chunk_height;
+
+        remaining_height -=
+            chunk_height;
     }
+
 
     return ESP_OK;
 }
 
 
-esp_err_t display_fill(uint16_t color)
+esp_err_t display_fill(
+    uint16_t color
+)
 {
     return display_fill_rect(
         0,
@@ -419,6 +576,108 @@ esp_err_t display_fill(uint16_t color)
         DISPLAY_HEIGHT,
         color
     );
+}
+
+
+/*
+ * Draw an RGB565 image using the internal DMA buffer.
+ *
+ * The source bitmap may live in normal RAM or PSRAM.
+ */
+esp_err_t display_draw_rgb565_bitmap(
+    int x,
+    int y,
+    int width,
+    int height,
+    const uint16_t *pixels
+)
+{
+    if (
+        s_panel_handle == NULL ||
+        s_transfer_buffer == NULL
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+
+    if (pixels == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+
+    if (
+        width <= 0 ||
+        height <= 0 ||
+        x < 0 ||
+        y < 0 ||
+        x + width > DISPLAY_WIDTH ||
+        y + height > DISPLAY_HEIGHT
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+
+    int source_row = 0;
+
+
+    while (source_row < height) {
+
+        int chunk_height =
+            height - source_row;
+
+
+        if (
+            chunk_height >
+            DISPLAY_TRANSFER_ROWS
+        ) {
+            chunk_height =
+                DISPLAY_TRANSFER_ROWS;
+        }
+
+
+        const size_t pixel_count =
+            (size_t)width *
+            chunk_height;
+
+
+        memcpy(
+            s_transfer_buffer,
+            pixels +
+                ((size_t)source_row * width),
+            pixel_count *
+                sizeof(uint16_t)
+        );
+
+
+        esp_err_t err =
+            display_draw_bitmap_sync(
+                x,
+                y + source_row,
+                x + width,
+                y + source_row +
+                    chunk_height,
+                s_transfer_buffer
+            );
+
+
+        if (err != ESP_OK) {
+
+            ESP_LOGE(
+                TAG,
+                "Bitmap draw failed: %s",
+                esp_err_to_name(err)
+            );
+
+            return err;
+        }
+
+
+        source_row +=
+            chunk_height;
+    }
+
+
+    return ESP_OK;
 }
 
 
@@ -431,15 +690,21 @@ esp_err_t display_draw_char(
     uint8_t scale
 )
 {
-    if (s_panel_handle == NULL ||
-        s_transfer_buffer == NULL) {
-
+    if (
+        s_panel_handle == NULL ||
+        s_transfer_buffer == NULL
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (scale == 0 || scale > FONT_MAX_SCALE) {
+
+    if (
+        scale == 0 ||
+        scale > FONT_MAX_SCALE
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
+
 
     const int cell_width =
         FONT_CELL_WIDTH * scale;
@@ -447,43 +712,74 @@ esp_err_t display_draw_char(
     const int cell_height =
         FONT_CELL_HEIGHT * scale;
 
-    if (x < 0 ||
-        y < 0 ||
-        x + cell_width > DISPLAY_WIDTH ||
-        y + cell_height > DISPLAY_HEIGHT) {
 
+    if (
+        x < 0 ||
+        y < 0 ||
+        x + cell_width >
+            DISPLAY_WIDTH ||
+        y + cell_height >
+            DISPLAY_HEIGHT
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
+
     const uint8_t *glyph =
-        font5x7_get_glyph(character);
+        font5x7_get_glyph(
+            character
+        );
+
 
     /*
-     * Render the complete character cell into the reusable
-     * transfer buffer before sending it to the LCD.
+     * Render the complete character cell into
+     * the reusable transfer buffer.
      */
-    for (int py = 0; py < cell_height; ++py) {
-        const int source_y = py / scale;
+    for (
+        int py = 0;
+        py < cell_height;
+        ++py
+    ) {
+        const int source_y =
+            py / scale;
 
-        for (int px = 0; px < cell_width; ++px) {
-            const int source_x = px / scale;
 
-            bool pixel_on = false;
+        for (
+            int px = 0;
+            px < cell_width;
+            ++px
+        ) {
+            const int source_x =
+                px / scale;
 
-            if (source_x < FONT_GLYPH_WIDTH &&
-                source_y < FONT_GLYPH_HEIGHT) {
 
+            bool pixel_on =
+                false;
+
+
+            if (
+                source_x <
+                    FONT_GLYPH_WIDTH &&
+                source_y <
+                    FONT_GLYPH_HEIGHT
+            ) {
                 pixel_on =
-                    (glyph[source_x] & (1U << source_y)) != 0;
+                    (
+                        glyph[source_x] &
+                        (1U << source_y)
+                    ) != 0;
             }
+
 
             s_transfer_buffer[
                 py * cell_width + px
-            ] = pixel_on
-                ? foreground
-                : background;
+            ] =
+                pixel_on
+                    ? foreground
+                    : background;
         }
     }
+
 
     return display_draw_bitmap_sync(
         x,
@@ -508,11 +804,18 @@ esp_err_t display_draw_text(
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (scale == 0 || scale > FONT_MAX_SCALE) {
+
+    if (
+        scale == 0 ||
+        scale > FONT_MAX_SCALE
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    const int start_x = x;
+
+    const int start_x =
+        x;
+
 
     const int cell_width =
         FONT_CELL_WIDTH * scale;
@@ -520,43 +823,69 @@ esp_err_t display_draw_text(
     const int cell_height =
         FONT_CELL_HEIGHT * scale;
 
+
     while (*text != '\0') {
+
         if (*text == '\n') {
-            x = start_x;
-            y += cell_height;
+
+            x =
+                start_x;
+
+            y +=
+                cell_height;
 
             text++;
+
             continue;
         }
 
+
         /*
-         * Wrap text when the next character does not fit.
+         * Wrap text when the next character
+         * does not fit.
          */
-        if (x + cell_width > DISPLAY_WIDTH) {
-            x = start_x;
-            y += cell_height;
+        if (
+            x + cell_width >
+            DISPLAY_WIDTH
+        ) {
+            x =
+                start_x;
+
+            y +=
+                cell_height;
         }
 
-        if (y + cell_height > DISPLAY_HEIGHT) {
+
+        if (
+            y + cell_height >
+            DISPLAY_HEIGHT
+        ) {
             break;
         }
 
-        esp_err_t err = display_draw_char(
-            x,
-            y,
-            *text,
-            foreground,
-            background,
-            scale
-        );
+
+        esp_err_t err =
+            display_draw_char(
+                x,
+                y,
+                *text,
+                foreground,
+                background,
+                scale
+            );
+
 
         if (err != ESP_OK) {
             return err;
         }
 
-        x += cell_width;
+
+        x +=
+            cell_width;
+
         text++;
     }
+
 
     return ESP_OK;
 }
@@ -565,24 +894,47 @@ esp_err_t display_draw_text(
 void display_deinit(void)
 {
     if (s_panel_handle != NULL) {
-        esp_lcd_panel_del(s_panel_handle);
+
+        esp_lcd_panel_del(
+            s_panel_handle
+        );
+
         s_panel_handle = NULL;
     }
 
+
     if (s_io_handle != NULL) {
-        esp_lcd_panel_io_del(s_io_handle);
+
+        esp_lcd_panel_io_del(
+            s_io_handle
+        );
+
         s_io_handle = NULL;
     }
 
+
     if (s_transfer_buffer != NULL) {
-        free(s_transfer_buffer);
+
+        free(
+            s_transfer_buffer
+        );
+
         s_transfer_buffer = NULL;
     }
 
+
     if (s_transfer_done != NULL) {
-        vSemaphoreDelete(s_transfer_done);
+
+        vSemaphoreDelete(
+            s_transfer_done
+        );
+
         s_transfer_done = NULL;
     }
 
-    ESP_LOGI(TAG, "Display deinitialized");
+
+    ESP_LOGI(
+        TAG,
+        "Display deinitialized"
+    );
 }
