@@ -2,320 +2,88 @@
 
 #include <stddef.h>
 
-#include "display.h"
 #include "esp_log.h"
+
+#include "ui_internal.h"
 
 
 static const char *TAG = "UI";
 
 
-typedef enum
-{
-    UI_SCREEN_HOME = 0,
-    UI_SCREEN_DETAIL
-} ui_screen_t;
+static ui_screen_t s_screen =
+    UI_SCREEN_HOME;
 
-
-static const char *MENU_ITEMS[] = {
-    "MEASUREMENTS",
-    "STORAGE",
-    "WI-FI",
-    "SYSTEM"
-};
-
-
-#define MENU_ITEM_COUNT \
-    (sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]))
-
-
-static const int MENU_Y[] = {
-    48,
-    72,
-    96,
-    120
-};
-
-
-static ui_screen_t s_screen = UI_SCREEN_HOME;
 static size_t s_selected_item = 0;
 
 
-static esp_err_t ui_draw_header(void)
+static esp_err_t ui_draw_current_screen(void)
 {
-    ESP_ERROR_CHECK(
-        display_fill_rect(
-            0,
-            0,
-            DISPLAY_WIDTH,
-            34,
-            DISPLAY_COLOR_NAVY
-        )
-    );
+    switch (s_screen) {
 
-    return display_draw_text(
-        10,
-        8,
-        "GEO LOCATOR",
-        DISPLAY_COLOR_WHITE,
-        DISPLAY_COLOR_NAVY,
-        2
-    );
+        case UI_SCREEN_MEASUREMENTS:
+            return ui_measurements_draw();
+
+        case UI_SCREEN_STORAGE:
+            return ui_storage_draw();
+
+        case UI_SCREEN_WIFI:
+            return ui_wifi_draw();
+
+        case UI_SCREEN_SYSTEM:
+            return ui_system_draw();
+
+        case UI_SCREEN_HOME:
+        default:
+            return ui_home_draw(
+                s_selected_item
+            );
+    }
 }
 
 
-static esp_err_t ui_draw_menu(void)
+static void ui_open_selected_item(void)
 {
-    /*
-     * Clear only the menu area so navigation does not redraw
-     * the complete screen.
-     */
-    ESP_ERROR_CHECK(
-        display_fill_rect(
-            158,
-            40,
-            162,
-            150,
-            DISPLAY_COLOR_BLACK
-        )
-    );
+    switch (s_selected_item) {
 
-    for (size_t i = 0; i < MENU_ITEM_COUNT; i++) {
-        const bool selected =
-            i == s_selected_item;
+        case 0:
+            s_screen =
+                UI_SCREEN_MEASUREMENTS;
+            break;
 
-        uint16_t background =
-            selected
-                ? DISPLAY_COLOR_CYAN
-                : DISPLAY_COLOR_BLACK;
+        case 1:
+            s_screen =
+                UI_SCREEN_STORAGE;
+            break;
 
-        uint16_t foreground =
-            selected
-                ? DISPLAY_COLOR_BLACK
-                : DISPLAY_COLOR_WHITE;
+        case 2:
+            s_screen =
+                UI_SCREEN_WIFI;
+            break;
 
-        if (selected) {
-            ESP_ERROR_CHECK(
-                display_fill_rect(
-                    164,
-                    MENU_Y[i] - 4,
-                    148,
-                    17,
-                    background
-                )
-            );
-        }
+        case 3:
+            s_screen =
+                UI_SCREEN_SYSTEM;
+            break;
 
-        ESP_ERROR_CHECK(
-            display_draw_text(
-                170,
-                MENU_Y[i],
-                MENU_ITEMS[i],
-                foreground,
-                background,
-                1
-            )
-        );
+        default:
+            s_screen =
+                UI_SCREEN_HOME;
+            break;
     }
 
-    return ESP_OK;
-}
+
+    esp_err_t err =
+        ui_draw_current_screen();
 
 
-static esp_err_t ui_draw_home(void)
-{
-    ESP_ERROR_CHECK(
-        display_fill(DISPLAY_COLOR_BLACK)
-    );
+    if (err != ESP_OK) {
 
-    ESP_ERROR_CHECK(ui_draw_header());
-
-    /*
-     * Device status section.
-     */
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            48,
-            "SYSTEM",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            78,
-            48,
-            "READY",
-            DISPLAY_COLOR_GREEN,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            66,
-            "SD CARD",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            78,
-            66,
-            "OK",
-            DISPLAY_COLOR_GREEN,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            84,
-            "WI-FI",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            78,
-            84,
-            "OFF",
-            DISPLAY_COLOR_YELLOW,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            102,
-            "SENSORS",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            78,
-            102,
-            "--",
-            DISPLAY_COLOR_YELLOW,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    /*
-     * Vertical separator between status and navigation.
-     */
-    ESP_ERROR_CHECK(
-        display_fill_rect(
-            151,
-            44,
-            1,
-            142,
-            DISPLAY_COLOR_DARK_GRAY
-        )
-    );
-
-    ESP_ERROR_CHECK(ui_draw_menu());
-
-    /*
-     * Footer.
-     */
-    ESP_ERROR_CHECK(
-        display_fill_rect(
-            0,
-            204,
-            DISPLAY_WIDTH,
-            1,
-            DISPLAY_COLOR_DARK_GRAY
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            10,
-            218,
-            "UP/DOWN SELECT",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            244,
-            218,
-            "OK OPEN",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    return ESP_OK;
-}
-
-
-static esp_err_t ui_draw_detail(void)
-{
-    ESP_ERROR_CHECK(
-        display_fill(DISPLAY_COLOR_BLACK)
-    );
-
-    ESP_ERROR_CHECK(ui_draw_header());
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            54,
-            MENU_ITEMS[s_selected_item],
-            DISPLAY_COLOR_CYAN,
-            DISPLAY_COLOR_BLACK,
-            2
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            100,
-            "PLACEHOLDER SCREEN",
-            DISPLAY_COLOR_WHITE,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            12,
-            220,
-            "LEFT BACK",
-            DISPLAY_COLOR_GRAY,
-            DISPLAY_COLOR_BLACK,
-            1
-        )
-    );
-
-    return ESP_OK;
+        ESP_LOGE(
+            TAG,
+            "Failed to open screen: %s",
+            esp_err_to_name(err)
+        );
+    }
 }
 
 
@@ -324,13 +92,24 @@ esp_err_t ui_init(void)
     s_screen = UI_SCREEN_HOME;
     s_selected_item = 0;
 
-    ESP_LOGI(TAG, "Initializing UI");
+    ESP_LOGI(
+        TAG,
+        "Initializing UI"
+    );
 
-    esp_err_t err = ui_draw_home();
+
+    esp_err_t err =
+        ui_draw_current_screen();
+
 
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "UI ready");
+
+        ESP_LOGI(
+            TAG,
+            "UI ready"
+        );
     }
+
 
     return err;
 }
@@ -343,26 +122,30 @@ void ui_handle_keypad_event(
 {
     (void)user_context;
 
+
     ESP_LOGI(
         TAG,
         "UI key: %s",
         keypad_key_name(key)
     );
 
+
     if (s_screen == UI_SCREEN_HOME) {
 
         switch (key) {
+
             case KEYPAD_KEY_UP:
 
                 if (s_selected_item == 0) {
+
                     s_selected_item =
-                        MENU_ITEM_COUNT - 1;
+                        UI_MENU_ITEM_COUNT - 1;
                 }
                 else {
+
                     s_selected_item--;
                 }
 
-                ESP_ERROR_CHECK(ui_draw_menu());
                 break;
 
 
@@ -370,51 +153,73 @@ void ui_handle_keypad_event(
 
                 s_selected_item++;
 
-                if (s_selected_item >= MENU_ITEM_COUNT) {
+                if (
+                    s_selected_item >=
+                    UI_MENU_ITEM_COUNT
+                ) {
+
                     s_selected_item = 0;
                 }
 
-                ESP_ERROR_CHECK(ui_draw_menu());
                 break;
 
 
             case KEYPAD_KEY_OK:
             case KEYPAD_KEY_RIGHT:
 
-                s_screen = UI_SCREEN_DETAIL;
-
-                ESP_ERROR_CHECK(ui_draw_detail());
-                break;
+                ui_open_selected_item();
+                return;
 
 
             case KEYPAD_KEY_LEFT:
             case KEYPAD_KEY_NONE:
             default:
-                break;
+
+                return;
         }
+
+
+        esp_err_t err =
+            ui_home_draw(
+                s_selected_item
+            );
+
+
+        if (err != ESP_OK) {
+
+            ESP_LOGE(
+                TAG,
+                "Failed to redraw home screen: %s",
+                esp_err_to_name(err)
+            );
+        }
+
 
         return;
     }
 
 
-    if (s_screen == UI_SCREEN_DETAIL) {
+    /*
+     * LEFT always returns from a child screen
+     * to the main menu.
+     */
+    if (key == KEYPAD_KEY_LEFT) {
 
-        switch (key) {
-            case KEYPAD_KEY_LEFT:
+        s_screen = UI_SCREEN_HOME;
 
-                s_screen = UI_SCREEN_HOME;
+        esp_err_t err =
+            ui_home_draw(
+                s_selected_item
+            );
 
-                ESP_ERROR_CHECK(ui_draw_home());
-                break;
 
+        if (err != ESP_OK) {
 
-            case KEYPAD_KEY_UP:
-            case KEYPAD_KEY_DOWN:
-            case KEYPAD_KEY_RIGHT:
-            case KEYPAD_KEY_OK:
-            case KEYPAD_KEY_NONE:
-            default:
-                break;
+            ESP_LOGE(
+                TAG,
+                "Failed to return home: %s",
+                esp_err_to_name(err)
+            );
         }
     }
 }

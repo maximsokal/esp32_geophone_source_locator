@@ -252,15 +252,9 @@ esp_err_t display_init(void)
     }
 
 	/*
-	 * Rotate the native 240x320 panel into 320x240 landscape
-	 * and match the physical mounting orientation.
+	 * Rotate the native 240x320 panel into 320x240 landscape.
 	 *
-	 * The required transformation from the previous orientation is:
-	 * - 180 degree rotation
-	 * - horizontal mirror
-	 *
-	 * Combined, this is equivalent to flipping the landscape image
-	 * on the vertical axis.
+	 * No mirroring matches the final physical mounting orientation.
 	 */
 	err = esp_lcd_panel_swap_xy(
 	    s_panel_handle,
@@ -282,16 +276,6 @@ esp_err_t display_init(void)
 	    false,
 	    false
 	);
-	
-	if (err != ESP_OK) {
-	    ESP_LOGE(
-	        TAG,
-	        "Failed to mirror display: %s",
-	        esp_err_to_name(err)
-	    );
-	
-	    goto fail;
-	}
 
     if (err != ESP_OK) {
         ESP_LOGE(
