@@ -1,0 +1,7 @@
+#pragma once
+
+#include "esp_err.h"
+
+esp_err_t sd_card_mount(void);
+esp_err_t sd_card_test(void);
+void sd_card_unmount(void);
