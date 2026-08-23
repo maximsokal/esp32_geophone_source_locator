@@ -1,15 +1,18 @@
 #include "web_server.h"
 
+#include "web_api_status.h"
 #include "web_page.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
 
 
-static const char *TAG = "WEB_SERVER";
+static const char *TAG =
+    "WEB_SERVER";
 
 
-static httpd_handle_t s_server = NULL;
+static httpd_handle_t s_server =
+    NULL;
 
 
 /*
@@ -87,7 +90,9 @@ esp_err_t web_server_start(void)
         HTTPD_DEFAULT_CONFIG();
 
 
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers =
+        8;
+
 
     config.lru_purge_enable =
         true;
@@ -109,7 +114,9 @@ esp_err_t web_server_start(void)
 
     if (err != ESP_OK) {
 
-        s_server = NULL;
+        s_server =
+            NULL;
+
 
         ESP_LOGE(
             TAG,
@@ -124,8 +131,7 @@ esp_err_t web_server_start(void)
     const httpd_uri_t index_uri = {
         .uri = "/",
         .method = HTTP_GET,
-        .handler =
-            web_server_index_handler,
+        .handler = web_server_index_handler,
         .user_ctx = NULL,
     };
 
@@ -145,7 +151,9 @@ esp_err_t web_server_start(void)
             esp_err_to_name(err)
         );
 
+
         web_server_stop();
+
 
         return err;
     }
@@ -154,8 +162,7 @@ esp_err_t web_server_start(void)
     const httpd_uri_t health_uri = {
         .uri = "/health",
         .method = HTTP_GET,
-        .handler =
-            web_server_health_handler,
+        .handler = web_server_health_handler,
         .user_ctx = NULL,
     };
 
@@ -174,6 +181,22 @@ esp_err_t web_server_start(void)
             "Failed to register health URI: %s",
             esp_err_to_name(err)
         );
+
+
+        web_server_stop();
+
+
+        return err;
+    }
+
+
+    err =
+        web_api_status_register(
+            s_server
+        );
+
+
+    if (err != ESP_OK) {
 
         web_server_stop();
 
@@ -265,7 +288,8 @@ esp_err_t web_server_stop(void)
     }
 
 
-    s_server = NULL;
+    s_server =
+        NULL;
 
 
     ESP_LOGI(
