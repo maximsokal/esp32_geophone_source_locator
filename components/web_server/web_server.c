@@ -2,6 +2,7 @@
 
 #include "web_api_status.h"
 #include "web_page.h"
+#include "web_seismic.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -15,9 +16,6 @@ static httpd_handle_t s_server =
     NULL;
 
 
-/*
- * Handle GET /.
- */
 static esp_err_t web_server_index_handler(
     httpd_req_t *request
 )
@@ -47,10 +45,6 @@ static esp_err_t web_server_index_handler(
 }
 
 
-/*
- * Small endpoint used to verify that the web server
- * is alive without loading the complete HTML page.
- */
 static esp_err_t web_server_health_handler(
     httpd_req_t *request
 )
@@ -92,7 +86,6 @@ esp_err_t web_server_start(void)
 
     config.max_uri_handlers =
         8;
-
 
     config.lru_purge_enable =
         true;
@@ -145,15 +138,7 @@ esp_err_t web_server_start(void)
 
     if (err != ESP_OK) {
 
-        ESP_LOGE(
-            TAG,
-            "Failed to register index URI: %s",
-            esp_err_to_name(err)
-        );
-
-
         web_server_stop();
-
 
         return err;
     }
@@ -176,15 +161,7 @@ esp_err_t web_server_start(void)
 
     if (err != ESP_OK) {
 
-        ESP_LOGE(
-            TAG,
-            "Failed to register health URI: %s",
-            esp_err_to_name(err)
-        );
-
-
         web_server_stop();
-
 
         return err;
     }
@@ -192,6 +169,20 @@ esp_err_t web_server_start(void)
 
     err =
         web_api_status_register(
+            s_server
+        );
+
+
+    if (err != ESP_OK) {
+
+        web_server_stop();
+
+        return err;
+    }
+
+
+    err =
+        web_seismic_register(
             s_server
         );
 
@@ -213,6 +204,12 @@ esp_err_t web_server_start(void)
     ESP_LOGI(
         TAG,
         "Open http://192.168.4.1"
+    );
+
+
+    ESP_LOGI(
+        TAG,
+        "Seismic monitor: http://192.168.4.1/seismic"
     );
 
 

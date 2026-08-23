@@ -12,6 +12,8 @@ idf_component_register(
         power_control
         keypad
         device_status
+        seismic_buffer
+        seismic_test_generator
         wifi_manager
         web_server
         captive_portal

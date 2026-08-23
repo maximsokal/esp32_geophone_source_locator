@@ -5,6 +5,10 @@ idf_component_register(
         "web_api_status.c"
         "web_status_json.c"
         "web_status_json_pods.c"
+        "web_json_writer.c"
+        "web_seismic.c"
+        "web_seismic_api.c"
+        "web_seismic_page.c"
 
     INCLUDE_DIRS
         "include"
@@ -15,6 +19,7 @@ idf_component_register(
     REQUIRES
         app_config
         device_status
+        seismic_buffer
         esp_http_server
         esp_timer
         json

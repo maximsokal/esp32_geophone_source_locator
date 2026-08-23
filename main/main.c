@@ -7,6 +7,8 @@
 #include "power_control.h"
 #include "keypad.h"
 #include "device_status.h"
+#include "seismic_buffer.h"
+#include "seismic_test_generator.h"
 #include "wifi_manager.h"
 #include "web_server.h"
 #include "captive_portal.h"
@@ -35,9 +37,11 @@ void app_main(void)
     );
 
 
-    /*
-     * Start the local Wi-Fi SoftAP.
-     */
+    ESP_ERROR_CHECK(
+        seismic_buffer_init()
+    );
+
+
     ESP_ERROR_CHECK(
         wifi_manager_init()
     );
@@ -48,18 +52,11 @@ void app_main(void)
     );
 
 
-    /*
-     * Start the local HTTP interface.
-     */
     ESP_ERROR_CHECK(
         web_server_start()
     );
 
 
-    /*
-     * Redirect captive portal DNS and unknown HTTP
-     * requests to the local GeoLocator interface.
-     */
     ESP_ERROR_CHECK(
         captive_portal_start()
     );
@@ -99,15 +96,20 @@ void app_main(void)
     );
 
 
-    /*
-     * From this point every debounced keypad press
-     * is delivered to the UI router.
-     */
     ESP_ERROR_CHECK(
         keypad_start_event_monitor(
             ui_handle_keypad_event,
             NULL
         )
+    );
+
+
+    /*
+     * Temporary waveform source used only to verify
+     * the seismic web pipeline before AD7606 is connected.
+     */
+    ESP_ERROR_CHECK(
+        seismic_test_generator_start()
     );
 
 
@@ -143,6 +145,11 @@ void app_main(void)
 
     ESP_LOGI(
         TAG,
+        "Seismic test pipeline: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
         "UI: OK"
     );
 
@@ -153,10 +160,6 @@ void app_main(void)
     );
 
 
-    /*
-     * The main task remains dedicated to safe
-     * power shutdown.
-     */
     power_control_wait_for_shutdown_request();
 
 
@@ -166,15 +169,12 @@ void app_main(void)
     );
 
 
-    /*
-     * Stop all UI activity first.
-     */
     keypad_stop_event_monitor();
 
 
-    /*
-     * Stop network services in reverse order.
-     */
+    seismic_test_generator_stop();
+
+
     esp_err_t portal_err =
         captive_portal_stop();
 
