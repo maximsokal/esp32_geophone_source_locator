@@ -17,3 +17,9 @@
 
 // microSD (reserved, not used yet)
 #define BOARD_SD_CS_GPIO        GPIO_NUM_17
+
+// Pololu power control
+#define BOARD_POWER_OFF_GPIO    GPIO_NUM_18
+
+// External power button sense
+#define BOARD_POWER_BUTTON_GPIO GPIO_NUM_21
