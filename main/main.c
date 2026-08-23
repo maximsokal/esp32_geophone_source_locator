@@ -9,10 +9,12 @@
 #include "device_status.h"
 #include "wifi_manager.h"
 #include "web_server.h"
+#include "captive_portal.h"
 #include "ui.h"
 
 
-static const char *TAG = "APP";
+static const char *TAG =
+    "APP";
 
 
 void app_main(void)
@@ -34,7 +36,7 @@ void app_main(void)
 
 
     /*
-     * Start the local Wi-Fi network first.
+     * Start the local Wi-Fi SoftAP.
      */
     ESP_ERROR_CHECK(
         wifi_manager_init()
@@ -47,11 +49,19 @@ void app_main(void)
 
 
     /*
-     * Start the HTTP server after the Wi-Fi interface
-     * is initialized and running.
+     * Start the local HTTP interface.
      */
     ESP_ERROR_CHECK(
         web_server_start()
+    );
+
+
+    /*
+     * Redirect captive portal DNS and unknown HTTP
+     * requests to the local GeoLocator interface.
+     */
+    ESP_ERROR_CHECK(
+        captive_portal_start()
     );
 
 
@@ -90,8 +100,8 @@ void app_main(void)
 
 
     /*
-     * From this point every debounced keypad press is
-     * delivered to the UI router.
+     * From this point every debounced keypad press
+     * is delivered to the UI router.
      */
     ESP_ERROR_CHECK(
         keypad_start_event_monitor(
@@ -101,12 +111,40 @@ void app_main(void)
     );
 
 
-    ESP_LOGI(TAG, "Display: OK");
-    ESP_LOGI(TAG, "SD card: OK");
-    ESP_LOGI(TAG, "Keypad: OK");
-    ESP_LOGI(TAG, "Wi-Fi: OK");
-    ESP_LOGI(TAG, "Web server: OK");
-    ESP_LOGI(TAG, "UI: OK");
+    ESP_LOGI(
+        TAG,
+        "Display: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "SD card: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Keypad: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Wi-Fi: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Web server: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Captive portal: OK"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "UI: OK"
+    );
 
 
     ESP_LOGI(
@@ -116,7 +154,8 @@ void app_main(void)
 
 
     /*
-     * The main task remains dedicated to safe power shutdown.
+     * The main task remains dedicated to safe
+     * power shutdown.
      */
     power_control_wait_for_shutdown_request();
 
@@ -134,8 +173,22 @@ void app_main(void)
 
 
     /*
-     * Stop network services before Wi-Fi itself.
+     * Stop network services in reverse order.
      */
+    esp_err_t portal_err =
+        captive_portal_stop();
+
+
+    if (portal_err != ESP_OK) {
+
+        ESP_LOGW(
+            TAG,
+            "Failed to stop captive portal: %s",
+            esp_err_to_name(portal_err)
+        );
+    }
+
+
     esp_err_t web_err =
         web_server_stop();
 

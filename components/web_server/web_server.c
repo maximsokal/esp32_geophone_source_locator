@@ -52,7 +52,8 @@ static esp_err_t web_server_health_handler(
     httpd_req_t *request
 )
 {
-    static const char response[] = "OK";
+    static const char response[] =
+        "OK";
 
 
     httpd_resp_set_type(
@@ -86,11 +87,10 @@ esp_err_t web_server_start(void)
         HTTPD_DEFAULT_CONFIG();
 
 
-    /*
-     * Keep the first server configuration intentionally small.
-     * More URI handlers will be added as separate modules later.
-     */
     config.max_uri_handlers = 8;
+
+    config.lru_purge_enable =
+        true;
 
 
     ESP_LOGI(
@@ -124,15 +124,17 @@ esp_err_t web_server_start(void)
     const httpd_uri_t index_uri = {
         .uri = "/",
         .method = HTTP_GET,
-        .handler = web_server_index_handler,
+        .handler =
+            web_server_index_handler,
         .user_ctx = NULL,
     };
 
 
-    err = httpd_register_uri_handler(
-        s_server,
-        &index_uri
-    );
+    err =
+        httpd_register_uri_handler(
+            s_server,
+            &index_uri
+        );
 
 
     if (err != ESP_OK) {
@@ -152,15 +154,17 @@ esp_err_t web_server_start(void)
     const httpd_uri_t health_uri = {
         .uri = "/health",
         .method = HTTP_GET,
-        .handler = web_server_health_handler,
+        .handler =
+            web_server_health_handler,
         .user_ctx = NULL,
     };
 
 
-    err = httpd_register_uri_handler(
-        s_server,
-        &health_uri
-    );
+    err =
+        httpd_register_uri_handler(
+            s_server,
+            &health_uri
+        );
 
 
     if (err != ESP_OK) {
@@ -190,6 +194,43 @@ esp_err_t web_server_start(void)
 
 
     return ESP_OK;
+}
+
+
+esp_err_t web_server_set_not_found_handler(
+    httpd_err_handler_func_t handler
+)
+{
+    if (s_server == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+
+    if (handler == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+
+    return httpd_register_err_handler(
+        s_server,
+        HTTPD_404_NOT_FOUND,
+        handler
+    );
+}
+
+
+esp_err_t web_server_clear_not_found_handler(void)
+{
+    if (s_server == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+
+    return httpd_register_err_handler(
+        s_server,
+        HTTPD_404_NOT_FOUND,
+        NULL
+    );
 }
 
 

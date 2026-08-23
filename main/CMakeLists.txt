@@ -14,6 +14,7 @@ idf_component_register(
         device_status
         wifi_manager
         web_server
+        captive_portal
         ui
         freertos
         log
