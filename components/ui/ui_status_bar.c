@@ -11,22 +11,25 @@ esp_err_t ui_status_bar_draw(void)
 {
     device_status_snapshot_t status;
 
+
     ESP_ERROR_CHECK(
         device_status_get_snapshot(
             &status
         )
     );
 
+
     char power_line[64];
 
-    if (status.power_valid) {
+
+    if (status.power.valid) {
 
         snprintf(
             power_line,
             sizeof(power_line),
             "PWR %.2fV %+.2fA  MODE %s",
-            status.battery_voltage_v,
-            status.battery_current_a,
+            status.power.voltage_v,
+            status.power.current_a,
             device_status_mode_name(
                 status.mode
             )
@@ -47,21 +50,22 @@ esp_err_t ui_status_bar_draw(void)
 
     char pods_line[64];
 
+
     snprintf(
         pods_line,
         sizeof(pods_line),
         "PODS 1:%s  2:%s  3:%s  4:%s",
         device_status_pod_short_name(
-            status.pods[0]
+            status.pods[0].state
         ),
         device_status_pod_short_name(
-            status.pods[1]
+            status.pods[1].state
         ),
         device_status_pod_short_name(
-            status.pods[2]
+            status.pods[2].state
         ),
         device_status_pod_short_name(
-            status.pods[3]
+            status.pods[3].state
         )
     );
 
