@@ -23,3 +23,6 @@
 
 // External power button sense
 #define BOARD_POWER_BUTTON_GPIO GPIO_NUM_21
+
+// 5-button analog keypad KS0466
+#define BOARD_KEYPAD_GPIO       GPIO_NUM_8
