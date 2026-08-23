@@ -6,12 +6,14 @@ idf_component_register(
         "."
 
     REQUIRES
-        spi_bus
-        display
-        sd_card
-        power_control
-        keypad
-        ui
-        freertos
-        log
+	    spi_bus
+	    display
+	    sd_card
+	    power_control
+	    keypad
+	    device_status
+	    wifi_manager
+	    ui
+	    freertos
+	    log
 )

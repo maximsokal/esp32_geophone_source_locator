@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -18,6 +19,9 @@ typedef enum
 } ui_screen_t;
 
 
+/*
+ * Common UI elements.
+ */
 esp_err_t ui_status_bar_draw(void);
 
 
@@ -40,11 +44,23 @@ esp_err_t ui_common_draw_box(
 );
 
 
+/*
+ * Home screen.
+ */
 esp_err_t ui_home_draw(
     size_t selected_item
 );
 
 
+esp_err_t ui_home_update_selection(
+    size_t previous_item,
+    size_t selected_item
+);
+
+
+/*
+ * Application screens.
+ */
 esp_err_t ui_measurements_draw(void);
 
 esp_err_t ui_storage_draw(void);
