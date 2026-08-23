@@ -8,7 +8,7 @@
 #include "keypad.h"
 #include "device_status.h"
 #include "ui.h"
-
+#include "wifi_manager.h"
 
 static const char *TAG = "APP";
 
@@ -29,7 +29,14 @@ void app_main(void)
     ESP_ERROR_CHECK(
         device_status_init()
     );
-
+	
+	ESP_ERROR_CHECK(
+	    wifi_manager_init()
+	);
+	
+	ESP_ERROR_CHECK(
+	    wifi_manager_start()
+	);
 
     ESP_ERROR_CHECK(
         keypad_init()
