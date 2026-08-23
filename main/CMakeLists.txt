@@ -10,6 +10,7 @@ idf_component_register(
         display
         sd_card
         power_control
+        keypad
         freertos
         log
     
