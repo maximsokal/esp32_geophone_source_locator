@@ -1,0 +1,243 @@
+#include "web_server.h"
+
+#include "web_page.h"
+
+#include "esp_http_server.h"
+#include "esp_log.h"
+
+
+static const char *TAG = "WEB_SERVER";
+
+
+static httpd_handle_t s_server = NULL;
+
+
+/*
+ * Handle GET /.
+ */
+static esp_err_t web_server_index_handler(
+    httpd_req_t *request
+)
+{
+    const char *html =
+        web_page_get_index_html();
+
+
+    httpd_resp_set_type(
+        request,
+        "text/html; charset=utf-8"
+    );
+
+
+    httpd_resp_set_hdr(
+        request,
+        "Cache-Control",
+        "no-store"
+    );
+
+
+    return httpd_resp_send(
+        request,
+        html,
+        HTTPD_RESP_USE_STRLEN
+    );
+}
+
+
+/*
+ * Small endpoint used to verify that the web server
+ * is alive without loading the complete HTML page.
+ */
+static esp_err_t web_server_health_handler(
+    httpd_req_t *request
+)
+{
+    static const char response[] = "OK";
+
+
+    httpd_resp_set_type(
+        request,
+        "text/plain"
+    );
+
+
+    return httpd_resp_send(
+        request,
+        response,
+        HTTPD_RESP_USE_STRLEN
+    );
+}
+
+
+esp_err_t web_server_start(void)
+{
+    if (s_server != NULL) {
+
+        ESP_LOGW(
+            TAG,
+            "HTTP server already running"
+        );
+
+        return ESP_OK;
+    }
+
+
+    httpd_config_t config =
+        HTTPD_DEFAULT_CONFIG();
+
+
+    /*
+     * Keep the first server configuration intentionally small.
+     * More URI handlers will be added as separate modules later.
+     */
+    config.max_uri_handlers = 8;
+
+
+    ESP_LOGI(
+        TAG,
+        "Starting HTTP server on port %d",
+        config.server_port
+    );
+
+
+    esp_err_t err =
+        httpd_start(
+            &s_server,
+            &config
+        );
+
+
+    if (err != ESP_OK) {
+
+        s_server = NULL;
+
+        ESP_LOGE(
+            TAG,
+            "Failed to start HTTP server: %s",
+            esp_err_to_name(err)
+        );
+
+        return err;
+    }
+
+
+    const httpd_uri_t index_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = web_server_index_handler,
+        .user_ctx = NULL,
+    };
+
+
+    err = httpd_register_uri_handler(
+        s_server,
+        &index_uri
+    );
+
+
+    if (err != ESP_OK) {
+
+        ESP_LOGE(
+            TAG,
+            "Failed to register index URI: %s",
+            esp_err_to_name(err)
+        );
+
+        web_server_stop();
+
+        return err;
+    }
+
+
+    const httpd_uri_t health_uri = {
+        .uri = "/health",
+        .method = HTTP_GET,
+        .handler = web_server_health_handler,
+        .user_ctx = NULL,
+    };
+
+
+    err = httpd_register_uri_handler(
+        s_server,
+        &health_uri
+    );
+
+
+    if (err != ESP_OK) {
+
+        ESP_LOGE(
+            TAG,
+            "Failed to register health URI: %s",
+            esp_err_to_name(err)
+        );
+
+        web_server_stop();
+
+        return err;
+    }
+
+
+    ESP_LOGI(
+        TAG,
+        "HTTP server started"
+    );
+
+
+    ESP_LOGI(
+        TAG,
+        "Open http://192.168.4.1"
+    );
+
+
+    return ESP_OK;
+}
+
+
+esp_err_t web_server_stop(void)
+{
+    if (s_server == NULL) {
+        return ESP_OK;
+    }
+
+
+    ESP_LOGI(
+        TAG,
+        "Stopping HTTP server"
+    );
+
+
+    esp_err_t err =
+        httpd_stop(
+            s_server
+        );
+
+
+    if (err != ESP_OK) {
+
+        ESP_LOGE(
+            TAG,
+            "Failed to stop HTTP server: %s",
+            esp_err_to_name(err)
+        );
+
+        return err;
+    }
+
+
+    s_server = NULL;
+
+
+    ESP_LOGI(
+        TAG,
+        "HTTP server stopped"
+    );
+
+
+    return ESP_OK;
+}
+
+
+bool web_server_is_running(void)
+{
+    return s_server != NULL;
+}
