@@ -4,8 +4,10 @@
 
 #include "esp_err.h"
 
+
 #define DISPLAY_WIDTH   320
 #define DISPLAY_HEIGHT  240
+
 
 /*
  * RGB565 colors.
@@ -21,9 +23,14 @@
 #define DISPLAY_COLOR_DARK_GRAY   0x4208
 #define DISPLAY_COLOR_NAVY        0x000F
 
+
 esp_err_t display_init(void);
 
-esp_err_t display_fill(uint16_t color);
+
+esp_err_t display_fill(
+    uint16_t color
+);
+
 
 esp_err_t display_fill_rect(
     int x,
@@ -32,6 +39,23 @@ esp_err_t display_fill_rect(
     int height,
     uint16_t color
 );
+
+
+/*
+ * Draw an RGB565 bitmap.
+ *
+ * The source buffer does not need to be DMA-capable.
+ * The display component copies it into its internal DMA buffer
+ * and transfers the image in chunks.
+ */
+esp_err_t display_draw_rgb565_bitmap(
+    int x,
+    int y,
+    int width,
+    int height,
+    const uint16_t *pixels
+);
+
 
 esp_err_t display_draw_char(
     int x,
@@ -42,6 +66,7 @@ esp_err_t display_draw_char(
     uint8_t scale
 );
 
+
 esp_err_t display_draw_text(
     int x,
     int y,
@@ -50,5 +75,6 @@ esp_err_t display_draw_text(
     uint16_t background,
     uint8_t scale
 );
+
 
 void display_deinit(void);
