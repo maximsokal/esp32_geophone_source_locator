@@ -1,13 +1,9 @@
 #include "object_store_internal.h"
 
-#include <stdio.h>
-
 #include "cJSON.h"
 
+#include "object_format.h"
 #include "storage_manager.h"
-
-
-#define OBJECT_METADATA_PATH_SIZE  192
 
 
 esp_err_t object_store_json_write_metadata(
@@ -15,30 +11,26 @@ esp_err_t object_store_json_write_metadata(
 )
 {
     if (
-        !object_store_fs_id_is_valid(
+        !object_format_id_is_valid(
             object_id
         )
     ) {
         return ESP_ERR_INVALID_ARG;
     }
 
-
     cJSON *root =
         cJSON_CreateObject();
-
 
     if (root == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-
     cJSON *schema =
         cJSON_AddNumberToObject(
             root,
             "schema_version",
-            1
+            OBJECT_FORMAT_SCHEMA_VERSION
         );
-
 
     cJSON *id =
         cJSON_AddStringToObject(
@@ -47,7 +39,6 @@ esp_err_t object_store_json_write_metadata(
             object_id
         );
 
-
     cJSON *name =
         cJSON_AddStringToObject(
             root,
@@ -55,13 +46,11 @@ esp_err_t object_store_json_write_metadata(
             object_id
         );
 
-
     cJSON *location =
         cJSON_AddObjectToObject(
             root,
             "location"
         );
-
 
     if (
         schema == NULL ||
@@ -75,7 +64,6 @@ esp_err_t object_store_json_write_metadata(
 
         return ESP_ERR_NO_MEM;
     }
-
 
     if (
         cJSON_AddBoolToObject(
@@ -111,62 +99,41 @@ esp_err_t object_store_json_write_metadata(
         return ESP_ERR_NO_MEM;
     }
 
-
     char *json =
         cJSON_PrintUnformatted(
             root
         );
 
-
     cJSON_Delete(
         root
     );
-
 
     if (json == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-
     char metadata_path[
-        OBJECT_METADATA_PATH_SIZE
+        OBJECT_STORE_FS_PATH_SIZE
     ];
 
-
-    int written =
-        snprintf(
-            metadata_path,
-            sizeof(metadata_path),
-            "%s/%s/object.json",
-            STORAGE_MANAGER_OBJECTS_PATH,
-            object_id
-        );
-
-
-    if (
-        written < 0 ||
-        written >=
-            (int)sizeof(metadata_path)
-    ) {
-        cJSON_free(
-            json
-        );
-
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-
     esp_err_t err =
-        storage_manager_atomic_write_text(
+        object_store_fs_metadata_path(
+            object_id,
             metadata_path,
-            json
+            sizeof(metadata_path)
         );
 
+    if (err == ESP_OK) {
+        err =
+            storage_manager_atomic_write_text(
+                metadata_path,
+                json
+            );
+    }
 
     cJSON_free(
         json
     );
-
 
     return err;
 }

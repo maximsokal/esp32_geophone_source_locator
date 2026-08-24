@@ -5,7 +5,7 @@
 
 #include "esp_err.h"
 
-#include "object_store.h"
+#include "object_service.h"
 
 
 #define UI_OBJECTS_ACTION_COUNT 3
@@ -21,6 +21,7 @@ typedef enum
 
 esp_err_t ui_objects_view_draw_menu(
     size_t selected_action,
+    const object_service_summary_t *active_object,
     const char *notice,
     bool notice_warning
 );
@@ -39,7 +40,7 @@ esp_err_t ui_objects_view_draw_notice(
 
 
 esp_err_t ui_objects_view_draw_list(
-    const object_store_summary_t *objects,
+    const object_service_summary_t *objects,
     size_t object_count,
     size_t selected_object,
     ui_objects_list_kind_t kind
@@ -47,7 +48,7 @@ esp_err_t ui_objects_view_draw_list(
 
 
 esp_err_t ui_objects_view_update_list_selection(
-    const object_store_summary_t *objects,
+    const object_service_summary_t *objects,
     size_t object_count,
     size_t previous_object,
     size_t selected_object,
@@ -56,5 +57,5 @@ esp_err_t ui_objects_view_update_list_selection(
 
 
 esp_err_t ui_objects_view_draw_delete_confirm(
-    const object_store_summary_t *object
+    const object_service_summary_t *object
 );

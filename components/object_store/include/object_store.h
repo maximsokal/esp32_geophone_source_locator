@@ -1,29 +1,24 @@
 #pragma once
 
-#include <stdbool.h>
 #include <stddef.h>
 
 #include "esp_err.h"
 
-
-#define OBJECT_STORE_ID_SIZE       16
-#define OBJECT_STORE_NAME_SIZE     32
-#define OBJECT_STORE_MAX_OBJECTS   32
+#include "object_format.h"
 
 
-typedef struct
-{
-    char id[
-        OBJECT_STORE_ID_SIZE
-    ];
+#define OBJECT_STORE_ID_SIZE \
+    OBJECT_FORMAT_ID_SIZE
 
-    char name[
-        OBJECT_STORE_NAME_SIZE
-    ];
+#define OBJECT_STORE_NAME_SIZE \
+    OBJECT_FORMAT_NAME_SIZE
 
-    bool active;
+#define OBJECT_STORE_MAX_OBJECTS \
+    OBJECT_FORMAT_MAX_OBJECTS
 
-} object_store_summary_t;
+
+typedef object_summary_t
+    object_store_summary_t;
 
 
 esp_err_t object_store_init(void);
@@ -56,8 +51,4 @@ esp_err_t object_store_delete(
 );
 
 
-/*
- * Clear in-memory object state after application data
- * has been erased from the SD card.
- */
 esp_err_t object_store_reset(void);

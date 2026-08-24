@@ -1,8 +1,38 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "esp_err.h"
+
+
+#define OBJECT_RECOVERY_PATH_SIZE          256
+#define OBJECT_RECOVERY_METADATA_MAX_SIZE 16384
+
+
+esp_err_t object_recovery_fs_build_path(
+    char *buffer,
+    size_t buffer_size,
+    const char *directory,
+    const char *file_name
+);
+
+
+bool object_recovery_fs_metadata_valid(
+    const char *path,
+    const char *expected_id
+);
+
+
+esp_err_t object_recovery_fs_unlink_if_exists(
+    const char *path
+);
+
+
+esp_err_t object_recovery_fs_restore_file(
+    const char *source,
+    const char *destination
+);
 
 
 esp_err_t object_recovery_fs_prepare_metadata(

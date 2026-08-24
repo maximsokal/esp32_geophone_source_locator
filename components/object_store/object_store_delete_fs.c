@@ -1,14 +1,11 @@
 #include "object_store_internal.h"
 
-#include <stdio.h>
-
+#include "object_format.h"
 #include "storage_manager.h"
 
 
 #define ACTIVE_OBJECT_PATH \
     STORAGE_MANAGER_ROOT_PATH "/active_object.txt"
-
-#define OBJECT_DELETE_PATH_SIZE  256
 
 
 esp_err_t object_store_fs_clear_active(void)
@@ -21,9 +18,10 @@ esp_err_t object_store_fs_clear_active(void)
         return ESP_OK;
     }
 
-    return storage_manager_remove_tree(
-        ACTIVE_OBJECT_PATH
-    );
+    return
+        storage_manager_remove_tree(
+            ACTIVE_OBJECT_PATH
+        );
 }
 
 
@@ -32,7 +30,7 @@ esp_err_t object_store_fs_delete_object(
 )
 {
     if (
-        !object_store_fs_id_is_valid(
+        !object_format_id_is_valid(
             object_id
         )
     ) {
@@ -40,27 +38,22 @@ esp_err_t object_store_fs_delete_object(
     }
 
     char object_path[
-        OBJECT_DELETE_PATH_SIZE
+        OBJECT_STORE_FS_PATH_SIZE
     ];
 
-    int written =
-        snprintf(
+    esp_err_t err =
+        object_store_fs_object_path(
+            object_id,
             object_path,
-            sizeof(object_path),
-            "%s/%s",
-            STORAGE_MANAGER_OBJECTS_PATH,
-            object_id
+            sizeof(object_path)
         );
 
-    if (
-        written < 0 ||
-        written >=
-            (int)sizeof(object_path)
-    ) {
-        return ESP_ERR_INVALID_SIZE;
+    if (err != ESP_OK) {
+        return err;
     }
 
-    return storage_manager_remove_tree(
-        object_path
-    );
+    return
+        storage_manager_remove_tree(
+            object_path
+        );
 }

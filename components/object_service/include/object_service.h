@@ -5,10 +5,18 @@
 
 #include "esp_err.h"
 
-#include "object_store.h"
+#include "object_format.h"
 
 
-#define OBJECT_SERVICE_OBJECT_ID_SIZE 16
+#define OBJECT_SERVICE_OBJECT_ID_SIZE \
+    OBJECT_FORMAT_ID_SIZE
+
+#define OBJECT_SERVICE_MAX_OBJECTS \
+    OBJECT_FORMAT_MAX_OBJECTS
+
+
+typedef object_summary_t
+    object_service_summary_t;
 
 
 typedef enum
@@ -34,7 +42,7 @@ typedef struct
 
     esp_err_t result;
 
-    object_store_summary_t object;
+    object_service_summary_t object;
 
     char object_id[
         OBJECT_SERVICE_OBJECT_ID_SIZE
@@ -42,8 +50,8 @@ typedef struct
 
     size_t object_count;
 
-    object_store_summary_t objects[
-        OBJECT_STORE_MAX_OBJECTS
+    object_service_summary_t objects[
+        OBJECT_SERVICE_MAX_OBJECTS
     ];
 
 } object_service_event_t;
@@ -64,6 +72,11 @@ void object_service_shutdown(void);
 esp_err_t object_service_set_event_callback(
     object_service_event_callback_t callback,
     void *user_context
+);
+
+
+esp_err_t object_service_get_active(
+    object_service_summary_t *object
 );
 
 

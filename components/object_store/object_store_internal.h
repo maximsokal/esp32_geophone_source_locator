@@ -8,12 +8,29 @@
 #include "object_store.h"
 
 
-/*
- * Object-store state helpers.
- *
- * Filesystem-backed operations use one lock order everywhere:
- * storage operation guard first, object-store mutex second.
- */
+
+#define OBJECT_STORE_FS_PATH_SIZE  192
+
+
+bool object_store_internal_is_initialized(void);
+
+
+void object_store_internal_set_initialized(
+    bool initialized
+);
+
+
+void *object_store_internal_mutex_handle(void);
+
+
+void object_store_internal_set_mutex_handle(
+    void *mutex
+);
+
+
+void object_store_internal_restore_active(void);
+
+
 esp_err_t object_store_internal_begin_file_operation(void);
 
 
@@ -38,12 +55,23 @@ void object_store_internal_fill_summary(
 );
 
 
-bool object_store_fs_id_is_valid(
-    const char *object_id
+esp_err_t object_store_fs_object_path(
+    const char *object_id,
+    char *path,
+    size_t path_size
 );
 
 
-bool object_store_fs_object_exists(
+esp_err_t object_store_fs_metadata_path(
+    const char *object_id,
+    char *path,
+    size_t path_size
+);
+
+
+void object_store_fs_copy_id(
+    char *destination,
+    size_t destination_size,
     const char *object_id
 );
 
@@ -51,6 +79,11 @@ bool object_store_fs_object_exists(
 esp_err_t object_store_fs_next_id(
     char *object_id,
     size_t object_id_size
+);
+
+
+bool object_store_fs_object_exists(
+    const char *object_id
 );
 
 

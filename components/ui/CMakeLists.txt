@@ -5,7 +5,17 @@ idf_component_register(
         "ui_status_bar.c"
         "ui_home.c"
         "ui_objects.c"
+        "ui_objects_state.c"
+        "ui_objects_render.c"
+        "ui_objects_events.c"
+        "ui_objects_event_list.c"
+        "ui_objects_menu.c"
+        "ui_objects_list.c"
         "ui_objects_view.c"
+        "ui_objects_status_view.c"
+        "ui_objects_list_view.c"
+        "ui_objects_list_row.c"
+        "ui_objects_delete_view.c"
         "ui_measurements.c"
         "ui_storage.c"
         "ui_storage_view.c"
@@ -24,7 +34,6 @@ idf_component_register(
         device_status
         app_config
         wifi_qr
-        object_store
         object_service
         storage_service
         log
