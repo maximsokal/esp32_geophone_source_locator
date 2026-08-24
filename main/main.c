@@ -27,6 +27,25 @@ static const char *TAG =
     "APP";
 
 
+static void app_idle_after_power_off(void)
+{
+    /*
+     * Pololu removes project power in normal standalone use.
+     *
+     * During USB debugging the ESP32 can remain electrically
+     * powered after Pololu turns the project rail off. Keep
+     * app_main alive in a safe idle state instead of returning.
+     */
+    while (true) {
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                1000
+            )
+        );
+    }
+}
+
+
 static void app_storage_boot_failure(
     const char *message
 )
@@ -120,17 +139,7 @@ static void app_storage_boot_failure(
 
     power_control_shutdown();
 
-    /*
-     * USB can keep the ESP32 powered after the Pololu
-     * output is turned off.
-     */
-    while (true) {
-        vTaskDelay(
-            pdMS_TO_TICKS(
-                1000
-            )
-        );
-    }
+    app_idle_after_power_off();
 }
 
 
@@ -424,4 +433,6 @@ void app_main(void)
     );
 
     power_control_shutdown();
+
+    app_idle_after_power_off();
 }
