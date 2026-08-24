@@ -1,6 +1,11 @@
 idf_component_register(
     SRCS
         main.c
+        app_startup.c
+        app_startup_status.c
+        app_storage_boot.c
+        app_shutdown.c
+        app_poweroff.c
 
     INCLUDE_DIRS
         "."
