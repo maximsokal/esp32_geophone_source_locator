@@ -11,6 +11,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "storage_manager.h"
+
 
 static const char *TAG =
     "OBJECT_STORE";
@@ -29,7 +31,7 @@ static char s_active_object_id[
 ] = "";
 
 
-static void object_store_fill_summary(
+void object_store_internal_fill_summary(
     object_store_summary_t *object,
     const char *object_id,
     bool active
@@ -54,6 +56,69 @@ static void object_store_fill_summary(
 }
 
 
+esp_err_t object_store_internal_begin_file_operation(void)
+{
+    if (
+        !s_initialized ||
+        s_mutex == NULL
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err =
+        storage_manager_operation_begin();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    xSemaphoreTake(
+        s_mutex,
+        portMAX_DELAY
+    );
+
+    return ESP_OK;
+}
+
+
+void object_store_internal_end_file_operation(void)
+{
+    if (s_mutex != NULL) {
+        xSemaphoreGive(
+            s_mutex
+        );
+    }
+
+    storage_manager_operation_end();
+}
+
+
+const char *object_store_internal_active_id(void)
+{
+    return s_active_object_id;
+}
+
+
+void object_store_internal_set_active_id(
+    const char *object_id
+)
+{
+    snprintf(
+        s_active_object_id,
+        sizeof(s_active_object_id),
+        "%s",
+        object_id
+    );
+}
+
+
+void object_store_internal_clear_active_id(void)
+{
+    s_active_object_id[0] =
+        '\0';
+}
+
+
 esp_err_t object_store_init(void)
 {
     if (s_initialized) {
@@ -67,8 +132,26 @@ esp_err_t object_store_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_active_object_id[0] =
-        '\0';
+    esp_err_t guard_err =
+        storage_manager_operation_begin();
+
+    if (guard_err != ESP_OK) {
+        vSemaphoreDelete(
+            s_mutex
+        );
+
+        s_mutex =
+            NULL;
+
+        return guard_err;
+    }
+
+    xSemaphoreTake(
+        s_mutex,
+        portMAX_DELAY
+    );
+
+    object_store_internal_clear_active_id();
 
     char active_id[
         OBJECT_STORE_ID_SIZE
@@ -86,10 +169,7 @@ esp_err_t object_store_init(void)
                 active_id
             )
         ) {
-            snprintf(
-                s_active_object_id,
-                sizeof(s_active_object_id),
-                "%s",
+            object_store_internal_set_active_id(
                 active_id
             );
 
@@ -108,7 +188,8 @@ esp_err_t object_store_init(void)
         }
     }
     else if (
-        err == ESP_ERR_NOT_FOUND
+        err ==
+        ESP_ERR_NOT_FOUND
     ) {
         ESP_LOGI(
             TAG,
@@ -122,124 +203,16 @@ esp_err_t object_store_init(void)
         );
     }
 
+    xSemaphoreGive(
+        s_mutex
+    );
+
+    storage_manager_operation_end();
+
     s_initialized =
         true;
 
     return ESP_OK;
-}
-
-
-esp_err_t object_store_create(
-    object_store_summary_t *created_object
-)
-{
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
-    );
-
-    char object_id[
-        OBJECT_STORE_ID_SIZE
-    ];
-
-    esp_err_t err =
-        object_store_fs_next_id(
-            object_id,
-            sizeof(object_id)
-        );
-
-    if (err == ESP_OK) {
-        err =
-            object_store_fs_create_layout(
-                object_id
-            );
-    }
-
-    if (err == ESP_OK) {
-        err =
-            object_store_json_write_metadata(
-                object_id
-            );
-    }
-
-    if (err == ESP_OK) {
-        err =
-            object_store_fs_save_active(
-                object_id
-            );
-    }
-
-    if (err == ESP_OK) {
-        snprintf(
-            s_active_object_id,
-            sizeof(s_active_object_id),
-            "%s",
-            object_id
-        );
-
-        if (created_object != NULL) {
-            object_store_fill_summary(
-                created_object,
-                object_id,
-                true
-            );
-        }
-
-        ESP_LOGI(
-            TAG,
-            "Created object: %s",
-            object_id
-        );
-    }
-
-    xSemaphoreGive(
-        s_mutex
-    );
-
-    return err;
-}
-
-
-esp_err_t object_store_list(
-    object_store_summary_t *objects,
-    size_t max_objects,
-    size_t *object_count
-)
-{
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (
-        objects == NULL ||
-        object_count == NULL ||
-        max_objects == 0
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
-    );
-
-    esp_err_t err =
-        object_store_fs_list(
-            objects,
-            max_objects,
-            object_count,
-            s_active_object_id
-        );
-
-    xSemaphoreGive(
-        s_mutex
-    );
-
-    return err;
 }
 
 
@@ -271,7 +244,7 @@ esp_err_t object_store_get_active(
         return ESP_ERR_NOT_FOUND;
     }
 
-    object_store_fill_summary(
+    object_store_internal_fill_summary(
         object,
         s_active_object_id,
         true
@@ -282,148 +255,6 @@ esp_err_t object_store_get_active(
     );
 
     return ESP_OK;
-}
-
-
-esp_err_t object_store_set_active(
-    const char *object_id
-)
-{
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (
-        !object_store_fs_id_is_valid(
-            object_id
-        )
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
-    );
-
-    if (
-        !object_store_fs_object_exists(
-            object_id
-        )
-    ) {
-        xSemaphoreGive(
-            s_mutex
-        );
-
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    esp_err_t err =
-        object_store_fs_save_active(
-            object_id
-        );
-
-    if (err == ESP_OK) {
-        snprintf(
-            s_active_object_id,
-            sizeof(s_active_object_id),
-            "%s",
-            object_id
-        );
-
-        ESP_LOGI(
-            TAG,
-            "Active object: %s",
-            object_id
-        );
-    }
-
-    xSemaphoreGive(
-        s_mutex
-    );
-
-    return err;
-}
-
-
-esp_err_t object_store_delete(
-    const char *object_id
-)
-{
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (
-        !object_store_fs_id_is_valid(
-            object_id
-        )
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
-    );
-
-    if (
-        !object_store_fs_object_exists(
-            object_id
-        )
-    ) {
-        xSemaphoreGive(
-            s_mutex
-        );
-
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    bool deleting_active =
-        strcmp(
-            s_active_object_id,
-            object_id
-        ) == 0;
-
-    esp_err_t err =
-        ESP_OK;
-
-    /*
-     * Clear the active marker first.
-     *
-     * If deletion is interrupted after this point,
-     * the remaining object is simply inactive.
-     */
-    if (deleting_active) {
-        err =
-            object_store_fs_clear_active();
-
-        if (err == ESP_OK) {
-            s_active_object_id[0] =
-                '\0';
-        }
-    }
-
-    if (err == ESP_OK) {
-        err =
-            object_store_fs_delete_object(
-                object_id
-            );
-    }
-
-    if (err == ESP_OK) {
-        ESP_LOGI(
-            TAG,
-            "Deleted object: %s",
-            object_id
-        );
-    }
-
-    xSemaphoreGive(
-        s_mutex
-    );
-
-    return err;
 }
 
 
@@ -438,8 +269,7 @@ esp_err_t object_store_reset(void)
         portMAX_DELAY
     );
 
-    s_active_object_id[0] =
-        '\0';
+    object_store_internal_clear_active_id();
 
     xSemaphoreGive(
         s_mutex

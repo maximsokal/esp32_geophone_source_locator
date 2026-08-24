@@ -26,14 +26,12 @@ static bool object_recovery_is_object_id(
 )
 {
     if (
-        name ==
-        NULL ||
+        name == NULL ||
         strlen(name) !=
             OBJECT_ID_LENGTH
     ) {
         return false;
     }
-
 
     if (
         strncmp(
@@ -44,7 +42,6 @@ static bool object_recovery_is_object_id(
     ) {
         return false;
     }
-
 
     for (
         size_t i = 4;
@@ -59,7 +56,6 @@ static bool object_recovery_is_object_id(
         }
     }
 
-
     return true;
 }
 
@@ -72,11 +68,9 @@ static esp_err_t object_recovery_check_one(
     *removed =
         false;
 
-
     char object_directory[
         RECOVERY_PATH_SIZE
     ];
-
 
     const int written =
         snprintf(
@@ -87,7 +81,6 @@ static esp_err_t object_recovery_check_one(
             object_id
         );
 
-
     if (
         written < 0 ||
         (size_t)written >=
@@ -96,9 +89,7 @@ static esp_err_t object_recovery_check_one(
         return ESP_ERR_INVALID_SIZE;
     }
 
-
     struct stat info;
-
 
     if (
         stat(
@@ -109,7 +100,6 @@ static esp_err_t object_recovery_check_one(
         return ESP_FAIL;
     }
 
-
     if (
         !S_ISDIR(
             info.st_mode
@@ -118,14 +108,11 @@ static esp_err_t object_recovery_check_one(
         return ESP_OK;
     }
 
-
     bool valid =
         false;
 
-
     bool recovered =
         false;
-
 
     esp_err_t err =
         object_recovery_fs_prepare_metadata(
@@ -135,24 +122,17 @@ static esp_err_t object_recovery_check_one(
             &recovered
         );
 
-
-    if (
-        err !=
-        ESP_OK
-    ) {
+    if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
             "Metadata recovery failed for %s",
             object_id
         );
 
-
         return err;
     }
 
-
     if (valid) {
-
         if (recovered) {
             ESP_LOGW(
                 TAG,
@@ -161,10 +141,8 @@ static esp_err_t object_recovery_check_one(
             );
         }
 
-
         return ESP_OK;
     }
-
 
     ESP_LOGW(
         TAG,
@@ -172,27 +150,20 @@ static esp_err_t object_recovery_check_one(
         object_id
     );
 
-
     err =
-        object_recovery_fs_remove_tree(
+        storage_manager_remove_tree(
             object_directory
         );
 
-
-    if (
-        err !=
-        ESP_OK
-    ) {
+    if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
             "Failed to remove incomplete object: %s",
             object_id
         );
 
-
         return err;
     }
-
 
     ESP_LOGI(
         TAG,
@@ -200,10 +171,8 @@ static esp_err_t object_recovery_check_one(
         object_id
     );
 
-
     *removed =
         true;
-
 
     return ESP_OK;
 }
@@ -211,11 +180,20 @@ static esp_err_t object_recovery_check_one(
 
 esp_err_t object_recovery_run(void)
 {
+    esp_err_t guard_err =
+        storage_manager_operation_begin();
+
+    if (guard_err != ESP_OK) {
+        return guard_err;
+    }
+
     ESP_LOGI(
         TAG,
         "Checking object storage"
     );
 
+    esp_err_t final_result =
+        ESP_OK;
 
     /*
      * Restart directory enumeration whenever an incomplete
@@ -223,37 +201,30 @@ esp_err_t object_recovery_run(void)
      * iteration behavior while entries are being deleted.
      */
     while (true) {
-
         DIR *directory =
             opendir(
                 STORAGE_MANAGER_OBJECTS_PATH
             );
 
-
-        if (
-            directory ==
-            NULL
-        ) {
+        if (directory == NULL) {
             ESP_LOGE(
                 TAG,
                 "Failed to open object directory"
             );
 
+            final_result =
+                ESP_FAIL;
 
-            return ESP_FAIL;
+            break;
         }
-
 
         bool removed =
             false;
 
-
         esp_err_t result =
             ESP_OK;
 
-
         struct dirent *entry;
-
 
         while (
             (
@@ -271,13 +242,11 @@ esp_err_t object_recovery_run(void)
                 continue;
             }
 
-
             result =
                 object_recovery_check_one(
                     entry->d_name,
                     &removed
                 );
-
 
             if (
                 result !=
@@ -288,33 +257,30 @@ esp_err_t object_recovery_run(void)
             }
         }
 
-
         closedir(
             directory
         );
 
+        if (result != ESP_OK) {
+            final_result =
+                result;
 
-        if (
-            result !=
-            ESP_OK
-        ) {
-            return result;
+            break;
         }
 
-
-        if (
-            !removed
-        ) {
+        if (!removed) {
             break;
         }
     }
 
+    storage_manager_operation_end();
 
-    ESP_LOGI(
-        TAG,
-        "Object storage check complete"
-    );
+    if (final_result == ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "Object storage check complete"
+        );
+    }
 
-
-    return ESP_OK;
+    return final_result;
 }

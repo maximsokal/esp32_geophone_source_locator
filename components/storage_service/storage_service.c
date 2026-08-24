@@ -1,19 +1,14 @@
 #include "storage_service.h"
 
 #include <stdbool.h>
-#include <string.h>
 
 #include "esp_log.h"
-
-#include "object_service.h"
-#include "object_store.h"
-#include "power_control.h"
-#include "sd_card.h"
-#include "storage_manager.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+
+#include "storage_service_internal.h"
 
 
 static const char *TAG =
@@ -23,15 +18,6 @@ static const char *TAG =
 #define STORAGE_SERVICE_QUEUE_LENGTH      1
 #define STORAGE_SERVICE_TASK_STACK_SIZE   8192
 #define STORAGE_SERVICE_TASK_PRIORITY     3
-
-
-typedef enum
-{
-    STORAGE_COMMAND_INFO = 0,
-    STORAGE_COMMAND_ERASE_DATA,
-    STORAGE_COMMAND_STOP
-
-} storage_command_t;
 
 
 static QueueHandle_t s_queue =
@@ -75,132 +61,6 @@ static void storage_service_notify(void)
 }
 
 
-static void storage_service_process_info(void)
-{
-    memset(
-        &s_event,
-        0,
-        sizeof(s_event)
-    );
-
-    s_event.result =
-        sd_card_get_info(
-            &s_event.info
-        );
-
-    if (s_event.result == ESP_OK) {
-        s_event.type =
-            STORAGE_SERVICE_EVENT_INFO_DONE;
-
-        ESP_LOGI(
-            TAG,
-            "Card info completed"
-        );
-    }
-    else {
-        s_event.type =
-            STORAGE_SERVICE_EVENT_INFO_FAILED;
-
-        ESP_LOGE(
-            TAG,
-            "Card info failed: %s",
-            esp_err_to_name(
-                s_event.result
-            )
-        );
-    }
-
-    storage_service_notify();
-}
-
-
-static esp_err_t storage_service_erase_data(void)
-{
-    /*
-     * Application data must not be deleted while an object
-     * create/delete/select operation is still using storage.
-     */
-    if (
-        object_service_is_busy()
-    ) {
-        ESP_LOGW(
-            TAG,
-            "Cannot erase data while object service is busy"
-        );
-
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    esp_err_t err =
-        storage_manager_erase_application_data();
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    /*
-     * The active object marker was deleted together with
-     * application data. Clear the in-memory object state too.
-     */
-    return object_store_reset();
-}
-
-
-static void storage_service_process_erase(void)
-{
-    memset(
-        &s_event,
-        0,
-        sizeof(s_event)
-    );
-
-    s_event.result =
-        storage_service_erase_data();
-
-    if (s_event.result == ESP_OK) {
-        s_event.type =
-            STORAGE_SERVICE_EVENT_ERASE_DONE;
-
-        ESP_LOGI(
-            TAG,
-            "Application data erase completed"
-        );
-    }
-    else {
-        s_event.type =
-            STORAGE_SERVICE_EVENT_ERASE_FAILED;
-
-        ESP_LOGE(
-            TAG,
-            "Application data erase failed: %s",
-            esp_err_to_name(
-                s_event.result
-            )
-        );
-    }
-
-    /*
-     * If POWER was pressed during erase, do not spend more
-     * time redrawing the STORAGE menu.
-     *
-     * The erase has already completed safely. The main task
-     * can now continue the pending shutdown sequence.
-     */
-    if (
-        power_control_is_shutdown_requested()
-    ) {
-        ESP_LOGI(
-            TAG,
-            "Shutdown pending after erase; skipping UI redraw"
-        );
-
-        return;
-    }
-
-    storage_service_notify();
-}
-
-
 static void storage_service_task(
     void *argument
 )
@@ -232,18 +92,31 @@ static void storage_service_task(
             break;
         }
 
+        bool notify =
+            false;
+
         switch (command) {
             case STORAGE_COMMAND_INFO:
-                storage_service_process_info();
+                notify =
+                    storage_service_process_info(
+                        &s_event
+                    );
                 break;
 
             case STORAGE_COMMAND_ERASE_DATA:
-                storage_service_process_erase();
+                notify =
+                    storage_service_process_erase(
+                        &s_event
+                    );
                 break;
 
             case STORAGE_COMMAND_STOP:
             default:
                 break;
+        }
+
+        if (notify) {
+            storage_service_notify();
         }
 
         /*
