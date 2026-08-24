@@ -77,4 +77,21 @@ esp_err_t display_draw_text(
 );
 
 
+/*
+ * Render consecutive text cells into one heap buffer
+ * and transfer each line as a bitmap.
+ *
+ * This avoids one synchronous SPI transaction per character
+ * and is intended for screens that redraw multiple text rows.
+ */
+esp_err_t display_draw_text_fast(
+    int x,
+    int y,
+    const char *text,
+    uint16_t foreground,
+    uint16_t background,
+    uint8_t scale
+);
+
+
 void display_deinit(void);

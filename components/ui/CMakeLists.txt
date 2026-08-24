@@ -4,6 +4,7 @@ idf_component_register(
         "ui_common.c"
         "ui_status_bar.c"
         "ui_home.c"
+        "ui_objects.c"
         "ui_measurements.c"
         "ui_storage.c"
         "ui_wifi.c"
@@ -21,5 +22,7 @@ idf_component_register(
         device_status
         app_config
         wifi_qr
+        object_store
+        object_service
         log
 )

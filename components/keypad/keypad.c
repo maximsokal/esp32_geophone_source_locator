@@ -17,7 +17,7 @@ static const char *TAG = "KEYPAD";
 #define KEYPAD_SAMPLE_COUNT        16
 #define KEYPAD_POLL_PERIOD_MS      20
 #define KEYPAD_DEBOUNCE_COUNT      3
-#define KEYPAD_TASK_STACK_SIZE     3072
+#define KEYPAD_TASK_STACK_SIZE     8192
 #define KEYPAD_TASK_PRIORITY       4
 
 

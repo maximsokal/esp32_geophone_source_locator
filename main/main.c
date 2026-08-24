@@ -3,6 +3,10 @@
 
 #include "spi_bus.h"
 #include "sd_card.h"
+#include "storage_manager.h"
+#include "object_recovery.h"
+#include "object_store.h"
+#include "object_service.h"
 #include "display.h"
 #include "power_control.h"
 #include "keypad.h"
@@ -72,10 +76,6 @@ void app_main(void)
     );
 
 
-    /*
-     * The SD card and TFT share SPI2.
-     * Initialize the SD card before TFT traffic begins.
-     */
     ESP_ERROR_CHECK(
         sd_card_mount()
     );
@@ -83,6 +83,31 @@ void app_main(void)
 
     ESP_ERROR_CHECK(
         sd_card_test()
+    );
+
+
+    ESP_ERROR_CHECK(
+        storage_manager_init()
+    );
+
+
+    /*
+     * Recover interrupted metadata writes and remove
+     * incomplete OBJ_XXXX directories before the
+     * object store builds its persistent state.
+     */
+    ESP_ERROR_CHECK(
+        object_recovery_run()
+    );
+
+
+    ESP_ERROR_CHECK(
+        object_store_init()
+    );
+
+
+    ESP_ERROR_CHECK(
+        object_service_init()
     );
 
 
@@ -104,10 +129,6 @@ void app_main(void)
     );
 
 
-    /*
-     * Temporary waveform source used only to verify
-     * the seismic web pipeline before AD7606 is connected.
-     */
     ESP_ERROR_CHECK(
         seismic_test_generator_start()
     );
@@ -118,35 +139,66 @@ void app_main(void)
         "Display: OK"
     );
 
+
     ESP_LOGI(
         TAG,
         "SD card: OK"
     );
+
+
+    ESP_LOGI(
+        TAG,
+        "Storage manager: OK"
+    );
+
+
+    ESP_LOGI(
+        TAG,
+        "Object recovery: OK"
+    );
+
+
+    ESP_LOGI(
+        TAG,
+        "Object store: OK"
+    );
+
+
+    ESP_LOGI(
+        TAG,
+        "Object service: OK"
+    );
+
 
     ESP_LOGI(
         TAG,
         "Keypad: OK"
     );
 
+
     ESP_LOGI(
         TAG,
         "Wi-Fi: OK"
     );
+
 
     ESP_LOGI(
         TAG,
         "Web server: OK"
     );
 
+
     ESP_LOGI(
         TAG,
         "Captive portal: OK"
     );
 
+
     ESP_LOGI(
         TAG,
         "Seismic test pipeline: OK"
     );
+
 
     ESP_LOGI(
         TAG,
@@ -172,6 +224,13 @@ void app_main(void)
     keypad_stop_event_monitor();
 
 
+    /*
+     * A previously accepted CREATE or SET ACTIVE operation
+     * must finish before the filesystem is shut down.
+     */
+    object_service_shutdown();
+
+
     seismic_test_generator_stop();
 
 
@@ -179,12 +238,16 @@ void app_main(void)
         captive_portal_stop();
 
 
-    if (portal_err != ESP_OK) {
-
+    if (
+        portal_err !=
+        ESP_OK
+    ) {
         ESP_LOGW(
             TAG,
             "Failed to stop captive portal: %s",
-            esp_err_to_name(portal_err)
+            esp_err_to_name(
+                portal_err
+            )
         );
     }
 
@@ -193,12 +256,16 @@ void app_main(void)
         web_server_stop();
 
 
-    if (web_err != ESP_OK) {
-
+    if (
+        web_err !=
+        ESP_OK
+    ) {
         ESP_LOGW(
             TAG,
             "Failed to stop web server: %s",
-            esp_err_to_name(web_err)
+            esp_err_to_name(
+                web_err
+            )
         );
     }
 
@@ -207,12 +274,34 @@ void app_main(void)
         wifi_manager_stop();
 
 
-    if (wifi_err != ESP_OK) {
-
+    if (
+        wifi_err !=
+        ESP_OK
+    ) {
         ESP_LOGW(
             TAG,
             "Failed to stop Wi-Fi: %s",
-            esp_err_to_name(wifi_err)
+            esp_err_to_name(
+                wifi_err
+            )
+        );
+    }
+
+
+    esp_err_t storage_err =
+        storage_manager_shutdown();
+
+
+    if (
+        storage_err !=
+        ESP_OK
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Storage shutdown failed: %s",
+            esp_err_to_name(
+                storage_err
+            )
         );
     }
 
@@ -232,12 +321,16 @@ void app_main(void)
         );
 
 
-    if (display_err != ESP_OK) {
-
+    if (
+        display_err !=
+        ESP_OK
+    ) {
         ESP_LOGW(
             TAG,
             "Failed to clear display: %s",
-            esp_err_to_name(display_err)
+            esp_err_to_name(
+                display_err
+            )
         );
     }
 
