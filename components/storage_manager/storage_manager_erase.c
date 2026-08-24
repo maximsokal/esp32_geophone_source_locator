@@ -9,19 +9,56 @@
 
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 
 static const char *TAG =
     "STORAGE_ERASE";
 
 
-#define ERASE_PATH_SIZE 256
+#define ERASE_PATH_SIZE              256
+#define ERASE_COOPERATE_INTERVAL       4
+
+
+static void storage_erase_cooperate(
+    unsigned *operation_count
+)
+{
+    if (operation_count == NULL) {
+        return;
+    }
+
+    (*operation_count)++;
+
+    if (
+        (
+            *operation_count %
+            ERASE_COOPERATE_INTERVAL
+        ) == 0
+    ) {
+        /*
+         * Allow higher-priority monitoring tasks and the
+         * main shutdown task to run during a long erase.
+         *
+         * The erase itself is never cancelled.
+         */
+        vTaskDelay(
+            1
+        );
+    }
+}
 
 
 static esp_err_t storage_erase_tree(
-    const char *path
+    const char *path,
+    unsigned *operation_count
 )
 {
-    if (path == NULL) {
+    if (
+        path == NULL ||
+        operation_count == NULL
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -40,10 +77,26 @@ static esp_err_t storage_erase_tree(
     }
 
     if (!S_ISDIR(info.st_mode)) {
-        return
-            remove(path) == 0
-                ? ESP_OK
-                : ESP_FAIL;
+        if (
+            remove(
+                path
+            ) != 0
+        ) {
+            ESP_LOGE(
+                TAG,
+                "Failed to remove file: %s, errno=%d",
+                path,
+                errno
+            );
+
+            return ESP_FAIL;
+        }
+
+        storage_erase_cooperate(
+            operation_count
+        );
+
+        return ESP_OK;
     }
 
     DIR *directory =
@@ -52,6 +105,13 @@ static esp_err_t storage_erase_tree(
         );
 
     if (directory == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Failed to open directory: %s, errno=%d",
+            path,
+            errno
+        );
+
         return ESP_FAIL;
     }
 
@@ -105,7 +165,8 @@ static esp_err_t storage_erase_tree(
 
         result =
             storage_erase_tree(
-                child_path
+                child_path,
+                operation_count
             );
 
         if (result != ESP_OK) {
@@ -136,6 +197,10 @@ static esp_err_t storage_erase_tree(
         return ESP_FAIL;
     }
 
+    storage_erase_cooperate(
+        operation_count
+    );
+
     return ESP_OK;
 }
 
@@ -165,9 +230,13 @@ esp_err_t storage_manager_erase_application_data(void)
         return shutdown_err;
     }
 
+    unsigned operation_count =
+        0;
+
     esp_err_t erase_err =
         storage_erase_tree(
-            STORAGE_MANAGER_ROOT_PATH
+            STORAGE_MANAGER_ROOT_PATH,
+            &operation_count
         );
 
     /*
