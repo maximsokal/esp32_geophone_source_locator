@@ -8,25 +8,25 @@
 #include "ui_internal.h"
 
 
-static const char *TAG = "UI";
+static const char *TAG =
+    "UI";
 
 
 static ui_screen_t s_screen =
     UI_SCREEN_HOME;
 
 
-static size_t s_selected_item = 0;
+static size_t s_selected_item =
+    0;
 
 
-/*
- * Draw the currently active screen.
- *
- * Full screen rendering is used only when changing
- * between different screens.
- */
 static esp_err_t ui_draw_current_screen(void)
 {
     switch (s_screen) {
+
+        case UI_SCREEN_OBJECTS:
+            return ui_objects_draw();
+
 
         case UI_SCREEN_MEASUREMENTS:
             return ui_measurements_draw();
@@ -53,39 +53,52 @@ static esp_err_t ui_draw_current_screen(void)
 }
 
 
-/*
- * Open the screen represented by the currently
- * selected main menu item.
- */
 static esp_err_t ui_open_selected_item(void)
 {
     switch (s_selected_item) {
 
         case 0:
+
             s_screen =
-                UI_SCREEN_MEASUREMENTS;
-            break;
+                UI_SCREEN_OBJECTS;
+
+            return ui_objects_open();
 
 
         case 1:
+
             s_screen =
-                UI_SCREEN_STORAGE;
+                UI_SCREEN_MEASUREMENTS;
+
             break;
 
 
         case 2:
+
             s_screen =
-                UI_SCREEN_WIFI;
+                UI_SCREEN_STORAGE;
+
             break;
 
 
         case 3:
+
+            s_screen =
+                UI_SCREEN_WIFI;
+
+            break;
+
+
+        case 4:
+
             s_screen =
                 UI_SCREEN_SYSTEM;
+
             break;
 
 
         default:
+
             return ESP_ERR_INVALID_STATE;
     }
 
@@ -94,24 +107,19 @@ static esp_err_t ui_open_selected_item(void)
 }
 
 
-/*
- * Move the menu selection one item upward.
- *
- * Only the previous and new menu rows are redrawn.
- */
 static esp_err_t ui_select_previous_item(void)
 {
     const size_t previous_item =
         s_selected_item;
 
 
-    if (s_selected_item == 0) {
-
+    if (
+        s_selected_item == 0
+    ) {
         s_selected_item =
             UI_MENU_ITEM_COUNT - 1;
     }
     else {
-
         s_selected_item--;
     }
 
@@ -123,11 +131,6 @@ static esp_err_t ui_select_previous_item(void)
 }
 
 
-/*
- * Move the menu selection one item downward.
- *
- * Only the previous and new menu rows are redrawn.
- */
 static esp_err_t ui_select_next_item(void)
 {
     const size_t previous_item =
@@ -141,8 +144,8 @@ static esp_err_t ui_select_next_item(void)
         s_selected_item >=
         UI_MENU_ITEM_COUNT
     ) {
-
-        s_selected_item = 0;
+        s_selected_item =
+            0;
     }
 
 
@@ -153,12 +156,6 @@ static esp_err_t ui_select_next_item(void)
 }
 
 
-/*
- * Return from any child screen to the home screen.
- *
- * Returning to home requires one complete redraw because
- * another screen currently occupies the framebuffer area.
- */
 static esp_err_t ui_return_home(void)
 {
     s_screen =
@@ -177,7 +174,8 @@ esp_err_t ui_init(void)
         UI_SCREEN_HOME;
 
 
-    s_selected_item = 0;
+    s_selected_item =
+        0;
 
 
     ESP_LOGI(
@@ -227,14 +225,14 @@ void ui_handle_keypad_event(
     );
 
 
-    esp_err_t err = ESP_OK;
+    esp_err_t err =
+        ESP_OK;
 
 
-    /*
-     * Main menu navigation.
-     */
-    if (s_screen == UI_SCREEN_HOME) {
-
+    if (
+        s_screen ==
+        UI_SCREEN_HOME
+    ) {
         switch (key) {
 
             case KEYPAD_KEY_UP:
@@ -285,11 +283,46 @@ void ui_handle_keypad_event(
 
 
     /*
-     * LEFT always returns from a child screen
+     * The Objects screen has its own nested navigation.
+     */
+    if (
+        s_screen ==
+        UI_SCREEN_OBJECTS
+    ) {
+        err =
+            ui_objects_handle_key(
+                key
+            );
+
+
+        if (err == ESP_OK) {
+            return;
+        }
+
+
+        if (
+            err !=
+            ESP_ERR_NOT_SUPPORTED
+        ) {
+            ESP_LOGE(
+                TAG,
+                "Objects navigation failed: %s",
+                esp_err_to_name(err)
+            );
+
+            return;
+        }
+    }
+
+
+    /*
+     * LEFT returns from a top-level child screen
      * to the main menu.
      */
-    if (key == KEYPAD_KEY_LEFT) {
-
+    if (
+        key ==
+        KEYPAD_KEY_LEFT
+    ) {
         err =
             ui_return_home();
 

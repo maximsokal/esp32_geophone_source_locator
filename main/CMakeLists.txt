@@ -9,6 +9,10 @@ idf_component_register(
         spi_bus
         display
         sd_card
+        storage_manager
+        object_recovery
+        object_store
+        object_service
         power_control
         keypad
         device_status

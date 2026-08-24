@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "display.c"
+        "display_text_fast.c"
         "font5x7.c"
 
     INCLUDE_DIRS
