@@ -42,14 +42,12 @@ static void object_store_fill_summary(
         object_id
     );
 
-
     snprintf(
         object->name,
         sizeof(object->name),
         "%s",
         object_id
     );
-
 
     object->active =
         active;
@@ -62,24 +60,19 @@ esp_err_t object_store_init(void)
         return ESP_OK;
     }
 
-
     s_mutex =
         xSemaphoreCreateMutex();
-
 
     if (s_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-
     s_active_object_id[0] =
         '\0';
-
 
     char active_id[
         OBJECT_STORE_ID_SIZE
     ];
-
 
     esp_err_t err =
         object_store_fs_load_active(
@@ -87,9 +80,7 @@ esp_err_t object_store_init(void)
             sizeof(active_id)
         );
 
-
     if (err == ESP_OK) {
-
         if (
             object_store_fs_object_exists(
                 active_id
@@ -102,7 +93,6 @@ esp_err_t object_store_init(void)
                 active_id
             );
 
-
             ESP_LOGI(
                 TAG,
                 "Restored active object: %s",
@@ -110,7 +100,6 @@ esp_err_t object_store_init(void)
             );
         }
         else {
-
             ESP_LOGW(
                 TAG,
                 "Active object does not exist: %s",
@@ -121,24 +110,20 @@ esp_err_t object_store_init(void)
     else if (
         err == ESP_ERR_NOT_FOUND
     ) {
-
         ESP_LOGI(
             TAG,
             "No active object"
         );
     }
     else {
-
         ESP_LOGW(
             TAG,
             "Active object marker is invalid"
         );
     }
 
-
     s_initialized =
         true;
-
 
     return ESP_OK;
 }
@@ -152,17 +137,14 @@ esp_err_t object_store_create(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
 
-
     char object_id[
         OBJECT_STORE_ID_SIZE
     ];
-
 
     esp_err_t err =
         object_store_fs_next_id(
@@ -170,36 +152,28 @@ esp_err_t object_store_create(
             sizeof(object_id)
         );
 
-
     if (err == ESP_OK) {
-
         err =
             object_store_fs_create_layout(
                 object_id
             );
     }
 
-
     if (err == ESP_OK) {
-
         err =
             object_store_json_write_metadata(
                 object_id
             );
     }
 
-
     if (err == ESP_OK) {
-
         err =
             object_store_fs_save_active(
                 object_id
             );
     }
 
-
     if (err == ESP_OK) {
-
         snprintf(
             s_active_object_id,
             sizeof(s_active_object_id),
@@ -207,16 +181,13 @@ esp_err_t object_store_create(
             object_id
         );
 
-
         if (created_object != NULL) {
-
             object_store_fill_summary(
                 created_object,
                 object_id,
                 true
             );
         }
-
 
         ESP_LOGI(
             TAG,
@@ -225,11 +196,9 @@ esp_err_t object_store_create(
         );
     }
 
-
     xSemaphoreGive(
         s_mutex
     );
-
 
     return err;
 }
@@ -245,7 +214,6 @@ esp_err_t object_store_list(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (
         objects == NULL ||
         object_count == NULL ||
@@ -254,12 +222,10 @@ esp_err_t object_store_list(
         return ESP_ERR_INVALID_ARG;
     }
 
-
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
-
 
     esp_err_t err =
         object_store_fs_list(
@@ -269,11 +235,9 @@ esp_err_t object_store_list(
             s_active_object_id
         );
 
-
     xSemaphoreGive(
         s_mutex
     );
-
 
     return err;
 }
@@ -287,17 +251,14 @@ esp_err_t object_store_get_active(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (object == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
 
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
-
 
     if (
         s_active_object_id[0] ==
@@ -310,18 +271,15 @@ esp_err_t object_store_get_active(
         return ESP_ERR_NOT_FOUND;
     }
 
-
     object_store_fill_summary(
         object,
         s_active_object_id,
         true
     );
 
-
     xSemaphoreGive(
         s_mutex
     );
-
 
     return ESP_OK;
 }
@@ -335,7 +293,6 @@ esp_err_t object_store_set_active(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (
         !object_store_fs_id_is_valid(
             object_id
@@ -344,12 +301,10 @@ esp_err_t object_store_set_active(
         return ESP_ERR_INVALID_ARG;
     }
 
-
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
-
 
     if (
         !object_store_fs_object_exists(
@@ -363,22 +318,18 @@ esp_err_t object_store_set_active(
         return ESP_ERR_NOT_FOUND;
     }
 
-
     esp_err_t err =
         object_store_fs_save_active(
             object_id
         );
 
-
     if (err == ESP_OK) {
-
         snprintf(
             s_active_object_id,
             sizeof(s_active_object_id),
             "%s",
             object_id
         );
-
 
         ESP_LOGI(
             TAG,
@@ -387,11 +338,117 @@ esp_err_t object_store_set_active(
         );
     }
 
+    xSemaphoreGive(
+        s_mutex
+    );
+
+    return err;
+}
+
+
+esp_err_t object_store_delete(
+    const char *object_id
+)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (
+        !object_store_fs_id_is_valid(
+            object_id
+        )
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(
+        s_mutex,
+        portMAX_DELAY
+    );
+
+    if (
+        !object_store_fs_object_exists(
+            object_id
+        )
+    ) {
+        xSemaphoreGive(
+            s_mutex
+        );
+
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    bool deleting_active =
+        strcmp(
+            s_active_object_id,
+            object_id
+        ) == 0;
+
+    esp_err_t err =
+        ESP_OK;
+
+    /*
+     * Clear the active marker first.
+     *
+     * If deletion is interrupted after this point,
+     * the remaining object is simply inactive.
+     */
+    if (deleting_active) {
+        err =
+            object_store_fs_clear_active();
+
+        if (err == ESP_OK) {
+            s_active_object_id[0] =
+                '\0';
+        }
+    }
+
+    if (err == ESP_OK) {
+        err =
+            object_store_fs_delete_object(
+                object_id
+            );
+    }
+
+    if (err == ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "Deleted object: %s",
+            object_id
+        );
+    }
 
     xSemaphoreGive(
         s_mutex
     );
 
-
     return err;
+}
+
+
+esp_err_t object_store_reset(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(
+        s_mutex,
+        portMAX_DELAY
+    );
+
+    s_active_object_id[0] =
+        '\0';
+
+    xSemaphoreGive(
+        s_mutex
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Runtime object state reset"
+    );
+
+    return ESP_OK;
 }

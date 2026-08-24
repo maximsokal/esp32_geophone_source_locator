@@ -48,6 +48,14 @@ esp_err_t object_store_fs_save_active(
 );
 
 
+esp_err_t object_store_fs_clear_active(void);
+
+
+esp_err_t object_store_fs_delete_object(
+    const char *object_id
+);
+
+
 esp_err_t object_store_json_write_metadata(
     const char *object_id
 );

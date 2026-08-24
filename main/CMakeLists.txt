@@ -10,6 +10,7 @@ idf_component_register(
         display
         sd_card
         storage_manager
+        storage_service
         object_recovery
         object_store
         object_service

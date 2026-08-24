@@ -20,7 +20,10 @@ typedef enum
     OBJECT_SERVICE_EVENT_LIST_FAILED,
 
     OBJECT_SERVICE_EVENT_SET_ACTIVE_DONE,
-    OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED
+    OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED,
+
+    OBJECT_SERVICE_EVENT_DELETE_DONE,
+    OBJECT_SERVICE_EVENT_DELETE_FAILED
 
 } object_service_event_type_t;
 
@@ -71,6 +74,11 @@ esp_err_t object_service_list_async(void);
 
 
 esp_err_t object_service_set_active_async(
+    const char *object_id
+);
+
+
+esp_err_t object_service_delete_async(
     const char *object_id
 );
 
