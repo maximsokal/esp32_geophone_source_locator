@@ -10,6 +10,7 @@ idf_component_register(
         storage_manager
         object_store
         object_service
+        power_control
         freertos
         log
 )

@@ -7,6 +7,7 @@
 
 #include "object_service.h"
 #include "object_store.h"
+#include "power_control.h"
 #include "sd_card.h"
 #include "storage_manager.h"
 
@@ -176,6 +177,24 @@ static void storage_service_process_erase(void)
                 s_event.result
             )
         );
+    }
+
+    /*
+     * If POWER was pressed during erase, do not spend more
+     * time redrawing the STORAGE menu.
+     *
+     * The erase has already completed safely. The main task
+     * can now continue the pending shutdown sequence.
+     */
+    if (
+        power_control_is_shutdown_requested()
+    ) {
+        ESP_LOGI(
+            TAG,
+            "Shutdown pending after erase; skipping UI redraw"
+        );
+
+        return;
     }
 
     storage_service_notify();
@@ -349,6 +368,13 @@ void storage_service_shutdown(void)
         TAG,
         "Shutdown requested"
     );
+
+    if (s_busy) {
+        ESP_LOGI(
+            TAG,
+            "Waiting for active storage operation"
+        );
+    }
 
     storage_command_t command =
         STORAGE_COMMAND_STOP;
