@@ -11,8 +11,3 @@ esp_err_t object_recovery_fs_prepare_metadata(
     bool *valid,
     bool *recovered
 );
-
-
-esp_err_t object_recovery_fs_remove_tree(
-    const char *path
-);

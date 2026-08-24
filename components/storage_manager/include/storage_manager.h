@@ -25,12 +25,37 @@ esp_err_t storage_manager_shutdown(void);
 bool storage_manager_is_ready(void);
 
 
+/*
+ * Acquire the recursive high-level storage operation guard.
+ *
+ * The guard serializes complete filesystem operations across
+ * object services, storage services and future acquisition code.
+ *
+ * Calls may be nested by the same task. Every successful begin
+ * must be paired with storage_manager_operation_end().
+ */
+esp_err_t storage_manager_operation_begin(void);
+
+
+void storage_manager_operation_end(void);
+
+
 esp_err_t storage_manager_create_directory(
     const char *path
 );
 
 
 bool storage_manager_path_exists(
+    const char *path
+);
+
+
+/*
+ * Recursively remove one file or directory tree.
+ *
+ * ESP_ERR_NOT_FOUND is returned when the root path does not exist.
+ */
+esp_err_t storage_manager_remove_tree(
     const char *path
 );
 

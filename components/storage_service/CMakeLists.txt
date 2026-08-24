@@ -1,15 +1,18 @@
 idf_component_register(
     SRCS
         "storage_service.c"
+        "storage_service_operations.c"
 
     INCLUDE_DIRS
         "include"
+
+    PRIV_INCLUDE_DIRS
+        "."
 
     REQUIRES
         sd_card
         storage_manager
         object_store
-        object_service
         power_control
         freertos
         log

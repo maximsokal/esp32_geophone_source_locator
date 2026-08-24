@@ -57,7 +57,7 @@ esp_err_t object_store_delete(
 
 
 /*
- * Clear in-memory object state after the SD filesystem
- * has been formatted.
+ * Clear in-memory object state after application data
+ * has been erased from the SD card.
  */
 esp_err_t object_store_reset(void);
