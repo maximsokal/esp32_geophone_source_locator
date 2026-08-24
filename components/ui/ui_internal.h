@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -7,25 +8,9 @@
 
 #include "keypad.h"
 
-
-#define UI_MENU_ITEM_COUNT 5
-
-
-typedef enum
-{
-    UI_SCREEN_HOME = 0,
-    UI_SCREEN_OBJECTS,
-    UI_SCREEN_MEASUREMENTS,
-    UI_SCREEN_STORAGE,
-    UI_SCREEN_WIFI,
-    UI_SCREEN_SYSTEM
-
-} ui_screen_t;
+#include "ui_screen.h"
 
 
-/*
- * Common UI elements.
- */
 esp_err_t ui_status_bar_draw(void);
 
 
@@ -48,9 +33,6 @@ esp_err_t ui_common_draw_box(
 );
 
 
-/*
- * Home screen.
- */
 esp_err_t ui_home_draw(
     size_t selected_item
 );
@@ -62,9 +44,17 @@ esp_err_t ui_home_update_selection(
 );
 
 
-/*
- * Objects screen.
- */
+esp_err_t ui_home_controller_open(void);
+
+
+esp_err_t ui_home_controller_draw(void);
+
+
+esp_err_t ui_home_controller_handle_key(
+    keypad_key_t key
+);
+
+
 esp_err_t ui_objects_open(void);
 
 
@@ -76,9 +66,6 @@ esp_err_t ui_objects_handle_key(
 );
 
 
-/*
- * Storage screen.
- */
 esp_err_t ui_storage_open(void);
 
 
@@ -90,9 +77,6 @@ esp_err_t ui_storage_handle_key(
 );
 
 
-/*
- * Application screens.
- */
 esp_err_t ui_measurements_draw(void);
 
 
