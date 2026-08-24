@@ -10,5 +10,6 @@ idf_component_register(
         fatfs
         sdmmc
         esp_driver_sdspi
+        freertos
         log
 )

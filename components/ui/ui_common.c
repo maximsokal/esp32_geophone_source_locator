@@ -12,7 +12,10 @@ esp_err_t ui_common_draw_box(
     uint16_t color
 )
 {
-    if (width < 2 || height < 2) {
+    if (
+        width < 2 ||
+        height < 2
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -79,7 +82,7 @@ esp_err_t ui_common_begin_screen(
     );
 
     ESP_ERROR_CHECK(
-        display_draw_text(
+        display_draw_text_fast(
             10,
             UI_TITLE_Y,
             title,
@@ -89,17 +92,13 @@ esp_err_t ui_common_begin_screen(
         )
     );
 
-    ESP_ERROR_CHECK(
-        display_fill_rect(
-            0,
-            58,
-            DISPLAY_WIDTH,
-            1,
-            UI_COLOR_SEPARATOR
-        )
+    return display_fill_rect(
+        0,
+        58,
+        DISPLAY_WIDTH,
+        1,
+        UI_COLOR_SEPARATOR
     );
-
-    return ESP_OK;
 }
 
 
@@ -116,12 +115,23 @@ esp_err_t ui_common_draw_footer(
             0,
             UI_FOOTER_SEPARATOR_Y,
             DISPLAY_WIDTH,
+            DISPLAY_HEIGHT -
+                UI_FOOTER_SEPARATOR_Y,
+            UI_COLOR_BACKGROUND
+        )
+    );
+
+    ESP_ERROR_CHECK(
+        display_fill_rect(
+            0,
+            UI_FOOTER_SEPARATOR_Y,
+            DISPLAY_WIDTH,
             1,
             UI_COLOR_SEPARATOR
         )
     );
 
-    return display_draw_text(
+    return display_draw_text_fast(
         10,
         UI_FOOTER_TEXT_Y,
         text,

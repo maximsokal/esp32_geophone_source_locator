@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -25,6 +26,7 @@ typedef enum
     OBJECT_SERVICE_COMMAND_CREATE = 0,
     OBJECT_SERVICE_COMMAND_LIST,
     OBJECT_SERVICE_COMMAND_SET_ACTIVE,
+    OBJECT_SERVICE_COMMAND_DELETE,
     OBJECT_SERVICE_COMMAND_STOP
 
 } object_service_command_type_t;
@@ -49,9 +51,8 @@ static TaskHandle_t s_worker_task =
     NULL;
 
 
-static object_service_event_callback_t
-    s_event_callback =
-        NULL;
+static object_service_event_callback_t s_event_callback =
+    NULL;
 
 
 static void *s_event_user_context =
@@ -66,33 +67,7 @@ static bool s_initialized =
     false;
 
 
-/*
- * Event storage is static instead of being allocated
- * on the worker task stack.
- *
- * LIST may contain up to OBJECT_STORE_MAX_OBJECTS
- * summaries, so keeping the event in BSS saves stack.
- */
 static object_service_event_t s_event;
-
-
-static void object_service_notify(
-    const object_service_event_t *event
-)
-{
-    if (
-        s_event_callback ==
-        NULL
-    ) {
-        return;
-    }
-
-
-    s_event_callback(
-        event,
-        s_event_user_context
-    );
-}
 
 
 static void object_service_prepare_event(void)
@@ -103,9 +78,36 @@ static void object_service_prepare_event(void)
         sizeof(s_event)
     );
 
-
     s_event.result =
         ESP_OK;
+}
+
+
+static void object_service_copy_id(
+    char *destination,
+    size_t destination_size,
+    const char *source
+)
+{
+    snprintf(
+        destination,
+        destination_size,
+        "%s",
+        source
+    );
+}
+
+
+static void object_service_notify(void)
+{
+    if (s_event_callback == NULL) {
+        return;
+    }
+
+    s_event_callback(
+        &s_event,
+        s_event_user_context
+    );
 }
 
 
@@ -113,20 +115,14 @@ static void object_service_process_create(void)
 {
     object_service_prepare_event();
 
-
     s_event.result =
         object_store_create(
             &s_event.object
         );
 
-
-    if (
-        s_event.result ==
-        ESP_OK
-    ) {
+    if (s_event.result == ESP_OK) {
         s_event.type =
             OBJECT_SERVICE_EVENT_CREATE_DONE;
-
 
         ESP_LOGI(
             TAG,
@@ -138,7 +134,6 @@ static void object_service_process_create(void)
         s_event.type =
             OBJECT_SERVICE_EVENT_CREATE_FAILED;
 
-
         ESP_LOGE(
             TAG,
             "Create failed: %s",
@@ -148,17 +143,13 @@ static void object_service_process_create(void)
         );
     }
 
-
-    object_service_notify(
-        &s_event
-    );
+    object_service_notify();
 }
 
 
 static void object_service_process_list(void)
 {
     object_service_prepare_event();
-
 
     s_event.result =
         object_store_list(
@@ -167,14 +158,9 @@ static void object_service_process_list(void)
             &s_event.object_count
         );
 
-
-    if (
-        s_event.result ==
-        ESP_OK
-    ) {
+    if (s_event.result == ESP_OK) {
         s_event.type =
             OBJECT_SERVICE_EVENT_LIST_DONE;
-
 
         ESP_LOGI(
             TAG,
@@ -186,7 +172,6 @@ static void object_service_process_list(void)
         s_event.type =
             OBJECT_SERVICE_EVENT_LIST_FAILED;
 
-
         ESP_LOGE(
             TAG,
             "List failed: %s",
@@ -196,10 +181,7 @@ static void object_service_process_list(void)
         );
     }
 
-
-    object_service_notify(
-        &s_event
-    );
+    object_service_notify();
 }
 
 
@@ -209,48 +191,20 @@ static void object_service_process_set_active(
 {
     object_service_prepare_event();
 
-
-    size_t id_length =
-        strlen(
-            object_id
-        );
-
-
-    if (
-        id_length >=
-        sizeof(s_event.object_id)
-    ) {
-        id_length =
-            sizeof(s_event.object_id) -
-            1;
-    }
-
-
-    memcpy(
+    object_service_copy_id(
         s_event.object_id,
-        object_id,
-        id_length
+        sizeof(s_event.object_id),
+        object_id
     );
-
-
-    s_event.object_id[
-        id_length
-    ] = '\0';
-
 
     s_event.result =
         object_store_set_active(
             object_id
         );
 
-
-    if (
-        s_event.result ==
-        ESP_OK
-    ) {
+    if (s_event.result == ESP_OK) {
         s_event.type =
             OBJECT_SERVICE_EVENT_SET_ACTIVE_DONE;
-
 
         ESP_LOGI(
             TAG,
@@ -262,7 +216,6 @@ static void object_service_process_set_active(
         s_event.type =
             OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED;
 
-
         ESP_LOGE(
             TAG,
             "Set active failed for %s: %s",
@@ -273,10 +226,52 @@ static void object_service_process_set_active(
         );
     }
 
+    object_service_notify();
+}
 
-    object_service_notify(
-        &s_event
+
+static void object_service_process_delete(
+    const char *object_id
+)
+{
+    object_service_prepare_event();
+
+    object_service_copy_id(
+        s_event.object_id,
+        sizeof(s_event.object_id),
+        object_id
     );
+
+    s_event.result =
+        object_store_delete(
+            object_id
+        );
+
+    if (s_event.result == ESP_OK) {
+        s_event.type =
+            OBJECT_SERVICE_EVENT_DELETE_DONE;
+
+        ESP_LOGI(
+            TAG,
+            "Delete completed: %s",
+            object_id
+        );
+    }
+    else {
+        s_event.type =
+            OBJECT_SERVICE_EVENT_DELETE_FAILED;
+
+        ESP_LOGE(
+            TAG,
+            "Delete failed for %s: %s",
+            object_id,
+            esp_err_to_name(
+                s_event.result
+            )
+        );
+    }
+
+    object_service_notify();
 }
 
 
@@ -286,17 +281,13 @@ static void object_service_worker_task(
 {
     (void)arg;
 
-
     ESP_LOGI(
         TAG,
         "Worker started"
     );
 
-
     while (true) {
-
         object_service_command_t command;
-
 
         if (
             xQueueReceive(
@@ -308,7 +299,6 @@ static void object_service_worker_task(
             continue;
         }
 
-
         if (
             command.type ==
             OBJECT_SERVICE_COMMAND_STOP
@@ -316,66 +306,50 @@ static void object_service_worker_task(
             break;
         }
 
-
-        switch (
-            command.type
-        ) {
-
+        switch (command.type) {
             case OBJECT_SERVICE_COMMAND_CREATE:
-
                 object_service_process_create();
-
                 break;
-
 
             case OBJECT_SERVICE_COMMAND_LIST:
-
                 object_service_process_list();
-
                 break;
 
-
             case OBJECT_SERVICE_COMMAND_SET_ACTIVE:
-
                 object_service_process_set_active(
                     command.object_id
                 );
-
                 break;
 
+            case OBJECT_SERVICE_COMMAND_DELETE:
+                object_service_process_delete(
+                    command.object_id
+                );
+                break;
 
             case OBJECT_SERVICE_COMMAND_STOP:
             default:
-
                 break;
         }
 
-
         /*
-         * Keep the service busy while the completion
-         * callback redraws the UI.
-         *
-         * This prevents keypad-driven drawing from using
-         * the display at the same time as this task.
+         * Callback drawing finishes before keypad input
+         * is allowed to modify the same UI again.
          */
         s_busy =
             false;
     }
 
-
     s_busy =
         false;
-
 
     ESP_LOGI(
         TAG,
         "Worker stopped"
     );
 
-
     s_worker_task =
         NULL;
-
 
     vTaskDelete(
         NULL
@@ -394,25 +368,16 @@ static esp_err_t object_service_submit(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (command == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
 
     if (s_busy) {
         return ESP_ERR_INVALID_STATE;
     }
 
-
-    /*
-     * Busy is set before placing the command into the queue.
-     * Keypad/UI code can immediately see that storage work
-     * is in progress.
-     */
     s_busy =
         true;
-
 
     if (
         xQueueSend(
@@ -424,49 +389,67 @@ static esp_err_t object_service_submit(
         s_busy =
             false;
 
-
         return ESP_ERR_TIMEOUT;
     }
 
-
     return ESP_OK;
+}
+
+
+static esp_err_t object_service_submit_id(
+    object_service_command_type_t type,
+    const char *object_id
+)
+{
+    if (object_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t length =
+        strlen(object_id);
+
+    if (
+        length == 0 ||
+        length >=
+            OBJECT_SERVICE_OBJECT_ID_SIZE
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    object_service_command_t command = {
+        .type = type,
+    };
+
+    memcpy(
+        command.object_id,
+        object_id,
+        length + 1
+    );
+
+    return object_service_submit(
+        &command
+    );
 }
 
 
 esp_err_t object_service_init(void)
 {
     if (s_initialized) {
-
-        ESP_LOGW(
-            TAG,
-            "Object service already initialized"
-        );
-
-
         return ESP_OK;
     }
-
 
     s_command_queue =
         xQueueCreate(
             OBJECT_SERVICE_QUEUE_LENGTH,
-            sizeof(
-                object_service_command_t
-            )
+            sizeof(object_service_command_t)
         );
 
-
-    if (
-        s_command_queue ==
-        NULL
-    ) {
+    if (s_command_queue == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-
     s_busy =
         false;
-
 
     BaseType_t result =
         xTaskCreate(
@@ -478,33 +461,24 @@ esp_err_t object_service_init(void)
             &s_worker_task
         );
 
-
-    if (
-        result !=
-        pdPASS
-    ) {
+    if (result != pdPASS) {
         vQueueDelete(
             s_command_queue
         );
 
-
         s_command_queue =
             NULL;
-
 
         return ESP_ERR_NO_MEM;
     }
 
-
     s_initialized =
         true;
-
 
     ESP_LOGI(
         TAG,
         "Initialized"
     );
-
 
     return ESP_OK;
 }
@@ -512,33 +486,21 @@ esp_err_t object_service_init(void)
 
 void object_service_shutdown(void)
 {
-    if (
-        !s_initialized
-    ) {
+    if (!s_initialized) {
         return;
     }
-
 
     ESP_LOGI(
         TAG,
         "Shutdown requested"
     );
 
-
     object_service_command_t command = {
         .type =
             OBJECT_SERVICE_COMMAND_STOP,
     };
 
-
-    /*
-     * If an SD operation is currently executing, STOP waits
-     * in the queue. The active write completes first.
-     */
-    if (
-        s_command_queue !=
-        NULL
-    ) {
+    if (s_command_queue != NULL) {
         xQueueSend(
             s_command_queue,
             &command,
@@ -546,46 +508,32 @@ void object_service_shutdown(void)
         );
     }
 
-
-    while (
-        s_worker_task !=
-        NULL
-    ) {
+    while (s_worker_task != NULL) {
         vTaskDelay(
             pdMS_TO_TICKS(10)
         );
     }
 
-
-    if (
-        s_command_queue !=
-        NULL
-    ) {
+    if (s_command_queue != NULL) {
         vQueueDelete(
             s_command_queue
         );
-
 
         s_command_queue =
             NULL;
     }
 
-
     s_event_callback =
         NULL;
-
 
     s_event_user_context =
         NULL;
 
-
     s_busy =
         false;
 
-
     s_initialized =
         false;
-
 
     ESP_LOGI(
         TAG,
@@ -599,20 +547,15 @@ esp_err_t object_service_set_event_callback(
     void *user_context
 )
 {
-    if (
-        !s_initialized
-    ) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-
 
     s_event_callback =
         callback;
 
-
     s_event_user_context =
         user_context;
-
 
     return ESP_OK;
 }
@@ -624,7 +567,6 @@ esp_err_t object_service_create_async(void)
         .type =
             OBJECT_SERVICE_COMMAND_CREATE,
     };
-
 
     return object_service_submit(
         &command
@@ -639,7 +581,6 @@ esp_err_t object_service_list_async(void)
             OBJECT_SERVICE_COMMAND_LIST,
     };
 
-
     return object_service_submit(
         &command
     );
@@ -650,44 +591,20 @@ esp_err_t object_service_set_active_async(
     const char *object_id
 )
 {
-    if (
-        object_id ==
-        NULL
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-
-    const size_t id_length =
-        strlen(
-            object_id
-        );
-
-
-    if (
-        id_length == 0 ||
-        id_length >=
-            OBJECT_SERVICE_OBJECT_ID_SIZE
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-
-    object_service_command_t command = {
-        .type =
-            OBJECT_SERVICE_COMMAND_SET_ACTIVE,
-    };
-
-
-    memcpy(
-        command.object_id,
-        object_id,
-        id_length + 1
+    return object_service_submit_id(
+        OBJECT_SERVICE_COMMAND_SET_ACTIVE,
+        object_id
     );
+}
 
 
-    return object_service_submit(
-        &command
+esp_err_t object_service_delete_async(
+    const char *object_id
+)
+{
+    return object_service_submit_id(
+        OBJECT_SERVICE_COMMAND_DELETE,
+        object_id
     );
 }
 

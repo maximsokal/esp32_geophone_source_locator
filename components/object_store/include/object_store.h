@@ -49,3 +49,15 @@ esp_err_t object_store_get_active(
 esp_err_t object_store_set_active(
     const char *object_id
 );
+
+
+esp_err_t object_store_delete(
+    const char *object_id
+);
+
+
+/*
+ * Clear in-memory object state after the SD filesystem
+ * has been formatted.
+ */
+esp_err_t object_store_reset(void);

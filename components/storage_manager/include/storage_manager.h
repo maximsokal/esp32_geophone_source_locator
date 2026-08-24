@@ -36,6 +36,15 @@ bool storage_manager_path_exists(
 
 
 /*
+ * Delete all application data under /sdcard/geolocator
+ * and recreate the empty application directory layout.
+ *
+ * The SD filesystem itself is not formatted.
+ */
+esp_err_t storage_manager_erase_application_data(void);
+
+
+/*
  * Write a small metadata file using a temporary file
  * and backup replacement.
  */

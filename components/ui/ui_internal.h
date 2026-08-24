@@ -77,12 +77,23 @@ esp_err_t ui_objects_handle_key(
 
 
 /*
- * Application screens.
+ * Storage screen.
  */
-esp_err_t ui_measurements_draw(void);
+esp_err_t ui_storage_open(void);
 
 
 esp_err_t ui_storage_draw(void);
+
+
+esp_err_t ui_storage_handle_key(
+    keypad_key_t key
+);
+
+
+/*
+ * Application screens.
+ */
+esp_err_t ui_measurements_draw(void);
 
 
 esp_err_t ui_wifi_draw(void);
