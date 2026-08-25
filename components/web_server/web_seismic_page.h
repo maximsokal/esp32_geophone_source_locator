@@ -1,4 +1,10 @@
 #pragma once
 
+#include "esp_err.h"
 
-const char *web_seismic_page_get_html(void);
+#include "esp_http_server.h"
+
+
+esp_err_t web_seismic_page_send(
+    httpd_req_t *request
+);

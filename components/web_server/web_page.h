@@ -1,7 +1,10 @@
 #pragma once
 
+#include "esp_err.h"
 
-/*
- * Return the main HTML page served at "/".
- */
-const char *web_page_get_index_html(void);
+#include "esp_http_server.h"
+
+
+esp_err_t web_page_send_index(
+    httpd_req_t *request
+);
