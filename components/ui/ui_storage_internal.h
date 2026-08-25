@@ -6,7 +6,7 @@
 #include "esp_err.h"
 
 #include "keypad.h"
-#include "sd_card.h"
+#include "sd_card_info.h"
 #include "storage_service.h"
 
 

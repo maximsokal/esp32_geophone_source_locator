@@ -4,7 +4,7 @@
 
 #include "esp_err.h"
 
-#include "sd_card.h"
+#include "sd_card_info.h"
 
 
 typedef enum

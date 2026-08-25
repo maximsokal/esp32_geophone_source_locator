@@ -2,9 +2,11 @@
 
 #include "app_poweroff.h"
 
+#include "app_config.h"
 #include "display.h"
 #include "power_control.h"
 #include "sd_card.h"
+#include "sd_card_diagnostics.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -24,10 +26,6 @@ static void app_storage_boot_failure(
         message
     );
 
-    /*
-     * TFT is initialized only after the isolated SD test has
-     * already failed, preserving the previous failure path.
-     */
     esp_err_t display_err =
         display_init();
 
@@ -57,7 +55,7 @@ static void app_storage_boot_failure(
         display_draw_text_fast(
             20,
             138,
-            "SD TEST: 2 MHZ",
+            "SD SPI: 2 MHZ",
             DISPLAY_COLOR_YELLOW,
             DISPLAY_COLOR_BLACK,
             1
@@ -91,9 +89,6 @@ static void app_storage_boot_failure(
         );
     }
 
-    /*
-     * No reboot loop. Wait for an explicit power-button request.
-     */
     power_control_wait_for_shutdown_request();
 
     sd_card_unmount();
@@ -114,7 +109,7 @@ void app_storage_boot_run_diagnostic(void)
 {
     ESP_LOGI(
         TAG,
-        "Starting isolated SD diagnostic"
+        "Starting isolated SD startup check"
     );
 
     esp_err_t err =
@@ -126,17 +121,29 @@ void app_storage_boot_run_diagnostic(void)
         );
     }
 
+#if APP_SD_BOOT_WRITE_TEST_ENABLED
+    ESP_LOGI(
+        TAG,
+        "Boot SD write/read diagnostic enabled"
+    );
+
     err =
-        sd_card_test();
+        sd_card_diagnostics_run_write_read_test();
 
     if (err != ESP_OK) {
         app_storage_boot_failure(
             "WRITE TEST FAILED"
         );
     }
+#else
+    ESP_LOGI(
+        TAG,
+        "Boot SD write/read diagnostic disabled"
+    );
+#endif
 
     ESP_LOGI(
         TAG,
-        "Isolated SD diagnostic passed"
+        "Isolated SD startup check passed"
     );
 }
