@@ -6,7 +6,7 @@
 
 #include "object_store.h"
 #include "power_control.h"
-#include "sd_card.h"
+#include "sd_card_info.h"
 #include "storage_manager.h"
 
 

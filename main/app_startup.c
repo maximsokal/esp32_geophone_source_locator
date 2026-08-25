@@ -113,14 +113,15 @@ void app_startup_run(void)
     app_startup_initialize_core();
 
     /*
-     * Keep the SD diagnostic isolated from TFT, Wi-Fi and web
-     * startup exactly as before.
+     * Keep the SD startup check isolated from TFT, Wi-Fi and web
+     * startup. The card is always mounted here; the write/read
+     * probe is controlled by APP_SD_BOOT_WRITE_TEST_ENABLED.
      */
     app_storage_boot_run_diagnostic();
 
     /*
-     * Only after SD read/write is confirmed do the display,
-     * storage services and higher-current Wi-Fi stack start.
+     * Only after the SD startup check do the display, storage
+     * services and higher-current Wi-Fi stack start.
      */
     app_startup_initialize_services();
 
