@@ -1,6 +1,9 @@
 idf_component_register(
     SRCS
         "web_server.c"
+        "web_server_routes.c"
+        "web_static_assets.c"
+        "web_static_asset_data.c"
         "web_page.c"
         "web_api_status.c"
         "web_status_json.c"
@@ -24,4 +27,12 @@ idf_component_register(
         esp_timer
         json
         log
+
+    EMBED_TXTFILES
+        "assets/index.html"
+        "assets/dashboard.css"
+        "assets/dashboard.js"
+        "assets/seismic.html"
+        "assets/seismic.css"
+        "assets/seismic.js"
 )

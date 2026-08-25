@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>GeoLocator Seismic</title>
+    <link rel="stylesheet" href="/assets/seismic.css">
+</head>
+<body>
+    <main class="page">
+        <a href="/">&larr; Dashboard</a>
+
+        <div class="header">
+            <div class="title">Seismic Monitor</div>
+            <div id="status" class="status muted">WAITING</div>
+        </div>
+
+        <div class="meta">
+            <div class="meta-item">
+                <div class="meta-label">Source</div>
+                <div id="source" class="meta-value">--</div>
+            </div>
+
+            <div class="meta-item">
+                <div class="meta-label">Sample rate</div>
+                <div id="rate" class="meta-value">--</div>
+            </div>
+
+            <div class="meta-item">
+                <div class="meta-label">Window</div>
+                <div id="window" class="meta-value">--</div>
+            </div>
+
+            <div class="meta-item">
+                <div class="meta-label">Frames</div>
+                <div id="frames" class="meta-value">--</div>
+            </div>
+        </div>
+
+        <div class="trace">
+            <div class="trace-head">
+                <span class="trace-name">Geophone 1</span>
+                <span id="range1" class="muted">--</span>
+            </div>
+            <canvas id="graph1"></canvas>
+        </div>
+
+        <div class="trace">
+            <div class="trace-head">
+                <span class="trace-name">Geophone 2</span>
+                <span id="range2" class="muted">--</span>
+            </div>
+            <canvas id="graph2"></canvas>
+        </div>
+
+        <div class="trace">
+            <div class="trace-head">
+                <span class="trace-name">Geophone 3</span>
+                <span id="range3" class="muted">--</span>
+            </div>
+            <canvas id="graph3"></canvas>
+        </div>
+
+        <div class="trace">
+            <div class="trace-head">
+                <span class="trace-name">Geophone 4</span>
+                <span id="range4" class="muted">--</span>
+            </div>
+            <canvas id="graph4"></canvas>
+        </div>
+    </main>
+
+    <script src="/assets/seismic.js"></script>
+</body>
+</html>
