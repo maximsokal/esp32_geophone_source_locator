@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "wifi_manager_dhcp.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -73,6 +74,13 @@ esp_err_t wifi_manager_init(void)
     if (s_ap_netif == NULL) {
         return ESP_FAIL;
     }
+
+
+    ESP_ERROR_CHECK(
+        wifi_manager_dhcp_configure(
+            s_ap_netif
+        )
+    );
 
 
     wifi_init_config_t wifi_init_config =
