@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "esp_http_server.h"
 #include "esp_log.h"
 
 #include "web_server_routes.h"
@@ -80,42 +81,6 @@ esp_err_t web_server_start(void)
 }
 
 
-esp_err_t web_server_set_not_found_handler(
-    httpd_err_handler_func_t handler
-)
-{
-    if (s_server == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (handler == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    return
-        httpd_register_err_handler(
-            s_server,
-            HTTPD_404_NOT_FOUND,
-            handler
-        );
-}
-
-
-esp_err_t web_server_clear_not_found_handler(void)
-{
-    if (s_server == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    return
-        httpd_register_err_handler(
-            s_server,
-            HTTPD_404_NOT_FOUND,
-            NULL
-        );
-}
-
-
 esp_err_t web_server_stop(void)
 {
     if (s_server == NULL) {
@@ -151,12 +116,4 @@ esp_err_t web_server_stop(void)
     );
 
     return ESP_OK;
-}
-
-
-bool web_server_is_running(void)
-{
-    return
-        s_server !=
-        NULL;
 }

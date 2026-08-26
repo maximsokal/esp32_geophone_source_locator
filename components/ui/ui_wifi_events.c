@@ -1,6 +1,5 @@
 #include "ui_wifi_events.h"
 
-#include "captive_portal.h"
 #include "ui_internal.h"
 #include "ui_screen.h"
 #include "ui_state.h"
@@ -44,13 +43,6 @@ static esp_err_t ui_wifi_flow_set_page(
 static esp_err_t ui_wifi_flow_credentials_saved(void)
 {
     esp_err_t err =
-        captive_portal_stop();
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
         wifi_manager_connect_saved();
 
     if (err != ESP_OK) {

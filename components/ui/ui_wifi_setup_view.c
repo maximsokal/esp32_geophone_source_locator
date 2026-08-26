@@ -1,8 +1,8 @@
 #include "ui_internal.h"
 
+#include "app_config.h"
 #include "display.h"
 #include "ui_theme.h"
-#include "wifi_manager.h"
 #include "wifi_qr.h"
 
 
@@ -61,7 +61,7 @@ esp_err_t ui_wifi_open_setup_view_draw(void)
 
     ESP_ERROR_CHECK(
         wifi_qr_draw_url(
-            "http://192.168.4.1/setup",
+            APP_WIFI_SETUP_URL,
             104,
             62,
             112

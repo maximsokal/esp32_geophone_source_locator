@@ -28,7 +28,6 @@ idf_component_register(
         seismic_test_generator
         wifi_manager
         web_server
-        captive_portal
         ui
         freertos
         log

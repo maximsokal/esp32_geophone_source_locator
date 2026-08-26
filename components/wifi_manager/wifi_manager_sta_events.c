@@ -9,15 +9,60 @@
 #include "esp_wifi.h"
 
 
-static const char *TAG =
-    "WIFI_STA";
+static const char *TAG = "WIFI_STA";
+
+static bool s_initialized = false;
+static bool s_connect_enabled = false;
+static bool s_has_ip = false;
+static bool s_disconnect_reported = false;
 
 
-static bool s_initialized =
-    false;
+static void wifi_manager_sta_handle_start(void)
+{
+    if (!s_connect_enabled) {
+        ESP_LOGI(
+            TAG,
+            "Station idle during setup AP mode"
+        );
+        return;
+    }
 
-static bool s_connect_enabled =
-    false;
+    ESP_LOGI(
+        TAG,
+        "Station started, connecting"
+    );
+
+    (void)esp_wifi_connect();
+}
+
+
+static void wifi_manager_sta_handle_disconnect(void)
+{
+    const bool was_connected =
+        s_has_ip;
+
+    s_has_ip = false;
+
+    wifi_manager_runtime_clear_sta_ip();
+
+    if (!s_disconnect_reported) {
+        ESP_LOGW(
+            TAG,
+            "Station disconnected; reconnecting"
+        );
+
+        s_disconnect_reported = true;
+    }
+
+    if (was_connected) {
+        (void)app_event_bus_publish(
+            APP_EVENT_WIFI_STA_DISCONNECTED,
+            0
+        );
+    }
+
+    (void)esp_wifi_connect();
+}
 
 
 static void wifi_manager_sta_on_wifi_event(
@@ -31,48 +76,16 @@ static void wifi_manager_sta_on_wifi_event(
     (void)event_base;
     (void)event_data;
 
-    if (
-        event_id ==
-        WIFI_EVENT_STA_START
-    ) {
-        if (!s_connect_enabled) {
-            ESP_LOGI(
-                TAG,
-                "Station idle during setup AP mode"
-            );
-
-            return;
-        }
-
-        ESP_LOGI(
-            TAG,
-            "Station started, connecting"
-        );
-
-        (void)esp_wifi_connect();
-
+    if (event_id == WIFI_EVENT_STA_START) {
+        wifi_manager_sta_handle_start();
         return;
     }
 
     if (
-        event_id ==
-            WIFI_EVENT_STA_DISCONNECTED &&
+        event_id == WIFI_EVENT_STA_DISCONNECTED &&
         s_connect_enabled
     ) {
-        wifi_manager_runtime_clear_sta_ip();
-
-        (void)
-            app_event_bus_publish(
-                APP_EVENT_WIFI_STA_DISCONNECTED,
-                0
-            );
-
-        ESP_LOGW(
-            TAG,
-            "Station disconnected; reconnecting"
-        );
-
-        (void)esp_wifi_connect();
+        wifi_manager_sta_handle_disconnect();
     }
 }
 
@@ -89,12 +102,14 @@ static void wifi_manager_sta_on_ip_event(
     (void)event_id;
 
     const ip_event_got_ip_t *event =
-        (const ip_event_got_ip_t *)
-            event_data;
+        (const ip_event_got_ip_t *)event_data;
 
     if (event == NULL) {
         return;
     }
+
+    s_has_ip = true;
+    s_disconnect_reported = false;
 
     wifi_manager_runtime_set_sta_ip(
         &event->ip_info.ip
@@ -103,24 +118,19 @@ static void wifi_manager_sta_on_ip_event(
     ESP_LOGI(
         TAG,
         "Connected, IP=" IPSTR,
-        IP2STR(
-            &event->ip_info.ip
-        )
+        IP2STR(&event->ip_info.ip)
     );
 
     ESP_LOGI(
         TAG,
         "Web UI: http://" IPSTR,
-        IP2STR(
-            &event->ip_info.ip
-        )
+        IP2STR(&event->ip_info.ip)
     );
 
-    (void)
-        app_event_bus_publish(
-            APP_EVENT_WIFI_STA_CONNECTED,
-            0
-        );
+    (void)app_event_bus_publish(
+        APP_EVENT_WIFI_STA_CONNECTED,
+        0
+    );
 }
 
 
@@ -151,8 +161,7 @@ esp_err_t wifi_manager_sta_events_init(void)
         );
 
     if (err == ESP_OK) {
-        s_initialized =
-            true;
+        s_initialized = true;
     }
 
     return err;
@@ -163,15 +172,19 @@ void wifi_manager_sta_events_set_connect_enabled(
     bool enabled
 )
 {
-    s_connect_enabled =
-        enabled;
+    s_connect_enabled = enabled;
+
+    if (enabled) {
+        s_disconnect_reported = false;
+    }
 }
 
 
 void wifi_manager_sta_events_reset(void)
 {
-    s_connect_enabled =
-        false;
+    s_connect_enabled = false;
+    s_has_ip = false;
+    s_disconnect_reported = false;
 
     wifi_manager_runtime_clear_sta_ip();
 }
