@@ -1,0 +1,113 @@
+#include "wifi_manager_setup_ap.h"
+
+#include <string.h>
+
+#include "app_config.h"
+#include "wifi_manager_dhcp.h"
+#include "wifi_manager_setup_events.h"
+#include "wifi_manager_sta_events.h"
+
+#include "esp_log.h"
+#include "esp_wifi.h"
+
+
+static const char *TAG =
+    "WIFI_SETUP_AP";
+
+
+esp_err_t wifi_manager_setup_ap_start(
+    esp_netif_t *ap_netif
+)
+{
+    if (ap_netif == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err =
+        wifi_manager_setup_events_init();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    wifi_manager_sta_events_set_connect_enabled(
+        false
+    );
+
+    wifi_config_t config = {0};
+
+    strlcpy(
+        (char *)config.ap.ssid,
+        APP_WIFI_AP_SSID,
+        sizeof(config.ap.ssid)
+    );
+
+    strlcpy(
+        (char *)config.ap.password,
+        APP_WIFI_AP_PASSWORD,
+        sizeof(config.ap.password)
+    );
+
+    config.ap.ssid_len =
+        strlen(
+            APP_WIFI_AP_SSID
+        );
+
+    config.ap.channel =
+        1;
+
+    config.ap.max_connection =
+        4;
+
+    config.ap.authmode =
+        WIFI_AUTH_WPA2_PSK;
+
+    err =
+        wifi_manager_dhcp_configure(
+            ap_netif
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        esp_wifi_set_mode(
+            WIFI_MODE_APSTA
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        esp_wifi_set_config(
+            WIFI_IF_AP,
+            &config
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        esp_wifi_start();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Setup AP started: %s",
+        APP_WIFI_AP_SSID
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Local setup page: %s",
+        APP_WIFI_AP_ADDRESS
+    );
+
+    return ESP_OK;
+}

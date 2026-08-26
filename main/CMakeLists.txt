@@ -12,6 +12,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        app_event_bus
         spi_bus
         display
         sd_card

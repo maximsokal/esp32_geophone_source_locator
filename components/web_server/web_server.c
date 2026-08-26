@@ -30,7 +30,7 @@ esp_err_t web_server_start(void)
         HTTPD_DEFAULT_CONFIG();
 
     config.max_uri_handlers =
-        12;
+        14;
 
     config.lru_purge_enable =
         true;
@@ -74,16 +74,6 @@ esp_err_t web_server_start(void)
     ESP_LOGI(
         TAG,
         "HTTP server started"
-    );
-
-    ESP_LOGI(
-        TAG,
-        "Open http://192.168.4.1"
-    );
-
-    ESP_LOGI(
-        TAG,
-        "Seismic monitor: http://192.168.4.1/seismic"
     );
 
     return ESP_OK;

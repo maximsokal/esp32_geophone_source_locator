@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 
+#include "ui_event_task.h"
 #include "ui_screen_router.h"
 #include "ui_state.h"
 
@@ -28,6 +29,19 @@ esp_err_t ui_init(void)
         ESP_LOGE(
             TAG,
             "Failed to initialize UI: %s",
+            esp_err_to_name(err)
+        );
+
+        return err;
+    }
+
+    err =
+        ui_event_task_start();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to start UI event task: %s",
             esp_err_to_name(err)
         );
 
