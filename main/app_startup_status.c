@@ -1,6 +1,7 @@
 #include "app_startup_status.h"
 
 #include "app_config.h"
+#include "wifi_manager.h"
 
 #include "esp_log.h"
 
@@ -19,20 +20,36 @@ void app_startup_log_success(void)
     ESP_LOGI(TAG, "Object store: OK");
     ESP_LOGI(TAG, "Object service: OK");
     ESP_LOGI(TAG, "Keypad: OK");
-    ESP_LOGI(TAG, "Wi-Fi: OK");
 
-#if APP_WIFI_LOCAL_ONLY_ENABLED
-    ESP_LOGI(TAG, "Wi-Fi routing: LOCAL ONLY");
-#else
-    ESP_LOGI(TAG, "Wi-Fi routing: DEFAULT ROUTER");
-#endif
+    if (
+        wifi_manager_is_setup_mode()
+    ) {
+        ESP_LOGI(
+            TAG,
+            "Wi-Fi mode: SETUP AP"
+        );
+
+        ESP_LOGI(
+            TAG,
+            "Setup page: LOCAL"
+        );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "Wi-Fi mode: STA"
+        );
+    }
 
     ESP_LOGI(TAG, "Web server: OK");
 
 #if APP_CAPTIVE_PORTAL_ENABLED
-    ESP_LOGI(TAG, "Captive portal: OK");
-#else
-    ESP_LOGI(TAG, "Captive portal: DISABLED");
+    ESP_LOGI(
+        TAG,
+        "Captive portal: %s",
+        wifi_manager_is_setup_mode()
+            ? "ACTIVE"
+            : "INACTIVE"
+    );
 #endif
 
     ESP_LOGI(TAG, "Seismic test pipeline: OK");

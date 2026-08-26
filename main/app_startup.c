@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include "app_config.h"
+#include "app_event_bus.h"
 #include "captive_portal.h"
 #include "device_status.h"
 #include "display.h"
@@ -28,6 +29,10 @@
 
 static void app_startup_initialize_core(void)
 {
+    ESP_ERROR_CHECK(
+        app_event_bus_init()
+    );
+
     ESP_ERROR_CHECK(
         power_control_init()
     );
@@ -89,9 +94,13 @@ static void app_startup_initialize_services(void)
     );
 
 #if APP_CAPTIVE_PORTAL_ENABLED
-    ESP_ERROR_CHECK(
-        captive_portal_start()
-    );
+    if (
+        wifi_manager_is_setup_mode()
+    ) {
+        ESP_ERROR_CHECK(
+            captive_portal_start()
+        );
+    }
 #endif
 
     ESP_ERROR_CHECK(
@@ -115,17 +124,8 @@ void app_startup_run(void)
 {
     app_startup_initialize_core();
 
-    /*
-     * Keep the SD startup check isolated from TFT, Wi-Fi and web
-     * startup. The card is always mounted here; the write/read
-     * probe is controlled by APP_SD_BOOT_WRITE_TEST_ENABLED.
-     */
     app_storage_boot_run_diagnostic();
 
-    /*
-     * Only after the SD startup check do the display, storage
-     * services and higher-current Wi-Fi stack start.
-     */
     app_startup_initialize_services();
 
     app_startup_log_success();

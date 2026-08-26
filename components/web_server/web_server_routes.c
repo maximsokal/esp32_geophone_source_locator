@@ -6,12 +6,23 @@
 #include "web_page.h"
 #include "web_seismic.h"
 #include "web_static_assets.h"
+#include "web_wifi_setup.h"
+#include "wifi_manager.h"
 
 
 static esp_err_t web_server_index_handler(
     httpd_req_t *request
 )
 {
+    if (
+        wifi_manager_is_setup_mode()
+    ) {
+        return
+            web_wifi_setup_send_page(
+                request
+            );
+    }
+
     return
         web_page_send_index(
             request
@@ -86,6 +97,15 @@ esp_err_t web_server_routes_register(
 
     esp_err_t err =
         web_server_register_core_routes(
+            server
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        web_wifi_setup_register(
             server
         );
 

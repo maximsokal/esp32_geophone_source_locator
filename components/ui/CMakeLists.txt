@@ -5,6 +5,9 @@ idf_component_register(
         "ui_screen_router.c"
         "ui_navigation.c"
         "ui_input.c"
+        "ui_event_task.c"
+        "ui_event_dispatch.c"
+        "ui_wifi_events.c"
         "ui_common.c"
         "ui_status_bar.c"
         "ui_home.c"
@@ -34,6 +37,14 @@ idf_component_register(
         "ui_storage_space_view.c"
         "ui_storage_erase_view.c"
         "ui_wifi.c"
+        "ui_wifi_state.c"
+        "ui_wifi_controller.c"
+        "ui_wifi_actions.c"
+        "ui_wifi_navigation.c"
+        "ui_wifi_menu_view.c"
+        "ui_wifi_setup_view.c"
+        "ui_wifi_status_view.c"
+        "ui_wifi_device_view.c"
         "ui_system.c"
 
     INCLUDE_DIRS
@@ -43,12 +54,17 @@ idf_component_register(
         "."
 
     REQUIRES
+        app_event_bus
         display
         keypad
         device_status
         app_config
         wifi_qr
+        wifi_manager
+        captive_portal
         object_service
         storage_service
+        esp_system
+        freertos
         log
 )

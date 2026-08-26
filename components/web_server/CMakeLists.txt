@@ -12,6 +12,11 @@ idf_component_register(
         "web_seismic.c"
         "web_seismic_api.c"
         "web_seismic_page.c"
+        "web_wifi_setup.c"
+        "web_wifi_setup_page.c"
+        "web_wifi_setup_request.c"
+        "web_wifi_setup_form.c"
+        "web_wifi_setup_decode.c"
 
     INCLUDE_DIRS
         "include"
@@ -21,8 +26,10 @@ idf_component_register(
 
     REQUIRES
         app_config
+        app_event_bus
         device_status
         seismic_buffer
+        wifi_manager
         esp_http_server
         esp_timer
         json

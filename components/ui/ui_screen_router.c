@@ -50,8 +50,11 @@ esp_err_t ui_screen_open(
             return
                 ui_storage_open();
 
-        case UI_SCREEN_MEASUREMENTS:
         case UI_SCREEN_WIFI:
+            return
+                ui_wifi_controller_open();
+
+        case UI_SCREEN_MEASUREMENTS:
         case UI_SCREEN_SYSTEM:
             return
                 ui_screen_draw(
@@ -88,7 +91,7 @@ esp_err_t ui_screen_draw(
 
         case UI_SCREEN_WIFI:
             return
-                ui_wifi_draw();
+                ui_wifi_controller_draw();
 
         case UI_SCREEN_SYSTEM:
             return
@@ -125,8 +128,13 @@ esp_err_t ui_screen_handle_key(
                     key
                 );
 
-        case UI_SCREEN_MEASUREMENTS:
         case UI_SCREEN_WIFI:
+            return
+                ui_wifi_controller_handle_key(
+                    key
+                );
+
+        case UI_SCREEN_MEASUREMENTS:
         case UI_SCREEN_SYSTEM:
             return
                 key == KEYPAD_KEY_LEFT

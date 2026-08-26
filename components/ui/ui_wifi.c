@@ -1,99 +1,46 @@
 #include "ui_internal.h"
 
-#include "app_config.h"
-#include "display.h"
-#include "ui_theme.h"
-#include "wifi_qr.h"
-
-#include "esp_log.h"
-
-
-static const char *TAG =
-    "UI_WIFI";
+#include "ui_wifi_state.h"
 
 
 esp_err_t ui_wifi_draw(void)
 {
-    ESP_ERROR_CHECK(
-        ui_common_begin_screen(
-            "WI-FI"
-        )
-    );
+    switch (
+        ui_wifi_state_page()
+    ) {
+        case UI_WIFI_PAGE_MENU:
+            return
+                ui_wifi_menu_view_draw();
 
+        case UI_WIFI_PAGE_QUICK_CONFIRM:
+            return
+                ui_wifi_quick_view_draw();
 
-    /*
-     * Draw the real Wi-Fi connection QR code.
-     *
-     * The QR bitmap is generated completely in memory
-     * and then transferred to the TFT in large blocks.
-     */
-    esp_err_t qr_err =
-        wifi_qr_draw(
-            104,
-            61,
-            112
-        );
+        case UI_WIFI_PAGE_CONNECT_SETUP:
+            return
+                ui_wifi_connect_view_draw();
 
+        case UI_WIFI_PAGE_OPEN_SETUP:
+            return
+                ui_wifi_open_setup_view_draw();
 
-    if (qr_err != ESP_OK) {
+        case UI_WIFI_PAGE_ENTER_CREDENTIALS:
+            return
+                ui_wifi_credentials_view_draw();
 
-        ESP_LOGE(
-            TAG,
-            "Failed to draw Wi-Fi QR: %s",
-            esp_err_to_name(qr_err)
-        );
+        case UI_WIFI_PAGE_WAIT_HOTSPOT:
+            return
+                ui_wifi_hotspot_view_draw();
 
+        case UI_WIFI_PAGE_OPEN_DEVICE:
+            return
+                ui_wifi_device_view_draw();
 
-        ESP_ERROR_CHECK(
-            display_draw_text(
-                116,
-                108,
-                "QR ERROR",
-                UI_COLOR_WARNING,
-                UI_COLOR_BACKGROUND,
-                1
-            )
-        );
+        case UI_WIFI_PAGE_FORGET_CONFIRM:
+            return
+                ui_wifi_forget_view_draw();
+
+        default:
+            return ESP_ERR_INVALID_STATE;
     }
-
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            62,
-            178,
-            "SSID: " APP_WIFI_AP_SSID,
-            UI_COLOR_TEXT,
-            UI_COLOR_BACKGROUND,
-            1
-        )
-    );
-
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            62,
-            190,
-            "PASS: " APP_WIFI_AP_PASSWORD,
-            UI_COLOR_TEXT,
-            UI_COLOR_BACKGROUND,
-            1
-        )
-    );
-
-
-    ESP_ERROR_CHECK(
-        display_draw_text(
-            62,
-            202,
-            "URL: " APP_WIFI_AP_ADDRESS,
-            UI_COLOR_ACCENT,
-            UI_COLOR_BACKGROUND,
-            1
-        )
-    );
-
-
-    return ui_common_draw_footer(
-        "LEFT BACK"
-    );
 }
