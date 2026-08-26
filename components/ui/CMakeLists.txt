@@ -61,7 +61,6 @@ idf_component_register(
         app_config
         wifi_qr
         wifi_manager
-        captive_portal
         object_service
         storage_service
         esp_system

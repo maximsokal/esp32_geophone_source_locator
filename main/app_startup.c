@@ -5,9 +5,7 @@
 
 #include <stddef.h>
 
-#include "app_config.h"
 #include "app_event_bus.h"
-#include "captive_portal.h"
 #include "device_status.h"
 #include "display.h"
 #include "keypad.h"
@@ -92,16 +90,6 @@ static void app_startup_initialize_services(void)
     ESP_ERROR_CHECK(
         web_server_start()
     );
-
-#if APP_CAPTIVE_PORTAL_ENABLED
-    if (
-        wifi_manager_is_setup_mode()
-    ) {
-        ESP_ERROR_CHECK(
-            captive_portal_start()
-        );
-    }
-#endif
 
     ESP_ERROR_CHECK(
         ui_init()

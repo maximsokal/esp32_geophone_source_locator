@@ -2,7 +2,6 @@
 
 #include "app_poweroff.h"
 
-#include "captive_portal.h"
 #include "display.h"
 #include "keypad.h"
 #include "object_service.h"
@@ -25,17 +24,6 @@ static const char *TAG =
 static void app_shutdown_stop_network(void)
 {
     esp_err_t err =
-        captive_portal_stop();
-
-    if (err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "Failed to stop captive portal: %s",
-            esp_err_to_name(err)
-        );
-    }
-
-    err =
         web_server_stop();
 
     if (err != ESP_OK) {

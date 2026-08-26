@@ -1,7 +1,6 @@
 #include "ui_wifi_actions.h"
 
 #include "app_config.h"
-#include "captive_portal.h"
 #include "ui_internal.h"
 #include "ui_wifi_state.h"
 #include "wifi_manager.h"
@@ -15,13 +14,6 @@
 static esp_err_t ui_wifi_start_sta_flow(void)
 {
     esp_err_t err =
-        captive_portal_stop();
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
         wifi_manager_connect_saved();
 
     if (err != ESP_OK) {
@@ -41,13 +33,6 @@ esp_err_t ui_wifi_action_activate_setup(void)
 {
     esp_err_t err =
         wifi_manager_enter_setup_mode();
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
-        captive_portal_start();
 
     if (err != ESP_OK) {
         return err;

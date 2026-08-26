@@ -6,11 +6,7 @@
  */
 #define APP_WIFI_AP_SSID          "GEOLOCATOR_SETUP"
 #define APP_WIFI_AP_PASSWORD      "GEOLOCATOR"
-#define APP_WIFI_AP_ADDRESS       "HTTP://192.168.4.1"
-
-
-#define APP_WIFI_LOCAL_ONLY_ENABLED    0
-#define APP_CAPTIVE_PORTAL_ENABLED     1
+#define APP_WIFI_SETUP_URL        "http://192.168.4.1/setup"
 
 
 /*

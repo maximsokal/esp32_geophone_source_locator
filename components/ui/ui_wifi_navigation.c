@@ -68,9 +68,7 @@ esp_err_t ui_wifi_navigation_select(void)
 
         case 3:
             return
-                ui_wifi_open_page(
-                    UI_WIFI_PAGE_WAIT_HOTSPOT
-                );
+                ui_wifi_action_connect_saved();
 
         case 4:
             return

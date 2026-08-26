@@ -1,6 +1,5 @@
 #include "app_startup_status.h"
 
-#include "app_config.h"
 #include "wifi_manager.h"
 
 #include "esp_log.h"
@@ -31,7 +30,7 @@ void app_startup_log_success(void)
 
         ESP_LOGI(
             TAG,
-            "Setup page: LOCAL"
+            "Setup page: LOCAL QR FLOW"
         );
     } else {
         ESP_LOGI(
@@ -41,17 +40,6 @@ void app_startup_log_success(void)
     }
 
     ESP_LOGI(TAG, "Web server: OK");
-
-#if APP_CAPTIVE_PORTAL_ENABLED
-    ESP_LOGI(
-        TAG,
-        "Captive portal: %s",
-        wifi_manager_is_setup_mode()
-            ? "ACTIVE"
-            : "INACTIVE"
-    );
-#endif
-
     ESP_LOGI(TAG, "Seismic test pipeline: OK");
     ESP_LOGI(TAG, "UI: OK");
 

@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "app_config.h"
-#include "wifi_manager_dhcp.h"
 #include "wifi_manager_setup_events.h"
 #include "wifi_manager_sta_events.h"
 
@@ -63,15 +62,6 @@ esp_err_t wifi_manager_setup_ap_start(
         WIFI_AUTH_WPA2_PSK;
 
     err =
-        wifi_manager_dhcp_configure(
-            ap_netif
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
         esp_wifi_set_mode(
             WIFI_MODE_APSTA
         );
@@ -105,8 +95,8 @@ esp_err_t wifi_manager_setup_ap_start(
 
     ESP_LOGI(
         TAG,
-        "Local setup page: %s",
-        APP_WIFI_AP_ADDRESS
+        "Setup page: %s",
+        APP_WIFI_SETUP_URL
     );
 
     return ESP_OK;
