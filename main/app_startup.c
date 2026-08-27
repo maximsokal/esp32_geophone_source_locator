@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 
+#include "adc_service.h"
 #include "app_event_bus.h"
 #include "device_status.h"
 #include "display.h"
@@ -13,8 +14,8 @@
 #include "object_service.h"
 #include "object_store.h"
 #include "power_control.h"
+#include "seismic_acquisition.h"
 #include "seismic_buffer.h"
-#include "seismic_test_generator.h"
 #include "spi_bus.h"
 #include "storage_manager.h"
 #include "storage_service.h"
@@ -41,6 +42,10 @@ static void app_startup_initialize_core(void)
 
     ESP_ERROR_CHECK(
         seismic_buffer_init()
+    );
+
+    ESP_ERROR_CHECK(
+        adc_service_init()
     );
 
     ESP_ERROR_CHECK(
@@ -103,7 +108,7 @@ static void app_startup_initialize_services(void)
     );
 
     ESP_ERROR_CHECK(
-        seismic_test_generator_start()
+        seismic_acquisition_start()
     );
 }
 

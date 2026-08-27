@@ -3,6 +3,7 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 
+
 // Shared SPI bus for TFT + microSD
 #define BOARD_SPI_HOST          SPI2_HOST
 
@@ -15,7 +16,7 @@
 #define BOARD_TFT_DC_GPIO       GPIO_NUM_15
 #define BOARD_TFT_RESET_GPIO    GPIO_NUM_16
 
-// microSD (reserved, not used yet)
+// microSD
 #define BOARD_SD_CS_GPIO        GPIO_NUM_17
 
 // Pololu power control
@@ -26,3 +27,6 @@
 
 // 5-button analog keypad KS0466
 #define BOARD_KEYPAD_GPIO       GPIO_NUM_8
+
+// Temporary direct geophone bench input
+#define BOARD_GEOPHONE_BENCH_GPIO GPIO_NUM_1

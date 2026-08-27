@@ -10,7 +10,7 @@
 
 #define WEB_SEISMIC_DEFAULT_POINTS  240
 #define WEB_SEISMIC_MIN_POINTS      16
-#define WEB_SEISMIC_MAX_POINTS      320
+#define WEB_SEISMIC_MAX_POINTS      1200
 
 
 static size_t web_seismic_requested_points(

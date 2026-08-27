@@ -594,6 +594,18 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# Seismic Acquisition
+#
+# CONFIG_SEISMIC_SOURCE_TEST is not set
+CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH=y
+CONFIG_SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ=500
+
+#
+# AD7606 will be added as a later acquisition backend.
+#
+# end of Seismic Acquisition
+
+#
 # Compiler options
 #
 CONFIG_COMPILER_OPTIMIZATION_DEBUG=y

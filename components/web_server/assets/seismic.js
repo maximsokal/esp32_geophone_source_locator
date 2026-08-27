@@ -1,5 +1,9 @@
-const POINTS = 240;
+const POINTS = 1000;
+const REFRESH_MS = 200;
+const SCALE_RELEASE = 0.92;
+
 let lastData = null;
+let displayScale = 10;
 
 function el(id) {
     return document.getElementById(id);
@@ -10,7 +14,7 @@ function setStatus(text, cls) {
     el('status').className = 'status ' + cls;
 }
 
-function scaleFor(data) {
+function targetScaleFor(data) {
     let max = 0;
 
     data.channels.forEach(function(channel) {
@@ -20,6 +24,21 @@ function scaleFor(data) {
     });
 
     return Math.max(10, max * 1.10);
+}
+
+function smoothScale(target) {
+    if (target >= displayScale) {
+        displayScale = target;
+    }
+    else {
+        displayScale =
+            Math.max(
+                target,
+                displayScale * SCALE_RELEASE
+            );
+    }
+
+    return displayScale;
 }
 
 function drawGraph(id, samples, scale) {
@@ -64,11 +83,14 @@ function drawGraph(id, samples, scale) {
 
     samples.forEach(function(value, index) {
         const x =
-            index / (samples.length - 1) * width;
+            index /
+            (samples.length - 1) *
+            width;
 
         const y =
             height / 2 -
-            (value / scale) * (height * 0.42);
+            (value / scale) *
+            (height * 0.42);
 
         if (index === 0) {
             ctx.moveTo(x, y);
@@ -85,31 +107,57 @@ function render(data) {
     lastData = data;
 
     el('source').textContent = data.source;
+
     el('rate').textContent =
         data.sample_rate_hz + ' Hz';
 
     const seconds =
         data.sample_rate_hz > 0
-            ? data.count / data.sample_rate_hz
+            ? data.count /
+                data.sample_rate_hz
             : 0;
 
     el('window').textContent =
-        seconds.toFixed(1) + ' s';
+        seconds.toFixed(2) + ' s';
 
     el('frames').textContent =
         data.total_frames;
 
     if (data.source === 'TEST') {
-        setStatus('TEST SIGNAL', 'warning');
+        setStatus(
+            'TEST SIGNAL',
+            'warning'
+        );
     }
-    else if (data.source === 'AD7606') {
-        setStatus('LIVE', 'ok');
+    else if (
+        data.source ===
+        'ESP_ADC_BENCH'
+    ) {
+        setStatus(
+            'BENCH / ESP ADC',
+            'warning'
+        );
+    }
+    else if (
+        data.source ===
+        'AD7606'
+    ) {
+        setStatus(
+            'LIVE',
+            'ok'
+        );
     }
     else {
-        setStatus('WAITING', 'muted');
+        setStatus(
+            'WAITING',
+            'muted'
+        );
     }
 
-    const scale = scaleFor(data);
+    const scale =
+        smoothScale(
+            targetScaleFor(data)
+        );
 
     data.channels.forEach(function(channel) {
         drawGraph(
@@ -118,12 +166,24 @@ function render(data) {
             scale
         );
 
-        el('range' + channel.id).textContent =
-            '+/- ' + scale.toFixed(1) + ' uV';
+        el(
+            'range' + channel.id
+        ).textContent =
+            '+/- ' +
+            scale.toFixed(1) +
+            ' uV';
     });
 }
 
+let refreshInFlight = false;
+
 function refresh() {
+    if (refreshInFlight) {
+        return;
+    }
+
+    refreshInFlight = true;
+
     fetch(
         '/api/seismic?points=' + POINTS,
         {cache: 'no-store'}
@@ -139,7 +199,13 @@ function refresh() {
             render(data);
         })
         .catch(function() {
-            setStatus('OFFLINE', 'error');
+            setStatus(
+                'OFFLINE',
+                'error'
+            );
+        })
+        .finally(function() {
+            refreshInFlight = false;
         });
 }
 
@@ -153,4 +219,7 @@ window.addEventListener(
 );
 
 refresh();
-setInterval(refresh, 500);
+setInterval(
+    refresh,
+    REFRESH_MS
+);

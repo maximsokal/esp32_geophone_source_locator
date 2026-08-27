@@ -7,7 +7,7 @@
 #include "object_service.h"
 #include "power_control.h"
 #include "sd_card.h"
-#include "seismic_test_generator.h"
+#include "seismic_acquisition.h"
 #include "storage_manager.h"
 #include "storage_service.h"
 #include "web_server.h"
@@ -100,16 +100,13 @@ void app_shutdown_wait_and_run(void)
         "Safe shutdown started"
     );
 
-    /*
-     * Preserve the previously verified shutdown order.
-     */
     keypad_stop_event_monitor();
 
     storage_service_shutdown();
 
     object_service_shutdown();
 
-    seismic_test_generator_stop();
+    seismic_acquisition_stop();
 
     app_shutdown_stop_network();
 

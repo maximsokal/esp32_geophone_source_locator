@@ -13,8 +13,8 @@ idf_component_register(
         "."
 
     REQUIRES
+        adc_service
         board_config
-        esp_adc
         freertos
         log
 )
