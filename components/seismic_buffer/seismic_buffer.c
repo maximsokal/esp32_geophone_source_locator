@@ -31,15 +31,12 @@ esp_err_t seismic_buffer_init(void)
         return ESP_OK;
     }
 
-
     s_mutex =
         xSemaphoreCreateMutex();
-
 
     if (s_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
-
 
     memset(
         s_frames,
@@ -47,9 +44,7 @@ esp_err_t seismic_buffer_init(void)
         sizeof(s_frames)
     );
 
-
     s_initialized = true;
-
 
     return ESP_OK;
 }
@@ -64,7 +59,6 @@ esp_err_t seismic_buffer_configure(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (
         source != SEISMIC_SOURCE_NONE &&
         sample_rate_hz == 0
@@ -72,12 +66,10 @@ esp_err_t seismic_buffer_configure(
         return ESP_ERR_INVALID_ARG;
     }
 
-
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
-
 
     s_source =
         source;
@@ -94,18 +86,15 @@ esp_err_t seismic_buffer_configure(
     s_total_frames =
         0;
 
-
     memset(
         s_frames,
         0,
         sizeof(s_frames)
     );
 
-
     xSemaphoreGive(
         s_mutex
     );
-
 
     return ESP_OK;
 }
@@ -120,17 +109,14 @@ esp_err_t seismic_buffer_push(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (channel_uv == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
 
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
-
 
     if (
         s_source == SEISMIC_SOURCE_NONE ||
@@ -143,14 +129,11 @@ esp_err_t seismic_buffer_push(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     seismic_frame_t *frame =
         &s_frames[s_write_index];
 
-
     frame->timestamp_us =
         timestamp_us;
-
 
     for (
         size_t channel = 0;
@@ -161,9 +144,7 @@ esp_err_t seismic_buffer_push(
             channel_uv[channel];
     }
 
-
     s_write_index++;
-
 
     if (
         s_write_index >=
@@ -172,7 +153,6 @@ esp_err_t seismic_buffer_push(
         s_write_index = 0;
     }
 
-
     if (
         s_frame_count <
         SEISMIC_BUFFER_CAPACITY
@@ -180,14 +160,11 @@ esp_err_t seismic_buffer_push(
         s_frame_count++;
     }
 
-
     s_total_frames++;
-
 
     xSemaphoreGive(
         s_mutex
     );
-
 
     return ESP_OK;
 }
@@ -204,7 +181,6 @@ esp_err_t seismic_buffer_copy_latest(
         return ESP_ERR_INVALID_STATE;
     }
 
-
     if (
         frames == NULL ||
         frame_count == NULL ||
@@ -214,21 +190,17 @@ esp_err_t seismic_buffer_copy_latest(
         return ESP_ERR_INVALID_ARG;
     }
 
-
     xSemaphoreTake(
         s_mutex,
         portMAX_DELAY
     );
 
-
     size_t count =
         s_frame_count;
-
 
     if (count > max_frames) {
         count = max_frames;
     }
-
 
     size_t start_index =
         (
@@ -237,7 +209,6 @@ esp_err_t seismic_buffer_copy_latest(
             count
         ) %
         SEISMIC_BUFFER_CAPACITY;
-
 
     for (
         size_t i = 0;
@@ -250,15 +221,12 @@ esp_err_t seismic_buffer_copy_latest(
             ) %
             SEISMIC_BUFFER_CAPACITY;
 
-
         frames[i] =
             s_frames[source_index];
     }
 
-
     *frame_count =
         count;
-
 
     info->source =
         s_source;
@@ -272,11 +240,9 @@ esp_err_t seismic_buffer_copy_latest(
     info->total_frames =
         s_total_frames;
 
-
     xSemaphoreGive(
         s_mutex
     );
-
 
     return ESP_OK;
 }
@@ -287,9 +253,11 @@ const char *seismic_buffer_source_name(
 )
 {
     switch (source) {
-
         case SEISMIC_SOURCE_TEST:
             return "TEST";
+
+        case SEISMIC_SOURCE_ESP_ADC_BENCH:
+            return "ESP_ADC_BENCH";
 
         case SEISMIC_SOURCE_AD7606:
             return "AD7606";

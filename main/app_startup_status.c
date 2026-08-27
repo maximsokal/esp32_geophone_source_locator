@@ -1,5 +1,6 @@
 #include "app_startup_status.h"
 
+#include "seismic_acquisition.h"
 #include "wifi_manager.h"
 
 #include "esp_log.h"
@@ -40,7 +41,13 @@ void app_startup_log_success(void)
     }
 
     ESP_LOGI(TAG, "Web server: OK");
-    ESP_LOGI(TAG, "Seismic test pipeline: OK");
+
+    ESP_LOGI(
+        TAG,
+        "Seismic acquisition: %s",
+        seismic_acquisition_source_name()
+    );
+
     ESP_LOGI(TAG, "UI: OK");
 
     ESP_LOGI(

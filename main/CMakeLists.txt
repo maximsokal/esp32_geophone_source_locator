@@ -13,6 +13,7 @@ idf_component_register(
     REQUIRES
         app_config
         app_event_bus
+        adc_service
         spi_bus
         display
         sd_card
@@ -25,7 +26,7 @@ idf_component_register(
         keypad
         device_status
         seismic_buffer
-        seismic_test_generator
+        seismic_acquisition
         wifi_manager
         web_server
         ui
