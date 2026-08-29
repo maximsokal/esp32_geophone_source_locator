@@ -7,6 +7,7 @@
 #include "power_control.h"
 #include "sd_card.h"
 #include "sd_card_diagnostics.h"
+#include "ui.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -26,77 +27,52 @@ static void app_storage_boot_failure(
         message
     );
 
+    bool ui_started =
+        false;
+
     esp_err_t display_err =
         display_init();
 
     if (display_err == ESP_OK) {
-        display_fill(
-            DISPLAY_COLOR_BLACK
-        );
+        esp_err_t ui_err =
+            ui_boot_init();
 
-        display_draw_text_fast(
-            20,
-            68,
-            "SD CARD ERROR",
-            DISPLAY_COLOR_RED,
-            DISPLAY_COLOR_BLACK,
-            2
-        );
+        if (ui_err == ESP_OK) {
+            ui_started =
+                true;
 
-        display_draw_text_fast(
-            20,
-            108,
-            message,
-            DISPLAY_COLOR_WHITE,
-            DISPLAY_COLOR_BLACK,
-            1
-        );
-
-        display_draw_text_fast(
-            20,
-            138,
-            "SD SPI: 2 MHZ",
-            DISPLAY_COLOR_YELLOW,
-            DISPLAY_COLOR_BLACK,
-            1
-        );
-
-        display_draw_text_fast(
-            20,
-            164,
-            "CHECK CARD AND WIRING",
-            DISPLAY_COLOR_WHITE,
-            DISPLAY_COLOR_BLACK,
-            1
-        );
-
-        display_draw_text_fast(
-            20,
-            190,
-            "PRESS POWER TO SHUT DOWN",
-            DISPLAY_COLOR_WHITE,
-            DISPLAY_COLOR_BLACK,
-            1
-        );
-    }
-    else {
+            ui_boot_show_error(
+                message
+            );
+        } else {
+            ESP_LOGE(
+                TAG,
+                "LVGL boot error UI failed: %s",
+                esp_err_to_name(ui_err)
+            );
+        }
+    } else {
         ESP_LOGE(
             TAG,
             "Display initialization failed: %s",
-            esp_err_to_name(
-                display_err
-            )
+            esp_err_to_name(display_err)
         );
     }
 
     power_control_wait_for_shutdown_request();
 
-    sd_card_unmount();
+    (void)sd_card_unmount();
+
+    if (ui_started) {
+        ui_shutdown();
+    }
 
     if (display_err == ESP_OK) {
-        display_fill(
-            DISPLAY_COLOR_BLACK
+        (void)display_set_enabled(
+            false
         );
+
+        display_deinit();
     }
 
     power_control_shutdown();

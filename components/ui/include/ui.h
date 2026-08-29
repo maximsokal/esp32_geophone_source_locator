@@ -17,6 +17,11 @@ void ui_boot_set_stage(
 );
 
 
+void ui_boot_show_error(
+    const char *message
+);
+
+
 /*
  * Switch from the boot screen to the interactive application UI.
  */

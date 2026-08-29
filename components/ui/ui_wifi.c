@@ -1,7 +1,9 @@
 #include "ui_internal.h"
 
 #include <stdio.h>
+#include <string.h>
 
+#include "app_config.h"
 #include "wifi_manager.h"
 
 
@@ -37,6 +39,11 @@ static lv_obj_t *ui_wifi_label(
         width
     );
 
+    lv_label_set_long_mode(
+        label,
+        LV_LABEL_LONG_CLIP
+    );
+
     lv_label_set_text(
         label,
         text
@@ -49,6 +56,82 @@ static lv_obj_t *ui_wifi_label(
     );
 
     return label;
+}
+
+
+static void ui_wifi_render_setup_qr(
+    lv_obj_t *screen
+)
+{
+#if LV_USE_QRCODE
+    char payload[128];
+
+    const int length =
+        snprintf(
+            payload,
+            sizeof(payload),
+            "WIFI:T:WPA;S:%s;P:%s;;",
+            APP_WIFI_AP_SSID,
+            APP_WIFI_AP_PASSWORD
+        );
+
+    if (
+        length <= 0 ||
+        length >= (int)sizeof(payload)
+    ) {
+        return;
+    }
+
+    lv_obj_t *qr =
+        lv_qrcode_create(
+            screen
+        );
+
+    if (qr == NULL) {
+        return;
+    }
+
+    lv_qrcode_set_size(
+        qr,
+        70
+    );
+
+    lv_qrcode_set_dark_color(
+        qr,
+        lv_color_hex(0x000000)
+    );
+
+    lv_qrcode_set_light_color(
+        qr,
+        lv_color_hex(0xFFFFFF)
+    );
+
+    (void)lv_qrcode_update(
+        qr,
+        payload,
+        strlen(payload)
+    );
+
+    lv_obj_set_pos(
+        qr,
+        238,
+        42
+    );
+
+    lv_obj_set_style_border_color(
+        qr,
+        lv_color_hex(0xFFFFFF),
+        0
+    );
+
+    lv_obj_set_style_border_width(
+        qr,
+        2,
+        0
+    );
+#else
+    (void)screen;
+#endif
 }
 
 
@@ -67,21 +150,23 @@ void ui_render_wifi_locked(void)
         return;
     }
 
+    const bool setup =
+        wifi_manager_is_setup_mode();
+
     lv_obj_t *card =
         ui_create_card_locked(
             screen,
             10,
             42,
-            300,
-            72
+            setup
+                ? 220
+                : 300,
+            70
         );
 
     char ssid[40] = {0};
     char ip[24] = {0};
     char text[96];
-
-    const bool setup =
-        wifi_manager_is_setup_mode();
 
     snprintf(
         text,
@@ -96,74 +181,107 @@ void ui_render_wifi_locked(void)
         card,
         10,
         8,
-        280,
+        setup
+            ? 200
+            : 280,
         text,
         setup
             ? UI_WIFI_COLOR_WARNING
             : UI_WIFI_COLOR_ACCENT
     );
 
-    if (
-        wifi_manager_get_saved_ssid(
-            ssid,
-            sizeof(ssid)
-        ) != ESP_OK ||
-        ssid[0] == '\0'
-    ) {
+    if (setup) {
         snprintf(
-            ssid,
-            sizeof(ssid),
-            "--"
+            text,
+            sizeof(text),
+            "AP  %s",
+            APP_WIFI_AP_SSID
         );
-    }
 
-    if (
-        wifi_manager_sta_ip_string(
-            ip,
-            sizeof(ip)
-        ) != ESP_OK ||
-        ip[0] == '\0'
-    ) {
-        snprintf(
-            ip,
-            sizeof(ip),
-            "--"
+        ui_wifi_label(
+            card,
+            10,
+            29,
+            200,
+            text,
+            UI_WIFI_COLOR_TEXT
         );
-    }
 
-    snprintf(
-        text,
-        sizeof(text),
-        "SSID  %s",
-        ssid
-    );
-
-    ui_wifi_label(
-        card,
-        10,
-        30,
-        280,
-        text,
-        UI_WIFI_COLOR_TEXT
-    );
-
-    snprintf(
-        text,
-        sizeof(text),
-        "IP    %s",
-        ip
-    );
-
-    ui_wifi_label(
-        card,
-        10,
-        50,
-        280,
-        text,
-        ip[0] != '-' ?
-            UI_WIFI_COLOR_GOOD :
+        ui_wifi_label(
+            card,
+            10,
+            49,
+            200,
+            APP_WIFI_SETUP_URL,
             UI_WIFI_COLOR_MUTED
-    );
+        );
+
+        ui_wifi_render_setup_qr(
+            screen
+        );
+    } else {
+        if (
+            wifi_manager_get_saved_ssid(
+                ssid,
+                sizeof(ssid)
+            ) != ESP_OK ||
+            ssid[0] == '\0'
+        ) {
+            snprintf(
+                ssid,
+                sizeof(ssid),
+                "--"
+            );
+        }
+
+        if (
+            wifi_manager_sta_ip_string(
+                ip,
+                sizeof(ip)
+            ) != ESP_OK ||
+            ip[0] == '\0'
+        ) {
+            snprintf(
+                ip,
+                sizeof(ip),
+                "--"
+            );
+        }
+
+        snprintf(
+            text,
+            sizeof(text),
+            "SSID  %s",
+            ssid
+        );
+
+        ui_wifi_label(
+            card,
+            10,
+            29,
+            280,
+            text,
+            UI_WIFI_COLOR_TEXT
+        );
+
+        snprintf(
+            text,
+            sizeof(text),
+            "IP    %s",
+            ip
+        );
+
+        ui_wifi_label(
+            card,
+            10,
+            49,
+            280,
+            text,
+            ip[0] != '-'
+                ? UI_WIFI_COLOR_GOOD
+                : UI_WIFI_COLOR_MUTED
+        );
+    }
 
     static const char *actions[3] = {
         "ENTER SETUP MODE",
@@ -174,7 +292,7 @@ void ui_render_wifi_locked(void)
     for (size_t i = 0; i < 3; ++i) {
         ui_create_row_locked(
             screen,
-            120 + (int)(i * 30U),
+            118 + (int)(i * 32U),
             actions[i],
             i == context->wifi_action
         );

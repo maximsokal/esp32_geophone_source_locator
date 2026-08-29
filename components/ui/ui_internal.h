@@ -90,6 +90,10 @@ void ui_render_boot_locked(
     const char *stage
 );
 
+void ui_render_boot_error_locked(
+    const char *message
+);
+
 void ui_render_current_locked(void);
 void ui_refresh_dynamic_locked(void);
 void ui_refresh_header_locked(void);

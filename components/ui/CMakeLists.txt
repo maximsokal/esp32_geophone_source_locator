@@ -4,6 +4,7 @@ idf_component_register(
         "ui_lvgl.c"
         "ui_event_task.c"
         "ui_screen.c"
+        "ui_boot_error.c"
         "ui_home.c"
         "ui_measurements.c"
         "ui_objects.c"
