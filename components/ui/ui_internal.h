@@ -11,6 +11,7 @@
 #include "sd_card_info.h"
 #include "seismic_acquisition.h"
 #include "storage_service.h"
+#include "ui_theme.h"
 
 
 typedef enum
@@ -99,6 +100,15 @@ void ui_render_boot_error_locked(
 void ui_render_current_locked(void);
 void ui_refresh_dynamic_locked(void);
 void ui_refresh_header_locked(void);
+
+lv_obj_t *ui_create_label_locked(
+    lv_obj_t *parent,
+    int x,
+    int y,
+    int width,
+    const char *text,
+    uint32_t color
+);
 
 lv_obj_t *ui_create_screen_base_locked(
     const char *title,
