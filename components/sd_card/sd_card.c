@@ -1,7 +1,6 @@
 #include "sd_card.h"
 
 #include <stddef.h>
-
 #include <stdint.h>
 
 #include "esp_log.h"
@@ -39,13 +38,13 @@ bool sd_card_is_mounted(void)
 }
 
 
-void sd_card_unmount(void)
+esp_err_t sd_card_unmount(void)
 {
     sdmmc_card_t *card =
-        sd_card_internal_take_card();
+        sd_card_internal_card();
 
     if (card == NULL) {
-        return;
+        return ESP_OK;
     }
 
     esp_err_t err =
@@ -61,11 +60,21 @@ void sd_card_unmount(void)
             esp_err_to_name(err)
         );
 
-        return;
+        /*
+         * Keep the card handle published so state still matches
+         * reality and a later recovery/unmount attempt is possible.
+         */
+        return err;
     }
+
+    sd_card_internal_set_card(
+        NULL
+    );
 
     ESP_LOGI(
         TAG,
         "SD card unmounted"
     );
+
+    return ESP_OK;
 }

@@ -10,8 +10,6 @@
 
 #define KEYPAD_POLL_PERIOD_MS    20
 #define KEYPAD_DEBOUNCE_COUNT     3
-#define KEYPAD_TASK_STACK_SIZE 8192
-#define KEYPAD_TASK_PRIORITY      4
 
 
 typedef struct

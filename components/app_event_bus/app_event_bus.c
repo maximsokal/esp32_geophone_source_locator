@@ -99,3 +99,29 @@ esp_err_t app_event_bus_receive(
 
     return ESP_OK;
 }
+
+
+esp_err_t app_event_bus_receive_timeout(
+    app_event_t *event,
+    uint32_t timeout_ms
+)
+{
+    if (
+        s_queue == NULL ||
+        event == NULL
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (
+        xQueueReceive(
+            s_queue,
+            event,
+            pdMS_TO_TICKS(timeout_ms)
+        ) != pdTRUE
+    ) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return ESP_OK;
+}

@@ -19,7 +19,4 @@ void sd_card_internal_set_card(
 );
 
 
-sdmmc_card_t *sd_card_internal_take_card(void);
-
-
 esp_err_t sd_card_internal_prepare_shared_spi(void);

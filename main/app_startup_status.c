@@ -42,11 +42,21 @@ void app_startup_log_success(void)
 
     ESP_LOGI(TAG, "Web server: OK");
 
-    ESP_LOGI(
-        TAG,
-        "Seismic acquisition: %s",
-        seismic_acquisition_source_name()
-    );
+    if (
+        seismic_acquisition_is_running()
+    ) {
+        ESP_LOGI(
+            TAG,
+            "Seismic acquisition: %s RUNNING",
+            seismic_acquisition_source_name()
+        );
+    } else {
+        ESP_LOGW(
+            TAG,
+            "Seismic acquisition: %s UNAVAILABLE",
+            seismic_acquisition_source_name()
+        );
+    }
 
     ESP_LOGI(TAG, "UI: OK");
 

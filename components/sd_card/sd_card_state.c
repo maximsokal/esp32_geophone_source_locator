@@ -32,15 +32,3 @@ void sd_card_internal_set_card(
     s_card =
         card;
 }
-
-
-sdmmc_card_t *sd_card_internal_take_card(void)
-{
-    sdmmc_card_t *card =
-        s_card;
-
-    s_card =
-        NULL;
-
-    return card;
-}

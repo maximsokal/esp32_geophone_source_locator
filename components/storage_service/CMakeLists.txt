@@ -10,6 +10,7 @@ idf_component_register(
         "."
 
     REQUIRES
+        app_config
         sd_card
         storage_manager
         object_store

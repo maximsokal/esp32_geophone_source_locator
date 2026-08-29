@@ -4,19 +4,40 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 
 
-static SemaphoreHandle_t s_mutex = NULL;
+#define SEISMIC_SLOT_READ_RETRIES      4
+#define SEISMIC_SNAPSHOT_RETRIES       4
 
-static seismic_frame_t
-    s_frames[SEISMIC_BUFFER_CAPACITY];
+
+typedef struct
+{
+    uint32_t sequence;
+    uint64_t frame_number;
+    seismic_frame_t frame;
+
+} seismic_slot_t;
+
+
+typedef struct
+{
+    size_t frame_count;
+    uint64_t total_frames;
+    uint32_t sample_rate_hz;
+    seismic_source_t source;
+
+} seismic_metadata_t;
+
+
+static portMUX_TYPE s_metadata_lock =
+    portMUX_INITIALIZER_UNLOCKED;
+
+static seismic_slot_t
+    s_slots[SEISMIC_BUFFER_CAPACITY];
 
 static size_t s_write_index = 0;
 static size_t s_frame_count = 0;
-
 static uint64_t s_total_frames = 0;
-
 static uint32_t s_sample_rate_hz = 0;
 
 static seismic_source_t s_source =
@@ -25,26 +46,163 @@ static seismic_source_t s_source =
 static bool s_initialized = false;
 
 
+static void seismic_buffer_snapshot_metadata(
+    seismic_metadata_t *metadata
+)
+{
+    portENTER_CRITICAL(
+        &s_metadata_lock
+    );
+
+    metadata->frame_count =
+        s_frame_count;
+
+    metadata->total_frames =
+        s_total_frames;
+
+    metadata->sample_rate_hz =
+        s_sample_rate_hz;
+
+    metadata->source =
+        s_source;
+
+    portEXIT_CRITICAL(
+        &s_metadata_lock
+    );
+}
+
+
+static void seismic_buffer_write_slot(
+    seismic_slot_t *slot,
+    uint64_t frame_number,
+    int64_t timestamp_us,
+    const float channel_uv[SEISMIC_CHANNEL_COUNT]
+)
+{
+    uint32_t sequence =
+        __atomic_load_n(
+            &slot->sequence,
+            __ATOMIC_SEQ_CST
+        );
+
+    if ((sequence & 1U) != 0U) {
+        sequence++;
+    }
+
+    /*
+     * Odd sequence means the producer is mutating this slot.
+     * Readers never wait for the producer; they simply retry.
+     */
+    __atomic_store_n(
+        &slot->sequence,
+        sequence + 1U,
+        __ATOMIC_SEQ_CST
+    );
+
+    slot->frame_number =
+        frame_number;
+
+    slot->frame.timestamp_us =
+        timestamp_us;
+
+    for (
+        size_t channel = 0;
+        channel < SEISMIC_CHANNEL_COUNT;
+        ++channel
+    ) {
+        slot->frame.channel_uv[channel] =
+            channel_uv[channel];
+    }
+
+    /*
+     * Publishing an even sequence releases the completed frame.
+     */
+    __atomic_store_n(
+        &slot->sequence,
+        sequence + 2U,
+        __ATOMIC_SEQ_CST
+    );
+}
+
+
+static bool seismic_buffer_read_slot(
+    const seismic_slot_t *slot,
+    uint64_t expected_frame_number,
+    seismic_frame_t *frame
+)
+{
+    for (
+        unsigned attempt = 0;
+        attempt < SEISMIC_SLOT_READ_RETRIES;
+        ++attempt
+    ) {
+        const uint32_t before =
+            __atomic_load_n(
+                &slot->sequence,
+                __ATOMIC_SEQ_CST
+            );
+
+        if ((before & 1U) != 0U) {
+            continue;
+        }
+
+        const uint64_t frame_number =
+            slot->frame_number;
+
+        const seismic_frame_t candidate =
+            slot->frame;
+
+        const uint32_t after =
+            __atomic_load_n(
+                &slot->sequence,
+                __ATOMIC_SEQ_CST
+            );
+
+        if (
+            before == after &&
+            (after & 1U) == 0U &&
+            frame_number == expected_frame_number
+        ) {
+            *frame =
+                candidate;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 esp_err_t seismic_buffer_init(void)
 {
     if (s_initialized) {
         return ESP_OK;
     }
 
-    s_mutex =
-        xSemaphoreCreateMutex();
-
-    if (s_mutex == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
     memset(
-        s_frames,
+        s_slots,
         0,
-        sizeof(s_frames)
+        sizeof(s_slots)
     );
 
-    s_initialized = true;
+    s_write_index =
+        0;
+
+    s_frame_count =
+        0;
+
+    s_total_frames =
+        0;
+
+    s_sample_rate_hz =
+        0;
+
+    s_source =
+        SEISMIC_SOURCE_NONE;
+
+    s_initialized =
+        true;
 
     return ESP_OK;
 }
@@ -66,9 +224,14 @@ esp_err_t seismic_buffer_configure(
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
+    /*
+     * Reset only published metadata. Old slot contents are harmless:
+     * frame_count becomes zero and every new session republishes slots
+     * with frame numbers starting at one. Avoiding a bulk memset here
+     * also avoids racing a web reader during shutdown/restart.
+     */
+    portENTER_CRITICAL(
+        &s_metadata_lock
     );
 
     s_source =
@@ -86,14 +249,8 @@ esp_err_t seismic_buffer_configure(
     s_total_frames =
         0;
 
-    memset(
-        s_frames,
-        0,
-        sizeof(s_frames)
-    );
-
-    xSemaphoreGive(
-        s_mutex
+    portEXIT_CRITICAL(
+        &s_metadata_lock
     );
 
     return ESP_OK;
@@ -113,44 +270,61 @@ esp_err_t seismic_buffer_push(
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
+    size_t write_index;
+    uint64_t frame_number;
+
+    /*
+     * This critical section only snapshots producer metadata.
+     * Web/UI readers never hold it while copying waveform data.
+     */
+    portENTER_CRITICAL(
+        &s_metadata_lock
     );
 
     if (
         s_source == SEISMIC_SOURCE_NONE ||
         s_sample_rate_hz == 0
     ) {
-        xSemaphoreGive(
-            s_mutex
+        portEXIT_CRITICAL(
+            &s_metadata_lock
         );
 
         return ESP_ERR_INVALID_STATE;
     }
 
-    seismic_frame_t *frame =
-        &s_frames[s_write_index];
+    write_index =
+        s_write_index;
 
-    frame->timestamp_us =
-        timestamp_us;
+    frame_number =
+        s_total_frames + 1U;
 
-    for (
-        size_t channel = 0;
-        channel < SEISMIC_CHANNEL_COUNT;
-        ++channel
-    ) {
-        frame->channel_uv[channel] =
-            channel_uv[channel];
-    }
+    portEXIT_CRITICAL(
+        &s_metadata_lock
+    );
 
-    s_write_index++;
+    seismic_buffer_write_slot(
+        &s_slots[write_index],
+        frame_number,
+        timestamp_us,
+        channel_uv
+    );
+
+    /*
+     * Publish ring metadata only after the slot is complete.
+     */
+    portENTER_CRITICAL(
+        &s_metadata_lock
+    );
+
+    s_write_index =
+        write_index + 1U;
 
     if (
         s_write_index >=
         SEISMIC_BUFFER_CAPACITY
     ) {
-        s_write_index = 0;
+        s_write_index =
+            0;
     }
 
     if (
@@ -160,10 +334,11 @@ esp_err_t seismic_buffer_push(
         s_frame_count++;
     }
 
-    s_total_frames++;
+    s_total_frames =
+        frame_number;
 
-    xSemaphoreGive(
-        s_mutex
+    portEXIT_CRITICAL(
+        &s_metadata_lock
     );
 
     return ESP_OK;
@@ -190,61 +365,94 @@ esp_err_t seismic_buffer_copy_latest(
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(
-        s_mutex,
-        portMAX_DELAY
-    );
-
-    size_t count =
-        s_frame_count;
-
-    if (count > max_frames) {
-        count = max_frames;
-    }
-
-    size_t start_index =
-        (
-            s_write_index +
-            SEISMIC_BUFFER_CAPACITY -
-            count
-        ) %
-        SEISMIC_BUFFER_CAPACITY;
-
     for (
-        size_t i = 0;
-        i < count;
-        ++i
+        unsigned snapshot_attempt = 0;
+        snapshot_attempt < SEISMIC_SNAPSHOT_RETRIES;
+        ++snapshot_attempt
     ) {
-        size_t source_index =
-            (
-                start_index + i
-            ) %
-            SEISMIC_BUFFER_CAPACITY;
+        seismic_metadata_t metadata;
 
-        frames[i] =
-            s_frames[source_index];
+        seismic_buffer_snapshot_metadata(
+            &metadata
+        );
+
+        size_t count =
+            metadata.frame_count;
+
+        if (count > max_frames) {
+            count =
+                max_frames;
+        }
+
+        info->source =
+            metadata.source;
+
+        info->sample_rate_hz =
+            metadata.sample_rate_hz;
+
+        info->buffered_frames =
+            metadata.frame_count;
+
+        info->total_frames =
+            metadata.total_frames;
+
+        if (count == 0) {
+            *frame_count =
+                0;
+
+            return ESP_OK;
+        }
+
+        const uint64_t first_frame_number =
+            metadata.total_frames -
+            (uint64_t)count +
+            1U;
+
+        bool consistent =
+            true;
+
+        for (
+            size_t i = 0;
+            i < count;
+            ++i
+        ) {
+            const uint64_t expected_frame_number =
+                first_frame_number +
+                (uint64_t)i;
+
+            const size_t source_index =
+                (size_t)(
+                    (expected_frame_number - 1U) %
+                    SEISMIC_BUFFER_CAPACITY
+                );
+
+            if (
+                !seismic_buffer_read_slot(
+                    &s_slots[source_index],
+                    expected_frame_number,
+                    &frames[i]
+                )
+            ) {
+                consistent =
+                    false;
+
+                break;
+            }
+        }
+
+        if (consistent) {
+            *frame_count =
+                count;
+
+            return ESP_OK;
+        }
     }
 
-    *frame_count =
-        count;
-
-    info->source =
-        s_source;
-
-    info->sample_rate_hz =
-        s_sample_rate_hz;
-
-    info->buffered_frames =
-        s_frame_count;
-
-    info->total_frames =
-        s_total_frames;
-
-    xSemaphoreGive(
-        s_mutex
-    );
-
-    return ESP_OK;
+    /*
+     * A producer wrap raced every retry. This is transient and,
+     * importantly, never stalls the acquisition task.
+     */
+    return ESP_ERR_TIMEOUT;
 }
 
 

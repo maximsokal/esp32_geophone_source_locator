@@ -14,6 +14,7 @@ idf_component_register(
 
     REQUIRES
         adc_service
+        app_config
         board_config
         freertos
         log
