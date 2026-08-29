@@ -22,9 +22,12 @@ typedef enum
     UI_SCREEN_MEASUREMENTS,
     UI_SCREEN_STORAGE,
     UI_SCREEN_WIFI,
-    UI_SCREEN_SYSTEM
+    UI_SCREEN_SYSTEM,
+    UI_SCREEN_COUNT
 
 } ui_screen_t;
+
+#define UI_HOME_SCREEN_COUNT ((size_t)UI_SCREEN_COUNT - 1U)
 
 
 typedef enum
@@ -35,6 +38,19 @@ typedef enum
     UI_OBJECTS_DELETE_CONFIRM
 
 } ui_objects_mode_t;
+
+
+typedef struct
+{
+    const char *name;
+    const char *home_label;
+
+    void (*open)(void);
+    void (*render)(void);
+    void (*handle_key)(keypad_key_t key);
+    void (*refresh)(void);
+
+} ui_screen_driver_t;
 
 
 typedef struct
@@ -52,7 +68,7 @@ typedef struct
     ui_screen_t screen;
     size_t selected;
 
-    lv_obj_t *home_rows[5];
+    lv_obj_t *home_rows[UI_HOME_SCREEN_COUNT];
 
     lv_obj_t *measurement_channel_labels[
         SEISMIC_ACQUISITION_MAX_CHANNELS
@@ -133,6 +149,39 @@ lv_obj_t *ui_create_row_locked(
 
 void ui_set_notice_locked(
     const char *text
+);
+
+
+/* Screen registry: the single source of truth for screen behavior. */
+const ui_screen_driver_t *ui_screen_driver(
+    ui_screen_t screen
+);
+
+size_t ui_screen_home_count(void);
+
+ui_screen_t ui_screen_home_at(
+    size_t index
+);
+
+const char *ui_screen_home_label(
+    size_t index
+);
+
+void ui_screen_open_locked(
+    ui_screen_t screen
+);
+
+void ui_screen_render_locked(
+    ui_screen_t screen
+);
+
+void ui_screen_handle_key_locked(
+    ui_screen_t screen,
+    keypad_key_t key
+);
+
+void ui_screen_refresh_locked(
+    ui_screen_t screen
 );
 
 
