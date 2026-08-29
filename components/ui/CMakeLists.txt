@@ -3,13 +3,17 @@ idf_component_register(
         "ui.c"
         "ui_lvgl.c"
         "ui_event_task.c"
-        "ui_screen.c"
+        "ui_shell.c"
+        "ui_navigation.c"
         "ui_boot_error.c"
         "ui_home.c"
         "ui_measurements.c"
         "ui_objects.c"
+        "ui_objects_input.c"
         "ui_storage.c"
+        "ui_storage_input.c"
         "ui_wifi.c"
+        "ui_wifi_input.c"
         "ui_system.c"
 
     INCLUDE_DIRS
