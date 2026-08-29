@@ -2,21 +2,29 @@ menu "Seismic Acquisition"
 
     choice SEISMIC_ACQUISITION_SOURCE
         prompt "Acquisition source"
-        default SEISMIC_SOURCE_ESP_ADC_BENCH
+        default SEISMIC_SOURCE_AD7606
 
         config SEISMIC_SOURCE_TEST
             bool "Synthetic test waveform"
 
         config SEISMIC_SOURCE_ESP_ADC_BENCH
             bool "ESP32-S3 ADC geophone bench input on GPIO1"
+
+        config SEISMIC_SOURCE_AD7606
+            bool "AD7606 SPI acquisition"
     endchoice
+
+    # Both backend components are compiled into the application,
+    # therefore both constants must always exist in sdkconfig.h.
 
     config SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ
         int "ESP ADC bench sample rate (Hz)"
         range 100 2000
         default 500
-        depends on SEISMIC_SOURCE_ESP_ADC_BENCH
 
-    comment "AD7606 will be added as a later acquisition backend."
+    config SEISMIC_AD7606_SAMPLE_RATE_HZ
+        int "AD7606 acquisition sample rate (Hz)"
+        range 100 5000
+        default 500
 
 endmenu

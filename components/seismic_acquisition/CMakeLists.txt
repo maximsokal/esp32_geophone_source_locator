@@ -6,6 +6,7 @@ idf_component_register(
         "include"
 
     REQUIRES
+        ad7606_acquisition
         geophone_adc_test
         seismic_test_generator
         log

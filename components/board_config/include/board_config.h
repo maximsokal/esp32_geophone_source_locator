@@ -4,7 +4,7 @@
 #include "driver/spi_master.h"
 
 
-// Shared SPI bus for TFT + microSD
+// Shared SPI bus for TFT + microSD + AD7606
 #define BOARD_SPI_HOST          SPI2_HOST
 
 #define BOARD_SPI_MOSI_GPIO     GPIO_NUM_11
@@ -18,6 +18,12 @@
 
 // microSD
 #define BOARD_SD_CS_GPIO        GPIO_NUM_17
+
+// AD7606
+#define BOARD_AD7606_RESET_GPIO     GPIO_NUM_6
+#define BOARD_AD7606_BUSY_GPIO      GPIO_NUM_7
+#define BOARD_AD7606_CONVST_GPIO    GPIO_NUM_9
+#define BOARD_AD7606_CS_GPIO        GPIO_NUM_10
 
 // Pololu power control
 #define BOARD_POWER_OFF_GPIO    GPIO_NUM_18
