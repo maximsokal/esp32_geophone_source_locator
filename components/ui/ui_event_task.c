@@ -1,12 +1,12 @@
-#include "ui_event_task.h"
+#include "ui_internal.h"
 
 #include <stdbool.h>
 
 #include "app_event_bus.h"
 #include "app_task_config.h"
-#include "ui_event_dispatch.h"
 
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -59,32 +59,26 @@ static void ui_event_task_main(
             break;
         }
 
-        if (
-            event.type ==
-            APP_EVENT_KEYPAD
-        ) {
-            err =
-                ui_event_dispatch_key(
-                    (keypad_key_t)
-                        event.value
-                );
-        } else {
-            err =
-                ui_event_dispatch_app(
-                    event.type
-                );
+        if (!lvgl_port_lock(250)) {
+            ESP_LOGW(
+                TAG,
+                "LVGL lock timeout"
+            );
+
+            continue;
         }
 
-        if (
-            err != ESP_OK &&
-            err != ESP_ERR_NOT_SUPPORTED
-        ) {
-            ESP_LOGE(
-                TAG,
-                "Event dispatch failed: %s",
-                esp_err_to_name(err)
+        if (event.type == APP_EVENT_KEYPAD) {
+            ui_dispatch_key_locked(
+                (keypad_key_t)event.value
+            );
+        } else {
+            ui_dispatch_app_event_locked(
+                (int)event.type
             );
         }
+
+        lvgl_port_unlock();
     }
 
     s_running =

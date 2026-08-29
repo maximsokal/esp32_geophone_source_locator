@@ -79,20 +79,22 @@ static void app_shutdown_stop_storage(void)
 }
 
 
-static void app_shutdown_clear_display(void)
+static void app_shutdown_stop_display(void)
 {
     esp_err_t err =
-        display_fill(
-            DISPLAY_COLOR_BLACK
+        display_set_enabled(
+            false
         );
 
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "Failed to clear display: %s",
+            "Failed to switch display off: %s",
             esp_err_to_name(err)
         );
     }
+
+    display_deinit();
 
     ESP_LOGI(
         TAG,
@@ -124,7 +126,7 @@ void app_shutdown_wait_and_run(void)
 
     app_shutdown_stop_storage();
 
-    app_shutdown_clear_display();
+    app_shutdown_stop_display();
 
     ESP_LOGI(
         TAG,

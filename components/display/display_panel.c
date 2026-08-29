@@ -45,10 +45,7 @@ esp_err_t display_panel_configure(
         return err;
     }
 
-    /*
-     * Preserve the user-verified physical orientation:
-     * native 240x320 -> landscape 320x240.
-     */
+    /* Native 240x320 panel is installed as 320x240 landscape. */
     err =
         esp_lcd_panel_swap_xy(
             panel_handle,
@@ -82,7 +79,7 @@ esp_err_t display_panel_configure(
 
     ESP_LOGI(
         TAG,
-        "ILI9341 initialized: %dx%d landscape RGB565",
+        "ILI9341 ready: %dx%d landscape RGB565",
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT
     );

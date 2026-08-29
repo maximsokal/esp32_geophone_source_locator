@@ -50,69 +50,6 @@ static void app_startup_log_elapsed(
 }
 
 
-static esp_err_t app_startup_show_boot_screen(void)
-{
-    esp_err_t err =
-        display_fill(
-            DISPLAY_COLOR_BLACK
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    return
-        display_draw_text_fast(
-            20,
-            24,
-            "STARTING...",
-            DISPLAY_COLOR_WHITE,
-            DISPLAY_COLOR_BLACK,
-            2
-        );
-}
-
-
-static void app_startup_show_stage(
-    const char *stage
-)
-{
-    if (stage == NULL) {
-        return;
-    }
-
-    esp_err_t err =
-        display_fill_rect(
-            0,
-            62,
-            DISPLAY_WIDTH,
-            24,
-            DISPLAY_COLOR_BLACK
-        );
-
-    if (err == ESP_OK) {
-        err =
-            display_draw_text_fast(
-                20,
-                66,
-                stage,
-                DISPLAY_COLOR_CYAN,
-                DISPLAY_COLOR_BLACK,
-                1
-            );
-    }
-
-    if (err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "Unable to update boot stage '%s': %s",
-            stage,
-            esp_err_to_name(err)
-        );
-    }
-}
-
-
 static void app_startup_initialize_core(void)
 {
     ESP_ERROR_CHECK(
@@ -171,7 +108,7 @@ static void app_startup_initialize_services(void)
         esp_log_timestamp();
 
     ESP_ERROR_CHECK(
-        app_startup_show_boot_screen()
+        ui_boot_init()
     );
 
     app_startup_log_elapsed(
@@ -179,7 +116,7 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
-    app_startup_show_stage(
+    ui_boot_set_stage(
         "STORAGE..."
     );
 
@@ -195,7 +132,7 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
-    app_startup_show_stage(
+    ui_boot_set_stage(
         "RECOVERY..."
     );
 
@@ -211,7 +148,7 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
-    app_startup_show_stage(
+    ui_boot_set_stage(
         "OBJECT STORE..."
     );
 
@@ -227,7 +164,7 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
-    app_startup_show_stage(
+    ui_boot_set_stage(
         "NETWORK + UI..."
     );
 
@@ -271,12 +208,9 @@ static void app_startup_initialize_services(void)
     );
 
     /*
-     * Acquisition hardware is allowed to be absent/faulty
-     * during hardware bring-up.
-     *
-     * A failed ADC must not reboot the entire controller.
-     * The acquisition layer owns the corresponding device-status
-     * transition for both success and failure.
+     * Acquisition hardware is allowed to be absent/faulty during
+     * bring-up. The LVGL UI remains usable and reports STOPPED/error
+     * state instead of rebooting the whole controller.
      */
     stage_started_ms =
         esp_log_timestamp();

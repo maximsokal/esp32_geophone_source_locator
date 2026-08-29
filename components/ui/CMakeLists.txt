@@ -1,50 +1,14 @@
 idf_component_register(
     SRCS
         "ui.c"
-        "ui_state.c"
-        "ui_screen_router.c"
-        "ui_navigation.c"
-        "ui_input.c"
+        "ui_lvgl.c"
         "ui_event_task.c"
-        "ui_event_dispatch.c"
-        "ui_wifi_events.c"
-        "ui_common.c"
-        "ui_status_bar.c"
+        "ui_screen.c"
         "ui_home.c"
-        "ui_home_controller.c"
-        "ui_objects.c"
-        "ui_objects_state.c"
-        "ui_objects_render.c"
-        "ui_objects_events.c"
-        "ui_objects_event_list.c"
-        "ui_objects_menu.c"
-        "ui_objects_list.c"
-        "ui_objects_view.c"
-        "ui_objects_status_view.c"
-        "ui_objects_list_view.c"
-        "ui_objects_list_row.c"
-        "ui_objects_delete_view.c"
         "ui_measurements.c"
+        "ui_objects.c"
         "ui_storage.c"
-        "ui_storage_state.c"
-        "ui_storage_render.c"
-        "ui_storage_events.c"
-        "ui_storage_actions.c"
-        "ui_storage_menu.c"
-        "ui_storage_input.c"
-        "ui_storage_view.c"
-        "ui_storage_card_view.c"
-        "ui_storage_space_view.c"
-        "ui_storage_erase_view.c"
         "ui_wifi.c"
-        "ui_wifi_state.c"
-        "ui_wifi_controller.c"
-        "ui_wifi_actions.c"
-        "ui_wifi_navigation.c"
-        "ui_wifi_menu_view.c"
-        "ui_wifi_setup_view.c"
-        "ui_wifi_status_view.c"
-        "ui_wifi_device_view.c"
         "ui_system.c"
 
     INCLUDE_DIRS
@@ -55,15 +19,18 @@ idf_component_register(
 
     REQUIRES
         app_event_bus
+        app_config
         display
         keypad
         device_status
-        app_config
-        wifi_qr
         wifi_manager
         object_service
         storage_service
+        seismic_acquisition
+        esp_lvgl_port
+        lvgl
         esp_system
+        esp_timer
         freertos
         log
 )
