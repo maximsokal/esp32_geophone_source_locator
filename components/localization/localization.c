@@ -5,7 +5,6 @@
 #include <string.h>
 
 
-#define LOCALIZATION_DEFAULT_SPEED_MPS       350.0
 #define LOCALIZATION_DEFAULT_ITERATIONS       20
 #define LOCALIZATION_DEFAULT_CONVERGENCE_M  0.001
 #define LOCALIZATION_DEFAULT_DAMPING         1.0e-6
@@ -48,6 +47,15 @@ static localization_point3d_t point_cross(
         .y_m = a.z_m * b.x_m - a.x_m * b.z_m,
         .z_m = a.x_m * b.y_m - a.y_m * b.x_m,
     };
+}
+
+
+static bool point_is_finite(localization_point3d_t point)
+{
+    return
+        isfinite(point.x_m) &&
+        isfinite(point.y_m) &&
+        isfinite(point.z_m);
 }
 
 
@@ -207,7 +215,8 @@ static bool solve_3x3(
 
             const double factor = augmented[row][pivot];
             for (size_t column = pivot; column < 4; ++column) {
-                augmented[row][column] -= factor * augmented[pivot][column];
+                augmented[row][column] -=
+                    factor * augmented[pivot][column];
             }
         }
     }
@@ -224,6 +233,7 @@ static esp_err_t localization_validate(
     const localization_observation_t *observations,
     size_t count,
     const localization_config_t *config,
+    const localization_point3d_t *initial_guess,
     localization_result_t *result,
     double *geometry_scale
 )
@@ -240,17 +250,36 @@ static esp_err_t localization_validate(
     if (
         count < LOCALIZATION_MIN_SENSORS_3D ||
         count > LOCALIZATION_MAX_SENSORS ||
+        !isfinite(config->propagation_speed_mps) ||
         config->propagation_speed_mps <= 0.0 ||
         config->max_iterations == 0 ||
+        !isfinite(config->convergence_m) ||
         config->convergence_m <= 0.0 ||
+        !isfinite(config->damping) ||
         config->damping < 0.0
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!point_is_finite(observations[i].sensor_position)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    if (
+        initial_guess != NULL &&
+        !point_is_finite(*initial_guess)
     ) {
         return ESP_ERR_INVALID_ARG;
     }
 
     *geometry_scale = localization_geometry_scale(observations, count);
 
-    if (!localization_geometry_is_3d(observations, count, *geometry_scale)) {
+    if (
+        !isfinite(*geometry_scale) ||
+        !localization_geometry_is_3d(observations, count, *geometry_scale)
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -261,7 +290,8 @@ static esp_err_t localization_validate(
 localization_config_t localization_default_config(void)
 {
     return (localization_config_t) {
-        .propagation_speed_mps = LOCALIZATION_DEFAULT_SPEED_MPS,
+        /* Caller must provide a measured/modelled propagation speed. */
+        .propagation_speed_mps = 0.0,
         .max_iterations = LOCALIZATION_DEFAULT_ITERATIONS,
         .convergence_m = LOCALIZATION_DEFAULT_CONVERGENCE_M,
         .damping = LOCALIZATION_DEFAULT_DAMPING,
@@ -283,6 +313,7 @@ esp_err_t localization_tdoa_solve(
         observations,
         observation_count,
         config,
+        initial_guess,
         result,
         &geometry_scale
     );
@@ -299,7 +330,9 @@ esp_err_t localization_tdoa_solve(
             : localization_centroid(observations, observation_count);
 
     const double speed = config->propagation_speed_mps;
-    const int64_t reference_arrival_us = observations[0].arrival_time_us;
+    const double reference_arrival_us =
+        (double)observations[0].arrival_time_us;
+
     const localization_point3d_t reference_sensor =
         observations[0].sensor_position;
 
@@ -335,15 +368,12 @@ esp_err_t localization_tdoa_solve(
                 return ESP_ERR_INVALID_STATE;
             }
 
+            const double arrival_delta_us =
+                (double)observations[i].arrival_time_us -
+                reference_arrival_us;
+
             const double measured_delta_m =
-                speed *
-                (
-                    (double)(
-                        observations[i].arrival_time_us -
-                        reference_arrival_us
-                    ) /
-                    1000000.0
-                );
+                speed * arrival_delta_us / 1000000.0;
 
             const double residual_m =
                 (distance - d0) - measured_delta_m;
@@ -380,6 +410,10 @@ esp_err_t localization_tdoa_solve(
             step[2] * step[2]
         );
 
+        if (!isfinite(step_norm)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
         const double max_step = fmax(geometry_scale, 1.0);
         if (step_norm > max_step) {
             const double scale = max_step / step_norm;
@@ -401,6 +435,10 @@ esp_err_t localization_tdoa_solve(
         }
     }
 
+    if (!point_is_finite(estimate)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     result->source_position = estimate;
 
     double residual_sum_sq_us = 0.0;
@@ -415,9 +453,9 @@ esp_err_t localization_tdoa_solve(
         const double predicted_delta_us =
             ((distance - solved_d0) / speed) * 1000000.0;
 
-        const double measured_delta_us = (double)(
-            observations[i].arrival_time_us - reference_arrival_us
-        );
+        const double measured_delta_us =
+            (double)observations[i].arrival_time_us -
+            reference_arrival_us;
 
         const double residual_us =
             predicted_delta_us - measured_delta_us;
