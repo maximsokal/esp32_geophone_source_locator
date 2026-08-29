@@ -1,0 +1,7 @@
+# Storage filesystem requirements.
+#
+# The application uses path components longer than FAT 8.3 names
+# (for example /sdcard/geolocator), so long filename support is a
+# functional requirement rather than an optional convenience.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
