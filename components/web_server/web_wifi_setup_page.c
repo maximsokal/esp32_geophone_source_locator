@@ -1,4 +1,4 @@
-#include "web_wifi_setup_page.h"
+#include "web_server_internal.h"
 
 #include "app_event_bus.h"
 
@@ -69,11 +69,10 @@ esp_err_t web_wifi_setup_page_send_form(
     httpd_req_t *request
 )
 {
-    return
-        web_wifi_setup_page_send(
-            request,
-            s_setup_page
-        );
+    return web_wifi_setup_page_send(
+        request,
+        s_setup_page
+    );
 }
 
 
@@ -81,11 +80,10 @@ esp_err_t web_wifi_setup_page_send_saved(
     httpd_req_t *request
 )
 {
-    return
-        web_wifi_setup_page_send(
-            request,
-            s_saved_page
-        );
+    return web_wifi_setup_page_send(
+        request,
+        s_saved_page
+    );
 }
 
 
@@ -107,11 +105,10 @@ esp_err_t web_wifi_setup_page_open_handler(
         "Setup page opened from wizard URL"
     );
 
-    (void)
-        app_event_bus_publish(
-            APP_EVENT_WIFI_SETUP_PAGE_OPENED,
-            0
-        );
+    (void)app_event_bus_publish(
+        APP_EVENT_WIFI_SETUP_PAGE_OPENED,
+        0
+    );
 
     return ESP_OK;
 }

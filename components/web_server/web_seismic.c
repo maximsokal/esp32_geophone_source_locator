@@ -1,7 +1,4 @@
-#include "web_seismic.h"
-
-#include "web_seismic_api.h"
-#include "web_seismic_page.h"
+#include "web_server_internal.h"
 
 
 static esp_err_t web_seismic_page_handler(

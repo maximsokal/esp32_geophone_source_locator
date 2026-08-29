@@ -5,7 +5,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 
-#include "web_server_routes.h"
+#include "web_server_internal.h"
 
 
 static const char *TAG =

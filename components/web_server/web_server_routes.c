@@ -1,12 +1,7 @@
-#include "web_server_routes.h"
+#include "web_server_internal.h"
 
 #include <stddef.h>
 
-#include "web_api_status.h"
-#include "web_page.h"
-#include "web_seismic.h"
-#include "web_static_assets.h"
-#include "web_wifi_setup.h"
 #include "wifi_manager.h"
 
 

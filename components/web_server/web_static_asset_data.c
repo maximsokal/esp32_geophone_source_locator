@@ -1,4 +1,4 @@
-#include "web_static_assets.h"
+#include "web_server_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>
