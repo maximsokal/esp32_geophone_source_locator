@@ -33,7 +33,6 @@ idf_component_register(
         storage_service
         seismic_acquisition
         esp_lvgl_port
-        lvgl
         esp_system
         esp_timer
         freertos
