@@ -16,5 +16,6 @@ idf_component_register(
 
     REQUIRES
         freertos
+        esp_timer
         log
 )

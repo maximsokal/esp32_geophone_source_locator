@@ -5,10 +5,32 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 
 static const char *TAG =
     "STORAGE_TEXT";
+
+
+static void storage_text_log_io(
+    const char *operation,
+    const char *path,
+    int result,
+    int64_t started_us
+)
+{
+    ESP_LOGI(
+        TAG,
+        "IO_TIMING: %s path=%s result=%d elapsed=%lld us",
+        operation,
+        path,
+        result,
+        (long long)(
+            esp_timer_get_time() -
+            started_us
+        )
+    );
+}
 
 
 esp_err_t storage_manager_sidecar_path(
@@ -58,12 +80,23 @@ esp_err_t storage_manager_recover_backup_locked(
 
     struct stat info;
 
-    if (
+    int64_t started_us =
+        esp_timer_get_time();
+
+    const int primary_stat_result =
         stat(
             path,
             &info
-        ) == 0
-    ) {
+        );
+
+    storage_text_log_io(
+        "recover-primary-stat",
+        path,
+        primary_stat_result,
+        started_us
+    );
+
+    if (primary_stat_result == 0) {
         return ESP_OK;
     }
 
@@ -88,12 +121,23 @@ esp_err_t storage_manager_recover_backup_locked(
         return err;
     }
 
-    if (
+    started_us =
+        esp_timer_get_time();
+
+    const int backup_stat_result =
         stat(
             backup_path,
             &info
-        ) != 0
-    ) {
+        );
+
+    storage_text_log_io(
+        "recover-backup-stat",
+        backup_path,
+        backup_stat_result,
+        started_us
+    );
+
+    if (backup_stat_result != 0) {
         return ESP_OK;
     }
 
@@ -103,12 +147,23 @@ esp_err_t storage_manager_recover_backup_locked(
         path
     );
 
-    if (
+    started_us =
+        esp_timer_get_time();
+
+    const int rename_result =
         rename(
             backup_path,
             path
-        ) != 0
-    ) {
+        );
+
+    storage_text_log_io(
+        "recover-backup-rename",
+        path,
+        rename_result,
+        started_us
+    );
+
+    if (rename_result != 0) {
         ESP_LOGE(
             TAG,
             "Failed to recover backup for %s, errno=%d",

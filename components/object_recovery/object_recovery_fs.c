@@ -4,6 +4,34 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "esp_log.h"
+#include "esp_timer.h"
+
+
+static const char *TAG =
+    "OBJECT_RECOVERY_IO";
+
+
+static void object_recovery_fs_log_io(
+    const char *operation,
+    const char *path,
+    int result,
+    int64_t started_us
+)
+{
+    ESP_LOGI(
+        TAG,
+        "IO_TIMING: %s path=%s result=%d elapsed=%lld us",
+        operation,
+        path,
+        result,
+        (long long)(
+            esp_timer_get_time() -
+            started_us
+        )
+    );
+}
+
 
 esp_err_t object_recovery_fs_build_path(
     char *buffer,
@@ -42,11 +70,30 @@ esp_err_t object_recovery_fs_unlink_if_exists(
     const char *path
 )
 {
-    if (
+    errno =
+        0;
+
+    const int64_t started_us =
+        esp_timer_get_time();
+
+    const int unlink_result =
         unlink(
             path
-        ) == 0 ||
-        errno == ENOENT
+        );
+
+    const int unlink_errno =
+        errno;
+
+    object_recovery_fs_log_io(
+        "unlink",
+        path,
+        unlink_result,
+        started_us
+    );
+
+    if (
+        unlink_result == 0 ||
+        unlink_errno == ENOENT
     ) {
         return ESP_OK;
     }
@@ -69,11 +116,24 @@ esp_err_t object_recovery_fs_restore_file(
         return err;
     }
 
-    return
+    const int64_t started_us =
+        esp_timer_get_time();
+
+    const int rename_result =
         rename(
             source,
             destination
-        ) == 0
+        );
+
+    object_recovery_fs_log_io(
+        "rename",
+        destination,
+        rename_result,
+        started_us
+    );
+
+    return
+        rename_result == 0
         ? ESP_OK
         : ESP_FAIL;
 }

@@ -4,12 +4,34 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "storage_manager_internal.h"
 
 
 static const char *TAG =
     "STORAGE_DIR";
+
+
+static void storage_directory_log_io(
+    const char *operation,
+    const char *path,
+    int result,
+    int64_t started_us
+)
+{
+    ESP_LOGI(
+        TAG,
+        "IO_TIMING: %s path=%s result=%d elapsed=%lld us",
+        operation,
+        path,
+        result,
+        (long long)(
+            esp_timer_get_time() -
+            started_us
+        )
+    );
+}
 
 
 esp_err_t storage_manager_ensure_directory_locked(
@@ -22,12 +44,23 @@ esp_err_t storage_manager_ensure_directory_locked(
 
     struct stat info;
 
-    if (
+    int64_t started_us =
+        esp_timer_get_time();
+
+    const int stat_result =
         stat(
             path,
             &info
-        ) == 0
-    ) {
+        );
+
+    storage_directory_log_io(
+        "stat",
+        path,
+        stat_result,
+        started_us
+    );
+
+    if (stat_result == 0) {
         if (
             S_ISDIR(
                 info.st_mode
@@ -52,12 +85,23 @@ esp_err_t storage_manager_ensure_directory_locked(
     errno =
         0;
 
-    if (
+    started_us =
+        esp_timer_get_time();
+
+    const int mkdir_result =
         mkdir(
             path,
             0775
-        ) == 0
-    ) {
+        );
+
+    storage_directory_log_io(
+        "mkdir",
+        path,
+        mkdir_result,
+        started_us
+    );
+
+    if (mkdir_result == 0) {
         ESP_LOGI(
             TAG,
             "Created directory: %s",
@@ -74,11 +118,24 @@ esp_err_t storage_manager_ensure_directory_locked(
         mkdir_errno ==
         EEXIST
     ) {
-        if (
+        started_us =
+            esp_timer_get_time();
+
+        const int recheck_result =
             stat(
                 path,
                 &info
-            ) == 0 &&
+            );
+
+        storage_directory_log_io(
+            "stat-after-EEXIST",
+            path,
+            recheck_result,
+            started_us
+        );
+
+        if (
+            recheck_result == 0 &&
             S_ISDIR(
                 info.st_mode
             )
@@ -114,8 +171,18 @@ esp_err_t storage_manager_create_directory(
         return ESP_ERR_INVALID_ARG;
     }
 
+    int64_t started_us =
+        esp_timer_get_time();
+
     esp_err_t err =
         storage_manager_operation_begin();
+
+    storage_directory_log_io(
+        "lock-wait",
+        path,
+        (int)err,
+        started_us
+    );
 
     if (err != ESP_OK) {
         ESP_LOGE(
@@ -145,8 +212,18 @@ bool storage_manager_path_exists(
         return false;
     }
 
+    int64_t started_us =
+        esp_timer_get_time();
+
     esp_err_t err =
         storage_manager_operation_begin();
+
+    storage_directory_log_io(
+        "path-exists-lock-wait",
+        path,
+        (int)err,
+        started_us
+    );
 
     if (err != ESP_OK) {
         return false;
@@ -154,11 +231,24 @@ bool storage_manager_path_exists(
 
     struct stat info;
 
-    bool exists =
+    started_us =
+        esp_timer_get_time();
+
+    const int stat_result =
         stat(
             path,
             &info
-        ) == 0;
+        );
+
+    storage_directory_log_io(
+        "path-exists-stat",
+        path,
+        stat_result,
+        started_us
+    );
+
+    const bool exists =
+        stat_result == 0;
 
     storage_manager_operation_end();
 

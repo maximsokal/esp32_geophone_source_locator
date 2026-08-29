@@ -73,6 +73,46 @@ static esp_err_t app_startup_show_boot_screen(void)
 }
 
 
+static void app_startup_show_stage(
+    const char *stage
+)
+{
+    if (stage == NULL) {
+        return;
+    }
+
+    esp_err_t err =
+        display_fill_rect(
+            0,
+            62,
+            DISPLAY_WIDTH,
+            24,
+            DISPLAY_COLOR_BLACK
+        );
+
+    if (err == ESP_OK) {
+        err =
+            display_draw_text_fast(
+                20,
+                66,
+                stage,
+                DISPLAY_COLOR_CYAN,
+                DISPLAY_COLOR_BLACK,
+                1
+            );
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Unable to update boot stage '%s': %s",
+            stage,
+            esp_err_to_name(err)
+        );
+    }
+}
+
+
 static void app_startup_initialize_core(void)
 {
     ESP_ERROR_CHECK(
@@ -139,6 +179,10 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
+    app_startup_show_stage(
+        "STORAGE..."
+    );
+
     stage_started_ms =
         esp_log_timestamp();
 
@@ -149,6 +193,10 @@ static void app_startup_initialize_services(void)
     app_startup_log_elapsed(
         "storage_manager_init",
         stage_started_ms
+    );
+
+    app_startup_show_stage(
+        "RECOVERY..."
     );
 
     stage_started_ms =
@@ -163,6 +211,10 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
+    app_startup_show_stage(
+        "OBJECT STORE..."
+    );
+
     stage_started_ms =
         esp_log_timestamp();
 
@@ -173,6 +225,10 @@ static void app_startup_initialize_services(void)
     app_startup_log_elapsed(
         "object_store_init",
         stage_started_ms
+    );
+
+    app_startup_show_stage(
+        "NETWORK + UI..."
     );
 
     stage_started_ms =
