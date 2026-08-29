@@ -16,5 +16,6 @@ idf_component_register(
         object_format
         storage_manager
         json
+        esp_timer
         log
 )

@@ -7,7 +7,35 @@
 
 #include "cJSON.h"
 
+#include "esp_log.h"
+#include "esp_timer.h"
+
 #include "object_format.h"
+
+
+static const char *TAG =
+    "OBJECT_RECOVERY_IO";
+
+
+static void object_recovery_log_io(
+    const char *operation,
+    const char *path,
+    int result,
+    int64_t started_us
+)
+{
+    ESP_LOGI(
+        TAG,
+        "IO_TIMING: %s path=%s result=%d elapsed=%lld us",
+        operation,
+        path,
+        result,
+        (long long)(
+            esp_timer_get_time() -
+            started_us
+        )
+    );
+}
 
 
 bool object_recovery_fs_metadata_valid(
@@ -17,11 +45,24 @@ bool object_recovery_fs_metadata_valid(
 {
     struct stat info;
 
-    if (
+    int64_t started_us =
+        esp_timer_get_time();
+
+    const int stat_result =
         stat(
             path,
             &info
-        ) != 0 ||
+        );
+
+    object_recovery_log_io(
+        "metadata-stat",
+        path,
+        stat_result,
+        started_us
+    );
+
+    if (
+        stat_result != 0 ||
         !S_ISREG(
             info.st_mode
         ) ||
@@ -32,11 +73,21 @@ bool object_recovery_fs_metadata_valid(
         return false;
     }
 
+    started_us =
+        esp_timer_get_time();
+
     FILE *file =
         fopen(
             path,
             "rb"
         );
+
+    object_recovery_log_io(
+        "metadata-fopen",
+        path,
+        file == NULL ? -1 : 0,
+        started_us
+    );
 
     if (file == NULL) {
         return false;
@@ -52,12 +103,26 @@ bool object_recovery_fs_metadata_valid(
         );
 
     if (buffer == NULL) {
-        fclose(
-            file
+        started_us =
+            esp_timer_get_time();
+
+        const int close_result =
+            fclose(
+                file
+            );
+
+        object_recovery_log_io(
+            "metadata-fclose-after-alloc-error",
+            path,
+            close_result,
+            started_us
         );
 
         return false;
     }
+
+    started_us =
+        esp_timer_get_time();
 
     size_t read_count =
         fread(
@@ -67,8 +132,26 @@ bool object_recovery_fs_metadata_valid(
             file
         );
 
-    fclose(
-        file
+    object_recovery_log_io(
+        "metadata-fread",
+        path,
+        (int)read_count,
+        started_us
+    );
+
+    started_us =
+        esp_timer_get_time();
+
+    const int close_result =
+        fclose(
+            file
+        );
+
+    object_recovery_log_io(
+        "metadata-fclose",
+        path,
+        close_result,
+        started_us
     );
 
     if (read_count != size) {
@@ -82,10 +165,20 @@ bool object_recovery_fs_metadata_valid(
     buffer[size] =
         '\0';
 
+    started_us =
+        esp_timer_get_time();
+
     cJSON *root =
         cJSON_Parse(
             buffer
         );
+
+    object_recovery_log_io(
+        "metadata-json-parse",
+        path,
+        root == NULL ? -1 : 0,
+        started_us
+    );
 
     free(
         buffer
@@ -130,5 +223,9 @@ bool object_recovery_fs_metadata_valid(
         root
     );
 
+    /*
+     * fclose result is logged above but intentionally does not
+     * change the legacy metadata-validity semantics.
+     */
     return valid;
 }
