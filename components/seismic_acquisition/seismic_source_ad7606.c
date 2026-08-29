@@ -1,5 +1,7 @@
 #include "seismic_source_driver.h"
 
+#include <stddef.h>
+
 #include "sdkconfig.h"
 
 #include "ad7606_acquisition.h"
