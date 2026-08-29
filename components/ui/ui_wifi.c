@@ -28,6 +28,10 @@ static lv_obj_t *ui_wifi_label(
             parent
         );
 
+    if (label == NULL) {
+        return NULL;
+    }
+
     lv_obj_set_pos(
         label,
         x,
@@ -46,7 +50,9 @@ static lv_obj_t *ui_wifi_label(
 
     lv_label_set_text(
         label,
-        text
+        text != NULL
+            ? text
+            : ""
     );
 
     lv_obj_set_style_text_color(
@@ -140,10 +146,20 @@ void ui_render_wifi_locked(void)
     ui_context_t *context =
         ui_context();
 
+    /*
+     * The third action row reaches y=213. Command feedback therefore
+     * belongs in the fixed footer instead of being painted over the
+     * last row.
+     */
+    const char *footer =
+        context->notice[0] != '\0'
+            ? context->notice
+            : "UP/DOWN NAV   OK SELECT   LEFT BACK";
+
     lv_obj_t *screen =
         ui_create_screen_base_locked(
             "WI-FI / WEB",
-            "UP/DOWN NAV   OK SELECT   LEFT BACK"
+            footer
         );
 
     if (screen == NULL) {
@@ -163,6 +179,10 @@ void ui_render_wifi_locked(void)
                 : 300,
             70
         );
+
+    if (card == NULL) {
+        return;
+    }
 
     char ssid[40] = {0};
     char ip[24] = {0};
@@ -295,17 +315,6 @@ void ui_render_wifi_locked(void)
             118 + (int)(i * 32U),
             actions[i],
             i == context->wifi_action
-        );
-    }
-
-    if (context->notice[0] != '\0') {
-        ui_wifi_label(
-            screen,
-            12,
-            204,
-            296,
-            context->notice,
-            UI_WIFI_COLOR_WARNING
         );
     }
 }
