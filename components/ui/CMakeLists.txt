@@ -37,4 +37,8 @@ idf_component_register(
         esp_timer
         freertos
         log
+
+    PRIV_REQUIRES
+        esp_app_format
+        heap
 )
