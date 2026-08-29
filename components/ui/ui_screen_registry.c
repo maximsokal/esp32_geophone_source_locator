@@ -163,6 +163,20 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 };
 
 
+/*
+ * Home-visible screens are explicit rather than inferred from enum order.
+ * Future modal/diagnostic screens can therefore be added to UI_SCREEN_* without
+ * silently appearing in the Home menu.
+ */
+static const ui_screen_t s_home_screens[] = {
+    UI_SCREEN_OBJECTS,
+    UI_SCREEN_MEASUREMENTS,
+    UI_SCREEN_STORAGE,
+    UI_SCREEN_WIFI,
+    UI_SCREEN_SYSTEM,
+};
+
+
 const ui_screen_driver_t *ui_screen_driver(
     ui_screen_t screen
 )
@@ -180,7 +194,7 @@ const ui_screen_driver_t *ui_screen_driver(
 
 size_t ui_screen_home_count(void)
 {
-    return UI_HOME_SCREEN_COUNT;
+    return sizeof(s_home_screens) / sizeof(s_home_screens[0]);
 }
 
 
@@ -188,11 +202,11 @@ ui_screen_t ui_screen_home_at(
     size_t index
 )
 {
-    if (index >= UI_HOME_SCREEN_COUNT) {
+    if (index >= ui_screen_home_count()) {
         return UI_SCREEN_HOME;
     }
 
-    return (ui_screen_t)(index + 1U);
+    return s_home_screens[index];
 }
 
 
