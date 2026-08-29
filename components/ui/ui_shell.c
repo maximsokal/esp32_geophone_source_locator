@@ -6,88 +6,44 @@
 #include "wifi_manager.h"
 
 
-#define UI_COLOR_BACKGROUND  0x08111F
-#define UI_COLOR_HEADER      0x0E1A2B
-#define UI_COLOR_PANEL       0x132238
-#define UI_COLOR_PANEL_ALT   0x1B2D46
-#define UI_COLOR_ACCENT      0x21C7D9
-#define UI_COLOR_GOOD        0x4CD681
-#define UI_COLOR_WARNING     0xF3B84B
-#define UI_COLOR_TEXT        0xF3F7FB
-#define UI_COLOR_MUTED       0x94A7BC
-
-
-static void ui_style_screen(
-    lv_obj_t *screen
-)
+static void ui_style_screen(lv_obj_t *screen)
 {
-    lv_obj_set_style_bg_color(
-        screen,
-        lv_color_hex(UI_COLOR_BACKGROUND),
-        0
-    );
-
-    lv_obj_set_style_bg_opa(
-        screen,
-        LV_OPA_COVER,
-        0
-    );
-
-    lv_obj_set_style_border_width(
-        screen,
-        0,
-        0
-    );
-
-    lv_obj_set_style_pad_all(
-        screen,
-        0,
-        0
-    );
-
-    lv_obj_set_style_text_color(
-        screen,
-        lv_color_hex(UI_COLOR_TEXT),
-        0
-    );
+    lv_obj_set_style_bg_color(screen, lv_color_hex(UI_COLOR_BACKGROUND), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(screen, 0, 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_set_style_text_color(screen, lv_color_hex(UI_COLOR_TEXT), 0);
 }
 
 
-static lv_obj_t *ui_create_label(
+lv_obj_t *ui_create_label_locked(
     lv_obj_t *parent,
     int x,
     int y,
+    int width,
     const char *text,
     uint32_t color
 )
 {
-    lv_obj_t *label =
-        lv_label_create(
-            parent
-        );
+    if (parent == NULL) {
+        return NULL;
+    }
+
+    lv_obj_t *label = lv_label_create(parent);
 
     if (label == NULL) {
         return NULL;
     }
 
-    lv_label_set_text(
-        label,
-        text != NULL
-            ? text
-            : ""
-    );
+    lv_label_set_text(label, text != NULL ? text : "");
+    lv_obj_set_pos(label, x, y);
 
-    lv_obj_set_pos(
-        label,
-        x,
-        y
-    );
+    if (width > 0) {
+        lv_obj_set_width(label, width);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+    }
 
-    lv_obj_set_style_text_color(
-        label,
-        lv_color_hex(color),
-        0
-    );
+    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
 
     return label;
 }
@@ -98,170 +54,57 @@ lv_obj_t *ui_create_screen_base_locked(
     const char *footer
 )
 {
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
+    lv_obj_t *previous = context->root;
 
-    lv_obj_t *previous =
-        context->root;
-
-    context->header_source =
-        NULL;
-
-    context->header_wifi =
-        NULL;
-
-    memset(
-        context->home_rows,
-        0,
-        sizeof(context->home_rows)
-    );
-
+    context->header_source = NULL;
+    context->header_wifi = NULL;
+    memset(context->home_rows, 0, sizeof(context->home_rows));
     memset(
         context->measurement_channel_labels,
         0,
         sizeof(context->measurement_channel_labels)
     );
+    context->measurement_summary = NULL;
+    context->measurement_transport = NULL;
+    context->measurement_health = NULL;
 
-    context->measurement_summary =
-        NULL;
-
-    context->measurement_transport =
-        NULL;
-
-    context->measurement_health =
-        NULL;
-
-    lv_obj_t *screen =
-        lv_obj_create(
-            NULL
-        );
-
+    lv_obj_t *screen = lv_obj_create(NULL);
     if (screen == NULL) {
         return NULL;
     }
 
-    ui_style_screen(
-        screen
-    );
+    ui_style_screen(screen);
+    context->root = screen;
 
-    context->root =
-        screen;
-
-    lv_obj_t *header =
-        lv_obj_create(
-            screen
-        );
-
+    lv_obj_t *header = lv_obj_create(screen);
     if (header == NULL) {
-        lv_obj_delete(
-            screen
-        );
-
-        context->root =
-            previous;
-
+        lv_obj_delete(screen);
+        context->root = previous;
         return NULL;
     }
 
-    lv_obj_set_pos(
-        header,
-        0,
-        0
+    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_size(header, 320, 34);
+    lv_obj_set_style_bg_color(header, lv_color_hex(UI_COLOR_HEADER), 0);
+    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_radius(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
+
+    (void)ui_create_label_locked(
+        header, 10, 9, 112, title, UI_COLOR_TEXT
     );
 
-    lv_obj_set_size(
-        header,
-        320,
-        34
+    context->header_source = ui_create_label_locked(
+        header, 128, 9, 112, "ADC --", UI_COLOR_ACCENT
     );
 
-    lv_obj_set_style_bg_color(
-        header,
-        lv_color_hex(UI_COLOR_HEADER),
-        0
+    context->header_wifi = ui_create_label_locked(
+        header, 248, 9, 66, "NET --", UI_COLOR_MUTED
     );
-
-    lv_obj_set_style_bg_opa(
-        header,
-        LV_OPA_COVER,
-        0
-    );
-
-    lv_obj_set_style_border_width(
-        header,
-        0,
-        0
-    );
-
-    lv_obj_set_style_radius(
-        header,
-        0,
-        0
-    );
-
-    lv_obj_set_style_pad_all(
-        header,
-        0,
-        0
-    );
-
-    lv_obj_t *title_label =
-        ui_create_label(
-            header,
-            10,
-            9,
-            title,
-            UI_COLOR_TEXT
-        );
-
-    if (title_label != NULL) {
-        lv_obj_set_width(
-            title_label,
-            112
-        );
-
-        lv_label_set_long_mode(
-            title_label,
-            LV_LABEL_LONG_CLIP
-        );
-    }
-
-    context->header_source =
-        ui_create_label(
-            header,
-            128,
-            9,
-            "ADC --",
-            UI_COLOR_ACCENT
-        );
-
-    if (context->header_source != NULL) {
-        lv_obj_set_width(
-            context->header_source,
-            112
-        );
-
-        lv_label_set_long_mode(
-            context->header_source,
-            LV_LABEL_LONG_CLIP
-        );
-    }
-
-    context->header_wifi =
-        ui_create_label(
-            header,
-            248,
-            9,
-            "NET --",
-            UI_COLOR_MUTED
-        );
 
     if (context->header_wifi != NULL) {
-        lv_obj_set_width(
-            context->header_wifi,
-            66
-        );
-
         lv_obj_set_style_text_align(
             context->header_wifi,
             LV_TEXT_ALIGN_RIGHT,
@@ -269,90 +112,34 @@ lv_obj_t *ui_create_screen_base_locked(
         );
     }
 
-    lv_obj_t *footer_bar =
-        lv_obj_create(
-            screen
-        );
-
+    lv_obj_t *footer_bar = lv_obj_create(screen);
     if (footer_bar != NULL) {
-        lv_obj_set_pos(
-            footer_bar,
-            0,
-            216
-        );
-
-        lv_obj_set_size(
-            footer_bar,
-            320,
-            24
-        );
-
+        lv_obj_set_pos(footer_bar, 0, 216);
+        lv_obj_set_size(footer_bar, 320, 24);
         lv_obj_set_style_bg_color(
             footer_bar,
             lv_color_hex(UI_COLOR_HEADER),
             0
         );
+        lv_obj_set_style_bg_opa(footer_bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(footer_bar, 0, 0);
+        lv_obj_set_style_radius(footer_bar, 0, 0);
+        lv_obj_set_style_pad_all(footer_bar, 0, 0);
 
-        lv_obj_set_style_bg_opa(
-            footer_bar,
-            LV_OPA_COVER,
-            0
+        (void)ui_create_label_locked(
+            footer_bar, 8, 6, 304, footer, UI_COLOR_MUTED
         );
-
-        lv_obj_set_style_border_width(
-            footer_bar,
-            0,
-            0
-        );
-
-        lv_obj_set_style_radius(
-            footer_bar,
-            0,
-            0
-        );
-
-        lv_obj_set_style_pad_all(
-            footer_bar,
-            0,
-            0
-        );
-
-        lv_obj_t *footer_label =
-            ui_create_label(
-                footer_bar,
-                8,
-                6,
-                footer,
-                UI_COLOR_MUTED
-            );
-
-        if (footer_label != NULL) {
-            lv_obj_set_width(
-                footer_label,
-                304
-            );
-
-            lv_label_set_long_mode(
-                footer_label,
-                LV_LABEL_LONG_CLIP
-            );
-        }
     }
 
     ui_refresh_header_locked();
-
-    lv_screen_load(
-        screen
-    );
+    lv_screen_load(screen);
 
     if (
         previous != NULL &&
         previous != screen &&
         lv_obj_is_valid(previous)
     ) {
-        lv_obj_delete(
-            previous
-        );
+        lv_obj_delete(previous);
     }
 
     return screen;
@@ -371,67 +158,24 @@ lv_obj_t *ui_create_card_locked(
         return NULL;
     }
 
-    lv_obj_t *card =
-        lv_obj_create(
-            parent
-        );
-
+    lv_obj_t *card = lv_obj_create(parent);
     if (card == NULL) {
         return NULL;
     }
 
-    lv_obj_set_pos(
-        card,
-        x,
-        y
-    );
-
-    lv_obj_set_size(
-        card,
-        width,
-        height
-    );
-
-    lv_obj_set_style_bg_color(
-        card,
-        lv_color_hex(UI_COLOR_PANEL),
-        0
-    );
-
-    lv_obj_set_style_bg_opa(
-        card,
-        LV_OPA_COVER,
-        0
-    );
-
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_size(card, width, height);
+    lv_obj_set_style_bg_color(card, lv_color_hex(UI_COLOR_PANEL), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(
         card,
         lv_color_hex(UI_COLOR_PANEL_ALT),
         0
     );
-
-    lv_obj_set_style_border_width(
-        card,
-        1,
-        0
-    );
-
-    lv_obj_set_style_radius(
-        card,
-        7,
-        0
-    );
-
-    lv_obj_set_style_pad_all(
-        card,
-        0,
-        0
-    );
-
-    lv_obj_remove_flag(
-        card,
-        LV_OBJ_FLAG_SCROLLABLE
-    );
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 7, 0);
+    lv_obj_set_style_pad_all(card, 0, 0);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     return card;
 }
@@ -444,15 +188,7 @@ lv_obj_t *ui_create_row_locked(
     bool selected
 )
 {
-    lv_obj_t *row =
-        ui_create_card_locked(
-            parent,
-            10,
-            y,
-            300,
-            31
-        );
-
+    lv_obj_t *row = ui_create_card_locked(parent, 10, y, 300, 31);
     if (row == NULL) {
         return NULL;
     }
@@ -463,50 +199,26 @@ lv_obj_t *ui_create_row_locked(
             lv_color_hex(UI_COLOR_PANEL_ALT),
             0
         );
-
         lv_obj_set_style_border_color(
             row,
             lv_color_hex(UI_COLOR_ACCENT),
             0
         );
-
-        lv_obj_set_style_border_width(
-            row,
-            2,
-            0
-        );
+        lv_obj_set_style_border_width(row, 2, 0);
     }
 
-    lv_obj_t *label =
-        ui_create_label(
-            row,
-            10,
-            8,
-            text,
-            selected
-                ? UI_COLOR_TEXT
-                : UI_COLOR_MUTED
-        );
-
-    if (label != NULL) {
-        lv_obj_set_width(
-            label,
-            258
-        );
-
-        lv_label_set_long_mode(
-            label,
-            LV_LABEL_LONG_CLIP
-        );
-    }
+    (void)ui_create_label_locked(
+        row,
+        10,
+        8,
+        258,
+        text,
+        selected ? UI_COLOR_TEXT : UI_COLOR_MUTED
+    );
 
     if (selected) {
-        ui_create_label(
-            row,
-            278,
-            8,
-            ">",
-            UI_COLOR_ACCENT
+        (void)ui_create_label_locked(
+            row, 278, 8, 12, ">", UI_COLOR_ACCENT
         );
     }
 
@@ -514,33 +226,22 @@ lv_obj_t *ui_create_row_locked(
 }
 
 
-void ui_set_notice_locked(
-    const char *text
-)
+void ui_set_notice_locked(const char *text)
 {
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
     if (text == NULL) {
-        context->notice[0] =
-            '\0';
-
+        context->notice[0] = '\0';
         return;
     }
 
-    snprintf(
-        context->notice,
-        sizeof(context->notice),
-        "%s",
-        text
-    );
+    snprintf(context->notice, sizeof(context->notice), "%s", text);
 }
 
 
 void ui_refresh_header_locked(void)
 {
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
     if (
         context->header_source == NULL ||
@@ -551,13 +252,8 @@ void ui_refresh_header_locked(void)
 
     seismic_acquisition_snapshot_t acquisition;
 
-    if (
-        seismic_acquisition_get_snapshot(
-            &acquisition
-        ) == ESP_OK
-    ) {
+    if (seismic_acquisition_get_snapshot(&acquisition) == ESP_OK) {
         char text[32];
-
         snprintf(
             text,
             sizeof(text),
@@ -565,16 +261,10 @@ void ui_refresh_header_locked(void)
             acquisition.source_name != NULL
                 ? acquisition.source_name
                 : "ADC",
-            acquisition.running
-                ? "RUN"
-                : "OFF"
+            acquisition.running ? "RUN" : "OFF"
         );
 
-        lv_label_set_text(
-            context->header_source,
-            text
-        );
-
+        lv_label_set_text(context->header_source, text);
         lv_obj_set_style_text_color(
             context->header_source,
             lv_color_hex(
@@ -585,11 +275,7 @@ void ui_refresh_header_locked(void)
             0
         );
     } else {
-        lv_label_set_text(
-            context->header_source,
-            "ADC --"
-        );
-
+        lv_label_set_text(context->header_source, "ADC --");
         lv_obj_set_style_text_color(
             context->header_source,
             lv_color_hex(UI_COLOR_MUTED),
@@ -600,39 +286,24 @@ void ui_refresh_header_locked(void)
     char ip[24] = {0};
 
     if (wifi_manager_is_setup_mode()) {
-        lv_label_set_text(
-            context->header_wifi,
-            "SETUP"
-        );
-
+        lv_label_set_text(context->header_wifi, "SETUP");
         lv_obj_set_style_text_color(
             context->header_wifi,
             lv_color_hex(UI_COLOR_WARNING),
             0
         );
     } else if (
-        wifi_manager_sta_ip_string(
-            ip,
-            sizeof(ip)
-        ) == ESP_OK &&
+        wifi_manager_sta_ip_string(ip, sizeof(ip)) == ESP_OK &&
         ip[0] != '\0'
     ) {
-        lv_label_set_text(
-            context->header_wifi,
-            "NET OK"
-        );
-
+        lv_label_set_text(context->header_wifi, "NET OK");
         lv_obj_set_style_text_color(
             context->header_wifi,
             lv_color_hex(UI_COLOR_GOOD),
             0
         );
     } else {
-        lv_label_set_text(
-            context->header_wifi,
-            "NET --"
-        );
-
+        lv_label_set_text(context->header_wifi, "NET --");
         lv_obj_set_style_text_color(
             context->header_wifi,
             lv_color_hex(UI_COLOR_MUTED),
@@ -642,79 +313,39 @@ void ui_refresh_header_locked(void)
 }
 
 
-void ui_render_boot_locked(
-    const char *stage
-)
+void ui_render_boot_locked(const char *stage)
 {
-    lv_obj_t *screen =
-        ui_create_screen_base_locked(
-            "GEOPHONE LOCATOR",
-            "ESP32-S3  |  INITIALIZING"
-        );
+    lv_obj_t *screen = ui_create_screen_base_locked(
+        "GEOPHONE LOCATOR",
+        "ESP32-S3  |  INITIALIZING"
+    );
 
     if (screen == NULL) {
         return;
     }
 
-    lv_obj_t *card =
-        ui_create_card_locked(
-            screen,
-            18,
-            58,
-            284,
-            116
-        );
-
+    lv_obj_t *card = ui_create_card_locked(screen, 18, 58, 284, 116);
     if (card == NULL) {
         return;
     }
 
-    ui_create_label(
-        card,
-        18,
-        18,
-        "SYSTEM STARTUP",
-        UI_COLOR_ACCENT
+    (void)ui_create_label_locked(
+        card, 18, 18, 248, "SYSTEM STARTUP", UI_COLOR_ACCENT
+    );
+    (void)ui_create_label_locked(
+        card, 18, 51, 248, stage, UI_COLOR_TEXT
     );
 
-    ui_create_label(
-        card,
-        18,
-        51,
-        stage,
-        UI_COLOR_TEXT
-    );
-
-    lv_obj_t *bar =
-        lv_bar_create(
-            card
-        );
-
+    lv_obj_t *bar = lv_bar_create(card);
     if (bar == NULL) {
         return;
     }
 
-    lv_obj_set_pos(
-        bar,
-        18,
-        82
-    );
+    lv_obj_set_pos(bar, 18, 82);
+    lv_obj_set_size(bar, 248, 10);
+    lv_bar_set_range(bar, 0, 100);
 
-    lv_obj_set_size(
-        bar,
-        248,
-        10
-    );
-
-    lv_bar_set_range(
-        bar,
-        0,
-        100
-    );
-
-    int value =
-        12;
-
+    int value = 12;
     if (stage != NULL) {
         if (strstr(stage, "STORAGE") != NULL) {
             value = 35;
@@ -727,18 +358,12 @@ void ui_render_boot_locked(
         }
     }
 
-    lv_bar_set_value(
-        bar,
-        value,
-        LV_ANIM_OFF
-    );
-
+    lv_bar_set_value(bar, value, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(
         bar,
         lv_color_hex(UI_COLOR_PANEL_ALT),
         LV_PART_MAIN
     );
-
     lv_obj_set_style_bg_color(
         bar,
         lv_color_hex(UI_COLOR_ACCENT),
@@ -782,10 +407,7 @@ void ui_refresh_dynamic_locked(void)
 {
     ui_refresh_header_locked();
 
-    if (
-        ui_context()->screen ==
-        UI_SCREEN_MEASUREMENTS
-    ) {
+    if (ui_context()->screen == UI_SCREEN_MEASUREMENTS) {
         ui_measurements_refresh_locked();
     }
 }
