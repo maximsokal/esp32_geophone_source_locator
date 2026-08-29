@@ -1,6 +1,7 @@
 ﻿# ESP-IDF build output
 build/
 managed_components/
+sdkconfig
 sdkconfig.old
 
 # IDE / editor
@@ -14,7 +15,8 @@ sdkconfig.old
 .DS_Store
 Thumbs.db
 
-# Temporary files
+# Temporary / local transfer files
 *.tmp
 *.bak
 *.swp
+/repo.zip
