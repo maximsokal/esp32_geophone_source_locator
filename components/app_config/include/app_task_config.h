@@ -31,6 +31,14 @@
 #define APP_TASK_PRIORITY_UI_EVENT        6
 #define APP_TASK_STACK_UI_EVENT        6144
 
+/*
+ * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so
+ * rendering and the shared TFT/SD SPI2 side never migrate onto the
+ * real-time acquisition core.
+ */
+#define APP_TASK_PRIORITY_LVGL            4
+#define APP_TASK_STACK_LVGL            7168
+
 #define APP_TASK_PRIORITY_POWER_BUTTON    5
 #define APP_TASK_STACK_POWER_BUTTON    3072
 

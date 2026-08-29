@@ -1,8 +1,10 @@
 #pragma once
 
-#include <stdint.h>
+#include <stdbool.h>
 
 #include "esp_err.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
 
 
 #define DISPLAY_WIDTH   320
@@ -10,87 +12,23 @@
 
 
 /*
- * RGB565 colors.
+ * Initialize only the physical ILI9341/esp_lcd layer.
+ * Application rendering is owned by LVGL in the ui component.
  */
-#define DISPLAY_COLOR_BLACK       0x0000
-#define DISPLAY_COLOR_WHITE       0xFFFF
-#define DISPLAY_COLOR_RED         0xF800
-#define DISPLAY_COLOR_GREEN       0x07E0
-#define DISPLAY_COLOR_BLUE        0x001F
-#define DISPLAY_COLOR_YELLOW      0xFFE0
-#define DISPLAY_COLOR_CYAN        0x07FF
-#define DISPLAY_COLOR_GRAY        0x8410
-#define DISPLAY_COLOR_DARK_GRAY   0x4208
-#define DISPLAY_COLOR_NAVY        0x000F
-
-
 esp_err_t display_init(void);
 
 
-esp_err_t display_fill(
-    uint16_t color
-);
+bool display_is_ready(void);
 
 
-esp_err_t display_fill_rect(
-    int x,
-    int y,
-    int width,
-    int height,
-    uint16_t color
-);
+esp_lcd_panel_io_handle_t display_io_handle(void);
 
 
-/*
- * Draw an RGB565 bitmap.
- *
- * The source buffer does not need to be DMA-capable.
- * The display component copies it into its internal DMA buffer
- * and transfers the image in chunks.
- */
-esp_err_t display_draw_rgb565_bitmap(
-    int x,
-    int y,
-    int width,
-    int height,
-    const uint16_t *pixels
-);
+esp_lcd_panel_handle_t display_panel_handle(void);
 
 
-esp_err_t display_draw_char(
-    int x,
-    int y,
-    char character,
-    uint16_t foreground,
-    uint16_t background,
-    uint8_t scale
-);
-
-
-esp_err_t display_draw_text(
-    int x,
-    int y,
-    const char *text,
-    uint16_t foreground,
-    uint16_t background,
-    uint8_t scale
-);
-
-
-/*
- * Render consecutive text cells into one reusable scratch buffer
- * and transfer each line as a bitmap.
- *
- * This avoids one synchronous SPI transaction per character and
- * avoids allocating/freeing a temporary buffer for every call.
- */
-esp_err_t display_draw_text_fast(
-    int x,
-    int y,
-    const char *text,
-    uint16_t foreground,
-    uint16_t background,
-    uint8_t scale
+esp_err_t display_set_enabled(
+    bool enabled
 );
 
 

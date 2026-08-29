@@ -5,7 +5,23 @@
 #include "keypad.h"
 
 
+/*
+ * Start LVGL immediately after the physical display is initialized
+ * and show the boot/status screen used during service bring-up.
+ */
+esp_err_t ui_boot_init(void);
+
+
+void ui_boot_set_stage(
+    const char *stage
+);
+
+
+/*
+ * Switch from the boot screen to the interactive application UI.
+ */
 esp_err_t ui_init(void);
+
 
 void ui_shutdown(void);
 

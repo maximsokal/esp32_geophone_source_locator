@@ -54,7 +54,7 @@ Current AD7606 board configuration is:
 - 1 MHz SPI clock;
 - default acquisition rate: 500 Hz.
 
-The first four AD7606 channels currently feed the application seismic buffer. All eight channels are read on every conversion.
+The first four AD7606 channels currently feed the application seismic ring buffer. All eight channels are read on every conversion and are available to the local TFT diagnostics UI.
 
 ### Other current GPIO assignments
 
@@ -67,13 +67,49 @@ The first four AD7606 channels currently feed the application seismic buffer. Al
 
 GPIO1 is reserved by the existing divider/bench wiring and must not be reused for AD7606.
 
+## UI architecture
+
+The TFT application UI uses **LVGL 9** through Espressif's official **esp_lvgl_port** integration. The display component is deliberately limited to the physical `esp_lcd` / ILI9341 panel layer; application widgets, text, layouts, redraws, timing and display buffering belong to LVGL.
+
+Managed component dependencies are pinned in `main/idf_component.yml`:
+
+- `espressif/esp_lcd_ili9341 ^2.0.2`;
+- `espressif/esp_lvgl_port ^2.9.0`;
+- `lvgl/lvgl ^9.5.0`.
+
+The previous project-local 5x7 bitmap font and custom character/text rendering stack are not part of the active display component anymore. This prevents each new screen/widget from growing a second home-made GUI framework alongside the application logic.
+
+The LVGL handler task is pinned to **Core 0**. The five-button analog keypad remains the physical input device and application key events are dispatched through the existing event bus.
+
+Current screens are:
+
+- Home;
+- Objects;
+- Measurements;
+- Storage;
+- Wi-Fi / Web;
+- System.
+
+The **Measurements** screen is live, not a placeholder. For the AD7606 build it displays:
+
+- acquisition source and RUN/STOP state;
+- sample rate and channel count;
+- real-time core assignment;
+- SPI3 transport, SPI mode and bus clock;
+- configured +/-5 V range and hardware oversampling ratio;
+- total successful reads and ADC read errors;
+- age of the last simultaneous sample;
+- live V1..V8 values in mV.
+
+The acquisition source is still selected at build time with Kconfig. The UI reports the actual selected backend; it does not pretend to switch hardware backends at runtime.
+
 ## CPU/task policy
 
 Application-owned work is split by role:
 
 ### Core 0 - services
 
-- UI event handling;
+- LVGL handler and UI event handling;
 - keypad polling;
 - object service;
 - storage service;
@@ -100,7 +136,7 @@ geophone
    -> CONVST
    -> BUSY
    -> SPI3 read of V1..V8
-   -> timestamped seismic frame
+   -> timestamped acquisition status + seismic frame
    -> lock-minimized ring buffer
    -> web/UI/recording consumers
 ```
@@ -117,7 +153,7 @@ The source is selected at build time in `menuconfig`:
 - `ESP32-S3 ADC geophone bench input` - temporary direct ADC bench mode;
 - `Synthetic test waveform` - software-only waveform source.
 
-The selected backend is represented by one acquisition driver descriptor, which owns start/stop/name/sample-rate behavior and updates the shared device acquisition status.
+The selected backend is represented by one acquisition driver descriptor, which owns start/stop/name/sample-rate behavior and updates the shared device acquisition status. A separate read-only acquisition snapshot feeds diagnostics such as the LVGL Measurements screen without coupling the UI directly to one ADC implementation.
 
 ## Storage and safe shutdown
 
@@ -127,18 +163,20 @@ The shutdown sequence stops producers/services before cutting power:
 
 ```text
 keypad monitor
--> UI event worker
+-> UI event worker / LVGL port
 -> storage service
 -> object service
 -> seismic acquisition
 -> HTTP/Wi-Fi
 -> storage manager
 -> SD unmount
--> display off
+-> display disable/deinit
 -> power-off pulse
 ```
 
 The SD card handle is cleared only after a successful FAT unmount. If unmount fails, the handle remains available so software state still reflects the mounted card.
+
+The TFT Storage screen requires a second confirmation press before application data erase is started.
 
 ## Web interface
 
@@ -152,6 +190,14 @@ The firmware starts a local HTTP server and exposes device/seismic data APIs, in
 ## Build
 
 Install ESP-IDF v5.5.4 and open an ESP-IDF terminal in the repository directory.
+
+When managed dependencies change, run:
+
+```powershell
+idf.py reconfigure
+```
+
+Then build:
 
 ```powershell
 idf.py build
@@ -211,13 +257,14 @@ raw=[...,10500]
 mV=[...,1602]
 ```
 
-Exact values depend on the measured supply/reference/input voltage and must not be treated as a calibration result.
+The same V8 value should appear on the LVGL Measurements screen. Exact values depend on the measured supply/reference/input voltage and must not be treated as a calibration result.
 
 ## Project status
 
 Implemented foundations include:
 
-- TFT UI and keypad navigation;
+- LVGL 9 TFT UI with five-button keypad navigation;
+- live AD7606 transport/acquisition/channel diagnostics on TFT;
 - microSD object storage and recovery;
 - safe power-down flow;
 - Wi-Fi and local web server;

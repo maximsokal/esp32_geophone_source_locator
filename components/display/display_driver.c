@@ -14,7 +14,6 @@ static const char *TAG =
 static esp_lcd_panel_io_handle_t s_io_handle =
     NULL;
 
-
 static esp_lcd_panel_handle_t s_panel_handle =
     NULL;
 
@@ -22,18 +21,29 @@ static esp_lcd_panel_handle_t s_panel_handle =
 bool display_driver_is_initialized(void)
 {
     return
-        s_panel_handle != NULL;
+        s_panel_handle != NULL &&
+        s_io_handle != NULL;
+}
+
+
+esp_lcd_panel_io_handle_t display_driver_io_handle(void)
+{
+    return
+        s_io_handle;
+}
+
+
+esp_lcd_panel_handle_t display_driver_panel_handle(void)
+{
+    return
+        s_panel_handle;
 }
 
 
 static void display_driver_cleanup(void)
 {
-    display_transfer_set_panel(
-        NULL
-    );
-
     if (s_panel_handle != NULL) {
-        esp_lcd_panel_del(
+        (void)esp_lcd_panel_del(
             s_panel_handle
         );
 
@@ -42,7 +52,7 @@ static void display_driver_cleanup(void)
     }
 
     if (s_io_handle != NULL) {
-        esp_lcd_panel_io_del(
+        (void)esp_lcd_panel_io_del(
             s_io_handle
         );
 
@@ -54,15 +64,13 @@ static void display_driver_cleanup(void)
 
 esp_err_t display_driver_init(void)
 {
-    if (
-        display_driver_is_initialized()
-    ) {
+    if (display_driver_is_initialized()) {
         return ESP_OK;
     }
 
     ESP_LOGI(
         TAG,
-        "Creating SPI LCD IO"
+        "Creating SPI LCD IO for LVGL"
     );
 
     const esp_lcd_panel_io_spi_config_t io_config =
@@ -79,17 +87,6 @@ esp_err_t display_driver_init(void)
                 app_spi_bus_get_host(),
             &io_config,
             &s_io_handle
-        );
-
-    if (err != ESP_OK) {
-        display_driver_cleanup();
-
-        return err;
-    }
-
-    err =
-        display_dma_register_io(
-            s_io_handle
         );
 
     if (err != ESP_OK) {
@@ -121,10 +118,6 @@ esp_err_t display_driver_init(void)
 
         return err;
     }
-
-    display_transfer_set_panel(
-        s_panel_handle
-    );
 
     err =
         display_panel_configure(

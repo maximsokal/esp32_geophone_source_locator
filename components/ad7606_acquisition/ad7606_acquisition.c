@@ -1,7 +1,9 @@
 #include "ad7606_acquisition.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "sdkconfig.h"
 
@@ -30,6 +32,11 @@ static esp_timer_handle_t s_timer =
 static volatile bool s_running =
     false;
 
+static portMUX_TYPE s_status_lock =
+    portMUX_INITIALIZER_UNLOCKED;
+
+static ad7606_acquisition_status_t s_status;
+
 
 typedef struct
 {
@@ -37,6 +44,98 @@ typedef struct
     esp_err_t result;
 
 } ad7606_start_context_t;
+
+
+static void ad7606_status_reset(void)
+{
+    portENTER_CRITICAL(
+        &s_status_lock
+    );
+
+    memset(
+        &s_status,
+        0,
+        sizeof(s_status)
+    );
+
+    portEXIT_CRITICAL(
+        &s_status_lock
+    );
+}
+
+
+static void ad7606_status_set_running(
+    bool running
+)
+{
+    portENTER_CRITICAL(
+        &s_status_lock
+    );
+
+    s_status.running =
+        running;
+
+    portEXIT_CRITICAL(
+        &s_status_lock
+    );
+}
+
+
+static uint32_t ad7606_status_record_failure(void)
+{
+    uint32_t consecutive_failures;
+
+    portENTER_CRITICAL(
+        &s_status_lock
+    );
+
+    s_status.read_errors++;
+    s_status.consecutive_failures++;
+
+    consecutive_failures =
+        s_status.consecutive_failures;
+
+    portEXIT_CRITICAL(
+        &s_status_lock
+    );
+
+    return consecutive_failures;
+}
+
+
+static void ad7606_status_record_sample(
+    const ad7606_sample_t *sample,
+    const float latest_uv[AD7606_CHANNEL_COUNT]
+)
+{
+    portENTER_CRITICAL(
+        &s_status_lock
+    );
+
+    s_status.samples++;
+
+    s_status.consecutive_failures =
+        0;
+
+    s_status.latest_valid =
+        true;
+
+    s_status.last_sample_timestamp_us =
+        sample->timestamp_us;
+
+    for (
+        size_t channel = 0;
+        channel < AD7606_CHANNEL_COUNT;
+        ++channel
+    ) {
+        s_status.latest_uv[channel] =
+            latest_uv[channel];
+    }
+
+    portEXIT_CRITICAL(
+        &s_status_lock
+    );
+}
 
 
 static void ad7606_timer_callback(
@@ -76,30 +175,14 @@ static void ad7606_log_sample(
     ESP_LOGI(
         TAG,
         "mV=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
-        ad7606_raw_to_uv(
-            sample->raw[0]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[1]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[2]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[3]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[4]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[5]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[6]
-        ) / 1000.0f,
-        ad7606_raw_to_uv(
-            sample->raw[7]
-        ) / 1000.0f
+        ad7606_raw_to_uv(sample->raw[0]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[1]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[2]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[3]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[4]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[5]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[6]) / 1000.0f,
+        ad7606_raw_to_uv(sample->raw[7]) / 1000.0f
     );
 }
 
@@ -119,10 +202,7 @@ static void ad7606_worker_cleanup(void)
             NULL;
     }
 
-    /*
-     * The driver owns SPI3, so deinit must remain on this same
-     * Core 1 worker that initialized the bus.
-     */
+    /* SPI3 was initialized by this Core 1 worker and is released here. */
     ad7606_driver_deinit();
 
     (void)seismic_buffer_configure(
@@ -132,16 +212,18 @@ static void ad7606_worker_cleanup(void)
 
     s_running =
         false;
+
+    ad7606_status_set_running(
+        false
+    );
 }
 
 
 static esp_err_t ad7606_worker_initialize(void)
 {
     /*
-     * This function executes inside the Core 1 acquisition task.
-     * Consequently spi_bus_initialize(SPI3_HOST) also runs on
-     * Core 1 and the SPI3 ISR affinity stays with the real-time
-     * acquisition side of the application.
+     * This executes on Core 1, so SPI3 initialization and its ISR
+     * affinity stay on the real-time side of the application.
      */
     esp_err_t err =
         ad7606_driver_init();
@@ -204,6 +286,10 @@ static esp_err_t ad7606_worker_initialize(void)
         return err;
     }
 
+    ad7606_status_set_running(
+        true
+    );
+
     ESP_LOGI(
         TAG,
         "Started: %d Hz, 8 channels, SPI3 dedicated, core=%d",
@@ -261,17 +347,11 @@ static void ad7606_worker(
         start_context->ready
     );
 
-    /*
-     * The start context belongs to the caller's stack and must
-     * not be touched after the ready semaphore is released.
-     */
+    /* The caller owns this stack object after the semaphore is given. */
     start_context =
         NULL;
 
     uint32_t successful_samples =
-        0;
-
-    uint32_t consecutive_failures =
         0;
 
     while (s_running) {
@@ -292,7 +372,8 @@ static void ad7606_worker(
             );
 
         if (err != ESP_OK) {
-            consecutive_failures++;
+            const uint32_t consecutive_failures =
+                ad7606_status_record_failure();
 
             if (
                 consecutive_failures == 1 ||
@@ -311,10 +392,27 @@ static void ad7606_worker(
             continue;
         }
 
-        consecutive_failures =
-            0;
+        float all_channels_uv[
+            AD7606_CHANNEL_COUNT
+        ];
 
-        float channels[
+        for (
+            size_t channel = 0;
+            channel < AD7606_CHANNEL_COUNT;
+            ++channel
+        ) {
+            all_channels_uv[channel] =
+                ad7606_raw_to_uv(
+                    sample.raw[channel]
+                );
+        }
+
+        ad7606_status_record_sample(
+            &sample,
+            all_channels_uv
+        );
+
+        float seismic_channels[
             SEISMIC_CHANNEL_COUNT
         ];
 
@@ -323,20 +421,15 @@ static void ad7606_worker(
             channel < SEISMIC_CHANNEL_COUNT;
             ++channel
         ) {
-            channels[channel] =
-                ad7606_raw_to_uv(
-                    sample.raw[channel]
-                );
+            seismic_channels[channel] =
+                all_channels_uv[channel];
         }
 
-        /*
-         * timestamp_us now belongs to the actual simultaneous
-         * CONVST event, not the later end of the SPI read.
-         */
+        /* Timestamp belongs to the simultaneous CONVST event. */
         err =
             seismic_buffer_push(
                 sample.timestamp_us,
-                channels
+                seismic_channels
             );
 
         if (err != ESP_OK) {
@@ -382,6 +475,8 @@ esp_err_t ad7606_acquisition_start(void)
         return ESP_OK;
     }
 
+    ad7606_status_reset();
+
     ad7606_start_context_t start_context = {
         .ready =
             xSemaphoreCreateBinary(),
@@ -417,9 +512,8 @@ esp_err_t ad7606_acquisition_start(void)
     }
 
     /*
-     * Keep the public start() contract synchronous: startup does
-     * not report success until Core 1 has initialized SPI3,
-     * self-tested the ADC and started the sampling timer.
+     * Keep start() synchronous: success means SPI3, the ADC self-test
+     * and the sampling timer all completed on Core 1.
      */
     (void)xSemaphoreTake(
         start_context.ready,
@@ -443,6 +537,10 @@ void ad7606_acquisition_stop(void)
         s_task;
 
     if (task == NULL) {
+        ad7606_status_set_running(
+            false
+        );
+
         return;
     }
 
@@ -453,13 +551,32 @@ void ad7606_acquisition_stop(void)
         task
     );
 
-    /*
-     * Worker cleanup includes timer deletion, AD7606 deinit and
-     * SPI3 bus release on Core 1.
-     */
     while (s_task != NULL) {
         vTaskDelay(
             pdMS_TO_TICKS(10)
         );
     }
+}
+
+
+esp_err_t ad7606_acquisition_get_status(
+    ad7606_acquisition_status_t *status
+)
+{
+    if (status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(
+        &s_status_lock
+    );
+
+    *status =
+        s_status;
+
+    portEXIT_CRITICAL(
+        &s_status_lock
+    );
+
+    return ESP_OK;
 }

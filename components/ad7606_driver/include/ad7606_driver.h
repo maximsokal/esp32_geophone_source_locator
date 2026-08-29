@@ -5,7 +5,11 @@
 #include "esp_err.h"
 
 
-#define AD7606_CHANNEL_COUNT 8
+#define AD7606_CHANNEL_COUNT          8
+#define AD7606_BUS_CLOCK_HZ     1000000U
+#define AD7606_SPI_MODE                2U
+#define AD7606_INPUT_RANGE_V           5.0f
+#define AD7606_OVERSAMPLING_RATIO      1U
 
 
 typedef struct

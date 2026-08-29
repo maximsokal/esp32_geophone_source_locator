@@ -7,6 +7,8 @@ idf_component_register(
 
     REQUIRES
         ad7606_acquisition
+        ad7606_driver
+        app_config
         device_status
         geophone_adc_test
         seismic_buffer
