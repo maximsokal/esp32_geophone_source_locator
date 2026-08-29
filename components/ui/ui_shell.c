@@ -30,7 +30,6 @@ lv_obj_t *ui_create_label_locked(
     }
 
     lv_obj_t *label = lv_label_create(parent);
-
     if (label == NULL) {
         return NULL;
     }
@@ -44,7 +43,6 @@ lv_obj_t *ui_create_label_locked(
     }
 
     lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
-
     return label;
 }
 
@@ -127,7 +125,12 @@ lv_obj_t *ui_create_screen_base_locked(
         lv_obj_set_style_pad_all(footer_bar, 0, 0);
 
         (void)ui_create_label_locked(
-            footer_bar, 8, 6, 304, footer, UI_COLOR_MUTED
+            footer_bar,
+            8,
+            6,
+            304,
+            footer,
+            UI_COLOR_MUTED
         );
     }
 
@@ -330,10 +333,21 @@ void ui_render_boot_locked(const char *stage)
     }
 
     (void)ui_create_label_locked(
-        card, 18, 18, 248, "SYSTEM STARTUP", UI_COLOR_ACCENT
+        card,
+        18,
+        18,
+        248,
+        "SYSTEM STARTUP",
+        UI_COLOR_ACCENT
     );
+
     (void)ui_create_label_locked(
-        card, 18, 51, 248, stage, UI_COLOR_TEXT
+        card,
+        18,
+        51,
+        248,
+        stage,
+        UI_COLOR_TEXT
     );
 
     lv_obj_t *bar = lv_bar_create(card);
@@ -374,40 +388,12 @@ void ui_render_boot_locked(const char *stage)
 
 void ui_render_current_locked(void)
 {
-    switch (ui_context()->screen) {
-        case UI_SCREEN_OBJECTS:
-            ui_render_objects_locked();
-            break;
-
-        case UI_SCREEN_MEASUREMENTS:
-            ui_render_measurements_locked();
-            break;
-
-        case UI_SCREEN_STORAGE:
-            ui_render_storage_locked();
-            break;
-
-        case UI_SCREEN_WIFI:
-            ui_render_wifi_locked();
-            break;
-
-        case UI_SCREEN_SYSTEM:
-            ui_render_system_locked();
-            break;
-
-        case UI_SCREEN_HOME:
-        default:
-            ui_render_home_locked();
-            break;
-    }
+    ui_screen_render_locked(ui_context()->screen);
 }
 
 
 void ui_refresh_dynamic_locked(void)
 {
     ui_refresh_header_locked();
-
-    if (ui_context()->screen == UI_SCREEN_MEASUREMENTS) {
-        ui_measurements_refresh_locked();
-    }
+    ui_screen_refresh_locked(ui_context()->screen);
 }
