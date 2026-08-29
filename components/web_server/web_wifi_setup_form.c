@@ -1,9 +1,7 @@
-#include "web_wifi_setup_form.h"
+#include "web_server_internal.h"
 
 #include <stdbool.h>
 #include <string.h>
-
-#include "web_wifi_setup_decode.h"
 
 
 static char *web_wifi_setup_form_value(
@@ -11,27 +9,17 @@ static char *web_wifi_setup_form_value(
     const char *key
 )
 {
-    const size_t key_length =
-        strlen(
-            key
-        );
-
-    char *field =
-        body;
+    const size_t key_length = strlen(key);
+    char *field = body;
 
     while (
         field != NULL &&
         *field != '\0'
     ) {
-        char *next =
-            strchr(
-                field,
-                '&'
-            );
+        char *next = strchr(field, '&');
 
         if (next != NULL) {
-            *next =
-                '\0';
+            *next = '\0';
         }
 
         if (
@@ -42,16 +30,10 @@ static char *web_wifi_setup_form_value(
             ) == 0 &&
             field[key_length] == '='
         ) {
-            return
-                field +
-                key_length +
-                1;
+            return field + key_length + 1;
         }
 
-        field =
-            next != NULL
-                ? next + 1
-                : NULL;
+        field = next != NULL ? next + 1 : NULL;
     }
 
     return NULL;
@@ -68,18 +50,11 @@ static esp_err_t web_wifi_setup_decode_field(
 {
     char copy[256];
 
-    if (
-        strlen(body) >=
-        sizeof(copy)
-    ) {
+    if (strlen(body) >= sizeof(copy)) {
         return ESP_ERR_INVALID_SIZE;
     }
 
-    strlcpy(
-        copy,
-        body,
-        sizeof(copy)
-    );
+    strlcpy(copy, body, sizeof(copy));
 
     char *encoded =
         web_wifi_setup_form_value(
@@ -92,18 +67,15 @@ static esp_err_t web_wifi_setup_decode_field(
             return ESP_ERR_INVALID_ARG;
         }
 
-        destination[0] =
-            '\0';
-
+        destination[0] = '\0';
         return ESP_OK;
     }
 
-    return
-        web_wifi_setup_url_decode(
-            encoded,
-            destination,
-            destination_size
-        );
+    return web_wifi_setup_url_decode(
+        encoded,
+        destination,
+        destination_size
+    );
 }
 
 
@@ -136,12 +108,11 @@ esp_err_t web_wifi_setup_form_parse(
         return err;
     }
 
-    return
-        web_wifi_setup_decode_field(
-            body,
-            "password",
-            password,
-            password_size,
-            false
-        );
+    return web_wifi_setup_decode_field(
+        body,
+        "password",
+        password,
+        password_size,
+        false
+    );
 }

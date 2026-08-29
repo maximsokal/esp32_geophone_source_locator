@@ -1,14 +1,8 @@
-#include "web_status_json.h"
+#include "web_server_internal.h"
 
 #include <stddef.h>
 
-#include "cJSON.h"
-
-#include "device_status.h"
-
 #include "esp_timer.h"
-
-#include "web_status_json_pods.h"
 
 
 static bool web_status_json_add_system(
@@ -22,18 +16,15 @@ static bool web_status_json_add_system(
             "system"
         );
 
-
     if (system == NULL) {
         return false;
     }
-
 
     cJSON_AddStringToObject(
         system,
         "state",
         "READY"
     );
-
 
     cJSON_AddStringToObject(
         system,
@@ -43,20 +34,17 @@ static bool web_status_json_add_system(
         )
     );
 
-
     const uint64_t uptime_ms =
         (uint64_t)(
             esp_timer_get_time() /
             1000
         );
 
-
     cJSON_AddNumberToObject(
         system,
         "uptime_ms",
         (double)uptime_ms
     );
-
 
     return true;
 }
@@ -73,11 +61,9 @@ static bool web_status_json_add_power(
             "power"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -103,18 +89,15 @@ static bool web_status_json_add_power(
         power->power_w
     );
 
-
     cJSON *channels =
         cJSON_AddArrayToObject(
             object,
             "channels"
         );
 
-
     if (channels == NULL) {
         return false;
     }
-
 
     for (
         size_t i = 0;
@@ -124,21 +107,17 @@ static bool web_status_json_add_power(
         const device_power_channel_status_t *channel =
             &power->channels[i];
 
-
         cJSON *channel_object =
             cJSON_CreateObject();
-
 
         if (channel_object == NULL) {
             return false;
         }
 
-
         cJSON_AddItemToArray(
             channels,
             channel_object
         );
-
 
         cJSON_AddNumberToObject(
             channel_object,
@@ -146,13 +125,11 @@ static bool web_status_json_add_power(
             i + 1
         );
 
-
         cJSON_AddBoolToObject(
             channel_object,
             "valid",
             channel->valid
         );
-
 
         cJSON_AddNumberToObject(
             channel_object,
@@ -160,13 +137,11 @@ static bool web_status_json_add_power(
             channel->voltage_v
         );
 
-
         cJSON_AddNumberToObject(
             channel_object,
             "current_a",
             channel->current_a
         );
-
 
         cJSON_AddNumberToObject(
             channel_object,
@@ -174,7 +149,6 @@ static bool web_status_json_add_power(
             channel->power_w
         );
     }
-
 
     return true;
 }
@@ -191,11 +165,9 @@ static bool web_status_json_add_environment(
             "environment"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -221,7 +193,6 @@ static bool web_status_json_add_environment(
         environment->pressure_pa
     );
 
-
     return true;
 }
 
@@ -237,11 +208,9 @@ static bool web_status_json_add_mux(
             "mux"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -261,7 +230,6 @@ static bool web_status_json_add_mux(
         mux->active_pod
     );
 
-
     return true;
 }
 
@@ -277,11 +245,9 @@ static bool web_status_json_add_acquisition(
             "acquisition"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -307,7 +273,6 @@ static bool web_status_json_add_acquisition(
         (double)acquisition->recording_ms
     );
 
-
     return true;
 }
 
@@ -320,40 +285,30 @@ esp_err_t web_status_json_build(
         return ESP_ERR_INVALID_ARG;
     }
 
-
-    *json_out =
-        NULL;
-
+    *json_out = NULL;
 
     device_status_snapshot_t status;
-
 
     esp_err_t err =
         device_status_get_snapshot(
             &status
         );
 
-
     if (err != ESP_OK) {
         return err;
     }
 
-
-    cJSON *root =
-        cJSON_CreateObject();
-
+    cJSON *root = cJSON_CreateObject();
 
     if (root == NULL) {
         return ESP_ERR_NO_MEM;
     }
-
 
     bool ok =
         web_status_json_add_system(
             root,
             &status
         );
-
 
     ok =
         ok &&
@@ -362,14 +317,12 @@ esp_err_t web_status_json_build(
             &status.power
         );
 
-
     ok =
         ok &&
         web_status_json_add_environment(
             root,
             &status.environment
         );
-
 
     ok =
         ok &&
@@ -378,14 +331,12 @@ esp_err_t web_status_json_build(
             &status.mux
         );
 
-
     ok =
         ok &&
         web_status_json_add_pods(
             root,
             &status
         );
-
 
     ok =
         ok &&
@@ -394,37 +345,20 @@ esp_err_t web_status_json_build(
             &status.acquisition
         );
 
-
     if (!ok) {
-
-        cJSON_Delete(
-            root
-        );
-
+        cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
 
+    char *json = cJSON_PrintUnformatted(root);
 
-    char *json =
-        cJSON_PrintUnformatted(
-            root
-        );
-
-
-    cJSON_Delete(
-        root
-    );
-
+    cJSON_Delete(root);
 
     if (json == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-
-    *json_out =
-        json;
-
-
+    *json_out = json;
     return ESP_OK;
 }
 
@@ -437,8 +371,5 @@ void web_status_json_free(
         return;
     }
 
-
-    cJSON_free(
-        json
-    );
+    cJSON_free(json);
 }

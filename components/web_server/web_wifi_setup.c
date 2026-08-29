@@ -1,9 +1,6 @@
-#include "web_wifi_setup.h"
+#include "web_server_internal.h"
 
 #include "app_event_bus.h"
-#include "web_wifi_setup_form.h"
-#include "web_wifi_setup_page.h"
-#include "web_wifi_setup_request.h"
 #include "wifi_manager.h"
 
 #include "esp_log.h"
@@ -22,10 +19,7 @@ esp_err_t web_wifi_setup_send_page(
     httpd_req_t *request
 )
 {
-    return
-        web_wifi_setup_page_send_form(
-            request
-        );
+    return web_wifi_setup_page_send_form(request);
 }
 
 
@@ -33,9 +27,7 @@ static esp_err_t web_wifi_setup_post_handler(
     httpd_req_t *request
 )
 {
-    char body[
-        WIFI_SETUP_BODY_SIZE
-    ];
+    char body[WIFI_SETUP_BODY_SIZE];
 
     esp_err_t err =
         web_wifi_setup_request_read_body(
@@ -54,13 +46,8 @@ static esp_err_t web_wifi_setup_post_handler(
         return err;
     }
 
-    char ssid[
-        WIFI_SETUP_SSID_SIZE
-    ];
-
-    char password[
-        WIFI_SETUP_PASSWORD_SIZE
-    ];
+    char ssid[WIFI_SETUP_SSID_SIZE];
+    char password[WIFI_SETUP_PASSWORD_SIZE];
 
     err =
         web_wifi_setup_form_parse(
@@ -103,25 +90,18 @@ static esp_err_t web_wifi_setup_post_handler(
         return err;
     }
 
-    err =
-        web_wifi_setup_page_send_saved(
-            request
-        );
+    err = web_wifi_setup_page_send_saved(request);
 
     if (err != ESP_OK) {
         return err;
     }
 
-    ESP_LOGI(
-        TAG,
-        "Wi-Fi setup saved"
-    );
+    ESP_LOGI(TAG, "Wi-Fi setup saved");
 
-    (void)
-        app_event_bus_publish(
-            APP_EVENT_WIFI_CREDENTIALS_SAVED,
-            0
-        );
+    (void)app_event_bus_publish(
+        APP_EVENT_WIFI_CREDENTIALS_SAVED,
+        0
+    );
 
     return ESP_OK;
 }
@@ -159,9 +139,8 @@ esp_err_t web_wifi_setup_register(
         .user_ctx = NULL,
     };
 
-    return
-        httpd_register_uri_handler(
-            server,
-            &save_uri
-        );
+    return httpd_register_uri_handler(
+        server,
+        &save_uri
+    );
 }

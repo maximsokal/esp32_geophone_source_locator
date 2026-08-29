@@ -1,4 +1,4 @@
-#include "web_status_json_pods.h"
+#include "web_server_internal.h"
 
 
 static bool web_status_json_add_barometer(
@@ -12,11 +12,9 @@ static bool web_status_json_add_barometer(
             "barometer"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -42,7 +40,6 @@ static bool web_status_json_add_barometer(
         barometer->reference_pressure_pa
     );
 
-
     return true;
 }
 
@@ -58,11 +55,9 @@ static bool web_status_json_add_imu(
             "imu"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -88,7 +83,6 @@ static bool web_status_json_add_imu(
         imu->yaw_relative_deg
     );
 
-
     return true;
 }
 
@@ -104,11 +98,9 @@ static bool web_status_json_add_geophone(
             "geophone"
         );
 
-
     if (object == NULL) {
         return false;
     }
-
 
     cJSON_AddBoolToObject(
         object,
@@ -146,7 +138,6 @@ static bool web_status_json_add_geophone(
         geophone->snr_db
     );
 
-
     return true;
 }
 
@@ -162,11 +153,9 @@ bool web_status_json_add_pods(
             "pods"
         );
 
-
     if (pods == NULL) {
         return false;
     }
-
 
     for (
         size_t i = 0;
@@ -176,28 +165,23 @@ bool web_status_json_add_pods(
         const device_pod_status_t *pod =
             &status->pods[i];
 
-
         cJSON *pod_object =
             cJSON_CreateObject();
-
 
         if (pod_object == NULL) {
             return false;
         }
-
 
         cJSON_AddItemToArray(
             pods,
             pod_object
         );
 
-
         cJSON_AddNumberToObject(
             pod_object,
             "id",
             i + 1
         );
-
 
         cJSON_AddStringToObject(
             pod_object,
@@ -206,7 +190,6 @@ bool web_status_json_add_pods(
                 pod->state
             )
         );
-
 
         if (
             !web_status_json_add_barometer(
@@ -217,7 +200,6 @@ bool web_status_json_add_pods(
             return false;
         }
 
-
         if (
             !web_status_json_add_imu(
                 pod_object,
@@ -226,7 +208,6 @@ bool web_status_json_add_pods(
         ) {
             return false;
         }
-
 
         if (
             !web_status_json_add_geophone(
@@ -237,7 +218,6 @@ bool web_status_json_add_pods(
             return false;
         }
     }
-
 
     return true;
 }

@@ -1,4 +1,4 @@
-#include "web_wifi_setup_decode.h"
+#include "web_server_internal.h"
 
 #include <ctype.h>
 
@@ -11,21 +11,16 @@ static int web_wifi_setup_hex_value(
         value >= '0' &&
         value <= '9'
     ) {
-        return
-            value - '0';
+        return value - '0';
     }
 
-    value =
-        (char)toupper(
-            (unsigned char)value
-        );
+    value = (char)toupper((unsigned char)value);
 
     if (
         value >= 'A' &&
         value <= 'F'
     ) {
-        return
-            value - 'A' + 10;
+        return value - 'A' + 10;
     }
 
     return -1;
@@ -46,21 +41,15 @@ esp_err_t web_wifi_setup_url_decode(
         return ESP_ERR_INVALID_ARG;
     }
 
-    size_t output =
-        0;
+    size_t output = 0;
 
     while (*source != '\0') {
-        if (
-            output + 1 >=
-            destination_size
-        ) {
+        if (output + 1 >= destination_size) {
             return ESP_ERR_INVALID_SIZE;
         }
 
         if (*source == '+') {
-            destination[output++] =
-                ' ';
-
+            destination[output++] = ' ';
             ++source;
             continue;
         }
@@ -74,14 +63,10 @@ esp_err_t web_wifi_setup_url_decode(
             }
 
             const int high =
-                web_wifi_setup_hex_value(
-                    source[1]
-                );
+                web_wifi_setup_hex_value(source[1]);
 
             const int low =
-                web_wifi_setup_hex_value(
-                    source[2]
-                );
+                web_wifi_setup_hex_value(source[2]);
 
             if (
                 high < 0 ||
@@ -91,21 +76,16 @@ esp_err_t web_wifi_setup_url_decode(
             }
 
             destination[output++] =
-                (char)(
-                    (high << 4) |
-                    low
-                );
+                (char)((high << 4) | low);
 
             source += 3;
             continue;
         }
 
-        destination[output++] =
-            *source++;
+        destination[output++] = *source++;
     }
 
-    destination[output] =
-        '\0';
+    destination[output] = '\0';
 
     return ESP_OK;
 }

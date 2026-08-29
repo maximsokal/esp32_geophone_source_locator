@@ -1,11 +1,9 @@
-#include "web_page.h"
+#include "web_server_internal.h"
 
 #include <stddef.h>
 #include <string.h>
 
 #include "app_config.h"
-
-#include "web_static_assets.h"
 
 
 #define WIFI_SSID_TOKEN  "{{WIFI_SSID}}"

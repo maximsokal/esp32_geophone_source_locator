@@ -1,8 +1,6 @@
-#include "web_seismic_page.h"
+#include "web_server_internal.h"
 
 #include <stddef.h>
-
-#include "web_static_assets.h"
 
 
 esp_err_t web_seismic_page_send(
