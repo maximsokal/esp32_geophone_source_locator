@@ -1,6 +1,9 @@
 #include "ui_event_task.h"
 
+#include <stdbool.h>
+
 #include "app_event_bus.h"
+#include "app_task_config.h"
 #include "ui_event_dispatch.h"
 
 #include "esp_log.h"
@@ -13,8 +16,14 @@ static const char *TAG =
     "UI_EVENT";
 
 
+#define UI_EVENT_RECEIVE_TIMEOUT_MS  100
+
+
 static TaskHandle_t s_task =
     NULL;
+
+static volatile bool s_running =
+    false;
 
 
 static void ui_event_task_main(
@@ -25,11 +34,16 @@ static void ui_event_task_main(
 
     app_event_t event;
 
-    while (true) {
+    while (s_running) {
         esp_err_t err =
-            app_event_bus_receive(
-                &event
+            app_event_bus_receive_timeout(
+                &event,
+                UI_EVENT_RECEIVE_TIMEOUT_MS
             );
+
+        if (err == ESP_ERR_TIMEOUT) {
+            continue;
+        }
 
         if (err != ESP_OK) {
             ESP_LOGE(
@@ -39,6 +53,10 @@ static void ui_event_task_main(
             );
 
             continue;
+        }
+
+        if (!s_running) {
+            break;
         }
 
         if (
@@ -68,6 +86,21 @@ static void ui_event_task_main(
             );
         }
     }
+
+    s_running =
+        false;
+
+    s_task =
+        NULL;
+
+    ESP_LOGI(
+        TAG,
+        "UI event task stopped"
+    );
+
+    vTaskDelete(
+        NULL
+    );
 }
 
 
@@ -77,17 +110,24 @@ esp_err_t ui_event_task_start(void)
         return ESP_OK;
     }
 
+    s_running =
+        true;
+
     BaseType_t result =
-        xTaskCreate(
+        xTaskCreatePinnedToCore(
             ui_event_task_main,
             "ui_event",
-            6144,
+            APP_TASK_STACK_UI_EVENT,
             NULL,
-            6,
-            &s_task
+            APP_TASK_PRIORITY_UI_EVENT,
+            &s_task,
+            APP_TASK_CORE_SERVICES
         );
 
     if (result != pdPASS) {
+        s_running =
+            false;
+
         s_task =
             NULL;
 
@@ -96,8 +136,26 @@ esp_err_t ui_event_task_start(void)
 
     ESP_LOGI(
         TAG,
-        "UI event task started"
+        "UI event task started core=%d",
+        APP_TASK_CORE_SERVICES
     );
 
     return ESP_OK;
+}
+
+
+void ui_event_task_stop(void)
+{
+    if (s_task == NULL) {
+        return;
+    }
+
+    s_running =
+        false;
+
+    while (s_task != NULL) {
+        vTaskDelay(
+            pdMS_TO_TICKS(10)
+        );
+    }
 }

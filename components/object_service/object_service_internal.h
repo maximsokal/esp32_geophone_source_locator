@@ -10,8 +10,6 @@
 
 
 #define OBJECT_SERVICE_QUEUE_LENGTH       1
-#define OBJECT_SERVICE_TASK_STACK_SIZE    8192
-#define OBJECT_SERVICE_TASK_PRIORITY      3
 
 
 typedef enum

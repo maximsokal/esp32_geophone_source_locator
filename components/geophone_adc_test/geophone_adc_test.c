@@ -5,6 +5,7 @@
 #include "geophone_adc_test_internal.h"
 
 #include "adc_service.h"
+#include "app_task_config.h"
 #include "board_config.h"
 #include "seismic_buffer.h"
 
@@ -55,13 +56,14 @@ esp_err_t geophone_adc_test_start(void)
         true;
 
     BaseType_t result =
-        xTaskCreate(
+        xTaskCreatePinnedToCore(
             geophone_adc_worker,
             "geophone_adc",
-            4096,
+            APP_TASK_STACK_GEOPHONE_ADC,
             NULL,
-            6,
-            &g_geophone_adc_task
+            APP_TASK_PRIORITY_GEOPHONE_ADC,
+            &g_geophone_adc_task,
+            APP_TASK_CORE_REALTIME
         );
 
     if (result != pdPASS) {
@@ -91,9 +93,10 @@ esp_err_t geophone_adc_test_start(void)
 
     ESP_LOGW(
         TAG,
-        "ESP ADC bench enabled: GPIO%d at %d Hz",
+        "ESP ADC bench enabled: GPIO%d at %d Hz core=%d",
         BOARD_GEOPHONE_BENCH_GPIO,
-        CONFIG_SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ
+        CONFIG_SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ,
+        APP_TASK_CORE_REALTIME
     );
 
     return ESP_OK;

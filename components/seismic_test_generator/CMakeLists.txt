@@ -6,6 +6,7 @@ idf_component_register(
         "include"
 
     REQUIRES
+        app_config
         seismic_buffer
         esp_timer
         freertos

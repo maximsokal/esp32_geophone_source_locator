@@ -36,3 +36,8 @@ esp_err_t app_event_bus_publish(
 esp_err_t app_event_bus_receive(
     app_event_t *event
 );
+
+esp_err_t app_event_bus_receive_timeout(
+    app_event_t *event,
+    uint32_t timeout_ms
+);

@@ -2,10 +2,13 @@
 
 #include <stdbool.h>
 
+#include "app_task_config.h"
+
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "storage_service_internal.h"
@@ -16,34 +19,26 @@ static const char *TAG =
 
 
 #define STORAGE_SERVICE_QUEUE_LENGTH      1
-#define STORAGE_SERVICE_TASK_STACK_SIZE   8192
-#define STORAGE_SERVICE_TASK_PRIORITY     3
 
 
 static QueueHandle_t s_queue =
     NULL;
 
+static SemaphoreHandle_t s_command_gate =
+    NULL;
 
 static TaskHandle_t s_task =
     NULL;
-
 
 static storage_service_event_callback_t
     s_callback =
         NULL;
 
-
 static void *s_callback_context =
     NULL;
 
-
-static volatile bool s_busy =
-    false;
-
-
 static bool s_initialized =
     false;
-
 
 static storage_service_event_t s_event;
 
@@ -61,6 +56,16 @@ static void storage_service_notify(void)
 }
 
 
+static void storage_service_release_command_gate(void)
+{
+    if (s_command_gate != NULL) {
+        (void)xSemaphoreGive(
+            s_command_gate
+        );
+    }
+}
+
+
 static void storage_service_task(
     void *argument
 )
@@ -69,7 +74,8 @@ static void storage_service_task(
 
     ESP_LOGI(
         TAG,
-        "Worker started"
+        "Worker started core=%d",
+        APP_TASK_CORE_SERVICES
     );
 
     while (true) {
@@ -120,15 +126,13 @@ static void storage_service_task(
         }
 
         /*
-         * UI callbacks finish before another storage command
-         * is accepted.
+         * Keep the gate held through the callback so the legacy
+         * rule remains intact: another storage command is not
+         * accepted until the current operation and its UI callback
+         * have completed.
          */
-        s_busy =
-            false;
+        storage_service_release_command_gate();
     }
-
-    s_busy =
-        false;
 
     ESP_LOGI(
         TAG,
@@ -150,17 +154,24 @@ static esp_err_t storage_service_submit(
 {
     if (
         !s_initialized ||
-        s_queue == NULL
+        s_queue == NULL ||
+        s_command_gate == NULL
     ) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (s_busy) {
+    /*
+     * The binary semaphore makes "check + mark busy" atomic
+     * across both CPU cores. A volatile bool did not.
+     */
+    if (
+        xSemaphoreTake(
+            s_command_gate,
+            0
+        ) != pdTRUE
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    s_busy =
-        true;
 
     if (
         xQueueSend(
@@ -169,8 +180,7 @@ static esp_err_t storage_service_submit(
             0
         ) != pdTRUE
     ) {
-        s_busy =
-            false;
+        storage_service_release_command_gate();
 
         return ESP_ERR_TIMEOUT;
     }
@@ -195,17 +205,10 @@ esp_err_t storage_service_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    BaseType_t result =
-        xTaskCreate(
-            storage_service_task,
-            "storage_service",
-            STORAGE_SERVICE_TASK_STACK_SIZE,
-            NULL,
-            STORAGE_SERVICE_TASK_PRIORITY,
-            &s_task
-        );
+    s_command_gate =
+        xSemaphoreCreateBinary();
 
-    if (result != pdPASS) {
+    if (s_command_gate == NULL) {
         vQueueDelete(
             s_queue
         );
@@ -216,8 +219,38 @@ esp_err_t storage_service_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_busy =
-        false;
+    (void)xSemaphoreGive(
+        s_command_gate
+    );
+
+    BaseType_t result =
+        xTaskCreatePinnedToCore(
+            storage_service_task,
+            "storage_service",
+            APP_TASK_STACK_STORAGE_SERVICE,
+            NULL,
+            APP_TASK_PRIORITY_STORAGE_SERVICE,
+            &s_task,
+            APP_TASK_CORE_SERVICES
+        );
+
+    if (result != pdPASS) {
+        vSemaphoreDelete(
+            s_command_gate
+        );
+
+        s_command_gate =
+            NULL;
+
+        vQueueDelete(
+            s_queue
+        );
+
+        s_queue =
+            NULL;
+
+        return ESP_ERR_NO_MEM;
+    }
 
     s_initialized =
         true;
@@ -242,7 +275,7 @@ void storage_service_shutdown(void)
         "Shutdown requested"
     );
 
-    if (s_busy) {
+    if (storage_service_is_busy()) {
         ESP_LOGI(
             TAG,
             "Waiting for active storage operation"
@@ -253,7 +286,7 @@ void storage_service_shutdown(void)
         STORAGE_COMMAND_STOP;
 
     if (s_queue != NULL) {
-        xQueueSend(
+        (void)xQueueSend(
             s_queue,
             &command,
             portMAX_DELAY
@@ -275,14 +308,20 @@ void storage_service_shutdown(void)
             NULL;
     }
 
+    if (s_command_gate != NULL) {
+        vSemaphoreDelete(
+            s_command_gate
+        );
+
+        s_command_gate =
+            NULL;
+    }
+
     s_callback =
         NULL;
 
     s_callback_context =
         NULL;
-
-    s_busy =
-        false;
 
     s_initialized =
         false;
@@ -331,5 +370,15 @@ esp_err_t storage_service_erase_data_async(void)
 
 bool storage_service_is_busy(void)
 {
-    return s_busy;
+    if (
+        !s_initialized ||
+        s_command_gate == NULL
+    ) {
+        return false;
+    }
+
+    return
+        uxSemaphoreGetCount(
+            s_command_gate
+        ) == 0;
 }

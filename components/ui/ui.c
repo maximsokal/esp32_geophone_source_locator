@@ -55,3 +55,14 @@ esp_err_t ui_init(void)
 
     return ESP_OK;
 }
+
+
+void ui_shutdown(void)
+{
+    ui_event_task_stop();
+
+    ESP_LOGI(
+        TAG,
+        "UI stopped"
+    );
+}

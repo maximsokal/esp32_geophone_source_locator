@@ -13,6 +13,7 @@ idf_component_register(
 
     REQUIRES
         adc_service
+        app_config
         board_config
         seismic_buffer
         esp_adc

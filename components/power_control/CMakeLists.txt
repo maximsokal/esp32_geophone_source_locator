@@ -15,6 +15,7 @@ idf_component_register(
         "."
 
     REQUIRES
+        app_config
         board_config
         esp_driver_gpio
         freertos

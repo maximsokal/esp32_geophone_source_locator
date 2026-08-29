@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+#include "app_task_config.h"
+
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -60,13 +62,14 @@ esp_err_t keypad_event_monitor_start(
         true;
 
     BaseType_t result =
-        xTaskCreate(
+        xTaskCreatePinnedToCore(
             keypad_event_worker,
             "keypad_events",
-            KEYPAD_TASK_STACK_SIZE,
+            APP_TASK_STACK_KEYPAD,
             NULL,
-            KEYPAD_TASK_PRIORITY,
-            &s_state.task
+            APP_TASK_PRIORITY_KEYPAD,
+            &s_state.task,
+            APP_TASK_CORE_SERVICES
         );
 
     if (
@@ -92,6 +95,12 @@ esp_err_t keypad_event_monitor_start(
 
         return ESP_ERR_NO_MEM;
     }
+
+    ESP_LOGI(
+        TAG,
+        "Key event monitor core=%d",
+        APP_TASK_CORE_SERVICES
+    );
 
     return ESP_OK;
 }

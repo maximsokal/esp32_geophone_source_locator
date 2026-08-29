@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+#include "app_task_config.h"
+
 #include "esp_log.h"
 
 #include "power_button_input.h"
@@ -44,13 +46,14 @@ esp_err_t power_button_monitor_init(void)
         true;
 
     BaseType_t task_result =
-        xTaskCreate(
+        xTaskCreatePinnedToCore(
             power_button_monitor_worker,
             "power_button",
-            POWER_MONITOR_TASK_STACK_SIZE,
+            APP_TASK_STACK_POWER_BUTTON,
             NULL,
-            POWER_MONITOR_TASK_PRIORITY,
-            &state->task
+            APP_TASK_PRIORITY_POWER_BUTTON,
+            &state->task,
+            APP_TASK_CORE_SERVICES
         );
 
     if (
@@ -80,6 +83,12 @@ esp_err_t power_button_monitor_init(void)
 
     state->initialized =
         true;
+
+    ESP_LOGI(
+        TAG,
+        "Monitor task core=%d",
+        APP_TASK_CORE_SERVICES
+    );
 
     return ESP_OK;
 }

@@ -275,6 +275,8 @@ static void app_startup_initialize_services(void)
      * during hardware bring-up.
      *
      * A failed ADC must not reboot the entire controller.
+     * The acquisition layer owns the corresponding device-status
+     * transition for both success and failure.
      */
     stage_started_ms =
         esp_log_timestamp();
@@ -295,27 +297,6 @@ static void app_startup_initialize_services(void)
                 acquisition_err
             )
         );
-
-        /*
-         * Explicitly expose a stopped acquisition state.
-         */
-        esp_err_t status_err =
-            device_status_set_acquisition(
-                false,
-                0,
-                0,
-                0
-            );
-
-        if (status_err != ESP_OK) {
-            ESP_LOGW(
-                TAG,
-                "Unable to update acquisition status: %s",
-                esp_err_to_name(
-                    status_err
-                )
-            );
-        }
     }
 }
 

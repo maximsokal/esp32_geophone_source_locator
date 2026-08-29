@@ -10,6 +10,7 @@
 #include "seismic_acquisition.h"
 #include "storage_manager.h"
 #include "storage_service.h"
+#include "ui.h"
 #include "web_server.h"
 #include "wifi_manager.h"
 
@@ -60,12 +61,21 @@ static void app_shutdown_stop_storage(void)
         );
     }
 
-    sd_card_unmount();
+    err =
+        sd_card_unmount();
 
-    ESP_LOGI(
-        TAG,
-        "SD card unmounted"
-    );
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "SD card unmount failed: %s",
+            esp_err_to_name(err)
+        );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "SD card unmounted"
+        );
+    }
 }
 
 
@@ -101,6 +111,8 @@ void app_shutdown_wait_and_run(void)
     );
 
     keypad_stop_event_monitor();
+
+    ui_shutdown();
 
     storage_service_shutdown();
 

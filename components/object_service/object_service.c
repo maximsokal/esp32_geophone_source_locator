@@ -2,6 +2,7 @@
 
 #include "object_service_internal.h"
 
+#include "app_task_config.h"
 #include "object_store.h"
 
 #include "esp_log.h"
@@ -36,13 +37,14 @@ esp_err_t object_service_init(void)
         false;
 
     BaseType_t result =
-        xTaskCreate(
+        xTaskCreatePinnedToCore(
             object_service_internal_worker,
             "object_service",
-            OBJECT_SERVICE_TASK_STACK_SIZE,
+            APP_TASK_STACK_OBJECT_SERVICE,
             NULL,
-            OBJECT_SERVICE_TASK_PRIORITY,
-            &state->worker_task
+            APP_TASK_PRIORITY_OBJECT_SERVICE,
+            &state->worker_task,
+            APP_TASK_CORE_SERVICES
         );
 
     if (result != pdPASS) {
@@ -61,7 +63,8 @@ esp_err_t object_service_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized"
+        "Initialized core=%d",
+        APP_TASK_CORE_SERVICES
     );
 
     return ESP_OK;
