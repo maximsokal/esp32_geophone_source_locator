@@ -38,23 +38,18 @@ static esp_err_t app_spi_bus_set_level_checked(
 
 
 /*
- * Put every device sharing SPI2 into a deterministic idle state
- * before the bus is initialized and before the first SD/TFT
- * transaction can occur.
+ * Put both SPI2 devices into a deterministic deselected state
+ * before the bus is initialized and before the first transfer.
  *
- * This is especially important for AD7606 DOUTA, which shares
- * GPIO13/MISO with the SD card. If AD7606 CS is left floating
- * during boot, the ADC can drive MISO and corrupt SD traffic.
+ * AD7606 no longer shares this bus in Stage 11B. Its GPIO and
+ * SPI3 lifecycle are owned by the acquisition task on Core 1.
  */
 static esp_err_t app_spi_bus_prepare_device_idle_levels(void)
 {
     const gpio_config_t output_config = {
         .pin_bit_mask =
             (1ULL << BOARD_TFT_CS_GPIO) |
-            (1ULL << BOARD_SD_CS_GPIO) |
-            (1ULL << BOARD_AD7606_CS_GPIO) |
-            (1ULL << BOARD_AD7606_RESET_GPIO) |
-            (1ULL << BOARD_AD7606_CONVST_GPIO),
+            (1ULL << BOARD_SD_CS_GPIO),
 
         .mode =
             GPIO_MODE_OUTPUT,
@@ -77,7 +72,7 @@ static esp_err_t app_spi_bus_prepare_device_idle_levels(void)
     if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
-            "Failed to configure shared SPI idle pins: %s",
+            "Failed to configure SPI2 idle pins: %s",
             esp_err_to_name(err)
         );
 
@@ -106,42 +101,9 @@ static esp_err_t app_spi_bus_prepare_device_idle_levels(void)
         return err;
     }
 
-    err =
-        app_spi_bus_set_level_checked(
-            BOARD_AD7606_CS_GPIO,
-            1,
-            "AD7606_CS"
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
-        app_spi_bus_set_level_checked(
-            BOARD_AD7606_RESET_GPIO,
-            0,
-            "AD7606_RESET"
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
-        app_spi_bus_set_level_checked(
-            BOARD_AD7606_CONVST_GPIO,
-            0,
-            "AD7606_CONVST"
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
     ESP_LOGI(
         TAG,
-        "Safe boot levels: TFT_CS=1 SD_CS=1 AD7606_CS=1 RESET=0 CONVST=0"
+        "Safe SPI2 boot levels: TFT_CS=1 SD_CS=1"
     );
 
     return ESP_OK;
@@ -216,7 +178,7 @@ esp_err_t app_spi_bus_init(void)
     if (err == ESP_ERR_INVALID_STATE) {
         ESP_LOGW(
             TAG,
-            "SPI bus is already initialized"
+            "SPI2 bus is already initialized"
         );
 
         return ESP_OK;
@@ -225,7 +187,7 @@ esp_err_t app_spi_bus_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
-            "SPI bus initialization failed: %s",
+            "SPI2 bus initialization failed: %s",
             esp_err_to_name(err)
         );
 

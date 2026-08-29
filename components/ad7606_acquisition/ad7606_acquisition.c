@@ -6,12 +6,14 @@
 #include "sdkconfig.h"
 
 #include "ad7606_driver.h"
+#include "app_task_config.h"
 #include "seismic_buffer.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 
@@ -27,6 +29,14 @@ static esp_timer_handle_t s_timer =
 
 static volatile bool s_running =
     false;
+
+
+typedef struct
+{
+    SemaphoreHandle_t ready;
+    esp_err_t result;
+
+} ad7606_start_context_t;
 
 
 static void ad7606_timer_callback(
@@ -94,11 +104,169 @@ static void ad7606_log_sample(
 }
 
 
+static void ad7606_worker_cleanup(void)
+{
+    if (s_timer != NULL) {
+        (void)esp_timer_stop(
+            s_timer
+        );
+
+        (void)esp_timer_delete(
+            s_timer
+        );
+
+        s_timer =
+            NULL;
+    }
+
+    /*
+     * The driver owns SPI3, so deinit must remain on this same
+     * Core 1 worker that initialized the bus.
+     */
+    ad7606_driver_deinit();
+
+    (void)seismic_buffer_configure(
+        SEISMIC_SOURCE_NONE,
+        0
+    );
+
+    s_running =
+        false;
+}
+
+
+static esp_err_t ad7606_worker_initialize(void)
+{
+    /*
+     * This function executes inside the Core 1 acquisition task.
+     * Consequently spi_bus_initialize(SPI3_HOST) also runs on
+     * Core 1 and the SPI3 ISR affinity stays with the real-time
+     * acquisition side of the application.
+     */
+    esp_err_t err =
+        ad7606_driver_init();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        seismic_buffer_configure(
+            SEISMIC_SOURCE_AD7606,
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const esp_timer_create_args_t timer_config = {
+        .callback =
+            ad7606_timer_callback,
+
+        .arg =
+            NULL,
+
+        .dispatch_method =
+            ESP_TIMER_TASK,
+
+        .name =
+            "ad7606_tick",
+    };
+
+    err =
+        esp_timer_create(
+            &timer_config,
+            &s_timer
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint64_t period_us =
+        1000000ULL /
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+
+    s_running =
+        true;
+
+    err =
+        esp_timer_start_periodic(
+            s_timer,
+            period_us
+        );
+
+    if (err != ESP_OK) {
+        s_running =
+            false;
+
+        return err;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Started: %d Hz, 8 channels, SPI3 dedicated, core=%d",
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        APP_TASK_CORE_REALTIME
+    );
+
+    return ESP_OK;
+}
+
+
 static void ad7606_worker(
     void *argument
 )
 {
-    (void)argument;
+    ad7606_start_context_t *start_context =
+        (ad7606_start_context_t *)argument;
+
+    s_task =
+        xTaskGetCurrentTaskHandle();
+
+    esp_err_t startup_err =
+        ad7606_worker_initialize();
+
+    if (startup_err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Core 1 acquisition initialization failed: %s",
+            esp_err_to_name(startup_err)
+        );
+
+        ad7606_worker_cleanup();
+
+        s_task =
+            NULL;
+
+        start_context->result =
+            startup_err;
+
+        xSemaphoreGive(
+            start_context->ready
+        );
+
+        vTaskDelete(
+            NULL
+        );
+
+        return;
+    }
+
+    start_context->result =
+        ESP_OK;
+
+    xSemaphoreGive(
+        start_context->ready
+    );
+
+    /*
+     * The start context belongs to the caller's stack and must
+     * not be touched after the ready semaphore is released.
+     */
+    start_context =
+        NULL;
 
     uint32_t successful_samples =
         0;
@@ -116,7 +284,7 @@ static void ad7606_worker(
             break;
         }
 
-        ad7606_sample_t sample;
+        ad7606_sample_t sample = {0};
 
         esp_err_t err =
             ad7606_driver_read(
@@ -135,7 +303,7 @@ static void ad7606_worker(
             ) {
                 ESP_LOGW(
                     TAG,
-                    "Read failed: %s (check BUSY/CONVST/SPI wiring)",
+                    "Read failed: %s (check BUSY/CONVST/SPI3 wiring)",
                     esp_err_to_name(err)
                 );
             }
@@ -161,9 +329,13 @@ static void ad7606_worker(
                 );
         }
 
+        /*
+         * timestamp_us now belongs to the actual simultaneous
+         * CONVST event, not the later end of the SPI read.
+         */
         err =
             seismic_buffer_push(
-                esp_timer_get_time(),
+                sample.timestamp_us,
                 channels
             );
 
@@ -188,11 +360,15 @@ static void ad7606_worker(
         }
     }
 
-    s_running =
-        false;
+    ad7606_worker_cleanup();
 
     s_task =
         NULL;
+
+    ESP_LOGI(
+        TAG,
+        "Stopped"
+    );
 
     vTaskDelete(
         NULL
@@ -206,151 +382,84 @@ esp_err_t ad7606_acquisition_start(void)
         return ESP_OK;
     }
 
-    esp_err_t err =
-        ad7606_driver_init();
+    ad7606_start_context_t start_context = {
+        .ready =
+            xSemaphoreCreateBinary(),
 
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
-        seismic_buffer_configure(
-            SEISMIC_SOURCE_AD7606,
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
-        );
-
-    if (err != ESP_OK) {
-        ad7606_driver_deinit();
-
-        return err;
-    }
-
-    const esp_timer_create_args_t timer_config = {
-        .callback =
-            ad7606_timer_callback,
-
-        .arg =
-            NULL,
-
-        .dispatch_method =
-            ESP_TIMER_TASK,
-
-        .name =
-            "ad7606_tick",
+        .result =
+            ESP_ERR_INVALID_STATE,
     };
 
-    err =
-        esp_timer_create(
-            &timer_config,
-            &s_timer
-        );
-
-    if (err != ESP_OK) {
-        ad7606_driver_deinit();
-
-        return err;
+    if (start_context.ready == NULL) {
+        return ESP_ERR_NO_MEM;
     }
 
-    s_running =
-        true;
-
-    BaseType_t result =
-        xTaskCreate(
+    BaseType_t task_result =
+        xTaskCreatePinnedToCore(
             ad7606_worker,
             "ad7606_acq",
-            4096,
-            NULL,
-            7,
-            &s_task
+            APP_TASK_STACK_AD7606,
+            &start_context,
+            APP_TASK_PRIORITY_AD7606,
+            &s_task,
+            APP_TASK_CORE_REALTIME
         );
 
-    if (result != pdPASS) {
-        s_running =
-            false;
-
-        esp_timer_delete(
-            s_timer
+    if (task_result != pdPASS) {
+        vSemaphoreDelete(
+            start_context.ready
         );
 
-        s_timer =
+        s_task =
             NULL;
-
-        ad7606_driver_deinit();
 
         return ESP_ERR_NO_MEM;
     }
 
-    const uint64_t period_us =
-        1000000ULL /
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
-
-    err =
-        esp_timer_start_periodic(
-            s_timer,
-            period_us
-        );
-
-    if (err != ESP_OK) {
-        ad7606_acquisition_stop();
-
-        return err;
-    }
-
-    ESP_LOGI(
-        TAG,
-        "Started: %d Hz, 8 channels, +/-5 V expected",
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+    /*
+     * Keep the public start() contract synchronous: startup does
+     * not report success until Core 1 has initialized SPI3,
+     * self-tested the ADC and started the sampling timer.
+     */
+    (void)xSemaphoreTake(
+        start_context.ready,
+        portMAX_DELAY
     );
 
-    return ESP_OK;
+    const esp_err_t result =
+        start_context.result;
+
+    vSemaphoreDelete(
+        start_context.ready
+    );
+
+    return result;
 }
 
 
 void ad7606_acquisition_stop(void)
 {
-    if (
-        s_task == NULL &&
-        s_timer == NULL
-    ) {
-        ad7606_driver_deinit();
+    TaskHandle_t task =
+        s_task;
 
+    if (task == NULL) {
         return;
-    }
-
-    if (s_timer != NULL) {
-        (void)esp_timer_stop(
-            s_timer
-        );
     }
 
     s_running =
         false;
 
-    if (s_task != NULL) {
-        xTaskNotifyGive(
-            s_task
-        );
-
-        while (s_task != NULL) {
-            vTaskDelay(
-                pdMS_TO_TICKS(10)
-            );
-        }
-    }
-
-    if (s_timer != NULL) {
-        (void)esp_timer_delete(
-            s_timer
-        );
-
-        s_timer =
-            NULL;
-    }
-
-    ad7606_driver_deinit();
-
-    ESP_LOGI(
-        TAG,
-        "Stopped"
+    xTaskNotifyGive(
+        task
     );
+
+    /*
+     * Worker cleanup includes timer deletion, AD7606 deinit and
+     * SPI3 bus release on Core 1.
+     */
+    while (s_task != NULL) {
+        vTaskDelay(
+            pdMS_TO_TICKS(10)
+        );
+    }
 }
