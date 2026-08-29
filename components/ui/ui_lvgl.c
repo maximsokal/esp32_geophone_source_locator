@@ -80,8 +80,13 @@ esp_err_t ui_lvgl_init(void)
         .color_format =
             LV_COLOR_FORMAT_RGB565,
 
+        /*
+         * The physical ILI9341 is native 240x320. esp_lvgl_port
+         * owns the one and only rotation decision and applies the
+         * verified 320x240 landscape orientation here.
+         */
         .rotation = {
-            .swap_xy = false,
+            .swap_xy = true,
             .mirror_x = false,
             .mirror_y = false,
         },
@@ -112,7 +117,7 @@ esp_err_t ui_lvgl_init(void)
 
     ESP_LOGI(
         TAG,
-        "LVGL 9 display ready: %dx%d, Core %d, RGB565 double-buffer",
+        "LVGL 9 display ready: %dx%d landscape, Core %d, RGB565 double-buffer",
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
         APP_TASK_CORE_SERVICES
