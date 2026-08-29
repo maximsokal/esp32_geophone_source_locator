@@ -30,7 +30,12 @@ typedef struct
 
 typedef struct
 {
+    /*
+     * Must be supplied from the measurement model / calibration. There is no
+     * universal propagation speed for heterogeneous rubble or structures.
+     */
     double propagation_speed_mps;
+
     uint8_t max_iterations;
     double convergence_m;
     double damping;
@@ -50,6 +55,10 @@ typedef struct
 } localization_result_t;
 
 
+/*
+ * Returns numerical solver defaults. propagation_speed_mps is deliberately
+ * zero so the caller must set a measured/modelled value before solving.
+ */
 localization_config_t localization_default_config(void);
 
 
@@ -58,11 +67,11 @@ localization_config_t localization_default_config(void);
  *
  * Arrival times must refer to the same detected event. Sensor positions and
  * propagation speed must use meters / meters-per-second. At least four
- * non-coplanar sensors are required for an unambiguous 3D solution.
+ * non-coplanar sensors are required for a 3D solution.
  *
  * The solver estimates source position from TDOA, then derives emission time
- * from the solved distances. Detection / arrival-picking is intentionally a
- * separate preprocessing responsibility.
+ * from the solved distances. Detection / arrival-picking and propagation-speed
+ * estimation are intentionally separate preprocessing/model responsibilities.
  */
 esp_err_t localization_tdoa_solve(
     const localization_observation_t *observations,
