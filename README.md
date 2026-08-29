@@ -1,8 +1,10 @@
 # ESP32 Geophone Source Locator
 
-ESP32-S3 diploma prototype for seismic/acoustic search under rubble. The device acquires multiple geophone channels simultaneously, stores object/measurement data on microSD, exposes a local web interface, and is being prepared for later event detection and TDOA/source-localization processing.
+ESP32-S3 diploma prototype for seismic search under rubble. The firmware acquires multiple geophone channels simultaneously, stores object/measurement data on microSD, exposes a local web interface, provides a local TFT UI, and now contains a reusable 3D TDOA geometry solver for the later localization pipeline.
 
-The repository is an ESP-IDF project. Current development target is ESP-IDF **v5.5.4** on an ESP32-S3 N16R8 board.
+The project targets **ESP-IDF v5.5.4** on an ESP32-S3 N16R8 board.
+
+For the component/runtime design, task ownership and extension rules, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Current hardware architecture
 
@@ -10,7 +12,7 @@ The repository is an ESP-IDF project. Current development target is ESP-IDF **v5
 
 The controller is an ESP32-S3 with 16 MB flash and 8 MB octal PSRAM.
 
-Octal PSRAM uses GPIO33-GPIO37 internally, so those pins are intentionally not assigned to application peripherals.
+GPIO33-GPIO37 are occupied by octal PSRAM internally and are intentionally not assigned to application peripherals.
 
 ### SPI2: UI and storage
 
@@ -26,7 +28,7 @@ SPI2 is shared only by the TFT and microSD card:
 | TFT RESET | 16 |
 | microSD CS | 17 |
 
-The microSD SPI clock is intentionally limited to **2 MHz** because higher rates were not stable on the current hardware assembly.
+The microSD SPI clock is intentionally limited to **2 MHz** because higher rates were not stable on the current physical assembly.
 
 ### SPI3: dedicated AD7606 acquisition bus
 
@@ -41,11 +43,9 @@ AD7606 is isolated from the display/storage bus and owns SPI3:
 | BUSY | 47 |
 | RST | 2 |
 
-AD7606 serial mode is read-only, therefore SPI3 MOSI is not used.
+AD7606 serial mode is read-only, therefore SPI3 MOSI is unused. A 10 kOhm pull-up is used on AD7606 CS.
 
-A 10 kOhm pull-up is used on the AD7606 CS line.
-
-Current AD7606 board configuration is:
+Current AD7606 board configuration:
 
 - RANGE low: +/-5 V input range;
 - OS0/OS1/OS2 low: no hardware oversampling;
@@ -69,19 +69,21 @@ GPIO1 is reserved by the existing divider/bench wiring and must not be reused fo
 
 ## UI architecture
 
-The TFT application UI uses **LVGL 9** through Espressif's official **esp_lvgl_port** integration. The display component is deliberately limited to the physical `esp_lcd` / ILI9341 panel layer; application widgets, text, layouts, redraws, timing and display buffering belong to LVGL.
+The TFT UI uses **LVGL 9** through Espressif's official **esp_lvgl_port** integration. The display component is limited to the physical `esp_lcd` / ILI9341 layer; widgets, text, QR rendering, navigation, refresh timing and buffering belong to LVGL.
 
-Managed component dependencies are pinned in `main/idf_component.yml`:
+Managed dependencies are pinned through the ESP-IDF Component Manager:
 
 - `espressif/esp_lcd_ili9341 ^2.0.2`;
 - `espressif/esp_lvgl_port ^2.9.0`;
 - `lvgl/lvgl ^9.5.0`.
 
-The previous project-local 5x7 bitmap font and custom character/text rendering stack are not part of the active display component anymore. This prevents each new screen/widget from growing a second home-made GUI framework alongside the application logic.
+The previous project-local 5x7 bitmap font and custom text-rendering stack are no longer part of the active display architecture.
 
-The LVGL handler task is pinned to **Core 0**. The five-button analog keypad remains the physical input device and application key events are dispatched through the existing event bus.
+The LVGL handler task is pinned to **Core 0**. The five-button analog keypad remains the physical input device and application key events are dispatched through the event bus.
 
-Current screens are:
+Screen behavior is registered through one `ui_screen_driver_t` table. Open/render/key/refresh behavior and the Home menu label therefore have one source of truth instead of duplicated enum/switch routing.
+
+Current screens:
 
 - Home;
 - Objects;
@@ -97,15 +99,15 @@ The **Measurements** screen is live, not a placeholder. For the AD7606 build it 
 - real-time core assignment;
 - SPI3 transport, SPI mode and bus clock;
 - configured +/-5 V range and hardware oversampling ratio;
-- total successful reads and ADC read errors;
+- successful sample count, read errors and consecutive failures;
 - age of the last simultaneous sample;
 - live V1..V8 values in mV.
 
-The acquisition source is still selected at build time with Kconfig. The UI reports the actual selected backend; it does not pretend to switch hardware backends at runtime.
+The UI consumes a read-only `seismic_acquisition_snapshot_t`; it does not access AD7606 GPIO or SPI functions directly.
 
 ## CPU/task policy
 
-Application-owned work is split by role:
+Application-owned tasks are split by role.
 
 ### Core 0 - services
 
@@ -116,14 +118,17 @@ Application-owned work is split by role:
 - power-button monitor;
 - Wi-Fi/HTTP-facing application work.
 
-### Core 1 - real-time acquisition
+### Core 1 - real-time side
 
 - AD7606 acquisition;
 - ESP ADC bench acquisition source;
 - synthetic seismic test source;
-- future signal preprocessing, event detection and localization.
+- future signal preprocessing / event detection;
+- future continuous localization worker if required.
 
-The AD7606 task initializes and owns SPI3 on Core 1 so the SPI3 interrupt affinity follows the real-time acquisition side.
+All application task priorities, stacks and core assignments are centralized in `components/app_config/include/app_task_config.h`.
+
+The AD7606 task initializes and owns SPI3 on Core 1 so the dedicated acquisition bus and its interrupt affinity remain on the real-time side.
 
 ## Seismic acquisition pipeline
 
@@ -134,18 +139,19 @@ geophone
    -> low-noise analog amplifier/filter
    -> AD7606 simultaneous analog inputs
    -> CONVST
-   -> BUSY
+   -> timestamp captured at the sampling event
+   -> BUSY completion
    -> SPI3 read of V1..V8
-   -> timestamped acquisition status + seismic frame
-   -> lock-minimized ring buffer
-   -> web/UI/recording consumers
+   -> acquisition diagnostics snapshot
+   -> seismic ring buffer
+   -> web / recording / future signal processing
 ```
 
-The frame timestamp is captured at the CONVST sampling event, not after the later SPI transfer.
+The frame timestamp is captured immediately after the CONVST rising edge, not after BUSY handling and SPI transfer.
 
-The seismic ring buffer uses short metadata critical sections plus per-slot publication sequencing. Web snapshots do not hold a mutex while copying hundreds of waveform frames, so HTTP reads cannot block the acquisition producer for the duration of a large copy.
+The seismic ring buffer uses short metadata critical sections plus per-slot publication sequencing. HTTP snapshots do not hold a long mutex while copying hundreds of waveform frames, so a slow web reader does not block the acquisition producer for the duration of the copy.
 
-## Acquisition sources
+## Acquisition source interface
 
 The source is selected at build time in `menuconfig`:
 
@@ -153,7 +159,61 @@ The source is selected at build time in `menuconfig`:
 - `ESP32-S3 ADC geophone bench input` - temporary direct ADC bench mode;
 - `Synthetic test waveform` - software-only waveform source.
 
-The selected backend is represented by one acquisition driver descriptor, which owns start/stop/name/sample-rate behavior and updates the shared device acquisition status. A separate read-only acquisition snapshot feeds diagnostics such as the LVGL Measurements screen without coupling the UI directly to one ADC implementation.
+Each backend implements the same private `seismic_source_driver_t` interface. The acquisition orchestrator itself is backend-agnostic; compile-time selection is isolated in the source registry. Runtime source switching is intentionally not exposed yet.
+
+Current backend files:
+
+- `seismic_source_ad7606.c`;
+- `seismic_source_esp_adc.c`;
+- `seismic_source_test.c`.
+
+Adding a new source should add a descriptor and registry entry rather than adding source-specific branches to `seismic_acquisition.c`.
+
+## TDOA localization component
+
+The repository now contains an independent `localization` component with a reusable 3D TDOA solver:
+
+```c
+esp_err_t localization_tdoa_solve(...);
+```
+
+It accepts:
+
+- 4..8 sensor positions in meters;
+- one arrival timestamp per sensor for the same detected event;
+- a propagation speed in m/s;
+- an optional initial source-position guess.
+
+It returns:
+
+- estimated `(x, y, z)` source position;
+- estimated emission time;
+- RMS timing residual;
+- iteration count;
+- convergence status.
+
+The solver rejects degenerate/coplanar 3D sensor geometry and uses damped nonlinear least-squares iterations.
+
+**Important:** this does not mean the end-to-end locator is finished. The firmware still needs a validated preprocessing/event-detection stage that converts raw geophone data into reliable per-channel arrival timestamps. The propagation speed also cannot be hard-coded as a universal constant for heterogeneous rubble; `localization_default_config()` deliberately leaves `propagation_speed_mps` unset so the caller must provide a measured or modelled value.
+
+Planned end-to-end path:
+
+```text
+AD7606 frames
+   -> filtering / preprocessing
+   -> event detection
+   -> per-channel arrival-time picking
+   -> sensor position / height data
+   -> propagation model
+   -> localization_tdoa_solve()
+   -> source position + residual / quality
+```
+
+## Current timing limitation
+
+Timestamp placement is already correct: timestamps represent CONVST, not later SPI completion.
+
+The periodic trigger is still initiated by `esp_timer` + task notification. That is acceptable for the current bench stage, but it is not claimed to be the final deterministic sampling architecture. If the later TDOA error budget shows scheduler/trigger jitter to be significant, CONVST timing must move to a hardware-timed path rather than merely changing where software reads a timestamp.
 
 ## Storage and safe shutdown
 
@@ -167,49 +227,51 @@ keypad monitor
 -> storage service
 -> object service
 -> seismic acquisition
--> HTTP/Wi-Fi
+-> HTTP / Wi-Fi
 -> storage manager
 -> SD unmount
 -> display disable/deinit
 -> power-off pulse
 ```
 
-The SD card handle is cleared only after a successful FAT unmount. If unmount fails, the handle remains available so software state still reflects the mounted card.
+The SD handle is cleared only after successful FAT unmount. If unmount fails, software state still reflects that the card handle is present.
 
-The TFT Storage screen requires a second confirmation press before application data erase is started.
+The TFT Storage screen requires a second confirmation before application-data erase is started.
 
 ## Web interface
 
-The firmware starts a local HTTP server and exposes device/seismic data APIs, including:
+The firmware starts a local HTTP server and exposes device/seismic APIs including:
 
 - `/api/status`
 - `/api/seismic`
 
-`/api/seismic` can return a snapshot of recent waveform frames without holding the acquisition producer behind a long copy operation.
+`/api/seismic` can return recent waveform frames without holding the acquisition producer behind a long reader-side copy.
+
+The web component exposes only `include/web_server.h` publicly. Internal routes, JSON helpers, setup parsing and static-asset declarations share one private `web_server_internal.h` instead of a separate private header for every `.c` file.
 
 ## Build
 
 Install ESP-IDF v5.5.4 and open an ESP-IDF terminal in the repository directory.
 
-When managed dependencies change, run:
+When managed dependencies change:
 
 ```powershell
 idf.py reconfigure
 ```
 
-Then build:
+Build:
 
 ```powershell
 idf.py build
 ```
 
-To select another seismic source:
+Select another seismic backend:
 
 ```powershell
 idf.py menuconfig
 ```
 
-Then open **Seismic Acquisition** and select the required backend.
+Then open **Seismic Acquisition** and select the required source.
 
 ## Flash and monitor
 
@@ -221,14 +283,14 @@ idf.py -p COM4 flash
 
 In the current bench setup an external USB-to-TTL adapter can be used as a passive UART monitor while the device runs from the 2x18650 power system. The external adapter must not power the ESP32 board.
 
-Typical passive monitor wiring is:
+Typical passive monitor wiring:
 
 ```text
 ESP32 GPIO43 TX -> USB-TTL RXD
 ESP32 GND       -> USB-TTL GND
 ```
 
-The USB-TTL TXD and power pins are not required for log-only monitoring.
+USB-TTL TXD and power pins are not required for log-only monitoring.
 
 Example:
 
@@ -236,7 +298,7 @@ Example:
 idf.py -p COM6 monitor
 ```
 
-COM numbers are development-machine specific and may be different on another PC.
+COM numbers are development-machine specific.
 
 ## Hardware bring-up checks
 
@@ -263,24 +325,33 @@ The same V8 value should appear on the LVGL Measurements screen. Exact values de
 
 Implemented foundations include:
 
+- componentized ESP-IDF architecture;
+- centralized application task/core/priority policy;
 - LVGL 9 TFT UI with five-button keypad navigation;
+- one UI screen-driver registry instead of duplicated screen switches;
 - live AD7606 transport/acquisition/channel diagnostics on TFT;
 - microSD object storage and recovery;
 - safe power-down flow;
 - Wi-Fi and local web server;
+- unified web component-private interface convention;
 - simultaneous AD7606 acquisition;
 - dedicated SPI3 acquisition bus;
-- Core 0/Core 1 task separation;
+- Core 0 / Core 1 task separation;
 - CONVST-time frame timestamps;
-- non-blocking waveform snapshot architecture.
+- non-blocking waveform snapshot architecture;
+- common acquisition-backend driver interface/registry;
+- reusable 3D TDOA localization solver;
+- `ARCHITECTURE.md` with runtime and real-time design rules.
 
-Still planned for later stages:
+Still required for an end-to-end source-location system:
 
 - final low-noise geophone analog front ends;
-- sensor-pod barometer/IMU integration;
-- event detection and signal preprocessing;
-- deterministic higher-precision acquisition timing where required;
-- TDOA/source-localization algorithm;
+- sensor-pod barometer/IMU integration and validated sensor geometry;
+- signal filtering / preprocessing;
+- event detection and per-channel arrival-time picking;
+- measured/modelled propagation-speed strategy for rubble;
+- localization integration with actual events and quality/rejection criteria;
+- deterministic hardware-timed acquisition if required by the measured timing error budget;
 - calibration and quantified measurement accuracy.
 
 This repository is a development/diploma prototype and is not a certified rescue instrument.
