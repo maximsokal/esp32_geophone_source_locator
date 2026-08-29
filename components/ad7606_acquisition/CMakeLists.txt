@@ -6,6 +6,7 @@ idf_component_register(
         "include"
 
     REQUIRES
+        app_config
         ad7606_driver
         seismic_buffer
         esp_timer

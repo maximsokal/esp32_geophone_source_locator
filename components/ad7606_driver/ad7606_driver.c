@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 #include "board_config.h"
-#include "spi_bus.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -30,18 +29,9 @@ static const char *TAG =
 
 /*
  * Normal conversion itself is only a few microseconds.
- * 100 us gives generous margin for Stage 11A polling.
+ * 100 us gives generous margin for Stage 11B polling.
  */
 #define AD7606_BUSY_RELEASE_TIMEOUT_US          100
-
-/*
- * Boot-only idle wait.
- *
- * This is NOT a RESET validation rule.
- * We simply must not start a conversion while BUSY is HIGH,
- * because a CONVST edge while BUSY is active may be ignored.
- */
-#define AD7606_STARTUP_IDLE_TIMEOUT_US          50000
 
 #define AD7606_FULL_SCALE_UV                    5000000.0f
 #define AD7606_CODES_PER_HALF_RANGE             32768.0f
@@ -49,6 +39,9 @@ static const char *TAG =
 
 static spi_device_handle_t s_spi_device =
     NULL;
+
+static bool s_spi_bus_initialized =
+    false;
 
 static bool s_initialized =
     false;
@@ -96,7 +89,8 @@ static esp_err_t ad7606_configure_gpio(void)
     const gpio_config_t output_config = {
         .pin_bit_mask =
             (1ULL << BOARD_AD7606_RESET_GPIO) |
-            (1ULL << BOARD_AD7606_CONVST_GPIO),
+            (1ULL << BOARD_AD7606_CONVST_GPIO) |
+            (1ULL << BOARD_AD7606_CS_GPIO),
 
         .mode =
             GPIO_MODE_OUTPUT,
@@ -146,6 +140,21 @@ static esp_err_t ad7606_configure_gpio(void)
         return err;
     }
 
+    /*
+     * Keep the ADC deselected before SPI3 takes ownership of CS.
+     * The hardware 10 kOhm pull-up on CS provides the same safe
+     * state before the ESP32 configures this GPIO.
+     */
+    err =
+        gpio_set_level(
+            BOARD_AD7606_CS_GPIO,
+            1
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
     err =
         gpio_set_level(
             BOARD_AD7606_RESET_GPIO,
@@ -168,10 +177,87 @@ static esp_err_t ad7606_configure_gpio(void)
 
     ESP_LOGI(
         TAG,
-        "GPIO configured: RESET=%d CONVST=%d BUSY=%d",
+        "GPIO configured: RESET=%d CONVST=%d BUSY=%d CS=%d",
         BOARD_AD7606_RESET_GPIO,
         BOARD_AD7606_CONVST_GPIO,
-        BOARD_AD7606_BUSY_GPIO
+        BOARD_AD7606_BUSY_GPIO,
+        BOARD_AD7606_CS_GPIO
+    );
+
+    return ESP_OK;
+}
+
+
+static esp_err_t ad7606_init_spi_bus(void)
+{
+    const spi_bus_config_t bus_config = {
+        .mosi_io_num =
+            -1,
+
+        .miso_io_num =
+            BOARD_AD7606_SPI_MISO_GPIO,
+
+        .sclk_io_num =
+            BOARD_AD7606_SPI_SCLK_GPIO,
+
+        .quadwp_io_num =
+            -1,
+
+        .quadhd_io_num =
+            -1,
+
+        .data4_io_num =
+            -1,
+
+        .data5_io_num =
+            -1,
+
+        .data6_io_num =
+            -1,
+
+        .data7_io_num =
+            -1,
+
+        .max_transfer_sz =
+            AD7606_CHANNEL_COUNT * 2,
+
+        .flags =
+            SPICOMMON_BUSFLAG_MASTER,
+
+        .intr_flags =
+            0,
+    };
+
+    ESP_LOGI(
+        TAG,
+        "Initializing dedicated SPI3: MISO=%d SCLK=%d",
+        BOARD_AD7606_SPI_MISO_GPIO,
+        BOARD_AD7606_SPI_SCLK_GPIO
+    );
+
+    esp_err_t err =
+        spi_bus_initialize(
+            BOARD_AD7606_SPI_HOST,
+            &bus_config,
+            SPI_DMA_CH_AUTO
+        );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "SPI3 bus initialization failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return err;
+    }
+
+    s_spi_bus_initialized =
+        true;
+
+    ESP_LOGI(
+        TAG,
+        "SPI3 initialized successfully"
     );
 
     return ESP_OK;
@@ -209,7 +295,7 @@ static esp_err_t ad7606_add_spi_device(void)
 
     esp_err_t err =
         spi_bus_add_device(
-            app_spi_bus_get_host(),
+            BOARD_AD7606_SPI_HOST,
             &config,
             &s_spi_device
         );
@@ -217,13 +303,54 @@ static esp_err_t ad7606_add_spi_device(void)
     if (err == ESP_OK) {
         ESP_LOGI(
             TAG,
-            "SPI registered: SPI2 mode=2 clock=%d Hz CS=%d",
+            "SPI device registered: SPI3 mode=2 clock=%d Hz CS=%d",
             AD7606_SPI_CLOCK_HZ,
             BOARD_AD7606_CS_GPIO
         );
     }
 
     return err;
+}
+
+
+static void ad7606_release_spi(void)
+{
+    if (s_spi_device != NULL) {
+        esp_err_t err =
+            spi_bus_remove_device(
+                s_spi_device
+            );
+
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "SPI3 device removal failed: %s",
+                esp_err_to_name(err)
+            );
+        }
+
+        s_spi_device =
+            NULL;
+    }
+
+    if (s_spi_bus_initialized) {
+        esp_err_t err =
+            spi_bus_free(
+                BOARD_AD7606_SPI_HOST
+            );
+
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "SPI3 bus free failed: %s",
+                esp_err_to_name(err)
+            );
+        }
+        else {
+            s_spi_bus_initialized =
+                false;
+        }
+    }
 }
 
 
@@ -288,7 +415,7 @@ static esp_err_t ad7606_hardware_reset(void)
 
 
 /*
- * One complete conversion + 8-channel SPI read.
+ * One complete simultaneous conversion + 8-channel SPI read.
  *
  * This internal function deliberately does NOT check
  * s_initialized, because init() itself uses it for the
@@ -302,9 +429,12 @@ static esp_err_t ad7606_read_once(
         return ESP_ERR_INVALID_ARG;
     }
 
+    sample->timestamp_us =
+        0;
+
     /*
      * Start simultaneous conversion.
-     * CVA and CVB are physically tied together to GPIO9.
+     * CVA and CVB are physically tied together to GPIO42.
      */
     esp_err_t err =
         gpio_set_level(
@@ -315,6 +445,13 @@ static esp_err_t ad7606_read_once(
     if (err != ESP_OK) {
         return err;
     }
+
+    /*
+     * Capture the sample timestamp immediately after the rising
+     * CONVST edge, rather than after BUSY handling and SPI readout.
+     */
+    sample->timestamp_us =
+        esp_timer_get_time();
 
     esp_rom_delay_us(
         AD7606_CONVST_PULSE_US
@@ -332,17 +469,12 @@ static esp_err_t ad7606_read_once(
 
     /*
      * Do not require software to catch the short BUSY-HIGH
-     * interval.
-     *
-     * Wait beyond the conversion time first.
+     * interval. Wait beyond the conversion time first.
      */
     esp_rom_delay_us(
         AD7606_CONVERSION_GUARD_US
     );
 
-    /*
-     * If conversion is still active, wait for its completion.
-     */
     if (
         gpio_get_level(
             BOARD_AD7606_BUSY_GPIO
@@ -429,9 +561,6 @@ static esp_err_t ad7606_self_test(void)
      * On this HW-AD7606-F4 module BUSY can be HIGH after RESET,
      * while the first real CONVST + SPI transaction still works
      * correctly.
-     *
-     * Therefore the authoritative initialization test is the
-     * conversion itself, not BUSY state before the first CONVST.
      */
     const int busy_before_first_conversion =
         gpio_get_level(
@@ -482,6 +611,7 @@ static esp_err_t ad7606_self_test(void)
     return ESP_OK;
 }
 
+
 esp_err_t ad7606_driver_init(void)
 {
     if (s_initialized) {
@@ -505,6 +635,13 @@ esp_err_t ad7606_driver_init(void)
     }
 
     err =
+        ad7606_init_spi_bus();
+
+    if (err != ESP_OK) {
+        goto fail;
+    }
+
+    err =
         ad7606_add_spi_device();
 
     if (err != ESP_OK) {
@@ -514,7 +651,7 @@ esp_err_t ad7606_driver_init(void)
             esp_err_to_name(err)
         );
 
-        return err;
+        goto fail;
     }
 
     err =
@@ -533,7 +670,7 @@ esp_err_t ad7606_driver_init(void)
     /*
      * Initialization is not considered successful until one
      * real conversion has completed and all 8 words have been
-     * read over SPI.
+     * read over the dedicated SPI3 bus.
      */
     err =
         ad7606_self_test();
@@ -547,7 +684,7 @@ esp_err_t ad7606_driver_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized successfully: 8 channels, SPI2 mode=2, clock=%d Hz",
+        "Initialized successfully: 8 channels, SPI3 mode=2, clock=%d Hz",
         AD7606_SPI_CLOCK_HZ
     );
 
@@ -556,14 +693,12 @@ esp_err_t ad7606_driver_init(void)
 
 fail:
 
-    if (s_spi_device != NULL) {
-        (void)spi_bus_remove_device(
-            s_spi_device
-        );
+    ad7606_release_spi();
 
-        s_spi_device =
-            NULL;
-    }
+    (void)gpio_set_level(
+        BOARD_AD7606_CS_GPIO,
+        1
+    );
 
     (void)gpio_set_level(
         BOARD_AD7606_CONVST_GPIO,
@@ -587,14 +722,12 @@ fail:
 
 void ad7606_driver_deinit(void)
 {
-    if (s_spi_device != NULL) {
-        (void)spi_bus_remove_device(
-            s_spi_device
-        );
+    ad7606_release_spi();
 
-        s_spi_device =
-            NULL;
-    }
+    (void)gpio_set_level(
+        BOARD_AD7606_CS_GPIO,
+        1
+    );
 
     (void)gpio_set_level(
         BOARD_AD7606_CONVST_GPIO,

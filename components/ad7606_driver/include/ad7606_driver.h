@@ -10,6 +10,12 @@
 
 typedef struct
 {
+    /*
+     * Timestamp captured immediately after the CONVST rising edge
+     * that starts the simultaneous conversion of all 8 channels.
+     */
+    int64_t timestamp_us;
+
     int16_t raw[AD7606_CHANNEL_COUNT];
 
 } ad7606_sample_t;

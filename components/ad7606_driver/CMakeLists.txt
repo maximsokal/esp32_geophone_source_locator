@@ -7,7 +7,6 @@ idf_component_register(
 
     REQUIRES
         board_config
-        spi_bus
         esp_driver_gpio
         esp_driver_spi
         esp_timer
