@@ -4,6 +4,7 @@
 #include "app_storage_boot.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "adc_service.h"
 #include "app_event_bus.h"
@@ -29,6 +30,47 @@
 
 static const char *TAG =
     "APP";
+
+
+static void app_startup_log_elapsed(
+    const char *stage,
+    uint32_t started_ms
+)
+{
+    const uint32_t elapsed_ms =
+        esp_log_timestamp() -
+        started_ms;
+
+    ESP_LOGI(
+        TAG,
+        "BOOT_TIMING: %s=%u ms",
+        stage,
+        (unsigned)elapsed_ms
+    );
+}
+
+
+static esp_err_t app_startup_show_boot_screen(void)
+{
+    esp_err_t err =
+        display_fill(
+            DISPLAY_COLOR_BLACK
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return
+        display_draw_text_fast(
+            20,
+            24,
+            "STARTING...",
+            DISPLAY_COLOR_WHITE,
+            DISPLAY_COLOR_BLACK,
+            2
+        );
+}
 
 
 static void app_startup_initialize_core(void)
@@ -57,29 +99,84 @@ static void app_startup_initialize_core(void)
         keypad_init()
     );
 
+    const uint32_t spi_started_ms =
+        esp_log_timestamp();
+
     ESP_ERROR_CHECK(
         app_spi_bus_init()
+    );
+
+    app_startup_log_elapsed(
+        "spi_bus_init",
+        spi_started_ms
     );
 }
 
 
 static void app_startup_initialize_services(void)
 {
+    uint32_t stage_started_ms =
+        esp_log_timestamp();
+
     ESP_ERROR_CHECK(
         display_init()
     );
+
+    app_startup_log_elapsed(
+        "display_init",
+        stage_started_ms
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
+
+    ESP_ERROR_CHECK(
+        app_startup_show_boot_screen()
+    );
+
+    app_startup_log_elapsed(
+        "boot_screen",
+        stage_started_ms
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
 
     ESP_ERROR_CHECK(
         storage_manager_init()
     );
 
+    app_startup_log_elapsed(
+        "storage_manager_init",
+        stage_started_ms
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
+
     ESP_ERROR_CHECK(
         object_recovery_run()
     );
 
+    app_startup_log_elapsed(
+        "object_recovery_run",
+        stage_started_ms
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
+
     ESP_ERROR_CHECK(
         object_store_init()
     );
+
+    app_startup_log_elapsed(
+        "object_store_init",
+        stage_started_ms
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
 
     ESP_ERROR_CHECK(
         object_service_init()
@@ -112,14 +209,27 @@ static void app_startup_initialize_services(void)
         )
     );
 
+    app_startup_log_elapsed(
+        "runtime_services",
+        stage_started_ms
+    );
+
     /*
      * Acquisition hardware is allowed to be absent/faulty
      * during hardware bring-up.
      *
      * A failed ADC must not reboot the entire controller.
      */
+    stage_started_ms =
+        esp_log_timestamp();
+
     const esp_err_t acquisition_err =
         seismic_acquisition_start();
+
+    app_startup_log_elapsed(
+        "seismic_acquisition_start",
+        stage_started_ms
+    );
 
     if (acquisition_err != ESP_OK) {
         ESP_LOGE(
@@ -156,11 +266,27 @@ static void app_startup_initialize_services(void)
 
 void app_startup_run(void)
 {
+    const uint32_t startup_started_ms =
+        esp_log_timestamp();
+
     app_startup_initialize_core();
 
+    const uint32_t sd_started_ms =
+        esp_log_timestamp();
+
     app_storage_boot_run_diagnostic();
+
+    app_startup_log_elapsed(
+        "sd_boot_diagnostic",
+        sd_started_ms
+    );
 
     app_startup_initialize_services();
 
     app_startup_log_success();
+
+    app_startup_log_elapsed(
+        "startup_total",
+        startup_started_ms
+    );
 }

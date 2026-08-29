@@ -1,5 +1,6 @@
 #include "object_recovery_internal.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/stat.h>
 
@@ -11,6 +12,25 @@
 
 static const char *TAG =
     "OBJECT_RECOVERY";
+
+
+static void object_recovery_log_boot_timing(
+    const char *object_id,
+    const char *stage,
+    uint32_t started_ms
+)
+{
+    ESP_LOGI(
+        TAG,
+        "BOOT_TIMING: object=%s %s=%u ms",
+        object_id,
+        stage,
+        (unsigned)(
+            esp_log_timestamp() -
+            started_ms
+        )
+    );
+}
 
 
 esp_err_t object_recovery_check_one(
@@ -51,12 +71,22 @@ esp_err_t object_recovery_check_one(
 
     struct stat info;
 
-    if (
+    uint32_t stage_started_ms =
+        esp_log_timestamp();
+
+    const int stat_result =
         stat(
             object_directory,
             &info
-        ) != 0
-    ) {
+        );
+
+    object_recovery_log_boot_timing(
+        object_id,
+        "directory_stat",
+        stage_started_ms
+    );
+
+    if (stat_result != 0) {
         return ESP_FAIL;
     }
 
@@ -74,6 +104,9 @@ esp_err_t object_recovery_check_one(
     bool recovered =
         false;
 
+    stage_started_ms =
+        esp_log_timestamp();
+
     esp_err_t err =
         object_recovery_fs_prepare_metadata(
             object_directory,
@@ -81,6 +114,12 @@ esp_err_t object_recovery_check_one(
             &valid,
             &recovered
         );
+
+    object_recovery_log_boot_timing(
+        object_id,
+        "prepare_metadata",
+        stage_started_ms
+    );
 
     if (err != ESP_OK) {
         ESP_LOGE(
@@ -110,10 +149,19 @@ esp_err_t object_recovery_check_one(
         object_id
     );
 
+    stage_started_ms =
+        esp_log_timestamp();
+
     err =
         storage_manager_remove_tree(
             object_directory
         );
+
+    object_recovery_log_boot_timing(
+        object_id,
+        "remove_incomplete_tree",
+        stage_started_ms
+    );
 
     if (err != ESP_OK) {
         return err;
