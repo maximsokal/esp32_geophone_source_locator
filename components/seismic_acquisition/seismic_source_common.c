@@ -1,5 +1,7 @@
 #include "seismic_source_driver.h"
 
+#include <stddef.h>
+
 #include "seismic_buffer.h"
 
 
