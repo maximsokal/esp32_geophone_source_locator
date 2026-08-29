@@ -82,10 +82,12 @@ typedef struct
 ui_context_t *ui_context(void);
 
 
+/* LVGL/esp_lcd bridge lifecycle. */
 esp_err_t ui_lvgl_init(void);
 void ui_lvgl_deinit(void);
 
 
+/* Shared shell/layout primitives. Caller holds the LVGL port lock. */
 void ui_render_boot_locked(
     const char *stage
 );
@@ -97,40 +99,6 @@ void ui_render_boot_error_locked(
 void ui_render_current_locked(void);
 void ui_refresh_dynamic_locked(void);
 void ui_refresh_header_locked(void);
-
-
-void ui_render_home_locked(void);
-void ui_render_measurements_locked(void);
-void ui_measurements_refresh_locked(void);
-void ui_render_objects_locked(void);
-void ui_render_storage_locked(void);
-void ui_render_wifi_locked(void);
-void ui_render_system_locked(void);
-
-
-void ui_dispatch_key_locked(
-    keypad_key_t key
-);
-
-void ui_dispatch_app_event_locked(
-    int event_type
-);
-
-
-esp_err_t ui_event_task_start(void);
-void ui_event_task_stop(void);
-
-
-void ui_object_service_event(
-    const object_service_event_t *event,
-    void *user_context
-);
-
-void ui_storage_service_event(
-    const storage_service_event_t *event,
-    void *user_context
-);
-
 
 lv_obj_t *ui_create_screen_base_locked(
     const char *title,
@@ -154,4 +122,61 @@ lv_obj_t *ui_create_row_locked(
 
 void ui_set_notice_locked(
     const char *text
+);
+
+
+/* Screen renderers. */
+void ui_render_home_locked(void);
+void ui_render_measurements_locked(void);
+void ui_measurements_refresh_locked(void);
+void ui_render_objects_locked(void);
+void ui_render_storage_locked(void);
+void ui_render_wifi_locked(void);
+void ui_render_system_locked(void);
+
+
+/* Navigation/input policy. */
+void ui_open_home_locked(void);
+
+void ui_move_index(
+    size_t *value,
+    size_t count,
+    bool down
+);
+
+void ui_handle_objects_key_locked(
+    keypad_key_t key
+);
+
+void ui_handle_storage_key_locked(
+    keypad_key_t key
+);
+
+void ui_handle_wifi_key_locked(
+    keypad_key_t key
+);
+
+void ui_dispatch_key_locked(
+    keypad_key_t key
+);
+
+void ui_dispatch_app_event_locked(
+    int event_type
+);
+
+
+/* Application event worker. */
+esp_err_t ui_event_task_start(void);
+void ui_event_task_stop(void);
+
+
+/* Async service callbacks. */
+void ui_object_service_event(
+    const object_service_event_t *event,
+    void *user_context
+);
+
+void ui_storage_service_event(
+    const storage_service_event_t *event,
+    void *user_context
 );
