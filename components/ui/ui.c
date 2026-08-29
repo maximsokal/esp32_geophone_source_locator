@@ -110,6 +110,29 @@ void ui_boot_set_stage(
 }
 
 
+void ui_boot_show_error(
+    const char *message
+)
+{
+    if (
+        !s_context.port_ready ||
+        message == NULL
+    ) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_error_locked(
+        message
+    );
+
+    lvgl_port_unlock();
+}
+
+
 esp_err_t ui_init(void)
 {
     if (!s_context.port_ready) {

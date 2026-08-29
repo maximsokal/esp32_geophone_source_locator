@@ -1,0 +1,2 @@
+# LVGL features intentionally enabled by the project UI.
+CONFIG_LV_USE_QRCODE=y
