@@ -6,100 +6,40 @@
 #include "esp_lvgl_port.h"
 
 
-#define UI_OBJECT_COLOR_TEXT     0xF3F7FB
-#define UI_OBJECT_COLOR_MUTED    0x94A7BC
-#define UI_OBJECT_COLOR_ACCENT   0x21C7D9
-#define UI_OBJECT_COLOR_WARNING  0xF3B84B
-#define UI_OBJECT_COLOR_ERROR    0xF05A67
-
-
-static lv_obj_t *ui_objects_label(
-    lv_obj_t *parent,
-    int x,
-    int y,
-    int width,
-    const char *text,
-    uint32_t color
-)
+static void ui_objects_render_notice(lv_obj_t *screen)
 {
-    lv_obj_t *label =
-        lv_label_create(
-            parent
-        );
-
-    lv_obj_set_pos(
-        label,
-        x,
-        y
-    );
-
-    lv_obj_set_width(
-        label,
-        width
-    );
-
-    lv_label_set_text(
-        label,
-        text
-    );
-
-    lv_obj_set_style_text_color(
-        label,
-        lv_color_hex(color),
-        0
-    );
-
-    return label;
-}
-
-
-static void ui_objects_render_notice(
-    lv_obj_t *screen
-)
-{
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
     if (context->notice[0] == '\0') {
         return;
     }
 
-    ui_objects_label(
+    (void)ui_create_label_locked(
         screen,
         12,
         196,
         296,
         context->notice,
-        UI_OBJECT_COLOR_WARNING
+        UI_COLOR_WARNING
     );
 }
 
 
-static void ui_objects_render_menu(
-    lv_obj_t *screen
-)
+static void ui_objects_render_menu(lv_obj_t *screen)
 {
-    ui_context_t *context =
-        ui_context();
-
+    ui_context_t *context = ui_context();
     object_service_summary_t active;
 
-    lv_obj_t *active_card =
-        ui_create_card_locked(
-            screen,
-            10,
-            42,
-            300,
-            42
-        );
+    lv_obj_t *active_card = ui_create_card_locked(
+        screen, 10, 42, 300, 42
+    );
 
-    if (
-        object_service_get_active(
-            &active
-        ) == ESP_OK
-    ) {
+    if (active_card == NULL) {
+        return;
+    }
+
+    if (object_service_get_active(&active) == ESP_OK) {
         char text[64];
-
         snprintf(
             text,
             sizeof(text),
@@ -108,22 +48,22 @@ static void ui_objects_render_menu(
             active.name
         );
 
-        ui_objects_label(
+        (void)ui_create_label_locked(
             active_card,
             10,
             12,
             280,
             text,
-            UI_OBJECT_COLOR_ACCENT
+            UI_COLOR_ACCENT
         );
     } else {
-        ui_objects_label(
+        (void)ui_create_label_locked(
             active_card,
             10,
             12,
             280,
             "ACTIVE  NONE",
-            UI_OBJECT_COLOR_MUTED
+            UI_COLOR_MUTED
         );
     }
 
@@ -134,7 +74,7 @@ static void ui_objects_render_menu(
     };
 
     for (size_t i = 0; i < 3; ++i) {
-        ui_create_row_locked(
+        (void)ui_create_row_locked(
             screen,
             92 + (int)(i * 34U),
             actions[i],
@@ -142,65 +82,52 @@ static void ui_objects_render_menu(
         );
     }
 
-    ui_objects_render_notice(
-        screen
-    );
+    ui_objects_render_notice(screen);
 }
 
 
-static void ui_objects_render_list(
-    lv_obj_t *screen
-)
+static void ui_objects_render_list(lv_obj_t *screen)
 {
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
     const char *caption =
-        context->objects_mode ==
-                UI_OBJECTS_SELECT_ACTIVE
+        context->objects_mode == UI_OBJECTS_SELECT_ACTIVE
             ? "SELECT OBJECT TO ACTIVATE"
             : "SELECT OBJECT TO DELETE";
 
-    ui_objects_label(
+    (void)ui_create_label_locked(
         screen,
         12,
         42,
         296,
         caption,
-        UI_OBJECT_COLOR_MUTED
+        UI_COLOR_MUTED
     );
 
     if (context->object_count == 0) {
-        ui_objects_label(
+        (void)ui_create_label_locked(
             screen,
             12,
             84,
             296,
             "NO OBJECTS",
-            UI_OBJECT_COLOR_WARNING
+            UI_COLOR_WARNING
         );
-
-        ui_objects_render_notice(
-            screen
-        );
-
+        ui_objects_render_notice(screen);
         return;
     }
 
-    size_t page_start =
-        (context->object_index / 4U) *
-        4U;
+    const size_t page_start =
+        (context->object_index / 4U) * 4U;
 
     for (size_t row = 0; row < 4; ++row) {
-        const size_t index =
-            page_start + row;
+        const size_t index = page_start + row;
 
         if (index >= context->object_count) {
             break;
         }
 
         char text[64];
-
         snprintf(
             text,
             sizeof(text),
@@ -212,7 +139,7 @@ static void ui_objects_render_list(
                 : ""
         );
 
-        ui_create_row_locked(
+        (void)ui_create_row_locked(
             screen,
             62 + (int)(row * 34U),
             text,
@@ -220,93 +147,77 @@ static void ui_objects_render_list(
         );
     }
 
-    ui_objects_render_notice(
-        screen
-    );
+    ui_objects_render_notice(screen);
 }
 
 
-static void ui_objects_render_delete_confirm(
-    lv_obj_t *screen
-)
+static void ui_objects_render_delete_confirm(lv_obj_t *screen)
 {
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
-    lv_obj_t *card =
-        ui_create_card_locked(
-            screen,
-            16,
-            62,
-            288,
-            112
-        );
+    lv_obj_t *card = ui_create_card_locked(
+        screen, 16, 62, 288, 112
+    );
 
-    ui_objects_label(
+    if (card == NULL) {
+        return;
+    }
+
+    (void)ui_create_label_locked(
         card,
         14,
         14,
         260,
         "DELETE OBJECT?",
-        UI_OBJECT_COLOR_ERROR
+        UI_COLOR_ERROR
     );
 
     if (
         context->object_count > 0 &&
-        context->object_index <
-            context->object_count
+        context->object_index < context->object_count
     ) {
         char text[80];
-
         snprintf(
             text,
             sizeof(text),
             "%s  %s",
-            context->objects[
-                context->object_index
-            ].id,
-            context->objects[
-                context->object_index
-            ].name
+            context->objects[context->object_index].id,
+            context->objects[context->object_index].name
         );
 
-        ui_objects_label(
+        (void)ui_create_label_locked(
             card,
             14,
             45,
             260,
             text,
-            UI_OBJECT_COLOR_TEXT
+            UI_COLOR_TEXT
         );
     }
 
-    ui_objects_label(
+    (void)ui_create_label_locked(
         card,
         14,
         75,
         260,
         "OK/RIGHT CONFIRM   LEFT CANCEL",
-        UI_OBJECT_COLOR_WARNING
+        UI_COLOR_WARNING
     );
 
-    ui_objects_render_notice(
-        screen
-    );
+    ui_objects_render_notice(screen);
 }
 
 
 void ui_render_objects_locked(void)
 {
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
-    lv_obj_t *screen =
-        ui_create_screen_base_locked(
-            "OBJECTS",
-            context->objects_mode == UI_OBJECTS_MENU
-                ? "UP/DOWN NAV   OK SELECT   LEFT BACK"
-                : "UP/DOWN NAV   OK SELECT   LEFT CANCEL"
-        );
+    lv_obj_t *screen = ui_create_screen_base_locked(
+        "OBJECTS",
+        context->objects_mode == UI_OBJECTS_MENU
+            ? "UP/DOWN NAV   OK SELECT   LEFT BACK"
+            : "UP/DOWN NAV   OK SELECT   LEFT CANCEL"
+    );
 
     if (screen == NULL) {
         return;
@@ -315,22 +226,16 @@ void ui_render_objects_locked(void)
     switch (context->objects_mode) {
         case UI_OBJECTS_SELECT_ACTIVE:
         case UI_OBJECTS_SELECT_DELETE:
-            ui_objects_render_list(
-                screen
-            );
+            ui_objects_render_list(screen);
             break;
 
         case UI_OBJECTS_DELETE_CONFIRM:
-            ui_objects_render_delete_confirm(
-                screen
-            );
+            ui_objects_render_delete_confirm(screen);
             break;
 
         case UI_OBJECTS_MENU:
         default:
-            ui_objects_render_menu(
-                screen
-            );
+            ui_objects_render_menu(screen);
             break;
     }
 }
@@ -343,13 +248,9 @@ void ui_object_service_event(
 {
     (void)user_context;
 
-    ui_context_t *context =
-        ui_context();
+    ui_context_t *context = ui_context();
 
-    if (
-        event == NULL ||
-        !context->runtime_ready
-    ) {
+    if (event == NULL || !context->runtime_ready) {
         return;
     }
 
@@ -367,41 +268,28 @@ void ui_object_service_event(
                 "CREATED %s",
                 event->object.id
             );
-
-            ui_set_notice_locked(
-                notice
-            );
-
-            context->objects_mode =
-                UI_OBJECTS_MENU;
+            ui_set_notice_locked(notice);
+            context->objects_mode = UI_OBJECTS_MENU;
             break;
 
         case OBJECT_SERVICE_EVENT_LIST_DONE:
-            context->object_count =
-                event->object_count;
+            context->object_count = event->object_count;
 
-            if (
-                context->object_count >
-                OBJECT_SERVICE_MAX_OBJECTS
-            ) {
-                context->object_count =
-                    OBJECT_SERVICE_MAX_OBJECTS;
+            if (context->object_count > OBJECT_SERVICE_MAX_OBJECTS) {
+                context->object_count = OBJECT_SERVICE_MAX_OBJECTS;
             }
 
             memcpy(
                 context->objects,
                 event->objects,
-                context->object_count *
-                    sizeof(context->objects[0])
+                context->object_count * sizeof(context->objects[0])
             );
 
             if (
                 context->object_count > 0 &&
-                context->object_index >=
-                    context->object_count
+                context->object_index >= context->object_count
             ) {
-                context->object_index =
-                    0;
+                context->object_index = 0;
             }
 
             ui_set_notice_locked(
@@ -418,13 +306,8 @@ void ui_object_service_event(
                 "ACTIVE %s",
                 event->object_id
             );
-
-            ui_set_notice_locked(
-                notice
-            );
-
-            context->objects_mode =
-                UI_OBJECTS_MENU;
+            ui_set_notice_locked(notice);
+            context->objects_mode = UI_OBJECTS_MENU;
             break;
 
         case OBJECT_SERVICE_EVENT_DELETE_DONE:
@@ -434,13 +317,8 @@ void ui_object_service_event(
                 "DELETED %s",
                 event->object_id
             );
-
-            ui_set_notice_locked(
-                notice
-            );
-
-            context->objects_mode =
-                UI_OBJECTS_MENU;
+            ui_set_notice_locked(notice);
+            context->objects_mode = UI_OBJECTS_MENU;
             break;
 
         case OBJECT_SERVICE_EVENT_CREATE_FAILED:
@@ -448,12 +326,8 @@ void ui_object_service_event(
         case OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED:
         case OBJECT_SERVICE_EVENT_DELETE_FAILED:
         default:
-            ui_set_notice_locked(
-                "OBJECT OPERATION FAILED"
-            );
-
-            context->objects_mode =
-                UI_OBJECTS_MENU;
+            ui_set_notice_locked("OBJECT OPERATION FAILED");
+            context->objects_mode = UI_OBJECTS_MENU;
             break;
     }
 

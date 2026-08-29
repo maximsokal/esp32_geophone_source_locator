@@ -8,72 +8,23 @@
 #include "esp_timer.h"
 
 
-#define UI_SYSTEM_COLOR_TEXT    0xF3F7FB
-#define UI_SYSTEM_COLOR_MUTED   0x94A7BC
-#define UI_SYSTEM_COLOR_ACCENT  0x21C7D9
-#define UI_SYSTEM_COLOR_GOOD    0x4CD681
-
-
-static void ui_system_label(
-    lv_obj_t *parent,
-    int x,
-    int y,
-    const char *text,
-    uint32_t color
-)
-{
-    lv_obj_t *label =
-        lv_label_create(
-            parent
-        );
-
-    lv_obj_set_pos(
-        label,
-        x,
-        y
-    );
-
-    lv_obj_set_width(
-        label,
-        284
-    );
-
-    lv_label_set_text(
-        label,
-        text
-    );
-
-    lv_obj_set_style_text_color(
-        label,
-        lv_color_hex(color),
-        0
-    );
-}
-
-
 void ui_render_system_locked(void)
 {
-    lv_obj_t *screen =
-        ui_create_screen_base_locked(
-            "SYSTEM",
-            "LEFT BACK"
-        );
+    lv_obj_t *screen = ui_create_screen_base_locked(
+        "SYSTEM",
+        "LEFT BACK"
+    );
 
     if (screen == NULL) {
         return;
     }
 
-    const esp_app_desc_t *app =
-        esp_app_get_description();
+    const esp_app_desc_t *app = esp_app_get_description();
+    lv_obj_t *card = ui_create_card_locked(screen, 10, 42, 300, 158);
 
-    lv_obj_t *card =
-        ui_create_card_locked(
-            screen,
-            10,
-            42,
-            300,
-            158
-        );
+    if (card == NULL) {
+        return;
+    }
 
     char text[96];
 
@@ -81,17 +32,10 @@ void ui_render_system_locked(void)
         text,
         sizeof(text),
         "FW      %s",
-        app != NULL
-            ? app->version
-            : "--"
+        app != NULL ? app->version : "--"
     );
-
-    ui_system_label(
-        card,
-        10,
-        10,
-        text,
-        UI_SYSTEM_COLOR_ACCENT
+    (void)ui_create_label_locked(
+        card, 10, 10, 284, text, UI_COLOR_ACCENT
     );
 
     snprintf(
@@ -100,13 +44,8 @@ void ui_render_system_locked(void)
         "ESP-IDF  %s",
         esp_get_idf_version()
     );
-
-    ui_system_label(
-        card,
-        10,
-        32,
-        text,
-        UI_SYSTEM_COLOR_TEXT
+    (void)ui_create_label_locked(
+        card, 10, 32, 284, text, UI_COLOR_TEXT
     );
 
     snprintf(
@@ -117,13 +56,8 @@ void ui_render_system_locked(void)
         LVGL_VERSION_MINOR,
         LVGL_VERSION_PATCH
     );
-
-    ui_system_label(
-        card,
-        10,
-        54,
-        text,
-        UI_SYSTEM_COLOR_GOOD
+    (void)ui_create_label_locked(
+        card, 10, 54, 284, text, UI_COLOR_GOOD
     );
 
     snprintf(
@@ -131,19 +65,11 @@ void ui_render_system_locked(void)
         sizeof(text),
         "HEAP     %lu KB internal free",
         (unsigned long)(
-            heap_caps_get_free_size(
-                MALLOC_CAP_INTERNAL
-            ) /
-            1024U
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U
         )
     );
-
-    ui_system_label(
-        card,
-        10,
-        76,
-        text,
-        UI_SYSTEM_COLOR_TEXT
+    (void)ui_create_label_locked(
+        card, 10, 76, 284, text, UI_COLOR_TEXT
     );
 
     snprintf(
@@ -151,44 +77,29 @@ void ui_render_system_locked(void)
         sizeof(text),
         "PSRAM    %lu KB free",
         (unsigned long)(
-            heap_caps_get_free_size(
-                MALLOC_CAP_SPIRAM
-            ) /
-            1024U
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U
         )
     );
-
-    ui_system_label(
-        card,
-        10,
-        98,
-        text,
-        UI_SYSTEM_COLOR_TEXT
+    (void)ui_create_label_locked(
+        card, 10, 98, 284, text, UI_COLOR_TEXT
     );
 
     snprintf(
         text,
         sizeof(text),
         "UPTIME   %lld s",
-        (long long)(
-            esp_timer_get_time() /
-            1000000LL
-        )
+        (long long)(esp_timer_get_time() / 1000000LL)
+    );
+    (void)ui_create_label_locked(
+        card, 10, 120, 284, text, UI_COLOR_MUTED
     );
 
-    ui_system_label(
-        card,
-        10,
-        120,
-        text,
-        UI_SYSTEM_COLOR_MUTED
-    );
-
-    ui_system_label(
+    (void)ui_create_label_locked(
         card,
         10,
         140,
+        284,
         "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
-        UI_SYSTEM_COLOR_MUTED
+        UI_COLOR_MUTED
     );
 }
