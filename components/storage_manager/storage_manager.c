@@ -1,6 +1,7 @@
 #include "storage_manager.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/stat.h>
 
 #include "esp_log.h"
@@ -21,6 +22,23 @@ static SemaphoreHandle_t s_operation_mutex =
 
 static bool s_ready =
     false;
+
+
+static void storage_manager_log_boot_timing(
+    const char *stage,
+    uint32_t started_ms
+)
+{
+    ESP_LOGI(
+        TAG,
+        "BOOT_TIMING: %s=%u ms",
+        stage,
+        (unsigned)(
+            esp_log_timestamp() -
+            started_ms
+        )
+    );
+}
 
 
 static esp_err_t storage_manager_create_mutex(void)
@@ -69,15 +87,24 @@ esp_err_t storage_manager_init(void)
 
     struct stat mount_info;
 
-    if (
+    uint32_t stage_started_ms =
+        esp_log_timestamp();
+
+    const bool mount_available =
         stat(
             STORAGE_MANAGER_MOUNT_POINT,
             &mount_info
-        ) != 0 ||
-        !S_ISDIR(
+        ) == 0 &&
+        S_ISDIR(
             mount_info.st_mode
-        )
-    ) {
+        );
+
+    storage_manager_log_boot_timing(
+        "mount_point_stat",
+        stage_started_ms
+    );
+
+    if (!mount_available) {
         xSemaphoreGiveRecursive(
             s_operation_mutex
         );
@@ -90,16 +117,32 @@ esp_err_t storage_manager_init(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    stage_started_ms =
+        esp_log_timestamp();
+
     err =
         storage_manager_ensure_directory_locked(
             STORAGE_MANAGER_ROOT_PATH
         );
 
+    storage_manager_log_boot_timing(
+        "ensure_root_directory",
+        stage_started_ms
+    );
+
     if (err == ESP_OK) {
+        stage_started_ms =
+            esp_log_timestamp();
+
         err =
             storage_manager_ensure_directory_locked(
                 STORAGE_MANAGER_OBJECTS_PATH
             );
+
+        storage_manager_log_boot_timing(
+            "ensure_objects_directory",
+            stage_started_ms
+        );
     }
 
     s_ready =
