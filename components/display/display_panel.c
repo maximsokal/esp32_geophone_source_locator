@@ -45,17 +45,12 @@ esp_err_t display_panel_configure(
         return err;
     }
 
-    /* Native 240x320 panel is installed as 320x240 landscape. */
-    err =
-        esp_lcd_panel_swap_xy(
-            panel_handle,
-            true
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
+    /*
+     * Keep the hardware layer in the panel's native orientation.
+     * Stage 11D deliberately gives rotation ownership to
+     * esp_lvgl_port so there is exactly one place that controls
+     * portrait/landscape state.
+     */
     err =
         esp_lcd_panel_mirror(
             panel_handle,
@@ -79,9 +74,7 @@ esp_err_t display_panel_configure(
 
     ESP_LOGI(
         TAG,
-        "ILI9341 ready: %dx%d landscape RGB565",
-        DISPLAY_WIDTH,
-        DISPLAY_HEIGHT
+        "ILI9341 hardware ready: native 240x320 RGB565; orientation owned by LVGL"
     );
 
     return ESP_OK;
