@@ -24,6 +24,11 @@
 #include "wifi_manager.h"
 
 #include "esp_err.h"
+#include "esp_log.h"
+
+
+static const char *TAG =
+    "APP";
 
 
 static void app_startup_initialize_core(void)
@@ -107,9 +112,45 @@ static void app_startup_initialize_services(void)
         )
     );
 
-    ESP_ERROR_CHECK(
-        seismic_acquisition_start()
-    );
+    /*
+     * Acquisition hardware is allowed to be absent/faulty
+     * during hardware bring-up.
+     *
+     * A failed ADC must not reboot the entire controller.
+     */
+    const esp_err_t acquisition_err =
+        seismic_acquisition_start();
+
+    if (acquisition_err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Seismic acquisition unavailable: %s",
+            esp_err_to_name(
+                acquisition_err
+            )
+        );
+
+        /*
+         * Explicitly expose a stopped acquisition state.
+         */
+        esp_err_t status_err =
+            device_status_set_acquisition(
+                false,
+                0,
+                0,
+                0
+            );
+
+        if (status_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Unable to update acquisition status: %s",
+                esp_err_to_name(
+                    status_err
+                )
+            );
+        }
+    }
 }
 
 

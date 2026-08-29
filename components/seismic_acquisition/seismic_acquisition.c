@@ -2,6 +2,7 @@
 
 #include "sdkconfig.h"
 
+#include "ad7606_acquisition.h"
 #include "geophone_adc_test.h"
 #include "seismic_test_generator.h"
 
@@ -32,6 +33,15 @@ esp_err_t seismic_acquisition_start(void)
     return
         geophone_adc_test_start();
 
+#elif CONFIG_SEISMIC_SOURCE_AD7606
+    ESP_LOGI(
+        TAG,
+        "Source: AD7606"
+    );
+
+    return
+        ad7606_acquisition_start();
+
 #else
 #error "No seismic acquisition source selected"
 #endif
@@ -45,6 +55,9 @@ void seismic_acquisition_stop(void)
 
 #elif CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH
     geophone_adc_test_stop();
+
+#elif CONFIG_SEISMIC_SOURCE_AD7606
+    ad7606_acquisition_stop();
 #endif
 }
 
@@ -56,6 +69,9 @@ const char *seismic_acquisition_source_name(void)
 
 #elif CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH
     return "ESP_ADC_BENCH";
+
+#elif CONFIG_SEISMIC_SOURCE_AD7606
+    return "AD7606";
 
 #else
     return "NONE";
