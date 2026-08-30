@@ -66,6 +66,9 @@ lv_obj_t *ui_create_screen_base_locked(
     context->measurement_summary = NULL;
     context->measurement_transport = NULL;
     context->measurement_health = NULL;
+    context->system_heap = NULL;
+    context->system_psram = NULL;
+    context->system_uptime = NULL;
 
     lv_obj_t *screen = lv_obj_create(NULL);
     if (screen == NULL) {
@@ -188,7 +191,8 @@ lv_obj_t *ui_create_row_locked(
     lv_obj_t *parent,
     int y,
     const char *text,
-    bool selected
+    bool selected,
+    bool enabled
 )
 {
     lv_obj_t *row = ui_create_card_locked(parent, 10, y, 300, 31);
@@ -204,7 +208,11 @@ lv_obj_t *ui_create_row_locked(
         );
         lv_obj_set_style_border_color(
             row,
-            lv_color_hex(UI_COLOR_ACCENT),
+            lv_color_hex(
+                enabled
+                    ? UI_COLOR_ACCENT
+                    : UI_COLOR_MUTED
+            ),
             0
         );
         lv_obj_set_style_border_width(row, 2, 0);
@@ -216,10 +224,12 @@ lv_obj_t *ui_create_row_locked(
         8,
         258,
         text,
-        selected ? UI_COLOR_TEXT : UI_COLOR_MUTED
+        enabled && selected
+            ? UI_COLOR_TEXT
+            : UI_COLOR_MUTED
     );
 
-    if (selected) {
+    if (selected && enabled) {
         (void)ui_create_label_locked(
             row, 278, 8, 12, ">", UI_COLOR_ACCENT
         );
