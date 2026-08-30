@@ -91,22 +91,47 @@ BMP relative-height + IMU motion/tilt + future ranging fusion
 
 The external scan constrains the visible outer geometry. Unknown internal rubble volume must not be classified as empty just because the phone cannot see it.
 
-## Important browser security boundary
+## Browser-only secure runtime
 
-The current ESP32 page is served as plain HTTP (`http://geolocator.local/`). That is sufficient for the dashboard and this 3D viewer, but browser camera APIs and WebXR are secure-context features. A production phone scan therefore cannot simply be enabled on the current plain-HTTP page.
+The production phone client is the browser application itself. No Android/Capacitor APK is part of the architecture.
 
-Keep the 3D application architecture reusable while the capture runtime is decided. Practical options are:
+GeoLocator uses two local web transports with different responsibilities:
 
-1. an HTTPS/PWA origin that is cached for offline use and talks to the ESP over the local network where the target browser permits Local Network Access; or
-2. a small Android/Capacitor shell around this same React/Vite application, with native camera/ARCore access and no internet dependency.
+```text
+HTTP :80
+  bootstrap / Wi-Fi setup / certificate onboarding
+
+HTTPS :443
+  https://geolocator.local/
+  normal dashboard and APIs
+  future camera / WebXR / depth capture
+```
+
+Browser camera APIs and WebXR require a secure context, therefore the scanning workflow runs from `https://geolocator.local/`.
+
+The ESP32 server certificate is signed by a private GeoLocator Root CA. The Root CA private key stays only on the development machine. The public Root CA certificate will be delivered to the phone through the ESP32 onboarding flow and installed once with the Android system confirmation required by the OS.
+
+After that trust bootstrap, the intended field workflow is fully local and does not require internet access:
+
+```text
+phone browser
+    ↓ HTTPS / trusted geolocator.local
+ESP32-S3
+    ↓
+local React/Vite/Three Web UI
+    ↓
+WebXR / ARCore-backed tracking + supported depth APIs
+```
 
 Do not add insecure Chrome flags or make field operation depend on them.
 
 ## Next implementation slices
 
-1. Replace `demoScene` with a local JSON scene store and import/export.
-2. Add GLB/PLY or project-specific triangle-mesh import.
-3. Add AprilTag observation records and tag-to-geophone offsets.
-4. Add a real ESP API contract for saved scene geometry and sensor positions.
-5. Add the secure Android capture path (camera/tracking/depth).
-6. Fuse scan pose with barometer, IMU and future ranging without moving a position that is already locked unless motion is detected.
+1. Finish and hardware-verify the dual HTTP bootstrap + HTTPS main transport.
+2. Add QR-driven GeoLocator Root CA onboarding and secure-context verification.
+3. Serve the production React/Vite build from SD with the embedded dashboard as fallback.
+4. Add browser capability diagnostics for secure context, camera, WebXR and depth support.
+5. Add AR tracking/depth acquisition and local point-cloud/mesh reconstruction.
+6. Add AprilTag observation records and tag-to-geophone offsets for MAIN + GEO1…GEO4.
+7. Add a real ESP API contract for saved scene geometry and sensor positions.
+8. Fuse scan pose with barometer, IMU and future ranging without moving a position that is already locked unless motion is detected.
