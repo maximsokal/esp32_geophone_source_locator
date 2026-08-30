@@ -75,6 +75,22 @@ esp_err_t wifi_manager_mdns_init(void)
 }
 
 
+void wifi_manager_mdns_stop(void)
+{
+    if (!s_ready) {
+        return;
+    }
+
+    mdns_free();
+    s_ready = false;
+
+    ESP_LOGI(
+        TAG,
+        "mDNS stopped"
+    );
+}
+
+
 bool wifi_manager_mdns_is_ready(void)
 {
     return s_ready;
