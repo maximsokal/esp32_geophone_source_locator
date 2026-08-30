@@ -28,5 +28,6 @@ idf_component_register(
         esp_event
         nvs_flash
         freertos
+        heap
         log
 )
