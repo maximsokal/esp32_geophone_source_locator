@@ -33,39 +33,38 @@ void ui_handle_objects_key_locked(
             key == KEYPAD_KEY_OK ||
             key == KEYPAD_KEY_RIGHT
         ) {
-            esp_err_t err =
-                ESP_OK;
-
             if (context->object_action == 0) {
                 ui_set_notice_locked(
                     "CREATING OBJECT..."
                 );
 
-                err =
+                esp_err_t err =
                     object_service_create_async();
-            } else {
-                context->objects_mode =
-                    context->object_action == 1
-                        ? UI_OBJECTS_SELECT_ACTIVE
-                        : UI_OBJECTS_SELECT_DELETE;
 
-                context->object_index =
-                    0;
+                if (err != ESP_OK) {
+                    ui_set_notice_locked(
+                        "OBJECT SERVICE BUSY/FAILED"
+                    );
+                }
 
-                ui_set_notice_locked(
-                    "LOADING OBJECTS..."
-                );
-
-                err =
-                    object_service_list_async();
+                ui_render_objects_locked();
+                return;
             }
 
-            if (err != ESP_OK) {
-                ui_set_notice_locked(
-                    "OBJECT SERVICE BUSY/FAILED"
-                );
+            if (
+                !context->objects_loaded ||
+                context->object_count == 0
+            ) {
+                return;
             }
 
+            context->objects_mode =
+                context->object_action == 1
+                    ? UI_OBJECTS_SELECT_ACTIVE
+                    : UI_OBJECTS_SELECT_DELETE;
+
+            context->object_index = 0;
+            ui_set_notice_locked(NULL);
             ui_render_objects_locked();
         } else if (key == KEYPAD_KEY_LEFT) {
             ui_open_home_locked();
