@@ -1,6 +1,8 @@
 #include "wifi_manager_sta_events.h"
 
+#include "app_config.h"
 #include "app_event_bus.h"
+#include "wifi_manager_mdns.h"
 #include "wifi_manager_runtime.h"
 
 #include "esp_event.h"
@@ -121,9 +123,17 @@ static void wifi_manager_sta_on_ip_event(
         IP2STR(&event->ip_info.ip)
     );
 
+    if (wifi_manager_mdns_is_ready()) {
+        ESP_LOGI(
+            TAG,
+            "Web UI: %s",
+            APP_MDNS_WEB_URL
+        );
+    }
+
     ESP_LOGI(
         TAG,
-        "Web UI: http://" IPSTR,
+        "Web UI fallback: http://" IPSTR,
         IP2STR(&event->ip_info.ip)
     );
 
