@@ -14,16 +14,15 @@ menu "Seismic Acquisition"
             bool "AD7606 SPI acquisition"
     endchoice
 
-    # Both backend components are compiled into the application,
-    # therefore both constants must always exist in sdkconfig.h.
-
     config SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ
         int "ESP ADC bench sample rate (Hz)"
+        depends on SEISMIC_SOURCE_ESP_ADC_BENCH
         range 100 2000
         default 500
 
     config SEISMIC_AD7606_SAMPLE_RATE_HZ
         int "AD7606 acquisition sample rate (Hz)"
+        depends on SEISMIC_SOURCE_AD7606
         range 100 5000
         default 500
 
