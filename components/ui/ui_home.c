@@ -25,7 +25,8 @@ void ui_render_home_locked(void)
             screen,
             40 + (int)(i * 34U),
             ui_screen_home_label(i),
-            i == context->selected
+            i == context->selected,
+            true
         );
     }
 }
