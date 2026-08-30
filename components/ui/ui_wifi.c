@@ -96,7 +96,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             280,
-            "SETTINGS SAVED",
+            "STEP 3/3  SETTINGS SAVED",
             UI_COLOR_GOOD
         );
 
@@ -127,7 +127,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             200,
-            "STEP 1/2  CONNECT PHONE",
+            "STEP 1/3  CONNECT PHONE",
             UI_COLOR_WARNING
         );
 
@@ -166,8 +166,8 @@ static void ui_wifi_render_setup_card(
         8,
         200,
         context->wifi_setup_page_opened
-            ? "SETUP PAGE OPENED"
-            : "STEP 2/2  OPEN SETUP PAGE",
+            ? "STEP 2/3  SETUP PAGE OPEN"
+            : "STEP 2/3  OPEN SETUP PAGE",
         context->wifi_setup_page_opened
             ? UI_COLOR_GOOD
             : UI_COLOR_ACCENT
