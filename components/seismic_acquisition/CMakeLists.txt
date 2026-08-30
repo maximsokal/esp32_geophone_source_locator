@@ -1,32 +1,11 @@
-set(
-    seismic_acquisition_sources
-    "seismic_acquisition.c"
-    "seismic_source_registry.c"
-    "seismic_source_common.c"
-)
-
-if(CONFIG_SEISMIC_SOURCE_TEST)
-    list(APPEND
-        seismic_acquisition_sources
-        "seismic_source_test.c"
-    )
-elseif(CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH)
-    list(APPEND
-        seismic_acquisition_sources
-        "seismic_source_esp_adc.c"
-    )
-elseif(CONFIG_SEISMIC_SOURCE_AD7606)
-    list(APPEND
-        seismic_acquisition_sources
-        "seismic_source_ad7606.c"
-    )
-else()
-    message(FATAL_ERROR "No seismic acquisition source selected")
-endif()
-
 idf_component_register(
     SRCS
-        ${seismic_acquisition_sources}
+        "seismic_acquisition.c"
+        "seismic_source_registry.c"
+        "seismic_source_common.c"
+        "seismic_source_test.c"
+        "seismic_source_esp_adc.c"
+        "seismic_source_ad7606.c"
 
     INCLUDE_DIRS
         "include"
@@ -34,12 +13,13 @@ idf_component_register(
     PRIV_INCLUDE_DIRS
         "."
 
-    # ESP-IDF 5.5 uses the v1 build system: REQUIRES/PRIV_REQUIRES
-    # cannot depend on CONFIG_* because dependency expansion happens
-    # before sdkconfig is loaded. Keep backend components private and
-    # unconditional here, while compiling only the selected adapter
-    # above. Unselected backend archives have no referenced symbols and
-    # are therefore discarded by the final linker's section GC.
+    # ESP-IDF 5.5 build-system v1 resolves the component dependency
+    # graph before sdkconfig is available, so CONFIG_* must not control
+    # SRCS or REQUIRES here. All backend adapter translation units are
+    # compiled, but the registry references only the selected descriptor.
+    # Because each adapter is a separate object file, unselected adapters
+    # and their backend archives remain unreferenced and can be omitted
+    # from the final ELF by normal static-library resolution / GC.
     PRIV_REQUIRES
         ad7606_acquisition
         ad7606_driver
