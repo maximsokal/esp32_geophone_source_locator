@@ -39,6 +39,7 @@ typedef enum
 } web_static_asset_id_t;
 
 
+esp_err_t web_server_bootstrap_routes_register(httpd_handle_t server);
 esp_err_t web_server_routes_register(httpd_handle_t server);
 
 esp_err_t web_api_status_register(httpd_handle_t server);
