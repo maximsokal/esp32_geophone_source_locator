@@ -21,3 +21,9 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 #
 # CONFIG_MBEDTLS_HARDWARE_AES is not set
 # CONFIG_MBEDTLS_AES_USE_INTERRUPT is not set
+
+# Browser HTTPS needs enough internal RAM for two simultaneous sockets while
+# Wi-Fi, LVGL and acquisition stay active. ESP-IDF can place zero-initialized
+# data from lwIP, net80211, libpp and wpa_supplicant in PSRAM, freeing internal
+# static DRAM without moving the HTTPD task stack out of internal memory.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
