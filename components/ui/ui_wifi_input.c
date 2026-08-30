@@ -95,6 +95,12 @@ void ui_handle_wifi_key_locked(
             context->wifi_confirm =
                 UI_WIFI_CONFIRM_NONE;
 
+            context->wifi_setup_page_opened =
+                false;
+
+            context->wifi_credentials_saved =
+                false;
+
             err =
                 wifi_manager_enter_setup_mode();
         } else if (context->wifi_action == 1) {
@@ -106,6 +112,12 @@ void ui_handle_wifi_key_locked(
 
             context->wifi_confirm =
                 UI_WIFI_CONFIRM_NONE;
+
+            context->wifi_setup_page_opened =
+                false;
+
+            context->wifi_credentials_saved =
+                false;
 
             err =
                 wifi_manager_connect_saved();
@@ -133,6 +145,12 @@ void ui_handle_wifi_key_locked(
 
             context->wifi_confirm =
                 UI_WIFI_CONFIRM_NONE;
+
+            context->wifi_setup_page_opened =
+                false;
+
+            context->wifi_credentials_saved =
+                false;
 
             err =
                 wifi_manager_forget_sta_credentials();
