@@ -1,19 +1,69 @@
 #include "web_server_internal.h"
 
+#include <errno.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #include "app_config.h"
 
 #include "esp_log.h"
 
 
-#define WIFI_SSID_TOKEN       "{{WIFI_SSID}}"
-#define WEB_PAGE_CHUNK_BYTES  512U
+#define WIFI_SSID_TOKEN              "{{WIFI_SSID}}"
+#define WEB_PAGE_CHUNK_BYTES         512U
+#define WEB_PAGE_SEND_TIMEOUT_SEC    30
 
 
 static const char *TAG =
     "WEB_PAGE";
+
+
+static void web_page_configure_send_timeout(
+    httpd_req_t *request
+)
+{
+    if (request == NULL) {
+        return;
+    }
+
+    const int socket_fd =
+        httpd_req_to_sockfd(
+            request
+        );
+
+    if (socket_fd < 0) {
+        ESP_LOGW(
+            TAG,
+            "Could not resolve response socket"
+        );
+        return;
+    }
+
+    const struct timeval timeout = {
+        .tv_sec = WEB_PAGE_SEND_TIMEOUT_SEC,
+        .tv_usec = 0,
+    };
+
+    if (
+        setsockopt(
+            socket_fd,
+            SOL_SOCKET,
+            SO_SNDTIMEO,
+            &timeout,
+            sizeof(timeout)
+        ) != 0
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Could not set %d s send timeout on socket %d: errno=%d",
+            WEB_PAGE_SEND_TIMEOUT_SEC,
+            socket_fd,
+            errno
+        );
+    }
+}
 
 
 static esp_err_t web_page_send_data(
@@ -78,6 +128,10 @@ esp_err_t web_page_send_index(
     if (request == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    web_page_configure_send_timeout(
+        request
+    );
 
     const char *html =
         web_static_asset_data(
