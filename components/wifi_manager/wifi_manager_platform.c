@@ -1,9 +1,24 @@
 #include "wifi_manager_platform.h"
 
 #include "esp_event.h"
+#include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+
+
+static const char *TAG =
+    "WIFI_PLATFORM";
+
+
+/*
+ * ESP-IDF allocates every static Wi-Fi RX buffer from DMA-capable internal
+ * SRAM. The project also uses SPI LCD/SD/AD7606 DMA, so the default value of
+ * 10 leaves too little contiguous DMA memory for the ESP32-S3 AES engine
+ * during WPA2 SoftAP authentication. Espressif documents 6 as a supported
+ * memory-saving value while AMPDU RX remains enabled.
+ */
+#define WIFI_MANAGER_STATIC_RX_BUFFERS  6
 
 
 static esp_netif_t *s_ap_netif =
@@ -73,6 +88,15 @@ esp_err_t wifi_manager_platform_init(void)
 
     wifi_init_config_t config =
         WIFI_INIT_CONFIG_DEFAULT();
+
+    config.static_rx_buf_num =
+        WIFI_MANAGER_STATIC_RX_BUFFERS;
+
+    ESP_LOGI(
+        TAG,
+        "Wi-Fi init: static RX DMA buffers=%d",
+        config.static_rx_buf_num
+    );
 
     err =
         esp_wifi_init(
