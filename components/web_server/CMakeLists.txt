@@ -1,3 +1,26 @@
+set(WEB_SERVER_TLS_CERT_FILE
+    "${CMAKE_CURRENT_LIST_DIR}/certs/servercert.pem"
+)
+
+set(WEB_SERVER_TLS_KEY_FILE
+    "${CMAKE_CURRENT_LIST_DIR}/certs/prvtkey.pem"
+)
+
+set(WEB_SERVER_TLS_EMBED_FILES)
+set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 0)
+
+if(
+    EXISTS "${WEB_SERVER_TLS_CERT_FILE}"
+    AND EXISTS "${WEB_SERVER_TLS_KEY_FILE}"
+)
+    list(APPEND WEB_SERVER_TLS_EMBED_FILES
+        "certs/servercert.pem"
+        "certs/prvtkey.pem"
+    )
+
+    set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 1)
+endif()
+
 idf_component_register(
     SRCS
         "web_server.c"
@@ -31,8 +54,13 @@ idf_component_register(
         seismic_buffer
         wifi_manager
         esp_http_server
+        esp_https_server
+        esp_event
+        esp_netif
+        esp_wifi
         esp_timer
         freertos
+        heap
         json
         log
 
@@ -43,4 +71,19 @@ idf_component_register(
         "assets/seismic.html"
         "assets/seismic.css"
         "assets/seismic.js"
+        ${WEB_SERVER_TLS_EMBED_FILES}
 )
+
+target_compile_definitions(
+    ${COMPONENT_LIB}
+    PRIVATE
+        WEB_SERVER_TLS_CREDENTIALS_EMBEDDED=${WEB_SERVER_TLS_CREDENTIALS_EMBEDDED}
+)
+
+if(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED)
+    message(STATUS "GeoLocator HTTPS credentials will be embedded")
+else()
+    message(WARNING
+        "GeoLocator HTTPS credentials are missing; HTTP setup will build, but HTTPS will stay disabled until certs/servercert.pem and certs/prvtkey.pem are generated"
+    )
+endif()
