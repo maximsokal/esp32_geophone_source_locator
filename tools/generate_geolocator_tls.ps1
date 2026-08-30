@@ -15,7 +15,7 @@ function Invoke-OpenSsl {
     & $OpenSsl @Arguments
 
     if ($LASTEXITCODE -ne 0) {
-        throw "OpenSSL failed with exit code $LASTEXITCODE: $($Arguments -join ' ')"
+        throw "OpenSSL failed with exit code ${LASTEXITCODE}: $($Arguments -join ' ')"
     }
 }
 
@@ -56,8 +56,7 @@ if ($ExistingFiles.Count -gt 0 -and -not $Force) {
     Write-Host "Existing GeoLocator TLS files were found:" -ForegroundColor Yellow
     $ExistingFiles | ForEach-Object { Write-Host "  $_" }
     Write-Host ""
-    Write-Host "Nothing was overwritten. Use -Force only if you intentionally want to replace the Root CA and server identity." -ForegroundColor Yellow
-    exit 2
+    throw "Nothing was overwritten. Use -Force only if you intentionally want to replace the Root CA and server identity."
 }
 
 if ($Force) {
