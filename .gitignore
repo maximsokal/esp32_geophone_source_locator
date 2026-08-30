@@ -9,6 +9,10 @@ webui/node_modules/
 webui/dist/
 webui/.vite/
 
+# Local TLS credentials (never commit generated keys/certificates)
+components/web_server/certs/*
+!components/web_server/certs/README.md
+
 # IDE / editor
 .vscode/
 .vscode.zip
