@@ -89,7 +89,7 @@ authorityKeyIdentifier = keyid:always,issuer
 $ServerConfigText = @"
 [req]
 distinguished_name = req_distinguished_name
-req_extensions = v3_req
+req_extensions = req_ext
 prompt = no
 
 [req_distinguished_name]
@@ -97,7 +97,13 @@ C = UA
 O = GeoLocator
 CN = geolocator.local
 
-[v3_req]
+[req_ext]
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[server_ext]
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
@@ -157,7 +163,7 @@ Invoke-OpenSsl -Arguments @(
     "-days", "825",
     "-sha256",
     "-extfile", $ServerConfig,
-    "-extensions", "v3_req"
+    "-extensions", "server_ext"
 )
 
 Write-Host "Verifying certificate chain and SAN..."
