@@ -10,6 +10,16 @@
 
 
 /*
+ * Web transports.
+ *
+ * HTTP stays available as the local bootstrap/provisioning transport.
+ * The normal application UI is served over HTTPS after STA receives an IP.
+ */
+#define APP_WEB_HTTP_PORT         80
+#define APP_WEB_HTTPS_PORT        443
+
+
+/*
  * Local-network discovery.
  *
  * The hostname intentionally excludes the .local suffix because the mDNS
@@ -17,7 +27,7 @@
  */
 #define APP_MDNS_HOSTNAME         "geolocator"
 #define APP_MDNS_INSTANCE_NAME    "GeoLocator"
-#define APP_MDNS_WEB_URL          "http://geolocator.local/"
+#define APP_MDNS_WEB_URL          "https://geolocator.local/"
 
 
 /*
