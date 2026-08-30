@@ -87,10 +87,7 @@ subjectAltName = @alt_names
 DNS.1 = geolocator.local
 "@
 
-Set-Content \
-    -Path $ServerConfig \
-    -Value $ServerConfigText \
-    -Encoding ascii
+Set-Content -Path $ServerConfig -Value $ServerConfigText -Encoding ascii
 
 Write-Host "Generating GeoLocator Root CA..."
 Invoke-OpenSsl -Arguments @(
