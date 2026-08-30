@@ -5,38 +5,20 @@ set(
     "seismic_source_common.c"
 )
 
-set(seismic_acquisition_backend_requires)
-
 if(CONFIG_SEISMIC_SOURCE_TEST)
     list(APPEND
         seismic_acquisition_sources
         "seismic_source_test.c"
-    )
-
-    list(APPEND
-        seismic_acquisition_backend_requires
-        seismic_test_generator
     )
 elseif(CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH)
     list(APPEND
         seismic_acquisition_sources
         "seismic_source_esp_adc.c"
     )
-
-    list(APPEND
-        seismic_acquisition_backend_requires
-        geophone_adc_test
-    )
 elseif(CONFIG_SEISMIC_SOURCE_AD7606)
     list(APPEND
         seismic_acquisition_sources
         "seismic_source_ad7606.c"
-    )
-
-    list(APPEND
-        seismic_acquisition_backend_requires
-        ad7606_acquisition
-        ad7606_driver
     )
 else()
     message(FATAL_ERROR "No seismic acquisition source selected")
@@ -52,10 +34,19 @@ idf_component_register(
     PRIV_INCLUDE_DIRS
         "."
 
-    REQUIRES
+    # ESP-IDF 5.5 uses the v1 build system: REQUIRES/PRIV_REQUIRES
+    # cannot depend on CONFIG_* because dependency expansion happens
+    # before sdkconfig is loaded. Keep backend components private and
+    # unconditional here, while compiling only the selected adapter
+    # above. Unselected backend archives have no referenced symbols and
+    # are therefore discarded by the final linker's section GC.
+    PRIV_REQUIRES
+        ad7606_acquisition
+        ad7606_driver
         app_config
         device_status
+        geophone_adc_test
         seismic_buffer
+        seismic_test_generator
         log
-        ${seismic_acquisition_backend_requires}
 )
