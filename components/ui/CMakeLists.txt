@@ -32,6 +32,7 @@ idf_component_register(
         wifi_manager
         object_service
         storage_service
+        storage_manager
         seismic_acquisition
         esp_lvgl_port
         esp_system
