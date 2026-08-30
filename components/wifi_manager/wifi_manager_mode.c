@@ -2,6 +2,7 @@
 
 #include "app_event_bus.h"
 #include "wifi_manager_internal.h"
+#include "wifi_manager_mdns.h"
 #include "wifi_manager_runtime.h"
 #include "wifi_manager_sta.h"
 
@@ -15,6 +16,7 @@ static const char *TAG =
 
 static esp_err_t wifi_manager_stop_radio(void)
 {
+    wifi_manager_mdns_stop();
     wifi_manager_sta_reset_state();
 
     esp_err_t err =
