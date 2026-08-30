@@ -4,6 +4,8 @@
 
 #include "esp_lvgl_port.h"
 
+#include "storage_manager.h"
+
 
 #define UI_STORAGE_COLOR_TEXT     0xF3F7FB
 #define UI_STORAGE_COLOR_MUTED    0x94A7BC
@@ -74,6 +76,14 @@ void ui_render_storage_locked(void)
 {
     ui_context_t *context =
         ui_context();
+
+    const bool storage_ready =
+        storage_manager_is_ready();
+
+    if (!storage_ready) {
+        context->storage_erase_confirm =
+            false;
+    }
 
     lv_obj_t *screen =
         ui_create_screen_base_locked(
@@ -164,7 +174,8 @@ void ui_render_storage_locked(void)
         screen,
         132,
         "REFRESH SD INFO",
-        context->storage_action == 0
+        context->storage_action == 0,
+        true
     );
 
     ui_create_row_locked(
@@ -173,7 +184,8 @@ void ui_render_storage_locked(void)
         context->storage_erase_confirm
             ? "CONFIRM ERASE DATA"
             : "ERASE DEVICE DATA",
-        context->storage_action == 1
+        context->storage_action == 1,
+        storage_ready
     );
 
     ui_storage_render_notice(
