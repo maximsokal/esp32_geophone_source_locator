@@ -173,15 +173,25 @@ Invoke-OpenSsl -Arguments @(
     $ServerCert
 )
 
+$CertificateText = & $OpenSsl "x509" "-in" $ServerCert "-noout" "-text"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSSL failed while inspecting the generated server certificate."
+}
+
+if (-not ($CertificateText -match "DNS:geolocator\.local")) {
+    throw "Generated server certificate does not contain SAN DNS:geolocator.local"
+}
+
 Invoke-OpenSsl -Arguments @(
     "x509",
     "-in", $ServerCert,
     "-noout",
     "-subject",
-    "-issuer",
-    "-ext", "subjectAltName"
+    "-issuer"
 )
 
+Write-Host "SAN: DNS:geolocator.local"
 Write-Host ""
 Write-Host "GeoLocator TLS credentials generated successfully." -ForegroundColor Green
 Write-Host ""
