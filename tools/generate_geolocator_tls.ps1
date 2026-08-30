@@ -31,6 +31,7 @@ New-Item -ItemType Directory -Path $CertDir -Force | Out-Null
 $RootKey = Join-Path $CertDir "rootCA.key"
 $RootCert = Join-Path $CertDir "rootCA.crt"
 $RootSerial = Join-Path $CertDir "rootCA.srl"
+$RootConfig = Join-Path $CertDir "root-openssl.cnf"
 $ServerKey = Join-Path $CertDir "prvtkey.pem"
 $ServerCsr = Join-Path $CertDir "server.csr"
 $ServerCert = Join-Path $CertDir "servercert.pem"
@@ -40,6 +41,7 @@ $GeneratedFiles = @(
     $RootKey,
     $RootCert,
     $RootSerial,
+    $RootConfig,
     $ServerKey,
     $ServerCsr,
     $ServerCert,
@@ -66,6 +68,24 @@ if ($Force) {
     }
 }
 
+$RootConfigText = @"
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+C = UA
+O = GeoLocator
+CN = GeoLocator Root CA
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+"@
+
 $ServerConfigText = @"
 [req]
 distinguished_name = req_distinguished_name
@@ -82,11 +102,14 @@ basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
 
 [alt_names]
 DNS.1 = geolocator.local
 "@
 
+Set-Content -Path $RootConfig -Value $RootConfigText -Encoding ascii
 Set-Content -Path $ServerConfig -Value $ServerConfigText -Encoding ascii
 
 Write-Host "Generating GeoLocator Root CA..."
@@ -100,12 +123,11 @@ Invoke-OpenSsl -Arguments @(
     "req",
     "-x509",
     "-new",
-    "-nodes",
     "-key", $RootKey,
     "-sha256",
     "-days", "3650",
     "-out", $RootCert,
-    "-subj", "/C=UA/O=GeoLocator/CN=GeoLocator Root CA"
+    "-config", $RootConfig
 )
 
 Write-Host "Generating geolocator.local server key and CSR..."
@@ -138,11 +160,20 @@ Invoke-OpenSsl -Arguments @(
     "-extensions", "v3_req"
 )
 
-Write-Host "Verifying certificate chain..."
+Write-Host "Verifying certificate chain and SAN..."
 Invoke-OpenSsl -Arguments @(
     "verify",
     "-CAfile", $RootCert,
     $ServerCert
+)
+
+Invoke-OpenSsl -Arguments @(
+    "x509",
+    "-in", $ServerCert,
+    "-noout",
+    "-subject",
+    "-issuer",
+    "-ext", "subjectAltName"
 )
 
 Write-Host ""
