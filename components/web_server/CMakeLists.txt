@@ -32,6 +32,7 @@ idf_component_register(
         wifi_manager
         esp_http_server
         esp_timer
+        freertos
         json
         log
 
