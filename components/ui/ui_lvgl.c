@@ -11,7 +11,17 @@ static const char *TAG =
     "UI_LVGL";
 
 
-#define UI_LVGL_BUFFER_ROWS  20
+/*
+ * SPI LCD rendering is intentionally conservative with internal DMA RAM.
+ * WPA2 SoftAP authentication also needs contiguous DMA-capable memory for
+ * the ESP32-S3 AES engine. A large double LVGL DMA buffer can starve that
+ * handshake even when plenty of PSRAM/general heap remains available.
+ *
+ * The UI is mostly static and only refreshes small regions, so one 8-row
+ * RGB565 draw buffer is a better trade-off here:
+ *   320 * 8 * 2 bytes = 5120 bytes of DMA-capable SRAM.
+ */
+#define UI_LVGL_BUFFER_ROWS  8
 
 
 esp_err_t ui_lvgl_init(void)
@@ -63,7 +73,7 @@ esp_err_t ui_lvgl_init(void)
             UI_LVGL_BUFFER_ROWS,
 
         .double_buffer =
-            true,
+            false,
 
         .trans_size =
             0,
@@ -117,10 +127,11 @@ esp_err_t ui_lvgl_init(void)
 
     ESP_LOGI(
         TAG,
-        "LVGL 9 display ready: %dx%d landscape, Core %d, RGB565 double-buffer",
+        "LVGL 9 display ready: %dx%d landscape, Core %d, RGB565 %d-row single DMA buffer",
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
-        APP_TASK_CORE_SERVICES
+        APP_TASK_CORE_SERVICES,
+        UI_LVGL_BUFFER_ROWS
     );
 
     return ESP_OK;
