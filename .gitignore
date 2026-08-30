@@ -6,6 +6,7 @@ sdkconfig.old
 
 # IDE / editor
 .vscode/
+.vscode.zip
 .idea/
 .settings/
 .project
