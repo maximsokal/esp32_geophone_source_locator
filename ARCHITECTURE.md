@@ -1,8 +1,10 @@
 # Architecture
 
-This document describes the runtime ownership, real-time boundaries, component interfaces, and extension points of `esp32_geophone_source_locator`.
+This document describes the runtime ownership, real-time boundaries, component interfaces, extension points, and the **physical prototype wiring** of `esp32_geophone_source_locator`.
 
 The design target is ESP32-S3 N16R8 on ESP-IDF v5.5.4. The firmware is split into ESP-IDF components rather than one application translation unit. Public headers live under each component's `include/` directory; multi-file component-private state and contracts use private headers inside the component directory.
+
+> **Hardware safety rule:** the GPIO/wiring ledger in this document is part of the project architecture, not an informal note. If the prototype is disconnected for another homework or bench task, reconnect it from this ledger. Do not reassign a listed GPIO without updating both `components/board_config/include/board_config.h` and this document in the same change.
 
 ## Runtime boot sequence
 
@@ -81,18 +83,92 @@ Current policy:
 
 Do not introduce new application tasks with ad-hoc priorities. Add them to `app_task_config.h` so the whole scheduling hierarchy stays reviewable in one place.
 
+## Physical prototype wiring ledger
+
+`components/board_config/include/board_config.h` is the software source of truth for application GPIO allocation. This section adds the physical destination, direction and bench-only wiring that cannot be recovered from a GPIO number alone.
+
+### ESP32-S3 GPIO map - current prototype
+
+| ESP32-S3 pin | Direction | Physical connection | Purpose / do-not-forget note |
+| --- | --- | --- | --- |
+| **GPIO1** | analog input | **Temporary geophone/ADC bench voltage-divider node** | **Still physically present. Reserved; do not reuse for AD7606 or homework wiring while the divider remains connected.** This is the ESP32-S3 ADC bench input (ADC1 channel 0). Exact divider resistor values/topology are not currently encoded anywhere in the repository, so they must be measured/recorded before this temporary divider is dismantled rather than guessed later. |
+| **GPIO2** | output | AD7606 `RESET` | Hardware reset line for the AD7606 module. |
+| **GPIO8** | analog input | Keyestudio KS0466 5-button keypad analog signal output | One ADC line represents all five buttons through the keypad's resistor ladder. |
+| **GPIO11** | output | TFT `SDI/MOSI` **and** microSD module `MOSI` | Shared SPI2 MOSI. Both devices share the bus and use separate CS lines. |
+| **GPIO12** | output | TFT `SCK` **and** microSD module `SCK` | Shared SPI2 clock. |
+| **GPIO13** | input | TFT `SDO/MISO` **and** microSD module `MISO` | Shared SPI2 MISO. |
+| **GPIO14** | output | TFT `CS` | ILI9341 display chip select. |
+| **GPIO15** | output | TFT `DC` | ILI9341 data/command select. |
+| **GPIO16** | output | TFT `RESET` | ILI9341 hardware reset. |
+| **GPIO17** | output | microSD module `CS` | SD card SPI chip select. |
+| **GPIO18** | output | Power-control module `OFF` control input | Normal level is LOW. After safe shutdown the firmware drives a **200 ms HIGH pulse** to request physical power cut. Do not connect this line to an unrelated peripheral. |
+| **GPIO21** | input | External power-button sense line | Digital input used by the power-button monitor. ESP32 internal pull-up/pull-down is disabled, therefore the external power-control/button circuit must provide a defined logic level. |
+| **GPIO39** | input | AD7606 `DOUTA/DB7` | Dedicated SPI3 MISO/data output from AD7606. |
+| **GPIO40** | output | AD7606 `RD/SCLK` | Dedicated SPI3 clock. |
+| **GPIO41** | output | AD7606 `CS` **plus external 10 kOhm pull-up to 3.3 V** | `CS` is active LOW. The 10 kOhm resistor keeps the ADC deselected while ESP32 is resetting/booting and GPIO41 is not yet actively driven. Firmware then drives CS HIGH before handing the pin to SPI3. **Do not remove this pull-up when rewiring.** |
+| **GPIO42** | output | AD7606 `CVA` + `CVB`, physically tied together | One rising edge starts the simultaneous conversion of all eight AD7606 channels. Both CONVST inputs must remain tied to this GPIO for simultaneous sampling. |
+| **GPIO43** | output | ESP32-S3 UART0 TX -> external CH340 `RXD` for passive serial monitoring | Used for battery-only COM6 logging. In passive-monitor setup only ESP32 TX -> CH340 RXD and common GND are used. |
+| **GPIO44** | input / reserved | UART0 RX; **not connected to CH340 TXD in passive-monitor setup** | Leave disconnected during passive COM6 monitoring so the CH340 cannot drive the ESP32. |
+| **GPIO47** | input | AD7606 `BUSY` | Conversion-status input. Firmware waits for BUSY release before SPI readout. |
+
+All other ESP32-S3 GPIOs are currently **unallocated by `board_config.h`** unless another documented bench experiment explicitly says otherwise. Treat that as "free in the current firmware", not as permission to move one of the connections above.
+
+### Physical resistor / temporary analog wiring notes
+
+#### GPIO41 AD7606 CS pull-up - permanent prototype requirement
+
+```text
+3.3 V
+  |
+ [10 kOhm]
+  |
+  +------ GPIO41 ------ AD7606 CS
+```
+
+The resistor is a **pull-up**, not a series resistor. AD7606 CS is active LOW. During ESP32 reset, boot and the interval before `ad7606_driver` configures GPIO41, the ESP32 pin can be high-impedance. Without an external pull-up the CS line could float and the ADC could be selected unintentionally. The 10 kOhm pull-up establishes the safe hardware state independently of firmware. Once initialized, the ESP32 drives the same line normally and SPI3 controls CS during transactions.
+
+#### GPIO1 temporary voltage divider - currently still connected
+
+GPIO1 remains physically occupied by the earlier temporary ADC/geophone bench divider and is deliberately reserved in `board_config.h` so later AD7606 work does not silently reuse it.
+
+```text
+external / bench signal
+       |
+   [temporary divider]
+       |
+       +------ GPIO1 / ADC1_CH0
+       |
+      GND / divider return
+```
+
+**Important:** the repository currently proves that the divider exists and that GPIO1 is its ADC node, but it does **not** contain trustworthy values for the divider resistors or enough information to reconstruct which exact resistor is on each side. Those values must not be invented. Before removing the divider, record its two resistor values and exact connection here (or from a clear photo/multimeter check), then replace this paragraph with the exact schematic. Until then, GPIO1 stays reserved.
+
+### Debug / flashing wiring
+
+- **COM4 / USB-C:** normal ESP-IDF flashing and USB-connected monitoring path.
+- **COM6 / external CH340:** passive battery-only monitor. Connect `GPIO43 (ESP TX)` -> `CH340 RXD` and `GND` -> `GND`.
+- In passive COM6 mode, **CH340 TXD is disconnected** and **CH340 VCC is disconnected**.
+- **Never flash through COM6.** Flash through COM4/USB only.
+
+### Ground and power notes that must survive disassembly
+
+- ESP32-S3, TFT, microSD, AD7606, keypad, power-control board and any external serial monitor used for signal observation require a **common reference GND** where they exchange logic signals.
+- The GPIO41 pull-up terminates at the ESP32 **3.3 V** rail.
+- The CH340 VCC pin stays disconnected in passive battery-monitor mode; only RXD and GND are connected.
+- Exact present VCC rail routing for every external module is not represented by firmware GPIO definitions. Before a complete prototype teardown, add the measured/verified module power wiring here rather than reconstructing it from memory.
+
 ## Hardware bus ownership
 
 ### SPI2 - display and SD
 
 ```text
-GPIO11 MOSI
-GPIO12 SCLK
-GPIO13 MISO
-GPIO14 TFT CS
-GPIO15 TFT DC
-GPIO16 TFT RESET
-GPIO17 SD CS
+GPIO11 MOSI -> TFT SDI/MOSI + SD MOSI
+GPIO12 SCLK -> TFT SCK      + SD SCK
+GPIO13 MISO <- TFT SDO/MISO + SD MISO
+GPIO14      -> TFT CS
+GPIO15      -> TFT DC
+GPIO16      -> TFT RESET
+GPIO17      -> SD CS
 ```
 
 The SD card stays at 2 MHz on the current prototype because higher rates were not stable on the physical assembly.
@@ -100,15 +176,17 @@ The SD card stays at 2 MHz on the current prototype because higher rates were no
 ### SPI3 - AD7606 only
 
 ```text
-GPIO39 DOUTA/MISO
-GPIO40 RD/SCLK
-GPIO41 CS
-GPIO42 CONVST A+B
-GPIO47 BUSY
-GPIO2  RESET
+GPIO39 <- AD7606 DOUTA/DB7
+GPIO40 -> AD7606 RD/SCLK
+GPIO41 -> AD7606 CS        + 10 kOhm pull-up to 3.3 V
+GPIO42 -> AD7606 CVA + CVB (tied together)
+GPIO47 <- AD7606 BUSY
+GPIO2  -> AD7606 RESET
 ```
 
-SPI3 is read-only for this AD7606 connection; MOSI is unused.
+SPI3 is read-only for this AD7606 connection; MOSI is intentionally unused.
+
+Current AD7606 acquisition assumptions are 8 channels, SPI mode 2, 1 MHz bus clock, +/-5 V input range and hardware oversampling x1. The physical RANGE / OS0 / OS1 / OS2 module straps must continue to match those assumptions when the board is rewired.
 
 ## Seismic acquisition interface
 
@@ -136,6 +214,8 @@ Current descriptors are:
 - `seismic_source_ad7606.c`
 
 `seismic_source_registry.c` performs the compile-time Kconfig selection. Runtime source switching is intentionally not exposed yet; changing the selected backend requires a firmware configuration/build change. Adding a backend should not require editing the acquisition orchestrator.
+
+ESP-IDF 5.5.4 resolves component dependencies before `sdkconfig` is available, so all backend components can appear in the CMake dependency graph. The source registry still references only the selected backend, and linker verification is used to ensure unselected backend code is absent from the final ELF.
 
 ## AD7606 sample timing
 
@@ -281,3 +361,4 @@ When adding hardware or features:
 7. Add new acquisition backends through `seismic_source_driver_t` and the source registry.
 8. Keep raw arrival detection separate from the localization solver.
 9. Preserve safe shutdown ordering for every new producer or storage writer.
+10. Every GPIO reassignment or physical resistor/strap change must update the wiring ledger above in the same commit.
