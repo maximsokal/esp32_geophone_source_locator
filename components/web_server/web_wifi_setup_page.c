@@ -30,7 +30,8 @@ static const char s_saved_page[] =
     "<title>GeoLocator Wi-Fi Setup</title>"
     "<h2>Saved</h2>"
     "<p>Hotspot settings were saved.</p>"
-    "<p>Turn on this phone's hotspot. GeoLocator is connecting now.</p>";
+    "<p>GeoLocator will leave GEOLOCATOR_SETUP and switch to station mode automatically.</p>"
+    "<p>When this page disconnects, enable this phone's hotspot and keep its name/password unchanged.</p>";
 
 
 static esp_err_t web_wifi_setup_page_send(
