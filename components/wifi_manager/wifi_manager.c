@@ -2,6 +2,7 @@
 
 #include "wifi_manager_credentials.h"
 #include "wifi_manager_internal.h"
+#include "wifi_manager_mdns.h"
 #include "wifi_manager_platform.h"
 #include "wifi_manager_setup_ap.h"
 #include "wifi_manager_sta.h"
@@ -92,6 +93,21 @@ esp_err_t wifi_manager_init(void)
         TAG,
         "Wi-Fi STA events initialization failed"
     );
+
+    /*
+     * mDNS is a convenience layer on top of the normal IP path. Keep Wi-Fi
+     * usable through its DHCP address even if discovery cannot start.
+     */
+    esp_err_t mdns_err =
+        wifi_manager_mdns_init();
+
+    if (mdns_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "mDNS unavailable: %s; numeric IP remains available",
+            esp_err_to_name(mdns_err)
+        );
+    }
 
     s_initialized =
         true;
