@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 
+#include "app_event_bus.h"
 #include "wifi_manager_internal.h"
 #include "wifi_manager_runtime.h"
 #include "wifi_manager_sta.h"
@@ -101,6 +102,11 @@ esp_err_t wifi_manager_connect_saved(void)
     ESP_LOGI(
         TAG,
         "Switching to saved Wi-Fi STA credentials"
+    );
+
+    (void)app_event_bus_publish(
+        APP_EVENT_WIFI_STA_CONNECTING,
+        0
     );
 
     return ESP_OK;
