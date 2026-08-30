@@ -4,6 +4,11 @@ managed_components/
 sdkconfig
 sdkconfig.old
 
+# Web UI build output
+webui/node_modules/
+webui/dist/
+webui/.vite/
+
 # IDE / editor
 .vscode/
 .vscode.zip
