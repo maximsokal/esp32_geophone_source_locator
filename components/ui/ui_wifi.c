@@ -68,6 +68,14 @@ void ui_render_wifi_locked(void)
 
     const bool setup = wifi_manager_is_setup_mode();
 
+    char ssid[40] = {0};
+    const bool has_saved_network =
+        wifi_manager_get_saved_ssid(
+            ssid,
+            sizeof(ssid)
+        ) == ESP_OK &&
+        ssid[0] != '\0';
+
     lv_obj_t *card = ui_create_card_locked(
         screen,
         10,
@@ -80,7 +88,6 @@ void ui_render_wifi_locked(void)
         return;
     }
 
-    char ssid[40] = {0};
     char ip[24] = {0};
     char text[96];
 
@@ -115,10 +122,7 @@ void ui_render_wifi_locked(void)
         );
         ui_wifi_render_setup_qr(screen);
     } else {
-        if (
-            wifi_manager_get_saved_ssid(ssid, sizeof(ssid)) != ESP_OK ||
-            ssid[0] == '\0'
-        ) {
+        if (!has_saved_network) {
             snprintf(ssid, sizeof(ssid), "--");
         }
 
@@ -145,10 +149,20 @@ void ui_render_wifi_locked(void)
         );
     }
 
-    static const char *actions[3] = {
-        "ENTER SETUP MODE",
+    const char *actions[3] = {
+        context->wifi_confirm == UI_WIFI_CONFIRM_SETUP
+            ? "CONFIRM ENTER SETUP"
+            : "ENTER SETUP MODE",
         "CONNECT SAVED NETWORK",
-        "FORGET SAVED NETWORK",
+        context->wifi_confirm == UI_WIFI_CONFIRM_FORGET
+            ? "CONFIRM FORGET NETWORK"
+            : "FORGET SAVED NETWORK",
+    };
+
+    const bool enabled[3] = {
+        !setup,
+        has_saved_network,
+        has_saved_network,
     };
 
     for (size_t i = 0; i < 3; ++i) {
@@ -156,7 +170,8 @@ void ui_render_wifi_locked(void)
             screen,
             118 + (int)(i * 32U),
             actions[i],
-            i == context->wifi_action
+            i == context->wifi_action,
+            enabled[i]
         );
     }
 }
