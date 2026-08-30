@@ -10,3 +10,7 @@ dependencies:
 
   # Pin the UI to LVGL 9 now, before the screen/widget surface grows.
   lvgl/lvgl: "^9.5.0"
+
+  # Official Espressif mDNS responder. Pin a known-stable release rather than
+  # automatically taking a newly published minor version during reconfigure.
+  espressif/mdns: "1.11.3"
