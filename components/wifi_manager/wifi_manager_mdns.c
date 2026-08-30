@@ -50,9 +50,9 @@ esp_err_t wifi_manager_mdns_init(void)
     err =
         mdns_service_add(
             NULL,
-            "_http",
+            "_https",
             "_tcp",
-            80,
+            APP_WEB_HTTPS_PORT,
             NULL,
             0
         );
