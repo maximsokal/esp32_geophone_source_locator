@@ -1,4 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import type { ThreeEvent } from '@react-three/fiber';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -166,7 +167,7 @@ function SensorMarker({
       <mesh
         position={[0, 0.11, 0]}
         castShadow
-        onPointerDown={(event) => {
+        onPointerDown={(event: ThreeEvent<PointerEvent>) => {
           event.stopPropagation();
           onSelect(sensor.id);
         }}
