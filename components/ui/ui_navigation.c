@@ -58,6 +58,20 @@ void ui_dispatch_app_event_locked(
             );
             break;
 
+        case APP_EVENT_WIFI_SETUP_CLIENT_DISCONNECTED:
+            context->wifi_setup_page_opened = false;
+
+            if (context->wifi_credentials_saved) {
+                ui_set_notice_locked(
+                    "SETUP LINK CLOSED - SWITCHING TO WI-FI"
+                );
+            } else {
+                ui_set_notice_locked(
+                    "PHONE DISCONNECTED - SCAN WI-FI QR"
+                );
+            }
+            break;
+
         case APP_EVENT_WIFI_SETUP_PAGE_OPENED:
             context->wifi_setup_page_opened = true;
             context->wifi_credentials_saved = false;
@@ -73,6 +87,14 @@ void ui_dispatch_app_event_locked(
             );
             break;
 
+        case APP_EVENT_WIFI_STA_CONNECTING:
+            context->wifi_setup_page_opened = false;
+            context->wifi_credentials_saved = false;
+            ui_set_notice_locked(
+                "CONNECTING TO SAVED WI-FI..."
+            );
+            break;
+
         case APP_EVENT_WIFI_STA_CONNECTED:
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
@@ -82,15 +104,11 @@ void ui_dispatch_app_event_locked(
             break;
 
         case APP_EVENT_WIFI_STA_DISCONNECTED:
-            /*
-             * Keep the setup/save instruction visible while the station
-             * retries a phone hotspot that may not have been enabled yet.
-             */
-            if (!context->wifi_credentials_saved) {
-                ui_set_notice_locked(
-                    "WI-FI DISCONNECTED - RETRYING"
-                );
-            }
+            context->wifi_setup_page_opened = false;
+            context->wifi_credentials_saved = false;
+            ui_set_notice_locked(
+                "WI-FI DISCONNECTED - RETRYING"
+            );
             break;
 
         case APP_EVENT_KEYPAD:
