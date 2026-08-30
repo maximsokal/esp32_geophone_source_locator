@@ -148,12 +148,6 @@ static void wifi_manager_sta_on_ip_event(
         );
     }
 
-    ESP_LOGI(
-        TAG,
-        "Web UI fallback: http://" IPSTR,
-        IP2STR(&event->ip_info.ip)
-    );
-
     (void)app_event_bus_publish(
         APP_EVENT_WIFI_STA_CONNECTED,
         0
