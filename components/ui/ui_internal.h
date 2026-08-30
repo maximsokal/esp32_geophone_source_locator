@@ -106,6 +106,8 @@ typedef struct
 
     size_t wifi_action;
     ui_wifi_confirm_t wifi_confirm;
+    bool wifi_setup_page_opened;
+    bool wifi_credentials_saved;
 
     char notice[80];
 
