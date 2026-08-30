@@ -10,3 +10,14 @@
 #
 # CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# ESP32-S3 hardware AES uses DMA. When mbedTLS buffers live in PSRAM the AES
+# port may need temporary MALLOC_CAP_DMA buffers in internal RAM (up to a
+# 1600-byte processing chunk per buffer). With the display, Wi-Fi, HTTPD and
+# concurrent browser TLS sessions this fragmented the remaining internal heap
+# enough to make HTTPS writes fail with "esp-aes: Failed to allocate memory".
+# The local dashboard workload is small, so prefer software AES and preserve
+# internal DMA memory for the rest of the device.
+#
+# CONFIG_MBEDTLS_HARDWARE_AES is not set
+# CONFIG_MBEDTLS_AES_USE_INTERRUPT is not set
