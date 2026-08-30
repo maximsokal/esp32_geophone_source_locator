@@ -31,6 +31,18 @@ static esp_err_t web_wifi_setup_post_handler(
     httpd_req_t *request
 )
 {
+    if (
+        !wifi_manager_is_setup_mode()
+    ) {
+        httpd_resp_send_err(
+            request,
+            HTTPD_403_FORBIDDEN,
+            "Wi-Fi setup is only available in setup mode"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
     char body[WIFI_SETUP_BODY_SIZE];
 
     esp_err_t err =
