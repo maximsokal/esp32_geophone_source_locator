@@ -5,6 +5,9 @@
 
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 
 static const char *TAG =
     "WEB_WIFI_SETUP";
@@ -13,6 +16,7 @@ static const char *TAG =
 #define WIFI_SETUP_BODY_SIZE        256
 #define WIFI_SETUP_SSID_SIZE        33
 #define WIFI_SETUP_PASSWORD_SIZE    64
+#define WIFI_SETUP_STA_SWITCH_MS    750
 
 
 esp_err_t web_wifi_setup_send_page(
@@ -101,6 +105,34 @@ static esp_err_t web_wifi_setup_post_handler(
     (void)app_event_bus_publish(
         APP_EVENT_WIFI_CREDENTIALS_SAVED,
         0
+    );
+
+    /*
+     * httpd_resp_send() has already sent the confirmation page. Keep the
+     * SoftAP alive briefly so the phone can render it, then perform the
+     * promised APSTA -> STA transition. Doing this here also avoids making
+     * the UI layer responsible for Wi-Fi control.
+     */
+    vTaskDelay(
+        pdMS_TO_TICKS(WIFI_SETUP_STA_SWITCH_MS)
+    );
+
+    err =
+        wifi_manager_connect_saved();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to switch from setup AP to saved STA: %s",
+            esp_err_to_name(err)
+        );
+
+        return ESP_OK;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Setup complete; switched to saved Wi-Fi STA"
     );
 
     return ESP_OK;
