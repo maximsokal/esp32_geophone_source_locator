@@ -10,9 +10,11 @@
 
 void ui_render_system_locked(void)
 {
+    ui_context_t *context = ui_context();
+
     lv_obj_t *screen = ui_create_screen_base_locked(
         "SYSTEM",
-        "LEFT BACK"
+        "LEFT BACK   LIVE SYSTEM STATUS"
     );
 
     if (screen == NULL) {
@@ -60,6 +62,60 @@ void ui_render_system_locked(void)
         card, 10, 54, 284, text, UI_COLOR_GOOD
     );
 
+    context->system_heap = ui_create_label_locked(
+        card,
+        10,
+        76,
+        284,
+        "HEAP     -- KB internal free",
+        UI_COLOR_TEXT
+    );
+
+    context->system_psram = ui_create_label_locked(
+        card,
+        10,
+        98,
+        284,
+        "PSRAM    -- KB free",
+        UI_COLOR_TEXT
+    );
+
+    context->system_uptime = ui_create_label_locked(
+        card,
+        10,
+        120,
+        284,
+        "UPTIME   -- s",
+        UI_COLOR_MUTED
+    );
+
+    (void)ui_create_label_locked(
+        card,
+        10,
+        140,
+        284,
+        "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
+        UI_COLOR_MUTED
+    );
+
+    ui_system_refresh_locked();
+}
+
+
+void ui_system_refresh_locked(void)
+{
+    ui_context_t *context = ui_context();
+
+    if (
+        context->system_heap == NULL ||
+        context->system_psram == NULL ||
+        context->system_uptime == NULL
+    ) {
+        return;
+    }
+
+    char text[96];
+
     snprintf(
         text,
         sizeof(text),
@@ -68,8 +124,9 @@ void ui_render_system_locked(void)
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U
         )
     );
-    (void)ui_create_label_locked(
-        card, 10, 76, 284, text, UI_COLOR_TEXT
+    lv_label_set_text(
+        context->system_heap,
+        text
     );
 
     snprintf(
@@ -80,8 +137,9 @@ void ui_render_system_locked(void)
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U
         )
     );
-    (void)ui_create_label_locked(
-        card, 10, 98, 284, text, UI_COLOR_TEXT
+    lv_label_set_text(
+        context->system_psram,
+        text
     );
 
     snprintf(
@@ -90,16 +148,8 @@ void ui_render_system_locked(void)
         "UPTIME   %lld s",
         (long long)(esp_timer_get_time() / 1000000LL)
     );
-    (void)ui_create_label_locked(
-        card, 10, 120, 284, text, UI_COLOR_MUTED
-    );
-
-    (void)ui_create_label_locked(
-        card,
-        10,
-        140,
-        284,
-        "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
-        UI_COLOR_MUTED
+    lv_label_set_text(
+        context->system_uptime,
+        text
     );
 }
