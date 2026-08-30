@@ -82,7 +82,14 @@ function CameraControls({ command }: { command: ViewCommand }) {
 
     controls.target.set(0, 0.55, 0);
     camera.lookAt(controls.target);
-    camera.updateProjectionMatrix();
+
+    if (
+      camera instanceof THREE.PerspectiveCamera ||
+      camera instanceof THREE.OrthographicCamera
+    ) {
+      camera.updateProjectionMatrix();
+    }
+
     controls.update();
   }, [camera, command, controls]);
 
