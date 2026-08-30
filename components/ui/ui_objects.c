@@ -73,12 +73,21 @@ static void ui_objects_render_menu(lv_obj_t *screen)
         "DELETE OBJECT",
     };
 
+    const bool have_objects =
+        context->objects_loaded &&
+        context->object_count > 0;
+
     for (size_t i = 0; i < 3; ++i) {
+        const bool enabled =
+            i == 0 ||
+            have_objects;
+
         (void)ui_create_row_locked(
             screen,
             92 + (int)(i * 34U),
             actions[i],
-            i == context->object_action
+            i == context->object_action,
+            enabled
         );
     }
 
@@ -143,7 +152,8 @@ static void ui_objects_render_list(lv_obj_t *screen)
             screen,
             62 + (int)(row * 34U),
             text,
-            index == context->object_index
+            index == context->object_index,
+            true
         );
     }
 
@@ -208,6 +218,98 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
 }
 
 
+static void ui_objects_cache_created(
+    ui_context_t *context,
+    const object_service_summary_t *object
+)
+{
+    if (
+        !context->objects_loaded ||
+        object == NULL
+    ) {
+        return;
+    }
+
+    for (size_t i = 0; i < context->object_count; ++i) {
+        if (strcmp(context->objects[i].id, object->id) == 0) {
+            context->objects[i] = *object;
+            return;
+        }
+    }
+
+    if (context->object_count >= OBJECT_SERVICE_MAX_OBJECTS) {
+        context->objects_loaded = false;
+        return;
+    }
+
+    context->objects[context->object_count] = *object;
+    ++context->object_count;
+}
+
+
+static void ui_objects_cache_active(
+    ui_context_t *context,
+    const char *object_id
+)
+{
+    if (
+        !context->objects_loaded ||
+        object_id == NULL
+    ) {
+        return;
+    }
+
+    for (size_t i = 0; i < context->object_count; ++i) {
+        context->objects[i].active =
+            strcmp(context->objects[i].id, object_id) == 0;
+    }
+}
+
+
+static void ui_objects_cache_deleted(
+    ui_context_t *context,
+    const char *object_id
+)
+{
+    if (
+        !context->objects_loaded ||
+        object_id == NULL
+    ) {
+        return;
+    }
+
+    for (size_t i = 0; i < context->object_count; ++i) {
+        if (strcmp(context->objects[i].id, object_id) != 0) {
+            continue;
+        }
+
+        if (i + 1U < context->object_count) {
+            memmove(
+                &context->objects[i],
+                &context->objects[i + 1U],
+                (context->object_count - i - 1U) *
+                    sizeof(context->objects[0])
+            );
+        }
+
+        --context->object_count;
+        memset(
+            &context->objects[context->object_count],
+            0,
+            sizeof(context->objects[0])
+        );
+        break;
+    }
+
+    if (
+        context->object_count == 0 ||
+        context->object_index >= context->object_count
+    ) {
+        context->object_index = 0;
+    }
+}
+
+
 void ui_render_objects_locked(void)
 {
     ui_context_t *context = ui_context();
@@ -262,6 +364,11 @@ void ui_object_service_event(
 
     switch (event->type) {
         case OBJECT_SERVICE_EVENT_CREATE_DONE:
+            ui_objects_cache_created(
+                context,
+                &event->object
+            );
+
             snprintf(
                 notice,
                 sizeof(notice),
@@ -273,6 +380,7 @@ void ui_object_service_event(
             break;
 
         case OBJECT_SERVICE_EVENT_LIST_DONE:
+            context->objects_loaded = true;
             context->object_count = event->object_count;
 
             if (context->object_count > OBJECT_SERVICE_MAX_OBJECTS) {
@@ -286,11 +394,13 @@ void ui_object_service_event(
             );
 
             if (
-                context->object_count > 0 &&
+                context->object_count == 0 ||
                 context->object_index >= context->object_count
             ) {
                 context->object_index = 0;
             }
+
+            context->objects_mode = UI_OBJECTS_MENU;
 
             ui_set_notice_locked(
                 context->object_count > 0
@@ -300,6 +410,11 @@ void ui_object_service_event(
             break;
 
         case OBJECT_SERVICE_EVENT_SET_ACTIVE_DONE:
+            ui_objects_cache_active(
+                context,
+                event->object_id
+            );
+
             snprintf(
                 notice,
                 sizeof(notice),
@@ -311,6 +426,11 @@ void ui_object_service_event(
             break;
 
         case OBJECT_SERVICE_EVENT_DELETE_DONE:
+            ui_objects_cache_deleted(
+                context,
+                event->object_id
+            );
+
             snprintf(
                 notice,
                 sizeof(notice),
@@ -321,8 +441,15 @@ void ui_object_service_event(
             context->objects_mode = UI_OBJECTS_MENU;
             break;
 
-        case OBJECT_SERVICE_EVENT_CREATE_FAILED:
         case OBJECT_SERVICE_EVENT_LIST_FAILED:
+            context->objects_loaded = false;
+            context->object_count = 0;
+            context->object_index = 0;
+            context->objects_mode = UI_OBJECTS_MENU;
+            ui_set_notice_locked("OBJECT LIST FAILED");
+            break;
+
+        case OBJECT_SERVICE_EVENT_CREATE_FAILED:
         case OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED:
         case OBJECT_SERVICE_EVENT_DELETE_FAILED:
         default:
