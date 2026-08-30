@@ -1,5 +1,7 @@
 #include "ui_internal.h"
 
+#include "storage_manager.h"
+
 
 void ui_handle_storage_key_locked(
     keypad_key_t key
@@ -67,28 +69,36 @@ void ui_handle_storage_key_locked(
                     "STORAGE SERVICE BUSY/FAILED"
                 );
             }
-        } else if (!context->storage_erase_confirm) {
-            context->storage_erase_confirm =
-                true;
-
-            ui_set_notice_locked(
-                "PRESS OK AGAIN TO ERASE DATA"
-            );
         } else {
-            context->storage_erase_confirm =
-                false;
+            if (!storage_manager_is_ready()) {
+                context->storage_erase_confirm =
+                    false;
+                return;
+            }
 
-            ui_set_notice_locked(
-                "ERASING DATA..."
-            );
+            if (!context->storage_erase_confirm) {
+                context->storage_erase_confirm =
+                    true;
 
-            esp_err_t err =
-                storage_service_erase_data_async();
-
-            if (err != ESP_OK) {
                 ui_set_notice_locked(
-                    "STORAGE SERVICE BUSY/FAILED"
+                    "PRESS OK AGAIN TO ERASE DATA"
                 );
+            } else {
+                context->storage_erase_confirm =
+                    false;
+
+                ui_set_notice_locked(
+                    "ERASING DATA..."
+                );
+
+                esp_err_t err =
+                    storage_service_erase_data_async();
+
+                if (err != ESP_OK) {
+                    ui_set_notice_locked(
+                        "STORAGE SERVICE BUSY/FAILED"
+                    );
+                }
             }
         }
 
