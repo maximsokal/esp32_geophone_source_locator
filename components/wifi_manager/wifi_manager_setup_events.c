@@ -99,6 +99,11 @@ static void wifi_manager_setup_wifi_event(
             TAG,
             "Setup client disconnected"
         );
+
+        (void)app_event_bus_publish(
+            APP_EVENT_WIFI_SETUP_CLIENT_DISCONNECTED,
+            0
+        );
     }
 }
 
