@@ -7,6 +7,7 @@ static void ui_screen_open_home(void)
 
     context->selected = 0;
     context->storage_erase_confirm = false;
+    context->wifi_confirm = UI_WIFI_CONFIRM_NONE;
     ui_set_notice_locked(NULL);
     ui_render_home_locked();
 }
@@ -20,7 +21,17 @@ static void ui_screen_open_objects(void)
     context->objects_mode = UI_OBJECTS_MENU;
     context->object_action = 0;
     context->object_index = 0;
-    ui_set_notice_locked(NULL);
+    context->object_count = 0;
+    context->objects_loaded = false;
+
+    esp_err_t err = object_service_list_async();
+
+    ui_set_notice_locked(
+        err == ESP_OK
+            ? "LOADING OBJECTS..."
+            : "OBJECT LIST FAILED"
+    );
+
     ui_render_objects_locked();
 }
 
@@ -53,6 +64,7 @@ static void ui_screen_open_wifi(void)
 
     context->selected = 0;
     context->wifi_action = 0;
+    context->wifi_confirm = UI_WIFI_CONFIRM_NONE;
     ui_set_notice_locked(NULL);
     ui_render_wifi_locked();
 }
@@ -158,7 +170,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
         .open = ui_screen_open_system,
         .render = ui_render_system_locked,
         .handle_key = ui_screen_handle_back_key,
-        .refresh = NULL,
+        .refresh = ui_system_refresh_locked,
     },
 };
 
