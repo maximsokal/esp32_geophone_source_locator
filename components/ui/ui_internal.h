@@ -40,6 +40,15 @@ typedef enum
 } ui_objects_mode_t;
 
 
+typedef enum
+{
+    UI_WIFI_CONFIRM_NONE = 0,
+    UI_WIFI_CONFIRM_SETUP,
+    UI_WIFI_CONFIRM_FORGET
+
+} ui_wifi_confirm_t;
+
+
 typedef struct
 {
     const char *name;
@@ -77,10 +86,15 @@ typedef struct
     lv_obj_t *measurement_transport;
     lv_obj_t *measurement_health;
 
+    lv_obj_t *system_heap;
+    lv_obj_t *system_psram;
+    lv_obj_t *system_uptime;
+
     ui_objects_mode_t objects_mode;
     size_t object_action;
     size_t object_index;
     size_t object_count;
+    bool objects_loaded;
     object_service_summary_t objects[
         OBJECT_SERVICE_MAX_OBJECTS
     ];
@@ -91,6 +105,7 @@ typedef struct
     sd_card_info_t storage_info;
 
     size_t wifi_action;
+    ui_wifi_confirm_t wifi_confirm;
 
     char notice[80];
 
@@ -144,7 +159,8 @@ lv_obj_t *ui_create_row_locked(
     lv_obj_t *parent,
     int y,
     const char *text,
-    bool selected
+    bool selected,
+    bool enabled
 );
 
 void ui_set_notice_locked(
@@ -193,6 +209,7 @@ void ui_render_objects_locked(void);
 void ui_render_storage_locked(void);
 void ui_render_wifi_locked(void);
 void ui_render_system_locked(void);
+void ui_system_refresh_locked(void);
 
 
 /* Navigation/input policy. */
