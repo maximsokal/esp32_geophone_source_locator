@@ -1,0 +1,12 @@
+# GeoLocator TLS runtime memory policy.
+#
+# ESP32-S3 N16R8 has 8 MB PSRAM. HTTPS handshakes were exhausting the
+# fragmented internal DRAM after Wi-Fi/LVGL/server startup with
+# MBEDTLS_ERR_SSL_ALLOC_FAILED (-0x7F00). Keep scarce internal RAM for
+# Wi-Fi, LVGL and DMA-capable drivers; allocate mbedTLS dynamic state in
+# external SPIRAM instead.
+#
+# Component config -> mbedTLS -> Memory allocation strategy -> External SPIRAM
+#
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
