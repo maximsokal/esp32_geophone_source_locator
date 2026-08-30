@@ -6,12 +6,27 @@
 #include "wifi_manager_setup_events.h"
 #include "wifi_manager_sta_events.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 
 
 static const char *TAG =
     "WIFI_SETUP_AP";
+
+
+static void wifi_manager_setup_log_dma_heap(
+    const char *stage
+)
+{
+    ESP_LOGI(
+        TAG,
+        "DMA heap %s: free=%u largest=%u",
+        stage,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA)
+    );
+}
 
 
 esp_err_t wifi_manager_setup_ap_start(
@@ -55,12 +70,22 @@ esp_err_t wifi_manager_setup_ap_start(
     config.ap.channel =
         1;
 
+    /* One setup phone is enough and keeps SoftAP memory deterministic. */
     config.ap.max_connection =
-        4;
+        1;
 
     config.ap.authmode =
         WIFI_AUTH_WPA2_PSK;
 
+    wifi_manager_setup_log_dma_heap(
+        "before APSTA start"
+    );
+
+    /*
+     * Keep APSTA here because STA credentials are written while the setup
+     * portal is still active. wifi_manager_connect_saved() later performs
+     * the clean APSTA -> STA transition after the HTTP response is sent.
+     */
     err =
         esp_wifi_set_mode(
             WIFI_MODE_APSTA
@@ -86,6 +111,10 @@ esp_err_t wifi_manager_setup_ap_start(
     if (err != ESP_OK) {
         return err;
     }
+
+    wifi_manager_setup_log_dma_heap(
+        "after APSTA start"
+    );
 
     ESP_LOGI(
         TAG,
