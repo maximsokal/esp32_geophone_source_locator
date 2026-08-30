@@ -19,12 +19,16 @@ static void wifi_manager_setup_log_dma_heap(
     const char *stage
 )
 {
+    const uint32_t caps =
+        MALLOC_CAP_DMA |
+        MALLOC_CAP_INTERNAL;
+
     ESP_LOGI(
         TAG,
-        "DMA heap %s: free=%u largest=%u",
+        "Internal DMA heap %s: free=%u largest=%u",
         stage,
-        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA)
+        (unsigned)heap_caps_get_free_size(caps),
+        (unsigned)heap_caps_get_largest_free_block(caps)
     );
 }
 
