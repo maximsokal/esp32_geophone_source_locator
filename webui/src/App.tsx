@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { SceneViewport, type ViewCommand, type ViewPreset } from './components/SceneViewport';
 import { SensorPanel } from './components/SensorPanel';
+import { XrRuntimePanel } from './components/XrRuntimePanel';
 import { demoScene } from './data/demoScene';
 
 export default function App() {
@@ -23,13 +24,14 @@ export default function App() {
       <header className="app-header">
         <div>
           <div className="eyebrow">ESP32 GEOLOCATOR · 3D WORKSPACE</div>
-          <h1>Sensor placement & scan geometry</h1>
+          <h1>Sensor placement & browser AR tracking</h1>
           <p>
-            Hardware-independent viewer for MAIN + GEO1…GEO4 in one metric coordinate frame.
+            Browser-only metric workspace for MAIN + GEO1…GEO4, with a real WebXR immersive-AR runtime on the phone.
           </p>
         </div>
         <div className="header-badges">
-          <span className="badge good">OFFLINE ASSETS</span>
+          <span className="badge good">TRUSTED HTTPS</span>
+          <span className="badge good">WEBXR-A</span>
           <span className="badge warning">DEMO SCAN</span>
         </div>
       </header>
@@ -40,6 +42,8 @@ export default function App() {
         <button type="button" onClick={() => requestView('front')}>Front</button>
         <span className="toolbar-note">Tap a marker or device row to select it.</span>
       </section>
+
+      <XrRuntimePanel />
 
       <section className="workspace">
         <SceneViewport
@@ -52,7 +56,7 @@ export default function App() {
       </section>
 
       <footer className="app-footer">
-        Next data sources: scanned triangle mesh → AprilTag poses → locked sensor XYZ → barometer / IMU / ranging fusion.
+        WEB-XR-A tracks the phone pose only. Next: ARCore/WebXR depth sensing → point cloud / surface samples → mesh reconstruction → AprilTag sensor registration.
       </footer>
     </main>
   );
