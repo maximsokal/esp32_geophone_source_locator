@@ -104,12 +104,14 @@ HTTP :80
 HTTPS :443
   https://geolocator.local/
   normal dashboard and APIs
-  future camera / WebXR / depth capture
+  camera / WebXR / future depth capture
 ```
 
 Browser camera APIs and WebXR require a secure context, therefore the scanning workflow runs from `https://geolocator.local/`.
 
-The ESP32 server certificate is signed by a private GeoLocator Root CA. The Root CA private key stays only on the development machine. The public Root CA certificate will be delivered to the phone through the ESP32 onboarding flow and installed once with the Android system confirmation required by the OS.
+The ESP32 server certificate is signed by a private GeoLocator Root CA. The Root CA private key stays only on the development machine. The public Root CA certificate is delivered to the phone through the ESP32 onboarding flow and installed with the Android system confirmation required by the OS.
+
+The certificate onboarding and browser verification path is hardware-verified with secure context, camera, WebXR API and `immersive-ar` all passing.
 
 After that trust bootstrap, the intended field workflow is fully local and does not require internet access:
 
@@ -125,13 +127,65 @@ WebXR / ARCore-backed tracking + supported depth APIs
 
 Do not add insecure Chrome flags or make field operation depend on them.
 
+## WEB-XR-A runtime
+
+`WEB-XR-A` adds a browser AR runtime layer without depth acquisition yet.
+
+It currently provides:
+
+```text
+secure-context capability probe
+camera API presence
+WebGL availability
+navigator.xr availability
+immersive-ar support probe
+        ↓
+user-triggered immersive-ar session
+        ↓
+transparent XRWebGLLayer
+        ↓
+local-floor reference space
+        ↓ fallback
+local reference space
+        ↓
+XRFrame.getViewerPose()
+        ↓
+phone XYZ + orientation quaternion + frame/tracking diagnostics
+```
+
+The AR session requests DOM overlay as an optional feature. When supported, the phone keeps a compact GeoLocator overlay visible over the camera passthrough with live pose information and an `End AR session` control.
+
+Depth sensing is intentionally not requested by this slice. Depth configuration, depth frames and point-cloud generation belong to `WEB-XR-B` so pose/session bring-up can be tested independently.
+
+### WEB-XR-A build acceptance
+
+```powershell
+cd webui
+npm ci
+npm run typecheck
+npm run build
+```
+
+Expected result:
+
+```text
+TypeScript: PASS
+Vite production build: PASS
+webui/dist/index.html exists
+webui/dist/assets/*.js exists
+webui/dist/assets/*.css exists
+```
+
+The production phone acceptance test must be run only after `WEB-HTTPS-B` serves `webui/dist` through the already trusted `https://geolocator.local/` origin. A plain LAN Vite URL is not an acceptable field-mode WebXR test because it is not the trusted GeoLocator HTTPS origin.
+
 ## Next implementation slices
 
-1. Finish and hardware-verify the dual HTTP bootstrap + HTTPS main transport.
-2. Add QR-driven GeoLocator Root CA onboarding and secure-context verification.
-3. Serve the production React/Vite build from SD with the embedded dashboard as fallback.
-4. Add browser capability diagnostics for secure context, camera, WebXR and depth support.
-5. Add AR tracking/depth acquisition and local point-cloud/mesh reconstruction.
-6. Add AprilTag observation records and tag-to-geophone offsets for MAIN + GEO1…GEO4.
-7. Add a real ESP API contract for saved scene geometry and sensor positions.
-8. Fuse scan pose with barometer, IMU and future ranging without moving a position that is already locked unless motion is detected.
+1. `WEB-HTTPS-A` — dual HTTP bootstrap + HTTPS main transport. **COMPLETE**
+2. `WEB-HTTPS-ONBOARDING` — QR Root CA onboarding + secure-context verification. **COMPLETE**
+3. `WEB-XR-A` — immersive AR session + phone pose/reference-space runtime. **IMPLEMENTED; build/hardware acceptance pending**
+4. `WEB-HTTPS-B` — serve the production React/Vite build from SD with the embedded dashboard as fallback.
+5. `WEB-XR-B` — request ARCore/WebXR depth sensing and acquire metric depth samples.
+6. `WEB-XR-C` — local point-cloud accumulation, registration and mesh reconstruction.
+7. `WEB-TAG-A` — AprilTag observations and tag-to-geophone offsets for MAIN + GEO1…GEO4.
+8. Add a real ESP API contract for saved scene geometry and sensor positions.
+9. Fuse scan pose with barometer, IMU and future ranging without moving a position that is already locked unless motion is detected.
