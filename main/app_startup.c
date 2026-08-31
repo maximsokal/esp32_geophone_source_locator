@@ -164,6 +164,28 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
+    /*
+     * Seed/check the production React bundle while storage is mounted but
+     * before storage workers, Wi-Fi and ESP-IDF's sys_evt task are involved.
+     * web_server_prepare_webui() uses a temporary 8 KiB worker stack and
+     * releases it before TLS is started.
+     */
+    ui_boot_set_stage(
+        "WEB UI..."
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
+
+    ESP_ERROR_CHECK(
+        web_server_prepare_webui()
+    );
+
+    app_startup_log_elapsed(
+        "webui_prepare",
+        stage_started_ms
+    );
+
     ui_boot_set_stage(
         "NETWORK + UI..."
     );
