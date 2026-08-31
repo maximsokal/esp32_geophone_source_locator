@@ -10,10 +10,14 @@ export interface ScanPointCloudSnapshot {
   pointCount: number;
   rawPointCount: number;
   bounds: PointCloudBounds | null;
+  fullBounds: PointCloudBounds | null;
   voxelSizeMeters: number;
   maxDepthMeters: number;
   depthFrameCount: number;
   sampledDepthFrames: number;
+  capacityReached: boolean;
+  maxPointCapacity: number;
+  boundsTrimFraction: number;
 }
 
 export interface DepthSampleView {
@@ -34,7 +38,7 @@ export interface CpuDepthInformationLike {
 }
 
 const DEFAULT_VOXEL_SIZE_METERS = 0.04;
-const DEFAULT_MAX_POINTS = 100000;
+const DEFAULT_MAX_POINTS = 250000;
 const DEFAULT_MAX_DEPTH_METERS = 5.0;
 const SAMPLE_COLUMNS = 40;
 const SAMPLE_ROWS = 22;
@@ -43,6 +47,8 @@ const MIN_DEPTH_METERS = 0.18;
 const SUPPORT_CELL_METERS = 0.12;
 const MIN_SUPPORT_HITS = 2;
 const MIN_FILTERED_POINTS = 300;
+const ROBUST_BOUNDS_TRIM_FRACTION = 0.01;
+const MIN_POINTS_FOR_ROBUST_BOUNDS = 1000;
 
 function finite(value: number): boolean {
   return Number.isFinite(value);
@@ -105,6 +111,27 @@ function depthIsLocallyConsistent(
   return valid < 2 || agreeing >= 2;
 }
 
+function sortedAxis(positions: readonly number[], axis: 0 | 1 | 2): number[] {
+  const values = new Array<number>(positions.length / 3);
+  let writeIndex = 0;
+
+  for (let index = axis; index < positions.length; index += 3) {
+    values[writeIndex] = positions[index];
+    writeIndex += 1;
+  }
+
+  values.sort((left, right) => left - right);
+  return values;
+}
+
+function percentileIndex(count: number, fraction: number): number {
+  if (count <= 1) {
+    return 0;
+  }
+
+  return clamp(Math.round((count - 1) * fraction), 0, count - 1);
+}
+
 /**
  * Metric point-cloud accumulator for browser-only AR scanning.
  *
@@ -157,6 +184,14 @@ export class DepthPointCloudAccumulator {
     return this.positions.length / 3;
   }
 
+  get capacityReached(): boolean {
+    return this.pointCount >= this.maxPoints;
+  }
+
+  get maxPointCapacity(): number {
+    return this.maxPoints;
+  }
+
   get voxelSize(): number {
     return this.voxelSizeMeters;
   }
@@ -165,7 +200,7 @@ export class DepthPointCloudAccumulator {
     depth: CpuDepthInformationLike,
     fallbackView: DepthSampleView,
   ): number {
-    if (this.pointCount >= this.maxPoints) {
+    if (this.capacityReached) {
       return 0;
     }
 
@@ -205,7 +240,7 @@ export class DepthPointCloudAccumulator {
       const ndcY = 1 - v * 2;
 
       for (let column = 0; column < SAMPLE_COLUMNS; column += 1) {
-        if (this.pointCount >= this.maxPoints) {
+        if (this.capacityReached) {
           return added;
         }
 
@@ -295,21 +330,29 @@ export class DepthPointCloudAccumulator {
         ? supported
         : this.positions;
 
-    const bounds = this.computeBounds(finalPositions);
+    const fullBounds = this.computeFullBounds(finalPositions);
+    const bounds = this.computeRobustBounds(finalPositions) ?? fullBounds;
 
     return {
       positions: Float32Array.from(finalPositions),
       pointCount: finalPositions.length / 3,
       rawPointCount,
       bounds,
+      fullBounds,
       voxelSizeMeters: this.voxelSizeMeters,
       maxDepthMeters: this.maxDepthMeters,
       depthFrameCount,
       sampledDepthFrames,
+      capacityReached: this.capacityReached,
+      maxPointCapacity: this.maxPoints,
+      boundsTrimFraction:
+        finalPositions.length / 3 >= MIN_POINTS_FOR_ROBUST_BOUNDS
+          ? ROBUST_BOUNDS_TRIM_FRACTION
+          : 0,
     };
   }
 
-  private computeBounds(positions: readonly number[]): PointCloudBounds | null {
+  private computeFullBounds(positions: readonly number[]): PointCloudBounds | null {
     if (positions.length < 3) {
       return null;
     }
@@ -337,6 +380,24 @@ export class DepthPointCloudAccumulator {
     return {
       min: [minX, minY, minZ],
       max: [maxX, maxY, maxZ],
+    };
+  }
+
+  private computeRobustBounds(positions: readonly number[]): PointCloudBounds | null {
+    const count = positions.length / 3;
+    if (count < MIN_POINTS_FOR_ROBUST_BOUNDS) {
+      return null;
+    }
+
+    const x = sortedAxis(positions, 0);
+    const y = sortedAxis(positions, 1);
+    const z = sortedAxis(positions, 2);
+    const lowIndex = percentileIndex(count, ROBUST_BOUNDS_TRIM_FRACTION);
+    const highIndex = percentileIndex(count, 1 - ROBUST_BOUNDS_TRIM_FRACTION);
+
+    return {
+      min: [x[lowIndex], y[lowIndex], z[lowIndex]],
+      max: [x[highIndex], y[highIndex], z[highIndex]],
     };
   }
 
