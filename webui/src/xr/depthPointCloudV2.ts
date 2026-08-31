@@ -12,6 +12,7 @@ import {
 } from './surfelEvidence';
 
 export type ProjectPoint = readonly [number, number, number];
+type VoxelIndexKey = number | string;
 
 export interface PointCloudBounds {
   min: ProjectPoint;
@@ -131,6 +132,7 @@ interface RepresentativePoint {
   promoted: boolean;
   priority: number;
   voxelKey: string;
+  voxelIndexKey: VoxelIndexKey;
   coverageKey: string;
 }
 
@@ -187,6 +189,8 @@ const MIN_DEPTH_METERS = 0.18;
 const EDGE_PROBE_PIXEL_OFFSET = 0.75;
 const NORMAL_PROBE_PIXEL_OFFSET = 1.5;
 const NORMAL_COMPATIBILITY_ABS_DOT = Math.cos((50 * Math.PI) / 180);
+const PACKED_VOXEL_AXIS_OFFSET = 65536;
+const PACKED_VOXEL_AXIS_RADIX = 131072;
 
 const MAX_FUSION_WEIGHT = 12;
 const MIN_OBSERVATION_WEIGHT = 0.025;
@@ -218,6 +222,22 @@ function finite(value: number): boolean { return Number.isFinite(value); }
 function clamp(value: number, min: number, max: number): number { return Math.min(max, Math.max(min, value)); }
 function gridCoordinate(value: number, cellSizeMeters: number): number { return Math.floor(value / cellSizeMeters); }
 function coordinateKey(x: number, y: number, z: number): string { return `${x}:${y}:${z}`; }
+function packedVoxelIndexKey(x: number, y: number, z: number): VoxelIndexKey {
+  if (
+    x >= -PACKED_VOXEL_AXIS_OFFSET && x < PACKED_VOXEL_AXIS_OFFSET &&
+    y >= -PACKED_VOXEL_AXIS_OFFSET && y < PACKED_VOXEL_AXIS_OFFSET &&
+    z >= -PACKED_VOXEL_AXIS_OFFSET && z < PACKED_VOXEL_AXIS_OFFSET
+  ) {
+    return (
+      ((x + PACKED_VOXEL_AXIS_OFFSET) * PACKED_VOXEL_AXIS_RADIX + (y + PACKED_VOXEL_AXIS_OFFSET)) *
+      PACKED_VOXEL_AXIS_RADIX +
+      (z + PACKED_VOXEL_AXIS_OFFSET)
+    );
+  }
+  // The normal project-scale path is a collision-free exact integer (< 2^51).
+  // Keep a string fallback so even pathological coordinates retain old semantics.
+  return coordinateKey(x, y, z);
+}
 function cellKey(x: number, y: number, z: number, cellSizeMeters: number): string {
   return coordinateKey(gridCoordinate(x, cellSizeMeters), gridCoordinate(y, cellSizeMeters), gridCoordinate(z, cellSizeMeters));
 }
@@ -227,6 +247,13 @@ function voxelCoordinates(x: number, y: number, z: number, size: number): readon
 function voxelKey(x: number, y: number, z: number, size: number): string {
   const [vx, vy, vz] = voxelCoordinates(x, y, z, size);
   return coordinateKey(vx, vy, vz);
+}
+function voxelIndexKey(x: number, y: number, z: number, size: number): VoxelIndexKey {
+  return packedVoxelIndexKey(
+    gridCoordinate(x, size),
+    gridCoordinate(y, size),
+    gridCoordinate(z, size),
+  );
 }
 function hashVoxel(x: number, y: number, z: number): number {
   let hash = 0x811c9dc5;
@@ -406,7 +433,7 @@ export class DepthPointCloudAccumulator {
   private readonly memoryBudgetPoints: number;
   private maxDepthMeters: number;
   private readonly coverageCells = new Map<string, CoverageCell>();
-  private readonly voxelIndex = new Map<string, RepresentativePoint[]>();
+  private readonly voxelIndex = new Map<VoxelIndexKey, RepresentativePoint[]>();
   private readonly representatives = new Map<string, RepresentativePoint>();
   private representativeCount = 0;
   private promotedRepresentativeCount = 0;
@@ -734,7 +761,8 @@ export class DepthPointCloudAccumulator {
       this.updateAdaptiveQuota();
     }
     const key = voxelKey(x, y, z, this.voxelSizeMeters);
-    const bucket = this.voxelIndex.get(key) ?? [];
+    const indexKey = voxelIndexKey(x, y, z, this.voxelSizeMeters);
+    const bucket = this.voxelIndex.get(indexKey) ?? [];
     if (bucket.length >= MAX_SURFELS_PER_FINE_VOXEL) {
       let worst = bucket[0];
       let worstScore = representativeScore(worst);
@@ -775,6 +803,7 @@ export class DepthPointCloudAccumulator {
       promoted: false,
       priority: voxelPriority(x, y, z, this.voxelSizeMeters),
       voxelKey: key,
+      voxelIndexKey: indexKey,
       coverageKey,
     };
     if (!this.insertCandidate(cell, candidate)) {
@@ -890,57 +919,33 @@ export class DepthPointCloudAccumulator {
     const vx = gridCoordinate(x, size);
     const vy = gridCoordinate(y, size);
     const vz = gridCoordinate(z, size);
-    const xLowGap = x - vx * size;
-    const xHighGap = (vx + 1) * size - x;
-    const yLowGap = y - vy * size;
-    const yHighGap = (vy + 1) * size - y;
-    const zLowGap = z - vz * size;
-    const zHighGap = (vz + 1) * size - z;
     const normal = normalEstimate !== null && normalEstimate.confidence >= 0.35
       ? normalEstimate.normal
       : null;
     let best: RepresentativePoint | null = null;
     let bestDistanceSquared = Number.POSITIVE_INFINITY;
-
-    for (let dx = -1; dx <= 1; dx += 1) {
-      const gapX = dx < 0 ? xLowGap : (dx > 0 ? xHighGap : 0);
-      const gapXSquared = gapX * gapX;
-      for (let dy = -1; dy <= 1; dy += 1) {
-        const gapY = dy < 0 ? yLowGap : (dy > 0 ? yHighGap : 0);
-        const gapXYSquared = gapXSquared + gapY * gapY;
-        for (let dz = -1; dz <= 1; dz += 1) {
-          const gapZ = dz < 0 ? zLowGap : (dz > 0 ? zHighGap : 0);
-          const bucketLowerBoundSquared = gapXYSquared + gapZ * gapZ;
-          // Once a compatible representative is found, a neighbouring voxel whose
-          // AABB cannot contain anything closer is irrelevant. This preserves the
-          // exact nearest-compatible result while avoiding the Map lookup, string
-          // key allocation and bucket scan for spatially impossible winners.
-          if (bucketLowerBoundSquared >= bestDistanceSquared) continue;
-
-          const bucket = this.voxelIndex.get(coordinateKey(vx + dx, vy + dy, vz + dz));
-          if (bucket === undefined) continue;
-          for (const point of bucket) {
-            const ddx = x - point.x;
-            const ddy = y - point.y;
-            const ddz = z - point.z;
-            const distanceSquared = ddx * ddx + ddy * ddy + ddz * ddz;
-            // Normal compatibility is only relevant when this point can actually
-            // beat the current nearest candidate. Avoid the dot product otherwise.
-            if (distanceSquared >= bestDistanceSquared) continue;
-
-            if (normal !== null && point.normalConfidence >= 0.35) {
-              // Both stored surfel normals and fresh normal estimates are normalized.
-              // Compare their absolute dot product directly instead of allocating
-              // temporary vectors, re-normalizing twice and evaluating acos().
-              const absDot = Math.abs(
-                point.normalX * normal[0] + point.normalY * normal[1] + point.normalZ * normal[2],
-              );
-              if (absDot < NORMAL_COMPATIBILITY_ABS_DOT) continue;
-            }
-            best = point;
-            bestDistanceSquared = distanceSquared;
-          }
+    for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) for (let dz = -1; dz <= 1; dz += 1) {
+      const bucket = this.voxelIndex.get(packedVoxelIndexKey(vx + dx, vy + dy, vz + dz));
+      if (bucket === undefined) continue;
+      for (const point of bucket) {
+        const ddx = x - point.x;
+        const ddy = y - point.y;
+        const ddz = z - point.z;
+        const distanceSquared = ddx * ddx + ddy * ddy + ddz * ddz;
+        // Compatibility work cannot change the winner when this point is already
+        // farther than the best compatible candidate found in the same scan order.
+        if (distanceSquared >= bestDistanceSquared) continue;
+        if (normal !== null && point.normalConfidence >= 0.35) {
+          // Both stored surfel normals and fresh normal estimates are normalized.
+          // Compare their absolute dot product directly instead of allocating
+          // temporary vectors, re-normalizing twice and evaluating acos().
+          const absDot = Math.abs(
+            point.normalX * normal[0] + point.normalY * normal[1] + point.normalZ * normal[2],
+          );
+          if (absDot < NORMAL_COMPATIBILITY_ABS_DOT) continue;
         }
+        best = point;
+        bestDistanceSquared = distanceSquared;
       }
     }
     return best;
@@ -1003,8 +1008,8 @@ export class DepthPointCloudAccumulator {
     } else if (!this.ensureGlobalSlot(candidate.coverageKey)) return false;
     cell.representatives.set(candidate.id, candidate);
     this.representatives.set(candidate.id, candidate);
-    const bucket = this.voxelIndex.get(candidate.voxelKey) ?? [];
-    bucket.push(candidate); this.voxelIndex.set(candidate.voxelKey, bucket);
+    const bucket = this.voxelIndex.get(candidate.voxelIndexKey) ?? [];
+    bucket.push(candidate); this.voxelIndex.set(candidate.voxelIndexKey, bucket);
     this.representativeCount += 1; return true;
   }
   private desiredAdaptiveQuota(): number {
@@ -1051,11 +1056,11 @@ export class DepthPointCloudAccumulator {
   private removeRepresentative(point: RepresentativePoint): void {
     const cell = this.coverageCells.get(point.coverageKey); cell?.representatives.delete(point.id);
     this.representatives.delete(point.id);
-    const bucket = this.voxelIndex.get(point.voxelKey);
+    const bucket = this.voxelIndex.get(point.voxelIndexKey);
     if (bucket !== undefined) {
       const index = bucket.indexOf(point);
       if (index >= 0) bucket.splice(index, 1);
-      if (bucket.length === 0) this.voxelIndex.delete(point.voxelKey);
+      if (bucket.length === 0) this.voxelIndex.delete(point.voxelIndexKey);
     }
     if (point.promoted) {
       this.promotedRepresentativeCount = Math.max(0, this.promotedRepresentativeCount - 1);
