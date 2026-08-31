@@ -2,13 +2,16 @@ import { useState } from 'react';
 
 import './scan.css';
 
-import {
-  ScanPointCloudViewport,
-  type ScanDisplayOptions,
-} from './components/ScanPointCloudViewport';
+import { ScanPointCloudViewport } from './components/ScanPointCloudViewport';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel } from './components/XrRuntimePanel';
+import { clientDiagnostics } from './data/clientDiagnostics';
 import { countCoverageQualityBands } from './xr/coverageQuality';
+import {
+  displayForScanMode,
+  type ScanDisplayOptions,
+  type ScanMode,
+} from './xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot } from './xr/webxrRuntime';
 
 function formatMeters(value: number): string {
@@ -26,84 +29,50 @@ function extentFromBounds(
   ];
 }
 
-const qualityDisplay: ScanDisplayOptions = {
-  goodPoints: true,
-  badPoints: true,
-  dimensions: true,
-  mesh: false,
-  freeAir: false,
-  unknownSpace: false,
-  manualPoints: true,
-};
-
-const surfaceDisplay: ScanDisplayOptions = {
-  goodPoints: true,
-  badPoints: false,
-  dimensions: true,
-  mesh: false,
-  freeAir: false,
-  unknownSpace: false,
-  manualPoints: true,
-};
-
-const searchVolumeDisplay: ScanDisplayOptions = {
-  goodPoints: true,
-  badPoints: false,
-  dimensions: true,
-  mesh: false,
-  freeAir: true,
-  unknownSpace: true,
-  manualPoints: true,
-};
-
-const meshDisplay: ScanDisplayOptions = {
-  goodPoints: false,
-  badPoints: false,
-  dimensions: true,
-  mesh: true,
-  freeAir: false,
-  unknownSpace: false,
-  manualPoints: true,
-};
-
-type ScanMode = 'quality' | 'surface' | 'search-volume' | 'mesh';
-
-function displayForMode(mode: ScanMode): ScanDisplayOptions {
-  switch (mode) {
-    case 'surface': return surfaceDisplay;
-    case 'search-volume': return searchVolumeDisplay;
-    case 'mesh': return meshDisplay;
-    default: return qualityDisplay;
-  }
-}
-
 export default function App() {
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
-  const [display, setDisplay] = useState<ScanDisplayOptions>(qualityDisplay);
+  const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
   const [viewCommand, setViewCommand] = useState<ViewCommand>({
     preset: 'perspective',
     sequence: 0,
   });
 
-  const requestView = (preset: ViewPreset) => {
+  const requestView = (preset: ViewPreset): void => {
+    clientDiagnostics.info('SCAN_VIEW_PRESET', { preset });
     setViewCommand((current) => ({ preset, sequence: current.sequence + 1 }));
   };
 
   const selectMode = (mode: ScanMode): void => {
+    const next = displayForScanMode(mode);
     setScanMode(mode);
-    setDisplay(displayForMode(mode));
+    setDisplay(next);
+    clientDiagnostics.info('SCAN_RESULT_MODE', { mode, display: next });
   };
 
-  const toggleDisplay = (key: keyof ScanDisplayOptions) => {
+  const toggleDisplay = (key: keyof ScanDisplayOptions): void => {
     setScanMode(null);
-    setDisplay((current) => ({ ...current, [key]: !current[key] }));
+    setDisplay((current) => {
+      const next = { ...current, [key]: !current[key] };
+      clientDiagnostics.info('SCAN_RESULT_LAYER_TOGGLE', { layer: key, enabled: next[key] });
+      return next;
+    });
   };
 
   const handleScanReady = (snapshot: ScanPointCloudSnapshot | null): void => {
     setScanSnapshot(snapshot);
-    if (snapshot !== null) selectMode('quality');
+    if (snapshot !== null) {
+      selectMode('quality');
+      clientDiagnostics.info('SCAN_RESULT_READY', {
+        stablePoints: snapshot.pointCount,
+        tentativePoints: snapshot.tentativePointCount,
+        manualPoints: snapshot.manualControlPoints.length,
+        freeVoxels: snapshot.knownFreeVoxelCount,
+        unknownVoxels: snapshot.unknownCandidateVoxelCount,
+      });
+      void clientDiagnostics.flush();
+    }
   };
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
@@ -182,6 +151,7 @@ export default function App() {
             snapshot={scanSnapshot}
             viewCommand={viewCommand}
             display={display}
+            mode={scanMode}
           />
 
           <aside className="side-panel scan-result-panel">
@@ -205,7 +175,7 @@ export default function App() {
               </dl>
 
               <p className="scan-volume-note">
-                Quality map uses red = weak, yellow = improving and green = multi-view stable. Magenta pins are operator-marked corners. Verified free air is blue; unseen internal volume stays an explicit candidate instead of being guessed empty.
+                Red and yellow points are still uncertain. Green surfels are the stable measured boundary. Blue voxels are ray-verified free air. Amber voxels are still unknown and therefore remain valid seismic-source search volume.
               </p>
 
               <details className="xr-technical-details scan-result-details">
