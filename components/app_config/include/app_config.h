@@ -7,7 +7,7 @@
 #define APP_WIFI_AP_SSID          "GEOLOCATOR_SETUP"
 #define APP_WIFI_AP_PASSWORD      "GEOLOCATOR"
 #define APP_WIFI_SETUP_URL        "http://192.168.4.1/setup"
-#define APP_WIFI_CA_URL           "http://192.168.4.1/setup/ca"
+#define APP_WIFI_CA_URL           "http://192.168.4.1/setup/ca-guide"
 
 
 /*
@@ -29,7 +29,7 @@
 #define APP_MDNS_HOSTNAME         "geolocator"
 #define APP_MDNS_INSTANCE_NAME    "GeoLocator"
 #define APP_MDNS_WEB_URL          "https://geolocator.local/"
-#define APP_HTTPS_VERIFY_URL      "https://geolocator.local/setup/verify"
+#define APP_HTTPS_VERIFY_URL      "https://geolocator.local/setup/verify-ui"
 
 
 /*
