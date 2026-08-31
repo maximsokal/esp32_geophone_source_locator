@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/xr-reconstruction-hardening
+      - main
   workflow_dispatch:
 
 permissions:
@@ -148,9 +149,23 @@ jobs:
       - name: Verify build-id cache busting is embedded
         working-directory: webui
         run: |
+          set -euo pipefail
           grep -E 'assets/app\.js\?v=[0-9a-f]{20}' esp-dist/index.html
           grep -E 'assets/app\.css\?v=[0-9a-f]{20}' esp-dist/index.html
           cat esp-dist/build-id.txt
+
+      - name: Verify operator UX and browser telemetry are in production bundle
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          gzip -cd esp-dist/assets/app.js.gz >/tmp/geolocator-app.js
+          grep -F 'Finish & save scan' /tmp/geolocator-app.js
+          grep -F 'Mark corners' /tmp/geolocator-app.js
+          grep -F 'Quality map' /tmp/geolocator-app.js
+          grep -F 'WEBUI_BOOT' /tmp/geolocator-app.js
+          grep -F 'XR_PROGRESS' /tmp/geolocator-app.js
+          grep -F 'XR_MANUAL_POINT_ADDED' /tmp/geolocator-app.js
 
   stress-mobile-chrome:
     runs-on: ubuntu-24.04
@@ -205,12 +220,42 @@ jobs:
 
   validate-firmware:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 25
+    container:
+      image: espressif/idf:v5.5.4
     steps:
       - uses: actions/checkout@v4
-      - name: Install ESP-IDF v5.5.4
-        uses: espressif/install-esp-idf-action@v1
+      - uses: actions/setup-node@v4
         with:
-          version: 'v5.5.4'
-      - name: Build ESP32-S3 firmware
-        run: idf.py build
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Verify VM toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          . /opt/esp/idf/export.sh
+          idf.py --version
+
+      - name: Build ESP32-S3 firmware with current WebUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          idf.py build
+
+      - name: Prove firmware embedded the current browser bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s components/web_server/generated_webui_assets_app.js.gz
+          gzip -cd components/web_server/generated_webui_assets_app.js.gz >/tmp/embedded-app.js
+          grep -F 'Finish & save scan' /tmp/embedded-app.js
+          grep -F 'Mark corners' /tmp/embedded-app.js
+          grep -F 'WEBUI_BOOT' /tmp/embedded-app.js
+          grep -F 'XR_PROGRESS' /tmp/embedded-app.js
+          grep -F 'XR_MANUAL_POINT_ADDED' /tmp/embedded-app.js
+          grep -E 'GeoLocator React Web UI seed will be embedded' build/log/idf_py_stdout_output 2>/dev/null || true
