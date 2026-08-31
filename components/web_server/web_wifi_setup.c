@@ -43,6 +43,18 @@ static esp_err_t web_wifi_setup_post_handler(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (
+        !web_https_onboarding_ca_install_confirmed()
+    ) {
+        httpd_resp_send_err(
+            request,
+            HTTPD_403_FORBIDDEN,
+            "Confirm GeoLocator Root CA installation before saving Wi-Fi settings"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
     char body[WIFI_SETUP_BODY_SIZE];
 
     esp_err_t err =
