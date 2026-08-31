@@ -108,4 +108,6 @@ esp_err_t web_wifi_setup_request_read_body(
 
 esp_err_t web_https_onboarding_bootstrap_register(httpd_handle_t server);
 esp_err_t web_https_onboarding_secure_register(httpd_handle_t server);
+esp_err_t web_https_onboarding_ui_bootstrap_register(httpd_handle_t server);
+esp_err_t web_https_onboarding_ui_secure_register(httpd_handle_t server);
 bool web_https_onboarding_ca_install_confirmed(void);
