@@ -48,15 +48,18 @@ digest.update(sourceJs);
 digest.update(sourceCss);
 const buildId = digest.digest('hex').slice(0, 20);
 
-espIndex = espIndex.replace(
-  '</head>',
-  `<meta name="geolocator-webui-build" content="${buildId}"></head>`,
-);
+// Cache-Control: no-store remains the first line of defence on the ESP, but
+// Android Chrome can retain a live page/back-forward entry across firmware
+// reflashes. Give every firmware WebUI bundle a different asset identity too.
+espIndex = espIndex
+  .replaceAll('./assets/app.js', `./assets/app.js?v=${buildId}`)
+  .replaceAll('./assets/app.css', `./assets/app.css?v=${buildId}`)
+  .replace(
+    '</head>',
+    `<meta name="geolocator-webui-build" content="${buildId}"></head>`,
+  );
 
-const gzipOptions = {
-  level: 9,
-  mtime: 0,
-};
+const gzipOptions = { level: 9, mtime: 0 };
 const jsGzip = gzipSync(sourceJs, gzipOptions);
 const cssGzip = gzipSync(sourceCss, gzipOptions);
 
