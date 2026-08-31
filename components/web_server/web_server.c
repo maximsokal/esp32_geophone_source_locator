@@ -121,16 +121,25 @@ static esp_err_t web_server_https_start_internal(void)
         14;
 
     /*
-     * Chrome opens dashboard resources in parallel. Two TLS sessions fit the
-     * device memory budget; additional TCP connections remain queued until a
-     * slot becomes free. Do not enable LRU purge here: purging can terminate
-     * the response which is currently streaming to the browser.
+     * Chrome may establish speculative/preconnect TLS sessions before the
+     * navigation request itself. With only two sockets those idle sessions
+     * can occupy the whole HTTPS capacity and starve the real GET request.
+     *
+     * Three TLS sockets leave one request slot of headroom for the React
+     * index/assets. LRU purge is enabled so a newer useful connection can
+     * replace the least-recently-used idle/speculative session instead of
+     * waiting indefinitely. The WEB-HTTPS-A memory tuning keeps TLS buffers in
+     * PSRAM; hardware logs with two clients still leave enough internal RAM
+     * headroom for this conservative third slot.
      */
     config.httpd.max_open_sockets =
-        2;
+        3;
 
     config.httpd.lru_purge_enable =
-        false;
+        true;
+
+    config.httpd.recv_wait_timeout =
+        5;
 
     config.httpd.send_wait_timeout =
         30;
@@ -157,7 +166,7 @@ static esp_err_t web_server_https_start_internal(void)
 
     ESP_LOGI(
         TAG,
-        "Starting HTTPS server on port %u (max TLS clients=%u)",
+        "Starting HTTPS server on port %u (max TLS clients=%u, LRU purge=on)",
         (unsigned)config.port_secure,
         (unsigned)config.httpd.max_open_sockets
     );
