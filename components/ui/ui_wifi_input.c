@@ -16,6 +16,29 @@ static bool ui_wifi_saved_network_available(void)
 }
 
 
+static void ui_wifi_reset_verify_state(
+    ui_context_t *context
+)
+{
+    context->wifi_verify_ready = false;
+    context->wifi_verify_result_received = false;
+    context->wifi_verify_nonce = 0;
+    context->wifi_verify_result_mask = 0;
+}
+
+
+static void ui_wifi_reset_setup_state(
+    ui_context_t *context
+)
+{
+    context->wifi_setup_page_opened = false;
+    context->wifi_credentials_saved = false;
+    context->wifi_ca_downloaded = false;
+    context->wifi_ca_install_confirmed = false;
+    ui_wifi_reset_verify_state(context);
+}
+
+
 void ui_handle_wifi_key_locked(
     keypad_key_t key
 )
@@ -95,11 +118,9 @@ void ui_handle_wifi_key_locked(
             context->wifi_confirm =
                 UI_WIFI_CONFIRM_NONE;
 
-            context->wifi_setup_page_opened =
-                false;
-
-            context->wifi_credentials_saved =
-                false;
+            ui_wifi_reset_setup_state(
+                context
+            );
 
             err =
                 wifi_manager_enter_setup_mode();
@@ -118,6 +139,10 @@ void ui_handle_wifi_key_locked(
 
             context->wifi_credentials_saved =
                 false;
+
+            ui_wifi_reset_verify_state(
+                context
+            );
 
             err =
                 wifi_manager_connect_saved();
@@ -146,11 +171,9 @@ void ui_handle_wifi_key_locked(
             context->wifi_confirm =
                 UI_WIFI_CONFIRM_NONE;
 
-            context->wifi_setup_page_opened =
-                false;
-
-            context->wifi_credentials_saved =
-                false;
+            ui_wifi_reset_setup_state(
+                context
+            );
 
             err =
                 wifi_manager_forget_sta_credentials();
