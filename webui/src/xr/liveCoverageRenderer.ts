@@ -20,7 +20,10 @@ export interface CoverageRenderLayer {
 export interface CoverageRenderSnapshot {
   /** Positions in the active WebXR reference-space coordinate system. */
   positions: Float32Array;
-  /** Per-point coverage confidence in [0, 1]. */
+  /**
+   * Coverage confidence in [0, 1]. A value > 1.5 is reserved for a manual
+   * operator control point so it can be rendered as an unmistakable marker.
+   */
   confidence: Float32Array;
   pointCount: number;
 }
@@ -60,7 +63,9 @@ function createProgram(gl: GlContext): WebGLProgram {
       out float v_confidence;
       void main() {
         gl_Position = u_view_projection * vec4(a_position, 1.0);
-        gl_PointSize = mix(3.0, 7.5, a_confidence);
+        bool manual = a_confidence > 1.5;
+        float quality = clamp(a_confidence, 0.0, 1.0);
+        gl_PointSize = manual ? 13.0 : mix(4.0, 7.5, quality);
         v_confidence = a_confidence;
       }
     `
@@ -72,7 +77,9 @@ function createProgram(gl: GlContext): WebGLProgram {
       varying float v_confidence;
       void main() {
         gl_Position = u_view_projection * vec4(a_position, 1.0);
-        gl_PointSize = mix(3.0, 7.5, a_confidence);
+        bool manual = a_confidence > 1.5;
+        float quality = clamp(a_confidence, 0.0, 1.0);
+        gl_PointSize = manual ? 13.0 : mix(4.0, 7.5, quality);
         v_confidence = a_confidence;
       }
     `;
@@ -84,20 +91,17 @@ function createProgram(gl: GlContext): WebGLProgram {
       out vec4 out_color;
       void main() {
         float radius = distance(gl_PointCoord, vec2(0.5));
-        if (radius > 0.5) {
-          discard;
-        }
+        if (radius > 0.5) discard;
 
+        bool manual = v_confidence > 1.5;
         float t = clamp(v_confidence, 0.0, 1.0);
-        vec3 low = vec3(1.00, 0.22, 0.08);
-        vec3 mid = vec3(1.00, 0.82, 0.08);
-        vec3 high = vec3(0.12, 1.00, 0.55);
-        vec3 color = t < 0.5
-          ? mix(low, mid, t * 2.0)
-          : mix(mid, high, (t - 0.5) * 2.0);
-
+        vec3 color = manual
+          ? vec3(0.95, 0.30, 1.00)
+          : (t < 0.42
+              ? vec3(1.00, 0.20, 0.10)
+              : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55)));
         float edge = 1.0 - smoothstep(0.30, 0.50, radius);
-        float alpha = mix(0.10, 0.92, smoothstep(0.0, 1.0, t)) * edge;
+        float alpha = (manual ? 1.0 : mix(0.48, 0.96, t)) * edge;
         out_color = vec4(color, alpha);
       }
     `
@@ -106,20 +110,17 @@ function createProgram(gl: GlContext): WebGLProgram {
       varying float v_confidence;
       void main() {
         float radius = distance(gl_PointCoord, vec2(0.5));
-        if (radius > 0.5) {
-          discard;
-        }
+        if (radius > 0.5) discard;
 
+        bool manual = v_confidence > 1.5;
         float t = clamp(v_confidence, 0.0, 1.0);
-        vec3 low = vec3(1.00, 0.22, 0.08);
-        vec3 mid = vec3(1.00, 0.82, 0.08);
-        vec3 high = vec3(0.12, 1.00, 0.55);
-        vec3 color = t < 0.5
-          ? mix(low, mid, t * 2.0)
-          : mix(mid, high, (t - 0.5) * 2.0);
-
+        vec3 color = manual
+          ? vec3(0.95, 0.30, 1.00)
+          : (t < 0.42
+              ? vec3(1.00, 0.20, 0.10)
+              : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55)));
         float edge = 1.0 - smoothstep(0.30, 0.50, radius);
-        float alpha = mix(0.10, 0.92, smoothstep(0.0, 1.0, t)) * edge;
+        float alpha = (manual ? 1.0 : mix(0.48, 0.96, t)) * edge;
         gl_FragColor = vec4(color, alpha);
       }
     `;
@@ -150,9 +151,7 @@ function createProgram(gl: GlContext): WebGLProgram {
 }
 
 function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
-  if (matrix.length < 16) {
-    return false;
-  }
+  if (matrix.length < 16) return false;
 
   const m0 = Number(matrix[0]);
   const m1 = Number(matrix[1]);
@@ -195,9 +194,7 @@ function multiplyMat4(
   right: ArrayLike<number>,
   out: Float32Array,
 ): boolean {
-  if (left.length < 16 || right.length < 16) {
-    return false;
-  }
+  if (left.length < 16 || right.length < 16) return false;
 
   for (let column = 0; column < 4; column += 1) {
     const r0 = Number(right[column * 4]);
@@ -206,38 +203,19 @@ function multiplyMat4(
     const r3 = Number(right[column * 4 + 3]);
 
     out[column * 4] =
-      Number(left[0]) * r0 +
-      Number(left[4]) * r1 +
-      Number(left[8]) * r2 +
-      Number(left[12]) * r3;
+      Number(left[0]) * r0 + Number(left[4]) * r1 + Number(left[8]) * r2 + Number(left[12]) * r3;
     out[column * 4 + 1] =
-      Number(left[1]) * r0 +
-      Number(left[5]) * r1 +
-      Number(left[9]) * r2 +
-      Number(left[13]) * r3;
+      Number(left[1]) * r0 + Number(left[5]) * r1 + Number(left[9]) * r2 + Number(left[13]) * r3;
     out[column * 4 + 2] =
-      Number(left[2]) * r0 +
-      Number(left[6]) * r1 +
-      Number(left[10]) * r2 +
-      Number(left[14]) * r3;
+      Number(left[2]) * r0 + Number(left[6]) * r1 + Number(left[10]) * r2 + Number(left[14]) * r3;
     out[column * 4 + 3] =
-      Number(left[3]) * r0 +
-      Number(left[7]) * r1 +
-      Number(left[11]) * r2 +
-      Number(left[15]) * r3;
+      Number(left[3]) * r0 + Number(left[7]) * r1 + Number(left[11]) * r2 + Number(left[15]) * r3;
   }
 
   return true;
 }
 
-/**
- * Lightweight point renderer used only during immersive AR.
- *
- * The expensive spatial decimation runs on the CPU at depth-sample cadence.
- * GPU buffers are refreshed at a much lower cadence by WebXrRuntime and then
- * rendered in one POINTS draw call per XRView. This keeps the UX useful without
- * turning every camera frame into a point-cloud rebuild.
- */
+/** Lightweight point renderer used only during immersive AR. */
 export class LiveCoveragePointRenderer {
   private readonly program: WebGLProgram;
   private readonly positionBuffer: WebGLBuffer;
@@ -310,9 +288,7 @@ export class LiveCoveragePointRenderer {
   }
 
   render(layer: CoverageRenderLayer, views: readonly CoverageRenderView[]): void {
-    if (this.pointCount <= 0) {
-      return;
-    }
+    if (this.pointCount <= 0) return;
 
     const gl = this.gl;
     gl.useProgram(this.program);
@@ -334,12 +310,8 @@ export class LiveCoveragePointRenderer {
       const viewport = layer.getViewport(view);
       gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
 
-      if (!rigidInverse(view.transform.matrix, this.viewMatrix)) {
-        continue;
-      }
-      if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) {
-        continue;
-      }
+      if (!rigidInverse(view.transform.matrix, this.viewMatrix)) continue;
+      if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) continue;
 
       gl.uniformMatrix4fv(this.viewProjectionLocation, false, this.viewProjection);
       gl.drawArrays(gl.POINTS, 0, this.pointCount);
