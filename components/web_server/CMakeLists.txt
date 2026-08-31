@@ -10,8 +10,12 @@ set(WEB_SERVER_ROOT_CA_FILE
     "${CMAKE_CURRENT_LIST_DIR}/certs/rootCA.crt"
 )
 
+set(WEB_SERVER_WEBUI_PROJECT_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/../../webui"
+)
+
 set(WEB_SERVER_WEBUI_SOURCE_DIR
-    "${CMAKE_CURRENT_LIST_DIR}/../../webui/esp-dist"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/esp-dist"
 )
 
 set(WEB_SERVER_WEBUI_GENERATED_INDEX
@@ -50,6 +54,82 @@ if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
         "certs/rootCA.crt"
     )
     set(WEB_SERVER_ROOT_CA_EMBEDDED 1)
+endif()
+
+# The firmware must never silently embed an old React bundle. The previous flow
+# trusted an ignored webui/esp-dist directory, so a fresh firmware commit could
+# still serve an older browser UI. Track the WebUI source as CMake inputs and
+# rebuild the deterministic Vite bundle before copying it into the component.
+find_program(WEB_SERVER_NPM_EXECUTABLE NAMES npm.cmd npm)
+if(NOT WEB_SERVER_NPM_EXECUTABLE)
+    message(FATAL_ERROR
+        "GeoLocator firmware requires Node.js/npm so the current WebUI can be built before embedding. Install Node.js 22+ and rerun idf.py reconfigure/build."
+    )
+endif()
+
+file(GLOB_RECURSE WEB_SERVER_WEBUI_SOURCE_INPUTS CONFIGURE_DEPENDS
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.ts"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.tsx"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.css"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/scripts/*.mjs"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/stress/*.js"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/stress/*.html"
+)
+
+set(WEB_SERVER_WEBUI_CONFIG_INPUTS
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/package.json"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/index.html"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/tsconfig.json"
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/vite.config.ts"
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${WEB_SERVER_WEBUI_SOURCE_INPUTS}
+    ${WEB_SERVER_WEBUI_CONFIG_INPUTS}
+)
+
+set(WEB_SERVER_WEBUI_NODE_LOCK
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/node_modules/.package-lock.json"
+)
+set(WEB_SERVER_WEBUI_PACKAGE_LOCK
+    "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
+)
+
+set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 0)
+if(NOT EXISTS "${WEB_SERVER_WEBUI_NODE_LOCK}")
+    set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 1)
+elseif("${WEB_SERVER_WEBUI_PACKAGE_LOCK}" IS_NEWER_THAN "${WEB_SERVER_WEBUI_NODE_LOCK}")
+    set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 1)
+endif()
+
+if(WEB_SERVER_WEBUI_NEEDS_NPM_CI)
+    message(STATUS "GeoLocator WebUI dependencies are missing/stale; running npm ci")
+    execute_process(
+        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" ci
+        WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
+        RESULT_VARIABLE WEB_SERVER_NPM_CI_RESULT
+        OUTPUT_VARIABLE WEB_SERVER_NPM_CI_STDOUT
+        ERROR_VARIABLE WEB_SERVER_NPM_CI_STDERR
+    )
+    if(NOT WEB_SERVER_NPM_CI_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "GeoLocator npm ci failed (${WEB_SERVER_NPM_CI_RESULT})\n${WEB_SERVER_NPM_CI_STDOUT}\n${WEB_SERVER_NPM_CI_STDERR}"
+        )
+    endif()
+endif()
+
+message(STATUS "Building current GeoLocator React WebUI for firmware embed")
+execute_process(
+    COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" run build
+    WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
+    RESULT_VARIABLE WEB_SERVER_WEBUI_BUILD_RESULT
+    OUTPUT_VARIABLE WEB_SERVER_WEBUI_BUILD_STDOUT
+    ERROR_VARIABLE WEB_SERVER_WEBUI_BUILD_STDERR
+)
+if(NOT WEB_SERVER_WEBUI_BUILD_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "GeoLocator WebUI build failed (${WEB_SERVER_WEBUI_BUILD_RESULT})\n${WEB_SERVER_WEBUI_BUILD_STDOUT}\n${WEB_SERVER_WEBUI_BUILD_STDERR}"
+    )
 endif()
 
 file(REMOVE
@@ -108,6 +188,10 @@ if(
     )
 
     set(WEB_SERVER_WEBUI_SEED_EMBEDDED 1)
+else()
+    message(FATAL_ERROR
+        "GeoLocator WebUI build completed but esp-dist is incomplete; refusing to embed stale/missing browser assets"
+    )
 endif()
 
 idf_component_register(
@@ -200,12 +284,6 @@ else()
     )
 endif()
 
-if(WEB_SERVER_WEBUI_SEED_EMBEDDED)
-    message(STATUS
-        "GeoLocator React Web UI seed will be embedded: ${WEB_SERVER_WEBUI_BUILD_ID}"
-    )
-else()
-    message(WARNING
-        "GeoLocator React Web UI seed is missing; run npm run build in webui before idf.py reconfigure/build to enable WEB-HTTPS-B"
-    )
-endif()
+message(STATUS
+    "GeoLocator React Web UI seed will be embedded: ${WEB_SERVER_WEBUI_BUILD_ID}"
+)
