@@ -1,87 +1,55 @@
 # GeoLocator Web UI
 
-React + TypeScript + Vite workspace for the phone/desktop 3D interface.
+Browser-only React + TypeScript + Vite client for the diploma 3D scanning and sensor-localization workflow.
 
-This workspace provides the browser-only secure 3D scanner, measured point-cloud review, and the coordinate contracts used by the diploma localization pipeline.
+The production phone client runs from trusted local HTTPS served by the ESP32. No Android/Capacitor APK and no cloud processing are required.
 
-## Stack
-
-- React 19
-- TypeScript
-- Vite 8
-- WebXR / ARCore Depth on supported Android Chrome devices
-- WebGL point-cloud review
-
-All runtime dependencies are bundled into local static files. The deployed UI does not use CDN imports and does not require internet access.
-
-## Develop
+## Build
 
 ```powershell
 cd webui
 npm install
-npm run dev
-```
-
-## Production build
-
-```powershell
-cd webui
+npm run typecheck
 npm run build
 ```
 
-The build produces:
+Production output:
 
 ```text
 webui/dist/
-    normal Vite production output
-
 webui/esp-dist/
-    index.html
-    build-id.txt
-    assets/app.js.gz
-    assets/app.css.gz
+  index.html
+  build-id.txt
+  assets/app.js.gz
+  assets/app.css.gz
 ```
 
-`esp-dist` is prepared automatically after the normal Vite build. Hashed Vite asset names are rewritten to stable ESP routes and JavaScript/CSS are pre-compressed with gzip.
+The generated build folders and `components/web_server/generated_webui/` are ignored by Git.
 
-The generated `dist/`, `esp-dist/`, and `components/web_server/generated_webui/` artifacts are intentionally ignored by Git.
+## Runtime serving
 
-## WEB-HTTPS-B deployment
-
-The ESP-IDF component checks for `webui/esp-dist` during CMake configure. When a bundle exists before `idf.py reconfigure/build`, a compressed seed is embedded into firmware. During boot, while SD is mounted and before the TFT begins using shared SPI2, the firmware can update the SD backup copy by build-id.
-
-Runtime serving priority is intentionally:
-
-```text
-1. embedded React bundle from firmware flash
-2. legacy tiny embedded dashboard if no React bundle was built
-```
-
-The HTTPS runtime does not read React assets from SD. This prevents HTTP/FATFS/SDSPI traffic from racing the asynchronous TFT driver on shared SPI2. The SD copy remains a boot-time seed/backup artifact and the card remains the persistent store for object/session data.
-
-The browser requests:
+Normal STA mode is HTTPS-only:
 
 ```text
 https://geolocator.local/
-https://geolocator.local/assets/app.js
-https://geolocator.local/assets/app.css
 ```
 
-JavaScript/CSS are served with `Content-Encoding: gzip`.
+The React bundle is served from firmware flash. The SD card keeps the boot-time seed/backup and object/session data; the HTTPS server does not read React assets from SD while the TFT and SD share SPI2.
+
+Certificate onboarding and the secure browser gate are hardware-verified on Android Chrome.
 
 ## Coordinate contract
 
-Application data uses the diploma coordinate convention:
+GeoLocator project coordinates:
 
 ```text
-X = local horizontal axis
-Y = local horizontal axis
+X = local horizontal
+Y = local horizontal
 Z = height
-MAIN = preferred local frame origin
 units = metres
 ```
 
-WebXR uses X-right / Y-up / -Z-forward. Measured depth points are converted into project coordinates as:
+WebXR coordinates are converted as:
 
 ```text
 project X = XR X
@@ -89,202 +57,231 @@ project Y = -XR Z
 project Z = XR Y
 ```
 
-The external scan constrains visible outer geometry. Unknown internal rubble volume must not be classified as empty just because the phone cannot see it.
+The phone scan constrains visible external geometry only. Unseen rubble interior remains unknown, not empty.
 
-## Browser-only secure runtime
+## WebXR depth input
 
-The production phone client is the browser application itself. No Android/Capacitor APK is part of the architecture.
-
-GeoLocator uses two local transports:
+The immersive session requests:
 
 ```text
-HTTP :80
-  bootstrap / Wi-Fi setup / certificate onboarding
-
-HTTPS :443
-  https://geolocator.local/
-  React UI
-  dashboard APIs
-  camera / WebXR / depth capture
+immersive-ar
+local-floor (local fallback)
+dom-overlay
+depth-sensing
+light-estimation
+CPU-optimized depth
+matchDepthView = true
+raw depth preferred, smooth fallback
 ```
 
-Browser camera APIs and WebXR run only from the trusted `https://geolocator.local/` secure context.
-
-The ESP32 server certificate is signed by the private GeoLocator Root CA. The Root CA private key stays on the development machine. The public Root CA certificate is delivered by the ESP32 onboarding flow and Android performs the OS-required installation confirmation.
-
-The certificate onboarding/browser verification path is hardware-verified with secure context, camera, WebXR API and `immersive-ar` all passing.
-
-## WEB-XR-A — immersive tracking
-
-`WEB-XR-A` provides:
+The tested phone has previously supplied:
 
 ```text
-secure-context capability probe
-camera API presence
-WebGL availability
-navigator.xr availability
-immersive-ar support
-        ↓
-user-triggered immersive-ar session
-        ↓
-transparent XRWebGLLayer
-        ↓
-local-floor reference space
-        ↓ fallback
-local reference space
-        ↓
-XRFrame.getViewerPose()
-        ↓
-phone XYZ + orientation quaternion
+depth usage  = cpu-optimized
+depth format = luminance-alpha
+depth buffer = 160 × 90
 ```
 
-This layer is hardware-verified on Android Chrome.
+The current runtime also exposes the selected WebXR `depthType` so the phone test can verify whether Chromium actually grants `raw`, `smooth`, or leaves the type unspecified.
 
-## WEB-XR-B — ARCore/WebXR Depth
+## Robust multi-view surface fusion
 
-The immersive session optionally requests `depth-sensing` with CPU-optimized depth. On the tested phone the browser provides:
+The old live guide counted repeated sampled frames. That was intentionally removed because a stationary phone could repeatedly observe the same noisy region and manufacture false confidence.
+
+The current pipeline separates **depth frames** from **independent map evidence**:
 
 ```text
-depth usage:  cpu-optimized
-depth format: luminance-alpha
-depth buffer: 160 × 90
+WebXR / ARCore 6DoF pose
+        ↓
+motion-quality estimate
+        ↓
+keyframe selector
+        ├─ novel slow pose     → EVIDENCE KEYFRAME
+        ├─ redundant/still     → low-weight POLISH only
+        └─ excessive motion    → SKIP
+        ↓
+ARCore/WebXR depth
+        ↓
+local depth-neighbour residual gate
+        ↓
+metric project XYZ
+        ↓
+40 mm surface hypotheses
+        ↓
+robust capped-weight fusion
+        ↓
+independent-view confirmation
+        ↓
+PROMOTED stable surface
+        ↓
+300 mm coverage quality
+        ↓
+local live coverage guide + final point cloud
 ```
 
-For each usable depth frame, the browser reconstructs metric view-space points using the depth projection matrix and transforms them into the common WebXR world frame. No image or depth data is uploaded to a cloud service.
+### Keyframe policy
 
-## WEB-XR-C — bounded adaptive point cloud
-
-The scanner does not retain every unique depth voxel until memory fills. It uses a streaming bounded-memory spatial sampler:
+A new depth frame is allowed to add coverage evidence only when the WebXR pose is geometrically novel. Current starting policy:
 
 ```text
-ARCore CPU depth
-        ↓
-local depth-neighbour consistency check
-        ↓
-metric world/project XYZ
-        ↓
-40 mm fine voxel identity
-        ↓
-300 mm spatial coverage cell
-        ↓
-adaptive representative quota per coverage cell
-        ↓
-deterministic stability-weighted bottom-k replacement
-        ↓
-fixed global representative budget (60k)
-        ↓
-final local-support / repeat-observation filter
-        ↓
-robust 1st–99th percentile bounds
-        ↓
-local WebGL point-cloud review
+minimum keyframe interval        260 ms
+translation novelty             ~55 mm
+or translation + view change    ~25 mm + 10°
 ```
 
-### Why adaptive decimation is required
+Pose-derived linear/angular velocity and acceleration reduce frame quality. Fast/shaky frames are skipped instead of being allowed to create high-confidence geometry.
 
-A long scan can observe hundreds of thousands of nearly redundant fine voxels. A simple hard point limit is scan-order biased: early viewpoints consume the budget and later viewpoints cannot add geometry.
+The WebXR pose is used rather than a separately clocked `DeviceMotionEvent` stream because the XR pose already represents the platform's camera/IMU tracking result and is synchronized to the XR frame loop.
 
-The adaptive sampler instead gives newly discovered spatial coverage its own budget. As the number of 300 mm coverage cells grows, the representative quota per cell decreases automatically. Dense already-covered regions are compacted, while new regions continue to enter the retained map.
+### Stationary-frame rule
 
-Within a coverage cell:
-
-- repeated observations update/average an existing 40 mm representative rather than adding another point;
-- stable repeated representatives receive higher retention weight;
-- deterministic voxel hashing gives scan-order-independent bottom-k selection;
-- when the quota shrinks, low-priority representatives are evicted;
-- retained representatives are globally bounded, so scan duration no longer implies unbounded browser memory growth.
-
-The only true exhaustion state is when there are more distinct 300 mm coverage cells than the global budget can represent even at one point per cell. That condition is exposed separately as `coverageRejectedCount`.
-
-### Live temporal coverage guide
-
-During immersive scanning the retained map is also used for a lightweight on-camera coverage guide. The guide is intentionally delayed so the first few frames remain a clean camera view and a single noisy depth frame cannot immediately paint a surface as complete.
-
-Coverage confidence is based primarily on how many **different sampled depth frames** observed a 300 mm coverage cell, not how many depth pixels happened to land there in one frame.
-
-Current policy:
+A stationary/redundant frame:
 
 ```text
-warm-up:
-  >= 12 sampled depth frames
-  >= 600 retained representatives
-  >= 20 coverage cells
-  >= 120 valid candidate samples / sampled frame
+CAN:
+  refine the centroid/variance of an already matched surface at low weight
 
-per-cell visibility:
-  < 4 sampled-frame hits   -> hidden / transparent
-  4..9 hits                -> visible, red/orange -> yellow
-  >= 10 hits               -> well-covered, green/teal
-
-rendering:
-  max 16k live guide points
-  GPU buffer refresh ~ every 550 ms
-  one GL_POINTS draw per XRView
-  scanner point-cloud processing continues independently
+CANNOT:
+  create a new voxel
+  increment independent-view coverage
+  turn an area "ready" by waiting in place
 ```
 
-The live overlay reports `READY / VISIBLE` coverage-cell counts. Dense well-observed areas become more opaque and greener, while areas with insufficient temporal support remain absent or faint so the operator can see where another pass is useful.
+This is the critical anti-saturation invariant.
 
-The guide is a UX aid, not a replacement for the final scan filter. The final point cloud still uses the bounded adaptive representatives, repeat-observation/spatial support cleanup and robust bounds.
+### Surface hypothesis lifecycle
 
-### Scan diagnostics
-
-A completed scan reports:
+Each retained representative tracks:
 
 ```text
-Stable 3D points
-Retained representatives
-Spatial memory budget
-Coverage cells
-Coverage cell size
-Adaptive reps / cell
-Candidate depth samples
-Samples decimated
-In-cell replacements
-Adaptive rebalance evictions
-Coverage rejects
-Depth frames / sampled frames
-40 mm fine voxel resolution
-Depth range cap
-Robust extent X/Y/Z
-Raw outlier span XYZ
+bounded fusion weight
+independent keyframe views
+spatial residual / variance
+last evidence keyframe
+view-direction diversity
+promotion state
 ```
 
-A live retained-point count may plateau or decrease slightly when expanding coverage triggers a rebalance. That is expected and does not mean depth capture stopped.
+Fusion weight is capped so an old surface never becomes immutable. Even a mature voxel keeps a finite update gain and can self-polish when later consistent observations arrive.
 
-## Scan operating guidance
+A new hypothesis is tentative. It must be confirmed by independent keyframes with a sufficiently small residual before being promoted. Tentative hypotheses that remain unsupported for later keyframes are pruned.
 
-A 360° rotation from one position is useful for validating room-scale geometry. It can measure the visible surrounding shell but cannot see surfaces occluded behind furniture or rubble.
+Depth residual gates increase with range because depth uncertainty grows with distance, but are capped so unrelated surfaces are not merged.
 
-For the diploma rubble workflow, the operator should both rotate and translate the phone between viewpoints. The result remains a visible-surface constraint; unknown internal volume stays unknown rather than being marked empty.
+### Bounded adaptive memory
 
-## Downstream scan contract
+The phone still uses bounded spatial memory:
 
 ```text
-filtered metric point cloud
+fine surface voxel             40 mm
+coverage cell                 300 mm
+global representative budget  60,000
+max representatives/cell      28 before adaptive rebalance
+```
+
+As new coverage cells appear, dense earlier regions can be compacted so new geometry is not blocked by scan order.
+
+## Live coverage guide
+
+The live guide now visualizes **multi-view surface confidence**, not elapsed time or raw frame count.
+
+A coverage cell becomes visible only after stable promoted surface exists from independent views. Readiness combines:
+
+```text
+promoted surface density
+independent keyframes
+camera baseline
+view-angle diversity
+surface residual quality
+```
+
+Standing still therefore keeps the HUD at `MOVE PHONE` / `NEW ANGLE`; it may polish an already known surface but does not make the region greener simply because time passed.
+
+The guide uses a separate bounded render budget and refresh cadence so reconstruction does not rebuild a huge GPU buffer every XR frame.
+
+## Screen-off / interruption lifecycle
+
+While scanning, the page requests a **Screen Wake Lock** so Android should not turn the display off due to normal timeout.
+
+If the document/XR session is temporarily hidden:
+
+```text
+scan state = PAUSED
+no depth integration
+same XR session may continue when visible again
+wake lock is reacquired when possible
+```
+
+If the browser/OS actually ends the XR session, WebXR cannot restore that same session. GeoLocator now reports `SCAN INTERRUPTED` and does **not** falsely mark the partial map as READY.
+
+A new XR session is not automatically fused with the partial map because its local reference frame is not guaranteed to match. Safe cross-session resume requires an explicit relocalization step (future ICP / tag-based alignment) before fusion.
+
+## Lighting and camera policy
+
+The runtime requests WebXR Lighting Estimation when supported and records primary-light magnitude as diagnostic telemetry. It is not treated as calibrated lux and is not currently a hard depth-confidence gate.
+
+The project deliberately does **not** use a strobe or start parallel physical cameras during immersive WebXR:
+
+- WebXR does not provide a portable frame-synchronized torch/strobe control for the AR camera;
+- a second `getUserMedia()` camera can contend with the camera owned by the immersive AR session;
+- arbitrary phone cameras are not exposed as a guaranteed synchronized/calibrated multi-camera rig;
+- ARCore itself can use supported hardware depth/stereo/ToF sensors when available.
+
+WebXR Raw Camera Access can be evaluated later for low-rate image-quality metrics (brightness/texture/blur) if the tested Chrome exposes `camera-access`; it should not be made mandatory unless hardware testing shows a measurable reconstruction benefit.
+
+## Operator-facing scan UI
+
+The main scan UI is intentionally small. During immersive scanning it shows only information that changes operator behavior:
+
+```text
+scan state
+stable surface count
+independent/new views
+ready / seen coverage
+motion instruction
+Finish scan
+```
+
+Internal counters and diagnostics live under `Technical details` instead of occupying the scan page.
+
+A completed scan emphasizes:
+
+```text
+stable surface points
+ready coverage cells
+independent keyframes
+surface residual
+X / Y / Z extent
+```
+
+## Downstream contract
+
+```text
+stable metric visible-surface map
         ↓
-surface / occupancy representation
+surface / probabilistic occupancy representation
         ↓
-AprilTag observations for MAIN + GEO1…GEO4
+TAG0 MAIN + TAG1…TAG4 GEO1…GEO4 observations
         ↓
-robust tag pose in the same world frame
+robust tag poses in common frame
         ↓
-fixed tag → geophone-contact transform
+tag → geophone-contact offsets
         ↓
 locked sensor XYZ
         ↓
-BMP relative-height + IMU motion/tilt + future ranging fusion
+BMP relative height + IMU + future ranging fusion
 ```
 
-## Current implementation slices
+## Stage status
 
 1. `WEB-HTTPS-A` — HTTPS transport hardening. **COMPLETE / HARDWARE VERIFIED**
-2. `WEB-HTTPS-ONBOARDING` — QR Root CA onboarding + secure-context verification. **COMPLETE / HARDWARE VERIFIED**
-3. `WEB-HTTPS-B` — React production bundle + gzip + flash runtime serving + boot-time SD seed. **COMPLETE / HARDWARE VERIFIED**
-4. `WEB-XR-A` — immersive AR session + phone pose/reference-space runtime. **COMPLETE / HARDWARE VERIFIED**
-5. `WEB-XR-B` — ARCore/WebXR CPU depth acquisition. **COMPLETE / HARDWARE VERIFIED**
-6. `WEB-XR-C` — metric point-cloud accumulation, adaptive decimation, local review and live temporal coverage guide. **POINT CLOUD HARDWARE VERIFIED; LIVE COVERAGE GUIDE REBUILD/PHONE RETEST REQUIRED**
-7. `WEB-XR-D` — surface / occupancy reconstruction. **NEXT AFTER COVERAGE-GUIDE ACCEPTANCE**
-8. `WEB-TAG-A` — AprilTag observations and tag-to-geophone offsets for MAIN + GEO1…GEO4.
-9. Add ESP API/storage contract for saved geometry and sensor positions.
-10. Fuse scan pose with barometer, IMU and future ranging without moving a locked position unless motion is detected.
+2. `WEB-HTTPS-ONBOARDING` — Root CA + secure browser gate. **COMPLETE / HARDWARE VERIFIED**
+3. `WEB-HTTPS-B` — React gzip/flash serving + SD seed. **COMPLETE / HARDWARE VERIFIED**
+4. `WEB-XR-A` — immersive AR + phone pose. **COMPLETE / HARDWARE VERIFIED**
+5. `WEB-XR-B` — WebXR/ARCore CPU depth acquisition. **COMPLETE / HARDWARE VERIFIED**
+6. `WEB-XR-C v1` — adaptive cloud / old temporal guide. **HARDWARE TESTED; TEMPORAL CONFIDENCE MODEL REJECTED**
+7. `WEB-XR-C v2` — motion-qualified keyframes + robust self-polishing voxel/surfel fusion + multi-view coverage + wake-lock lifecycle. **IMPLEMENTED; TYPECHECK/PHONE RETEST REQUIRED**
+8. `WEB-XR-D` — surface / occupancy reconstruction. **BLOCKED UNTIL v2 ACCEPTANCE**
+9. `WEB-TAG-A` — AprilTag MAIN + GEO1…GEO4.
+10. ESP storage/API contract for saved geometry and sensor positions.
+11. Fusion with barometer, IMU and future ranging.
