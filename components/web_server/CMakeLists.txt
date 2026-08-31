@@ -6,8 +6,13 @@ set(WEB_SERVER_TLS_KEY_FILE
     "${CMAKE_CURRENT_LIST_DIR}/certs/prvtkey.pem"
 )
 
+set(WEB_SERVER_ROOT_CA_FILE
+    "${CMAKE_CURRENT_LIST_DIR}/certs/rootCA.crt"
+)
+
 set(WEB_SERVER_TLS_EMBED_FILES)
 set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 0)
+set(WEB_SERVER_ROOT_CA_EMBEDDED 0)
 
 if(
     EXISTS "${WEB_SERVER_TLS_CERT_FILE}"
@@ -19,6 +24,14 @@ if(
     )
 
     set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 1)
+endif()
+
+if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
+    list(APPEND WEB_SERVER_TLS_EMBED_FILES
+        "certs/rootCA.crt"
+    )
+
+    set(WEB_SERVER_ROOT_CA_EMBEDDED 1)
 endif()
 
 idf_component_register(
@@ -40,6 +53,7 @@ idf_component_register(
         "web_wifi_setup_request.c"
         "web_wifi_setup_form.c"
         "web_wifi_setup_decode.c"
+        "web_https_onboarding.c"
 
     INCLUDE_DIRS
         "include"
@@ -59,6 +73,7 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp_timer
+        esp_system
         freertos
         heap
         json
@@ -78,6 +93,7 @@ target_compile_definitions(
     ${COMPONENT_LIB}
     PRIVATE
         WEB_SERVER_TLS_CREDENTIALS_EMBEDDED=${WEB_SERVER_TLS_CREDENTIALS_EMBEDDED}
+        WEB_SERVER_ROOT_CA_EMBEDDED=${WEB_SERVER_ROOT_CA_EMBEDDED}
 )
 
 if(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED)
@@ -85,5 +101,13 @@ if(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED)
 else()
     message(WARNING
         "GeoLocator HTTPS credentials are missing; HTTP setup will build, but HTTPS will stay disabled until certs/servercert.pem and certs/prvtkey.pem are generated"
+    )
+endif()
+
+if(WEB_SERVER_ROOT_CA_EMBEDDED)
+    message(STATUS "GeoLocator public Root CA will be embedded for QR onboarding")
+else()
+    message(WARNING
+        "GeoLocator Root CA is missing; /setup/ca.crt onboarding will be unavailable until certs/rootCA.crt is generated"
     )
 endif()
