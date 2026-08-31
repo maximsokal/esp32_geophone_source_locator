@@ -5,6 +5,18 @@
 #include "esp_err.h"
 
 
+#define APP_TLS_VERIFY_SECURE_CONTEXT  (1U << 0)
+#define APP_TLS_VERIFY_CAMERA          (1U << 1)
+#define APP_TLS_VERIFY_XR_API          (1U << 2)
+#define APP_TLS_VERIFY_IMMERSIVE_AR    (1U << 3)
+
+#define APP_TLS_VERIFY_REQUIRED_MASK   \
+    (APP_TLS_VERIFY_SECURE_CONTEXT |   \
+     APP_TLS_VERIFY_CAMERA |           \
+     APP_TLS_VERIFY_XR_API |           \
+     APP_TLS_VERIFY_IMMERSIVE_AR)
+
+
 typedef enum
 {
     APP_EVENT_KEYPAD = 0,
@@ -16,6 +28,11 @@ typedef enum
     APP_EVENT_WIFI_STA_CONNECTING,
     APP_EVENT_WIFI_STA_CONNECTED,
     APP_EVENT_WIFI_STA_DISCONNECTED,
+
+    APP_EVENT_TLS_CA_DOWNLOADED,
+    APP_EVENT_TLS_CA_INSTALL_CONFIRMED,
+    APP_EVENT_TLS_VERIFY_READY,
+    APP_EVENT_TLS_VERIFY_RESULT,
 
 } app_event_type_t;
 
