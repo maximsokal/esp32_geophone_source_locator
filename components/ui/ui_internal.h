@@ -246,7 +246,8 @@ void ui_dispatch_key_locked(
 );
 
 void ui_dispatch_app_event_locked(
-    int event_type
+    int event_type,
+    int32_t event_value
 );
 
 
