@@ -7,12 +7,13 @@
 #define APP_WIFI_AP_SSID          "GEOLOCATOR_SETUP"
 #define APP_WIFI_AP_PASSWORD      "GEOLOCATOR"
 #define APP_WIFI_SETUP_URL        "http://192.168.4.1/setup"
+#define APP_WIFI_CA_URL           "http://192.168.4.1/setup/ca"
 
 
 /*
  * Web transports.
  *
- * HTTP stays available as the local bootstrap/provisioning transport.
+ * HTTP is only used while the setup/provisioning SoftAP is active.
  * The normal application UI is served over HTTPS after STA receives an IP.
  */
 #define APP_WEB_HTTP_PORT         80
@@ -28,6 +29,7 @@
 #define APP_MDNS_HOSTNAME         "geolocator"
 #define APP_MDNS_INSTANCE_NAME    "GeoLocator"
 #define APP_MDNS_WEB_URL          "https://geolocator.local/"
+#define APP_HTTPS_VERIFY_URL      "https://geolocator.local/setup/verify"
 
 
 /*
