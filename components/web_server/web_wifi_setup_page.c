@@ -33,7 +33,8 @@ static const char s_saved_page[] =
     "<h2>Saved</h2>"
     "<p>Hotspot settings were saved.</p>"
     "<p>GeoLocator will leave GEOLOCATOR_SETUP and switch to station mode automatically.</p>"
-    "<p>When this page disconnects, enable this phone's hotspot and keep its name/password unchanged.</p>";
+    "<p>When this page disconnects, enable this phone's hotspot and keep its name/password unchanged.</p>"
+    "<p>After GeoLocator connects, scan the HTTPS verification QR shown on its display.</p>";
 
 
 static esp_err_t web_wifi_setup_page_send(
@@ -124,13 +125,25 @@ esp_err_t web_wifi_setup_page_open_handler(
             );
     }
 
+    const bool ca_confirmed =
+        web_https_onboarding_ca_install_confirmed();
+
     esp_err_t err =
-        web_wifi_setup_page_send_form(
+        web_wifi_setup_send_page(
             request
         );
 
     if (err != ESP_OK) {
         return err;
+    }
+
+    if (!ca_confirmed) {
+        ESP_LOGI(
+            TAG,
+            "Setup page redirected to Root CA onboarding"
+        );
+
+        return ESP_OK;
     }
 
     ESP_LOGI(
