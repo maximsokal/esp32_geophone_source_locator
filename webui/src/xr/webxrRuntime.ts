@@ -1,3 +1,10 @@
+import {
+  DepthPointCloudAccumulator,
+  type CpuDepthInformationLike,
+  type DepthSampleView,
+  type ScanPointCloudSnapshot,
+} from './depthPointCloud';
+
 export type XrRuntimePhase =
   | 'idle'
   | 'starting'
@@ -28,6 +35,16 @@ export interface WebXrRuntimeState {
   frameCount: number;
   tracking: boolean;
   pose: WebXrPoseSnapshot | null;
+  depthAvailable: boolean;
+  depthUsage: string | null;
+  depthDataFormat: string | null;
+  depthWidth: number | null;
+  depthHeight: number | null;
+  depthFrameCount: number;
+  sampledDepthFrames: number;
+  pointCount: number;
+  pointCloudVersion: number;
+  depthError: string | null;
   error: string | null;
 }
 
@@ -41,9 +58,14 @@ interface XrPointLike {
 interface XrRigidTransformLike {
   position: XrPointLike;
   orientation: Required<XrPointLike>;
+  matrix: ArrayLike<number>;
 }
 
-interface XrViewLike {}
+interface XrViewLike extends DepthSampleView {
+  projectionMatrix: ArrayLike<number>;
+  transform: XrRigidTransformLike;
+}
+
 interface XrReferenceSpaceLike {}
 
 interface XrViewerPoseLike {
@@ -54,6 +76,7 @@ interface XrViewerPoseLike {
 interface XrFrameLike {
   session: XrSessionLike;
   getViewerPose(referenceSpace: XrReferenceSpaceLike): XrViewerPoseLike | null;
+  getDepthInformation?(view: XrViewLike): CpuDepthInformationLike | null;
 }
 
 type XrFrameCallback = (time: number, frame: XrFrameLike) => void;
@@ -71,12 +94,18 @@ interface XrSessionLike extends EventTarget {
   end(): Promise<void>;
   domOverlayState?: { type: string } | null;
   environmentBlendMode?: string;
+  depthUsage?: string;
+  depthDataFormat?: string;
 }
 
 interface XrSessionInitLike {
   optionalFeatures?: string[];
   domOverlay?: {
     root: Element;
+  };
+  depthSensing?: {
+    usagePreference: string[];
+    formatPreference: string[];
   };
 }
 
@@ -104,6 +133,8 @@ type WindowWithXrLayer = Window & {
 
 type RuntimeListener = (state: WebXrRuntimeState) => void;
 
+const DEPTH_SAMPLE_INTERVAL_MS = 140;
+
 const initialRuntimeState: WebXrRuntimeState = {
   phase: 'idle',
   referenceSpace: null,
@@ -112,6 +143,16 @@ const initialRuntimeState: WebXrRuntimeState = {
   frameCount: 0,
   tracking: false,
   pose: null,
+  depthAvailable: false,
+  depthUsage: null,
+  depthDataFormat: null,
+  depthWidth: null,
+  depthHeight: null,
+  depthFrameCount: 0,
+  sampledDepthFrames: 0,
+  pointCount: 0,
+  pointCloudVersion: 0,
+  depthError: null,
   error: null,
 };
 
@@ -149,6 +190,10 @@ function hasWebGl(): boolean {
   return true;
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function probeWebXrCapabilities(): Promise<WebXrCapabilities> {
   const xr = (navigator as NavigatorWithXr).xr;
   const xrApi = xr !== undefined;
@@ -180,6 +225,14 @@ export class WebXrRuntime {
   private layer: XrWebGlLayerLike | null = null;
   private frameCount = 0;
   private lastUiUpdateMs = 0;
+  private lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+  private depthFrameCount = 0;
+  private sampledDepthFrames = 0;
+  private pointCloudVersion = 0;
+  private depthWidth: number | null = null;
+  private depthHeight: number | null = null;
+  private depthFailureReported = false;
+  private readonly pointCloud = new DepthPointCloudAccumulator();
 
   subscribe(listener: RuntimeListener): () => void {
     this.listeners.add(listener);
@@ -192,6 +245,10 @@ export class WebXrRuntime {
 
   getState(): WebXrRuntimeState {
     return this.state;
+  }
+
+  getPointCloudSnapshot(): ScanPointCloudSnapshot {
+    return this.pointCloud.snapshot(this.depthFrameCount, this.sampledDepthFrames);
   }
 
   async start(): Promise<void> {
@@ -226,6 +283,8 @@ export class WebXrRuntime {
       return;
     }
 
+    this.resetScanState();
+
     this.publish({
       phase: 'starting',
       referenceSpace: null,
@@ -234,6 +293,16 @@ export class WebXrRuntime {
       frameCount: 0,
       tracking: false,
       pose: null,
+      depthAvailable: false,
+      depthUsage: null,
+      depthDataFormat: null,
+      depthWidth: null,
+      depthHeight: null,
+      depthFrameCount: 0,
+      sampledDepthFrames: 0,
+      pointCount: 0,
+      pointCloudVersion: 0,
+      depthError: null,
       error: null,
     });
 
@@ -241,9 +310,13 @@ export class WebXrRuntime {
 
     try {
       session = await xr.requestSession('immersive-ar', {
-        optionalFeatures: ['local-floor', 'dom-overlay'],
+        optionalFeatures: ['local-floor', 'dom-overlay', 'depth-sensing'],
         domOverlay: {
           root: document.body,
+        },
+        depthSensing: {
+          usagePreference: ['cpu-optimized'],
+          formatPreference: ['float32', 'luminance-alpha'],
         },
       });
 
@@ -275,8 +348,11 @@ export class WebXrRuntime {
       this.layer = layer;
       this.frameCount = 0;
       this.lastUiUpdateMs = 0;
+      this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
 
       document.documentElement.classList.add('xr-session-active');
+
+      const depthAvailable = session.depthUsage === 'cpu-optimized';
 
       this.publish({
         phase: 'running',
@@ -286,6 +362,18 @@ export class WebXrRuntime {
         frameCount: 0,
         tracking: false,
         pose: null,
+        depthAvailable,
+        depthUsage: session.depthUsage ?? null,
+        depthDataFormat: session.depthDataFormat ?? null,
+        depthWidth: null,
+        depthHeight: null,
+        depthFrameCount: 0,
+        sampledDepthFrames: 0,
+        pointCount: 0,
+        pointCloudVersion: 0,
+        depthError: depthAvailable
+          ? null
+          : 'AR session started, but WebXR depth-sensing was not granted by this browser/device.',
         error: null,
       });
 
@@ -308,7 +396,11 @@ export class WebXrRuntime {
         environmentBlendMode: null,
         tracking: false,
         pose: null,
-        error: error instanceof Error ? error.message : String(error),
+        depthAvailable: false,
+        depthUsage: null,
+        depthDataFormat: null,
+        depthError: null,
+        error: errorText(error),
       });
     }
   }
@@ -329,7 +421,7 @@ export class WebXrRuntime {
     } catch (error) {
       this.publish({
         phase: 'error',
-        error: error instanceof Error ? error.message : String(error),
+        error: errorText(error),
       });
     }
   }
@@ -361,6 +453,17 @@ export class WebXrRuntime {
     }
   }
 
+  private resetScanState(): void {
+    this.pointCloud.reset();
+    this.depthFrameCount = 0;
+    this.sampledDepthFrames = 0;
+    this.pointCloudVersion = 0;
+    this.depthWidth = null;
+    this.depthHeight = null;
+    this.depthFailureReported = false;
+    this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+  }
+
   private cleanupRuntime(): void {
     document.documentElement.classList.remove('xr-session-active');
     releaseWebGlContext(this.gl);
@@ -370,9 +473,15 @@ export class WebXrRuntime {
     this.layer = null;
     this.frameCount = 0;
     this.lastUiUpdateMs = 0;
+    this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
   }
 
   private readonly handleSessionEnd = (): void => {
+    const finalPointCount = this.pointCloud.pointCount;
+    const finalDepthFrames = this.depthFrameCount;
+    const finalSampledFrames = this.sampledDepthFrames;
+    const finalVersion = this.pointCloudVersion;
+
     this.cleanupRuntime();
     this.publish({
       phase: 'ended',
@@ -381,9 +490,58 @@ export class WebXrRuntime {
       environmentBlendMode: null,
       tracking: false,
       pose: null,
+      depthFrameCount: finalDepthFrames,
+      sampledDepthFrames: finalSampledFrames,
+      pointCount: finalPointCount,
+      pointCloudVersion: finalVersion,
       error: null,
     });
   };
+
+  private captureDepth(time: number, frame: XrFrameLike, pose: XrViewerPoseLike): void {
+    const session = this.session;
+
+    if (
+      session === null ||
+      session.depthUsage !== 'cpu-optimized' ||
+      typeof frame.getDepthInformation !== 'function' ||
+      pose.views.length === 0
+    ) {
+      return;
+    }
+
+    const view = pose.views[0];
+
+    try {
+      const depth = frame.getDepthInformation(view);
+      if (depth === null) {
+        return;
+      }
+
+      this.depthFrameCount += 1;
+      this.depthWidth = depth.width;
+      this.depthHeight = depth.height;
+
+      if (time - this.lastDepthSampleMs < DEPTH_SAMPLE_INTERVAL_MS) {
+        return;
+      }
+
+      this.lastDepthSampleMs = time;
+      this.sampledDepthFrames += 1;
+
+      const added = this.pointCloud.sampleDepthFrame(depth, view);
+      if (added > 0) {
+        this.pointCloudVersion += 1;
+      }
+    } catch (error) {
+      if (!this.depthFailureReported) {
+        this.depthFailureReported = true;
+        this.publish({
+          depthError: `Depth frame access failed: ${errorText(error)}`,
+        });
+      }
+    }
+  }
 
   private readonly handleFrame: XrFrameCallback = (time, frame): void => {
     const session = this.session;
@@ -412,6 +570,10 @@ export class WebXrRuntime {
     const pose = frame.getViewerPose(referenceSpace);
     this.frameCount += 1;
 
+    if (pose !== null) {
+      this.captureDepth(time, frame, pose);
+    }
+
     if (time - this.lastUiUpdateMs < 100 && this.frameCount > 1) {
       return;
     }
@@ -423,6 +585,12 @@ export class WebXrRuntime {
         frameCount: this.frameCount,
         tracking: false,
         pose: null,
+        depthWidth: this.depthWidth,
+        depthHeight: this.depthHeight,
+        depthFrameCount: this.depthFrameCount,
+        sampledDepthFrames: this.sampledDepthFrames,
+        pointCount: this.pointCloud.pointCount,
+        pointCloudVersion: this.pointCloudVersion,
       });
       return;
     }
@@ -442,6 +610,14 @@ export class WebXrRuntime {
         ],
         views: pose.views.length,
       },
+      depthWidth: this.depthWidth,
+      depthHeight: this.depthHeight,
+      depthFrameCount: this.depthFrameCount,
+      sampledDepthFrames: this.sampledDepthFrames,
+      pointCount: this.pointCloud.pointCount,
+      pointCloudVersion: this.pointCloudVersion,
     });
   };
 }
+
+export type { ScanPointCloudSnapshot } from './depthPointCloud';
