@@ -63,7 +63,7 @@ static esp_err_t web_server_secure_index_handler(
     );
 
     const esp_err_t webui_err =
-        web_webui_send_index(
+        web_webui_flash_send_index(
             request
         );
 
@@ -74,7 +74,7 @@ static esp_err_t web_server_secure_index_handler(
     if (webui_err != ESP_ERR_NOT_FOUND) {
         ESP_LOGW(
             TAG,
-            "React root response failed: %s",
+            "React flash root response failed: %s",
             esp_err_to_name(webui_err)
         );
         return webui_err;
@@ -82,7 +82,7 @@ static esp_err_t web_server_secure_index_handler(
 
     ESP_LOGW(
         TAG,
-        "React root unavailable; serving legacy embedded dashboard"
+        "React flash root unavailable; serving legacy embedded dashboard"
     );
 
     return
@@ -230,8 +230,8 @@ esp_err_t web_server_routes_register(
 
     /*
      * React/SD preparation is intentionally completed before Wi-Fi starts.
-     * Never perform FAT/SD work here: this function is called from the
-     * IP_EVENT_STA_GOT_IP system event context when HTTPS is started.
+     * Runtime HTTP delivery uses the embedded flash bundle so the HTTP task
+     * never starts SDSPI transactions while esp_lcd is using shared SPI2.
      */
     esp_err_t err =
         web_server_register_root_and_health(
@@ -244,7 +244,7 @@ esp_err_t web_server_routes_register(
     }
 
     err =
-        web_webui_register(
+        web_webui_flash_register(
             server
         );
 
