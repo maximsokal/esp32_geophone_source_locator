@@ -1,0 +1,121 @@
+.xr-runtime-warning {
+  margin-top: 10px;
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  border-radius: 9px;
+  padding: 9px 11px;
+  color: #fef08a;
+  background: rgba(113, 63, 18, 0.22);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.xr-overlay-scan-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 9px 0 10px;
+}
+
+.xr-overlay-scan-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid rgba(71, 85, 105, 0.72);
+  border-radius: 9px;
+  padding: 7px 8px;
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.xr-overlay-scan-grid span {
+  color: #94a3b8;
+  font-size: 0.57rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.xr-overlay-scan-grid strong {
+  color: #f8fafc;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.good-text {
+  color: #86efac !important;
+}
+
+.bad-text {
+  color: #fca5a5 !important;
+}
+
+.xr-overlay-warning {
+  margin: 0 0 10px;
+  border: 1px solid rgba(250, 204, 21, 0.48);
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: #fef08a;
+  background: rgba(113, 63, 18, 0.32);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.scan-viewport {
+  min-height: 680px;
+}
+
+.scan-source-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  border: 1px solid rgba(34, 211, 238, 0.48);
+  border-radius: 999px;
+  padding: 6px 9px;
+  color: #a5f3fc;
+  background: rgba(8, 16, 29, 0.86);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  pointer-events: none;
+}
+
+.scan-result-panel .status-list dt {
+  font-size: 0.75rem;
+}
+
+.scan-result-panel .status-list dd {
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.75rem;
+}
+
+.scan-result-copy {
+  margin: 0 0 12px;
+  color: #94a3b8;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.scan-clear-button {
+  margin-top: auto;
+  border: 1px solid #334155;
+  border-radius: 9px;
+  padding: 9px 11px;
+  color: #cbd5e1;
+  background: #111827;
+  cursor: pointer;
+}
+
+.scan-clear-button:hover {
+  border-color: #64748b;
+  color: #f8fafc;
+}
+
+@media (max-width: 640px) {
+  .xr-overlay-scan-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scan-source-badge {
+    max-width: calc(100% - 24px);
+    white-space: normal;
+  }
+}
