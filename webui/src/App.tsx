@@ -3,10 +3,8 @@ import { useState } from 'react';
 import './scan.css';
 
 import { ScanPointCloudViewport } from './components/ScanPointCloudViewport';
-import { SceneViewport, type ViewCommand, type ViewPreset } from './components/SceneViewport';
-import { SensorPanel } from './components/SensorPanel';
+import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel } from './components/XrRuntimePanel';
-import { demoScene } from './data/demoScene';
 import type { ScanPointCloudSnapshot } from './xr/webxrRuntime';
 
 function formatMeters(value: number): string {
@@ -14,7 +12,6 @@ function formatMeters(value: number): string {
 }
 
 export default function App() {
-  const [selectedId, setSelectedId] = useState('MAIN');
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
   const [viewCommand, setViewCommand] = useState<ViewCommand>({
@@ -60,13 +57,13 @@ export default function App() {
       </header>
 
       <section className="toolbar" aria-label="3D view controls">
-        <button type="button" onClick={() => requestView('perspective')}>Perspective</button>
-        <button type="button" onClick={() => requestView('top')}>Top</button>
-        <button type="button" onClick={() => requestView('front')}>Front</button>
+        <button type="button" disabled={!hasMeasuredScan} onClick={() => requestView('perspective')}>Perspective</button>
+        <button type="button" disabled={!hasMeasuredScan} onClick={() => requestView('top')}>Top</button>
+        <button type="button" disabled={!hasMeasuredScan} onClick={() => requestView('front')}>Front</button>
         <span className="toolbar-note">
           {hasMeasuredScan
-            ? 'Measured point cloud: drag to orbit, wheel/pinch to zoom.'
-            : 'Start 3D scan above. The scene below is only the reference sensor-layout model.'}
+            ? 'Measured point cloud: drag to orbit. Desktop wheel zoom is available.'
+            : 'Start a real 3D scan below. No demo mesh is shown anymore.'}
         </span>
       </section>
 
@@ -122,7 +119,7 @@ export default function App() {
               <section className="panel-card grow">
                 <div className="panel-title">What this result is</div>
                 <p className="scan-result-copy">
-                  These are real metric surface samples reconstructed from ARCore depth maps plus the camera pose for each sampled XR frame. They are not the old demo mesh and are not uploaded to a cloud service.
+                  These are real metric surface samples reconstructed from ARCore depth maps plus the camera pose for each sampled XR frame. They are not a demo mesh and are not uploaded to a cloud service.
                 </p>
                 <p className="scan-result-copy">
                   The next reconstruction layer will turn these surface samples into a decimated surface/occupancy representation and attach TAG0 MAIN + TAG1…TAG4 sensor coordinates to the same frame.
@@ -138,14 +135,17 @@ export default function App() {
             </aside>
           </section>
         ) : (
-          <section className="workspace">
-            <SceneViewport
-              scene={demoScene}
-              selectedId={selectedId}
-              viewCommand={viewCommand}
-              onSelect={setSelectedId}
-            />
-            <SensorPanel scene={demoScene} selectedId={selectedId} onSelect={setSelectedId} />
+          <section className="scan-empty-state" aria-label="No measured 3D scan yet">
+            <div className="scan-empty-icon">3D</div>
+            <div>
+              <h2>No measured scan yet</h2>
+              <p>
+                Press <b>Start 3D scan</b>, move around the visible rubble/object while the live counter grows, then press <b>Finish scan & view 3D</b>.
+              </p>
+              <p>
+                During a valid depth scan the overlay must show <b>DEPTH ACTIVE</b>, increasing <b>DEPTH FRAMES</b> and increasing <b>3D POINTS</b>. If it says DEPTH UNAVAILABLE, the browser/device did not grant WebXR Depth and no fake geometry will be generated.
+              </p>
+            </div>
           </section>
         )
       )}
