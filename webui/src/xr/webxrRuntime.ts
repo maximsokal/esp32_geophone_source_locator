@@ -1,16 +1,24 @@
+import { clientDiagnostics } from '../data/clientDiagnostics';
+import { countCoverageQualityBands } from './coverageQuality';
 import {
   DepthPointCloudAccumulator,
   type CpuDepthInformationLike,
   type DepthFusionFrameContext,
   type DepthSampleView,
   type LiveCoverageSnapshot,
-  type ScanPointCloudSnapshot,
+  type ScanPointCloudSnapshot as DepthScanPointCloudSnapshot,
 } from './depthPointCloud';
 import {
   LiveCoveragePointRenderer,
+  type CoverageRenderSnapshot,
   type CoverageRenderView,
   type CoverageRenderViewport,
 } from './liveCoverageRenderer';
+import {
+  ManualControlPointStore,
+  projectDepthSampleToProject,
+  type ManualControlPoint,
+} from './manualControlPoints';
 import {
   WebXrFusionKeyframeSelector,
   type FusionMotionState,
@@ -24,6 +32,10 @@ export type XrRuntimePhase =
   | 'ended'
   | 'interrupted'
   | 'error';
+
+export interface ScanPointCloudSnapshot extends DepthScanPointCloudSnapshot {
+  manualControlPoints: readonly ManualControlPoint[];
+}
 
 export interface WebXrCapabilities {
   secureContext: boolean;
@@ -77,7 +89,12 @@ export interface WebXrRuntimeState {
   coverageTotalCells: number;
   coverageTargetIndependentViews: number;
   coverageAverageConfidence: number;
+  coverageWeakPoints: number;
+  coverageImprovingPoints: number;
+  coverageStablePoints: number;
   coverageGuideError: string | null;
+  manualPointCount: number;
+  manualPointError: string | null;
   lightingEstimateAvailable: boolean;
   primaryLightIntensity: number | null;
   depthError: string | null;
@@ -194,9 +211,17 @@ interface DepthConfiguration {
   type: string | null;
 }
 
+interface PendingManualPointRequest {
+  u: number;
+  v: number;
+  pointId: number | null;
+}
+
 const DEPTH_SAMPLE_INTERVAL_MS = 140;
 const COVERAGE_GPU_UPLOAD_INTERVAL_MS = 550;
 const LIGHT_ESTIMATE_INTERVAL_MS = 500;
+const CLIENT_TELEMETRY_INTERVAL_MS = 5000;
+const MIN_MANUAL_DEPTH_METERS = 0.18;
 
 const initialRuntimeState: WebXrRuntimeState = {
   phase: 'idle',
@@ -235,12 +260,21 @@ const initialRuntimeState: WebXrRuntimeState = {
   coverageTotalCells: 0,
   coverageTargetIndependentViews: 3,
   coverageAverageConfidence: 0,
+  coverageWeakPoints: 0,
+  coverageImprovingPoints: 0,
+  coverageStablePoints: 0,
   coverageGuideError: null,
+  manualPointCount: 0,
+  manualPointError: null,
   lightingEstimateAvailable: false,
   primaryLightIntensity: null,
   depthError: null,
   error: null,
 };
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
 
 function createWebGlContext(): XrCompatibleGl | null {
   const canvas = document.createElement('canvas');
@@ -307,6 +341,31 @@ function projectCameraPosition(pose: XrViewerPoseLike): readonly [number, number
   return [position.x, -position.z, position.y];
 }
 
+export function composeCoverageRenderSnapshot(
+  coverage: LiveCoverageSnapshot,
+  manualReferencePositions: Float32Array,
+): CoverageRenderSnapshot {
+  const coverageCount = Math.min(
+    coverage.pointCount,
+    Math.floor(coverage.positions.length / 3),
+    coverage.confidence.length,
+  );
+  const manualCount = Math.floor(manualReferencePositions.length / 3);
+  const pointCount = coverageCount + manualCount;
+  const positions = new Float32Array(pointCount * 3);
+  const confidence = new Float32Array(pointCount);
+
+  if (coverageCount > 0) {
+    positions.set(coverage.positions.subarray(0, coverageCount * 3), 0);
+    confidence.set(coverage.confidence.subarray(0, coverageCount), 0);
+  }
+  if (manualCount > 0) {
+    positions.set(manualReferencePositions.subarray(0, manualCount * 3), coverageCount * 3);
+    confidence.fill(2, coverageCount, pointCount);
+  }
+  return { positions, confidence, pointCount };
+}
+
 export async function probeWebXrCapabilities(): Promise<WebXrCapabilities> {
   const xr = (navigator as NavigatorWithXr).xr;
   const xrApi = xr !== undefined;
@@ -345,12 +404,14 @@ export class WebXrRuntime {
   private lastDepthSampleMs = Number.NEGATIVE_INFINITY;
   private lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
   private lastLightEstimateMs = Number.NEGATIVE_INFINITY;
+  private lastClientTelemetryMs = Number.NEGATIVE_INFINITY;
   private depthFrameCount = 0;
   private sampledDepthFrames = 0;
   private pointCloudVersion = 0;
   private depthWidth: number | null = null;
   private depthHeight: number | null = null;
   private depthFailureReported = false;
+  private depthReadyLogged = false;
   private depthEnabled = false;
   private motionRejectedFrames = 0;
   private motionState: FusionMotionState | 'paused' | null = null;
@@ -365,11 +426,16 @@ export class WebXrRuntime {
   private coverageTotalCells = 0;
   private coverageTargetIndependentViews = 3;
   private coverageAverageConfidence = 0;
+  private coverageWeakPoints = 0;
+  private coverageImprovingPoints = 0;
+  private coverageStablePoints = 0;
   private coverageGuideError: string | null = null;
+  private pendingManualPointRequest: PendingManualPointRequest | null = null;
   private lightingEstimateAvailable = false;
   private primaryLightIntensity: number | null = null;
   private readonly pointCloud = new DepthPointCloudAccumulator();
   private readonly keyframeSelector = new WebXrFusionKeyframeSelector();
+  private readonly manualPoints = new ManualControlPointStore();
 
   constructor() {
     document.addEventListener('visibilitychange', this.handleDocumentVisibilityChange);
@@ -384,24 +450,66 @@ export class WebXrRuntime {
   getState(): WebXrRuntimeState { return this.state; }
 
   getPointCloudSnapshot(): ScanPointCloudSnapshot {
-    return this.pointCloud.snapshot(this.depthFrameCount, this.sampledDepthFrames);
+    return {
+      ...this.pointCloud.snapshot(this.depthFrameCount, this.sampledDepthFrames),
+      manualControlPoints: this.manualPoints.snapshot(),
+    };
+  }
+
+  getLastManualPointId(): number | null {
+    return this.manualPoints.lastId;
+  }
+
+  queueManualPointAtNormalized(u: number, v: number, pointId: number | null = null): void {
+    if (this.session === null || this.state.phase !== 'running') {
+      this.publish({ manualPointError: 'Manual point can only be placed during an active AR scan.' });
+      return;
+    }
+    if (pointId !== null && this.manualPoints.lastId === null) {
+      this.publish({ manualPointError: 'There is no manual point to move yet.' });
+      return;
+    }
+    this.pendingManualPointRequest = {
+      u: clamp01(u),
+      v: clamp01(v),
+      pointId,
+    };
+    this.publish({ manualPointError: null });
+  }
+
+  undoLastManualPoint(): void {
+    const removed = this.manualPoints.removeLast();
+    if (removed === null) return;
+    this.lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
+    this.publish({ manualPointCount: this.manualPoints.size, manualPointError: null });
+    clientDiagnostics.info('XR_MANUAL_POINT_UNDO', { id: removed.id, remaining: this.manualPoints.size });
+    void clientDiagnostics.flush();
   }
 
   async start(): Promise<void> {
     if (this.session !== null || this.state.phase === 'starting') return;
 
+    clientDiagnostics.info('XR_START_REQUEST');
+    void clientDiagnostics.flush();
+
     const xr = (navigator as NavigatorWithXr).xr;
     const Layer = (window as WindowWithXrLayer).XRWebGLLayer;
     if (!window.isSecureContext) {
-      this.publish({ phase: 'error', error: 'Trusted HTTPS is required for WebXR.' });
+      const message = 'Trusted HTTPS is required for WebXR.';
+      clientDiagnostics.error('XR_START_REJECTED', message);
+      this.publish({ phase: 'error', error: message });
       return;
     }
     if (xr === undefined) {
-      this.publish({ phase: 'error', error: 'WebXR is not available in this browser.' });
+      const message = 'WebXR is not available in this browser.';
+      clientDiagnostics.error('XR_START_REJECTED', message);
+      this.publish({ phase: 'error', error: message });
       return;
     }
     if (Layer === undefined) {
-      this.publish({ phase: 'error', error: 'XRWebGLLayer is unavailable.' });
+      const message = 'XRWebGLLayer is unavailable.';
+      clientDiagnostics.error('XR_START_REJECTED', message);
+      this.publish({ phase: 'error', error: message });
       return;
     }
 
@@ -460,6 +568,7 @@ export class WebXrRuntime {
       } catch (error) {
         this.coverageRenderer = null;
         this.coverageGuideError = `Coverage renderer unavailable: ${errorText(error)}`;
+        clientDiagnostics.warn('XR_COVERAGE_RENDERER_UNAVAILABLE', error);
       }
 
       if (typeof session.requestLightProbe === 'function') {
@@ -492,6 +601,16 @@ export class WebXrRuntime {
         error: null,
       });
 
+      clientDiagnostics.info('XR_SESSION_RUNNING', {
+        referenceSpace: referenceSpaceType,
+        domOverlay: session.domOverlayState != null,
+        environmentBlendMode: session.environmentBlendMode ?? null,
+        depthEnabled: depthConfiguration.enabled,
+        depthUsage: depthConfiguration.usage,
+        depthFormat: depthConfiguration.dataFormat,
+        depthType: depthConfiguration.type,
+      });
+      void clientDiagnostics.flush();
       session.requestAnimationFrame(this.handleFrame);
     } catch (error) {
       if (session !== null) {
@@ -500,6 +619,9 @@ export class WebXrRuntime {
         try { await session.end(); } catch { /* best effort */ }
       }
       this.cleanupRuntime();
+      const message = errorText(error);
+      clientDiagnostics.error('XR_START_FAILED', message);
+      void clientDiagnostics.flush();
       this.publish({
         phase: 'error',
         referenceSpace: null,
@@ -509,7 +631,7 @@ export class WebXrRuntime {
         pose: null,
         scanPaused: false,
         depthAvailable: false,
-        error: errorText(error),
+        error: message,
       });
     }
   }
@@ -518,12 +640,21 @@ export class WebXrRuntime {
     const session = this.session;
     if (session === null) return;
     this.explicitStopRequested = true;
+    clientDiagnostics.info('XR_FINISH_REQUEST', {
+      stablePoints: this.pointCloud.promotedCount,
+      retainedPoints: this.pointCloud.pointCount,
+      keyframes: this.pointCloud.keyframeCount,
+      manualPoints: this.manualPoints.size,
+    });
+    void clientDiagnostics.flush();
     this.publish({ phase: 'stopping', error: null });
     try {
       await session.end();
     } catch (error) {
       this.explicitStopRequested = false;
-      this.publish({ phase: 'error', error: errorText(error) });
+      const message = errorText(error);
+      clientDiagnostics.error('XR_FINISH_FAILED', message);
+      this.publish({ phase: 'error', error: message });
     }
   }
 
@@ -547,6 +678,8 @@ export class WebXrRuntime {
   private resetScanState(): void {
     this.pointCloud.reset();
     this.keyframeSelector.reset();
+    this.manualPoints.reset();
+    this.pendingManualPointRequest = null;
     this.explicitStopRequested = false;
     this.scanPaused = false;
     this.frameCount = 0;
@@ -554,12 +687,14 @@ export class WebXrRuntime {
     this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
     this.lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
     this.lastLightEstimateMs = Number.NEGATIVE_INFINITY;
+    this.lastClientTelemetryMs = Number.NEGATIVE_INFINITY;
     this.depthFrameCount = 0;
     this.sampledDepthFrames = 0;
     this.pointCloudVersion = 0;
     this.depthWidth = null;
     this.depthHeight = null;
     this.depthFailureReported = false;
+    this.depthReadyLogged = false;
     this.depthEnabled = false;
     this.motionRejectedFrames = 0;
     this.motionState = null;
@@ -574,6 +709,9 @@ export class WebXrRuntime {
     this.coverageTotalCells = 0;
     this.coverageTargetIndependentViews = 3;
     this.coverageAverageConfidence = 0;
+    this.coverageWeakPoints = 0;
+    this.coverageImprovingPoints = 0;
+    this.coverageStablePoints = 0;
     this.coverageGuideError = null;
     this.lightProbe = null;
     this.lightingEstimateAvailable = false;
@@ -595,6 +733,7 @@ export class WebXrRuntime {
     this.depthEnabled = false;
     this.coverageGuideActive = false;
     this.coverageGuideRenderPoints = 0;
+    this.pendingManualPointRequest = null;
   }
 
   private async acquireWakeLock(): Promise<void> {
@@ -662,7 +801,7 @@ export class WebXrRuntime {
 
   private readonly handleSessionEnd = (): void => {
     const normalFinish = this.explicitStopRequested;
-    const snapshot = this.pointCloud.snapshot(this.depthFrameCount, this.sampledDepthFrames);
+    const snapshot = this.getPointCloudSnapshot();
     const finalState = {
       referenceSpace: null,
       domOverlay: false,
@@ -685,6 +824,10 @@ export class WebXrRuntime {
       coverageTotalCells: this.coverageTotalCells,
       coverageTargetIndependentViews: this.coverageTargetIndependentViews,
       coverageAverageConfidence: this.coverageAverageConfidence,
+      coverageWeakPoints: this.coverageWeakPoints,
+      coverageImprovingPoints: this.coverageImprovingPoints,
+      coverageStablePoints: this.coverageStablePoints,
+      manualPointCount: this.manualPoints.size,
       lightingEstimateAvailable: this.lightingEstimateAvailable,
       primaryLightIntensity: this.primaryLightIntensity,
       error: null,
@@ -701,24 +844,45 @@ export class WebXrRuntime {
       phase: normalFinish ? 'ended' : 'interrupted',
       motionState: normalFinish ? this.motionState : 'paused',
     });
+
+    clientDiagnostics.info(normalFinish ? 'XR_SCAN_FINISHED' : 'XR_SCAN_INTERRUPTED', {
+      stablePoints: snapshot.pointCount,
+      tentativePoints: snapshot.tentativePointCount,
+      retainedPoints: snapshot.rawPointCount,
+      keyframes: snapshot.integrationKeyframes,
+      weak: this.coverageWeakPoints,
+      improving: this.coverageImprovingPoints,
+      stable: this.coverageStablePoints,
+      manualPoints: snapshot.manualControlPoints.length,
+      residualMm: Math.round(snapshot.averageStableResidualMeters * 1000),
+    });
+    void clientDiagnostics.flush();
   };
 
-  private refreshCoverageGuide(time: number): void {
-    if (time - this.lastCoverageGpuUploadMs < COVERAGE_GPU_UPLOAD_INTERVAL_MS) return;
+  private refreshCoverageGuide(time: number, force = false): void {
+    if (!force && time - this.lastCoverageGpuUploadMs < COVERAGE_GPU_UPLOAD_INTERVAL_MS) return;
     this.lastCoverageGpuUploadMs = time;
     const coverage: LiveCoverageSnapshot = this.pointCloud.liveCoverageSnapshot();
+    const counts = countCoverageQualityBands(coverage.confidence.subarray(0, coverage.pointCount));
     this.coverageGuideActive = coverage.active && this.coverageRenderer !== null;
     this.coverageVisibleCells = coverage.visibleCoverageCells;
     this.coverageReadyCells = coverage.readyCoverageCells;
     this.coverageTotalCells = coverage.totalCoverageCells;
     this.coverageTargetIndependentViews = coverage.targetFrameHits;
     this.coverageAverageConfidence = coverage.averageCoverageConfidence;
+    this.coverageWeakPoints = counts.weak;
+    this.coverageImprovingPoints = counts.improving;
+    this.coverageStablePoints = counts.stable;
 
-    if (this.coverageGuideActive && this.coverageRenderer !== null) {
-      this.coverageRenderer.update(coverage);
+    if (this.coverageRenderer !== null) {
+      const renderSnapshot = composeCoverageRenderSnapshot(
+        coverage,
+        this.manualPoints.xrReferencePositions(),
+      );
+      if (renderSnapshot.pointCount > 0) this.coverageRenderer.update(renderSnapshot);
+      else this.coverageRenderer.clear();
       this.coverageGuideRenderPoints = coverage.pointCount;
     } else {
-      this.coverageRenderer?.clear();
       this.coverageGuideRenderPoints = 0;
     }
   }
@@ -747,12 +911,81 @@ export class WebXrRuntime {
     }
   }
 
+  private processPendingManualPoint(
+    time: number,
+    depth: CpuDepthInformationLike,
+    view: XrViewLike,
+  ): void {
+    const request = this.pendingManualPointRequest;
+    if (request === null) return;
+    this.pendingManualPointRequest = null;
+
+    try {
+      const depthMeters = depth.getDepthInMeters(request.u, request.v);
+      if (
+        !Number.isFinite(depthMeters) ||
+        depthMeters < MIN_MANUAL_DEPTH_METERS ||
+        depthMeters > this.pointCloud.maxDepth
+      ) {
+        const message = 'No valid AR depth at that screen point. Aim at a visible surface and try again.';
+        this.publish({ manualPointError: message });
+        clientDiagnostics.warn('XR_MANUAL_POINT_DEPTH_INVALID', {
+          u: request.u,
+          v: request.v,
+          depthMeters,
+        });
+        return;
+      }
+
+      const geometry = depthGeometry(depth, view);
+      const point = projectDepthSampleToProject({
+        u: request.u,
+        v: request.v,
+        depthMeters,
+        projectionMatrix: geometry.projectionMatrix,
+        worldFromView: geometry.transform.matrix,
+      });
+      if (point === null) {
+        const message = 'Could not project the selected depth sample into scan coordinates.';
+        this.publish({ manualPointError: message });
+        clientDiagnostics.warn('XR_MANUAL_POINT_PROJECT_FAILED', { u: request.u, v: request.v });
+        return;
+      }
+
+      const stored = request.pointId === null
+        ? this.manualPoints.add(point)
+        : this.manualPoints.update(request.pointId, point);
+      if (stored === null) {
+        this.publish({ manualPointError: 'The selected manual point no longer exists.' });
+        return;
+      }
+
+      this.publish({ manualPointCount: this.manualPoints.size, manualPointError: null });
+      clientDiagnostics.info(
+        request.pointId === null ? 'XR_MANUAL_POINT_ADDED' : 'XR_MANUAL_POINT_MOVED',
+        {
+          id: stored.id,
+          x: Number(stored.position[0].toFixed(3)),
+          y: Number(stored.position[1].toFixed(3)),
+          z: Number(stored.position[2].toFixed(3)),
+        },
+      );
+      this.refreshCoverageGuide(time, true);
+    } catch (error) {
+      const message = `Manual point depth access failed: ${errorText(error)}`;
+      this.publish({ manualPointError: message });
+      clientDiagnostics.warn('XR_MANUAL_POINT_FAILED', error);
+    }
+  }
+
   private captureDepth(time: number, frame: XrFrameLike, pose: XrViewerPoseLike): void {
     if (this.scanPaused || !this.depthEnabled || pose.views.length === 0) return;
     if (typeof frame.getDepthInformation !== 'function') {
       if (!this.depthFailureReported) {
         this.depthFailureReported = true;
-        this.publish({ depthError: 'XRFrame.getDepthInformation() is unavailable.' });
+        const message = 'XRFrame.getDepthInformation() is unavailable.';
+        clientDiagnostics.error('XR_DEPTH_API_MISSING', message);
+        this.publish({ depthError: message });
       }
       return;
     }
@@ -764,6 +997,21 @@ export class WebXrRuntime {
       this.depthFrameCount += 1;
       this.depthWidth = depth.width;
       this.depthHeight = depth.height;
+
+      if (!this.depthReadyLogged) {
+        this.depthReadyLogged = true;
+        clientDiagnostics.info('XR_DEPTH_STREAM_READY', {
+          width: depth.width,
+          height: depth.height,
+          usage: this.state.depthUsage,
+          format: this.state.depthDataFormat,
+          type: this.state.depthType,
+        });
+        void clientDiagnostics.flush();
+      }
+
+      this.processPendingManualPoint(time, depth, view);
+
       if (time - this.lastDepthSampleMs < DEPTH_SAMPLE_INTERVAL_MS) return;
       this.lastDepthSampleMs = time;
 
@@ -796,9 +1044,33 @@ export class WebXrRuntime {
     } catch (error) {
       if (!this.depthFailureReported) {
         this.depthFailureReported = true;
-        this.publish({ depthError: `Depth access failed: ${errorText(error)}` });
+        const message = `Depth access failed: ${errorText(error)}`;
+        clientDiagnostics.error('XR_DEPTH_ACCESS_FAILED', message);
+        this.publish({ depthError: message });
       }
     }
+  }
+
+  private reportClientTelemetry(time: number): void {
+    if (time - this.lastClientTelemetryMs < CLIENT_TELEMETRY_INTERVAL_MS) return;
+    this.lastClientTelemetryMs = time;
+    clientDiagnostics.info('XR_PROGRESS', {
+      frames: this.frameCount,
+      depthFrames: this.depthFrameCount,
+      integratedFrames: this.sampledDepthFrames,
+      stablePoints: this.pointCloud.promotedCount,
+      retainedPoints: this.pointCloud.pointCount,
+      keyframes: this.pointCloud.keyframeCount,
+      polishFrames: this.pointCloud.polishFrameCount,
+      readyCells: this.coverageReadyCells,
+      visibleCells: this.coverageVisibleCells,
+      weak: this.coverageWeakPoints,
+      improving: this.coverageImprovingPoints,
+      stable: this.coverageStablePoints,
+      manualPoints: this.manualPoints.size,
+      motion: this.motionState,
+    });
+    void clientDiagnostics.flush();
   }
 
   private readonly handleFrame: XrFrameCallback = (time, frame): void => {
@@ -826,6 +1098,8 @@ export class WebXrRuntime {
       this.captureDepth(time, frame, pose);
       this.coverageRenderer?.render(layer, pose.views);
     }
+
+    this.reportClientTelemetry(time);
 
     if (time - this.lastUiUpdateMs < 100 && this.frameCount > 1) return;
     this.lastUiUpdateMs = time;
@@ -856,7 +1130,11 @@ export class WebXrRuntime {
       coverageTotalCells: this.coverageTotalCells,
       coverageTargetIndependentViews: this.coverageTargetIndependentViews,
       coverageAverageConfidence: this.coverageAverageConfidence,
+      coverageWeakPoints: this.coverageWeakPoints,
+      coverageImprovingPoints: this.coverageImprovingPoints,
+      coverageStablePoints: this.coverageStablePoints,
       coverageGuideError: this.coverageGuideError,
+      manualPointCount: this.manualPoints.size,
       lightingEstimateAvailable: this.lightingEstimateAvailable,
       primaryLightIntensity: this.primaryLightIntensity,
     };
@@ -878,5 +1156,3 @@ export class WebXrRuntime {
     });
   };
 }
-
-export type { ScanPointCloudSnapshot } from './depthPointCloud';
