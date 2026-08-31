@@ -152,6 +152,33 @@ esp_err_t web_server_bootstrap_routes_register(
         return err;
     }
 
+    /*
+     * The bootstrap server has six URI slots. The legacy CA file endpoint is
+     * replaced by the guided Android download endpoint below. /health is not
+     * needed while the temporary setup AP is active; HTTPS keeps its own
+     * /health route in normal STA mode. Reuse those two slots rather than
+     * increasing the HTTP server's RAM footprint.
+     */
+    err = httpd_unregister_uri_handler(
+        server,
+        "/setup/ca.crt",
+        HTTP_GET
+    );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = httpd_unregister_uri_handler(
+        server,
+        "/health",
+        HTTP_GET
+    );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
     return
         web_https_onboarding_ui_bootstrap_register(
             server
