@@ -44,7 +44,7 @@ export default function App() {
           <div className="eyebrow">ESP32 GEOLOCATOR · 3D WORKSPACE</div>
           <h1>Metric browser 3D scanning & sensor placement</h1>
           <p>
-            Android WebXR/ARCore depth is processed locally into a metric point cloud. The ESP32 only serves the trusted offline web application.
+            Android WebXR/ARCore depth is processed locally into a filtered metric point cloud. The ESP32 only serves the trusted offline web application.
           </p>
         </div>
         <div className="header-badges">
@@ -62,8 +62,8 @@ export default function App() {
         <button type="button" disabled={!hasMeasuredScan} onClick={() => requestView('front')}>Front</button>
         <span className="toolbar-note">
           {hasMeasuredScan
-            ? 'Measured point cloud: drag to orbit. Desktop wheel zoom is available.'
-            : 'Start a real 3D scan below. No demo mesh is shown anymore.'}
+            ? 'Filtered measured cloud: drag to orbit. Desktop wheel zoom is available.'
+            : 'Start a real 3D scan below. No demo mesh is shown.'}
         </span>
       </section>
 
@@ -82,8 +82,12 @@ export default function App() {
                 <div className="panel-title">Measured scan result</div>
                 <dl className="status-list">
                   <div>
-                    <dt>3D points</dt>
+                    <dt>Stable 3D points</dt>
                     <dd>{scanSnapshot.pointCount.toLocaleString()}</dd>
+                  </div>
+                  <div>
+                    <dt>Raw unique voxels</dt>
+                    <dd>{scanSnapshot.rawPointCount.toLocaleString()}</dd>
                   </div>
                   <div>
                     <dt>Depth frames received</dt>
@@ -96,6 +100,10 @@ export default function App() {
                   <div>
                     <dt>Voxel resolution</dt>
                     <dd>{Math.round(scanSnapshot.voxelSizeMeters * 1000)} mm</dd>
+                  </div>
+                  <div>
+                    <dt>Depth range cap</dt>
+                    <dd>{formatMeters(scanSnapshot.maxDepthMeters)}</dd>
                   </div>
                   {extent !== null && (
                     <>
@@ -119,10 +127,10 @@ export default function App() {
               <section className="panel-card grow">
                 <div className="panel-title">What this result is</div>
                 <p className="scan-result-copy">
-                  These are real metric surface samples reconstructed from ARCore depth maps plus the camera pose for each sampled XR frame. They are not a demo mesh and are not uploaded to a cloud service.
+                  These are real metric surface samples reconstructed from ARCore depth maps plus the depth-sensor pose for each sampled XR frame. A local depth-neighbour filter rejects unstable pixels and repeated observations are used to remove isolated one-frame points.
                 </p>
                 <p className="scan-result-copy">
-                  The next reconstruction layer will turn these surface samples into a decimated surface/occupancy representation and attach TAG0 MAIN + TAG1…TAG4 sensor coordinates to the same frame.
+                  This validation build caps accepted depth at 5 m. Once the measured cloud is geometrically sane, the next layer will add selectable scan range, surface/occupancy reconstruction and TAG0 MAIN + TAG1…TAG4 registration.
                 </p>
                 <button
                   type="button"
@@ -140,10 +148,10 @@ export default function App() {
             <div>
               <h2>No measured scan yet</h2>
               <p>
-                Press <b>Start 3D scan</b>, move around the visible rubble/object while the live counter grows, then press <b>Finish scan & view 3D</b>.
+                Press <b>Start 3D scan</b>, move slowly around the visible rubble/object while the live counter grows, then press <b>Finish scan & view 3D</b>.
               </p>
               <p>
-                During a valid depth scan the overlay must show <b>DEPTH ACTIVE</b>, increasing <b>DEPTH FRAMES</b> and increasing <b>3D POINTS</b>. If it says DEPTH UNAVAILABLE, the browser/device did not grant WebXR Depth and no fake geometry will be generated.
+                For this validation pass keep the target mostly within about 0.5–4 m of the phone. During a valid scan the overlay must show <b>DEPTH ACTIVE</b> with increasing depth frames and 3D points.
               </p>
             </div>
           </section>
@@ -151,7 +159,7 @@ export default function App() {
       )}
 
       <footer className="app-footer">
-        Current pipeline: trusted HTTPS → immersive WebXR → ARCore CPU depth → metric XYZ reconstruction → 40 mm voxel point cloud → local 3D review. Next: surface/occupancy reconstruction and AprilTag registration.
+        Current pipeline: trusted HTTPS → immersive WebXR → ARCore CPU depth → local depth consistency filter → metric XYZ reconstruction → 40 mm voxel cloud → repeated-observation cleanup → local 3D review.
       </footer>
     </main>
   );
