@@ -192,7 +192,7 @@ static esp_err_t web_onboarding_ca_download_handler(
 #else
     return httpd_resp_send_err(
         request,
-        HTTPD_503_SERVICE_UNAVAILABLE,
+        HTTPD_500_INTERNAL_SERVER_ERROR,
         "GeoLocator Root CA is not embedded"
     );
 #endif
