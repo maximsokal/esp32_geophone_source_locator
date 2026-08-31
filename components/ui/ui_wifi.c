@@ -1,9 +1,11 @@
 #include "ui_internal.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "app_config.h"
+#include "app_event_bus.h"
 #include "wifi_manager.h"
 
 
@@ -72,7 +74,7 @@ static void ui_wifi_render_setup_card(
     const bool client_ready =
         wifi_manager_setup_client_connected();
 
-    const bool show_page_qr =
+    const bool show_qr =
         client_ready &&
         !context->wifi_credentials_saved;
 
@@ -80,7 +82,7 @@ static void ui_wifi_render_setup_card(
         screen,
         10,
         42,
-        show_page_qr || !client_ready ? 220 : 300,
+        show_qr || !client_ready ? 220 : 300,
         70
     );
 
@@ -96,7 +98,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             280,
-            "STEP 3/3  SETTINGS SAVED",
+            "STEP 3/4  SETTINGS SAVED",
             UI_COLOR_GOOD
         );
 
@@ -114,7 +116,7 @@ static void ui_wifi_render_setup_card(
             10,
             49,
             280,
-            "GEOLOCATOR IS SWITCHING TO STATION MODE",
+            "NEXT: HTTPS VERIFY QR",
             UI_COLOR_MUTED
         );
 
@@ -127,7 +129,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             200,
-            "STEP 1/3  CONNECT PHONE",
+            "STEP 1/4  CONNECT PHONE",
             UI_COLOR_WARNING
         );
 
@@ -160,14 +162,84 @@ static void ui_wifi_render_setup_card(
         return;
     }
 
+    if (!context->wifi_ca_downloaded) {
+        (void)ui_create_label_locked(
+            card,
+            10,
+            8,
+            200,
+            "STEP 2/4  INSTALL ROOT CA",
+            UI_COLOR_WARNING
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            29,
+            200,
+            "DOWNLOAD PUBLIC CA",
+            UI_COLOR_TEXT
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            49,
+            200,
+            APP_WIFI_CA_URL,
+            UI_COLOR_MUTED
+        );
+
+        ui_wifi_render_qr(
+            screen,
+            APP_WIFI_CA_URL
+        );
+        return;
+    }
+
+    if (!context->wifi_ca_install_confirmed) {
+        (void)ui_create_label_locked(
+            card,
+            10,
+            8,
+            200,
+            "STEP 2/4  CA DOWNLOADED",
+            UI_COLOR_ACCENT
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            29,
+            200,
+            "INSTALL CA IN ANDROID",
+            UI_COLOR_TEXT
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            49,
+            200,
+            "RETURN + TAP CONTINUE",
+            UI_COLOR_MUTED
+        );
+
+        ui_wifi_render_qr(
+            screen,
+            APP_WIFI_CA_URL
+        );
+        return;
+    }
+
     (void)ui_create_label_locked(
         card,
         10,
         8,
         200,
         context->wifi_setup_page_opened
-            ? "STEP 2/3  SETUP PAGE OPEN"
-            : "STEP 2/3  OPEN SETUP PAGE",
+            ? "STEP 3/4  SETUP PAGE OPEN"
+            : "STEP 3/4  CONFIGURE HOTSPOT",
         context->wifi_setup_page_opened
             ? UI_COLOR_GOOD
             : UI_COLOR_ACCENT
@@ -178,7 +250,7 @@ static void ui_wifi_render_setup_card(
         10,
         29,
         200,
-        "PHONE CONNECTED",
+        "ROOT CA CONFIRMED",
         UI_COLOR_GOOD
     );
 
@@ -194,6 +266,169 @@ static void ui_wifi_render_setup_card(
     ui_wifi_render_qr(
         screen,
         APP_WIFI_SETUP_URL
+    );
+}
+
+
+static void ui_wifi_render_sta_card(
+    lv_obj_t *screen,
+    const char *ssid,
+    const char *ip
+)
+{
+    ui_context_t *context = ui_context();
+
+    const bool show_verify_qr =
+        context->wifi_verify_ready &&
+        !context->wifi_verify_result_received &&
+        context->wifi_verify_nonce != 0;
+
+    lv_obj_t *card = ui_create_card_locked(
+        screen,
+        10,
+        42,
+        show_verify_qr ? 220 : 300,
+        70
+    );
+
+    if (card == NULL) {
+        return;
+    }
+
+    if (context->wifi_verify_result_received) {
+        const uint32_t mask =
+            context->wifi_verify_result_mask;
+
+        const bool ready =
+            (mask & APP_TLS_VERIFY_REQUIRED_MASK) ==
+            APP_TLS_VERIFY_REQUIRED_MASK;
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            8,
+            280,
+            ready
+                ? "STEP 4/4  HTTPS / WEBXR VERIFIED"
+                : "STEP 4/4  VERIFY INCOMPLETE",
+            ready
+                ? UI_COLOR_GOOD
+                : UI_COLOR_WARNING
+        );
+
+        char result[96];
+
+        snprintf(
+            result,
+            sizeof(result),
+            "SEC %s  CAM %s  XR %s  AR %s",
+            (mask & APP_TLS_VERIFY_SECURE_CONTEXT) ? "OK" : "--",
+            (mask & APP_TLS_VERIFY_CAMERA) ? "OK" : "--",
+            (mask & APP_TLS_VERIFY_XR_API) ? "OK" : "--",
+            (mask & APP_TLS_VERIFY_IMMERSIVE_AR) ? "OK" : "--"
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            29,
+            280,
+            result,
+            ready ? UI_COLOR_GOOD : UI_COLOR_TEXT
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            49,
+            280,
+            "PHONE REPORT RECEIVED",
+            UI_COLOR_MUTED
+        );
+
+        return;
+    }
+
+    if (show_verify_qr) {
+        (void)ui_create_label_locked(
+            card,
+            10,
+            8,
+            200,
+            "STEP 4/4  VERIFY HTTPS",
+            UI_COLOR_WARNING
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            29,
+            200,
+            "SCAN QR ON PHONE",
+            UI_COLOR_TEXT
+        );
+
+        (void)ui_create_label_locked(
+            card,
+            10,
+            49,
+            200,
+            "CAMERA + WEBXR TEST",
+            UI_COLOR_MUTED
+        );
+
+        char verify_url[128];
+
+        const int length = snprintf(
+            verify_url,
+            sizeof(verify_url),
+            "%s?t=%08" PRIx32,
+            APP_HTTPS_VERIFY_URL,
+            context->wifi_verify_nonce
+        );
+
+        if (
+            length > 0 &&
+            length < (int)sizeof(verify_url)
+        ) {
+            ui_wifi_render_qr(
+                screen,
+                verify_url
+            );
+        }
+
+        return;
+    }
+
+    char text[96];
+
+    (void)ui_create_label_locked(
+        card,
+        10,
+        8,
+        280,
+        "MODE  STATION",
+        UI_COLOR_ACCENT
+    );
+
+    snprintf(text, sizeof(text), "SSID  %s", ssid);
+    (void)ui_create_label_locked(
+        card,
+        10,
+        29,
+        280,
+        text,
+        UI_COLOR_TEXT
+    );
+
+    snprintf(text, sizeof(text), "IP    %s", ip);
+    (void)ui_create_label_locked(
+        card,
+        10,
+        49,
+        280,
+        text,
+        ip[0] != '-' ? UI_COLOR_GOOD : UI_COLOR_MUTED
     );
 }
 
@@ -234,29 +469,7 @@ void ui_render_wifi_locked(void)
     if (setup) {
         ui_wifi_render_setup_card(screen);
     } else {
-        lv_obj_t *card = ui_create_card_locked(
-            screen,
-            10,
-            42,
-            300,
-            70
-        );
-
-        if (card == NULL) {
-            return;
-        }
-
         char ip[24] = {0};
-        char text[96];
-
-        (void)ui_create_label_locked(
-            card,
-            10,
-            8,
-            280,
-            "MODE  STATION",
-            UI_COLOR_ACCENT
-        );
 
         if (!has_saved_network) {
             snprintf(ssid, sizeof(ssid), "--");
@@ -269,19 +482,10 @@ void ui_render_wifi_locked(void)
             snprintf(ip, sizeof(ip), "--");
         }
 
-        snprintf(text, sizeof(text), "SSID  %s", ssid);
-        (void)ui_create_label_locked(
-            card, 10, 29, 280, text, UI_COLOR_TEXT
-        );
-
-        snprintf(text, sizeof(text), "IP    %s", ip);
-        (void)ui_create_label_locked(
-            card,
-            10,
-            49,
-            280,
-            text,
-            ip[0] != '-' ? UI_COLOR_GOOD : UI_COLOR_MUTED
+        ui_wifi_render_sta_card(
+            screen,
+            ssid,
+            ip
         );
     }
 
