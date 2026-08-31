@@ -6,6 +6,7 @@
 
 #include "app_config.h"
 #include "wifi_manager.h"
+#include "web_client_log.h"
 
 
 static const char *TAG =
@@ -190,7 +191,7 @@ esp_err_t web_server_bootstrap_routes_register(
      * The bootstrap server has six URI slots. The legacy CA file endpoint is
      * replaced by the guided Android download endpoint below. /health is not
      * needed while the temporary setup AP is active; HTTPS keeps its own
-     * /health route in normal STA mode. Reuse those two slots rather than
+     * diagnostics route in normal STA mode. Reuse those two slots rather than
      * increasing the HTTP server's RAM footprint.
      */
     err = httpd_unregister_uri_handler(
@@ -228,17 +229,32 @@ esp_err_t web_server_routes_register(
         return ESP_ERR_INVALID_ARG;
     }
 
-    /*
-     * React/SD preparation is intentionally completed before Wi-Fi starts.
-     * Runtime HTTP delivery uses the embedded flash bundle so the HTTP task
-     * never starts SDSPI transactions while esp_lcd is using shared SPI2.
-     */
     esp_err_t err =
         web_server_register_root_and_health(
             server,
             web_server_secure_index_handler
         );
 
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /*
+     * HTTPS already sat at the 14-handler budget. Browser diagnostics are more
+     * valuable during the current WebXR bring-up than a health probe, so reuse
+     * that existing slot instead of increasing the server table/internal RAM.
+     */
+    err = httpd_unregister_uri_handler(
+        server,
+        "/health",
+        HTTP_GET
+    );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = web_client_log_register(server);
     if (err != ESP_OK) {
         return err;
     }
