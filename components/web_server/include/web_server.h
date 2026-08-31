@@ -3,6 +3,8 @@
 #include "esp_err.h"
 
 
+esp_err_t web_server_prepare_webui(void);
+
 esp_err_t web_server_start(void);
 
 esp_err_t web_server_stop(void);
