@@ -41,9 +41,13 @@ export interface OccupancyIntegrationResult {
 }
 
 export interface OccupancySnapshot {
+  /** Effective spacing used for the bounded UNKNOWN display volume. */
   occupancyVoxelSizeMeters: number;
+  /** Exact number of stored cells confidently cleared by repeated camera rays. */
   knownFreeVoxelCount: number;
+  /** Exact number of stored cells with repeated depth-hit evidence. */
   occupiedSurfaceVoxelCount: number;
+  /** Candidate cells sampled inside the measured rubble/object envelope. */
   unknownCandidateVoxelCount: number;
   freeAirPositions: Float32Array;
   occupiedSurfacePositions: Float32Array;
@@ -100,11 +104,6 @@ function keyFromCoordinates(x: number, y: number, z: number): string {
   return `${x}:${y}:${z}`;
 }
 
-function parseKey(key: string): readonly [number, number, number] {
-  const parts = key.split(':');
-  return [Number(parts[0]), Number(parts[1]), Number(parts[2])];
-}
-
 function pointKey(point: OccupancyPoint, voxelSizeMeters: number): string {
   return keyFromCoordinates(
     gridCoordinate(point[0], voxelSizeMeters),
@@ -124,6 +123,11 @@ function voxelCenterFromCoordinates(
     (y + 0.5) * voxelSizeMeters,
     (z + 0.5) * voxelSizeMeters,
   ];
+}
+
+function voxelCenterFromKey(key: string, voxelSizeMeters: number): OccupancyPoint {
+  const [xText, yText, zText] = key.split(':');
+  return voxelCenterFromCoordinates(Number(xText), Number(yText), Number(zText), voxelSizeMeters);
 }
 
 function safeDepth(depth: OccupancyDepthFrameLike, u: number, v: number): number | null {
@@ -153,9 +157,9 @@ function traceSegmentVoxelKeys(
   const tDeltaX = stepX === 0 ? Number.POSITIVE_INFINITY : voxelSizeMeters / Math.abs(dx);
   const tDeltaY = stepY === 0 ? Number.POSITIVE_INFINITY : voxelSizeMeters / Math.abs(dy);
   const tDeltaZ = stepZ === 0 ? Number.POSITIVE_INFINITY : voxelSizeMeters / Math.abs(dz);
-
   const nextBoundary = (coordinate: number, step: number): number =>
     (coordinate + (step > 0 ? 1 : 0)) * voxelSizeMeters;
+
   let tMaxX = stepX === 0 ? Number.POSITIVE_INFINITY : (nextBoundary(x, stepX) - origin[0]) / dx;
   let tMaxY = stepY === 0 ? Number.POSITIVE_INFINITY : (nextBoundary(y, stepY) - origin[1]) / dy;
   let tMaxZ = stepZ === 0 ? Number.POSITIVE_INFINITY : (nextBoundary(z, stepZ) - origin[2]) / dz;
@@ -196,7 +200,6 @@ function unprojectDepthSample(
   const worldY = Number(worldFromView[1]) * viewX + Number(worldFromView[5]) * viewY + Number(worldFromView[9]) * viewZ + Number(worldFromView[13]);
   const worldZ = Number(worldFromView[2]) * viewX + Number(worldFromView[6]) * viewY + Number(worldFromView[10]) * viewZ + Number(worldFromView[14]);
   if (![worldX, worldY, worldZ].every(finite)) return null;
-
   return [worldX, -worldZ, worldY];
 }
 
@@ -292,9 +295,9 @@ export class SparseOccupancyGrid {
       const endpointKey = pointKey(endpoint, this.voxelSizeMeters);
       updateMaxWeight(occupiedKeys, endpointKey, weight);
 
-      // Do not carve right up to the measured hit. The terminal band protects
-      // the rubble/object boundary from depth noise and deliberately leaves the
-      // unseen volume behind the surface UNKNOWN rather than pretending it is solid.
+      // Inverse sensor model: free evidence stops before the measured hit.
+      // Crucially, nothing behind the hit is modified. That hidden rubble volume
+      // remains UNKNOWN and therefore remains eligible for source localization.
       const terminalBand = Math.max(this.voxelSizeMeters * 0.80, 0.10);
       const freeDistance = Math.max(0, distance - terminalBand);
       if (freeDistance <= this.voxelSizeMeters * 0.25) continue;
@@ -309,9 +312,9 @@ export class SparseOccupancyGrid {
       }
     }
 
-    // OctoMap-style scan insertion semantics: one cell update per depth frame,
-    // regardless of how many pixels/rays cross the same voxel. Occupied endpoint
-    // evidence wins over free evidence within the same keyframe.
+    // One update per voxel per evidence frame. Hundreds of pixels crossing the
+    // same voxel are not hundreds of independent observations. Endpoint hits
+    // win over free-ray evidence within that frame.
     for (const key of occupiedKeys.keys()) freeKeys.delete(key);
     for (const [key, weight] of freeKeys) this.updateCell(key, false, weight, context.keyframeId);
     for (const [key, weight] of occupiedKeys) this.updateCell(key, true, weight, context.keyframeId);
@@ -325,48 +328,66 @@ export class SparseOccupancyGrid {
     };
   }
 
-  snapshot(bounds: OccupancyBounds | null): OccupancySnapshot {
-    if (bounds === null) return this.emptySnapshot();
-    const minX = gridCoordinate(bounds.min[0], this.voxelSizeMeters);
-    const minY = gridCoordinate(bounds.min[1], this.voxelSizeMeters);
-    const minZ = gridCoordinate(bounds.min[2], this.voxelSizeMeters);
-    const maxX = gridCoordinate(bounds.max[0], this.voxelSizeMeters);
-    const maxY = gridCoordinate(bounds.max[1], this.voxelSizeMeters);
-    const maxZ = gridCoordinate(bounds.max[2], this.voxelSizeMeters);
-    const nx = Math.max(1, maxX - minX + 1);
-    const ny = Math.max(1, maxY - minY + 1);
-    const nz = Math.max(1, maxZ - minZ + 1);
-    const totalCells = nx * ny * nz;
-    const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
-
+  snapshot(candidateBounds: OccupancyBounds | null): OccupancySnapshot {
     const free: number[] = [];
     const occupied: number[] = [];
-    const unknown: number[] = [];
     let knownFreeVoxelCount = 0;
     let occupiedSurfaceVoxelCount = 0;
-    let unknownCandidateVoxelCount = 0;
 
     const append = (target: number[], point: OccupancyPoint): void => {
       if (target.length / 3 >= MAX_DISPLAY_POINTS_PER_CLASS) return;
       target.push(point[0], point[1], point[2]);
     };
 
+    // Stored evidence is reported independently of the object envelope. This is
+    // how we can show ray-verified exterior air in front of a rubble surface.
+    for (const [key, cell] of this.cells) {
+      const state = this.classifyCell(cell);
+      if (state === 'free') {
+        knownFreeVoxelCount += 1;
+        append(free, voxelCenterFromKey(key, this.voxelSizeMeters));
+      } else if (state === 'occupied') {
+        occupiedSurfaceVoxelCount += 1;
+        append(occupied, voxelCenterFromKey(key, this.voxelSizeMeters));
+      }
+    }
+
+    if (candidateBounds === null) {
+      return {
+        occupancyVoxelSizeMeters: this.voxelSizeMeters,
+        knownFreeVoxelCount,
+        occupiedSurfaceVoxelCount,
+        unknownCandidateVoxelCount: 0,
+        freeAirPositions: Float32Array.from(free),
+        occupiedSurfacePositions: Float32Array.from(occupied),
+        unknownCandidatePositions: new Float32Array(0),
+      };
+    }
+
+    // Unknown candidate volume is intentionally bounded by the measured object
+    // envelope, not by camera positions. Otherwise all exterior air around the
+    // operator would become a fake source-search volume.
+    const minX = gridCoordinate(candidateBounds.min[0], this.voxelSizeMeters);
+    const minY = gridCoordinate(candidateBounds.min[1], this.voxelSizeMeters);
+    const minZ = gridCoordinate(candidateBounds.min[2], this.voxelSizeMeters);
+    const maxX = gridCoordinate(candidateBounds.max[0], this.voxelSizeMeters);
+    const maxY = gridCoordinate(candidateBounds.max[1], this.voxelSizeMeters);
+    const maxZ = gridCoordinate(candidateBounds.max[2], this.voxelSizeMeters);
+    const nx = Math.max(1, maxX - minX + 1);
+    const ny = Math.max(1, maxY - minY + 1);
+    const nz = Math.max(1, maxZ - minZ + 1);
+    const totalCells = nx * ny * nz;
+    const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
+    const unknown: number[] = [];
+    let unknownCandidateVoxelCount = 0;
+
     for (let x = minX; x <= maxX; x += stride) {
       for (let y = minY; y <= maxY; y += stride) {
         for (let z = minZ; z <= maxZ; z += stride) {
-          const key = keyFromCoordinates(x, y, z);
-          const state = this.classifyCell(this.cells.get(key));
-          const center = voxelCenterFromCoordinates(x, y, z, this.voxelSizeMeters);
-          if (state === 'free') {
-            knownFreeVoxelCount += 1;
-            append(free, center);
-          } else if (state === 'occupied') {
-            occupiedSurfaceVoxelCount += 1;
-            append(occupied, center);
-          } else {
-            unknownCandidateVoxelCount += 1;
-            append(unknown, center);
-          }
+          const state = this.classifyCell(this.cells.get(keyFromCoordinates(x, y, z)));
+          if (state !== 'unknown') continue;
+          unknownCandidateVoxelCount += 1;
+          append(unknown, voxelCenterFromCoordinates(x, y, z, this.voxelSizeMeters));
         }
       }
     }
@@ -402,6 +423,7 @@ export class SparseOccupancyGrid {
       };
       this.cells.set(key, cell);
     }
+
     const boundedWeight = clamp(weight, 0.08, 1);
     if (occupied) {
       if (cell.lastHitKeyframe === keyframeId) return;
@@ -414,18 +436,6 @@ export class SparseOccupancyGrid {
       cell.missKeyframes += 1;
       cell.logOdds = clamp(cell.logOdds + MISS_LOG_ODDS * boundedWeight, MIN_LOG_ODDS, MAX_LOG_ODDS);
     }
-  }
-
-  private emptySnapshot(): OccupancySnapshot {
-    return {
-      occupancyVoxelSizeMeters: this.voxelSizeMeters,
-      knownFreeVoxelCount: 0,
-      occupiedSurfaceVoxelCount: 0,
-      unknownCandidateVoxelCount: 0,
-      freeAirPositions: new Float32Array(0),
-      occupiedSurfacePositions: new Float32Array(0),
-      unknownCandidatePositions: new Float32Array(0),
-    };
   }
 }
 
