@@ -38,6 +38,13 @@ bool sd_card_is_mounted(void)
 }
 
 
+const char *sd_card_mount_point(void)
+{
+    return
+        sd_card_internal_mount_point();
+}
+
+
 esp_err_t sd_card_unmount(void)
 {
     sdmmc_card_t *card =
