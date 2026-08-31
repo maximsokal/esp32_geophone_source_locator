@@ -788,28 +788,35 @@ export class DepthPointCloudAccumulator {
 
     if (nearby !== null) {
       const residual = Math.hypot(x - nearby.x, y - nearby.y, z - nearby.z);
-      if (residual > mergeGateMeters(depthMeters, nearby)) {
-        this.residualRejectedSamples += 1;
+      if (residual <= mergeGateMeters(depthMeters, nearby)) {
+        const promotedBefore = nearby.promoted;
+        this.fuseRepresentative(
+          nearby,
+          x,
+          y,
+          z,
+          depthMeters,
+          observationWeight,
+          context,
+        );
+        return {
+          accepted: true,
+          changed: true,
+          created: false,
+          promoted: !promotedBefore && nearby.promoted,
+        };
+      }
+
+      // A residual outside the merge gate is a depth discontinuity, not proof
+      // that the sample itself is invalid. Redundant polish frames are not
+      // allowed to create a second surface hypothesis, but a novel keyframe may
+      // seed the candidate's own free voxel so nearby foreground/background
+      // surfaces are preserved rather than erased at object silhouettes.
+      this.residualRejectedSamples += 1;
+      if (!context.evidenceKeyframe) {
         this.discardedSampleCount += 1;
         return { accepted: false, changed: false, created: false, promoted: false };
       }
-
-      const promotedBefore = nearby.promoted;
-      this.fuseRepresentative(
-        nearby,
-        x,
-        y,
-        z,
-        depthMeters,
-        observationWeight,
-        context,
-      );
-      return {
-        accepted: true,
-        changed: true,
-        created: false,
-        promoted: !promotedBefore && nearby.promoted,
-      };
     }
 
     // This is the central anti-saturation rule: a redundant or stationary frame
