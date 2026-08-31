@@ -16,23 +16,38 @@ const emptyRuntimeState: WebXrRuntimeState = {
   frameCount: 0,
   tracking: false,
   pose: null,
+  scanPaused: false,
+  wakeLockActive: false,
+  wakeLockError: null,
   depthAvailable: false,
   depthUsage: null,
   depthDataFormat: null,
+  depthType: null,
   depthWidth: null,
   depthHeight: null,
   depthFrameCount: 0,
   sampledDepthFrames: 0,
   pointCount: 0,
+  retainedPointCount: 0,
   pointCloudVersion: 0,
+  keyframeCount: 0,
+  polishFrameCount: 0,
+  motionRejectedFrames: 0,
+  motionState: null,
+  motionQuality: 0,
+  linearSpeedMetersPerSecond: 0,
+  angularSpeedRadiansPerSecond: 0,
+  linearAccelerationMetersPerSecond2: 0,
   coverageGuideActive: false,
   coverageGuideRenderPoints: 0,
   coverageVisibleCells: 0,
   coverageReadyCells: 0,
   coverageTotalCells: 0,
-  coverageTargetFrameHits: 10,
-  coverageAverageCandidatesPerFrame: 0,
+  coverageTargetIndependentViews: 3,
+  coverageAverageConfidence: 0,
   coverageGuideError: null,
+  lightingEstimateAvailable: false,
+  primaryLightIntensity: null,
   depthError: null,
   error: null,
 };
@@ -42,91 +57,46 @@ interface XrRuntimePanelProps {
   onPointCloudReady?: (snapshot: ScanPointCloudSnapshot | null) => void;
 }
 
-function capabilityClass(value: boolean): string {
-  return value ? 'xr-capability good' : 'xr-capability bad';
-}
-
-function capabilityText(value: boolean): string {
-  return value ? 'PASS' : 'NO';
-}
-
-function formatPosition(value: readonly [number, number, number] | null): string {
-  if (value === null) {
-    return '--';
-  }
-
-  return value.map((component) => component.toFixed(3)).join(' / ');
-}
-
-function formatOrientation(value: readonly [number, number, number, number] | null): string {
-  if (value === null) {
-    return '--';
-  }
-
-  return value.map((component) => component.toFixed(3)).join(' / ');
-}
-
 function phaseLabel(state: WebXrRuntimeState): string {
-  switch (state.phase) {
-    case 'starting':
-      return 'STARTING SCAN';
-    case 'running':
-      if (!state.tracking) {
-        return 'WAITING FOR POSE';
-      }
-      return state.depthAvailable ? 'SCANNING 3D' : 'TRACKING ONLY';
-    case 'stopping':
-      return 'FINISHING';
-    case 'ended':
-      return state.pointCount > 0 ? '3D SCAN READY' : 'ENDED';
-    case 'error':
-      return 'ERROR';
-    case 'idle':
-    default:
-      return 'IDLE';
+  if (state.phase === 'starting') return 'STARTING';
+  if (state.phase === 'stopping') return 'FINISHING';
+  if (state.phase === 'interrupted') return 'SCAN INTERRUPTED';
+  if (state.phase === 'ended') return state.pointCount > 0 ? 'SCAN READY' : 'NO STABLE SURFACE';
+  if (state.phase === 'error') return 'ERROR';
+  if (state.phase !== 'running') return 'READY';
+  if (state.scanPaused) return 'PAUSED';
+  if (!state.tracking) return 'FINDING TRACKING';
+  if (!state.depthAvailable) return 'DEPTH UNAVAILABLE';
+  if (state.motionState === 'too-fast') return 'MOVE SLOWER';
+  if (state.motionState === 'stationary' || state.motionState === 'redundant') {
+    return 'MOVE TO A NEW VIEW';
   }
+  if (!state.coverageGuideActive) return 'BUILDING SURFACE';
+  return 'SCANNING';
 }
 
-function depthLabel(state: WebXrRuntimeState): string {
-  if (state.phase === 'starting') {
-    return 'REQUESTING';
-  }
-
-  if (state.phase === 'running' || state.phase === 'stopping') {
-    return state.depthAvailable ? 'ACTIVE' : 'UNAVAILABLE';
-  }
-
-  if (state.phase === 'ended') {
-    if (state.pointCount > 0) {
-      return 'CAPTURED';
-    }
-    return state.depthAvailable ? 'NO POINTS' : 'UNAVAILABLE';
-  }
-
-  return 'CHECK ON START';
+function qualityClass(state: WebXrRuntimeState): string {
+  if (state.phase === 'error' || state.phase === 'interrupted') return 'bad';
+  if (state.phase === 'running' && state.motionState === 'too-fast') return 'warning';
+  if (state.phase === 'running' || state.phase === 'ended') return 'good';
+  return '';
 }
 
-function depthCapabilityClass(state: WebXrRuntimeState): string {
-  if (state.phase === 'idle' || state.phase === 'starting') {
-    return 'xr-capability neutral';
-  }
-
-  return state.depthAvailable || state.pointCount > 0
-    ? 'xr-capability good'
-    : 'xr-capability bad';
+function formatPercent(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
-function coverageGuideLabel(state: WebXrRuntimeState): string {
-  if (state.coverageGuideError !== null) {
-    return 'ERROR';
+function formatMotion(state: WebXrRuntimeState): string {
+  if (state.scanPaused) return 'PAUSED';
+  switch (state.motionState) {
+    case 'keyframe': return 'NEW VIEW ✓';
+    case 'polish': return 'POLISHING';
+    case 'stationary': return 'MOVE PHONE';
+    case 'redundant': return 'NEW ANGLE';
+    case 'too-fast': return 'TOO FAST';
+    case 'initializing': return 'INITIALIZING';
+    default: return '--';
   }
-  if (state.coverageGuideActive) {
-    return 'ACTIVE';
-  }
-  if (state.phase === 'running' && state.depthAvailable) {
-    return 'WARMING UP';
-  }
-  return '--';
 }
 
 export function XrRuntimePanel({
@@ -140,13 +110,9 @@ export function XrRuntimePanel({
   useEffect(() => {
     const unsubscribe = runtime.subscribe(setRuntimeState);
     let cancelled = false;
-
     void probeWebXrCapabilities().then((result) => {
-      if (!cancelled) {
-        setCapabilities(result);
-      }
+      if (!cancelled) setCapabilities(result);
     });
-
     return () => {
       cancelled = true;
       unsubscribe();
@@ -159,19 +125,16 @@ export function XrRuntimePanel({
       runtimeState.phase === 'starting' ||
       runtimeState.phase === 'running' ||
       runtimeState.phase === 'stopping';
-
     onSessionActiveChange?.(active);
   }, [onSessionActiveChange, runtimeState.phase]);
 
   useEffect(() => {
     if (runtimeState.phase === 'starting') {
       onPointCloudReady?.(null);
-      return;
-    }
-
-    if (runtimeState.phase === 'ended' && runtimeState.pointCount > 0) {
+    } else if (runtimeState.phase === 'ended' && runtimeState.pointCount > 0) {
       onPointCloudReady?.(runtime.getPointCloudSnapshot());
     }
+    // An unexpected XR end is intentionally NOT finalized as a valid scan.
   }, [onPointCloudReady, runtime, runtimeState.phase, runtimeState.pointCount]);
 
   const running = runtimeState.phase === 'running';
@@ -181,187 +144,123 @@ export function XrRuntimePanel({
     capabilities.webGl === true &&
     capabilities.xrApi === true &&
     capabilities.immersiveAr === true &&
-    !running &&
-    !busy;
-
-  const posePosition = runtimeState.pose?.position ?? null;
-  const poseOrientation = runtimeState.pose?.orientation ?? null;
-  const depthSize =
-    runtimeState.depthWidth !== null && runtimeState.depthHeight !== null
-      ? `${runtimeState.depthWidth} × ${runtimeState.depthHeight}`
-      : '--';
-  const coverageCells = `${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
+    !running && !busy;
+  const readyVisible = `${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
 
   return (
     <>
-      <section className="xr-runtime-card" aria-label="WebXR depth scanner">
+      <section className="xr-runtime-card xr-runtime-card-compact" aria-label="3D scanner">
         <div className="xr-runtime-heading">
           <div>
-            <div className="panel-title">WEB-XR-B/C · metric browser 3D scanner</div>
-            <strong>ARCore depth → world-space point cloud</strong>
+            <div className="panel-title">3D SCANNER</div>
+            <strong>ARCore depth · robust local fusion</strong>
           </div>
-          <span className={`xr-phase ${runtimeState.phase === 'error' ? 'bad' : running || runtimeState.pointCount > 0 ? 'good' : ''}`}>
-            {phaseLabel(runtimeState)}
+          <span className={`xr-phase ${qualityClass(runtimeState)}`}>{phaseLabel(runtimeState)}</span>
+        </div>
+
+        <div className="xr-compact-status">
+          <span className={capabilities?.immersiveAr ? 'good-text' : 'bad-text'}>
+            WebXR {capabilities?.immersiveAr ? '✓' : '—'}
+          </span>
+          <span className={runtimeState.depthAvailable ? 'good-text' : ''}>
+            Depth {runtimeState.depthAvailable ? '✓' : runtimeState.phase === 'idle' ? 'on start' : '—'}
+          </span>
+          <span className={runtimeState.wakeLockActive ? 'good-text' : ''}>
+            Screen {runtimeState.wakeLockActive ? 'awake ✓' : capabilities?.wakeLockApi ? 'wake-ready' : 'wake-lock —'}
           </span>
         </div>
 
-        <div className="xr-capability-grid">
-          <div className={capabilityClass(capabilities?.secureContext === true)}>
-            <span>Trusted HTTPS</span>
-            <strong>{capabilities === null ? '...' : capabilityText(capabilities.secureContext)}</strong>
-          </div>
-          <div className={capabilityClass(capabilities?.cameraApi === true)}>
-            <span>Camera API</span>
-            <strong>{capabilities === null ? '...' : capabilityText(capabilities.cameraApi)}</strong>
-          </div>
-          <div className={capabilityClass(capabilities?.webGl === true)}>
-            <span>WebGL</span>
-            <strong>{capabilities === null ? '...' : capabilityText(capabilities.webGl)}</strong>
-          </div>
-          <div className={capabilityClass(capabilities?.xrApi === true)}>
-            <span>WebXR API</span>
-            <strong>{capabilities === null ? '...' : capabilityText(capabilities.xrApi)}</strong>
-          </div>
-          <div className={capabilityClass(capabilities?.immersiveAr === true)}>
-            <span>immersive-ar</span>
-            <strong>{capabilities === null ? '...' : capabilityText(capabilities.immersiveAr)}</strong>
-          </div>
-          <div className={depthCapabilityClass(runtimeState)}>
-            <span>Depth sensing</span>
-            <strong>{depthLabel(runtimeState)}</strong>
-          </div>
-        </div>
-
-        <div className="xr-runtime-controls">
+        <div className="xr-runtime-controls xr-runtime-controls-compact">
           <button
             type="button"
             className="xr-start-button"
             disabled={!canStart}
             onClick={() => void runtime.start()}
           >
-            {runtimeState.phase === 'starting' ? 'Starting scanner…' : 'Start 3D scan'}
+            {runtimeState.phase === 'interrupted' ? 'Discard partial & start again' : 'Start 3D scan'}
           </button>
-
           <button
             type="button"
             className="xr-stop-button"
-            disabled={!running && runtimeState.phase !== 'stopping'}
+            disabled={!running}
             onClick={() => void runtime.stop()}
           >
-            Finish scan & build 3D
+            Finish scan
           </button>
-
-          <span className="xr-runtime-note">
-            The phone stays local. The live coverage guide starts only after enough temporally repeated depth evidence exists; its GPU buffer is refreshed at a reduced cadence instead of rebuilding on every camera frame.
-          </span>
         </div>
 
-        <dl className="xr-runtime-values">
-          <div><dt>Reference</dt><dd>{runtimeState.referenceSpace ?? '--'}</dd></div>
-          <div><dt>Depth mode</dt><dd>{runtimeState.depthUsage ?? '--'}</dd></div>
-          <div><dt>Depth format</dt><dd>{runtimeState.depthDataFormat ?? '--'}</dd></div>
-          <div><dt>Depth buffer</dt><dd>{depthSize}</dd></div>
-          <div><dt>Depth frames</dt><dd>{runtimeState.depthFrameCount.toLocaleString()}</dd></div>
-          <div><dt>3D points</dt><dd>{runtimeState.pointCount.toLocaleString()}</dd></div>
-          <div><dt>XR frames</dt><dd>{runtimeState.frameCount.toLocaleString()}</dd></div>
-          <div><dt>Sampled frames</dt><dd>{runtimeState.sampledDepthFrames.toLocaleString()}</dd></div>
-          <div><dt>Coverage guide</dt><dd>{coverageGuideLabel(runtimeState)}</dd></div>
-          <div><dt>Guide points</dt><dd>{runtimeState.coverageGuideRenderPoints.toLocaleString()}</dd></div>
-          <div><dt>Covered / visible cells</dt><dd>{coverageCells}</dd></div>
-          <div><dt>Target observations</dt><dd>{runtimeState.coverageTargetFrameHits} frames / cell</dd></div>
-          <div><dt>Tracking</dt><dd>{running ? (runtimeState.tracking ? 'POSE VALID' : 'WAITING') : '--'}</dd></div>
-          <div><dt>DOM overlay</dt><dd>{running ? (runtimeState.domOverlay ? 'AVAILABLE' : 'NO') : '--'}</dd></div>
-          <div><dt>Blend</dt><dd>{runtimeState.environmentBlendMode ?? '--'}</dd></div>
-          <div><dt>Views</dt><dd>{runtimeState.pose?.views ?? '--'}</dd></div>
-          <div className="wide"><dt>Phone XYZ, m (WebXR)</dt><dd>{formatPosition(posePosition)}</dd></div>
-          <div className="wide"><dt>Quaternion XYZW</dt><dd>{formatOrientation(poseOrientation)}</dd></div>
-        </dl>
-
-        {runtimeState.coverageGuideError !== null && (
+        {runtimeState.phase === 'interrupted' && (
           <div className="xr-runtime-warning" role="status">
-            {runtimeState.coverageGuideError}
+            XR session ended unexpectedly. Partial geometry is retained in memory but was not marked READY because a new XR session may use a different reference frame.
           </div>
         )}
 
         {runtimeState.depthError !== null && (
-          <div className="xr-runtime-warning" role="status">
-            {runtimeState.depthError}
-          </div>
+          <div className="xr-runtime-warning" role="status">{runtimeState.depthError}</div>
+        )}
+        {runtimeState.error !== null && (
+          <div className="xr-runtime-error" role="alert">{runtimeState.error}</div>
         )}
 
-        {runtimeState.error !== null && (
-          <div className="xr-runtime-error" role="alert">
-            {runtimeState.error}
-          </div>
-        )}
+        <details className="xr-technical-details">
+          <summary>Technical details</summary>
+          <dl className="xr-runtime-values">
+            <div><dt>Depth type</dt><dd>{runtimeState.depthType ?? '--'}</dd></div>
+            <div><dt>Depth format</dt><dd>{runtimeState.depthDataFormat ?? '--'}</dd></div>
+            <div><dt>Depth size</dt><dd>{runtimeState.depthWidth && runtimeState.depthHeight ? `${runtimeState.depthWidth} × ${runtimeState.depthHeight}` : '--'}</dd></div>
+            <div><dt>Stable points</dt><dd>{runtimeState.pointCount.toLocaleString()}</dd></div>
+            <div><dt>Retained hypotheses</dt><dd>{runtimeState.retainedPointCount.toLocaleString()}</dd></div>
+            <div><dt>Keyframes</dt><dd>{runtimeState.keyframeCount.toLocaleString()}</dd></div>
+            <div><dt>Polish frames</dt><dd>{runtimeState.polishFrameCount.toLocaleString()}</dd></div>
+            <div><dt>Motion rejects</dt><dd>{runtimeState.motionRejectedFrames.toLocaleString()}</dd></div>
+            <div><dt>Ready / visible cells</dt><dd>{readyVisible}</dd></div>
+            <div><dt>Coverage confidence</dt><dd>{formatPercent(runtimeState.coverageAverageConfidence)}</dd></div>
+            <div><dt>Linear speed</dt><dd>{runtimeState.linearSpeedMetersPerSecond.toFixed(2)} m/s</dd></div>
+            <div><dt>Angular speed</dt><dd>{runtimeState.angularSpeedRadiansPerSecond.toFixed(2)} rad/s</dd></div>
+            <div><dt>Acceleration</dt><dd>{runtimeState.linearAccelerationMetersPerSecond2.toFixed(2)} m/s²</dd></div>
+            <div><dt>Motion quality</dt><dd>{formatPercent(runtimeState.motionQuality)}</dd></div>
+            <div><dt>Lighting estimate</dt><dd>{runtimeState.lightingEstimateAvailable ? 'AVAILABLE' : '--'}</dd></div>
+            <div><dt>Primary light magnitude</dt><dd>{runtimeState.primaryLightIntensity?.toFixed(3) ?? '--'}</dd></div>
+            <div><dt>Wake lock</dt><dd>{runtimeState.wakeLockActive ? 'ACTIVE' : runtimeState.wakeLockError ?? '--'}</dd></div>
+          </dl>
+        </details>
       </section>
 
       <div className="xr-immersive-overlay" aria-live="polite">
-        <div className="xr-overlay-card">
-          <div className="eyebrow">GEOLOCATOR · LIVE METRIC 3D SCAN</div>
-          <h2>
-            {!runtimeState.tracking
-              ? 'Waiting for AR tracking…'
-              : runtimeState.depthAvailable
-                ? runtimeState.coverageGuideActive
-                  ? 'Coverage guide active'
-                  : 'Building coverage evidence…'
-                : 'Tracking works, depth unavailable'}
-          </h2>
-          <p>
-            Reference: <b>{runtimeState.referenceSpace ?? '--'}</b> · XR frames:{' '}
-            <b>{runtimeState.frameCount.toLocaleString()}</b>
-          </p>
+        <div className="xr-overlay-card xr-overlay-card-compact">
+          <div className="xr-overlay-topline">
+            <strong className={runtimeState.motionState === 'too-fast' ? 'bad-text' : ''}>
+              {phaseLabel(runtimeState)}
+            </strong>
+            <span>{runtimeState.wakeLockActive ? 'SCREEN LOCK ✓' : ''}</span>
+          </div>
 
-          <div className="xr-overlay-scan-grid">
-            <div>
-              <span>DEPTH</span>
-              <strong className={runtimeState.depthAvailable ? 'good-text' : 'bad-text'}>
-                {runtimeState.depthAvailable ? 'ACTIVE' : 'UNAVAILABLE'}
-              </strong>
-            </div>
-            <div><span>SAMPLED</span><strong>{runtimeState.sampledDepthFrames.toLocaleString()}</strong></div>
-            <div><span>3D POINTS</span><strong>{runtimeState.pointCount.toLocaleString()}</strong></div>
-            <div>
-              <span>COVERAGE</span>
-              <strong className={runtimeState.coverageGuideActive ? 'good-text' : ''}>
-                {coverageGuideLabel(runtimeState)}
-              </strong>
-            </div>
-            <div><span>GUIDE POINTS</span><strong>{runtimeState.coverageGuideRenderPoints.toLocaleString()}</strong></div>
-            <div><span>READY / VISIBLE</span><strong>{coverageCells}</strong></div>
+          <div className="xr-overlay-scan-grid xr-overlay-scan-grid-compact">
+            <div><span>STABLE</span><strong>{runtimeState.pointCount.toLocaleString()}</strong></div>
+            <div><span>NEW VIEWS</span><strong>{runtimeState.keyframeCount.toLocaleString()}</strong></div>
+            <div><span>READY / SEEN</span><strong>{readyVisible}</strong></div>
+            <div><span>MOTION</span><strong>{formatMotion(runtimeState)}</strong></div>
           </div>
 
           {runtimeState.coverageGuideActive && (
-            <div className="xr-coverage-legend" aria-label="Coverage color legend">
-              <span><i className="coverage-dot coverage-low" />needs more</span>
-              <span><i className="coverage-dot coverage-mid" />building</span>
-              <span><i className="coverage-dot coverage-high" />well covered</span>
+            <div className="xr-coverage-legend" aria-label="Coverage quality">
+              <span><i className="coverage-dot coverage-low" />weak</span>
+              <span><i className="coverage-dot coverage-mid" />improving</span>
+              <span><i className="coverage-dot coverage-high" />multi-view stable</span>
             </div>
           )}
 
-          {!runtimeState.coverageGuideActive && runtimeState.depthAvailable && running && (
-            <div className="xr-coverage-warmup">
-              Coverage points stay hidden until enough different sampled frames confirm the surface. This avoids painting one noisy depth frame as “done”.
-            </div>
+          {runtimeState.scanPaused && (
+            <div className="xr-overlay-warning">Scan paused while XR is hidden. It will continue if this XR session becomes visible again.</div>
+          )}
+          {runtimeState.motionState === 'too-fast' && (
+            <div className="xr-overlay-warning">Move slower — this depth sample is not being fused.</div>
+          )}
+          {(runtimeState.motionState === 'stationary' || runtimeState.motionState === 'redundant') && (
+            <div className="xr-overlay-hint">Move 5–10 cm and change viewpoint. Standing still can polish geometry but cannot increase coverage confidence.</div>
           )}
 
-          <div className="xr-overlay-pose">
-            <span>Phone XYZ m</span>
-            <strong>{formatPosition(posePosition)}</strong>
-          </div>
-
-          {runtimeState.coverageGuideError !== null && (
-            <div className="xr-overlay-warning">{runtimeState.coverageGuideError}</div>
-          )}
-
-          {runtimeState.depthError !== null && (
-            <div className="xr-overlay-warning">{runtimeState.depthError}</div>
-          )}
-
-          <button type="button" onClick={() => void runtime.stop()}>
-            Finish scan & view 3D
-          </button>
+          <button type="button" onClick={() => void runtime.stop()}>Finish scan</button>
         </div>
       </div>
     </>
