@@ -7,6 +7,7 @@ import {
   type ScanPointCloudSnapshot,
   type WebXrCapabilities,
   type WebXrRuntimeState,
+  type XrRuntimePhase,
 } from '../xr/webxrRuntime';
 
 const emptyRuntimeState: WebXrRuntimeState = {
@@ -61,6 +62,7 @@ const emptyRuntimeState: WebXrRuntimeState = {
 interface XrRuntimePanelProps {
   onSessionActiveChange?: (active: boolean) => void;
   onPointCloudReady?: (snapshot: ScanPointCloudSnapshot | null) => void;
+  onCapabilitiesChange?: (capabilities: WebXrCapabilities) => void;
 }
 
 interface ManualPointerState {
@@ -137,7 +139,11 @@ function normalizedPointer(event: React.PointerEvent<HTMLElement>): readonly [nu
   ];
 }
 
-export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrRuntimePanelProps) {
+export function XrRuntimePanel({
+  onSessionActiveChange,
+  onPointCloudReady,
+  onCapabilitiesChange,
+}: XrRuntimePanelProps) {
   const runtime = useMemo(() => new WebXrRuntime(), []);
   const [capabilities, setCapabilities] = useState<WebXrCapabilities | null>(null);
   const [runtimeState, setRuntimeState] = useState<WebXrRuntimeState>(emptyRuntimeState);
@@ -146,6 +152,22 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
   const manualPointer = useRef<ManualPointerState | null>(null);
   const lastMoveUpdateMs = useRef(0);
   const previousManualCount = useRef(0);
+  const previousRuntimePhase = useRef<XrRuntimePhase>('idle');
+  const onSessionActiveChangeRef = useRef(onSessionActiveChange);
+  const onPointCloudReadyRef = useRef(onPointCloudReady);
+  const onCapabilitiesChangeRef = useRef(onCapabilitiesChange);
+
+  useEffect(() => {
+    onSessionActiveChangeRef.current = onSessionActiveChange;
+  }, [onSessionActiveChange]);
+
+  useEffect(() => {
+    onPointCloudReadyRef.current = onPointCloudReady;
+  }, [onPointCloudReady]);
+
+  useEffect(() => {
+    onCapabilitiesChangeRef.current = onCapabilitiesChange;
+  }, [onCapabilitiesChange]);
 
   useEffect(() => {
     const unsubscribe = runtime.subscribe(setRuntimeState);
@@ -153,7 +175,10 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
     void probeWebXrCapabilities().then((result) => {
       clientDiagnostics.info('XR_CAPABILITIES', result);
       void clientDiagnostics.flush();
-      if (!cancelled) setCapabilities(result);
+      if (!cancelled) {
+        setCapabilities(result);
+        onCapabilitiesChangeRef.current?.(result);
+      }
     });
     return () => {
       cancelled = true;
@@ -167,20 +192,27 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
 
   useEffect(() => {
     const active = runtimeState.phase === 'starting' || runtimeState.phase === 'running' || runtimeState.phase === 'stopping';
-    onSessionActiveChange?.(active);
+    onSessionActiveChangeRef.current?.(active);
     if (!active) {
       setManualMode(false);
       manualPointer.current = null;
     }
-  }, [onSessionActiveChange, runtimeState.phase]);
+  }, [runtimeState.phase]);
 
   useEffect(() => {
-    if (runtimeState.phase === 'starting') {
-      onPointCloudReady?.(null);
-    } else if (runtimeState.phase === 'ended' && runtimeState.pointCount > 0) {
-      onPointCloudReady?.(runtime.getPointCloudSnapshot());
+    const previous = previousRuntimePhase.current;
+    previousRuntimePhase.current = runtimeState.phase;
+
+    if (runtimeState.phase === 'starting' && previous !== 'starting') {
+      onPointCloudReadyRef.current?.(null);
+    } else if (
+      runtimeState.phase === 'ended'
+      && previous !== 'ended'
+      && runtimeState.pointCount > 0
+    ) {
+      onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());
     }
-  }, [onPointCloudReady, runtime, runtimeState.phase, runtimeState.pointCount]);
+  }, [runtime, runtimeState.phase, runtimeState.pointCount]);
 
   useEffect(() => {
     if (runtimeState.manualPointCount > previousManualCount.current) {
@@ -188,6 +220,12 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
     }
     previousManualCount.current = runtimeState.manualPointCount;
   }, [runtimeState.manualPointCount]);
+
+  useEffect(() => {
+    if (runtimeState.manualPointError !== null) {
+      setManualCursor((current) => ({ ...current, phase: 'aim' }));
+    }
+  }, [runtimeState.manualPointError]);
 
   const running = runtimeState.phase === 'running';
   const busy = runtimeState.phase === 'starting' || runtimeState.phase === 'stopping';
@@ -285,15 +323,17 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
         u: Number(u.toFixed(3)),
         v: Number(v.toFixed(3)),
       });
-    } else if (moved <= TAP_SLOP_PX) {
-      const [u, v] = queueManualAtEvent(event, null);
-      clientDiagnostics.info('XR_MANUAL_POINTER_TAP', {
-        u: Number(u.toFixed(3)),
-        v: Number(v.toFixed(3)),
-      });
-      void clientDiagnostics.flush();
     } else {
-      clientDiagnostics.info('XR_MANUAL_POINTER_CANCELLED_MOVE', { movedPx: Math.round(moved) });
+      const [u, v] = queueManualAtEvent(event, null);
+      clientDiagnostics.info(
+        moved <= TAP_SLOP_PX ? 'XR_MANUAL_POINTER_TAP' : 'XR_MANUAL_POINTER_DRAG_ADD',
+        {
+          u: Number(u.toFixed(3)),
+          v: Number(v.toFixed(3)),
+          movedPx: Math.round(moved),
+        },
+      );
+      void clientDiagnostics.flush();
     }
     if (pointer.captureActive) {
       try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
@@ -350,7 +390,7 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
           <div className="xr-finish-explainer">Finish &amp; save is shown over the camera while AR scanning is active.</div>
         </div>
 
-        {runtimeState.phase === 'interrupted' && <div className="xr-runtime-warning" role="status">XR session ended unexpectedly. Partial geometry is retained in memory but was not marked READY because a new XR session may use a different reference frame.</div>}
+        {runtimeState.phase === 'interrupted' && <div className="xr-runtime-warning" role="status">XR session ended unexpectedly. Partial geometry is retained in memory but was not marked READY because a new session may use a different reference frame.</div>}
         {runtimeState.depthError !== null && <div className="xr-runtime-warning" role="status">{runtimeState.depthError}</div>}
         {runtimeState.error !== null && <div className="xr-runtime-error" role="alert">{runtimeState.error}</div>}
 
@@ -400,7 +440,7 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
             <div className="xr-manual-cursor-state" style={{ left: `${manualCursor.u * 100}%`, top: `${manualCursor.v * 100}%` }}>
               {manualCursor.phase === 'pending' ? 'DEPTH…' : manualCursor.phase === 'dragging' ? 'MOVE PIN' : manualCursor.phase === 'confirmed' ? `PIN ${runtimeState.manualPointCount} ✓` : 'AIM'}
             </div>
-            <div className="xr-manual-instruction">Tap a visible corner = add 3D pin · hold and drag = move the last pin</div>
+            <div className="xr-manual-instruction">Tap or drag/release on a visible corner = add 3D pin · hold and drag = move the last pin</div>
           </div>
         )}
 
@@ -432,7 +472,7 @@ export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrR
 
           <div className="xr-manual-status">
             <span>Manual corner pins: <strong>{runtimeState.manualPointCount}</strong></span>
-            <span>{manualMode ? 'Tap = add · hold/drag = move last' : 'Optional operator geometry'}</span>
+            <span>{manualMode ? 'Tap or drag/release = add · hold/drag = move last' : 'Optional operator geometry'}</span>
           </div>
 
           <div className="xr-overlay-actions">
