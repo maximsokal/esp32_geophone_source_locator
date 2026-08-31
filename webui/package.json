@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build && node scripts/prepare-esp-assets.mjs",
     "typecheck": "tsc --noEmit",
+    "test:xr": "npx --yes vitest@4.1.11 run tests/xr/surfelEvidence.test.ts tests/xr/depthPointCloud.test.ts",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
