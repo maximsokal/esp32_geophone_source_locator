@@ -56,142 +56,146 @@ if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
     set(WEB_SERVER_ROOT_CA_EMBEDDED 1)
 endif()
 
-# The firmware must never silently embed an old React bundle. The previous flow
-# trusted an ignored webui/esp-dist directory, so a fresh firmware commit could
-# still serve an older browser UI. Track the WebUI source as CMake inputs and
-# rebuild the deterministic Vite bundle before copying it into the component.
-find_program(WEB_SERVER_NPM_EXECUTABLE NAMES npm.cmd npm)
-if(NOT WEB_SERVER_NPM_EXECUTABLE)
-    message(FATAL_ERROR
-        "GeoLocator firmware requires Node.js/npm so the current WebUI can be built before embedding. Install Node.js 22+ and rerun idf.py reconfigure/build."
-    )
-endif()
-
-file(GLOB_RECURSE WEB_SERVER_WEBUI_SOURCE_INPUTS CONFIGURE_DEPENDS
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.ts"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.tsx"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.css"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/scripts/*.mjs"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/stress/*.js"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/stress/*.html"
-)
-
-set(WEB_SERVER_WEBUI_CONFIG_INPUTS
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/package.json"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/index.html"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/tsconfig.json"
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/vite.config.ts"
-)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    ${WEB_SERVER_WEBUI_SOURCE_INPUTS}
-    ${WEB_SERVER_WEBUI_CONFIG_INPUTS}
-)
-
-set(WEB_SERVER_WEBUI_NODE_LOCK
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/node_modules/.package-lock.json"
-)
-set(WEB_SERVER_WEBUI_PACKAGE_LOCK
-    "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
-)
-
-set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 0)
-if(NOT EXISTS "${WEB_SERVER_WEBUI_NODE_LOCK}")
-    set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 1)
-elseif("${WEB_SERVER_WEBUI_PACKAGE_LOCK}" IS_NEWER_THAN "${WEB_SERVER_WEBUI_NODE_LOCK}")
-    set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 1)
-endif()
-
-if(WEB_SERVER_WEBUI_NEEDS_NPM_CI)
-    message(STATUS "GeoLocator WebUI dependencies are missing/stale; running npm ci")
-    execute_process(
-        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" ci
-        WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
-        RESULT_VARIABLE WEB_SERVER_NPM_CI_RESULT
-        OUTPUT_VARIABLE WEB_SERVER_NPM_CI_STDOUT
-        ERROR_VARIABLE WEB_SERVER_NPM_CI_STDERR
-    )
-    if(NOT WEB_SERVER_NPM_CI_RESULT EQUAL 0)
+# ESP-IDF evaluates component CMakeLists.txt once in CMake script mode only to
+# discover dependencies. Do not run filesystem dependency tracking, npm, or
+# generated-asset work in that discovery pass: CONFIGURE_DEPENDS is illegal in
+# script mode and side effects there make requirement discovery brittle.
+# The real configure pass below still builds the current React bundle and fails
+# closed if it cannot produce a complete esp-dist.
+if(NOT CMAKE_SCRIPT_MODE_FILE)
+    find_program(WEB_SERVER_NPM_EXECUTABLE NAMES npm.cmd npm)
+    if(NOT WEB_SERVER_NPM_EXECUTABLE)
         message(FATAL_ERROR
-            "GeoLocator npm ci failed (${WEB_SERVER_NPM_CI_RESULT})\n${WEB_SERVER_NPM_CI_STDOUT}\n${WEB_SERVER_NPM_CI_STDERR}"
+            "GeoLocator firmware requires Node.js/npm so the current WebUI can be built before embedding. Install Node.js 22+ and rerun idf.py reconfigure/build."
         )
     endif()
-endif()
 
-message(STATUS "Building current GeoLocator React WebUI for firmware embed")
-execute_process(
-    COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" run build
-    WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
-    RESULT_VARIABLE WEB_SERVER_WEBUI_BUILD_RESULT
-    OUTPUT_VARIABLE WEB_SERVER_WEBUI_BUILD_STDOUT
-    ERROR_VARIABLE WEB_SERVER_WEBUI_BUILD_STDERR
-)
-if(NOT WEB_SERVER_WEBUI_BUILD_RESULT EQUAL 0)
-    message(FATAL_ERROR
-        "GeoLocator WebUI build failed (${WEB_SERVER_WEBUI_BUILD_RESULT})\n${WEB_SERVER_WEBUI_BUILD_STDOUT}\n${WEB_SERVER_WEBUI_BUILD_STDERR}"
+    file(GLOB_RECURSE WEB_SERVER_WEBUI_SOURCE_INPUTS CONFIGURE_DEPENDS
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.ts"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.tsx"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/src/*.css"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/scripts/*.mjs"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/stress/*.js"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/stress/*.html"
     )
-endif()
 
-file(REMOVE
-    "${WEB_SERVER_WEBUI_GENERATED_INDEX}"
-    "${WEB_SERVER_WEBUI_GENERATED_JS}"
-    "${WEB_SERVER_WEBUI_GENERATED_CSS}"
-    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.js.gz"
-    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.css.gz"
-)
+    set(WEB_SERVER_WEBUI_CONFIG_INPUTS
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/package.json"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/index.html"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/tsconfig.json"
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/vite.config.ts"
+    )
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        ${WEB_SERVER_WEBUI_SOURCE_INPUTS}
+        ${WEB_SERVER_WEBUI_CONFIG_INPUTS}
+    )
 
-file(REMOVE_RECURSE
-    "${CMAKE_CURRENT_LIST_DIR}/generated_webui"
-)
+    set(WEB_SERVER_WEBUI_NODE_LOCK
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/node_modules/.package-lock.json"
+    )
+    set(WEB_SERVER_WEBUI_PACKAGE_LOCK
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
+    )
 
-if(
-    EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
-    AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
-    AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
-    AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
-)
-    configure_file(
-        "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
+    set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 0)
+    if(NOT EXISTS "${WEB_SERVER_WEBUI_NODE_LOCK}")
+        set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 1)
+    elseif("${WEB_SERVER_WEBUI_PACKAGE_LOCK}" IS_NEWER_THAN "${WEB_SERVER_WEBUI_NODE_LOCK}")
+        set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 1)
+    endif()
+
+    if(WEB_SERVER_WEBUI_NEEDS_NPM_CI)
+        message(STATUS "GeoLocator WebUI dependencies are missing/stale; running npm ci")
+        execute_process(
+            COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" ci
+            WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
+            RESULT_VARIABLE WEB_SERVER_NPM_CI_RESULT
+            OUTPUT_VARIABLE WEB_SERVER_NPM_CI_STDOUT
+            ERROR_VARIABLE WEB_SERVER_NPM_CI_STDERR
+        )
+        if(NOT WEB_SERVER_NPM_CI_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "GeoLocator npm ci failed (${WEB_SERVER_NPM_CI_RESULT})\n${WEB_SERVER_NPM_CI_STDOUT}\n${WEB_SERVER_NPM_CI_STDERR}"
+            )
+        endif()
+    endif()
+
+    message(STATUS "Building current GeoLocator React WebUI for firmware embed")
+    execute_process(
+        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" run build
+        WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
+        RESULT_VARIABLE WEB_SERVER_WEBUI_BUILD_RESULT
+        OUTPUT_VARIABLE WEB_SERVER_WEBUI_BUILD_STDOUT
+        ERROR_VARIABLE WEB_SERVER_WEBUI_BUILD_STDERR
+    )
+    if(NOT WEB_SERVER_WEBUI_BUILD_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "GeoLocator WebUI build failed (${WEB_SERVER_WEBUI_BUILD_RESULT})\n${WEB_SERVER_WEBUI_BUILD_STDOUT}\n${WEB_SERVER_WEBUI_BUILD_STDERR}"
+        )
+    endif()
+
+    file(REMOVE
         "${WEB_SERVER_WEBUI_GENERATED_INDEX}"
-        COPYONLY
-    )
-
-    configure_file(
-        "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
         "${WEB_SERVER_WEBUI_GENERATED_JS}"
-        COPYONLY
-    )
-
-    configure_file(
-        "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
         "${WEB_SERVER_WEBUI_GENERATED_CSS}"
-        COPYONLY
+        "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.js.gz"
+        "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.css.gz"
     )
 
-    file(READ
-        "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
-        WEB_SERVER_WEBUI_BUILD_ID
+    file(REMOVE_RECURSE
+        "${CMAKE_CURRENT_LIST_DIR}/generated_webui"
     )
 
-    string(STRIP
-        "${WEB_SERVER_WEBUI_BUILD_ID}"
-        WEB_SERVER_WEBUI_BUILD_ID
+    if(
+        EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
+        AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
+        AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
+        AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
     )
+        configure_file(
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
+            "${WEB_SERVER_WEBUI_GENERATED_INDEX}"
+            COPYONLY
+        )
 
-    list(APPEND WEB_SERVER_WEBUI_EMBED_TXTFILES
-        "generated_webui_index.html"
-    )
+        configure_file(
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
+            "${WEB_SERVER_WEBUI_GENERATED_JS}"
+            COPYONLY
+        )
 
-    list(APPEND WEB_SERVER_WEBUI_EMBED_FILES
-        "generated_webui_assets_app.js.gz"
-        "generated_webui_assets_app.css.gz"
-    )
+        configure_file(
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
+            "${WEB_SERVER_WEBUI_GENERATED_CSS}"
+            COPYONLY
+        )
 
-    set(WEB_SERVER_WEBUI_SEED_EMBEDDED 1)
-else()
-    message(FATAL_ERROR
-        "GeoLocator WebUI build completed but esp-dist is incomplete; refusing to embed stale/missing browser assets"
-    )
+        file(READ
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
+            WEB_SERVER_WEBUI_BUILD_ID
+        )
+
+        string(STRIP
+            "${WEB_SERVER_WEBUI_BUILD_ID}"
+            WEB_SERVER_WEBUI_BUILD_ID
+        )
+
+        list(APPEND WEB_SERVER_WEBUI_EMBED_TXTFILES
+            "generated_webui_index.html"
+        )
+
+        list(APPEND WEB_SERVER_WEBUI_EMBED_FILES
+            "generated_webui_assets_app.js.gz"
+            "generated_webui_assets_app.css.gz"
+        )
+
+        set(WEB_SERVER_WEBUI_SEED_EMBEDDED 1)
+    else()
+        message(FATAL_ERROR
+            "GeoLocator WebUI build completed but esp-dist is incomplete; refusing to embed stale/missing browser assets"
+        )
+    endif()
 endif()
 
 idf_component_register(
@@ -259,31 +263,33 @@ idf_component_register(
         ${WEB_SERVER_WEBUI_EMBED_TXTFILES}
 )
 
-target_compile_definitions(
-    ${COMPONENT_LIB}
-    PRIVATE
-        WEB_SERVER_TLS_CREDENTIALS_EMBEDDED=${WEB_SERVER_TLS_CREDENTIALS_EMBEDDED}
-        WEB_SERVER_ROOT_CA_EMBEDDED=${WEB_SERVER_ROOT_CA_EMBEDDED}
-        WEB_SERVER_WEBUI_SEED_EMBEDDED=${WEB_SERVER_WEBUI_SEED_EMBEDDED}
-        WEB_SERVER_WEBUI_BUILD_ID=\"${WEB_SERVER_WEBUI_BUILD_ID}\"
-)
+if(NOT CMAKE_SCRIPT_MODE_FILE)
+    target_compile_definitions(
+        ${COMPONENT_LIB}
+        PRIVATE
+            WEB_SERVER_TLS_CREDENTIALS_EMBEDDED=${WEB_SERVER_TLS_CREDENTIALS_EMBEDDED}
+            WEB_SERVER_ROOT_CA_EMBEDDED=${WEB_SERVER_ROOT_CA_EMBEDDED}
+            WEB_SERVER_WEBUI_SEED_EMBEDDED=${WEB_SERVER_WEBUI_SEED_EMBEDDED}
+            WEB_SERVER_WEBUI_BUILD_ID=\"${WEB_SERVER_WEBUI_BUILD_ID}\"
+    )
 
-if(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED)
-    message(STATUS "GeoLocator HTTPS credentials will be embedded")
-else()
-    message(WARNING
-        "GeoLocator HTTPS credentials are missing; HTTP setup will build, but HTTPS will stay disabled until certs/servercert.pem and certs/prvtkey.pem are generated"
+    if(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED)
+        message(STATUS "GeoLocator HTTPS credentials will be embedded")
+    else()
+        message(WARNING
+            "GeoLocator HTTPS credentials are missing; HTTP setup will build, but HTTPS will stay disabled until certs/servercert.pem and certs/prvtkey.pem are generated"
+        )
+    endif()
+
+    if(WEB_SERVER_ROOT_CA_EMBEDDED)
+        message(STATUS "GeoLocator public Root CA will be embedded for QR onboarding")
+    else()
+        message(WARNING
+            "GeoLocator Root CA is missing; CA onboarding download will be unavailable until certs/rootCA.crt is generated"
+        )
+    endif()
+
+    message(STATUS
+        "GeoLocator React Web UI seed will be embedded: ${WEB_SERVER_WEBUI_BUILD_ID}"
     )
 endif()
-
-if(WEB_SERVER_ROOT_CA_EMBEDDED)
-    message(STATUS "GeoLocator public Root CA will be embedded for QR onboarding")
-else()
-    message(WARNING
-        "GeoLocator Root CA is missing; CA onboarding download will be unavailable until certs/rootCA.crt is generated"
-    )
-endif()
-
-message(STATUS
-    "GeoLocator React Web UI seed will be embedded: ${WEB_SERVER_WEBUI_BUILD_ID}"
-)
