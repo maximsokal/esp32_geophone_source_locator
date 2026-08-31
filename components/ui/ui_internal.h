@@ -108,6 +108,12 @@ typedef struct
     ui_wifi_confirm_t wifi_confirm;
     bool wifi_setup_page_opened;
     bool wifi_credentials_saved;
+    bool wifi_ca_downloaded;
+    bool wifi_ca_install_confirmed;
+    bool wifi_verify_ready;
+    bool wifi_verify_result_received;
+    uint32_t wifi_verify_nonce;
+    uint32_t wifi_verify_result_mask;
 
     char notice[80];
 
