@@ -191,6 +191,7 @@ jobs:
         run: npm run stress:xr:mobile
 
       - name: Profile mid-range Android Chrome hotspots
+        if: always()
         working-directory: webui
         env:
           XR_STRESS_CPU_THROTTLE: '4'
