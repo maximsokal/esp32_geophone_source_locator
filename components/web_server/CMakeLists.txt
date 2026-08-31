@@ -18,12 +18,14 @@ set(WEB_SERVER_WEBUI_GENERATED_INDEX
     "${CMAKE_CURRENT_LIST_DIR}/generated_webui_index.html"
 )
 
+# Keep "assets" in the flat generated filename so its ESP-IDF linker symbol
+# stays compatible with web_webui.c while avoiding directory-dependent names.
 set(WEB_SERVER_WEBUI_GENERATED_JS
-    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.js.gz"
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_assets_app.js.gz"
 )
 
 set(WEB_SERVER_WEBUI_GENERATED_CSS
-    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.css.gz"
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_assets_app.css.gz"
 )
 
 set(WEB_SERVER_TLS_EMBED_FILES)
@@ -54,13 +56,18 @@ if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
     set(WEB_SERVER_ROOT_CA_EMBEDDED 1)
 endif()
 
-# Keep generated seed filenames flat and stable. ESP-IDF derives the linker
-# symbols from the exact EMBED_FILES/EMBED_TXTFILES strings, so directory
-# components would become part of the symbol name as underscores.
+# Keep generated seed filenames flat and stable. ESP-IDF derives linker
+# symbols from the exact EMBED_FILES/EMBED_TXTFILES strings. With these names
+# the symbols are deterministic:
+#   generated_webui_index.html         -> _binary_generated_webui_index_html_*
+#   generated_webui_assets_app.js.gz  -> _binary_generated_webui_assets_app_js_gz_*
+#   generated_webui_assets_app.css.gz -> _binary_generated_webui_assets_app_css_gz_*
 file(REMOVE
     "${WEB_SERVER_WEBUI_GENERATED_INDEX}"
     "${WEB_SERVER_WEBUI_GENERATED_JS}"
     "${WEB_SERVER_WEBUI_GENERATED_CSS}"
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.js.gz"
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.css.gz"
 )
 
 # Clean up the first WEB-HTTPS-B implementation's generated directory if it
@@ -108,8 +115,8 @@ if(
     )
 
     list(APPEND WEB_SERVER_WEBUI_EMBED_FILES
-        "generated_webui_app.js.gz"
-        "generated_webui_app.css.gz"
+        "generated_webui_assets_app.js.gz"
+        "generated_webui_assets_app.css.gz"
     )
 
     set(WEB_SERVER_WEBUI_SEED_EMBEDDED 1)
