@@ -10,9 +10,21 @@ set(WEB_SERVER_ROOT_CA_FILE
     "${CMAKE_CURRENT_LIST_DIR}/certs/rootCA.crt"
 )
 
+set(WEB_SERVER_WEBUI_SOURCE_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/../../webui/esp-dist"
+)
+
+set(WEB_SERVER_WEBUI_GENERATED_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui"
+)
+
 set(WEB_SERVER_TLS_EMBED_FILES)
+set(WEB_SERVER_WEBUI_EMBED_FILES)
+set(WEB_SERVER_WEBUI_EMBED_TXTFILES)
 set(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED 0)
 set(WEB_SERVER_ROOT_CA_EMBEDDED 0)
+set(WEB_SERVER_WEBUI_SEED_EMBEDDED 0)
+set(WEB_SERVER_WEBUI_BUILD_ID "none")
 
 if(
     EXISTS "${WEB_SERVER_TLS_CERT_FILE}"
@@ -34,12 +46,71 @@ if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
     set(WEB_SERVER_ROOT_CA_EMBEDDED 1)
 endif()
 
+if(
+    EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
+    AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
+    AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
+    AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
+)
+    file(REMOVE_RECURSE
+        "${WEB_SERVER_WEBUI_GENERATED_DIR}"
+    )
+
+    file(MAKE_DIRECTORY
+        "${WEB_SERVER_WEBUI_GENERATED_DIR}/assets"
+    )
+
+    configure_file(
+        "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
+        "${WEB_SERVER_WEBUI_GENERATED_DIR}/index.html"
+        COPYONLY
+    )
+
+    configure_file(
+        "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
+        "${WEB_SERVER_WEBUI_GENERATED_DIR}/assets/app.js.gz"
+        COPYONLY
+    )
+
+    configure_file(
+        "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
+        "${WEB_SERVER_WEBUI_GENERATED_DIR}/assets/app.css.gz"
+        COPYONLY
+    )
+
+    file(READ
+        "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
+        WEB_SERVER_WEBUI_BUILD_ID
+    )
+
+    string(STRIP
+        "${WEB_SERVER_WEBUI_BUILD_ID}"
+        WEB_SERVER_WEBUI_BUILD_ID
+    )
+
+    list(APPEND WEB_SERVER_WEBUI_EMBED_TXTFILES
+        "generated_webui/index.html"
+    )
+
+    list(APPEND WEB_SERVER_WEBUI_EMBED_FILES
+        "generated_webui/assets/app.js.gz"
+        "generated_webui/assets/app.css.gz"
+    )
+
+    set(WEB_SERVER_WEBUI_SEED_EMBEDDED 1)
+else()
+    file(REMOVE_RECURSE
+        "${WEB_SERVER_WEBUI_GENERATED_DIR}"
+    )
+endif()
+
 idf_component_register(
     SRCS
         "web_server.c"
         "web_server_routes.c"
         "web_static_assets.c"
         "web_static_asset_data.c"
+        "web_webui.c"
         "web_page.c"
         "web_api_status.c"
         "web_status_json.c"
@@ -66,6 +137,7 @@ idf_component_register(
         app_config
         app_event_bus
         device_status
+        sd_card
         seismic_buffer
         wifi_manager
         esp_http_server
@@ -80,6 +152,9 @@ idf_component_register(
         json
         log
 
+    EMBED_FILES
+        ${WEB_SERVER_WEBUI_EMBED_FILES}
+
     EMBED_TXTFILES
         "assets/index.html"
         "assets/dashboard.css"
@@ -88,6 +163,7 @@ idf_component_register(
         "assets/seismic.css"
         "assets/seismic.js"
         ${WEB_SERVER_TLS_EMBED_FILES}
+        ${WEB_SERVER_WEBUI_EMBED_TXTFILES}
 )
 
 target_compile_definitions(
@@ -95,6 +171,8 @@ target_compile_definitions(
     PRIVATE
         WEB_SERVER_TLS_CREDENTIALS_EMBEDDED=${WEB_SERVER_TLS_CREDENTIALS_EMBEDDED}
         WEB_SERVER_ROOT_CA_EMBEDDED=${WEB_SERVER_ROOT_CA_EMBEDDED}
+        WEB_SERVER_WEBUI_SEED_EMBEDDED=${WEB_SERVER_WEBUI_SEED_EMBEDDED}
+        WEB_SERVER_WEBUI_BUILD_ID=\"${WEB_SERVER_WEBUI_BUILD_ID}\"
 )
 
 if(WEB_SERVER_TLS_CREDENTIALS_EMBEDDED)
@@ -110,5 +188,15 @@ if(WEB_SERVER_ROOT_CA_EMBEDDED)
 else()
     message(WARNING
         "GeoLocator Root CA is missing; CA onboarding download will be unavailable until certs/rootCA.crt is generated"
+    )
+endif()
+
+if(WEB_SERVER_WEBUI_SEED_EMBEDDED)
+    message(STATUS
+        "GeoLocator React Web UI seed will be embedded: ${WEB_SERVER_WEBUI_BUILD_ID}"
+    )
+else()
+    message(WARNING
+        "GeoLocator React Web UI seed is missing; run npm run build in webui before idf.py reconfigure/build to enable WEB-HTTPS-B"
     )
 endif()
