@@ -135,14 +135,17 @@ function createWebGlContext(): XrCompatibleGl | null {
   return webGl === null ? null : (webGl as XrCompatibleGl);
 }
 
+function releaseWebGlContext(context: XrCompatibleGl | null): void {
+  context?.getExtension('WEBGL_lose_context')?.loseContext();
+}
+
 function hasWebGl(): boolean {
   const context = createWebGlContext();
   if (context === null) {
     return false;
   }
 
-  const extension = context.getExtension('WEBGL_lose_context');
-  extension?.loseContext();
+  releaseWebGlContext(context);
   return true;
 }
 
@@ -360,6 +363,7 @@ export class WebXrRuntime {
 
   private cleanupRuntime(): void {
     document.documentElement.classList.remove('xr-session-active');
+    releaseWebGlContext(this.gl);
     this.session = null;
     this.referenceSpace = null;
     this.gl = null;
