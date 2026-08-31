@@ -51,6 +51,19 @@ static esp_err_t web_server_secure_index_handler(
     httpd_req_t *request
 )
 {
+    const esp_err_t webui_err =
+        web_webui_send_index(
+            request
+        );
+
+    if (webui_err == ESP_OK) {
+        return ESP_OK;
+    }
+
+    if (webui_err != ESP_ERR_NOT_FOUND) {
+        return webui_err;
+    }
+
     return
         web_page_send_index(
             request
@@ -195,9 +208,25 @@ esp_err_t web_server_routes_register(
     }
 
     esp_err_t err =
+        web_webui_prepare();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
         web_server_register_root_and_health(
             server,
             web_server_secure_index_handler
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        web_webui_register(
+            server
         );
 
     if (err != ESP_OK) {
