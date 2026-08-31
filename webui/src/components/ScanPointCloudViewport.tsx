@@ -11,6 +11,7 @@ export interface ScanDisplayOptions {
   mesh: boolean;
   freeAir: boolean;
   unknownSpace: boolean;
+  manualPoints: boolean;
 }
 
 interface ScanPointCloudViewportProps {
@@ -24,6 +25,7 @@ interface PreparedScene {
   goodConfidence: Float32Array;
   badPositions: Float32Array;
   badConfidence: Float32Array;
+  manualPositions: Float32Array;
   meshPositions: Float32Array;
   freeAirPositions: Float32Array;
   unknownPositions: Float32Array;
@@ -61,6 +63,17 @@ function transformProjectPositions(
     output[index + 2] = -projectY;
   }
   return output;
+}
+
+function manualProjectPositions(snapshot: ScanPointCloudSnapshot): Float32Array {
+  const raw = new Float32Array(snapshot.manualControlPoints.length * 3);
+  snapshot.manualControlPoints.forEach((point, index) => {
+    const offset = index * 3;
+    raw[offset] = point.position[0];
+    raw[offset + 1] = point.position[1];
+    raw[offset + 2] = point.position[2];
+  });
+  return raw;
 }
 
 function boundsLinePositions(
@@ -114,6 +127,7 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
     goodConfidence: snapshot.confidence,
     badPositions: transformProjectPositions(snapshot.tentativePositions, centerX, centerY, centerZ),
     badConfidence: snapshot.tentativeConfidence,
+    manualPositions: transformProjectPositions(manualProjectPositions(snapshot), centerX, centerY, centerZ),
     meshPositions: transformProjectPositions(mesh.trianglePositions, centerX, centerY, centerZ),
     freeAirPositions: transformProjectPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
     unknownPositions: transformProjectPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
@@ -221,7 +235,7 @@ function createConfidencePointProgram(gl: WebGLRenderingContext): WebGLProgram {
     varying float vConfidence;
     void main() {
       gl_Position = uViewProjection * vec4(aPosition, 1.0);
-      gl_PointSize = mix(2.2, 5.4, clamp(aConfidence, 0.0, 1.0)) * uPointScale;
+      gl_PointSize = mix(3.0, 5.8, clamp(aConfidence, 0.0, 1.0)) * uPointScale;
       vConfidence = aConfidence;
     }
   `, `
@@ -231,11 +245,10 @@ function createConfidencePointProgram(gl: WebGLRenderingContext): WebGLProgram {
       vec2 p = gl_PointCoord * 2.0 - 1.0;
       if (dot(p, p) > 1.0) discard;
       float t = clamp(vConfidence, 0.0, 1.0);
-      vec3 low = vec3(1.00, 0.20, 0.10);
-      vec3 mid = vec3(1.00, 0.78, 0.08);
-      vec3 high = vec3(0.12, 1.00, 0.55);
-      vec3 color = t < 0.5 ? mix(low, mid, t * 2.0) : mix(mid, high, (t - 0.5) * 2.0);
-      float alpha = mix(0.18, 0.96, t);
+      vec3 color = t < 0.42
+        ? vec3(1.00, 0.20, 0.10)
+        : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55));
+      float alpha = t < 0.42 ? 0.62 : (t < 0.72 ? 0.80 : 0.96);
       gl_FragColor = vec4(color, alpha);
     }
   `);
@@ -322,6 +335,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
     const goodConfidenceBuffer = gl.createBuffer();
     const badBuffer = gl.createBuffer();
     const badConfidenceBuffer = gl.createBuffer();
+    const manualBuffer = gl.createBuffer();
     const meshBuffer = gl.createBuffer();
     const freeAirBuffer = gl.createBuffer();
     const unknownBuffer = gl.createBuffer();
@@ -330,7 +344,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
     if ([
       confidenceMatrix, confidenceScale, volumeMatrix, volumePointSize, volumeColor,
       solidMatrix, solidColor, goodBuffer, goodConfidenceBuffer, badBuffer,
-      badConfidenceBuffer, meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
+      badConfidenceBuffer, manualBuffer, meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
     ].some((value) => value === null)) {
       gl.deleteProgram(confidenceProgram);
       gl.deleteProgram(volumeProgram);
@@ -346,6 +360,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
     upload(goodConfidenceBuffer!, prepared.goodConfidence);
     upload(badBuffer!, prepared.badPositions);
     upload(badConfidenceBuffer!, prepared.badConfidence);
+    upload(manualBuffer!, prepared.manualPositions);
     upload(meshBuffer!, prepared.meshPositions);
     upload(freeAirBuffer!, prepared.freeAirPositions);
     upload(unknownBuffer!, prepared.unknownPositions);
@@ -507,6 +522,15 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
           dpr,
         );
       }
+      if (display.manualPoints) {
+        drawVolumePoints(
+          manualBuffer!,
+          snapshot.manualControlPoints.length,
+          matrix,
+          Math.max(8, 8 * dpr),
+          [0.95, 0.30, 1.00, 1.00],
+        );
+      }
       if (display.dimensions) {
         gl.lineWidth(1);
         drawSolid(
@@ -543,7 +567,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
     const handlePointerUp = (event: PointerEvent): void => {
       if (pointerId === event.pointerId) {
         pointerId = null;
-        canvas.releasePointerCapture(event.pointerId);
+        try { canvas.releasePointerCapture(event.pointerId); } catch { /* already released */ }
       }
     };
     const handleWheel = (event: WheelEvent): void => {
@@ -574,7 +598,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
       canvas.removeEventListener('pointercancel', handlePointerUp);
       canvas.removeEventListener('wheel', handleWheel);
       for (const buffer of [
-        goodBuffer, goodConfidenceBuffer, badBuffer, badConfidenceBuffer,
+        goodBuffer, goodConfidenceBuffer, badBuffer, badConfidenceBuffer, manualBuffer,
         meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
       ]) {
         if (buffer !== null) gl.deleteBuffer(buffer);
@@ -583,13 +607,13 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
       gl.deleteProgram(volumeProgram);
       gl.deleteProgram(solidProgram);
     };
-  }, [prepared, snapshot.pointCount, snapshot.tentativePointCount, viewCommand, display]);
+  }, [prepared, snapshot.pointCount, snapshot.tentativePointCount, snapshot.manualControlPoints.length, viewCommand, display]);
 
   return (
     <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume">
       <canvas ref={canvasRef} className="scan-webgl-canvas" />
       <div className="scan-source-badge">
-        SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()}
+        SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()}
       </div>
       {display.dimensions && (
         <div className="scan-dimension-overlay">
