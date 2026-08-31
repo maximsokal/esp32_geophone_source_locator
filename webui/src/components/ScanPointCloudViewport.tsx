@@ -1,31 +1,36 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+import { clientDiagnostics } from '../data/clientDiagnostics';
 import { buildSurfaceMeshPreview } from '../xr/meshPreview';
+import {
+  displayFingerprint,
+  scanModeLabel,
+  type ScanDisplayOptions,
+  type ScanMode,
+} from '../xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import type { ViewCommand } from './SceneViewport';
-
-export interface ScanDisplayOptions {
-  goodPoints: boolean;
-  badPoints: boolean;
-  dimensions: boolean;
-  mesh: boolean;
-  freeAir: boolean;
-  unknownSpace: boolean;
-  manualPoints: boolean;
-}
 
 interface ScanPointCloudViewportProps {
   snapshot: ScanPointCloudSnapshot;
   viewCommand: ViewCommand;
   display: ScanDisplayOptions;
+  mode: ScanMode | null;
+}
+
+interface QualityBands {
+  weak: Float32Array;
+  improving: Float32Array;
+  stable: Float32Array;
 }
 
 interface PreparedScene {
-  goodPositions: Float32Array;
-  goodConfidence: Float32Array;
-  badPositions: Float32Array;
-  badConfidence: Float32Array;
-  manualPositions: Float32Array;
+  good: QualityBands;
+  bad: QualityBands;
+  manualPositions: readonly [number, number, number][];
   meshPositions: Float32Array;
   freeAirPositions: Float32Array;
   unknownPositions: Float32Array;
@@ -37,17 +42,22 @@ interface PreparedScene {
   meshTriangles: number;
 }
 
-interface OrbitState {
-  yaw: number;
-  pitch: number;
-  distance: number;
-}
-
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-function transformProjectPositions(
+function transformOne(
+  x: number,
+  y: number,
+  z: number,
+  centerX: number,
+  centerY: number,
+  centerZ: number,
+): readonly [number, number, number] {
+  return [x - centerX, z - centerZ, -(y - centerY)];
+}
+
+function transformPositions(
   source: Float32Array,
   centerX: number,
   centerY: number,
@@ -55,25 +65,54 @@ function transformProjectPositions(
 ): Float32Array {
   const output = new Float32Array(source.length);
   for (let index = 0; index < source.length; index += 3) {
-    const projectX = source[index] - centerX;
-    const projectY = source[index + 1] - centerY;
-    const projectZ = source[index + 2] - centerZ;
-    output[index] = projectX;
-    output[index + 1] = projectZ;
-    output[index + 2] = -projectY;
+    const transformed = transformOne(
+      source[index],
+      source[index + 1],
+      source[index + 2],
+      centerX,
+      centerY,
+      centerZ,
+    );
+    output[index] = transformed[0];
+    output[index + 1] = transformed[1];
+    output[index + 2] = transformed[2];
   }
   return output;
 }
 
-function manualProjectPositions(snapshot: ScanPointCloudSnapshot): Float32Array {
-  const raw = new Float32Array(snapshot.manualControlPoints.length * 3);
-  snapshot.manualControlPoints.forEach((point, index) => {
+function splitConfidenceBands(
+  positions: Float32Array,
+  confidence: Float32Array,
+  centerX: number,
+  centerY: number,
+  centerZ: number,
+): QualityBands {
+  const weak: number[] = [];
+  const improving: number[] = [];
+  const stable: number[] = [];
+  const count = Math.min(Math.floor(positions.length / 3), confidence.length);
+  for (let index = 0; index < count; index += 1) {
     const offset = index * 3;
-    raw[offset] = point.position[0];
-    raw[offset + 1] = point.position[1];
-    raw[offset + 2] = point.position[2];
-  });
-  return raw;
+    const transformed = transformOne(
+      positions[offset],
+      positions[offset + 1],
+      positions[offset + 2],
+      centerX,
+      centerY,
+      centerZ,
+    );
+    const target = confidence[index] < 0.42
+      ? weak
+      : confidence[index] < 0.72
+        ? improving
+        : stable;
+    target.push(transformed[0], transformed[1], transformed[2]);
+  }
+  return {
+    weak: Float32Array.from(weak),
+    improving: Float32Array.from(improving),
+    stable: Float32Array.from(stable),
+  };
 }
 
 function boundsLinePositions(
@@ -87,24 +126,26 @@ function boundsLinePositions(
   const corners: Array<readonly [number, number, number]> = [];
   for (const x of [bounds.min[0], bounds.max[0]]) {
     for (const y of [bounds.min[1], bounds.max[1]]) {
-      for (const z of [bounds.min[2], bounds.max[2]]) corners.push([x, y, z]);
+      for (const z of [bounds.min[2], bounds.max[2]]) {
+        corners.push(transformOne(x, y, z, centerX, centerY, centerZ));
+      }
     }
   }
   const edges: readonly [number, number][] = [
     [0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3],
     [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7],
   ];
-  const raw = new Float32Array(edges.length * 2 * 3);
+  const output = new Float32Array(edges.length * 6);
   let write = 0;
   for (const [a, b] of edges) {
-    for (const index of [a, b]) {
-      const point = corners[index];
-      raw[write++] = point[0];
-      raw[write++] = point[1];
-      raw[write++] = point[2];
+    for (const pointIndex of [a, b]) {
+      const point = corners[pointIndex];
+      output[write++] = point[0];
+      output[write++] = point[1];
+      output[write++] = point[2];
     }
   }
-  return transformProjectPositions(raw, centerX, centerY, centerZ);
+  return output;
 }
 
 function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
@@ -115,6 +156,7 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
   const extentX = bounds === null ? 0 : bounds.max[0] - bounds.min[0];
   const extentY = bounds === null ? 0 : bounds.max[1] - bounds.min[1];
   const extentZ = bounds === null ? 0 : bounds.max[2] - bounds.min[2];
+  const extent = Math.max(0.8, extentX, extentY, extentZ);
   const mesh = buildSurfaceMeshPreview({
     positions: snapshot.positions,
     normals: snapshot.normals,
@@ -123,16 +165,33 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
   });
 
   return {
-    goodPositions: transformProjectPositions(snapshot.positions, centerX, centerY, centerZ),
-    goodConfidence: snapshot.confidence,
-    badPositions: transformProjectPositions(snapshot.tentativePositions, centerX, centerY, centerZ),
-    badConfidence: snapshot.tentativeConfidence,
-    manualPositions: transformProjectPositions(manualProjectPositions(snapshot), centerX, centerY, centerZ),
-    meshPositions: transformProjectPositions(mesh.trianglePositions, centerX, centerY, centerZ),
-    freeAirPositions: transformProjectPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
-    unknownPositions: transformProjectPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
+    good: splitConfidenceBands(
+      snapshot.positions,
+      snapshot.confidence,
+      centerX,
+      centerY,
+      centerZ,
+    ),
+    bad: splitConfidenceBands(
+      snapshot.tentativePositions,
+      snapshot.tentativeConfidence,
+      centerX,
+      centerY,
+      centerZ,
+    ),
+    manualPositions: snapshot.manualControlPoints.map((point) => transformOne(
+      point.position[0],
+      point.position[1],
+      point.position[2],
+      centerX,
+      centerY,
+      centerZ,
+    )),
+    meshPositions: transformPositions(mesh.trianglePositions, centerX, centerY, centerZ),
+    freeAirPositions: transformPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
+    unknownPositions: transformPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
     boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ),
-    extent: Math.max(0.8, extentX, extentY, extentZ),
+    extent,
     extentX,
     extentY,
     extentZ,
@@ -140,481 +199,294 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
   };
 }
 
-function multiplyMat4(a: Float32Array, b: Float32Array): Float32Array {
-  const out = new Float32Array(16);
-  for (let column = 0; column < 4; column += 1) {
-    for (let row = 0; row < 4; row += 1) {
-      let value = 0;
-      for (let inner = 0; inner < 4; inner += 1) {
-        value += a[inner * 4 + row] * b[column * 4 + inner];
-      }
-      out[column * 4 + row] = value;
-    }
-  }
-  return out;
-}
+function PointLayer({
+  positions,
+  color,
+  size,
+  opacity,
+  depthTest = true,
+  renderOrder = 0,
+}: {
+  positions: Float32Array;
+  color: string;
+  size: number;
+  opacity: number;
+  depthTest?: boolean;
+  renderOrder?: number;
+}) {
+  const geometry = useMemo(() => {
+    const next = new THREE.BufferGeometry();
+    next.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    return next;
+  }, [positions]);
 
-function perspectiveMatrix(aspect: number, near: number, far: number): Float32Array {
-  const f = 1 / Math.tan((50 * Math.PI / 180) * 0.5);
-  const out = new Float32Array(16);
-  out[0] = f / aspect;
-  out[5] = f;
-  out[10] = (far + near) / (near - far);
-  out[11] = -1;
-  out[14] = (2 * far * near) / (near - far);
-  return out;
-}
-
-function normalize3(x: number, y: number, z: number): [number, number, number] {
-  const length = Math.hypot(x, y, z) || 1;
-  return [x / length, y / length, z / length];
-}
-
-function lookAtMatrix(eyeX: number, eyeY: number, eyeZ: number): Float32Array {
-  const [zX, zY, zZ] = normalize3(eyeX, eyeY, eyeZ);
-  const [xX, xY, xZ] = normalize3(zZ, 0, -zX);
-  const yX = zY * xZ - zZ * xY;
-  const yY = zZ * xX - zX * xZ;
-  const yZ = zX * xY - zY * xX;
-  const out = new Float32Array(16);
-  out[0] = xX; out[1] = yX; out[2] = zX;
-  out[4] = xY; out[5] = yY; out[6] = zY;
-  out[8] = xZ; out[9] = yZ; out[10] = zZ;
-  out[12] = -(xX * eyeX + xY * eyeY + xZ * eyeZ);
-  out[13] = -(yX * eyeX + yY * eyeY + yZ * eyeZ);
-  out[14] = -(zX * eyeX + zY * eyeY + zZ * eyeZ);
-  out[15] = 1;
-  return out;
-}
-
-function createShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
-  const shader = gl.createShader(type);
-  if (shader === null) throw new Error('WebGL shader allocation failed.');
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const info = gl.getShaderInfoLog(shader) ?? 'Unknown shader compile error';
-    gl.deleteShader(shader);
-    throw new Error(info);
-  }
-  return shader;
-}
-
-function linkProgram(
-  gl: WebGLRenderingContext,
-  vertexSource: string,
-  fragmentSource: string,
-): WebGLProgram {
-  const vertex = createShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragment = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  const program = gl.createProgram();
-  if (program === null) {
-    gl.deleteShader(vertex);
-    gl.deleteShader(fragment);
-    throw new Error('WebGL program allocation failed.');
-  }
-  gl.attachShader(program, vertex);
-  gl.attachShader(program, fragment);
-  gl.linkProgram(program);
-  gl.deleteShader(vertex);
-  gl.deleteShader(fragment);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const info = gl.getProgramInfoLog(program) ?? 'Unknown WebGL link error';
-    gl.deleteProgram(program);
-    throw new Error(info);
-  }
-  return program;
-}
-
-function createConfidencePointProgram(gl: WebGLRenderingContext): WebGLProgram {
-  return linkProgram(gl, `
-    attribute vec3 aPosition;
-    attribute float aConfidence;
-    uniform mat4 uViewProjection;
-    uniform float uPointScale;
-    varying float vConfidence;
-    void main() {
-      gl_Position = uViewProjection * vec4(aPosition, 1.0);
-      gl_PointSize = mix(3.0, 5.8, clamp(aConfidence, 0.0, 1.0)) * uPointScale;
-      vConfidence = aConfidence;
-    }
-  `, `
-    precision mediump float;
-    varying float vConfidence;
-    void main() {
-      vec2 p = gl_PointCoord * 2.0 - 1.0;
-      if (dot(p, p) > 1.0) discard;
-      float t = clamp(vConfidence, 0.0, 1.0);
-      vec3 color = t < 0.42
-        ? vec3(1.00, 0.20, 0.10)
-        : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55));
-      float alpha = t < 0.42 ? 0.62 : (t < 0.72 ? 0.80 : 0.96);
-      gl_FragColor = vec4(color, alpha);
-    }
-  `);
-}
-
-function createVolumePointProgram(gl: WebGLRenderingContext): WebGLProgram {
-  return linkProgram(gl, `
-    attribute vec3 aPosition;
-    uniform mat4 uViewProjection;
-    uniform float uPointSize;
-    void main() {
-      gl_Position = uViewProjection * vec4(aPosition, 1.0);
-      gl_PointSize = uPointSize;
-    }
-  `, `
-    precision mediump float;
-    uniform vec4 uColor;
-    void main() {
-      vec2 p = gl_PointCoord * 2.0 - 1.0;
-      if (dot(p, p) > 1.0) discard;
-      gl_FragColor = uColor;
-    }
-  `);
-}
-
-function createSolidProgram(gl: WebGLRenderingContext): WebGLProgram {
-  return linkProgram(gl, `
-    attribute vec3 aPosition;
-    uniform mat4 uViewProjection;
-    void main() { gl_Position = uViewProjection * vec4(aPosition, 1.0); }
-  `, `
-    precision mediump float;
-    uniform vec4 uColor;
-    void main() { gl_FragColor = uColor; }
-  `);
-}
-
-function applyPreset(orbit: OrbitState, command: ViewCommand, extent: number): void {
-  orbit.distance = Math.max(1.5, extent * 1.7);
-  if (command.preset === 'top') {
-    orbit.yaw = 0;
-    orbit.pitch = Math.PI * 0.5 - 0.035;
-  } else if (command.preset === 'front') {
-    orbit.yaw = 0;
-    orbit.pitch = 0.12;
-  } else {
-    orbit.yaw = 0.72;
-    orbit.pitch = 0.48;
-  }
-}
-
-export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanPointCloudViewportProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const prepared = useMemo(() => prepareScene(snapshot), [snapshot]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas === null) return;
-    const gl = canvas.getContext('webgl', {
-      alpha: false,
-      antialias: true,
-      depth: true,
-      preserveDrawingBuffer: false,
-    });
-    if (gl === null) return;
-
-    const confidenceProgram = createConfidencePointProgram(gl);
-    const volumeProgram = createVolumePointProgram(gl);
-    const solidProgram = createSolidProgram(gl);
-
-    const confidencePosition = gl.getAttribLocation(confidenceProgram, 'aPosition');
-    const confidenceValue = gl.getAttribLocation(confidenceProgram, 'aConfidence');
-    const confidenceMatrix = gl.getUniformLocation(confidenceProgram, 'uViewProjection');
-    const confidenceScale = gl.getUniformLocation(confidenceProgram, 'uPointScale');
-    const volumePosition = gl.getAttribLocation(volumeProgram, 'aPosition');
-    const volumeMatrix = gl.getUniformLocation(volumeProgram, 'uViewProjection');
-    const volumePointSize = gl.getUniformLocation(volumeProgram, 'uPointSize');
-    const volumeColor = gl.getUniformLocation(volumeProgram, 'uColor');
-    const solidPosition = gl.getAttribLocation(solidProgram, 'aPosition');
-    const solidMatrix = gl.getUniformLocation(solidProgram, 'uViewProjection');
-    const solidColor = gl.getUniformLocation(solidProgram, 'uColor');
-
-    const goodBuffer = gl.createBuffer();
-    const goodConfidenceBuffer = gl.createBuffer();
-    const badBuffer = gl.createBuffer();
-    const badConfidenceBuffer = gl.createBuffer();
-    const manualBuffer = gl.createBuffer();
-    const meshBuffer = gl.createBuffer();
-    const freeAirBuffer = gl.createBuffer();
-    const unknownBuffer = gl.createBuffer();
-    const boundsBuffer = gl.createBuffer();
-
-    if ([
-      confidenceMatrix, confidenceScale, volumeMatrix, volumePointSize, volumeColor,
-      solidMatrix, solidColor, goodBuffer, goodConfidenceBuffer, badBuffer,
-      badConfidenceBuffer, manualBuffer, meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
-    ].some((value) => value === null)) {
-      gl.deleteProgram(confidenceProgram);
-      gl.deleteProgram(volumeProgram);
-      gl.deleteProgram(solidProgram);
-      return;
-    }
-
-    const upload = (buffer: WebGLBuffer, data: Float32Array): void => {
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    };
-    upload(goodBuffer!, prepared.goodPositions);
-    upload(goodConfidenceBuffer!, prepared.goodConfidence);
-    upload(badBuffer!, prepared.badPositions);
-    upload(badConfidenceBuffer!, prepared.badConfidence);
-    upload(manualBuffer!, prepared.manualPositions);
-    upload(meshBuffer!, prepared.meshPositions);
-    upload(freeAirBuffer!, prepared.freeAirPositions);
-    upload(unknownBuffer!, prepared.unknownPositions);
-    upload(boundsBuffer!, prepared.boundsLines);
-
-    const orbit: OrbitState = {
-      yaw: 0.72,
-      pitch: 0.48,
-      distance: Math.max(1.5, prepared.extent * 1.7),
-    };
-    applyPreset(orbit, viewCommand, prepared.extent);
-
-    let pointerId: number | null = null;
-    let previousX = 0;
-    let previousY = 0;
-    let animationFrame = 0;
-
-    const drawConfidencePoints = (
-      positionBuffer: WebGLBuffer,
-      confidenceBuffer: WebGLBuffer,
-      count: number,
-      matrix: Float32Array,
-      dpr: number,
-    ): void => {
-      if (count <= 0) return;
-      gl.useProgram(confidenceProgram);
-      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-      gl.enableVertexAttribArray(confidencePosition);
-      gl.vertexAttribPointer(confidencePosition, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, confidenceBuffer);
-      gl.enableVertexAttribArray(confidenceValue);
-      gl.vertexAttribPointer(confidenceValue, 1, gl.FLOAT, false, 0, 0);
-      gl.uniformMatrix4fv(confidenceMatrix, false, matrix);
-      gl.uniform1f(confidenceScale, Math.min(dpr, 1.5));
-      gl.drawArrays(gl.POINTS, 0, count);
-      gl.disableVertexAttribArray(confidencePosition);
-      gl.disableVertexAttribArray(confidenceValue);
-    };
-
-    const drawVolumePoints = (
-      buffer: WebGLBuffer,
-      count: number,
-      matrix: Float32Array,
-      pointSize: number,
-      color: readonly [number, number, number, number],
-    ): void => {
-      if (count <= 0) return;
-      gl.useProgram(volumeProgram);
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.enableVertexAttribArray(volumePosition);
-      gl.vertexAttribPointer(volumePosition, 3, gl.FLOAT, false, 0, 0);
-      gl.uniformMatrix4fv(volumeMatrix, false, matrix);
-      gl.uniform1f(volumePointSize, pointSize);
-      gl.uniform4f(volumeColor, ...color);
-      gl.drawArrays(gl.POINTS, 0, count);
-      gl.disableVertexAttribArray(volumePosition);
-    };
-
-    const drawSolid = (
-      buffer: WebGLBuffer,
-      primitive: number,
-      count: number,
-      matrix: Float32Array,
-      color: readonly [number, number, number, number],
-    ): void => {
-      if (count <= 0) return;
-      gl.useProgram(solidProgram);
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.enableVertexAttribArray(solidPosition);
-      gl.vertexAttribPointer(solidPosition, 3, gl.FLOAT, false, 0, 0);
-      gl.uniformMatrix4fv(solidMatrix, false, matrix);
-      gl.uniform4f(solidColor, ...color);
-      gl.drawArrays(primitive, 0, count);
-      gl.disableVertexAttribArray(solidPosition);
-    };
-
-    const draw = (): void => {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      const width = Math.max(1, Math.round(rect.width * dpr));
-      const height = Math.max(1, Math.round(rect.height * dpr));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-
-      gl.viewport(0, 0, width, height);
-      gl.enable(gl.DEPTH_TEST);
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.clearColor(0.027, 0.063, 0.098, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-      const horizontal = Math.cos(orbit.pitch) * orbit.distance;
-      const eyeX = Math.sin(orbit.yaw) * horizontal;
-      const eyeY = Math.sin(orbit.pitch) * orbit.distance;
-      const eyeZ = Math.cos(orbit.yaw) * horizontal;
-      const projection = perspectiveMatrix(
-        width / height,
-        Math.max(0.01, prepared.extent * 0.003),
-        Math.max(20, prepared.extent * 12),
-      );
-      const matrix = multiplyMat4(projection, lookAtMatrix(eyeX, eyeY, eyeZ));
-
-      // Unknown is not "solid rubble". It is deliberately translucent candidate
-      // volume: the camera has not proved it free and the seismic source may be there.
-      if (display.unknownSpace) {
-        gl.depthMask(false);
-        drawVolumePoints(
-          unknownBuffer!,
-          prepared.unknownPositions.length / 3,
-          matrix,
-          Math.max(2.0, 2.6 * dpr),
-          [0.98, 0.67, 0.16, 0.13],
-        );
-        gl.depthMask(true);
-      }
-
-      // Ray-verified free space is a different semantic class from low-confidence
-      // surface points, so it is intentionally blue rather than reusing confidence colours.
-      if (display.freeAir) {
-        gl.depthMask(false);
-        drawVolumePoints(
-          freeAirBuffer!,
-          prepared.freeAirPositions.length / 3,
-          matrix,
-          Math.max(2.0, 2.8 * dpr),
-          [0.18, 0.68, 1.00, 0.30],
-        );
-        gl.depthMask(true);
-      }
-
-      if (display.mesh) {
-        gl.depthMask(false);
-        drawSolid(
-          meshBuffer!,
-          gl.TRIANGLES,
-          prepared.meshPositions.length / 3,
-          matrix,
-          [0.28, 0.78, 0.82, 0.27],
-        );
-        gl.depthMask(true);
-      }
-      if (display.badPoints) {
-        drawConfidencePoints(
-          badBuffer!,
-          badConfidenceBuffer!,
-          snapshot.tentativePointCount,
-          matrix,
-          dpr,
-        );
-      }
-      if (display.goodPoints) {
-        drawConfidencePoints(
-          goodBuffer!,
-          goodConfidenceBuffer!,
-          snapshot.pointCount,
-          matrix,
-          dpr,
-        );
-      }
-      if (display.manualPoints) {
-        drawVolumePoints(
-          manualBuffer!,
-          snapshot.manualControlPoints.length,
-          matrix,
-          Math.max(8, 8 * dpr),
-          [0.95, 0.30, 1.00, 1.00],
-        );
-      }
-      if (display.dimensions) {
-        gl.lineWidth(1);
-        drawSolid(
-          boundsBuffer!,
-          gl.LINES,
-          prepared.boundsLines.length / 3,
-          matrix,
-          [0.82, 0.90, 1.0, 0.90],
-        );
-      }
-    };
-
-    const requestDraw = (): void => {
-      cancelAnimationFrame(animationFrame);
-      animationFrame = requestAnimationFrame(draw);
-    };
-
-    const handlePointerDown = (event: PointerEvent): void => {
-      pointerId = event.pointerId;
-      previousX = event.clientX;
-      previousY = event.clientY;
-      canvas.setPointerCapture(event.pointerId);
-    };
-    const handlePointerMove = (event: PointerEvent): void => {
-      if (pointerId !== event.pointerId) return;
-      const deltaX = event.clientX - previousX;
-      const deltaY = event.clientY - previousY;
-      previousX = event.clientX;
-      previousY = event.clientY;
-      orbit.yaw -= deltaX * 0.008;
-      orbit.pitch = clamp(orbit.pitch + deltaY * 0.006, -1.45, 1.45);
-      requestDraw();
-    };
-    const handlePointerUp = (event: PointerEvent): void => {
-      if (pointerId === event.pointerId) {
-        pointerId = null;
-        try { canvas.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-      }
-    };
-    const handleWheel = (event: WheelEvent): void => {
-      event.preventDefault();
-      orbit.distance = clamp(
-        orbit.distance * Math.exp(event.deltaY * 0.0012),
-        Math.max(0.25, prepared.extent * 0.12),
-        Math.max(16, prepared.extent * 8),
-      );
-      requestDraw();
-    };
-
-    const resizeObserver = new ResizeObserver(requestDraw);
-    resizeObserver.observe(canvas);
-    canvas.addEventListener('pointerdown', handlePointerDown);
-    canvas.addEventListener('pointermove', handlePointerMove);
-    canvas.addEventListener('pointerup', handlePointerUp);
-    canvas.addEventListener('pointercancel', handlePointerUp);
-    canvas.addEventListener('wheel', handleWheel, { passive: false });
-    requestDraw();
-
-    return () => {
-      cancelAnimationFrame(animationFrame);
-      resizeObserver.disconnect();
-      canvas.removeEventListener('pointerdown', handlePointerDown);
-      canvas.removeEventListener('pointermove', handlePointerMove);
-      canvas.removeEventListener('pointerup', handlePointerUp);
-      canvas.removeEventListener('pointercancel', handlePointerUp);
-      canvas.removeEventListener('wheel', handleWheel);
-      for (const buffer of [
-        goodBuffer, goodConfidenceBuffer, badBuffer, badConfidenceBuffer, manualBuffer,
-        meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
-      ]) {
-        if (buffer !== null) gl.deleteBuffer(buffer);
-      }
-      gl.deleteProgram(confidenceProgram);
-      gl.deleteProgram(volumeProgram);
-      gl.deleteProgram(solidProgram);
-    };
-  }, [prepared, snapshot.pointCount, snapshot.tentativePointCount, snapshot.manualControlPoints.length, viewCommand, display]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  if (positions.length === 0) return null;
 
   return (
-    <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume">
-      <canvas ref={canvasRef} className="scan-webgl-canvas" />
+    <points geometry={geometry} frustumCulled={false} renderOrder={renderOrder}>
+      <pointsMaterial
+        color={color}
+        size={size}
+        sizeAttenuation
+        transparent={opacity < 1}
+        opacity={opacity}
+        depthTest={depthTest}
+        depthWrite={false}
+      />
+    </points>
+  );
+}
+
+function QualityPointLayers({ bands, extent, faint = false }: {
+  bands: QualityBands;
+  extent: number;
+  faint?: boolean;
+}) {
+  const base = clamp(extent * 0.008, 0.014, 0.045);
+  return (
+    <>
+      <PointLayer positions={bands.weak} color="#ff3d28" size={base * 0.86} opacity={faint ? 0.42 : 0.62} />
+      <PointLayer positions={bands.improving} color="#facc15" size={base} opacity={faint ? 0.58 : 0.82} />
+      <PointLayer positions={bands.stable} color="#2ee6a6" size={base * 1.12} opacity={faint ? 0.76 : 0.98} />
+    </>
+  );
+}
+
+function SurfaceMesh({ positions }: { positions: Float32Array }) {
+  const geometry = useMemo(() => {
+    const next = new THREE.BufferGeometry();
+    next.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    next.computeVertexNormals();
+    return next;
+  }, [positions]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  if (positions.length === 0) return null;
+
+  return (
+    <group>
+      <mesh geometry={geometry} renderOrder={4}>
+        <meshBasicMaterial
+          color="#38cfd2"
+          transparent
+          opacity={0.34}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh geometry={geometry} renderOrder={5}>
+        <meshBasicMaterial
+          color="#a5f3fc"
+          transparent
+          opacity={0.34}
+          wireframe
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function BoundsLines({ positions }: { positions: Float32Array }) {
+  const geometry = useMemo(() => {
+    const next = new THREE.BufferGeometry();
+    next.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    return next;
+  }, [positions]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  if (positions.length === 0) return null;
+
+  return (
+    <lineSegments geometry={geometry} renderOrder={20}>
+      <lineBasicMaterial color="#dbeafe" transparent opacity={0.78} depthTest={false} />
+    </lineSegments>
+  );
+}
+
+function ManualPin({ position, extent, id }: {
+  position: readonly [number, number, number];
+  extent: number;
+  id: number;
+}) {
+  const radius = clamp(extent * 0.022, 0.035, 0.10);
+  return (
+    <group position={position as [number, number, number]} renderOrder={50}>
+      <mesh renderOrder={50}>
+        <sphereGeometry args={[radius, 18, 12]} />
+        <meshBasicMaterial color="#f05cff" depthTest={false} />
+      </mesh>
+      <mesh rotation={[Math.PI / 2, 0, 0]} renderOrder={51}>
+        <torusGeometry args={[radius * 1.8, radius * 0.18, 8, 28]} />
+        <meshBasicMaterial color="#ffffff" depthTest={false} />
+      </mesh>
+      <sprite position={[0, radius * 3.1, 0]} scale={[radius * 4.5, radius * 2.0, 1]} renderOrder={52}>
+        <spriteMaterial color="#f05cff" depthTest={false} />
+      </sprite>
+      <mesh position={[0, radius * 3.1, 0]} visible={false} name={`manual-pin-${id}`} />
+    </group>
+  );
+}
+
+function CameraController({
+  command,
+  extent,
+  onInteractionEnd,
+}: {
+  command: ViewCommand;
+  extent: number;
+  onInteractionEnd: (distance: number) => void;
+}) {
+  const { camera, gl } = useThree();
+  const controls = useMemo(() => new OrbitControls(camera, gl.domElement), [camera, gl.domElement]);
+
+  useEffect(() => {
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enableRotate = true;
+    controls.enableZoom = true;
+    controls.enablePan = true;
+    controls.screenSpacePanning = true;
+    controls.rotateSpeed = 0.72;
+    controls.zoomSpeed = 0.92;
+    controls.panSpeed = 0.72;
+    controls.minDistance = Math.max(0.18, extent * 0.10);
+    controls.maxDistance = Math.max(18, extent * 10);
+    controls.touches.ONE = THREE.TOUCH.ROTATE;
+    controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    const handleStart = (): void => {
+      clientDiagnostics.info('SCAN_VIEW_GESTURE_START');
+    };
+    const handleEnd = (): void => {
+      const distance = controls.getDistance();
+      onInteractionEnd(distance);
+      clientDiagnostics.info('SCAN_VIEW_GESTURE_END', {
+        distance: Number(distance.toFixed(3)),
+        x: Number(camera.position.x.toFixed(3)),
+        y: Number(camera.position.y.toFixed(3)),
+        z: Number(camera.position.z.toFixed(3)),
+      });
+    };
+    controls.addEventListener('start', handleStart);
+    controls.addEventListener('end', handleEnd);
+
+    return () => {
+      controls.removeEventListener('start', handleStart);
+      controls.removeEventListener('end', handleEnd);
+      controls.dispose();
+    };
+  }, [camera, controls, extent, onInteractionEnd]);
+
+  useEffect(() => {
+    const distance = Math.max(1.5, extent * 1.75);
+    controls.target.set(0, 0, 0);
+    if (command.preset === 'top') {
+      camera.up.set(0, 0, -1);
+      camera.position.set(0, distance, 0.001);
+    } else if (command.preset === 'front') {
+      camera.up.set(0, 1, 0);
+      camera.position.set(0, extent * 0.08, distance);
+    } else {
+      camera.up.set(0, 1, 0);
+      camera.position.set(distance * 0.66, distance * 0.52, distance * 0.72);
+    }
+    camera.lookAt(controls.target);
+    if (camera instanceof THREE.PerspectiveCamera) camera.updateProjectionMatrix();
+    controls.update();
+    onInteractionEnd(controls.getDistance());
+  }, [camera, command.preset, command.sequence, controls, extent, onInteractionEnd]);
+
+  useFrame(() => controls.update());
+  return null;
+}
+
+function SceneLayers({ prepared, display }: {
+  prepared: PreparedScene;
+  display: ScanDisplayOptions;
+}) {
+  const voxelPointSize = clamp(prepared.extent * 0.010, 0.018, 0.055);
+  return (
+    <>
+      <color attach="background" args={['#07101a']} />
+      {display.unknownSpace && (
+        <PointLayer
+          positions={prepared.unknownPositions}
+          color="#f59e0b"
+          size={voxelPointSize}
+          opacity={0.30}
+          depthTest={false}
+          renderOrder={1}
+        />
+      )}
+      {display.freeAir && (
+        <PointLayer
+          positions={prepared.freeAirPositions}
+          color="#38bdf8"
+          size={voxelPointSize * 0.82}
+          opacity={0.48}
+          depthTest={false}
+          renderOrder={2}
+        />
+      )}
+      {display.mesh && <SurfaceMesh positions={prepared.meshPositions} />}
+      {display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}
+      {display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}
+      {display.manualPoints && prepared.manualPositions.map((position, index) => (
+        <ManualPin key={index} id={index + 1} position={position} extent={prepared.extent} />
+      ))}
+      {display.dimensions && <BoundsLines positions={prepared.boundsLines} />}
+    </>
+  );
+}
+
+export function ScanPointCloudViewport({
+  snapshot,
+  viewCommand,
+  display,
+  mode,
+}: ScanPointCloudViewportProps) {
+  const prepared = useMemo(() => prepareScene(snapshot), [snapshot]);
+  const [interactionRevision, setInteractionRevision] = useState(0);
+  const [cameraDistance, setCameraDistance] = useState(Math.max(1.5, prepared.extent * 1.75));
+  const fingerprint = displayFingerprint(display);
+  const modeLabel = scanModeLabel(mode);
+
+  const handleInteractionEnd = useCallback((distance: number): void => {
+    setCameraDistance(distance);
+    setInteractionRevision((current) => current + 1);
+  }, []);
+
+  return (
+    <div
+      className="viewport-shell scan-viewport"
+      aria-label="Measured WebXR rescue search volume"
+      data-scan-mode={mode ?? 'custom'}
+      data-layer-fingerprint={fingerprint}
+      data-camera-revision={interactionRevision}
+      data-camera-distance={cameraDistance.toFixed(4)}
+    >
+      <Canvas
+        className="scan-webgl-canvas"
+        camera={{ position: [3.2, 2.5, 3.6], fov: 50, near: 0.01, far: 120 }}
+        dpr={[1, 1.5]}
+        gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
+        onContextMenu={(event) => event.preventDefault()}
+      >
+        <SceneLayers prepared={prepared} display={display} />
+        <CameraController
+          command={viewCommand}
+          extent={prepared.extent}
+          onInteractionEnd={handleInteractionEnd}
+        />
+      </Canvas>
+
       <div className="scan-source-badge">
         SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()}
       </div>
+      <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
       {display.dimensions && (
         <div className="scan-dimension-overlay">
           X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m
@@ -625,7 +497,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
           SURFACE BOUNDARY · {prepared.meshTriangles.toLocaleString()} triangles
         </div>
       )}
-      <div className="axis-note">X / Y = local horizontal · Z = height · drag to orbit</div>
+      <div className="axis-note">1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height</div>
     </div>
   );
 }
