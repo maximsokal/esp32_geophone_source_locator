@@ -67,6 +67,8 @@ interface ManualPointerState {
   pointerId: number;
   startX: number;
   startY: number;
+  startU: number;
+  startV: number;
   latestX: number;
   latestY: number;
   dragging: boolean;
@@ -205,10 +207,14 @@ export function XrRuntimePanel({
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     const movePointId = runtime.getLastManualPointId();
+    const [startU, startV] = normalizedPointer(event);
+    const pointerId = event.pointerId;
     const state: ManualPointerState = {
-      pointerId: event.pointerId,
+      pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      startU,
+      startV,
       latestX: event.clientX,
       latestY: event.clientY,
       dragging: false,
@@ -217,9 +223,9 @@ export function XrRuntimePanel({
     };
     state.timer = window.setTimeout(() => {
       const current = manualPointer.current;
-      if (current === null || current.pointerId !== event.pointerId || current.movePointId === null) return;
+      if (current === null || current.pointerId !== pointerId || current.movePointId === null) return;
       current.dragging = true;
-      queueManualAtEvent(event, current.movePointId);
+      runtime.queueManualPointAtNormalized(current.startU, current.startV, current.movePointId);
       clientDiagnostics.info('XR_MANUAL_DRAG_BEGIN', { id: current.movePointId });
     }, LONG_PRESS_MS);
     manualPointer.current = state;
