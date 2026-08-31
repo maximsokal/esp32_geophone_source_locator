@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { clientDiagnostics } from '../data/clientDiagnostics';
 import {
   probeWebXrCapabilities,
   WebXrRuntime,
@@ -45,7 +46,12 @@ const emptyRuntimeState: WebXrRuntimeState = {
   coverageTotalCells: 0,
   coverageTargetIndependentViews: 3,
   coverageAverageConfidence: 0,
+  coverageWeakPoints: 0,
+  coverageImprovingPoints: 0,
+  coverageStablePoints: 0,
   coverageGuideError: null,
+  manualPointCount: 0,
+  manualPointError: null,
   lightingEstimateAvailable: false,
   primaryLightIntensity: null,
   depthError: null,
@@ -56,6 +62,21 @@ interface XrRuntimePanelProps {
   onSessionActiveChange?: (active: boolean) => void;
   onPointCloudReady?: (snapshot: ScanPointCloudSnapshot | null) => void;
 }
+
+interface ManualPointerState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  latestX: number;
+  latestY: number;
+  dragging: boolean;
+  movePointId: number | null;
+  timer: number | null;
+}
+
+const LONG_PRESS_MS = 450;
+const MOVE_UPDATE_MS = 75;
+const TAP_SLOP_PX = 14;
 
 function phaseLabel(state: WebXrRuntimeState): string {
   if (state.phase === 'starting') return 'STARTING';
@@ -99,6 +120,16 @@ function formatMotion(state: WebXrRuntimeState): string {
   }
 }
 
+function normalizedPointer(event: React.PointerEvent<HTMLElement>): readonly [number, number] {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  return [
+    Math.max(0, Math.min(1, (event.clientX - rect.left) / width)),
+    Math.max(0, Math.min(1, (event.clientY - rect.top) / height)),
+  ];
+}
+
 export function XrRuntimePanel({
   onSessionActiveChange,
   onPointCloudReady,
@@ -106,15 +137,23 @@ export function XrRuntimePanel({
   const runtime = useMemo(() => new WebXrRuntime(), []);
   const [capabilities, setCapabilities] = useState<WebXrCapabilities | null>(null);
   const [runtimeState, setRuntimeState] = useState<WebXrRuntimeState>(emptyRuntimeState);
+  const [manualMode, setManualMode] = useState(false);
+  const manualPointer = useRef<ManualPointerState | null>(null);
+  const lastMoveUpdateMs = useRef(0);
 
   useEffect(() => {
     const unsubscribe = runtime.subscribe(setRuntimeState);
     let cancelled = false;
     void probeWebXrCapabilities().then((result) => {
+      clientDiagnostics.info('XR_CAPABILITIES', result);
+      void clientDiagnostics.flush();
       if (!cancelled) setCapabilities(result);
     });
     return () => {
       cancelled = true;
+      const pointer = manualPointer.current;
+      if (pointer?.timer != null) window.clearTimeout(pointer.timer);
+      manualPointer.current = null;
       unsubscribe();
       void runtime.dispose();
     };
@@ -126,6 +165,7 @@ export function XrRuntimePanel({
       runtimeState.phase === 'running' ||
       runtimeState.phase === 'stopping';
     onSessionActiveChange?.(active);
+    if (!active) setManualMode(false);
   }, [onSessionActiveChange, runtimeState.phase]);
 
   useEffect(() => {
@@ -146,6 +186,76 @@ export function XrRuntimePanel({
     capabilities.immersiveAr === true &&
     !running && !busy;
   const readyVisible = `${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
+
+  const clearManualTimer = (): void => {
+    const pointer = manualPointer.current;
+    if (pointer?.timer != null) {
+      window.clearTimeout(pointer.timer);
+      pointer.timer = null;
+    }
+  };
+
+  const queueManualAtEvent = (event: React.PointerEvent<HTMLElement>, pointId: number | null): void => {
+    const [u, v] = normalizedPointer(event);
+    runtime.queueManualPointAtNormalized(u, v, pointId);
+  };
+
+  const handleManualPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (!running || !manualMode) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const movePointId = runtime.getLastManualPointId();
+    const state: ManualPointerState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      latestX: event.clientX,
+      latestY: event.clientY,
+      dragging: false,
+      movePointId,
+      timer: null,
+    };
+    state.timer = window.setTimeout(() => {
+      const current = manualPointer.current;
+      if (current === null || current.pointerId !== event.pointerId || current.movePointId === null) return;
+      current.dragging = true;
+      queueManualAtEvent(event, current.movePointId);
+      clientDiagnostics.info('XR_MANUAL_DRAG_BEGIN', { id: current.movePointId });
+    }, LONG_PRESS_MS);
+    manualPointer.current = state;
+  };
+
+  const handleManualPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const pointer = manualPointer.current;
+    if (pointer === null || pointer.pointerId !== event.pointerId) return;
+    pointer.latestX = event.clientX;
+    pointer.latestY = event.clientY;
+    if (!pointer.dragging || pointer.movePointId === null) return;
+    const now = performance.now();
+    if (now - lastMoveUpdateMs.current < MOVE_UPDATE_MS) return;
+    lastMoveUpdateMs.current = now;
+    queueManualAtEvent(event, pointer.movePointId);
+  };
+
+  const handleManualPointerUp = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const pointer = manualPointer.current;
+    if (pointer === null || pointer.pointerId !== event.pointerId) return;
+    clearManualTimer();
+    const moved = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY);
+    if (pointer.dragging && pointer.movePointId !== null) {
+      queueManualAtEvent(event, pointer.movePointId);
+    } else if (moved <= TAP_SLOP_PX) {
+      queueManualAtEvent(event, null);
+    }
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    manualPointer.current = null;
+  };
+
+  const handleManualPointerCancel = (event: React.PointerEvent<HTMLDivElement>): void => {
+    clearManualTimer();
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    manualPointer.current = null;
+  };
 
   return (
     <>
@@ -179,14 +289,9 @@ export function XrRuntimePanel({
           >
             {runtimeState.phase === 'interrupted' ? 'Discard partial & start again' : 'Start 3D scan'}
           </button>
-          <button
-            type="button"
-            className="xr-stop-button"
-            disabled={!running}
-            onClick={() => void runtime.stop()}
-          >
-            Finish scan
-          </button>
+          <div className="xr-finish-explainer">
+            Finish &amp; save is shown over the camera while AR scanning is active.
+          </div>
         </div>
 
         {runtimeState.phase === 'interrupted' && (
@@ -215,6 +320,10 @@ export function XrRuntimePanel({
             <div><dt>Motion rejects</dt><dd>{runtimeState.motionRejectedFrames.toLocaleString()}</dd></div>
             <div><dt>Ready / visible cells</dt><dd>{readyVisible}</dd></div>
             <div><dt>Coverage confidence</dt><dd>{formatPercent(runtimeState.coverageAverageConfidence)}</dd></div>
+            <div><dt>Weak points</dt><dd>{runtimeState.coverageWeakPoints.toLocaleString()}</dd></div>
+            <div><dt>Improving points</dt><dd>{runtimeState.coverageImprovingPoints.toLocaleString()}</dd></div>
+            <div><dt>Stable guide points</dt><dd>{runtimeState.coverageStablePoints.toLocaleString()}</dd></div>
+            <div><dt>Manual corners</dt><dd>{runtimeState.manualPointCount.toLocaleString()}</dd></div>
             <div><dt>Linear speed</dt><dd>{runtimeState.linearSpeedMetersPerSecond.toFixed(2)} m/s</dd></div>
             <div><dt>Angular speed</dt><dd>{runtimeState.angularSpeedRadiansPerSecond.toFixed(2)} rad/s</dd></div>
             <div><dt>Acceleration</dt><dd>{runtimeState.linearAccelerationMetersPerSecond2.toFixed(2)} m/s²</dd></div>
@@ -227,6 +336,22 @@ export function XrRuntimePanel({
       </section>
 
       <div className="xr-immersive-overlay" aria-live="polite">
+        {running && manualMode && (
+          <div
+            className="xr-manual-hit-surface"
+            aria-label="Manual corner placement surface"
+            onPointerDown={handleManualPointerDown}
+            onPointerMove={handleManualPointerMove}
+            onPointerUp={handleManualPointerUp}
+            onPointerCancel={handleManualPointerCancel}
+          >
+            <div className="xr-manual-reticle" aria-hidden="true" />
+            <div className="xr-manual-instruction">
+              Tap a visible corner to pin it · hold and drag to move the last pin
+            </div>
+          </div>
+        )}
+
         <div className="xr-overlay-card xr-overlay-card-compact">
           <div className="xr-overlay-topline">
             <strong className={runtimeState.motionState === 'too-fast' ? 'bad-text' : ''}>
@@ -242,11 +367,11 @@ export function XrRuntimePanel({
             <div><span>MOTION</span><strong>{formatMotion(runtimeState)}</strong></div>
           </div>
 
-          {runtimeState.coverageGuideActive && (
+          {running && (
             <div className="xr-coverage-legend" aria-label="Coverage quality">
-              <span><i className="coverage-dot coverage-low" />weak</span>
-              <span><i className="coverage-dot coverage-mid" />improving</span>
-              <span><i className="coverage-dot coverage-high" />multi-view stable</span>
+              <span><i className="coverage-dot coverage-low" />weak <strong>{runtimeState.coverageWeakPoints.toLocaleString()}</strong></span>
+              <span><i className="coverage-dot coverage-mid" />improving <strong>{runtimeState.coverageImprovingPoints.toLocaleString()}</strong></span>
+              <span><i className="coverage-dot coverage-high" />stable <strong>{runtimeState.coverageStablePoints.toLocaleString()}</strong></span>
             </div>
           )}
 
@@ -259,8 +384,37 @@ export function XrRuntimePanel({
           {(runtimeState.motionState === 'stationary' || runtimeState.motionState === 'redundant') && (
             <div className="xr-overlay-hint">Move 5–10 cm and change viewpoint. Standing still can polish geometry but cannot increase coverage confidence.</div>
           )}
+          {runtimeState.manualPointError !== null && (
+            <div className="xr-overlay-warning">{runtimeState.manualPointError}</div>
+          )}
 
-          <button type="button" onClick={() => void runtime.stop()}>Finish scan</button>
+          <div className="xr-manual-status">
+            <span>Manual corner pins: <strong>{runtimeState.manualPointCount}</strong></span>
+            <span>{manualMode ? 'Tap = add · hold/drag = move last' : 'Optional operator geometry'}</span>
+          </div>
+
+          <div className="xr-overlay-actions">
+            <button
+              type="button"
+              className={manualMode ? 'xr-manual-toggle active' : 'xr-manual-toggle'}
+              aria-pressed={manualMode}
+              onClick={() => setManualMode((value) => !value)}
+            >
+              {manualMode ? 'Done marking' : 'Mark corners'}
+            </button>
+            <button
+              type="button"
+              className="xr-undo-button"
+              disabled={runtimeState.manualPointCount === 0}
+              onClick={() => runtime.undoLastManualPoint()}
+            >
+              Undo pin
+            </button>
+          </div>
+
+          <button className="xr-finish-button" type="button" onClick={() => void runtime.stop()}>
+            Finish &amp; save scan
+          </button>
         </div>
       </div>
     </>
