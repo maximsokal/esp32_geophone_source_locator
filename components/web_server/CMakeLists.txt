@@ -14,8 +14,16 @@ set(WEB_SERVER_WEBUI_SOURCE_DIR
     "${CMAKE_CURRENT_LIST_DIR}/../../webui/esp-dist"
 )
 
-set(WEB_SERVER_WEBUI_GENERATED_DIR
-    "${CMAKE_CURRENT_LIST_DIR}/generated_webui"
+set(WEB_SERVER_WEBUI_GENERATED_INDEX
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_index.html"
+)
+
+set(WEB_SERVER_WEBUI_GENERATED_JS
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.js.gz"
+)
+
+set(WEB_SERVER_WEBUI_GENERATED_CSS
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_app.css.gz"
 )
 
 set(WEB_SERVER_TLS_EMBED_FILES)
@@ -46,35 +54,42 @@ if(EXISTS "${WEB_SERVER_ROOT_CA_FILE}")
     set(WEB_SERVER_ROOT_CA_EMBEDDED 1)
 endif()
 
+# Keep generated seed filenames flat and stable. ESP-IDF derives the linker
+# symbols from the exact EMBED_FILES/EMBED_TXTFILES strings, so directory
+# components would become part of the symbol name as underscores.
+file(REMOVE
+    "${WEB_SERVER_WEBUI_GENERATED_INDEX}"
+    "${WEB_SERVER_WEBUI_GENERATED_JS}"
+    "${WEB_SERVER_WEBUI_GENERATED_CSS}"
+)
+
+# Clean up the first WEB-HTTPS-B implementation's generated directory if it
+# exists in a local checkout.
+file(REMOVE_RECURSE
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui"
+)
+
 if(
     EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
     AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
     AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
     AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
 )
-    file(REMOVE_RECURSE
-        "${WEB_SERVER_WEBUI_GENERATED_DIR}"
-    )
-
-    file(MAKE_DIRECTORY
-        "${WEB_SERVER_WEBUI_GENERATED_DIR}/assets"
-    )
-
     configure_file(
         "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
-        "${WEB_SERVER_WEBUI_GENERATED_DIR}/index.html"
+        "${WEB_SERVER_WEBUI_GENERATED_INDEX}"
         COPYONLY
     )
 
     configure_file(
         "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
-        "${WEB_SERVER_WEBUI_GENERATED_DIR}/assets/app.js.gz"
+        "${WEB_SERVER_WEBUI_GENERATED_JS}"
         COPYONLY
     )
 
     configure_file(
         "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
-        "${WEB_SERVER_WEBUI_GENERATED_DIR}/assets/app.css.gz"
+        "${WEB_SERVER_WEBUI_GENERATED_CSS}"
         COPYONLY
     )
 
@@ -89,19 +104,15 @@ if(
     )
 
     list(APPEND WEB_SERVER_WEBUI_EMBED_TXTFILES
-        "generated_webui/index.html"
+        "generated_webui_index.html"
     )
 
     list(APPEND WEB_SERVER_WEBUI_EMBED_FILES
-        "generated_webui/assets/app.js.gz"
-        "generated_webui/assets/app.css.gz"
+        "generated_webui_app.js.gz"
+        "generated_webui_app.css.gz"
     )
 
     set(WEB_SERVER_WEBUI_SEED_EMBEDDED 1)
-else()
-    file(REMOVE_RECURSE
-        "${WEB_SERVER_WEBUI_GENERATED_DIR}"
-    )
 endif()
 
 idf_component_register(
