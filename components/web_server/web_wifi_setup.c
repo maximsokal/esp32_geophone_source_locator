@@ -1,5 +1,6 @@
 #include "web_server_internal.h"
 
+#include "app_config.h"
 #include "app_event_bus.h"
 #include "wifi_manager.h"
 
@@ -23,6 +24,35 @@ esp_err_t web_wifi_setup_send_page(
     httpd_req_t *request
 )
 {
+    if (
+        !web_https_onboarding_ca_install_confirmed()
+    ) {
+        static const char response[] =
+            "Install and confirm the GeoLocator Root CA before Wi-Fi setup.";
+
+        httpd_resp_set_status(
+            request,
+            "302 Found"
+        );
+
+        httpd_resp_set_hdr(
+            request,
+            "Location",
+            APP_WIFI_CA_URL
+        );
+
+        httpd_resp_set_type(
+            request,
+            "text/plain; charset=utf-8"
+        );
+
+        return httpd_resp_send(
+            request,
+            response,
+            HTTPD_RESP_USE_STRLEN
+        );
+    }
+
     return web_wifi_setup_page_send_form(request);
 }
 
