@@ -20,12 +20,11 @@ export interface CoverageRenderLayer {
 export interface CoverageRenderSnapshot {
   /** Positions in the active WebXR reference-space coordinate system. */
   positions: Float32Array;
-  /**
-   * Coverage confidence in [0, 1]. A value > 1.5 is reserved for a manual
-   * operator control point so it can be rendered as an unmistakable marker.
-   */
+  /** Confidence in [0,1]. Values >1.5 are reserved for operator pins. */
   confidence: Float32Array;
   pointCount: number;
+  /** Manual pins are always appended at the end so they can be drawn last. */
+  manualPointCount: number;
 }
 
 type GlContext = WebGLRenderingContext | WebGL2RenderingContext;
@@ -36,19 +35,14 @@ function isWebGl2(gl: GlContext): gl is WebGL2RenderingContext {
 
 function compileShader(gl: GlContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
-  if (shader === null) {
-    throw new Error('Unable to allocate coverage-guide shader.');
-  }
-
+  if (shader === null) throw new Error('Unable to allocate coverage-guide shader.');
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
-
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     const log = gl.getShaderInfoLog(shader) ?? 'unknown shader compile error';
     gl.deleteShader(shader);
     throw new Error(`Coverage-guide shader compile failed: ${log}`);
   }
-
   return shader;
 }
 
@@ -65,7 +59,7 @@ function createProgram(gl: GlContext): WebGLProgram {
         gl_Position = u_view_projection * vec4(a_position, 1.0);
         bool manual = a_confidence > 1.5;
         float quality = clamp(a_confidence, 0.0, 1.0);
-        gl_PointSize = manual ? 13.0 : mix(4.0, 7.5, quality);
+        gl_PointSize = manual ? 24.0 : mix(4.0, 7.5, quality);
         v_confidence = a_confidence;
       }
     `
@@ -79,10 +73,24 @@ function createProgram(gl: GlContext): WebGLProgram {
         gl_Position = u_view_projection * vec4(a_position, 1.0);
         bool manual = a_confidence > 1.5;
         float quality = clamp(a_confidence, 0.0, 1.0);
-        gl_PointSize = manual ? 13.0 : mix(4.0, 7.5, quality);
+        gl_PointSize = manual ? 24.0 : mix(4.0, 7.5, quality);
         v_confidence = a_confidence;
       }
     `;
+
+  const fragmentBody = `
+      float radius = distance(gl_PointCoord, vec2(0.5));
+      if (radius > 0.5) discard;
+      bool manual = v_confidence > 1.5;
+      float t = clamp(v_confidence, 0.0, 1.0);
+      vec3 coverageColor = t < 0.42
+        ? vec3(1.00, 0.20, 0.10)
+        : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55));
+      vec3 manualColor = radius < 0.13 ? vec3(1.0) : vec3(0.95, 0.18, 1.00);
+      vec3 color = manual ? manualColor : coverageColor;
+      float edge = 1.0 - smoothstep(0.32, 0.50, radius);
+      float alpha = manual ? max(0.86, edge) : mix(0.48, 0.96, t) * edge;
+  `;
 
   const fragmentSource = webGl2
     ? `#version 300 es
@@ -90,18 +98,7 @@ function createProgram(gl: GlContext): WebGLProgram {
       in float v_confidence;
       out vec4 out_color;
       void main() {
-        float radius = distance(gl_PointCoord, vec2(0.5));
-        if (radius > 0.5) discard;
-
-        bool manual = v_confidence > 1.5;
-        float t = clamp(v_confidence, 0.0, 1.0);
-        vec3 color = manual
-          ? vec3(0.95, 0.30, 1.00)
-          : (t < 0.42
-              ? vec3(1.00, 0.20, 0.10)
-              : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55)));
-        float edge = 1.0 - smoothstep(0.30, 0.50, radius);
-        float alpha = (manual ? 1.0 : mix(0.48, 0.96, t)) * edge;
+        ${fragmentBody}
         out_color = vec4(color, alpha);
       }
     `
@@ -109,18 +106,7 @@ function createProgram(gl: GlContext): WebGLProgram {
       precision mediump float;
       varying float v_confidence;
       void main() {
-        float radius = distance(gl_PointCoord, vec2(0.5));
-        if (radius > 0.5) discard;
-
-        bool manual = v_confidence > 1.5;
-        float t = clamp(v_confidence, 0.0, 1.0);
-        vec3 color = manual
-          ? vec3(0.95, 0.30, 1.00)
-          : (t < 0.42
-              ? vec3(1.00, 0.20, 0.10)
-              : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55)));
-        float edge = 1.0 - smoothstep(0.30, 0.50, radius);
-        float alpha = (manual ? 1.0 : mix(0.48, 0.96, t)) * edge;
+        ${fragmentBody}
         gl_FragColor = vec4(color, alpha);
       }
     `;
@@ -128,31 +114,26 @@ function createProgram(gl: GlContext): WebGLProgram {
   const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
   const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
   const program = gl.createProgram();
-
   if (program === null) {
     gl.deleteShader(vertex);
     gl.deleteShader(fragment);
     throw new Error('Unable to allocate coverage-guide WebGL program.');
   }
-
   gl.attachShader(program, vertex);
   gl.attachShader(program, fragment);
   gl.linkProgram(program);
   gl.deleteShader(vertex);
   gl.deleteShader(fragment);
-
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const log = gl.getProgramInfoLog(program) ?? 'unknown program link error';
     gl.deleteProgram(program);
     throw new Error(`Coverage-guide program link failed: ${log}`);
   }
-
   return program;
 }
 
 function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
   if (matrix.length < 16) return false;
-
   const m0 = Number(matrix[0]);
   const m1 = Number(matrix[1]);
   const m2 = Number(matrix[2]);
@@ -165,23 +146,11 @@ function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
   const tx = Number(matrix[12]);
   const ty = Number(matrix[13]);
   const tz = Number(matrix[14]);
+  if (![m0, m1, m2, m4, m5, m6, m8, m9, m10, tx, ty, tz].every(Number.isFinite)) return false;
 
-  if (![m0, m1, m2, m4, m5, m6, m8, m9, m10, tx, ty, tz].every(Number.isFinite)) {
-    return false;
-  }
-
-  out[0] = m0;
-  out[1] = m4;
-  out[2] = m8;
-  out[3] = 0;
-  out[4] = m1;
-  out[5] = m5;
-  out[6] = m9;
-  out[7] = 0;
-  out[8] = m2;
-  out[9] = m6;
-  out[10] = m10;
-  out[11] = 0;
+  out[0] = m0; out[1] = m4; out[2] = m8; out[3] = 0;
+  out[4] = m1; out[5] = m5; out[6] = m9; out[7] = 0;
+  out[8] = m2; out[9] = m6; out[10] = m10; out[11] = 0;
   out[12] = -(m0 * tx + m1 * ty + m2 * tz);
   out[13] = -(m4 * tx + m5 * ty + m6 * tz);
   out[14] = -(m8 * tx + m9 * ty + m10 * tz);
@@ -189,29 +158,18 @@ function rigidInverse(matrix: ArrayLike<number>, out: Float32Array): boolean {
   return true;
 }
 
-function multiplyMat4(
-  left: ArrayLike<number>,
-  right: ArrayLike<number>,
-  out: Float32Array,
-): boolean {
+function multiplyMat4(left: ArrayLike<number>, right: ArrayLike<number>, out: Float32Array): boolean {
   if (left.length < 16 || right.length < 16) return false;
-
   for (let column = 0; column < 4; column += 1) {
     const r0 = Number(right[column * 4]);
     const r1 = Number(right[column * 4 + 1]);
     const r2 = Number(right[column * 4 + 2]);
     const r3 = Number(right[column * 4 + 3]);
-
-    out[column * 4] =
-      Number(left[0]) * r0 + Number(left[4]) * r1 + Number(left[8]) * r2 + Number(left[12]) * r3;
-    out[column * 4 + 1] =
-      Number(left[1]) * r0 + Number(left[5]) * r1 + Number(left[9]) * r2 + Number(left[13]) * r3;
-    out[column * 4 + 2] =
-      Number(left[2]) * r0 + Number(left[6]) * r1 + Number(left[10]) * r2 + Number(left[14]) * r3;
-    out[column * 4 + 3] =
-      Number(left[3]) * r0 + Number(left[7]) * r1 + Number(left[11]) * r2 + Number(left[15]) * r3;
+    out[column * 4] = Number(left[0]) * r0 + Number(left[4]) * r1 + Number(left[8]) * r2 + Number(left[12]) * r3;
+    out[column * 4 + 1] = Number(left[1]) * r0 + Number(left[5]) * r1 + Number(left[9]) * r2 + Number(left[13]) * r3;
+    out[column * 4 + 2] = Number(left[2]) * r0 + Number(left[6]) * r1 + Number(left[10]) * r2 + Number(left[14]) * r3;
+    out[column * 4 + 3] = Number(left[3]) * r0 + Number(left[7]) * r1 + Number(left[11]) * r2 + Number(left[15]) * r3;
   }
-
   return true;
 }
 
@@ -226,10 +184,10 @@ export class LiveCoveragePointRenderer {
   private readonly viewMatrix = new Float32Array(16);
   private readonly viewProjection = new Float32Array(16);
   private pointCount = 0;
+  private manualPointCount = 0;
 
   constructor(private readonly gl: GlContext) {
     this.program = createProgram(gl);
-
     const positionBuffer = gl.createBuffer();
     const confidenceBuffer = gl.createBuffer();
     if (positionBuffer === null || confidenceBuffer === null) {
@@ -238,12 +196,10 @@ export class LiveCoveragePointRenderer {
       gl.deleteProgram(this.program);
       throw new Error('Unable to allocate coverage-guide WebGL buffers.');
     }
-
     this.positionBuffer = positionBuffer;
     this.confidenceBuffer = confidenceBuffer;
     this.positionLocation = gl.getAttribLocation(this.program, 'a_position');
     this.confidenceLocation = gl.getAttribLocation(this.program, 'a_confidence');
-
     const matrixLocation = gl.getUniformLocation(this.program, 'u_view_projection');
     if (this.positionLocation < 0 || this.confidenceLocation < 0 || matrixLocation === null) {
       this.dispose();
@@ -253,55 +209,36 @@ export class LiveCoveragePointRenderer {
   }
 
   update(snapshot: CoverageRenderSnapshot): void {
-    const count = Math.min(
-      snapshot.pointCount,
-      Math.floor(snapshot.positions.length / 3),
-      snapshot.confidence.length,
-    );
-
+    const count = Math.min(snapshot.pointCount, Math.floor(snapshot.positions.length / 3), snapshot.confidence.length);
     this.pointCount = Math.max(0, count);
+    this.manualPointCount = Math.min(Math.max(0, snapshot.manualPointCount), this.pointCount);
     const gl = this.gl;
-
     gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      this.pointCount === snapshot.pointCount
-        ? snapshot.positions
-        : snapshot.positions.subarray(0, this.pointCount * 3),
-      gl.DYNAMIC_DRAW,
-    );
-
+    gl.bufferData(gl.ARRAY_BUFFER, snapshot.positions.subarray(0, this.pointCount * 3), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      this.pointCount === snapshot.pointCount
-        ? snapshot.confidence
-        : snapshot.confidence.subarray(0, this.pointCount),
-      gl.DYNAMIC_DRAW,
-    );
-
+    gl.bufferData(gl.ARRAY_BUFFER, snapshot.confidence.subarray(0, this.pointCount), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
   clear(): void {
     this.pointCount = 0;
+    this.manualPointCount = 0;
   }
 
   render(layer: CoverageRenderLayer, views: readonly CoverageRenderView[]): void {
     if (this.pointCount <= 0) return;
-
     const gl = this.gl;
+    const regularCount = this.pointCount - this.manualPointCount;
     gl.useProgram(this.program);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
-    gl.depthMask(true);
+    gl.depthMask(false);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
     gl.enableVertexAttribArray(this.positionLocation);
     gl.vertexAttribPointer(this.positionLocation, 3, gl.FLOAT, false, 0, 0);
-
     gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
     gl.enableVertexAttribArray(this.confidenceLocation);
     gl.vertexAttribPointer(this.confidenceLocation, 1, gl.FLOAT, false, 0, 0);
@@ -309,14 +246,23 @@ export class LiveCoveragePointRenderer {
     for (const view of views) {
       const viewport = layer.getViewport(view);
       gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-
       if (!rigidInverse(view.transform.matrix, this.viewMatrix)) continue;
       if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) continue;
-
       gl.uniformMatrix4fv(this.viewProjectionLocation, false, this.viewProjection);
-      gl.drawArrays(gl.POINTS, 0, this.pointCount);
+
+      if (regularCount > 0) {
+        gl.enable(gl.DEPTH_TEST);
+        gl.drawArrays(gl.POINTS, 0, regularCount);
+      }
+      if (this.manualPointCount > 0) {
+        // Operator geometry must remain visible against the camera/depth scene.
+        gl.disable(gl.DEPTH_TEST);
+        gl.drawArrays(gl.POINTS, regularCount, this.manualPointCount);
+      }
     }
 
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
     gl.disableVertexAttribArray(this.positionLocation);
     gl.disableVertexAttribArray(this.confidenceLocation);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
@@ -328,5 +274,6 @@ export class LiveCoveragePointRenderer {
     this.gl.deleteBuffer(this.confidenceBuffer);
     this.gl.deleteProgram(this.program);
     this.pointCount = 0;
+    this.manualPointCount = 0;
   }
 }
