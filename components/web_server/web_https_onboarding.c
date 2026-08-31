@@ -12,6 +12,7 @@
 #include "app_event_bus.h"
 
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_system.h"
 
 
