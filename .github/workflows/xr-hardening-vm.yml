@@ -190,6 +190,14 @@ jobs:
           XR_STRESS_TIMEOUT_MS: '180000'
         run: npm run stress:xr:mobile
 
+      - name: Profile mid-range Android Chrome hotspots
+        working-directory: webui
+        env:
+          XR_STRESS_CPU_THROTTLE: '4'
+          XR_STRESS_TIMEOUT_MS: '180000'
+          XR_STRESS_PROFILE: '1'
+        run: npm run stress:xr:mobile
+
       - name: Print Vite server log on failure
         if: failure()
         run: cat /tmp/geolocator-vite.log || true
