@@ -50,6 +50,15 @@ esp_err_t web_webui_prepare(void);
 esp_err_t web_webui_send_index(httpd_req_t *request);
 esp_err_t web_webui_register(httpd_handle_t server);
 
+/*
+ * Runtime React delivery intentionally uses the embedded flash bundle.
+ * The TFT and SD card share SPI2; avoiding FATFS/SDSPI access in HTTP
+ * handlers prevents SD polling transactions from colliding with the
+ * asynchronous esp_lcd transfer queue.
+ */
+esp_err_t web_webui_flash_send_index(httpd_req_t *request);
+esp_err_t web_webui_flash_register(httpd_handle_t server);
+
 esp_err_t web_seismic_register(httpd_handle_t server);
 esp_err_t web_seismic_api_register(httpd_handle_t server);
 esp_err_t web_seismic_page_send(httpd_req_t *request);
