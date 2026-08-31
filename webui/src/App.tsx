@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import './scan.css';
+
 import { ScanPointCloudViewport } from './components/ScanPointCloudViewport';
 import { SceneViewport, type ViewCommand, type ViewPreset } from './components/SceneViewport';
 import { SensorPanel } from './components/SensorPanel';
