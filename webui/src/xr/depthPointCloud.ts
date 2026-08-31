@@ -25,6 +25,10 @@ export interface CpuDepthInformationLike {
   width: number;
   height: number;
   getDepthInMeters(x: number, y: number): number;
+  projectionMatrix?: ArrayLike<number>;
+  transform?: {
+    matrix: ArrayLike<number>;
+  };
 }
 
 const DEFAULT_VOXEL_SIZE_METERS = 0.04;
