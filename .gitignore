@@ -7,7 +7,9 @@ sdkconfig.old
 # Web UI build output
 webui/node_modules/
 webui/dist/
+webui/esp-dist/
 webui/.vite/
+components/web_server/generated_webui/
 
 # Local TLS credentials (never commit generated keys/certificates)
 components/web_server/certs/*
