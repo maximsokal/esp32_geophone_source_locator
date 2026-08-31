@@ -143,8 +143,17 @@ esp_err_t web_server_bootstrap_routes_register(
         return err;
     }
 
-    return
+    err =
         web_https_onboarding_bootstrap_register(
+            server
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return
+        web_https_onboarding_ui_bootstrap_register(
             server
         );
 }
@@ -195,8 +204,17 @@ esp_err_t web_server_routes_register(
         return err;
     }
 
-    return
+    err =
         web_https_onboarding_secure_register(
+            server
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return
+        web_https_onboarding_ui_secure_register(
             server
         );
 }
