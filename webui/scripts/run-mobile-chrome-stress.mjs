@@ -8,6 +8,7 @@ const PORT = Number(process.env.XR_STRESS_CDP_PORT ?? 9222);
 const TARGET_URL = process.env.XR_STRESS_URL ?? 'http://127.0.0.1:4173/stress/xr-mobile-stress.html';
 const CPU_THROTTLE = Number(process.env.XR_STRESS_CPU_THROTTLE ?? 4);
 const TIMEOUT_MS = Number(process.env.XR_STRESS_TIMEOUT_MS ?? 180000);
+const PROFILE_CPU = process.env.XR_STRESS_PROFILE === '1';
 const MOBILE_USER_AGENT = process.env.XR_STRESS_USER_AGENT ??
   'Mozilla/5.0 (Linux; Android 14; SM-A546B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36';
 
@@ -111,6 +112,33 @@ async function evaluate(client, expression) {
   return response.result?.value;
 }
 
+function summarizeCpuProfile(profile) {
+  if (!profile || !Array.isArray(profile.nodes) || !Array.isArray(profile.samples)) return [];
+  const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
+  const selfMicros = new Map();
+  const deltas = Array.isArray(profile.timeDeltas) ? profile.timeDeltas : [];
+  for (let index = 0; index < profile.samples.length; index += 1) {
+    const nodeId = profile.samples[index];
+    const delta = Number(deltas[index] ?? 0);
+    if (!Number.isFinite(delta) || delta <= 0) continue;
+    selfMicros.set(nodeId, (selfMicros.get(nodeId) ?? 0) + delta);
+  }
+  return [...selfMicros.entries()]
+    .map(([nodeId, micros]) => {
+      const node = nodes.get(nodeId);
+      const frame = node?.callFrame ?? {};
+      return {
+        function: frame.functionName || '(anonymous)',
+        selfMs: micros / 1000,
+        url: frame.url || '',
+        line: Number.isFinite(frame.lineNumber) ? frame.lineNumber + 1 : null,
+      };
+    })
+    .filter((entry) => entry.function !== '(idle)' && entry.function !== '(program)')
+    .sort((a, b) => b.selfMs - a.selfMs)
+    .slice(0, 20);
+}
+
 async function main() {
   if (typeof WebSocket !== 'function') throw new Error('Node 22+ WebSocket API is required for the CDP runner.');
 
@@ -163,11 +191,13 @@ async function main() {
       }
     });
 
-    await Promise.all([
+    const domains = [
       client.send('Page.enable'),
       client.send('Runtime.enable'),
       client.send('Performance.enable'),
-    ]);
+    ];
+    if (PROFILE_CPU) domains.push(client.send('Profiler.enable'));
+    await Promise.all(domains);
     await client.send('Emulation.setCPUThrottlingRate', { rate: CPU_THROTTLE });
     await client.send('Emulation.setDeviceMetricsOverride', {
       width: 412,
@@ -185,6 +215,11 @@ async function main() {
       platform: 'Android',
     });
 
+    if (PROFILE_CPU) {
+      await client.send('Profiler.setSamplingInterval', { interval: 1000 });
+      await client.send('Profiler.start');
+    }
+
     await client.send('Page.navigate', { url: TARGET_URL });
     const deadline = Date.now() + TIMEOUT_MS;
     let done = false;
@@ -198,6 +233,8 @@ async function main() {
     const result = await evaluate(client, 'window.__XR_STRESS_RESULT__');
     const perf = await client.send('Performance.getMetrics');
     const heap = await client.send('Runtime.getHeapUsage');
+    const profileResponse = PROFILE_CPU ? await client.send('Profiler.stop') : null;
+    const cpuHotspots = summarizeCpuProfile(profileResponse?.profile);
     const metricMap = Object.fromEntries((perf.metrics ?? []).map((entry) => [entry.name, entry.value]));
 
     const browserSummary = {
@@ -207,6 +244,7 @@ async function main() {
         viewport: '412x915 @ 2.625 DPR',
         cpuThrottle: CPU_THROTTLE,
         v8OldSpaceLimitMiB: 384,
+        cpuProfiler: PROFILE_CPU,
       },
       cdp: {
         taskDurationSeconds: metricMap.TaskDuration ?? null,
@@ -216,15 +254,21 @@ async function main() {
         jsHeapUsedBytes: heap.usedSize ?? null,
         jsHeapTotalBytes: heap.totalSize ?? null,
       },
+      cpuHotspots,
       runtimeExceptions,
       consoleErrors,
     };
 
-    console.log('=== MID-RANGE ANDROID CHROME XR STRESS ===');
+    console.log(PROFILE_CPU
+      ? '=== MID-RANGE ANDROID CHROME XR CPU PROFILE ==='
+      : '=== MID-RANGE ANDROID CHROME XR STRESS ===');
     console.log(JSON.stringify({ result, browserSummary }, null, 2));
 
-    if (!result || result.pass !== true) {
+    if (!PROFILE_CPU && (!result || result.pass !== true)) {
       throw new Error(`XR stress workload failed: ${JSON.stringify(result?.failures ?? ['missing result'])}`);
+    }
+    if (PROFILE_CPU && (!result || result.pass !== true)) {
+      console.warn(`Profiling run exceeded hard-gate timing threshold; diagnostic profile is still valid: ${JSON.stringify(result?.failures ?? ['missing result'])}`);
     }
     if (runtimeExceptions.length > 0) {
       throw new Error(`Chrome runtime exceptions: ${runtimeExceptions.join(' | ')}`);
