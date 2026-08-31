@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-webxr:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -111,6 +111,32 @@ jobs:
           fi
           echo 'Mutation killed: collapsed low-discrepancy sampling was detected.'
 
+      - name: Mutation smoke - unseen volume must stay unknown
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/xr/occupancyEvidence.ts /tmp/occupancyEvidence.ts
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/xr/occupancyEvidence.ts')
+          s = p.read_text()
+          old = "if (cell === undefined) return 'unknown';"
+          assert old in s
+          p.write_text(s.replace(old, "if (cell === undefined) return 'free';"))
+          PY
+          set +e
+          npm run test:xr >/tmp/mutation-unknown.log 2>&1
+          code=$?
+          set -e
+          cp /tmp/occupancyEvidence.ts src/xr/occupancyEvidence.ts
+          if [ "$code" -eq 0 ]; then
+            cat /tmp/mutation-unknown.log
+            echo 'Mutation survived: tests did not detect unknown volume being falsely carved free.' >&2
+            exit 1
+          fi
+          echo 'Mutation killed: unseen volume cannot be silently reclassified as free.'
+
       - name: Typecheck and build production WebUI
         working-directory: webui
         run: npm run build
@@ -121,3 +147,16 @@ jobs:
           grep -E 'assets/app\.js\?v=[0-9a-f]{20}' esp-dist/index.html
           grep -E 'assets/app\.css\?v=[0-9a-f]{20}' esp-dist/index.html
           cat esp-dist/build-id.txt
+
+  validate-firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ESP32-S3 firmware with ESP-IDF v5.5.4
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32s3
+          path: '.'
+          command: idf.py build
