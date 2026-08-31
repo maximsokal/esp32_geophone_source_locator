@@ -42,7 +42,10 @@ describe('vector and normal geometry', () => {
   });
 
   it('orients a normal toward the camera side', () => {
-    expect(orientNormalToward([0, 0, -1], [0, 0, 1])).toEqual([0, 0, 1]);
+    const normal = orientNormalToward([0, 0, -1], [0, 0, 1]);
+    expect(normal[0]).toBeCloseTo(0, 8);
+    expect(normal[1]).toBeCloseTo(0, 8);
+    expect(normal[2]).toBeCloseTo(1, 8);
   });
 
   it('accepts same-surface normals but rejects an orthogonal corner', () => {
