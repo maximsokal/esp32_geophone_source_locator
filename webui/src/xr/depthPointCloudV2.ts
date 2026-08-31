@@ -4,7 +4,6 @@ import {
   crossVector,
   depthToleranceMeters,
   lowDiscrepancySample2D,
-  normalsCompatible,
   orientNormalToward,
   packInitialView,
   registerIndependentView,
@@ -160,6 +159,14 @@ interface LocalQuality {
   dominantAxis: 'u' | 'v' | 'none';
 }
 
+interface SurfaceNeighbourhood {
+  quality: LocalQuality;
+  left: number | null;
+  right: number | null;
+  up: number | null;
+  down: number | null;
+}
+
 interface SurfaceNormalEstimate {
   normal: ProjectVector;
   confidence: number;
@@ -179,6 +186,7 @@ const SAMPLE_MARGIN = 0.025;
 const MIN_DEPTH_METERS = 0.18;
 const EDGE_PROBE_PIXEL_OFFSET = 0.75;
 const NORMAL_PROBE_PIXEL_OFFSET = 1.5;
+const NORMAL_COMPATIBILITY_ABS_DOT = Math.cos((50 * Math.PI) / 180);
 
 const MAX_FUSION_WEIGHT = 12;
 const MIN_OBSERVATION_WEIGHT = 0.025;
@@ -266,7 +274,7 @@ function promotionResidualLimitMeters(depthMeters: number): number {
   return clamp(0.018 + 0.0019 * depthMeters * depthMeters, 0.022, 0.062);
 }
 function rangeWeight(depthMeters: number): number { return 1 / (1 + 0.12 * depthMeters * depthMeters); }
-function sortedAxis(positions: readonly number[], axis: 0 | 1 | 2): number[] {
+function sortedAxis(positions: ArrayLike<number>, axis: 0 | 1 | 2): number[] {
   const values = new Array<number>(positions.length / 3);
   let out = 0;
   for (let index = axis; index < positions.length; index += 3) values[out++] = positions[index];
@@ -299,16 +307,25 @@ function safeDepth(depth: CpuDepthInformationLike, u: number, v: number): number
   const value = depth.getDepthInMeters(u, v);
   return finite(value) && value >= MIN_DEPTH_METERS ? value : null;
 }
-function localDepthQuality(depth: CpuDepthInformationLike, u: number, v: number, center: number): LocalQuality {
-  const du = 1.5 / Math.max(1, depth.width);
-  const dv = 1.5 / Math.max(1, depth.height);
-  return classifyDepthNeighbourhood(
-    center,
-    safeDepth(depth, u - du, v),
-    safeDepth(depth, u + du, v),
-    safeDepth(depth, u, v - dv),
-    safeDepth(depth, u, v + dv),
-  );
+function readSurfaceNeighbourhood(
+  depth: CpuDepthInformationLike,
+  u: number,
+  v: number,
+  center: number,
+): SurfaceNeighbourhood {
+  const du = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.width);
+  const dv = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
+  const left = safeDepth(depth, u - du, v);
+  const right = safeDepth(depth, u + du, v);
+  const up = safeDepth(depth, u, v - dv);
+  const down = safeDepth(depth, u, v + dv);
+  return {
+    quality: classifyDepthNeighbourhood(center, left, right, up, down),
+    left,
+    right,
+    up,
+    down,
+  };
 }
 
 function unprojectProjectPoint(
@@ -343,6 +360,7 @@ function estimateSurfaceNormal(
   v: number,
   centerDepth: number,
   center: ProjectPoint,
+  neighbours: SurfaceNeighbourhood,
   p00: number,
   p11: number,
   p20: number,
@@ -354,16 +372,15 @@ function estimateSurfaceNormal(
   const dv = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
   const tolerance = depthToleranceMeters(centerDepth) * 1.45;
 
-  const sample = (su: number, sv: number): ProjectPoint | null => {
-    const d = safeDepth(depth, su, sv);
+  const projectNeighbour = (su: number, sv: number, d: number | null): ProjectPoint | null => {
     if (d === null || Math.abs(d - centerDepth) > tolerance) return null;
     return unprojectProjectPoint(su, sv, d, p00, p11, p20, p21, worldFromView);
   };
 
-  const left = sample(u - du, v);
-  const right = sample(u + du, v);
-  const up = sample(u, v - dv);
-  const down = sample(u, v + dv);
+  const left = projectNeighbour(u - du, v, neighbours.left);
+  const right = projectNeighbour(u + du, v, neighbours.right);
+  const up = projectNeighbour(u, v - dv, neighbours.up);
+  const down = projectNeighbour(u, v + dv, neighbours.down);
 
   let tangentU: ProjectVector | null = null;
   let tangentV: ProjectVector | null = null;
@@ -392,6 +409,7 @@ export class DepthPointCloudAccumulator {
   private readonly voxelIndex = new Map<string, RepresentativePoint[]>();
   private readonly representatives = new Map<string, RepresentativePoint>();
   private representativeCount = 0;
+  private promotedRepresentativeCount = 0;
   private adaptiveQuota = MAX_POINTS_PER_COVERAGE_CELL;
   private candidateSampleCount = 0;
   private discardedSampleCount = 0;
@@ -418,7 +436,8 @@ export class DepthPointCloudAccumulator {
 
   reset(): void {
     this.coverageCells.clear(); this.voxelIndex.clear(); this.representatives.clear();
-    this.representativeCount = 0; this.adaptiveQuota = MAX_POINTS_PER_COVERAGE_CELL;
+    this.representativeCount = 0; this.promotedRepresentativeCount = 0;
+    this.adaptiveQuota = MAX_POINTS_PER_COVERAGE_CELL;
     this.candidateSampleCount = 0; this.discardedSampleCount = 0; this.replacementCount = 0;
     this.rebalanceEvictionCount = 0; this.coverageRejectedCount = 0; this.residualRejectedSamples = 0;
     this.staleTentativePruned = 0; this.sampleEpoch = 0; this.integrationKeyframes = 0; this.polishFrames = 0;
@@ -434,11 +453,7 @@ export class DepthPointCloudAccumulator {
   get keyframeCount(): number { return this.integrationKeyframes; }
   get polishFrameCount(): number { return this.polishFrames; }
   get rejectedResidualCount(): number { return this.residualRejectedSamples; }
-  get promotedCount(): number {
-    let count = 0;
-    for (const point of this.representatives.values()) if (point.promoted) count += 1;
-    return count;
-  }
+  get promotedCount(): number { return this.promotedRepresentativeCount; }
   get averageCandidatesPerSampledFrame(): number {
     return this.sampleEpoch > 0 ? this.candidateSampleCount / this.sampleEpoch : 0;
   }
@@ -470,13 +485,14 @@ export class DepthPointCloudAccumulator {
       if (u <= SAMPLE_MARGIN || u >= 1 - SAMPLE_MARGIN || v <= SAMPLE_MARGIN || v >= 1 - SAMPLE_MARGIN) return null;
       const depthMeters = depth.getDepthInMeters(u, v);
       if (!finite(depthMeters) || depthMeters < MIN_DEPTH_METERS || depthMeters > this.maxDepthMeters) return null;
-      const local = localDepthQuality(depth, u, v, depthMeters);
+      const neighbourhood = readSurfaceNeighbourhood(depth, u, v, depthMeters);
+      const local = neighbourhood.quality;
       if (!local.accepted) { this.discardedSampleCount += 1; return local; }
 
       const project = unprojectProjectPoint(u, v, depthMeters, p00, p11, p20, p21, worldFromView);
       if (project === null) return local;
       const normalEstimate = estimateSurfaceNormal(
-        depth, u, v, depthMeters, project, p00, p11, p20, p21, worldFromView,
+        depth, u, v, depthMeters, project, neighbourhood, p00, p11, p20, p21, worldFromView,
         context.cameraProjectPosition,
       );
 
@@ -495,6 +511,8 @@ export class DepthPointCloudAccumulator {
       if (outcome.created) createdPoints += 1;
       if (outcome.promoted) promotedPoints += 1;
 
+      // This is deliberately bounded one-level edge supersampling, not unbounded recursion:
+      // children are always invoked with expandEdges=false and therefore cannot recurse again.
       if (expandEdges && local.edge && local.dominantAxis !== 'none') {
         const du = EDGE_PROBE_PIXEL_OFFSET / Math.max(1, depth.width);
         const dv = EDGE_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
@@ -529,7 +547,7 @@ export class DepthPointCloudAccumulator {
   }
 
   liveCoverageSnapshot(): LiveCoverageSnapshot {
-    const promotedPointCount = this.promotedCount;
+    const promotedPointCount = this.promotedRepresentativeCount;
     const active =
       this.integrationKeyframes >= LIVE_GUIDE_MIN_KEYFRAMES &&
       this.representativeCount >= LIVE_GUIDE_MIN_RETAINED &&
@@ -634,9 +652,8 @@ export class DepthPointCloudAccumulator {
 
     let readyCoverageCellCount = 0;
     for (const cell of this.coverageCells.values()) if (this.cellQuality(cell).ready) readyCoverageCellCount += 1;
-    const finalArray = Array.from(finalPositions);
-    const fullBounds = this.computeFullBounds(finalArray);
-    const bounds = this.computeRobustBounds(finalArray) ?? fullBounds;
+    const fullBounds = this.computeFullBounds(finalPositions);
+    const bounds = this.computeRobustBounds(finalPositions) ?? fullBounds;
     return {
       positions: finalPositions,
       confidence: finalConfidence,
@@ -719,9 +736,14 @@ export class DepthPointCloudAccumulator {
     const key = voxelKey(x, y, z, this.voxelSizeMeters);
     const bucket = this.voxelIndex.get(key) ?? [];
     if (bucket.length >= MAX_SURFELS_PER_FINE_VOXEL) {
-      const worst = bucket.slice().sort((a, b) => representativeScore(b) - representativeScore(a))[0];
+      let worst = bucket[0];
+      let worstScore = representativeScore(worst);
+      for (let index = 1; index < bucket.length; index += 1) {
+        const score = representativeScore(bucket[index]);
+        if (score > worstScore) { worst = bucket[index]; worstScore = score; }
+      }
       const probeQuality = this.candidatePriority(x, y, z);
-      if (probeQuality >= representativeScore(worst)) {
+      if (probeQuality >= worstScore) {
         this.discardedSampleCount += 1;
         return { accepted: false, changed: false, created: false, promoted: false };
       }
@@ -834,6 +856,7 @@ export class DepthPointCloudAccumulator {
       point.contradictionWeight < 1.5
     ) {
       point.promoted = true;
+      this.promotedRepresentativeCount += 1;
     }
   }
 
@@ -851,7 +874,10 @@ export class DepthPointCloudAccumulator {
     if (residual < mergeGateMeters(depthMeters, point) * 1.7) return;
     point.lastProcessedKeyframe = context.keyframeId;
     point.contradictionWeight = Math.min(6, point.contradictionWeight + Math.max(0.25, context.frameWeight));
-    if (point.promoted && point.contradictionWeight >= 2.75) point.promoted = false;
+    if (point.promoted && point.contradictionWeight >= 2.75) {
+      point.promoted = false;
+      this.promotedRepresentativeCount = Math.max(0, this.promotedRepresentativeCount - 1);
+    }
   }
 
   private findNearbyRepresentative(
@@ -861,21 +887,32 @@ export class DepthPointCloudAccumulator {
     normalEstimate: SurfaceNormalEstimate | null,
   ): RepresentativePoint | null {
     const [vx, vy, vz] = voxelCoordinates(x, y, z, this.voxelSizeMeters);
+    const normal = normalEstimate !== null && normalEstimate.confidence >= 0.35
+      ? normalEstimate.normal
+      : null;
     let best: RepresentativePoint | null = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestDistanceSquared = Number.POSITIVE_INFINITY;
     for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) for (let dz = -1; dz <= 1; dz += 1) {
       const bucket = this.voxelIndex.get(coordinateKey(vx + dx, vy + dy, vz + dz));
       if (bucket === undefined) continue;
       for (const point of bucket) {
-        if (
-          normalEstimate !== null && normalEstimate.confidence >= 0.35 && point.normalConfidence >= 0.35 &&
-          !normalsCompatible(
-            [point.normalX, point.normalY, point.normalZ],
-            normalEstimate.normal,
-          )
-        ) continue;
-        const distance = Math.hypot(x - point.x, y - point.y, z - point.z);
-        if (distance < bestDistance) { best = point; bestDistance = distance; }
+        if (normal !== null && point.normalConfidence >= 0.35) {
+          // Both stored surfel normals and fresh normal estimates are normalized.
+          // Compare their absolute dot product directly instead of allocating
+          // temporary vectors, re-normalizing twice and evaluating acos().
+          const absDot = Math.abs(
+            point.normalX * normal[0] + point.normalY * normal[1] + point.normalZ * normal[2],
+          );
+          if (absDot < NORMAL_COMPATIBILITY_ABS_DOT) continue;
+        }
+        const ddx = x - point.x;
+        const ddy = y - point.y;
+        const ddz = z - point.z;
+        const distanceSquared = ddx * ddx + ddy * ddy + ddz * ddz;
+        if (distanceSquared < bestDistanceSquared) {
+          best = point;
+          bestDistanceSquared = distanceSquared;
+        }
       }
     }
     return best;
@@ -988,9 +1025,12 @@ export class DepthPointCloudAccumulator {
     this.representatives.delete(point.id);
     const bucket = this.voxelIndex.get(point.voxelKey);
     if (bucket !== undefined) {
-      const filtered = bucket.filter((entry) => entry !== point);
-      if (filtered.length === 0) this.voxelIndex.delete(point.voxelKey);
-      else this.voxelIndex.set(point.voxelKey, filtered);
+      const index = bucket.indexOf(point);
+      if (index >= 0) bucket.splice(index, 1);
+      if (bucket.length === 0) this.voxelIndex.delete(point.voxelKey);
+    }
+    if (point.promoted) {
+      this.promotedRepresentativeCount = Math.max(0, this.promotedRepresentativeCount - 1);
     }
     this.representativeCount = Math.max(0, this.representativeCount - 1);
   }
@@ -1001,7 +1041,7 @@ export class DepthPointCloudAccumulator {
     }
     for (const point of remove) { this.removeRepresentative(point); this.staleTentativePruned += 1; }
   }
-  private computeFullBounds(positions: readonly number[]): PointCloudBounds | null {
+  private computeFullBounds(positions: ArrayLike<number>): PointCloudBounds | null {
     if (positions.length < 3) return null;
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -1012,7 +1052,7 @@ export class DepthPointCloudAccumulator {
     }
     return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
   }
-  private computeRobustBounds(positions: readonly number[]): PointCloudBounds | null {
+  private computeRobustBounds(positions: ArrayLike<number>): PointCloudBounds | null {
     const count = positions.length / 3;
     if (count < MIN_POINTS_FOR_ROBUST_BOUNDS) return null;
     const x = sortedAxis(positions, 0), y = sortedAxis(positions, 1), z = sortedAxis(positions, 2);
