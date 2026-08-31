@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 
 import './scan.css';
 
@@ -12,7 +12,7 @@ import {
   type ScanDisplayOptions,
   type ScanMode,
 } from './xr/scanDisplayModes';
-import type { ScanPointCloudSnapshot } from './xr/webxrRuntime';
+import type { ScanPointCloudSnapshot, WebXrCapabilities } from './xr/webxrRuntime';
 
 function formatMeters(value: number): string {
   return `${value.toFixed(2)} m`;
@@ -31,6 +31,7 @@ function extentFromBounds(
 
 export default function App() {
   const [xrSessionActive, setXrSessionActive] = useState(false);
+  const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
   const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
@@ -39,28 +40,28 @@ export default function App() {
     sequence: 0,
   });
 
-  const requestView = (preset: ViewPreset): void => {
+  const requestView = useCallback((preset: ViewPreset): void => {
     clientDiagnostics.info('SCAN_VIEW_PRESET', { preset });
     setViewCommand((current) => ({ preset, sequence: current.sequence + 1 }));
-  };
+  }, []);
 
-  const selectMode = (mode: ScanMode): void => {
+  const selectMode = useCallback((mode: ScanMode): void => {
     const next = displayForScanMode(mode);
     setScanMode(mode);
     setDisplay(next);
     clientDiagnostics.info('SCAN_RESULT_MODE', { mode, display: next });
-  };
+  }, []);
 
-  const toggleDisplay = (key: keyof ScanDisplayOptions): void => {
+  const toggleDisplay = useCallback((key: keyof ScanDisplayOptions): void => {
     setScanMode(null);
     setDisplay((current) => {
       const next = { ...current, [key]: !current[key] };
       clientDiagnostics.info('SCAN_RESULT_LAYER_TOGGLE', { layer: key, enabled: next[key] });
       return next;
     });
-  };
+  }, []);
 
-  const handleScanReady = (snapshot: ScanPointCloudSnapshot | null): void => {
+  const handleScanReady = useCallback((snapshot: ScanPointCloudSnapshot | null): void => {
     setScanSnapshot(snapshot);
     if (snapshot !== null) {
       selectMode('quality');
@@ -73,9 +74,11 @@ export default function App() {
       });
       void clientDiagnostics.flush();
     }
-  };
+  }, [selectMode]);
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
+  const httpsReady = xrCapabilities?.secureContext === true;
+  const webXrReady = xrCapabilities?.immersiveAr === true;
   const extent = extentFromBounds(scanSnapshot?.bounds ?? null);
   const stableBands = scanSnapshot === null
     ? { weak: 0, improving: 0, stable: 0 }
@@ -98,8 +101,12 @@ export default function App() {
             <h1>3D search volume</h1>
           </div>
           <div className="header-badges">
-            <span className="badge good">HTTPS</span>
-            <span className="badge good">WEBXR</span>
+            <span className={`badge ${httpsReady ? 'good' : 'warning'}`}>
+              HTTPS {httpsReady ? '✓' : '—'}
+            </span>
+            <span className={`badge ${webXrReady ? 'good' : 'warning'}`}>
+              WEBXR {webXrReady ? '✓' : '—'}
+            </span>
             <span className={`badge ${hasMeasuredScan ? 'good' : 'warning'}`}>
               {hasMeasuredScan ? 'VOLUME READY' : 'READY'}
             </span>
@@ -143,6 +150,7 @@ export default function App() {
       <XrRuntimePanel
         onSessionActiveChange={setXrSessionActive}
         onPointCloudReady={handleScanReady}
+        onCapabilitiesChange={setXrCapabilities}
       />
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
