@@ -207,14 +207,12 @@ esp_err_t web_server_routes_register(
         return ESP_ERR_INVALID_ARG;
     }
 
+    /*
+     * React/SD preparation is intentionally completed before Wi-Fi starts.
+     * Never perform FAT/SD work here: this function is called from the
+     * IP_EVENT_STA_GOT_IP system event context when HTTPS is started.
+     */
     esp_err_t err =
-        web_webui_prepare();
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
         web_server_register_root_and_health(
             server,
             web_server_secure_index_handler
