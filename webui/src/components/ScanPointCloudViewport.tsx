@@ -9,6 +9,8 @@ export interface ScanDisplayOptions {
   badPoints: boolean;
   dimensions: boolean;
   mesh: boolean;
+  freeAir: boolean;
+  unknownSpace: boolean;
 }
 
 interface ScanPointCloudViewportProps {
@@ -23,6 +25,8 @@ interface PreparedScene {
   badPositions: Float32Array;
   badConfidence: Float32Array;
   meshPositions: Float32Array;
+  freeAirPositions: Float32Array;
+  unknownPositions: Float32Array;
   boundsLines: Float32Array;
   extent: number;
   extentX: number;
@@ -82,7 +86,9 @@ function boundsLinePositions(
   for (const [a, b] of edges) {
     for (const index of [a, b]) {
       const point = corners[index];
-      raw[write++] = point[0]; raw[write++] = point[1]; raw[write++] = point[2];
+      raw[write++] = point[0];
+      raw[write++] = point[1];
+      raw[write++] = point[2];
     }
   }
   return transformProjectPositions(raw, centerX, centerY, centerZ);
@@ -102,12 +108,15 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
     confidence: snapshot.confidence,
     voxelSizeMeters: snapshot.voxelSizeMeters,
   });
+
   return {
     goodPositions: transformProjectPositions(snapshot.positions, centerX, centerY, centerZ),
     goodConfidence: snapshot.confidence,
     badPositions: transformProjectPositions(snapshot.tentativePositions, centerX, centerY, centerZ),
     badConfidence: snapshot.tentativeConfidence,
     meshPositions: transformProjectPositions(mesh.trianglePositions, centerX, centerY, centerZ),
+    freeAirPositions: transformProjectPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
+    unknownPositions: transformProjectPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
     boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ),
     extent: Math.max(0.8, extentX, extentY, extentZ),
     extentX,
@@ -122,7 +131,9 @@ function multiplyMat4(a: Float32Array, b: Float32Array): Float32Array {
   for (let column = 0; column < 4; column += 1) {
     for (let row = 0; row < 4; row += 1) {
       let value = 0;
-      for (let inner = 0; inner < 4; inner += 1) value += a[inner * 4 + row] * b[column * 4 + inner];
+      for (let inner = 0; inner < 4; inner += 1) {
+        value += a[inner * 4 + row] * b[column * 4 + inner];
+      }
       out[column * 4 + row] = value;
     }
   }
@@ -132,8 +143,10 @@ function multiplyMat4(a: Float32Array, b: Float32Array): Float32Array {
 function perspectiveMatrix(aspect: number, near: number, far: number): Float32Array {
   const f = 1 / Math.tan((50 * Math.PI / 180) * 0.5);
   const out = new Float32Array(16);
-  out[0] = f / aspect; out[5] = f;
-  out[10] = (far + near) / (near - far); out[11] = -1;
+  out[0] = f / aspect;
+  out[5] = f;
+  out[10] = (far + near) / (near - far);
+  out[11] = -1;
   out[14] = (2 * far * near) / (near - far);
   return out;
 }
@@ -163,32 +176,43 @@ function lookAtMatrix(eyeX: number, eyeY: number, eyeZ: number): Float32Array {
 function createShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
   if (shader === null) throw new Error('WebGL shader allocation failed.');
-  gl.shaderSource(shader, source); gl.compileShader(shader);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     const info = gl.getShaderInfoLog(shader) ?? 'Unknown shader compile error';
-    gl.deleteShader(shader); throw new Error(info);
+    gl.deleteShader(shader);
+    throw new Error(info);
   }
   return shader;
 }
 
-function linkProgram(gl: WebGLRenderingContext, vertexSource: string, fragmentSource: string): WebGLProgram {
+function linkProgram(
+  gl: WebGLRenderingContext,
+  vertexSource: string,
+  fragmentSource: string,
+): WebGLProgram {
   const vertex = createShader(gl, gl.VERTEX_SHADER, vertexSource);
   const fragment = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
   const program = gl.createProgram();
   if (program === null) {
-    gl.deleteShader(vertex); gl.deleteShader(fragment);
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
     throw new Error('WebGL program allocation failed.');
   }
-  gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
-  gl.deleteShader(vertex); gl.deleteShader(fragment);
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const info = gl.getProgramInfoLog(program) ?? 'Unknown WebGL link error';
-    gl.deleteProgram(program); throw new Error(info);
+    gl.deleteProgram(program);
+    throw new Error(info);
   }
   return program;
 }
 
-function createPointProgram(gl: WebGLRenderingContext): WebGLProgram {
+function createConfidencePointProgram(gl: WebGLRenderingContext): WebGLProgram {
   return linkProgram(gl, `
     attribute vec3 aPosition;
     attribute float aConfidence;
@@ -217,6 +241,26 @@ function createPointProgram(gl: WebGLRenderingContext): WebGLProgram {
   `);
 }
 
+function createVolumePointProgram(gl: WebGLRenderingContext): WebGLProgram {
+  return linkProgram(gl, `
+    attribute vec3 aPosition;
+    uniform mat4 uViewProjection;
+    uniform float uPointSize;
+    void main() {
+      gl_Position = uViewProjection * vec4(aPosition, 1.0);
+      gl_PointSize = uPointSize;
+    }
+  `, `
+    precision mediump float;
+    uniform vec4 uColor;
+    void main() {
+      vec2 p = gl_PointCoord * 2.0 - 1.0;
+      if (dot(p, p) > 1.0) discard;
+      gl_FragColor = uColor;
+    }
+  `);
+}
+
 function createSolidProgram(gl: WebGLRenderingContext): WebGLProgram {
   return linkProgram(gl, `
     attribute vec3 aPosition;
@@ -231,9 +275,16 @@ function createSolidProgram(gl: WebGLRenderingContext): WebGLProgram {
 
 function applyPreset(orbit: OrbitState, command: ViewCommand, extent: number): void {
   orbit.distance = Math.max(1.5, extent * 1.7);
-  if (command.preset === 'top') { orbit.yaw = 0; orbit.pitch = Math.PI * 0.5 - 0.035; }
-  else if (command.preset === 'front') { orbit.yaw = 0; orbit.pitch = 0.12; }
-  else { orbit.yaw = 0.72; orbit.pitch = 0.48; }
+  if (command.preset === 'top') {
+    orbit.yaw = 0;
+    orbit.pitch = Math.PI * 0.5 - 0.035;
+  } else if (command.preset === 'front') {
+    orbit.yaw = 0;
+    orbit.pitch = 0.12;
+  } else {
+    orbit.yaw = 0.72;
+    orbit.pitch = 0.48;
+  }
 }
 
 export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanPointCloudViewportProps) {
@@ -244,38 +295,75 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
     const canvas = canvasRef.current;
     if (canvas === null) return;
     const gl = canvas.getContext('webgl', {
-      alpha: false, antialias: true, depth: true, preserveDrawingBuffer: false,
+      alpha: false,
+      antialias: true,
+      depth: true,
+      preserveDrawingBuffer: false,
     });
     if (gl === null) return;
 
-    const pointProgram = createPointProgram(gl);
+    const confidenceProgram = createConfidencePointProgram(gl);
+    const volumeProgram = createVolumePointProgram(gl);
     const solidProgram = createSolidProgram(gl);
-    const pointPosition = gl.getAttribLocation(pointProgram, 'aPosition');
-    const pointConfidence = gl.getAttribLocation(pointProgram, 'aConfidence');
-    const pointMatrix = gl.getUniformLocation(pointProgram, 'uViewProjection');
-    const pointScale = gl.getUniformLocation(pointProgram, 'uPointScale');
+
+    const confidencePosition = gl.getAttribLocation(confidenceProgram, 'aPosition');
+    const confidenceValue = gl.getAttribLocation(confidenceProgram, 'aConfidence');
+    const confidenceMatrix = gl.getUniformLocation(confidenceProgram, 'uViewProjection');
+    const confidenceScale = gl.getUniformLocation(confidenceProgram, 'uPointScale');
+    const volumePosition = gl.getAttribLocation(volumeProgram, 'aPosition');
+    const volumeMatrix = gl.getUniformLocation(volumeProgram, 'uViewProjection');
+    const volumePointSize = gl.getUniformLocation(volumeProgram, 'uPointSize');
+    const volumeColor = gl.getUniformLocation(volumeProgram, 'uColor');
     const solidPosition = gl.getAttribLocation(solidProgram, 'aPosition');
     const solidMatrix = gl.getUniformLocation(solidProgram, 'uViewProjection');
     const solidColor = gl.getUniformLocation(solidProgram, 'uColor');
-    const goodBuffer = gl.createBuffer(); const goodConfidenceBuffer = gl.createBuffer();
-    const badBuffer = gl.createBuffer(); const badConfidenceBuffer = gl.createBuffer();
-    const meshBuffer = gl.createBuffer(); const boundsBuffer = gl.createBuffer();
-    if ([pointMatrix, pointScale, solidMatrix, solidColor, goodBuffer, goodConfidenceBuffer, badBuffer, badConfidenceBuffer, meshBuffer, boundsBuffer].some((value) => value === null)) {
-      gl.deleteProgram(pointProgram); gl.deleteProgram(solidProgram); return;
+
+    const goodBuffer = gl.createBuffer();
+    const goodConfidenceBuffer = gl.createBuffer();
+    const badBuffer = gl.createBuffer();
+    const badConfidenceBuffer = gl.createBuffer();
+    const meshBuffer = gl.createBuffer();
+    const freeAirBuffer = gl.createBuffer();
+    const unknownBuffer = gl.createBuffer();
+    const boundsBuffer = gl.createBuffer();
+
+    if ([
+      confidenceMatrix, confidenceScale, volumeMatrix, volumePointSize, volumeColor,
+      solidMatrix, solidColor, goodBuffer, goodConfidenceBuffer, badBuffer,
+      badConfidenceBuffer, meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
+    ].some((value) => value === null)) {
+      gl.deleteProgram(confidenceProgram);
+      gl.deleteProgram(volumeProgram);
+      gl.deleteProgram(solidProgram);
+      return;
     }
 
     const upload = (buffer: WebGLBuffer, data: Float32Array): void => {
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     };
-    upload(goodBuffer!, prepared.goodPositions); upload(goodConfidenceBuffer!, prepared.goodConfidence);
-    upload(badBuffer!, prepared.badPositions); upload(badConfidenceBuffer!, prepared.badConfidence);
-    upload(meshBuffer!, prepared.meshPositions); upload(boundsBuffer!, prepared.boundsLines);
+    upload(goodBuffer!, prepared.goodPositions);
+    upload(goodConfidenceBuffer!, prepared.goodConfidence);
+    upload(badBuffer!, prepared.badPositions);
+    upload(badConfidenceBuffer!, prepared.badConfidence);
+    upload(meshBuffer!, prepared.meshPositions);
+    upload(freeAirBuffer!, prepared.freeAirPositions);
+    upload(unknownBuffer!, prepared.unknownPositions);
+    upload(boundsBuffer!, prepared.boundsLines);
 
-    const orbit: OrbitState = { yaw: 0.72, pitch: 0.48, distance: Math.max(1.5, prepared.extent * 1.7) };
+    const orbit: OrbitState = {
+      yaw: 0.72,
+      pitch: 0.48,
+      distance: Math.max(1.5, prepared.extent * 1.7),
+    };
     applyPreset(orbit, viewCommand, prepared.extent);
-    let pointerId: number | null = null; let previousX = 0; let previousY = 0; let animationFrame = 0;
 
-    const drawPoints = (
+    let pointerId: number | null = null;
+    let previousX = 0;
+    let previousY = 0;
+    let animationFrame = 0;
+
+    const drawConfidencePoints = (
       positionBuffer: WebGLBuffer,
       confidenceBuffer: WebGLBuffer,
       count: number,
@@ -283,14 +371,37 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
       dpr: number,
     ): void => {
       if (count <= 0) return;
-      gl.useProgram(pointProgram);
-      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.enableVertexAttribArray(pointPosition);
-      gl.vertexAttribPointer(pointPosition, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, confidenceBuffer); gl.enableVertexAttribArray(pointConfidence);
-      gl.vertexAttribPointer(pointConfidence, 1, gl.FLOAT, false, 0, 0);
-      gl.uniformMatrix4fv(pointMatrix, false, matrix); gl.uniform1f(pointScale, Math.min(dpr, 1.5));
+      gl.useProgram(confidenceProgram);
+      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+      gl.enableVertexAttribArray(confidencePosition);
+      gl.vertexAttribPointer(confidencePosition, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, confidenceBuffer);
+      gl.enableVertexAttribArray(confidenceValue);
+      gl.vertexAttribPointer(confidenceValue, 1, gl.FLOAT, false, 0, 0);
+      gl.uniformMatrix4fv(confidenceMatrix, false, matrix);
+      gl.uniform1f(confidenceScale, Math.min(dpr, 1.5));
       gl.drawArrays(gl.POINTS, 0, count);
-      gl.disableVertexAttribArray(pointPosition); gl.disableVertexAttribArray(pointConfidence);
+      gl.disableVertexAttribArray(confidencePosition);
+      gl.disableVertexAttribArray(confidenceValue);
+    };
+
+    const drawVolumePoints = (
+      buffer: WebGLBuffer,
+      count: number,
+      matrix: Float32Array,
+      pointSize: number,
+      color: readonly [number, number, number, number],
+    ): void => {
+      if (count <= 0) return;
+      gl.useProgram(volumeProgram);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.enableVertexAttribArray(volumePosition);
+      gl.vertexAttribPointer(volumePosition, 3, gl.FLOAT, false, 0, 0);
+      gl.uniformMatrix4fv(volumeMatrix, false, matrix);
+      gl.uniform1f(volumePointSize, pointSize);
+      gl.uniform4f(volumeColor, ...color);
+      gl.drawArrays(gl.POINTS, 0, count);
+      gl.disableVertexAttribArray(volumePosition);
     };
 
     const drawSolid = (
@@ -301,86 +412,195 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display }: ScanP
       color: readonly [number, number, number, number],
     ): void => {
       if (count <= 0) return;
-      gl.useProgram(solidProgram); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.enableVertexAttribArray(solidPosition); gl.vertexAttribPointer(solidPosition, 3, gl.FLOAT, false, 0, 0);
-      gl.uniformMatrix4fv(solidMatrix, false, matrix); gl.uniform4f(solidColor, ...color);
-      gl.drawArrays(primitive, 0, count); gl.disableVertexAttribArray(solidPosition);
+      gl.useProgram(solidProgram);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.enableVertexAttribArray(solidPosition);
+      gl.vertexAttribPointer(solidPosition, 3, gl.FLOAT, false, 0, 0);
+      gl.uniformMatrix4fv(solidMatrix, false, matrix);
+      gl.uniform4f(solidColor, ...color);
+      gl.drawArrays(primitive, 0, count);
+      gl.disableVertexAttribArray(solidPosition);
     };
 
     const draw = (): void => {
-      const rect = canvas.getBoundingClientRect(); const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      const width = Math.max(1, Math.round(rect.width * dpr)); const height = Math.max(1, Math.round(rect.height * dpr));
-      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-      gl.viewport(0, 0, width, height); gl.enable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.clearColor(0.027, 0.063, 0.098, 1);
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const width = Math.max(1, Math.round(rect.width * dpr));
+      const height = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+
+      gl.viewport(0, 0, width, height);
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.clearColor(0.027, 0.063, 0.098, 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       const horizontal = Math.cos(orbit.pitch) * orbit.distance;
-      const eyeX = Math.sin(orbit.yaw) * horizontal; const eyeY = Math.sin(orbit.pitch) * orbit.distance;
+      const eyeX = Math.sin(orbit.yaw) * horizontal;
+      const eyeY = Math.sin(orbit.pitch) * orbit.distance;
       const eyeZ = Math.cos(orbit.yaw) * horizontal;
-      const projection = perspectiveMatrix(width / height, Math.max(0.01, prepared.extent * 0.003), Math.max(20, prepared.extent * 12));
+      const projection = perspectiveMatrix(
+        width / height,
+        Math.max(0.01, prepared.extent * 0.003),
+        Math.max(20, prepared.extent * 12),
+      );
       const matrix = multiplyMat4(projection, lookAtMatrix(eyeX, eyeY, eyeZ));
+
+      // Unknown is not "solid rubble". It is deliberately translucent candidate
+      // volume: the camera has not proved it free and the seismic source may be there.
+      if (display.unknownSpace) {
+        gl.depthMask(false);
+        drawVolumePoints(
+          unknownBuffer!,
+          prepared.unknownPositions.length / 3,
+          matrix,
+          Math.max(2.0, 2.6 * dpr),
+          [0.98, 0.67, 0.16, 0.13],
+        );
+        gl.depthMask(true);
+      }
+
+      // Ray-verified free space is a different semantic class from low-confidence
+      // surface points, so it is intentionally blue rather than reusing confidence colours.
+      if (display.freeAir) {
+        gl.depthMask(false);
+        drawVolumePoints(
+          freeAirBuffer!,
+          prepared.freeAirPositions.length / 3,
+          matrix,
+          Math.max(2.0, 2.8 * dpr),
+          [0.18, 0.68, 1.00, 0.30],
+        );
+        gl.depthMask(true);
+      }
 
       if (display.mesh) {
         gl.depthMask(false);
-        drawSolid(meshBuffer!, gl.TRIANGLES, prepared.meshPositions.length / 3, matrix, [0.28, 0.78, 0.82, 0.27]);
+        drawSolid(
+          meshBuffer!,
+          gl.TRIANGLES,
+          prepared.meshPositions.length / 3,
+          matrix,
+          [0.28, 0.78, 0.82, 0.27],
+        );
         gl.depthMask(true);
       }
-      if (display.badPoints) drawPoints(badBuffer!, badConfidenceBuffer!, snapshot.tentativePointCount, matrix, dpr);
-      if (display.goodPoints) drawPoints(goodBuffer!, goodConfidenceBuffer!, snapshot.pointCount, matrix, dpr);
+      if (display.badPoints) {
+        drawConfidencePoints(
+          badBuffer!,
+          badConfidenceBuffer!,
+          snapshot.tentativePointCount,
+          matrix,
+          dpr,
+        );
+      }
+      if (display.goodPoints) {
+        drawConfidencePoints(
+          goodBuffer!,
+          goodConfidenceBuffer!,
+          snapshot.pointCount,
+          matrix,
+          dpr,
+        );
+      }
       if (display.dimensions) {
         gl.lineWidth(1);
-        drawSolid(boundsBuffer!, gl.LINES, prepared.boundsLines.length / 3, matrix, [0.82, 0.90, 1.0, 0.90]);
+        drawSolid(
+          boundsBuffer!,
+          gl.LINES,
+          prepared.boundsLines.length / 3,
+          matrix,
+          [0.82, 0.90, 1.0, 0.90],
+        );
       }
     };
 
-    const requestDraw = (): void => { cancelAnimationFrame(animationFrame); animationFrame = requestAnimationFrame(draw); };
+    const requestDraw = (): void => {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(draw);
+    };
+
     const handlePointerDown = (event: PointerEvent): void => {
-      pointerId = event.pointerId; previousX = event.clientX; previousY = event.clientY; canvas.setPointerCapture(event.pointerId);
+      pointerId = event.pointerId;
+      previousX = event.clientX;
+      previousY = event.clientY;
+      canvas.setPointerCapture(event.pointerId);
     };
     const handlePointerMove = (event: PointerEvent): void => {
       if (pointerId !== event.pointerId) return;
-      const deltaX = event.clientX - previousX; const deltaY = event.clientY - previousY;
-      previousX = event.clientX; previousY = event.clientY;
-      orbit.yaw -= deltaX * 0.008; orbit.pitch = clamp(orbit.pitch + deltaY * 0.006, -1.45, 1.45); requestDraw();
+      const deltaX = event.clientX - previousX;
+      const deltaY = event.clientY - previousY;
+      previousX = event.clientX;
+      previousY = event.clientY;
+      orbit.yaw -= deltaX * 0.008;
+      orbit.pitch = clamp(orbit.pitch + deltaY * 0.006, -1.45, 1.45);
+      requestDraw();
     };
     const handlePointerUp = (event: PointerEvent): void => {
-      if (pointerId === event.pointerId) { pointerId = null; canvas.releasePointerCapture(event.pointerId); }
+      if (pointerId === event.pointerId) {
+        pointerId = null;
+        canvas.releasePointerCapture(event.pointerId);
+      }
     };
     const handleWheel = (event: WheelEvent): void => {
-      event.preventDefault(); orbit.distance = clamp(
+      event.preventDefault();
+      orbit.distance = clamp(
         orbit.distance * Math.exp(event.deltaY * 0.0012),
-        Math.max(0.25, prepared.extent * 0.12), Math.max(16, prepared.extent * 8),
-      ); requestDraw();
+        Math.max(0.25, prepared.extent * 0.12),
+        Math.max(16, prepared.extent * 8),
+      );
+      requestDraw();
     };
 
-    const resizeObserver = new ResizeObserver(requestDraw); resizeObserver.observe(canvas);
-    canvas.addEventListener('pointerdown', handlePointerDown); canvas.addEventListener('pointermove', handlePointerMove);
-    canvas.addEventListener('pointerup', handlePointerUp); canvas.addEventListener('pointercancel', handlePointerUp);
-    canvas.addEventListener('wheel', handleWheel, { passive: false }); requestDraw();
+    const resizeObserver = new ResizeObserver(requestDraw);
+    resizeObserver.observe(canvas);
+    canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('pointermove', handlePointerMove);
+    canvas.addEventListener('pointerup', handlePointerUp);
+    canvas.addEventListener('pointercancel', handlePointerUp);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    requestDraw();
 
     return () => {
-      cancelAnimationFrame(animationFrame); resizeObserver.disconnect();
-      canvas.removeEventListener('pointerdown', handlePointerDown); canvas.removeEventListener('pointermove', handlePointerMove);
-      canvas.removeEventListener('pointerup', handlePointerUp); canvas.removeEventListener('pointercancel', handlePointerUp);
+      cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+      canvas.removeEventListener('pointerdown', handlePointerDown);
+      canvas.removeEventListener('pointermove', handlePointerMove);
+      canvas.removeEventListener('pointerup', handlePointerUp);
+      canvas.removeEventListener('pointercancel', handlePointerUp);
       canvas.removeEventListener('wheel', handleWheel);
-      for (const buffer of [goodBuffer, goodConfidenceBuffer, badBuffer, badConfidenceBuffer, meshBuffer, boundsBuffer]) if (buffer !== null) gl.deleteBuffer(buffer);
-      gl.deleteProgram(pointProgram); gl.deleteProgram(solidProgram);
+      for (const buffer of [
+        goodBuffer, goodConfidenceBuffer, badBuffer, badConfidenceBuffer,
+        meshBuffer, freeAirBuffer, unknownBuffer, boundsBuffer,
+      ]) {
+        if (buffer !== null) gl.deleteBuffer(buffer);
+      }
+      gl.deleteProgram(confidenceProgram);
+      gl.deleteProgram(volumeProgram);
+      gl.deleteProgram(solidProgram);
     };
   }, [prepared, snapshot.pointCount, snapshot.tentativePointCount, viewCommand, display]);
 
   return (
-    <div className="viewport-shell scan-viewport" aria-label="Measured WebXR depth reconstruction">
+    <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume">
       <canvas ref={canvasRef} className="scan-webgl-canvas" />
       <div className="scan-source-badge">
-        GOOD {snapshot.pointCount.toLocaleString()} · TENTATIVE {snapshot.tentativePointCount.toLocaleString()}
+        SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()}
       </div>
       {display.dimensions && (
         <div className="scan-dimension-overlay">
           X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m
         </div>
       )}
-      {display.mesh && <div className="scan-mesh-overlay">MESH {prepared.meshTriangles.toLocaleString()} triangles</div>}
+      {display.mesh && (
+        <div className="scan-mesh-overlay">
+          SURFACE BOUNDARY · {prepared.meshTriangles.toLocaleString()} triangles
+        </div>
+      )}
       <div className="axis-note">X / Y = local horizontal · Z = height · drag to orbit</div>
     </div>
   );
