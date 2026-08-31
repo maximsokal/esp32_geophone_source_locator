@@ -74,11 +74,18 @@ interface ManualPointerState {
   dragging: boolean;
   movePointId: number | null;
   timer: number | null;
+  captureActive: boolean;
 }
 
-const LONG_PRESS_MS = 450;
-const MOVE_UPDATE_MS = 75;
-const TAP_SLOP_PX = 14;
+interface ManualCursorState {
+  u: number;
+  v: number;
+  phase: 'aim' | 'pending' | 'dragging' | 'confirmed';
+}
+
+const LONG_PRESS_MS = 380;
+const MOVE_UPDATE_MS = 70;
+const TAP_SLOP_PX = 16;
 
 function phaseLabel(state: WebXrRuntimeState): string {
   if (state.phase === 'starting') return 'STARTING';
@@ -91,9 +98,7 @@ function phaseLabel(state: WebXrRuntimeState): string {
   if (!state.tracking) return 'FINDING TRACKING';
   if (!state.depthAvailable) return 'DEPTH UNAVAILABLE';
   if (state.motionState === 'too-fast') return 'MOVE SLOWER';
-  if (state.motionState === 'stationary' || state.motionState === 'redundant') {
-    return 'MOVE TO A NEW VIEW';
-  }
+  if (state.motionState === 'stationary' || state.motionState === 'redundant') return 'MOVE TO A NEW VIEW';
   if (!state.coverageGuideActive) return 'BUILDING SURFACE';
   return 'SCANNING';
 }
@@ -132,16 +137,15 @@ function normalizedPointer(event: React.PointerEvent<HTMLElement>): readonly [nu
   ];
 }
 
-export function XrRuntimePanel({
-  onSessionActiveChange,
-  onPointCloudReady,
-}: XrRuntimePanelProps) {
+export function XrRuntimePanel({ onSessionActiveChange, onPointCloudReady }: XrRuntimePanelProps) {
   const runtime = useMemo(() => new WebXrRuntime(), []);
   const [capabilities, setCapabilities] = useState<WebXrCapabilities | null>(null);
   const [runtimeState, setRuntimeState] = useState<WebXrRuntimeState>(emptyRuntimeState);
   const [manualMode, setManualMode] = useState(false);
+  const [manualCursor, setManualCursor] = useState<ManualCursorState>({ u: 0.5, v: 0.5, phase: 'aim' });
   const manualPointer = useRef<ManualPointerState | null>(null);
   const lastMoveUpdateMs = useRef(0);
+  const previousManualCount = useRef(0);
 
   useEffect(() => {
     const unsubscribe = runtime.subscribe(setRuntimeState);
@@ -162,12 +166,12 @@ export function XrRuntimePanel({
   }, [runtime]);
 
   useEffect(() => {
-    const active =
-      runtimeState.phase === 'starting' ||
-      runtimeState.phase === 'running' ||
-      runtimeState.phase === 'stopping';
+    const active = runtimeState.phase === 'starting' || runtimeState.phase === 'running' || runtimeState.phase === 'stopping';
     onSessionActiveChange?.(active);
-    if (!active) setManualMode(false);
+    if (!active) {
+      setManualMode(false);
+      manualPointer.current = null;
+    }
   }, [onSessionActiveChange, runtimeState.phase]);
 
   useEffect(() => {
@@ -176,17 +180,23 @@ export function XrRuntimePanel({
     } else if (runtimeState.phase === 'ended' && runtimeState.pointCount > 0) {
       onPointCloudReady?.(runtime.getPointCloudSnapshot());
     }
-    // An unexpected XR end is intentionally NOT finalized as a valid scan.
   }, [onPointCloudReady, runtime, runtimeState.phase, runtimeState.pointCount]);
+
+  useEffect(() => {
+    if (runtimeState.manualPointCount > previousManualCount.current) {
+      setManualCursor((current) => ({ ...current, phase: 'confirmed' }));
+    }
+    previousManualCount.current = runtimeState.manualPointCount;
+  }, [runtimeState.manualPointCount]);
 
   const running = runtimeState.phase === 'running';
   const busy = runtimeState.phase === 'starting' || runtimeState.phase === 'stopping';
-  const canStart =
-    capabilities?.secureContext === true &&
-    capabilities.webGl === true &&
-    capabilities.xrApi === true &&
-    capabilities.immersiveAr === true &&
-    !running && !busy;
+  const canStart = capabilities?.secureContext === true
+    && capabilities.webGl === true
+    && capabilities.xrApi === true
+    && capabilities.immersiveAr === true
+    && !running
+    && !busy;
   const readyVisible = `${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
 
   const clearManualTimer = (): void => {
@@ -197,17 +207,33 @@ export function XrRuntimePanel({
     }
   };
 
-  const queueManualAtEvent = (event: React.PointerEvent<HTMLElement>, pointId: number | null): void => {
+  const queueManualAtEvent = (event: React.PointerEvent<HTMLElement>, pointId: number | null): readonly [number, number] => {
     const [u, v] = normalizedPointer(event);
     runtime.queueManualPointAtNormalized(u, v, pointId);
+    setManualCursor({ u, v, phase: pointId === null ? 'pending' : 'dragging' });
+    return [u, v];
   };
 
   const handleManualPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (!running || !manualMode) return;
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    let captureActive = false;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      captureActive = true;
+    } catch (error) {
+      clientDiagnostics.warn('XR_MANUAL_POINTER_CAPTURE_UNAVAILABLE', error);
+    }
     const movePointId = runtime.getLastManualPointId();
     const [startU, startV] = normalizedPointer(event);
+    setManualCursor({ u: startU, v: startV, phase: 'aim' });
+    clientDiagnostics.info('XR_MANUAL_POINTER_DOWN', {
+      u: Number(startU.toFixed(3)),
+      v: Number(startV.toFixed(3)),
+      movePointId,
+      captureActive,
+    });
+
     const pointerId = event.pointerId;
     const state: ManualPointerState = {
       pointerId,
@@ -220,12 +246,14 @@ export function XrRuntimePanel({
       dragging: false,
       movePointId,
       timer: null,
+      captureActive,
     };
     state.timer = window.setTimeout(() => {
       const current = manualPointer.current;
       if (current === null || current.pointerId !== pointerId || current.movePointId === null) return;
       current.dragging = true;
       runtime.queueManualPointAtNormalized(current.startU, current.startV, current.movePointId);
+      setManualCursor({ u: current.startU, v: current.startV, phase: 'dragging' });
       clientDiagnostics.info('XR_MANUAL_DRAG_BEGIN', { id: current.movePointId });
     }, LONG_PRESS_MS);
     manualPointer.current = state;
@@ -236,11 +264,13 @@ export function XrRuntimePanel({
     if (pointer === null || pointer.pointerId !== event.pointerId) return;
     pointer.latestX = event.clientX;
     pointer.latestY = event.clientY;
+    const [u, v] = normalizedPointer(event);
+    setManualCursor({ u, v, phase: pointer.dragging ? 'dragging' : 'aim' });
     if (!pointer.dragging || pointer.movePointId === null) return;
     const now = performance.now();
     if (now - lastMoveUpdateMs.current < MOVE_UPDATE_MS) return;
     lastMoveUpdateMs.current = now;
-    queueManualAtEvent(event, pointer.movePointId);
+    runtime.queueManualPointAtNormalized(u, v, pointer.movePointId);
   };
 
   const handleManualPointerUp = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -249,18 +279,51 @@ export function XrRuntimePanel({
     clearManualTimer();
     const moved = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY);
     if (pointer.dragging && pointer.movePointId !== null) {
-      queueManualAtEvent(event, pointer.movePointId);
+      const [u, v] = queueManualAtEvent(event, pointer.movePointId);
+      clientDiagnostics.info('XR_MANUAL_POINTER_MOVE_COMMIT', {
+        id: pointer.movePointId,
+        u: Number(u.toFixed(3)),
+        v: Number(v.toFixed(3)),
+      });
     } else if (moved <= TAP_SLOP_PX) {
-      queueManualAtEvent(event, null);
+      const [u, v] = queueManualAtEvent(event, null);
+      clientDiagnostics.info('XR_MANUAL_POINTER_TAP', {
+        u: Number(u.toFixed(3)),
+        v: Number(v.toFixed(3)),
+      });
+      void clientDiagnostics.flush();
+    } else {
+      clientDiagnostics.info('XR_MANUAL_POINTER_CANCELLED_MOVE', { movedPx: Math.round(moved) });
     }
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (pointer.captureActive) {
+      try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    }
     manualPointer.current = null;
   };
 
   const handleManualPointerCancel = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const pointer = manualPointer.current;
     clearManualTimer();
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (pointer?.captureActive) {
+      try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    }
     manualPointer.current = null;
+    setManualCursor((current) => ({ ...current, phase: 'aim' }));
+    clientDiagnostics.info('XR_MANUAL_POINTER_CANCEL');
+  };
+
+  const toggleManualMode = (): void => {
+    setManualMode((value) => {
+      const next = !value;
+      if (!next) {
+        clearManualTimer();
+        manualPointer.current = null;
+      }
+      setManualCursor((current) => ({ ...current, phase: 'aim' }));
+      clientDiagnostics.info('XR_MANUAL_MODE', { enabled: next, points: runtimeState.manualPointCount });
+      void clientDiagnostics.flush();
+      return next;
+    });
   };
 
   return (
@@ -275,43 +338,21 @@ export function XrRuntimePanel({
         </div>
 
         <div className="xr-compact-status">
-          <span className={capabilities?.immersiveAr ? 'good-text' : 'bad-text'}>
-            WebXR {capabilities?.immersiveAr ? '✓' : '—'}
-          </span>
-          <span className={runtimeState.depthAvailable ? 'good-text' : ''}>
-            Depth {runtimeState.depthAvailable ? '✓' : runtimeState.phase === 'idle' ? 'on start' : '—'}
-          </span>
-          <span className={runtimeState.wakeLockActive ? 'good-text' : ''}>
-            Screen {runtimeState.wakeLockActive ? 'awake ✓' : capabilities?.wakeLockApi ? 'wake-ready' : 'wake-lock —'}
-          </span>
+          <span className={capabilities?.immersiveAr ? 'good-text' : 'bad-text'}>WebXR {capabilities?.immersiveAr ? '✓' : '—'}</span>
+          <span className={runtimeState.depthAvailable ? 'good-text' : ''}>Depth {runtimeState.depthAvailable ? '✓' : runtimeState.phase === 'idle' ? 'on start' : '—'}</span>
+          <span className={runtimeState.wakeLockActive ? 'good-text' : ''}>Screen {runtimeState.wakeLockActive ? 'awake ✓' : capabilities?.wakeLockApi ? 'wake-ready' : 'wake-lock —'}</span>
         </div>
 
         <div className="xr-runtime-controls xr-runtime-controls-compact">
-          <button
-            type="button"
-            className="xr-start-button"
-            disabled={!canStart}
-            onClick={() => void runtime.start()}
-          >
+          <button type="button" className="xr-start-button" disabled={!canStart} onClick={() => void runtime.start()}>
             {runtimeState.phase === 'interrupted' ? 'Discard partial & start again' : 'Start 3D scan'}
           </button>
-          <div className="xr-finish-explainer">
-            Finish &amp; save is shown over the camera while AR scanning is active.
-          </div>
+          <div className="xr-finish-explainer">Finish &amp; save is shown over the camera while AR scanning is active.</div>
         </div>
 
-        {runtimeState.phase === 'interrupted' && (
-          <div className="xr-runtime-warning" role="status">
-            XR session ended unexpectedly. Partial geometry is retained in memory but was not marked READY because a new XR session may use a different reference frame.
-          </div>
-        )}
-
-        {runtimeState.depthError !== null && (
-          <div className="xr-runtime-warning" role="status">{runtimeState.depthError}</div>
-        )}
-        {runtimeState.error !== null && (
-          <div className="xr-runtime-error" role="alert">{runtimeState.error}</div>
-        )}
+        {runtimeState.phase === 'interrupted' && <div className="xr-runtime-warning" role="status">XR session ended unexpectedly. Partial geometry is retained in memory but was not marked READY because a new XR session may use a different reference frame.</div>}
+        {runtimeState.depthError !== null && <div className="xr-runtime-warning" role="status">{runtimeState.depthError}</div>}
+        {runtimeState.error !== null && <div className="xr-runtime-error" role="alert">{runtimeState.error}</div>}
 
         <details className="xr-technical-details">
           <summary>Technical details</summary>
@@ -351,18 +392,21 @@ export function XrRuntimePanel({
             onPointerUp={handleManualPointerUp}
             onPointerCancel={handleManualPointerCancel}
           >
-            <div className="xr-manual-reticle" aria-hidden="true" />
-            <div className="xr-manual-instruction">
-              Tap a visible corner to pin it · hold and drag to move the last pin
+            <div
+              className={`xr-manual-reticle ${manualCursor.phase}`}
+              style={{ left: `${manualCursor.u * 100}%`, top: `${manualCursor.v * 100}%` }}
+              aria-hidden="true"
+            />
+            <div className="xr-manual-cursor-state" style={{ left: `${manualCursor.u * 100}%`, top: `${manualCursor.v * 100}%` }}>
+              {manualCursor.phase === 'pending' ? 'DEPTH…' : manualCursor.phase === 'dragging' ? 'MOVE PIN' : manualCursor.phase === 'confirmed' ? `PIN ${runtimeState.manualPointCount} ✓` : 'AIM'}
             </div>
+            <div className="xr-manual-instruction">Tap a visible corner = add 3D pin · hold and drag = move the last pin</div>
           </div>
         )}
 
         <div className="xr-overlay-card xr-overlay-card-compact">
           <div className="xr-overlay-topline">
-            <strong className={runtimeState.motionState === 'too-fast' ? 'bad-text' : ''}>
-              {phaseLabel(runtimeState)}
-            </strong>
+            <strong className={runtimeState.motionState === 'too-fast' ? 'bad-text' : ''}>{phaseLabel(runtimeState)}</strong>
             <span>{runtimeState.wakeLockActive ? 'SCREEN LOCK ✓' : ''}</span>
           </div>
 
@@ -381,18 +425,10 @@ export function XrRuntimePanel({
             </div>
           )}
 
-          {runtimeState.scanPaused && (
-            <div className="xr-overlay-warning">Scan paused while XR is hidden. It will continue if this XR session becomes visible again.</div>
-          )}
-          {runtimeState.motionState === 'too-fast' && (
-            <div className="xr-overlay-warning">Move slower — this depth sample is not being fused.</div>
-          )}
-          {(runtimeState.motionState === 'stationary' || runtimeState.motionState === 'redundant') && (
-            <div className="xr-overlay-hint">Move 5–10 cm and change viewpoint. Standing still can polish geometry but cannot increase coverage confidence.</div>
-          )}
-          {runtimeState.manualPointError !== null && (
-            <div className="xr-overlay-warning">{runtimeState.manualPointError}</div>
-          )}
+          {runtimeState.scanPaused && <div className="xr-overlay-warning">Scan paused while XR is hidden. It will continue if this XR session becomes visible again.</div>}
+          {runtimeState.motionState === 'too-fast' && <div className="xr-overlay-warning">Move slower — this depth sample is not being fused.</div>}
+          {(runtimeState.motionState === 'stationary' || runtimeState.motionState === 'redundant') && <div className="xr-overlay-hint">Move 5–10 cm and change viewpoint. Standing still can polish geometry but cannot increase coverage confidence.</div>}
+          {runtimeState.manualPointError !== null && <div className="xr-overlay-warning">{runtimeState.manualPointError}</div>}
 
           <div className="xr-manual-status">
             <span>Manual corner pins: <strong>{runtimeState.manualPointCount}</strong></span>
@@ -400,27 +436,15 @@ export function XrRuntimePanel({
           </div>
 
           <div className="xr-overlay-actions">
-            <button
-              type="button"
-              className={manualMode ? 'xr-manual-toggle active' : 'xr-manual-toggle'}
-              aria-pressed={manualMode}
-              onClick={() => setManualMode((value) => !value)}
-            >
+            <button type="button" className={manualMode ? 'xr-manual-toggle active' : 'xr-manual-toggle'} aria-pressed={manualMode} onClick={toggleManualMode}>
               {manualMode ? 'Done marking' : 'Mark corners'}
             </button>
-            <button
-              type="button"
-              className="xr-undo-button"
-              disabled={runtimeState.manualPointCount === 0}
-              onClick={() => runtime.undoLastManualPoint()}
-            >
+            <button type="button" className="xr-undo-button" disabled={runtimeState.manualPointCount === 0} onClick={() => runtime.undoLastManualPoint()}>
               Undo pin
             </button>
           </div>
 
-          <button className="xr-finish-button" type="button" onClick={() => void runtime.stop()}>
-            Finish &amp; save scan
-          </button>
+          <button className="xr-finish-button" type="button" onClick={() => void runtime.stop()}>Finish &amp; save scan</button>
         </div>
       </div>
     </>
