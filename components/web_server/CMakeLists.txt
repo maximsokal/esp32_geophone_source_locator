@@ -125,6 +125,7 @@ endif()
 idf_component_register(
     SRCS
         "web_server.c"
+        "web_server_prepare.c"
         "web_server_routes.c"
         "web_static_assets.c"
         "web_static_asset_data.c"
