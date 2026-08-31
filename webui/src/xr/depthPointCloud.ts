@@ -31,6 +31,21 @@ export interface ScanPointCloudSnapshot {
   coverageRejectedCount: number;
 }
 
+export interface LiveCoverageSnapshot {
+  /** Positions converted back into WebXR reference-space X/Y/Z for rendering. */
+  positions: Float32Array;
+  /** Temporal coverage confidence in [0, 1]. */
+  confidence: Float32Array;
+  pointCount: number;
+  active: boolean;
+  visibleCoverageCells: number;
+  readyCoverageCells: number;
+  totalCoverageCells: number;
+  minimumVisibleFrameHits: number;
+  targetFrameHits: number;
+  averageCandidatesPerSampledFrame: number;
+}
+
 export interface DepthSampleView {
   projectionMatrix: ArrayLike<number>;
   transform: {
@@ -58,15 +73,17 @@ interface RepresentativePoint {
 
 interface CoverageCell {
   representatives: Map<string, RepresentativePoint>;
+  lastSampleEpoch: number;
+  frameHits: number;
+  candidateHits: number;
 }
 
 const DEFAULT_VOXEL_SIZE_METERS = 0.04;
 const DEFAULT_MAX_DEPTH_METERS = 5.0;
 
 // The browser keeps a bounded representative set instead of retaining every
-// unique fine voxel forever. 60k representatives are enough for roughly
-// 100 m² of 40 mm surface samples while keeping JS Map/object overhead sane on
-// mid-range Android devices.
+// unique fine voxel forever. 60k representatives are enough for useful metric
+// coverage while keeping JS Map/object overhead sane on mid-range Android.
 const DEFAULT_MEMORY_BUDGET_POINTS = 60000;
 const COVERAGE_CELL_METERS = 0.30;
 const MAX_POINTS_PER_COVERAGE_CELL = 28;
@@ -84,6 +101,18 @@ const OBSERVATION_PRIORITY_CAP = 8;
 
 const ROBUST_BOUNDS_TRIM_FRACTION = 0.01;
 const MIN_POINTS_FOR_ROBUST_BOUNDS = 1000;
+
+// Live coverage guide deliberately starts late. The camera is initially clean;
+// only after enough valid depth and temporal evidence has accumulated do we
+// render coverage points over the real scene.
+const LIVE_GUIDE_MIN_SAMPLED_FRAMES = 12;
+const LIVE_GUIDE_MIN_REPRESENTATIVES = 600;
+const LIVE_GUIDE_MIN_COVERAGE_CELLS = 20;
+const LIVE_GUIDE_MIN_CANDIDATES_PER_FRAME = 120;
+const LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS = 4;
+const LIVE_GUIDE_TARGET_FRAME_HITS = 10;
+const LIVE_GUIDE_POINT_BUDGET = 16000;
+const LIVE_GUIDE_MAX_POINTS_PER_CELL = 14;
 
 function finite(value: number): boolean {
   return Number.isFinite(value);
@@ -244,6 +273,7 @@ function supportNeighbourCount(
  * - deterministic bottom-k replacement prevents early viewpoints from owning
  *   the whole budget forever.
  * - repeat observations are averaged and receive a stability bonus.
+ * - temporal frame hits are tracked per coverage cell for live scan guidance.
  * - final support filtering removes isolated representatives without keeping an
  *   unbounded history map during the scan.
  *
@@ -264,6 +294,7 @@ export class DepthPointCloudAccumulator {
   private replacementCount = 0;
   private rebalanceEvictionCount = 0;
   private coverageRejectedCount = 0;
+  private sampleEpoch = 0;
 
   constructor(
     voxelSizeMeters = DEFAULT_VOXEL_SIZE_METERS,
@@ -284,6 +315,7 @@ export class DepthPointCloudAccumulator {
     this.replacementCount = 0;
     this.rebalanceEvictionCount = 0;
     this.coverageRejectedCount = 0;
+    this.sampleEpoch = 0;
   }
 
   setMaxDepthMeters(maxDepthMeters: number): void {
@@ -319,6 +351,10 @@ export class DepthPointCloudAccumulator {
     return this.voxelSizeMeters;
   }
 
+  get averageCandidatesPerSampledFrame(): number {
+    return this.sampleEpoch > 0 ? this.candidateSampleCount / this.sampleEpoch : 0;
+  }
+
   sampleDepthFrame(
     depth: CpuDepthInformationLike,
     fallbackView: DepthSampleView,
@@ -351,6 +387,7 @@ export class DepthPointCloudAccumulator {
       return 0;
     }
 
+    this.sampleEpoch += 1;
     const usableSpan = 1 - SAMPLE_MARGIN * 2;
     let changed = 0;
 
@@ -413,6 +450,105 @@ export class DepthPointCloudAccumulator {
     }
 
     return changed;
+  }
+
+  liveCoverageSnapshot(): LiveCoverageSnapshot {
+    const averageCandidatesPerSampledFrame = this.averageCandidatesPerSampledFrame;
+    const active =
+      this.sampleEpoch >= LIVE_GUIDE_MIN_SAMPLED_FRAMES &&
+      this.representativeCount >= LIVE_GUIDE_MIN_REPRESENTATIVES &&
+      this.coverageCells.size >= LIVE_GUIDE_MIN_COVERAGE_CELLS &&
+      averageCandidatesPerSampledFrame >= LIVE_GUIDE_MIN_CANDIDATES_PER_FRAME;
+
+    let visibleCoverageCells = 0;
+    let readyCoverageCells = 0;
+
+    for (const cell of this.coverageCells.values()) {
+      if (cell.frameHits >= LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS) {
+        visibleCoverageCells += 1;
+      }
+      if (cell.frameHits >= LIVE_GUIDE_TARGET_FRAME_HITS) {
+        readyCoverageCells += 1;
+      }
+    }
+
+    if (!active || visibleCoverageCells === 0) {
+      return {
+        positions: new Float32Array(0),
+        confidence: new Float32Array(0),
+        pointCount: 0,
+        active,
+        visibleCoverageCells,
+        readyCoverageCells,
+        totalCoverageCells: this.coverageCells.size,
+        minimumVisibleFrameHits: LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS,
+        targetFrameHits: LIVE_GUIDE_TARGET_FRAME_HITS,
+        averageCandidatesPerSampledFrame,
+      };
+    }
+
+    const perCellBudget = clamp(
+      Math.floor(LIVE_GUIDE_POINT_BUDGET / visibleCoverageCells),
+      1,
+      LIVE_GUIDE_MAX_POINTS_PER_CELL,
+    );
+    const positions = new Float32Array(LIVE_GUIDE_POINT_BUDGET * 3);
+    const confidence = new Float32Array(LIVE_GUIDE_POINT_BUDGET);
+    let pointCount = 0;
+
+    for (const cell of this.coverageCells.values()) {
+      if (cell.frameHits < LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS) {
+        continue;
+      }
+
+      const cellConfidence = clamp(
+        (cell.frameHits - (LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS - 1)) /
+          (LIVE_GUIDE_TARGET_FRAME_HITS - (LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS - 1)),
+        0,
+        1,
+      );
+      const requested = Math.max(
+        1,
+        Math.round(perCellBudget * (0.35 + 0.65 * cellConfidence)),
+      );
+      const ranked = [...cell.representatives.values()].sort(
+        (left, right) => representativeScore(left) - representativeScore(right),
+      );
+      const take = Math.min(requested, ranked.length);
+
+      for (let index = 0; index < take && pointCount < LIVE_GUIDE_POINT_BUDGET; index += 1) {
+        const point = ranked[index];
+        const observationConfidence = clamp(point.observations / 4, 0, 1);
+        const combinedConfidence = clamp(
+          cellConfidence * 0.85 + observationConfidence * 0.15,
+          0,
+          1,
+        );
+        const positionOffset = pointCount * 3;
+
+        // Convert project coordinates back to the WebXR reference space used
+        // by XRView: world X = project X, world Y = project Z,
+        // world Z = -project Y.
+        positions[positionOffset] = point.x;
+        positions[positionOffset + 1] = point.z;
+        positions[positionOffset + 2] = -point.y;
+        confidence[pointCount] = combinedConfidence;
+        pointCount += 1;
+      }
+    }
+
+    return {
+      positions: positions.subarray(0, pointCount * 3),
+      confidence: confidence.subarray(0, pointCount),
+      pointCount,
+      active,
+      visibleCoverageCells,
+      readyCoverageCells,
+      totalCoverageCells: this.coverageCells.size,
+      minimumVisibleFrameHits: LIVE_GUIDE_MIN_VISIBLE_FRAME_HITS,
+      targetFrameHits: LIVE_GUIDE_TARGET_FRAME_HITS,
+      averageCandidatesPerSampledFrame,
+    };
   }
 
   snapshot(depthFrameCount: number, sampledDepthFrames: number): ScanPointCloudSnapshot {
@@ -489,9 +625,20 @@ export class DepthPointCloudAccumulator {
         return false;
       }
 
-      cell = { representatives: new Map<string, RepresentativePoint>() };
+      cell = {
+        representatives: new Map<string, RepresentativePoint>(),
+        lastSampleEpoch: -1,
+        frameHits: 0,
+        candidateHits: 0,
+      };
       this.coverageCells.set(coverageKey, cell);
       this.updateAdaptiveQuota();
+    }
+
+    cell.candidateHits += 1;
+    if (cell.lastSampleEpoch !== this.sampleEpoch) {
+      cell.lastSampleEpoch = this.sampleEpoch;
+      cell.frameHits += 1;
     }
 
     const fineKey = voxelKey(x, y, z, this.voxelSizeMeters);
@@ -589,32 +736,34 @@ export class DepthPointCloudAccumulator {
     // one low-quality representative from an over-populated cell rather than
     // freezing the map at whichever viewpoint filled the budget first.
     let donorCell: CoverageCell | null = null;
-    let donorKey: string | null = null;
     let donorWorst: { key: string; score: number } | null = null;
 
-    for (const [coverageKey, cell] of this.coverageCells) {
-      if (coverageKey === preferredCoverageKey || cell.representatives.size <= MIN_POINTS_PER_COVERAGE_CELL) {
+    for (const [coverageKey, candidateCell] of this.coverageCells) {
+      if (
+        coverageKey === preferredCoverageKey ||
+        candidateCell.representatives.size <= MIN_POINTS_PER_COVERAGE_CELL
+      ) {
         continue;
       }
 
-      const worst = this.findWorstRepresentative(cell);
+      const worst = this.findWorstRepresentative(candidateCell);
       if (worst === null) {
         continue;
       }
 
       if (
         donorCell === null ||
-        cell.representatives.size > donorCell.representatives.size ||
-        (cell.representatives.size === donorCell.representatives.size &&
-          donorWorst !== null && worst.score > donorWorst.score)
+        candidateCell.representatives.size > donorCell.representatives.size ||
+        (candidateCell.representatives.size === donorCell.representatives.size &&
+          donorWorst !== null &&
+          worst.score > donorWorst.score)
       ) {
-        donorCell = cell;
-        donorKey = coverageKey;
+        donorCell = candidateCell;
         donorWorst = worst;
       }
     }
 
-    if (donorCell === null || donorKey === null || donorWorst === null) {
+    if (donorCell === null || donorWorst === null) {
       this.coverageRejectedCount += 1;
       return false;
     }
