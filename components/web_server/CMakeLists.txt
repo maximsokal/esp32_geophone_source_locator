@@ -54,6 +54,7 @@ idf_component_register(
         "web_wifi_setup_form.c"
         "web_wifi_setup_decode.c"
         "web_https_onboarding.c"
+        "web_https_onboarding_ui.c"
 
     INCLUDE_DIRS
         "include"
@@ -108,6 +109,6 @@ if(WEB_SERVER_ROOT_CA_EMBEDDED)
     message(STATUS "GeoLocator public Root CA will be embedded for QR onboarding")
 else()
     message(WARNING
-        "GeoLocator Root CA is missing; /setup/ca.crt onboarding will be unavailable until certs/rootCA.crt is generated"
+        "GeoLocator Root CA is missing; CA onboarding download will be unavailable until certs/rootCA.crt is generated"
     )
 endif()
