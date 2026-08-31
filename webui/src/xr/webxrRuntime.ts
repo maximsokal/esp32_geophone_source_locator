@@ -2,8 +2,14 @@ import {
   DepthPointCloudAccumulator,
   type CpuDepthInformationLike,
   type DepthSampleView,
+  type LiveCoverageSnapshot,
   type ScanPointCloudSnapshot,
 } from './depthPointCloud';
+import {
+  LiveCoveragePointRenderer,
+  type CoverageRenderView,
+  type CoverageRenderViewport,
+} from './liveCoverageRenderer';
 
 export type XrRuntimePhase =
   | 'idle'
@@ -44,6 +50,14 @@ export interface WebXrRuntimeState {
   sampledDepthFrames: number;
   pointCount: number;
   pointCloudVersion: number;
+  coverageGuideActive: boolean;
+  coverageGuideRenderPoints: number;
+  coverageVisibleCells: number;
+  coverageReadyCells: number;
+  coverageTotalCells: number;
+  coverageTargetFrameHits: number;
+  coverageAverageCandidatesPerFrame: number;
+  coverageGuideError: string | null;
   depthError: string | null;
   error: string | null;
 }
@@ -61,7 +75,7 @@ interface XrRigidTransformLike {
   matrix: ArrayLike<number>;
 }
 
-interface XrViewLike extends DepthSampleView {
+interface XrViewLike extends DepthSampleView, CoverageRenderView {
   projectionMatrix: ArrayLike<number>;
   transform: XrRigidTransformLike;
 }
@@ -85,6 +99,7 @@ interface XrWebGlLayerLike {
   framebuffer: WebGLFramebuffer | null;
   framebufferWidth: number;
   framebufferHeight: number;
+  getViewport(view: CoverageRenderView): CoverageRenderViewport;
 }
 
 interface XrSessionLike extends EventTarget {
@@ -106,6 +121,8 @@ interface XrSessionInitLike {
   depthSensing?: {
     usagePreference: string[];
     dataFormatPreference: string[];
+    /** Compatibility alias used by older Chromium Depth API revisions. */
+    formatPreference?: string[];
     matchDepthView?: boolean;
   };
 }
@@ -141,6 +158,7 @@ interface DepthConfiguration {
 }
 
 const DEPTH_SAMPLE_INTERVAL_MS = 140;
+const COVERAGE_GPU_UPLOAD_INTERVAL_MS = 550;
 
 const initialRuntimeState: WebXrRuntimeState = {
   phase: 'idle',
@@ -159,6 +177,14 @@ const initialRuntimeState: WebXrRuntimeState = {
   sampledDepthFrames: 0,
   pointCount: 0,
   pointCloudVersion: 0,
+  coverageGuideActive: false,
+  coverageGuideRenderPoints: 0,
+  coverageVisibleCells: 0,
+  coverageReadyCells: 0,
+  coverageTotalCells: 0,
+  coverageTargetFrameHits: 10,
+  coverageAverageCandidatesPerFrame: 0,
+  coverageGuideError: null,
   depthError: null,
   error: null,
 };
@@ -268,9 +294,11 @@ export class WebXrRuntime {
   private referenceSpace: XrReferenceSpaceLike | null = null;
   private gl: XrCompatibleGl | null = null;
   private layer: XrWebGlLayerLike | null = null;
+  private coverageRenderer: LiveCoveragePointRenderer | null = null;
   private frameCount = 0;
   private lastUiUpdateMs = 0;
   private lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+  private lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
   private depthFrameCount = 0;
   private sampledDepthFrames = 0;
   private pointCloudVersion = 0;
@@ -278,6 +306,14 @@ export class WebXrRuntime {
   private depthHeight: number | null = null;
   private depthFailureReported = false;
   private depthEnabled = false;
+  private coverageGuideActive = false;
+  private coverageGuideRenderPoints = 0;
+  private coverageVisibleCells = 0;
+  private coverageReadyCells = 0;
+  private coverageTotalCells = 0;
+  private coverageTargetFrameHits = 10;
+  private coverageAverageCandidatesPerFrame = 0;
+  private coverageGuideError: string | null = null;
   private readonly pointCloud = new DepthPointCloudAccumulator();
 
   subscribe(listener: RuntimeListener): () => void {
@@ -348,6 +384,14 @@ export class WebXrRuntime {
       sampledDepthFrames: 0,
       pointCount: 0,
       pointCloudVersion: 0,
+      coverageGuideActive: false,
+      coverageGuideRenderPoints: 0,
+      coverageVisibleCells: 0,
+      coverageReadyCells: 0,
+      coverageTotalCells: 0,
+      coverageTargetFrameHits: 10,
+      coverageAverageCandidatesPerFrame: 0,
+      coverageGuideError: null,
       depthError: null,
       error: null,
     });
@@ -355,6 +399,7 @@ export class WebXrRuntime {
     let session: XrSessionLike | null = null;
 
     try {
+      const depthFormats = ['luminance-alpha', 'float32'];
       session = await xr.requestSession('immersive-ar', {
         optionalFeatures: ['local-floor', 'dom-overlay', 'depth-sensing'],
         domOverlay: {
@@ -362,7 +407,8 @@ export class WebXrRuntime {
         },
         depthSensing: {
           usagePreference: ['cpu-optimized'],
-          dataFormatPreference: ['luminance-alpha', 'float32'],
+          dataFormatPreference: depthFormats,
+          formatPreference: depthFormats,
           matchDepthView: true,
         },
       });
@@ -396,6 +442,14 @@ export class WebXrRuntime {
       this.frameCount = 0;
       this.lastUiUpdateMs = 0;
       this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+      this.lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
+
+      try {
+        this.coverageRenderer = new LiveCoveragePointRenderer(gl);
+      } catch (error) {
+        this.coverageRenderer = null;
+        this.coverageGuideError = `Live coverage renderer unavailable: ${errorText(error)}`;
+      }
 
       document.documentElement.classList.add('xr-session-active');
 
@@ -419,6 +473,14 @@ export class WebXrRuntime {
         sampledDepthFrames: 0,
         pointCount: 0,
         pointCloudVersion: 0,
+        coverageGuideActive: false,
+        coverageGuideRenderPoints: 0,
+        coverageVisibleCells: 0,
+        coverageReadyCells: 0,
+        coverageTotalCells: 0,
+        coverageTargetFrameHits: 10,
+        coverageAverageCandidatesPerFrame: 0,
+        coverageGuideError: this.coverageGuideError,
         depthError: depthConfiguration.enabled
           ? null
           : 'AR tracking is available, but this browser/device did not enable WebXR depth-sensing for the session.',
@@ -447,6 +509,8 @@ export class WebXrRuntime {
         depthAvailable: false,
         depthUsage: null,
         depthDataFormat: null,
+        coverageGuideActive: false,
+        coverageGuideRenderPoints: 0,
         depthError: null,
         error: errorText(error),
       });
@@ -511,10 +575,21 @@ export class WebXrRuntime {
     this.depthFailureReported = false;
     this.depthEnabled = false;
     this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+    this.lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
+    this.coverageGuideActive = false;
+    this.coverageGuideRenderPoints = 0;
+    this.coverageVisibleCells = 0;
+    this.coverageReadyCells = 0;
+    this.coverageTotalCells = 0;
+    this.coverageTargetFrameHits = 10;
+    this.coverageAverageCandidatesPerFrame = 0;
+    this.coverageGuideError = null;
   }
 
   private cleanupRuntime(): void {
     document.documentElement.classList.remove('xr-session-active');
+    this.coverageRenderer?.dispose();
+    this.coverageRenderer = null;
     releaseWebGlContext(this.gl);
     this.session = null;
     this.referenceSpace = null;
@@ -523,7 +598,10 @@ export class WebXrRuntime {
     this.frameCount = 0;
     this.lastUiUpdateMs = 0;
     this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+    this.lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
     this.depthEnabled = false;
+    this.coverageGuideActive = false;
+    this.coverageGuideRenderPoints = 0;
   }
 
   private readonly handleSessionEnd = (): void => {
@@ -531,6 +609,12 @@ export class WebXrRuntime {
     const finalDepthFrames = this.depthFrameCount;
     const finalSampledFrames = this.sampledDepthFrames;
     const finalVersion = this.pointCloudVersion;
+    const finalVisibleCells = this.coverageVisibleCells;
+    const finalReadyCells = this.coverageReadyCells;
+    const finalTotalCells = this.coverageTotalCells;
+    const finalTargetHits = this.coverageTargetFrameHits;
+    const finalCandidatesPerFrame = this.coverageAverageCandidatesPerFrame;
+    const finalCoverageError = this.coverageGuideError;
 
     this.cleanupRuntime();
     this.publish({
@@ -544,9 +628,40 @@ export class WebXrRuntime {
       sampledDepthFrames: finalSampledFrames,
       pointCount: finalPointCount,
       pointCloudVersion: finalVersion,
+      coverageGuideActive: false,
+      coverageGuideRenderPoints: 0,
+      coverageVisibleCells: finalVisibleCells,
+      coverageReadyCells: finalReadyCells,
+      coverageTotalCells: finalTotalCells,
+      coverageTargetFrameHits: finalTargetHits,
+      coverageAverageCandidatesPerFrame: finalCandidatesPerFrame,
+      coverageGuideError: finalCoverageError,
       error: null,
     });
   };
+
+  private refreshCoverageGuide(time: number): void {
+    if (time - this.lastCoverageGpuUploadMs < COVERAGE_GPU_UPLOAD_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastCoverageGpuUploadMs = time;
+    const coverage: LiveCoverageSnapshot = this.pointCloud.liveCoverageSnapshot();
+    this.coverageGuideActive = coverage.active && this.coverageRenderer !== null;
+    this.coverageVisibleCells = coverage.visibleCoverageCells;
+    this.coverageReadyCells = coverage.readyCoverageCells;
+    this.coverageTotalCells = coverage.totalCoverageCells;
+    this.coverageTargetFrameHits = coverage.targetFrameHits;
+    this.coverageAverageCandidatesPerFrame = coverage.averageCandidatesPerSampledFrame;
+
+    if (this.coverageGuideActive && this.coverageRenderer !== null) {
+      this.coverageRenderer.update(coverage);
+      this.coverageGuideRenderPoints = coverage.pointCount;
+    } else {
+      this.coverageRenderer?.clear();
+      this.coverageGuideRenderPoints = 0;
+    }
+  }
 
   private captureDepth(time: number, frame: XrFrameLike, pose: XrViewerPoseLike): void {
     if (!this.depthEnabled || pose.views.length === 0) {
@@ -582,14 +697,16 @@ export class WebXrRuntime {
       this.lastDepthSampleMs = time;
       this.sampledDepthFrames += 1;
 
-      const added = this.pointCloud.sampleDepthFrame(
+      const changed = this.pointCloud.sampleDepthFrame(
         depth,
         depthGeometry(depth, view),
       );
 
-      if (added > 0) {
+      if (changed > 0) {
         this.pointCloudVersion += 1;
       }
+
+      this.refreshCoverageGuide(time);
     } catch (error) {
       if (!this.depthFailureReported) {
         this.depthFailureReported = true;
@@ -629,6 +746,7 @@ export class WebXrRuntime {
 
     if (pose !== null) {
       this.captureDepth(time, frame, pose);
+      this.coverageRenderer?.render(layer, pose.views);
     }
 
     if (time - this.lastUiUpdateMs < 100 && this.frameCount > 1) {
@@ -637,17 +755,29 @@ export class WebXrRuntime {
 
     this.lastUiUpdateMs = time;
 
+    const commonPatch = {
+      frameCount: this.frameCount,
+      depthWidth: this.depthWidth,
+      depthHeight: this.depthHeight,
+      depthFrameCount: this.depthFrameCount,
+      sampledDepthFrames: this.sampledDepthFrames,
+      pointCount: this.pointCloud.pointCount,
+      pointCloudVersion: this.pointCloudVersion,
+      coverageGuideActive: this.coverageGuideActive,
+      coverageGuideRenderPoints: this.coverageGuideRenderPoints,
+      coverageVisibleCells: this.coverageVisibleCells,
+      coverageReadyCells: this.coverageReadyCells,
+      coverageTotalCells: this.coverageTotalCells,
+      coverageTargetFrameHits: this.coverageTargetFrameHits,
+      coverageAverageCandidatesPerFrame: this.coverageAverageCandidatesPerFrame,
+      coverageGuideError: this.coverageGuideError,
+    };
+
     if (pose === null) {
       this.publish({
-        frameCount: this.frameCount,
+        ...commonPatch,
         tracking: false,
         pose: null,
-        depthWidth: this.depthWidth,
-        depthHeight: this.depthHeight,
-        depthFrameCount: this.depthFrameCount,
-        sampledDepthFrames: this.sampledDepthFrames,
-        pointCount: this.pointCloud.pointCount,
-        pointCloudVersion: this.pointCloudVersion,
       });
       return;
     }
@@ -655,7 +785,7 @@ export class WebXrRuntime {
     const { position, orientation } = pose.transform;
 
     this.publish({
-      frameCount: this.frameCount,
+      ...commonPatch,
       tracking: true,
       pose: {
         position: [position.x, position.y, position.z],
@@ -667,12 +797,6 @@ export class WebXrRuntime {
         ],
         views: pose.views.length,
       },
-      depthWidth: this.depthWidth,
-      depthHeight: this.depthHeight,
-      depthFrameCount: this.depthFrameCount,
-      sampledDepthFrames: this.sampledDepthFrames,
-      pointCount: this.pointCloud.pointCount,
-      pointCloudVersion: this.pointCloudVersion,
     });
   };
 }
