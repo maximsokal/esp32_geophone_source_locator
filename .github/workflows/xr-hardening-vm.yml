@@ -1,0 +1,123 @@
+name: XR reconstruction hardening VM
+
+on:
+  push:
+    branches:
+      - agent/xr-reconstruction-hardening
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install locked WebUI dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Run full XR regression suite
+        working-directory: webui
+        run: npm run test:xr
+
+      - name: Measure algorithm-core V8 coverage
+        working-directory: webui
+        run: npm run test:xr:coverage
+
+      - name: Mutation smoke - tentative surfaces must not become green
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/xr/surfelEvidence.ts /tmp/surfelEvidence.ts
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/xr/surfelEvidence.ts')
+          s = p.read_text()
+          old = 'return input.promoted ? raw : Math.min(0.46, raw * 0.62);'
+          assert old in s
+          p.write_text(s.replace(old, 'return 1;'))
+          PY
+          set +e
+          npm run test:xr >/tmp/mutation-confidence.log 2>&1
+          code=$?
+          set -e
+          cp /tmp/surfelEvidence.ts src/xr/surfelEvidence.ts
+          if [ "$code" -eq 0 ]; then
+            cat /tmp/mutation-confidence.log
+            echo 'Mutation survived: tests did not detect forced-green tentative points.' >&2
+            exit 1
+          fi
+          echo 'Mutation killed: forced-green tentative surfaces were detected.'
+
+      - name: Mutation smoke - normal gate must protect hard edges
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/xr/surfelEvidence.ts /tmp/surfelEvidence.ts
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/xr/surfelEvidence.ts')
+          s = p.read_text()
+          old = "if (!Number.isFinite(maxAngleRadians) || maxAngleRadians <= 0) return false;\n  return Math.acos(Math.abs(dotVector(a, b))) <= maxAngleRadians;"
+          assert old in s
+          p.write_text(s.replace(old, "if (!Number.isFinite(maxAngleRadians) || maxAngleRadians <= 0) return false;\n  return true;"))
+          PY
+          set +e
+          npm run test:xr >/tmp/mutation-normal.log 2>&1
+          code=$?
+          set -e
+          cp /tmp/surfelEvidence.ts src/xr/surfelEvidence.ts
+          if [ "$code" -eq 0 ]; then
+            cat /tmp/mutation-normal.log
+            echo 'Mutation survived: tests did not detect disabled normal gating.' >&2
+            exit 1
+          fi
+          echo 'Mutation killed: disabled normal gating was detected.'
+
+      - name: Mutation smoke - sampler must not collapse to a fixed lattice point
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/xr/surfelEvidence.ts /tmp/surfelEvidence.ts
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/xr/surfelEvidence.ts')
+          s = p.read_text()
+          old = "return [safeMargin + u01 * usable, safeMargin + v01 * usable];"
+          assert old in s
+          p.write_text(s.replace(old, "return [safeMargin + usable * 0.5, safeMargin + usable * 0.5];"))
+          PY
+          set +e
+          npm run test:xr >/tmp/mutation-sampler.log 2>&1
+          code=$?
+          set -e
+          cp /tmp/surfelEvidence.ts src/xr/surfelEvidence.ts
+          if [ "$code" -eq 0 ]; then
+            cat /tmp/mutation-sampler.log
+            echo 'Mutation survived: tests did not detect collapsed sampling.' >&2
+            exit 1
+          fi
+          echo 'Mutation killed: collapsed low-discrepancy sampling was detected.'
+
+      - name: Typecheck and build production WebUI
+        working-directory: webui
+        run: npm run build
+
+      - name: Verify build-id cache busting is embedded
+        working-directory: webui
+        run: |
+          grep -E 'assets/app\.js\?v=[0-9a-f]{20}' esp-dist/index.html
+          grep -E 'assets/app\.css\?v=[0-9a-f]{20}' esp-dist/index.html
+          cat esp-dist/build-id.txt
