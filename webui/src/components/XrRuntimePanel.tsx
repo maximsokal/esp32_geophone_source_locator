@@ -18,6 +18,10 @@ const emptyRuntimeState: WebXrRuntimeState = {
   error: null,
 };
 
+interface XrRuntimePanelProps {
+  onSessionActiveChange?: (active: boolean) => void;
+}
+
 function capabilityClass(value: boolean): string {
   return value ? 'xr-capability good' : 'xr-capability bad';
 }
@@ -60,7 +64,7 @@ function phaseLabel(state: WebXrRuntimeState): string {
   }
 }
 
-export function XrRuntimePanel() {
+export function XrRuntimePanel({ onSessionActiveChange }: XrRuntimePanelProps) {
   const runtime = useMemo(() => new WebXrRuntime(), []);
   const [capabilities, setCapabilities] = useState<WebXrCapabilities | null>(null);
   const [runtimeState, setRuntimeState] = useState<WebXrRuntimeState>(emptyRuntimeState);
@@ -81,6 +85,15 @@ export function XrRuntimePanel() {
       void runtime.dispose();
     };
   }, [runtime]);
+
+  useEffect(() => {
+    const active =
+      runtimeState.phase === 'starting' ||
+      runtimeState.phase === 'running' ||
+      runtimeState.phase === 'stopping';
+
+    onSessionActiveChange?.(active);
+  }, [onSessionActiveChange, runtimeState.phase]);
 
   const running = runtimeState.phase === 'running';
   const busy = runtimeState.phase === 'starting' || runtimeState.phase === 'stopping';
