@@ -164,28 +164,6 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
-    /*
-     * Seed/check the production React bundle while storage is mounted but
-     * before storage workers, Wi-Fi and ESP-IDF's sys_evt task are involved.
-     * web_server_prepare_webui() uses a temporary 8 KiB worker stack and
-     * releases it before TLS is started.
-     */
-    ui_boot_set_stage(
-        "WEB UI..."
-    );
-
-    stage_started_ms =
-        esp_log_timestamp();
-
-    ESP_ERROR_CHECK(
-        web_server_prepare_webui()
-    );
-
-    app_startup_log_elapsed(
-        "webui_prepare",
-        stage_started_ms
-    );
-
     ui_boot_set_stage(
         "NETWORK + UI..."
     );
@@ -272,6 +250,24 @@ void app_startup_run(void)
     app_startup_log_elapsed(
         "sd_boot_diagnostic",
         sd_started_ms
+    );
+
+    /*
+     * Prepare/seed the immutable React bundle immediately after the SD mount,
+     * before display_init() creates the esp_lcd device on shared SPI2. This
+     * guarantees that Web UI seed FAT/SDSPI traffic cannot overlap TFT DMA.
+     * Runtime HTTP delivery itself is flash-only.
+     */
+    const uint32_t webui_started_ms =
+        esp_log_timestamp();
+
+    ESP_ERROR_CHECK(
+        web_server_prepare_webui()
+    );
+
+    app_startup_log_elapsed(
+        "webui_prepare",
+        webui_started_ms
     );
 
     app_startup_initialize_services();
