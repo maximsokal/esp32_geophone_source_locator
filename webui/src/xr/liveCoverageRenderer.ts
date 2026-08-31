@@ -23,8 +23,8 @@ export interface CoverageRenderSnapshot {
   /** Confidence in [0,1]. Values >1.5 are reserved for operator pins. */
   confidence: Float32Array;
   pointCount: number;
-  /** Manual pins are always appended at the end so they can be drawn last. */
-  manualPointCount: number;
+  /** Manual pins are appended at the end; optional for older snapshot producers. */
+  manualPointCount?: number;
 }
 
 type GlContext = WebGLRenderingContext | WebGL2RenderingContext;
@@ -173,6 +173,15 @@ function multiplyMat4(left: ArrayLike<number>, right: ArrayLike<number>, out: Fl
   return true;
 }
 
+function inferManualTail(confidence: Float32Array, count: number): number {
+  let manual = 0;
+  for (let index = count - 1; index >= 0; index -= 1) {
+    if (confidence[index] <= 1.5) break;
+    manual += 1;
+  }
+  return manual;
+}
+
 /** Lightweight point renderer used only during immersive AR. */
 export class LiveCoveragePointRenderer {
   private readonly program: WebGLProgram;
@@ -211,7 +220,8 @@ export class LiveCoveragePointRenderer {
   update(snapshot: CoverageRenderSnapshot): void {
     const count = Math.min(snapshot.pointCount, Math.floor(snapshot.positions.length / 3), snapshot.confidence.length);
     this.pointCount = Math.max(0, count);
-    this.manualPointCount = Math.min(Math.max(0, snapshot.manualPointCount), this.pointCount);
+    const inferred = inferManualTail(snapshot.confidence, this.pointCount);
+    this.manualPointCount = Math.min(Math.max(0, snapshot.manualPointCount ?? inferred), this.pointCount);
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, snapshot.positions.subarray(0, this.pointCount * 3), gl.DYNAMIC_DRAW);
@@ -255,7 +265,6 @@ export class LiveCoveragePointRenderer {
         gl.drawArrays(gl.POINTS, 0, regularCount);
       }
       if (this.manualPointCount > 0) {
-        // Operator geometry must remain visible against the camera/depth scene.
         gl.disable(gl.DEPTH_TEST);
         gl.drawArrays(gl.POINTS, regularCount, this.manualPointCount);
       }
