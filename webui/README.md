@@ -196,6 +196,37 @@ Within a coverage cell:
 
 The only true exhaustion state is when there are more distinct 300 mm coverage cells than the global budget can represent even at one point per cell. That condition is exposed separately as `coverageRejectedCount`.
 
+### Live temporal coverage guide
+
+During immersive scanning the retained map is also used for a lightweight on-camera coverage guide. The guide is intentionally delayed so the first few frames remain a clean camera view and a single noisy depth frame cannot immediately paint a surface as complete.
+
+Coverage confidence is based primarily on how many **different sampled depth frames** observed a 300 mm coverage cell, not how many depth pixels happened to land there in one frame.
+
+Current policy:
+
+```text
+warm-up:
+  >= 12 sampled depth frames
+  >= 600 retained representatives
+  >= 20 coverage cells
+  >= 120 valid candidate samples / sampled frame
+
+per-cell visibility:
+  < 4 sampled-frame hits   -> hidden / transparent
+  4..9 hits                -> visible, red/orange -> yellow
+  >= 10 hits               -> well-covered, green/teal
+
+rendering:
+  max 16k live guide points
+  GPU buffer refresh ~ every 550 ms
+  one GL_POINTS draw per XRView
+  scanner point-cloud processing continues independently
+```
+
+The live overlay reports `READY / VISIBLE` coverage-cell counts. Dense well-observed areas become more opaque and greener, while areas with insufficient temporal support remain absent or faint so the operator can see where another pass is useful.
+
+The guide is a UX aid, not a replacement for the final scan filter. The final point cloud still uses the bounded adaptive representatives, repeat-observation/spatial support cleanup and robust bounds.
+
 ### Scan diagnostics
 
 A completed scan reports:
@@ -252,8 +283,8 @@ BMP relative-height + IMU motion/tilt + future ranging fusion
 3. `WEB-HTTPS-B` — React production bundle + gzip + flash runtime serving + boot-time SD seed. **COMPLETE / HARDWARE VERIFIED**
 4. `WEB-XR-A` — immersive AR session + phone pose/reference-space runtime. **COMPLETE / HARDWARE VERIFIED**
 5. `WEB-XR-B` — ARCore/WebXR CPU depth acquisition. **COMPLETE / HARDWARE VERIFIED**
-6. `WEB-XR-C` — metric point-cloud accumulation and local review. **DEPTH/POINT CLOUD HARDWARE VERIFIED; ADAPTIVE DECIMATION IMPLEMENTED, REBUILD/RETEST REQUIRED**
-7. `WEB-XR-D` — surface / occupancy reconstruction. **NEXT**
+6. `WEB-XR-C` — metric point-cloud accumulation, adaptive decimation, local review and live temporal coverage guide. **POINT CLOUD HARDWARE VERIFIED; LIVE COVERAGE GUIDE REBUILD/PHONE RETEST REQUIRED**
+7. `WEB-XR-D` — surface / occupancy reconstruction. **NEXT AFTER COVERAGE-GUIDE ACCEPTANCE**
 8. `WEB-TAG-A` — AprilTag observations and tag-to-geophone offsets for MAIN + GEO1…GEO4.
 9. Add ESP API/storage contract for saved geometry and sensor positions.
 10. Fuse scan pose with barometer, IMU and future ranging without moving a locked position unless motion is detected.
