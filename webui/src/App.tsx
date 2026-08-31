@@ -30,6 +30,8 @@ const initialDisplay: ScanDisplayOptions = {
   badPoints: true,
   dimensions: true,
   mesh: false,
+  freeAir: false,
+  unknownSpace: false,
 };
 
 export default function App() {
@@ -58,29 +60,31 @@ export default function App() {
         <header className="app-header app-header-compact">
           <div>
             <div className="eyebrow">ESP32 GEOLOCATOR</div>
-            <h1>3D scan</h1>
+            <h1>3D search volume</h1>
           </div>
           <div className="header-badges">
             <span className="badge good">HTTPS</span>
             <span className="badge good">WEBXR</span>
             <span className={`badge ${hasMeasuredScan ? 'good' : 'warning'}`}>
-              {hasMeasuredScan ? 'SCAN READY' : 'READY'}
+              {hasMeasuredScan ? 'VOLUME READY' : 'READY'}
             </span>
           </div>
         </header>
       )}
 
       {!xrSessionActive && hasMeasuredScan && (
-        <section className="toolbar toolbar-compact scan-toolbar" aria-label="3D scan view controls">
+        <section className="toolbar toolbar-compact scan-toolbar" aria-label="3D search-volume controls">
           <div className="scan-toolbar-group">
             <button type="button" onClick={() => requestView('perspective')}>3D</button>
             <button type="button" onClick={() => requestView('top')}>Top</button>
             <button type="button" onClick={() => requestView('front')}>Front</button>
           </div>
           <div className="scan-toolbar-group scan-layer-controls" aria-label="Reconstruction layers">
-            <button type="button" aria-pressed={display.goodPoints} onClick={() => toggleDisplay('goodPoints')}>Good points</button>
+            <button type="button" aria-pressed={display.goodPoints} onClick={() => toggleDisplay('goodPoints')}>Surface</button>
             <button type="button" aria-pressed={display.badPoints} onClick={() => toggleDisplay('badPoints')}>Tentative</button>
-            <button type="button" aria-pressed={display.mesh} onClick={() => toggleDisplay('mesh')}>Mesh</button>
+            <button type="button" aria-pressed={display.mesh} onClick={() => toggleDisplay('mesh')}>Surface mesh</button>
+            <button type="button" aria-pressed={display.freeAir} onClick={() => toggleDisplay('freeAir')}>Free air</button>
+            <button type="button" aria-pressed={display.unknownSpace} onClick={() => toggleDisplay('unknownSpace')}>Unknown</button>
             <button type="button" aria-pressed={display.dimensions} onClick={() => toggleDisplay('dimensions')}>Dimensions</button>
           </div>
         </section>
@@ -101,12 +105,13 @@ export default function App() {
 
           <aside className="side-panel scan-result-panel">
             <section className="panel-card">
-              <div className="panel-title">SCAN RESULT</div>
+              <div className="panel-title">SEARCH VOLUME</div>
               <dl className="status-list scan-result-primary">
-                <div><dt>Stable surface points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
-                <div><dt>Tentative / unsupported</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
-                <div><dt>Ready coverage cells</dt><dd>{scanSnapshot.readyCoverageCellCount.toLocaleString()}</dd></div>
-                <div><dt>Independent keyframes</dt><dd>{scanSnapshot.integrationKeyframes.toLocaleString()}</dd></div>
+                <div><dt>Stable boundary points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
+                <div><dt>Known free air voxels</dt><dd>{scanSnapshot.knownFreeVoxelCount.toLocaleString()}</dd></div>
+                <div><dt>Observed surface voxels</dt><dd>{scanSnapshot.occupiedSurfaceVoxelCount.toLocaleString()}</dd></div>
+                <div><dt>Unknown / candidate voxels</dt><dd>{scanSnapshot.unknownCandidateVoxelCount.toLocaleString()}</dd></div>
+                <div><dt>Tentative boundary points</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
                 <div><dt>Surface residual</dt><dd>{Math.round(scanSnapshot.averageStableResidualMeters * 1000)} mm</dd></div>
                 {extent !== null && (
                   <>
@@ -117,14 +122,21 @@ export default function App() {
                 )}
               </dl>
 
+              <p className="scan-volume-note">
+                Free air is ray-verified and can be excluded from seismic source search. Unknown volume is deliberately retained as a candidate because the camera cannot see inside rubble.
+              </p>
+
               <details className="xr-technical-details scan-result-details">
                 <summary>Technical details</summary>
                 <dl className="status-list">
-                  <div><dt>Retained hypotheses</dt><dd>{scanSnapshot.rawPointCount.toLocaleString()}</dd></div>
+                  <div><dt>Retained surface hypotheses</dt><dd>{scanSnapshot.rawPointCount.toLocaleString()}</dd></div>
                   <div><dt>Promoted surfels</dt><dd>{scanSnapshot.promotedPointCount.toLocaleString()}</dd></div>
+                  <div><dt>Ready coverage cells</dt><dd>{scanSnapshot.readyCoverageCellCount.toLocaleString()}</dd></div>
+                  <div><dt>Independent keyframes</dt><dd>{scanSnapshot.integrationKeyframes.toLocaleString()}</dd></div>
                   <div><dt>Coverage cells</dt><dd>{scanSnapshot.coverageCellCount.toLocaleString()}</dd></div>
                   <div><dt>Coverage cell</dt><dd>{Math.round(scanSnapshot.coverageCellSizeMeters * 1000)} mm</dd></div>
-                  <div><dt>Association voxel</dt><dd>{Math.round(scanSnapshot.voxelSizeMeters * 1000)} mm</dd></div>
+                  <div><dt>Surface association voxel</dt><dd>{Math.round(scanSnapshot.voxelSizeMeters * 1000)} mm</dd></div>
+                  <div><dt>Occupancy display voxel</dt><dd>{Math.round(scanSnapshot.occupancyVoxelSizeMeters * 1000)} mm</dd></div>
                   <div><dt>Adaptive reps / cell</dt><dd>{scanSnapshot.adaptivePointsPerCell}</dd></div>
                   <div><dt>Polish frames</dt><dd>{scanSnapshot.polishFrames.toLocaleString()}</dd></div>
                   <div><dt>Residual rejects</dt><dd>{scanSnapshot.residualRejectedSamples.toLocaleString()}</dd></div>
