@@ -25,6 +25,14 @@ const emptyRuntimeState: WebXrRuntimeState = {
   sampledDepthFrames: 0,
   pointCount: 0,
   pointCloudVersion: 0,
+  coverageGuideActive: false,
+  coverageGuideRenderPoints: 0,
+  coverageVisibleCells: 0,
+  coverageReadyCells: 0,
+  coverageTotalCells: 0,
+  coverageTargetFrameHits: 10,
+  coverageAverageCandidatesPerFrame: 0,
+  coverageGuideError: null,
   depthError: null,
   error: null,
 };
@@ -99,17 +107,26 @@ function depthLabel(state: WebXrRuntimeState): string {
 }
 
 function depthCapabilityClass(state: WebXrRuntimeState): string {
-  if (state.phase === 'idle') {
-    return 'xr-capability neutral';
-  }
-
-  if (state.phase === 'starting') {
+  if (state.phase === 'idle' || state.phase === 'starting') {
     return 'xr-capability neutral';
   }
 
   return state.depthAvailable || state.pointCount > 0
     ? 'xr-capability good'
     : 'xr-capability bad';
+}
+
+function coverageGuideLabel(state: WebXrRuntimeState): string {
+  if (state.coverageGuideError !== null) {
+    return 'ERROR';
+  }
+  if (state.coverageGuideActive) {
+    return 'ACTIVE';
+  }
+  if (state.phase === 'running' && state.depthAvailable) {
+    return 'WARMING UP';
+  }
+  return '--';
 }
 
 export function XrRuntimePanel({
@@ -173,6 +190,7 @@ export function XrRuntimePanel({
     runtimeState.depthWidth !== null && runtimeState.depthHeight !== null
       ? `${runtimeState.depthWidth} × ${runtimeState.depthHeight}`
       : '--';
+  const coverageCells = `${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
 
   return (
     <>
@@ -234,68 +252,36 @@ export function XrRuntimePanel({
           </button>
 
           <span className="xr-runtime-note">
-            The phone stays local: WebXR depth samples are converted to metric XYZ and voxel-decimated in browser memory. No photo upload is required.
+            The phone stays local. The live coverage guide starts only after enough temporally repeated depth evidence exists; its GPU buffer is refreshed at a reduced cadence instead of rebuilding on every camera frame.
           </span>
         </div>
 
         <dl className="xr-runtime-values">
-          <div>
-            <dt>Reference</dt>
-            <dd>{runtimeState.referenceSpace ?? '--'}</dd>
-          </div>
-          <div>
-            <dt>Depth mode</dt>
-            <dd>{runtimeState.depthUsage ?? '--'}</dd>
-          </div>
-          <div>
-            <dt>Depth format</dt>
-            <dd>{runtimeState.depthDataFormat ?? '--'}</dd>
-          </div>
-          <div>
-            <dt>Depth buffer</dt>
-            <dd>{depthSize}</dd>
-          </div>
-          <div>
-            <dt>Depth frames</dt>
-            <dd>{runtimeState.depthFrameCount.toLocaleString()}</dd>
-          </div>
-          <div>
-            <dt>3D points</dt>
-            <dd>{runtimeState.pointCount.toLocaleString()}</dd>
-          </div>
-          <div>
-            <dt>XR frames</dt>
-            <dd>{runtimeState.frameCount.toLocaleString()}</dd>
-          </div>
-          <div>
-            <dt>Sampled frames</dt>
-            <dd>{runtimeState.sampledDepthFrames.toLocaleString()}</dd>
-          </div>
-          <div>
-            <dt>Tracking</dt>
-            <dd>{running ? (runtimeState.tracking ? 'POSE VALID' : 'WAITING') : '--'}</dd>
-          </div>
-          <div>
-            <dt>DOM overlay</dt>
-            <dd>{running ? (runtimeState.domOverlay ? 'AVAILABLE' : 'NO') : '--'}</dd>
-          </div>
-          <div>
-            <dt>Blend</dt>
-            <dd>{runtimeState.environmentBlendMode ?? '--'}</dd>
-          </div>
-          <div>
-            <dt>Views</dt>
-            <dd>{runtimeState.pose?.views ?? '--'}</dd>
-          </div>
-          <div className="wide">
-            <dt>Phone XYZ, m (WebXR)</dt>
-            <dd>{formatPosition(posePosition)}</dd>
-          </div>
-          <div className="wide">
-            <dt>Quaternion XYZW</dt>
-            <dd>{formatOrientation(poseOrientation)}</dd>
-          </div>
+          <div><dt>Reference</dt><dd>{runtimeState.referenceSpace ?? '--'}</dd></div>
+          <div><dt>Depth mode</dt><dd>{runtimeState.depthUsage ?? '--'}</dd></div>
+          <div><dt>Depth format</dt><dd>{runtimeState.depthDataFormat ?? '--'}</dd></div>
+          <div><dt>Depth buffer</dt><dd>{depthSize}</dd></div>
+          <div><dt>Depth frames</dt><dd>{runtimeState.depthFrameCount.toLocaleString()}</dd></div>
+          <div><dt>3D points</dt><dd>{runtimeState.pointCount.toLocaleString()}</dd></div>
+          <div><dt>XR frames</dt><dd>{runtimeState.frameCount.toLocaleString()}</dd></div>
+          <div><dt>Sampled frames</dt><dd>{runtimeState.sampledDepthFrames.toLocaleString()}</dd></div>
+          <div><dt>Coverage guide</dt><dd>{coverageGuideLabel(runtimeState)}</dd></div>
+          <div><dt>Guide points</dt><dd>{runtimeState.coverageGuideRenderPoints.toLocaleString()}</dd></div>
+          <div><dt>Covered / visible cells</dt><dd>{coverageCells}</dd></div>
+          <div><dt>Target observations</dt><dd>{runtimeState.coverageTargetFrameHits} frames / cell</dd></div>
+          <div><dt>Tracking</dt><dd>{running ? (runtimeState.tracking ? 'POSE VALID' : 'WAITING') : '--'}</dd></div>
+          <div><dt>DOM overlay</dt><dd>{running ? (runtimeState.domOverlay ? 'AVAILABLE' : 'NO') : '--'}</dd></div>
+          <div><dt>Blend</dt><dd>{runtimeState.environmentBlendMode ?? '--'}</dd></div>
+          <div><dt>Views</dt><dd>{runtimeState.pose?.views ?? '--'}</dd></div>
+          <div className="wide"><dt>Phone XYZ, m (WebXR)</dt><dd>{formatPosition(posePosition)}</dd></div>
+          <div className="wide"><dt>Quaternion XYZW</dt><dd>{formatOrientation(poseOrientation)}</dd></div>
         </dl>
+
+        {runtimeState.coverageGuideError !== null && (
+          <div className="xr-runtime-warning" role="status">
+            {runtimeState.coverageGuideError}
+          </div>
+        )}
 
         {runtimeState.depthError !== null && (
           <div className="xr-runtime-warning" role="status">
@@ -317,7 +303,9 @@ export function XrRuntimePanel({
             {!runtimeState.tracking
               ? 'Waiting for AR tracking…'
               : runtimeState.depthAvailable
-                ? 'Depth processing active'
+                ? runtimeState.coverageGuideActive
+                  ? 'Coverage guide active'
+                  : 'Building coverage evidence…'
                 : 'Tracking works, depth unavailable'}
           </h2>
           <p>
@@ -332,24 +320,40 @@ export function XrRuntimePanel({
                 {runtimeState.depthAvailable ? 'ACTIVE' : 'UNAVAILABLE'}
               </strong>
             </div>
+            <div><span>SAMPLED</span><strong>{runtimeState.sampledDepthFrames.toLocaleString()}</strong></div>
+            <div><span>3D POINTS</span><strong>{runtimeState.pointCount.toLocaleString()}</strong></div>
             <div>
-              <span>DEPTH FRAMES</span>
-              <strong>{runtimeState.depthFrameCount.toLocaleString()}</strong>
+              <span>COVERAGE</span>
+              <strong className={runtimeState.coverageGuideActive ? 'good-text' : ''}>
+                {coverageGuideLabel(runtimeState)}
+              </strong>
             </div>
-            <div>
-              <span>SAMPLED</span>
-              <strong>{runtimeState.sampledDepthFrames.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>3D POINTS</span>
-              <strong>{runtimeState.pointCount.toLocaleString()}</strong>
-            </div>
+            <div><span>GUIDE POINTS</span><strong>{runtimeState.coverageGuideRenderPoints.toLocaleString()}</strong></div>
+            <div><span>READY / VISIBLE</span><strong>{coverageCells}</strong></div>
           </div>
+
+          {runtimeState.coverageGuideActive && (
+            <div className="xr-coverage-legend" aria-label="Coverage color legend">
+              <span><i className="coverage-dot coverage-low" />needs more</span>
+              <span><i className="coverage-dot coverage-mid" />building</span>
+              <span><i className="coverage-dot coverage-high" />well covered</span>
+            </div>
+          )}
+
+          {!runtimeState.coverageGuideActive && runtimeState.depthAvailable && running && (
+            <div className="xr-coverage-warmup">
+              Coverage points stay hidden until enough different sampled frames confirm the surface. This avoids painting one noisy depth frame as “done”.
+            </div>
+          )}
 
           <div className="xr-overlay-pose">
             <span>Phone XYZ m</span>
             <strong>{formatPosition(posePosition)}</strong>
           </div>
+
+          {runtimeState.coverageGuideError !== null && (
+            <div className="xr-overlay-warning">{runtimeState.coverageGuideError}</div>
+          )}
 
           {runtimeState.depthError !== null && (
             <div className="xr-overlay-warning">{runtimeState.depthError}</div>
