@@ -11,4 +11,7 @@ esp_err_t sd_card_mount(void);
 bool sd_card_is_mounted(void);
 
 
+const char *sd_card_mount_point(void);
+
+
 esp_err_t sd_card_unmount(void);
