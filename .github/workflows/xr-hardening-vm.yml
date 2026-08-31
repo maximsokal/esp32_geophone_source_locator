@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/xr-reconstruction-hardening
+      - agent/xr-result-viewport-input-fix
       - main
   workflow_dispatch:
 
@@ -163,9 +164,13 @@ jobs:
           grep -F 'Finish & save scan' /tmp/geolocator-app.js
           grep -F 'Mark corners' /tmp/geolocator-app.js
           grep -F 'Quality map' /tmp/geolocator-app.js
+          grep -F '1 finger = orbit' /tmp/geolocator-app.js
           grep -F 'WEBUI_BOOT' /tmp/geolocator-app.js
           grep -F 'XR_PROGRESS' /tmp/geolocator-app.js
           grep -F 'XR_MANUAL_POINT_ADDED' /tmp/geolocator-app.js
+          grep -F 'XR_MANUAL_POINTER_TAP' /tmp/geolocator-app.js
+          grep -F 'SCAN_RESULT_MODE' /tmp/geolocator-app.js
+          grep -F 'SCAN_VIEW_GESTURE_END' /tmp/geolocator-app.js
 
   stress-mobile-chrome:
     runs-on: ubuntu-24.04
@@ -190,13 +195,18 @@ jobs:
           npm run dev -- --host 127.0.0.1 --port 4173 >/tmp/geolocator-vite.log 2>&1 &
           echo $! >/tmp/geolocator-vite.pid
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:4173/stress/xr-mobile-stress.html >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:4173/stress/xr-mobile-stress.html >/dev/null \
+              && curl --fail --silent http://127.0.0.1:4173/stress/scan-result-ui.html >/dev/null; then
               exit 0
             fi
             sleep 0.5
           done
           cat /tmp/geolocator-vite.log
           exit 1
+
+      - name: Test real result modes orbit and pinch zoom in Android Chrome proxy
+        working-directory: webui
+        run: node scripts/run-scan-result-ui-e2e.mjs
 
       - name: Run mid-range Android Chrome scan stress
         working-directory: webui
@@ -255,7 +265,11 @@ jobs:
           gzip -cd components/web_server/generated_webui_assets_app.js.gz >/tmp/embedded-app.js
           grep -F 'Finish & save scan' /tmp/embedded-app.js
           grep -F 'Mark corners' /tmp/embedded-app.js
+          grep -F '1 finger = orbit' /tmp/embedded-app.js
           grep -F 'WEBUI_BOOT' /tmp/embedded-app.js
           grep -F 'XR_PROGRESS' /tmp/embedded-app.js
           grep -F 'XR_MANUAL_POINT_ADDED' /tmp/embedded-app.js
+          grep -F 'XR_MANUAL_POINTER_TAP' /tmp/embedded-app.js
+          grep -F 'SCAN_RESULT_MODE' /tmp/embedded-app.js
+          grep -F 'SCAN_VIEW_GESTURE_END' /tmp/embedded-app.js
           grep -E 'GeoLocator React Web UI seed will be embedded' build/log/idf_py_stdout_output 2>/dev/null || true
