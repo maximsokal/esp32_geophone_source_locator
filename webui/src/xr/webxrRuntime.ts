@@ -105,7 +105,7 @@ interface XrSessionInitLike {
   };
   depthSensing?: {
     usagePreference: string[];
-    formatPreference: string[];
+    dataFormatPreference: string[];
   };
 }
 
@@ -132,6 +132,12 @@ type WindowWithXrLayer = Window & {
 };
 
 type RuntimeListener = (state: WebXrRuntimeState) => void;
+
+interface DepthConfiguration {
+  enabled: boolean;
+  usage: string | null;
+  dataFormat: string | null;
+}
 
 const DEPTH_SAMPLE_INTERVAL_MS = 140;
 
@@ -194,6 +200,29 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function readDepthConfiguration(session: XrSessionLike): DepthConfiguration {
+  try {
+    const usage = session.depthUsage ?? null;
+    const dataFormat = session.depthDataFormat ?? null;
+
+    return {
+      enabled: usage === 'cpu-optimized',
+      usage,
+      dataFormat,
+    };
+  } catch {
+    // The current depth specification requires these getters to throw when
+    // depth-sensing was not enabled on the session. Optional feature denial
+    // must therefore be treated as a normal capability result, not a scan
+    // startup failure.
+    return {
+      enabled: false,
+      usage: null,
+      dataFormat: null,
+    };
+  }
+}
+
 export async function probeWebXrCapabilities(): Promise<WebXrCapabilities> {
   const xr = (navigator as NavigatorWithXr).xr;
   const xrApi = xr !== undefined;
@@ -232,6 +261,7 @@ export class WebXrRuntime {
   private depthWidth: number | null = null;
   private depthHeight: number | null = null;
   private depthFailureReported = false;
+  private depthEnabled = false;
   private readonly pointCloud = new DepthPointCloudAccumulator();
 
   subscribe(listener: RuntimeListener): () => void {
@@ -316,7 +346,7 @@ export class WebXrRuntime {
         },
         depthSensing: {
           usagePreference: ['cpu-optimized'],
-          formatPreference: ['float32', 'luminance-alpha'],
+          dataFormatPreference: ['luminance-alpha', 'float32'],
         },
       });
 
@@ -352,7 +382,8 @@ export class WebXrRuntime {
 
       document.documentElement.classList.add('xr-session-active');
 
-      const depthAvailable = session.depthUsage === 'cpu-optimized';
+      const depthConfiguration = readDepthConfiguration(session);
+      this.depthEnabled = depthConfiguration.enabled;
 
       this.publish({
         phase: 'running',
@@ -362,18 +393,18 @@ export class WebXrRuntime {
         frameCount: 0,
         tracking: false,
         pose: null,
-        depthAvailable,
-        depthUsage: session.depthUsage ?? null,
-        depthDataFormat: session.depthDataFormat ?? null,
+        depthAvailable: depthConfiguration.enabled,
+        depthUsage: depthConfiguration.usage,
+        depthDataFormat: depthConfiguration.dataFormat,
         depthWidth: null,
         depthHeight: null,
         depthFrameCount: 0,
         sampledDepthFrames: 0,
         pointCount: 0,
         pointCloudVersion: 0,
-        depthError: depthAvailable
+        depthError: depthConfiguration.enabled
           ? null
-          : 'AR session started, but WebXR depth-sensing was not granted by this browser/device.',
+          : 'AR tracking is available, but this browser/device did not enable WebXR depth-sensing for the session.',
         error: null,
       });
 
@@ -461,6 +492,7 @@ export class WebXrRuntime {
     this.depthWidth = null;
     this.depthHeight = null;
     this.depthFailureReported = false;
+    this.depthEnabled = false;
     this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
   }
 
@@ -474,6 +506,7 @@ export class WebXrRuntime {
     this.frameCount = 0;
     this.lastUiUpdateMs = 0;
     this.lastDepthSampleMs = Number.NEGATIVE_INFINITY;
+    this.depthEnabled = false;
   }
 
   private readonly handleSessionEnd = (): void => {
@@ -499,14 +532,17 @@ export class WebXrRuntime {
   };
 
   private captureDepth(time: number, frame: XrFrameLike, pose: XrViewerPoseLike): void {
-    const session = this.session;
+    if (!this.depthEnabled || pose.views.length === 0) {
+      return;
+    }
 
-    if (
-      session === null ||
-      session.depthUsage !== 'cpu-optimized' ||
-      typeof frame.getDepthInformation !== 'function' ||
-      pose.views.length === 0
-    ) {
+    if (typeof frame.getDepthInformation !== 'function') {
+      if (!this.depthFailureReported) {
+        this.depthFailureReported = true;
+        this.publish({
+          depthError: 'Depth was enabled on the XR session, but XRFrame.getDepthInformation() is unavailable.',
+        });
+      }
       return;
     }
 
