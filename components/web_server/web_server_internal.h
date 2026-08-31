@@ -46,6 +46,10 @@ esp_err_t web_api_status_register(httpd_handle_t server);
 
 esp_err_t web_page_send_index(httpd_req_t *request);
 
+esp_err_t web_webui_prepare(void);
+esp_err_t web_webui_send_index(httpd_req_t *request);
+esp_err_t web_webui_register(httpd_handle_t server);
+
 esp_err_t web_seismic_register(httpd_handle_t server);
 esp_err_t web_seismic_api_register(httpd_handle_t server);
 esp_err_t web_seismic_page_send(httpd_req_t *request);
