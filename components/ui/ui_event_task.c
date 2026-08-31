@@ -74,7 +74,8 @@ static void ui_event_task_main(
             );
         } else {
             ui_dispatch_app_event_locked(
-                (int)event.type
+                (int)event.type,
+                event.value
             );
         }
 
