@@ -7,6 +7,7 @@ import { demoScene } from './data/demoScene';
 
 export default function App() {
   const [selectedId, setSelectedId] = useState('MAIN');
+  const [xrSessionActive, setXrSessionActive] = useState(false);
   const [viewCommand, setViewCommand] = useState<ViewCommand>({
     preset: 'perspective',
     sequence: 0,
@@ -43,17 +44,19 @@ export default function App() {
         <span className="toolbar-note">Tap a marker or device row to select it.</span>
       </section>
 
-      <XrRuntimePanel />
+      <XrRuntimePanel onSessionActiveChange={setXrSessionActive} />
 
-      <section className="workspace">
-        <SceneViewport
-          scene={demoScene}
-          selectedId={selectedId}
-          viewCommand={viewCommand}
-          onSelect={setSelectedId}
-        />
-        <SensorPanel scene={demoScene} selectedId={selectedId} onSelect={setSelectedId} />
-      </section>
+      {!xrSessionActive && (
+        <section className="workspace">
+          <SceneViewport
+            scene={demoScene}
+            selectedId={selectedId}
+            viewCommand={viewCommand}
+            onSelect={setSelectedId}
+          />
+          <SensorPanel scene={demoScene} selectedId={selectedId} onSelect={setSelectedId} />
+        </section>
+      )}
 
       <footer className="app-footer">
         WEB-XR-A tracks the phone pose only. Next: ARCore/WebXR depth sensing → point cloud / surface samples → mesh reconstruction → AprilTag sensor registration.
