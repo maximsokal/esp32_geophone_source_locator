@@ -1,9 +1,15 @@
 #include "web_server_internal.h"
 
+#include "esp_log.h"
+
 #include <stddef.h>
 
 #include "app_config.h"
 #include "wifi_manager.h"
+
+
+static const char *TAG =
+    "WEB_ROUTES";
 
 
 static esp_err_t web_server_bootstrap_index_handler(
@@ -51,6 +57,11 @@ static esp_err_t web_server_secure_index_handler(
     httpd_req_t *request
 )
 {
+    ESP_LOGI(
+        TAG,
+        "HTTPS GET / entered"
+    );
+
     const esp_err_t webui_err =
         web_webui_send_index(
             request
@@ -61,8 +72,18 @@ static esp_err_t web_server_secure_index_handler(
     }
 
     if (webui_err != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(
+            TAG,
+            "React root response failed: %s",
+            esp_err_to_name(webui_err)
+        );
         return webui_err;
     }
+
+    ESP_LOGW(
+        TAG,
+        "React root unavailable; serving legacy embedded dashboard"
+    );
 
     return
         web_page_send_index(
