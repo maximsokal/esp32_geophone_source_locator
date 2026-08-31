@@ -1,4 +1,5 @@
 export type ProjectVector = readonly [number, number, number];
+export type SampleUv = readonly [number, number];
 
 export interface IndependentViewUpdate {
   independent: boolean;
@@ -23,13 +24,19 @@ export interface SurfaceConfidenceInput {
   residualMeters: number;
   maxViewAngleRadians: number;
   contradictionWeight?: number;
+  normalConfidence?: number;
 }
 
 const VIEW_AZIMUTH_BINS = 64;
 const VIEW_ELEVATION_BINS = 32;
-const VIEW_CODE_BASE = VIEW_AZIMUTH_BINS * VIEW_ELEVATION_BINS; // 2048 = 11 bits
-const MAX_PACKED_VIEW_CODES = 4; // 44 bits, exactly representable by JS Number
+const VIEW_CODE_BASE = VIEW_AZIMUTH_BINS * VIEW_ELEVATION_BINS;
+const MAX_PACKED_VIEW_CODES = 4;
+const R2_PLASTIC = 1.3247179572447458;
+const R2_ALPHA_1 = 1 / R2_PLASTIC;
+const R2_ALPHA_2 = 1 / (R2_PLASTIC * R2_PLASTIC);
+
 export const DEFAULT_INDEPENDENT_VIEW_ANGLE_RADIANS = (8 * Math.PI) / 180;
+export const DEFAULT_SURFEL_NORMAL_GATE_RADIANS = (50 * Math.PI) / 180;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -39,16 +46,59 @@ export function clamp01(value: number): number {
   return clamp(value, 0, 1);
 }
 
+function fract(value: number): number {
+  return value - Math.floor(value);
+}
+
+function hash32(value: number): number {
+  let x = value | 0;
+  x ^= x >>> 16;
+  x = Math.imul(x, 0x7feb352d);
+  x ^= x >>> 15;
+  x = Math.imul(x, 0x846ca68b);
+  x ^= x >>> 16;
+  return x >>> 0;
+}
+
 export function normalizeVector(vector: ProjectVector): ProjectVector {
   const length = Math.hypot(vector[0], vector[1], vector[2]);
   if (!Number.isFinite(length) || length < 1e-9) return [0, 0, 1];
   return [vector[0] / length, vector[1] / length, vector[2] / length];
 }
 
-export function angularDistance(a: ProjectVector, b: ProjectVector): number {
+export function dotVector(a: ProjectVector, b: ProjectVector): number {
   const na = normalizeVector(a);
   const nb = normalizeVector(b);
-  return Math.acos(clamp(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2], -1, 1));
+  return clamp(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2], -1, 1);
+}
+
+export function angularDistance(a: ProjectVector, b: ProjectVector): number {
+  return Math.acos(dotVector(a, b));
+}
+
+export function crossVector(a: ProjectVector, b: ProjectVector): ProjectVector {
+  return normalizeVector([
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ]);
+}
+
+export function orientNormalToward(
+  normal: ProjectVector,
+  toward: ProjectVector,
+): ProjectVector {
+  const n = normalizeVector(normal);
+  return dotVector(n, toward) < 0 ? [-n[0], -n[1], -n[2]] : n;
+}
+
+export function normalsCompatible(
+  a: ProjectVector,
+  b: ProjectVector,
+  maxAngleRadians = DEFAULT_SURFEL_NORMAL_GATE_RADIANS,
+): boolean {
+  if (!Number.isFinite(maxAngleRadians) || maxAngleRadians <= 0) return false;
+  return Math.acos(Math.abs(dotVector(a, b))) <= maxAngleRadians;
 }
 
 export function encodeViewDirection(direction: ProjectVector): number {
@@ -78,11 +128,6 @@ function packedViewCode(packed: number, index: number): number {
   return Math.floor(packed / (VIEW_CODE_BASE ** index)) % VIEW_CODE_BASE;
 }
 
-/**
- * Keeps up to four quantized view directions in one 44-bit JS number. This is
- * much more reliable than treating a new global keyframe id as a new view,
- * while avoiding 9-12 extra floating-point fields per retained surfel.
- */
 export function registerIndependentView(
   packed: number,
   count: number,
@@ -100,8 +145,13 @@ export function registerIndependentView(
   if (safeCount === 0) minimumAngleRadians = Math.PI;
   const independent = safeCount < MAX_PACKED_VIEW_CODES && minimumAngleRadians >= minAngleRadians;
   if (!independent) return { independent: false, packed, count: safeCount, code, minimumAngleRadians };
-  const updated = packed + code * (VIEW_CODE_BASE ** safeCount);
-  return { independent: true, packed: updated, count: safeCount + 1, code, minimumAngleRadians };
+  return {
+    independent: true,
+    packed: packed + code * (VIEW_CODE_BASE ** safeCount),
+    count: safeCount + 1,
+    code,
+    minimumAngleRadians,
+  };
 }
 
 function median(values: number[]): number {
@@ -116,16 +166,6 @@ export function depthToleranceMeters(depthMeters: number): number {
   return clamp(0.020 + 0.0040 * depthMeters * depthMeters, 0.026, 0.105);
 }
 
-/**
- * Edge-aware depth validation.
- *
- * A true silhouette/room corner has neighbours on two depth layers. Rejecting
- * the center merely because the neighbourhood median is far away erases the
- * geometry we care about most. We therefore require same-layer support instead:
- * two supporting neighbours = normal surface; one supporting neighbour plus a
- * clear discontinuity = accepted edge; no supporting neighbours = isolated
- * spike/outlier.
- */
 export function classifyDepthNeighbourhood(
   centerDepth: number,
   left: number | null,
@@ -145,7 +185,7 @@ export function classifyDepthNeighbourhood(
   add('u', left); add('u', right); add('v', up); add('v', down);
 
   if (entries.length < 2) {
-    return { accepted: true, score: 0.38, edge: false, dominantAxis: 'none', supportingNeighbours: entries.length };
+    return { accepted: true, score: 0.34, edge: false, dominantAxis: 'none', supportingNeighbours: entries.length };
   }
 
   const residuals = entries.map((entry) => Math.abs(entry.value - centerDepth));
@@ -172,7 +212,7 @@ export function classifyDepthNeighbourhood(
     const residualScore = 1 - clamp01(inlierMedian / tolerance);
     return {
       accepted: true,
-      score: clamp01((edge ? 0.62 : 0.78) + residualScore * (edge ? 0.30 : 0.22)),
+      score: clamp01((edge ? 0.60 : 0.77) + residualScore * (edge ? 0.30 : 0.23)),
       edge,
       dominantAxis,
       supportingNeighbours: support.length,
@@ -180,51 +220,31 @@ export function classifyDepthNeighbourhood(
   }
 
   if (support.length === 1 && edge) {
-    return {
-      accepted: true,
-      score: 0.52,
-      edge: true,
-      dominantAxis,
-      supportingNeighbours: 1,
-    };
+    return { accepted: true, score: 0.48, edge: true, dominantAxis, supportingNeighbours: 1 };
   }
 
-  return {
-    accepted: false,
-    score: 0,
-    edge,
-    dominantAxis,
-    supportingNeighbours: support.length,
-  };
+  return { accepted: false, score: 0, edge, dominantAxis, supportingNeighbours: support.length };
 }
 
-function hash32(value: number): number {
-  let x = value | 0;
-  x ^= x >>> 16;
-  x = Math.imul(x, 0x7feb352d);
-  x ^= x >>> 15;
-  x = Math.imul(x, 0x846ca68b);
-  x ^= x >>> 16;
-  return x >>> 0;
-}
-
-/** Returns a deterministic coordinate inside one stratum, not at its fixed center. */
-export function stratifiedSampleCoordinate(
+/**
+ * R2 low-discrepancy sample with a per-frame Cranley-Patterson rotation.
+ * Unlike one-sample-per-grid-cell stratification, this has no permanent row /
+ * column lattice for the accumulated map to reveal.
+ */
+export function lowDiscrepancySample2D(
   index: number,
-  count: number,
   margin: number,
   phase: number,
-  axisSalt: number,
-): number {
-  const safeCount = Math.max(1, Math.floor(count));
-  const safeIndex = clamp(Math.floor(index), 0, safeCount - 1);
-  const usableSpan = 1 - margin * 2;
-  const hash = hash32((phase + 1) * 0x45d9f3b + safeIndex * 0x27d4eb2d + axisSalt * 0x165667b1);
-  const jitter01 = (hash + 0.5) / 4294967296;
-  // Keep away from stratum borders: the same cell is still represented every frame,
-  // but repeated keyframes no longer stamp a permanent regular lattice.
-  const withinCell = 0.18 + jitter01 * 0.64;
-  return margin + ((safeIndex + withinCell) / safeCount) * usableSpan;
+): SampleUv {
+  const safeIndex = Math.max(0, Math.floor(index));
+  const safeMargin = clamp(margin, 0, 0.45);
+  const usable = 1 - safeMargin * 2;
+  const rotationU = (hash32(phase * 0x45d9f3b + 0x9e3779b9) + 0.5) / 4294967296;
+  const rotationV = (hash32(phase * 0x27d4eb2d + 0x165667b1) + 0.5) / 4294967296;
+  const sequenceIndex = safeIndex + 1;
+  const u01 = fract(0.5 + R2_ALPHA_1 * sequenceIndex + rotationU);
+  const v01 = fract(0.5 + R2_ALPHA_2 * sequenceIndex + rotationV);
+  return [safeMargin + u01 * usable, safeMargin + v01 * usable];
 }
 
 export function surfaceRenderConfidence(input: SurfaceConfidenceInput): number {
@@ -232,16 +252,19 @@ export function surfaceRenderConfidence(input: SurfaceConfidenceInput): number {
   const angleScore = clamp01(input.maxViewAngleRadians / ((16 * Math.PI) / 180));
   const residualScore = 1 - clamp01(input.residualMeters / 0.055);
   const weightScore = clamp01(input.weight / 4);
+  const normalScore = clamp01(input.normalConfidence ?? 0.55);
   const contradictionPenalty = clamp01((input.contradictionWeight ?? 0) / 3);
 
   const raw = clamp01(
-    0.10 +
-    viewScore * 0.34 +
-    angleScore * 0.24 +
-    residualScore * 0.20 +
-    weightScore * 0.12 -
-    contradictionPenalty * 0.35,
+    0.05 +
+    viewScore * 0.30 +
+    angleScore * 0.20 +
+    residualScore * 0.18 +
+    weightScore * 0.10 +
+    normalScore * 0.17 -
+    contradictionPenalty * 0.38,
   );
 
-  return input.promoted ? raw : Math.min(0.48, raw * 0.72);
+  // A single-view / unpromoted hypothesis is intentionally never green.
+  return input.promoted ? raw : Math.min(0.46, raw * 0.62);
 }
