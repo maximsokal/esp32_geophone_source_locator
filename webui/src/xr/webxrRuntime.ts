@@ -106,6 +106,7 @@ interface XrSessionInitLike {
   depthSensing?: {
     usagePreference: string[];
     dataFormatPreference: string[];
+    matchDepthView?: boolean;
   };
 }
 
@@ -211,16 +212,31 @@ function readDepthConfiguration(session: XrSessionLike): DepthConfiguration {
       dataFormat,
     };
   } catch {
-    // The current depth specification requires these getters to throw when
-    // depth-sensing was not enabled on the session. Optional feature denial
-    // must therefore be treated as a normal capability result, not a scan
-    // startup failure.
     return {
       enabled: false,
       usage: null,
       dataFormat: null,
     };
   }
+}
+
+function depthGeometry(
+  depth: CpuDepthInformationLike,
+  fallbackView: XrViewLike,
+): DepthSampleView {
+  if (
+    depth.projectionMatrix !== undefined &&
+    depth.projectionMatrix.length >= 16 &&
+    depth.transform !== undefined &&
+    depth.transform.matrix.length >= 16
+  ) {
+    return {
+      projectionMatrix: depth.projectionMatrix,
+      transform: depth.transform,
+    };
+  }
+
+  return fallbackView;
 }
 
 export async function probeWebXrCapabilities(): Promise<WebXrCapabilities> {
@@ -347,6 +363,7 @@ export class WebXrRuntime {
         depthSensing: {
           usagePreference: ['cpu-optimized'],
           dataFormatPreference: ['luminance-alpha', 'float32'],
+          matchDepthView: true,
         },
       });
 
@@ -565,7 +582,11 @@ export class WebXrRuntime {
       this.lastDepthSampleMs = time;
       this.sampledDepthFrames += 1;
 
-      const added = this.pointCloud.sampleDepthFrame(depth, view);
+      const added = this.pointCloud.sampleDepthFrame(
+        depth,
+        depthGeometry(depth, view),
+      );
+
       if (added > 0) {
         this.pointCloudVersion += 1;
       }
