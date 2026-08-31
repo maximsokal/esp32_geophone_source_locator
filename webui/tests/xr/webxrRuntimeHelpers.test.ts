@@ -34,7 +34,10 @@ describe('composeCoverageRenderSnapshot', () => {
       7, 8, 9,
       10, 11, 12,
     ]);
-    expect(Array.from(result.confidence)).toEqual([0.2, 0.85, 2, 2]);
+    expect(result.confidence[0]).toBeCloseTo(0.2, 6);
+    expect(result.confidence[1]).toBeCloseTo(0.85, 6);
+    expect(result.confidence[2]).toBe(2);
+    expect(result.confidence[3]).toBe(2);
   });
 
   it('honours pointCount bounds instead of reading stale capacity data', () => {
@@ -43,6 +46,6 @@ describe('composeCoverageRenderSnapshot', () => {
     const result = composeCoverageRenderSnapshot(coverage, new Float32Array(0));
     expect(result.pointCount).toBe(1);
     expect(Array.from(result.positions)).toEqual([1, 2, 3]);
-    expect(Array.from(result.confidence)).toEqual([0.2]);
+    expect(result.confidence[0]).toBeCloseTo(0.2, 6);
   });
 });
