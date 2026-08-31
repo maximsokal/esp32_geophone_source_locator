@@ -44,7 +44,8 @@ void ui_dispatch_key_locked(
 
 
 void ui_dispatch_app_event_locked(
-    int event_type
+    int event_type,
+    int32_t event_value
 )
 {
     ui_context_t *context = ui_context();
@@ -54,7 +55,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
-                "PHONE CONNECTED - SCAN SETUP PAGE QR"
+                "PHONE CONNECTED - SCAN ROOT CA QR"
             );
             break;
 
@@ -64,6 +65,13 @@ void ui_dispatch_app_event_locked(
             if (context->wifi_credentials_saved) {
                 ui_set_notice_locked(
                     "SETUP LINK CLOSED - SWITCHING TO WI-FI"
+                );
+            } else if (
+                context->wifi_ca_downloaded &&
+                !context->wifi_ca_install_confirmed
+            ) {
+                ui_set_notice_locked(
+                    "INSTALL CA, RECONNECT, THEN CONFIRM"
                 );
             } else {
                 ui_set_notice_locked(
@@ -90,6 +98,10 @@ void ui_dispatch_app_event_locked(
         case APP_EVENT_WIFI_STA_CONNECTING:
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
+            context->wifi_verify_ready = false;
+            context->wifi_verify_result_received = false;
+            context->wifi_verify_nonce = 0;
+            context->wifi_verify_result_mask = 0;
             ui_set_notice_locked(
                 "CONNECTING TO SAVED WI-FI..."
             );
@@ -99,16 +111,65 @@ void ui_dispatch_app_event_locked(
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
-                "WI-FI CONNECTED"
+                "WI-FI CONNECTED - STARTING HTTPS"
             );
             break;
 
         case APP_EVENT_WIFI_STA_DISCONNECTED:
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
+            context->wifi_verify_ready = false;
+            context->wifi_verify_result_received = false;
+            context->wifi_verify_nonce = 0;
+            context->wifi_verify_result_mask = 0;
             ui_set_notice_locked(
                 "WI-FI DISCONNECTED - RETRYING"
             );
+            break;
+
+        case APP_EVENT_TLS_CA_DOWNLOADED:
+            context->wifi_ca_downloaded = true;
+            context->wifi_ca_install_confirmed = false;
+            ui_set_notice_locked(
+                "CA DOWNLOADED - INSTALL IT, THEN CONTINUE"
+            );
+            break;
+
+        case APP_EVENT_TLS_CA_INSTALL_CONFIRMED:
+            context->wifi_ca_downloaded = true;
+            context->wifi_ca_install_confirmed = true;
+            ui_set_notice_locked(
+                "CA CONFIRMED - SCAN HOTSPOT SETUP QR"
+            );
+            break;
+
+        case APP_EVENT_TLS_VERIFY_READY:
+            context->wifi_verify_ready = true;
+            context->wifi_verify_result_received = false;
+            context->wifi_verify_nonce = (uint32_t)event_value;
+            context->wifi_verify_result_mask = 0;
+            ui_set_notice_locked(
+                "HTTPS READY - SCAN VERIFY QR ON PHONE"
+            );
+            break;
+
+        case APP_EVENT_TLS_VERIFY_RESULT:
+            context->wifi_verify_result_received = true;
+            context->wifi_verify_result_mask = (uint32_t)event_value;
+
+            if (
+                (context->wifi_verify_result_mask &
+                 APP_TLS_VERIFY_REQUIRED_MASK) ==
+                APP_TLS_VERIFY_REQUIRED_MASK
+            ) {
+                ui_set_notice_locked(
+                    "HTTPS/CAMERA/WEBXR VERIFIED"
+                );
+            } else {
+                ui_set_notice_locked(
+                    "VERIFY INCOMPLETE - CHECK PHONE RESULTS"
+                );
+            }
             break;
 
         case APP_EVENT_KEYPAD:
