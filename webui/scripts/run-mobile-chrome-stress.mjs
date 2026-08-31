@@ -139,6 +139,21 @@ function summarizeCpuProfile(profile) {
     .slice(0, 20);
 }
 
+async function bestEffortRemove(path) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      return;
+    } catch (error) {
+      if (attempt === 4) {
+        console.warn(`Chrome stress temp cleanup skipped: ${String(error)}`);
+        return;
+      }
+      await sleep(150 * (attempt + 1));
+    }
+  }
+}
+
 async function main() {
   if (typeof WebSocket !== 'function') throw new Error('Node 22+ WebSocket API is required for the CDP runner.');
 
@@ -283,8 +298,11 @@ async function main() {
       new Promise((resolve) => chrome.once('exit', resolve)),
       sleep(3000),
     ]);
-    if (chrome.exitCode === null) chrome.kill('SIGKILL');
-    await rm(profileDir, { recursive: true, force: true });
+    if (chrome.exitCode === null) {
+      chrome.kill('SIGKILL');
+      await sleep(250);
+    }
+    await bestEffortRemove(profileDir);
     if (chrome.exitCode && chrome.exitCode !== 0) {
       console.error('Chrome stderr tail:\n' + chromeStderr);
     }
