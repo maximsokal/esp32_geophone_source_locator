@@ -152,6 +152,48 @@ jobs:
           grep -E 'assets/app\.css\?v=[0-9a-f]{20}' esp-dist/index.html
           cat esp-dist/build-id.txt
 
+  stress-mobile-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install locked WebUI dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Start Vite source server
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run dev -- --host 127.0.0.1 --port 4173 >/tmp/geolocator-vite.log 2>&1 &
+          echo $! >/tmp/geolocator-vite.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:4173/stress/xr-mobile-stress.html >/dev/null; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat /tmp/geolocator-vite.log
+          exit 1
+
+      - name: Run mid-range Android Chrome scan stress
+        working-directory: webui
+        env:
+          XR_STRESS_CPU_THROTTLE: '4'
+          XR_STRESS_TIMEOUT_MS: '180000'
+        run: npm run stress:xr:mobile
+
+      - name: Print Vite server log on failure
+        if: failure()
+        run: cat /tmp/geolocator-vite.log || true
+
   validate-firmware:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
