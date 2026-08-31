@@ -130,6 +130,7 @@ idf_component_register(
         "web_static_assets.c"
         "web_static_asset_data.c"
         "web_webui.c"
+        "web_webui_flash.c"
         "web_page.c"
         "web_api_status.c"
         "web_status_json.c"
