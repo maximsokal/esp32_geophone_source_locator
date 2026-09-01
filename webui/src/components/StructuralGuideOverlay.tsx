@@ -66,6 +66,7 @@ const MIN_CERTIFIED_EDGE_OBSERVATIONS = 2;
 const MAX_CERTIFICATE_SHIFT_METERS = 0.055;
 const MAX_CERTIFIED_UNCERTAINTY_METERS = 0.032;
 const VISUAL_CERTIFICATE_MIN_FRAMES = 3;
+const MIN_VISUAL_STRUCTURE_STRENGTH = 0.30;
 const VIEW_MARGIN = 0.07;
 const MAX_VISIBLE_CORNERS = 4;
 const REJECTED_CORNER_RADIUS_METERS = 0.14;
@@ -93,8 +94,18 @@ function insideWorkingView(u: number, v: number): boolean {
   return u >= VIEW_MARGIN && u <= 1 - VIEW_MARGIN && v >= VIEW_MARGIN && v <= 1 - VIEW_MARGIN;
 }
 
-function needsVisualCertificate(frames: readonly VisualEvidenceFrame[]): boolean {
-  return frames.length >= VISUAL_CERTIFICATE_MIN_FRAMES;
+function hasUsableLineCoverage(frames: readonly VisualEvidenceFrame[]): boolean {
+  return frames.filter((frame) => frame.lines.some((line) => line.strength >= MIN_VISUAL_STRUCTURE_STRENGTH)).length
+    >= VISUAL_CERTIFICATE_MIN_FRAMES;
+}
+
+function hasUsableJunctionCoverage(frames: readonly VisualEvidenceFrame[]): boolean {
+  return frames.filter((frame) => frame.junctions.some((junction) => junction.strength >= MIN_VISUAL_STRUCTURE_STRENGTH)).length
+    >= VISUAL_CERTIFICATE_MIN_FRAMES;
+}
+
+function visualCheckActive(frames: readonly VisualEvidenceFrame[]): boolean {
+  return hasUsableLineCoverage(frames) || hasUsableJunctionCoverage(frames);
 }
 
 /** Convert the current WebXR viewer pose into the same project frame as fused surfels. */
@@ -128,7 +139,8 @@ function certifyCandidates(
   const endpointObservations = result.corners.some((candidate) => candidate.id.startsWith('endpoint:'))
     ? detectEdgeEndpointObservations(snapshot)
     : [];
-  const requireVisual = needsVisualCertificate(visualFrames);
+  const requireLineVisual = hasUsableLineCoverage(visualFrames);
+  const requireJunctionVisual = hasUsableJunctionCoverage(visualFrames);
   const certified: StructuralCornerCandidate[] = [];
 
   for (const candidate of result.corners) {
@@ -152,7 +164,7 @@ function certifyCandidates(
         confidence: Math.min(candidate.confidence, observation.confidence),
         support: Math.max(candidate.support, observation.support),
       };
-      if (requireVisual) {
+      if (requireLineVisual) {
         const visual = certifyEndpointByVisualReprojection(validatedCandidate.position, visualFrames);
         if (!visual.accepted) continue;
         validatedCandidate = {
@@ -177,7 +189,7 @@ function certifyCandidates(
         confidence: Math.min(candidate.confidence, certificate.confidence),
         support: Math.max(candidate.support, certificate.supportCount),
       };
-      if (requireVisual) {
+      if (requireJunctionVisual) {
         const visual = certifyCornerByVisualReprojection(validatedCandidate.position, visualFrames);
         if (!visual.accepted) continue;
         validatedCandidate = {
@@ -197,7 +209,7 @@ function certifyEdges(
   visualFrames: readonly VisualEvidenceFrame[],
 ): readonly StructuralEdgeCandidate[] {
   if (result === null) return [];
-  const requireVisual = needsVisualCertificate(visualFrames);
+  const requireVisual = hasUsableLineCoverage(visualFrames);
   const output: StructuralEdgeCandidate[] = [];
   for (const edge of result.edges) {
     if (edge.confidence < MIN_CERTIFIED_EDGE_CONFIDENCE) continue;
@@ -437,7 +449,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
       <div className="xr-structural-guide-status">
-        AUTO GUIDE · {projectedCorners.length}/{certifiedCandidates.length} certified corner · {certifiedEdgeCandidates.length} certified edge · {result.planarPatches} patches{needsVisualCertificate(visualFrames) ? ' · RGB CHECK' : ''}
+        AUTO GUIDE · {projectedCorners.length}/{certifiedCandidates.length} certified corner · {certifiedEdgeCandidates.length} certified edge · {result.planarPatches} patches{visualCheckActive(visualFrames) ? ' · RGB CHECK' : ''}
       </div>
 
       {projectedEdges.map((edge) => {
