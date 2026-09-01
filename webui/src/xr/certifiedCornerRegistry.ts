@@ -5,7 +5,7 @@ export interface CertifiedGuideCorner {
   position: ProjectPoint;
   confidence: number;
   support: number;
-  source: 'three-plane' | 'multi-view-edge-endpoint';
+  source: 'three-plane' | 'multi-view-edge-endpoint' | 'multi-edge-vertex';
 }
 
 export interface CertifiedGuideEdge {
