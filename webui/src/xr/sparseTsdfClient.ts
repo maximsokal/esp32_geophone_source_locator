@@ -8,6 +8,8 @@ export interface SparseTsdfReconstructInput {
   voxelSizeMeters: number;
   freeSpacePositions?: Float32Array;
   freeSpaceVoxelSizeMeters?: number;
+  maxInputPoints?: number;
+  maxTriangles?: number;
 }
 
 interface ResultMessage {
@@ -56,6 +58,8 @@ export class SparseTsdfMeshClient {
         voxelSizeMeters: input.voxelSizeMeters,
         freeSpacePositions: input.freeSpacePositions,
         freeSpaceVoxelSizeMeters: input.freeSpaceVoxelSizeMeters,
+        maxInputPoints: input.maxInputPoints,
+        maxTriangles: input.maxTriangles,
       }, transfer);
     });
   }
