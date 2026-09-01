@@ -147,6 +147,43 @@ export class ManualControlPointStore {
     return point;
   }
 
+  private storeSnapped(
+    position: ProjectPoint,
+    snapMeters: number,
+    placementMode: ManualPlacementMode | null,
+    placementConfidence: number | null,
+    firstPlacementSnapped: boolean,
+  ): ManualPointPlacementResult {
+    let nearest: ManualControlPoint | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const point of this.points.values()) {
+      const distance = pointDistance(point.position, position);
+      if (distance < nearestDistance) { nearest = point; nearestDistance = distance; }
+    }
+    if (nearest !== null && nearestDistance <= snapMeters) {
+      const blended: ProjectPoint = [
+        nearest.position[0] * 0.35 + position[0] * 0.65,
+        nearest.position[1] * 0.35 + position[1] * 0.65,
+        nearest.position[2] * 0.35 + position[2] * 0.65,
+      ];
+      const updated = this.updateStored(nearest.id, blended) ?? nearest;
+      return {
+        point: updated,
+        created: false,
+        snapped: true,
+        placementMode,
+        placementConfidence,
+      };
+    }
+    return {
+      point: this.add(position),
+      created: true,
+      snapped: firstPlacementSnapped,
+      placementMode,
+      placementConfidence,
+    };
+  }
+
   /**
    * A phone tap starts from one low-resolution depth texel, but a rescue-search
    * structural pin must never trust that texel directly. When the active XR map
@@ -158,36 +195,39 @@ export class ManualControlPointStore {
    */
   addOrSnap(position: ProjectPoint, snapMeters = 0.065): ManualPointPlacementResult {
     const resolved = resolvePlacement(position);
-    const lockedPosition = resolved.position;
-    let nearest: ManualControlPoint | null = null;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    for (const point of this.points.values()) {
-      const distance = pointDistance(point.position, lockedPosition);
-      if (distance < nearestDistance) { nearest = point; nearestDistance = distance; }
+    return this.storeSnapped(
+      resolved.position,
+      snapMeters,
+      resolved.mode,
+      resolved.confidence,
+      resolved.surfaceLocked,
+    );
+  }
+
+  /**
+   * Store geometry that has already passed a stronger external certificate.
+   * This exists for multi-view two-plane endpoints: the worker requires repeated
+   * independent viewpoints + verified FREE beyond the finite edge, and the UI
+   * immediately re-certifies the same endpoint before calling this method.
+   * Running the ordinary three-plane manual resolver a third time would reject a
+   * mathematically valid two-plane endpoint simply because it is not a 3-plane
+   * corner. This method does NOT accept raw screen/depth candidates.
+   */
+  addCertifiedOrSnap(
+    position: ProjectPoint,
+    confidence: number,
+    snapMeters = 0.065,
+  ): ManualPointPlacementResult {
+    if (!position.every(Number.isFinite) || !Number.isFinite(confidence) || confidence < 0.70) {
+      throw new ManualPlacementRejectedError('Certified structural endpoint is invalid or below confidence threshold.');
     }
-    if (nearest !== null && nearestDistance <= snapMeters) {
-      const blended: ProjectPoint = [
-        nearest.position[0] * 0.35 + lockedPosition[0] * 0.65,
-        nearest.position[1] * 0.35 + lockedPosition[1] * 0.65,
-        nearest.position[2] * 0.35 + lockedPosition[2] * 0.65,
-      ];
-      const updated = this.updateStored(nearest.id, blended) ?? nearest;
-      return {
-        point: updated,
-        created: false,
-        snapped: true,
-        placementMode: resolved.mode,
-        placementConfidence: resolved.confidence,
-      };
-    }
-    return {
-      point: this.add(lockedPosition),
-      created: true,
-      // A first tap resolved against stable geometry is a real surface snap too.
-      snapped: resolved.surfaceLocked,
-      placementMode: resolved.mode,
-      placementConfidence: resolved.confidence,
-    };
+    return this.storeSnapped(
+      position,
+      snapMeters,
+      'corner',
+      Math.min(0.99, Math.max(0, confidence)),
+      true,
+    );
   }
 
   update(id: number, position: ProjectPoint): ManualControlPoint | null {
