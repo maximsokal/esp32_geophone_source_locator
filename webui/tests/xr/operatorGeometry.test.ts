@@ -50,12 +50,21 @@ describe('projectProjectPointToNormalized', () => {
     0,0,0,1,
   ]);
 
-  it('projects a project-space point through the current XR view', () => {
-    const projected = projectProjectPointToNormalized([0,0,0], identity, identity);
+  it('projects a project-space point in front of the current XR view', () => {
+    // Project +Y maps to WebXR -Z, so [0,1,0] is one metre in front of an
+    // identity camera. A point at [0,0,0] lies exactly on the camera plane and
+    // must not be considered a visible/manual-placement target.
+    const projected = projectProjectPointToNormalized([0,1,0], identity, identity);
     expect(projected).not.toBeNull();
     expect(projected?.u).toBeCloseTo(0.5);
     expect(projected?.v).toBeCloseTo(0.5);
+    expect(projected?.viewDepthMeters).toBeCloseTo(1);
     expect(projected?.visible).toBe(true);
+  });
+
+  it('rejects points on the camera plane or behind the camera', () => {
+    expect(projectProjectPointToNormalized([0,0,0], identity, identity)).toBeNull();
+    expect(projectProjectPointToNormalized([0,-1,0], identity, identity)).toBeNull();
   });
 
   it('rejects invalid transform matrices', () => {
