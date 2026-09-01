@@ -212,7 +212,12 @@ export function classifyDepthNeighbourhood(
     const residualScore = 1 - clamp01(inlierMedian / tolerance);
     return {
       accepted: true,
-      score: clamp01((edge ? 0.60 : 0.77) + residualScore * (edge ? 0.30 : 0.23)),
+      // A discontinuity sample can be a confident-but-wrong mixture of foreground
+      // and background. Keep it as weak boundary evidence so sharp geometry is
+      // not erased, but never give it near-interior surface weight.
+      score: edge
+        ? clamp01(0.22 + residualScore * 0.18)
+        : clamp01(0.77 + residualScore * 0.23),
       edge,
       dominantAxis,
       supportingNeighbours: support.length,
@@ -220,7 +225,7 @@ export function classifyDepthNeighbourhood(
   }
 
   if (support.length === 1 && edge) {
-    return { accepted: true, score: 0.48, edge: true, dominantAxis, supportingNeighbours: 1 };
+    return { accepted: true, score: 0.18, edge: true, dominantAxis, supportingNeighbours: 1 };
   }
 
   return { accepted: false, score: 0, edge, dominantAxis, supportingNeighbours: support.length };
