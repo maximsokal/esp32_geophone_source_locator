@@ -111,12 +111,15 @@ describe('edge-aware depth quality', () => {
     expect(quality.supportingNeighbours).toBe(4);
   });
 
-  it('keeps a true depth discontinuity when the center is supported on its own layer', () => {
+  it('keeps a true depth discontinuity only as weak boundary evidence', () => {
     const quality = classifyDepthNeighbourhood(1.0, 1.01, 2.0, 0.99, 2.02);
     expect(quality.accepted).toBe(true);
     expect(quality.edge).toBe(true);
     expect(quality.supportingNeighbours).toBe(2);
-    expect(quality.score).toBeGreaterThan(0.5);
+    // Mixed foreground/background pixels can be confidently wrong. Preserve
+    // the boundary sample, but never let it carry interior-plane weight.
+    expect(quality.score).toBeGreaterThan(0.15);
+    expect(quality.score).toBeLessThan(0.5);
   });
 
   it('identifies the dominant horizontal depth jump', () => {
@@ -127,11 +130,12 @@ describe('edge-aware depth quality', () => {
     expect(classifyDepthNeighbourhood(1.0, 1.0, 1.0, 1.0, 2.0).dominantAxis).toBe('v');
   });
 
-  it('keeps a one-sided silhouette sample instead of median-filtering the edge away', () => {
+  it('keeps a one-sided silhouette sample with very low weight instead of erasing the edge', () => {
     const quality = classifyDepthNeighbourhood(1.0, 1.01, 2.0, 2.0, 2.0);
     expect(quality.accepted).toBe(true);
     expect(quality.edge).toBe(true);
     expect(quality.supportingNeighbours).toBe(1);
+    expect(quality.score).toBeLessThan(0.25);
   });
 
   it('rejects an isolated depth spike', () => {
