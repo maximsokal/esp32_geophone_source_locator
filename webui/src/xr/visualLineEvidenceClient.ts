@@ -101,6 +101,11 @@ export class VisualLineEvidenceClient {
       const edgeStrength = frame.edgeStrength.slice();
       const gradientX = frame.gradientX.slice();
       const gradientY = frame.gradientY.slice();
+      const transfer: Transferable[] = [
+        edgeStrength.buffer as ArrayBuffer,
+        gradientX.buffer as ArrayBuffer,
+        gradientY.buffer as ArrayBuffer,
+      ];
       this.worker!.postMessage({
         type: 'analyze',
         requestId,
@@ -111,7 +116,7 @@ export class VisualLineEvidenceClient {
         edgeStrength,
         gradientX,
         gradientY,
-      }, [edgeStrength.buffer, gradientX.buffer, gradientY.buffer]);
+      }, transfer);
     });
   }
 
