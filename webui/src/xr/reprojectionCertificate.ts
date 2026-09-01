@@ -5,15 +5,18 @@ import type { VisualEvidenceFrame, VisualLineSegment } from './visualLineEvidenc
 export interface ReprojectionCertificate {
   accepted: boolean;
   observations: number;
+  eligibleObservations: number;
   meanErrorNormalized: number;
   confidence: number;
   matchedKeyframes: readonly number[];
+  eligibleKeyframes: readonly number[];
 }
 
 const DEFAULT_CORNER_TOLERANCE = 0.035;
 const DEFAULT_ENDPOINT_TOLERANCE = 0.030;
 const DEFAULT_EDGE_TOLERANCE = 0.028;
 const MIN_BASELINE_METERS = 0.075;
+const ELIGIBLE_VIEW_MARGIN = 0.04;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 
@@ -46,7 +49,13 @@ function independentFrame(acceptedFrames: readonly VisualEvidenceFrame[], candid
   return acceptedFrames.every((frame) => distance3(camera, cameraProjectPosition(frame)) >= MIN_BASELINE_METERS);
 }
 
+function insideEligibleView(u: number, v: number): boolean {
+  return u >= ELIGIBLE_VIEW_MARGIN && u <= 1 - ELIGIBLE_VIEW_MARGIN &&
+    v >= ELIGIBLE_VIEW_MARGIN && v <= 1 - ELIGIBLE_VIEW_MARGIN;
+}
+
 function finishCertificate(
+  eligibleFrames: readonly VisualEvidenceFrame[],
   acceptedFrames: readonly VisualEvidenceFrame[],
   errors: readonly number[],
   strengths: readonly number[],
@@ -65,9 +74,11 @@ function finishCertificate(
   return {
     accepted: observations >= minimumObservations,
     observations,
+    eligibleObservations: eligibleFrames.length,
     meanErrorNormalized: meanError,
     confidence: clamp01(countScore * 0.46 + errorScore * 0.34 + meanStrength * 0.20),
     matchedKeyframes: acceptedFrames.map((frame) => frame.keyframeId),
+    eligibleKeyframes: eligibleFrames.map((frame) => frame.keyframeId),
   };
 }
 
@@ -77,31 +88,37 @@ export function certifyCornerByVisualReprojection(
   minimumObservations = 3,
   toleranceNormalized = DEFAULT_CORNER_TOLERANCE,
 ): ReprojectionCertificate {
+  const eligibleFrames: VisualEvidenceFrame[] = [];
   const acceptedFrames: VisualEvidenceFrame[] = [];
   const errors: number[] = [];
   const strengths: number[] = [];
   for (const frame of frames) {
     const projection = projectProjectPointToNormalized(position, frame.projectionMatrix, frame.worldFromView);
-    if (projection === null || !projection.visible || frame.junctions.length === 0) continue;
+    if (
+      projection === null || !projection.visible || !insideEligibleView(projection.u, projection.v) ||
+      frame.junctions.length === 0 || !independentFrame(eligibleFrames, frame)
+    ) continue;
+    eligibleFrames.push(frame);
     let bestError = Number.POSITIVE_INFINITY;
     let bestStrength = 0;
     for (const junction of frame.junctions) {
       const error = Math.hypot(junction.position[0] - projection.u, junction.position[1] - projection.v);
       if (error < bestError) { bestError = error; bestStrength = junction.strength; }
     }
-    if (bestError > toleranceNormalized || !independentFrame(acceptedFrames, frame)) continue;
+    if (bestError > toleranceNormalized) continue;
     acceptedFrames.push(frame);
     errors.push(bestError);
     strengths.push(bestStrength);
   }
-  return finishCertificate(acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
+  return finishCertificate(eligibleFrames, acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
 }
 
 /**
  * Finite two-plane endpoints do not always form a 2D junction (a visible edge
- * can simply stop at an occlusion/boundary). Accept endpoint evidence only when
- * the projected 3D endpoint repeatedly lands near a detected line endpoint in
- * independent RGB keyframes.
+ * can simply stop at an occlusion/boundary). Candidate-specific eligibility is
+ * counted separately from successful matches: RGB is allowed to veto only when
+ * this endpoint was actually visible with usable line evidence in enough
+ * independent views.
  */
 export function certifyEndpointByVisualReprojection(
   position: ProjectPoint,
@@ -109,24 +126,29 @@ export function certifyEndpointByVisualReprojection(
   minimumObservations = 3,
   toleranceNormalized = DEFAULT_ENDPOINT_TOLERANCE,
 ): ReprojectionCertificate {
+  const eligibleFrames: VisualEvidenceFrame[] = [];
   const acceptedFrames: VisualEvidenceFrame[] = [];
   const errors: number[] = [];
   const strengths: number[] = [];
   for (const frame of frames) {
     const projection = projectProjectPointToNormalized(position, frame.projectionMatrix, frame.worldFromView);
-    if (projection === null || !projection.visible || frame.lines.length === 0) continue;
+    if (
+      projection === null || !projection.visible || !insideEligibleView(projection.u, projection.v) ||
+      frame.lines.length === 0 || !independentFrame(eligibleFrames, frame)
+    ) continue;
+    eligibleFrames.push(frame);
     let bestError = Number.POSITIVE_INFINITY;
     let bestStrength = 0;
     for (const line of frame.lines) {
       const error = lineEndpointDistance(projection.u, projection.v, line);
       if (error < bestError) { bestError = error; bestStrength = line.strength; }
     }
-    if (bestError > toleranceNormalized || !independentFrame(acceptedFrames, frame)) continue;
+    if (bestError > toleranceNormalized) continue;
     acceptedFrames.push(frame);
     errors.push(bestError);
     strengths.push(bestStrength);
   }
-  return finishCertificate(acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
+  return finishCertificate(eligibleFrames, acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
 }
 
 export function certifyEdgeByVisualReprojection(
@@ -136,17 +158,23 @@ export function certifyEdgeByVisualReprojection(
   minimumObservations = 3,
   toleranceNormalized = DEFAULT_EDGE_TOLERANCE,
 ): ReprojectionCertificate {
+  const eligibleFrames: VisualEvidenceFrame[] = [];
   const acceptedFrames: VisualEvidenceFrame[] = [];
   const errors: number[] = [];
   const strengths: number[] = [];
   for (const frame of frames) {
     const a = projectProjectPointToNormalized(start, frame.projectionMatrix, frame.worldFromView);
     const b = projectProjectPointToNormalized(end, frame.projectionMatrix, frame.worldFromView);
-    if (a === null || b === null || !a.visible || !b.visible || frame.lines.length === 0) continue;
+    if (
+      a === null || b === null || !a.visible || !b.visible ||
+      !insideEligibleView(a.u, a.v) || !insideEligibleView(b.u, b.v) ||
+      frame.lines.length === 0 || !independentFrame(eligibleFrames, frame)
+    ) continue;
     const projectedDx = b.u - a.u;
     const projectedDy = b.v - a.v;
     const projectedLength = Math.hypot(projectedDx, projectedDy);
     if (projectedLength < 0.025) continue;
+    eligibleFrames.push(frame);
     const dirX = projectedDx / projectedLength;
     const dirY = projectedDy / projectedLength;
     let bestError = Number.POSITIVE_INFINITY;
@@ -164,10 +192,10 @@ export function certifyEdgeByVisualReprojection(
       const error = midpointError * 0.65 + endpointError * 0.35;
       if (error < bestError) { bestError = error; bestStrength = line.strength * directionDot; }
     }
-    if (bestError > toleranceNormalized || !independentFrame(acceptedFrames, frame)) continue;
+    if (bestError > toleranceNormalized) continue;
     acceptedFrames.push(frame);
     errors.push(bestError);
     strengths.push(bestStrength);
   }
-  return finishCertificate(acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
+  return finishCertificate(eligibleFrames, acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
 }
