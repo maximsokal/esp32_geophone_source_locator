@@ -31,6 +31,7 @@ interface PreparedScene {
   good: QualityBands;
   bad: QualityBands;
   manualPositions: ReadonlyArray<readonly [number, number, number]>;
+  operatorEdgePositions: Float32Array;
   meshPositions: Float32Array;
   freeAirPositions: Float32Array;
   unknownPositions: Float32Array;
@@ -82,6 +83,18 @@ function boundsLinePositions(snapshot: ScanPointCloudSnapshot, centerX: number, 
   return output;
 }
 
+function operatorEdgePositions(snapshot: ScanPointCloudSnapshot, centerX:number, centerY:number, centerZ:number): Float32Array {
+  const output = new Float32Array(snapshot.operatorEdges.length * 6);
+  let write = 0;
+  for (const edge of snapshot.operatorEdges) {
+    for (const point of [edge.start, edge.end] as const) {
+      const transformed = transformOne(point[0], point[1], point[2], centerX, centerY, centerZ);
+      output[write++] = transformed[0]; output[write++] = transformed[1]; output[write++] = transformed[2];
+    }
+  }
+  return output;
+}
+
 function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
   const bounds = snapshot.bounds;
   const centerX = bounds === null ? 0 : (bounds.min[0] + bounds.max[0]) * 0.5;
@@ -96,6 +109,7 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
     good: splitConfidenceBands(snapshot.positions, snapshot.confidence, centerX, centerY, centerZ),
     bad: splitConfidenceBands(snapshot.tentativePositions, snapshot.tentativeConfidence, centerX, centerY, centerZ),
     manualPositions: snapshot.manualControlPoints.map((point) => transformOne(point.position[0], point.position[1], point.position[2], centerX, centerY, centerZ)),
+    operatorEdgePositions: operatorEdgePositions(snapshot, centerX, centerY, centerZ),
     meshPositions: transformPositions(mesh.trianglePositions, centerX, centerY, centerZ),
     freeAirPositions: transformPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
     unknownPositions: transformPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
@@ -127,6 +141,12 @@ function BoundsLines({ positions }: { positions: Float32Array }) {
   return <lineSegments geometry={geometry} renderOrder={20}><lineBasicMaterial color="#dbeafe" transparent opacity={0.78} depthTest={false} /></lineSegments>;
 }
 
+function OperatorEdges({ positions }: { positions: Float32Array }) {
+  const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); return next; }, [positions]);
+  useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
+  return <lineSegments geometry={geometry} renderOrder={48}><lineBasicMaterial color="#f05cff" transparent opacity={0.96} depthTest={false} /></lineSegments>;
+}
+
 function ManualPin({ position, extent, id }: { position: readonly [number, number, number]; extent: number; id: number }) {
   const radius = clamp(extent * 0.022, 0.035, 0.10);
   return <group position={[position[0], position[1], position[2]]} renderOrder={50}><mesh renderOrder={50}><sphereGeometry args={[radius,18,12]} /><meshBasicMaterial color="#f05cff" depthTest={false} /></mesh><mesh rotation={[Math.PI/2,0,0]} renderOrder={51}><torusGeometry args={[radius*1.8,radius*0.18,8,28]} /><meshBasicMaterial color="#ffffff" depthTest={false} /></mesh><sprite position={[0,radius*3.1,0]} scale={[radius*4.5,radius*2,1]} renderOrder={52}><spriteMaterial color="#f05cff" depthTest={false} /></sprite><mesh position={[0,radius*3.1,0]} visible={false} name={`manual-pin-${id}`} /></group>;
@@ -154,7 +174,7 @@ function CameraController({ command, extent, onInteractionEnd }: { command: View
 
 function SceneLayers({ prepared, display }: { prepared: PreparedScene; display: ScanDisplayOptions }) {
   const voxelPointSize = clamp(prepared.extent*0.010,0.018,0.055);
-  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={prepared.meshPositions} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
+  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={prepared.meshPositions} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && <OperatorEdges positions={prepared.operatorEdgePositions} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
 }
 
 export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }: ScanPointCloudViewportProps) {
@@ -165,7 +185,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
   return <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume" data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
-    <div className="scan-source-badge">SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()}</div>
+    <div className="scan-source-badge">SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()} · EDGES {snapshot.operatorEdges.length.toLocaleString()}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
     {display.dimensions && <div className="scan-dimension-overlay">X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m</div>}
     {display.mesh && <div className="scan-mesh-overlay">SURFACE BOUNDARY · {prepared.meshTriangles.toLocaleString()} triangles</div>}
