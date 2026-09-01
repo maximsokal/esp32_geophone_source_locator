@@ -42,10 +42,10 @@ function compileShader(
 }
 
 function createProgram(gl: WebGLRenderingContext | WebGL2RenderingContext): WebGLProgram {
-  // GLSL ES 1.00 shaders are intentionally used because the runtime may fall
-  // back to WebGL1. The fragment shader flips Y: Chromium's raw camera texture
-  // follows WebGL's bottom-left origin while WebXR/depth normalized coordinates
-  // in this project are top-left-origin.
+  // GLSL ES 1.00 is used because the runtime may fall back to WebGL1. Chromium
+  // exposes the XR camera as a normal bottom-left-origin WebGL texture. We keep
+  // that convention in the GPU blit; buildRgbDepthGuidanceFrame flips the
+  // readPixels rows exactly once into WebXR's top-left normalized convention.
   const vertex = compileShader(gl, gl.VERTEX_SHADER, `
     attribute vec2 a_position;
     varying vec2 v_uv;
@@ -59,7 +59,7 @@ function createProgram(gl: WebGLRenderingContext | WebGL2RenderingContext): WebG
     uniform sampler2D u_camera;
     varying vec2 v_uv;
     void main() {
-      gl_FragColor = texture2D(u_camera, vec2(v_uv.x, 1.0 - v_uv.y));
+      gl_FragColor = texture2D(u_camera, v_uv);
     }
   `);
   const program = gl.createProgram();
@@ -161,9 +161,6 @@ export class RawCameraGuidanceCapture {
       gl.uniform1i(sampler, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.readPixels(0, 0, TARGET_WIDTH, TARGET_HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
-      // The shader already flips the camera texture into the project top-left
-      // convention. readPixels itself is bottom-left, so tell the CPU conversion
-      // to flip the rows once more into top-left luma storage.
       return buildRgbDepthGuidanceFrame(
         this.pixels,
         TARGET_WIDTH,
