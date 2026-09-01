@@ -2,7 +2,12 @@
 
 import { detectCertifiedStructuralCorners } from './certifiedStructuralGeometry';
 import { StructuralEdgeEndpointTracker } from './structuralEdgeEndpoints';
-import { StructuralGuideTracker, type StructuralGuideInput, type StructuralGuideViewpoint } from './structuralGuide';
+import {
+  StructuralGuideTracker,
+  type StructuralCornerCandidate,
+  type StructuralGuideInput,
+  type StructuralGuideViewpoint,
+} from './structuralGuide';
 
 interface AnalyzeMessage {
   type: 'analyze';
@@ -28,6 +33,9 @@ type WorkerMessage = AnalyzeMessage | ResetMessage;
 const tracker = new StructuralGuideTracker();
 const endpointTracker = new StructuralEdgeEndpointTracker();
 let currentEpoch = 0;
+let analysisSequence = 0;
+let lastThreePlaneCorners: readonly StructuralCornerCandidate[] = [];
+let lastEndpointCorners: readonly StructuralCornerCandidate[] = [];
 
 function pointDistance(
   a: readonly [number, number, number],
@@ -42,11 +50,12 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     currentEpoch = message.epoch;
     tracker.reset();
     endpointTracker.reset();
+    analysisSequence = 0;
+    lastThreePlaneCorners = [];
+    lastEndpointCorners = [];
     return;
   }
 
-  // A reset can be queued while an older analysis is in flight. The client also
-  // validates the echoed epoch, but this early gate prevents stale queued work.
   if (message.epoch !== currentEpoch) return;
 
   const started = performance.now();
@@ -61,10 +70,6 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
   };
 
-  // Keep the mature edge tracker/diagnostics, but do not expose its old
-  // three-small-patch corner hypotheses directly. Auto corners now come from
-  // either a bounded 3-plane solve or a multi-view 2-plane edge endpoint whose
-  // continuation is independently verified as FREE.
   const tracked = tracker.update(input, 0);
   const certifiedSnapshot = {
     positions: message.positions,
@@ -79,11 +84,26 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     freeSpacePositions: message.freeSpacePositions,
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
   };
-  const threePlaneCorners = detectCertifiedStructuralCorners(certifiedSnapshot);
-  const endpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
 
-  const corners = [...threePlaneCorners];
-  for (const endpoint of endpointCorners) {
+  // Both uncertainty-aware solvers are deliberately expensive. Geometry changes
+  // much more slowly than the XR frame rate, so alternate them instead of doing
+  // both in one worker turn. Every candidate is independently re-certified on
+  // the main thread before it is displayed, making cached candidates safe.
+  analysisSequence += 1;
+  if ((analysisSequence & 1) === 1 || lastThreePlaneCorners.length === 0) {
+    lastThreePlaneCorners = detectCertifiedStructuralCorners(certifiedSnapshot);
+  } else {
+    lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
+  }
+
+  // Endpoint tracking needs several independent observations. Give it a first
+  // observation early without forcing all later analyses to pay both costs.
+  if (analysisSequence === 1) {
+    lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
+  }
+
+  const corners = [...lastThreePlaneCorners];
+  for (const endpoint of lastEndpointCorners) {
     const duplicate = corners.find((corner) => pointDistance(corner.position, endpoint.position) <= 0.075);
     if (duplicate === undefined) {
       corners.push(endpoint);
