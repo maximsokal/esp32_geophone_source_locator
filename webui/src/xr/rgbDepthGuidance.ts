@@ -3,6 +3,8 @@ export interface RgbDepthGuidanceFrame {
   height: number;
   /** Top-left-origin 8-bit luminance. */
   luma: Uint8Array;
+  /** Optional top-left-origin RGBA copy for the opt-in monocular prior. */
+  rgba?: Uint8Array;
   /** Sobel gradient magnitude, normalized to 0..255. */
   edgeStrength: Uint8Array;
   /** Quantized normalized Sobel gradient components in -127..127. */
@@ -51,6 +53,47 @@ function lumaIndex(frame: RgbDepthGuidanceFrame, u: number, v: number): number {
   return y * frame.width + x;
 }
 
+export function rgbaDownsampled(
+  rgba: Uint8Array,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+  sourceOrigin: 'top-left' | 'bottom-left' = 'top-left',
+): Uint8Array {
+  const width = Math.max(1, Math.floor(targetWidth));
+  const height = Math.max(1, Math.floor(targetHeight));
+  const result = new Uint8Array(width * height * 4);
+  if (sourceWidth <= 0 || sourceHeight <= 0 || rgba.length < sourceWidth * sourceHeight * 4) return result;
+  for (let y = 0; y < height; y += 1) {
+    const normalizedY = (y + 0.5) / height;
+    const sourceYTop = clamp(Math.floor(normalizedY * sourceHeight), 0, sourceHeight - 1);
+    const sy = sourceOrigin === 'bottom-left' ? sourceHeight - 1 - sourceYTop : sourceYTop;
+    for (let x = 0; x < width; x += 1) {
+      const normalizedX = (x + 0.5) / width;
+      const sx = clamp(Math.floor(normalizedX * sourceWidth), 0, sourceWidth - 1);
+      const sourceOffset = (sy * sourceWidth + sx) * 4;
+      const targetOffset = (y * width + x) * 4;
+      result[targetOffset] = rgba[sourceOffset];
+      result[targetOffset + 1] = rgba[sourceOffset + 1];
+      result[targetOffset + 2] = rgba[sourceOffset + 2];
+      result[targetOffset + 3] = rgba[sourceOffset + 3];
+    }
+  }
+  return result;
+}
+
+function rgbaToLuma(rgba: Uint8Array, width: number, height: number): Uint8Array {
+  const result = new Uint8Array(width * height);
+  for (let index = 0; index < result.length; index += 1) {
+    const offset = index * 4;
+    result[index] = clamp(Math.round(
+      rgba[offset] * 0.2126 + rgba[offset + 1] * 0.7152 + rgba[offset + 2] * 0.0722,
+    ), 0, 255);
+  }
+  return result;
+}
+
 export function rgbaToLumaDownsampled(
   rgba: Uint8Array,
   sourceWidth: number,
@@ -61,22 +104,11 @@ export function rgbaToLumaDownsampled(
 ): Uint8Array {
   const width = Math.max(1, Math.floor(targetWidth));
   const height = Math.max(1, Math.floor(targetHeight));
-  const result = new Uint8Array(width * height);
-  if (sourceWidth <= 0 || sourceHeight <= 0 || rgba.length < sourceWidth * sourceHeight * 4) return result;
-  for (let y = 0; y < height; y += 1) {
-    const normalizedY = (y + 0.5) / height;
-    const sourceYTop = clamp(Math.floor(normalizedY * sourceHeight), 0, sourceHeight - 1);
-    const sy = sourceOrigin === 'bottom-left' ? sourceHeight - 1 - sourceYTop : sourceYTop;
-    for (let x = 0; x < width; x += 1) {
-      const normalizedX = (x + 0.5) / width;
-      const sx = clamp(Math.floor(normalizedX * sourceWidth), 0, sourceWidth - 1);
-      const offset = (sy * sourceWidth + sx) * 4;
-      result[y * width + x] = clamp(Math.round(
-        rgba[offset] * 0.2126 + rgba[offset + 1] * 0.7152 + rgba[offset + 2] * 0.0722,
-      ), 0, 255);
-    }
-  }
-  return result;
+  return rgbaToLuma(
+    rgbaDownsampled(rgba, sourceWidth, sourceHeight, width, height, sourceOrigin),
+    width,
+    height,
+  );
 }
 
 export function buildRgbDepthGuidanceFrameFromLuma(
@@ -125,12 +157,16 @@ export function buildRgbDepthGuidanceFrame(
   sourceOrigin: 'top-left' | 'bottom-left' = 'top-left',
   capturedAtMs = performance.now(),
 ): RgbDepthGuidanceFrame {
-  return buildRgbDepthGuidanceFrameFromLuma(
-    rgbaToLumaDownsampled(rgba, sourceWidth, sourceHeight, targetWidth, targetHeight, sourceOrigin),
-    targetWidth,
-    targetHeight,
+  const width = Math.max(1, Math.floor(targetWidth));
+  const height = Math.max(1, Math.floor(targetHeight));
+  const normalizedRgba = rgbaDownsampled(rgba, sourceWidth, sourceHeight, width, height, sourceOrigin);
+  const frame = buildRgbDepthGuidanceFrameFromLuma(
+    rgbaToLuma(normalizedRgba, width, height),
+    width,
+    height,
     capturedAtMs,
   );
+  return { ...frame, rgba: normalizedRgba };
 }
 
 export function sampleRgbGuidance(
