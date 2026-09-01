@@ -21,6 +21,10 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function pointDistance(a: ProjectPoint, b: ProjectPoint): number {
+  return Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+}
+
 /**
  * Convert one WebXR CPU-depth sample into the project coordinate convention.
  *
@@ -89,6 +93,30 @@ export class ManualControlPointStore {
     this.points.set(point.id, point);
     this.order.push(point.id);
     return point;
+  }
+
+  /**
+   * Manual placement is noisy on a phone. Repeated taps within snapMeters of an
+   * existing corner update that corner instead of creating a cloud of duplicate
+   * magenta pins.
+   */
+  addOrSnap(position: ProjectPoint, snapMeters = 0.065): { point: ManualControlPoint; created: boolean; snapped: boolean } {
+    let nearest: ManualControlPoint | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const point of this.points.values()) {
+      const distance = pointDistance(point.position, position);
+      if (distance < nearestDistance) { nearest = point; nearestDistance = distance; }
+    }
+    if (nearest !== null && nearestDistance <= snapMeters) {
+      const blended: ProjectPoint = [
+        nearest.position[0] * 0.35 + position[0] * 0.65,
+        nearest.position[1] * 0.35 + position[1] * 0.65,
+        nearest.position[2] * 0.35 + position[2] * 0.65,
+      ];
+      const updated = this.update(nearest.id, blended) ?? nearest;
+      return { point: updated, created: false, snapped: true };
+    }
+    return { point: this.add(position), created: true, snapped: false };
   }
 
   update(id: number, position: ProjectPoint): ManualControlPoint | null {
