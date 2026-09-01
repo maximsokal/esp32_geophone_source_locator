@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { detectCertifiedStructuralCorners } from './certifiedStructuralGeometry';
 import { StructuralGuideTracker, type StructuralGuideInput, type StructuralGuideViewpoint } from './structuralGuide';
 
 interface AnalyzeMessage {
@@ -45,7 +46,24 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     freeSpacePositions: message.freeSpacePositions,
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
   };
-  const result = tracker.update(input, performance.now() - started);
+
+  // Keep the mature edge tracker/diagnostics, but do not expose its old
+  // three-small-patch corner hypotheses directly. Auto corners now come from an
+  // independent RANSAC/TLS/IRLS local solve on the fused surface map.
+  const tracked = tracker.update(input, 0);
+  const certifiedCorners = detectCertifiedStructuralCorners({
+    positions: message.positions,
+    normals: message.normals,
+    confidence: message.confidence,
+    pointCount: Math.floor(message.positions.length / 3),
+    voxelSizeMeters: message.voxelSizeMeters,
+  });
+  const result = {
+    ...tracked,
+    corners: certifiedCorners,
+    computeMs: performance.now() - started,
+  };
+
   self.postMessage({ type: 'result', requestId: message.requestId, epoch: message.epoch, result });
 });
 
