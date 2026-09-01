@@ -2,6 +2,7 @@ import type { ReprojectionCertificate } from './reprojectionCertificate';
 
 export interface StructuralVisualCorroboration {
   confidence: number;
+  /** Physical multi-view observations only. RGB matches never increase this. */
   observations: number;
   visuallyConfirmed: boolean;
   visualDisagreement: boolean;
@@ -46,11 +47,12 @@ export function applyStructuralVisualCorroboration(
   }
 
   // Positive RGB evidence may add a small confidence bonus, but cannot dominate
-  // the physical 3D certificate. It also contributes independent observations.
+  // the physical 3D certificate. Visual matches are reported separately and do
+  // not count as independent metric ARCore observations.
   const bonus = (1 - confidence) * Math.max(0, Math.min(1, visual.confidence)) * 0.08;
   return {
     confidence: Math.min(0.97, confidence + bonus),
-    observations: Math.max(observations, visual.observations),
+    observations,
     visuallyConfirmed: true,
     visualDisagreement: false,
     eligibleVisualObservations: visual.eligibleObservations,
