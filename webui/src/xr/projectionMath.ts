@@ -4,8 +4,8 @@ export interface NormalizedProjection {
   u: number;
   v: number;
   clipDepth: number;
-  /** Positive metric distance along the camera forward axis. */
-  viewDepthMeters: number;
+  /** Positive metric distance along the camera forward axis when available. */
+  viewDepthMeters?: number;
   visible: boolean;
 }
 
