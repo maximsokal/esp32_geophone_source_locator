@@ -1,3 +1,4 @@
+import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult } from './structuralGuide';
 
 interface AnalyzeInput {
@@ -20,7 +21,10 @@ export class StructuralGuideClient {
   private pending: { id: number; resolve: (value: StructuralGuideResult) => void; reject: (reason?: unknown) => void; started: number } | null = null;
 
   constructor() {
-    this.worker = new Worker(new URL('./structuralGuide.worker.ts', import.meta.url), { type: 'module' });
+    // Vite inlines the worker payload into the application bundle. It still runs
+    // in a dedicated browser thread, while the ESP firmware keeps the existing
+    // single-JS-asset contract and needs no extra HTTP route.
+    this.worker = new StructuralGuideWorker();
     this.worker.addEventListener('message', this.handleMessage);
     this.worker.addEventListener('error', this.handleError);
   }
