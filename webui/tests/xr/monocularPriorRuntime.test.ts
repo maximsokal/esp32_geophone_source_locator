@@ -16,7 +16,18 @@ function relativeAt(u: number, v: number): number {
   return 0.55 + u * 0.72 + v * 0.24;
 }
 
-function guidance(capturedAtMs: number): RgbDepthGuidanceFrame {
+function transform(translationX = 0, yawRadians = 0): Float32Array {
+  const c = Math.cos(yawRadians);
+  const s = Math.sin(yawRadians);
+  return new Float32Array([
+    c, 0, -s, 0,
+    0, 1, 0, 0,
+    s, 0, c, 0,
+    translationX, 0, 0, 1,
+  ]);
+}
+
+function guidance(capturedAtMs: number, worldFromView?: Float32Array): RgbDepthGuidanceFrame {
   const width = 64, height = 48;
   return {
     width,
@@ -25,6 +36,7 @@ function guidance(capturedAtMs: number): RgbDepthGuidanceFrame {
     edgeStrength: new Uint8Array(width * height),
     gradientX: new Int8Array(width * height),
     gradientY: new Int8Array(width * height),
+    worldFromView,
     capturedAtMs,
   };
 }
@@ -142,6 +154,24 @@ describe('optional monocular prior runtime', () => {
     expect(agreement.available).toBe(true);
     expect(agreement.accepted).toBe(true);
     expect(agreement.disagreementMeters!).toBeLessThan(0.1);
+  });
+
+  it('invalidates a calibrated ONNX depth map after the camera leaves its RGB capture pose', async () => {
+    const runtime = new MonocularPriorRuntime(new FakePriorProvider());
+    runtime.setEnabled(true);
+    const captured = guidance(100, transform());
+    expect(await runtime.maybeUpdate(captured, metricDepth(), 100)).toBe(true);
+
+    const u = 0.55, v = 0.35;
+    const physical = metricDepth().getDepthInMeters(u, v);
+    const nearPose = runtime.surfaceAgreement(u, v, physical, 200, guidance(200, transform(0.02, 3 * Math.PI / 180)));
+    expect(nearPose.available).toBe(true);
+    expect(nearPose.accepted).toBe(true);
+
+    const movedPose = runtime.surfaceAgreement(u, v, 6.5, 250, guidance(250, transform(0.20, 0)));
+    expect(movedPose.available).toBe(false);
+    expect(movedPose.accepted).toBe(true);
+    expect(movedPose.priorMeters).toBeNull();
   });
 
   it('can only veto an extreme disagreement; it never substitutes its own metric depth', async () => {
