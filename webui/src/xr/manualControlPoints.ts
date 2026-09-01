@@ -16,8 +16,14 @@ export interface ManualProjectionInput {
   projectionMatrix: ArrayLike<number>; worldFromView: ArrayLike<number>;
 }
 export interface ManualPointPlacementResult {
-  point: ManualControlPoint; created: boolean; snapped: boolean;
-  placementMode: ManualPlacementMode | null; placementConfidence: number | null;
+  point: ManualControlPoint;
+  /** Convenience aliases keep add/update call-sites shape-compatible. */
+  id: number;
+  position: ProjectPoint;
+  created: boolean;
+  snapped: boolean;
+  placementMode: ManualPlacementMode | null;
+  placementConfidence: number | null;
 }
 
 export class ManualPlacementRejectedError extends Error {
@@ -108,6 +114,24 @@ export class ManualControlPointStore {
     this.points.set(id, point); return point;
   }
 
+  private placementResult(
+    point: ManualControlPoint,
+    created: boolean,
+    snapped: boolean,
+    placementMode: ManualPlacementMode | null,
+    placementConfidence: number | null,
+  ): ManualPointPlacementResult {
+    return {
+      point,
+      id: point.id,
+      position: point.position,
+      created,
+      snapped,
+      placementMode,
+      placementConfidence,
+    };
+  }
+
   private storeSnapped(
     position: ProjectPoint, snapMeters: number, placementMode: ManualPlacementMode | null,
     placementConfidence: number | null, firstPlacementSnapped: boolean,
@@ -124,9 +148,10 @@ export class ManualControlPointStore {
         nearest.position[2] * 0.35 + position[2] * 0.65,
       ];
       const updated = this.updateStored(nearest.id, blended) ?? nearest;
-      return { point: updated, created: false, snapped: true, placementMode, placementConfidence };
+      return this.placementResult(updated, false, true, placementMode, placementConfidence);
     }
-    return { point: this.add(position), created: true, snapped: firstPlacementSnapped, placementMode, placementConfidence };
+    const point = this.add(position);
+    return this.placementResult(point, true, firstPlacementSnapped, placementMode, placementConfidence);
   }
 
   addOrSnap(position: ProjectPoint, snapMeters = 0.065): ManualPointPlacementResult {
