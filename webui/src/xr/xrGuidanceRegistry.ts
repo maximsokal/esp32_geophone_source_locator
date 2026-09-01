@@ -33,11 +33,17 @@ export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
     Math.abs(guidance.capturedAtMs - frame.capturedAtMs) <= 20 &&
     !visualClient.busy
   ) {
+    // The detector works on the RGB pixels, so reprojection must use the exact
+    // pose/projection that captured those pixels. Falling back to the marker's
+    // matrices preserves synthetic/offline callers that do not carry capture
+    // metadata, but production Raw Camera frames always provide it.
+    const projectionMatrix = guidance.projectionMatrix ?? frame.projectionMatrix;
+    const worldFromView = guidance.worldFromView ?? frame.worldFromView;
     void visualClient.analyze(
       guidance,
       frame.keyframeId,
-      frame.projectionMatrix,
-      frame.worldFromView,
+      projectionMatrix,
+      worldFromView,
     ).then((resolved) => {
       visualDetectionError = null;
       visualStore.add(resolved);
