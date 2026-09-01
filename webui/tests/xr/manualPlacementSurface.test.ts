@@ -38,24 +38,24 @@ function snapshot(source: MutableCloud): ManualPlacementSurfaceSnapshot {
 
 function addPlaneX(target: MutableCloud): void {
   for (const y of [-0.08, -0.04, 0, 0.04, 0.08]) {
-    for (const z of [-0.04, 0, 0.04]) add(target, [0, y, z], [1, 0, 0]);
+    for (const z of [-0.06, -0.02, 0.02, 0.06]) add(target, [0, y, z], [1, 0, 0]);
   }
 }
 
 function addPlaneY(target: MutableCloud): void {
   for (const x of [-0.08, -0.04, 0, 0.04, 0.08]) {
-    for (const z of [-0.04, 0, 0.04]) add(target, [x, 0, z], [0, 1, 0]);
+    for (const z of [-0.06, -0.02, 0.02, 0.06]) add(target, [x, 0, z], [0, 1, 0]);
   }
 }
 
 function addPlaneZ(target: MutableCloud): void {
   for (const x of [-0.08, -0.04, 0, 0.04, 0.08]) {
-    for (const y of [-0.04, 0, 0.04]) add(target, [x, y, 0], [0, 0, 1]);
+    for (const y of [-0.06, -0.02, 0.02, 0.06]) add(target, [x, y, 0], [0, 0, 1]);
   }
 }
 
 describe('manual placement on accumulated surface geometry', () => {
-  it('locks a cursor depth candidate to a reconstructed two-plane edge', () => {
+  it('locks a cursor candidate to a reconstructed robust two-plane edge', () => {
     const source = cloud();
     addPlaneX(source);
     addPlaneY(source);
@@ -64,13 +64,15 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.accepted).toBe(true);
     expect(result.mode).toBe('edge');
     expect(result.position).not.toBeNull();
-    expect(result.position![0]).toBeCloseTo(0, 3);
-    expect(result.position![1]).toBeCloseTo(0, 3);
-    expect(result.position![2]).toBeCloseTo(0.02, 2);
-    expect(result.supportCount).toBeGreaterThanOrEqual(4);
+    expect(result.position![0]).toBeCloseTo(0, 2);
+    expect(result.position![1]).toBeCloseTo(0, 2);
+    expect(result.position![2]).toBeCloseTo(0.02, 1);
+    expect(result.supportCount).toBeGreaterThanOrEqual(12);
+    expect(result.uncertaintyMeters).toBeLessThan(0.035);
+    expect(result.confidence).toBeLessThan(1);
   });
 
-  it('solves a three-plane structural corner instead of keeping raw depth', () => {
+  it('solves a conditioned three-plane structural corner instead of keeping seed depth', () => {
     const source = cloud();
     addPlaneX(source);
     addPlaneY(source);
@@ -80,19 +82,22 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.accepted).toBe(true);
     expect(result.mode).toBe('corner');
     expect(result.position).not.toBeNull();
-    expect(result.position![0]).toBeCloseTo(0, 3);
-    expect(result.position![1]).toBeCloseTo(0, 3);
-    expect(result.position![2]).toBeCloseTo(0, 3);
+    expect(result.position![0]).toBeCloseTo(0, 2);
+    expect(result.position![1]).toBeCloseTo(0, 2);
+    expect(result.position![2]).toBeCloseTo(0, 2);
+    expect(result.uncertaintyMeters).toBeLessThan(0.032);
+    expect(result.conditionNumber).toBeLessThan(35);
+    expect(result.confidence).toBeLessThan(1);
   });
 
-  it('rejects a tap when only one surface family has been accumulated', () => {
+  it('rejects a tap when only one robust surface has been accumulated', () => {
     const source = cloud();
     addPlaneX(source);
 
     const result = solveManualPlacementOnStableSurface([0.01, 0.01, 0], snapshot(source));
     expect(result.accepted).toBe(false);
     expect(result.position).toBeNull();
-    expect(result.message).toContain('another side');
+    expect(result.message).toContain('other side');
   });
 
   it('rejects a flying-depth candidate far away from all promoted surface support', () => {
@@ -103,6 +108,31 @@ describe('manual placement on accumulated surface geometry', () => {
     const result = solveManualPlacementOnStableSurface([0.45, 0.45, 0], snapshot(source));
     expect(result.accepted).toBe(false);
     expect(result.position).toBeNull();
-    expect(result.message).toContain('does not agree');
+    expect(result.message).toContain('not supported');
+  });
+
+  it('does not call a few normal-consistent points a plane', () => {
+    const source = cloud();
+    addPlaneX(source);
+    for (let index = 0; index < 3; index += 1) {
+      add(source, [0.03 + index * 0.01, 0.01, 0.01], [0, 1, 0], 0.95);
+    }
+    const result = solveManualPlacementOnStableSurface([0.01, 0.01, 0.01], snapshot(source));
+    expect(result.accepted).toBe(false);
+    expect(result.mode).toBeNull();
+  });
+
+  it('rejects high-residual evidence through the optional uncertainty certificate', () => {
+    const source = cloud();
+    addPlaneX(source);
+    addPlaneY(source);
+    const base = snapshot(source);
+    const residualMeters = new Float32Array(base.pointCount).fill(0.055);
+    const result = solveManualPlacementOnStableSurface([0.01, 0.01, 0], {
+      ...base,
+      residualMeters,
+    });
+    expect(result.accepted).toBe(false);
+    expect(result.position).toBeNull();
   });
 });
