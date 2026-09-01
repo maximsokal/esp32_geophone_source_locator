@@ -190,12 +190,7 @@ const DEFAULT_MEMORY_BUDGET_POINTS = 60000;
 const COVERAGE_CELL_METERS = 0.30;
 const MAX_POINTS_PER_COVERAGE_CELL = 28;
 const MIN_POINTS_PER_COVERAGE_CELL = 1;
-// A trihedral corner can contribute three genuinely different surface normals
-// inside one 40-mm association voxel. Downstream structural clustering already
-// keeps three orientation families, so live fusion must not discard the third
-// family before the corner solver ever sees it. The global 60k budget is still
-// authoritative; this only changes per-voxel orientation diversity.
-export const MAX_SURFELS_PER_FINE_VOXEL = 3;
+const MAX_SURFELS_PER_FINE_VOXEL = 2;
 
 // Keep roughly the old 40x22 compute budget but remove its permanent lattice.
 const BASE_DEPTH_SAMPLES_PER_FRAME = 880;
@@ -274,6 +269,8 @@ function hashVoxel(x: number, y: number, z: number): number {
   let hash = 0x811c9dc5;
   hash = Math.imul(hash ^ x, 0x01000193);
   hash = Math.imul(hash ^ y, 0x01000193);
+  hash = Math.imul(hash ^ z, 0x01000193);
+  hash ^= hash >>> 16;
   hash = Math.imul(hash, 0x7feb352d);
   hash ^= hash >>> 15;
   hash = Math.imul(hash, 0x846ca68b);
@@ -551,6 +548,8 @@ export class DepthPointCloudAccumulator {
       if (outcome.created) createdPoints += 1;
       if (outcome.promoted) promotedPoints += 1;
 
+      // This is deliberately bounded one-level edge supersampling, not unbounded recursion:
+      // children are always invoked with expandEdges=false and therefore cannot recurse again.
       if (expandEdges && local.edge && local.dominantAxis !== 'none') {
         const du = EDGE_PROBE_PIXEL_OFFSET / Math.max(1, depth.width);
         const dv = EDGE_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
@@ -647,6 +646,10 @@ export class DepthPointCloudAccumulator {
   }
 
   structuralGuideSnapshot(): StructuralGuidePointCloudSnapshot {
+    // The live guide must not call the full final snapshot: final snapshot also
+    // builds tentative arrays, support maps, robust sorted bounds and occupancy
+    // in the wrapper. Here we copy only the promoted surfel state required by
+    // the off-main-thread plane/corner detector.
     const count = this.promotedRepresentativeCount;
     const positions = new Float32Array(count * 3);
     const normals = new Float32Array(count * 3);
@@ -971,8 +974,13 @@ export class DepthPointCloudAccumulator {
         const ddy = y - point.y;
         const ddz = z - point.z;
         const distanceSquared = ddx * ddx + ddy * ddy + ddz * ddz;
+        // Compatibility work cannot change the winner when this point is already
+        // farther than the best compatible candidate found in the same scan order.
         if (distanceSquared >= bestDistanceSquared) continue;
         if (normal !== null && point.normalConfidence >= 0.35) {
+          // Both stored surfel normals and fresh normal estimates are normalized.
+          // Compare their absolute dot product directly instead of allocating
+          // temporary vectors, re-normalizing twice and evaluating acos().
           const absDot = Math.abs(
             point.normalX * normal[0] + point.normalY * normal[1] + point.normalZ * normal[2],
           );
