@@ -54,6 +54,14 @@ export function describeAiPrior(input: AiPriorUiInput): AiPriorUiState {
   if (input.error !== null || input.providerStatus === 'error') {
     return { shortStatus: 'NOT APPLIED', calibrationLabel: 'CALIBRATION FAILED', explanation: input.error ?? 'AI calibration failed open.', good: false };
   }
+  if (input.phase === 'ended' && !input.hasStagedPostScanFrame) {
+    return {
+      shortStatus: 'NOT APPLIED',
+      calibrationLabel: 'NO STAGED RGB+DEPTH',
+      explanation: 'The scan ended without enough pose-aligned physical RGB+depth anchors to run the optional prior.',
+      good: false,
+    };
+  }
   return {
     shortStatus: 'ARMED · POST-SCAN',
     calibrationLabel: 'PENDING AFTER FINISH',
