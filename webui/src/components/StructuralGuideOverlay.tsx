@@ -4,12 +4,19 @@ import { clientDiagnostics } from '../data/clientDiagnostics';
 import {
   deactivateCertifiedGuideRegistry,
   setCertifiedGuideCorners,
+  setCertifiedGuideEdges,
 } from '../xr/certifiedCornerRegistry';
+import type { StructuralGuideSnapshot } from '../xr/depthPointCloud';
 import {
   authorizeCertifiedManualPlacement,
   type ProjectPoint,
 } from '../xr/manualControlPoints';
 import { solveManualPlacementOnStableSurface } from '../xr/manualPlacementSurface';
+import {
+  certifyCornerByVisualReprojection,
+  certifyEdgeByVisualReprojection,
+  certifyEndpointByVisualReprojection,
+} from '../xr/reprojectionCertificate';
 import { detectEdgeEndpointObservations } from '../xr/structuralEdgeEndpoints';
 import {
   matchEdgeToManualPoints,
@@ -19,8 +26,9 @@ import {
   type StructuralGuideViewpoint,
 } from '../xr/structuralGuide';
 import { StructuralGuideClient } from '../xr/structuralGuideClient';
-import type { StructuralGuideSnapshot } from '../xr/depthPointCloud';
+import type { VisualEvidenceFrame } from '../xr/visualLineEvidence';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
+import { getVisualEvidenceFrames } from '../xr/xrGuidanceRegistry';
 
 import './StructuralGuideOverlay.css';
 
@@ -53,8 +61,11 @@ const MIN_KEYFRAME_ADVANCE = 4;
 const BASE_ANALYSIS_INTERVAL_MS = 1900;
 const MIN_VISIBLE_CORNER_CONFIDENCE = 0.70;
 const MIN_CERTIFIED_CORNER_CONFIDENCE = 0.70;
+const MIN_CERTIFIED_EDGE_CONFIDENCE = 0.66;
+const MIN_CERTIFIED_EDGE_OBSERVATIONS = 2;
 const MAX_CERTIFICATE_SHIFT_METERS = 0.055;
 const MAX_CERTIFIED_UNCERTAINTY_METERS = 0.032;
+const VISUAL_CERTIFICATE_MIN_FRAMES = 3;
 const VIEW_MARGIN = 0.07;
 const MAX_VISIBLE_CORNERS = 4;
 const REJECTED_CORNER_RADIUS_METERS = 0.14;
@@ -82,6 +93,10 @@ function insideWorkingView(u: number, v: number): boolean {
   return u >= VIEW_MARGIN && u <= 1 - VIEW_MARGIN && v >= VIEW_MARGIN && v <= 1 - VIEW_MARGIN;
 }
 
+function needsVisualCertificate(frames: readonly VisualEvidenceFrame[]): boolean {
+  return frames.length >= VISUAL_CERTIFICATE_MIN_FRAMES;
+}
+
 /** Convert the current WebXR viewer pose into the same project frame as fused surfels. */
 export function structuralGuideViewpointFromState(state: WebXrRuntimeState): StructuralGuideViewpoint | null {
   const pose = state.pose;
@@ -105,6 +120,7 @@ export function structuralGuideViewpointFromState(state: WebXrRuntimeState): Str
 function certifyCandidates(
   result: StructuralGuideResult | null,
   snapshot: StructuralGuideSnapshot | null,
+  visualFrames: readonly VisualEvidenceFrame[],
   rejected: ReadonlySet<string>,
   rejectedPositions: readonly ProjectPoint[],
 ): readonly StructuralCornerCandidate[] {
@@ -112,6 +128,7 @@ function certifyCandidates(
   const endpointObservations = result.corners.some((candidate) => candidate.id.startsWith('endpoint:'))
     ? detectEdgeEndpointObservations(snapshot)
     : [];
+  const requireVisual = needsVisualCertificate(visualFrames);
   const certified: StructuralCornerCandidate[] = [];
 
   for (const candidate of result.corners) {
@@ -135,6 +152,15 @@ function certifyCandidates(
         confidence: Math.min(candidate.confidence, observation.confidence),
         support: Math.max(candidate.support, observation.support),
       };
+      if (requireVisual) {
+        const visual = certifyEndpointByVisualReprojection(validatedCandidate.position, visualFrames);
+        if (!visual.accepted) continue;
+        validatedCandidate = {
+          ...validatedCandidate,
+          confidence: Math.min(validatedCandidate.confidence, 0.74 + visual.confidence * 0.26),
+          observations: Math.max(validatedCandidate.observations, visual.observations),
+        };
+      }
     } else {
       const certificate = solveManualPlacementOnStableSurface(candidate.position, snapshot);
       if (
@@ -151,10 +177,46 @@ function certifyCandidates(
         confidence: Math.min(candidate.confidence, certificate.confidence),
         support: Math.max(candidate.support, certificate.supportCount),
       };
+      if (requireVisual) {
+        const visual = certifyCornerByVisualReprojection(validatedCandidate.position, visualFrames);
+        if (!visual.accepted) continue;
+        validatedCandidate = {
+          ...validatedCandidate,
+          confidence: Math.min(validatedCandidate.confidence, 0.74 + visual.confidence * 0.26),
+          observations: Math.max(validatedCandidate.observations, visual.observations),
+        };
+      }
     }
     certified.push(validatedCandidate);
   }
   return certified.sort((left, right) => right.confidence - left.confidence).slice(0, 8);
+}
+
+function certifyEdges(
+  result: StructuralGuideResult | null,
+  visualFrames: readonly VisualEvidenceFrame[],
+): readonly StructuralEdgeCandidate[] {
+  if (result === null) return [];
+  const requireVisual = needsVisualCertificate(visualFrames);
+  const output: StructuralEdgeCandidate[] = [];
+  for (const edge of result.edges) {
+    if (edge.confidence < MIN_CERTIFIED_EDGE_CONFIDENCE) continue;
+    if (edge.observations < MIN_CERTIFIED_EDGE_OBSERVATIONS) continue;
+    const length = pointDistance(edge.start, edge.end);
+    if (!Number.isFinite(length) || length < 0.065) continue;
+    if (requireVisual) {
+      const visual = certifyEdgeByVisualReprojection(edge.start, edge.end, visualFrames);
+      if (!visual.accepted) continue;
+      output.push({
+        ...edge,
+        confidence: Math.min(edge.confidence, 0.74 + visual.confidence * 0.26),
+        observations: Math.max(edge.observations, visual.observations),
+      });
+    } else {
+      output.push(edge);
+    }
+  }
+  return output.sort((left, right) => right.confidence - left.confidence).slice(0, 10);
 }
 
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
@@ -237,6 +299,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
         edges: next.edges.length,
         freeSpaceRejected: next.rejectedByFreeSpace,
         candidateComparisons: next.candidateComparisons,
+        visualFrames: runtimeState.visualEvidenceFrames,
         snapshotMs: Number(snapshotMs.toFixed(1)),
         workerRoundTripMs: Number((performance.now() - workerStarted).toFixed(1)),
         workerComputeMs: Number(next.computeMs.toFixed(1)),
@@ -249,9 +312,19 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     });
   }, [client, runtime, runtimeState]);
 
+  const visualFrames = useMemo(
+    () => getVisualEvidenceFrames(),
+    [result, runtimeState.visualEvidenceFrames],
+  );
+
   const certifiedCandidates = useMemo(
-    () => certifyCandidates(result, validationSnapshot, rejected, rejectedPositions),
-    [result, validationSnapshot, rejected, rejectedPositions],
+    () => certifyCandidates(result, validationSnapshot, visualFrames, rejected, rejectedPositions),
+    [result, validationSnapshot, visualFrames, rejected, rejectedPositions],
+  );
+
+  const certifiedEdgeCandidates = useMemo(
+    () => certifyEdges(result, visualFrames),
+    [result, visualFrames],
   );
 
   useEffect(() => {
@@ -263,7 +336,16 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       support: candidate.support,
       source: candidate.id.startsWith('endpoint:') ? 'multi-view-edge-endpoint' : 'three-plane',
     })));
-  }, [certifiedCandidates, runtimeState.phase]);
+    setCertifiedGuideEdges(certifiedEdgeCandidates.map((candidate) => ({
+      id: candidate.id,
+      start: candidate.start,
+      end: candidate.end,
+      confidence: candidate.confidence,
+      support: candidate.support,
+      observations: candidate.observations,
+      source: 'robust-two-plane',
+    })));
+  }, [certifiedCandidates, certifiedEdgeCandidates, runtimeState.phase]);
 
   if (runtimeState.phase !== 'running' || result === null || validationSnapshot === null) return null;
 
@@ -284,7 +366,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
   const manualPoints = runtime.getManualControlPoints();
   const projectedEdges: ProjectedEdge[] = [];
-  for (const candidate of result.edges) {
+  for (const candidate of certifiedEdgeCandidates) {
     if (acceptedEdges.has(candidate.id)) continue;
     const match = matchEdgeToManualPoints(candidate, manualPoints);
     if (match === null) continue;
@@ -355,12 +437,16 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
       <div className="xr-structural-guide-status">
-        AUTO GUIDE · {projectedCorners.length}/{certifiedCandidates.length} certified corner · {projectedEdges.length} edge · {result.planarPatches} patches
+        AUTO GUIDE · {projectedCorners.length}/{certifiedCandidates.length} certified corner · {certifiedEdgeCandidates.length} certified edge · {result.planarPatches} patches{needsVisualCertificate(visualFrames) ? ' · RGB CHECK' : ''}
       </div>
 
       {projectedEdges.map((edge) => {
-        const x1 = edge.startU * 100, y1 = edge.startV * 100, x2 = edge.endU * 100, y2 = edge.endV * 100;
-        const midX = (x1 + x2) * 0.5, midY = (y1 + y2) * 0.5;
+        const x1 = edge.startU * 100;
+        const y1 = edge.startV * 100;
+        const x2 = edge.endU * 100;
+        const y2 = edge.endV * 100;
+        const midX = (x1 + x2) * 0.5;
+        const midY = (y1 + y2) * 0.5;
         return (
           <div key={edge.candidate.id} className="xr-edge-suggestion" aria-hidden={!interactionEnabled}>
             <svg className="xr-edge-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -377,7 +463,13 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
       {projectedCorners.map(({ candidate, u, v }) => (
         <div key={candidate.id} className="xr-corner-suggestion" style={{ left: `${u * 100}%`, top: `${v * 100}%` }}>
-          <button type="button" className="xr-corner-question" disabled={!interactionEnabled} onClick={() => confirmCorner(candidate)} title={candidate.id.startsWith('endpoint:') ? 'Confirm multi-view edge endpoint' : 'Confirm robustly certified 3D corner'}>
+          <button
+            type="button"
+            className="xr-corner-question"
+            disabled={!interactionEnabled}
+            onClick={() => confirmCorner(candidate)}
+            title={candidate.id.startsWith('endpoint:') ? 'Confirm multi-view edge endpoint' : 'Confirm robustly certified 3D corner'}
+          >
             ?
           </button>
           <span>{Math.round(candidate.confidence * 100)}%</span>
