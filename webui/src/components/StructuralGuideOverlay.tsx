@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import type { ProjectPoint } from '../xr/manualControlPoints';
 import {
   matchEdgeToManualPoints,
   type StructuralCornerCandidate,
@@ -23,6 +24,7 @@ interface ProjectedCorner {
   candidate: StructuralCornerCandidate;
   u: number;
   v: number;
+  score: number;
 }
 
 interface ProjectedEdge {
@@ -39,6 +41,10 @@ const MIN_STABLE_POINTS = 180;
 const MIN_KEYFRAMES = 8;
 const MIN_KEYFRAME_ADVANCE = 4;
 const BASE_ANALYSIS_INTERVAL_MS = 1900;
+const MIN_VISIBLE_CORNER_CONFIDENCE = 0.70;
+const VIEW_MARGIN = 0.07;
+const MAX_VISIBLE_CORNERS = 4;
+const REJECTED_CORNER_RADIUS_METERS = 0.14;
 
 function analysisInterval(state: WebXrRuntimeState): number {
   if (state.performance.pressure === 'high') return 4200;
@@ -53,6 +59,14 @@ function shouldAnalyzeMotion(state: WebXrRuntimeState): boolean {
 function normalize3(vector: readonly [number, number, number]): readonly [number, number, number] | null {
   const magnitude = Math.hypot(vector[0], vector[1], vector[2]);
   return magnitude > 1e-8 ? [vector[0] / magnitude, vector[1] / magnitude, vector[2] / magnitude] : null;
+}
+
+function pointDistance(a: ProjectPoint, b: ProjectPoint): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+function insideWorkingView(u: number, v: number): boolean {
+  return u >= VIEW_MARGIN && u <= 1 - VIEW_MARGIN && v >= VIEW_MARGIN && v <= 1 - VIEW_MARGIN;
 }
 
 /** Convert the current WebXR viewer pose into the same project frame as fused surfels. */
@@ -80,6 +94,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
   const [rejected, setRejected] = useState<Set<string>>(() => new Set());
+  const [rejectedPositions, setRejectedPositions] = useState<ProjectPoint[]>([]);
   const [acceptedEdges, setAcceptedEdges] = useState<Set<string>>(() => new Set());
   const lastAnalysisMs = useRef(Number.NEGATIVE_INFINITY);
   const lastAnalysisKeyframe = useRef(0);
@@ -91,6 +106,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       client.reset();
       setResult(null);
       setRejected(new Set());
+      setRejectedPositions([]);
       setAcceptedEdges(new Set());
       lastAnalysisMs.current = Number.NEGATIVE_INFINITY;
       lastAnalysisKeyframe.current = 0;
@@ -156,10 +172,22 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
   const projectedCorners: ProjectedCorner[] = [];
   for (const candidate of result.corners) {
+    if (candidate.confidence < MIN_VISIBLE_CORNER_CONFIDENCE) continue;
     if (rejected.has(candidate.id)) continue;
+    if (rejectedPositions.some((position) => pointDistance(position, candidate.position) <= REJECTED_CORNER_RADIUS_METERS)) continue;
     const projection = runtime.projectProjectPointToNormalized(candidate.position);
-    if (projection?.visible) projectedCorners.push({ candidate, u: projection.u, v: projection.v });
+    if (!projection?.visible || !insideWorkingView(projection.u, projection.v)) continue;
+    const centerDistance = Math.hypot(projection.u - 0.5, projection.v - 0.5);
+    projectedCorners.push({
+      candidate,
+      u: projection.u,
+      v: projection.v,
+      // Prefer strong geometry close to where the operator is actually aiming.
+      score: candidate.confidence - centerDistance * 0.24,
+    });
   }
+  projectedCorners.sort((left, right) => right.score - left.score);
+  projectedCorners.splice(MAX_VISIBLE_CORNERS);
 
   const manualPoints = runtime.getManualControlPoints();
   const projectedEdges: ProjectedEdge[] = [];
@@ -170,6 +198,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     const start = runtime.projectProjectPointToNormalized(match[0].position);
     const end = runtime.projectProjectPointToNormalized(match[1].position);
     if (!start?.visible || !end?.visible) continue;
+    if (!insideWorkingView(start.u, start.v) || !insideWorkingView(end.u, end.v)) continue;
     projectedEdges.push({
       candidate,
       startU: start.u,
@@ -182,20 +211,33 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   }
 
   const confirmCorner = (candidate: StructuralCornerCandidate): void => {
-    const stored = runtime.addSuggestedManualPoint(candidate.position);
-    if (stored === null) return;
-    setRejected((current) => new Set(current).add(candidate.id));
-    clientDiagnostics.info('XR_GUIDE_CORNER_CONFIRMED', {
-      candidate: candidate.id,
-      confidence: Number(candidate.confidence.toFixed(3)),
-      manualPointId: stored.point.id,
-      snapped: stored.snapped,
-    });
-    void clientDiagnostics.flush();
+    try {
+      const stored = runtime.addSuggestedManualPoint(candidate.position);
+      if (stored === null) return;
+      setRejected((current) => new Set(current).add(candidate.id));
+      clientDiagnostics.info('XR_GUIDE_CORNER_CONFIRMED', {
+        candidate: candidate.id,
+        confidence: Number(candidate.confidence.toFixed(3)),
+        manualPointId: stored.point.id,
+        snapped: stored.snapped,
+      });
+      void clientDiagnostics.flush();
+    } catch (error) {
+      // The same surface-lock gate used by manual taps also protects automatic
+      // suggestions. A stale worker candidate must never crash the overlay or
+      // bypass the accumulated-surface requirement.
+      setRejected((current) => new Set(current).add(candidate.id));
+      clientDiagnostics.warn('XR_GUIDE_CORNER_CONFIRM_REJECTED', {
+        candidate: candidate.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      void clientDiagnostics.flush();
+    }
   };
 
   const rejectCorner = (candidate: StructuralCornerCandidate): void => {
     setRejected((current) => new Set(current).add(candidate.id));
+    setRejectedPositions((current) => [...current, candidate.position]);
     clientDiagnostics.info('XR_GUIDE_CORNER_REJECTED', { candidate: candidate.id });
   };
 
@@ -219,7 +261,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
       <div className="xr-structural-guide-status">
-        AUTO GUIDE · {result.corners.length} corner · {result.edges.length} edge · {result.planarPatches} planes
+        AUTO GUIDE · {projectedCorners.length}/{result.corners.length} visible corner · {projectedEdges.length} edge · {result.planarPatches} planes
       </div>
 
       {projectedEdges.map((edge) => {
