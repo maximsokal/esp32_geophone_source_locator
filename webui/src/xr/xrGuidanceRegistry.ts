@@ -1,8 +1,20 @@
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
-import { VisualLineEvidenceStore, type VisualEvidenceFrame } from './visualLineEvidence';
+import {
+  setVisualLineDetectionDeferred,
+  VisualLineEvidenceStore,
+  type VisualEvidenceFrame,
+} from './visualLineEvidence';
+import { VisualLineEvidenceClient } from './visualLineEvidenceClient';
 
 let latestRgb: RgbDepthGuidanceFrame | null = null;
 const visualStore = new VisualLineEvidenceStore(18);
+const visualClient = new VisualLineEvidenceClient();
+let visualDetectionError: string | null = null;
+
+// WebXrRuntime still calls detectVisualLines() for compatibility, but production
+// uses that call only as a cheap handoff marker. The real detector runs here in
+// a module worker against the same pose-synchronized RGB frame.
+setVisualLineDetectionDeferred(true);
 
 export function setLatestRgbGuidance(frame: RgbDepthGuidanceFrame | null): void {
   latestRgb = frame;
@@ -14,7 +26,29 @@ export function getFreshRgbGuidance(nowMs: number, maximumAgeMs = 450): RgbDepth
 }
 
 export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
-  visualStore.add(frame);
+  const guidance = latestRgb;
+  const deferredMarker = frame.lines.length === 0 && frame.junctions.length === 0;
+  if (
+    deferredMarker && guidance !== null &&
+    Math.abs(guidance.capturedAtMs - frame.capturedAtMs) <= 20 &&
+    !visualClient.busy
+  ) {
+    void visualClient.analyze(
+      guidance,
+      frame.keyframeId,
+      frame.projectionMatrix,
+      frame.worldFromView,
+    ).then((resolved) => {
+      visualDetectionError = null;
+      visualStore.add(resolved);
+    }).catch((error: unknown) => {
+      visualDetectionError = error instanceof Error ? error.message : String(error);
+    });
+    return;
+  }
+
+  // Isolated/offline callers can still supply already-detected evidence.
+  if (!deferredMarker) visualStore.add(frame);
 }
 
 export function getVisualEvidenceFrames(): readonly VisualEvidenceFrame[] {
@@ -22,8 +56,12 @@ export function getVisualEvidenceFrames(): readonly VisualEvidenceFrame[] {
 }
 
 export function getVisualEvidenceFrameCount(): number { return visualStore.size; }
+export function isVisualEvidenceWorkerBacked(): boolean { return visualClient.workerBacked; }
+export function getVisualEvidenceDetectionError(): string | null { return visualDetectionError; }
 
 export function resetXrGuidanceRegistry(): void {
   latestRgb = null;
   visualStore.reset();
+  visualClient.reset();
+  visualDetectionError = null;
 }
