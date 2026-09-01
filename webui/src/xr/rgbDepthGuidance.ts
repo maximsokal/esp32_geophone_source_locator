@@ -35,19 +35,16 @@ export interface GuidedDepthSample {
 const MIN_VALID_DEPTH_METERS = 0.08;
 const MAX_VALID_DEPTH_METERS = 12;
 const SOBEL_MAX = Math.sqrt(2) * 1020;
+const FORBIDDEN_RGB_EDGE_STRENGTH = 0.36;
+const NO_INTERPOLATION_RGB_EDGE_STRENGTH = 0.20;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
-
-function clamp01(value: number): number {
-  return clamp(value, 0, 1);
-}
-
+function clamp01(value: number): number { return clamp(value, 0, 1); }
 function validDepth(value: number): boolean {
   return Number.isFinite(value) && value >= MIN_VALID_DEPTH_METERS && value <= MAX_VALID_DEPTH_METERS;
 }
-
 function lumaIndex(frame: RgbDepthGuidanceFrame, u: number, v: number): number {
   const x = clamp(Math.round(clamp01(u) * (frame.width - 1)), 0, frame.width - 1);
   const y = clamp(Math.round(clamp01(v) * (frame.height - 1)), 0, frame.height - 1);
@@ -66,7 +63,6 @@ export function rgbaToLumaDownsampled(
   const height = Math.max(1, Math.floor(targetHeight));
   const result = new Uint8Array(width * height);
   if (sourceWidth <= 0 || sourceHeight <= 0 || rgba.length < sourceWidth * sourceHeight * 4) return result;
-
   for (let y = 0; y < height; y += 1) {
     const normalizedY = (y + 0.5) / height;
     const sourceYTop = clamp(Math.floor(normalizedY * sourceHeight), 0, sourceHeight - 1);
@@ -75,8 +71,6 @@ export function rgbaToLumaDownsampled(
       const normalizedX = (x + 0.5) / width;
       const sx = clamp(Math.floor(normalizedX * sourceWidth), 0, sourceWidth - 1);
       const offset = (sy * sourceWidth + sx) * 4;
-      // Integer Rec.709-like luma approximation. RGB camera evidence is a guide,
-      // never a metric source, so exact colour management is unnecessary here.
       result[y * width + x] = clamp(Math.round(
         rgba[offset] * 0.2126 + rgba[offset + 1] * 0.7152 + rgba[offset + 2] * 0.0722,
       ), 0, 255);
@@ -98,11 +92,9 @@ export function buildRgbDepthGuidanceFrameFromLuma(
   const edgeStrength = new Uint8Array(w * h);
   const gradientX = new Int8Array(w * h);
   const gradientY = new Int8Array(w * h);
-
   const at = (x: number, y: number): number => normalizedLuma[
     clamp(y, 0, h - 1) * w + clamp(x, 0, w - 1)
   ];
-
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
       const gx =
@@ -121,7 +113,6 @@ export function buildRgbDepthGuidanceFrameFromLuma(
       }
     }
   }
-
   return { width: w, height: h, luma: normalizedLuma, edgeStrength, gradientX, gradientY, capturedAtMs };
 }
 
@@ -157,11 +148,7 @@ export function sampleRgbGuidance(
   };
 }
 
-/**
- * Joint-bilateral-like refinement using ONLY physical depth measurements.
- * RGB changes weights and therefore preserves discontinuities, but it can never
- * create a depth value when the physical sensor has no valid sample nearby.
- */
+/** Joint-bilateral-like refinement using ONLY physical depth measurements. */
 export function guidedDepthInMeters(
   depth: PhysicalDepthSampler,
   u: number,
@@ -173,17 +160,13 @@ export function guidedDepthInMeters(
   if (guidance === null || guidance === undefined) {
     return centreValid ? { depthMeters: centre, refined: false, physicalSamples: 1, edgeStrength: 0 } : null;
   }
-
   const guideCentre = sampleRgbGuidance(guidance, u, v);
   if (guideCentre === null) return centreValid ? { depthMeters: centre, refined: false, physicalSamples: 1, edgeStrength: 0 } : null;
   const du = 1 / Math.max(1, depth.width);
   const dv = 1 / Math.max(1, depth.height);
-  let weightedDepth = 0;
-  let weightSum = 0;
-  let physicalSamples = 0;
+  let weightedDepth = 0, weightSum = 0, physicalSamples = 0;
   const spatialSigmaSquared = 0.95 * 0.95;
   const lumaSigma = guideCentre.edgeStrength >= 0.22 ? 0.055 : 0.11;
-
   for (let oy = -1; oy <= 1; oy += 1) {
     for (let ox = -1; ox <= 1; ox += 1) {
       const su = clamp01(u + ox * du);
@@ -202,22 +185,13 @@ export function guidedDepthInMeters(
       physicalSamples += 1;
     }
   }
-
   if (weightSum <= 1e-8 || physicalSamples === 0) return null;
   const refined = weightedDepth / weightSum;
-  // At a strong RGB boundary, do not let interpolation pull a known foreground
-  // sample toward a different surface. The centre physical measurement wins if
-  // disagreement is larger than a conservative sensor-scale tolerance.
   if (
     centreValid && guideCentre.edgeStrength >= 0.24 &&
     Math.abs(refined - centre) > Math.max(0.035, 0.025 * centre)
   ) {
-    return {
-      depthMeters: centre,
-      refined: false,
-      physicalSamples,
-      edgeStrength: guideCentre.edgeStrength,
-    };
+    return { depthMeters: centre, refined: false, physicalSamples, edgeStrength: guideCentre.edgeStrength };
   }
   return {
     depthMeters: refined,
@@ -228,11 +202,28 @@ export function guidedDepthInMeters(
 }
 
 /**
- * Evidence weight for a physical depth sample at a detected depth discontinuity.
- * A coincident strong RGB edge is a classic mixed/flying-pixel risk, so the
- * centre sample is kept only as weak boundary evidence while side bands carry
- * the plane-fitting evidence.
+ * Surface-fusion policy around a visual discontinuity. Strong RGB edges form a
+ * forbidden central band: the mixed/flying physical depth texel is deliberately
+ * omitted from surfel fusion. A weaker edge keeps the centre PHYSICAL sample but
+ * disables cross-edge interpolation. This function never manufactures depth.
  */
+export function surfaceFusionDepthInMeters(
+  depth: PhysicalDepthSampler,
+  u: number,
+  v: number,
+  guidance: RgbDepthGuidanceFrame | null | undefined,
+): number {
+  if (guidance === null || guidance === undefined) return depth.getDepthInMeters(clamp01(u), clamp01(v));
+  const visual = sampleRgbGuidance(guidance, u, v);
+  if (visual !== null && visual.edgeStrength >= FORBIDDEN_RGB_EDGE_STRENGTH) return Number.NaN;
+  if (visual !== null && visual.edgeStrength >= NO_INTERPOLATION_RGB_EDGE_STRENGTH) {
+    const physical = depth.getDepthInMeters(clamp01(u), clamp01(v));
+    return validDepth(physical) ? physical : Number.NaN;
+  }
+  return guidedDepthInMeters(depth, u, v, guidance)?.depthMeters ?? Number.NaN;
+}
+
+/** Evidence weight retained for diagnostics/tests at a depth + RGB boundary. */
 export function guidanceBoundaryWeight(
   depthEdge: boolean,
   guidance: RgbDepthGuidanceFrame | null | undefined,
@@ -242,7 +233,7 @@ export function guidanceBoundaryWeight(
   if (!depthEdge) return 1;
   const sample = sampleRgbGuidance(guidance, u, v);
   if (sample === null) return 0.45;
-  if (sample.edgeStrength >= 0.36) return 0.08;
-  if (sample.edgeStrength >= 0.20) return 0.22;
+  if (sample.edgeStrength >= FORBIDDEN_RGB_EDGE_STRENGTH) return 0.08;
+  if (sample.edgeStrength >= NO_INTERPOLATION_RGB_EDGE_STRENGTH) return 0.22;
   return 0.42;
 }
