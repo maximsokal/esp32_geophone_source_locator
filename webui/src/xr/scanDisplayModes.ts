@@ -74,7 +74,7 @@ export function scanModeLabel(mode: ScanMode | null): string {
     case 'surface': return 'STABLE SURFACE';
     case 'search-volume': return 'SEARCH VOLUME';
     case 'mesh': return 'SURFACE MESH';
-    case 'quality': return 'QUALITY + MESH';
+    case 'quality': return 'QUALITY MAP';
     default: return 'CUSTOM LAYERS';
   }
 }
