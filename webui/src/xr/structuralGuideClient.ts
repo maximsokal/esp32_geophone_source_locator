@@ -1,3 +1,4 @@
+import { clientDiagnostics } from '../data/clientDiagnostics';
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
 import { isCurrentStructuralGuideWorkerResult } from './structuralGuideProtocol';
@@ -104,7 +105,19 @@ export class StructuralGuideClient {
     if (event.data?.type !== 'result' || !isCurrentStructuralGuideWorkerResult(event.data, this.pending, this.epoch)) return;
     const pending = this.pending!;
     this.pending = null;
-    pending.resolve({ ...event.data.result, computeMs: event.data.result.computeMs || (performance.now() - pending.started) });
+    const result = { ...event.data.result, computeMs: event.data.result.computeMs || (performance.now() - pending.started) };
+    const edgeConfidences = result.edges.map((edge) => edge.confidence);
+    const cornerConfidences = result.corners.map((corner) => corner.confidence);
+    clientDiagnostics.info('XR_GUIDE_CANDIDATE_MATURITY', {
+      edges: result.edges.length,
+      edgeMinConfidence: edgeConfidences.length > 0 ? Number(Math.min(...edgeConfidences).toFixed(3)) : null,
+      edgeMaxConfidence: edgeConfidences.length > 0 ? Number(Math.max(...edgeConfidences).toFixed(3)) : null,
+      edgeMaxObservations: result.edges.reduce((maximum, edge) => Math.max(maximum, edge.observations), 0),
+      corners: result.corners.length,
+      cornerMaxConfidence: cornerConfidences.length > 0 ? Number(Math.max(...cornerConfidences).toFixed(3)) : null,
+      cornerMaxObservations: result.corners.reduce((maximum, corner) => Math.max(maximum, corner.observations), 0),
+    });
+    pending.resolve(result);
   };
 
   private readonly handleError = (event: ErrorEvent): void => {
