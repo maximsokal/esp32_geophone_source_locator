@@ -159,7 +159,7 @@ function certifyCandidates(
       if (
         observation === undefined ||
         pointDistance(observation.position, candidate.position) > MAX_CERTIFICATE_SHIFT_METERS ||
-        observation.confidence < 0.68
+        observation.confidence < MIN_CERTIFIED_CORNER_CONFIDENCE
       ) continue;
       validatedCandidate = {
         ...candidate,
