@@ -20,6 +20,7 @@ import {
   type ProjectPoint,
 } from './manualControlPoints';
 import { previewManualPlacementFromStableSurface } from './manualPlacementPreview';
+import { optionalMonocularPrior } from './monocularPriorRuntime';
 import { OperatorEdgeStore, type OperatorEdge } from './operatorEdges';
 import {
   projectProjectPointToNormalized as projectProjectPointToScreen,
@@ -205,21 +206,19 @@ function clamp01(value:number):number{return Math.max(0,Math.min(1,value));}
 function createWebGlContext():XrCompatibleGl|null{
   const canvas=document.createElement('canvas');
   const attributes:WebGLContextAttributes={alpha:true,antialias:false,depth:true,stencil:false,premultipliedAlpha:true,preserveDrawingBuffer:false};
-  const gl2=canvas.getContext('webgl2',attributes); if(gl2!==null)return gl2 as XrCompatibleGl;
-  const gl=canvas.getContext('webgl',attributes); return gl===null?null:gl as XrCompatibleGl;
+  const gl2=canvas.getContext('webgl2',attributes);if(gl2!==null)return gl2 as XrCompatibleGl;
+  const gl=canvas.getContext('webgl',attributes);return gl===null?null:gl as XrCompatibleGl;
 }
 function releaseWebGlContext(context:XrCompatibleGl|null):void{context?.getExtension('WEBGL_lose_context')?.loseContext();}
 function hasWebGl():boolean{const c=createWebGlContext();if(c===null)return false;releaseWebGlContext(c);return true;}
 function errorText(error:unknown):string{return error instanceof Error?error.message:String(error);}
 function readDepthConfiguration(session:XrSessionLike):DepthConfiguration{
-  try{const usage=session.depthUsage??null;const dataFormat=session.depthDataFormat??null;const type=session.depthType??null;
-    return{enabled:usage==='cpu-optimized'&&session.depthActive!==false,usage,dataFormat,type};}
+  try{const usage=session.depthUsage??null;const dataFormat=session.depthDataFormat??null;const type=session.depthType??null;return{enabled:usage==='cpu-optimized'&&session.depthActive!==false,usage,dataFormat,type};}
   catch{return{enabled:false,usage:null,dataFormat:null,type:null};}
 }
 function depthGeometry(depth:CpuDepthInformationLike,fallbackView:XrViewLike):DepthSampleView{
-  if(depth.projectionMatrix!==undefined&&depth.projectionMatrix.length>=16&&depth.transform!==undefined&&depth.transform.matrix.length>=16){
-    return{projectionMatrix:depth.projectionMatrix,transform:depth.transform};
-  }return fallbackView;
+  if(depth.projectionMatrix!==undefined&&depth.projectionMatrix.length>=16&&depth.transform!==undefined&&depth.transform.matrix.length>=16)return{projectionMatrix:depth.projectionMatrix,transform:depth.transform};
+  return fallbackView;
 }
 function projectCameraPosition(pose:XrViewerPoseLike):readonly[number,number,number]{const p=pose.transform.position;return[p.x,-p.z,p.y];}
 
@@ -275,12 +274,10 @@ export class WebXrRuntime{
 
   addSuggestedManualPoint(position:ProjectPoint):{point:ManualControlPoint;created:boolean;snapped:boolean}|null{
     if(this.session===null||this.state.phase!=='running')return null;
-    const stored=this.manualPoints.addOrSnap(position);this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
-    this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});return stored;
+    const stored=this.manualPoints.addOrSnap(position);this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});return stored;
   }
   addOperatorEdge(start:ProjectPoint,end:ProjectPoint,confidence=1):OperatorEdge|null{
-    if(this.session===null||this.state.phase!=='running')return null;const stored=this.operatorEdges.add(start,end,confidence);
-    if(stored!==null)this.publish({manualEdgeCount:this.operatorEdges.size});return stored;
+    if(this.session===null||this.state.phase!=='running')return null;const stored=this.operatorEdges.add(start,end,confidence);if(stored!==null)this.publish({manualEdgeCount:this.operatorEdges.size});return stored;
   }
 
   /** Robust manual placement only. No screen coordinate is ever converted from one raw depth texel. */
@@ -288,12 +285,10 @@ export class WebXrRuntime{
     if(this.session===null||this.state.phase!=='running'){this.publish({manualPointError:'Manual point can only be placed during an active AR scan.'});return;}
     try{
       const preview=previewManualPlacementFromStableSurface(clamp01(u),clamp01(v),this.getStructuralGuideSnapshot(),(point)=>this.projectProjectPointToNormalized(point));
-      const resolution=preview.resolution;
-      if(!resolution.accepted||resolution.position===null){this.publish({manualPointError:resolution.message});return;}
+      const resolution=preview.resolution;if(!resolution.accepted||resolution.position===null){this.publish({manualPointError:resolution.message});return;}
       const stored=pointId===null?this.manualPoints.addOrSnap(resolution.position):this.manualPoints.update(pointId,resolution.position);
       if(stored===null){this.publish({manualPointError:'The selected manual point no longer exists.'});return;}
-      this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
-      this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});
+      this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});
       clientDiagnostics.info(pointId===null?'XR_MANUAL_CERTIFIED_POINT_ADDED':'XR_MANUAL_CERTIFIED_POINT_MOVED',{id:stored.id,mode:resolution.mode,confidence:Number(resolution.confidence.toFixed(3)),x:Number(stored.position[0].toFixed(3)),y:Number(stored.position[1].toFixed(3)),z:Number(stored.position[2].toFixed(3))});
     }catch(error){this.publish({manualPointError:errorText(error)});clientDiagnostics.warn('XR_MANUAL_CERTIFIED_POINT_FAILED',error);}
   }
@@ -305,13 +300,12 @@ export class WebXrRuntime{
     if(!window.isSecureContext){this.publish({phase:'error',error:'Trusted HTTPS is required for WebXR.'});return;}
     if(xr===undefined){this.publish({phase:'error',error:'WebXR is not available in this browser.'});return;}
     if(Layer===undefined){this.publish({phase:'error',error:'XRWebGLLayer is unavailable.'});return;}
-    this.resetScanState();this.publish({...initialRuntimeState,phase:'starting'});
+    this.resetScanState();this.publish({...initialRuntimeState,phase:'starting',monocularPriorStatus:optionalMonocularPrior.status});
     let session:XrSessionLike|null=null;
     try{
       const depthFormats=['luminance-alpha','float32'];
       session=await xr.requestSession('immersive-ar',{
-        optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access'],
-        domOverlay:{root:document.body},
+        optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access'],domOverlay:{root:document.body},
         depthSensing:{usagePreference:['cpu-optimized'],dataFormatPreference:depthFormats,formatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
       });
       this.session=session;session.addEventListener('end',this.handleSessionEnd);session.addEventListener('visibilitychange',this.handleSessionVisibilityChange);
@@ -327,14 +321,14 @@ export class WebXrRuntime{
       document.documentElement.classList.add('xr-session-active');const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock();
       this.publish({phase:'running',referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
-        coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,
+        coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
         depthError:depthConfiguration.enabled?null:'WebXR tracking is running, but CPU depth was not enabled.',error:null});
-      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true});
+      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true,monocularPriorStatus:optionalMonocularPrior.status});
       void clientDiagnostics.flush();session.requestAnimationFrame(this.handleFrame);
     }catch(error){
       if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*best effort*/}}
       this.cleanupRuntime();const message=errorText(error);clientDiagnostics.error('XR_START_FAILED',message);void clientDiagnostics.flush();
-      this.publish({phase:'error',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,depthAvailable:false,error:message});
+      this.publish({phase:'error',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,depthAvailable:false,monocularPriorStatus:optionalMonocularPrior.status,error:message});
     }
   }
 
@@ -375,8 +369,8 @@ export class WebXrRuntime{
       coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,
       coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,
       performance,lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,
-      rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),motionState:normalFinish?this.motionState:'paused',error:null});
-    clientDiagnostics.info(normalFinish?'XR_SCAN_FINISHED':'XR_SCAN_INTERRUPTED',{stablePoints:snapshot.pointCount,tentativePoints:snapshot.tentativePointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:snapshot.manualControlPoints.length,operatorEdges:snapshot.operatorEdges.length,visualEvidenceFrames:getVisualEvidenceFrameCount(),performance,residualMm:Math.round(snapshot.averageStableResidualMeters*1000)});void clientDiagnostics.flush();
+      rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,motionState:normalFinish?this.motionState:'paused',error:null});
+    clientDiagnostics.info(normalFinish?'XR_SCAN_FINISHED':'XR_SCAN_INTERRUPTED',{stablePoints:snapshot.pointCount,tentativePoints:snapshot.tentativePointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:snapshot.manualControlPoints.length,operatorEdges:snapshot.operatorEdges.length,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance,residualMm:Math.round(snapshot.averageStableResidualMeters*1000)});void clientDiagnostics.flush();
   };
 
   private refreshCoverageGuide(time:number,force=false):void{
@@ -394,8 +388,7 @@ export class WebXrRuntime{
   }
 
   private captureRgbGuidance(time:number,view:XrViewLike):void{
-    if(this.cameraBinding===null||this.cameraCapture===null||view.camera==null||time-this.lastRgbCaptureMs<RGB_CAPTURE_INTERVAL_MS)return;
-    this.lastRgbCaptureMs=time;
+    if(this.cameraBinding===null||this.cameraCapture===null||view.camera==null||time-this.lastRgbCaptureMs<RGB_CAPTURE_INTERVAL_MS)return;this.lastRgbCaptureMs=time;
     try{const guidance=this.cameraCapture.capture(this.cameraBinding,view,time);if(guidance===null)return;setLatestRgbGuidance(guidance);this.rgbGuidanceAvailable=true;this.rgbGuidanceWidth=guidance.width;this.rgbGuidanceHeight=guidance.height;}
     catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_CAPTURE_FAILED',error);}
   }
@@ -403,7 +396,9 @@ export class WebXrRuntime{
   private maybeRecordVisualEvidence(time:number,keyframeId:number,view:XrViewLike):void{
     if(time-this.lastVisualEvidenceMs<VISUAL_EVIDENCE_INTERVAL_MS)return;const guidance=getFreshRgbGuidance(time,300);if(guidance===null)return;
     const detected=detectVisualLines(guidance);this.lastVisualEvidenceMs=time;
-    addVisualEvidenceFrame({keyframeId,capturedAtMs:guidance.capturedAtMs,lines:detected.lines,junctions:detected.junctions,projectionMatrix:Float32Array.from(view.projectionMatrix as ArrayLike<number>),worldFromView:Float32Array.from(view.transform.matrix as ArrayLike<number>)});
+    addVisualEvidenceFrame({keyframeId,capturedAtMs:guidance.capturedAtMs,lines:detected.lines,junctions:detected.junctions,
+      projectionMatrix:guidance.projectionMatrix??Float32Array.from(view.projectionMatrix),
+      worldFromView:guidance.worldFromView??Float32Array.from(view.transform.matrix)});
   }
 
   private captureDepth(time:number,frame:XrFrameLike,pose:XrViewerPoseLike):void{
@@ -425,7 +420,7 @@ export class WebXrRuntime{
 
   private reportClientTelemetry(time:number):void{
     if(time-this.lastClientTelemetryMs<CLIENT_TELEMETRY_INTERVAL_MS)return;this.lastClientTelemetryMs=time;
-    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,visualEvidenceFrames:getVisualEvidenceFrameCount(),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
+    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
   }
 
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
@@ -438,7 +433,7 @@ export class WebXrRuntime{
     if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);this.coverageRenderer?.render(layer,pose.views);}
     this.performanceProfiler.record('frameWork',performance.now()-frameWorkStarted);this.reportClientTelemetry(time);
     if(time-this.lastUiUpdateMs<100&&this.frameCount>1)return;this.lastUiUpdateMs=time;
-    const commonPatch={frameCount:this.frameCount,scanPaused:this.scanPaused,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,depthWidth:this.depthWidth,depthHeight:this.depthHeight,depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount:this.pointCloud.promotedCount,retainedPointCount:this.pointCloud.pointCount,pointCloudVersion:this.pointCloudVersion,keyframeCount:this.pointCloud.keyframeCount,polishFrameCount:this.pointCloud.polishFrameCount,motionRejectedFrames:this.motionRejectedFrames,motionState:this.scanPaused?'paused' as const:this.motionState,motionQuality:this.motionQuality,linearSpeedMetersPerSecond:this.linearSpeedMetersPerSecond,angularSpeedRadiansPerSecond:this.angularSpeedRadiansPerSecond,linearAccelerationMetersPerSecond2:this.linearAccelerationMetersPerSecond2,coverageGuideActive:this.coverageGuideActive,coverageGuideRenderPoints:this.coverageGuideRenderPoints,coverageVisibleCells:this.coverageVisibleCells,coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,coverageGuideError:this.coverageGuideError,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,performance:this.performanceProfiler.snapshot(),lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:'disabled' as const};
+    const commonPatch={frameCount:this.frameCount,scanPaused:this.scanPaused,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,depthWidth:this.depthWidth,depthHeight:this.depthHeight,depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount:this.pointCloud.promotedCount,retainedPointCount:this.pointCloud.pointCount,pointCloudVersion:this.pointCloudVersion,keyframeCount:this.pointCloud.keyframeCount,polishFrameCount:this.pointCloud.polishFrameCount,motionRejectedFrames:this.motionRejectedFrames,motionState:this.scanPaused?'paused' as const:this.motionState,motionQuality:this.motionQuality,linearSpeedMetersPerSecond:this.linearSpeedMetersPerSecond,angularSpeedRadiansPerSecond:this.angularSpeedRadiansPerSecond,linearAccelerationMetersPerSecond2:this.linearAccelerationMetersPerSecond2,coverageGuideActive:this.coverageGuideActive,coverageGuideRenderPoints:this.coverageGuideRenderPoints,coverageVisibleCells:this.coverageVisibleCells,coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,coverageGuideError:this.coverageGuideError,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,performance:this.performanceProfiler.snapshot(),lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status};
     if(pose===null){this.publish({...commonPatch,tracking:false,pose:null});return;}
     const{position,orientation}=pose.transform;this.publish({...commonPatch,tracking:true,pose:{position:[position.x,position.y,position.z],orientation:[orientation.x,orientation.y,orientation.z,orientation.w],views:pose.views.length}});
   };
