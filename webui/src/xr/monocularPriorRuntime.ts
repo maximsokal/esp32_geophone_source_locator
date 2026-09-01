@@ -10,6 +10,7 @@ import {
   type MonocularDepthProviderStatus,
 } from './monocularDepthPrior';
 import {
+  rgbGuidanceMatchesView,
   sampleRgbGuidance,
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
@@ -17,6 +18,8 @@ import {
 interface CalibratedPrior {
   frame: MonocularDepthPriorFrame;
   calibration: LogAffineDepthCalibration;
+  /** RGB frame/pose whose pixels produced this monocular depth map. */
+  captureGuidance: RgbDepthGuidanceFrame;
 }
 
 export interface MonocularSurfaceAgreement {
@@ -154,7 +157,7 @@ export class MonocularPriorRuntime {
         this.lastError = 'Monocular prior did not pass physical-anchor calibration.';
         return false;
       }
-      this.calibrated = { frame: prior, calibration };
+      this.calibrated = { frame: prior, calibration, captureGuidance: guidance };
       this.lastError = null;
       return true;
     } catch (error) {
@@ -174,11 +177,15 @@ export class MonocularPriorRuntime {
     v: number,
     physicalMeters: number,
     nowMs: number,
+    currentGuidance?: RgbDepthGuidanceFrame,
   ): MonocularSurfaceAgreement {
     const calibrated = this.calibrated;
+    const poseAligned = calibrated === null || currentGuidance === undefined || currentGuidance.worldFromView === undefined
+      ? true
+      : rgbGuidanceMatchesView(calibrated.captureGuidance, currentGuidance.worldFromView);
     if (
       !this.enabled || calibrated === null || !validPhysicalDepth(physicalMeters) ||
-      nowMs - calibrated.frame.capturedAtMs > MAX_PRIOR_AGE_MS
+      nowMs - calibrated.frame.capturedAtMs > MAX_PRIOR_AGE_MS || !poseAligned
     ) {
       return {
         available: false,
