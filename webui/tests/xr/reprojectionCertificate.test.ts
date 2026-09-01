@@ -57,6 +57,8 @@ describe('multi-view RGB reprojection certificates', () => {
   it('certifies a 3D corner only after independent RGB junction reprojection', () => {
     const certificate = certifyCornerByVisualReprojection([0, 2, 0], independentFrames);
     expect(certificate.accepted).toBe(true);
+    expect(certificate.conclusive).toBe(true);
+    expect(certificate.eligibleObservations).toBe(3);
     expect(certificate.observations).toBe(3);
     expect(certificate.matchedKeyframes).toEqual([1, 2, 3]);
     expect(certificate.meanErrorNormalized).toBeLessThan(1e-5);
@@ -65,6 +67,7 @@ describe('multi-view RGB reprojection certificates', () => {
   it('certifies finite edge endpoints from repeated RGB line endpoints', () => {
     const certificate = certifyEndpointByVisualReprojection([-0.5, 2, 0], independentFrames);
     expect(certificate.accepted).toBe(true);
+    expect(certificate.conclusive).toBe(true);
     expect(certificate.observations).toBe(3);
     expect(certificate.confidence).toBeGreaterThan(0.7);
   });
@@ -72,18 +75,29 @@ describe('multi-view RGB reprojection certificates', () => {
   it('certifies a 3D edge against the same oriented 2D line in independent views', () => {
     const certificate = certifyEdgeByVisualReprojection([-0.5, 2, 0], [0.5, 2, 0], independentFrames);
     expect(certificate.accepted).toBe(true);
+    expect(certificate.conclusive).toBe(true);
     expect(certificate.observations).toBe(3);
     expect(certificate.meanErrorNormalized).toBeLessThan(1e-5);
   });
 
-  it('does not count repeated evidence from essentially the same camera position', () => {
+  it('treats repeated evidence from essentially the same camera position as inconclusive instead of vetoing 3D geometry', () => {
     const repeated = [frame(1, 0), frame(2, 0.01), frame(3, 0.02), frame(4, 0.03)];
     const certificate = certifyCornerByVisualReprojection([0, 2, 0], repeated);
-    expect(certificate.accepted).toBe(false);
+    expect(certificate.conclusive).toBe(false);
+    expect(certificate.accepted).toBe(true);
+    expect(certificate.eligibleObservations).toBe(1);
     expect(certificate.observations).toBe(1);
+    expect(certificate.confidence).toBe(1);
   });
 
-  it('rejects a visually inconsistent geometric corner', () => {
+  it('does not let RGB structure elsewhere in the scene veto a candidate without enough candidate-specific views', () => {
+    const certificate = certifyEdgeByVisualReprojection([20, 2, 0], [21, 2, 0], independentFrames);
+    expect(certificate.eligibleObservations).toBe(0);
+    expect(certificate.conclusive).toBe(false);
+    expect(certificate.accepted).toBe(true);
+  });
+
+  it('rejects a visually inconsistent geometric corner once enough independent views actually observe that candidate', () => {
     const inconsistent = independentFrames.map((item) => ({
       ...item,
       junctions: item.junctions.map((junction) => ({
@@ -92,6 +106,8 @@ describe('multi-view RGB reprojection certificates', () => {
       })),
     }));
     const certificate = certifyCornerByVisualReprojection([0, 2, 0], inconsistent);
+    expect(certificate.conclusive).toBe(true);
+    expect(certificate.eligibleObservations).toBe(3);
     expect(certificate.accepted).toBe(false);
     expect(certificate.observations).toBe(0);
   });
