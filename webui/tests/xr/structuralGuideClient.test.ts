@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isCurrentStructuralGuideWorkerResult } from '../../src/xr/structuralGuideClient';
+import { isCurrentStructuralGuideWorkerResult } from '../../src/xr/structuralGuideProtocol';
 
 describe('structural guide worker epoch guard', () => {
   it('accepts only the matching request from the active scan epoch', () => {
