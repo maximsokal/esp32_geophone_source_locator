@@ -19,6 +19,7 @@ import {
   type OccupancySnapshot,
 } from './occupancyEvidence';
 import {
+  rgbGuidanceMatchesView,
   surfaceFusionDepthInMeters,
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
@@ -251,7 +252,10 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     context: DepthFusionFrameContext,
   ): DepthFusionResult {
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    const guidance = getFreshRgbGuidance(nowMs);
+    const freshGuidance = getFreshRgbGuidance(nowMs);
+    const guidance = freshGuidance !== null && rgbGuidanceMatchesView(freshGuidance, fallbackView.transform.matrix)
+      ? freshGuidance
+      : null;
     if (context.evidenceKeyframe && guidance !== null && this.monocularPrior.isEnabled) {
       void this.monocularPrior.maybeUpdate(guidance, depth, nowMs);
     }
