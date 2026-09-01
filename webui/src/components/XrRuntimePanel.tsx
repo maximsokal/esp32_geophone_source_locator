@@ -4,6 +4,10 @@ import { clientDiagnostics } from '../data/clientDiagnostics';
 import { StructuralGuideOverlay } from './StructuralGuideOverlay';
 import { describeAiPrior } from '../xr/aiPriorUi';
 import {
+  getCertifiedGuideRegistrySummary,
+  subscribeCertifiedGuideRegistry,
+} from '../xr/certifiedCornerRegistry';
+import {
   manualPreviewLabel,
   previewManualPlacementFromStableSurface,
   type ManualPlacementPreview,
@@ -71,11 +75,12 @@ function previewDistanceMeters(preview:ManualPlacementPreview,state:WebXrRuntime
 function cursorLabel(cursor:ManualCursorState,count:number):string{if(cursor.phase==='dragging'&&cursor.preview===null)return'MOVE RETICLE';if(cursor.phase==='confirmed')return`PIN ${count} ✓`;if(cursor.phase==='scan-more'||cursor.preview===null)return'SCAN MORE';const confidence=Math.round(cursor.preview.resolution.confidence*100);const distance=cursor.distanceMeters===null?'':` · ${cursor.distanceMeters.toFixed(2)} m`;return`${manualPreviewLabel(cursor.preview)} ${confidence}%${distance}`;}
 
 export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabilitiesChange}:XrRuntimePanelProps){
-  const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[,setAiPriorRevision]=useState(0);
+  const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange);
   useEffect(()=>{onSessionActiveChangeRef.current=onSessionActiveChange;},[onSessionActiveChange]);useEffect(()=>{onPointCloudReadyRef.current=onPointCloudReady;},[onPointCloudReady]);useEffect(()=>{onCapabilitiesChangeRef.current=onCapabilitiesChange;},[onCapabilitiesChange]);
   useEffect(()=>optionalMonocularPrior.subscribe(()=>setAiPriorRevision((revision)=>revision+1)),[]);
+  useEffect(()=>subscribeCertifiedGuideRegistry(()=>setCertifiedGeometryRevision((revision)=>revision+1)),[]);
   useEffect(()=>{optionalMonocularPrior.setEnabled(aiPriorEnabled);},[aiPriorEnabled]);
   useEffect(()=>{const unsubscribe=runtime.subscribe(setRuntimeState);let cancelled=false;void probeWebXrCapabilities().then((result)=>{clientDiagnostics.info('XR_CAPABILITIES',result);void clientDiagnostics.flush();if(!cancelled){setCapabilities(result);onCapabilitiesChangeRef.current?.(result);}});return()=>{cancelled=true;const pointer=manualPointer.current;if(pointer?.timer!=null)window.clearTimeout(pointer.timer);manualPointer.current=null;unsubscribe();void runtime.dispose();};},[runtime]);
   useEffect(()=>{const active=runtimeState.phase==='starting'||runtimeState.phase==='running'||runtimeState.phase==='stopping';onSessionActiveChangeRef.current?.(active);if(!active){setManualMode(false);manualPointer.current=null;}},[runtimeState.phase]);
@@ -84,6 +89,7 @@ export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabi
   useEffect(()=>{if(runtimeState.manualPointError!==null)setManualCursor((current)=>({...current,phase:'scan-more'}));},[runtimeState.manualPointError]);
 
   const running=runtimeState.phase==='running',busy=runtimeState.phase==='starting'||runtimeState.phase==='stopping';const canStart=capabilities?.secureContext===true&&capabilities.webGl===true&&capabilities.xrApi===true&&capabilities.immersiveAr===true&&!running&&!busy;const readyVisible=`${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
+  const certifiedGeometry=getCertifiedGuideRegistrySummary();const showManualToggle=running&&(manualMode||certifiedGeometry.hasTargets);
   const aiPriorUi=describeAiPrior({
     enabled:aiPriorEnabled,
     phase:runtimeState.phase,
@@ -145,8 +151,8 @@ export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabi
         <div className="xr-overlay-scan-grid xr-overlay-scan-grid-compact"><div><span>STABLE</span><strong>{runtimeState.pointCount.toLocaleString()}</strong></div><div><span>NEW VIEWS</span><strong>{runtimeState.keyframeCount.toLocaleString()}</strong></div><div><span>READY / SEEN</span><strong>{readyVisible}</strong></div><div><span>MOTION</span><strong>{formatMotion(runtimeState)}</strong></div></div>
         {running&&<div className="xr-coverage-legend" aria-label="Coverage quality"><span><i className="coverage-dot coverage-low"/>weak <strong>{runtimeState.coverageWeakPoints.toLocaleString()}</strong></span><span><i className="coverage-dot coverage-mid"/>improving <strong>{runtimeState.coverageImprovingPoints.toLocaleString()}</strong></span><span><i className="coverage-dot coverage-high"/>stable <strong>{runtimeState.coverageStablePoints.toLocaleString()}</strong></span></div>}
         {runtimeState.scanPaused&&<div className="xr-overlay-warning">Scan paused while XR is hidden. It will continue if this XR session becomes visible again.</div>}{runtimeState.motionState==='too-fast'&&<div className="xr-overlay-warning">Move slower — this depth sample is not being fused.</div>}{(runtimeState.motionState==='stationary'||runtimeState.motionState==='redundant')&&<div className="xr-overlay-hint">Move 5–10 cm and change viewpoint. Standing still can polish geometry but cannot increase coverage confidence.</div>}{runtimeState.manualPointError!==null&&<div className="xr-overlay-warning">{runtimeState.manualPointError}</div>}
-        <div className="xr-manual-status"><span>Operator geometry: <strong>{runtimeState.manualPointCount}</strong> pins · <strong>{runtimeState.manualEdgeCount}</strong> edges</span><span>{manualMode?'Release only on validated EDGE/CORNER LOCK':'Yellow ? = suggested corner · LINE? = suggested edge'}</span></div>
-        <div className="xr-overlay-actions"><button type="button" className={manualMode?'xr-manual-toggle active':'xr-manual-toggle'} aria-pressed={manualMode} onClick={toggleManualMode}>{manualMode?'Done marking':'Mark corners'}</button><button type="button" className="xr-undo-button" disabled={runtimeState.manualPointCount===0} onClick={()=>runtime.undoLastManualPoint()}>Undo pin</button><button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>AI {aiPriorEnabled?'ON · POST-SCAN':'OFF'}</button></div><button className="xr-finish-button" type="button" onClick={()=>void runtime.stop()}>Finish &amp; save scan</button>
+        <div className="xr-manual-status"><span>Operator geometry: <strong>{runtimeState.manualPointCount}</strong> pins · <strong>{runtimeState.manualEdgeCount}</strong> edges</span><span>{manualMode?'Release only on validated EDGE/CORNER LOCK':certifiedGeometry.hasTargets?`Certified now: ${certifiedGeometry.cornerCount} corner · ${certifiedGeometry.edgeCount} edge`:'Scanning for certifiable edge/corner…'}</span></div>
+        <div className="xr-overlay-actions">{showManualToggle&&<button type="button" className={manualMode?'xr-manual-toggle active':'xr-manual-toggle'} aria-pressed={manualMode} onClick={toggleManualMode}>{manualMode?'Done marking':'Mark corners'}</button>}<button type="button" className="xr-undo-button" disabled={runtimeState.manualPointCount===0} onClick={()=>runtime.undoLastManualPoint()}>Undo pin</button><button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>AI {aiPriorEnabled?'ON · POST-SCAN':'OFF'}</button></div><button className="xr-finish-button" type="button" onClick={()=>void runtime.stop()}>Finish &amp; save scan</button>
       </div>
     </div>
   </>;
