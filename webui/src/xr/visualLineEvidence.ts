@@ -215,38 +215,92 @@ export function detectVisualLines(
   return detectVisualLinesNow(frame, options);
 }
 
+function cloneEvidenceFrame(frame: VisualEvidenceFrame): VisualEvidenceFrame {
+  return {
+    ...frame,
+    projectionMatrix: frame.projectionMatrix.slice(),
+    worldFromView: frame.worldFromView.slice(),
+    lines: frame.lines.map((line) => ({
+      ...line,
+      start: [...line.start] as NormalizedPoint2,
+      end: [...line.end] as NormalizedPoint2,
+      direction: [...line.direction] as NormalizedPoint2,
+    })),
+    junctions: frame.junctions.map((junction) => ({
+      ...junction,
+      position: [...junction.position] as NormalizedPoint2,
+    })),
+  };
+}
+
+function cameraPosition(frame: VisualEvidenceFrame): readonly [number, number, number] {
+  return [frame.worldFromView[12] ?? 0, frame.worldFromView[13] ?? 0, frame.worldFromView[14] ?? 0];
+}
+
+function cameraForward(frame: VisualEvidenceFrame): readonly [number, number, number] | null {
+  const x = -(frame.worldFromView[8] ?? 0);
+  const y = -(frame.worldFromView[9] ?? 0);
+  const z = -(frame.worldFromView[10] ?? 0);
+  const length = Math.hypot(x, y, z);
+  return length > 1e-6 ? [x / length, y / length, z / length] : null;
+}
+
+function poseDistance(a: VisualEvidenceFrame, b: VisualEvidenceFrame): number {
+  const ap = cameraPosition(a), bp = cameraPosition(b);
+  const translation = Math.hypot(ap[0] - bp[0], ap[1] - bp[1], ap[2] - bp[2]);
+  const af = cameraForward(a), bf = cameraForward(b);
+  let angle = 0;
+  if (af !== null && bf !== null) {
+    const dot = clamp(af[0] * bf[0] + af[1] * bf[1] + af[2] * bf[2], -1, 1);
+    angle = Math.acos(dot);
+  }
+  return translation / 0.08 + angle / ((10 * Math.PI) / 180);
+}
+
+function evidenceQuality(frame: VisualEvidenceFrame): number {
+  let strongest = 0;
+  for (const line of frame.lines) strongest = Math.max(strongest, line.strength);
+  for (const junction of frame.junctions) strongest = Math.max(strongest, junction.strength);
+  return strongest + Math.min(0.35, frame.lines.length * 0.012 + frame.junctions.length * 0.02);
+}
+
+/**
+ * Bounded pose-diverse visual history. A simple FIFO window caused late corners
+ * to lose the independent RGB viewpoints collected earlier in a scan. When the
+ * reservoir is full we remove one member of the closest pose pair, preferring
+ * the frame with weaker visual evidence. This keeps the scan-wide baseline
+ * diversity needed by candidate-specific multi-view reprojection.
+ */
 export class VisualLineEvidenceStore {
   private frames: VisualEvidenceFrame[] = [];
-  constructor(private readonly maxFrames = 18) {}
+  constructor(private readonly maxFrames = 64) {}
   reset(): void { this.frames = []; }
+
   add(frame: VisualEvidenceFrame): void {
     this.frames = this.frames.filter((item) => item.keyframeId !== frame.keyframeId);
-    this.frames.push({
-      ...frame,
-      projectionMatrix: frame.projectionMatrix.slice(),
-      worldFromView: frame.worldFromView.slice(),
-      lines: frame.lines.map((line) => ({
-        ...line,
-        start: [...line.start] as NormalizedPoint2,
-        end: [...line.end] as NormalizedPoint2,
-        direction: [...line.direction] as NormalizedPoint2,
-      })),
-      junctions: frame.junctions.map((junction) => ({
-        ...junction,
-        position: [...junction.position] as NormalizedPoint2,
-      })),
-    });
+    this.frames.push(cloneEvidenceFrame(frame));
+
+    while (this.frames.length > Math.max(1, this.maxFrames)) {
+      let first = 0, second = 1, closest = Number.POSITIVE_INFINITY;
+      for (let left = 0; left < this.frames.length; left += 1) {
+        for (let right = left + 1; right < this.frames.length; right += 1) {
+          const distance = poseDistance(this.frames[left], this.frames[right]);
+          if (distance < closest) { closest = distance; first = left; second = right; }
+        }
+      }
+      const firstQuality = evidenceQuality(this.frames[first]);
+      const secondQuality = evidenceQuality(this.frames[second]);
+      const remove = Math.abs(firstQuality - secondQuality) > 0.04
+        ? (firstQuality < secondQuality ? first : second)
+        : (this.frames[first].keyframeId < this.frames[second].keyframeId ? first : second);
+      this.frames.splice(remove, 1);
+    }
+
     this.frames.sort((a, b) => a.keyframeId - b.keyframeId);
-    if (this.frames.length > this.maxFrames) this.frames.splice(0, this.frames.length - this.maxFrames);
   }
+
   snapshot(): readonly VisualEvidenceFrame[] {
-    return this.frames.map((frame) => ({
-      ...frame,
-      projectionMatrix: frame.projectionMatrix.slice(),
-      worldFromView: frame.worldFromView.slice(),
-      lines: frame.lines.map((line) => ({ ...line })),
-      junctions: frame.junctions.map((junction) => ({ ...junction })),
-    }));
+    return this.frames.map(cloneEvidenceFrame);
   }
   get size(): number { return this.frames.length; }
 }
