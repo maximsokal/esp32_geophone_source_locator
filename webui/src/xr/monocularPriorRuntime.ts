@@ -262,7 +262,11 @@ export class MonocularPriorRuntime {
         staged.guidance.height,
         staged.guidance.capturedAtMs,
       );
-      if (requestEpoch !== this.epoch || !this.enabled || prior === null) return false;
+      if (requestEpoch !== this.epoch || !this.enabled) return false;
+      if (prior === null) {
+        this.lastError = this.provider.error ?? 'Monocular prior inference returned no depth frame.';
+        return false;
+      }
       const detailed = calibrateMonocularDepthPriorDetailed(prior, staged.anchors);
       this.lastCalibrationDiagnostics = detailed.diagnostics;
       const calibration = detailed.calibration;
