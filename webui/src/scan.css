@@ -171,6 +171,12 @@
 
 .xr-manual-reticle::before { width: 22px; height: 2px; }
 .xr-manual-reticle::after { width: 2px; height: 22px; }
+.xr-manual-reticle.scan-more { border-color: #facc15; box-shadow: 0 0 20px rgba(250, 204, 21, 0.72); }
+.xr-manual-reticle.scan-more::before, .xr-manual-reticle.scan-more::after { background: #fde68a; }
+.xr-manual-reticle.edge { width: 44px; height: 44px; border-color: #22d3ee; box-shadow: 0 0 22px rgba(34, 211, 238, 0.88); }
+.xr-manual-reticle.edge::before, .xr-manual-reticle.edge::after { background: #a5f3fc; }
+.xr-manual-reticle.corner { width: 48px; height: 48px; border-color: #4ade80; box-shadow: 0 0 24px rgba(34, 197, 94, 0.92); }
+.xr-manual-reticle.corner::before, .xr-manual-reticle.corner::after { background: #bbf7d0; }
 .xr-manual-reticle.pending { border-color: #facc15; box-shadow: 0 0 20px rgba(250, 204, 21, 0.72); }
 .xr-manual-reticle.dragging { width: 48px; height: 48px; border-color: #ffffff; box-shadow: 0 0 22px rgba(217, 70, 239, 0.95); }
 .xr-manual-reticle.confirmed { width: 46px; height: 46px; border-color: #86efac; box-shadow: 0 0 22px rgba(34, 197, 94, 0.84); }
@@ -190,6 +196,11 @@
   pointer-events: none;
   white-space: nowrap;
 }
+
+.xr-manual-cursor-state.scan-more { border-color: rgba(250, 204, 21, 0.86); color: #fef08a; background: rgba(66, 32, 6, 0.90); }
+.xr-manual-cursor-state.edge { border-color: rgba(34, 211, 238, 0.90); color: #cffafe; background: rgba(8, 47, 73, 0.92); }
+.xr-manual-cursor-state.corner, .xr-manual-cursor-state.confirmed { border-color: rgba(74, 222, 128, 0.90); color: #dcfce7; background: rgba(20, 83, 45, 0.92); }
+.xr-manual-cursor-state.dragging { border-color: rgba(255, 255, 255, 0.85); }
 
 .xr-manual-instruction {
   position: absolute;
