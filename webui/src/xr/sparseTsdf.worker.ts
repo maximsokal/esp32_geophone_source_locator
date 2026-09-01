@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
-import { buildSparseTsdfMesh, type SparseTsdfInput } from './sparseTsdf';
+import { buildDirectionalTsdfMesh } from './directionalTsdf';
+import type { SparseTsdfInput } from './sparseTsdf';
 
 interface ReconstructMessage {
   type: 'reconstruct';
@@ -38,7 +39,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     maxInputPoints: message.maxInputPoints,
     maxTriangles: message.maxTriangles,
   };
-  const result = buildSparseTsdfMesh(input);
+  const result = buildDirectionalTsdfMesh(input);
   if (requestEpoch !== epoch) return;
   self.postMessage({ type: 'result', requestId: message.requestId, epoch: requestEpoch, result }, [result.trianglePositions.buffer]);
 });
