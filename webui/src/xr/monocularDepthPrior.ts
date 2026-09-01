@@ -222,8 +222,13 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = height;
     const context = canvas.getContext('2d');
-    if (context === null || rgba.length < width * height * 4) return null;
-    const pixels = new Uint8ClampedArray(rgba.buffer.slice(rgba.byteOffset, rgba.byteOffset + width * height * 4));
+    const pixelCount = width * height * 4;
+    if (context === null || rgba.length < pixelCount) return null;
+    // TypeScript 7 tracks SharedArrayBuffer-capable views explicitly. ImageData
+    // requires an owned ArrayBuffer-backed clamped array, so copy instead of
+    // forwarding rgba.buffer (which may be typed as ArrayBufferLike).
+    const pixels: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(pixelCount);
+    pixels.set(rgba.subarray(0, pixelCount));
     context.putImageData(new ImageData(pixels, width, height), 0, 0);
     try {
       const output = await this.estimator(canvas.toDataURL('image/jpeg', 0.82));
