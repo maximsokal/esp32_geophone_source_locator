@@ -18,16 +18,25 @@ import {
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
 
+export interface PhysicalDepthGuardFrame {
+  width: number;
+  height: number;
+  depthMeters: Float32Array;
+}
+
 interface CalibratedPrior {
   frame: MonocularDepthPriorFrame;
   calibration: LogAffineDepthCalibration;
   /** RGB frame/pose whose pixels produced this monocular depth map. */
   captureGuidance: RgbDepthGuidanceFrame;
+  /** Sparse physical frontmost depth from exactly the same staged XR view. */
+  physicalGuard: PhysicalDepthGuardFrame;
 }
 
 interface StagedPostScanPrior {
   guidance: RgbDepthGuidanceFrame;
   anchors: MetricDepthAnchor[];
+  physicalGuard: PhysicalDepthGuardFrame;
 }
 
 export interface MonocularSurfaceAgreement {
@@ -44,6 +53,11 @@ const MIN_CALIBRATION_CONFIDENCE = 0.66;
 const MIN_CALIBRATION_INLIERS = 10;
 const ANCHOR_COLUMNS = 8;
 const ANCHOR_ROWS = 6;
+const GUARD_COLUMNS = 16;
+const GUARD_ROWS = 9;
+const GUARD_EDGE_STRENGTH = 0.20;
+const GUARD_ABSOLUTE_TOLERANCE_METERS = 0.12;
+const GUARD_RELATIVE_TOLERANCE = 0.12;
 
 function validPhysicalDepth(value: number): boolean {
   return Number.isFinite(value) && value >= 0.18 && value <= 8;
@@ -89,7 +103,7 @@ export function collectPhysicalMetricAnchors(
     for (let column = 0; column < ANCHOR_COLUMNS; column += 1) {
       const u = (column + 0.5) / ANCHOR_COLUMNS;
       const visual = sampleRgbGuidance(guidance, u, v);
-      if (visual !== null && visual.edgeStrength >= 0.20) continue;
+      if (visual !== null && visual.edgeStrength >= GUARD_EDGE_STRENGTH) continue;
       const metric = depth.getDepthInMeters(u, v);
       if (!validPhysicalDepth(metric)) continue;
       anchors.push({
@@ -101,6 +115,60 @@ export function collectPhysicalMetricAnchors(
     }
   }
   return anchors;
+}
+
+/**
+ * Small staged physical-depth grid from the exact RGB capture pose. It is not
+ * used to create geometry. Its sole purpose is to stop the monocular prior from
+ * vetoing a real surfel that was hidden behind another surface in this view.
+ */
+export function collectPhysicalDepthGuard(
+  depth: CpuDepthInformationLike,
+  guidance: RgbDepthGuidanceFrame,
+): PhysicalDepthGuardFrame {
+  const depthMeters = new Float32Array(GUARD_COLUMNS * GUARD_ROWS);
+  depthMeters.fill(Number.NaN);
+  for (let row = 0; row < GUARD_ROWS; row += 1) {
+    const v = (row + 0.5) / GUARD_ROWS;
+    for (let column = 0; column < GUARD_COLUMNS; column += 1) {
+      const u = (column + 0.5) / GUARD_COLUMNS;
+      const visual = sampleRgbGuidance(guidance, u, v);
+      if (visual !== null && visual.edgeStrength >= GUARD_EDGE_STRENGTH) continue;
+      const metric = depth.getDepthInMeters(u, v);
+      if (!validPhysicalDepth(metric)) continue;
+      depthMeters[row * GUARD_COLUMNS + column] = metric;
+    }
+  }
+  return { width: GUARD_COLUMNS, height: GUARD_ROWS, depthMeters };
+}
+
+export function samplePhysicalDepthGuard(
+  guard: PhysicalDepthGuardFrame,
+  u: number,
+  v: number,
+): number | null {
+  if (guard.width <= 0 || guard.height <= 0 || guard.depthMeters.length < guard.width * guard.height) return null;
+  const x = Math.max(0, Math.min(guard.width - 1, Math.floor(Math.max(0, Math.min(1, u)) * guard.width)));
+  const y = Math.max(0, Math.min(guard.height - 1, Math.floor(Math.max(0, Math.min(1, v)) * guard.height)));
+  const metric = guard.depthMeters[y * guard.width + x];
+  return validPhysicalDepth(metric) ? metric : null;
+}
+
+/** True only when the surfel is plausibly the same frontmost physical surface. */
+export function physicalDepthGuardAllowsAiVeto(
+  guard: PhysicalDepthGuardFrame,
+  u: number,
+  v: number,
+  viewDepthMeters: number,
+): boolean {
+  if (!validPhysicalDepth(viewDepthMeters)) return false;
+  const physicalFrontmost = samplePhysicalDepthGuard(guard, u, v);
+  if (physicalFrontmost === null) return false;
+  const tolerance = Math.max(
+    GUARD_ABSOLUTE_TOLERANCE_METERS,
+    physicalFrontmost * GUARD_RELATIVE_TOLERANCE,
+  );
+  return Math.abs(viewDepthMeters - physicalFrontmost) <= tolerance;
 }
 
 export class MonocularPriorRuntime {
@@ -164,8 +232,17 @@ export class MonocularPriorRuntime {
     if (!this.enabled || !this.provider.isSupported()) return false;
     const anchors = collectPhysicalMetricAnchors(depth, guidance);
     if (anchors.length < MIN_CALIBRATION_INLIERS) return false;
+    const physicalGuard = collectPhysicalDepthGuard(depth, guidance);
     const wasStaged = this.staged !== null;
-    this.staged = { guidance: cloneGuidance(guidance), anchors: anchors.map((anchor) => ({ ...anchor })) };
+    this.staged = {
+      guidance: cloneGuidance(guidance),
+      anchors: anchors.map((anchor) => ({ ...anchor })),
+      physicalGuard: {
+        width: physicalGuard.width,
+        height: physicalGuard.height,
+        depthMeters: physicalGuard.depthMeters.slice(),
+      },
+    };
     if (!wasStaged) this.notify();
     return true;
   }
@@ -199,7 +276,12 @@ export class MonocularPriorRuntime {
         this.lastError = `Monocular prior did not pass physical-anchor calibration (model=${selected}).`;
         return false;
       }
-      this.calibrated = { frame: prior, calibration, captureGuidance: staged.guidance };
+      this.calibrated = {
+        frame: prior,
+        calibration,
+        captureGuidance: staged.guidance,
+        physicalGuard: staged.physicalGuard,
+      };
       this.lastError = null;
       return true;
     } catch (error) {
@@ -290,6 +372,18 @@ export class MonocularPriorRuntime {
     const projected = projectProjectPointToNormalized(position, guidance.projectionMatrix, guidance.worldFromView);
     const physicalMeters = projected?.viewDepthMeters ?? Number.NaN;
     if (projected === null || !projected.visible || !validPhysicalDepth(physicalMeters)) {
+      return {
+        available: false,
+        accepted: true,
+        priorMeters: null,
+        physicalMeters,
+        disagreementMeters: null,
+        calibrationConfidence: calibrated.calibration.confidence,
+      };
+    }
+    // A monocular frame sees only the frontmost surface. Never let it reject a
+    // different/occluded surfel that happens to reproject to the same RGB pixel.
+    if (!physicalDepthGuardAllowsAiVeto(calibrated.physicalGuard, projected.u, projected.v, physicalMeters)) {
       return {
         available: false,
         accepted: true,
