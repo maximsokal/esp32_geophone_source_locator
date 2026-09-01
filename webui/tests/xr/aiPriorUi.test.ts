@@ -53,4 +53,16 @@ describe('optional AI UI state', () => {
     expect(failed.calibrationLabel).toBe('CALIBRATION FAILED');
     expect(failed.good).toBe(false);
   });
+
+  it('shows an ended scan with no staged RGB+depth packet as not applied', () => {
+    const unstaged = describeAiPrior({
+      ...base,
+      phase: 'ended',
+      providerStatus: 'disabled',
+      hasStagedPostScanFrame: false,
+    });
+    expect(unstaged.shortStatus).toBe('NOT APPLIED');
+    expect(unstaged.calibrationLabel).toBe('NO STAGED RGB+DEPTH');
+    expect(unstaged.good).toBe(false);
+  });
 });
