@@ -1,3 +1,11 @@
+import {
+  calibrateRelativeDepthToMetricDetailed,
+  metricDepthFromRelative,
+  type RelativeDepthCalibration,
+  type RelativeDepthCalibrationDiagnostics,
+  type RelativeMetricSample,
+} from './monocularDepthCalibration';
+
 export interface MonocularDepthPriorFrame {
   width: number;
   height: number;
@@ -13,13 +21,9 @@ export interface MetricDepthAnchor {
   weight?: number;
 }
 
-export interface LogAffineDepthCalibration {
-  scale: number;
-  bias: number;
-  inliers: number;
-  rmsLogError: number;
-  confidence: number;
-}
+/** Backward-compatible name used by runtime/tests; model is now explicitly tagged. */
+export type LogAffineDepthCalibration = RelativeDepthCalibration;
+export type MonocularDepthCalibrationDiagnostics = RelativeDepthCalibrationDiagnostics;
 
 export type MonocularDepthProviderStatus = 'disabled' | 'unavailable' | 'loading' | 'ready' | 'error';
 
@@ -44,99 +48,48 @@ function samplePrior(frame: MonocularDepthPriorFrame, u: number, v: number): num
   return Number.isFinite(value) && value > 1e-6 ? value : null;
 }
 
-interface LogSample { x: number; y: number; weight: number; }
-
-function weightedLine(samples: readonly LogSample[], robust?: readonly number[]): { a: number; b: number } | null {
-  let w = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
-  for (let index = 0; index < samples.length; index += 1) {
-    const item = samples[index];
-    const weight = Math.max(0, item.weight * (robust?.[index] ?? 1));
-    w += weight; sx += item.x * weight; sy += item.y * weight;
-    sxx += item.x * item.x * weight; sxy += item.x * item.y * weight;
+function calibrationSamples(
+  frame: MonocularDepthPriorFrame,
+  anchors: readonly MetricDepthAnchor[],
+): RelativeMetricSample[] {
+  const samples: RelativeMetricSample[] = [];
+  for (const anchor of anchors) {
+    if (!Number.isFinite(anchor.depthMeters) || anchor.depthMeters <= 0.08) continue;
+    const relativeDepth = samplePrior(frame, anchor.u, anchor.v);
+    if (relativeDepth === null) continue;
+    samples.push({
+      relativeDepth,
+      metricMeters: anchor.depthMeters,
+      weight: clamp(anchor.weight ?? 1, 0.05, 1),
+    });
   }
-  const determinant = w * sxx - sx * sx;
-  if (w <= 1e-8 || Math.abs(determinant) <= 1e-8) return null;
-  return {
-    a: (w * sxy - sx * sy) / determinant,
-    b: (sy * sxx - sx * sxy) / determinant,
-  };
+  return samples;
 }
 
 /**
- * Robust calibration for a relative monocular prior:
- * log(z_metric) ~= a*log(z_prior)+b.
+ * Robust calibration for a relative monocular prior.
  *
- * Both polarities are accepted. Some exported depth networks expose a quantity
- * proportional to depth, while others expose inverse-depth/disparity-like
- * values. Physical ARCore anchors decide the sign and scale; model convention
- * is never assumed. The result is surface guidance only and is never reused for
- * occupancy/FREE classification.
+ * Depth Anything V2 relative output does not promise a metric scale or a single
+ * depth convention. We therefore test three physically anchored mappings:
+ *   1) affine inverse depth/disparity: 1/z = a*r + b,
+ *   2) affine depth:                 z   = a*r + b,
+ *   3) legacy log-power fallback:    log(z) = a*log(r) + b.
+ * The model with the strongest ARCore-anchor support and lowest metric log
+ * residual wins. This remains a post-scan SURFACE prior only; it never creates
+ * FREE/occupied evidence.
  */
+export function calibrateMonocularDepthPriorDetailed(
+  frame: MonocularDepthPriorFrame,
+  anchors: readonly MetricDepthAnchor[],
+): { calibration: LogAffineDepthCalibration | null; diagnostics: MonocularDepthCalibrationDiagnostics } {
+  return calibrateRelativeDepthToMetricDetailed(calibrationSamples(frame, anchors));
+}
+
 export function calibrateMonocularDepthPrior(
   frame: MonocularDepthPriorFrame,
   anchors: readonly MetricDepthAnchor[],
 ): LogAffineDepthCalibration | null {
-  const samples: LogSample[] = [];
-  for (const anchor of anchors) {
-    if (!Number.isFinite(anchor.depthMeters) || anchor.depthMeters <= 0.08) continue;
-    const prior = samplePrior(frame, anchor.u, anchor.v);
-    if (prior === null) continue;
-    samples.push({ x: Math.log(prior), y: Math.log(anchor.depthMeters), weight: clamp(anchor.weight ?? 1, 0.05, 1) });
-  }
-  if (samples.length < 6) return null;
-
-  let best: { a: number; b: number; inliers: number[]; error: number } | null = null;
-  const maxTrials = Math.min(72, samples.length * 3);
-  for (let trial = 0; trial < maxTrials; trial += 1) {
-    const first = trial % samples.length;
-    const second = (trial * 7 + Math.floor(samples.length / 2) + 1) % samples.length;
-    if (first === second) continue;
-    const dx = samples[second].x - samples[first].x;
-    if (Math.abs(dx) < 1e-5) continue;
-    const a = (samples[second].y - samples[first].y) / dx;
-    const b = samples[first].y - a * samples[first].x;
-    const absoluteSlope = Math.abs(a);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || absoluteSlope < 0.25 || absoluteSlope > 4) continue;
-    const inliers: number[] = [];
-    let error = 0;
-    for (let index = 0; index < samples.length; index += 1) {
-      const residual = Math.abs(samples[index].y - (a * samples[index].x + b));
-      if (residual <= 0.13) { inliers.push(index); error += residual * samples[index].weight; }
-    }
-    if (best === null || inliers.length > best.inliers.length || (inliers.length === best.inliers.length && error < best.error)) {
-      best = { a, b, inliers, error };
-    }
-  }
-  if (best === null || best.inliers.length < Math.max(5, Math.ceil(samples.length * 0.45))) return null;
-
-  const active = best.inliers.map((index) => samples[index]);
-  let fit = weightedLine(active);
-  if (fit === null || Math.abs(fit.a) < 0.20 || Math.abs(fit.a) > 4.5) return null;
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const residuals = active.map((sample) => Math.abs(sample.y - (fit!.a * sample.x + fit!.b))).sort((a, b) => a - b);
-    const median = residuals[Math.floor(residuals.length * 0.5)] ?? 0.02;
-    const huber = Math.max(0.035, median * 2.2);
-    const weights = active.map((sample) => {
-      const residual = Math.abs(sample.y - (fit!.a * sample.x + fit!.b));
-      return residual <= huber ? 1 : huber / Math.max(residual, 1e-9);
-    });
-    fit = weightedLine(active, weights) ?? fit;
-  }
-  if (Math.abs(fit.a) < 0.20 || Math.abs(fit.a) > 4.5) return null;
-  let squared = 0;
-  for (const sample of active) {
-    const residual = sample.y - (fit.a * sample.x + fit.b);
-    squared += residual * residual;
-  }
-  const rms = Math.sqrt(squared / active.length);
-  const inlierRatio = active.length / samples.length;
-  return {
-    scale: fit.a,
-    bias: fit.b,
-    inliers: active.length,
-    rmsLogError: rms,
-    confidence: clamp(inlierRatio * 0.62 + clamp(1 - rms / 0.12, 0, 1) * 0.38, 0, 1),
-  };
+  return calibrateMonocularDepthPriorDetailed(frame, anchors).calibration;
 }
 
 export function calibratedPriorDepthMeters(
@@ -145,10 +98,8 @@ export function calibratedPriorDepthMeters(
   u: number,
   v: number,
 ): number | null {
-  const prior = samplePrior(frame, u, v);
-  if (prior === null) return null;
-  const metric = Math.exp(calibration.scale * Math.log(prior) + calibration.bias);
-  return Number.isFinite(metric) && metric > 0.08 && metric < 12 ? metric : null;
+  const relativeDepth = samplePrior(frame, u, v);
+  return relativeDepth === null ? null : metricDepthFromRelative(relativeDepth, calibration);
 }
 
 interface TransformersModuleLike {
