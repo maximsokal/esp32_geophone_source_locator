@@ -33,6 +33,13 @@ export class ManualPlacementRejectedError extends Error {
   }
 }
 
+interface CertifiedPlacementToken {
+  position: ProjectPoint;
+  confidence: number;
+}
+
+let certifiedPlacementToken: CertifiedPlacementToken | null = null;
+
 function finite(value: number): boolean {
   return Number.isFinite(value);
 }
@@ -43,6 +50,30 @@ function clamp01(value: number): number {
 
 function pointDistance(a: ProjectPoint, b: ProjectPoint): number {
   return Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+}
+
+/**
+ * Authorize exactly one already-certified structural placement. The consumer
+ * must subsequently submit the same 3D position through addOrSnap(); unrelated
+ * depth/tap coordinates cannot consume the token. A later authorization
+ * replaces an older unused token, so there is never a queue of bypasses.
+ */
+export function authorizeCertifiedManualPlacement(position: ProjectPoint, confidence: number): void {
+  if (!position.every(Number.isFinite) || !Number.isFinite(confidence) || confidence < 0.70) {
+    certifiedPlacementToken = null;
+    throw new ManualPlacementRejectedError('Certified structural endpoint is invalid or below confidence threshold.');
+  }
+  certifiedPlacementToken = {
+    position: [position[0], position[1], position[2]],
+    confidence: Math.min(0.99, Math.max(0, confidence)),
+  };
+}
+
+function consumeCertifiedPlacement(position: ProjectPoint): CertifiedPlacementToken | null {
+  const token = certifiedPlacementToken;
+  certifiedPlacementToken = null;
+  if (token === null) return null;
+  return pointDistance(token.position, position) <= 0.008 ? token : null;
 }
 
 /**
@@ -125,6 +156,7 @@ export class ManualControlPointStore {
     this.points.clear();
     this.order.length = 0;
     this.nextId = 1;
+    certifiedPlacementToken = null;
   }
 
   add(position: ProjectPoint): ManualControlPoint {
@@ -194,6 +226,10 @@ export class ManualControlPointStore {
    * Duplicate taps are still merged after structural locking.
    */
   addOrSnap(position: ProjectPoint, snapMeters = 0.065): ManualPointPlacementResult {
+    const certified = consumeCertifiedPlacement(position);
+    if (certified !== null) {
+      return this.addCertifiedOrSnap(certified.position, certified.confidence, snapMeters);
+    }
     const resolved = resolvePlacement(position);
     return this.storeSnapped(
       resolved.position,
