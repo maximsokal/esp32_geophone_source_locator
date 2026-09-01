@@ -43,6 +43,10 @@ function occupancyVoxelCenter(point, size = 0.18) {
   ];
 }
 
+function occupancyVoxelKey(point, size = 0.18) {
+  return `${Math.floor(point[0] / size)}:${Math.floor(point[1] / size)}:${Math.floor(point[2] / size)}`;
+}
+
 function scene(iteration = 0) {
   const positions = [];
   const normals = [];
@@ -109,9 +113,13 @@ async function run() {
 
   const nearestCorner = [...baseline.corners].sort((a, b) => Math.hypot(...a.position) - Math.hypot(...b.position))[0];
   const freePosition = nearestCorner ? Float32Array.from(occupancyVoxelCenter(nearestCorner.position)) : undefined;
+  const freeVoxelKey = freePosition ? occupancyVoxelKey(freePosition) : null;
   const contradicted = detectStructuralGuideGeometry(guideInput(initialCloud, 11, [0.55, 0.55, 0.55], freePosition));
   assertMetric(contradicted.rejectedByFreeSpace > 0, 'verified FREE space rejected no structural hypotheses');
-  assertMetric(!contradicted.corners.some((corner) => Math.hypot(...corner.position) < 0.08), 'FREE-space corner survived structural validation');
+  assertMetric(
+    freeVoxelKey === null || !contradicted.corners.some((corner) => occupancyVoxelKey(corner.position) === freeVoxelKey),
+    'FREE-space corner survived structural validation',
+  );
 
   const staticTracker = new StructuralGuideTracker();
   for (const keyframe of [10, 20, 40, 80]) {
