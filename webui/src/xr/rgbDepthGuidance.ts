@@ -5,6 +5,9 @@ export interface RgbDepthGuidanceFrame {
   luma: Uint8Array;
   /** Optional top-left-origin RGBA copy for the opt-in monocular prior. */
   rgba?: Uint8Array;
+  /** Exact XR camera matrices at RGB capture time when Raw Camera Access provides them. */
+  projectionMatrix?: Float32Array;
+  worldFromView?: Float32Array;
   /** Sobel gradient magnitude, normalized to 0..255. */
   edgeStrength: Uint8Array;
   /** Quantized normalized Sobel gradient components in -127..127. */
@@ -39,6 +42,8 @@ const MAX_VALID_DEPTH_METERS = 12;
 const SOBEL_MAX = Math.sqrt(2) * 1020;
 const FORBIDDEN_RGB_EDGE_STRENGTH = 0.36;
 const NO_INTERPOLATION_RGB_EDGE_STRENGTH = 0.20;
+const DEFAULT_POSE_TRANSLATION_GATE_METERS = 0.04;
+const DEFAULT_POSE_ROTATION_GATE_RADIANS = (6 * Math.PI) / 180;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -51,6 +56,43 @@ function lumaIndex(frame: RgbDepthGuidanceFrame, u: number, v: number): number {
   const x = clamp(Math.round(clamp01(u) * (frame.width - 1)), 0, frame.width - 1);
   const y = clamp(Math.round(clamp01(v) * (frame.height - 1)), 0, frame.height - 1);
   return y * frame.width + x;
+}
+function matrixForward(matrix: ArrayLike<number>): readonly [number, number, number] | null {
+  if (matrix.length < 16) return null;
+  const x = -Number(matrix[8]), y = -Number(matrix[9]), z = -Number(matrix[10]);
+  const length = Math.hypot(x, y, z);
+  return Number.isFinite(length) && length > 1e-8 ? [x / length, y / length, z / length] : null;
+}
+
+/**
+ * RGB may refine a CURRENT physical depth sample only while the camera pose is
+ * still spatially aligned with the pose that captured that RGB image. Visual
+ * reprojection can safely use an older frame because it carries its own pose;
+ * depth fusion cannot.
+ */
+export function rgbGuidanceMatchesView(
+  frame: RgbDepthGuidanceFrame,
+  worldFromView: ArrayLike<number>,
+  maxTranslationMeters = DEFAULT_POSE_TRANSLATION_GATE_METERS,
+  maxRotationRadians = DEFAULT_POSE_ROTATION_GATE_RADIANS,
+): boolean {
+  const captured = frame.worldFromView;
+  if (captured === undefined || captured.length < 16 || worldFromView.length < 16) {
+    // Synthetic/legacy frames have no pose metadata. Keep them compatible; all
+    // production Raw Camera frames are tagged in RawCameraGuidanceCapture.
+    return true;
+  }
+  const translation = Math.hypot(
+    Number(captured[12]) - Number(worldFromView[12]),
+    Number(captured[13]) - Number(worldFromView[13]),
+    Number(captured[14]) - Number(worldFromView[14]),
+  );
+  if (!Number.isFinite(translation) || translation > maxTranslationMeters) return false;
+  const a = matrixForward(captured);
+  const b = matrixForward(worldFromView);
+  if (a === null || b === null) return false;
+  const dot = clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1, 1);
+  return Math.acos(dot) <= maxRotationRadians;
 }
 
 export function rgbaDownsampled(
