@@ -18,6 +18,7 @@ import {
   type OccupancySnapshot,
 } from './occupancyEvidence';
 import { surfaceFusionDepthInMeters } from './rgbDepthGuidance';
+import { clusterStructuralSurfaceFamilies } from './structuralSurfaceClustering';
 import { getFreshRgbGuidance } from './xrGuidanceRegistry';
 import { recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
 
@@ -186,8 +187,6 @@ function guidedSurfaceDepth(depth: CpuDepthInformationLike): CpuDepthInformation
     projectionMatrix: depth.projectionMatrix,
     transform: depth.transform,
     getDepthInMeters(u: number, v: number): number {
-      // Strong visual discontinuities deliberately become a no-fusion band;
-      // elsewhere this remains a combination of PHYSICAL depth measurements.
       return surfaceFusionDepthInMeters(depth, u, v, guidance);
     },
   };
@@ -223,7 +222,10 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   }
 
   override structuralGuideSnapshot(): StructuralGuideSnapshot {
-    const surface = filterStructuralSurface(super.structuralGuideSnapshot());
+    // Plane/corner inference gets at most three distinct normal families per
+    // fine cell, so wall/floor/side evidence cannot collapse into one diagonal.
+    const clustered = clusterStructuralSurfaceFamilies(super.structuralGuideSnapshot());
+    const surface = filterStructuralSurface(clustered);
     const occupancy = this.occupancy.snapshot(null);
     return { ...surface, freeSpacePositions: occupancy.freeAirPositions, freeSpaceVoxelSizeMeters: occupancy.occupancyVoxelSizeMeters };
   }
@@ -231,6 +233,8 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   override snapshot(depthFrameCount: number, sampledDepthFrames: number): ScanPointCloudSnapshot {
     const surface = super.snapshot(depthFrameCount, sampledDepthFrames);
     const occupancy = this.occupancy.snapshot(surface.bounds);
+    // Keep dense certified surfels for Directional TSDF. Clustering is only for
+    // structural inference, not for discarding measured mesh support.
     const certified = filterStructuralSurface(super.structuralGuideSnapshot());
     const hasTsdfCertificate =
       certified.pointCount >= TSDF_MIN_CERTIFIED_POINTS &&
