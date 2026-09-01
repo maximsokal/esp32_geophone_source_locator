@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import { StructuralGuideOverlay } from './StructuralGuideOverlay';
+import {
+  manualPreviewLabel,
+  previewManualPlacementFromStableSurface,
+  type ManualPlacementPreview,
+} from '../xr/manualPlacementPreview';
 import { emptyXrPerformanceSnapshot } from '../xr/xrPerformanceProfiler';
 import {
   probeWebXrCapabilities,
@@ -83,14 +88,19 @@ interface ManualPointerState {
   captureActive: boolean;
 }
 
+type ManualCursorPhase = 'scan-more' | 'edge' | 'corner' | 'dragging' | 'confirmed';
+
 interface ManualCursorState {
   u: number;
   v: number;
-  phase: 'aim' | 'pending' | 'dragging' | 'confirmed';
+  phase: ManualCursorPhase;
+  preview: ManualPlacementPreview | null;
+  distanceMeters: number | null;
 }
 
 const LONG_PRESS_MS = 380;
 const MOVE_UPDATE_MS = 70;
+const PREVIEW_UPDATE_MS = 110;
 const TAP_SLOP_PX = 16;
 
 function phaseLabel(state: WebXrRuntimeState): string {
@@ -143,6 +153,34 @@ function normalizedPointer(event: React.PointerEvent<HTMLElement>): readonly [nu
   ];
 }
 
+function previewPhase(preview: ManualPlacementPreview): ManualCursorPhase {
+  if (!preview.resolution.accepted || preview.resolution.position === null) return 'scan-more';
+  return preview.resolution.mode === 'corner' ? 'corner' : 'edge';
+}
+
+function previewDistanceMeters(preview: ManualPlacementPreview, state: WebXrRuntimeState): number | null {
+  const target = preview.resolution.position;
+  const pose = state.pose;
+  if (target === null || pose === null) return null;
+  const cameraX = pose.position[0];
+  const cameraY = -pose.position[2];
+  const cameraZ = pose.position[1];
+  return Math.hypot(
+    target[0] - cameraX,
+    target[1] - cameraY,
+    target[2] - cameraZ,
+  );
+}
+
+function cursorLabel(cursor: ManualCursorState, manualPointCount: number): string {
+  if (cursor.phase === 'dragging') return 'MOVE PIN';
+  if (cursor.phase === 'confirmed') return `PIN ${manualPointCount} ✓`;
+  if (cursor.phase === 'scan-more' || cursor.preview === null) return 'SCAN MORE';
+  const confidence = Math.round(cursor.preview.resolution.confidence * 100);
+  const distance = cursor.distanceMeters === null ? '' : ` · ${cursor.distanceMeters.toFixed(2)} m`;
+  return `${manualPreviewLabel(cursor.preview)} ${confidence}%${distance}`;
+}
+
 export function XrRuntimePanel({
   onSessionActiveChange,
   onPointCloudReady,
@@ -152,9 +190,16 @@ export function XrRuntimePanel({
   const [capabilities, setCapabilities] = useState<WebXrCapabilities | null>(null);
   const [runtimeState, setRuntimeState] = useState<WebXrRuntimeState>(emptyRuntimeState);
   const [manualMode, setManualMode] = useState(false);
-  const [manualCursor, setManualCursor] = useState<ManualCursorState>({ u: 0.5, v: 0.5, phase: 'aim' });
+  const [manualCursor, setManualCursor] = useState<ManualCursorState>({
+    u: 0.5,
+    v: 0.5,
+    phase: 'scan-more',
+    preview: null,
+    distanceMeters: null,
+  });
   const manualPointer = useRef<ManualPointerState | null>(null);
   const lastMoveUpdateMs = useRef(0);
+  const lastPreviewUpdateMs = useRef(Number.NEGATIVE_INFINITY);
   const previousManualCount = useRef(0);
   const previousRuntimePhase = useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef = useRef(onSessionActiveChange);
@@ -227,7 +272,7 @@ export function XrRuntimePanel({
 
   useEffect(() => {
     if (runtimeState.manualPointError !== null) {
-      setManualCursor((current) => ({ ...current, phase: 'aim' }));
+      setManualCursor((current) => ({ ...current, phase: 'scan-more' }));
     }
   }, [runtimeState.manualPointError]);
 
@@ -249,10 +294,38 @@ export function XrRuntimePanel({
     }
   };
 
+  const computeManualPreview = (u: number, v: number): ManualPlacementPreview => {
+    const snapshot = runtime.getStructuralGuideSnapshot();
+    return previewManualPlacementFromStableSurface(
+      u,
+      v,
+      snapshot,
+      (point) => runtime.projectProjectPointToNormalized(point),
+    );
+  };
+
+  const refreshManualPreview = (u: number, v: number, force = false): ManualPlacementPreview | null => {
+    const now = performance.now();
+    if (!force && now - lastPreviewUpdateMs.current < PREVIEW_UPDATE_MS) {
+      setManualCursor((current) => ({ ...current, u, v }));
+      return null;
+    }
+    lastPreviewUpdateMs.current = now;
+    const preview = computeManualPreview(u, v);
+    setManualCursor({
+      u,
+      v,
+      phase: previewPhase(preview),
+      preview,
+      distanceMeters: previewDistanceMeters(preview, runtimeState),
+    });
+    return preview;
+  };
+
   const queueManualAtEvent = (event: React.PointerEvent<HTMLElement>, pointId: number | null): readonly [number, number] => {
     const [u, v] = normalizedPointer(event);
     runtime.queueManualPointAtNormalized(u, v, pointId);
-    setManualCursor({ u, v, phase: pointId === null ? 'pending' : 'dragging' });
+    setManualCursor((current) => ({ ...current, u, v, phase: 'dragging' }));
     return [u, v];
   };
 
@@ -268,7 +341,7 @@ export function XrRuntimePanel({
     }
     const movePointId = runtime.getLastManualPointId();
     const [startU, startV] = normalizedPointer(event);
-    setManualCursor({ u: startU, v: startV, phase: 'aim' });
+    refreshManualPreview(startU, startV, true);
     clientDiagnostics.info('XR_MANUAL_POINTER_DOWN', {
       u: Number(startU.toFixed(3)),
       v: Number(startV.toFixed(3)),
@@ -295,7 +368,7 @@ export function XrRuntimePanel({
       if (current === null || current.pointerId !== pointerId || current.movePointId === null) return;
       current.dragging = true;
       runtime.queueManualPointAtNormalized(current.startU, current.startV, current.movePointId);
-      setManualCursor({ u: current.startU, v: current.startV, phase: 'dragging' });
+      setManualCursor((cursor) => ({ ...cursor, u: current.startU, v: current.startV, phase: 'dragging' }));
       clientDiagnostics.info('XR_MANUAL_DRAG_BEGIN', { id: current.movePointId });
     }, LONG_PRESS_MS);
     manualPointer.current = state;
@@ -307,8 +380,12 @@ export function XrRuntimePanel({
     pointer.latestX = event.clientX;
     pointer.latestY = event.clientY;
     const [u, v] = normalizedPointer(event);
-    setManualCursor({ u, v, phase: pointer.dragging ? 'dragging' : 'aim' });
-    if (!pointer.dragging || pointer.movePointId === null) return;
+    if (!pointer.dragging) {
+      refreshManualPreview(u, v);
+      return;
+    }
+    setManualCursor((current) => ({ ...current, u, v, phase: 'dragging' }));
+    if (pointer.movePointId === null) return;
     const now = performance.now();
     if (now - lastMoveUpdateMs.current < MOVE_UPDATE_MS) return;
     lastMoveUpdateMs.current = now;
@@ -328,15 +405,42 @@ export function XrRuntimePanel({
         v: Number(v.toFixed(3)),
       });
     } else {
-      const [u, v] = queueManualAtEvent(event, null);
-      clientDiagnostics.info(
-        moved <= TAP_SLOP_PX ? 'XR_MANUAL_POINTER_TAP' : 'XR_MANUAL_POINTER_DRAG_ADD',
-        {
+      const [u, v] = normalizedPointer(event);
+      const preview = refreshManualPreview(u, v, true) ?? computeManualPreview(u, v);
+      const resolved = preview.resolution;
+      if (resolved.accepted && resolved.position !== null) {
+        try {
+          const stored = runtime.addSuggestedManualPoint(resolved.position);
+          if (stored !== null) {
+            setManualCursor({
+              u,
+              v,
+              phase: 'confirmed',
+              preview,
+              distanceMeters: previewDistanceMeters(preview, runtimeState),
+            });
+            clientDiagnostics.info(
+              moved <= TAP_SLOP_PX ? 'XR_MANUAL_STABLE_TAP' : 'XR_MANUAL_STABLE_DRAG_RELEASE',
+              {
+                id: stored.point.id,
+                mode: resolved.mode,
+                confidence: Number(resolved.confidence.toFixed(3)),
+                distanceMeters: previewDistanceMeters(preview, runtimeState),
+                movedPx: Math.round(moved),
+              },
+            );
+          }
+        } catch (error) {
+          setManualCursor({ u, v, phase: 'scan-more', preview, distanceMeters: null });
+          clientDiagnostics.warn('XR_MANUAL_PREVIEW_COMMIT_REJECTED', error);
+        }
+      } else {
+        clientDiagnostics.info('XR_MANUAL_PREVIEW_BLOCKED', {
           u: Number(u.toFixed(3)),
           v: Number(v.toFixed(3)),
-          movedPx: Math.round(moved),
-        },
-      );
+          reason: resolved.message,
+        });
+      }
       void clientDiagnostics.flush();
     }
     if (pointer.captureActive) {
@@ -352,7 +456,7 @@ export function XrRuntimePanel({
       try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
     }
     manualPointer.current = null;
-    setManualCursor((current) => ({ ...current, phase: 'aim' }));
+    setManualCursor((current) => ({ ...current, phase: 'scan-more' }));
     clientDiagnostics.info('XR_MANUAL_POINTER_CANCEL');
   };
 
@@ -362,8 +466,10 @@ export function XrRuntimePanel({
       if (!next) {
         clearManualTimer();
         manualPointer.current = null;
+        setManualCursor((current) => ({ ...current, phase: 'scan-more', preview: null, distanceMeters: null }));
+      } else {
+        refreshManualPreview(0.5, 0.5, true);
       }
-      setManualCursor((current) => ({ ...current, phase: 'aim' }));
       clientDiagnostics.info('XR_MANUAL_MODE', { enabled: next, points: runtimeState.manualPointCount });
       void clientDiagnostics.flush();
       return next;
@@ -453,10 +559,12 @@ export function XrRuntimePanel({
               style={{ left: `${manualCursor.u * 100}%`, top: `${manualCursor.v * 100}%` }}
               aria-hidden="true"
             />
-            <div className="xr-manual-cursor-state" style={{ left: `${manualCursor.u * 100}%`, top: `${manualCursor.v * 100}%` }}>
-              {manualCursor.phase === 'pending' ? 'DEPTH…' : manualCursor.phase === 'dragging' ? 'MOVE PIN' : manualCursor.phase === 'confirmed' ? `PIN ${runtimeState.manualPointCount} ✓` : 'AIM'}
+            <div className={`xr-manual-cursor-state ${manualCursor.phase}`} style={{ left: `${manualCursor.u * 100}%`, top: `${manualCursor.v * 100}%` }}>
+              {cursorLabel(manualCursor, runtimeState.manualPointCount)}
             </div>
-            <div className="xr-manual-instruction">Tap or drag/release on a visible corner = add 3D pin · hold and drag = move the last pin</div>
+            <div className="xr-manual-instruction">
+              Drag the reticle over a scanned corner. Release only on EDGE LOCK / CORNER LOCK. SCAN MORE means this area still needs another view.
+            </div>
           </div>
         )}
 
@@ -488,7 +596,7 @@ export function XrRuntimePanel({
 
           <div className="xr-manual-status">
             <span>Operator geometry: <strong>{runtimeState.manualPointCount}</strong> pins · <strong>{runtimeState.manualEdgeCount}</strong> edges</span>
-            <span>{manualMode ? 'Tap or drag/release = add · hold/drag = move last' : 'Yellow ? = suggested corner · LINE? = suggested edge'}</span>
+            <span>{manualMode ? 'Release only on validated EDGE/CORNER LOCK' : 'Yellow ? = suggested corner · LINE? = suggested edge'}</span>
           </div>
 
           <div className="xr-overlay-actions">
