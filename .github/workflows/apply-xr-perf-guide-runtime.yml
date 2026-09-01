@@ -14,17 +14,21 @@ concurrency:
 
 jobs:
   patch-runtime:
-    if: ${{ !contains(github.event.head_commit.message, '[runtime-patched]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[integration-patched]') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/xr-perf-guide
           fetch-depth: 0
-      - name: Allow ordered one-at-a-time replacements for repeated state blocks
+      - name: Apply runtime patch only when still needed
         shell: bash
         run: |
-          python3 - <<'PY'
+          set -euo pipefail
+          if grep -q 'XrPerformanceProfiler' webui/src/xr/webxrRuntime.ts; then
+            echo 'Runtime already integrated.'
+          else
+            python3 - <<'PY'
           from pathlib import Path
           p = Path('scripts/patch_xr_runtime_perf_guide.py')
           s = p.read_text()
@@ -33,18 +37,27 @@ jobs:
           assert old in s
           p.write_text(s.replace(old, new, 1))
           PY
-      - name: Apply deterministic runtime patch
-        run: python3 scripts/patch_xr_runtime_perf_guide.py
-      - name: Commit patched runtime
+            python3 scripts/patch_xr_runtime_perf_guide.py
+          fi
+      - name: Apply scanner-panel integration when still needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q 'StructuralGuideOverlay' webui/src/components/XrRuntimePanel.tsx; then
+            echo 'Panel already integrated.'
+          else
+            python3 scripts/patch_xr_panel_perf_guide.py
+          fi
+      - name: Commit integrated runtime and panel
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add webui/src/xr/webxrRuntime.ts
+          git add webui/src/xr/webxrRuntime.ts webui/src/components/XrRuntimePanel.tsx
           if git diff --cached --quiet; then
-            echo 'Runtime already patched.'
+            echo 'Integration already complete.'
             exit 0
           fi
-          git commit -m 'Integrate XR profiler and structural operator geometry [runtime-patched]'
+          git commit -m 'Integrate XR performance and structural guidance UI [integration-patched]'
           git push origin HEAD:agent/xr-perf-guide
