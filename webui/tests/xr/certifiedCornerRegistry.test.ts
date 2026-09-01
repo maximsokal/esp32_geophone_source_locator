@@ -3,15 +3,22 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   deactivateCertifiedGuideRegistry,
   findCertifiedGuideCorner,
+  findCertifiedGuideEdgeAtPoint,
   getCertifiedGuideCorners,
+  getCertifiedGuideEdges,
   isCertifiedGuideRegistryActive,
   setCertifiedGuideCorners,
+  setCertifiedGuideEdges,
 } from '../../src/xr/certifiedCornerRegistry';
 import {
   ManualControlPointStore,
   ManualPlacementRejectedError,
 } from '../../src/xr/manualControlPoints';
 import { previewManualPlacementFromStableSurface } from '../../src/xr/manualPlacementPreview';
+import {
+  resetLatestProjectionMatrices,
+  setLatestProjectionMatrices,
+} from '../../src/xr/latestProjectionRegistry';
 
 const emptySnapshot = {
   positions: new Float32Array(0),
@@ -21,9 +28,25 @@ const emptySnapshot = {
   voxelSizeMeters: 0.04,
 };
 
-afterEach(() => deactivateCertifiedGuideRegistry());
+const simpleProjection = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, -1, -1,
+  0, 0, -0.2, 0,
+]);
+const identityWorldFromView = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
 
-describe('certified corner registry', () => {
+afterEach(() => {
+  deactivateCertifiedGuideRegistry();
+  resetLatestProjectionMatrices();
+});
+
+describe('certified structural registry', () => {
   it('makes an empty active registry a hard manual-placement gate', () => {
     setCertifiedGuideCorners([]);
     expect(isCertifiedGuideRegistryActive()).toBe(true);
@@ -73,5 +96,59 @@ describe('certified corner registry', () => {
     const store = new ManualControlPointStore();
     expect(() => store.addOrSnap([0.28, 0.10, 0.40])).toThrow(ManualPlacementRejectedError);
     expect(getCertifiedGuideCorners()).toHaveLength(1);
+  });
+
+  it('publishes a certified two-plane edge as a manual target before an AUTO endpoint exists', () => {
+    setCertifiedGuideCorners([]);
+    setCertifiedGuideEdges([{
+      id: 'edge:two-plane',
+      start: [-0.5, 2, 0],
+      end: [0.5, 2, 0],
+      confidence: 0.88,
+      support: 24,
+      observations: 4,
+      source: 'robust-two-plane',
+    }]);
+    expect(getCertifiedGuideCorners()).toHaveLength(0);
+    expect(getCertifiedGuideEdges()).toHaveLength(1);
+    expect(findCertifiedGuideEdgeAtPoint([0, 2, 0])).not.toBeNull();
+  });
+
+  it('lets the camera ray supply the missing coordinate along a certified edge', () => {
+    setCertifiedGuideCorners([]);
+    setCertifiedGuideEdges([{
+      id: 'edge:two-plane',
+      start: [-0.5, 2, 0],
+      end: [0.5, 2, 0],
+      confidence: 0.90,
+      support: 24,
+      observations: 4,
+      source: 'robust-two-plane',
+    }]);
+    setLatestProjectionMatrices(simpleProjection, identityWorldFromView);
+
+    const preview = previewManualPlacementFromStableSurface(
+      0.5,
+      0.5,
+      emptySnapshot,
+      (point) => ({
+        u: 0.5 + point[0] / 4,
+        v: 0.5,
+        visible: true,
+        viewDepthMeters: point[1],
+      }),
+    );
+
+    expect(preview.resolution.accepted).toBe(true);
+    expect(preview.resolution.mode).toBe('edge');
+    expect(preview.resolution.position).not.toBeNull();
+    expect(preview.resolution.position![0]).toBeCloseTo(0, 5);
+    expect(preview.resolution.position![1]).toBeCloseTo(2, 5);
+    expect(preview.resolution.position![2]).toBeCloseTo(0, 5);
+
+    const store = new ManualControlPointStore();
+    const stored = store.addOrSnap(preview.resolution.position!);
+    expect(stored.point.position[1]).toBeCloseTo(2, 5);
+    expect(stored.placementMode).toBe('edge');
   });
 });
