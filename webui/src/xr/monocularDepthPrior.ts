@@ -65,8 +65,12 @@ function weightedLine(samples: readonly LogSample[], robust?: readonly number[])
 /**
  * Robust calibration for a relative monocular prior:
  * log(z_metric) ~= a*log(z_prior)+b.
- * The calibration uses only physical ARCore anchors and is never reused to mark
- * occupancy FREE; it exists solely for surface/mesh/visual-structure guidance.
+ *
+ * Both polarities are accepted. Some exported depth networks expose a quantity
+ * proportional to depth, while others expose inverse-depth/disparity-like
+ * values. Physical ARCore anchors decide the sign and scale; model convention
+ * is never assumed. The result is surface guidance only and is never reused for
+ * occupancy/FREE classification.
  */
 export function calibrateMonocularDepthPrior(
   frame: MonocularDepthPriorFrame,
@@ -81,7 +85,6 @@ export function calibrateMonocularDepthPrior(
   }
   if (samples.length < 6) return null;
 
-  // Deterministic pair-RANSAC over a bounded spread of sample indices.
   let best: { a: number; b: number; inliers: number[]; error: number } | null = null;
   const maxTrials = Math.min(72, samples.length * 3);
   for (let trial = 0; trial < maxTrials; trial += 1) {
@@ -92,7 +95,8 @@ export function calibrateMonocularDepthPrior(
     if (Math.abs(dx) < 1e-5) continue;
     const a = (samples[second].y - samples[first].y) / dx;
     const b = samples[first].y - a * samples[first].x;
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0.25 || a > 4) continue;
+    const absoluteSlope = Math.abs(a);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || absoluteSlope < 0.25 || absoluteSlope > 4) continue;
     const inliers: number[] = [];
     let error = 0;
     for (let index = 0; index < samples.length; index += 1) {
@@ -107,7 +111,7 @@ export function calibrateMonocularDepthPrior(
 
   const active = best.inliers.map((index) => samples[index]);
   let fit = weightedLine(active);
-  if (fit === null) return null;
+  if (fit === null || Math.abs(fit.a) < 0.20 || Math.abs(fit.a) > 4.5) return null;
   for (let iteration = 0; iteration < 4; iteration += 1) {
     const residuals = active.map((sample) => Math.abs(sample.y - (fit!.a * sample.x + fit!.b))).sort((a, b) => a - b);
     const median = residuals[Math.floor(residuals.length * 0.5)] ?? 0.02;
@@ -118,6 +122,7 @@ export function calibrateMonocularDepthPrior(
     });
     fit = weightedLine(active, weights) ?? fit;
   }
+  if (Math.abs(fit.a) < 0.20 || Math.abs(fit.a) > 4.5) return null;
   let squared = 0;
   for (const sample of active) {
     const residual = sample.y - (fit.a * sample.x + fit.b);
@@ -170,8 +175,8 @@ function tensorFromOutput(output: unknown): { data: ArrayLike<number>; width: nu
 
 /**
  * Optional browser-only DA-V2 provider. It is lazy-loaded from a CDN so the
- * 20+ MB model/runtime never enters ESP32 flash. Failure is non-fatal; the
- * physical RGB+ARCore pipeline remains fully functional offline.
+ * model/runtime never enters ESP32 flash. Failure is non-fatal; the physical
+ * RGB+ARCore pipeline remains fully functional offline.
  */
 export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
   readonly name = 'Depth Anything V2 Small (optional WebGPU prior)';
@@ -221,8 +226,6 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
     const pixels = new Uint8ClampedArray(rgba.buffer.slice(rgba.byteOffset, rgba.byteOffset + width * height * 4));
     context.putImageData(new ImageData(pixels, width, height), 0, 0);
     try {
-      // Pipelines accept browser image URLs; a short-lived data URL avoids any
-      // cross-origin dependency on the local ESP32 server.
       const output = await this.estimator(canvas.toDataURL('image/jpeg', 0.82));
       const tensor = tensorFromOutput(output);
       if (tensor === null) throw new Error('Depth Anything output did not expose a depth tensor.');
