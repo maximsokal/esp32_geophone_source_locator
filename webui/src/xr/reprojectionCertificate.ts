@@ -3,7 +3,10 @@ import { projectProjectPointToNormalized } from './projectionMath';
 import type { VisualEvidenceFrame, VisualLineSegment } from './visualLineEvidence';
 
 export interface ReprojectionCertificate {
+  /** True means RGB does not veto this geometric candidate. */
   accepted: boolean;
+  /** True only when enough independent candidate-specific RGB views existed to make a visual decision. */
+  conclusive: boolean;
   observations: number;
   eligibleObservations: number;
   meanErrorNormalized: number;
@@ -63,6 +66,7 @@ function finishCertificate(
   toleranceNormalized: number,
 ): ReprojectionCertificate {
   const observations = acceptedFrames.length;
+  const conclusive = eligibleFrames.length >= minimumObservations;
   const meanError = observations > 0
     ? errors.reduce((a, b) => a + b, 0) / observations
     : Number.POSITIVE_INFINITY;
@@ -71,12 +75,17 @@ function finishCertificate(
     : 0;
   const countScore = clamp01(observations / Math.max(minimumObservations, 1));
   const errorScore = Number.isFinite(meanError) ? clamp01(1 - meanError / toleranceNormalized) : 0;
+  const measuredConfidence = clamp01(countScore * 0.46 + errorScore * 0.34 + meanStrength * 0.20);
   return {
-    accepted: observations >= minimumObservations,
+    // Insufficient candidate-specific RGB coverage is deliberately neutral,
+    // not a rejection. Robust 3D geometry remains authoritative until RGB has
+    // enough independent views of THIS candidate to contradict or support it.
+    accepted: !conclusive || observations >= minimumObservations,
+    conclusive,
     observations,
     eligibleObservations: eligibleFrames.length,
     meanErrorNormalized: meanError,
-    confidence: clamp01(countScore * 0.46 + errorScore * 0.34 + meanStrength * 0.20),
+    confidence: conclusive ? measuredConfidence : 1,
     matchedKeyframes: acceptedFrames.map((frame) => frame.keyframeId),
     eligibleKeyframes: eligibleFrames.map((frame) => frame.keyframeId),
   };
