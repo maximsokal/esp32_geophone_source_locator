@@ -18,9 +18,17 @@ export interface CertifiedGuideEdge {
   source: 'robust-two-plane';
 }
 
+export interface CertifiedGuideRegistrySummary {
+  active: boolean;
+  cornerCount: number;
+  edgeCount: number;
+  hasTargets: boolean;
+}
+
 let active = false;
 let corners: CertifiedGuideCorner[] = [];
 let edges: CertifiedGuideEdge[] = [];
+const listeners = new Set<() => void>();
 
 function clonePoint(point: ProjectPoint): ProjectPoint { return [point[0], point[1], point[2]]; }
 function cloneCorner(corner: CertifiedGuideCorner): CertifiedGuideCorner { return { ...corner, position: clonePoint(corner.position) }; }
@@ -40,19 +48,35 @@ function pointSegmentDistance(point: ProjectPoint, edge: CertifiedGuideEdge): nu
   );
 }
 
-function updateManualButtonVisibility(): void {
+function updateRegistryPresentation(): void {
   if (typeof document === 'undefined') return;
   const hasTargets = corners.length > 0 || edges.length > 0;
   document.documentElement.classList.toggle('xr-has-certified-corners', active && corners.length > 0);
   document.documentElement.classList.toggle('xr-has-certified-geometry', active && hasTargets);
   document.documentElement.dataset.xrCertifiedCorners = active ? String(corners.length) : '';
   document.documentElement.dataset.xrCertifiedEdges = active ? String(edges.length) : '';
-  for (const element of document.querySelectorAll<HTMLButtonElement>('.xr-manual-toggle')) {
-    const pressed = element.getAttribute('aria-pressed') === 'true';
-    element.hidden = active && !hasTargets && !pressed;
-    if (active && !hasTargets) element.title = 'Scan until a robust edge or corner is certified.';
-    else element.removeAttribute('title');
-  }
+}
+
+function notify(): void {
+  updateRegistryPresentation();
+  for (const listener of listeners) listener();
+}
+
+export function subscribeCertifiedGuideRegistry(listener: () => void): () => void {
+  listeners.add(listener);
+  listener();
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function getCertifiedGuideRegistrySummary(): CertifiedGuideRegistrySummary {
+  return {
+    active,
+    cornerCount: active ? corners.length : 0,
+    edgeCount: active ? edges.length : 0,
+    hasTargets: active && (corners.length > 0 || edges.length > 0),
+  };
 }
 
 export function setCertifiedGuideCorners(next: readonly CertifiedGuideCorner[]): void {
@@ -67,7 +91,7 @@ export function setCertifiedGuideCorners(next: readonly CertifiedGuideCorner[]):
     else if (candidate.confidence > existing.confidence) deduped[deduped.indexOf(existing)] = cloneCorner(candidate);
   }
   corners = deduped.sort((a, b) => b.confidence - a.confidence).slice(0, 8);
-  updateManualButtonVisibility();
+  notify();
 }
 
 export function setCertifiedGuideEdges(next: readonly CertifiedGuideEdge[]): void {
@@ -91,10 +115,15 @@ export function setCertifiedGuideEdges(next: readonly CertifiedGuideEdge[]): voi
     else if (candidate.confidence > existing.confidence) deduped[deduped.indexOf(existing)] = cloneEdge(candidate);
   }
   edges = deduped.sort((a, b) => b.confidence - a.confidence).slice(0, 10);
-  updateManualButtonVisibility();
+  notify();
 }
 
-export function deactivateCertifiedGuideRegistry(): void { active = false; corners = []; edges = []; updateManualButtonVisibility(); }
+export function deactivateCertifiedGuideRegistry(): void {
+  active = false;
+  corners = [];
+  edges = [];
+  notify();
+}
 export function isCertifiedGuideRegistryActive(): boolean { return active; }
 export function getCertifiedGuideCorners(): readonly CertifiedGuideCorner[] { return corners.map(cloneCorner); }
 export function getCertifiedGuideEdges(): readonly CertifiedGuideEdge[] { return edges.map(cloneEdge); }
