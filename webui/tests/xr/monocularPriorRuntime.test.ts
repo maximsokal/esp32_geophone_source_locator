@@ -54,16 +54,18 @@ class FakePriorProvider implements MonocularDepthProvider {
   status: MonocularDepthProviderStatus = 'ready';
   error: string | null = null;
   calls = 0;
+  lastRgba: Uint8Array | null = null;
 
   isSupported(): boolean { return true; }
 
   async estimateRgba(
-    _rgba: Uint8Array,
+    rgba: Uint8Array,
     width: number,
     height: number,
     capturedAtMs: number,
   ): Promise<MonocularDepthPriorFrame> {
     this.calls += 1;
+    this.lastRgba = rgba.slice();
     return priorFrame(width, height, capturedAtMs, this.name);
   }
 
@@ -111,6 +113,18 @@ describe('optional monocular prior runtime', () => {
     expect(await runtime.maybeUpdate(guidance(100), metricDepth(), 100)).toBe(false);
     expect(provider.calls).toBe(0);
     expect(runtime.status).toBe('disabled');
+  });
+
+  it('passes preserved colour pixels to the opt-in provider instead of forcing grayscale', async () => {
+    const provider = new FakePriorProvider();
+    const runtime = new MonocularPriorRuntime(provider);
+    const frame = guidance(100);
+    frame.rgba = new Uint8Array(frame.width * frame.height * 4).fill(255);
+    frame.rgba.set([12, 34, 56, 255], 0);
+    runtime.setEnabled(true);
+    expect(await runtime.maybeUpdate(frame, metricDepth(), 100)).toBe(true);
+    expect(provider.lastRgba).not.toBeNull();
+    expect(Array.from(provider.lastRgba!.slice(0, 4))).toEqual([12, 34, 56, 255]);
   });
 
   it('calibrates against ARCore anchors and accepts an agreeing physical surface', async () => {
