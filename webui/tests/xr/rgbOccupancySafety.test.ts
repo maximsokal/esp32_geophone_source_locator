@@ -70,14 +70,25 @@ class RejectPostScanSurfacePrior implements MonocularSurfacePrior {
 }
 
 function integrateRepeatedPhysicalPlane(accumulator: DepthPointCloudAccumulator, depth: CpuDepthInformationLike): void {
-  for (let keyframeId = 1; keyframeId <= 4; keyframeId += 1) {
+  // Promotion deliberately requires independent camera evidence. Repeating the
+  // exact same synthetic camera position only creates tentative hypotheses and
+  // therefore cannot prove that an enabled-but-staged AI leaves promoted live
+  // geometry untouched. Use genuine side baselines just like the production
+  // promotion tests do.
+  const cameras: readonly ProjectPoint[] = [
+    [0, 0, 0],
+    [0.45, 0, 0],
+    [-0.45, 0, 0],
+    [0.25, 0.20, 0],
+  ];
+  cameras.forEach((cameraProjectPosition, index) => {
     accumulator.sampleDepthFrame(depth, view, {
-      keyframeId,
+      keyframeId: index + 1,
       evidenceKeyframe: true,
       frameWeight: 1,
-      cameraProjectPosition: [0, 0, 0],
+      cameraProjectPosition,
     });
-  }
+  });
 }
 
 function freshForWholeTest(): number {
@@ -117,6 +128,7 @@ describe('RGB / AI surface guidance versus occupancy safety boundary', () => {
 
     const snapshot = accumulator.snapshot(4, 4);
     expect(prior.stageCalls).toBeGreaterThan(0);
+    expect(prior.agreementCalls).toBe(0);
     expect(snapshot.rawPointCount).toBeGreaterThan(0);
     expect(snapshot.pointCount).toBeGreaterThan(0);
 
