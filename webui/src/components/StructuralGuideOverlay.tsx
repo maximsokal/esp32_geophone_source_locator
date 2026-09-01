@@ -14,9 +14,9 @@ import {
 import { solveManualPlacementOnStableSurface } from '../xr/manualPlacementSurface';
 import {
   certifyCornerByVisualReprojection,
-  certifyEdgeByVisualReprojection,
   certifyEndpointByVisualReprojection,
 } from '../xr/reprojectionCertificate';
+import { certifyOperationalStructuralEdges } from '../xr/structuralEdgeCertification';
 import { inferStructuralVerticesFromEdges } from '../xr/structuralEdgeVertices';
 import { detectEdgeEndpointObservations } from '../xr/structuralEdgeEndpoints';
 import {
@@ -60,8 +60,6 @@ const MIN_KEYFRAME_ADVANCE = 4;
 const BASE_ANALYSIS_INTERVAL_MS = 1900;
 const MIN_VISIBLE_CORNER_CONFIDENCE = 0.70;
 const MIN_CERTIFIED_CORNER_CONFIDENCE = 0.70;
-const MIN_CERTIFIED_EDGE_CONFIDENCE = 0.66;
-const MIN_CERTIFIED_EDGE_OBSERVATIONS = 2;
 const MAX_CERTIFICATE_SHIFT_METERS = 0.055;
 const MAX_CERTIFIED_UNCERTAINTY_METERS = 0.032;
 const VISUAL_CERTIFICATE_MIN_FRAMES = 3;
@@ -217,33 +215,6 @@ function certifyCandidates(
   return certified.sort((left, right) => right.confidence - left.confidence).slice(0, 8);
 }
 
-function certifyEdges(
-  result: StructuralGuideResult | null,
-  visualFrames: readonly VisualEvidenceFrame[],
-): readonly StructuralEdgeCandidate[] {
-  if (result === null) return [];
-  const checkVisual = hasUsableLineCoverage(visualFrames);
-  const output: StructuralEdgeCandidate[] = [];
-  for (const edge of result.edges) {
-    if (edge.confidence < MIN_CERTIFIED_EDGE_CONFIDENCE) continue;
-    if (edge.observations < MIN_CERTIFIED_EDGE_OBSERVATIONS) continue;
-    const length = pointDistance(edge.start, edge.end);
-    if (!Number.isFinite(length) || length < 0.065) continue;
-    if (checkVisual) {
-      const visual = certifyEdgeByVisualReprojection(edge.start, edge.end, visualFrames);
-      const corroborated = applyStructuralVisualCorroboration(edge.confidence, edge.observations, visual);
-      output.push({
-        ...edge,
-        confidence: corroborated.confidence,
-        observations: corroborated.observations,
-      });
-    } else {
-      output.push(edge);
-    }
-  }
-  return output.sort((left, right) => right.confidence - left.confidence).slice(0, 10);
-}
-
 function mergeCornerCandidates(
   primary: readonly StructuralCornerCandidate[],
   inferred: readonly StructuralCornerCandidate[],
@@ -361,7 +332,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   );
 
   const certifiedEdgeCandidates = useMemo(
-    () => certifyEdges(result, visualFrames),
+    () => certifyOperationalStructuralEdges(result?.edges ?? [], visualFrames),
     [result, visualFrames],
   );
 
@@ -452,9 +423,10 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
   const confirmCorner = (candidate: StructuralCornerCandidate): void => {
     try {
-      if (candidate.id.startsWith('endpoint:')) {
-        authorizeCertifiedManualPlacement(candidate.position, candidate.confidence);
-      }
+      // All rendered candidates have already passed the shared certification
+      // path. Authorize the exact candidate once so a same-frame click cannot
+      // race the registry effect that publishes it to ManualControlPointStore.
+      authorizeCertifiedManualPlacement(candidate.position, candidate.confidence);
       const stored = runtime.addSuggestedManualPoint(candidate.position);
       if (stored === null) return;
       setRejected((current) => new Set(current).add(candidate.id));
