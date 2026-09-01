@@ -160,11 +160,15 @@ export class MonocularPriorRuntime {
     return true;
   }
 
-  /** Execute the staged ONNX prior only after the XR session has ended. */
+  /** Execute the staged ONNX prior only once after the XR session has ended. */
   async runStagedPostScan(): Promise<boolean> {
     const staged = this.staged;
     if (!this.enabled || staged === null || this.providerBusy || !this.provider.isSupported()) return false;
     const requestEpoch = this.epoch;
+    // Consume before awaiting the multi-second provider call. This guarantees
+    // one-shot semantics even if the result viewport is remounted while the
+    // previous inference is in flight or immediately after it finishes.
+    this.staged = null;
     this.providerBusy = true;
     try {
       const prior = await this.provider.estimateRgba(
