@@ -35,6 +35,7 @@ export class VisualLineEvidenceClient {
   private requestId = 0;
   private epoch = 1;
   private pending = new Map<number, PendingRequest>();
+  private fallbackInFlight = 0;
   private disposed = false;
 
   constructor() {
@@ -51,13 +52,16 @@ export class VisualLineEvidenceClient {
     }
   }
 
-  get busy(): boolean { return this.pending.size > 0; }
+  get busy(): boolean { return this.pending.size > 0 || this.fallbackInFlight > 0; }
   get workerBacked(): boolean { return this.worker !== null; }
 
   reset(): void {
     this.epoch += 1;
     for (const request of this.pending.values()) request.reject(new Error('Visual evidence client reset for a new scan.'));
     this.pending.clear();
+    // A fallback task already queued on the event loop is allowed to finish but
+    // remains counted as busy and will reject itself by epoch. This prevents a
+    // new scan from stacking another main-thread Hough job on top of it.
     this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
@@ -71,10 +75,20 @@ export class VisualLineEvidenceClient {
     const matrices = cloneMatrices(projectionMatrix, worldFromView);
 
     if (this.worker === null) {
+      const requestEpoch = this.epoch;
+      this.fallbackInFlight += 1;
       return new Promise<VisualEvidenceFrame>((resolve, reject) => {
         setTimeout(() => {
           try {
+            if (this.disposed || requestEpoch !== this.epoch) {
+              reject(new Error('Visual evidence fallback belongs to an obsolete scan epoch.'));
+              return;
+            }
             const detected = detectVisualLinesNow(frame);
+            if (this.disposed || requestEpoch !== this.epoch) {
+              reject(new Error('Visual evidence fallback belongs to an obsolete scan epoch.'));
+              return;
+            }
             resolve({
               keyframeId,
               capturedAtMs: frame.capturedAtMs,
@@ -85,6 +99,8 @@ export class VisualLineEvidenceClient {
             });
           } catch (error) {
             reject(error instanceof Error ? error : new Error(String(error)));
+          } finally {
+            this.fallbackInFlight = Math.max(0, this.fallbackInFlight - 1);
           }
         }, 0);
       });
@@ -126,14 +142,18 @@ export class VisualLineEvidenceClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.epoch += 1;
     for (const request of this.pending.values()) request.reject(new Error('Visual evidence client disposed.'));
     this.pending.clear();
-    if (this.worker !== null) {
-      this.worker.removeEventListener('message', this.handleWorkerMessage);
-      this.worker.removeEventListener('error', this.handleWorkerError);
-      this.worker.terminate();
-      this.worker = null;
-    }
+    this.detachBrokenWorker();
+  }
+
+  private detachBrokenWorker(): void {
+    if (this.worker === null) return;
+    this.worker.removeEventListener('message', this.handleWorkerMessage);
+    this.worker.removeEventListener('error', this.handleWorkerError);
+    this.worker.terminate();
+    this.worker = null;
   }
 
   private readonly handleWorkerMessage = (event: MessageEvent<WorkerResultMessage>): void => {
@@ -160,5 +180,8 @@ export class VisualLineEvidenceClient {
     const error = new Error(event.message || 'Visual evidence worker failed.');
     for (const request of this.pending.values()) request.reject(error);
     this.pending.clear();
+    // Subsequent analyses use the bounded async fallback instead of continuing
+    // to post into a worker that has already raised an uncaught error.
+    this.detachBrokenWorker();
   };
 }
