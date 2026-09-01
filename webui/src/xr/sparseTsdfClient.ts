@@ -63,6 +63,7 @@ function filterWithCalibratedPostScanPrior(
       proposedRejected: rejected,
       rejectFraction: Number(rejectFraction.toFixed(3)),
       calibration: Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),
+      calibrationModel: optionalMonocularPrior.calibrationModel,
     });
     return { input, rejected: 0, applied: false };
   }
@@ -125,6 +126,8 @@ export class SparseTsdfMeshClient {
         calibrated,
         applied: filtered.applied,
         calibration: Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),
+        calibrationModel: optionalMonocularPrior.calibrationModel,
+        calibrationDiagnostics: optionalMonocularPrior.calibrationDiagnostics,
         sourcePoints: Math.floor(input.positions.length / 3),
         rejectedPoints: filtered.rejected,
         retainedPoints: Math.floor(reconstructionInput.positions.length / 3),
