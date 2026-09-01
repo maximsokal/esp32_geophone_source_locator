@@ -102,9 +102,9 @@ export class XrPerformanceProfiler {
 
     return {
       frameDeltaP50Ms: this.frameDelta.percentile(0.50),
-      frameDeltaP95Ms,
+      frameDeltaP95Ms: frameDeltaP95,
       frameDeltaMaxMs: this.frameDelta.max(),
-      frameWorkP95Ms,
+      frameWorkP95Ms: frameWorkP95,
       depthAccessP95Ms: this.metrics.depthAccess.percentile(0.95),
       fusionP50Ms: this.metrics.fusion.percentile(0.50),
       fusionP95Ms: fusionP95,
