@@ -6,9 +6,11 @@ import {
   findCertifiedGuideEdgeAtPoint,
   getCertifiedGuideCorners,
   getCertifiedGuideEdges,
+  getCertifiedGuideRegistrySummary,
   isCertifiedGuideRegistryActive,
   setCertifiedGuideCorners,
   setCertifiedGuideEdges,
+  subscribeCertifiedGuideRegistry,
 } from '../../src/xr/certifiedCornerRegistry';
 import {
   ManualControlPointStore,
@@ -52,6 +54,35 @@ describe('certified structural registry', () => {
     expect(isCertifiedGuideRegistryActive()).toBe(true);
     const store = new ManualControlPointStore();
     expect(() => store.addOrSnap([0, 0, 0])).toThrow(ManualPlacementRejectedError);
+  });
+
+  it('publishes target availability reactively so UI can stay hidden at 0/0', () => {
+    const summaries = [];
+    const unsubscribe = subscribeCertifiedGuideRegistry(() => {
+      summaries.push(getCertifiedGuideRegistrySummary());
+    });
+    expect(summaries.at(-1)).toEqual({ active: false, cornerCount: 0, edgeCount: 0, hasTargets: false });
+
+    setCertifiedGuideCorners([]);
+    expect(summaries.at(-1)).toEqual({ active: true, cornerCount: 0, edgeCount: 0, hasTargets: false });
+
+    setCertifiedGuideEdges([{
+      id: 'edge:reactive',
+      start: [-0.5, 2, 0],
+      end: [0.5, 2, 0],
+      confidence: 0.88,
+      support: 24,
+      observations: 4,
+      source: 'robust-two-plane',
+    }]);
+    expect(summaries.at(-1)).toEqual({ active: true, cornerCount: 0, edgeCount: 1, hasTargets: true });
+
+    deactivateCertifiedGuideRegistry();
+    expect(summaries.at(-1)).toEqual({ active: false, cornerCount: 0, edgeCount: 0, hasTargets: false });
+    const countBeforeUnsubscribe = summaries.length;
+    unsubscribe();
+    setCertifiedGuideCorners([]);
+    expect(summaries).toHaveLength(countBeforeUnsubscribe);
   });
 
   it('shares exactly the same certified target with manual preview and storage', () => {
