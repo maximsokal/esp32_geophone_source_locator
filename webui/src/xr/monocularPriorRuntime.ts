@@ -40,7 +40,13 @@ function validPhysicalDepth(value: number): boolean {
 }
 
 function guidanceAsRgba(frame: RgbDepthGuidanceFrame): Uint8Array {
-  const rgba = new Uint8Array(frame.width * frame.height * 4);
+  const expected = frame.width * frame.height * 4;
+  if (frame.rgba !== undefined && frame.rgba.length >= expected) {
+    return frame.rgba.length === expected ? frame.rgba.slice() : frame.rgba.slice(0, expected);
+  }
+  // Synthetic/tests/older callers may only carry luma. Grayscale fallback keeps
+  // them compatible, while production Raw Camera Access preserves true RGBA.
+  const rgba = new Uint8Array(expected);
   for (let index = 0; index < frame.luma.length; index += 1) {
     const value = frame.luma[index];
     const offset = index * 4;
@@ -80,7 +86,7 @@ export function collectPhysicalMetricAnchors(
 
 export class MonocularPriorRuntime {
   private enabled = false;
-  private busy = false;
+  private providerBusy = false;
   private epoch = 1;
   private lastAttemptMs = Number.NEGATIVE_INFINITY;
   private calibrated: CalibratedPrior | null = null;
@@ -95,14 +101,13 @@ export class MonocularPriorRuntime {
     // provider may still finish internally, but its result must never mutate
     // current geometry state.
     this.epoch += 1;
-    this.busy = false;
     this.lastAttemptMs = Number.NEGATIVE_INFINITY;
     this.calibrated = null;
     this.lastError = null;
   }
 
   get isEnabled(): boolean { return this.enabled; }
-  get isBusy(): boolean { return this.busy; }
+  get isBusy(): boolean { return this.providerBusy; }
   get error(): string | null { return this.lastError ?? this.provider.error; }
   get status(): MonocularDepthProviderStatus {
     if (!this.enabled) return 'disabled';
@@ -113,7 +118,6 @@ export class MonocularPriorRuntime {
 
   reset(): void {
     this.epoch += 1;
-    this.busy = false;
     this.lastAttemptMs = Number.NEGATIVE_INFINITY;
     this.calibrated = null;
     this.lastError = null;
@@ -124,14 +128,14 @@ export class MonocularPriorRuntime {
     depth: CpuDepthInformationLike,
     nowMs: number,
   ): Promise<boolean> {
-    if (!this.enabled || this.busy || !this.provider.isSupported()) return false;
+    if (!this.enabled || this.providerBusy || !this.provider.isSupported()) return false;
     if (nowMs - this.lastAttemptMs < UPDATE_INTERVAL_MS) return false;
     const anchors = collectPhysicalMetricAnchors(depth, guidance);
     if (anchors.length < MIN_CALIBRATION_INLIERS) return false;
 
     const requestEpoch = this.epoch;
     this.lastAttemptMs = nowMs;
-    this.busy = true;
+    this.providerBusy = true;
     try {
       const prior = await this.provider.estimateRgba(
         guidanceAsRgba(guidance),
@@ -159,7 +163,9 @@ export class MonocularPriorRuntime {
       }
       return false;
     } finally {
-      if (requestEpoch === this.epoch) this.busy = false;
+      // Do not launch concurrent WebGPU model jobs even if the logical scan
+      // epoch changed while this provider call was still running.
+      this.providerBusy = false;
     }
   }
 
