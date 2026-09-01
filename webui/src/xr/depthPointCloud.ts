@@ -59,6 +59,26 @@ export interface StructuralGuideSnapshot extends StructuralSurfaceEvidenceSnapsh
   freeSpaceVoxelSizeMeters: number;
 }
 
+/**
+ * Narrow dependency boundary for optional model-based SURFACE validation.
+ * Deliberately exposes no occupancy API and no replacement-depth value.
+ */
+export interface MonocularSurfacePrior {
+  readonly isEnabled: boolean;
+  reset(): void;
+  maybeUpdate(
+    guidance: RgbDepthGuidanceFrame,
+    depth: CpuDepthInformationLike,
+    nowMs: number,
+  ): Promise<boolean>;
+  surfaceAgreement(
+    u: number,
+    v: number,
+    physicalMeters: number,
+    nowMs: number,
+  ): { accepted: boolean };
+}
+
 const STRUCTURAL_MIN_CONFIDENCE = 0.58;
 const STRUCTURAL_NORMAL_DOT = Math.cos((28 * Math.PI) / 180);
 const MAX_LOCAL_CERTIFICATE_NEIGHBOURS = 18;
@@ -186,9 +206,10 @@ function guidedSurfaceDepth(
   depth: CpuDepthInformationLike,
   guidance: RgbDepthGuidanceFrame | null,
   nowMs: number,
+  monocularPrior: MonocularSurfacePrior,
 ): CpuDepthInformationLike {
   if (guidance === null) return depth;
-  const useMonocular = optionalMonocularPrior.isEnabled;
+  const useMonocular = monocularPrior.isEnabled;
   return {
     width: depth.width,
     height: depth.height,
@@ -197,7 +218,7 @@ function guidedSurfaceDepth(
     getDepthInMeters(u: number, v: number): number {
       const physical = surfaceFusionDepthInMeters(depth, u, v, guidance);
       if (!Number.isFinite(physical) || !useMonocular) return physical;
-      const agreement = optionalMonocularPrior.surfaceAgreement(u, v, physical, nowMs);
+      const agreement = monocularPrior.surfaceAgreement(u, v, physical, nowMs);
       return agreement.accepted ? physical : Number.NaN;
     },
   };
@@ -206,7 +227,12 @@ function guidedSurfaceDepth(
 export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulator {
   private readonly occupancy = new SparseOccupancyGrid();
 
-  constructor(voxelSizeMeters?: number, memoryBudgetPoints?: number, maxDepthMeters?: number) {
+  constructor(
+    voxelSizeMeters?: number,
+    memoryBudgetPoints?: number,
+    maxDepthMeters?: number,
+    private readonly monocularPrior: MonocularSurfacePrior = optionalMonocularPrior,
+  ) {
     super(voxelSizeMeters, memoryBudgetPoints, maxDepthMeters);
     registerManualPlacementResolver((candidate: ProjectPoint) =>
       solveManualPlacementOnStableSurface(candidate, this.structuralGuideSnapshot())
@@ -216,7 +242,7 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   override reset(): void {
     super.reset();
     this.occupancy.reset();
-    optionalMonocularPrior.reset();
+    this.monocularPrior.reset();
   }
 
   override sampleDepthFrame(
@@ -226,12 +252,17 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   ): DepthFusionResult {
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const guidance = getFreshRgbGuidance(nowMs);
-    if (context.evidenceKeyframe && guidance !== null && optionalMonocularPrior.isEnabled) {
-      void optionalMonocularPrior.maybeUpdate(guidance, depth, nowMs);
+    if (context.evidenceKeyframe && guidance !== null && this.monocularPrior.isEnabled) {
+      void this.monocularPrior.maybeUpdate(guidance, depth, nowMs);
     }
-    const result = super.sampleDepthFrame(guidedSurfaceDepth(depth, guidance, nowMs), fallbackView, context);
+    const result = super.sampleDepthFrame(
+      guidedSurfaceDepth(depth, guidance, nowMs, this.monocularPrior),
+      fallbackView,
+      context,
+    );
     // Safety invariant: RGB and AI can veto SURFACE evidence, but occupancy/FREE
-    // always sees untouched physical XR depth.
+    // always sees untouched physical XR depth. The injected model interface has
+    // no occupancy handle, so it cannot manufacture or erase FREE evidence.
     this.occupancy.integrateDepthFrame(depth, fallbackView, { ...context, maxDepthMeters: this.maxDepth });
     return result;
   }
