@@ -1,0 +1,38 @@
+name: Apply XR perf guide runtime patch
+
+on:
+  push:
+    branches:
+      - agent/xr-perf-guide
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xr-perf-guide-patch
+  cancel-in-progress: false
+
+jobs:
+  patch-runtime:
+    if: ${{ !contains(github.event.head_commit.message, '[runtime-patched]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/xr-perf-guide
+          fetch-depth: 0
+      - name: Apply deterministic runtime patch
+        run: python3 scripts/patch_xr_runtime_perf_guide.py
+      - name: Commit patched runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add webui/src/xr/webxrRuntime.ts
+          if git diff --cached --quiet; then
+            echo 'Runtime already patched.'
+            exit 0
+          fi
+          git commit -m 'Integrate XR profiler and structural operator geometry [runtime-patched]'
+          git push origin HEAD:agent/xr-perf-guide
