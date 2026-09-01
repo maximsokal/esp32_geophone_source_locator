@@ -6,7 +6,11 @@ import type {
   MonocularDepthProvider,
   MonocularDepthProviderStatus,
 } from '../../src/xr/monocularDepthPrior';
-import { MonocularPriorRuntime } from '../../src/xr/monocularPriorRuntime';
+import {
+  collectPhysicalDepthGuard,
+  MonocularPriorRuntime,
+  physicalDepthGuardAllowsAiVeto,
+} from '../../src/xr/monocularPriorRuntime';
 import type { RgbDepthGuidanceFrame } from '../../src/xr/rgbDepthGuidance';
 
 function relativeAt(u: number, v: number): number { return 0.55 + u * 0.72 + v * 0.24; }
@@ -90,6 +94,19 @@ describe('post-scan monocular prior scheduling', () => {
     expect(runtime.calibrationDiagnostics).not.toBeNull();
     expect(runtime.calibrationDiagnostics!.sampleCount).toBeGreaterThanOrEqual(10);
     expect(runtime.calibrationDiagnostics!.selectedModel).not.toBeNull();
+  });
+
+  it('guards AI veto with physical frontmost depth from the same staged RGB pose', () => {
+    const depth = metricDepth();
+    const frame = guidance(100);
+    const guard = collectPhysicalDepthGuard(depth, frame);
+    const u = 0.52, v = 0.47;
+    const frontmost = depth.getDepthInMeters(u, v);
+
+    expect(physicalDepthGuardAllowsAiVeto(guard, u, v, frontmost)).toBe(true);
+    // A valid surface hidden well behind the staged foreground is not evidence
+    // that AI may judge from this one RGB frame.
+    expect(physicalDepthGuardAllowsAiVeto(guard, u, v, frontmost + 0.8)).toBe(false);
   });
 
   it('latest live keyframe can replace the staged packet repeatedly without provider work', () => {
