@@ -1,4 +1,5 @@
 import type { CpuDepthInformationLike } from './depthPointCloudV2';
+import type { ProjectPoint } from './manualControlPoints';
 import {
   calibrateMonocularDepthPrior,
   calibratedPriorDepthMeters,
@@ -9,6 +10,7 @@ import {
   type MonocularDepthProvider,
   type MonocularDepthProviderStatus,
 } from './monocularDepthPrior';
+import { projectProjectPointToNormalized } from './projectionMath';
 import {
   rgbGuidanceMatchesView,
   sampleRgbGuidance,
@@ -22,6 +24,11 @@ interface CalibratedPrior {
   captureGuidance: RgbDepthGuidanceFrame;
 }
 
+interface StagedPostScanPrior {
+  guidance: RgbDepthGuidanceFrame;
+  anchors: MetricDepthAnchor[];
+}
+
 export interface MonocularSurfaceAgreement {
   available: boolean;
   accepted: boolean;
@@ -31,7 +38,6 @@ export interface MonocularSurfaceAgreement {
   calibrationConfidence: number;
 }
 
-const UPDATE_INTERVAL_MS = 6500;
 const MAX_PRIOR_AGE_MS = 9000;
 const MIN_CALIBRATION_CONFIDENCE = 0.66;
 const MIN_CALIBRATION_INLIERS = 10;
@@ -40,6 +46,19 @@ const ANCHOR_ROWS = 6;
 
 function validPhysicalDepth(value: number): boolean {
   return Number.isFinite(value) && value >= 0.18 && value <= 8;
+}
+
+function cloneGuidance(frame: RgbDepthGuidanceFrame): RgbDepthGuidanceFrame {
+  return {
+    ...frame,
+    luma: frame.luma.slice(),
+    rgba: frame.rgba?.slice(),
+    edgeStrength: frame.edgeStrength.slice(),
+    gradientX: frame.gradientX.slice(),
+    gradientY: frame.gradientY.slice(),
+    projectionMatrix: frame.projectionMatrix?.slice(),
+    worldFromView: frame.worldFromView?.slice(),
+  };
 }
 
 function guidanceAsRgba(frame: RgbDepthGuidanceFrame): Uint8Array {
@@ -91,8 +110,8 @@ export class MonocularPriorRuntime {
   private enabled = false;
   private providerBusy = false;
   private epoch = 1;
-  private lastAttemptMs = Number.NEGATIVE_INFINITY;
   private calibrated: CalibratedPrior | null = null;
+  private staged: StagedPostScanPrior | null = null;
   private lastError: string | null = null;
 
   constructor(private readonly provider: MonocularDepthProvider) {}
@@ -104,13 +123,14 @@ export class MonocularPriorRuntime {
     // provider may still finish internally, but its result must never mutate
     // current geometry state.
     this.epoch += 1;
-    this.lastAttemptMs = Number.NEGATIVE_INFINITY;
     this.calibrated = null;
+    this.staged = null;
     this.lastError = null;
   }
 
   get isEnabled(): boolean { return this.enabled; }
   get isBusy(): boolean { return this.providerBusy; }
+  get hasStagedPostScanFrame(): boolean { return this.staged !== null; }
   get error(): string | null { return this.lastError ?? this.provider.error; }
   get status(): MonocularDepthProviderStatus {
     if (!this.enabled) return 'disabled';
@@ -121,33 +141,40 @@ export class MonocularPriorRuntime {
 
   reset(): void {
     this.epoch += 1;
-    this.lastAttemptMs = Number.NEGATIVE_INFINITY;
     this.calibrated = null;
+    this.staged = null;
     this.lastError = null;
   }
 
-  async maybeUpdate(
-    guidance: RgbDepthGuidanceFrame,
-    depth: CpuDepthInformationLike,
-    nowMs: number,
-  ): Promise<boolean> {
-    if (!this.enabled || this.providerBusy || !this.provider.isSupported()) return false;
-    if (nowMs - this.lastAttemptMs < UPDATE_INTERVAL_MS) return false;
+  /**
+   * Cheap live-scan path: copy one pose-synchronised RGB frame plus physical
+   * ARCore anchors. No ONNX model is loaded or executed here. The latest valid
+   * keyframe replaces the previous staging packet so live WebXR never competes
+   * with a multi-second mobile WebGPU inference.
+   */
+  stagePostScan(guidance: RgbDepthGuidanceFrame, depth: CpuDepthInformationLike): boolean {
+    if (!this.enabled || !this.provider.isSupported()) return false;
     const anchors = collectPhysicalMetricAnchors(depth, guidance);
     if (anchors.length < MIN_CALIBRATION_INLIERS) return false;
+    this.staged = { guidance: cloneGuidance(guidance), anchors: anchors.map((anchor) => ({ ...anchor })) };
+    return true;
+  }
 
+  /** Execute the staged ONNX prior only after the XR session has ended. */
+  async runStagedPostScan(): Promise<boolean> {
+    const staged = this.staged;
+    if (!this.enabled || staged === null || this.providerBusy || !this.provider.isSupported()) return false;
     const requestEpoch = this.epoch;
-    this.lastAttemptMs = nowMs;
     this.providerBusy = true;
     try {
       const prior = await this.provider.estimateRgba(
-        guidanceAsRgba(guidance),
-        guidance.width,
-        guidance.height,
-        guidance.capturedAtMs,
+        guidanceAsRgba(staged.guidance),
+        staged.guidance.width,
+        staged.guidance.height,
+        staged.guidance.capturedAtMs,
       );
       if (requestEpoch !== this.epoch || !this.enabled || prior === null) return false;
-      const calibration = calibrateMonocularDepthPrior(prior, anchors);
+      const calibration = calibrateMonocularDepthPrior(prior, staged.anchors);
       if (requestEpoch !== this.epoch || !this.enabled) return false;
       if (
         calibration === null ||
@@ -157,7 +184,7 @@ export class MonocularPriorRuntime {
         this.lastError = 'Monocular prior did not pass physical-anchor calibration.';
         return false;
       }
-      this.calibrated = { frame: prior, calibration, captureGuidance: guidance };
+      this.calibrated = { frame: prior, calibration, captureGuidance: staged.guidance };
       this.lastError = null;
       return true;
     } catch (error) {
@@ -166,10 +193,21 @@ export class MonocularPriorRuntime {
       }
       return false;
     } finally {
-      // Do not launch concurrent WebGPU model jobs even if the logical scan
-      // epoch changed while this provider call was still running.
       this.providerBusy = false;
     }
+  }
+
+  /**
+   * Backward-compatible explicit helper used by isolated tests/tools. Production
+   * live XR uses stagePostScan() and calls runStagedPostScan() only after Finish.
+   */
+  async maybeUpdate(
+    guidance: RgbDepthGuidanceFrame,
+    depth: CpuDepthInformationLike,
+    _nowMs: number,
+  ): Promise<boolean> {
+    if (!this.stagePostScan(guidance, depth)) return false;
+    return this.runStagedPostScan();
   }
 
   surfaceAgreement(
@@ -221,6 +259,50 @@ export class MonocularPriorRuntime {
       disagreementMeters,
       calibrationConfidence: calibrated.calibration.confidence,
     };
+  }
+
+  /**
+   * Post-scan TSDF-only check. The metric depth remains the measured 3D point's
+   * view depth; ONNX can only reject a grossly inconsistent surfel visible from
+   * the staged RGB pose. Points outside that view are untouched.
+   */
+  postScanSurfaceAgreement(position: ProjectPoint): MonocularSurfaceAgreement {
+    const calibrated = this.calibrated;
+    const guidance = calibrated?.captureGuidance;
+    if (
+      calibrated === null || guidance === undefined ||
+      guidance.projectionMatrix === undefined || guidance.worldFromView === undefined
+    ) {
+      return {
+        available: false,
+        accepted: true,
+        priorMeters: null,
+        physicalMeters: Number.NaN,
+        disagreementMeters: null,
+        calibrationConfidence: calibrated?.calibration.confidence ?? 0,
+      };
+    }
+    const projected = projectProjectPointToNormalized(position, guidance.projectionMatrix, guidance.worldFromView);
+    const physicalMeters = projected?.viewDepthMeters ?? Number.NaN;
+    if (projected === null || !projected.visible || !validPhysicalDepth(physicalMeters)) {
+      return {
+        available: false,
+        accepted: true,
+        priorMeters: null,
+        physicalMeters,
+        disagreementMeters: null,
+        calibrationConfidence: calibrated.calibration.confidence,
+      };
+    }
+    // Pass capture time and capture pose so the live-age/pose safeguards remain
+    // satisfied without weakening them for normal runtime calls.
+    return this.surfaceAgreement(
+      projected.u,
+      projected.v,
+      physicalMeters,
+      calibrated.frame.capturedAtMs,
+      guidance,
+    );
   }
 
   dispose(): void {
