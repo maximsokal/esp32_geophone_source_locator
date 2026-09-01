@@ -10,11 +10,19 @@ export interface ScanDisplayOptions {
 
 export type ScanMode = 'quality' | 'surface' | 'search-volume' | 'mesh';
 
+/**
+ * Mesh is deliberately an overlay in the two surface-quality views. The mesh
+ * preview already accepts only sufficiently confident promoted points and uses
+ * conservative GP3-style triangle gates, so showing it beneath the coloured
+ * points gives the operator immediate visual feedback about where the scan is
+ * already geometrically connected and where more observations are still
+ * needed.
+ */
 const qualityDisplay: ScanDisplayOptions = {
   goodPoints: true,
   badPoints: true,
   dimensions: true,
-  mesh: false,
+  mesh: true,
   freeAir: false,
   unknownSpace: false,
   manualPoints: true,
@@ -24,7 +32,7 @@ const surfaceDisplay: ScanDisplayOptions = {
   goodPoints: true,
   badPoints: false,
   dimensions: true,
-  mesh: false,
+  mesh: true,
   freeAir: false,
   unknownSpace: false,
   manualPoints: true,
@@ -66,7 +74,7 @@ export function scanModeLabel(mode: ScanMode | null): string {
     case 'surface': return 'STABLE SURFACE';
     case 'search-volume': return 'SEARCH VOLUME';
     case 'mesh': return 'SURFACE MESH';
-    case 'quality': return 'QUALITY MAP';
+    case 'quality': return 'QUALITY + MESH';
     default: return 'CUSTOM LAYERS';
   }
 }
