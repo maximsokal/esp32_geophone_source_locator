@@ -7,7 +7,7 @@ import {
 import { VisualLineEvidenceClient } from './visualLineEvidenceClient';
 
 let latestRgb: RgbDepthGuidanceFrame | null = null;
-const visualStore = new VisualLineEvidenceStore(18);
+const visualStore = new VisualLineEvidenceStore(64);
 const visualClient = new VisualLineEvidenceClient();
 let visualDetectionError: string | null = null;
 
