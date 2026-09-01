@@ -29,6 +29,16 @@ function guidance(capturedAtMs: number): RgbDepthGuidanceFrame {
   };
 }
 
+function priorFrame(width: number, height: number, capturedAtMs: number, source = 'fake-prior'): MonocularDepthPriorFrame {
+  const relativeDepth = new Float32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      relativeDepth[y * width + x] = relativeAt(x / (width - 1), y / (height - 1));
+    }
+  }
+  return { width, height, relativeDepth, capturedAtMs, source };
+}
+
 function metricDepth(a = 1.15, b = Math.log(1.7)): CpuDepthInformationLike {
   return {
     width: 160,
@@ -54,16 +64,38 @@ class FakePriorProvider implements MonocularDepthProvider {
     capturedAtMs: number,
   ): Promise<MonocularDepthPriorFrame> {
     this.calls += 1;
-    const relativeDepth = new Float32Array(width * height);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        relativeDepth[y * width + x] = relativeAt(x / (width - 1), y / (height - 1));
-      }
-    }
-    return { width, height, relativeDepth, capturedAtMs, source: this.name };
+    return priorFrame(width, height, capturedAtMs, this.name);
   }
 
   dispose(): void {}
+}
+
+class DeferredPriorProvider implements MonocularDepthProvider {
+  readonly name = 'deferred-prior';
+  status: MonocularDepthProviderStatus = 'loading';
+  error: string | null = null;
+  private resolvePending: ((frame: MonocularDepthPriorFrame) => void) | null = null;
+
+  isSupported(): boolean { return true; }
+
+  estimateRgba(
+    _rgba: Uint8Array,
+    width: number,
+    height: number,
+    capturedAtMs: number,
+  ): Promise<MonocularDepthPriorFrame> {
+    return new Promise((resolve) => {
+      this.resolvePending = () => resolve(priorFrame(width, height, capturedAtMs, this.name));
+    });
+  }
+
+  resolve(): void {
+    const resolve = this.resolvePending;
+    this.resolvePending = null;
+    resolve?.(priorFrame(64, 48, 100, this.name));
+  }
+
+  dispose(): void { this.resolvePending = null; }
 }
 
 describe('optional monocular prior runtime', () => {
@@ -117,6 +149,24 @@ describe('optional monocular prior runtime', () => {
     runtime.setEnabled(true);
     expect(await runtime.maybeUpdate(guidance(100), metricDepth(), 100)).toBe(true);
     runtime.setEnabled(false);
+    const agreement = runtime.surfaceAgreement(0.5, 0.5, 6.5, 200);
+    expect(agreement.available).toBe(false);
+    expect(agreement.accepted).toBe(true);
+  });
+
+  it('drops an inference result that completes after a scan reset', async () => {
+    const provider = new DeferredPriorProvider();
+    const runtime = new MonocularPriorRuntime(provider);
+    runtime.setEnabled(true);
+    const pending = runtime.maybeUpdate(guidance(100), metricDepth(), 100);
+    expect(runtime.isBusy).toBe(true);
+
+    runtime.reset();
+    expect(runtime.isBusy).toBe(false);
+    provider.resolve();
+
+    expect(await pending).toBe(false);
+    expect(runtime.calibrationConfidence).toBe(0);
     const agreement = runtime.surfaceAgreement(0.5, 0.5, 6.5, 200);
     expect(agreement.available).toBe(false);
     expect(agreement.accepted).toBe(true);
