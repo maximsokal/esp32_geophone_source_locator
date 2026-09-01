@@ -1,11 +1,12 @@
 import type { CpuDepthInformationLike } from './depthPointCloudV2';
 import type { ProjectPoint } from './manualControlPoints';
 import {
-  calibrateMonocularDepthPrior,
+  calibrateMonocularDepthPriorDetailed,
   calibratedPriorDepthMeters,
   DepthAnythingV2WebGpuProvider,
   type LogAffineDepthCalibration,
   type MetricDepthAnchor,
+  type MonocularDepthCalibrationDiagnostics,
   type MonocularDepthPriorFrame,
   type MonocularDepthProvider,
   type MonocularDepthProviderStatus,
@@ -113,6 +114,7 @@ export class MonocularPriorRuntime {
   private calibrated: CalibratedPrior | null = null;
   private staged: StagedPostScanPrior | null = null;
   private lastError: string | null = null;
+  private lastCalibrationDiagnostics: MonocularDepthCalibrationDiagnostics | null = null;
 
   constructor(private readonly provider: MonocularDepthProvider) {}
 
@@ -126,6 +128,7 @@ export class MonocularPriorRuntime {
     this.calibrated = null;
     this.staged = null;
     this.lastError = null;
+    this.lastCalibrationDiagnostics = null;
   }
 
   get isEnabled(): boolean { return this.enabled; }
@@ -138,12 +141,15 @@ export class MonocularPriorRuntime {
     return this.provider.status;
   }
   get calibrationConfidence(): number { return this.calibrated?.calibration.confidence ?? 0; }
+  get calibrationModel(): LogAffineDepthCalibration['model'] | null { return this.calibrated?.calibration.model ?? null; }
+  get calibrationDiagnostics(): MonocularDepthCalibrationDiagnostics | null { return this.lastCalibrationDiagnostics; }
 
   reset(): void {
     this.epoch += 1;
     this.calibrated = null;
     this.staged = null;
     this.lastError = null;
+    this.lastCalibrationDiagnostics = null;
   }
 
   /**
@@ -178,14 +184,17 @@ export class MonocularPriorRuntime {
         staged.guidance.capturedAtMs,
       );
       if (requestEpoch !== this.epoch || !this.enabled || prior === null) return false;
-      const calibration = calibrateMonocularDepthPrior(prior, staged.anchors);
+      const detailed = calibrateMonocularDepthPriorDetailed(prior, staged.anchors);
+      this.lastCalibrationDiagnostics = detailed.diagnostics;
+      const calibration = detailed.calibration;
       if (requestEpoch !== this.epoch || !this.enabled) return false;
       if (
         calibration === null ||
         calibration.inliers < MIN_CALIBRATION_INLIERS ||
         calibration.confidence < MIN_CALIBRATION_CONFIDENCE
       ) {
-        this.lastError = 'Monocular prior did not pass physical-anchor calibration.';
+        const selected = detailed.diagnostics.selectedModel ?? 'none';
+        this.lastError = `Monocular prior did not pass physical-anchor calibration (model=${selected}).`;
         return false;
       }
       this.calibrated = { frame: prior, calibration, captureGuidance: staged.guidance };
