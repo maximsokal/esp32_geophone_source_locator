@@ -67,8 +67,6 @@ function guidanceAsRgba(frame: RgbDepthGuidanceFrame): Uint8Array {
   if (frame.rgba !== undefined && frame.rgba.length >= expected) {
     return frame.rgba.length === expected ? frame.rgba.slice() : frame.rgba.slice(0, expected);
   }
-  // Synthetic/tests/older callers may only carry luma. Grayscale fallback keeps
-  // them compatible, while production Raw Camera Access preserves true RGBA.
   const rgba = new Uint8Array(expected);
   for (let index = 0; index < frame.luma.length; index += 1) {
     const value = frame.luma[index];
@@ -91,8 +89,6 @@ export function collectPhysicalMetricAnchors(
     for (let column = 0; column < ANCHOR_COLUMNS; column += 1) {
       const u = (column + 0.5) / ANCHOR_COLUMNS;
       const visual = sampleRgbGuidance(guidance, u, v);
-      // Do not calibrate against the exact RGB/depth boundaries that are most
-      // likely to contain ARCore flying pixels.
       if (visual !== null && visual.edgeStrength >= 0.20) continue;
       const metric = depth.getDepthInMeters(u, v);
       if (!validPhysicalDepth(metric)) continue;
@@ -115,20 +111,29 @@ export class MonocularPriorRuntime {
   private staged: StagedPostScanPrior | null = null;
   private lastError: string | null = null;
   private lastCalibrationDiagnostics: MonocularDepthCalibrationDiagnostics | null = null;
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly provider: MonocularDepthProvider) {}
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    listener();
+    return () => this.listeners.delete(listener);
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
+  }
 
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
-    // Any in-flight inference belongs to the previous enable/scan epoch. The
-    // provider may still finish internally, but its result must never mutate
-    // current geometry state.
     this.epoch += 1;
     this.calibrated = null;
     this.staged = null;
     this.lastError = null;
     this.lastCalibrationDiagnostics = null;
+    this.notify();
   }
 
   get isEnabled(): boolean { return this.enabled; }
@@ -150,19 +155,16 @@ export class MonocularPriorRuntime {
     this.staged = null;
     this.lastError = null;
     this.lastCalibrationDiagnostics = null;
+    this.notify();
   }
 
-  /**
-   * Cheap live-scan path: copy one pose-synchronised RGB frame plus physical
-   * ARCore anchors. No ONNX model is loaded or executed here. The latest valid
-   * keyframe replaces the previous staging packet so live WebXR never competes
-   * with a multi-second mobile WebGPU inference.
-   */
   stagePostScan(guidance: RgbDepthGuidanceFrame, depth: CpuDepthInformationLike): boolean {
     if (!this.enabled || !this.provider.isSupported()) return false;
     const anchors = collectPhysicalMetricAnchors(depth, guidance);
     if (anchors.length < MIN_CALIBRATION_INLIERS) return false;
+    const wasStaged = this.staged !== null;
     this.staged = { guidance: cloneGuidance(guidance), anchors: anchors.map((anchor) => ({ ...anchor })) };
+    if (!wasStaged) this.notify();
     return true;
   }
 
@@ -171,11 +173,9 @@ export class MonocularPriorRuntime {
     const staged = this.staged;
     if (!this.enabled || staged === null || this.providerBusy || !this.provider.isSupported()) return false;
     const requestEpoch = this.epoch;
-    // Consume before awaiting the multi-second provider call. This guarantees
-    // one-shot semantics even if the result viewport is remounted while the
-    // previous inference is in flight or immediately after it finishes.
     this.staged = null;
     this.providerBusy = true;
+    this.notify();
     try {
       const prior = await this.provider.estimateRgba(
         guidanceAsRgba(staged.guidance),
@@ -207,13 +207,10 @@ export class MonocularPriorRuntime {
       return false;
     } finally {
       this.providerBusy = false;
+      this.notify();
     }
   }
 
-  /**
-   * Backward-compatible explicit helper used by isolated tests/tools. Production
-   * live XR uses stagePostScan() and calls runStagedPostScan() only after Finish.
-   */
   async maybeUpdate(
     guidance: RgbDepthGuidanceFrame,
     depth: CpuDepthInformationLike,
@@ -261,8 +258,6 @@ export class MonocularPriorRuntime {
     }
 
     const disagreementMeters = Math.abs(priorMeters - physicalMeters);
-    // A calibrated monocular model is only a gross-outlier veto. Normal ARCore
-    // noise and legitimate fine geometry remain controlled by physical depth.
     const vetoThreshold = Math.max(0.32, physicalMeters * 0.30);
     return {
       available: true,
@@ -274,11 +269,6 @@ export class MonocularPriorRuntime {
     };
   }
 
-  /**
-   * Post-scan TSDF-only check. The metric depth remains the measured 3D point's
-   * view depth; ONNX can only reject a grossly inconsistent surfel visible from
-   * the staged RGB pose. Points outside that view are untouched.
-   */
   postScanSurfaceAgreement(position: ProjectPoint): MonocularSurfaceAgreement {
     const calibrated = this.calibrated;
     const guidance = calibrated?.captureGuidance;
@@ -307,8 +297,6 @@ export class MonocularPriorRuntime {
         calibrationConfidence: calibrated.calibration.confidence,
       };
     }
-    // Pass capture time and capture pose so the live-age/pose safeguards remain
-    // satisfied without weakening them for normal runtime calls.
     return this.surfaceAgreement(
       projected.u,
       projected.v,
@@ -322,6 +310,7 @@ export class MonocularPriorRuntime {
     this.epoch += 1;
     this.provider.dispose();
     this.reset();
+    this.listeners.clear();
   }
 }
 
