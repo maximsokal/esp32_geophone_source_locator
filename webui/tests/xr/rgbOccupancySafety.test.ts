@@ -5,6 +5,7 @@ import {
   type CpuDepthInformationLike,
   type DepthSampleView,
   type MonocularSurfacePrior,
+  type ProjectPoint,
 } from '../../src/xr/depthPointCloud';
 import type { RgbDepthGuidanceFrame } from '../../src/xr/rgbDepthGuidance';
 import {
@@ -48,21 +49,23 @@ function guidance(
   };
 }
 
-class RejectEverySurfacePrior implements MonocularSurfacePrior {
+class RejectPostScanSurfacePrior implements MonocularSurfacePrior {
   readonly isEnabled = true;
-  updateCalls = 0;
+  stageCalls = 0;
   agreementCalls = 0;
+  private staged = false;
 
-  reset(): void {}
+  reset(): void { this.staged = false; }
 
-  async maybeUpdate(): Promise<boolean> {
-    this.updateCalls += 1;
-    return false;
+  stagePostScan(): boolean {
+    this.stageCalls += 1;
+    this.staged = true;
+    return true;
   }
 
-  surfaceAgreement(): { accepted: boolean } {
+  postScanSurfaceAgreement(_position: ProjectPoint): { available: boolean; accepted: boolean } {
     this.agreementCalls += 1;
-    return { accepted: false };
+    return { available: this.staged, accepted: false };
   }
 }
 
@@ -104,8 +107,8 @@ describe('RGB / AI surface guidance versus occupancy safety boundary', () => {
     expect(snapshot.occupiedSurfacePositions.length).toBeGreaterThan(0);
   });
 
-  it('can reject every AI surface sample while raw ARCore depth still certifies FREE and OCCUPIED voxels', () => {
-    const prior = new RejectEverySurfacePrior();
+  it('stages optional AI during live XR without letting the model touch live physical surface fusion or occupancy', () => {
+    const prior = new RejectPostScanSurfacePrior();
     const accumulator = new DepthPointCloudAccumulator(undefined, undefined, undefined, prior);
     const depth = physicalPlane(1.5);
     setLatestRgbGuidance(guidance(freshForWholeTest(), false));
@@ -113,35 +116,30 @@ describe('RGB / AI surface guidance versus occupancy safety boundary', () => {
     integrateRepeatedPhysicalPlane(accumulator, depth);
 
     const snapshot = accumulator.snapshot(4, 4);
-    expect(prior.updateCalls).toBeGreaterThan(0);
-    expect(prior.agreementCalls).toBeGreaterThan(0);
-    expect(snapshot.pointCount).toBe(0);
-    expect(snapshot.rawPointCount).toBe(0);
+    expect(prior.stageCalls).toBeGreaterThan(0);
+    expect(snapshot.rawPointCount).toBeGreaterThan(0);
+    expect(snapshot.pointCount).toBeGreaterThan(0);
 
-    // Diploma safety invariant: model output has no path into the occupancy
-    // integrator. Only repeated physical ARCore rays establish FREE/OCCUPIED.
+    // Diploma safety invariant: model output has no path into the live fusion or
+    // occupancy integrator. Only repeated physical ARCore rays establish FREE.
     expect(snapshot.knownFreeVoxelCount).toBeGreaterThan(0);
     expect(snapshot.occupiedSurfaceVoxelCount).toBeGreaterThan(0);
     expect(snapshot.freeAirPositions.length).toBeGreaterThan(0);
     expect(snapshot.occupiedSurfacePositions.length).toBeGreaterThan(0);
   });
 
-  it('ignores a time-fresh RGB/AI frame after the camera has moved beyond the capture-pose gate', () => {
-    const prior = new RejectEverySurfacePrior();
+  it('does not even stage AI from a time-fresh RGB frame after the camera moved beyond the capture-pose gate', () => {
+    const prior = new RejectPostScanSurfacePrior();
     const accumulator = new DepthPointCloudAccumulator(undefined, undefined, undefined, prior);
     const depth = physicalPlane(1.5);
     const oldPose = new Float32Array(identity);
     oldPose[12] = 0.20;
-    // This frame would veto every surface sample if it were used, but its pose
-    // is 20 cm away from the current depth view. Time freshness alone is not
-    // sufficient to let RGB or the ONNX prior touch surface fusion.
     setLatestRgbGuidance(guidance(freshForWholeTest(), true, oldPose));
 
     integrateRepeatedPhysicalPlane(accumulator, depth);
 
     const snapshot = accumulator.snapshot(4, 4);
-    expect(prior.updateCalls).toBe(0);
-    expect(prior.agreementCalls).toBe(0);
+    expect(prior.stageCalls).toBe(0);
     expect(snapshot.rawPointCount).toBeGreaterThan(0);
     expect(snapshot.knownFreeVoxelCount).toBeGreaterThan(0);
     expect(snapshot.occupiedSurfaceVoxelCount).toBeGreaterThan(0);
