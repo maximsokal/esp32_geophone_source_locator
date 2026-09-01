@@ -1,5 +1,6 @@
 import {
   buildSparseTsdfMesh,
+  type Point3,
   type SparseTsdfInput,
   type SparseTsdfMesh,
 } from './sparseTsdf';
@@ -11,7 +12,10 @@ export interface DirectionalTsdfMesh extends SparseTsdfMesh {
 
 type Channel = 0 | 1 | 2 | 3 | 4 | 5;
 
-interface FreeIndex { size: number; keys: Set<string>; positions: Float32Array; }
+interface FreeIndex {
+  size: number;
+  buckets: Map<string, Point3[]>;
+}
 
 function key(x: number, y: number, z: number): string { return `${x}:${y}:${z}`; }
 
@@ -19,15 +23,20 @@ function buildFreeIndex(input: SparseTsdfInput): FreeIndex | null {
   const positions = input.freeSpacePositions;
   const size = input.freeSpaceVoxelSizeMeters;
   if (positions === undefined || positions.length < 3 || size === undefined || !Number.isFinite(size) || size <= 0) return null;
-  const keys = new Set<string>();
+  const buckets = new Map<string, Point3[]>();
   for (let offset = 0; offset + 2 < positions.length; offset += 3) {
-    keys.add(key(
-      Math.floor(positions[offset] / size),
-      Math.floor(positions[offset + 1] / size),
-      Math.floor(positions[offset + 2] / size),
-    ));
+    const point: Point3 = [positions[offset], positions[offset + 1], positions[offset + 2]];
+    if (!point.every(Number.isFinite)) continue;
+    const bucketKey = key(
+      Math.floor(point[0] / size),
+      Math.floor(point[1] / size),
+      Math.floor(point[2] / size),
+    );
+    const bucket = buckets.get(bucketKey) ?? [];
+    bucket.push(point);
+    buckets.set(bucketKey, bucket);
   }
-  return { size, keys, positions };
+  return buckets.size > 0 ? { size, buckets } : null;
 }
 
 function orientedNormal(
@@ -41,12 +50,18 @@ function orientedNormal(
     const gx = Math.floor(px / free.size), gy = Math.floor(py / free.size), gz = Math.floor(pz / free.size);
     let bestSquared = (free.size * 3.5) ** 2;
     let best: readonly [number, number, number] | null = null;
-    for (let offset = 0; offset + 2 < free.positions.length; offset += 3) {
-      const fx = free.positions[offset], fy = free.positions[offset + 1], fz = free.positions[offset + 2];
-      if (Math.abs(Math.floor(fx / free.size) - gx) > 3 || Math.abs(Math.floor(fy / free.size) - gy) > 3 || Math.abs(Math.floor(fz / free.size) - gz) > 3) continue;
-      const dx = fx - px, dy = fy - py, dz = fz - pz;
-      const squared = dx * dx + dy * dy + dz * dz;
-      if (squared < bestSquared) { bestSquared = squared; best = [dx, dy, dz]; }
+    for (let dx = -3; dx <= 3; dx += 1) {
+      for (let dy = -3; dy <= 3; dy += 1) {
+        for (let dz = -3; dz <= 3; dz += 1) {
+          const bucket = free.buckets.get(key(gx + dx, gy + dy, gz + dz));
+          if (bucket === undefined) continue;
+          for (const point of bucket) {
+            const fx = point[0] - px, fy = point[1] - py, fz = point[2] - pz;
+            const squared = fx * fx + fy * fy + fz * fz;
+            if (squared < bestSquared) { bestSquared = squared; best = [fx, fy, fz]; }
+          }
+        }
+      }
     }
     if (best !== null && x * best[0] + y * best[1] + z * best[2] < 0) { x = -x; y = -y; z = -z; }
   }
@@ -60,7 +75,11 @@ function channelFor(normal: readonly [number, number, number]): Channel {
   return normal[2] >= 0 ? 4 : 5;
 }
 
-function subsetInput(input: SparseTsdfInput, indices: readonly number[], normalsByIndex: Map<number, readonly [number, number, number]>): SparseTsdfInput {
+function subsetInput(
+  input: SparseTsdfInput,
+  indices: readonly number[],
+  normalsByIndex: Map<number, readonly [number, number, number]>,
+): SparseTsdfInput {
   const positions = new Float32Array(indices.length * 3);
   const normals = new Float32Array(indices.length * 3);
   const confidence = new Float32Array(indices.length);
@@ -97,7 +116,11 @@ function triangleKey(values: Float32Array, offset: number, quantization: number)
  */
 export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsdfMesh {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const count = Math.min(Math.floor(input.positions.length / 3), Math.floor(input.normals.length / 3), input.confidence.length);
+  const count = Math.min(
+    Math.floor(input.positions.length / 3),
+    Math.floor(input.normals.length / 3),
+    input.confidence.length,
+  );
   const free = buildFreeIndex(input);
   const channels: number[][] = Array.from({ length: 6 }, () => []);
   const normalsByIndex = new Map<number, readonly [number, number, number]>();
@@ -121,9 +144,12 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
   }
 
   const meshes: SparseTsdfMesh[] = [];
-  const perChannelBudget = Math.max(500, Math.floor(totalBudget / active.length));
+  const perChannelBudget = Math.max(32, Math.floor(totalBudget / active.length));
   for (const indices of active) {
-    meshes.push(buildSparseTsdfMesh({ ...subsetInput(input, indices, normalsByIndex), maxTriangles: perChannelBudget }));
+    meshes.push(buildSparseTsdfMesh({
+      ...subsetInput(input, indices, normalsByIndex),
+      maxTriangles: perChannelBudget,
+    }));
   }
 
   const combined: number[] = [];
