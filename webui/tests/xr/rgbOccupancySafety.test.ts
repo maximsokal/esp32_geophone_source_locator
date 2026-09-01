@@ -44,6 +44,7 @@ function guidance(
       ? new Int8Array(width * height).fill(127)
       : new Int8Array(width * height),
     gradientY: new Int8Array(width * height),
+    projectionMatrix: worldFromView === undefined ? undefined : projection.slice(),
     worldFromView,
     capturedAtMs: now,
   };
@@ -93,8 +94,8 @@ function integrateRepeatedPhysicalPlane(accumulator: DepthPointCloudAccumulator,
 
 function freshForWholeTest(): number {
   // Coverage/instrumented runs can make synthetic fusion much slower than the
-  // normal 450 ms RGB freshness window. A future fixture timestamp keeps the
-  // guidance intentionally fresh without weakening the production TTL.
+  // normal RGB freshness window. A future fixture timestamp keeps the guidance
+  // intentionally fresh without weakening production TTLs.
   return performance.now() + 60_000;
 }
 
@@ -153,6 +154,25 @@ describe('RGB / AI surface guidance versus occupancy safety boundary', () => {
     const snapshot = accumulator.snapshot(4, 4);
     expect(prior.stageCalls).toBe(0);
     expect(snapshot.rawPointCount).toBeGreaterThan(0);
+    expect(snapshot.knownFreeVoxelCount).toBeGreaterThan(0);
+    expect(snapshot.occupiedSurfaceVoxelCount).toBeGreaterThan(0);
+  });
+
+  it('allows a 600 ms pose-tagged RGB frame to remain available for reprojection without touching moved live depth', () => {
+    const prior = new RejectPostScanSurfacePrior();
+    const accumulator = new DepthPointCloudAccumulator(undefined, undefined, undefined, prior);
+    const depth = physicalPlane(1.5);
+    const oldPose = new Float32Array(identity);
+    oldPose[12] = 0.20;
+    setLatestRgbGuidance(guidance(performance.now() - 600, true, oldPose));
+
+    integrateRepeatedPhysicalPlane(accumulator, depth);
+
+    const snapshot = accumulator.snapshot(4, 4);
+    expect(prior.stageCalls).toBe(0);
+    expect(prior.agreementCalls).toBe(0);
+    expect(snapshot.rawPointCount).toBeGreaterThan(0);
+    expect(snapshot.pointCount).toBeGreaterThan(0);
     expect(snapshot.knownFreeVoxelCount).toBeGreaterThan(0);
     expect(snapshot.occupiedSurfaceVoxelCount).toBeGreaterThan(0);
   });
