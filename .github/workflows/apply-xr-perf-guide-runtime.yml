@@ -21,6 +21,18 @@ jobs:
         with:
           ref: agent/xr-perf-guide
           fetch-depth: 0
+      - name: Allow ordered one-at-a-time replacements for repeated state blocks
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/patch_xr_runtime_perf_guide.py')
+          s = p.read_text()
+          old = "    if count != 1:\n        raise SystemExit(f'Expected exactly one match, found {count}: {old[:120]!r}')"
+          new = "    if count < 1:\n        raise SystemExit(f'Expected at least one match, found {count}: {old[:120]!r}')"
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+          PY
       - name: Apply deterministic runtime patch
         run: python3 scripts/patch_xr_runtime_perf_guide.py
       - name: Commit patched runtime
