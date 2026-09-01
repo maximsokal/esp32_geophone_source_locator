@@ -4,6 +4,8 @@ export interface NormalizedProjection {
   u: number;
   v: number;
   clipDepth: number;
+  /** Positive metric distance along the camera forward axis. */
+  viewDepthMeters: number;
   visible: boolean;
 }
 
@@ -54,12 +56,20 @@ export function projectProjectPointToNormalized(
 
   // Project convention [X horizontal, Y horizontal, Z height] -> WebXR [X, Y-up, Z-back].
   const x=point[0]; const y=point[2]; const z=-point[1];
+  const viewZ = viewFromWorld[2]*x+viewFromWorld[6]*y+viewFromWorld[10]*z+viewFromWorld[14];
+  const viewDepthMeters = -viewZ;
   const clipX=vp[0]*x+vp[4]*y+vp[8]*z+vp[12];
   const clipY=vp[1]*x+vp[5]*y+vp[9]*z+vp[13];
   const clipZ=vp[2]*x+vp[6]*y+vp[10]*z+vp[14];
   const clipW=vp[3]*x+vp[7]*y+vp[11]*z+vp[15];
-  if (![clipX,clipY,clipZ,clipW].every(Number.isFinite) || clipW <= 1e-6) return null;
+  if (![clipX,clipY,clipZ,clipW,viewDepthMeters].every(Number.isFinite) || clipW <= 1e-6 || viewDepthMeters <= 0) return null;
   const ndcX=clipX/clipW; const ndcY=clipY/clipW; const ndcZ=clipZ/clipW;
   const u=(ndcX+1)*0.5; const v=(1-ndcY)*0.5;
-  return { u, v, clipDepth: ndcZ, visible: u>=0&&u<=1&&v>=0&&v<=1&&ndcZ>=-1&&ndcZ<=1 };
+  return {
+    u,
+    v,
+    clipDepth: ndcZ,
+    viewDepthMeters,
+    visible: u>=0&&u<=1&&v>=0&&v<=1&&ndcZ>=-1&&ndcZ<=1,
+  };
 }
