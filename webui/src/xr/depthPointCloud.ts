@@ -61,8 +61,10 @@ export interface StructuralGuideSnapshot extends StructuralSurfaceEvidenceSnapsh
 }
 
 /**
- * Narrow dependency boundary for optional model-based SURFACE validation.
- * There is deliberately no live replacement-depth API and no occupancy handle.
+ * Narrow live-scan dependency boundary for optional model staging.
+ * The accumulator may stage pose-synchronised RGB + metric anchors, but it has
+ * deliberately no model-agreement callback and no occupancy handle. Calibrated
+ * post-scan rejection lives exclusively in SparseTsdfMeshClient after Finish.
  */
 export interface MonocularSurfacePrior {
   readonly isEnabled: boolean;
@@ -71,9 +73,6 @@ export interface MonocularSurfacePrior {
     guidance: RgbDepthGuidanceFrame,
     depth: CpuDepthInformationLike,
   ): boolean;
-  postScanSurfaceAgreement?(
-    position: ProjectPoint,
-  ): { available: boolean; accepted: boolean };
 }
 
 const STRUCTURAL_MIN_CONFIDENCE = 0.58;
@@ -215,64 +214,6 @@ function guidedSurfaceDepth(
   };
 }
 
-function applyPostScanPrior(
-  surface: StructuralSurfaceEvidenceSnapshot,
-  prior: MonocularSurfacePrior,
-): StructuralSurfaceEvidenceSnapshot {
-  const agreement = prior.postScanSurfaceAgreement;
-  if (!prior.isEnabled || agreement === undefined) return surface;
-  const count = Math.min(surface.pointCount, Math.floor(surface.positions.length / 3));
-  if (count === 0) return surface;
-
-  const accepted: number[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const offset = index * 3;
-    const result = agreement.call(prior, [
-      surface.positions[offset],
-      surface.positions[offset + 1],
-      surface.positions[offset + 2],
-    ]);
-    if (!result.available || result.accepted) accepted.push(index);
-  }
-  if (accepted.length === count) return surface;
-
-  const positions = new Float32Array(accepted.length * 3);
-  const normals = new Float32Array(accepted.length * 3);
-  const confidence = new Float32Array(accepted.length);
-  const residualMeters = surface.residualMeters === undefined ? undefined : new Float32Array(accepted.length);
-  const normalConfidence = surface.normalConfidence === undefined ? undefined : new Float32Array(accepted.length);
-  const coverageConfidence = surface.coverageConfidence === undefined ? undefined : new Float32Array(accepted.length);
-  const coverageReady = surface.coverageReady === undefined ? undefined : new Uint8Array(accepted.length);
-
-  accepted.forEach((source, target) => {
-    const sourceOffset = source * 3, targetOffset = target * 3;
-    positions[targetOffset] = surface.positions[sourceOffset];
-    positions[targetOffset + 1] = surface.positions[sourceOffset + 1];
-    positions[targetOffset + 2] = surface.positions[sourceOffset + 2];
-    normals[targetOffset] = surface.normals[sourceOffset];
-    normals[targetOffset + 1] = surface.normals[sourceOffset + 1];
-    normals[targetOffset + 2] = surface.normals[sourceOffset + 2];
-    confidence[target] = surface.confidence[source];
-    if (residualMeters !== undefined && surface.residualMeters !== undefined) residualMeters[target] = surface.residualMeters[source];
-    if (normalConfidence !== undefined && surface.normalConfidence !== undefined) normalConfidence[target] = surface.normalConfidence[source];
-    if (coverageConfidence !== undefined && surface.coverageConfidence !== undefined) coverageConfidence[target] = surface.coverageConfidence[source];
-    if (coverageReady !== undefined && surface.coverageReady !== undefined) coverageReady[target] = surface.coverageReady[source];
-  });
-
-  return {
-    positions,
-    normals,
-    confidence,
-    residualMeters,
-    normalConfidence,
-    coverageConfidence,
-    coverageReady,
-    pointCount: accepted.length,
-    keyframeCount: surface.keyframeCount,
-    voxelSizeMeters: surface.voxelSizeMeters,
-  };
-}
-
 export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulator {
   private readonly occupancy = new SparseOccupancyGrid();
 
@@ -340,11 +281,10 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   override snapshot(depthFrameCount: number, sampledDepthFrames: number): ScanPointCloudSnapshot {
     const surface = super.snapshot(depthFrameCount, sampledDepthFrames);
     const occupancy = this.occupancy.snapshot(surface.bounds);
-    // Keep dense certified surfels for Directional TSDF; structural clustering
-    // is not allowed to throw away measured mesh support. A completed optional
-    // post-scan ONNX prior may only remove grossly inconsistent visible surfels.
-    const structurallyCertified = filterStructuralSurface(super.structuralGuideSnapshot());
-    const certified = applyPostScanPrior(structurallyCertified, this.monocularPrior);
+    // Keep dense physically certified surfels for Directional TSDF. Optional
+    // calibrated AI filtering happens later in SparseTsdfMeshClient, after the
+    // XR session has finished, so taking a point-cloud snapshot is model-free.
+    const certified = filterStructuralSurface(super.structuralGuideSnapshot());
     const hasTsdfCertificate =
       certified.pointCount >= TSDF_MIN_CERTIFIED_POINTS &&
       certified.residualMeters !== undefined && certified.normalConfidence !== undefined &&
