@@ -16,8 +16,9 @@ export interface XrPerformanceSnapshot {
   fusionP50Ms: number;
   fusionP95Ms: number;
   fusionMaxMs: number;
-  /** Compatibility aggregate: worst p95 across legacy/build/upload/draw coverage work. */
+  /** Compatibility aggregate: worst p95 across build/upload/draw coverage work. */
   coverageP95Ms: number;
+  /** Runtime coverage-build envelope; on legacy call sites this also includes upload. */
   coverageSnapshotP95Ms: number;
   coverageUploadP95Ms: number;
   coverageDrawP95Ms: number;
@@ -28,6 +29,11 @@ export interface XrPerformanceSnapshot {
   adaptiveCoveragePointBudget: number;
   adaptiveCoverageDrawIntervalMs: number;
   pressure: 'low' | 'medium' | 'high';
+}
+
+export interface XrRenderPolicy {
+  pointBudget: number;
+  drawIntervalMs: number;
 }
 
 const WINDOW_SIZE = 160;
@@ -69,6 +75,8 @@ class RollingSamples {
   get size(): number { return this.values.length; }
 }
 
+let activeProfiler: XrPerformanceProfiler | null = null;
+
 /**
  * Rolling profiler for the hot WebXR path. It deliberately stores only a small
  * bounded window, so diagnostics cannot become another source of scan jank.
@@ -88,10 +96,18 @@ export class XrPerformanceProfiler {
   };
   private previousFrameTime: number | null = null;
 
+  constructor() {
+    // There is one immersive XR runtime per page. Renderer instrumentation uses
+    // this bounded active sink so upload/draw timings do not require callbacks in
+    // the frame hot path.
+    activeProfiler = this;
+  }
+
   reset(): void {
     this.frameDelta.clear();
     for (const metric of Object.values(this.metrics)) metric.clear();
     this.previousFrameTime = null;
+    activeProfiler = this;
   }
 
   recordFrameTimestamp(timeMs: number): void {
@@ -109,24 +125,21 @@ export class XrPerformanceProfiler {
     const fusionP95 = this.metrics.fusion.percentile(0.95);
     const frameWorkP95 = this.metrics.frameWork.percentile(0.95);
     const frameDeltaP95 = this.frameDelta.percentile(0.95);
-    const coverageSnapshotP95 = this.metrics.coverageSnapshot.percentile(0.95);
+    const legacyCoverageP95 = this.metrics.coverage.percentile(0.95);
+    const explicitCoverageSnapshotP95 = this.metrics.coverageSnapshot.percentile(0.95);
+    const coverageSnapshotP95 = Math.max(explicitCoverageSnapshotP95, legacyCoverageP95);
     const coverageUploadP95 = this.metrics.coverageUpload.percentile(0.95);
     const coverageDrawP95 = this.metrics.coverageDraw.percentile(0.95);
-    const coverageP95 = Math.max(
-      this.metrics.coverage.percentile(0.95),
-      coverageSnapshotP95,
-      coverageUploadP95,
-      coverageDrawP95,
-    );
+    const coverageP95 = Math.max(coverageSnapshotP95, coverageUploadP95, coverageDrawP95);
 
     let pressure: XrPerformanceSnapshot['pressure'] = 'low';
     if (
       fusionP95 >= 90 || frameWorkP95 >= 32 || frameDeltaP95 >= 42 ||
-      coverageSnapshotP95 >= 32 || coverageUploadP95 >= 24 || coverageDrawP95 >= 13 || coverageP95 >= 45
+      coverageSnapshotP95 >= 45 || coverageUploadP95 >= 24 || coverageDrawP95 >= 13
     ) pressure = 'high';
     else if (
       fusionP95 >= 55 || frameWorkP95 >= 22 || frameDeltaP95 >= 28 ||
-      coverageSnapshotP95 >= 20 || coverageUploadP95 >= 13 || coverageDrawP95 >= 7 || coverageP95 >= 28
+      coverageSnapshotP95 >= 28 || coverageUploadP95 >= 13 || coverageDrawP95 >= 7
     ) pressure = 'medium';
 
     const adaptiveCoverageIntervalMs = pressure === 'high'
@@ -175,6 +188,18 @@ export class XrPerformanceProfiler {
   recommendedCoverageDrawIntervalMs(): number {
     return this.snapshot().adaptiveCoverageDrawIntervalMs;
   }
+}
+
+export function recordActiveXrPerformanceMetric(metric: XrPerfMetric, durationMs: number): void {
+  activeProfiler?.record(metric, durationMs);
+}
+
+export function activeXrRenderPolicy(): XrRenderPolicy {
+  if (activeProfiler === null) return { pointBudget: LOW_PRESSURE_POINT_BUDGET, drawIntervalMs: 0 };
+  return {
+    pointBudget: activeProfiler.recommendedCoveragePointBudget(),
+    drawIntervalMs: activeProfiler.recommendedCoverageDrawIntervalMs(),
+  };
 }
 
 export const emptyXrPerformanceSnapshot: XrPerformanceSnapshot = {
