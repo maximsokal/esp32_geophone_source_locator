@@ -12,6 +12,7 @@ import {
   type StructuralGuideInput,
   type StructuralGuideViewpoint,
 } from './structuralGuide';
+import { StructuralLifecycleTelemetry } from './structuralLifecycleTelemetry';
 
 interface AnalyzeMessage {
   type: 'analyze';
@@ -36,6 +37,7 @@ type WorkerMessage = AnalyzeMessage | ResetMessage;
 
 const tracker = new StructuralGuideTracker();
 const endpointTracker = new StructuralEdgeEndpointTracker();
+const lifecycleTelemetry = new StructuralLifecycleTelemetry();
 let currentEpoch = 0;
 let analysisSequence = 0;
 let lastThreePlaneCorners: readonly StructuralCornerCandidate[] = [];
@@ -54,6 +56,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     currentEpoch = message.epoch;
     tracker.reset();
     endpointTracker.reset();
+    lifecycleTelemetry.reset();
     analysisSequence = 0;
     lastThreePlaneCorners = [];
     lastEndpointCorners = [];
@@ -128,7 +131,10 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     corners: corners.slice(0, 8),
     computeMs: performance.now() - started,
   };
-  const diagnostics = summarizeStructuralCandidates(tracked.edges, operationalEdges, result.corners);
+  const diagnostics = {
+    ...summarizeStructuralCandidates(tracked.edges, operationalEdges, result.corners),
+    ...lifecycleTelemetry.update(tracked.edges, result.corners),
+  };
 
   self.postMessage({
     type: 'result',
