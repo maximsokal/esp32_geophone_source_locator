@@ -4,6 +4,7 @@ import {
   type DepthFusionFrameContext,
   type DepthFusionResult,
   type DepthSampleView,
+  type LiveCoverageSnapshot,
   type ScanPointCloudSnapshot as SurfaceScanPointCloudSnapshot,
   type StructuralGuidePointCloudSnapshot,
 } from './depthPointCloudV2';
@@ -11,6 +12,7 @@ import {
   SparseOccupancyGrid,
   type OccupancySnapshot,
 } from './occupancyEvidence';
+import { recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
 
 export type {
   ProjectPoint,
@@ -64,6 +66,15 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     });
 
     return result;
+  }
+
+  override liveCoverageSnapshot(): LiveCoverageSnapshot {
+    const started = performance.now();
+    try {
+      return super.liveCoverageSnapshot();
+    } finally {
+      recordActiveXrPerformanceMetric('coverageSnapshot', performance.now() - started);
+    }
   }
 
   override structuralGuideSnapshot(): StructuralGuideSnapshot {
