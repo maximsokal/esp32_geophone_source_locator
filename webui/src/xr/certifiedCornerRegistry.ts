@@ -8,32 +8,48 @@ export interface CertifiedGuideCorner {
   source: 'three-plane' | 'multi-view-edge-endpoint';
 }
 
+export interface CertifiedGuideEdge {
+  id: string;
+  start: ProjectPoint;
+  end: ProjectPoint;
+  confidence: number;
+  support: number;
+  observations: number;
+  source: 'robust-two-plane';
+}
+
 let active = false;
 let corners: CertifiedGuideCorner[] = [];
+let edges: CertifiedGuideEdge[] = [];
+
+function clonePoint(point: ProjectPoint): ProjectPoint {
+  return [point[0], point[1], point[2]];
+}
 
 function cloneCorner(corner: CertifiedGuideCorner): CertifiedGuideCorner {
-  return {
-    ...corner,
-    position: [corner.position[0], corner.position[1], corner.position[2]],
-  };
+  return { ...corner, position: clonePoint(corner.position) };
+}
+
+function cloneEdge(edge: CertifiedGuideEdge): CertifiedGuideEdge {
+  return { ...edge, start: clonePoint(edge.start), end: clonePoint(edge.end) };
 }
 
 function updateManualButtonVisibility(): void {
   if (typeof document === 'undefined') return;
-  const hasTargets = corners.length > 0;
-  document.documentElement.classList.toggle('xr-has-certified-corners', active && hasTargets);
+  const hasTargets = corners.length > 0 || edges.length > 0;
+  document.documentElement.classList.toggle('xr-has-certified-corners', active && corners.length > 0);
+  document.documentElement.classList.toggle('xr-has-certified-geometry', active && hasTargets);
   document.documentElement.dataset.xrCertifiedCorners = active ? String(corners.length) : '';
+  document.documentElement.dataset.xrCertifiedEdges = active ? String(edges.length) : '';
 
-  // The runtime panel deliberately owns its own interaction state. Keep this
-  // registry independent from React while still avoiding a misleading action:
-  // when the certified state machine has no valid corner anywhere, there is no
-  // meaningful manual corner action to show. If marking is already active we
-  // keep the button visible so the operator can always exit the mode.
+  // Manual marking is useful as soon as either a unique corner OR a robust
+  // two-plane edge exists. A user ray supplies the missing degree of freedom
+  // along an edge, so waiting for AUTO to discover an endpoint is unnecessary.
   for (const element of document.querySelectorAll<HTMLButtonElement>('.xr-manual-toggle')) {
     const pressed = element.getAttribute('aria-pressed') === 'true';
     element.hidden = active && !hasTargets && !pressed;
     if (active && !hasTargets) {
-      element.title = 'Scan until a robust corner or finite edge endpoint is certified.';
+      element.title = 'Scan until a robust edge or corner is certified.';
     } else {
       element.removeAttribute('title');
     }
@@ -60,18 +76,54 @@ export function setCertifiedGuideCorners(next: readonly CertifiedGuideCorner[]):
   updateManualButtonVisibility();
 }
 
-export function deactivateCertifiedGuideRegistry(): void {
-  active = false;
-  corners = [];
+export function setCertifiedGuideEdges(next: readonly CertifiedGuideEdge[]): void {
+  active = true;
+  const deduped: CertifiedGuideEdge[] = [];
+  for (const candidate of next) {
+    if (
+      !candidate.start.every(Number.isFinite) || !candidate.end.every(Number.isFinite) ||
+      !Number.isFinite(candidate.confidence) ||
+      Math.hypot(
+        candidate.end[0] - candidate.start[0],
+        candidate.end[1] - candidate.start[1],
+        candidate.end[2] - candidate.start[2],
+      ) < 0.035
+    ) continue;
+    const midpoint: ProjectPoint = [
+      (candidate.start[0] + candidate.end[0]) * 0.5,
+      (candidate.start[1] + candidate.end[1]) * 0.5,
+      (candidate.start[2] + candidate.end[2]) * 0.5,
+    ];
+    const existing = deduped.find((item) => {
+      const other: ProjectPoint = [
+        (item.start[0] + item.end[0]) * 0.5,
+        (item.start[1] + item.end[1]) * 0.5,
+        (item.start[2] + item.end[2]) * 0.5,
+      ];
+      return Math.hypot(midpoint[0] - other[0], midpoint[1] - other[1], midpoint[2] - other[2]) <= 0.065;
+    });
+    if (existing === undefined) deduped.push(cloneEdge(candidate));
+    else if (candidate.confidence > existing.confidence) deduped[deduped.indexOf(existing)] = cloneEdge(candidate);
+  }
+  edges = deduped.sort((a, b) => b.confidence - a.confidence).slice(0, 10);
   updateManualButtonVisibility();
 }
 
-export function isCertifiedGuideRegistryActive(): boolean {
-  return active;
+export function deactivateCertifiedGuideRegistry(): void {
+  active = false;
+  corners = [];
+  edges = [];
+  updateManualButtonVisibility();
 }
+
+export function isCertifiedGuideRegistryActive(): boolean { return active; }
 
 export function getCertifiedGuideCorners(): readonly CertifiedGuideCorner[] {
   return corners.map(cloneCorner);
+}
+
+export function getCertifiedGuideEdges(): readonly CertifiedGuideEdge[] {
+  return edges.map(cloneEdge);
 }
 
 export function findCertifiedGuideCorner(
