@@ -1,5 +1,5 @@
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
-import { detectVisualLines, type VisualEvidenceFrame, type VisualJunction, type VisualLineSegment } from './visualLineEvidence';
+import { detectVisualLinesNow, type VisualEvidenceFrame, type VisualJunction, type VisualLineSegment } from './visualLineEvidence';
 
 interface WorkerResultMessage {
   type: 'result';
@@ -68,12 +68,10 @@ export class VisualLineEvidenceClient {
     const matrices = cloneMatrices(projectionMatrix, worldFromView);
 
     if (this.worker === null) {
-      // Graceful non-Worker fallback. Promise scheduling ensures the XR frame
-      // callback has returned before the bounded CPU detector begins.
       return new Promise<VisualEvidenceFrame>((resolve, reject) => {
         setTimeout(() => {
           try {
-            const detected = detectVisualLines(frame);
+            const detected = detectVisualLinesNow(frame);
             resolve({
               keyframeId,
               capturedAtMs: frame.capturedAtMs,
