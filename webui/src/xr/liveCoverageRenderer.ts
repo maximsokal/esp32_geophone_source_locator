@@ -1,3 +1,5 @@
+import { activeXrRenderPolicy, recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
+
 export interface CoverageRenderView {
   projectionMatrix: ArrayLike<number>;
   transform: {
@@ -182,6 +184,47 @@ function inferManualTail(confidence: Float32Array, count: number): number {
   return manual;
 }
 
+/**
+ * Deterministic display-only LOD. It never mutates the fusion snapshot and
+ * always preserves operator pins at the tail of the render buffer.
+ */
+export function applyCoverageRenderBudget(snapshot: CoverageRenderSnapshot, regularPointBudget: number): CoverageRenderSnapshot {
+  const count = Math.min(snapshot.pointCount, Math.floor(snapshot.positions.length / 3), snapshot.confidence.length);
+  const inferredManual = inferManualTail(snapshot.confidence, count);
+  const manualPointCount = Math.min(Math.max(0, snapshot.manualPointCount ?? inferredManual), count);
+  const regularCount = count - manualPointCount;
+  const budget = Math.max(0, Math.floor(regularPointBudget));
+  if (regularCount <= budget) {
+    return {
+      positions: snapshot.positions.subarray(0, count * 3),
+      confidence: snapshot.confidence.subarray(0, count),
+      pointCount: count,
+      manualPointCount,
+    };
+  }
+
+  const takeRegular = budget;
+  const outputCount = takeRegular + manualPointCount;
+  const positions = new Float32Array(outputCount * 3);
+  const confidence = new Float32Array(outputCount);
+  for (let index = 0; index < takeRegular; index += 1) {
+    const source = Math.min(regularCount - 1, Math.floor(index * regularCount / Math.max(1, takeRegular)));
+    positions[index * 3] = snapshot.positions[source * 3];
+    positions[index * 3 + 1] = snapshot.positions[source * 3 + 1];
+    positions[index * 3 + 2] = snapshot.positions[source * 3 + 2];
+    confidence[index] = snapshot.confidence[source];
+  }
+  for (let manual = 0; manual < manualPointCount; manual += 1) {
+    const source = regularCount + manual;
+    const target = takeRegular + manual;
+    positions[target * 3] = snapshot.positions[source * 3];
+    positions[target * 3 + 1] = snapshot.positions[source * 3 + 1];
+    positions[target * 3 + 2] = snapshot.positions[source * 3 + 2];
+    confidence[target] = snapshot.confidence[source];
+  }
+  return { positions, confidence, pointCount: outputCount, manualPointCount };
+}
+
 /** Lightweight point renderer used only during immersive AR. */
 export class LiveCoveragePointRenderer {
   private readonly program: WebGLProgram;
@@ -194,6 +237,7 @@ export class LiveCoveragePointRenderer {
   private readonly viewProjection = new Float32Array(16);
   private pointCount = 0;
   private manualPointCount = 0;
+  private lastDrawMs = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly gl: GlContext) {
     this.program = createProgram(gl);
@@ -218,25 +262,33 @@ export class LiveCoveragePointRenderer {
   }
 
   update(snapshot: CoverageRenderSnapshot): void {
-    const count = Math.min(snapshot.pointCount, Math.floor(snapshot.positions.length / 3), snapshot.confidence.length);
-    this.pointCount = Math.max(0, count);
-    const inferred = inferManualTail(snapshot.confidence, this.pointCount);
-    this.manualPointCount = Math.min(Math.max(0, snapshot.manualPointCount ?? inferred), this.pointCount);
+    const started = performance.now();
+    const policy = activeXrRenderPolicy();
+    const bounded = applyCoverageRenderBudget(snapshot, policy.pointBudget);
+    this.pointCount = bounded.pointCount;
+    this.manualPointCount = bounded.manualPointCount ?? 0;
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, snapshot.positions.subarray(0, this.pointCount * 3), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, bounded.positions.subarray(0, this.pointCount * 3), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, snapshot.confidence.subarray(0, this.pointCount), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, bounded.confidence.subarray(0, this.pointCount), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    recordActiveXrPerformanceMetric('coverageUpload', performance.now() - started);
   }
 
   clear(): void {
     this.pointCount = 0;
     this.manualPointCount = 0;
+    this.lastDrawMs = Number.NEGATIVE_INFINITY;
   }
 
   render(layer: CoverageRenderLayer, views: readonly CoverageRenderView[]): void {
     if (this.pointCount <= 0) return;
+    const now = performance.now();
+    const policy = activeXrRenderPolicy();
+    if (policy.drawIntervalMs > 0 && now - this.lastDrawMs < policy.drawIntervalMs) return;
+    this.lastDrawMs = now;
+    const started = now;
     const gl = this.gl;
     const regularCount = this.pointCount - this.manualPointCount;
     gl.useProgram(this.program);
@@ -276,6 +328,7 @@ export class LiveCoveragePointRenderer {
     gl.disableVertexAttribArray(this.confidenceLocation);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     gl.useProgram(null);
+    recordActiveXrPerformanceMetric('coverageDraw', performance.now() - started);
   }
 
   dispose(): void {
@@ -284,5 +337,6 @@ export class LiveCoveragePointRenderer {
     this.gl.deleteProgram(this.program);
     this.pointCount = 0;
     this.manualPointCount = 0;
+    this.lastDrawMs = Number.NEGATIVE_INFINITY;
   }
 }
