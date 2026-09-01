@@ -118,7 +118,9 @@ export class MonocularPriorRuntime {
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     listener();
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   private notify(): void {
