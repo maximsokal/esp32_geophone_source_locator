@@ -17,7 +17,7 @@ import {
   SparseOccupancyGrid,
   type OccupancySnapshot,
 } from './occupancyEvidence';
-import { guidedDepthInMeters } from './rgbDepthGuidance';
+import { surfaceFusionDepthInMeters } from './rgbDepthGuidance';
 import { getFreshRgbGuidance } from './xrGuidanceRegistry';
 import { recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
 
@@ -186,9 +186,9 @@ function guidedSurfaceDepth(depth: CpuDepthInformationLike): CpuDepthInformation
     projectionMatrix: depth.projectionMatrix,
     transform: depth.transform,
     getDepthInMeters(u: number, v: number): number {
-      // The result is still a weighted combination of PHYSICAL depth samples.
-      // No RGB/AI value is allowed to manufacture metric occupancy evidence.
-      return guidedDepthInMeters(depth, u, v, guidance)?.depthMeters ?? depth.getDepthInMeters(u, v);
+      // Strong visual discontinuities deliberately become a no-fusion band;
+      // elsewhere this remains a combination of PHYSICAL depth measurements.
+      return surfaceFusionDepthInMeters(depth, u, v, guidance);
     },
   };
 }
@@ -210,9 +210,8 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     fallbackView: DepthSampleView,
     context: DepthFusionFrameContext,
   ): DepthFusionResult {
-    // Surface fusion may use RGB-guided interpolation, but occupancy ALWAYS sees
-    // the untouched physical XRDepthInformation object.
     const result = super.sampleDepthFrame(guidedSurfaceDepth(depth), fallbackView, context);
+    // Safety invariant: occupancy/FREE sees untouched physical XR depth only.
     this.occupancy.integrateDepthFrame(depth, fallbackView, { ...context, maxDepthMeters: this.maxDepth });
     return result;
   }
