@@ -1,3 +1,4 @@
+import VisualLineEvidenceWorker from './visualLineEvidence.worker.ts?worker&inline';
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
 import { detectVisualLinesNow, type VisualEvidenceFrame, type VisualJunction, type VisualLineSegment } from './visualLineEvidence';
 
@@ -39,7 +40,9 @@ export class VisualLineEvidenceClient {
   constructor() {
     if (typeof Worker === 'undefined') return;
     try {
-      this.worker = new Worker(new URL('./visualLineEvidence.worker.ts', import.meta.url), { type: 'module' });
+      // Inline Vite worker keeps ESP deployment to the existing one-JS/one-CSS
+      // contract. No hashed worker asset or extra HTTPS URI is required.
+      this.worker = new VisualLineEvidenceWorker();
       this.worker.addEventListener('message', this.handleWorkerMessage);
       this.worker.addEventListener('error', this.handleWorkerError);
       this.worker.postMessage({ type: 'reset', epoch: this.epoch });
