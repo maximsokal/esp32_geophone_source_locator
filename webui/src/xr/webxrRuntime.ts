@@ -482,6 +482,10 @@ export class WebXrRuntime {
     return this.manualPoints.lastId;
   }
 
+  getStructuralGuideSnapshot() {
+    return this.pointCloud.structuralGuideSnapshot();
+  }
+
   getManualControlPoints(): readonly ManualControlPoint[] {
     return this.manualPoints.snapshot();
   }

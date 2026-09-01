@@ -86,7 +86,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     lastAnalysisMs.current = now;
     lastAnalysisKeyframe.current = runtimeState.keyframeCount;
     const snapshotStarted = performance.now();
-    const snapshot = runtime.getPointCloudSnapshot();
+    const snapshot = runtime.getStructuralGuideSnapshot();
     const snapshotMs = performance.now() - snapshotStarted;
     if (snapshot.positions.length < MIN_STABLE_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) return;
 
@@ -95,7 +95,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       positions: snapshot.positions,
       normals: snapshot.normals,
       confidence: snapshot.confidence,
-      keyframeCount: snapshot.integrationKeyframes,
+      keyframeCount: snapshot.keyframeCount,
       voxelSizeMeters: snapshot.voxelSizeMeters,
     }).then((next) => {
       setResult(next);
