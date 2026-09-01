@@ -98,6 +98,12 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
     set(WEB_SERVER_WEBUI_PACKAGE_LOCK
         "${WEB_SERVER_WEBUI_PROJECT_DIR}/package-lock.json"
     )
+    set(WEB_SERVER_WEBUI_TSC_ENTRY
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/node_modules/typescript/bin/tsc"
+    )
+    set(WEB_SERVER_WEBUI_VITE_ENTRY
+        "${WEB_SERVER_WEBUI_PROJECT_DIR}/node_modules/vite/bin/vite.js"
+    )
 
     set(WEB_SERVER_WEBUI_NEEDS_NPM_CI 0)
     if(NOT EXISTS "${WEB_SERVER_WEBUI_NODE_LOCK}")
@@ -122,13 +128,23 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         endif()
     endif()
 
-    # Do not rely on npm lifecycle PATH injection here. ESP-IDF's exported
-    # Windows environment can launch npm successfully while a nested script
-    # still cannot resolve node_modules/.bin/tsc. `npm exec` resolves the local
-    # package binary itself, so configure/build is deterministic across shells.
+    if(NOT EXISTS "${WEB_SERVER_WEBUI_TSC_ENTRY}")
+        message(FATAL_ERROR
+            "GeoLocator local TypeScript compiler is missing after npm ci: ${WEB_SERVER_WEBUI_TSC_ENTRY}"
+        )
+    endif()
+    if(NOT EXISTS "${WEB_SERVER_WEBUI_VITE_ENTRY}")
+        message(FATAL_ERROR
+            "GeoLocator local Vite entry is missing after npm ci: ${WEB_SERVER_WEBUI_VITE_ENTRY}"
+        )
+    endif()
+
+    # Run the package entry files with node directly. This intentionally avoids
+    # node_modules/.bin shims because some Windows/npm configurations disable
+    # bin-link creation even though the packages themselves are installed.
     message(STATUS "Type-checking current GeoLocator React WebUI for firmware embed")
     execute_process(
-        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" exec -- tsc --noEmit
+        COMMAND "${WEB_SERVER_NODE_EXECUTABLE}" "${WEB_SERVER_WEBUI_TSC_ENTRY}" --noEmit
         WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
         RESULT_VARIABLE WEB_SERVER_WEBUI_TSC_RESULT
         OUTPUT_VARIABLE WEB_SERVER_WEBUI_TSC_STDOUT
@@ -142,7 +158,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
 
     message(STATUS "Bundling current GeoLocator React WebUI for firmware embed")
     execute_process(
-        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" exec -- vite build
+        COMMAND "${WEB_SERVER_NODE_EXECUTABLE}" "${WEB_SERVER_WEBUI_VITE_ENTRY}" build
         WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
         RESULT_VARIABLE WEB_SERVER_WEBUI_VITE_RESULT
         OUTPUT_VARIABLE WEB_SERVER_WEBUI_VITE_STDOUT
