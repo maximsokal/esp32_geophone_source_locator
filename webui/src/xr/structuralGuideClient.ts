@@ -6,6 +6,10 @@ interface AnalyzeInput {
   positions: Float32Array;
   normals: Float32Array;
   confidence: Float32Array;
+  residualMeters?: Float32Array;
+  normalConfidence?: Float32Array;
+  coverageConfidence?: Float32Array;
+  coverageReady?: Uint8Array;
   keyframeCount: number;
   voxelSizeMeters: number;
   viewpoint?: StructuralGuideViewpoint | null;
@@ -52,6 +56,10 @@ export class StructuralGuideClient {
     return new Promise((resolve, reject) => {
       this.pending = { id, epoch, resolve, reject, started: performance.now() };
       const transfer: Transferable[] = [input.positions.buffer, input.normals.buffer, input.confidence.buffer];
+      if (input.residualMeters !== undefined) transfer.push(input.residualMeters.buffer);
+      if (input.normalConfidence !== undefined) transfer.push(input.normalConfidence.buffer);
+      if (input.coverageConfidence !== undefined) transfer.push(input.coverageConfidence.buffer);
+      if (input.coverageReady !== undefined) transfer.push(input.coverageReady.buffer);
       if (input.freeSpacePositions !== undefined) transfer.push(input.freeSpacePositions.buffer);
       this.worker.postMessage({
         type: 'analyze',
@@ -60,6 +68,10 @@ export class StructuralGuideClient {
         positions: input.positions,
         normals: input.normals,
         confidence: input.confidence,
+        residualMeters: input.residualMeters,
+        normalConfidence: input.normalConfidence,
+        coverageConfidence: input.coverageConfidence,
+        coverageReady: input.coverageReady,
         keyframeCount: input.keyframeCount,
         voxelSizeMeters: input.voxelSizeMeters,
         viewpoint: input.viewpoint ?? null,
