@@ -45,25 +45,22 @@ interface HoughBin {
   rho: number;
 }
 
+let deferredToWorker = false;
+
+/** Production WebXR enables this through xrGuidanceRegistry. Worker/test modules do not. */
+export function setVisualLineDetectionDeferred(value: boolean): void {
+  deferredToWorker = value;
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
-
-function clamp01(value: number): number {
-  return clamp(value, 0, 1);
-}
-
-function normalize2(x: number, y: number): NormalizedPoint2 {
-  const magnitude = Math.hypot(x, y) || 1;
-  return [x / magnitude, y / magnitude];
-}
-
+function clamp01(value: number): number { return clamp(value, 0, 1); }
 function canonicalDirection(direction: NormalizedPoint2): NormalizedPoint2 {
   return direction[0] < -1e-8 || (Math.abs(direction[0]) <= 1e-8 && direction[1] < 0)
     ? [-direction[0], -direction[1]]
     : direction;
 }
-
 function pointSegmentDistance(point: NormalizedPoint2, line: VisualLineSegment): number {
   const dx = line.end[0] - line.start[0];
   const dy = line.end[1] - line.start[1];
@@ -72,26 +69,23 @@ function pointSegmentDistance(point: NormalizedPoint2, line: VisualLineSegment):
   const t = clamp(((point[0] - line.start[0]) * dx + (point[1] - line.start[1]) * dy) / squared, 0, 1);
   return Math.hypot(point[0] - (line.start[0] + dx * t), point[1] - (line.start[1] + dy * t));
 }
-
 function lineIntersection(a: VisualLineSegment, b: VisualLineSegment): NormalizedPoint2 | null {
-  const ax = a.start[0]; const ay = a.start[1];
-  const bx = b.start[0]; const by = b.start[1];
-  const adx = a.end[0] - ax; const ady = a.end[1] - ay;
-  const bdx = b.end[0] - bx; const bdy = b.end[1] - by;
+  const ax = a.start[0], ay = a.start[1], bx = b.start[0], by = b.start[1];
+  const adx = a.end[0] - ax, ady = a.end[1] - ay;
+  const bdx = b.end[0] - bx, bdy = b.end[1] - by;
   const determinant = adx * bdy - ady * bdx;
   if (Math.abs(determinant) < 1e-6) return null;
-  const rx = bx - ax; const ry = by - ay;
+  const rx = bx - ax, ry = by - ay;
   const ta = (rx * bdy - ry * bdx) / determinant;
   return [ax + adx * ta, ay + ady * ta];
 }
 
 /**
- * Small Hough-style detector built specifically for the low-resolution RGB
- * guidance frame. It is inspired by classical line-segment detection practice
- * (gradient orientation + global consistency), but is an original implementation
- * and deliberately bounded for a phone-side Web Worker/main-thread cadence.
+ * Immediate bounded Hough-style detector. This is the implementation used by
+ * the worker and isolated tests. Production XR calls detectVisualLines(), which
+ * is switched to a no-op handoff marker so the hot frame callback stays cheap.
  */
-export function detectVisualLines(
+export function detectVisualLinesNow(
   frame: RgbDepthGuidanceFrame,
   options: DetectVisualLinesOptions = {},
 ): { lines: VisualLineSegment[]; junctions: VisualJunction[] } {
@@ -112,8 +106,6 @@ export function detectVisualLines(
       const gx = frame.gradientX[index] / 127;
       const gy = frame.gradientY[index] / 127;
       if (Math.hypot(gx, gy) < 0.15) continue;
-      // Edge normal is Sobel gradient; Hough line normal therefore uses the
-      // same angle. Canonicalize theta to [0, pi).
       let theta = Math.atan2(gy, gx);
       if (theta < 0) theta += Math.PI;
       if (theta >= Math.PI) theta -= Math.PI;
@@ -124,13 +116,7 @@ export function detectVisualLines(
       const rho = u * Math.cos(quantizedTheta) + v * Math.sin(quantizedTheta);
       const rhoIndex = clamp(Math.floor(((rho + diagonal) / (2 * diagonal)) * rhoBins), 0, rhoBins - 1);
       const key = angleIndex * rhoBins + rhoIndex;
-      const existing = bins.get(key) ?? {
-        votes: 0,
-        weightedVotes: 0,
-        pixels: [],
-        theta: quantizedTheta,
-        rho,
-      };
+      const existing = bins.get(key) ?? { votes: 0, weightedVotes: 0, pixels: [], theta: quantizedTheta, rho };
       existing.votes += 1;
       existing.weightedVotes += strength;
       if (existing.pixels.length < 512) existing.pixels.push(index);
@@ -142,11 +128,8 @@ export function detectVisualLines(
   for (const bin of bins.values()) {
     if (bin.votes < minimumVotes) continue;
     const tangent = canonicalDirection([-Math.sin(bin.theta), Math.cos(bin.theta)]);
-    let minimum = Number.POSITIVE_INFINITY;
-    let maximum = Number.NEGATIVE_INFINITY;
-    let meanU = 0;
-    let meanV = 0;
-    let weightSum = 0;
+    let minimum = Number.POSITIVE_INFINITY, maximum = Number.NEGATIVE_INFINITY;
+    let meanU = 0, meanV = 0, weightSum = 0;
     for (const pixel of bin.pixels) {
       const x = pixel % frame.width;
       const y = Math.floor(pixel / frame.width);
@@ -161,8 +144,7 @@ export function detectVisualLines(
       weightSum += weight;
     }
     if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || weightSum <= 0) continue;
-    const length = maximum - minimum;
-    if (length < minimumLength) continue;
+    if (maximum - minimum < minimumLength) continue;
     const center: NormalizedPoint2 = [meanU / weightSum, meanV / weightSum];
     const centerParameter = center[0] * tangent[0] + center[1] * tangent[1];
     const start: NormalizedPoint2 = [
@@ -174,14 +156,20 @@ export function detectVisualLines(
       clamp01(center[1] + tangent[1] * (maximum - centerParameter)),
     ];
     raw.push({
-      id: '', start, end, direction: tangent,
+      id: '',
+      start,
+      end,
+      direction: tangent,
       length: Math.hypot(end[0] - start[0], end[1] - start[1]),
       strength: clamp01(bin.weightedVotes / Math.max(1, bin.votes)),
       supportPixels: bin.votes,
     });
   }
 
-  raw.sort((a, b) => (b.strength * b.length * Math.log2(b.supportPixels + 1)) - (a.strength * a.length * Math.log2(a.supportPixels + 1)));
+  raw.sort((a, b) =>
+    (b.strength * b.length * Math.log2(b.supportPixels + 1)) -
+    (a.strength * a.length * Math.log2(a.supportPixels + 1))
+  );
   const lines: VisualLineSegment[] = [];
   for (const candidate of raw) {
     const duplicate = lines.some((line) => {
@@ -201,15 +189,13 @@ export function detectVisualLines(
   const junctions: VisualJunction[] = [];
   for (let first = 0; first < lines.length; first += 1) {
     for (let second = first + 1; second < lines.length; second += 1) {
-      const a = lines[first]; const b = lines[second];
+      const a = lines[first], b = lines[second];
       const cosine = Math.abs(a.direction[0] * b.direction[0] + a.direction[1] * b.direction[1]);
       if (cosine > Math.cos((24 * Math.PI) / 180)) continue;
       const position = lineIntersection(a, b);
       if (position === null || position[0] < -0.02 || position[0] > 1.02 || position[1] < -0.02 || position[1] > 1.02) continue;
-      const endpointAllowance = 0.035;
-      if (pointSegmentDistance(position, a) > endpointAllowance || pointSegmentDistance(position, b) > endpointAllowance) continue;
-      const duplicate = junctions.some((item) => Math.hypot(item.position[0] - position[0], item.position[1] - position[1]) < 0.025);
-      if (duplicate) continue;
+      if (pointSegmentDistance(position, a) > 0.035 || pointSegmentDistance(position, b) > 0.035) continue;
+      if (junctions.some((item) => Math.hypot(item.position[0] - position[0], item.position[1] - position[1]) < 0.025)) continue;
       junctions.push({
         position: [clamp01(position[0]), clamp01(position[1])],
         strength: clamp01(Math.min(a.strength, b.strength) * (1 - cosine * 0.25)),
@@ -218,30 +204,41 @@ export function detectVisualLines(
       });
     }
   }
-
   return { lines, junctions: junctions.sort((a, b) => b.strength - a.strength).slice(0, 20) };
+}
+
+export function detectVisualLines(
+  frame: RgbDepthGuidanceFrame,
+  options: DetectVisualLinesOptions = {},
+): { lines: VisualLineSegment[]; junctions: VisualJunction[] } {
+  if (deferredToWorker) return { lines: [], junctions: [] };
+  return detectVisualLinesNow(frame, options);
 }
 
 export class VisualLineEvidenceStore {
   private frames: VisualEvidenceFrame[] = [];
-
   constructor(private readonly maxFrames = 18) {}
-
   reset(): void { this.frames = []; }
-
   add(frame: VisualEvidenceFrame): void {
     this.frames = this.frames.filter((item) => item.keyframeId !== frame.keyframeId);
     this.frames.push({
       ...frame,
       projectionMatrix: frame.projectionMatrix.slice(),
       worldFromView: frame.worldFromView.slice(),
-      lines: frame.lines.map((line) => ({ ...line, start: [...line.start] as NormalizedPoint2, end: [...line.end] as NormalizedPoint2, direction: [...line.direction] as NormalizedPoint2 })),
-      junctions: frame.junctions.map((junction) => ({ ...junction, position: [...junction.position] as NormalizedPoint2 })),
+      lines: frame.lines.map((line) => ({
+        ...line,
+        start: [...line.start] as NormalizedPoint2,
+        end: [...line.end] as NormalizedPoint2,
+        direction: [...line.direction] as NormalizedPoint2,
+      })),
+      junctions: frame.junctions.map((junction) => ({
+        ...junction,
+        position: [...junction.position] as NormalizedPoint2,
+      })),
     });
     this.frames.sort((a, b) => a.keyframeId - b.keyframeId);
     if (this.frames.length > this.maxFrames) this.frames.splice(0, this.frames.length - this.maxFrames);
   }
-
   snapshot(): readonly VisualEvidenceFrame[] {
     return this.frames.map((frame) => ({
       ...frame,
@@ -251,6 +248,5 @@ export class VisualLineEvidenceStore {
       junctions: frame.junctions.map((junction) => ({ ...junction })),
     }));
   }
-
   get size(): number { return this.frames.length; }
 }
