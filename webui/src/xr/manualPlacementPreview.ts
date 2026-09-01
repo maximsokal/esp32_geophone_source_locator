@@ -84,15 +84,18 @@ function previewCertifiedGeometry(
     const selected = frontmostCandidate(projected, nearestScreenDistance, screenRadius);
     if (selected !== null) {
       const candidate = registered[selected.candidateIndex];
+      const message = candidate.source === 'multi-view-edge-endpoint'
+        ? 'CORNER LOCK · certified finite edge endpoint from independent views.'
+        : candidate.source === 'multi-edge-vertex'
+          ? 'CORNER LOCK · vertex where two mature finite 3D edges converge.'
+          : 'CORNER LOCK · certified robust three-plane intersection.';
       return {
         u, v, screenDistance: selected.screenDistance, seedPosition: candidate.position,
         seedViewDepthMeters: selected.viewDepthMeters,
         resolution: {
           accepted: true, position: candidate.position, mode: 'corner', confidence: candidate.confidence,
           supportCount: candidate.support, sourceDistanceMeters: 0,
-          message: candidate.source === 'multi-view-edge-endpoint'
-            ? 'CORNER LOCK · certified finite edge endpoint from independent views.'
-            : 'CORNER LOCK · certified robust three-plane intersection.',
+          message,
           uncertaintyMeters: null, conditionNumber: null,
         },
       };
