@@ -130,4 +130,23 @@ describe('post-scan monocular prior scheduling', () => {
     expect(runtime.calibrationDiagnostics).toBeNull();
     expect(runtime.calibrationConfidence).toBe(0);
   });
+
+  it('notifies UI subscribers when AI becomes armed, starts inference, and finishes calibration', async () => {
+    const runtime = new MonocularPriorRuntime(new CountingProvider());
+    let notifications = 0;
+    const unsubscribe = runtime.subscribe(() => { notifications += 1; });
+    expect(notifications).toBe(1);
+
+    runtime.setEnabled(true);
+    expect(notifications).toBe(2);
+    expect(runtime.stagePostScan(guidance(100), metricDepth())).toBe(true);
+    expect(notifications).toBe(3);
+
+    expect(await runtime.runStagedPostScan()).toBe(true);
+    expect(notifications).toBeGreaterThanOrEqual(5);
+    const beforeUnsubscribe = notifications;
+    unsubscribe();
+    runtime.reset();
+    expect(notifications).toBe(beforeUnsubscribe);
+  });
 });
