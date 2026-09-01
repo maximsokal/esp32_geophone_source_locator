@@ -84,6 +84,27 @@ describe('certified structural registry', () => {
     expect(stored.snapped).toBe(true);
   });
 
+  it('locks a registry vertex inferred from two mature finite edges without a depth texel at the vertex', () => {
+    setCertifiedGuideCorners([{
+      id: 'edge-vertex:8:4:2',
+      position: [0.48, 0.24, 0.12],
+      confidence: 0.86,
+      support: 48,
+      source: 'multi-edge-vertex',
+    }]);
+
+    const preview = previewManualPlacementFromStableSurface(
+      0.5,
+      0.5,
+      emptySnapshot,
+      () => ({ u: 0.5, v: 0.5, visible: true, viewDepthMeters: 1.2 }),
+    );
+    expect(preview.resolution.accepted).toBe(true);
+    expect(preview.resolution.mode).toBe('corner');
+    expect(preview.resolution.position).toEqual([0.48, 0.24, 0.12]);
+    expect(preview.resolution.message).toContain('two mature finite 3D edges');
+  });
+
   it('does not allow a raw point near the scene to bypass the certified target', () => {
     setCertifiedGuideCorners([{
       id: 'endpoint:1',
