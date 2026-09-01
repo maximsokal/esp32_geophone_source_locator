@@ -1,4 +1,5 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import type { StructuralCandidateDiagnostics } from './structuralCandidatePolicy';
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
 import { isCurrentStructuralGuideWorkerResult } from './structuralGuideProtocol';
@@ -23,6 +24,7 @@ interface WorkerResultMessage {
   requestId: number;
   epoch: number;
   result: StructuralGuideResult;
+  diagnostics?: StructuralCandidateDiagnostics;
 }
 
 interface PendingAnalysis {
@@ -106,17 +108,29 @@ export class StructuralGuideClient {
     const pending = this.pending!;
     this.pending = null;
     const result = { ...event.data.result, computeMs: event.data.result.computeMs || (performance.now() - pending.started) };
-    const edgeConfidences = result.edges.map((edge) => edge.confidence);
-    const cornerConfidences = result.corners.map((corner) => corner.confidence);
-    clientDiagnostics.info('XR_GUIDE_CANDIDATE_MATURITY', {
-      edges: result.edges.length,
-      edgeMinConfidence: edgeConfidences.length > 0 ? Number(Math.min(...edgeConfidences).toFixed(3)) : null,
-      edgeMaxConfidence: edgeConfidences.length > 0 ? Number(Math.max(...edgeConfidences).toFixed(3)) : null,
-      edgeMaxObservations: result.edges.reduce((maximum, edge) => Math.max(maximum, edge.observations), 0),
-      corners: result.corners.length,
-      cornerMaxConfidence: cornerConfidences.length > 0 ? Number(Math.max(...cornerConfidences).toFixed(3)) : null,
-      cornerMaxObservations: result.corners.reduce((maximum, corner) => Math.max(maximum, corner.observations), 0),
-    });
+    const diagnostics = event.data.diagnostics;
+    if (diagnostics !== undefined) {
+      clientDiagnostics.info('XR_GUIDE_CANDIDATE_MATURITY', diagnostics);
+    } else {
+      // Backward-compatible fallback for a stale worker payload during dev/HMR.
+      const edgeConfidences = result.edges.map((edge) => edge.confidence);
+      const cornerConfidences = result.corners.map((corner) => corner.confidence);
+      clientDiagnostics.info('XR_GUIDE_CANDIDATE_MATURITY', {
+        rawTrackedEdges: result.edges.length,
+        operationalEdges: result.edges.length,
+        rawEdgeMinConfidence: edgeConfidences.length > 0 ? Number(Math.min(...edgeConfidences).toFixed(3)) : null,
+        rawEdgeMaxConfidence: edgeConfidences.length > 0 ? Number(Math.max(...edgeConfidences).toFixed(3)) : null,
+        operationalEdgeMinConfidence: edgeConfidences.length > 0 ? Number(Math.min(...edgeConfidences).toFixed(3)) : null,
+        operationalEdgeMaxConfidence: edgeConfidences.length > 0 ? Number(Math.max(...edgeConfidences).toFixed(3)) : null,
+        edgeMaxObservations: result.edges.reduce((maximum, edge) => Math.max(maximum, edge.observations), 0),
+        edgeMaxGeometryConfidence: result.edges.length > 0
+          ? Number(Math.max(...result.edges.map((edge) => edge.geometryConfidence)).toFixed(3))
+          : null,
+        threePlaneCorners: result.corners.filter((corner) => !corner.id.startsWith('endpoint:')).length,
+        endpointCorners: result.corners.filter((corner) => corner.id.startsWith('endpoint:')).length,
+        cornerMaxConfidence: cornerConfidences.length > 0 ? Number(Math.max(...cornerConfidences).toFixed(3)) : null,
+      });
+    }
     pending.resolve(result);
   };
 
