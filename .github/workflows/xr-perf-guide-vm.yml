@@ -1,0 +1,131 @@
+name: XR perf and structural guide VM
+
+on:
+  push:
+    branches:
+      - agent/xr-perf-guide
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xr-perf-guide-vm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-webxr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Install locked dependencies
+        working-directory: webui
+        run: npm ci
+      - name: Run full XR regression suite
+        working-directory: webui
+        run: npm run test:xr
+      - name: Measure V8 algorithm coverage
+        working-directory: webui
+        run: npm run test:xr:coverage
+      - name: Mutation - repeated same keyframe must not mature structural suggestions
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp src/xr/structuralGuide.ts /tmp/structuralGuide.ts
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/xr/structuralGuide.ts')
+          s=p.read_text()
+          old='if(input.keyframeCount-current.lastKeyframe>=2){current.observations+=1;current.lastKeyframe=input.keyframeCount;}'
+          assert s.count(old) == 2
+          p.write_text(s.replace(old,'{current.observations+=1;current.lastKeyframe=input.keyframeCount;}'))
+          PY
+          set +e
+          npx --yes vitest@4.1.11 run tests/xr/structuralGuide.test.ts >/tmp/guide-mutation.log 2>&1
+          code=$?
+          set -e
+          cp /tmp/structuralGuide.ts src/xr/structuralGuide.ts
+          if [ "$code" -eq 0 ]; then
+            cat /tmp/guide-mutation.log
+            echo 'Mutation survived: repeated frames could mature a structural suggestion.' >&2
+            exit 1
+          fi
+          echo 'Mutation killed: temporal structural confidence requires keyframe progression.'
+      - name: Typecheck and production build
+        working-directory: webui
+        run: npm run build
+      - name: Verify production operator guidance and profiler bundle
+        working-directory: webui
+        shell: bash
+        run: |
+          set -euo pipefail
+          gzip -cd esp-dist/assets/app.js.gz >/tmp/geolocator-app.js
+          grep -F 'AUTO GUIDE' /tmp/geolocator-app.js
+          grep -F 'XR_GUIDE_ANALYSIS' /tmp/geolocator-app.js
+          grep -F 'LINE?' /tmp/geolocator-app.js
+          grep -F 'XR_MANUAL_POINT_SNAPPED' /tmp/geolocator-app.js
+          grep -F 'adaptiveCoverageIntervalMs' /tmp/geolocator-app.js
+          grep -F 'operatorEdges' /tmp/geolocator-app.js
+          cat esp-dist/build-id.txt
+
+  stress-mobile-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Install locked dependencies
+        working-directory: webui
+        run: npm ci
+      - name: Run Android mid-range Chrome stress
+        working-directory: webui
+        env:
+          XR_STRESS_CPU_THROTTLE: '4'
+          XR_STRESS_TIMEOUT_MS: '180000'
+        run: npm run stress:xr:mobile
+      - name: Profile Android mid-range Chrome hotspots
+        working-directory: webui
+        env:
+          XR_STRESS_CPU_THROTTLE: '4'
+          XR_STRESS_TIMEOUT_MS: '180000'
+          XR_STRESS_PROFILE: '1'
+        run: npm run stress:xr:mobile
+
+  validate-firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: espressif/idf:v5.5.4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build ESP32-S3 firmware with current WebUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          idf.py --version
+          idf.py build
+      - name: Prove current guide bundle is embedded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f webui/esp-dist/build-id.txt
+          BUILD_ID=$(cat webui/esp-dist/build-id.txt)
+          echo "embedded WebUI build: $BUILD_ID"
+          strings build/esp32_geophone_source_locator.bin | grep -F "$BUILD_ID"
