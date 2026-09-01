@@ -11,6 +11,8 @@ interface ReconstructMessage {
   voxelSizeMeters: number;
   freeSpacePositions?: Float32Array;
   freeSpaceVoxelSizeMeters?: number;
+  maxInputPoints?: number;
+  maxTriangles?: number;
 }
 
 interface ResetMessage { type: 'reset'; epoch: number; }
@@ -33,6 +35,8 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     voxelSizeMeters: message.voxelSizeMeters,
     freeSpacePositions: message.freeSpacePositions,
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
+    maxInputPoints: message.maxInputPoints,
+    maxTriangles: message.maxTriangles,
   };
   const result = buildSparseTsdfMesh(input);
   if (requestEpoch !== epoch) return;
