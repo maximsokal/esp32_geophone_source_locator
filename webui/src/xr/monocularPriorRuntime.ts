@@ -81,6 +81,7 @@ export function collectPhysicalMetricAnchors(
 export class MonocularPriorRuntime {
   private enabled = false;
   private busy = false;
+  private epoch = 1;
   private lastAttemptMs = Number.NEGATIVE_INFINITY;
   private calibrated: CalibratedPrior | null = null;
   private lastError: string | null = null;
@@ -88,11 +89,16 @@ export class MonocularPriorRuntime {
   constructor(private readonly provider: MonocularDepthProvider) {}
 
   setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) return;
     this.enabled = enabled;
-    if (!enabled) {
-      this.calibrated = null;
-      this.lastError = null;
-    }
+    // Any in-flight inference belongs to the previous enable/scan epoch. The
+    // provider may still finish internally, but its result must never mutate
+    // current geometry state.
+    this.epoch += 1;
+    this.busy = false;
+    this.lastAttemptMs = Number.NEGATIVE_INFINITY;
+    this.calibrated = null;
+    this.lastError = null;
   }
 
   get isEnabled(): boolean { return this.enabled; }
@@ -106,6 +112,7 @@ export class MonocularPriorRuntime {
   get calibrationConfidence(): number { return this.calibrated?.calibration.confidence ?? 0; }
 
   reset(): void {
+    this.epoch += 1;
     this.busy = false;
     this.lastAttemptMs = Number.NEGATIVE_INFINITY;
     this.calibrated = null;
@@ -122,6 +129,7 @@ export class MonocularPriorRuntime {
     const anchors = collectPhysicalMetricAnchors(depth, guidance);
     if (anchors.length < MIN_CALIBRATION_INLIERS) return false;
 
+    const requestEpoch = this.epoch;
     this.lastAttemptMs = nowMs;
     this.busy = true;
     try {
@@ -131,8 +139,9 @@ export class MonocularPriorRuntime {
         guidance.height,
         guidance.capturedAtMs,
       );
-      if (prior === null) return false;
+      if (requestEpoch !== this.epoch || !this.enabled || prior === null) return false;
       const calibration = calibrateMonocularDepthPrior(prior, anchors);
+      if (requestEpoch !== this.epoch || !this.enabled) return false;
       if (
         calibration === null ||
         calibration.inliers < MIN_CALIBRATION_INLIERS ||
@@ -145,10 +154,12 @@ export class MonocularPriorRuntime {
       this.lastError = null;
       return true;
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      if (requestEpoch === this.epoch && this.enabled) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      }
       return false;
     } finally {
-      this.busy = false;
+      if (requestEpoch === this.epoch) this.busy = false;
     }
   }
 
@@ -200,6 +211,7 @@ export class MonocularPriorRuntime {
   }
 
   dispose(): void {
+    this.epoch += 1;
     this.provider.dispose();
     this.reset();
   }
