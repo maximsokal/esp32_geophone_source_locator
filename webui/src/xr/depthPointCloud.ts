@@ -30,7 +30,21 @@ export type {
 } from './depthPointCloudV2';
 
 export interface ScanPointCloudSnapshot
-  extends SurfaceScanPointCloudSnapshot, OccupancySnapshot {}
+  extends SurfaceScanPointCloudSnapshot, OccupancySnapshot {
+  /**
+   * Final-mesh input is intentionally stricter than the display surfel cloud.
+   * These arrays contain only locally certified multi-view surfels for which
+   * residual, normal agreement and coverage readiness were all measured.
+   */
+  tsdfPositions: Float32Array;
+  tsdfNormals: Float32Array;
+  tsdfConfidence: Float32Array;
+  tsdfResidualMeters: Float32Array;
+  tsdfNormalConfidence: Float32Array;
+  tsdfCoverageConfidence: Float32Array;
+  tsdfCoverageReady: Uint8Array;
+  tsdfPointCount: number;
+}
 
 interface StructuralSurfaceEvidenceSnapshot extends StructuralGuidePointCloudSnapshot {
   /** Local point-to-plane residual estimated from compatible promoted neighbours. */
@@ -52,6 +66,7 @@ export interface StructuralGuideSnapshot extends StructuralSurfaceEvidenceSnapsh
 const STRUCTURAL_MIN_CONFIDENCE = 0.58;
 const STRUCTURAL_NORMAL_DOT = Math.cos((28 * Math.PI) / 180);
 const MAX_LOCAL_CERTIFICATE_NEIGHBOURS = 18;
+const TSDF_MIN_CERTIFIED_POINTS = 60;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -80,8 +95,8 @@ interface LocalCertificate {
 /**
  * Structural inference is deliberately stricter than the display cloud.
  * Besides removing isolated promoted points, this computes a local geometric
- * certificate that downstream plane fitting can use as actual uncertainty
- * evidence instead of treating all green surfels as equally trustworthy.
+ * certificate that downstream plane fitting and TSDF integration can use as
+ * actual uncertainty evidence instead of treating all green surfels equally.
  */
 function filterStructuralSurface(
   surface: StructuralGuidePointCloudSnapshot,
@@ -160,7 +175,6 @@ function filterStructuralSurface(
             if (normalDot < STRUCTURAL_NORMAL_DOT) continue;
             compatibleSupport += 1;
             normalAgreementSum += normalDot;
-            // Point-to-plane residual around this surfel's tangent plane.
             residualSum += Math.abs(nnx * px + nny * py + nnz * pz);
             if (compatibleSupport >= MAX_LOCAL_CERTIFICATE_NEIGHBOURS) break;
           }
@@ -186,8 +200,8 @@ function filterStructuralSurface(
   }
 
   // An early scan may not yet have enough certified cells. Keep the original
-  // surface for rendering/worker analysis, but manual placement will naturally
-  // remain SCAN MORE because no coverageReady certificate is attached yet.
+  // surface for live guide diagnostics, but omit TSDF evidence until real local
+  // certificates exist; this is preferable to rendering a noisy fake surface.
   if (accepted.length < Math.max(12, Math.floor(count * 0.22))) return surface;
 
   const positions = new Float32Array(accepted.length * 3);
@@ -228,18 +242,6 @@ function filterStructuralSurface(
   };
 }
 
-/**
- * Surface reconstruction plus a deliberately conservative occupancy layer.
- *
- * The surfel map answers "where did we repeatedly observe a boundary?".
- * The occupancy map answers the more useful rescue-device question:
- * "which volume is definitely free air, which cells are measured surface,
- * and which volume remains unknown and must stay eligible for source search?"
- *
- * Only independent evidence keyframes modify occupancy. Polish frames may
- * refine surfels, but they cannot turn a stationary camera into certainty
- * about free/occupied space.
- */
 export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulator {
   private readonly occupancy = new SparseOccupancyGrid();
 
@@ -249,10 +251,6 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     maxDepthMeters?: number,
   ) {
     super(voxelSizeMeters, memoryBudgetPoints, maxDepthMeters);
-    // IMPORTANT: preview and commit must resolve against the SAME certified
-    // snapshot. The previous implementation used super.structuralGuideSnapshot
-    // here, so a preview could be valid on the filtered map and then be moved by
-    // a second solve on the raw promoted cloud during commit.
     registerManualPlacementResolver((candidate: ProjectPoint) =>
       solveManualPlacementOnStableSurface(candidate, this.structuralGuideSnapshot())
     );
@@ -269,12 +267,10 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     context: DepthFusionFrameContext,
   ): DepthFusionResult {
     const result = super.sampleDepthFrame(depth, fallbackView, context);
-
     this.occupancy.integrateDepthFrame(depth, fallbackView, {
       ...context,
       maxDepthMeters: this.maxDepth,
     });
-
     return result;
   }
 
@@ -289,8 +285,6 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
 
   override structuralGuideSnapshot(): StructuralGuideSnapshot {
     const surface = filterStructuralSurface(super.structuralGuideSnapshot());
-    // Passing null deliberately skips UNKNOWN-volume enumeration. The guide only
-    // needs already verified FREE cells, so this stays bounded and cheap.
     const occupancy = this.occupancy.snapshot(null);
     return {
       ...surface,
@@ -305,6 +299,25 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   ): ScanPointCloudSnapshot {
     const surface = super.snapshot(depthFrameCount, sampledDepthFrames);
     const occupancy = this.occupancy.snapshot(surface.bounds);
-    return { ...surface, ...occupancy };
+    const certified = filterStructuralSurface(super.structuralGuideSnapshot());
+    const hasTsdfCertificate =
+      certified.pointCount >= TSDF_MIN_CERTIFIED_POINTS &&
+      certified.residualMeters !== undefined &&
+      certified.normalConfidence !== undefined &&
+      certified.coverageConfidence !== undefined &&
+      certified.coverageReady !== undefined;
+
+    return {
+      ...surface,
+      ...occupancy,
+      tsdfPositions: hasTsdfCertificate ? certified.positions : new Float32Array(0),
+      tsdfNormals: hasTsdfCertificate ? certified.normals : new Float32Array(0),
+      tsdfConfidence: hasTsdfCertificate ? certified.confidence : new Float32Array(0),
+      tsdfResidualMeters: hasTsdfCertificate ? certified.residualMeters! : new Float32Array(0),
+      tsdfNormalConfidence: hasTsdfCertificate ? certified.normalConfidence! : new Float32Array(0),
+      tsdfCoverageConfidence: hasTsdfCertificate ? certified.coverageConfidence! : new Float32Array(0),
+      tsdfCoverageReady: hasTsdfCertificate ? certified.coverageReady! : new Uint8Array(0),
+      tsdfPointCount: hasTsdfCertificate ? certified.pointCount : 0,
+    };
   }
 }
