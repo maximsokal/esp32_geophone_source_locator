@@ -77,6 +77,7 @@ export interface MonocularSurfacePrior {
     v: number,
     physicalMeters: number,
     nowMs: number,
+    currentGuidance: RgbDepthGuidanceFrame,
   ): { accepted: boolean };
 }
 
@@ -219,7 +220,7 @@ function guidedSurfaceDepth(
     getDepthInMeters(u: number, v: number): number {
       const physical = surfaceFusionDepthInMeters(depth, u, v, guidance);
       if (!Number.isFinite(physical) || !useMonocular) return physical;
-      const agreement = monocularPrior.surfaceAgreement(u, v, physical, nowMs);
+      const agreement = monocularPrior.surfaceAgreement(u, v, physical, nowMs, guidance);
       return agreement.accepted ? physical : Number.NaN;
     },
   };
