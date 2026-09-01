@@ -130,10 +130,10 @@ function QualityPointLayers({ bands, extent, faint = false }: { bands: QualityBa
   return <><PointLayer positions={bands.weak} color="#ff3d28" size={base * 0.86} opacity={faint ? 0.42 : 0.62} /><PointLayer positions={bands.improving} color="#facc15" size={base} opacity={faint ? 0.58 : 0.82} /><PointLayer positions={bands.stable} color="#2ee6a6" size={base * 1.12} opacity={faint ? 0.76 : 0.98} /></>;
 }
 
-function SurfaceMesh({ positions }: { positions: Float32Array }) {
+function SurfaceMesh({ positions, wireframe }: { positions: Float32Array; wireframe: boolean }) {
   const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); next.computeVertexNormals(); return next; }, [positions]);
   useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
-  return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color="#38cfd2" transparent opacity={0.34} side={THREE.DoubleSide} depthWrite={false} /></mesh><mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color="#a5f3fc" transparent opacity={0.34} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh></group>;
+  return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color="#38cfd2" transparent opacity={wireframe ? 0.30 : 0.22} side={THREE.DoubleSide} depthWrite={false} /></mesh>{wireframe && <mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color="#a5f3fc" transparent opacity={0.22} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh>}</group>;
 }
 
 function BoundsLines({ positions }: { positions: Float32Array }) {
@@ -173,9 +173,9 @@ function CameraController({ command, extent, onInteractionEnd }: { command: View
   useFrame(() => controls.update()); return null;
 }
 
-function SceneLayers({ prepared, display, meshPositions }: { prepared: PreparedScene; display: ScanDisplayOptions; meshPositions: Float32Array }) {
+function SceneLayers({ prepared, display, meshPositions, wireframe }: { prepared: PreparedScene; display: ScanDisplayOptions; meshPositions: Float32Array; wireframe: boolean }) {
   const voxelPointSize = clamp(prepared.extent*0.010,0.018,0.055);
-  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={meshPositions} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && <OperatorEdges positions={prepared.operatorEdgePositions} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
+  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={meshPositions} wireframe={wireframe} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && <OperatorEdges positions={prepared.operatorEdgePositions} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
 }
 
 export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }: ScanPointCloudViewportProps) {
@@ -192,23 +192,30 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
     tsdfClient.reset();
     setTsdfMesh(null);
     setTsdfError(null);
-    if (snapshot.pointCount < 3) return () => { cancelled = true; };
+    if (snapshot.tsdfPointCount < 60) return () => { cancelled = true; };
 
     const started = performance.now();
+    const maxTriangles = Math.max(3000, Math.min(18000, snapshot.tsdfPointCount * 14));
     void tsdfClient.reconstruct({
-      // Worker transfer must never detach the final scan snapshot still used by
-      // point/free/unknown layers in this viewport.
-      positions: snapshot.positions.slice(),
-      normals: snapshot.normals.slice(),
-      confidence: snapshot.confidence.slice(),
-      voxelSizeMeters: snapshot.voxelSizeMeters,
+      // Use ONLY locally certified geometry for the implicit surface. Display
+      // surfels remain unchanged, so the operator can still see where evidence
+      // exists even when a region is deliberately excluded from the mesh.
+      positions: snapshot.tsdfPositions.slice(),
+      normals: snapshot.tsdfNormals.slice(),
+      confidence: snapshot.tsdfCoverageConfidence.slice(),
+      // A slightly coarser field than the 4-cm association grid suppresses
+      // sub-voxel ripples that are unsupported at this depth resolution.
+      voxelSizeMeters: snapshot.voxelSizeMeters * 1.20,
       freeSpacePositions: snapshot.freeAirPositions.slice(),
       freeSpaceVoxelSizeMeters: snapshot.occupancyVoxelSizeMeters,
+      maxInputPoints: Math.min(9000, Math.max(1000, snapshot.tsdfPointCount)),
+      maxTriangles,
     }).then((result) => {
       if (cancelled) return;
       setTsdfMesh(result);
       clientDiagnostics.info('SCAN_TSDF_READY', {
         sourcePoints: result.sourcePointCount,
+        certifiedPoints: snapshot.tsdfPointCount,
         integratedPoints: result.integratedPointCount,
         nodes: result.nodeCount,
         triangles: result.triangleCount,
@@ -237,12 +244,20 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
 
   const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode);
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
+  const meshStatus = snapshot.tsdfPointCount < 60
+    ? 'TSDF SURFACE · SCAN MORE FOR CERTIFIED GEOMETRY'
+    : tsdfError !== null
+      ? 'TSDF SURFACE · UNAVAILABLE'
+      : tsdfMesh === null
+        ? 'TSDF SURFACE · BUILDING…'
+        : `TSDF SURFACE · ${tsdfMesh.triangleCount.toLocaleString()} triangles · ${snapshot.tsdfPointCount.toLocaleString()} certified surfels`;
+
   return <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume" data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
     <div className="scan-source-badge">SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()} · EDGES {snapshot.operatorEdges.length.toLocaleString()}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
     {display.dimensions && <div className="scan-dimension-overlay">X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m</div>}
-    {display.mesh && <div className="scan-mesh-overlay">{tsdfError !== null ? 'TSDF SURFACE · UNAVAILABLE' : tsdfMesh === null ? 'TSDF SURFACE · BUILDING…' : `TSDF SURFACE · ${tsdfMesh.triangleCount.toLocaleString()} triangles`}</div>}
+    {display.mesh && <div className="scan-mesh-overlay">{meshStatus}</div>}
     <div className="axis-note">1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height</div>
   </div>;
 }
