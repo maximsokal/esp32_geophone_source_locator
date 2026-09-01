@@ -96,4 +96,14 @@ async function main(){
   }
 }
 
-main().catch((error)=>{console.error(error?.stack??error);process.exitCode=1;});
+main()
+  .then(() => {
+    // Chrome/CDP can leave a Windows handle alive even after the workload and
+    // cleanup have completed. At this point main() has already finished all
+    // validation and finally-cleanup, so terminate deterministically.
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error(error?.stack ?? error);
+    process.exit(1);
+  });
