@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { detectVisualLines } from './visualLineEvidence';
+import { detectVisualLinesNow } from './visualLineEvidence';
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
 
 interface AnalyzeMessage {
@@ -14,26 +14,14 @@ interface AnalyzeMessage {
   gradientX: Int8Array;
   gradientY: Int8Array;
 }
-
-interface ResetMessage {
-  type: 'reset';
-  epoch: number;
-}
-
+interface ResetMessage { type: 'reset'; epoch: number; }
 type WorkerMessage = AnalyzeMessage | ResetMessage;
-
 let activeEpoch = 0;
 
 self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   const message = event.data;
-  if (message.type === 'reset') {
-    activeEpoch = message.epoch;
-    return;
-  }
+  if (message.type === 'reset') { activeEpoch = message.epoch; return; }
   if (message.epoch !== activeEpoch) return;
-
-  // The detector needs only Sobel evidence. Luma is deliberately not copied to
-  // the worker, reducing transfer bandwidth while keeping RGB metric-free.
   const frame: RgbDepthGuidanceFrame = {
     width: message.width,
     height: message.height,
@@ -43,15 +31,9 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     gradientY: message.gradientY,
     capturedAtMs: message.capturedAtMs,
   };
-  const detected = detectVisualLines(frame);
+  const detected = detectVisualLinesNow(frame);
   if (message.epoch !== activeEpoch) return;
-  self.postMessage({
-    type: 'result',
-    requestId: message.requestId,
-    epoch: message.epoch,
-    lines: detected.lines,
-    junctions: detected.junctions,
-  });
+  self.postMessage({ type: 'result', requestId: message.requestId, epoch: message.epoch, lines: detected.lines, junctions: detected.junctions });
 });
 
 export {};
