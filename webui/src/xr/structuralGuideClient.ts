@@ -1,5 +1,6 @@
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
+import { isCurrentStructuralGuideWorkerResult } from './structuralGuideProtocol';
 
 interface AnalyzeInput {
   positions: Float32Array;
@@ -25,14 +26,6 @@ interface PendingAnalysis {
   resolve: (value: StructuralGuideResult) => void;
   reject: (reason?: unknown) => void;
   started: number;
-}
-
-export function isCurrentStructuralGuideWorkerResult(
-  message: Pick<WorkerResultMessage, 'requestId' | 'epoch'>,
-  pending: Pick<PendingAnalysis, 'id' | 'epoch'> | null,
-  currentEpoch: number,
-): boolean {
-  return pending !== null && message.requestId === pending.id && message.epoch === pending.epoch && message.epoch === currentEpoch;
 }
 
 export class StructuralGuideClient {
