@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
-import type { ProjectPoint } from '../xr/manualControlPoints';
+import {
+  authorizeCertifiedManualPlacement,
+  type ProjectPoint,
+} from '../xr/manualControlPoints';
 import { solveManualPlacementOnStableSurface } from '../xr/manualPlacementSurface';
 import { detectEdgeEndpointObservations } from '../xr/structuralEdgeEndpoints';
 import {
@@ -266,6 +269,9 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
   const confirmCorner = (candidate: StructuralCornerCandidate): void => {
     try {
+      if (candidate.id.startsWith('endpoint:')) {
+        authorizeCertifiedManualPlacement(candidate.position, candidate.confidence);
+      }
       const stored = runtime.addSuggestedManualPoint(candidate.position);
       if (stored === null) return;
       setRejected((current) => new Set(current).add(candidate.id));
