@@ -84,6 +84,7 @@ describe('post-scan monocular prior scheduling', () => {
 
     expect(await runtime.runStagedPostScan()).toBe(true);
     expect(provider.calls).toBe(1);
+    expect(runtime.hasStagedPostScanFrame).toBe(false);
     expect(runtime.calibrationConfidence).toBeGreaterThan(0.65);
   });
 
@@ -97,5 +98,19 @@ describe('post-scan monocular prior scheduling', () => {
     }
     expect(provider.calls).toBe(0);
     expect(runtime.hasStagedPostScanFrame).toBe(true);
+  });
+
+  it('consumes a staged packet exactly once so viewport remounts cannot rerun a multi-second model', async () => {
+    const provider = new CountingProvider();
+    const runtime = new MonocularPriorRuntime(provider);
+    runtime.setEnabled(true);
+
+    expect(runtime.stagePostScan(guidance(500), metricDepth())).toBe(true);
+    expect(await runtime.runStagedPostScan()).toBe(true);
+    expect(provider.calls).toBe(1);
+    expect(runtime.hasStagedPostScanFrame).toBe(false);
+
+    expect(await runtime.runStagedPostScan()).toBe(false);
+    expect(provider.calls).toBe(1);
   });
 });
