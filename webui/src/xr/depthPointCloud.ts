@@ -13,11 +13,15 @@ import {
   registerManualPlacementResolver,
   solveManualPlacementOnStableSurface,
 } from './manualPlacementSurface';
+import { optionalMonocularPrior } from './monocularPriorRuntime';
 import {
   SparseOccupancyGrid,
   type OccupancySnapshot,
 } from './occupancyEvidence';
-import { surfaceFusionDepthInMeters } from './rgbDepthGuidance';
+import {
+  surfaceFusionDepthInMeters,
+  type RgbDepthGuidanceFrame,
+} from './rgbDepthGuidance';
 import { clusterStructuralSurfaceFamilies } from './structuralSurfaceClustering';
 import { getFreshRgbGuidance } from './xrGuidanceRegistry';
 import { recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
@@ -178,16 +182,23 @@ function filterStructuralSurface(surface: StructuralGuidePointCloudSnapshot): St
   };
 }
 
-function guidedSurfaceDepth(depth: CpuDepthInformationLike): CpuDepthInformationLike {
-  const guidance = getFreshRgbGuidance(typeof performance !== 'undefined' ? performance.now() : Date.now());
+function guidedSurfaceDepth(
+  depth: CpuDepthInformationLike,
+  guidance: RgbDepthGuidanceFrame | null,
+  nowMs: number,
+): CpuDepthInformationLike {
   if (guidance === null) return depth;
+  const useMonocular = optionalMonocularPrior.isEnabled;
   return {
     width: depth.width,
     height: depth.height,
     projectionMatrix: depth.projectionMatrix,
     transform: depth.transform,
     getDepthInMeters(u: number, v: number): number {
-      return surfaceFusionDepthInMeters(depth, u, v, guidance);
+      const physical = surfaceFusionDepthInMeters(depth, u, v, guidance);
+      if (!Number.isFinite(physical) || !useMonocular) return physical;
+      const agreement = optionalMonocularPrior.surfaceAgreement(u, v, physical, nowMs);
+      return agreement.accepted ? physical : Number.NaN;
     },
   };
 }
@@ -202,15 +213,25 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     );
   }
 
-  override reset(): void { super.reset(); this.occupancy.reset(); }
+  override reset(): void {
+    super.reset();
+    this.occupancy.reset();
+    optionalMonocularPrior.reset();
+  }
 
   override sampleDepthFrame(
     depth: CpuDepthInformationLike,
     fallbackView: DepthSampleView,
     context: DepthFusionFrameContext,
   ): DepthFusionResult {
-    const result = super.sampleDepthFrame(guidedSurfaceDepth(depth), fallbackView, context);
-    // Safety invariant: occupancy/FREE sees untouched physical XR depth only.
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const guidance = getFreshRgbGuidance(nowMs);
+    if (context.evidenceKeyframe && guidance !== null && optionalMonocularPrior.isEnabled) {
+      void optionalMonocularPrior.maybeUpdate(guidance, depth, nowMs);
+    }
+    const result = super.sampleDepthFrame(guidedSurfaceDepth(depth, guidance, nowMs), fallbackView, context);
+    // Safety invariant: RGB and AI can veto SURFACE evidence, but occupancy/FREE
+    // always sees untouched physical XR depth.
     this.occupancy.integrateDepthFrame(depth, fallbackView, { ...context, maxDepthMeters: this.maxDepth });
     return result;
   }
@@ -222,8 +243,6 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   }
 
   override structuralGuideSnapshot(): StructuralGuideSnapshot {
-    // Plane/corner inference gets at most three distinct normal families per
-    // fine cell, so wall/floor/side evidence cannot collapse into one diagonal.
     const clustered = clusterStructuralSurfaceFamilies(super.structuralGuideSnapshot());
     const surface = filterStructuralSurface(clustered);
     const occupancy = this.occupancy.snapshot(null);
@@ -233,8 +252,8 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   override snapshot(depthFrameCount: number, sampledDepthFrames: number): ScanPointCloudSnapshot {
     const surface = super.snapshot(depthFrameCount, sampledDepthFrames);
     const occupancy = this.occupancy.snapshot(surface.bounds);
-    // Keep dense certified surfels for Directional TSDF. Clustering is only for
-    // structural inference, not for discarding measured mesh support.
+    // Keep dense certified surfels for Directional TSDF; structural clustering
+    // is not allowed to throw away measured mesh support.
     const certified = filterStructuralSurface(super.structuralGuideSnapshot());
     const hasTsdfCertificate =
       certified.pointCount >= TSDF_MIN_CERTIFIED_POINTS &&
