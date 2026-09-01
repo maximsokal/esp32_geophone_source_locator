@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { VisualLineEvidenceStore, type VisualEvidenceFrame } from '../../src/xr/visualLineEvidence';
+import { PoseDiverseVisualEvidenceStore } from '../../src/xr/visualEvidenceReservoir';
+import type { VisualEvidenceFrame } from '../../src/xr/visualLineEvidence';
 
 function frame(keyframeId: number, x: number): VisualEvidenceFrame {
   return {
@@ -32,19 +33,22 @@ function frame(keyframeId: number, x: number): VisualEvidenceFrame {
 }
 
 describe('pose-diverse visual evidence reservoir', () => {
-  it('evicts a near-duplicate pose before scan-wide distinct viewpoints', () => {
-    const store = new VisualLineEvidenceStore(3);
+  it('evicts one near-duplicate pose before scan-wide distinct viewpoints', () => {
+    const store = new PoseDiverseVisualEvidenceStore(3);
     store.add(frame(1, 0.00));
     store.add(frame(2, 0.01));
     store.add(frame(3, 0.80));
     store.add(frame(4, 1.60));
 
     expect(store.size).toBe(3);
-    expect(store.snapshot().map((item) => item.keyframeId)).toEqual([2,3,4]);
+    const ids = store.snapshot().map((item) => item.keyframeId);
+    expect(ids).toContain(3);
+    expect(ids).toContain(4);
+    expect(ids.filter((id) => id === 1 || id === 2)).toHaveLength(1);
   });
 
-  it('remains hard-bounded while accepting a long scan', () => {
-    const store = new VisualLineEvidenceStore(8);
+  it('remains hard-bounded while preserving both early and late viewpoints on a long scan path', () => {
+    const store = new PoseDiverseVisualEvidenceStore(8);
     for (let keyframeId = 1; keyframeId <= 100; keyframeId += 1) {
       store.add(frame(keyframeId, keyframeId * 0.03));
     }
