@@ -20,6 +20,9 @@ const DEFAULT_ENDPOINT_TOLERANCE = 0.030;
 const DEFAULT_EDGE_TOLERANCE = 0.028;
 const MIN_BASELINE_METERS = 0.075;
 const ELIGIBLE_VIEW_MARGIN = 0.04;
+const COARSE_LOCAL_FACTOR = 3.2;
+const COARSE_EDGE_DIRECTION_COSINE = Math.cos((22 * Math.PI) / 180);
+const STRICT_EDGE_DIRECTION_COSINE = Math.cos((12 * Math.PI) / 180);
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 
@@ -77,9 +80,7 @@ function finishCertificate(
   const errorScore = Number.isFinite(meanError) ? clamp01(1 - meanError / toleranceNormalized) : 0;
   const measuredConfidence = clamp01(countScore * 0.46 + errorScore * 0.34 + meanStrength * 0.20);
   return {
-    // Insufficient candidate-specific RGB coverage is deliberately neutral,
-    // not a rejection. Robust 3D geometry remains authoritative until RGB has
-    // enough independent views of THIS candidate to contradict or support it.
+    // Insufficient candidate-specific RGB coverage is neutral, not rejection.
     accepted: !conclusive || observations >= minimumObservations,
     conclusive,
     observations,
@@ -101,19 +102,19 @@ export function certifyCornerByVisualReprojection(
   const acceptedFrames: VisualEvidenceFrame[] = [];
   const errors: number[] = [];
   const strengths: number[] = [];
+  const coarseTolerance = toleranceNormalized * COARSE_LOCAL_FACTOR;
   for (const frame of frames) {
     const projection = projectProjectPointToNormalized(position, frame.projectionMatrix, frame.worldFromView);
-    if (
-      projection === null || !projection.visible || !insideEligibleView(projection.u, projection.v) ||
-      frame.junctions.length === 0 || !independentFrame(eligibleFrames, frame)
-    ) continue;
-    eligibleFrames.push(frame);
+    if (projection === null || !projection.visible || !insideEligibleView(projection.u, projection.v) || frame.junctions.length === 0) continue;
     let bestError = Number.POSITIVE_INFINITY;
     let bestStrength = 0;
     for (const junction of frame.junctions) {
       const error = Math.hypot(junction.position[0] - projection.u, junction.position[1] - projection.v);
       if (error < bestError) { bestError = error; bestStrength = junction.strength; }
     }
+    // A junction elsewhere in the image is not evidence about this candidate.
+    if (bestError > coarseTolerance || !independentFrame(eligibleFrames, frame)) continue;
+    eligibleFrames.push(frame);
     if (bestError > toleranceNormalized) continue;
     acceptedFrames.push(frame);
     errors.push(bestError);
@@ -122,13 +123,6 @@ export function certifyCornerByVisualReprojection(
   return finishCertificate(eligibleFrames, acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
 }
 
-/**
- * Finite two-plane endpoints do not always form a 2D junction (a visible edge
- * can simply stop at an occlusion/boundary). Candidate-specific eligibility is
- * counted separately from successful matches: RGB is allowed to veto only when
- * this endpoint was actually visible with usable line evidence in enough
- * independent views.
- */
 export function certifyEndpointByVisualReprojection(
   position: ProjectPoint,
   frames: readonly VisualEvidenceFrame[],
@@ -139,25 +133,39 @@ export function certifyEndpointByVisualReprojection(
   const acceptedFrames: VisualEvidenceFrame[] = [];
   const errors: number[] = [];
   const strengths: number[] = [];
+  const coarseTolerance = toleranceNormalized * COARSE_LOCAL_FACTOR;
   for (const frame of frames) {
     const projection = projectProjectPointToNormalized(position, frame.projectionMatrix, frame.worldFromView);
-    if (
-      projection === null || !projection.visible || !insideEligibleView(projection.u, projection.v) ||
-      frame.lines.length === 0 || !independentFrame(eligibleFrames, frame)
-    ) continue;
-    eligibleFrames.push(frame);
+    if (projection === null || !projection.visible || !insideEligibleView(projection.u, projection.v) || frame.lines.length === 0) continue;
     let bestError = Number.POSITIVE_INFINITY;
     let bestStrength = 0;
     for (const line of frame.lines) {
       const error = lineEndpointDistance(projection.u, projection.v, line);
       if (error < bestError) { bestError = error; bestStrength = line.strength; }
     }
+    if (bestError > coarseTolerance || !independentFrame(eligibleFrames, frame)) continue;
+    eligibleFrames.push(frame);
     if (bestError > toleranceNormalized) continue;
     acceptedFrames.push(frame);
     errors.push(bestError);
     strengths.push(bestStrength);
   }
   return finishCertificate(eligibleFrames, acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
+}
+
+function projectedEdgeError(
+  a: { u: number; v: number },
+  b: { u: number; v: number },
+  line: VisualLineSegment,
+): number {
+  const midpointU = (a.u + b.u) * 0.5;
+  const midpointV = (a.v + b.v) * 0.5;
+  const midpointError = pointSegmentDistance(midpointU, midpointV, line);
+  const endpointError = Math.min(
+    (pointSegmentDistance(a.u, a.v, line) + pointSegmentDistance(b.u, b.v, line)) * 0.5,
+    midpointError * 1.5,
+  );
+  return midpointError * 0.65 + endpointError * 0.35;
 }
 
 export function certifyEdgeByVisualReprojection(
@@ -171,40 +179,41 @@ export function certifyEdgeByVisualReprojection(
   const acceptedFrames: VisualEvidenceFrame[] = [];
   const errors: number[] = [];
   const strengths: number[] = [];
+  const coarseTolerance = toleranceNormalized * COARSE_LOCAL_FACTOR;
   for (const frame of frames) {
     const a = projectProjectPointToNormalized(start, frame.projectionMatrix, frame.worldFromView);
     const b = projectProjectPointToNormalized(end, frame.projectionMatrix, frame.worldFromView);
     if (
       a === null || b === null || !a.visible || !b.visible ||
-      !insideEligibleView(a.u, a.v) || !insideEligibleView(b.u, b.v) ||
-      frame.lines.length === 0 || !independentFrame(eligibleFrames, frame)
+      !insideEligibleView(a.u, a.v) || !insideEligibleView(b.u, b.v) || frame.lines.length === 0
     ) continue;
     const projectedDx = b.u - a.u;
     const projectedDy = b.v - a.v;
     const projectedLength = Math.hypot(projectedDx, projectedDy);
     if (projectedLength < 0.025) continue;
-    eligibleFrames.push(frame);
     const dirX = projectedDx / projectedLength;
     const dirY = projectedDy / projectedLength;
-    let bestError = Number.POSITIVE_INFINITY;
-    let bestStrength = 0;
+
+    let bestCoarseError = Number.POSITIVE_INFINITY;
+    let bestStrictError = Number.POSITIVE_INFINITY;
+    let bestStrictStrength = 0;
     for (const line of frame.lines) {
       const directionDot = Math.abs(dirX * line.direction[0] + dirY * line.direction[1]);
-      if (directionDot < Math.cos((12 * Math.PI) / 180)) continue;
-      const midpointU = (a.u + b.u) * 0.5;
-      const midpointV = (a.v + b.v) * 0.5;
-      const midpointError = pointSegmentDistance(midpointU, midpointV, line);
-      const endpointError = Math.min(
-        (pointSegmentDistance(a.u, a.v, line) + pointSegmentDistance(b.u, b.v, line)) * 0.5,
-        midpointError * 1.5,
-      );
-      const error = midpointError * 0.65 + endpointError * 0.35;
-      if (error < bestError) { bestError = error; bestStrength = line.strength * directionDot; }
+      if (directionDot < COARSE_EDGE_DIRECTION_COSINE) continue;
+      const error = projectedEdgeError(a, b, line);
+      bestCoarseError = Math.min(bestCoarseError, error);
+      if (directionDot >= STRICT_EDGE_DIRECTION_COSINE && error < bestStrictError) {
+        bestStrictError = error;
+        bestStrictStrength = line.strength * directionDot;
+      }
     }
-    if (bestError > toleranceNormalized) continue;
+    // A parallel-ish line must also be spatially local to this projected edge.
+    if (bestCoarseError > coarseTolerance || !independentFrame(eligibleFrames, frame)) continue;
+    eligibleFrames.push(frame);
+    if (bestStrictError > toleranceNormalized) continue;
     acceptedFrames.push(frame);
-    errors.push(bestError);
-    strengths.push(bestStrength);
+    errors.push(bestStrictError);
+    strengths.push(bestStrictStrength);
   }
   return finishCertificate(eligibleFrames, acceptedFrames, errors, strengths, minimumObservations, toleranceNormalized);
 }
