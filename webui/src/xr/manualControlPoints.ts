@@ -1,4 +1,8 @@
 import {
+  findCertifiedGuideCorner,
+  isCertifiedGuideRegistryActive,
+} from './certifiedCornerRegistry';
+import {
   resolveManualPlacementCandidate,
   type ManualPlacementMode,
 } from './manualPlacementSurface';
@@ -131,9 +135,28 @@ function resolvePlacement(position: ProjectPoint): {
   confidence: number | null;
   surfaceLocked: boolean;
 } {
+  // During a real XR scan the structural guide owns the state machine. Manual
+  // placement must use the SAME already-certified corner/end-point set instead
+  // of running a weaker second detector from a raw cursor/depth location.
+  if (isCertifiedGuideRegistryActive()) {
+    const certified = findCertifiedGuideCorner(position);
+    if (certified === null) {
+      throw new ManualPlacementRejectedError(
+        'No certified corner at this position. Keep scanning until AUTO GUIDE certifies the geometry.',
+      );
+    }
+    return {
+      position: certified.position,
+      mode: 'corner',
+      confidence: certified.confidence,
+      surfaceLocked: true,
+    };
+  }
+
+  // Isolated geometry/unit consumers do not have a running guide registry, so
+  // retain the direct robust solver for deterministic tests and offline tools.
   const resolution = resolveManualPlacementCandidate(position);
   if (resolution === null) {
-    // Pure geometry/unit consumers can use the store without a running XR map.
     return { position, mode: null, confidence: null, surfaceLocked: false };
   }
   if (!resolution.accepted || resolution.position === null) {
@@ -217,13 +240,9 @@ export class ManualControlPointStore {
   }
 
   /**
-   * A phone tap starts from one low-resolution depth texel, but a rescue-search
-   * structural pin must never trust that texel directly. When the active XR map
-   * has installed a placement resolver, the candidate is first locked to a
-   * multi-view reconstructed edge/corner. Unsupported/flying-pixel candidates
-   * are rejected instead of creating a pin in empty space.
-   *
-   * Duplicate taps are still merged after structural locking.
+   * Raw screen/depth coordinates never become a production corner directly.
+   * During XR they must match the shared certified-corner registry; outside XR
+   * the same robust local solver remains available to tests/offline consumers.
    */
   addOrSnap(position: ProjectPoint, snapMeters = 0.065): ManualPointPlacementResult {
     const certified = consumeCertifiedPlacement(position);
@@ -242,12 +261,8 @@ export class ManualControlPointStore {
 
   /**
    * Store geometry that has already passed a stronger external certificate.
-   * This exists for multi-view two-plane endpoints: the worker requires repeated
-   * independent viewpoints + verified FREE beyond the finite edge, and the UI
-   * immediately re-certifies the same endpoint before calling this method.
-   * Running the ordinary three-plane manual resolver a third time would reject a
-   * mathematically valid two-plane endpoint simply because it is not a 3-plane
-   * corner. This method does NOT accept raw screen/depth candidates.
+   * Multi-view two-plane endpoints use this after worker maturation + immediate
+   * local re-certification. It never accepts an arbitrary raw screen candidate.
    */
   addCertifiedOrSnap(
     position: ProjectPoint,
