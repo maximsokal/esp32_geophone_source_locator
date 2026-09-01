@@ -74,7 +74,7 @@ class DeferredPriorProvider implements MonocularDepthProvider {
   readonly name = 'deferred-prior';
   status: MonocularDepthProviderStatus = 'loading';
   error: string | null = null;
-  private resolvePending: ((frame: MonocularDepthPriorFrame) => void) | null = null;
+  private resolvePending: (() => void) | null = null;
 
   isSupported(): boolean { return true; }
 
@@ -92,7 +92,7 @@ class DeferredPriorProvider implements MonocularDepthProvider {
   resolve(): void {
     const resolve = this.resolvePending;
     this.resolvePending = null;
-    resolve?.(priorFrame(64, 48, 100, this.name));
+    resolve?.();
   }
 
   dispose(): void { this.resolvePending = null; }
@@ -154,7 +154,7 @@ describe('optional monocular prior runtime', () => {
     expect(agreement.accepted).toBe(true);
   });
 
-  it('drops an inference result that completes after a scan reset', async () => {
+  it('drops an inference result that completes after a scan reset without starting a concurrent provider job', async () => {
     const provider = new DeferredPriorProvider();
     const runtime = new MonocularPriorRuntime(provider);
     runtime.setEnabled(true);
@@ -162,10 +162,12 @@ describe('optional monocular prior runtime', () => {
     expect(runtime.isBusy).toBe(true);
 
     runtime.reset();
-    expect(runtime.isBusy).toBe(false);
+    expect(runtime.isBusy).toBe(true);
+    expect(await runtime.maybeUpdate(guidance(200), metricDepth(), 200)).toBe(false);
     provider.resolve();
 
     expect(await pending).toBe(false);
+    expect(runtime.isBusy).toBe(false);
     expect(runtime.calibrationConfidence).toBe(0);
     const agreement = runtime.surfaceAgreement(0.5, 0.5, 6.5, 200);
     expect(agreement.available).toBe(false);
