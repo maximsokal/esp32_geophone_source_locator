@@ -54,6 +54,24 @@ function addPlaneZ(target: MutableCloud): void {
   }
 }
 
+function addPlaneWithCornerHole(
+  target: MutableCloud,
+  axis: 0 | 1 | 2,
+): void {
+  const offsets = [-0.085, -0.055, 0.055, 0.085];
+  for (const first of offsets) {
+    for (const second of offsets) {
+      const position: [number, number, number] = [0, 0, 0];
+      const normal: [number, number, number] = [0, 0, 0];
+      normal[axis] = 1;
+      const tangentAxes = ([0, 1, 2] as const).filter((candidate) => candidate !== axis);
+      position[tangentAxes[0]] = first;
+      position[tangentAxes[1]] = second;
+      add(target, position, normal);
+    }
+  }
+}
+
 describe('manual placement on accumulated surface geometry', () => {
   it('locks a cursor candidate to a reconstructed robust two-plane edge', () => {
     const source = cloud();
@@ -88,6 +106,26 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.uncertaintyMeters).toBeLessThan(0.032);
     expect(result.conditionNumber).toBeLessThan(35);
     expect(result.confidence).toBeLessThan(1);
+  });
+
+  it('infers a three-plane corner even when consumer depth has no sample at the physical vertex', () => {
+    const source = cloud();
+    addPlaneWithCornerHole(source, 0);
+    addPlaneWithCornerHole(source, 1);
+    addPlaneWithCornerHole(source, 2);
+
+    // The nearest measured point is about 7.8 cm from the true vertex. The
+    // corner must come from the three robust plane equations, not from a density
+    // peak or a depth texel exactly at [0,0,0].
+    const result = solveManualPlacementOnStableSurface([0.012, -0.010, 0.008], snapshot(source));
+    expect(result.accepted).toBe(true);
+    expect(result.mode).toBe('corner');
+    expect(result.position).not.toBeNull();
+    expect(result.position![0]).toBeCloseTo(0, 2);
+    expect(result.position![1]).toBeCloseTo(0, 2);
+    expect(result.position![2]).toBeCloseTo(0, 2);
+    expect(result.sourceDistanceMeters).toBeGreaterThan(0.055);
+    expect(result.uncertaintyMeters).toBeLessThan(0.032);
   });
 
   it('rejects a tap when only one robust surface has been accumulated', () => {
