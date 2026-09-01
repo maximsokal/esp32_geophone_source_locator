@@ -190,7 +190,7 @@ const DEFAULT_MEMORY_BUDGET_POINTS = 60000;
 const COVERAGE_CELL_METERS = 0.30;
 const MAX_POINTS_PER_COVERAGE_CELL = 28;
 const MIN_POINTS_PER_COVERAGE_CELL = 1;
-const MAX_SURFELS_PER_FINE_VOXEL = 2;
+export const MAX_SURFELS_PER_FINE_VOXEL = 3;
 
 // Keep roughly the old 40x22 compute budget but remove its permanent lattice.
 const BASE_DEPTH_SAMPLES_PER_FRAME = 880;
