@@ -1,3 +1,8 @@
+import {
+  resolveManualPlacementCandidate,
+  type ManualPlacementMode,
+} from './manualPlacementSurface';
+
 export type ProjectPoint = readonly [number, number, number];
 
 export interface ManualControlPoint {
@@ -11,6 +16,21 @@ export interface ManualProjectionInput {
   depthMeters: number;
   projectionMatrix: ArrayLike<number>;
   worldFromView: ArrayLike<number>;
+}
+
+export interface ManualPointPlacementResult {
+  point: ManualControlPoint;
+  created: boolean;
+  snapped: boolean;
+  placementMode: ManualPlacementMode | null;
+  placementConfidence: number | null;
+}
+
+export class ManualPlacementRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ManualPlacementRejectedError';
+  }
 }
 
 function finite(value: number): boolean {
@@ -74,6 +94,28 @@ export function projectPointToXrReference(point: ProjectPoint): ProjectPoint {
   return [point[0], point[2], -point[1]];
 }
 
+function resolvePlacement(position: ProjectPoint): {
+  position: ProjectPoint;
+  mode: ManualPlacementMode | null;
+  confidence: number | null;
+  surfaceLocked: boolean;
+} {
+  const resolution = resolveManualPlacementCandidate(position);
+  if (resolution === null) {
+    // Pure geometry/unit consumers can use the store without a running XR map.
+    return { position, mode: null, confidence: null, surfaceLocked: false };
+  }
+  if (!resolution.accepted || resolution.position === null) {
+    throw new ManualPlacementRejectedError(resolution.message);
+  }
+  return {
+    position: resolution.position,
+    mode: resolution.mode,
+    confidence: resolution.confidence,
+    surfaceLocked: true,
+  };
+}
+
 export class ManualControlPointStore {
   private readonly points = new Map<number, ManualControlPoint>();
   private readonly order: number[] = [];
@@ -95,31 +137,7 @@ export class ManualControlPointStore {
     return point;
   }
 
-  /**
-   * Manual placement is noisy on a phone. Repeated taps within snapMeters of an
-   * existing corner update that corner instead of creating a cloud of duplicate
-   * magenta pins.
-   */
-  addOrSnap(position: ProjectPoint, snapMeters = 0.065): { point: ManualControlPoint; created: boolean; snapped: boolean } {
-    let nearest: ManualControlPoint | null = null;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    for (const point of this.points.values()) {
-      const distance = pointDistance(point.position, position);
-      if (distance < nearestDistance) { nearest = point; nearestDistance = distance; }
-    }
-    if (nearest !== null && nearestDistance <= snapMeters) {
-      const blended: ProjectPoint = [
-        nearest.position[0] * 0.35 + position[0] * 0.65,
-        nearest.position[1] * 0.35 + position[1] * 0.65,
-        nearest.position[2] * 0.35 + position[2] * 0.65,
-      ];
-      const updated = this.update(nearest.id, blended) ?? nearest;
-      return { point: updated, created: false, snapped: true };
-    }
-    return { point: this.add(position), created: true, snapped: false };
-  }
-
-  update(id: number, position: ProjectPoint): ManualControlPoint | null {
+  private updateStored(id: number, position: ProjectPoint): ManualControlPoint | null {
     if (!this.points.has(id)) return null;
     const point: ManualControlPoint = {
       id,
@@ -127,6 +145,55 @@ export class ManualControlPointStore {
     };
     this.points.set(id, point);
     return point;
+  }
+
+  /**
+   * A phone tap starts from one low-resolution depth texel, but a rescue-search
+   * structural pin must never trust that texel directly. When the active XR map
+   * has installed a placement resolver, the candidate is first locked to a
+   * multi-view reconstructed edge/corner. Unsupported/flying-pixel candidates
+   * are rejected instead of creating a pin in empty space.
+   *
+   * Duplicate taps are still merged after structural locking.
+   */
+  addOrSnap(position: ProjectPoint, snapMeters = 0.065): ManualPointPlacementResult {
+    const resolved = resolvePlacement(position);
+    const lockedPosition = resolved.position;
+    let nearest: ManualControlPoint | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const point of this.points.values()) {
+      const distance = pointDistance(point.position, lockedPosition);
+      if (distance < nearestDistance) { nearest = point; nearestDistance = distance; }
+    }
+    if (nearest !== null && nearestDistance <= snapMeters) {
+      const blended: ProjectPoint = [
+        nearest.position[0] * 0.35 + lockedPosition[0] * 0.65,
+        nearest.position[1] * 0.35 + lockedPosition[1] * 0.65,
+        nearest.position[2] * 0.35 + lockedPosition[2] * 0.65,
+      ];
+      const updated = this.updateStored(nearest.id, blended) ?? nearest;
+      return {
+        point: updated,
+        created: false,
+        snapped: true,
+        placementMode: resolved.mode,
+        placementConfidence: resolved.confidence,
+      };
+    }
+    return {
+      point: this.add(lockedPosition),
+      created: true,
+      // A first tap resolved against stable geometry is a real surface snap too.
+      snapped: resolved.surfaceLocked,
+      placementMode: resolved.mode,
+      placementConfidence: resolved.confidence,
+    };
+  }
+
+  update(id: number, position: ProjectPoint): ManualControlPoint | null {
+    if (!this.points.has(id)) return null;
+    const resolved = resolvePlacement(position);
+    return this.updateStored(id, resolved.position);
   }
 
   removeLast(): ManualControlPoint | null {
