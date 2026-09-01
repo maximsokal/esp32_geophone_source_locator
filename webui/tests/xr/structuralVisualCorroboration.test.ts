@@ -48,8 +48,15 @@ describe('structural RGB corroboration policy', () => {
     const result = applyStructuralVisualCorroboration(0.70, 3, certificate({ confidence: 0.9, observations: 5 }));
     expect(result.confidence).toBeGreaterThan(0.70);
     expect(result.confidence).toBeLessThan(0.73);
-    expect(result.observations).toBe(5);
+    expect(result.observations).toBe(3);
+    expect(result.matchedVisualObservations).toBe(5);
     expect(result.visuallyConfirmed).toBe(true);
+  });
+
+  it('never lets RGB matches manufacture physical multi-view maturity', () => {
+    const result = applyStructuralVisualCorroboration(0.78, 2, certificate({ observations: 8, eligibleObservations: 8 }));
+    expect(result.observations).toBe(2);
+    expect(result.matchedVisualObservations).toBe(8);
   });
 
   it('never lowers an already strong physical confidence', () => {
