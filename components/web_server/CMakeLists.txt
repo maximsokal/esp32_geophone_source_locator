@@ -64,7 +64,8 @@ endif()
 # closed if it cannot produce a complete esp-dist.
 if(NOT CMAKE_SCRIPT_MODE_FILE)
     find_program(WEB_SERVER_NPM_EXECUTABLE NAMES npm.cmd npm)
-    if(NOT WEB_SERVER_NPM_EXECUTABLE)
+    find_program(WEB_SERVER_NODE_EXECUTABLE NAMES node.exe node)
+    if(NOT WEB_SERVER_NPM_EXECUTABLE OR NOT WEB_SERVER_NODE_EXECUTABLE)
         message(FATAL_ERROR
             "GeoLocator firmware requires Node.js/npm so the current WebUI can be built before embedding. Install Node.js 22+ and rerun idf.py reconfigure/build."
         )
@@ -108,7 +109,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
     if(WEB_SERVER_WEBUI_NEEDS_NPM_CI)
         message(STATUS "GeoLocator WebUI dependencies are missing/stale; running npm ci")
         execute_process(
-            COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" ci
+            COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" ci --no-audit --no-fund
             WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
             RESULT_VARIABLE WEB_SERVER_NPM_CI_RESULT
             OUTPUT_VARIABLE WEB_SERVER_NPM_CI_STDOUT
@@ -121,17 +122,49 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         endif()
     endif()
 
-    message(STATUS "Building current GeoLocator React WebUI for firmware embed")
+    # Do not rely on npm lifecycle PATH injection here. ESP-IDF's exported
+    # Windows environment can launch npm successfully while a nested script
+    # still cannot resolve node_modules/.bin/tsc. `npm exec` resolves the local
+    # package binary itself, so configure/build is deterministic across shells.
+    message(STATUS "Type-checking current GeoLocator React WebUI for firmware embed")
     execute_process(
-        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" run build
+        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" exec -- tsc --noEmit
         WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
-        RESULT_VARIABLE WEB_SERVER_WEBUI_BUILD_RESULT
-        OUTPUT_VARIABLE WEB_SERVER_WEBUI_BUILD_STDOUT
-        ERROR_VARIABLE WEB_SERVER_WEBUI_BUILD_STDERR
+        RESULT_VARIABLE WEB_SERVER_WEBUI_TSC_RESULT
+        OUTPUT_VARIABLE WEB_SERVER_WEBUI_TSC_STDOUT
+        ERROR_VARIABLE WEB_SERVER_WEBUI_TSC_STDERR
     )
-    if(NOT WEB_SERVER_WEBUI_BUILD_RESULT EQUAL 0)
+    if(NOT WEB_SERVER_WEBUI_TSC_RESULT EQUAL 0)
         message(FATAL_ERROR
-            "GeoLocator WebUI build failed (${WEB_SERVER_WEBUI_BUILD_RESULT})\n${WEB_SERVER_WEBUI_BUILD_STDOUT}\n${WEB_SERVER_WEBUI_BUILD_STDERR}"
+            "GeoLocator WebUI typecheck failed (${WEB_SERVER_WEBUI_TSC_RESULT})\n${WEB_SERVER_WEBUI_TSC_STDOUT}\n${WEB_SERVER_WEBUI_TSC_STDERR}"
+        )
+    endif()
+
+    message(STATUS "Bundling current GeoLocator React WebUI for firmware embed")
+    execute_process(
+        COMMAND "${WEB_SERVER_NPM_EXECUTABLE}" exec -- vite build
+        WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
+        RESULT_VARIABLE WEB_SERVER_WEBUI_VITE_RESULT
+        OUTPUT_VARIABLE WEB_SERVER_WEBUI_VITE_STDOUT
+        ERROR_VARIABLE WEB_SERVER_WEBUI_VITE_STDERR
+    )
+    if(NOT WEB_SERVER_WEBUI_VITE_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "GeoLocator WebUI Vite build failed (${WEB_SERVER_WEBUI_VITE_RESULT})\n${WEB_SERVER_WEBUI_VITE_STDOUT}\n${WEB_SERVER_WEBUI_VITE_STDERR}"
+        )
+    endif()
+
+    message(STATUS "Preparing GeoLocator ESP WebUI assets")
+    execute_process(
+        COMMAND "${WEB_SERVER_NODE_EXECUTABLE}" scripts/prepare-esp-assets.mjs
+        WORKING_DIRECTORY "${WEB_SERVER_WEBUI_PROJECT_DIR}"
+        RESULT_VARIABLE WEB_SERVER_WEBUI_PREPARE_RESULT
+        OUTPUT_VARIABLE WEB_SERVER_WEBUI_PREPARE_STDOUT
+        ERROR_VARIABLE WEB_SERVER_WEBUI_PREPARE_STDERR
+    )
+    if(NOT WEB_SERVER_WEBUI_PREPARE_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "GeoLocator WebUI ESP asset preparation failed (${WEB_SERVER_WEBUI_PREPARE_RESULT})\n${WEB_SERVER_WEBUI_PREPARE_STDOUT}\n${WEB_SERVER_WEBUI_PREPARE_STDERR}"
         )
     endif()
 
