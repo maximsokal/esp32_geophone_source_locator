@@ -69,6 +69,7 @@ export default function App() {
         stablePoints: snapshot.pointCount,
         tentativePoints: snapshot.tentativePointCount,
         manualPoints: snapshot.manualControlPoints.length,
+        operatorEdges: snapshot.operatorEdges.length,
         freeVoxels: snapshot.knownFreeVoxelCount,
         unknownVoxels: snapshot.unknownCandidateVoxelCount,
       });
@@ -128,6 +129,7 @@ export default function App() {
             <span><i className="coverage-dot coverage-mid" />improving <strong>{qualityBands.improving.toLocaleString()}</strong></span>
             <span><i className="coverage-dot coverage-high" />stable <strong>{qualityBands.stable.toLocaleString()}</strong></span>
             <span>operator pins <strong>{scanSnapshot?.manualControlPoints.length.toLocaleString() ?? '0'}</strong></span>
+            <span>edges <strong>{scanSnapshot?.operatorEdges.length.toLocaleString() ?? '0'}</strong></span>
           </div>
 
           <div className="scan-toolbar-group">
@@ -141,7 +143,7 @@ export default function App() {
             <button type="button" aria-pressed={display.mesh} onClick={() => toggleDisplay('mesh')}>Mesh</button>
             <button type="button" aria-pressed={display.freeAir} onClick={() => toggleDisplay('freeAir')}>Verified free</button>
             <button type="button" aria-pressed={display.unknownSpace} onClick={() => toggleDisplay('unknownSpace')}>Unknown candidate</button>
-            <button type="button" aria-pressed={display.manualPoints} onClick={() => toggleDisplay('manualPoints')}>Manual pins</button>
+            <button type="button" aria-pressed={display.manualPoints} onClick={() => toggleDisplay('manualPoints')}>Operator geometry</button>
             <button type="button" aria-pressed={display.dimensions} onClick={() => toggleDisplay('dimensions')}>Dimensions</button>
           </div>
         </section>
@@ -169,6 +171,7 @@ export default function App() {
                 <div><dt>Stable boundary points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
                 <div><dt>Tentative boundary points</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
                 <div><dt>Manual corner pins</dt><dd>{scanSnapshot.manualControlPoints.length.toLocaleString()}</dd></div>
+                <div><dt>Confirmed structural edges</dt><dd>{scanSnapshot.operatorEdges.length.toLocaleString()}</dd></div>
                 <div><dt>Known free air voxels</dt><dd>{scanSnapshot.knownFreeVoxelCount.toLocaleString()}</dd></div>
                 <div><dt>Observed surface voxels</dt><dd>{scanSnapshot.occupiedSurfaceVoxelCount.toLocaleString()}</dd></div>
                 <div><dt>Unknown / candidate voxels</dt><dd>{scanSnapshot.unknownCandidateVoxelCount.toLocaleString()}</dd></div>
@@ -183,7 +186,7 @@ export default function App() {
               </dl>
 
               <p className="scan-volume-note">
-                Red and yellow points are still uncertain. Green surfels are the stable measured boundary. Blue voxels are ray-verified free air. Amber voxels are still unknown and therefore remain valid seismic-source search volume.
+                Red and yellow points are still uncertain. Green surfels are the stable measured boundary. Blue voxels are ray-verified free air. Amber voxels are still unknown and therefore remain valid seismic-source search volume. Magenta pins and lines are operator-confirmed structural constraints.
               </p>
 
               <details className="xr-technical-details scan-result-details">
