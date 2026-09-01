@@ -58,6 +58,13 @@ function shifted(cloud: CloudBuilder, dx: number): CloudBuilder {
   }
   return output;
 }
+function occupancyVoxelCenter(point: ProjectPoint, size = 0.18): ProjectPoint {
+  return [
+    (Math.floor(point[0] / size) + 0.5) * size,
+    (Math.floor(point[1] / size) + 0.5) * size,
+    (Math.floor(point[2] / size) + 0.5) * size,
+  ];
+}
 
 describe('structural guide geometry', () => {
   it('does not invent edges on one flat plane', () => {
@@ -87,6 +94,10 @@ describe('structural guide geometry', () => {
 
   it('keeps spatial neighbour comparisons below all-pairs growth', () => {
     const cloud = builder(); addPlaneX(cloud); addPlaneY(cloud); addPlaneZ(cloud);
+    const distant = shifted(cloud, 1.20);
+    cloud.positions.push(...distant.positions);
+    cloud.normals.push(...distant.normals);
+    cloud.confidence.push(...distant.confidence);
     const result = detectStructuralGuideGeometry(inputFrom(cloud));
     const allPairs = result.planarPatches * (result.planarPatches - 1) / 2;
     expect(result.candidateComparisons).toBeGreaterThan(0);
@@ -98,7 +109,7 @@ describe('structural guide geometry', () => {
     const baseline = detectStructuralGuideGeometry(inputFrom(cloud));
     const corner = [...baseline.corners].sort((a, b) => Math.hypot(...a.position) - Math.hypot(...b.position))[0];
     expect(corner).toBeDefined();
-    const contradicted = detectStructuralGuideGeometry(inputFrom(cloud, 10, [0.5, 0.5, 0.5], Float32Array.from(corner.position)));
+    const contradicted = detectStructuralGuideGeometry(inputFrom(cloud, 10, [0.5, 0.5, 0.5], Float32Array.from(occupancyVoxelCenter(corner.position))));
     expect(contradicted.rejectedByFreeSpace).toBeGreaterThan(0);
     expect(contradicted.corners.some((candidate) => Math.hypot(...candidate.position) < 0.08)).toBe(false);
   });
