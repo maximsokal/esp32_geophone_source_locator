@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import {
+  deactivateCertifiedGuideRegistry,
+  setCertifiedGuideCorners,
+} from '../xr/certifiedCornerRegistry';
+import {
   authorizeCertifiedManualPlacement,
   type ProjectPoint,
 } from '../xr/manualControlPoints';
@@ -85,7 +89,6 @@ export function structuralGuideViewpointFromState(state: WebXrRuntimeState): Str
   const [x, y, z] = pose.position;
   const [qx, qy, qz, qw] = pose.orientation;
 
-  // Rotate camera-local -Z by the viewer quaternion to get the world forward axis.
   const worldForward: readonly [number, number, number] = [
     -2 * (qx * qz + qw * qy),
     -2 * (qy * qz - qw * qx),
@@ -99,6 +102,61 @@ export function structuralGuideViewpointFromState(state: WebXrRuntimeState): Str
   };
 }
 
+function certifyCandidates(
+  result: StructuralGuideResult | null,
+  snapshot: StructuralGuideSnapshot | null,
+  rejected: ReadonlySet<string>,
+  rejectedPositions: readonly ProjectPoint[],
+): readonly StructuralCornerCandidate[] {
+  if (result === null || snapshot === null) return [];
+  const endpointObservations = result.corners.some((candidate) => candidate.id.startsWith('endpoint:'))
+    ? detectEdgeEndpointObservations(snapshot)
+    : [];
+  const certified: StructuralCornerCandidate[] = [];
+
+  for (const candidate of result.corners) {
+    if (candidate.confidence < MIN_VISIBLE_CORNER_CONFIDENCE) continue;
+    if (rejected.has(candidate.id)) continue;
+    if (rejectedPositions.some((position) => pointDistance(position, candidate.position) <= REJECTED_CORNER_RADIUS_METERS)) continue;
+
+    let validatedCandidate: StructuralCornerCandidate | null = null;
+    if (candidate.id.startsWith('endpoint:')) {
+      const observation = endpointObservations
+        .filter((endpoint) => endpoint.freeBeyond)
+        .sort((left, right) => pointDistance(left.position, candidate.position) - pointDistance(right.position, candidate.position))[0];
+      if (
+        observation === undefined ||
+        pointDistance(observation.position, candidate.position) > MAX_CERTIFICATE_SHIFT_METERS ||
+        observation.confidence < 0.68
+      ) continue;
+      validatedCandidate = {
+        ...candidate,
+        position: observation.position,
+        confidence: Math.min(candidate.confidence, observation.confidence),
+        support: Math.max(candidate.support, observation.support),
+      };
+    } else {
+      const certificate = solveManualPlacementOnStableSurface(candidate.position, snapshot);
+      if (
+        !certificate.accepted ||
+        certificate.mode !== 'corner' ||
+        certificate.position === null ||
+        certificate.confidence < MIN_CERTIFIED_CORNER_CONFIDENCE ||
+        (certificate.uncertaintyMeters ?? Number.POSITIVE_INFINITY) > MAX_CERTIFIED_UNCERTAINTY_METERS ||
+        pointDistance(candidate.position, certificate.position) > MAX_CERTIFICATE_SHIFT_METERS
+      ) continue;
+      validatedCandidate = {
+        ...candidate,
+        position: certificate.position,
+        confidence: Math.min(candidate.confidence, certificate.confidence),
+        support: Math.max(candidate.support, certificate.supportCount),
+      };
+    }
+    certified.push(validatedCandidate);
+  }
+  return certified.sort((left, right) => right.confidence - left.confidence).slice(0, 8);
+}
+
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
@@ -109,11 +167,15 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   const lastAnalysisMs = useRef(Number.NEGATIVE_INFINITY);
   const lastAnalysisKeyframe = useRef(0);
 
-  useEffect(() => () => client.dispose(), [client]);
+  useEffect(() => () => {
+    client.dispose();
+    deactivateCertifiedGuideRegistry();
+  }, [client]);
 
   useEffect(() => {
     if (runtimeState.phase === 'starting') {
       client.reset();
+      deactivateCertifiedGuideRegistry();
       setResult(null);
       setValidationSnapshot(null);
       setRejected(new Set());
@@ -121,6 +183,8 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       setAcceptedEdges(new Set());
       lastAnalysisMs.current = Number.NEGATIVE_INFINITY;
       lastAnalysisKeyframe.current = 0;
+    } else if (runtimeState.phase !== 'running') {
+      deactivateCertifiedGuideRegistry();
     }
   }, [client, runtimeState.phase]);
 
@@ -162,9 +226,6 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       freeSpacePositions: snapshot.freeSpacePositions,
       freeSpaceVoxelSizeMeters: snapshot.freeSpaceVoxelSizeMeters,
     }).then((next) => {
-      // Worker buffers were transferred/detached. Re-snapshot once per analysis
-      // (not every React render) so visible candidates can be certified against
-      // current local geometry using an independent robust solve.
       const certificateSnapshot = runtime.getStructuralGuideSnapshot();
       setValidationSnapshot(certificateSnapshot);
       setResult(next);
@@ -188,59 +249,34 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     });
   }, [client, runtime, runtimeState]);
 
+  const certifiedCandidates = useMemo(
+    () => certifyCandidates(result, validationSnapshot, rejected, rejectedPositions),
+    [result, validationSnapshot, rejected, rejectedPositions],
+  );
+
+  useEffect(() => {
+    if (runtimeState.phase !== 'running') return;
+    setCertifiedGuideCorners(certifiedCandidates.map((candidate) => ({
+      id: candidate.id,
+      position: candidate.position,
+      confidence: candidate.confidence,
+      support: candidate.support,
+      source: candidate.id.startsWith('endpoint:') ? 'multi-view-edge-endpoint' : 'three-plane',
+    })));
+  }, [certifiedCandidates, runtimeState.phase]);
+
   if (runtimeState.phase !== 'running' || result === null || validationSnapshot === null) return null;
 
-  const endpointObservations = result.corners.some((candidate) => candidate.id.startsWith('endpoint:'))
-    ? detectEdgeEndpointObservations(validationSnapshot)
-    : [];
   const projectedCorners: ProjectedCorner[] = [];
-  for (const candidate of result.corners) {
-    if (candidate.confidence < MIN_VISIBLE_CORNER_CONFIDENCE) continue;
-    if (rejected.has(candidate.id)) continue;
-    if (rejectedPositions.some((position) => pointDistance(position, candidate.position) <= REJECTED_CORNER_RADIUS_METERS)) continue;
-
-    let validatedCandidate: StructuralCornerCandidate | null = null;
-    if (candidate.id.startsWith('endpoint:')) {
-      const observation = endpointObservations
-        .filter((endpoint) => endpoint.freeBeyond)
-        .sort((left, right) => pointDistance(left.position, candidate.position) - pointDistance(right.position, candidate.position))[0];
-      if (
-        observation === undefined ||
-        pointDistance(observation.position, candidate.position) > MAX_CERTIFICATE_SHIFT_METERS ||
-        observation.confidence < 0.68
-      ) continue;
-      validatedCandidate = {
-        ...candidate,
-        position: observation.position,
-        confidence: Math.min(candidate.confidence, observation.confidence),
-        support: Math.max(candidate.support, observation.support),
-      };
-    } else {
-      const certificate = solveManualPlacementOnStableSurface(candidate.position, validationSnapshot);
-      if (
-        !certificate.accepted ||
-        certificate.mode !== 'corner' ||
-        certificate.position === null ||
-        certificate.confidence < MIN_CERTIFIED_CORNER_CONFIDENCE ||
-        (certificate.uncertaintyMeters ?? Number.POSITIVE_INFINITY) > MAX_CERTIFIED_UNCERTAINTY_METERS ||
-        pointDistance(candidate.position, certificate.position) > MAX_CERTIFICATE_SHIFT_METERS
-      ) continue;
-      validatedCandidate = {
-        ...candidate,
-        position: certificate.position,
-        confidence: Math.min(candidate.confidence, certificate.confidence),
-        support: Math.max(candidate.support, certificate.supportCount),
-      };
-    }
-
-    const projection = runtime.projectProjectPointToNormalized(validatedCandidate.position);
+  for (const candidate of certifiedCandidates) {
+    const projection = runtime.projectProjectPointToNormalized(candidate.position);
     if (!projection?.visible || !insideWorkingView(projection.u, projection.v)) continue;
     const centerDistance = Math.hypot(projection.u - 0.5, projection.v - 0.5);
     projectedCorners.push({
-      candidate: validatedCandidate,
+      candidate,
       u: projection.u,
       v: projection.v,
-      score: validatedCandidate.confidence - centerDistance * 0.24,
+      score: candidate.confidence - centerDistance * 0.24,
     });
   }
   projectedCorners.sort((left, right) => right.score - left.score);
@@ -319,7 +355,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
       <div className="xr-structural-guide-status">
-        AUTO GUIDE · {projectedCorners.length}/{result.corners.length} certified corner · {projectedEdges.length} edge · {result.planarPatches} patches
+        AUTO GUIDE · {projectedCorners.length}/{certifiedCandidates.length} certified corner · {projectedEdges.length} edge · {result.planarPatches} patches
       </div>
 
       {projectedEdges.map((edge) => {
