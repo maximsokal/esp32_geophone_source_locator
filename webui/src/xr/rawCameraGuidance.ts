@@ -10,6 +10,8 @@ export interface XrCameraLike {
 
 export interface XrCameraViewLike {
   camera?: XrCameraLike | null;
+  projectionMatrix?: ArrayLike<number>;
+  transform?: { matrix: ArrayLike<number> };
 }
 
 export interface XrWebGlBindingLike {
@@ -161,7 +163,7 @@ export class RawCameraGuidanceCapture {
       gl.uniform1i(sampler, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.readPixels(0, 0, TARGET_WIDTH, TARGET_HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
-      return buildRgbDepthGuidanceFrame(
+      const guidance = buildRgbDepthGuidanceFrame(
         this.pixels,
         TARGET_WIDTH,
         TARGET_HEIGHT,
@@ -170,6 +172,17 @@ export class RawCameraGuidanceCapture {
         'bottom-left',
         capturedAtMs,
       );
+      if (
+        view.projectionMatrix !== undefined && view.projectionMatrix.length >= 16 &&
+        view.transform?.matrix !== undefined && view.transform.matrix.length >= 16
+      ) {
+        return {
+          ...guidance,
+          projectionMatrix: Float32Array.from(view.projectionMatrix),
+          worldFromView: Float32Array.from(view.transform.matrix),
+        };
+      }
+      return guidance;
     } finally {
       gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
       gl.useProgram(previousProgram);
