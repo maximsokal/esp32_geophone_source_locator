@@ -5,6 +5,7 @@ import {
   buildRgbDepthGuidanceFrameFromLuma,
   guidedDepthInMeters,
   guidanceBoundaryWeight,
+  rgbGuidanceMatchesView,
   surfaceFusionDepthInMeters,
 } from '../../src/xr/rgbDepthGuidance';
 
@@ -20,6 +21,17 @@ function depthSampler(values: number[][]) {
       return values[y][x];
     },
   };
+}
+
+function transform(translationX = 0, yawRadians = 0): Float32Array {
+  const c = Math.cos(yawRadians);
+  const s = Math.sin(yawRadians);
+  return new Float32Array([
+    c, 0, -s, 0,
+    0, 1, 0, 0,
+    s, 0, c, 0,
+    translationX, 0, 0, 1,
+  ]);
 }
 
 describe('RGB-guided physical depth', () => {
@@ -48,6 +60,20 @@ describe('RGB-guided physical depth', () => {
     expect(Array.from(frame.rgba!.slice(4, 8))).toEqual([255, 255, 255, 255]);
     expect(Array.from(frame.rgba!.slice(8, 12))).toEqual([255, 0, 0, 255]);
     expect(Array.from(frame.rgba!.slice(12, 16))).toEqual([0, 255, 0, 255]);
+  });
+
+  it('accepts RGB only while the current depth view stays aligned with its capture pose', () => {
+    const frame = buildRgbDepthGuidanceFrameFromLuma(new Uint8Array(9).fill(128), 3, 3, 10);
+    frame.worldFromView = transform();
+
+    expect(rgbGuidanceMatchesView(frame, transform(0.02, 3 * Math.PI / 180))).toBe(true);
+    expect(rgbGuidanceMatchesView(frame, transform(0.08, 0))).toBe(false);
+    expect(rgbGuidanceMatchesView(frame, transform(0, 10 * Math.PI / 180))).toBe(false);
+  });
+
+  it('keeps legacy/synthetic RGB frames without pose metadata compatible', () => {
+    const frame = buildRgbDepthGuidanceFrameFromLuma(new Uint8Array(9).fill(128), 3, 3, 10);
+    expect(rgbGuidanceMatchesView(frame, transform(2, Math.PI))).toBe(true);
   });
 
   it('does not blend foreground and background across an RGB boundary', () => {
