@@ -1,4 +1,11 @@
-export type XrPerfMetric = 'frameWork' | 'depthAccess' | 'fusion' | 'coverage';
+export type XrPerfMetric =
+  | 'frameWork'
+  | 'depthAccess'
+  | 'fusion'
+  | 'coverage'
+  | 'coverageSnapshot'
+  | 'coverageUpload'
+  | 'coverageDraw';
 
 export interface XrPerformanceSnapshot {
   frameDeltaP50Ms: number;
@@ -9,16 +16,25 @@ export interface XrPerformanceSnapshot {
   fusionP50Ms: number;
   fusionP95Ms: number;
   fusionMaxMs: number;
+  /** Compatibility aggregate: worst p95 across legacy/build/upload/draw coverage work. */
   coverageP95Ms: number;
+  coverageSnapshotP95Ms: number;
+  coverageUploadP95Ms: number;
+  coverageDrawP95Ms: number;
   longFrames33Ms: number;
   longFrames50Ms: number;
   sampleCount: number;
   adaptiveCoverageIntervalMs: number;
+  adaptiveCoveragePointBudget: number;
+  adaptiveCoverageDrawIntervalMs: number;
   pressure: 'low' | 'medium' | 'high';
 }
 
 const WINDOW_SIZE = 160;
 const DEFAULT_COVERAGE_INTERVAL_MS = 550;
+const LOW_PRESSURE_POINT_BUDGET = 12000;
+const MEDIUM_PRESSURE_POINT_BUDGET = 8000;
+const HIGH_PRESSURE_POINT_BUDGET = 4800;
 
 class RollingSamples {
   private readonly values: number[] = [];
@@ -56,6 +72,8 @@ class RollingSamples {
 /**
  * Rolling profiler for the hot WebXR path. It deliberately stores only a small
  * bounded window, so diagnostics cannot become another source of scan jank.
+ * Adaptive degradation changes only live visualization; fusion quality and
+ * stored scan evidence are never downsampled by this class.
  */
 export class XrPerformanceProfiler {
   private readonly frameDelta = new RollingSamples();
@@ -64,6 +82,9 @@ export class XrPerformanceProfiler {
     depthAccess: new RollingSamples(),
     fusion: new RollingSamples(),
     coverage: new RollingSamples(),
+    coverageSnapshot: new RollingSamples(),
+    coverageUpload: new RollingSamples(),
+    coverageDraw: new RollingSamples(),
   };
   private previousFrameTime: number | null = null;
 
@@ -88,17 +109,37 @@ export class XrPerformanceProfiler {
     const fusionP95 = this.metrics.fusion.percentile(0.95);
     const frameWorkP95 = this.metrics.frameWork.percentile(0.95);
     const frameDeltaP95 = this.frameDelta.percentile(0.95);
-    const coverageP95 = this.metrics.coverage.percentile(0.95);
+    const coverageSnapshotP95 = this.metrics.coverageSnapshot.percentile(0.95);
+    const coverageUploadP95 = this.metrics.coverageUpload.percentile(0.95);
+    const coverageDrawP95 = this.metrics.coverageDraw.percentile(0.95);
+    const coverageP95 = Math.max(
+      this.metrics.coverage.percentile(0.95),
+      coverageSnapshotP95,
+      coverageUploadP95,
+      coverageDrawP95,
+    );
 
     let pressure: XrPerformanceSnapshot['pressure'] = 'low';
-    if (fusionP95 >= 90 || frameWorkP95 >= 32 || frameDeltaP95 >= 42 || coverageP95 >= 45) pressure = 'high';
-    else if (fusionP95 >= 55 || frameWorkP95 >= 22 || frameDeltaP95 >= 28 || coverageP95 >= 28) pressure = 'medium';
+    if (
+      fusionP95 >= 90 || frameWorkP95 >= 32 || frameDeltaP95 >= 42 ||
+      coverageSnapshotP95 >= 32 || coverageUploadP95 >= 24 || coverageDrawP95 >= 13 || coverageP95 >= 45
+    ) pressure = 'high';
+    else if (
+      fusionP95 >= 55 || frameWorkP95 >= 22 || frameDeltaP95 >= 28 ||
+      coverageSnapshotP95 >= 20 || coverageUploadP95 >= 13 || coverageDrawP95 >= 7 || coverageP95 >= 28
+    ) pressure = 'medium';
 
     const adaptiveCoverageIntervalMs = pressure === 'high'
       ? 1100
       : pressure === 'medium'
         ? 780
         : DEFAULT_COVERAGE_INTERVAL_MS;
+    const adaptiveCoveragePointBudget = pressure === 'high'
+      ? HIGH_PRESSURE_POINT_BUDGET
+      : pressure === 'medium'
+        ? MEDIUM_PRESSURE_POINT_BUDGET
+        : LOW_PRESSURE_POINT_BUDGET;
+    const adaptiveCoverageDrawIntervalMs = pressure === 'high' ? 32 : pressure === 'medium' ? 16 : 0;
 
     return {
       frameDeltaP50Ms: this.frameDelta.percentile(0.50),
@@ -110,16 +151,29 @@ export class XrPerformanceProfiler {
       fusionP95Ms: fusionP95,
       fusionMaxMs: this.metrics.fusion.max(),
       coverageP95Ms: coverageP95,
+      coverageSnapshotP95Ms: coverageSnapshotP95,
+      coverageUploadP95Ms: coverageUploadP95,
+      coverageDrawP95Ms: coverageDrawP95,
       longFrames33Ms: this.frameDelta.countAtLeast(33),
       longFrames50Ms: this.frameDelta.countAtLeast(50),
       sampleCount: Math.max(this.frameDelta.size, this.metrics.fusion.size),
       adaptiveCoverageIntervalMs,
+      adaptiveCoveragePointBudget,
+      adaptiveCoverageDrawIntervalMs,
       pressure,
     };
   }
 
   recommendedCoverageIntervalMs(): number {
     return this.snapshot().adaptiveCoverageIntervalMs;
+  }
+
+  recommendedCoveragePointBudget(): number {
+    return this.snapshot().adaptiveCoveragePointBudget;
+  }
+
+  recommendedCoverageDrawIntervalMs(): number {
+    return this.snapshot().adaptiveCoverageDrawIntervalMs;
   }
 }
 
@@ -133,9 +187,14 @@ export const emptyXrPerformanceSnapshot: XrPerformanceSnapshot = {
   fusionP95Ms: 0,
   fusionMaxMs: 0,
   coverageP95Ms: 0,
+  coverageSnapshotP95Ms: 0,
+  coverageUploadP95Ms: 0,
+  coverageDrawP95Ms: 0,
   longFrames33Ms: 0,
   longFrames50Ms: 0,
   sampleCount: 0,
   adaptiveCoverageIntervalMs: DEFAULT_COVERAGE_INTERVAL_MS,
+  adaptiveCoveragePointBudget: LOW_PRESSURE_POINT_BUDGET,
+  adaptiveCoverageDrawIntervalMs: 0,
   pressure: 'low',
 };
