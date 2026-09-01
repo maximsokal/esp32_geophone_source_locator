@@ -10,6 +10,7 @@ let latestRgb: RgbDepthGuidanceFrame | null = null;
 const visualStore = new PoseDiverseVisualEvidenceStore(64);
 const visualClient = new VisualLineEvidenceClient();
 let visualDetectionError: string | null = null;
+const POSE_TAGGED_RGB_MAX_AGE_MS = 650;
 
 // WebXrRuntime still calls detectVisualLines() for compatibility, but production
 // uses that call only as a cheap handoff marker. The real detector runs here in
@@ -21,7 +22,17 @@ export function setLatestRgbGuidance(frame: RgbDepthGuidanceFrame | null): void 
 }
 
 export function getFreshRgbGuidance(nowMs: number, maximumAgeMs = 450): RgbDepthGuidanceFrame | null {
-  if (latestRgb === null || nowMs - latestRgb.capturedAtMs > maximumAgeMs) return null;
+  if (latestRgb === null) return null;
+  // Raw Camera Access frames carry their exact capture projection and pose. Such
+  // a frame can safely remain available a little longer for historical 2D↔3D
+  // reprojection. Live physical-depth fusion still applies rgbGuidanceMatchesView
+  // before using it, so this grace period cannot attach stale RGB to a moved
+  // camera pose. Legacy/unposed frames keep the caller's strict requested TTL.
+  const poseTagged = latestRgb.projectionMatrix !== undefined && latestRgb.worldFromView !== undefined;
+  const allowedAgeMs = poseTagged
+    ? Math.max(maximumAgeMs, POSE_TAGGED_RGB_MAX_AGE_MS)
+    : maximumAgeMs;
+  if (nowMs - latestRgb.capturedAtMs > allowedAgeMs) return null;
   return latestRgb;
 }
 
