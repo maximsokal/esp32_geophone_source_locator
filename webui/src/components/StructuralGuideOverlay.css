@@ -1,0 +1,106 @@
+.xr-structural-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 48;
+  pointer-events: none;
+  font-family: inherit;
+}
+
+.xr-structural-guide-status {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 0.7rem);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(90vw, 560px);
+  padding: 0.35rem 0.65rem;
+  border: 1px solid rgba(250, 204, 21, 0.6);
+  border-radius: 999px;
+  background: rgba(5, 13, 24, 0.74);
+  color: #fde68a;
+  font-size: 0.72rem;
+  letter-spacing: 0.055em;
+  backdrop-filter: blur(7px);
+}
+
+.xr-corner-suggestion {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas: "q reject" "score score";
+  justify-items: center;
+  gap: 0.08rem;
+  pointer-events: auto;
+  filter: drop-shadow(0 0 10px rgba(250, 204, 21, 0.52));
+}
+
+.xr-corner-question {
+  grid-area: q;
+  width: 2.55rem;
+  height: 2.55rem;
+  border-radius: 50%;
+  border: 2px solid #fff7b2;
+  background: rgba(250, 204, 21, 0.90);
+  color: #111827;
+  font-weight: 900;
+  font-size: 1.65rem;
+  line-height: 1;
+  padding: 0;
+}
+
+.xr-corner-question:disabled {
+  opacity: 0.68;
+}
+
+.xr-corner-suggestion > span {
+  grid-area: score;
+  padding: 0.08rem 0.32rem;
+  border-radius: 999px;
+  background: rgba(5, 13, 24, 0.82);
+  color: #fff7b2;
+  font-size: 0.62rem;
+}
+
+.xr-corner-reject {
+  grid-area: reject;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-left: -0.2rem;
+  border-radius: 50%;
+  border: 1px solid rgba(248, 113, 113, 0.8);
+  background: rgba(69, 10, 10, 0.88);
+  color: #fecaca;
+  padding: 0;
+  line-height: 1;
+}
+
+.xr-edge-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.xr-edge-svg line {
+  stroke: #facc15;
+  stroke-width: 0.6;
+  stroke-dasharray: 2.2 1.6;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 4px rgba(250, 204, 21, 0.7));
+}
+
+.xr-edge-confirm {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  border: 1px solid rgba(250, 204, 21, 0.85);
+  border-radius: 999px;
+  background: rgba(5, 13, 24, 0.88);
+  color: #fde68a;
+  padding: 0.3rem 0.52rem;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
