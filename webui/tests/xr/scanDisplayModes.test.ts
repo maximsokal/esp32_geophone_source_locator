@@ -14,14 +14,14 @@ describe('scan result display modes', () => {
     expect(displayForScanMode('quality')).toMatchObject({
       goodPoints: true,
       badPoints: true,
-      mesh: false,
+      mesh: true,
       freeAir: false,
       unknownSpace: false,
     });
     expect(displayForScanMode('surface')).toMatchObject({
       goodPoints: true,
       badPoints: false,
-      mesh: false,
+      mesh: true,
       freeAir: false,
       unknownSpace: false,
     });
@@ -47,14 +47,14 @@ describe('scan result display modes', () => {
   it('returns fresh display objects so one toggle cannot corrupt later presets', () => {
     const first = displayForScanMode('quality');
     first.badPoints = false;
-    first.mesh = true;
+    first.mesh = false;
     const second = displayForScanMode('quality');
     expect(second.badPoints).toBe(true);
-    expect(second.mesh).toBe(false);
+    expect(second.mesh).toBe(true);
   });
 
   it('labels presets and custom layer combinations explicitly', () => {
-    expect(scanModeLabel('quality')).toBe('QUALITY MAP');
+    expect(scanModeLabel('quality')).toBe('QUALITY + MESH');
     expect(scanModeLabel('surface')).toBe('STABLE SURFACE');
     expect(scanModeLabel('search-volume')).toBe('SEARCH VOLUME');
     expect(scanModeLabel('mesh')).toBe('SURFACE MESH');
