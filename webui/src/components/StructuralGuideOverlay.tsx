@@ -6,6 +6,7 @@ import {
   type StructuralCornerCandidate,
   type StructuralEdgeCandidate,
   type StructuralGuideResult,
+  type StructuralGuideViewpoint,
 } from '../xr/structuralGuide';
 import { StructuralGuideClient } from '../xr/structuralGuideClient';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
@@ -49,6 +50,32 @@ function shouldAnalyzeMotion(state: WebXrRuntimeState): boolean {
   return state.motionState !== 'too-fast' && state.motionState !== 'paused';
 }
 
+function normalize3(vector: readonly [number, number, number]): readonly [number, number, number] | null {
+  const magnitude = Math.hypot(vector[0], vector[1], vector[2]);
+  return magnitude > 1e-8 ? [vector[0] / magnitude, vector[1] / magnitude, vector[2] / magnitude] : null;
+}
+
+/** Convert the current WebXR viewer pose into the same project frame as fused surfels. */
+export function structuralGuideViewpointFromState(state: WebXrRuntimeState): StructuralGuideViewpoint | null {
+  const pose = state.pose;
+  if (pose === null || state.keyframeCount <= 0) return null;
+  const [x, y, z] = pose.position;
+  const [qx, qy, qz, qw] = pose.orientation;
+
+  // Rotate camera-local -Z by the viewer quaternion to get the world forward axis.
+  const worldForward: readonly [number, number, number] = [
+    -2 * (qx * qz + qw * qy),
+    -2 * (qy * qz - qw * qx),
+    -(1 - 2 * (qx * qx + qy * qy)),
+  ];
+  const forward = normalize3([worldForward[0], -worldForward[2], worldForward[1]]);
+  return {
+    position: [x, -z, y],
+    forward: forward ?? undefined,
+    keyframeId: state.keyframeCount,
+  };
+}
+
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
@@ -83,6 +110,9 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     const keyframeAdvance = runtimeState.keyframeCount - lastAnalysisKeyframe.current;
     if (elapsed < analysisInterval(runtimeState) || keyframeAdvance < MIN_KEYFRAME_ADVANCE || client.busy) return;
 
+    const viewpoint = structuralGuideViewpointFromState(runtimeState);
+    if (viewpoint === null) return;
+
     lastAnalysisMs.current = now;
     lastAnalysisKeyframe.current = runtimeState.keyframeCount;
     const snapshotStarted = performance.now();
@@ -97,6 +127,9 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       confidence: snapshot.confidence,
       keyframeCount: snapshot.keyframeCount,
       voxelSizeMeters: snapshot.voxelSizeMeters,
+      viewpoint,
+      freeSpacePositions: snapshot.freeSpacePositions,
+      freeSpaceVoxelSizeMeters: snapshot.freeSpaceVoxelSizeMeters,
     }).then((next) => {
       setResult(next);
       clientDiagnostics.info('XR_GUIDE_ANALYSIS', {
@@ -105,6 +138,8 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
         patches: next.planarPatches,
         corners: next.corners.length,
         edges: next.edges.length,
+        freeSpaceRejected: next.rejectedByFreeSpace,
+        candidateComparisons: next.candidateComparisons,
         snapshotMs: Number(snapshotMs.toFixed(1)),
         workerRoundTripMs: Number((performance.now() - workerStarted).toFixed(1)),
         workerComputeMs: Number(next.computeMs.toFixed(1)),
@@ -112,7 +147,8 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       if (snapshotMs >= 80) clientDiagnostics.warn('XR_GUIDE_SNAPSHOT_SLOW', { snapshotMs: Number(snapshotMs.toFixed(1)) });
       void clientDiagnostics.flush();
     }).catch((error) => {
-      clientDiagnostics.warn('XR_GUIDE_ANALYSIS_FAILED', error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('reset for a new scan')) clientDiagnostics.warn('XR_GUIDE_ANALYSIS_FAILED', error);
     });
   }, [client, runtime, runtimeState]);
 
@@ -187,28 +223,28 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       </div>
 
       {projectedEdges.map((edge) => {
-        const x1=edge.startU*100, y1=edge.startV*100, x2=edge.endU*100, y2=edge.endV*100;
-        const midX=(x1+x2)*0.5, midY=(y1+y2)*0.5;
+        const x1 = edge.startU * 100, y1 = edge.startV * 100, x2 = edge.endU * 100, y2 = edge.endV * 100;
+        const midX = (x1 + x2) * 0.5, midY = (y1 + y2) * 0.5;
         return (
           <div key={edge.candidate.id} className="xr-edge-suggestion" aria-hidden={!interactionEnabled}>
             <svg className="xr-edge-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               <line x1={x1} y1={y1} x2={x2} y2={y2} />
             </svg>
             {interactionEnabled && (
-              <button type="button" className="xr-edge-confirm" style={{left:`${midX}%`,top:`${midY}%`}} onClick={() => confirmEdge(edge)}>
-                LINE? {Math.round(edge.candidate.confidence*100)}%
+              <button type="button" className="xr-edge-confirm" style={{ left: `${midX}%`, top: `${midY}%` }} onClick={() => confirmEdge(edge)}>
+                LINE? {Math.round(edge.candidate.confidence * 100)}%
               </button>
             )}
           </div>
         );
       })}
 
-      {projectedCorners.map(({candidate,u,v}) => (
-        <div key={candidate.id} className="xr-corner-suggestion" style={{left:`${u*100}%`,top:`${v*100}%`}}>
+      {projectedCorners.map(({ candidate, u, v }) => (
+        <div key={candidate.id} className="xr-corner-suggestion" style={{ left: `${u * 100}%`, top: `${v * 100}%` }}>
           <button type="button" className="xr-corner-question" disabled={!interactionEnabled} onClick={() => confirmCorner(candidate)} title="Confirm suggested 3D corner">
             ?
           </button>
-          <span>{Math.round(candidate.confidence*100)}%</span>
+          <span>{Math.round(candidate.confidence * 100)}%</span>
           {interactionEnabled && <button type="button" className="xr-corner-reject" onClick={() => rejectCorner(candidate)} aria-label="Reject suggested corner">×</button>}
         </div>
       ))}
