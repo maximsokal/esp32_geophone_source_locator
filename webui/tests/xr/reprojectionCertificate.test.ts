@@ -90,19 +90,28 @@ describe('multi-view RGB reprojection certificates', () => {
     expect(certificate.confidence).toBe(1);
   });
 
-  it('does not let RGB structure elsewhere in the scene veto a candidate without enough candidate-specific views', () => {
-    const certificate = certifyEdgeByVisualReprojection([20, 2, 0], [21, 2, 0], independentFrames);
+  it('does not let RGB structure elsewhere in the scene veto a candidate without candidate-local evidence', () => {
+    const unrelated = independentFrames.map((item) => ({
+      ...item,
+      junctions: item.junctions.map((junction) => ({
+        ...junction,
+        position: [junction.position[0] + 0.20, junction.position[1]] as const,
+      })),
+    }));
+    const certificate = certifyCornerByVisualReprojection([0, 2, 0], unrelated);
     expect(certificate.eligibleObservations).toBe(0);
     expect(certificate.conclusive).toBe(false);
     expect(certificate.accepted).toBe(true);
   });
 
-  it('rejects a visually inconsistent geometric corner once enough independent views actually observe that candidate', () => {
+  it('rejects a visually inconsistent geometric corner once enough local independent views observe that candidate', () => {
     const inconsistent = independentFrames.map((item) => ({
       ...item,
       junctions: item.junctions.map((junction) => ({
         ...junction,
-        position: [junction.position[0] + 0.12, junction.position[1]] as const,
+        // Outside the strict 3.5% match gate but still inside the coarse local
+        // association radius, so RGB has enough evidence to issue a veto.
+        position: [junction.position[0] + 0.07, junction.position[1]] as const,
       })),
     }));
     const certificate = certifyCornerByVisualReprojection([0, 2, 0], inconsistent);
