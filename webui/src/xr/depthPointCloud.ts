@@ -62,23 +62,18 @@ export interface StructuralGuideSnapshot extends StructuralSurfaceEvidenceSnapsh
 
 /**
  * Narrow dependency boundary for optional model-based SURFACE validation.
- * Deliberately exposes no occupancy API and no replacement-depth value.
+ * There is deliberately no live replacement-depth API and no occupancy handle.
  */
 export interface MonocularSurfacePrior {
   readonly isEnabled: boolean;
   reset(): void;
-  maybeUpdate(
+  stagePostScan?(
     guidance: RgbDepthGuidanceFrame,
     depth: CpuDepthInformationLike,
-    nowMs: number,
-  ): Promise<boolean>;
-  surfaceAgreement(
-    u: number,
-    v: number,
-    physicalMeters: number,
-    nowMs: number,
-    currentGuidance: RgbDepthGuidanceFrame,
-  ): { accepted: boolean };
+  ): boolean;
+  postScanSurfaceAgreement?(
+    position: ProjectPoint,
+  ): { available: boolean; accepted: boolean };
 }
 
 const STRUCTURAL_MIN_CONFIDENCE = 0.58;
@@ -207,22 +202,74 @@ function filterStructuralSurface(surface: StructuralGuidePointCloudSnapshot): St
 function guidedSurfaceDepth(
   depth: CpuDepthInformationLike,
   guidance: RgbDepthGuidanceFrame | null,
-  nowMs: number,
-  monocularPrior: MonocularSurfacePrior,
 ): CpuDepthInformationLike {
   if (guidance === null) return depth;
-  const useMonocular = monocularPrior.isEnabled;
   return {
     width: depth.width,
     height: depth.height,
     projectionMatrix: depth.projectionMatrix,
     transform: depth.transform,
     getDepthInMeters(u: number, v: number): number {
-      const physical = surfaceFusionDepthInMeters(depth, u, v, guidance);
-      if (!Number.isFinite(physical) || !useMonocular) return physical;
-      const agreement = monocularPrior.surfaceAgreement(u, v, physical, nowMs, guidance);
-      return agreement.accepted ? physical : Number.NaN;
+      return surfaceFusionDepthInMeters(depth, u, v, guidance);
     },
+  };
+}
+
+function applyPostScanPrior(
+  surface: StructuralSurfaceEvidenceSnapshot,
+  prior: MonocularSurfacePrior,
+): StructuralSurfaceEvidenceSnapshot {
+  const agreement = prior.postScanSurfaceAgreement;
+  if (!prior.isEnabled || agreement === undefined) return surface;
+  const count = Math.min(surface.pointCount, Math.floor(surface.positions.length / 3));
+  if (count === 0) return surface;
+
+  const accepted: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 3;
+    const result = agreement.call(prior, [
+      surface.positions[offset],
+      surface.positions[offset + 1],
+      surface.positions[offset + 2],
+    ]);
+    if (!result.available || result.accepted) accepted.push(index);
+  }
+  if (accepted.length === count) return surface;
+
+  const positions = new Float32Array(accepted.length * 3);
+  const normals = new Float32Array(accepted.length * 3);
+  const confidence = new Float32Array(accepted.length);
+  const residualMeters = surface.residualMeters === undefined ? undefined : new Float32Array(accepted.length);
+  const normalConfidence = surface.normalConfidence === undefined ? undefined : new Float32Array(accepted.length);
+  const coverageConfidence = surface.coverageConfidence === undefined ? undefined : new Float32Array(accepted.length);
+  const coverageReady = surface.coverageReady === undefined ? undefined : new Uint8Array(accepted.length);
+
+  accepted.forEach((source, target) => {
+    const sourceOffset = source * 3, targetOffset = target * 3;
+    positions[targetOffset] = surface.positions[sourceOffset];
+    positions[targetOffset + 1] = surface.positions[sourceOffset + 1];
+    positions[targetOffset + 2] = surface.positions[sourceOffset + 2];
+    normals[targetOffset] = surface.normals[sourceOffset];
+    normals[targetOffset + 1] = surface.normals[sourceOffset + 1];
+    normals[targetOffset + 2] = surface.normals[sourceOffset + 2];
+    confidence[target] = surface.confidence[source];
+    if (residualMeters !== undefined && surface.residualMeters !== undefined) residualMeters[target] = surface.residualMeters[source];
+    if (normalConfidence !== undefined && surface.normalConfidence !== undefined) normalConfidence[target] = surface.normalConfidence[source];
+    if (coverageConfidence !== undefined && surface.coverageConfidence !== undefined) coverageConfidence[target] = surface.coverageConfidence[source];
+    if (coverageReady !== undefined && surface.coverageReady !== undefined) coverageReady[target] = surface.coverageReady[source];
+  });
+
+  return {
+    positions,
+    normals,
+    confidence,
+    residualMeters,
+    normalConfidence,
+    coverageConfidence,
+    coverageReady,
+    pointCount: accepted.length,
+    keyframeCount: surface.keyframeCount,
+    voxelSizeMeters: surface.voxelSizeMeters,
   };
 }
 
@@ -257,17 +304,22 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     const guidance = freshGuidance !== null && rgbGuidanceMatchesView(freshGuidance, fallbackView.transform.matrix)
       ? freshGuidance
       : null;
+
+    // Live scan only stages a cheap RGB+physical-anchor packet. ONNX inference
+    // is intentionally forbidden from the XR hot loop after real-device tests
+    // showed multi-second mobile stalls. The model runs after Finish & save.
     if (context.evidenceKeyframe && guidance !== null && this.monocularPrior.isEnabled) {
-      void this.monocularPrior.maybeUpdate(guidance, depth, nowMs);
+      this.monocularPrior.stagePostScan?.(guidance, depth);
     }
+
     const result = super.sampleDepthFrame(
-      guidedSurfaceDepth(depth, guidance, nowMs, this.monocularPrior),
+      guidedSurfaceDepth(depth, guidance),
       fallbackView,
       context,
     );
-    // Safety invariant: RGB and AI can veto SURFACE evidence, but occupancy/FREE
-    // always sees untouched physical XR depth. The injected model interface has
-    // no occupancy handle, so it cannot manufacture or erase FREE evidence.
+    // Safety invariant: RGB can veto SURFACE evidence, but occupancy/FREE always
+    // sees untouched physical XR depth. ONNX is not executed in this path and
+    // the injected model interface has no occupancy handle.
     this.occupancy.integrateDepthFrame(depth, fallbackView, { ...context, maxDepthMeters: this.maxDepth });
     return result;
   }
@@ -289,8 +341,10 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     const surface = super.snapshot(depthFrameCount, sampledDepthFrames);
     const occupancy = this.occupancy.snapshot(surface.bounds);
     // Keep dense certified surfels for Directional TSDF; structural clustering
-    // is not allowed to throw away measured mesh support.
-    const certified = filterStructuralSurface(super.structuralGuideSnapshot());
+    // is not allowed to throw away measured mesh support. A completed optional
+    // post-scan ONNX prior may only remove grossly inconsistent visible surfels.
+    const structurallyCertified = filterStructuralSurface(super.structuralGuideSnapshot());
+    const certified = applyPostScanPrior(structurallyCertified, this.monocularPrior);
     const hasTsdfCertificate =
       certified.pointCount >= TSDF_MIN_CERTIFIED_POINTS &&
       certified.residualMeters !== undefined && certified.normalConfidence !== undefined &&
