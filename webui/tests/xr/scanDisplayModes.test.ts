@@ -54,7 +54,7 @@ describe('scan result display modes', () => {
   });
 
   it('labels presets and custom layer combinations explicitly', () => {
-    expect(scanModeLabel('quality')).toBe('QUALITY + MESH');
+    expect(scanModeLabel('quality')).toBe('QUALITY MAP');
     expect(scanModeLabel('surface')).toBe('STABLE SURFACE');
     expect(scanModeLabel('search-volume')).toBe('SEARCH VOLUME');
     expect(scanModeLabel('mesh')).toBe('SURFACE MESH');
