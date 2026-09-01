@@ -1,6 +1,10 @@
 /// <reference lib="webworker" />
 
 import { detectCertifiedStructuralCorners } from './certifiedStructuralGeometry';
+import {
+  applyMaturityAwareEdgeConfidence,
+  summarizeStructuralCandidates,
+} from './structuralCandidatePolicy';
 import { StructuralEdgeEndpointTracker } from './structuralEdgeEndpoints';
 import {
   StructuralGuideTracker,
@@ -71,6 +75,14 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   };
 
   const tracked = tracker.update(input, 0);
+  // A two-plane edge that repeatedly survives independent camera views should
+  // not remain permanently unusable because the historical geometry/temporal
+  // blend tops out a few points below the UI's 0.66 gate. Keep raw geometry and
+  // tracking unchanged; only calibrate the aggregate operational confidence.
+  const operationalEdges = tracked.edges
+    .map(applyMaturityAwareEdgeConfidence)
+    .sort((left, right) => right.confidence - left.confidence);
+
   const certifiedSnapshot = {
     positions: message.positions,
     normals: message.normals,
@@ -112,11 +124,19 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
 
   const result = {
     ...tracked,
+    edges: operationalEdges,
     corners: corners.slice(0, 8),
     computeMs: performance.now() - started,
   };
+  const diagnostics = summarizeStructuralCandidates(tracked.edges, operationalEdges, result.corners);
 
-  self.postMessage({ type: 'result', requestId: message.requestId, epoch: message.epoch, result });
+  self.postMessage({
+    type: 'result',
+    requestId: message.requestId,
+    epoch: message.epoch,
+    result,
+    diagnostics,
+  });
 });
 
 export {};
