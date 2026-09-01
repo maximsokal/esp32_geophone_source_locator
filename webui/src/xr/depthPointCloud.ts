@@ -5,6 +5,7 @@ import {
   type DepthFusionResult,
   type DepthSampleView,
   type ScanPointCloudSnapshot as SurfaceScanPointCloudSnapshot,
+  type StructuralGuidePointCloudSnapshot,
 } from './depthPointCloudV2';
 import {
   SparseOccupancyGrid,
@@ -23,6 +24,12 @@ export type {
 
 export interface ScanPointCloudSnapshot
   extends SurfaceScanPointCloudSnapshot, OccupancySnapshot {}
+
+export interface StructuralGuideSnapshot extends StructuralGuidePointCloudSnapshot {
+  /** Ray-verified free-space voxel centres used only to reject contradictory guide geometry. */
+  freeSpacePositions: Float32Array;
+  freeSpaceVoxelSizeMeters: number;
+}
 
 /**
  * Surface reconstruction plus a deliberately conservative occupancy layer.
@@ -57,6 +64,18 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     });
 
     return result;
+  }
+
+  override structuralGuideSnapshot(): StructuralGuideSnapshot {
+    const surface = super.structuralGuideSnapshot();
+    // Passing null deliberately skips UNKNOWN-volume enumeration. The guide only
+    // needs already verified FREE cells, so this stays bounded and cheap.
+    const occupancy = this.occupancy.snapshot(null);
+    return {
+      ...surface,
+      freeSpacePositions: occupancy.freeAirPositions,
+      freeSpaceVoxelSizeMeters: occupancy.occupancyVoxelSizeMeters,
+    };
   }
 
   override snapshot(
