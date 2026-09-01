@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import type { ProjectPoint } from '../xr/manualControlPoints';
+import { solveManualPlacementOnStableSurface } from '../xr/manualPlacementSurface';
 import {
   matchEdgeToManualPoints,
   type StructuralCornerCandidate,
@@ -10,6 +11,7 @@ import {
   type StructuralGuideViewpoint,
 } from '../xr/structuralGuide';
 import { StructuralGuideClient } from '../xr/structuralGuideClient';
+import type { StructuralGuideSnapshot } from '../xr/depthPointCloud';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
 
 import './StructuralGuideOverlay.css';
@@ -42,6 +44,9 @@ const MIN_KEYFRAMES = 8;
 const MIN_KEYFRAME_ADVANCE = 4;
 const BASE_ANALYSIS_INTERVAL_MS = 1900;
 const MIN_VISIBLE_CORNER_CONFIDENCE = 0.70;
+const MIN_CERTIFIED_CORNER_CONFIDENCE = 0.70;
+const MAX_CERTIFICATE_SHIFT_METERS = 0.055;
+const MAX_CERTIFIED_UNCERTAINTY_METERS = 0.032;
 const VIEW_MARGIN = 0.07;
 const MAX_VISIBLE_CORNERS = 4;
 const REJECTED_CORNER_RADIUS_METERS = 0.14;
@@ -93,6 +98,7 @@ export function structuralGuideViewpointFromState(state: WebXrRuntimeState): Str
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
+  const [validationSnapshot, setValidationSnapshot] = useState<StructuralGuideSnapshot | null>(null);
   const [rejected, setRejected] = useState<Set<string>>(() => new Set());
   const [rejectedPositions, setRejectedPositions] = useState<ProjectPoint[]>([]);
   const [acceptedEdges, setAcceptedEdges] = useState<Set<string>>(() => new Set());
@@ -105,6 +111,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     if (runtimeState.phase === 'starting') {
       client.reset();
       setResult(null);
+      setValidationSnapshot(null);
       setRejected(new Set());
       setRejectedPositions([]);
       setAcceptedEdges(new Set());
@@ -147,6 +154,11 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       freeSpacePositions: snapshot.freeSpacePositions,
       freeSpaceVoxelSizeMeters: snapshot.freeSpaceVoxelSizeMeters,
     }).then((next) => {
+      // Worker buffers were transferred/detached. Re-snapshot once per analysis
+      // (not every React render) so visible candidates can be certified against
+      // current local geometry using an independent robust plane solve.
+      const certificateSnapshot = runtime.getStructuralGuideSnapshot();
+      setValidationSnapshot(certificateSnapshot);
       setResult(next);
       clientDiagnostics.info('XR_GUIDE_ANALYSIS', {
         keyframes: next.keyframeCount,
@@ -168,22 +180,38 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     });
   }, [client, runtime, runtimeState]);
 
-  if (runtimeState.phase !== 'running' || result === null) return null;
+  if (runtimeState.phase !== 'running' || result === null || validationSnapshot === null) return null;
 
   const projectedCorners: ProjectedCorner[] = [];
   for (const candidate of result.corners) {
     if (candidate.confidence < MIN_VISIBLE_CORNER_CONFIDENCE) continue;
     if (rejected.has(candidate.id)) continue;
     if (rejectedPositions.some((position) => pointDistance(position, candidate.position) <= REJECTED_CORNER_RADIUS_METERS)) continue;
-    const projection = runtime.projectProjectPointToNormalized(candidate.position);
+
+    const certificate = solveManualPlacementOnStableSurface(candidate.position, validationSnapshot);
+    if (
+      !certificate.accepted ||
+      certificate.mode !== 'corner' ||
+      certificate.position === null ||
+      certificate.confidence < MIN_CERTIFIED_CORNER_CONFIDENCE ||
+      (certificate.uncertaintyMeters ?? Number.POSITIVE_INFINITY) > MAX_CERTIFIED_UNCERTAINTY_METERS ||
+      pointDistance(candidate.position, certificate.position) > MAX_CERTIFICATE_SHIFT_METERS
+    ) continue;
+
+    const validatedCandidate: StructuralCornerCandidate = {
+      ...candidate,
+      position: certificate.position,
+      confidence: Math.min(candidate.confidence, certificate.confidence),
+      support: Math.max(candidate.support, certificate.supportCount),
+    };
+    const projection = runtime.projectProjectPointToNormalized(validatedCandidate.position);
     if (!projection?.visible || !insideWorkingView(projection.u, projection.v)) continue;
     const centerDistance = Math.hypot(projection.u - 0.5, projection.v - 0.5);
     projectedCorners.push({
-      candidate,
+      candidate: validatedCandidate,
       u: projection.u,
       v: projection.v,
-      // Prefer strong geometry close to where the operator is actually aiming.
-      score: candidate.confidence - centerDistance * 0.24,
+      score: validatedCandidate.confidence - centerDistance * 0.24,
     });
   }
   projectedCorners.sort((left, right) => right.score - left.score);
@@ -223,9 +251,6 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       });
       void clientDiagnostics.flush();
     } catch (error) {
-      // The same surface-lock gate used by manual taps also protects automatic
-      // suggestions. A stale worker candidate must never crash the overlay or
-      // bypass the accumulated-surface requirement.
       setRejected((current) => new Set(current).add(candidate.id));
       clientDiagnostics.warn('XR_GUIDE_CORNER_CONFIRM_REJECTED', {
         candidate: candidate.id,
@@ -261,7 +286,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
       <div className="xr-structural-guide-status">
-        AUTO GUIDE · {projectedCorners.length}/{result.corners.length} visible corner · {projectedEdges.length} edge · {result.planarPatches} planes
+        AUTO GUIDE · {projectedCorners.length}/{result.corners.length} certified corner · {projectedEdges.length} edge · {result.planarPatches} patches
       </div>
 
       {projectedEdges.map((edge) => {
@@ -283,7 +308,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
       {projectedCorners.map(({ candidate, u, v }) => (
         <div key={candidate.id} className="xr-corner-suggestion" style={{ left: `${u * 100}%`, top: `${v * 100}%` }}>
-          <button type="button" className="xr-corner-question" disabled={!interactionEnabled} onClick={() => confirmCorner(candidate)} title="Confirm suggested 3D corner">
+          <button type="button" className="xr-corner-question" disabled={!interactionEnabled} onClick={() => confirmCorner(candidate)} title="Confirm robustly certified 3D corner">
             ?
           </button>
           <span>{Math.round(candidate.confidence * 100)}%</span>
