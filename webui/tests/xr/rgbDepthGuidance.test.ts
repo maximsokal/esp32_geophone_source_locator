@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildRgbDepthGuidanceFrame,
   buildRgbDepthGuidanceFrameFromLuma,
   guidedDepthInMeters,
   guidanceBoundaryWeight,
@@ -33,6 +34,20 @@ describe('RGB-guided physical depth', () => {
     const index = 3 * width + 4;
     expect(frame.edgeStrength[index]).toBeGreaterThan(100);
     expect(Math.abs(frame.gradientX[index])).toBeGreaterThan(Math.abs(frame.gradientY[index]));
+  });
+
+  it('preserves top-left-origin camera RGBA for the optional monocular prior', () => {
+    // readPixels-style bottom-left-origin source: bottom row first, then top row.
+    const rgba = Uint8Array.from([
+      255, 0, 0, 255,    0, 255, 0, 255,
+      0, 0, 255, 255,    255, 255, 255, 255,
+    ]);
+    const frame = buildRgbDepthGuidanceFrame(rgba, 2, 2, 2, 2, 'bottom-left', 10);
+    expect(frame.rgba).toBeDefined();
+    expect(Array.from(frame.rgba!.slice(0, 4))).toEqual([0, 0, 255, 255]);
+    expect(Array.from(frame.rgba!.slice(4, 8))).toEqual([255, 255, 255, 255]);
+    expect(Array.from(frame.rgba!.slice(8, 12))).toEqual([255, 0, 0, 255]);
+    expect(Array.from(frame.rgba!.slice(12, 16))).toEqual([0, 255, 0, 255]);
   });
 
   it('does not blend foreground and background across an RGB boundary', () => {
