@@ -86,19 +86,16 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   };
 
   // Both uncertainty-aware solvers are deliberately expensive. Geometry changes
-  // much more slowly than the XR frame rate, so alternate them instead of doing
-  // both in one worker turn. Every candidate is independently re-certified on
-  // the main thread before it is displayed, making cached candidates safe.
+  // much more slowly than the XR frame rate, so after the initial seed pass they
+  // alternate. Every cached candidate is independently re-certified on the main
+  // thread before display, so stale candidates cannot bypass validation.
   analysisSequence += 1;
-  if ((analysisSequence & 1) === 1 || lastThreePlaneCorners.length === 0) {
+  if (analysisSequence === 1) {
+    lastThreePlaneCorners = detectCertifiedStructuralCorners(certifiedSnapshot);
+    lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
+  } else if ((analysisSequence & 1) === 1) {
     lastThreePlaneCorners = detectCertifiedStructuralCorners(certifiedSnapshot);
   } else {
-    lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
-  }
-
-  // Endpoint tracking needs several independent observations. Give it a first
-  // observation early without forcing all later analyses to pay both costs.
-  if (analysisSequence === 1) {
     lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
   }
 
