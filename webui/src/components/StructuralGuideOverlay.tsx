@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import type { ProjectPoint } from '../xr/manualControlPoints';
 import { solveManualPlacementOnStableSurface } from '../xr/manualPlacementSurface';
+import { detectEdgeEndpointObservations } from '../xr/structuralEdgeEndpoints';
 import {
   matchEdgeToManualPoints,
   type StructuralCornerCandidate,
@@ -148,6 +149,10 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       positions: snapshot.positions,
       normals: snapshot.normals,
       confidence: snapshot.confidence,
+      residualMeters: snapshot.residualMeters,
+      normalConfidence: snapshot.normalConfidence,
+      coverageConfidence: snapshot.coverageConfidence,
+      coverageReady: snapshot.coverageReady,
       keyframeCount: snapshot.keyframeCount,
       voxelSizeMeters: snapshot.voxelSizeMeters,
       viewpoint,
@@ -156,7 +161,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     }).then((next) => {
       // Worker buffers were transferred/detached. Re-snapshot once per analysis
       // (not every React render) so visible candidates can be certified against
-      // current local geometry using an independent robust plane solve.
+      // current local geometry using an independent robust solve.
       const certificateSnapshot = runtime.getStructuralGuideSnapshot();
       setValidationSnapshot(certificateSnapshot);
       setResult(next);
@@ -182,28 +187,49 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
   if (runtimeState.phase !== 'running' || result === null || validationSnapshot === null) return null;
 
+  const endpointObservations = result.corners.some((candidate) => candidate.id.startsWith('endpoint:'))
+    ? detectEdgeEndpointObservations(validationSnapshot)
+    : [];
   const projectedCorners: ProjectedCorner[] = [];
   for (const candidate of result.corners) {
     if (candidate.confidence < MIN_VISIBLE_CORNER_CONFIDENCE) continue;
     if (rejected.has(candidate.id)) continue;
     if (rejectedPositions.some((position) => pointDistance(position, candidate.position) <= REJECTED_CORNER_RADIUS_METERS)) continue;
 
-    const certificate = solveManualPlacementOnStableSurface(candidate.position, validationSnapshot);
-    if (
-      !certificate.accepted ||
-      certificate.mode !== 'corner' ||
-      certificate.position === null ||
-      certificate.confidence < MIN_CERTIFIED_CORNER_CONFIDENCE ||
-      (certificate.uncertaintyMeters ?? Number.POSITIVE_INFINITY) > MAX_CERTIFIED_UNCERTAINTY_METERS ||
-      pointDistance(candidate.position, certificate.position) > MAX_CERTIFICATE_SHIFT_METERS
-    ) continue;
+    let validatedCandidate: StructuralCornerCandidate | null = null;
+    if (candidate.id.startsWith('endpoint:')) {
+      const observation = endpointObservations
+        .filter((endpoint) => endpoint.freeBeyond)
+        .sort((left, right) => pointDistance(left.position, candidate.position) - pointDistance(right.position, candidate.position))[0];
+      if (
+        observation === undefined ||
+        pointDistance(observation.position, candidate.position) > MAX_CERTIFICATE_SHIFT_METERS ||
+        observation.confidence < 0.68
+      ) continue;
+      validatedCandidate = {
+        ...candidate,
+        position: observation.position,
+        confidence: Math.min(candidate.confidence, observation.confidence),
+        support: Math.max(candidate.support, observation.support),
+      };
+    } else {
+      const certificate = solveManualPlacementOnStableSurface(candidate.position, validationSnapshot);
+      if (
+        !certificate.accepted ||
+        certificate.mode !== 'corner' ||
+        certificate.position === null ||
+        certificate.confidence < MIN_CERTIFIED_CORNER_CONFIDENCE ||
+        (certificate.uncertaintyMeters ?? Number.POSITIVE_INFINITY) > MAX_CERTIFIED_UNCERTAINTY_METERS ||
+        pointDistance(candidate.position, certificate.position) > MAX_CERTIFICATE_SHIFT_METERS
+      ) continue;
+      validatedCandidate = {
+        ...candidate,
+        position: certificate.position,
+        confidence: Math.min(candidate.confidence, certificate.confidence),
+        support: Math.max(candidate.support, certificate.supportCount),
+      };
+    }
 
-    const validatedCandidate: StructuralCornerCandidate = {
-      ...candidate,
-      position: certificate.position,
-      confidence: Math.min(candidate.confidence, certificate.confidence),
-      support: Math.max(candidate.support, certificate.supportCount),
-    };
     const projection = runtime.projectProjectPointToNormalized(validatedCandidate.position);
     if (!projection?.visible || !insideWorkingView(projection.u, projection.v)) continue;
     const centerDistance = Math.hypot(projection.u - 0.5, projection.v - 0.5);
@@ -245,6 +271,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       setRejected((current) => new Set(current).add(candidate.id));
       clientDiagnostics.info('XR_GUIDE_CORNER_CONFIRMED', {
         candidate: candidate.id,
+        source: candidate.id.startsWith('endpoint:') ? 'multi-view-edge-endpoint' : 'three-plane',
         confidence: Number(candidate.confidence.toFixed(3)),
         manualPointId: stored.point.id,
         snapped: stored.snapped,
@@ -308,7 +335,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
 
       {projectedCorners.map(({ candidate, u, v }) => (
         <div key={candidate.id} className="xr-corner-suggestion" style={{ left: `${u * 100}%`, top: `${v * 100}%` }}>
-          <button type="button" className="xr-corner-question" disabled={!interactionEnabled} onClick={() => confirmCorner(candidate)} title="Confirm robustly certified 3D corner">
+          <button type="button" className="xr-corner-question" disabled={!interactionEnabled} onClick={() => confirmCorner(candidate)} title={candidate.id.startsWith('endpoint:') ? 'Confirm multi-view edge endpoint' : 'Confirm robustly certified 3D corner'}>
             ?
           </button>
           <span>{Math.round(candidate.confidence * 100)}%</span>
