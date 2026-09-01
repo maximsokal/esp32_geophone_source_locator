@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build && node scripts/prepare-esp-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test:xr": "npx --yes vitest@4.1.11 run tests/xr",
-    "test:xr:coverage": "npx --yes --package=vitest@4.1.11 --package=@vitest/coverage-v8@4.1.11 vitest run tests/xr --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.include=src/xr/surfelEvidence.ts --coverage.include=src/xr/depthPointCloudV2.ts --coverage.include=src/xr/depthPointCloud.ts --coverage.include=src/xr/occupancyEvidence.ts --coverage.include=src/xr/webxrFusionQuality.ts --coverage.include=src/xr/meshPreview.ts",
+    "test:xr:coverage": "npx --yes --package=vitest@4.1.11 --package=@vitest/coverage-v8@4.1.11 vitest run tests/xr --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.include=src/xr/surfelEvidence.ts --coverage.include=src/xr/depthPointCloudV2.ts --coverage.include=src/xr/depthPointCloud.ts --coverage.include=src/xr/occupancyEvidence.ts --coverage.include=src/xr/webxrFusionQuality.ts --coverage.include=src/xr/meshPreview.ts --coverage.include=src/xr/structuralGuide.ts --coverage.include=src/xr/xrPerformanceProfiler.ts --coverage.include=src/xr/operatorEdges.ts --coverage.include=src/xr/projectionMath.ts",
     "stress:xr:mobile": "node scripts/run-mobile-chrome-stress.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
