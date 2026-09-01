@@ -18,7 +18,6 @@ export interface XrPerformanceSnapshot {
   fusionMaxMs: number;
   /** Compatibility aggregate: worst p95 across build/upload/draw coverage work. */
   coverageP95Ms: number;
-  /** Runtime coverage-build envelope; on legacy call sites this also includes upload. */
   coverageSnapshotP95Ms: number;
   coverageUploadP95Ms: number;
   coverageDrawP95Ms: number;
@@ -127,10 +126,12 @@ export class XrPerformanceProfiler {
     const frameDeltaP95 = this.frameDelta.percentile(0.95);
     const legacyCoverageP95 = this.metrics.coverage.percentile(0.95);
     const explicitCoverageSnapshotP95 = this.metrics.coverageSnapshot.percentile(0.95);
-    const coverageSnapshotP95 = Math.max(explicitCoverageSnapshotP95, legacyCoverageP95);
+    const coverageSnapshotP95 = this.metrics.coverageSnapshot.size > 0
+      ? explicitCoverageSnapshotP95
+      : legacyCoverageP95;
     const coverageUploadP95 = this.metrics.coverageUpload.percentile(0.95);
     const coverageDrawP95 = this.metrics.coverageDraw.percentile(0.95);
-    const coverageP95 = Math.max(coverageSnapshotP95, coverageUploadP95, coverageDrawP95);
+    const coverageP95 = Math.max(legacyCoverageP95, coverageSnapshotP95, coverageUploadP95, coverageDrawP95);
 
     let pressure: XrPerformanceSnapshot['pressure'] = 'low';
     if (
