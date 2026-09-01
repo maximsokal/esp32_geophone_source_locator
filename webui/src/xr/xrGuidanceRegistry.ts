@@ -1,13 +1,13 @@
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
 import {
   setVisualLineDetectionDeferred,
-  VisualLineEvidenceStore,
   type VisualEvidenceFrame,
 } from './visualLineEvidence';
+import { PoseDiverseVisualEvidenceStore } from './visualEvidenceReservoir';
 import { VisualLineEvidenceClient } from './visualLineEvidenceClient';
 
 let latestRgb: RgbDepthGuidanceFrame | null = null;
-const visualStore = new VisualLineEvidenceStore(64);
+const visualStore = new PoseDiverseVisualEvidenceStore(64);
 const visualClient = new VisualLineEvidenceClient();
 let visualDetectionError: string | null = null;
 
@@ -23,6 +23,10 @@ export function setLatestRgbGuidance(frame: RgbDepthGuidanceFrame | null): void 
 export function getFreshRgbGuidance(nowMs: number, maximumAgeMs = 450): RgbDepthGuidanceFrame | null {
   if (latestRgb === null || nowMs - latestRgb.capturedAtMs > maximumAgeMs) return null;
   return latestRgb;
+}
+
+function usefulVisualFrame(frame: VisualEvidenceFrame): boolean {
+  return frame.lines.length > 0 || frame.junctions.length > 0;
 }
 
 export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
@@ -46,7 +50,9 @@ export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
       worldFromView,
     ).then((resolved) => {
       visualDetectionError = null;
-      visualStore.add(resolved);
+      // Empty Hough results do not consume the bounded reservoir. The displayed
+      // count therefore represents frames that can actually validate geometry.
+      if (usefulVisualFrame(resolved)) visualStore.add(resolved);
     }).catch((error: unknown) => {
       visualDetectionError = error instanceof Error ? error.message : String(error);
     });
@@ -54,7 +60,7 @@ export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
   }
 
   // Isolated/offline callers can still supply already-detected evidence.
-  if (!deferredMarker) visualStore.add(frame);
+  if (!deferredMarker && usefulVisualFrame(frame)) visualStore.add(frame);
 }
 
 export function getVisualEvidenceFrames(): readonly VisualEvidenceFrame[] {
