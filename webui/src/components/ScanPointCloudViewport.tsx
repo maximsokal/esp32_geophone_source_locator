@@ -4,13 +4,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
-import { buildSurfaceMeshPreview } from '../xr/meshPreview';
 import {
   displayFingerprint,
   scanModeLabel,
   type ScanDisplayOptions,
   type ScanMode,
 } from '../xr/scanDisplayModes';
+import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
+import type { SparseTsdfMesh } from '../xr/sparseTsdf';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import type { ViewCommand } from './SceneViewport';
 
@@ -32,15 +33,16 @@ interface PreparedScene {
   bad: QualityBands;
   manualPositions: ReadonlyArray<readonly [number, number, number]>;
   operatorEdgePositions: Float32Array;
-  meshPositions: Float32Array;
   freeAirPositions: Float32Array;
   unknownPositions: Float32Array;
   boundsLines: Float32Array;
+  centerX: number;
+  centerY: number;
+  centerZ: number;
   extent: number;
   extentX: number;
   extentY: number;
   extentZ: number;
-  meshTriangles: number;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -104,16 +106,15 @@ function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
   const extentY = bounds === null ? 0 : bounds.max[1] - bounds.min[1];
   const extentZ = bounds === null ? 0 : bounds.max[2] - bounds.min[2];
   const extent = Math.max(0.8, extentX, extentY, extentZ);
-  const mesh = buildSurfaceMeshPreview({ positions: snapshot.positions, normals: snapshot.normals, confidence: snapshot.confidence, voxelSizeMeters: snapshot.voxelSizeMeters });
   return {
     good: splitConfidenceBands(snapshot.positions, snapshot.confidence, centerX, centerY, centerZ),
     bad: splitConfidenceBands(snapshot.tentativePositions, snapshot.tentativeConfidence, centerX, centerY, centerZ),
     manualPositions: snapshot.manualControlPoints.map((point) => transformOne(point.position[0], point.position[1], point.position[2], centerX, centerY, centerZ)),
     operatorEdgePositions: operatorEdgePositions(snapshot, centerX, centerY, centerZ),
-    meshPositions: transformPositions(mesh.trianglePositions, centerX, centerY, centerZ),
     freeAirPositions: transformPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
     unknownPositions: transformPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
-    boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ), extent, extentX, extentY, extentZ, meshTriangles: mesh.triangleCount,
+    boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ),
+    centerX, centerY, centerZ, extent, extentX, extentY, extentZ,
   };
 }
 
@@ -172,23 +173,76 @@ function CameraController({ command, extent, onInteractionEnd }: { command: View
   useFrame(() => controls.update()); return null;
 }
 
-function SceneLayers({ prepared, display }: { prepared: PreparedScene; display: ScanDisplayOptions }) {
+function SceneLayers({ prepared, display, meshPositions }: { prepared: PreparedScene; display: ScanDisplayOptions; meshPositions: Float32Array }) {
   const voxelPointSize = clamp(prepared.extent*0.010,0.018,0.055);
-  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={prepared.meshPositions} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && <OperatorEdges positions={prepared.operatorEdgePositions} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
+  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={meshPositions} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && <OperatorEdges positions={prepared.operatorEdgePositions} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
 }
 
 export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }: ScanPointCloudViewportProps) {
   const prepared = useMemo(() => prepareScene(snapshot), [snapshot]);
+  const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
+  const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
+  const [tsdfError, setTsdfError] = useState<string | null>(null);
   const [interactionRevision,setInteractionRevision] = useState(0);
   const [cameraDistance,setCameraDistance] = useState(Math.max(1.5, prepared.extent*1.75));
+
+  useEffect(() => () => tsdfClient.dispose(), [tsdfClient]);
+  useEffect(() => {
+    let cancelled = false;
+    tsdfClient.reset();
+    setTsdfMesh(null);
+    setTsdfError(null);
+    if (snapshot.pointCount < 3) return () => { cancelled = true; };
+
+    const started = performance.now();
+    void tsdfClient.reconstruct({
+      // Worker transfer must never detach the final scan snapshot still used by
+      // point/free/unknown layers in this viewport.
+      positions: snapshot.positions.slice(),
+      normals: snapshot.normals.slice(),
+      confidence: snapshot.confidence.slice(),
+      voxelSizeMeters: snapshot.voxelSizeMeters,
+      freeSpacePositions: snapshot.freeAirPositions.slice(),
+      freeSpaceVoxelSizeMeters: snapshot.occupancyVoxelSizeMeters,
+    }).then((result) => {
+      if (cancelled) return;
+      setTsdfMesh(result);
+      clientDiagnostics.info('SCAN_TSDF_READY', {
+        sourcePoints: result.sourcePointCount,
+        integratedPoints: result.integratedPointCount,
+        nodes: result.nodeCount,
+        triangles: result.triangleCount,
+        voxelMm: Math.round(result.voxelSizeMeters * 1000),
+        truncationMm: Math.round(result.truncationMeters * 1000),
+        computeMs: Number(result.computeMs.toFixed(1)),
+        roundTripMs: Number((performance.now() - started).toFixed(1)),
+      });
+      void clientDiagnostics.flush();
+    }).catch((error) => {
+      if (cancelled) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('reset') || message.includes('superseded') || message.includes('disposed')) return;
+      setTsdfError(message);
+      clientDiagnostics.warn('SCAN_TSDF_FAILED', error);
+    });
+    return () => { cancelled = true; };
+  }, [snapshot, tsdfClient]);
+
+  const meshPositions = useMemo(
+    () => tsdfMesh === null
+      ? new Float32Array(0)
+      : transformPositions(tsdfMesh.trianglePositions, prepared.centerX, prepared.centerY, prepared.centerZ),
+    [prepared.centerX, prepared.centerY, prepared.centerZ, tsdfMesh],
+  );
+
   const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode);
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
   return <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume" data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
     <div className="scan-source-badge">SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()} · EDGES {snapshot.operatorEdges.length.toLocaleString()}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
     {display.dimensions && <div className="scan-dimension-overlay">X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m</div>}
-    {display.mesh && <div className="scan-mesh-overlay">SURFACE BOUNDARY · {prepared.meshTriangles.toLocaleString()} triangles</div>}
+    {display.mesh && <div className="scan-mesh-overlay">{tsdfError !== null ? 'TSDF SURFACE · UNAVAILABLE' : tsdfMesh === null ? 'TSDF SURFACE · BUILDING…' : `TSDF SURFACE · ${tsdfMesh.triangleCount.toLocaleString()} triangles`}</div>}
     <div className="axis-note">1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height</div>
   </div>;
 }
