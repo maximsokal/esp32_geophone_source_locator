@@ -229,8 +229,8 @@ async function main() {
     await sleep(700);
 
     const expected = {
-      'mode-quality': ['quality', 'stable+tentative+pins+dims'],
-      'mode-surface': ['surface', 'stable+pins+dims'],
+      'mode-quality': ['quality', 'stable+tentative+mesh+pins+dims'],
+      'mode-surface': ['surface', 'stable+mesh+pins+dims'],
       'mode-volume': ['search-volume', 'stable+free+unknown+pins+dims'],
       'mode-mesh': ['mesh', 'mesh+pins+dims'],
     };
