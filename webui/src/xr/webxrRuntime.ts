@@ -18,7 +18,18 @@ import {
   ManualControlPointStore,
   projectDepthSampleToProject,
   type ManualControlPoint,
+  type ProjectPoint,
 } from './manualControlPoints';
+import { OperatorEdgeStore, type OperatorEdge } from './operatorEdges';
+import {
+  projectProjectPointToNormalized as projectProjectPointToScreen,
+  type NormalizedProjection,
+} from './projectionMath';
+import {
+  XrPerformanceProfiler,
+  emptyXrPerformanceSnapshot,
+  type XrPerformanceSnapshot,
+} from './xrPerformanceProfiler';
 import {
   WebXrFusionKeyframeSelector,
   type FusionMotionState,
@@ -35,6 +46,7 @@ export type XrRuntimePhase =
 
 export interface ScanPointCloudSnapshot extends DepthScanPointCloudSnapshot {
   manualControlPoints: readonly ManualControlPoint[];
+  operatorEdges: readonly OperatorEdge[];
 }
 
 export interface WebXrCapabilities {
@@ -94,7 +106,9 @@ export interface WebXrRuntimeState {
   coverageStablePoints: number;
   coverageGuideError: string | null;
   manualPointCount: number;
+  manualEdgeCount: number;
   manualPointError: string | null;
+  performance: XrPerformanceSnapshot;
   lightingEstimateAvailable: boolean;
   primaryLightIntensity: number | null;
   depthError: string | null;
@@ -265,7 +279,9 @@ const initialRuntimeState: WebXrRuntimeState = {
   coverageStablePoints: 0,
   coverageGuideError: null,
   manualPointCount: 0,
+  manualEdgeCount: 0,
   manualPointError: null,
+  performance: emptyXrPerformanceSnapshot,
   lightingEstimateAvailable: false,
   primaryLightIntensity: null,
   depthError: null,
@@ -436,6 +452,11 @@ export class WebXrRuntime {
   private readonly pointCloud = new DepthPointCloudAccumulator();
   private readonly keyframeSelector = new WebXrFusionKeyframeSelector();
   private readonly manualPoints = new ManualControlPointStore();
+  private readonly operatorEdges = new OperatorEdgeStore();
+  private readonly performanceProfiler = new XrPerformanceProfiler();
+  private readonly latestProjectionMatrix = new Float32Array(16);
+  private readonly latestWorldFromView = new Float32Array(16);
+  private hasLatestProjection = false;
 
   constructor() {
     document.addEventListener('visibilitychange', this.handleDocumentVisibilityChange);
@@ -453,11 +474,40 @@ export class WebXrRuntime {
     return {
       ...this.pointCloud.snapshot(this.depthFrameCount, this.sampledDepthFrames),
       manualControlPoints: this.manualPoints.snapshot(),
+      operatorEdges: this.operatorEdges.snapshot(),
     };
   }
 
   getLastManualPointId(): number | null {
     return this.manualPoints.lastId;
+  }
+
+  getManualControlPoints(): readonly ManualControlPoint[] {
+    return this.manualPoints.snapshot();
+  }
+
+  getOperatorEdges(): readonly OperatorEdge[] {
+    return this.operatorEdges.snapshot();
+  }
+
+  projectProjectPointToNormalized(point: ProjectPoint): NormalizedProjection | null {
+    if (!this.hasLatestProjection) return null;
+    return projectProjectPointToScreen(point, this.latestProjectionMatrix, this.latestWorldFromView);
+  }
+
+  addSuggestedManualPoint(position: ProjectPoint): { point: ManualControlPoint; created: boolean; snapped: boolean } | null {
+    if (this.session === null || this.state.phase !== 'running') return null;
+    const stored = this.manualPoints.addOrSnap(position);
+    this.lastCoverageGpuUploadMs = Number.NEGATIVE_INFINITY;
+    this.publish({ manualPointCount: this.manualPoints.size, manualPointError: null });
+    return stored;
+  }
+
+  addOperatorEdge(start: ProjectPoint, end: ProjectPoint, confidence = 1): OperatorEdge | null {
+    if (this.session === null || this.state.phase !== 'running') return null;
+    const stored = this.operatorEdges.add(start, end, confidence);
+    if (stored !== null) this.publish({ manualEdgeCount: this.operatorEdges.size });
+    return stored;
   }
 
   queueManualPointAtNormalized(u: number, v: number, pointId: number | null = null): void {
@@ -645,6 +695,7 @@ export class WebXrRuntime {
       retainedPoints: this.pointCloud.pointCount,
       keyframes: this.pointCloud.keyframeCount,
       manualPoints: this.manualPoints.size,
+      operatorEdges: this.operatorEdges.size,
     });
     void clientDiagnostics.flush();
     this.publish({ phase: 'stopping', error: null });
@@ -679,6 +730,9 @@ export class WebXrRuntime {
     this.pointCloud.reset();
     this.keyframeSelector.reset();
     this.manualPoints.reset();
+    this.operatorEdges.reset();
+    this.performanceProfiler.reset();
+    this.hasLatestProjection = false;
     this.pendingManualPointRequest = null;
     this.explicitStopRequested = false;
     this.scanPaused = false;
@@ -828,6 +882,8 @@ export class WebXrRuntime {
       coverageImprovingPoints: this.coverageImprovingPoints,
       coverageStablePoints: this.coverageStablePoints,
       manualPointCount: this.manualPoints.size,
+      manualEdgeCount: this.operatorEdges.size,
+      performance: this.performanceProfiler.snapshot(),
       lightingEstimateAvailable: this.lightingEstimateAvailable,
       primaryLightIntensity: this.primaryLightIntensity,
       error: null,
@@ -854,14 +910,21 @@ export class WebXrRuntime {
       improving: this.coverageImprovingPoints,
       stable: this.coverageStablePoints,
       manualPoints: snapshot.manualControlPoints.length,
+      operatorEdges: snapshot.operatorEdges.length,
+      performance: this.performanceProfiler.snapshot(),
       residualMm: Math.round(snapshot.averageStableResidualMeters * 1000),
     });
     void clientDiagnostics.flush();
   };
 
   private refreshCoverageGuide(time: number, force = false): void {
-    if (!force && time - this.lastCoverageGpuUploadMs < COVERAGE_GPU_UPLOAD_INTERVAL_MS) return;
+    const adaptiveIntervalMs = Math.max(
+      COVERAGE_GPU_UPLOAD_INTERVAL_MS,
+      this.performanceProfiler.recommendedCoverageIntervalMs(),
+    );
+    if (!force && time - this.lastCoverageGpuUploadMs < adaptiveIntervalMs) return;
     this.lastCoverageGpuUploadMs = time;
+    const started = performance.now();
     const coverage: LiveCoverageSnapshot = this.pointCloud.liveCoverageSnapshot();
     const counts = countCoverageQualityBands(coverage.confidence.subarray(0, coverage.pointCount));
     this.coverageGuideActive = coverage.active && this.coverageRenderer !== null;
@@ -885,6 +948,7 @@ export class WebXrRuntime {
     } else {
       this.coverageGuideRenderPoints = 0;
     }
+    this.performanceProfiler.record('coverage', performance.now() - started);
   }
 
   private updateLightEstimate(time: number, frame: XrFrameLike): void {
@@ -952,9 +1016,15 @@ export class WebXrRuntime {
         return;
       }
 
-      const stored = request.pointId === null
-        ? this.manualPoints.add(point)
-        : this.manualPoints.update(request.pointId, point);
+      let stored: ManualControlPoint | null;
+      let snapped = false;
+      if (request.pointId === null) {
+        const result = this.manualPoints.addOrSnap(point);
+        stored = result.point;
+        snapped = result.snapped;
+      } else {
+        stored = this.manualPoints.update(request.pointId, point);
+      }
       if (stored === null) {
         this.publish({ manualPointError: 'The selected manual point no longer exists.' });
         return;
@@ -962,9 +1032,12 @@ export class WebXrRuntime {
 
       this.publish({ manualPointCount: this.manualPoints.size, manualPointError: null });
       clientDiagnostics.info(
-        request.pointId === null ? 'XR_MANUAL_POINT_ADDED' : 'XR_MANUAL_POINT_MOVED',
+        request.pointId === null
+          ? (snapped ? 'XR_MANUAL_POINT_SNAPPED' : 'XR_MANUAL_POINT_ADDED')
+          : 'XR_MANUAL_POINT_MOVED',
         {
           id: stored.id,
+          snapped,
           x: Number(stored.position[0].toFixed(3)),
           y: Number(stored.position[1].toFixed(3)),
           z: Number(stored.position[2].toFixed(3)),
@@ -992,7 +1065,9 @@ export class WebXrRuntime {
 
     const view = pose.views[0];
     try {
+      const depthStarted = performance.now();
       const depth = frame.getDepthInformation(view);
+      this.performanceProfiler.record('depthAccess', performance.now() - depthStarted);
       if (depth === null) return;
       this.depthFrameCount += 1;
       this.depthWidth = depth.width;
@@ -1034,11 +1109,13 @@ export class WebXrRuntime {
         frameWeight: decision.frameWeight,
         cameraProjectPosition: projectCameraPosition(pose),
       };
+      const fusionStarted = performance.now();
       const result = this.pointCloud.sampleDepthFrame(
         depth,
         depthGeometry(depth, view),
         context,
       );
+      this.performanceProfiler.record('fusion', performance.now() - fusionStarted);
       if (result.changedPoints > 0) this.pointCloudVersion += 1;
       this.refreshCoverageGuide(time);
     } catch (error) {
@@ -1068,7 +1145,9 @@ export class WebXrRuntime {
       improving: this.coverageImprovingPoints,
       stable: this.coverageStablePoints,
       manualPoints: this.manualPoints.size,
+      operatorEdges: this.operatorEdges.size,
       motion: this.motionState,
+      performance: this.performanceProfiler.snapshot(),
     });
     void clientDiagnostics.flush();
   }
@@ -1084,6 +1163,8 @@ export class WebXrRuntime {
     ) return;
 
     session.requestAnimationFrame(this.handleFrame);
+    this.performanceProfiler.recordFrameTimestamp(time);
+    const frameWorkStarted = performance.now();
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
     gl.viewport(0, 0, layer.framebufferWidth, layer.framebufferHeight);
     gl.clearColor(0, 0, 0, 0);
@@ -1091,6 +1172,14 @@ export class WebXrRuntime {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const pose = frame.getViewerPose(referenceSpace);
+    if (pose !== null && pose.views.length > 0) {
+      const view = pose.views[0];
+      for (let index = 0; index < 16; index += 1) {
+        this.latestProjectionMatrix[index] = Number(view.projectionMatrix[index]);
+        this.latestWorldFromView[index] = Number(view.transform.matrix[index]);
+      }
+      this.hasLatestProjection = true;
+    }
     this.frameCount += 1;
     this.updateLightEstimate(time, frame);
 
@@ -1099,6 +1188,7 @@ export class WebXrRuntime {
       this.coverageRenderer?.render(layer, pose.views);
     }
 
+    this.performanceProfiler.record('frameWork', performance.now() - frameWorkStarted);
     this.reportClientTelemetry(time);
 
     if (time - this.lastUiUpdateMs < 100 && this.frameCount > 1) return;
@@ -1135,6 +1225,8 @@ export class WebXrRuntime {
       coverageStablePoints: this.coverageStablePoints,
       coverageGuideError: this.coverageGuideError,
       manualPointCount: this.manualPoints.size,
+      manualEdgeCount: this.operatorEdges.size,
+      performance: this.performanceProfiler.snapshot(),
       lightingEstimateAvailable: this.lightingEstimateAvailable,
       primaryLightIntensity: this.primaryLightIntensity,
     };
