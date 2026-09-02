@@ -59,7 +59,9 @@ describe('sparse weighted TSDF reconstruction', () => {
     expect(mesh.meshReadiness).toBe(1);
     expect(mesh.integratedPointCount).toBeGreaterThan(60);
     expect(mesh.nodeCount).toBeGreaterThan(100);
+    expect(mesh.rawTriangleCount).toBeGreaterThanOrEqual(mesh.triangleCount);
     expect(mesh.triangleCount).toBeGreaterThan(20);
+    expect(mesh.orientationConflictCount).toBe(0);
     let maxAbsZ = 0;
     for (let offset = 2; offset < mesh.trianglePositions.length; offset += 3) {
       maxAbsZ = Math.max(maxAbsZ, Math.abs(mesh.trianglePositions[offset]));
@@ -73,6 +75,7 @@ describe('sparse weighted TSDF reconstruction', () => {
     const mesh = buildSparseTsdfMesh(input(source));
     expect(mesh.integratedPointCount).toBe(0);
     expect(mesh.triangleCount).toBe(0);
+    expect(mesh.rawTriangleCount).toBe(0);
   });
 
   it('does not manufacture a mesh from many points packed into a physically tiny island', () => {
@@ -94,6 +97,7 @@ describe('sparse weighted TSDF reconstruction', () => {
     addPlane(source, 0.55);
     const mesh = buildSparseTsdfMesh(input(source));
     expect(mesh.eligibleComponentCount).toBe(2);
+    expect(mesh.meshTopologyComponentCount).toBeGreaterThanOrEqual(2);
     expect(mesh.triangleCount).toBeGreaterThan(30);
 
     let maximumTriangleSpan = 0;
@@ -108,10 +112,11 @@ describe('sparse weighted TSDF reconstruction', () => {
     expect(maximumTriangleSpan).toBeLessThan(0.16);
   });
 
-  it('respects the triangle budget', () => {
+  it('respects the triangle budget before and after topology sanitation', () => {
     const source = cloud();
     addPlane(source, 0);
     const mesh = buildSparseTsdfMesh({ ...input(source), maxTriangles: 12 });
+    expect(mesh.rawTriangleCount).toBeLessThanOrEqual(12);
     expect(mesh.triangleCount).toBeLessThanOrEqual(12);
   });
 });
