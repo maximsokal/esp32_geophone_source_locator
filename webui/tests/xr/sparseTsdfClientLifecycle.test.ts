@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { assessMeshReconstructionPreflight } from '../../src/xr/meshReconstructionPreflight';
 import { SparseTsdfMeshClient, type SparseTsdfReconstructInput } from '../../src/xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../../src/xr/sparseTsdf';
 
@@ -57,6 +58,50 @@ function result(sourcePointCount: number): SparseTsdfMesh {
   };
 }
 
+class FakePreflightWorker {
+  private readonly messageListeners = new Set<(event: MessageEvent) => void>();
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (type === 'message' && typeof listener === 'function') {
+      this.messageListeners.add(listener as (event: MessageEvent) => void);
+    }
+  }
+
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (type === 'message' && typeof listener === 'function') {
+      this.messageListeners.delete(listener as (event: MessageEvent) => void);
+    }
+  }
+
+  postMessage(message: Record<string, unknown>): void {
+    if (message.type !== 'preflight') return;
+    const positions = message.positions as Float32Array;
+    const normals = message.normals as Float32Array;
+    const confidence = message.confidence as Float32Array;
+    const result = assessMeshReconstructionPreflight({
+      positions,
+      normals,
+      confidence,
+      voxelSizeMeters: Number(message.voxelSizeMeters),
+    });
+    const response = {
+      type: 'preflight-result',
+      requestId: Number(message.requestId),
+      positions,
+      normals,
+      confidence,
+      result,
+      computeMs: 0.5,
+    };
+    queueMicrotask(() => {
+      const event = { data: response } as MessageEvent;
+      for (const listener of this.messageListeners) listener(event);
+    });
+  }
+
+  terminate(): void {}
+}
+
 class FakeWorker {
   readonly messages: Array<Record<string, unknown>> = [];
   private epoch = 0;
@@ -98,13 +143,15 @@ class FakeWorker {
   terminate(): void {}
 }
 
+const preflightFactory = (): Worker => new FakePreflightWorker() as unknown as Worker;
+
 describe('SparseTsdfMeshClient lazy worker lifecycle', () => {
-  it('does not create a worker when physical mesh preflight is not ready', async () => {
+  it('does not create a TSDF worker when physical mesh preflight is not ready', async () => {
     let factoryCalls = 0;
     const client = new SparseTsdfMeshClient(() => {
       factoryCalls += 1;
       return new FakeWorker() as unknown as Worker;
-    });
+    }, preflightFactory);
     const mesh = await client.reconstruct(gridInput(8, 8, 0.006));
     expect(mesh.triangleCount).toBe(0);
     expect(mesh.meshReadiness).toBeLessThan(1);
@@ -129,9 +176,12 @@ describe('SparseTsdfMeshClient lazy worker lifecycle', () => {
     client.dispose();
   });
 
-  it('synchronizes epoch when reset happens before the lazy worker is created', async () => {
+  it('synchronizes epoch when reset happens before the lazy TSDF worker is created', async () => {
     const worker = new FakeWorker();
-    const client = new SparseTsdfMeshClient(() => worker as unknown as Worker);
+    const client = new SparseTsdfMeshClient(
+      () => worker as unknown as Worker,
+      preflightFactory,
+    );
     client.reset();
     const mesh = await client.reconstruct(gridInput());
 
