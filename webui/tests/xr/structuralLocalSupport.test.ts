@@ -76,6 +76,13 @@ function fullEdgeCloud(x = 0, y = 0): CloudBuilder {
   addPlaneYRegion(cloud, y, x - 0.20, x + 0.20, 0, 0.40, 0.03);
   return cloud;
 }
+function fullCornerCloud(): CloudBuilder {
+  const cloud = builder();
+  addPlaneXRegion(cloud, 0, -0.20, 0.20, 0, 0.40, 0.03);
+  addPlaneYRegion(cloud, 0, -0.20, 0.20, 0, 0.40, 0.03);
+  addPlaneZRegion(cloud, 0, -0.20, 0.20, -0.20, 0.20, 0.03);
+  return cloud;
+}
 
 describe('finite local support for structural intersections', () => {
   it('rejects an infinite-plane edge when neither measured patch approaches the mathematical intersection', () => {
@@ -115,6 +122,22 @@ describe('finite local support for structural intersections', () => {
     expect(zMin).toBeGreaterThanOrEqual(0.08);
     expect(zMax).toBeLessThanOrEqual(0.22);
     expect(Math.abs(edge.end[2] - edge.start[2])).toBeLessThan(0.18);
+  });
+
+  it('does not let one plane-consistent spatial outlier stretch a measured edge interval', () => {
+    const cloud = builder();
+    // Dense support occupies z≈0.105..0.145 inside one 10 cm patch. A single
+    // line-consistent sample at z=0.195 would historically become the raw max.
+    addPlaneXRegion(cloud, 0, -0.04, 0.04, 0.105, 0.145, 0.01);
+    addPlaneYRegion(cloud, 0, -0.04, 0.04, 0.105, 0.145, 0.01);
+    addPoint(cloud, [0, 0.02, 0.195], [1, 0, 0]);
+    addPoint(cloud, [0.02, 0, 0.195], [0, 1, 0]);
+
+    const result = detectStructuralGuideGeometry(inputFrom(cloud));
+    expect(result.edges.length).toBeGreaterThan(0);
+    const edge = [...result.edges]
+      .sort((left, right) => Math.abs(left.midpoint[2] - 0.125) - Math.abs(right.midpoint[2] - 0.125))[0];
+    expect(Math.max(edge.start[2], edge.end[2])).toBeLessThan(0.18);
   });
 
   it('rejects a three-plane corner whose infinite solution is not locally supported by all three surfaces', () => {
@@ -169,5 +192,16 @@ describe('structural candidate association hardening', () => {
     const result = tracker.update(inputFrom(secondCloud, 14, [0.28, 0.5, 0.55]));
     expect(result.edges.length).toBeGreaterThan(0);
     expect(result.edges[0].observations).toBe(2);
+  });
+
+  it('clears matured legacy raw-corner state immediately when worker fast mode is enabled', () => {
+    const tracker = new StructuralGuideTracker();
+    const cloud = fullCornerCloud();
+    tracker.update(inputFrom(cloud, 10, [0.5, 0.5, 0.5]));
+    const matured = tracker.update(inputFrom(cloud, 14, [0.30, 0.50, 0.55]));
+    expect(matured.corners.length).toBeGreaterThan(0);
+
+    const fastMode = tracker.update(inputFrom(cloud, 18, [0.15, 0.50, 0.55]), 0, false);
+    expect(fastMode.corners).toHaveLength(0);
   });
 });
