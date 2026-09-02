@@ -56,6 +56,7 @@ describe('mesh topology sanity', () => {
     expect(result.discardedTriangleCount).toBe(0);
     expect(result.orientationRepairCount).toBeGreaterThan(0);
     expect(result.orientationConflictCount).toBe(0);
+    expect(result.selfIntersectionPairCount).toBe(0);
     const signs = Array.from({ length: result.triangleCount }, (_, index) => zNormalSign(result.trianglePositions, index));
     expect(new Set(signs).size).toBe(1);
   });
@@ -81,6 +82,7 @@ describe('mesh topology sanity', () => {
     expect(result.components).toHaveLength(2);
     expect(result.components.every((component) => component.disposition === 'retain')).toBe(true);
     expect(result.retainedTriangleCount).toBe(24);
+    expect(result.selfIntersectionPairCount).toBe(0);
   });
 
   it('detects a non-manifold edge and does not let that local defect poison a separate healthy component', () => {
@@ -100,11 +102,26 @@ describe('mesh topology sanity', () => {
     expect(result.quarantinedTriangleCount + result.discardedTriangleCount).toBeGreaterThanOrEqual(3);
   });
 
+  it('reports non-adjacent geometric crossings without using them as a standalone delete gate', () => {
+    const source: number[] = [];
+    pushTriangle(source, [-0.12, -0.10, 0], [0.12, -0.10, 0], [0, 0.14, 0]);
+    pushTriangle(source, [0, -0.08, -0.12], [0, 0.12, 0.12], [0, 0.14, -0.12]);
+    const result = sanitizeMeshTopology(Float32Array.from(source), 0.04);
+    expect(result.selfIntersectionPairCount).toBe(1);
+    expect(result.selfIntersectionAffectedTriangleCount).toBe(2);
+    expect(result.components.some((component) => component.meshNoiseScore > 0)).toBe(true);
+    // These two faces are too small to render for the ordinary component-size
+    // reason; the test deliberately does not assert deletion *because* they intersect.
+    expect(result.discardedTriangleCount).toBe(2);
+  });
+
   it('is deterministic for identical triangle soup', () => {
     const source = Float32Array.from(gridPatch(4, 3, 0.04, [0, 0, 0], true));
     const first = sanitizeMeshTopology(source, 0.04);
     const second = sanitizeMeshTopology(source, 0.04);
     expect(second.components).toEqual(first.components);
+    expect(second.selfIntersectionPairCount).toBe(first.selfIntersectionPairCount);
+    expect(second.selfIntersectionExactTestedPairs).toBe(first.selfIntersectionExactTestedPairs);
     expect(Array.from(second.trianglePositions)).toEqual(Array.from(first.trianglePositions));
   });
 });
