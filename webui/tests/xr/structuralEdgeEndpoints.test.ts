@@ -42,15 +42,16 @@ function add(
   target.ready.push(1);
 }
 
-function bedEdgeCloud(): Cloud {
+function edgeCloud(zStart = 0.20, zEnd = 0.50, step = 0.025): Cloud {
   const target = cloud();
-  // Two measured faces intersect in the z-axis and both terminate near z=0.50.
-  for (let z = 0.20; z <= 0.5001; z += 0.025) {
+  for (let z = zStart; z <= zEnd + 0.0001; z += step) {
     for (const y of [0.018, 0.036, 0.054]) add(target, [0, y, z], [1, 0, 0]);
     for (const x of [0.018, 0.036, 0.054]) add(target, [x, 0, z], [0, 1, 0]);
   }
   return target;
 }
+
+function bedEdgeCloud(): Cloud { return edgeCloud(); }
 
 function freeBeyondUpperEndpoint(): Float32Array {
   const points: number[] = [];
@@ -62,8 +63,7 @@ function freeBeyondUpperEndpoint(): Float32Array {
   return Float32Array.from(points);
 }
 
-function snapshot(withFree = true): EdgeEndpointSnapshot {
-  const source = bedEdgeCloud();
+function snapshotFrom(source: Cloud, withFree = true): EdgeEndpointSnapshot {
   return {
     positions: Float32Array.from(source.positions),
     normals: Float32Array.from(source.normals),
@@ -79,6 +79,10 @@ function snapshot(withFree = true): EdgeEndpointSnapshot {
   };
 }
 
+function snapshot(withFree = true): EdgeEndpointSnapshot {
+  return snapshotFrom(bedEdgeCloud(), withFree);
+}
+
 describe('multi-view structural edge endpoint evidence', () => {
   it('detects a finite two-plane endpoint only where verified FREE continues beyond it', () => {
     const observations = detectEdgeEndpointObservations(snapshot(true));
@@ -89,6 +93,14 @@ describe('multi-view structural edge endpoint evidence', () => {
     expect(freeEndpoint!.position[2]).toBeGreaterThan(0.43);
     expect(freeEndpoint!.position[2]).toBeLessThan(0.53);
     expect(freeEndpoint!.support).toBeGreaterThanOrEqual(8);
+  });
+
+  it('rejects a dense endpoint on an edge whose measured overlap is below operational line scale', () => {
+    // Plenty of samples exist at both ends, but the actual two-plane overlap is
+    // only ~8 cm. Endpoint-corner inference must not bypass the 9-cm line gate.
+    const short = snapshotFrom(edgeCloud(0.42, 0.50, 0.01), true);
+    expect(short.pointCount).toBeGreaterThan(24);
+    expect(detectEdgeEndpointObservations(short)).toHaveLength(0);
   });
 
   it('does not mature a two-plane endpoint from a single viewpoint', () => {
