@@ -32,15 +32,41 @@ function secondaryComponentSupported(component: SurfaceComponent, voxelSizeMeter
   );
 }
 
+function componentSurfaceAreaProxy(component: SurfaceComponent): number {
+  return Math.max(0, component.majorExtentMeters) * Math.max(0, component.minorExtentMeters);
+}
+
+/**
+ * Primary UNKNOWN-envelope support should be the most physically useful measured
+ * component, not merely the one containing the most surfels. A dense tiny/noisy
+ * patch can otherwise become unconditionally retained and make the actual larger
+ * structure look secondary. Mesh readiness is already a conjunction of point
+ * support, occupied cells, 2-D metric extent and occupancy density, so it is the
+ * strongest existing scale-aware signal. Remaining ties prefer broader spatial
+ * support before raw point count. The ordering is deterministic.
+ */
+function selectPrimaryComponent(analysis: SurfaceComponentAnalysis): SurfaceComponent | null {
+  if (analysis.components.length === 0) return null;
+  return [...analysis.components].sort((left, right) =>
+    Number(right.meshEligible) - Number(left.meshEligible) ||
+    right.meshReadiness - left.meshReadiness ||
+    right.occupiedCellCount - left.occupiedCellCount ||
+    componentSurfaceAreaProxy(right) - componentSurfaceAreaProxy(left) ||
+    right.pointCount - left.pointCount ||
+    left.id - right.id
+  )[0] ?? null;
+}
+
 /**
  * Build the UNKNOWN source-search envelope from connected physical components.
  *
- * The largest measured component is always retained, even early in a scan. A
+ * The strongest physically supported component is always retained, even early in
+ * a scan. "Strongest" is scale-aware rather than a raw point-count maximum. A
  * disconnected secondary island may expand the search volume only after it has
  * its own repeated spatial support: points, occupied cells, two-dimensional
  * extent, occupancy density and partial mesh-scale readiness must all agree.
  *
- * This does NOT delete the secondary island from the physical point cloud or
+ * This does NOT delete a secondary island from the physical point cloud or
  * occupancy evidence. Weak islands are only quarantined from expanding the
  * combinatorial UNKNOWN candidate volume until the operator scans them better.
  */
@@ -51,9 +77,10 @@ export function computeOperationalSurfaceEnvelope(
   fallbackBounds: PointCloudBounds | null,
 ): OperationalSurfaceEnvelope {
   const labels = analysis.componentIdByPoint;
+  const primary = selectPrimaryComponent(analysis);
   if (
     analysis.components.length === 0 ||
-    analysis.largestComponent === null ||
+    primary === null ||
     labels === undefined ||
     labels.length === 0
   ) {
@@ -66,7 +93,7 @@ export function computeOperationalSurfaceEnvelope(
     };
   }
 
-  const primaryId = analysis.largestComponent.id;
+  const primaryId = primary.id;
   const retained = new Set<number>([primaryId]);
   const quarantined = new Set<number>();
   for (const component of analysis.components) {
