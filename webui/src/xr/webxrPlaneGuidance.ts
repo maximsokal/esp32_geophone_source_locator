@@ -1,13 +1,20 @@
 export type StructuralPlaneOrientation = 'horizontal' | 'vertical' | null;
 export type ProjectPoint = readonly [number, number, number];
 export type ProjectVector = readonly [number, number, number];
+export type PlanePolygonUv = readonly [number, number];
 
 export interface StructuralPlanePrior {
   /** Plane origin copied into the same project coordinates as fused surfels. */
   center: ProjectPoint;
   /** Unit plane normal in project coordinates. */
   normal: ProjectVector;
-  /** Conservative radius of the native polygon around its origin. */
+  /** Project-space tangent corresponding to XRPlane local +X. */
+  tangentU: ProjectVector;
+  /** Project-space tangent corresponding to XRPlane local +Z. */
+  tangentV: ProjectVector;
+  /** Owned, bounded copy of XRPlane polygon in plane-local X/Z coordinates. */
+  polygonUv: readonly PlanePolygonUv[];
+  /** Conservative radius of the native polygon around its origin (fast reject only). */
   extentRadiusMeters: number;
   /** Polygon area in the plane-local X/Z coordinates. Diagnostic/advisory only. */
   areaSquareMeters: number;
@@ -32,6 +39,7 @@ export interface XrPlaneFrameLike {
 }
 
 const MAX_CAPTURED_PLANES = 24;
+const MAX_CAPTURED_POLYGON_VERTICES = 64;
 const MIN_EXTENT_METERS = 0.035;
 const MAX_EXTENT_METERS = 12;
 
@@ -67,6 +75,17 @@ function polygonAreaLocalXZ(polygon: readonly XrPlanePointLike[]): number {
   }
   return Math.abs(twiceArea) * 0.5;
 }
+function capturePolygonUv(polygon: readonly XrPlanePointLike[]): readonly PlanePolygonUv[] {
+  const finiteVertices = polygon
+    .filter((vertex) => Number.isFinite(vertex.x) && Number.isFinite(vertex.z))
+    .map((vertex) => [Number(vertex.x), Number(vertex.z)] as const);
+  if (finiteVertices.length <= MAX_CAPTURED_POLYGON_VERTICES) return finiteVertices;
+  const sampled: PlanePolygonUv[] = [];
+  for (let index = 0; index < MAX_CAPTURED_POLYGON_VERTICES; index += 1) {
+    sampled.push(finiteVertices[Math.floor(index * finiteVertices.length / MAX_CAPTURED_POLYGON_VERTICES)]);
+  }
+  return sampled;
+}
 
 /**
  * Copy one native XRPlane while its XRFrame is active.
@@ -87,7 +106,9 @@ export function captureStructuralPlanePrior(
   const center = projectPointFromReference(Number(matrix[12]), Number(matrix[13]), Number(matrix[14]));
   // Column 1 is local +Y transformed into reference space for column-major XRRigidTransform matrices.
   const normal = projectVectorFromReference(Number(matrix[4]), Number(matrix[5]), Number(matrix[6]));
-  if (normal === null || !center.every(Number.isFinite)) return null;
+  const tangentU = projectVectorFromReference(Number(matrix[0]), Number(matrix[1]), Number(matrix[2]));
+  const tangentV = projectVectorFromReference(Number(matrix[8]), Number(matrix[9]), Number(matrix[10]));
+  if (normal === null || tangentU === null || tangentV === null || !center.every(Number.isFinite)) return null;
 
   let extentRadiusMeters = 0;
   let validVertices = 0;
@@ -100,12 +121,21 @@ export function captureStructuralPlanePrior(
     );
     validVertices += 1;
   }
-  if (!finite(extentRadiusMeters) || extentRadiusMeters < MIN_EXTENT_METERS || extentRadiusMeters > MAX_EXTENT_METERS) return null;
+  const polygonUv = capturePolygonUv(plane.polygon);
+  if (
+    !finite(extentRadiusMeters) ||
+    extentRadiusMeters < MIN_EXTENT_METERS ||
+    extentRadiusMeters > MAX_EXTENT_METERS ||
+    polygonUv.length < 3
+  ) return null;
 
   const areaSquareMeters = polygonAreaLocalXZ(plane.polygon);
   return {
     center,
     normal,
+    tangentU,
+    tangentV,
+    polygonUv,
     extentRadiusMeters,
     areaSquareMeters: finite(areaSquareMeters) ? Math.max(0, areaSquareMeters) : 0,
     polygonVertexCount: validVertices,
