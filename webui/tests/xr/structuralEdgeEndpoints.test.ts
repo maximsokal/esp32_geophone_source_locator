@@ -101,6 +101,14 @@ describe('multi-view structural edge endpoint evidence', () => {
     expect(result).toHaveLength(0);
   });
 
+  it('does not mature from rotation/jitter while the camera origin barely moves', () => {
+    const tracker = new StructuralEdgeEndpointTracker();
+    const scene = snapshot(true);
+    expect(tracker.update(scene, { position: [0.45, -0.35, 0.42], keyframeId: 10 })).toHaveLength(0);
+    expect(tracker.update(scene, { position: [0.46, -0.35, 0.42], keyframeId: 14 })).toHaveLength(0);
+    expect(tracker.update(scene, { position: [0.47, -0.35, 0.42], keyframeId: 18 })).toHaveLength(0);
+  });
+
   it('matures a stable endpoint after three independent viewpoints with FREE beyond', () => {
     const tracker = new StructuralEdgeEndpointTracker();
     const scene = snapshot(true);
