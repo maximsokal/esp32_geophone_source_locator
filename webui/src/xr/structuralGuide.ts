@@ -1,3 +1,5 @@
+import { EDGE_SUPPORT_INTERVAL_METERS } from './structuralEdgeScalePolicy';
+
 export type ProjectPoint = readonly [number, number, number];
 export type ProjectVector = readonly [number, number, number];
 
@@ -128,6 +130,18 @@ interface SupportInterval {
   max: number;
   count: number;
   meanPerpendicularMeters: number;
+  /** Sorted projected inlier positions along the candidate intersection line. */
+  parameters: readonly number[];
+}
+
+interface DistributedLineSupport {
+  accepted: boolean;
+  supportCount: number;
+  occupiedBins: number;
+  binCount: number;
+  coverageRatio: number;
+  maximumGapMeters: number;
+  quality: number;
 }
 
 const PATCH_CELL_METERS = 0.10;
@@ -145,9 +159,11 @@ const RANSAC_INLIER_METERS = 0.022;
 const RANSAC_MAX_TRIALS = 18;
 const LOCAL_EDGE_SUPPORT_RADIUS_METERS = 0.075;
 const LOCAL_EDGE_SUPPORT_MARGIN_METERS = 0.025;
-const MIN_EDGE_LOCAL_SUPPORT_POINTS = 2;
+const MIN_EDGE_LOCAL_SUPPORT_POINTS = 3;
 const MIN_EDGE_SUPPORTED_LENGTH_METERS = 0.035;
 const MAX_EDGE_SUPPORTED_LENGTH_METERS = 0.34;
+const MIN_EDGE_LINEAR_BIN_COVERAGE = 0.60;
+const MAX_EDGE_LINEAR_GAP_FACTOR = 2.20;
 const CORNER_LOCAL_SUPPORT_RADIUS_METERS = 0.125;
 const MIN_CORNER_LOCAL_SUPPORT_POINTS = 2;
 const CORNER_TRACK_RADIUS_METERS = 0.16;
@@ -165,6 +181,7 @@ const MIN_VIEW_RAY_ANGLE_RAD = (9 * Math.PI) / 180;
 const MAX_TRACKED_VIEW_EVIDENCE = 7;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
+function clamp(value: number, minimum: number, maximum: number): number { return Math.max(minimum, Math.min(maximum, value)); }
 function finite3(x: number, y: number, z: number): boolean { return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z); }
 function dot(a: ProjectVector, b: ProjectVector): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 function cross(a: ProjectVector, b: ProjectVector): ProjectVector {
@@ -244,7 +261,7 @@ function weightedPlaneFit(points: readonly WeightedPoint[], extraWeights?: reado
   let xx = 0; let xy = 0; let xz = 0; let yy = 0; let yz = 0; let zz = 0;
   let normalX = 0; let normalY = 0; let normalZ = 0; let confidenceSum = 0;
   for (let index = 0; index < points.length; index += 1) {
-    const sample = points[index]; const weight = sample.confidence * (extraWeights?.[index] ?? 1);
+    const sample = points[index]; const weight = points[index].confidence * (extraWeights?.[index] ?? 1);
     if (weight <= 1e-8) continue;
     const dx = sample.point[0] - center[0]; const dy = sample.point[1] - center[1]; const dz = sample.point[2] - center[2];
     xx += weight * dx * dx; xy += weight * dx * dy; xz += weight * dx * dz;
@@ -391,15 +408,90 @@ function supportIntervalOnIntersection(patch: PlanePatch, linePoint: ProjectPoin
     max: parameters[high],
     count,
     meanPerpendicularMeters: perpendicularSum / count,
+    parameters,
   };
 }
-function supportedEdgeFromPatches(a: PlanePatch, b: PlanePatch, intersection: { point: ProjectPoint; direction: ProjectVector }): RawEdge | null {
+
+function distributedLineSupport(
+  interval: SupportInterval,
+  startT: number,
+  endT: number,
+  voxelSizeMeters: number,
+): DistributedLineSupport {
+  const span = endT - startT;
+  if (!Number.isFinite(span) || span <= 0) {
+    return { accepted: false, supportCount: 0, occupiedBins: 0, binCount: 0, coverageRatio: 0, maximumGapMeters: Number.POSITIVE_INFINITY, quality: 0 };
+  }
+  const voxel = clamp(Math.abs(voxelSizeMeters), 0.025, 0.10);
+  const binSize = clamp(voxel * 0.90, 0.028, 0.055);
+  const binCount = Math.max(2, Math.ceil(span / binSize));
+  const bins = new Uint8Array(binCount);
+  const parameters = interval.parameters.filter((value) => value >= startT - 1e-7 && value <= endT + 1e-7);
+  const requiredSupport = Math.max(
+    MIN_EDGE_LOCAL_SUPPORT_POINTS,
+    Math.ceil(span / EDGE_SUPPORT_INTERVAL_METERS) + 1,
+  );
+  for (const value of parameters) {
+    const normalized = clamp01((value - startT) / Math.max(span, 1e-9));
+    bins[Math.min(binCount - 1, Math.floor(normalized * binCount))] = 1;
+  }
+  let occupiedBins = 0;
+  for (const value of bins) occupiedBins += value;
+  const coverageRatio = occupiedBins / binCount;
+  let maximumGapMeters = 0;
+  let previous = startT;
+  for (const value of parameters) {
+    maximumGapMeters = Math.max(maximumGapMeters, value - previous);
+    previous = value;
+  }
+  maximumGapMeters = Math.max(maximumGapMeters, endT - previous);
+  const allowedGapMeters = Math.max(binSize * MAX_EDGE_LINEAR_GAP_FACTOR, voxel * 1.8);
+  const gapQuality = clamp01(1 - maximumGapMeters / Math.max(allowedGapMeters * 1.35, 1e-9));
+  const densityQuality = clamp01(parameters.length / Math.max(requiredSupport, 1));
+  const quality = clamp01(coverageRatio * 0.50 + gapQuality * 0.28 + densityQuality * 0.22);
+  return {
+    accepted:
+      parameters.length >= requiredSupport &&
+      occupiedBins >= Math.min(2, binCount) &&
+      coverageRatio >= MIN_EDGE_LINEAR_BIN_COVERAGE &&
+      maximumGapMeters <= allowedGapMeters,
+    supportCount: parameters.length,
+    occupiedBins,
+    binCount,
+    coverageRatio,
+    maximumGapMeters,
+    quality,
+  };
+}
+
+function supportedEdgeFromPatches(
+  a: PlanePatch,
+  b: PlanePatch,
+  intersection: { point: ProjectPoint; direction: ProjectVector },
+  voxelSizeMeters: number,
+): RawEdge | null {
   const supportA = supportIntervalOnIntersection(a, intersection.point, intersection.direction);
   const supportB = supportIntervalOnIntersection(b, intersection.point, intersection.direction);
   if (supportA === null || supportB === null) return null;
-  let startT = Math.max(supportA.min, supportB.min) - LOCAL_EDGE_SUPPORT_MARGIN_METERS;
-  let endT = Math.min(supportA.max, supportB.max) + LOCAL_EDGE_SUPPORT_MARGIN_METERS;
-  if (endT - startT < MIN_EDGE_SUPPORTED_LENGTH_METERS) return null;
+
+  // Margins may extend a confirmed line for display, but they must never bridge
+  // two non-overlapping measured support intervals. First prove a physical common
+  // span, then test how evenly EACH surface supports that span.
+  let coreStartT = Math.max(supportA.min, supportB.min);
+  let coreEndT = Math.min(supportA.max, supportB.max);
+  const minimumCoreLength = Math.max(MIN_EDGE_SUPPORTED_LENGTH_METERS, clamp(Math.abs(voxelSizeMeters) * 0.90, 0.032, 0.055));
+  if (coreEndT - coreStartT < minimumCoreLength) return null;
+  if (coreEndT - coreStartT > MAX_EDGE_SUPPORTED_LENGTH_METERS) {
+    const center = (coreStartT + coreEndT) * 0.5;
+    coreStartT = center - MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
+    coreEndT = center + MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
+  }
+  const distributedA = distributedLineSupport(supportA, coreStartT, coreEndT, voxelSizeMeters);
+  const distributedB = distributedLineSupport(supportB, coreStartT, coreEndT, voxelSizeMeters);
+  if (!distributedA.accepted || !distributedB.accepted) return null;
+
+  let startT = coreStartT - LOCAL_EDGE_SUPPORT_MARGIN_METERS;
+  let endT = coreEndT + LOCAL_EDGE_SUPPORT_MARGIN_METERS;
   if (endT - startT > MAX_EDGE_SUPPORTED_LENGTH_METERS) {
     const center = (startT + endT) * 0.5;
     startT = center - MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
@@ -407,14 +499,15 @@ function supportedEdgeFromPatches(a: PlanePatch, b: PlanePatch, intersection: { 
   }
   const start = addScaled(intersection.point, intersection.direction, startT);
   const end = addScaled(intersection.point, intersection.direction, endT);
-  const supportQuality = clamp01(1 - (supportA.meanPerpendicularMeters + supportB.meanPerpendicularMeters) / (LOCAL_EDGE_SUPPORT_RADIUS_METERS * 2));
+  const perpendicularQuality = clamp01(1 - (supportA.meanPerpendicularMeters + supportB.meanPerpendicularMeters) / (LOCAL_EDGE_SUPPORT_RADIUS_METERS * 2));
+  const distributionQuality = Math.min(distributedA.quality, distributedB.quality);
   return {
     start,
     end,
     midpoint: midpoint(start, end),
     direction: intersection.direction,
-    geometryConfidence: supportQuality,
-    support: supportA.count + supportB.count,
+    geometryConfidence: clamp01(perpendicularQuality * 0.42 + distributionQuality * 0.58),
+    support: distributedA.supportCount + distributedB.supportCount,
   };
 }
 function localCornerSupport(patch: PlanePatch, point: ProjectPoint): number {
@@ -428,11 +521,19 @@ function solveThreePlanes(a: PlanePatch, b: PlanePatch, c: PlanePatch): ProjectP
   const point: ProjectPoint = [(a.d * bc[0] + b.d * ca[0] + c.d * ab[0]) * inverse, (a.d * bc[1] + b.d * ca[1] + c.d * ab[1]) * inverse, (a.d * bc[2] + b.d * ca[2] + c.d * ab[2]) * inverse];
   return finite3(point[0], point[1], point[2]) ? point : null;
 }
-function pairGeometryScore(a: PlanePatch, b: PlanePatch, centerDistance: number): number {
+function pairGeometryScore(a: PlanePatch, b: PlanePatch, centerDistance: number, localLineQuality: number): number {
   const absDot = Math.min(1, Math.abs(dot(a.normal, b.normal))); const angle = Math.acos(absDot); const conditioning = clamp01(Math.sin(angle));
   const angleScore = clamp01((angle - MIN_PLANE_ANGLE_RAD) / (Math.PI / 2 - MIN_PLANE_ANGLE_RAD)); const supportScore = clamp01((a.support + b.support) / 18);
   const fitQuality = (a.confidence + b.confidence) * 0.5; const planarity = (a.planarity + b.planarity) * 0.5; const proximity = clamp01(1 - centerDistance / MAX_PATCH_NEIGHBOUR_METERS);
-  return clamp01(angleScore * 0.20 + conditioning * 0.16 + supportScore * 0.18 + fitQuality * 0.22 + planarity * 0.14 + proximity * 0.10);
+  return clamp01(
+    angleScore * 0.18 +
+    conditioning * 0.14 +
+    supportScore * 0.12 +
+    clamp01(localLineQuality) * 0.18 +
+    fitQuality * 0.18 +
+    planarity * 0.11 +
+    proximity * 0.09
+  );
 }
 function dedupeCorners(raw: RawCorner[]): RawCorner[] {
   const output: RawCorner[] = [];
@@ -468,9 +569,9 @@ export function detectStructuralGuideGeometry(
         const angle = Math.acos(Math.min(1, Math.abs(dot(a.normal, b.normal)))); if (angle < MIN_PLANE_ANGLE_RAD) continue;
         const intersection = intersectTwoPlanesNear(a, b, midpoint(a.center, b.center)); if (intersection === null) continue;
         if (distance(intersection.point, a.center) > MAX_CORNER_CENTER_DISTANCE_METERS || distance(intersection.point, b.center) > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
-        const edge = supportedEdgeFromPatches(a, b, intersection); if (edge === null) continue;
-        const geometric = pairGeometryScore(a, b, centerDistance); if (geometric < 0.48) continue;
-        edge.geometryConfidence = clamp01(geometric * 0.82 + edge.geometryConfidence * 0.18);
+        const edge = supportedEdgeFromPatches(a, b, intersection, input.voxelSizeMeters); if (edge === null) continue;
+        const geometric = pairGeometryScore(a, b, centerDistance, edge.geometryConfidence); if (geometric < 0.48) continue;
+        edge.geometryConfidence = clamp01(geometric * 0.72 + edge.geometryConfidence * 0.28);
         const freeConflict = edgeFreeSpaceConflict(freeSpace, edge); if (freeConflict >= 0.43) { rejectedByFreeSpace += 1; continue; }
         edge.geometryConfidence *= 1 - freeConflict * 0.72; if (edge.geometryConfidence < 0.48) { rejectedByFreeSpace += 1; continue; }
         edges.push(edge); const forA = adjacency.get(i) ?? new Set<number>(); const forB = adjacency.get(j) ?? new Set<number>(); forA.add(j); forB.add(i); adjacency.set(i, forA); adjacency.set(j, forB);
