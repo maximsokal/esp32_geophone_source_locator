@@ -27,6 +27,18 @@ function addGrid(
   }
 }
 
+function addCluster(
+  target: Cloud,
+  x: number,
+  normal: readonly [number, number, number] = [0, 0, 1],
+): void {
+  for (const [dy, dz] of [[0, 0], [0.008, 0], [0, 0.008], [0.008, 0.008]] as const) {
+    target.positions.push(x, 0.010 + dy, 0.010 + dz);
+    target.normals.push(...normal);
+    target.confidence.push(0.92);
+  }
+}
+
 function addFamily(
   target: Cloud,
   count: number,
@@ -89,6 +101,30 @@ describe('bounded spatial surface components', () => {
     expect(result.eligiblePointCount).toBe(0);
   });
 
+  it('does not bridge same-normal supports merely because their hash cells are adjacent', () => {
+    const source = cloud();
+    // With voxel=4 cm the connection cell is 6 cm. x=1 mm and x=119 mm land
+    // in cells 0 and 1, so the old cell-only BFS incorrectly joined them even
+    // though almost 12 cm of unmeasured space separates their actual supports.
+    addCluster(source, 0.001);
+    addCluster(source, 0.119);
+    const result = analyze(source);
+    expect(result.connectionCellSizeMeters).toBeCloseTo(0.06);
+    expect(result.acceptedPointCount).toBe(8);
+    expect(result.componentCount).toBe(2);
+    expect(result.components.map((component) => component.pointCount).sort((a, b) => a - b)).toEqual([4, 4]);
+  });
+
+  it('still connects physically close support across a hash-cell boundary', () => {
+    const source = cloud();
+    addCluster(source, 0.055);
+    addCluster(source, 0.065);
+    const result = analyze(source);
+    expect(result.acceptedPointCount).toBe(8);
+    expect(result.componentCount).toBe(1);
+    expect(result.components[0].pointCount).toBe(8);
+  });
+
   it('keeps orthogonal surface families disconnected even when they share spatial cells', () => {
     const source = cloud();
     addGrid(source, [0, 0, 0], 8, 8, 0.04, [0, 0, 1]);
@@ -144,9 +180,9 @@ describe('bounded spatial surface components', () => {
   it('does not let a sparse connected tail inflate a tiny patch into a mesh-sized component', () => {
     const source = cloud();
     addGrid(source, [0, 0, 0], 7, 7, 0.01);
-    // Four high-confidence points form a connected tail through neighbouring
-    // 6-cm hash cells. A covariance-only extent can be dominated by this tail,
-    // but it is not enough measured area to redefine the physical object size.
+    // Four high-confidence points form a genuinely connected tail at 5-cm steps.
+    // The metric gate keeps it connected, while robust trimmed PCA extent ensures
+    // this sparse tail still cannot redefine the object's meaningful mesh size.
     for (const x of [0.10, 0.15, 0.20, 0.25]) {
       source.positions.push(x, 0.03, 0);
       source.normals.push(0, 0, 1);
