@@ -1,3 +1,4 @@
+import { BoundedSpatialPointIndex } from './boundedSpatialPointIndex';
 import type { ManualPlacementSurfaceSnapshot, ProjectPoint, ProjectVector } from './manualPlacementSurface';
 import {
   distance3,
@@ -52,6 +53,7 @@ interface EndpointTrack {
 const SEED_CELL_METERS = 0.14;
 const MAX_SEEDS = 72;
 const LOCAL_RADIUS_METERS = 0.18;
+const LOCAL_INDEX_CELL_METERS = 0.09;
 const EDGE_BAND_METERS = 0.065;
 const MIN_PLANE_SUPPORT = 7;
 const MIN_EDGE_SIDE_SUPPORT = 4;
@@ -275,19 +277,18 @@ export function detectEdgeEndpointObservations(snapshot: EdgeEndpointSnapshot): 
     .sort((left, right) => right.confidence - left.confidence)
     .slice(0, MAX_SEEDS);
   const freeIndex = buildFreeIndex(snapshot);
+  const spatialIndex = new BoundedSpatialPointIndex(snapshot.positions, count, LOCAL_INDEX_CELL_METERS);
   const observations: EdgeEndpointObservation[] = [];
 
   for (const seed of seedList) {
     const local: LocalSample[] = [];
-    for (let index = 0; index < count; index += 1) {
+    for (const index of spatialIndex.queryRadius(seed.position, LOCAL_RADIUS_METERS)) {
       const offset = index * 3;
-      const position: ProjectPoint = [snapshot.positions[offset], snapshot.positions[offset + 1], snapshot.positions[offset + 2]];
-      if (distance3(position, seed.position) > LOCAL_RADIUS_METERS) continue;
       const weight = evidenceWeight(snapshot, index);
       if (weight <= 0.05) continue;
       local.push({
         sourceIndex: index,
-        position,
+        position: [snapshot.positions[offset], snapshot.positions[offset + 1], snapshot.positions[offset + 2]],
         normal: [snapshot.normals[offset], snapshot.normals[offset + 1], snapshot.normals[offset + 2]],
         weight,
         residualMeters: optionalAt(snapshot.residualMeters, index, 0.018),
