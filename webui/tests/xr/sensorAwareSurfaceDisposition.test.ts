@@ -4,11 +4,13 @@ import { classifySensorAwareSurfaceComponents } from '../../src/xr/sensorAwareSu
 import type { SensorSurfaceRelevanceAnalysis } from '../../src/xr/sensorAwareSurfaceRelevance';
 import type { OperationalSurfaceEnvelope } from '../../src/xr/surfaceOperationalEnvelope';
 
-function envelope(): OperationalSurfaceEnvelope {
+function envelope(rescanBridgeComponentIds: readonly number[] = []): OperationalSurfaceEnvelope {
   return {
     bounds: null,
     retainedComponentIds: [0, 2],
     quarantinedComponentIds: [1, 3],
+    rescanBridgeComponentIds,
+    bridgeEvidenceTruncated: false,
     retainedPointCount: 100,
     quarantinedPointCount: 20,
   };
@@ -61,10 +63,27 @@ describe('sensor-aware floating island disposition', () => {
     expect(result.find((entry) => entry.componentId === 3)?.disposition).toBe('quarantine');
   });
 
+  it('marks a sensor-neutral weak bridge only as rescan metadata', () => {
+    const result = classifySensorAwareSurfaceComponents(envelope([3]), null);
+    expect(result.find((entry) => entry.componentId === 3)?.disposition).toBe('rescan-bridge');
+    expect(result.find((entry) => entry.componentId === 1)?.disposition).toBe('quarantine');
+  });
+
+  it('lets frame-validated sensor relevance outrank bridge-rescan metadata without certifying geometry', () => {
+    const result = classifySensorAwareSurfaceComponents(envelope([1]), relevance('ready'));
+    expect(result.find((entry) => entry.componentId === 1)?.disposition).toBe('promote-near-sensor');
+  });
+
   it('never promotes on a coordinate-frame mismatch', () => {
     const result = classifySensorAwareSurfaceComponents(envelope(), relevance('frame-mismatch'));
     expect(result.find((entry) => entry.componentId === 1)?.disposition).toBe('quarantine');
     expect(result.find((entry) => entry.componentId === 3)?.disposition).toBe('quarantine');
+  });
+
+  it('frame mismatch still allows sensor-neutral bridge RESCAN but never sensor promotion', () => {
+    const result = classifySensorAwareSurfaceComponents(envelope([3]), relevance('frame-mismatch'));
+    expect(result.find((entry) => entry.componentId === 3)?.disposition).toBe('rescan-bridge');
+    expect(result.filter((entry) => entry.disposition === 'promote-near-sensor')).toHaveLength(0);
   });
 
   it('never promotes when sensor coordinates are unavailable', () => {
