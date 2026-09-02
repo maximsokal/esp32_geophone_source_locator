@@ -1,7 +1,7 @@
 import type { SensorSurfaceRelevanceAnalysis } from './sensorAwareSurfaceRelevance';
 import type { OperationalSurfaceEnvelope } from './surfaceOperationalEnvelope';
 
-export type SensorAwareSurfaceDisposition = 'retain' | 'quarantine' | 'promote-near-sensor';
+export type SensorAwareSurfaceDisposition = 'retain' | 'quarantine' | 'rescan-bridge' | 'promote-near-sensor';
 
 export interface SensorAwareSurfaceDispositionEntry {
   componentId: number;
@@ -12,13 +12,16 @@ export interface SensorAwareSurfaceDispositionEntry {
 
 /**
  * Combine the existing physical connected-component quarantine policy with an
- * optional, frame-validated sensor relevance signal.
+ * optional, frame-validated sensor relevance signal and sensor-neutral weak-bridge
+ * rescan metadata.
  *
  * Safety contract:
  * - this is metadata only; it never deletes or mutates physical surfels;
  * - already-retained physical components stay retained;
  * - a quarantined component may be promoted only when sensor relevance status is
  *   `ready`, which itself requires sensorFrameId === scanFrameId;
+ * - weak physical bridge evidence can only request RESCAN and never expands the
+ *   operational UNKNOWN envelope or certifies geometry;
  * - lack of sensor proximity never demotes a component and never proves noise;
  * - `promote-near-sensor` means "important to preserve/rescan/model first", not
  *   "the mesh is geometrically certified".
@@ -33,6 +36,7 @@ export function classifySensorAwareSurfaceComponents(
 ): readonly SensorAwareSurfaceDispositionEntry[] {
   const retained = new Set(envelope.retainedComponentIds);
   const quarantined = new Set(envelope.quarantinedComponentIds);
+  const bridgeRescan = new Set(envelope.rescanBridgeComponentIds);
   const relevant = relevance?.status === 'ready'
     ? new Set(relevance.relevantComponentIds)
     : new Set<number>();
@@ -48,7 +52,9 @@ export function classifySensorAwareSurfaceComponents(
       ? 'retain'
       : quarantined.has(componentId) && relevant.has(componentId)
         ? 'promote-near-sensor'
-        : 'quarantine';
+        : quarantined.has(componentId) && bridgeRescan.has(componentId)
+          ? 'rescan-bridge'
+          : 'quarantine';
     return {
       componentId,
       disposition,
