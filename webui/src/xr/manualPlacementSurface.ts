@@ -38,6 +38,8 @@ export interface ManualPlacementResolution {
   message: string;
   uncertaintyMeters?: number | null;
   conditionNumber?: number | null;
+  /** Weakest robust measured arm among the three supporting corner planes. */
+  minimumCornerArmSpanMeters?: number | null;
 }
 
 export type ManualPlacementResolver = (candidate: ProjectPoint) => ManualPlacementResolution;
@@ -45,6 +47,11 @@ export type ManualPlacementResolver = (candidate: ProjectPoint) => ManualPlaceme
 interface LocalSample extends RobustPlaneSample {
   sourceIndex: number;
   distance: number;
+}
+
+interface CornerArmSupport {
+  accepted: boolean;
+  minimumSpanMeters: number;
 }
 
 let activeResolver: ManualPlacementResolver | null = null;
@@ -82,6 +89,7 @@ function reject(
     message,
     uncertaintyMeters,
     conditionNumber,
+    minimumCornerArmSpanMeters: null,
   };
 }
 
@@ -131,6 +139,55 @@ function planeSupportNear(
     nearest = Math.min(nearest, distance3(sample.position, position));
   }
   return nearest <= gateMeters;
+}
+
+function robustQuantile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+  values.sort((a, b) => a - b);
+  const position = clamp(q, 0, 1) * (values.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return values[lower];
+  const fraction = position - lower;
+  return values[lower] * (1 - fraction) + values[upper] * fraction;
+}
+
+/**
+ * A mathematically good three-plane intersection is not automatically a useful
+ * structural corner. Each measured surface must continue a meaningful distance
+ * away from the proposed vertex and must have several inliers along that arm.
+ * This prevents a 2-3 cm chip/notch from being promoted like a building/furniture
+ * corner merely because the three tiny patches happen to be well conditioned.
+ */
+function cornerArmSupport(
+  planes: readonly [RobustPlane, RobustPlane, RobustPlane],
+  samples: readonly LocalSample[],
+  corner: ProjectPoint,
+  voxelSizeMeters: number,
+): CornerArmSupport {
+  const minimumRequiredSpan = clamp(Math.abs(voxelSizeMeters) * 1.45, 0.055, 0.085);
+  let minimumSpanMeters = Number.POSITIVE_INFINITY;
+  for (const plane of planes) {
+    const distances: number[] = [];
+    for (const localIndex of plane.inlierIndices) {
+      const sample = samples[localIndex];
+      if (sample === undefined) continue;
+      const value = distance3(sample.position, corner);
+      if (Number.isFinite(value)) distances.push(value);
+    }
+    if (distances.length < MIN_PLANE_SUPPORT) return { accepted: false, minimumSpanMeters: 0 };
+    const span = robustQuantile(distances, 0.80);
+    minimumSpanMeters = Math.min(minimumSpanMeters, span);
+    const farSupport = distances.filter((value) => value >= minimumRequiredSpan * 0.70).length;
+    const requiredFarSupport = Math.max(3, Math.ceil(distances.length * 0.22));
+    if (span < minimumRequiredSpan || farSupport < requiredFarSupport) {
+      return { accepted: false, minimumSpanMeters: Number.isFinite(minimumSpanMeters) ? minimumSpanMeters : 0 };
+    }
+  }
+  return {
+    accepted: true,
+    minimumSpanMeters: Number.isFinite(minimumSpanMeters) ? minimumSpanMeters : 0,
+  };
 }
 
 function bestEdge(
@@ -236,15 +293,20 @@ export function solveManualPlacementOnStableSurface(
 
   const supportNearGate = clamp(snapshot.voxelSizeMeters * 2.0, 0.055, 0.090);
   if (planes.length >= 3) {
-    const corner = solveThreeRobustPlanes(planes[0], planes[1], planes[2]);
+    const cornerPlanes: [RobustPlane, RobustPlane, RobustPlane] = [planes[0], planes[1], planes[2]];
+    const corner = solveThreeRobustPlanes(cornerPlanes[0], cornerPlanes[1], cornerPlanes[2]);
+    const arms = corner === null
+      ? { accepted: false, minimumSpanMeters: 0 }
+      : cornerArmSupport(cornerPlanes, samples, corner.position, snapshot.voxelSizeMeters);
     if (
       corner !== null &&
+      arms.accepted &&
       corner.conditionNumber <= MAX_CORNER_CONDITION_NUMBER &&
       corner.maxStdDevMeters <= MAX_CORNER_UNCERTAINTY_METERS &&
       distance3(corner.position, candidate) <= searchRadius &&
-      planes.every((plane) => planeSupportNear(plane, samples, corner.position, supportNearGate))
+      cornerPlanes.every((plane) => planeSupportNear(plane, samples, corner.position, supportNearGate))
     ) {
-      const planeQuality = Math.min(planes[0].confidence, planes[1].confidence, planes[2].confidence);
+      const planeQuality = Math.min(cornerPlanes[0].confidence, cornerPlanes[1].confidence, cornerPlanes[2].confidence);
       const uncertaintyScore = clamp01((MAX_CORNER_UNCERTAINTY_METERS - corner.maxStdDevMeters) / 0.026);
       const proximityScore = clamp01(1 - distance3(corner.position, candidate) / searchRadius);
       // Never advertise mathematically perfect certainty from consumer depth.
@@ -257,11 +319,12 @@ export function solveManualPlacementOnStableSurface(
           position: corner.position,
           mode: 'corner',
           confidence,
-          supportCount: planes[0].support + planes[1].support + planes[2].support,
+          supportCount: cornerPlanes[0].support + cornerPlanes[1].support + cornerPlanes[2].support,
           sourceDistanceMeters: nearestDistance,
           uncertaintyMeters: corner.maxStdDevMeters,
           conditionNumber: corner.conditionNumber,
-          message: 'CORNER LOCK · robust 3-plane intersection with bounded uncertainty.',
+          minimumCornerArmSpanMeters: arms.minimumSpanMeters,
+          message: 'CORNER LOCK · robust 3-plane intersection with measured physical arms.',
         };
       }
     }
@@ -306,6 +369,7 @@ export function solveManualPlacementOnStableSurface(
     sourceDistanceMeters: nearestDistance,
     uncertaintyMeters: edge.uncertainty,
     conditionNumber: null,
+    minimumCornerArmSpanMeters: null,
     message: 'EDGE LOCK · robust 2-plane intersection with bounded uncertainty.',
   };
 }
