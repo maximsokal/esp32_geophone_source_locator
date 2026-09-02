@@ -34,6 +34,7 @@ const MIN_CLUSTER_CONFIDENCE = 0.42;
 const FEATURE_DETAIL_THRESHOLD = 0.20;
 const FEATURE_CELL_SCALE = 0.58;
 const MIN_FEATURE_CELL_METERS = 0.028;
+const MAX_COMPLEXITY_EVIDENCE = 96;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 function normalize(x: number, y: number, z: number): Vector3 | null {
@@ -46,8 +47,52 @@ function canonical(normal: Vector3): Vector3 {
   const axis = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
   return normal[axis] < 0 ? [-normal[0], -normal[1], -normal[2]] : normal;
 }
+function cellCoordinates(point: ProjectPoint, size: number): readonly [number, number, number] {
+  return [Math.floor(point[0] / size), Math.floor(point[1] / size), Math.floor(point[2] / size)];
+}
+function coordinateKey(x: number, y: number, z: number): string { return `${x}:${y}:${z}`; }
 function cellKey(point: ProjectPoint, size: number): string {
-  return `${Math.floor(point[0] / size)}:${Math.floor(point[1] / size)}:${Math.floor(point[2] / size)}`;
+  const [x, y, z] = cellCoordinates(point, size);
+  return coordinateKey(x, y, z);
+}
+function parseCoordinateKey(key: string): readonly [number, number, number] | null {
+  const values = key.split(':');
+  if (values.length !== 3) return null;
+  const x = Number(values[0]), y = Number(values[1]), z = Number(values[2]);
+  return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) ? [x, y, z] : null;
+}
+
+function boundedNeighbourhoodEvidence(
+  key: string,
+  evidenceByCell: ReadonlyMap<string, readonly SurfaceNormalEvidence[]>,
+): readonly SurfaceNormalEvidence[] {
+  const coordinate = parseCoordinateKey(key);
+  if (coordinate === null) return evidenceByCell.get(key) ?? [];
+  const combined: SurfaceNormalEvidence[] = [];
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dz = -1; dz <= 1; dz += 1) {
+        const evidence = evidenceByCell.get(coordinateKey(
+          coordinate[0] + dx,
+          coordinate[1] + dy,
+          coordinate[2] + dz,
+        ));
+        if (evidence !== undefined) combined.push(...evidence);
+      }
+    }
+  }
+  if (combined.length <= MAX_COMPLEXITY_EVIDENCE) return combined;
+
+  // Structural inference already runs off the XR render path, but keep feature
+  // classification bounded even in unusually dense local scans. A deterministic
+  // stride samples the whole 3x3x3 neighbourhood instead of letting the first
+  // spatial bucket dominate the normal distribution.
+  const sampled = new Array<SurfaceNormalEvidence>(MAX_COMPLEXITY_EVIDENCE);
+  const stride = combined.length / MAX_COMPLEXITY_EVIDENCE;
+  for (let index = 0; index < MAX_COMPLEXITY_EVIDENCE; index += 1) {
+    sampled[index] = combined[Math.min(combined.length - 1, Math.floor((index + 0.5) * stride))];
+  }
+  return sampled;
 }
 
 /**
@@ -56,10 +101,15 @@ function cellKey(point: ProjectPoint, size: number): string {
  *
  * Flat regions use coarse cells and a tolerant normal family. Cells that show
  * robust normal variation (smooth convex curvature or multiple supported
- * surfaces) are subdivided and use a tighter family angle. This preserves more
- * structural samples around bends/edges/corners while leaving the upstream
- * physical acceptance, multi-view promotion and global memory budget untouched.
- * Opposite normal signs still belong to the same physical surface family.
+ * surfaces) are subdivided and use a tighter family angle. Complexity is
+ * evaluated over the neighbouring 3x3x3 base cells so a real edge that happens
+ * to lie exactly on a hash-cell boundary cannot disappear simply because each
+ * side looked locally flat in isolation. The neighbourhood sample is bounded.
+ *
+ * This preserves more structural samples around bends/edges/corners while
+ * leaving physical acceptance, multi-view promotion and the global memory
+ * budget untouched. Opposite normal signs still belong to the same physical
+ * surface family.
  */
 export function clusterStructuralSurfaceFamilies(
   source: StructuralGuidePointCloudSnapshot,
@@ -114,8 +164,9 @@ export function clusterStructuralSurfaceFamilies(
   if (samples.length === 0) return source;
 
   const featureScoreByBaseCell = new Map<string, number>();
-  for (const [key, evidence] of normalEvidenceByBaseCell) {
-    featureScoreByBaseCell.set(key, estimateSurfaceFeatureComplexity(evidence).score);
+  for (const key of normalEvidenceByBaseCell.keys()) {
+    const neighbourhood = boundedNeighbourhoodEvidence(key, normalEvidenceByBaseCell);
+    featureScoreByBaseCell.set(key, estimateSurfaceFeatureComplexity(neighbourhood).score);
   }
 
   const cells = new Map<string, Family[]>();
