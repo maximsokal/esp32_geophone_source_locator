@@ -4,6 +4,7 @@ import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
 import { isCurrentStructuralGuideWorkerResult } from './structuralGuideProtocol';
 import type { StructuralPlanePrior } from './webxrPlaneGuidance';
+import { getLatestStructuralPlanePriors } from './xrPlaneGuidanceRegistry';
 
 interface AnalyzeInput {
   positions: Float32Array;
@@ -59,6 +60,11 @@ export class StructuralGuideClient {
     if (this.pending !== null) return Promise.reject(new Error('Structural guide analysis is already running.'));
     const id = this.nextRequestId++;
     const epoch = this.epoch;
+    // Callers may explicitly override priors for deterministic tests. Production
+    // analyses otherwise consume the latest frame-owned numeric plane snapshot.
+    // Native planes remain advisory: the worker can only rotate normals of
+    // already-measured physical surfels and cannot create OCCUPIED/FREE geometry.
+    const planePriors = input.planePriors ?? getLatestStructuralPlanePriors();
     return new Promise((resolve, reject) => {
       this.pending = { id, epoch, resolve, reject, started: performance.now() };
       const transfer: Transferable[] = [input.positions.buffer, input.normals.buffer, input.confidence.buffer];
@@ -83,7 +89,7 @@ export class StructuralGuideClient {
         viewpoint: input.viewpoint ?? null,
         freeSpacePositions: input.freeSpacePositions,
         freeSpaceVoxelSizeMeters: input.freeSpaceVoxelSizeMeters,
-        planePriors: input.planePriors ?? [],
+        planePriors,
       }, transfer);
     });
   }
