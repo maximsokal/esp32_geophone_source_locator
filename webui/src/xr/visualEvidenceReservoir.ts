@@ -73,11 +73,20 @@ function isolationScore(frames: readonly VisualEvidenceFrame[], index: number): 
   return nearest + second * 0.65;
 }
 
+function sameCapture(a: VisualEvidenceFrame, b: VisualEvidenceFrame): boolean {
+  return Math.abs(a.capturedAtMs - b.capturedAtMs) <= 0.01;
+}
+
 /**
  * Scan-wide, bounded RGB evidence reservoir. Unlike FIFO it preserves camera
  * baseline/orientation diversity across a long scan. Eviction uses a maximin-
  * style isolation score and visual evidence quality, so redundant middle poses
  * disappear before unique early/late viewpoints.
+ *
+ * RGB capture timestamp, not a later depth-keyframe id, is the observation
+ * identity. This matters for WebGL2 asynchronous readback: pixels may become
+ * CPU-visible on a later depth keyframe but still belong to their original
+ * camera pose/projection. The keyframe id remains diagnostic metadata only.
  */
 export class PoseDiverseVisualEvidenceStore {
   private frames: VisualEvidenceFrame[] = [];
@@ -87,26 +96,26 @@ export class PoseDiverseVisualEvidenceStore {
   reset(): void { this.frames = []; }
 
   add(frame: VisualEvidenceFrame): void {
-    this.frames = this.frames.filter((item) => item.keyframeId !== frame.keyframeId);
+    this.frames = this.frames.filter((item) => !sameCapture(item, frame));
     this.frames.push(cloneFrame(frame));
 
     while (this.frames.length > Math.max(1, this.maxFrames)) {
       let removeIndex = -1;
       let weakestRetention = Number.POSITIVE_INFINITY;
-      const newestKeyframe = Math.max(...this.frames.map((item) => item.keyframeId));
+      const newestCaptureAtMs = Math.max(...this.frames.map((item) => item.capturedAtMs));
       for (let index = 0; index < this.frames.length; index += 1) {
         const item = this.frames[index];
-        // Always give the just-arrived observation one eviction cycle to prove
-        // its usefulness; otherwise a new view near an old one could disappear
-        // before later motion establishes a new baseline.
-        if (item.keyframeId === newestKeyframe && this.frames.length > 2) continue;
+        // Always give the just-arrived RGB observation one eviction cycle to
+        // prove its usefulness. Async delivery can make keyframe ids unsuitable
+        // for deciding which camera image is actually newest.
+        if (Math.abs(item.capturedAtMs - newestCaptureAtMs) <= 0.01 && this.frames.length > 2) continue;
         const isolation = isolationScore(this.frames, index);
         const quality = evidenceQuality(item);
         const retention = isolation * (0.72 + Math.min(1.25, quality) * 0.28);
         if (
           retention < weakestRetention - 1e-9 ||
           (Math.abs(retention - weakestRetention) <= 1e-9 &&
-            (removeIndex < 0 || item.keyframeId < this.frames[removeIndex].keyframeId))
+            (removeIndex < 0 || item.capturedAtMs < this.frames[removeIndex].capturedAtMs))
         ) {
           weakestRetention = retention;
           removeIndex = index;
@@ -116,7 +125,7 @@ export class PoseDiverseVisualEvidenceStore {
       this.frames.splice(removeIndex, 1);
     }
 
-    this.frames.sort((a, b) => a.keyframeId - b.keyframeId);
+    this.frames.sort((a, b) => a.capturedAtMs - b.capturedAtMs || a.keyframeId - b.keyframeId);
   }
 
   snapshot(): readonly VisualEvidenceFrame[] { return this.frames.map(cloneFrame); }
