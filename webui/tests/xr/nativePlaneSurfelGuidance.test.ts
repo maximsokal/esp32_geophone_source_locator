@@ -78,10 +78,17 @@ describe('native plane surfel guidance', () => {
   });
 
   it('allows a small polygon-boundary margin for native tracker jitter', () => {
-    const positions = new Float32Array([0.1, 0.54, 0.01]);
+    const positions = new Float32Array([0.1, 0.535, 0.01]);
     const normals = new Float32Array([0.12, 0, 0.993]);
     const confidence = new Float32Array([0.8]);
     expect(stabilizeMeasuredSurfelsWithNativePlanes(positions, normals, confidence, [prior()])).toBe(1);
+  });
+
+  it('rejects a point beyond the conservative polygon jitter margin', () => {
+    const positions = new Float32Array([0.1, 0.56, 0.01]);
+    const normals = new Float32Array([0.12, 0, 0.993]);
+    const confidence = new Float32Array([0.8]);
+    expect(stabilizeMeasuredSurfelsWithNativePlanes(positions, normals, confidence, [prior()])).toBe(0);
   });
 
   it('never creates points when the physical surfel arrays are empty', () => {
