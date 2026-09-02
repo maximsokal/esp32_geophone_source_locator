@@ -520,7 +520,11 @@ export function solveThreeRobustPlanes(
   let bx = 0; let by = 0; let bz = 0;
   for (const plane of planes) {
     const sigma = clamp(plane.offsetSigmaMeters, 0.0025, 0.05);
-    const weight = Math.max(1, plane.confidence) / (sigma * sigma);
+    // Information is inverse variance scaled by the physical plane-fit confidence.
+    // The previous Math.max(1, confidence) made every 0..1 confidence exactly 1,
+    // so a weak plane contributed the same covariance information as a strong one.
+    const confidenceWeight = clamp(plane.confidence, 0.05, 1);
+    const weight = confidenceWeight / (sigma * sigma);
     const [nx, ny, nz] = plane.normal;
     xx += weight * nx * nx; xy += weight * nx * ny; xz += weight * nx * nz;
     yy += weight * ny * ny; yz += weight * ny * nz; zz += weight * nz * nz;
