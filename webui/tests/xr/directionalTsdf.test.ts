@@ -17,6 +17,19 @@ function appendPlane(
   }
 }
 
+function appendTinyPatch(
+  positions: number[], normals: number[], confidence: number[],
+  countPerAxis = 10,
+): void {
+  for (let y = 0; y < countPerAxis; y += 1) {
+    for (let x = 0; x < countPerAxis; x += 1) {
+      positions.push(x * 0.006, y * 0.006, 0);
+      normals.push(0, 0, 1);
+      confidence.push(0.92);
+    }
+  }
+}
+
 describe('directional TSDF', () => {
   it('keeps orthogonal box faces in separate directional channels', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
@@ -30,6 +43,8 @@ describe('directional TSDF', () => {
     expect(mesh.directionalChannelCount).toBeGreaterThanOrEqual(3);
     expect(mesh.triangleCount).toBeGreaterThan(0);
     expect(mesh.triangleCount).toBeLessThanOrEqual(12000);
+    expect(mesh.eligibleComponentCount).toBeGreaterThanOrEqual(3);
+    expect(mesh.meshReadiness).toBe(1);
   });
 
   it('keeps opposite thin surfaces separated instead of averaging them together', () => {
@@ -53,5 +68,43 @@ describe('directional TSDF', () => {
       voxelSizeMeters: 0.04, maxTriangles: 600,
     });
     expect(mesh.triangleCount).toBeLessThanOrEqual(600);
+  });
+
+  it('does not build a directional mesh from many points on a physically tiny patch', () => {
+    const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+    appendTinyPatch(positions, normals, confidence);
+    const mesh = buildDirectionalTsdfMesh({
+      positions: Float32Array.from(positions),
+      normals: Float32Array.from(normals),
+      confidence: Float32Array.from(confidence),
+      voxelSizeMeters: 0.04,
+    });
+    expect(mesh.sourcePointCount).toBe(100);
+    expect(mesh.meshReadiness).toBeLessThan(1);
+    expect(mesh.eligibleComponentCount).toBe(0);
+    expect(mesh.integratedPointCount).toBe(0);
+    expect(mesh.triangleCount).toBe(0);
+  });
+
+  it('does not let an undersized conflicting normal island contaminate one mature directional surface', () => {
+    const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+    appendPlane(positions, normals, confidence, 2, 0, [0, 0, 1]);
+    for (let index = 0; index < 20; index += 1) {
+      positions.push(0.01 * (index % 5), 0.01 * Math.floor(index / 5), 0.015);
+      normals.push(1, 0, 0);
+      confidence.push(0.92);
+    }
+    const mesh = buildDirectionalTsdfMesh({
+      positions: Float32Array.from(positions),
+      normals: Float32Array.from(normals),
+      confidence: Float32Array.from(confidence),
+      voxelSizeMeters: 0.04,
+    });
+    expect(mesh.sourcePointCount).toBe(101);
+    expect(mesh.directionalChannelCount).toBe(1);
+    expect(mesh.eligibleComponentCount).toBe(1);
+    expect(mesh.meshReadiness).toBe(1);
+    expect(mesh.rejectedComponentPoints).toBeGreaterThanOrEqual(20);
+    expect(mesh.triangleCount).toBeGreaterThan(0);
   });
 });
