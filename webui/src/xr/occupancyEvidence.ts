@@ -54,6 +54,19 @@ export interface OccupancySnapshot {
   unknownCandidatePositions: Float32Array;
 }
 
+/**
+ * Solver-facing FREE evidence. Unlike OccupancySnapshot this is not a display
+ * payload and therefore is never clipped by MAX_DISPLAY_POINTS_PER_CLASS.
+ */
+export interface FreeSpaceEvidenceSnapshot {
+  occupancyVoxelSizeMeters: number;
+  /** Exact FREE count in the whole sparse map. */
+  knownFreeVoxelCount: number;
+  /** FREE voxels actually returned after the optional spatial relevance filter. */
+  includedFreeVoxelCount: number;
+  freeAirPositions: Float32Array;
+}
+
 interface OccupancyCell {
   logOdds: number;
   hitKeyframes: number;
@@ -208,10 +221,22 @@ function updateMaxWeight(map: Map<string, number>, key: string, weight: number):
   if (previous === undefined || weight > previous) map.set(key, weight);
 }
 
+function pointInsideExpandedBounds(point: OccupancyPoint, bounds: OccupancyBounds, marginMeters: number): boolean {
+  const margin = Math.max(0, Number.isFinite(marginMeters) ? marginMeters : 0);
+  return (
+    point[0] >= bounds.min[0] - margin && point[0] <= bounds.max[0] + margin &&
+    point[1] >= bounds.min[1] - margin && point[1] <= bounds.max[1] + margin &&
+    point[2] >= bounds.min[2] - margin && point[2] <= bounds.max[2] + margin
+  );
+}
+
 export class SparseOccupancyGrid {
   private readonly voxelSizeMeters: number;
   private readonly maxCells: number;
   private readonly cells = new Map<string, OccupancyCell>();
+  /** Exact classified-state indices kept in sync when log-odds crosses thresholds. */
+  private readonly freeCellKeys = new Set<string>();
+  private readonly occupiedCellKeys = new Set<string>();
   private lastIntegratedKeyframe = -1;
 
   constructor(voxelSizeMeters = DEFAULT_VOXEL_SIZE_METERS, maxCells = DEFAULT_MAX_CELLS) {
@@ -221,6 +246,8 @@ export class SparseOccupancyGrid {
 
   reset(): void {
     this.cells.clear();
+    this.freeCellKeys.clear();
+    this.occupiedCellKeys.clear();
     this.lastIntegratedKeyframe = -1;
   }
 
@@ -328,29 +355,48 @@ export class SparseOccupancyGrid {
     };
   }
 
+  /**
+   * Physical FREE evidence for structural veto. No display cap is applied.
+   * Optional bounds only remove voxels that are too far from any geometry this
+   * worker invocation can create; they never change occupancy classification.
+   */
+  freeSpaceEvidenceSnapshot(
+    relevantBounds: OccupancyBounds | null = null,
+    marginMeters = 0,
+  ): FreeSpaceEvidenceSnapshot {
+    const positions = new Float32Array(this.freeCellKeys.size * 3);
+    let write = 0;
+    for (const key of this.freeCellKeys) {
+      const point = voxelCenterFromKey(key, this.voxelSizeMeters);
+      if (relevantBounds !== null && !pointInsideExpandedBounds(point, relevantBounds, marginMeters)) continue;
+      positions[write++] = point[0];
+      positions[write++] = point[1];
+      positions[write++] = point[2];
+    }
+    const includedFreeVoxelCount = Math.floor(write / 3);
+    return {
+      occupancyVoxelSizeMeters: this.voxelSizeMeters,
+      knownFreeVoxelCount: this.freeCellKeys.size,
+      includedFreeVoxelCount,
+      freeAirPositions: write === positions.length ? positions : positions.slice(0, write),
+    };
+  }
+
   snapshot(candidateBounds: OccupancyBounds | null): OccupancySnapshot {
     const free: number[] = [];
     const occupied: number[] = [];
-    let knownFreeVoxelCount = 0;
-    let occupiedSurfaceVoxelCount = 0;
 
     const append = (target: number[], point: OccupancyPoint): void => {
       if (target.length / 3 >= MAX_DISPLAY_POINTS_PER_CLASS) return;
       target.push(point[0], point[1], point[2]);
     };
 
-    // Stored evidence is reported independently of the object envelope. This is
-    // how we can show ray-verified exterior air in front of a rubble surface.
-    for (const [key, cell] of this.cells) {
-      const state = this.classifyCell(cell);
-      if (state === 'free') {
-        knownFreeVoxelCount += 1;
-        append(free, voxelCenterFromKey(key, this.voxelSizeMeters));
-      } else if (state === 'occupied') {
-        occupiedSurfaceVoxelCount += 1;
-        append(occupied, voxelCenterFromKey(key, this.voxelSizeMeters));
-      }
-    }
+    // Classified-state sets avoid rescanning and reclassifying every sparse cell
+    // whenever the UI or final snapshot needs display points.
+    for (const key of this.freeCellKeys) append(free, voxelCenterFromKey(key, this.voxelSizeMeters));
+    for (const key of this.occupiedCellKeys) append(occupied, voxelCenterFromKey(key, this.voxelSizeMeters));
+    const knownFreeVoxelCount = this.freeCellKeys.size;
+    const occupiedSurfaceVoxelCount = this.occupiedCellKeys.size;
 
     if (candidateBounds === null) {
       return {
@@ -410,6 +456,14 @@ export class SparseOccupancyGrid {
     return 'unknown';
   }
 
+  private syncClassifiedKey(key: string, previous: OccupancyState, next: OccupancyState): void {
+    if (previous === next) return;
+    if (previous === 'free') this.freeCellKeys.delete(key);
+    else if (previous === 'occupied') this.occupiedCellKeys.delete(key);
+    if (next === 'free') this.freeCellKeys.add(key);
+    else if (next === 'occupied') this.occupiedCellKeys.add(key);
+  }
+
   private updateCell(key: string, occupied: boolean, weight: number, keyframeId: number): void {
     let cell = this.cells.get(key);
     if (cell === undefined) {
@@ -424,6 +478,7 @@ export class SparseOccupancyGrid {
       this.cells.set(key, cell);
     }
 
+    const previousState = this.classifyCell(cell);
     const boundedWeight = clamp(weight, 0.08, 1);
     if (occupied) {
       if (cell.lastHitKeyframe === keyframeId) return;
@@ -436,6 +491,7 @@ export class SparseOccupancyGrid {
       cell.missKeyframes += 1;
       cell.logOdds = clamp(cell.logOdds + MISS_LOG_ODDS * boundedWeight, MIN_LOG_ODDS, MAX_LOG_ODDS);
     }
+    this.syncClassifiedKey(key, previousState, this.classifyCell(cell));
   }
 }
 
