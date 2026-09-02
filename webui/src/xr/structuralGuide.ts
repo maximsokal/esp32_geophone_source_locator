@@ -159,6 +159,7 @@ const TRACK_SMOOTHING = 0.36;
 const TRACK_INITIAL_INNOVATION_METERS = 0.04;
 const TRACK_MIN_INNOVATION_GATE_METERS = 0.075;
 const STALE_TRACK_KEYFRAMES = 10;
+const MIN_VIEW_TRANSLATION_METERS = 0.035;
 const MIN_VIEW_BASELINE_METERS = 0.085;
 const MIN_VIEW_RAY_ANGLE_RAD = (9 * Math.PI) / 180;
 const MAX_TRACKED_VIEW_EVIDENCE = 7;
@@ -285,7 +286,7 @@ function robustPlaneFit(points: readonly WeightedPoint[]): { center: ProjectPoin
     const ratio = residual / scale; return ratio <= 1 ? 1 : 1 / ratio;
   });
   fit = weightedPlaneFit(points, robustWeights) ?? fit;
-  if ((fit.planarity < PATCH_MIN_PLANARITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS) && points.length >= 6) {
+  if ((fit.planarity < PATCH_MIN_PLANANITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS) && points.length >= 6) {
     let bestInliers: number[] = []; let bestResidual = Number.POSITIVE_INFINITY;
     const trials = Math.min(RANSAC_MAX_TRIALS, points.length * 2);
     for (let trial = 0; trial < trials; trial += 1) {
@@ -381,9 +382,6 @@ function supportIntervalOnIntersection(patch: PlanePatch, linePoint: ProjectPoin
   const count = parameters.length;
   if (count < MIN_EDGE_LOCAL_SUPPORT_POINTS) return null;
   parameters.sort((a, b) => a - b);
-  // One spatially isolated but plane-consistent inlier must not stretch the
-  // finite edge support. With >=5 points trim at least one sample from each tail;
-  // small patches keep exact extrema so sparse genuine edges remain detectable.
   const trim = count >= 5 ? Math.max(1, Math.floor(count * 0.10)) : 0;
   const low = trim;
   const high = count - 1 - trim;
@@ -521,7 +519,9 @@ function observationForCandidate(candidate: ProjectPoint, viewpoint: StructuralG
 function isIndependentEvidence(evidence: readonly ViewEvidence[], next: ViewEvidence): boolean {
   if (evidence.some((item) => item.keyframeId === next.keyframeId)) return false; if (evidence.length === 0) return true;
   for (const previous of evidence) {
-    const baseline = distance(previous.position, next.position); const rayDot = Math.max(-1, Math.min(1, dot(previous.ray, next.ray))); const angle = Math.acos(rayDot);
+    const baseline = distance(previous.position, next.position);
+    if (baseline < MIN_VIEW_TRANSLATION_METERS) return false;
+    const rayDot = Math.max(-1, Math.min(1, dot(previous.ray, next.ray))); const angle = Math.acos(rayDot);
     if (baseline < MIN_VIEW_BASELINE_METERS && angle < MIN_VIEW_RAY_ANGLE_RAD) return false;
   }
   return true;
@@ -627,7 +627,7 @@ export function distancePointToSegment(point: ProjectPoint, start: ProjectPoint,
 }
 export interface ManualPointLike { id: number; position: ProjectPoint; }
 export function matchEdgeToManualPoints(edge: StructuralEdgeCandidate, points: readonly ManualPointLike[], radiusMeters = 0.14): readonly [ManualPointLike, ManualPointLike] | null {
-  if (points.length < 2) return null; let best: null | { a: ManualPointLike; b: ManualPointLike; score: number } = null;
+  if (points.length < 2) return null; let best: null | { a: ManualPointLike; b: ManualPointLike; score: number } | null = null;
   for (let i = 0; i < points.length; i += 1) for (let j = i + 1; j < points.length; j += 1) {
     const p = points[i]; const q = points[j]; const direct = distance(p.position, edge.start) + distance(q.position, edge.end); const reverse = distance(p.position, edge.end) + distance(q.position, edge.start); const score = Math.min(direct, reverse);
     if (score > radiusMeters * 2 || distancePointToSegment(midpoint(p.position, q.position), edge.start, edge.end) > radiusMeters) continue;
