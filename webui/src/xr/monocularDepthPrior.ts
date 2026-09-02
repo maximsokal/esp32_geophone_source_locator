@@ -102,8 +102,27 @@ export function calibratedPriorDepthMeters(
   return relativeDepth === null ? null : metricDepthFromRelative(relativeDepth, calibration);
 }
 
+export interface TransformersRawImageConstructor {
+  new (data: Uint8Array | Uint8ClampedArray, width: number, height: number, channels: 4): unknown;
+}
+
 interface TransformersModuleLike {
   pipeline(task: string, model: string, options?: Record<string, unknown>): Promise<(input: unknown) => Promise<unknown>>;
+  RawImage?: TransformersRawImageConstructor;
+}
+
+/** Create an exact, uncompressed Transformers.js image input from staged XR RGBA. */
+export function createTransformersRawImageInput(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  RawImage: TransformersRawImageConstructor,
+): unknown | null {
+  const pixelCount = width * height * 4;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || rgba.length < pixelCount) return null;
+  // The staged RGB packet already owns its byte array, so no JPEG encode/decode
+  // and no second full-frame copy are necessary here.
+  return new RawImage(rgba.length === pixelCount ? rgba : rgba.subarray(0, pixelCount), width, height, 4);
 }
 
 function tensorFromOutput(output: unknown): { data: ArrayLike<number>; width: number; height: number } | null {
@@ -124,6 +143,22 @@ function tensorFromOutput(output: unknown): { data: ArrayLike<number>; width: nu
   return null;
 }
 
+function canvasModelInput(rgba: Uint8Array, width: number, height: number): string | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  const pixelCount = width * height * 4;
+  if (context === null || rgba.length < pixelCount) return null;
+  // TypeScript 7 tracks SharedArrayBuffer-capable views explicitly. ImageData
+  // requires an owned ArrayBuffer-backed clamped array.
+  const pixels: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(pixelCount);
+  pixels.set(rgba.subarray(0, pixelCount));
+  context.putImageData(new ImageData(pixels, width, height), 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
 /**
  * Optional browser-only DA-V2 provider. It is lazy-loaded from a CDN so the
  * model/runtime never enters ESP32 flash. Failure is non-fatal; the physical
@@ -134,6 +169,7 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
   status: MonocularDepthProviderStatus = 'disabled';
   error: string | null = null;
   private estimator: ((input: unknown) => Promise<unknown>) | null = null;
+  private rawImageConstructor: TransformersRawImageConstructor | null = null;
   private disposed = false;
 
   constructor(
@@ -153,6 +189,7 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
       const dynamicImport = new Function('url', 'return import(url)') as (url: string) => Promise<TransformersModuleLike>;
       const module = await dynamicImport(this.moduleUrl);
       this.estimator = await module.pipeline('depth-estimation', this.model, { device: 'webgpu', dtype: 'q4f16' });
+      this.rawImageConstructor = module.RawImage ?? null;
       this.status = 'ready';
       this.error = null;
       return true;
@@ -170,24 +207,21 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
     capturedAtMs: number,
   ): Promise<MonocularDepthPriorFrame | null> {
     if (!(await this.load()) || this.estimator === null || this.disposed) return null;
-    const canvas = document.createElement('canvas');
-    canvas.width = width; canvas.height = height;
-    const context = canvas.getContext('2d');
-    const pixelCount = width * height * 4;
-    if (context === null || rgba.length < pixelCount) return null;
-    // TypeScript 7 tracks SharedArrayBuffer-capable views explicitly. ImageData
-    // requires an owned ArrayBuffer-backed clamped array, so copy instead of
-    // forwarding rgba.buffer (which may be typed as ArrayBufferLike).
-    const pixels: Uint8ClampedArray<ArrayBuffer> = new Uint8ClampedArray(pixelCount);
-    pixels.set(rgba.subarray(0, pixelCount));
-    context.putImageData(new ImageData(pixels, width, height), 0, 0);
     try {
-      const output = await this.estimator(canvas.toDataURL('image/jpeg', 0.82));
+      const rawInput = this.rawImageConstructor === null
+        ? null
+        : createTransformersRawImageInput(rgba, width, height, this.rawImageConstructor);
+      // RawImage is the normal fast path. Keep a lossless canvas fallback for a
+      // module build that does not export it; never JPEG-compress structural RGB.
+      const input = rawInput ?? canvasModelInput(rgba, width, height);
+      if (input === null) throw new Error('Unable to prepare Depth Anything image input.');
+      const output = await this.estimator(input);
       const tensor = tensorFromOutput(output);
       if (tensor === null) throw new Error('Depth Anything output did not expose a depth tensor.');
       const relativeDepth = new Float32Array(tensor.width * tensor.height);
       for (let index = 0; index < relativeDepth.length; index += 1) relativeDepth[index] = Number(tensor.data[index]);
-      this.status = 'ready'; this.error = null;
+      this.status = 'ready';
+      this.error = null;
       return { width: tensor.width, height: tensor.height, relativeDepth, capturedAtMs, source: this.model };
     } catch (error) {
       this.status = 'error';
@@ -196,5 +230,9 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
     }
   }
 
-  dispose(): void { this.disposed = true; this.estimator = null; }
+  dispose(): void {
+    this.disposed = true;
+    this.estimator = null;
+    this.rawImageConstructor = null;
+  }
 }
