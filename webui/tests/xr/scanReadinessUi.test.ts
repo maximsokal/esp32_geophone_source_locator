@@ -19,13 +19,13 @@ function readiness(overrides: Partial<ScanCapabilityReadiness> = {}): ScanCapabi
 }
 
 describe('compact scan readiness UI', () => {
-  it('shows measured camera azimuth sectors once an object component exists', () => {
+  it('shows measured camera azimuth sectors and honest linear size growth once an object component exists', () => {
     expect(compactScanReadinessLabel(readiness(), {
       visibleCorners: 2,
       certifiedCorners: 4,
       certifiedEdges: 1,
       rgbCorroboration: true,
-    })).toBe('S74 · M52 · V5/16 · A+35 · C2/4 · E1 · RGB');
+    })).toBe('S74 · M52 · V5/16 · SIZE+35 · C2/4 · E1 · RGB');
   });
 
   it('does not pretend early view progress is 360-degree object coverage before a center exists', () => {
@@ -43,6 +43,19 @@ describe('compact scan readiness UI', () => {
     });
     expect(value).toBe('S74 · M52 · V37');
     expect(value).not.toContain('/16');
+  });
+
+  it('tells the operator to move when viewpoint diversity is the structural limiter', () => {
+    const value = compactScanReadinessLabel(readiness({
+      structural: { progress: 0.63, ready: false, limitingMetric: 'views', growthNeededPercent: 59 },
+      objectTooSmall: false,
+    }), {
+      visibleCorners: 0,
+      certifiedCorners: 0,
+      certifiedEdges: 0,
+      rgbCorroboration: false,
+    });
+    expect(value).toBe('S63 · M52 · V5/16 · MOVE');
   });
 
   it('keeps unavailable mesh readiness explicit and omits empty candidate counters', () => {
