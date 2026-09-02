@@ -3,11 +3,6 @@
 import { CertifiedStructuralCornerTracker } from './certifiedStructuralGeometry';
 import { stabilizeMeasuredSurfelsWithNativePlanes } from './nativePlaneSurfelGuidance';
 import {
-  computeSurfaceStructuralReadiness,
-  summarizeSurfaceComponentReadiness,
-  type SurfaceComponentReadinessSummary,
-} from './scanCapabilityReadiness';
-import {
   applyMaturityAwareEdgeConfidence,
   summarizeStructuralCandidates,
 } from './structuralCandidatePolicy';
@@ -18,10 +13,8 @@ import {
   type StructuralGuideInput,
   type StructuralGuideViewpoint,
 } from './structuralGuide';
+import { prepareStructuralGuideReadiness } from './structuralGuideReadiness';
 import { StructuralLifecycleTelemetry } from './structuralLifecycleTelemetry';
-import { clusterStructuralSurfaceFamilies } from './structuralSurfaceClustering';
-import { filterStructuralSurface } from './structuralSurfacePreprocess';
-import { analyzeSurfaceComponents } from './surfaceComponents';
 import type { StructuralPlanePrior } from './webxrPlaneGuidance';
 
 interface AnalyzeMessage {
@@ -94,23 +87,21 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     voxelSizeMeters: message.voxelSizeMeters,
   };
 
-  // Mesh readiness must follow the same locally certified physical surfels that
-  // the post-scan TSDF branch will receive. Do this directly on raw promoted
-  // physical surfels: structural-family clustering is useful for plane/edge
-  // fitting, but it is not part of the mesh input policy and must not distort Mxx.
-  // Native XR planes are applied later and therefore cannot improve mesh readiness.
-  const meshSurface = filterStructuralSurface(rawSurface);
-
-  // All CPU-heavy structural preprocessing now happens after transfer. Family
-  // clustering is based on physical measured normals before any native-plane
-  // advisory stabilization, preserving the invariant that XRPlane geometry cannot
-  // create/merge physical surface families. The local certificate then rejects
-  // unsupported measured outliers and supplies residual/normal quality arrays.
-  const clusteredSurface = clusterStructuralSurfaceFamilies(rawSurface);
-  const surface = filterStructuralSurface(clusteredSurface);
+  // S and M deliberately use different physical representations. Keep their
+  // preparation in one pure/tested boundary so later performance work cannot
+  // accidentally make mesh readiness depend on structural family decimation.
+  const readinessPreparationStarted = performance.now();
+  const prepared = prepareStructuralGuideReadiness(rawSurface);
+  const readinessPreparationMs = performance.now() - readinessPreparationStarted;
+  const clusteredSurface = prepared.clusteredSurface;
+  const surface = prepared.structuralSurface;
+  const meshSurface = prepared.meshSurface;
+  const surfaceReadiness = prepared.surfaceReadiness;
+  const structuralReadiness = prepared.structuralReadiness;
 
   // Advisory native planes can rotate normals only after physical clustering and
-  // filtering. They never change position/confidence, create surfels or occupancy.
+  // filtering. They never change position/confidence, create surfels or occupancy,
+  // and cannot affect the independently prepared mesh-readiness branch above.
   const nativePlaneStabilizedSurfels = stabilizeMeasuredSurfelsWithNativePlanes(
     surface.positions,
     surface.normals,
@@ -118,34 +109,10 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     message.planePriors,
   );
 
-  // Connected-component/PCA readiness belongs in the CPU worker too. Structural
-  // readiness is evaluated on structural-family geometry, while mesh readiness is
-  // evaluated independently on the actual certified physical TSDF input. Only the
-  // two compact component records cross back to the UI.
-  const structuralComponentAnalysis = analyzeSurfaceComponents({
-    positions: surface.positions,
-    normals: surface.normals,
-    confidence: surface.confidence,
-    voxelSizeMeters: surface.voxelSizeMeters,
-    minimumConfidence: 0.58,
-  });
-  const meshComponentAnalysis = analyzeSurfaceComponents({
-    positions: meshSurface.positions,
-    normals: meshSurface.normals,
-    confidence: meshSurface.confidence,
-    voxelSizeMeters: meshSurface.voxelSizeMeters,
-    minimumConfidence: 0.58,
-  });
-  const surfaceReadiness: SurfaceComponentReadinessSummary = summarizeSurfaceComponentReadiness(
-    structuralComponentAnalysis,
-    meshComponentAnalysis,
-  );
-  const structuralSurface = computeSurfaceStructuralReadiness(surfaceReadiness);
-
   // A small/narrow/sparsely supported measured component is useful scan evidence,
   // but not yet large enough to justify plane intersections or certified corners.
   // Keep tracker history intact and let a later keyframe re-probe after scan growth.
-  if (!structuralSurface.ready) {
+  if (!structuralReadiness.ready) {
     const result = {
       corners: [],
       edges: [],
@@ -162,12 +129,13 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
       ...lifecycleTelemetry.update([], []),
       nativePlanePriors: message.planePriors?.length ?? 0,
       nativePlaneStabilizedSurfels,
-      rawStructuralPoints: rawPointCount,
+      rawStructuralPoints: prepared.rawPointCount,
       clusteredStructuralPoints: clusteredSurface.pointCount,
       certifiedStructuralPoints: surface.pointCount,
       certifiedMeshPoints: meshSurface.pointCount,
-      structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
-      structuralSurfaceLimit: structuralSurface.limitingMetric,
+      readinessPreparationMs: Number(readinessPreparationMs.toFixed(2)),
+      structuralSurfaceReadiness: Number(structuralReadiness.progress.toFixed(3)),
+      structuralSurfaceLimit: structuralReadiness.limitingMetric,
       structuralGeometryDeferred: true,
     };
     self.postMessage({
@@ -250,12 +218,13 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     ...lifecycleTelemetry.update(tracked.edges, result.corners),
     nativePlanePriors: message.planePriors?.length ?? 0,
     nativePlaneStabilizedSurfels,
-    rawStructuralPoints: rawPointCount,
+    rawStructuralPoints: prepared.rawPointCount,
     clusteredStructuralPoints: clusteredSurface.pointCount,
     certifiedStructuralPoints: surface.pointCount,
     certifiedMeshPoints: meshSurface.pointCount,
-    structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
-    structuralSurfaceLimit: structuralSurface.limitingMetric,
+    readinessPreparationMs: Number(readinessPreparationMs.toFixed(2)),
+    structuralSurfaceReadiness: Number(structuralReadiness.progress.toFixed(3)),
+    structuralSurfaceLimit: structuralReadiness.limitingMetric,
     structuralGeometryDeferred: false,
   };
 
