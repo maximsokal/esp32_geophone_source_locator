@@ -10,11 +10,12 @@ export interface MeshPreflightOwnedArrays {
 
 export interface MeshPreflightWorkerResult {
   arrays: MeshPreflightOwnedArrays;
-  preflight: MeshReconstructionPreflight;
+  preflight: MeshReconstructionPreflight | null;
   computeMs: number;
+  error: string | null;
 }
 
-interface PreflightResultMessage {
+interface PreflightSuccessMessage {
   type: 'preflight-result';
   requestId: number;
   positions: Float32Array;
@@ -24,10 +25,24 @@ interface PreflightResultMessage {
   computeMs: number;
 }
 
+interface PreflightFailureMessage {
+  type: 'preflight-error';
+  requestId: number;
+  positions: Float32Array;
+  normals: Float32Array;
+  confidence: Float32Array;
+  computeMs: number;
+  error: string;
+}
+
+type PreflightResultMessage = PreflightSuccessMessage | PreflightFailureMessage;
+
 /**
  * One-shot zero-copy component preflight. The caller temporarily transfers
  * ownership of the three surfel arrays and receives the same buffers back with
- * the analysis. This keeps the main/UI thread free without cloning a large cloud.
+ * either the analysis or a recoverable computation error. This keeps the UI
+ * thread free without cloning a large cloud and still permits synchronous
+ * fail-safe fallback after a worker-side exception.
  */
 export class MeshReconstructionPreflightClient {
   private nextRequestId = 1;
@@ -61,7 +76,8 @@ export class MeshReconstructionPreflightClient {
         const message = event.data;
         if (
           settled || generation !== this.generation ||
-          message?.type !== 'preflight-result' || message.requestId !== requestId
+          (message?.type !== 'preflight-result' && message?.type !== 'preflight-error') ||
+          message.requestId !== requestId
         ) return;
         settled = true;
         cleanup();
@@ -72,11 +88,15 @@ export class MeshReconstructionPreflightClient {
             confidence: message.confidence,
             voxelSizeMeters: arrays.voxelSizeMeters,
           },
-          preflight: message.result,
+          preflight: message.type === 'preflight-result' ? message.result : null,
           computeMs: message.computeMs,
+          error: message.type === 'preflight-error' ? message.error : null,
         });
       };
       const handleError = (event: ErrorEvent): void => {
+        // A catastrophic worker/runtime failure cannot return transferred buffers.
+        // Reject explicitly; normal algorithm exceptions use preflight-error and
+        // return ownership before the caller decides whether to fall back.
         fail(event.error ?? new Error(event.message));
       };
 
