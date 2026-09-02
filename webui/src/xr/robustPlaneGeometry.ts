@@ -17,6 +17,7 @@ export interface RobustPlane {
   supportWeight: number;
   rmsResidualMeters: number;
   robustScaleMeters: number;
+  /** Minimum standard deviation across the two tangent PCA axes. */
   tangentSpreadMeters: number;
   offsetSigmaMeters: number;
   confidence: number;
@@ -267,7 +268,11 @@ function fitWeightedTls(
   }
   const rmsResidualMeters = Math.sqrt(weightedSquaredResidual / Math.max(1e-9, residualWeight));
   const scaleMeters = robustScale(residuals);
-  const tangentSpreadMeters = Math.sqrt(Math.max(0, eigen.values[1] + eigen.values[2]));
+  // λ0 is the fitted-plane normal variance. A true 2-D surface must also have
+  // measurable support along BOTH tangent axes. Using sqrt(λ1+λ2) lets a long,
+  // almost one-dimensional line pass as a plane because λ2 alone can dominate.
+  // The smaller tangent axis is therefore the conservative plane-width metric.
+  const tangentSpreadMeters = Math.sqrt(Math.max(0, eigen.values[1]));
   // Offset uncertainty combines measured scatter and per-surfel accumulated residuals.
   const measurementSigma = Math.max(
     scaleMeters,
