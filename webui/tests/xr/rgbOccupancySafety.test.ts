@@ -26,6 +26,21 @@ function physicalPlane(depthMeters: number): CpuDepthInformationLike {
   return { width: 160, height: 90, getDepthInMeters: () => depthMeters };
 }
 
+function physicalRawPlane(depthMillimeters: number): CpuDepthInformationLike {
+  const width = 160;
+  const height = 90;
+  return {
+    width,
+    height,
+    data: new Uint16Array(width * height).fill(depthMillimeters).buffer,
+    rawValueToMeters: 0.001,
+    normDepthBufferFromNormView: { matrix: identity.slice() },
+    getDepthInMeters(): number {
+      throw new Error('native getDepthInMeters must not be used when the WebXR CPU buffer is available');
+    },
+  } as unknown as CpuDepthInformationLike;
+}
+
 function guidance(
   now: number,
   forbidden: boolean,
@@ -102,6 +117,17 @@ function freshForWholeTest(): number {
 afterEach(() => resetXrGuidanceRegistry());
 
 describe('RGB / AI surface guidance versus occupancy safety boundary', () => {
+  it('uses the exposed WebXR CPU depth buffer for both surface fusion and occupancy without native getter calls', () => {
+    const accumulator = new DepthPointCloudAccumulator();
+    integrateRepeatedPhysicalPlane(accumulator, physicalRawPlane(1500));
+
+    const snapshot = accumulator.snapshot(4, 4);
+    expect(snapshot.rawPointCount).toBeGreaterThan(0);
+    expect(snapshot.pointCount).toBeGreaterThan(0);
+    expect(snapshot.knownFreeVoxelCount).toBeGreaterThan(0);
+    expect(snapshot.occupiedSurfaceVoxelCount).toBeGreaterThan(0);
+  });
+
   it('can suppress every RGB surface-fusion sample without suppressing physical FREE-ray evidence', () => {
     const accumulator = new DepthPointCloudAccumulator();
     const depth = physicalPlane(1.5);
