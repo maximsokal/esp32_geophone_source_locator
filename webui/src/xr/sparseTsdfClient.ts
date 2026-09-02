@@ -4,6 +4,7 @@ import {
   assessMeshReconstructionPreflight,
   type MeshReconstructionPreflight,
 } from './meshReconstructionPreflight';
+import { MeshReconstructionPreflightClient } from './meshReconstructionPreflightClient';
 import { optionalMonocularPrior } from './monocularPriorRuntime';
 import { ParallelDirectionalTsdfClient } from './parallelDirectionalTsdfClient';
 import SparseTsdfWorker from './sparseTsdf.worker?worker&inline';
@@ -158,19 +159,45 @@ export class SparseTsdfMeshClient {
   private epoch = 0;
   private generation = 0;
   private pending: Pending | null = null;
+  private readonly preflightClient = new MeshReconstructionPreflightClient();
   private readonly parallelDirectional = new ParallelDirectionalTsdfClient();
 
   constructor(private readonly workerFactory: () => Worker = () => new SparseTsdfWorker()) {}
 
   async reconstruct(input: SparseTsdfReconstructInput): Promise<SparseTsdfMesh> {
     this.resetPending('Sparse TSDF reconstruction superseded by a newer scan.');
+    this.preflightClient.reset('Mesh preflight superseded by a newer scan.');
     this.parallelDirectional.reset('Parallel TSDF reconstruction superseded by a newer scan.');
     const generation = ++this.generation;
     const epoch = this.epoch;
-    const preflightStarted = performance.now();
-    const physicalPreflight = assessMeshReconstructionPreflight(input);
+
+    const physicalPreflightStarted = performance.now();
+    const physicalWorkerResult = await this.preflightClient.analyze({
+      positions: input.positions,
+      normals: input.normals,
+      confidence: input.confidence,
+      voxelSizeMeters: input.voxelSizeMeters,
+    });
+    if (generation !== this.generation || epoch !== this.epoch) {
+      throw new Error('Sparse TSDF reconstruction superseded during physical mesh preflight.');
+    }
+    let physicalInput: SparseTsdfReconstructInput = {
+      ...input,
+      positions: physicalWorkerResult.arrays.positions,
+      normals: physicalWorkerResult.arrays.normals,
+      confidence: physicalWorkerResult.arrays.confidence,
+    };
+    let physicalPreflight = physicalWorkerResult.preflight;
+    if (physicalPreflight === null) {
+      clientDiagnostics.warn('SCAN_MESH_PREFLIGHT_WORKER_FALLBACK', {
+        stage: 'physical',
+        error: physicalWorkerResult.error,
+        workerComputeMs: Number(physicalWorkerResult.computeMs.toFixed(1)),
+      });
+      physicalPreflight = assessMeshReconstructionPreflight(physicalInput);
+    }
+    const physicalPreflightElapsed = performance.now() - physicalPreflightStarted;
     if (!physicalPreflight.ready) {
-      const elapsed = performance.now() - preflightStarted;
       clientDiagnostics.info('SCAN_MESH_DEFERRED', {
         reason: physicalPreflight.limitingReason,
         sourcePoints: physicalPreflight.sourcePointCount,
@@ -178,17 +205,18 @@ export class SparseTsdfMeshClient {
         components: physicalPreflight.componentCount,
         eligibleComponents: physicalPreflight.eligibleComponentCount,
         readiness: Number(physicalPreflight.meshReadiness.toFixed(3)),
-        computeMs: Number(elapsed.toFixed(1)),
+        workerComputeMs: Number(physicalWorkerResult.computeMs.toFixed(1)),
+        roundTripMs: Number(physicalPreflightElapsed.toFixed(1)),
       });
       void clientDiagnostics.flush();
-      return deferredMesh(input, physicalPreflight, elapsed);
+      return deferredMesh(physicalInput, physicalPreflight, physicalPreflightElapsed);
     }
 
-    let reconstructionInput = input;
+    let reconstructionInput = physicalInput;
     if (optionalMonocularPrior.isEnabled && optionalMonocularPrior.hasStagedPostScanFrame) {
       const started = performance.now();
       clientDiagnostics.info('SCAN_AI_POST_SCAN_START', {
-        sourcePoints: Math.floor(input.positions.length / 3),
+        sourcePoints: Math.floor(physicalInput.positions.length / 3),
         model: 'onnx-community/depth-anything-v2-small',
       });
       const calibrated = await optionalMonocularPrior.runStagedPostScan();
@@ -196,12 +224,35 @@ export class SparseTsdfMeshClient {
         throw new Error('Sparse TSDF reconstruction superseded during post-scan AI refinement.');
       }
       const filtered = calibrated
-        ? filterWithCalibratedPostScanPrior(input)
-        : { input, rejected: 0, applied: false };
+        ? filterWithCalibratedPostScanPrior(physicalInput)
+        : { input: physicalInput, rejected: 0, applied: false };
       reconstructionInput = filtered.input;
 
-      if (filtered.applied && reconstructionInput !== input) {
-        const filteredPreflight = assessMeshReconstructionPreflight(reconstructionInput);
+      if (filtered.applied && reconstructionInput !== physicalInput) {
+        const filteredWorkerResult = await this.preflightClient.analyze({
+          positions: reconstructionInput.positions,
+          normals: reconstructionInput.normals,
+          confidence: reconstructionInput.confidence,
+          voxelSizeMeters: reconstructionInput.voxelSizeMeters,
+        });
+        if (generation !== this.generation || epoch !== this.epoch) {
+          throw new Error('Sparse TSDF reconstruction superseded during filtered mesh preflight.');
+        }
+        reconstructionInput = {
+          ...reconstructionInput,
+          positions: filteredWorkerResult.arrays.positions,
+          normals: filteredWorkerResult.arrays.normals,
+          confidence: filteredWorkerResult.arrays.confidence,
+        };
+        let filteredPreflight = filteredWorkerResult.preflight;
+        if (filteredPreflight === null) {
+          clientDiagnostics.warn('SCAN_MESH_PREFLIGHT_WORKER_FALLBACK', {
+            stage: 'post-ai',
+            error: filteredWorkerResult.error,
+            workerComputeMs: Number(filteredWorkerResult.computeMs.toFixed(1)),
+          });
+          filteredPreflight = assessMeshReconstructionPreflight(reconstructionInput);
+        }
         if (!filteredPreflight.ready) {
           clientDiagnostics.warn('SCAN_AI_POST_SCAN_COMPONENT_FAIL_OPEN', {
             physicalReadiness: Number(physicalPreflight.meshReadiness.toFixed(3)),
@@ -210,18 +261,18 @@ export class SparseTsdfMeshClient {
             retainedPoints: filteredPreflight.sourcePointCount,
             reason: filteredPreflight.limitingReason,
           });
-          reconstructionInput = input;
+          reconstructionInput = physicalInput;
         }
       }
 
       clientDiagnostics.info('SCAN_AI_POST_SCAN_READY', {
         calibrated,
-        applied: filtered.applied && reconstructionInput !== input,
+        applied: filtered.applied && reconstructionInput !== physicalInput,
         calibration: Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),
         calibrationModel: optionalMonocularPrior.calibrationModel,
         calibrationDiagnostics: optionalMonocularPrior.calibrationDiagnostics,
-        sourcePoints: Math.floor(input.positions.length / 3),
-        rejectedPoints: reconstructionInput === input ? 0 : filtered.rejected,
+        sourcePoints: Math.floor(physicalInput.positions.length / 3),
+        rejectedPoints: reconstructionInput === physicalInput ? 0 : filtered.rejected,
         retainedPoints: Math.floor(reconstructionInput.positions.length / 3),
         computeMs: Number((performance.now() - started).toFixed(1)),
         error: optionalMonocularPrior.error,
@@ -282,6 +333,7 @@ export class SparseTsdfMeshClient {
     this.generation += 1;
     this.epoch += 1;
     this.resetPending('Sparse TSDF reconstruction reset.');
+    this.preflightClient.reset();
     this.parallelDirectional.reset();
     this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
@@ -289,6 +341,7 @@ export class SparseTsdfMeshClient {
   dispose(): void {
     this.generation += 1;
     this.resetPending('Sparse TSDF worker disposed.');
+    this.preflightClient.dispose();
     this.parallelDirectional.dispose();
     if (this.worker !== null) {
       this.worker.removeEventListener('message', this.handleMessage);
