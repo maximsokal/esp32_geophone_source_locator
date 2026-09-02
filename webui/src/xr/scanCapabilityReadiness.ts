@@ -26,6 +26,7 @@ export interface ScanCapabilityReadiness {
   cameraBaselineMeters: number;
   objectMajorExtentMeters: number | null;
   objectMinorExtentMeters: number | null;
+  /** True only when physical extent is the branch currently limiting STRUCT. */
   objectTooSmall: boolean;
 }
 
@@ -165,7 +166,10 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
     cameraBaselineMeters: baseline,
     objectMajorExtentMeters: objectMajor,
     objectMinorExtentMeters: objectMinor,
-    objectTooSmall: scale !== null && scale.limitingMetric === 'extent' && scale.progress < 1,
+    // The overlay labels structural.growthNeededPercent as AREA only when extent
+    // is the actual weakest prerequisite. If points or views are lower, showing
+    // AREA +400% would be numerically wrong and misleading to the operator.
+    objectTooSmall: structuralLimit === 'extent' && structuralProgress < 1,
   };
 }
 
