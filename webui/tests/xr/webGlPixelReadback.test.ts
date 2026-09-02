@@ -23,11 +23,16 @@ function fakeWebGl2() {
   let throwOnReadback = false;
   const syncs: FakeSync[] = [];
   let readbackCalls = 0;
+  let getParameterCalls = 0;
 
   const gl = {
     ...constants,
     getParameter(parameter: number) {
-      return parameter === constants.PIXEL_PACK_BUFFER_BINDING ? bound : null;
+      if (parameter === constants.PIXEL_PACK_BUFFER_BINDING) {
+        getParameterCalls += 1;
+        return bound;
+      }
+      return null;
     },
     createBuffer(): FakeBuffer { return { data: new Uint8Array(0) }; },
     deleteBuffer(buffer: FakeBuffer) { buffer.deleted = true; },
@@ -63,22 +68,27 @@ function fakeWebGl2() {
     syncs,
     setNextPixels(values: readonly number[]) { nextPixels = Uint8Array.from(values); },
     setThrowOnReadback(value: boolean) { throwOnReadback = value; },
+    setExternalBinding(buffer: FakeBuffer | null) { bound = buffer; },
     signal(index: number) { syncs[index].status = constants.ALREADY_SIGNALED; },
     fail(index: number) { syncs[index].status = constants.WAIT_FAILED; },
     get readbackCalls() { return readbackCalls; },
+    get getParameterCalls() { return getParameterCalls; },
+    get boundBuffer() { return bound; },
   };
 }
 
 describe('NonBlockingRgbaReadback', () => {
-  it('never reads CPU pixels while the oldest GPU fence is unsignalled', () => {
+  it('never reads CPU pixels or queries GL binding state while an old fence is unsignalled', () => {
     const fake = fakeWebGl2();
     const ring = new NonBlockingRgbaReadback<{ frame: number }>(fake.gl, 2, 1, 2);
     fake.setNextPixels([1, 2, 3, 4, 5, 6, 7, 8]);
 
     expect(ring.enqueue({ frame: 11 })).toBe(true);
+    const queriesBeforePoll = fake.getParameterCalls;
     expect(ring.pendingCount).toBe(1);
     expect(ring.poll()).toBeNull();
     expect(fake.readbackCalls).toBe(0);
+    expect(fake.getParameterCalls).toBe(queriesBeforePoll);
   });
 
   it('returns pixels only after the matching fence signals and preserves frame metadata', () => {
@@ -94,6 +104,19 @@ describe('NonBlockingRgbaReadback', () => {
     expect(Array.from(result!.pixels)).toEqual([8, 7, 6, 5, 4, 3, 2, 1]);
     expect(fake.readbackCalls).toBe(1);
     expect(ring.pendingCount).toBe(0);
+  });
+
+  it('preserves a caller-owned PIXEL_PACK_BUFFER binding across enqueue and completed poll', () => {
+    const fake = fakeWebGl2();
+    const ring = new NonBlockingRgbaReadback<{ frame: number }>(fake.gl, 2, 1, 2);
+    const external: FakeBuffer = { data: new Uint8Array(4) };
+    fake.setExternalBinding(external);
+
+    expect(ring.enqueue({ frame: 1 })).toBe(true);
+    expect(fake.boundBuffer).toBe(external);
+    fake.signal(0);
+    expect(ring.poll()).not.toBeNull();
+    expect(fake.boundBuffer).toBe(external);
   });
 
   it('drops advisory camera captures instead of blocking when every PBO is in flight', () => {
@@ -119,15 +142,18 @@ describe('NonBlockingRgbaReadback', () => {
     expect(ring.enqueue({ frame: 2 })).toBe(true);
   });
 
-  it('releases the slot when getBufferSubData throws after a signalled fence', () => {
+  it('releases the slot and restores caller binding when getBufferSubData throws', () => {
     const fake = fakeWebGl2();
     const ring = new NonBlockingRgbaReadback<{ frame: number }>(fake.gl, 2, 1, 2);
     ring.enqueue({ frame: 1 });
     fake.signal(0);
+    const external: FakeBuffer = { data: new Uint8Array(4) };
+    fake.setExternalBinding(external);
     fake.setThrowOnReadback(true);
 
     expect(() => ring.poll()).toThrow('simulated context loss');
     expect(ring.pendingCount).toBe(0);
+    expect(fake.boundBuffer).toBe(external);
 
     fake.setThrowOnReadback(false);
     expect(ring.enqueue({ frame: 2 })).toBe(true);
