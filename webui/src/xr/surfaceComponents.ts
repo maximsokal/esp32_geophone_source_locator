@@ -57,7 +57,25 @@ interface OrientationNode {
   normalWeight: number;
 }
 
+interface CellSample {
+  index: number;
+  x: number;
+  y: number;
+  z: number;
+  confidence: number;
+  normal: SurfaceComponentNormal;
+}
+
+interface CellBucket {
+  gx: number;
+  gy: number;
+  gz: number;
+  spatialKey: string;
+  samples: CellSample[];
+}
+
 const MAX_ORIENTATION_NODES_PER_CELL = 3;
+const MAX_PROVISIONAL_ORIENTATION_NODES_PER_CELL = 12;
 const ORIENTATION_FAMILY_DOT = Math.cos((34 * Math.PI) / 180);
 const COMPONENT_NORMAL_DOT = Math.cos((52 * Math.PI) / 180);
 const DEFAULT_MINIMUM_CONFIDENCE = 0.58;
@@ -96,6 +114,39 @@ function absDot(a: SurfaceComponentNormal, b: SurfaceComponentNormal): number {
 
 function nodeNormal(node: OrientationNode): SurfaceComponentNormal | null {
   return normalize(node.normalX, node.normalY, node.normalZ);
+}
+
+function compareSamples(left: CellSample, right: CellSample): number {
+  return right.confidence - left.confidence ||
+    left.normal[0] - right.normal[0] ||
+    left.normal[1] - right.normal[1] ||
+    left.normal[2] - right.normal[2] ||
+    left.x - right.x ||
+    left.y - right.y ||
+    left.z - right.z;
+}
+
+function compareOrientationSupport(left: OrientationNode, right: OrientationNode): number {
+  const leftNormal = nodeNormal(left) ?? [0, 0, 0];
+  const rightNormal = nodeNormal(right) ?? [0, 0, 0];
+  return right.pointIndices.length - left.pointIndices.length ||
+    right.normalWeight - left.normalWeight ||
+    leftNormal[0] - rightNormal[0] ||
+    leftNormal[1] - rightNormal[1] ||
+    leftNormal[2] - rightNormal[2];
+}
+
+function accumulateSample(node: OrientationNode, sample: CellSample): void {
+  const reference = nodeNormal(node);
+  const sign = reference !== null && (
+    reference[0] * sample.normal[0] + reference[1] * sample.normal[1] + reference[2] * sample.normal[2]
+  ) < 0 ? -1 : 1;
+  const weight = clamp01(sample.confidence);
+  node.normalX += sample.normal[0] * weight * sign;
+  node.normalY += sample.normal[1] * weight * sign;
+  node.normalZ += sample.normal[2] * weight * sign;
+  node.normalWeight += weight;
+  node.pointIndices.push(sample.index);
 }
 
 function meshThresholds(voxelSizeMeters: number): {
@@ -216,10 +267,12 @@ function componentMetrics(
  * Memory-bounded connected-component analysis for unordered measured surfels.
  *
  * We intentionally do not run all-point DBSCAN on the phone. Points first enter
- * a voxel hash, each cell retains at most three normal-orientation families,
- * and BFS traverses only the 3x3x3 neighbouring occupied cells. This preserves
- * disconnected islands and sharp surface boundaries while keeping memory O(N)
- * and neighbour discovery local.
+ * a voxel hash. Each occupied cell may form at most twelve bounded provisional
+ * normal families; they are ranked deterministically by measured support and only
+ * the strongest three survive into component traversal. BFS then visits only the
+ * 3x3x3 neighbouring occupied cells. This keeps memory O(N), preserves sharp
+ * boundaries, and prevents arrival order or a few noisy normals from deciding
+ * which real surfaces survive the per-cell cap.
  */
 export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceComponentAnalysis {
   const sourceCount = Math.min(
@@ -231,9 +284,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
   const minimumConfidence = clamp01(input.minimumConfidence ?? DEFAULT_MINIMUM_CONFIDENCE);
   const voxel = clamp(Number.isFinite(input.voxelSizeMeters) ? input.voxelSizeMeters : 0.04, 0.025, 0.10);
   const connectionCellSizeMeters = clamp(voxel * 1.50, 0.045, 0.10);
-  const nodes: OrientationNode[] = [];
-  const nodesByCell = new Map<string, OrientationNode[]>();
-  let acceptedPointCount = 0;
+  const bucketsByCell = new Map<string, CellBucket>();
 
   for (let index = 0; index < sourceCount; index += 1) {
     const confidence = Number(input.confidence[index]);
@@ -254,39 +305,61 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
     const gy = grid(y, connectionCellSizeMeters);
     const gz = grid(z, connectionCellSizeMeters);
     const spatialKey = key(gx, gy, gz);
-    const cellNodes = nodesByCell.get(spatialKey) ?? [];
-    let best: OrientationNode | null = null;
-    let bestDot = ORIENTATION_FAMILY_DOT;
-    for (const node of cellNodes) {
-      const reference = nodeNormal(node);
-      if (reference === null) continue;
-      const similarity = absDot(reference, normal);
-      if (similarity >= bestDot) { best = node; bestDot = similarity; }
+    let bucket = bucketsByCell.get(spatialKey);
+    if (bucket === undefined) {
+      bucket = { gx, gy, gz, spatialKey, samples: [] };
+      bucketsByCell.set(spatialKey, bucket);
     }
-    if (best === null) {
-      if (cellNodes.length >= MAX_ORIENTATION_NODES_PER_CELL) continue;
-      best = {
-        id: nodes.length,
-        gx, gy, gz, spatialKey,
-        pointIndices: [],
-        normalX: 0, normalY: 0, normalZ: 0,
-        normalWeight: 0,
-      };
-      nodes.push(best);
-      cellNodes.push(best);
-      nodesByCell.set(spatialKey, cellNodes);
+    bucket.samples.push({ index, x, y, z, confidence, normal });
+  }
+
+  const nodes: OrientationNode[] = [];
+  const nodesByCell = new Map<string, OrientationNode[]>();
+  let acceptedPointCount = 0;
+  const orderedBuckets = [...bucketsByCell.values()].sort((left, right) =>
+    left.gx - right.gx || left.gy - right.gy || left.gz - right.gz
+  );
+
+  for (const bucket of orderedBuckets) {
+    bucket.samples.sort(compareSamples);
+    const provisional: OrientationNode[] = [];
+    for (const sample of bucket.samples) {
+      let best: OrientationNode | null = null;
+      let bestDot = ORIENTATION_FAMILY_DOT;
+      for (const node of provisional) {
+        const reference = nodeNormal(node);
+        if (reference === null) continue;
+        const similarity = absDot(reference, sample.normal);
+        if (similarity >= bestDot) { best = node; bestDot = similarity; }
+      }
+      if (best === null) {
+        if (provisional.length >= MAX_PROVISIONAL_ORIENTATION_NODES_PER_CELL) continue;
+        best = {
+          id: -1,
+          gx: bucket.gx,
+          gy: bucket.gy,
+          gz: bucket.gz,
+          spatialKey: bucket.spatialKey,
+          pointIndices: [],
+          normalX: 0,
+          normalY: 0,
+          normalZ: 0,
+          normalWeight: 0,
+        };
+        provisional.push(best);
+      }
+      accumulateSample(best, sample);
     }
-    const reference = nodeNormal(best);
-    const sign = reference !== null && (
-      reference[0] * normal[0] + reference[1] * normal[1] + reference[2] * normal[2]
-    ) < 0 ? -1 : 1;
-    const weight = clamp01(confidence);
-    best.normalX += normal[0] * weight * sign;
-    best.normalY += normal[1] * weight * sign;
-    best.normalZ += normal[2] * weight * sign;
-    best.normalWeight += weight;
-    best.pointIndices.push(index);
-    acceptedPointCount += 1;
+
+    const retained = provisional
+      .sort(compareOrientationSupport)
+      .slice(0, MAX_ORIENTATION_NODES_PER_CELL);
+    for (const node of retained) {
+      node.id = nodes.length;
+      nodes.push(node);
+      acceptedPointCount += node.pointIndices.length;
+    }
+    if (retained.length > 0) nodesByCell.set(bucket.spatialKey, retained);
   }
 
   const visited = new Uint8Array(nodes.length);
