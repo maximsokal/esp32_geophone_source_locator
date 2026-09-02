@@ -78,6 +78,7 @@ describe('mesh topology sanity', () => {
     expect(result.orientationRepairCount).toBeGreaterThan(0);
     expect(result.orientationConflictCount).toBe(0);
     expect(result.selfIntersectionPairCount).toBe(0);
+    expect(result.components.every((component) => component.diagnosticsComplete)).toBe(true);
     const signs = Array.from({ length: result.triangleCount }, (_, index) => zNormalSign(result.trianglePositions, index));
     expect(new Set(signs).size).toBe(1);
   });
@@ -160,6 +161,21 @@ describe('mesh topology sanity', () => {
     expect(noisy.length).toBeGreaterThan(0);
     expect(noisy.every((component) => component.disposition === 'quarantine')).toBe(true);
     expect(result.quarantinedTriangleCount).toBeGreaterThan(0);
+  });
+
+  it('never certifies retained mesh when a bounded diagnostic is incomplete', () => {
+    const source: number[] = [...gridPatch(3, 2, 0.04, [0, 0, 0])];
+    // This isolated giant face spans far more than the diagnostic spatial-cell
+    // budget. The healthy slab would normally be retained, but the complete
+    // triangle soup cannot be certified in this pass once verification truncates.
+    pushTriangle(source, [2, 0, 0], [5, 0, 0], [2, 3, 0]);
+
+    const result = sanitizeMeshTopology(Float32Array.from(source), 0.04);
+    expect(result.selfIntersectionTruncated).toBe(true);
+    expect(result.components.some((component) => !component.diagnosticsComplete)).toBe(true);
+    expect(result.retainedTriangleCount).toBe(0);
+    expect(result.quarantinedTriangleCount).toBeGreaterThan(0);
+    expect(result.discardedTriangleCount).toBeGreaterThan(0);
   });
 
   it('is deterministic for identical triangle soup', () => {
