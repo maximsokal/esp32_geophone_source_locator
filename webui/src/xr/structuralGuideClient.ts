@@ -1,5 +1,5 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
-import { deviceComputeProfilePromise } from './deviceComputeProfile';
+import { liveComputeScheduler } from './liveComputeScheduler';
 import type { StructuralCandidateDiagnostics } from './structuralCandidatePolicy';
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
@@ -67,11 +67,12 @@ export class StructuralGuideClient {
     if (this.busy) throw new Error('Structural guide analysis is already running.');
     if (this.disposed) throw new Error('Structural guide worker disposed.');
     this.starting = true;
+    const lease = await liveComputeScheduler.tryAcquire('structural');
+    if (lease === null) {
+      this.starting = false;
+      throw new Error('Live compute budget is busy; structural analysis will retry on a later keyframe.');
+    }
     try {
-      const compute = await deviceComputeProfilePromise;
-      if (compute.liveWorkerBudget < 1) {
-        throw new Error('No safe live Worker slot is available for structural analysis.');
-      }
       const worker = this.ensureWorker();
       const id = this.nextRequestId++;
       const epoch = this.epoch;
@@ -108,6 +109,7 @@ export class StructuralGuideClient {
         }, transfer);
       });
     } finally {
+      lease.release();
       this.starting = false;
     }
   }
