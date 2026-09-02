@@ -18,7 +18,7 @@ export interface MeshTopologyComponentQuality {
   selfIntersectionPairCount: number;
   /** Fraction of this component's faces touched by at least one such pair. */
   selfIntersectionAffectedTriangleRatio: number;
-  /** Combined diagnostic only; a sharp fold is never rejected from this score alone. */
+  /** Combined diagnostic only; a sharp fold is never discarded from this score alone. */
   meshNoiseScore: number;
   disposition: MeshComponentDisposition;
 }
@@ -72,6 +72,10 @@ const MIN_TRIANGLES_QUARANTINED_COMPONENT = 3;
 const MIN_AREA_ABSOLUTE_SQUARE_METERS = 0.0015;
 const MIN_EFFECTIVE_WIDTH_ABSOLUTE_METERS = 0.032;
 const MAX_BOUNDARY_RATIO_FOR_SMALL_COMPONENT = 0.86;
+// Noise can quarantine a rendered component, but never discard physical evidence.
+// 0.60 requires either widespread self-intersection or self-intersection combined
+// with a very open boundary; a localized genuine sharp fold stays below the gate.
+const MAX_RETAIN_MESH_NOISE_SCORE = 0.60;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -326,6 +330,7 @@ function componentQuality(
   const topologyClean = edgeStats.nonManifoldEdgeCount === 0 && edgeStats.orientationConflictCount === 0;
   const retain =
     topologyClean &&
+    meshNoiseScore <= MAX_RETAIN_MESH_NOISE_SCORE &&
     members.length >= MIN_TRIANGLES_RETAINED_COMPONENT &&
     area >= minimumArea &&
     majorExtentMeters >= minimumMajor &&
@@ -360,9 +365,9 @@ function componentQuality(
  * triangle island is trustworthy enough to be shown/consumed as a mesh. Tiny
  * non-manifold faces are removed locally first, shared manifold edges then repair
  * winding consistently. Self-intersection is measured with a bounded spatial
- * broad phase and contributes a noise diagnostic, but never rejects a genuine
- * sharp fold by itself. Small disconnected islands are discarded from the mesh
- * preview while their original physical points remain available to later rescans.
+ * broad phase and contributes a noise diagnostic. High combined noise can
+ * quarantine a component from the rendered/consumed mesh, but never discards the
+ * underlying physical surfels and never treats one sharp fold as sufficient proof.
  */
 export function sanitizeMeshTopology(
   trianglePositions: Float32Array,
