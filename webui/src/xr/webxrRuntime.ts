@@ -281,6 +281,7 @@ export class WebXrRuntime{
   getState():WebXrRuntimeState{return this.state;}
   getPointCloudSnapshot():ScanPointCloudSnapshot{return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};}
   getLastManualPointId():number|null{return this.manualPoints.lastId;}
+  getStructuralWorkerSnapshot(){return this.pointCloud.structuralWorkerSnapshot();}
   getStructuralGuideSnapshot(){return this.pointCloud.structuralGuideSnapshot();}
   getManualControlPoints():readonly ManualControlPoint[]{return this.manualPoints.snapshot();}
   getOperatorEdges():readonly OperatorEdge[]{return this.operatorEdges.snapshot();}
