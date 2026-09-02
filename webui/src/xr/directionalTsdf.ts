@@ -236,6 +236,15 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
       finalTopology.orientationConflictCount +
       meshes.reduce((sum, mesh) => sum + mesh.orientationConflictCount, 0),
     meshTopologyComponentCount: finalTopology.components.length,
+    // Self-intersection describes the final merged visible mesh. Do not add the
+    // same pairs again from per-channel intermediate meshes.
+    selfIntersectionPairCount: finalTopology.selfIntersectionPairCount,
+    selfIntersectionAffectedTriangleCount: finalTopology.selfIntersectionAffectedTriangleCount,
+    selfIntersectionExactTestedPairs: finalTopology.selfIntersectionExactTestedPairs,
+    selfIntersectionBroadPhaseCandidatePairs: finalTopology.selfIntersectionBroadPhaseCandidatePairs,
+    selfIntersectionTruncated: finalTopology.selfIntersectionTruncated,
+    selfIntersectionOversizedTriangleCount: finalTopology.selfIntersectionOversizedTriangleCount,
+    meshNoiseScore: finalTopology.components.reduce((maximum, component) => Math.max(maximum, component.meshNoiseScore), 0),
     sourcePointCount: count,
     integratedPointCount: meshes.reduce((sum, mesh) => sum + mesh.integratedPointCount, 0),
     skippedLowConfidence,
