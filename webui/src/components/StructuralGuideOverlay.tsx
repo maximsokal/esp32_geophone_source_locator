@@ -19,6 +19,7 @@ import {
 import {
   computeScanCapabilityReadiness,
   ScanViewpointHistory,
+  type SurfaceComponentReadinessSummary,
 } from '../xr/scanCapabilityReadiness';
 import { compactScanReadinessLabel } from '../xr/scanReadinessUi';
 import { certifyOperationalStructuralEdges } from '../xr/structuralEdgeCertification';
@@ -32,10 +33,6 @@ import {
 } from '../xr/structuralGuide';
 import { StructuralGuideClient } from '../xr/structuralGuideClient';
 import { applyStructuralVisualCorroboration } from '../xr/structuralVisualCorroboration';
-import {
-  analyzeSurfaceComponents,
-  type SurfaceComponentAnalysis,
-} from '../xr/surfaceComponents';
 import type { VisualEvidenceFrame } from '../xr/visualLineEvidence';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
 import { getVisualEvidenceFrames } from '../xr/xrGuidanceRegistry';
@@ -63,10 +60,14 @@ interface ProjectedEdge {
   endV: number;
 }
 
+type StructuralGuideResultWithReadiness = StructuralGuideResult & {
+  surfaceReadiness?: SurfaceComponentReadinessSummary;
+};
+
 const MIN_STABLE_POINTS = 180;
 // Structural-family clustering intentionally reduces the physical surfel set.
 // Do not demand the original 180 points a second time after that reduction;
-// physical component size/density below is the authoritative post-cluster gate.
+// worker-side physical component size/density is the authoritative post-cluster gate.
 const MIN_CLUSTERED_POINTS = 60;
 const MIN_KEYFRAMES = 8;
 const MIN_KEYFRAME_ADVANCE = 4;
@@ -245,21 +246,11 @@ function mergeCornerCandidates(
   return merged.sort((left, right) => right.confidence - left.confidence).slice(0, 8);
 }
 
-function analyzeStructuralSurface(snapshot: StructuralGuideSnapshot): SurfaceComponentAnalysis {
-  return analyzeSurfaceComponents({
-    positions: snapshot.positions,
-    normals: snapshot.normals,
-    confidence: snapshot.confidence,
-    voxelSizeMeters: snapshot.voxelSizeMeters,
-    minimumConfidence: 0.58,
-  });
-}
-
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
   const [validationSnapshot, setValidationSnapshot] = useState<StructuralGuideSnapshot | null>(null);
-  const [surfaceAnalysis, setSurfaceAnalysis] = useState<SurfaceComponentAnalysis | null>(null);
+  const [surfaceReadiness, setSurfaceReadiness] = useState<SurfaceComponentReadinessSummary | null>(null);
   const [viewHistoryRevision, setViewHistoryRevision] = useState(0);
   const [rejected, setRejected] = useState<Set<string>>(() => new Set());
   const [rejectedPositions, setRejectedPositions] = useState<ProjectPoint[]>([]);
@@ -281,7 +272,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       setViewHistoryRevision((value) => value + 1);
       setResult(null);
       setValidationSnapshot(null);
-      setSurfaceAnalysis(null);
+      setSurfaceReadiness(null);
       setRejected(new Set());
       setRejectedPositions([]);
       setAcceptedEdges(new Set());
@@ -311,14 +302,14 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     keyframeCount: runtimeState.keyframeCount,
     visibleCoverageCells: runtimeState.coverageVisibleCells,
     readyCoverageCells: runtimeState.coverageReadyCells,
-    surfaceAnalysis,
+    surfaceAnalysis: surfaceReadiness,
     viewpoints: viewpointHistory.current.snapshot(),
   }), [
     runtimeState.pointCount,
     runtimeState.keyframeCount,
     runtimeState.coverageVisibleCells,
     runtimeState.coverageReadyCells,
-    surfaceAnalysis,
+    surfaceReadiness,
     viewHistoryRevision,
   ]);
 
@@ -338,6 +329,20 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     const viewpoint = structuralGuideViewpointFromState(runtimeState);
     if (viewpoint === null) return;
 
+    // Cheap UI-side prerequisites only. Deliberately omit the previous surface
+    // summary here: using a stale "object too small" result as an activation gate
+    // would deadlock growth because the worker would never get a chance to remeasure
+    // the newly scanned component. Component/PCA scale is recomputed in the worker.
+    const preflight = computeScanCapabilityReadiness({
+      stablePointCount: runtimeState.pointCount,
+      keyframeCount: runtimeState.keyframeCount,
+      visibleCoverageCells: runtimeState.coverageVisibleCells,
+      readyCoverageCells: runtimeState.coverageReadyCells,
+      surfaceAnalysis: null,
+      viewpoints: viewpointHistory.current.snapshot(),
+    });
+    if (!preflight.structural.ready) return;
+
     lastAnalysisMs.current = now;
     lastAnalysisKeyframe.current = runtimeState.keyframeCount;
     const snapshotStarted = performance.now();
@@ -345,32 +350,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     const snapshotMs = performance.now() - snapshotStarted;
     if (snapshot.positions.length < MIN_CLUSTERED_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) {
       setResult(null);
-      return;
-    }
-
-    const nextSurfaceAnalysis = analyzeStructuralSurface(snapshot);
-    setSurfaceAnalysis(nextSurfaceAnalysis);
-    const activation = computeScanCapabilityReadiness({
-      stablePointCount: runtimeState.pointCount,
-      keyframeCount: runtimeState.keyframeCount,
-      visibleCoverageCells: runtimeState.coverageVisibleCells,
-      readyCoverageCells: runtimeState.coverageReadyCells,
-      surfaceAnalysis: nextSurfaceAnalysis,
-      viewpoints: viewpointHistory.current.snapshot(),
-    });
-    if (!activation.structural.ready) {
-      setResult(null);
-      setValidationSnapshot(snapshot);
-      clientDiagnostics.info('XR_GUIDE_DEFERRED', {
-        reason: activation.structural.limitingMetric,
-        readiness: Number(activation.structural.progress.toFixed(3)),
-        stablePoints: runtimeState.pointCount,
-        clusteredPoints: snapshot.positions.length / 3,
-        majorExtentMeters: activation.objectMajorExtentMeters === null ? null : Number(activation.objectMajorExtentMeters.toFixed(3)),
-        minorExtentMeters: activation.objectMinorExtentMeters === null ? null : Number(activation.objectMinorExtentMeters.toFixed(3)),
-        cameraBaselineMeters: Number(activation.cameraBaselineMeters.toFixed(3)),
-      });
-      void clientDiagnostics.flush();
+      setValidationSnapshot(null);
       return;
     }
 
@@ -389,9 +369,45 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       freeSpacePositions: snapshot.freeSpacePositions,
       freeSpaceVoxelSizeMeters: snapshot.freeSpaceVoxelSizeMeters,
     }).then((next) => {
-      const certificateSnapshot = runtime.getStructuralGuideSnapshot();
-      setValidationSnapshot(certificateSnapshot);
-      setSurfaceAnalysis(analyzeStructuralSurface(certificateSnapshot));
+      const workerResult = next as StructuralGuideResultWithReadiness;
+      const nextSurfaceReadiness = workerResult.surfaceReadiness ?? null;
+      setSurfaceReadiness(nextSurfaceReadiness);
+      const activation = computeScanCapabilityReadiness({
+        stablePointCount: runtimeState.pointCount,
+        keyframeCount: runtimeState.keyframeCount,
+        visibleCoverageCells: runtimeState.coverageVisibleCells,
+        readyCoverageCells: runtimeState.coverageReadyCells,
+        surfaceAnalysis: nextSurfaceReadiness,
+        viewpoints: viewpointHistory.current.snapshot(),
+      });
+
+      if (!activation.structural.ready) {
+        setResult(null);
+        setValidationSnapshot(null);
+        clientDiagnostics.info('XR_GUIDE_DEFERRED', {
+          reason: activation.structural.limitingMetric,
+          readiness: Number(activation.structural.progress.toFixed(3)),
+          stablePoints: runtimeState.pointCount,
+          clusteredPoints: next.analyzedPoints,
+          majorExtentMeters: activation.objectMajorExtentMeters === null ? null : Number(activation.objectMajorExtentMeters.toFixed(3)),
+          minorExtentMeters: activation.objectMinorExtentMeters === null ? null : Number(activation.objectMinorExtentMeters.toFixed(3)),
+          cameraBaselineMeters: Number(activation.cameraBaselineMeters.toFixed(3)),
+        });
+        void clientDiagnostics.flush();
+        return;
+      }
+
+      // Edge candidates already contain worker-side finite physical support and do
+      // not need another O(N) snapshot. Corner/endpoint suggestions deliberately
+      // get a fresh independent physical certificate before they can reach UI.
+      let certificateSnapshotMs = 0;
+      if (next.corners.length > 0) {
+        const certificateStarted = performance.now();
+        setValidationSnapshot(runtime.getStructuralGuideSnapshot());
+        certificateSnapshotMs = performance.now() - certificateStarted;
+      } else {
+        setValidationSnapshot(null);
+      }
       setResult(next);
       clientDiagnostics.info('XR_GUIDE_ANALYSIS', {
         keyframes: next.keyframeCount,
@@ -403,10 +419,12 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
         candidateComparisons: next.candidateComparisons,
         visualFrames: runtimeState.visualEvidenceFrames,
         snapshotMs: Number(snapshotMs.toFixed(1)),
+        certificateSnapshotMs: Number(certificateSnapshotMs.toFixed(1)),
         workerRoundTripMs: Number((performance.now() - workerStarted).toFixed(1)),
         workerComputeMs: Number(next.computeMs.toFixed(1)),
       });
       if (snapshotMs >= 80) clientDiagnostics.warn('XR_GUIDE_SNAPSHOT_SLOW', { snapshotMs: Number(snapshotMs.toFixed(1)) });
+      if (certificateSnapshotMs >= 80) clientDiagnostics.warn('XR_GUIDE_CERTIFICATE_SNAPSHOT_SLOW', { snapshotMs: Number(certificateSnapshotMs.toFixed(1)) });
       void clientDiagnostics.flush();
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -501,7 +519,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   }
 
   const projectedEdges: ProjectedEdge[] = [];
-  if (result !== null && validationSnapshot !== null) {
+  if (result !== null) {
     for (const candidate of certifiedEdgeCandidates) {
       if (acceptedEdges.has(candidate.id)) continue;
       const start = runtime.projectProjectPointToNormalized(candidate.start);
