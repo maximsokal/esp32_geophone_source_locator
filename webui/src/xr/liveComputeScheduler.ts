@@ -38,7 +38,14 @@ export class LiveComputeScheduler {
   constructor(private readonly budgetProvider: BudgetProvider) {}
 
   async tryAcquire(kind: LiveComputeTaskKind): Promise<LiveComputeLease | null> {
-    const budget = safeBudget(await this.budgetProvider());
+    let budget = 0;
+    try {
+      budget = safeBudget(await this.budgetProvider());
+    } catch {
+      // Capability discovery is advisory. If it ever fails unexpectedly, do not
+      // leave clients stuck in startup and do not guess that parallelism is safe.
+      budget = 0;
+    }
     this.resolvedBudget = budget;
     // Promise continuations execute serially on the JS event loop, so this
     // check+increment is atomic with respect to competing main-thread callers.
