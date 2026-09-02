@@ -16,6 +16,10 @@ import {
   certifyCornerByVisualReprojection,
   certifyEndpointByVisualReprojection,
 } from '../xr/reprojectionCertificate';
+import {
+  computeScanCapabilityReadiness,
+  ScanViewpointHistory,
+} from '../xr/scanCapabilityReadiness';
 import { certifyOperationalStructuralEdges } from '../xr/structuralEdgeCertification';
 import { inferStructuralVerticesFromEdges } from '../xr/structuralEdgeVertices';
 import { detectEdgeEndpointObservations } from '../xr/structuralEdgeEndpoints';
@@ -27,6 +31,10 @@ import {
 } from '../xr/structuralGuide';
 import { StructuralGuideClient } from '../xr/structuralGuideClient';
 import { applyStructuralVisualCorroboration } from '../xr/structuralVisualCorroboration';
+import {
+  analyzeSurfaceComponents,
+  type SurfaceComponentAnalysis,
+} from '../xr/surfaceComponents';
 import type { VisualEvidenceFrame } from '../xr/visualLineEvidence';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
 import { getVisualEvidenceFrames } from '../xr/xrGuidanceRegistry';
@@ -55,6 +63,10 @@ interface ProjectedEdge {
 }
 
 const MIN_STABLE_POINTS = 180;
+// Structural-family clustering intentionally reduces the physical surfel set.
+// Do not demand the original 180 points a second time after that reduction;
+// physical component size/density below is the authoritative post-cluster gate.
+const MIN_CLUSTERED_POINTS = 60;
 const MIN_KEYFRAMES = 8;
 const MIN_KEYFRAME_ADVANCE = 4;
 const BASE_ANALYSIS_INTERVAL_MS = 1900;
@@ -89,6 +101,10 @@ function pointDistance(a: ProjectPoint, b: ProjectPoint): number {
 
 function insideWorkingView(u: number, v: number): boolean {
   return u >= VIEW_MARGIN && u <= 1 - VIEW_MARGIN && v >= VIEW_MARGIN && v <= 1 - VIEW_MARGIN;
+}
+
+function percent(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function hasUsableLineCoverage(frames: readonly VisualEvidenceFrame[]): boolean {
@@ -228,15 +244,28 @@ function mergeCornerCandidates(
   return merged.sort((left, right) => right.confidence - left.confidence).slice(0, 8);
 }
 
+function analyzeStructuralSurface(snapshot: StructuralGuideSnapshot): SurfaceComponentAnalysis {
+  return analyzeSurfaceComponents({
+    positions: snapshot.positions,
+    normals: snapshot.normals,
+    confidence: snapshot.confidence,
+    voxelSizeMeters: snapshot.voxelSizeMeters,
+    minimumConfidence: 0.58,
+  });
+}
+
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
   const [validationSnapshot, setValidationSnapshot] = useState<StructuralGuideSnapshot | null>(null);
+  const [surfaceAnalysis, setSurfaceAnalysis] = useState<SurfaceComponentAnalysis | null>(null);
+  const [viewHistoryRevision, setViewHistoryRevision] = useState(0);
   const [rejected, setRejected] = useState<Set<string>>(() => new Set());
   const [rejectedPositions, setRejectedPositions] = useState<ProjectPoint[]>([]);
   const [acceptedEdges, setAcceptedEdges] = useState<Set<string>>(() => new Set());
   const lastAnalysisMs = useRef(Number.NEGATIVE_INFINITY);
   const lastAnalysisKeyframe = useRef(0);
+  const viewpointHistory = useRef(new ScanViewpointHistory());
 
   useEffect(() => () => {
     client.dispose();
@@ -247,8 +276,11 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     if (runtimeState.phase === 'starting') {
       client.reset();
       deactivateCertifiedGuideRegistry();
+      viewpointHistory.current.reset();
+      setViewHistoryRevision((value) => value + 1);
       setResult(null);
       setValidationSnapshot(null);
+      setSurfaceAnalysis(null);
       setRejected(new Set());
       setRejectedPositions([]);
       setAcceptedEdges(new Set());
@@ -258,6 +290,29 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       deactivateCertifiedGuideRegistry();
     }
   }, [client, runtimeState.phase]);
+
+  useEffect(() => {
+    if (runtimeState.phase !== 'running') return;
+    if (viewpointHistory.current.record(structuralGuideViewpointFromState(runtimeState))) {
+      setViewHistoryRevision((value) => value + 1);
+    }
+  }, [runtimeState.keyframeCount, runtimeState.phase]);
+
+  const readiness = useMemo(() => computeScanCapabilityReadiness({
+    stablePointCount: runtimeState.pointCount,
+    keyframeCount: runtimeState.keyframeCount,
+    visibleCoverageCells: runtimeState.coverageVisibleCells,
+    readyCoverageCells: runtimeState.coverageReadyCells,
+    surfaceAnalysis,
+    viewpoints: viewpointHistory.current.snapshot(),
+  }), [
+    runtimeState.pointCount,
+    runtimeState.keyframeCount,
+    runtimeState.coverageVisibleCells,
+    runtimeState.coverageReadyCells,
+    surfaceAnalysis,
+    viewHistoryRevision,
+  ]);
 
   useEffect(() => {
     if (
@@ -280,7 +335,36 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     const snapshotStarted = performance.now();
     const snapshot = runtime.getStructuralGuideSnapshot();
     const snapshotMs = performance.now() - snapshotStarted;
-    if (snapshot.positions.length < MIN_STABLE_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) return;
+    if (snapshot.positions.length < MIN_CLUSTERED_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) {
+      setResult(null);
+      return;
+    }
+
+    const nextSurfaceAnalysis = analyzeStructuralSurface(snapshot);
+    setSurfaceAnalysis(nextSurfaceAnalysis);
+    const activation = computeScanCapabilityReadiness({
+      stablePointCount: runtimeState.pointCount,
+      keyframeCount: runtimeState.keyframeCount,
+      visibleCoverageCells: runtimeState.coverageVisibleCells,
+      readyCoverageCells: runtimeState.coverageReadyCells,
+      surfaceAnalysis: nextSurfaceAnalysis,
+      viewpoints: viewpointHistory.current.snapshot(),
+    });
+    if (!activation.structural.ready) {
+      setResult(null);
+      setValidationSnapshot(snapshot);
+      clientDiagnostics.info('XR_GUIDE_DEFERRED', {
+        reason: activation.structural.limitingMetric,
+        readiness: Number(activation.structural.progress.toFixed(3)),
+        stablePoints: runtimeState.pointCount,
+        clusteredPoints: snapshot.positions.length / 3,
+        majorExtentMeters: activation.objectMajorExtentMeters === null ? null : Number(activation.objectMajorExtentMeters.toFixed(3)),
+        minorExtentMeters: activation.objectMinorExtentMeters === null ? null : Number(activation.objectMinorExtentMeters.toFixed(3)),
+        cameraBaselineMeters: Number(activation.cameraBaselineMeters.toFixed(3)),
+      });
+      void clientDiagnostics.flush();
+      return;
+    }
 
     const workerStarted = performance.now();
     void client.analyze({
@@ -299,6 +383,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     }).then((next) => {
       const certificateSnapshot = runtime.getStructuralGuideSnapshot();
       setValidationSnapshot(certificateSnapshot);
+      setSurfaceAnalysis(analyzeStructuralSurface(certificateSnapshot));
       setResult(next);
       clientDiagnostics.info('XR_GUIDE_ANALYSIS', {
         keyframes: next.keyframeCount,
@@ -388,44 +473,45 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     visualFrames.length,
   ]);
 
-  if (runtimeState.phase !== 'running' || result === null || validationSnapshot === null) return null;
+  if (runtimeState.phase !== 'running') return null;
 
   const projectedCorners: ProjectedCorner[] = [];
-  for (const candidate of certifiedCandidates) {
-    const projection = runtime.projectProjectPointToNormalized(candidate.position);
-    if (!projection?.visible || !insideWorkingView(projection.u, projection.v)) continue;
-    const centerDistance = Math.hypot(projection.u - 0.5, projection.v - 0.5);
-    projectedCorners.push({
-      candidate,
-      u: projection.u,
-      v: projection.v,
-      score: candidate.confidence - centerDistance * 0.24,
-    });
+  if (result !== null && validationSnapshot !== null) {
+    for (const candidate of certifiedCandidates) {
+      const projection = runtime.projectProjectPointToNormalized(candidate.position);
+      if (!projection?.visible || !insideWorkingView(projection.u, projection.v)) continue;
+      const centerDistance = Math.hypot(projection.u - 0.5, projection.v - 0.5);
+      projectedCorners.push({
+        candidate,
+        u: projection.u,
+        v: projection.v,
+        score: candidate.confidence - centerDistance * 0.24,
+      });
+    }
+    projectedCorners.sort((left, right) => right.score - left.score);
+    projectedCorners.splice(MAX_VISIBLE_CORNERS);
   }
-  projectedCorners.sort((left, right) => right.score - left.score);
-  projectedCorners.splice(MAX_VISIBLE_CORNERS);
 
   const projectedEdges: ProjectedEdge[] = [];
-  for (const candidate of certifiedEdgeCandidates) {
-    if (acceptedEdges.has(candidate.id)) continue;
-    const start = runtime.projectProjectPointToNormalized(candidate.start);
-    const end = runtime.projectProjectPointToNormalized(candidate.end);
-    if (!start?.visible || !end?.visible) continue;
-    if (!insideWorkingView(start.u, start.v) || !insideWorkingView(end.u, end.v)) continue;
-    projectedEdges.push({
-      candidate,
-      startU: start.u,
-      startV: start.v,
-      endU: end.u,
-      endV: end.v,
-    });
+  if (result !== null && validationSnapshot !== null) {
+    for (const candidate of certifiedEdgeCandidates) {
+      if (acceptedEdges.has(candidate.id)) continue;
+      const start = runtime.projectProjectPointToNormalized(candidate.start);
+      const end = runtime.projectProjectPointToNormalized(candidate.end);
+      if (!start?.visible || !end?.visible) continue;
+      if (!insideWorkingView(start.u, start.v) || !insideWorkingView(end.u, end.v)) continue;
+      projectedEdges.push({
+        candidate,
+        startU: start.u,
+        startV: start.v,
+        endU: end.u,
+        endV: end.v,
+      });
+    }
   }
 
   const confirmCorner = (candidate: StructuralCornerCandidate): void => {
     try {
-      // All rendered candidates have already passed the shared certification
-      // path. Authorize the exact candidate once so a same-frame click cannot
-      // race the registry effect that publishes it to ManualControlPointStore.
       authorizeCertifiedManualPlacement(candidate.position, candidate.confidence);
       const stored = runtime.addSuggestedManualPoint(candidate.position);
       if (stored === null) return;
@@ -467,10 +553,27 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     void clientDiagnostics.flush();
   };
 
+  const meshStatus = readiness.mesh === null ? 'MESH --' : `MESH ${percent(readiness.mesh.progress)}`;
+  const growthHint = readiness.objectTooSmall && readiness.structural.growthNeededPercent !== null
+    ? ` · AREA +${readiness.structural.growthNeededPercent}%`
+    : '';
+  const resultHint = result === null
+    ? ''
+    : ` · ${projectedCorners.length}/${certifiedCandidates.length}C · ${certifiedEdgeCandidates.length}E`;
+  const readinessTitle = [
+    `Structural readiness ${percent(readiness.structural.progress)} (${readiness.structural.limitingMetric})`,
+    readiness.mesh === null ? 'Mesh scale not measured yet' : `Mesh readiness ${percent(readiness.mesh.progress)} (${readiness.mesh.limitingMetric})`,
+    `View coverage ${percent(readiness.viewCoverage)}; ${readiness.viewSectors}/${readiness.totalViewSectors} azimuth sectors`,
+    `Camera baseline ${readiness.cameraBaselineMeters.toFixed(2)} m`,
+    readiness.objectMajorExtentMeters === null || readiness.objectMinorExtentMeters === null
+      ? 'Object extent not measured yet'
+      : `Measured component ${readiness.objectMajorExtentMeters.toFixed(2)} × ${readiness.objectMinorExtentMeters.toFixed(2)} m`,
+  ].join(' · ');
+
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
-      <div className="xr-structural-guide-status">
-        AUTO GUIDE · {projectedCorners.length}/{certifiedCandidates.length} certified corner · {certifiedEdgeCandidates.length} certified edge · {result.planarPatches} patches{visualCheckActive(visualFrames) ? ' · RGB SUPPORT' : ''}
+      <div className="xr-structural-guide-status" title={readinessTitle}>
+        STRUCT {percent(readiness.structural.progress)} · {meshStatus} · VIEWS {percent(readiness.viewCoverage)}{growthHint}{resultHint}{result !== null && visualCheckActive(visualFrames) ? ' · RGB' : ''}
       </div>
 
       {projectedEdges.map((edge) => {
