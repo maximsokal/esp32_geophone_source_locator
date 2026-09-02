@@ -11,10 +11,24 @@ const NOISY_MESH_SCORE = 0.60;
 /**
  * Compact post-scan mesh status. The status never changes geometry; it only
  * exposes already-computed readiness/topology/noise diagnostics to the operator.
+ *
+ * A small correlated hotspot that the bounded sanitizer successfully removed is
+ * not equivalent to losing an entire mesh component. Keep it visible as a
+ * warning, but do not force a full rescan unless component quarantine, diagnostic
+ * truncation or a high global noise score remains after the repair.
  */
 export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
   const readinessPercent = Math.round(Math.max(0, Math.min(1, mesh.meshReadiness)) * 100);
   const noisePercent = Math.round(Math.max(0, Math.min(1, mesh.meshNoiseScore)) * 100);
+  const localHotspotTriangles = Math.max(
+    0,
+    Math.min(mesh.quarantinedTriangleCount, mesh.localNoiseHotspotTriangleCount),
+  );
+  const componentQuarantinedTriangles = Math.max(
+    0,
+    mesh.quarantinedTriangleCount - localHotspotTriangles,
+  );
+
   if (mesh.meshReadiness < 1 - 1e-9) {
     return {
       label: `MESH ${readinessPercent}% · SCAN WIDER`,
@@ -29,9 +43,9 @@ export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
       rescanRecommended: true,
     };
   }
-  if (mesh.meshNoiseScore > NOISY_MESH_SCORE || mesh.quarantinedTriangleCount > 0) {
+  if (mesh.meshNoiseScore > NOISY_MESH_SCORE || componentQuarantinedTriangles > 0) {
     return {
-      label: `MESH NOISY ${noisePercent}% · Q${mesh.quarantinedTriangleCount.toLocaleString()} · RESCAN`,
+      label: `MESH NOISY ${noisePercent}% · Q${componentQuarantinedTriangles.toLocaleString()} · RESCAN`,
       severity: 'bad',
       rescanRecommended: true,
     };
@@ -41,6 +55,13 @@ export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
       label: 'MESH EMPTY · RESCAN',
       severity: 'bad',
       rescanRecommended: true,
+    };
+  }
+  if (mesh.localNoiseHotspotTriangleCount > 0) {
+    return {
+      label: `MESH REPAIRED · H${mesh.localNoiseHotspotCount.toLocaleString()} · ${mesh.triangleCount.toLocaleString()}△`,
+      severity: 'warning',
+      rescanRecommended: false,
     };
   }
   if (mesh.selfIntersectionPairCount > 0 || mesh.orientationConflictCount > 0 || mesh.nonManifoldEdgeCount > 0) {
