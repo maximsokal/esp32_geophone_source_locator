@@ -12,7 +12,7 @@ function component(
 ): SurfaceComponent {
   return {
     id,
-    pointCount: 40,
+    pointCount: 80,
     occupiedCellCount: 12,
     center: [id * 0.4, 0, 0],
     majorExtentMeters: 0.24,
@@ -55,8 +55,8 @@ const viewpoints = [
 
 describe('compact worker readiness summary', () => {
   it('returns only the two component records required by the live readiness UI', () => {
-    const structural = component(1, { pointCount: 70, meshReadiness: 0.7, meshEligible: false });
-    const mesh = component(2, { pointCount: 35, meshReadiness: 1, meshEligible: true });
+    const structural = component(1, { pointCount: 90, meshReadiness: 0.7, meshEligible: false });
+    const mesh = component(2, { pointCount: 80, meshReadiness: 1, meshEligible: true });
     const full = analysis([structural, mesh]);
 
     const compact = summarizeSurfaceComponentReadiness(full);
@@ -69,8 +69,8 @@ describe('compact worker readiness summary', () => {
 
   it('produces the same readiness result from compact and legacy full component input', () => {
     const full = analysis([
-      component(1, { pointCount: 70, meshReadiness: 0.76, meshEligible: false }),
-      component(2, { pointCount: 34, meshReadiness: 1, meshEligible: true }),
+      component(1, { pointCount: 90, meshReadiness: 0.76, meshEligible: false }),
+      component(2, { pointCount: 80, meshReadiness: 1, meshEligible: true }),
     ]);
     const compact = summarizeSurfaceComponentReadiness(full);
     const shared = {
@@ -83,5 +83,58 @@ describe('compact worker readiness summary', () => {
 
     expect(computeScanCapabilityReadiness({ ...shared, surfaceAnalysis: compact }))
       .toEqual(computeScanCapabilityReadiness({ ...shared, surfaceAnalysis: full }));
+  });
+
+  it('keeps S on the structural cloud while M comes from the independently certified mesh cloud', () => {
+    const structuralComponent = component(11, {
+      pointCount: 96,
+      center: [0, 0, 0],
+      majorExtentMeters: 0.31,
+      minorExtentMeters: 0.12,
+      meshReadiness: 0.45,
+      meshEligible: false,
+    });
+    const structuralDistractor = component(12, {
+      pointCount: 70,
+      center: [0.6, 0, 0],
+      majorExtentMeters: 0.18,
+      minorExtentMeters: 0.08,
+      meshReadiness: 1,
+      meshEligible: true,
+    });
+    const meshComponent = component(22, {
+      pointCount: 84,
+      center: [0.1, 0, 0],
+      majorExtentMeters: 0.28,
+      minorExtentMeters: 0.13,
+      meshReadiness: 1,
+      meshEligible: true,
+    });
+    const meshDistractor = component(23, {
+      pointCount: 120,
+      center: [0.9, 0, 0],
+      meshReadiness: 0.52,
+      meshEligible: false,
+    });
+
+    const compact = summarizeSurfaceComponentReadiness(
+      analysis([structuralComponent, structuralDistractor]),
+      analysis([meshComponent, meshDistractor]),
+    );
+    expect(compact.structuralComponent?.id).toBe(11);
+    expect(compact.bestMeshComponent?.id).toBe(22);
+
+    const readiness = computeScanCapabilityReadiness({
+      stablePointCount: 220,
+      keyframeCount: 10,
+      visibleCoverageCells: 20,
+      readyCoverageCells: 12,
+      viewpoints,
+      surfaceAnalysis: compact,
+    });
+    expect(readiness.objectMajorExtentMeters).toBeCloseTo(0.31, 6);
+    expect(readiness.objectMinorExtentMeters).toBeCloseTo(0.12, 6);
+    expect(readiness.mesh?.ready).toBe(true);
+    expect(readiness.mesh?.progress).toBe(1);
   });
 });
