@@ -65,7 +65,6 @@ function azimuthCoverage(
   if (center === null || viewpoints.length === 0) return { sectors: 0, fraction: 0 };
   const sectors = new Set<number>();
   for (const viewpoint of viewpoints) {
-    // Project coordinates use z as vertical; x/y span the horizontal plane.
     const dx = viewpoint.position[0] - center[0];
     const dy = viewpoint.position[1] - center[1];
     if (Math.hypot(dx, dy) < MIN_VIEW_RADIUS_METERS) continue;
@@ -75,18 +74,39 @@ function azimuthCoverage(
   return { sectors: sectors.size, fraction: sectors.size / VIEW_SECTORS };
 }
 
-function structuralScaleProgress(surface: SurfaceComponentAnalysis | null | undefined): {
+type SurfaceComponent = SurfaceComponentAnalysis['components'][number];
+
+function componentStructuralProgress(component: SurfaceComponent): {
   progress: number;
   limitingMetric: CapabilityProgress['limitingMetric'];
-} | null {
-  const component = surface?.largestComponent ?? null;
-  if (component === null) return null;
+} {
   const pointProgress = ratio(component.pointCount, STRUCTURAL_COMPONENT_POINTS);
   const majorProgress = ratio(component.majorExtentMeters, STRUCTURAL_MAJOR_EXTENT_METERS);
   const minorProgress = ratio(component.minorExtentMeters, STRUCTURAL_MINOR_EXTENT_METERS);
   const progress = Math.min(pointProgress, majorProgress, minorProgress);
   if (progress === pointProgress) return { progress, limitingMetric: 'surface-density' };
   return { progress, limitingMetric: 'extent' };
+}
+
+function bestStructuralComponent(surface: SurfaceComponentAnalysis | null | undefined): {
+  component: SurfaceComponent;
+  progress: number;
+  limitingMetric: CapabilityProgress['limitingMetric'];
+} | null {
+  if (surface === null || surface === undefined || surface.components.length === 0) return null;
+  let best: ReturnType<typeof bestStructuralComponent> = null;
+  for (const component of surface.components) {
+    const candidate = componentStructuralProgress(component);
+    if (
+      best === null ||
+      candidate.progress > best.progress ||
+      (candidate.progress === best.progress && component.majorExtentMeters * component.minorExtentMeters > best.component.majorExtentMeters * best.component.minorExtentMeters) ||
+      (candidate.progress === best.progress && component.majorExtentMeters * component.minorExtentMeters === best.component.majorExtentMeters * best.component.minorExtentMeters && component.pointCount > best.component.pointCount)
+    ) {
+      best = { component, ...candidate };
+    }
+  }
+  return best;
 }
 
 /**
@@ -98,7 +118,7 @@ function structuralScaleProgress(surface: SurfaceComponentAnalysis | null | unde
 export function computeScanCapabilityReadiness(input: ScanCapabilityInput): ScanCapabilityReadiness {
   const pointsProgress = ratio(input.stablePointCount, STRUCTURAL_TARGET_POINTS);
   const keyframeProgress = ratio(input.keyframeCount, STRUCTURAL_TARGET_KEYFRAMES);
-  const scale = structuralScaleProgress(input.surfaceAnalysis);
+  const scale = bestStructuralComponent(input.surfaceAnalysis);
   const structuralTerms = [pointsProgress, keyframeProgress];
   if (scale !== null) structuralTerms.push(scale.progress);
   const structuralProgress = Math.min(...structuralTerms);
@@ -117,18 +137,14 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
 
   const viewpoints = input.viewpoints ?? [];
   const baseline = cameraBaseline(viewpoints);
-  const largest = input.surfaceAnalysis?.largestComponent ?? null;
-  const azimuth = azimuthCoverage(viewpoints, largest?.center ?? null);
-  // Before a stable object centre exists, report conservative translation/view
-  // progress rather than pretending that a raw phone rotation equals 360° object
-  // coverage. Once centred surface geometry exists, the percentage is actual
-  // occupied azimuth sectors around that measured component.
-  const viewCoverage = largest === null
+  const structuralComponent = scale?.component ?? null;
+  const azimuth = azimuthCoverage(viewpoints, structuralComponent?.center ?? null);
+  const viewCoverage = structuralComponent === null
     ? Math.min(ratio(viewpoints.length, STRUCTURAL_TARGET_KEYFRAMES), ratio(baseline, TARGET_CAMERA_BASELINE_METERS))
     : azimuth.fraction;
 
-  const objectMajor = largest?.majorExtentMeters ?? null;
-  const objectMinor = largest?.minorExtentMeters ?? null;
+  const objectMajor = structuralComponent?.majorExtentMeters ?? null;
+  const objectMinor = structuralComponent?.minorExtentMeters ?? null;
   return {
     structural: {
       progress: structuralProgress,
