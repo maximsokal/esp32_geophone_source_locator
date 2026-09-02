@@ -34,6 +34,11 @@ interface BranchMetrics {
   effectiveWidthMeters: number;
 }
 
+interface DfsFrame {
+  node: number;
+  nextNeighbour: number;
+}
+
 function triangleArea(triangle: MeshBranchTriangle): number {
   const [a, b, c] = triangle.vertices;
   const abx = b[0] - a[0];
@@ -138,7 +143,7 @@ export function quarantineSubscaleMeshBranches(
   // and runs post-scan; no spatial intersection or normal-ray diagnostic is repeated.
   const edgeUses = new Map<string, number[]>();
   for (let component = 0; component < componentCount; component += 1) {
-    if (repairableComponentMask[component] === 0) continue;
+    if (component >= repairableComponentMask.length || repairableComponentMask[component] === 0) continue;
     for (const index of membersByComponent[component]) {
       const keys = triangles[index].keys;
       for (const [a, b] of [[keys[0], keys[1]], [keys[1], keys[2]], [keys[2], keys[0]]] as const) {
@@ -161,6 +166,18 @@ export function quarantineSubscaleMeshBranches(
   }
   for (const neighbours of adjacency) neighbours.sort((a, b) => a - b);
 
+  // One set of O(T) buffers serves every disjoint component. Recursive Tarjan is
+  // intentionally avoided: a long mobile mesh strip must not overflow the JS call
+  // stack merely because its topology is deep.
+  const discovery = new Int32Array(triangles.length);
+  discovery.fill(-1);
+  const low = new Int32Array(triangles.length);
+  const parent = new Int32Array(triangles.length);
+  parent.fill(-1);
+  const subtreeSize = new Int32Array(triangles.length);
+  const orderStart = new Int32Array(triangles.length);
+  let clock = 0;
+
   let branchCount = 0;
   let quarantinedTriangleCount = 0;
   for (let component = 0; component < componentCount; component += 1) {
@@ -168,41 +185,51 @@ export function quarantineSubscaleMeshBranches(
     const members = membersByComponent[component];
     if (members.length < MIN_REMAINING_TRIANGLES + 2) continue;
 
-    const discovery = new Int32Array(triangles.length);
-    discovery.fill(-1);
-    const low = new Int32Array(triangles.length);
-    const parent = new Int32Array(triangles.length);
-    parent.fill(-1);
-    const subtreeSize = new Int32Array(triangles.length);
     const order: number[] = [];
-    const orderStart = new Int32Array(triangles.length);
-    let clock = 0;
     const bridgeChildren: number[] = [];
-
-    const visit = (node: number): void => {
-      discovery[node] = clock;
-      low[node] = clock;
+    for (const seed of members) {
+      if (discovery[seed] >= 0) continue;
+      discovery[seed] = clock;
+      low[seed] = clock;
       clock += 1;
-      orderStart[node] = order.length;
-      order.push(node);
-      subtreeSize[node] = 1;
-      for (const neighbour of adjacency[node]) {
-        if (componentByTriangle[neighbour] !== component) continue;
-        if (discovery[neighbour] < 0) {
-          parent[neighbour] = node;
-          visit(neighbour);
-          subtreeSize[node] += subtreeSize[neighbour];
-          low[node] = Math.min(low[node], low[neighbour]);
-          if (low[neighbour] > discovery[node]) bridgeChildren.push(neighbour);
-        } else if (neighbour !== parent[node]) {
-          low[node] = Math.min(low[node], discovery[neighbour]);
-        }
-      }
-    };
+      parent[seed] = -1;
+      subtreeSize[seed] = 1;
+      orderStart[seed] = order.length;
+      order.push(seed);
+      const stack: DfsFrame[] = [{ node: seed, nextNeighbour: 0 }];
 
-    // orientAndPartition already says these are connected, but keep this helper
-    // correct for direct tests and future callers that provide imperfect labels.
-    for (const seed of members) if (discovery[seed] < 0) visit(seed);
+      while (stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        const neighbours = adjacency[frame.node];
+        if (frame.nextNeighbour < neighbours.length) {
+          const neighbour = neighbours[frame.nextNeighbour];
+          frame.nextNeighbour += 1;
+          if (componentByTriangle[neighbour] !== component) continue;
+          if (discovery[neighbour] < 0) {
+            parent[neighbour] = frame.node;
+            discovery[neighbour] = clock;
+            low[neighbour] = clock;
+            clock += 1;
+            subtreeSize[neighbour] = 1;
+            orderStart[neighbour] = order.length;
+            order.push(neighbour);
+            stack.push({ node: neighbour, nextNeighbour: 0 });
+            continue;
+          }
+          if (neighbour !== parent[frame.node]) {
+            low[frame.node] = Math.min(low[frame.node], discovery[neighbour]);
+          }
+          continue;
+        }
+
+        stack.pop();
+        const parentNode = parent[frame.node];
+        if (parentNode < 0) continue;
+        subtreeSize[parentNode] += subtreeSize[frame.node];
+        low[parentNode] = Math.min(low[parentNode], low[frame.node]);
+        if (low[frame.node] > discovery[parentNode]) bridgeChildren.push(frame.node);
+      }
+    }
 
     const candidates: number[][] = [];
     for (const child of bridgeChildren) {
@@ -213,12 +240,11 @@ export function quarantineSubscaleMeshBranches(
       if (candidateSize <= 0) continue;
 
       let candidate: number[];
+      const start = orderStart[child];
+      const end = start + childSize;
       if (useSubtree) {
-        const start = orderStart[child];
-        candidate = order.slice(start, start + childSize);
+        candidate = order.slice(start, end);
       } else {
-        const start = orderStart[child];
-        const end = start + childSize;
         candidate = members.filter((index) => {
           const position = orderStart[index];
           return position < start || position >= end;
