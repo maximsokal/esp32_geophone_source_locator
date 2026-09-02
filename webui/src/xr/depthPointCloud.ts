@@ -25,7 +25,7 @@ import {
   surfaceFusionDepthInMeters,
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
-import { analyzeSurfaceComponents } from './surfaceComponents';
+import { analyzeSurfaceComponents, MESH_MIN_POINTS } from './surfaceComponents';
 import { computeOperationalSurfaceEnvelope } from './surfaceOperationalEnvelope';
 import { clusterStructuralSurfaceFamilies } from './structuralSurfaceClustering';
 import {
@@ -82,7 +82,6 @@ export interface MonocularSurfacePrior {
   ): boolean;
 }
 
-const TSDF_MIN_CERTIFIED_POINTS = 60;
 // Structural geometry is locally supported: patch pairing is bounded to 24 cm,
 // edge support to 34 cm and corner support to 12.5 cm. Sixty centimetres around
 // the full measured surfel AABB therefore keeps a deliberately generous FREE-veto
@@ -246,7 +245,7 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     // XR session has finished, so taking a point-cloud snapshot is model-free.
     const certified = filterStructuralSurface(super.structuralGuideSnapshot());
     const hasTsdfCertificate =
-      certified.pointCount >= TSDF_MIN_CERTIFIED_POINTS &&
+      certified.pointCount >= MESH_MIN_POINTS &&
       certified.residualMeters !== undefined && certified.normalConfidence !== undefined &&
       certified.coverageConfidence !== undefined && certified.coverageReady !== undefined;
     return {
