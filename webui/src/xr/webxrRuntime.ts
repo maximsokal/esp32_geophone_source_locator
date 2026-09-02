@@ -53,6 +53,10 @@ import {
   WebXrFusionKeyframeSelector,
   type FusionMotionState,
 } from './webxrFusionQuality';
+import {
+  depthSensingPauseAction,
+  shouldPauseXrScan,
+} from './webxrDepthPausePolicy';
 
 export type XrRuntimePhase = 'idle'|'starting'|'running'|'stopping'|'ended'|'interrupted'|'error';
 
@@ -360,19 +364,26 @@ export class WebXrRuntime{
     this.scanPaused=false;this.depthEnabled=false;this.depthSensingPausedByApp=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
   }
 
-  private setDepthSensingPaused(paused:boolean):void{
-    const session=this.session;if(session===null||!this.depthEnabled||this.depthSensingPausedByApp===paused)return;
+  /** Must only be called from the active XR animation-frame callback. */
+  private syncDepthSensingPauseInsideFrame():void{
+    const session=this.session;if(session===null)return;
+    const action=depthSensingPauseAction(this.depthEnabled,this.scanPaused,this.depthSensingPausedByApp);if(action===null)return;
     try{
-      if(paused){if(typeof session.pauseDepthSensing!=='function')return;session.pauseDepthSensing();this.depthSensingPausedByApp=true;clientDiagnostics.info('XR_DEPTH_SENSING_PAUSED');}
-      else{if(typeof session.resumeDepthSensing!=='function')return;session.resumeDepthSensing();this.depthSensingPausedByApp=false;clientDiagnostics.info('XR_DEPTH_SENSING_RESUMED');}
+      if(action==='pause'){
+        if(typeof session.pauseDepthSensing!=='function')return;
+        session.pauseDepthSensing();this.depthSensingPausedByApp=true;clientDiagnostics.info('XR_DEPTH_SENSING_PAUSED');
+      }else{
+        if(typeof session.resumeDepthSensing!=='function')return;
+        session.resumeDepthSensing();this.depthSensingPausedByApp=false;clientDiagnostics.info('XR_DEPTH_SENSING_RESUMED');
+      }
     }catch(error){clientDiagnostics.warn('XR_DEPTH_SENSING_PAUSE_CONTROL_FAILED',error);}
   }
 
   private async acquireWakeLock():Promise<void>{if(this.session===null||document.visibilityState!=='visible'||(this.wakeLock!==null&&!this.wakeLock.released))return;const api=(navigator as NavigatorWithWakeLock).wakeLock;if(api===undefined){this.publish({wakeLockActive:false,wakeLockError:'Screen Wake Lock API unavailable.'});return;}try{const sentinel=await api.request('screen');this.wakeLock=sentinel;sentinel.addEventListener('release',this.handleWakeLockRelease);this.publish({wakeLockActive:true,wakeLockError:null});}catch(error){this.wakeLock=null;this.publish({wakeLockActive:false,wakeLockError:errorText(error)});}}
   private async releaseWakeLock():Promise<void>{const sentinel=this.wakeLock;this.wakeLock=null;if(sentinel===null)return;sentinel.removeEventListener('release',this.handleWakeLockRelease);if(!sentinel.released){try{await sentinel.release();}catch{/*released*/}}}
   private readonly handleWakeLockRelease=():void=>{this.wakeLock=null;this.publish({wakeLockActive:false});};
-  private readonly handleDocumentVisibilityChange=():void=>{const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=hidden||this.session.visibilityState==='hidden';this.setDepthSensingPaused(this.scanPaused);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!hidden)void this.acquireWakeLock();}};
-  private readonly handleSessionVisibilityChange=():void=>{const session=this.session;if(session===null)return;this.scanPaused=document.visibilityState!=='visible'||session.visibilityState==='hidden';this.setDepthSensingPaused(this.scanPaused);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!this.scanPaused)void this.acquireWakeLock();};
+  private readonly handleDocumentVisibilityChange=():void=>{const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=shouldPauseXrScan(document.visibilityState,this.session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!hidden)void this.acquireWakeLock();}};
+  private readonly handleSessionVisibilityChange=():void=>{const session=this.session;if(session===null)return;this.scanPaused=shouldPauseXrScan(document.visibilityState,session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!this.scanPaused)void this.acquireWakeLock();};
 
   private readonly handleSessionEnd=():void=>{
     const normalFinish=this.explicitStopRequested;const snapshot=this.getPointCloudSnapshot();const performance=this.performanceProfiler.snapshot();const session=this.session;
@@ -449,6 +460,9 @@ export class WebXrRuntime{
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
     const session=this.session,referenceSpace=this.referenceSpace,gl=this.gl,layer=this.layer;if(session===null||referenceSpace===null||gl===null||layer===null||frame.session!==session)return;
     session.requestAnimationFrame(this.handleFrame);this.performanceProfiler.recordFrameTimestamp(time);const frameWorkStarted=performance.now();
+    // WebXR requires pauseDepthSensing()/resumeDepthSensing() while this current
+    // XR animation frame is active. Visibility handlers only change scanPaused.
+    this.syncDepthSensingPauseInsideFrame();
     gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     const pose=frame.getViewerPose(referenceSpace);
     if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);}
