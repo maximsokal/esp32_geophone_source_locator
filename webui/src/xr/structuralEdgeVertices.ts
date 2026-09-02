@@ -3,11 +3,11 @@ import type {
   StructuralCornerCandidate,
   StructuralEdgeCandidate,
 } from './structuralGuide';
+import { isScaleSupportedStructuralEdge } from './structuralEdgeScalePolicy';
 
 const MIN_EDGE_CONFIDENCE = 0.68;
 const MIN_EDGE_GEOMETRY_CONFIDENCE = 0.70;
 const MIN_EDGE_OBSERVATIONS = 3;
-const MIN_EDGE_LENGTH_METERS = 0.065;
 const MAX_ENDPOINT_JOIN_METERS = 0.10;
 const MAX_PARALLEL_DIRECTION_DOT = Math.cos((35 * Math.PI) / 180);
 const DEDUPE_METERS = 0.075;
@@ -17,7 +17,6 @@ function clamp01(value: number): number { return Math.max(0, Math.min(1, value))
 function distance(a: ProjectPoint, b: ProjectPoint): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
-function edgeLength(edge: StructuralEdgeCandidate): number { return distance(edge.start, edge.end); }
 function normalize(vector: readonly [number, number, number]): readonly [number, number, number] | null {
   const magnitude = Math.hypot(vector[0], vector[1], vector[2]);
   return magnitude > 1e-8 ? [vector[0] / magnitude, vector[1] / magnitude, vector[2] / magnitude] : null;
@@ -62,7 +61,7 @@ function mature(edge: StructuralEdgeCandidate): boolean {
   return edge.confidence >= MIN_EDGE_CONFIDENCE &&
     edge.geometryConfidence >= MIN_EDGE_GEOMETRY_CONFIDENCE &&
     edge.observations >= MIN_EDGE_OBSERVATIONS &&
-    edgeLength(edge) >= MIN_EDGE_LENGTH_METERS;
+    isScaleSupportedStructuralEdge(edge);
 }
 
 /**
@@ -70,7 +69,9 @@ function mature(edge: StructuralEdgeCandidate): boolean {
  * This covers real furniture/building corners where the depth sensor has a hole
  * exactly at the vertex and only two terminating edges remain measurable.
  * Infinite-line intersections are deliberately not used: both measured segment
- * endpoints must physically converge near the proposed vertex.
+ * endpoints must physically converge near the proposed vertex. The same
+ * length-dependent support-density policy used by operational line certification
+ * is enforced again here so downstream callers cannot bypass physical maturity.
  */
 export function inferStructuralVerticesFromEdges(
   edges: readonly StructuralEdgeCandidate[],
