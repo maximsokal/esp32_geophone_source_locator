@@ -68,6 +68,7 @@ interface PlanePatch {
   normal: ProjectVector;
   d: number;
   support: number;
+  supportPoints: readonly ProjectPoint[];
   confidence: number;
   planarity: number;
   residualMeters: number;
@@ -102,6 +103,7 @@ interface TrackedCorner extends RawCorner {
   observations: number;
   lastSeenKeyframe: number;
   evidence: ViewEvidence[];
+  innovationEwmaMeters: number;
 }
 
 interface TrackedEdge extends RawEdge {
@@ -109,6 +111,7 @@ interface TrackedEdge extends RawEdge {
   observations: number;
   lastSeenKeyframe: number;
   evidence: ViewEvidence[];
+  innovationEwmaMeters: number;
 }
 
 interface GeometryDetectionResult {
@@ -118,6 +121,13 @@ interface GeometryDetectionResult {
   planarPatches: number;
   rejectedByFreeSpace: number;
   candidateComparisons: number;
+}
+
+interface SupportInterval {
+  min: number;
+  max: number;
+  count: number;
+  meanPerpendicularMeters: number;
 }
 
 const PATCH_CELL_METERS = 0.10;
@@ -133,10 +143,21 @@ const PATCH_RESIDUAL_REJECT_METERS = 0.030;
 const PATCH_MIN_PLANARITY = 0.54;
 const RANSAC_INLIER_METERS = 0.022;
 const RANSAC_MAX_TRIALS = 18;
+const LOCAL_EDGE_SUPPORT_RADIUS_METERS = 0.075;
+const LOCAL_EDGE_SUPPORT_MARGIN_METERS = 0.025;
+const MIN_EDGE_LOCAL_SUPPORT_POINTS = 2;
+const MIN_EDGE_SUPPORTED_LENGTH_METERS = 0.035;
+const MAX_EDGE_SUPPORTED_LENGTH_METERS = 0.34;
+const CORNER_LOCAL_SUPPORT_RADIUS_METERS = 0.125;
+const MIN_CORNER_LOCAL_SUPPORT_POINTS = 2;
 const CORNER_TRACK_RADIUS_METERS = 0.16;
 const EDGE_TRACK_RADIUS_METERS = 0.18;
 const EDGE_TRACK_MIN_DIRECTION_DOT = Math.cos((24 * Math.PI) / 180);
+const EDGE_TRACK_MAX_LATERAL_METERS = 0.075;
+const EDGE_TRACK_MIN_OVERLAP_RATIO = 0.20;
 const TRACK_SMOOTHING = 0.36;
+const TRACK_INITIAL_INNOVATION_METERS = 0.04;
+const TRACK_MIN_INNOVATION_GATE_METERS = 0.075;
 const STALE_TRACK_KEYFRAMES = 10;
 const MIN_VIEW_BASELINE_METERS = 0.085;
 const MIN_VIEW_RAY_ANGLE_RAD = (9 * Math.PI) / 180;
@@ -256,7 +277,7 @@ function weightedPlaneFit(points: readonly WeightedPoint[], extraWeights?: reado
   return { center, normal, residual, planarity, confidence: fitConfidence };
 }
 
-function robustPlaneFit(points: readonly WeightedPoint[]): { center: ProjectPoint; normal: ProjectVector; residual: number; planarity: number; confidence: number; support: number } | null {
+function robustPlaneFit(points: readonly WeightedPoint[]): { center: ProjectPoint; normal: ProjectVector; residual: number; planarity: number; confidence: number; support: number; supportPoints: readonly ProjectPoint[] } | null {
   let fit = weightedPlaneFit(points); if (fit === null) return null;
   const scale = Math.max(0.006, Math.min(0.028, fit.residual * 2.5));
   const robustWeights = points.map((sample) => {
@@ -284,12 +305,15 @@ function robustPlaneFit(points: readonly WeightedPoint[]): { center: ProjectPoin
     }
     if (bestInliers.length >= MIN_PATCH_SUPPORT && bestInliers.length >= Math.ceil(points.length * 0.55)) {
       const inlierPoints = bestInliers.map((index) => points[index]); const ransacFit = weightedPlaneFit(inlierPoints);
-      if (ransacFit !== null && (ransacFit.confidence > fit.confidence || ransacFit.residual < fit.residual * 0.8)) {
-        fit = ransacFit; return { ...fit, support: inlierPoints.length };
-      }
+      if (ransacFit !== null && (ransacFit.confidence > fit.confidence || ransacFit.residual < fit.residual * 0.8)) fit = ransacFit;
     }
   }
-  return { ...fit, support: points.length };
+  const supportGate = Math.max(RANSAC_INLIER_METERS, Math.min(0.034, fit.residual * 2.5 + 0.008));
+  const supportPoints = points
+    .filter((sample) => Math.abs(dot(fit!.normal, [sample.point[0] - fit!.center[0], sample.point[1] - fit!.center[1], sample.point[2] - fit!.center[2]])) <= supportGate)
+    .map((sample) => sample.point);
+  if (supportPoints.length < MIN_PATCH_SUPPORT) return null;
+  return { ...fit, support: supportPoints.length, supportPoints };
 }
 
 function buildPlanePatches(input: StructuralGuideInput): PlanePatch[] {
@@ -313,7 +337,7 @@ function buildPlanePatches(input: StructuralGuideInput): PlanePatch[] {
     const fit = robustPlaneFit(bucket.points);
     if (fit === null || fit.support < MIN_PATCH_SUPPORT) continue;
     if (fit.planarity < PATCH_MIN_PLANARITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS || fit.confidence < 0.48) continue;
-    patches.push({ key, center: fit.center, normal: fit.normal, d: dot(fit.normal, fit.center), support: fit.support, confidence: fit.confidence, planarity: fit.planarity, residualMeters: fit.residual, ix: bucket.ix, iy: bucket.iy, iz: bucket.iz });
+    patches.push({ key, center: fit.center, normal: fit.normal, d: dot(fit.normal, fit.center), support: fit.support, supportPoints: fit.supportPoints, confidence: fit.confidence, planarity: fit.planarity, residualMeters: fit.residual, ix: bucket.ix, iy: bucket.iy, iz: bucket.iz });
   }
   return patches;
 }
@@ -341,6 +365,49 @@ function intersectTwoPlanesNear(a: PlanePatch, b: PlanePatch, anchor: ProjectPoi
   const la = (ra - c * rb) / determinant; const lb = (rb - c * ra) / determinant;
   const point: ProjectPoint = [anchor[0] + a.normal[0] * la + b.normal[0] * lb, anchor[1] + a.normal[1] * la + b.normal[1] * lb, anchor[2] + a.normal[2] * la + b.normal[2] * lb];
   const direction = normalize(cross(a.normal, b.normal)); return direction === null ? null : { point, direction: canonicalDirection(direction) };
+}
+function supportIntervalOnIntersection(patch: PlanePatch, linePoint: ProjectPoint, direction: ProjectVector): SupportInterval | null {
+  let min = Number.POSITIVE_INFINITY; let max = Number.NEGATIVE_INFINITY; let count = 0; let perpendicularSum = 0;
+  for (const point of patch.supportPoints) {
+    const delta: ProjectVector = [point[0] - linePoint[0], point[1] - linePoint[1], point[2] - linePoint[2]];
+    const t = dot(delta, direction);
+    const closest = addScaled(linePoint, direction, t);
+    const perpendicular = distance(point, closest);
+    if (perpendicular > LOCAL_EDGE_SUPPORT_RADIUS_METERS) continue;
+    min = Math.min(min, t); max = Math.max(max, t); count += 1; perpendicularSum += perpendicular;
+  }
+  return count >= MIN_EDGE_LOCAL_SUPPORT_POINTS && Number.isFinite(min) && Number.isFinite(max)
+    ? { min, max, count, meanPerpendicularMeters: perpendicularSum / count }
+    : null;
+}
+function supportedEdgeFromPatches(a: PlanePatch, b: PlanePatch, intersection: { point: ProjectPoint; direction: ProjectVector }): RawEdge | null {
+  const supportA = supportIntervalOnIntersection(a, intersection.point, intersection.direction);
+  const supportB = supportIntervalOnIntersection(b, intersection.point, intersection.direction);
+  if (supportA === null || supportB === null) return null;
+  let startT = Math.max(supportA.min, supportB.min) - LOCAL_EDGE_SUPPORT_MARGIN_METERS;
+  let endT = Math.min(supportA.max, supportB.max) + LOCAL_EDGE_SUPPORT_MARGIN_METERS;
+  if (endT - startT < MIN_EDGE_SUPPORTED_LENGTH_METERS) return null;
+  if (endT - startT > MAX_EDGE_SUPPORTED_LENGTH_METERS) {
+    const center = (startT + endT) * 0.5;
+    startT = center - MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
+    endT = center + MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
+  }
+  const start = addScaled(intersection.point, intersection.direction, startT);
+  const end = addScaled(intersection.point, intersection.direction, endT);
+  const supportQuality = clamp01(1 - (supportA.meanPerpendicularMeters + supportB.meanPerpendicularMeters) / (LOCAL_EDGE_SUPPORT_RADIUS_METERS * 2));
+  return {
+    start,
+    end,
+    midpoint: midpoint(start, end),
+    direction: intersection.direction,
+    geometryConfidence: supportQuality,
+    support: supportA.count + supportB.count,
+  };
+}
+function localCornerSupport(patch: PlanePatch, point: ProjectPoint): number {
+  let count = 0;
+  for (const supportPoint of patch.supportPoints) if (distance(supportPoint, point) <= CORNER_LOCAL_SUPPORT_RADIUS_METERS) count += 1;
+  return count;
 }
 function solveThreePlanes(a: PlanePatch, b: PlanePatch, c: PlanePatch): ProjectPoint | null {
   const bc = cross(b.normal, c.normal); const ca = cross(c.normal, a.normal); const ab = cross(a.normal, b.normal); const determinant = dot(a.normal, bc);
@@ -385,9 +452,9 @@ export function detectStructuralGuideGeometry(input: StructuralGuideInput): Geom
         const angle = Math.acos(Math.min(1, Math.abs(dot(a.normal, b.normal)))); if (angle < MIN_PLANE_ANGLE_RAD) continue;
         const intersection = intersectTwoPlanesNear(a, b, midpoint(a.center, b.center)); if (intersection === null) continue;
         if (distance(intersection.point, a.center) > MAX_CORNER_CENTER_DISTANCE_METERS || distance(intersection.point, b.center) > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
-        const score = pairGeometryScore(a, b, centerDistance); if (score < 0.48) continue;
-        const halfLength = Math.max(0.09, Math.min(0.34, 0.08 + 0.008 * (a.support + b.support)));
-        const edge: RawEdge = { start: addScaled(intersection.point, intersection.direction, -halfLength), end: addScaled(intersection.point, intersection.direction, halfLength), midpoint: intersection.point, direction: intersection.direction, geometryConfidence: score, support: a.support + b.support };
+        const edge = supportedEdgeFromPatches(a, b, intersection); if (edge === null) continue;
+        const geometric = pairGeometryScore(a, b, centerDistance); if (geometric < 0.48) continue;
+        edge.geometryConfidence = clamp01(geometric * 0.82 + edge.geometryConfidence * 0.18);
         const freeConflict = edgeFreeSpaceConflict(freeSpace, edge); if (freeConflict >= 0.43) { rejectedByFreeSpace += 1; continue; }
         edge.geometryConfidence *= 1 - freeConflict * 0.72; if (edge.geometryConfidence < 0.48) { rejectedByFreeSpace += 1; continue; }
         edges.push(edge); const forA = adjacency.get(i) ?? new Set<number>(); const forB = adjacency.get(j) ?? new Set<number>(); forA.add(j); forB.add(i); adjacency.set(i, forA); adjacency.set(j, forB);
@@ -402,10 +469,14 @@ export function detectStructuralGuideGeometry(input: StructuralGuideInput): Geom
       const b = patches[bIndex]; const c = patches[cIndex]; const angleBC = Math.acos(Math.min(1, Math.abs(dot(b.normal, c.normal)))); if (angleBC < MIN_PLANE_ANGLE_RAD) continue;
       const point = solveThreePlanes(a, b, c); if (point === null) continue;
       const maxDistance = Math.max(distance(point, a.center), distance(point, b.center), distance(point, c.center)); if (maxDistance > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
+      const localA = localCornerSupport(a, point), localB = localCornerSupport(b, point), localC = localCornerSupport(c, point);
+      if (Math.min(localA, localB, localC) < MIN_CORNER_LOCAL_SUPPORT_POINTS) continue;
       if (isVerifiedFree(freeSpace, point)) { rejectedByFreeSpace += 1; continue; }
-      const determinant = Math.abs(dot(a.normal, cross(b.normal, c.normal))); const conditioning = clamp01(determinant / 0.78); const support = a.support + b.support + c.support;
+      const determinant = Math.abs(dot(a.normal, cross(b.normal, c.normal))); const conditioning = clamp01(determinant / 0.78);
+      const support = localA + localB + localC;
+      const localSupportScore = clamp01(support / 12);
       const fitQuality = (a.confidence + b.confidence + c.confidence) / 3; const planarity = (a.planarity + b.planarity + c.planarity) / 3;
-      const score = clamp01(conditioning * 0.30 + clamp01(support / 26) * 0.20 + fitQuality * 0.22 + planarity * 0.16 + clamp01(1 - maxDistance / MAX_CORNER_CENTER_DISTANCE_METERS) * 0.12);
+      const score = clamp01(conditioning * 0.28 + localSupportScore * 0.24 + fitQuality * 0.22 + planarity * 0.14 + clamp01(1 - maxDistance / MAX_CORNER_CENTER_DISTANCE_METERS) * 0.12);
       if (score >= 0.48) corners.push({ position: point, geometryConfidence: score, support });
     }
   }
@@ -435,6 +506,27 @@ function smoothDirection(current: ProjectVector, next: ProjectVector): ProjectVe
   const aligned: ProjectVector = dot(current, next) < 0 ? [-next[0], -next[1], -next[2]] : next;
   return canonicalDirection(normalize([current[0] + (aligned[0] - current[0]) * TRACK_SMOOTHING, current[1] + (aligned[1] - current[1]) * TRACK_SMOOTHING, current[2] + (aligned[2] - current[2]) * TRACK_SMOOTHING]) ?? current);
 }
+function trackInnovationGate(track: { innovationEwmaMeters: number; observations: number }, hardMaximum: number): number {
+  if (track.observations <= 1) return hardMaximum;
+  return Math.min(hardMaximum, Math.max(TRACK_MIN_INNOVATION_GATE_METERS, track.innovationEwmaMeters * 2.5 + 0.025));
+}
+function updateInnovation(track: { innovationEwmaMeters: number }, innovationMeters: number): void {
+  track.innovationEwmaMeters += (innovationMeters - track.innovationEwmaMeters) * 0.28;
+}
+function edgeLateralDistance(a: RawEdge, b: RawEdge): number {
+  const delta: ProjectVector = [b.midpoint[0] - a.midpoint[0], b.midpoint[1] - a.midpoint[1], b.midpoint[2] - a.midpoint[2]];
+  const axial = dot(delta, a.direction);
+  return Math.hypot(delta[0] - a.direction[0] * axial, delta[1] - a.direction[1] * axial, delta[2] - a.direction[2] * axial);
+}
+function edgeOverlapRatio(a: RawEdge, b: RawEdge): number {
+  const direction = a.direction;
+  const a0 = dot(a.start, direction), a1 = dot(a.end, direction);
+  const b0 = dot(b.start, direction), b1 = dot(b.end, direction);
+  const amin = Math.min(a0, a1), amax = Math.max(a0, a1), bmin = Math.min(b0, b1), bmax = Math.max(b0, b1);
+  const overlap = Math.max(0, Math.min(amax, bmax) - Math.max(amin, bmin));
+  const smallerLength = Math.max(1e-6, Math.min(amax - amin, bmax - bmin));
+  return clamp01(overlap / smallerLength);
+}
 
 export class StructuralGuideTracker {
   private corners = new Map<number, TrackedCorner>(); private edges = new Map<number, TrackedEdge>(); private nextCornerId = 1; private nextEdgeId = 1;
@@ -442,16 +534,50 @@ export class StructuralGuideTracker {
   update(input: StructuralGuideInput, computeMs = 0): StructuralGuideResult {
     const raw = detectStructuralGuideGeometry(input); const matchedCorners = new Set<number>(); const matchedEdges = new Set<number>();
     for (const candidate of raw.corners) {
-      let best: TrackedCorner | null = null; let bestDistance = CORNER_TRACK_RADIUS_METERS;
-      for (const track of this.corners.values()) { if (matchedCorners.has(track.id)) continue; const candidateDistance = distance(track.position, candidate.position); if (candidateDistance <= bestDistance) { best = track; bestDistance = candidateDistance; } }
-      if (best === null) { const id = this.nextCornerId++; const created: TrackedCorner = { ...candidate, id, observations: 0, lastSeenKeyframe: input.keyframeCount, evidence: [] }; addEvidence(created, candidate.position, input.viewpoint); this.corners.set(id, created); matchedCorners.add(id); }
-      else { matchedCorners.add(best.id); best.position = lerpPoint(best.position, candidate.position, TRACK_SMOOTHING); best.geometryConfidence += (candidate.geometryConfidence - best.geometryConfidence) * TRACK_SMOOTHING; best.support = Math.max(best.support, candidate.support); best.lastSeenKeyframe = input.keyframeCount; addEvidence(best, best.position, input.viewpoint); }
+      let best: TrackedCorner | null = null; let bestDistance = Number.POSITIVE_INFINITY;
+      for (const track of this.corners.values()) {
+        if (matchedCorners.has(track.id)) continue;
+        const candidateDistance = distance(track.position, candidate.position);
+        if (candidateDistance > trackInnovationGate(track, CORNER_TRACK_RADIUS_METERS) || candidateDistance >= bestDistance) continue;
+        best = track; bestDistance = candidateDistance;
+      }
+      if (best === null) {
+        const id = this.nextCornerId++;
+        const created: TrackedCorner = { ...candidate, id, observations: 0, lastSeenKeyframe: input.keyframeCount, evidence: [], innovationEwmaMeters: TRACK_INITIAL_INNOVATION_METERS };
+        addEvidence(created, candidate.position, input.viewpoint); this.corners.set(id, created); matchedCorners.add(id);
+      } else {
+        matchedCorners.add(best.id); updateInnovation(best, bestDistance);
+        best.position = lerpPoint(best.position, candidate.position, TRACK_SMOOTHING);
+        best.geometryConfidence += (candidate.geometryConfidence - best.geometryConfidence) * TRACK_SMOOTHING;
+        best.support = Math.max(best.support, candidate.support); best.lastSeenKeyframe = input.keyframeCount;
+        addEvidence(best, candidate.position, input.viewpoint);
+      }
     }
     for (const candidate of raw.edges) {
-      let best: TrackedEdge | null = null; let bestDistance = EDGE_TRACK_RADIUS_METERS;
-      for (const track of this.edges.values()) { if (matchedEdges.has(track.id)) continue; const candidateDistance = distance(track.midpoint, candidate.midpoint); if (candidateDistance > bestDistance || Math.abs(dot(track.direction, candidate.direction)) < EDGE_TRACK_MIN_DIRECTION_DOT) continue; best = track; bestDistance = candidateDistance; }
-      if (best === null) { const id = this.nextEdgeId++; const created: TrackedEdge = { ...candidate, id, observations: 0, lastSeenKeyframe: input.keyframeCount, evidence: [] }; addEvidence(created, candidate.midpoint, input.viewpoint); this.edges.set(id, created); matchedEdges.add(id); }
-      else { matchedEdges.add(best.id); best.start = lerpPoint(best.start, candidate.start, TRACK_SMOOTHING); best.end = lerpPoint(best.end, candidate.end, TRACK_SMOOTHING); best.midpoint = lerpPoint(best.midpoint, candidate.midpoint, TRACK_SMOOTHING); best.direction = smoothDirection(best.direction, candidate.direction); best.geometryConfidence += (candidate.geometryConfidence - best.geometryConfidence) * TRACK_SMOOTHING; best.support = Math.max(best.support, candidate.support); best.lastSeenKeyframe = input.keyframeCount; addEvidence(best, best.midpoint, input.viewpoint); }
+      let best: TrackedEdge | null = null; let bestScore = Number.POSITIVE_INFINITY; let bestDistance = 0;
+      for (const track of this.edges.values()) {
+        if (matchedEdges.has(track.id)) continue;
+        const directionDot = Math.abs(dot(track.direction, candidate.direction)); if (directionDot < EDGE_TRACK_MIN_DIRECTION_DOT) continue;
+        const candidateDistance = distance(track.midpoint, candidate.midpoint);
+        if (candidateDistance > trackInnovationGate(track, EDGE_TRACK_RADIUS_METERS)) continue;
+        const lateral = edgeLateralDistance(track, candidate); if (lateral > EDGE_TRACK_MAX_LATERAL_METERS) continue;
+        const overlap = edgeOverlapRatio(track, candidate); if (overlap < EDGE_TRACK_MIN_OVERLAP_RATIO) continue;
+        const score = candidateDistance + lateral * 0.8 + (1 - overlap) * 0.05 + (1 - directionDot) * 0.08;
+        if (score >= bestScore) continue;
+        best = track; bestScore = score; bestDistance = candidateDistance;
+      }
+      if (best === null) {
+        const id = this.nextEdgeId++;
+        const created: TrackedEdge = { ...candidate, id, observations: 0, lastSeenKeyframe: input.keyframeCount, evidence: [], innovationEwmaMeters: TRACK_INITIAL_INNOVATION_METERS };
+        addEvidence(created, candidate.midpoint, input.viewpoint); this.edges.set(id, created); matchedEdges.add(id);
+      } else {
+        matchedEdges.add(best.id); updateInnovation(best, bestDistance);
+        best.start = lerpPoint(best.start, candidate.start, TRACK_SMOOTHING); best.end = lerpPoint(best.end, candidate.end, TRACK_SMOOTHING);
+        best.midpoint = lerpPoint(best.midpoint, candidate.midpoint, TRACK_SMOOTHING); best.direction = smoothDirection(best.direction, candidate.direction);
+        best.geometryConfidence += (candidate.geometryConfidence - best.geometryConfidence) * TRACK_SMOOTHING;
+        best.support = Math.max(best.support, candidate.support); best.lastSeenKeyframe = input.keyframeCount;
+        addEvidence(best, candidate.midpoint, input.viewpoint);
+      }
     }
     for (const [id, track] of this.corners) if (!matchedCorners.has(id) && input.keyframeCount - track.lastSeenKeyframe > STALE_TRACK_KEYFRAMES) this.corners.delete(id);
     for (const [id, track] of this.edges) if (!matchedEdges.has(id) && input.keyframeCount - track.lastSeenKeyframe > STALE_TRACK_KEYFRAMES) this.edges.delete(id);
