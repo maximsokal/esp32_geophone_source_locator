@@ -120,6 +120,36 @@ describe('directional TSDF', () => {
     expect(Array.from(planned.trianglePositions)).toEqual(Array.from(sequential.trianglePositions));
   });
 
+  it('uses the scalar TSDF minimum FREE cell size before dropping FREE from transfer-safe channels', () => {
+    const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+    // One mature -X family at x=0. FREE sits 10 cm on +X. With the requested
+    // 2-cm FREE voxel it lies outside the old directional planner's 7-cm search,
+    // but the scalar TSDF intentionally clamps FREE cells to at least 4 cm and
+    // therefore sees the same measurement within its 14-cm local orientation halo.
+    appendPlane(positions, normals, confidence, 0, 0, [-1, 0, 0]);
+    const free: number[] = [];
+    for (let a = -4; a <= 4; a += 1) {
+      for (let b = -4; b <= 4; b += 1) free.push(0.10, a * 0.04, b * 0.04);
+    }
+    const plan = prepareDirectionalTsdfPlan({
+      positions: Float32Array.from(positions),
+      normals: Float32Array.from(normals),
+      confidence: Float32Array.from(confidence),
+      voxelSizeMeters: 0.04,
+      freeSpacePositions: Float32Array.from(free),
+      freeSpaceVoxelSizeMeters: 0.02,
+    }, true);
+
+    expect(plan.mode).toBe('single');
+    expect(plan.channelInputs).toHaveLength(1);
+    expect(plan.channelInputs[0].freeSpacePositions).toBeUndefined();
+    for (let offset = 0; offset < plan.channelInputs[0].normals.length; offset += 3) {
+      expect(plan.channelInputs[0].normals[offset]).toBeGreaterThan(0.99);
+      expect(Math.abs(plan.channelInputs[0].normals[offset + 1])).toBeLessThan(1e-6);
+      expect(Math.abs(plan.channelInputs[0].normals[offset + 2])).toBeLessThan(1e-6);
+    }
+  });
+
   it('does not build a directional mesh from many points on a physically tiny patch', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendTinyPatch(positions, normals, confidence);
