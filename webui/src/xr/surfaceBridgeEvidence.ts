@@ -63,6 +63,8 @@ export function detectWeakSurfaceBridgeEvidence(
   const linkRadiusSquared = linkRadius * linkRadius;
   const buckets = new Map<string, number[]>();
   const weakIndices: number[] = [];
+  const weakEligible = new Uint8Array(pointCount);
+  let totalWeakPoints = 0;
 
   for (let index = 0; index < pointCount; index += 1) {
     const offset = index * 3;
@@ -77,11 +79,15 @@ export function detectWeakSurfaceBridgeEvidence(
     const bucket = buckets.get(key);
     if (bucket === undefined) buckets.set(key, [index]);
     else bucket.push(index);
-    if (Number(input.componentIdByPoint[index]) < 0 && weakIndices.length < MAX_WEAK_POINTS) weakIndices.push(index);
+    if (Number(input.componentIdByPoint[index]) < 0) {
+      totalWeakPoints += 1;
+      if (weakIndices.length < MAX_WEAK_POINTS) {
+        weakEligible[index] = 1;
+        weakIndices.push(index);
+      }
+    }
   }
 
-  const totalWeakPoints = Array.from({ length: pointCount }, (_, index) => Number(input.componentIdByPoint[index]) < 0 ? 1 : 0)
-    .reduce((sum, value) => sum + value, 0);
   let truncated = totalWeakPoints > weakIndices.length;
   const visited = new Uint8Array(pointCount);
   const rescan = new Set<number>();
@@ -128,7 +134,7 @@ export function detectWeakSurfaceBridgeEvidence(
               if (ddx * ddx + ddy * ddy + ddz * ddz > linkRadiusSquared) continue;
               const component = Number(input.componentIdByPoint[candidate]);
               if (component < 0) {
-                if (visited[candidate] === 0 && queue.length < MAX_WEAK_POINTS) {
+                if (weakEligible[candidate] !== 0 && visited[candidate] === 0) {
                   visited[candidate] = 1;
                   queue.push(candidate);
                 }
