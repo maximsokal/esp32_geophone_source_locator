@@ -1,4 +1,8 @@
-import type { StructuralPlanePrior } from './webxrPlaneGuidance';
+import {
+  captureStructuralPlanePriors,
+  type StructuralPlanePrior,
+  type XrPlaneFrameLike,
+} from './webxrPlaneGuidance';
 
 let latestPriors: readonly StructuralPlanePrior[] = [];
 
@@ -20,5 +24,18 @@ export function getLatestStructuralPlanePriors(): readonly StructuralPlanePrior[
 }
 
 export function getLatestStructuralPlanePriorCount(): number { return latestPriors.length; }
+
+/**
+ * Snapshot native planes while the XRFrame is active. Unsupported Plane
+ * Detection is intentionally equivalent to an empty advisory set.
+ */
+export function captureLatestStructuralPlanePriors(
+  frame: XrPlaneFrameLike,
+  referenceSpace: object,
+): number {
+  const priors = captureStructuralPlanePriors(frame, referenceSpace);
+  setLatestStructuralPlanePriors(priors);
+  return priors.length;
+}
 
 export function resetXrPlaneGuidanceRegistry(): void { latestPriors = []; }
