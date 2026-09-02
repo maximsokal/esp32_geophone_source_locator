@@ -17,6 +17,9 @@ interface FreeIndex {
   buckets: Map<string, Point3[]>;
 }
 
+const MIN_DIRECTIONAL_CHANNEL_POINTS = 24;
+const MIN_DIRECTIONAL_CONFIDENCE = 0.58;
+
 function key(x: number, y: number, z: number): string { return `${x}:${y}:${z}`; }
 
 function buildFreeIndex(input: SparseTsdfInput): FreeIndex | null {
@@ -109,10 +112,21 @@ function triangleKey(values: Float32Array, offset: number, quantization: number)
   return vertices.join('|');
 }
 
+function maximumMeshReadiness(meshes: readonly SparseTsdfMesh[]): number {
+  let maximum = 0;
+  for (const mesh of meshes) maximum = Math.max(maximum, mesh.meshReadiness);
+  return maximum;
+}
+
 /**
  * Directional TSDF wrapper: locally opposite/orthogonal surfaces never share a
  * scalar field. Each signed dominant-normal family is fused independently and
  * resulting triangles are deduplicated only after zero-crossing extraction.
+ *
+ * A directional channel must contain at least the same 24 physical samples that
+ * a connected surface component needs before mesh eligibility. Smaller normal
+ * islands are not worth allocating a TSDF field and are counted as rejected
+ * component evidence rather than being allowed to contaminate a mature channel.
  */
 export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsdfMesh {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -124,9 +138,13 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
   const free = buildFreeIndex(input);
   const channels: number[][] = Array.from({ length: 6 }, () => []);
   const normalsByIndex = new Map<number, readonly [number, number, number]>();
+  let skippedLowConfidence = 0;
   for (let index = 0; index < count; index += 1) {
     const offset = index * 3;
-    if (input.confidence[index] < 0.58) continue;
+    if (input.confidence[index] < MIN_DIRECTIONAL_CONFIDENCE) {
+      skippedLowConfidence += 1;
+      continue;
+    }
     const normal = orientedNormal(
       input.positions[offset], input.positions[offset + 1], input.positions[offset + 2],
       input.normals[offset], input.normals[offset + 1], input.normals[offset + 2],
@@ -137,10 +155,32 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
   }
 
   const totalBudget = Math.max(1, Math.floor(input.maxTriangles ?? 50000));
-  const active = channels.filter((items) => items.length >= 12);
-  if (active.length <= 1) {
+  const active = channels.filter((items) => items.length >= MIN_DIRECTIONAL_CHANNEL_POINTS);
+  const highConfidencePointCount = count - skippedLowConfidence;
+  const activePointCount = active.reduce((sum, items) => sum + items.length, 0);
+  const rejectedUndersizedChannelPoints = Math.max(0, highConfidencePointCount - activePointCount);
+
+  // No directional family is large enough yet. Let the scalar implementation
+  // make the final connected-component decision over the whole measured cloud;
+  // this preserves a smooth curved component whose normals legitimately span
+  // several small directional bins.
+  if (active.length === 0) {
     const scalar = buildSparseTsdfMesh(input);
-    return { ...scalar, directionalChannelCount: active.length, channelTriangleCounts: [scalar.triangleCount] };
+    return { ...scalar, directionalChannelCount: 0, channelTriangleCounts: [scalar.triangleCount] };
+  }
+
+  // With one mature directional family, exclude smaller conflicting normal
+  // islands before scalar fusion so they cannot create a false zero crossing.
+  if (active.length === 1) {
+    const scalar = buildSparseTsdfMesh(subsetInput(input, active[0], normalsByIndex));
+    return {
+      ...scalar,
+      sourcePointCount: count,
+      skippedLowConfidence,
+      rejectedComponentPoints: scalar.rejectedComponentPoints + rejectedUndersizedChannelPoints,
+      directionalChannelCount: 1,
+      channelTriangleCounts: [scalar.triangleCount],
+    };
   }
 
   const meshes: SparseTsdfMesh[] = [];
@@ -171,7 +211,11 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
     triangleCount: Math.floor(combined.length / 9),
     sourcePointCount: count,
     integratedPointCount: meshes.reduce((sum, mesh) => sum + mesh.integratedPointCount, 0),
-    skippedLowConfidence: meshes.reduce((sum, mesh) => sum + mesh.skippedLowConfidence, 0),
+    skippedLowConfidence,
+    rejectedComponentPoints: rejectedUndersizedChannelPoints + meshes.reduce((sum, mesh) => sum + mesh.rejectedComponentPoints, 0),
+    componentCount: meshes.reduce((sum, mesh) => sum + mesh.componentCount, 0),
+    eligibleComponentCount: meshes.reduce((sum, mesh) => sum + mesh.eligibleComponentCount, 0),
+    meshReadiness: maximumMeshReadiness(meshes),
     nodeCount: meshes.reduce((sum, mesh) => sum + mesh.nodeCount, 0),
     voxelSizeMeters: meshes[0]?.voxelSizeMeters ?? input.voxelSizeMeters,
     truncationMeters: meshes[0]?.truncationMeters ?? input.voxelSizeMeters * 2.75,
