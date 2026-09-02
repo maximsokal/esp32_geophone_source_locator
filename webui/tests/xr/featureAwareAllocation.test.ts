@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DepthPointCloudAccumulator,
+  MAX_FEATURE_SUPERSAMPLE_PROBES_PER_CELL_PER_FRAME,
   MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME,
   type CpuDepthInformationLike,
   type DepthFusionFrameContext,
@@ -68,6 +69,11 @@ describe('feature-aware upstream surfel allocation', () => {
     expect(flatResult.featureSupersampleProbes).toBe(0);
     expect(convexResult.featureSupersampleProbes).toBeGreaterThan(0);
     expect(convexResult.featureSupersampleProbes).toBeLessThanOrEqual(MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME);
+    // This fixture is intentionally confined to one coverage cell: it must not
+    // consume the entire frame-wide feature budget even when that cell is curved.
+    expect(convexResult.featureSupersampleProbes).toBeLessThanOrEqual(
+      MAX_FEATURE_SUPERSAMPLE_PROBES_PER_CELL_PER_FRAME,
+    );
     expect(convexResult.featureSupersampleProbes % 2).toBe(0);
   });
 });
