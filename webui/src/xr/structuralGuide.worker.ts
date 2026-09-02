@@ -3,6 +3,10 @@
 import { CertifiedStructuralCornerTracker } from './certifiedStructuralGeometry';
 import { stabilizeMeasuredSurfelsWithNativePlanes } from './nativePlaneSurfelGuidance';
 import {
+  computeSurfaceStructuralReadiness,
+  type SurfaceComponentReadinessSummary,
+} from './scanCapabilityReadiness';
+import {
   applyMaturityAwareEdgeConfidence,
   summarizeStructuralCandidates,
 } from './structuralCandidatePolicy';
@@ -14,6 +18,7 @@ import {
   type StructuralGuideViewpoint,
 } from './structuralGuide';
 import { StructuralLifecycleTelemetry } from './structuralLifecycleTelemetry';
+import { analyzeSurfaceComponents } from './surfaceComponents';
 import type { StructuralPlanePrior } from './webxrPlaneGuidance';
 
 interface AnalyzeMessage {
@@ -81,6 +86,58 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     message.confidence,
     message.planePriors,
   );
+
+  // Connected-component/PCA readiness belongs in the CPU worker too. Returning
+  // only compact component metrics avoids the old main-thread O(N) analysis and
+  // avoids cloning the large eligible-point masks back across postMessage.
+  const componentAnalysis = analyzeSurfaceComponents({
+    positions: message.positions,
+    normals: message.normals,
+    confidence: message.confidence,
+    voxelSizeMeters: message.voxelSizeMeters,
+    minimumConfidence: 0.58,
+  });
+  const surfaceReadiness: SurfaceComponentReadinessSummary = {
+    components: componentAnalysis.components,
+    bestMeshComponent: componentAnalysis.bestMeshComponent,
+  };
+  const structuralSurface = computeSurfaceStructuralReadiness(surfaceReadiness);
+
+  // A small/narrow/sparsely supported measured component is useful scan evidence,
+  // but not yet large enough to justify the expensive plane-intersection and
+  // uncertainty-aware corner branches. Keep tracker history intact and return a
+  // readiness-only result; a later keyframe can re-probe after the scan grows.
+  if (!structuralSurface.ready) {
+    const result = {
+      corners: [],
+      edges: [],
+      analyzedPoints: componentAnalysis.acceptedPointCount,
+      planarPatches: 0,
+      computeMs: performance.now() - started,
+      keyframeCount: message.keyframeCount,
+      rejectedByFreeSpace: 0,
+      candidateComparisons: 0,
+      surfaceReadiness,
+    };
+    const diagnostics = {
+      ...summarizeStructuralCandidates([], [], []),
+      ...lifecycleTelemetry.update([], []),
+      nativePlanePriors: message.planePriors?.length ?? 0,
+      nativePlaneStabilizedSurfels,
+      structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
+      structuralSurfaceLimit: structuralSurface.limitingMetric,
+      structuralGeometryDeferred: true,
+    };
+    self.postMessage({
+      type: 'result',
+      requestId: message.requestId,
+      epoch: message.epoch,
+      result,
+      diagnostics,
+    });
+    return;
+  }
+
   const input: StructuralGuideInput = {
     positions: message.positions,
     normals: message.normals,
@@ -144,12 +201,16 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     edges: operationalEdges,
     corners: corners.slice(0, 8),
     computeMs: performance.now() - started,
+    surfaceReadiness,
   };
   const diagnostics = {
     ...summarizeStructuralCandidates(tracked.edges, operationalEdges, result.corners),
     ...lifecycleTelemetry.update(tracked.edges, result.corners),
     nativePlanePriors: message.planePriors?.length ?? 0,
     nativePlaneStabilizedSurfels,
+    structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
+    structuralSurfaceLimit: structuralSurface.limitingMetric,
+    structuralGeometryDeferred: false,
   };
 
   self.postMessage({
