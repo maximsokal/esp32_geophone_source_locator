@@ -74,6 +74,8 @@ function deferredMesh(
     selfIntersectionBroadPhaseCandidatePairs: 0,
     selfIntersectionTruncated: false,
     selfIntersectionOversizedTriangleCount: 0,
+    localNoiseHotspotCount: 0,
+    localNoiseHotspotTriangleCount: 0,
     meshNoiseScore: 0,
     sourcePointCount: preflight.sourcePointCount,
     integratedPointCount: 0,
@@ -194,10 +196,6 @@ export class SparseTsdfMeshClient {
         : { input, rejected: 0, applied: false };
       reconstructionInput = filtered.input;
 
-      // The learned prior is optional negative evidence. It may remove a bounded
-      // number of inconsistent surfels, but it must not erase the only physically
-      // mesh-eligible connected component. If that happens, fail open to the
-      // original metric cloud rather than allowing AI to disable reconstruction.
       if (filtered.applied && reconstructionInput !== input) {
         const filteredPreflight = assessMeshReconstructionPreflight(reconstructionInput);
         if (!filteredPreflight.ready) {
@@ -279,9 +277,6 @@ export class SparseTsdfMeshClient {
     const worker = this.workerFactory();
     worker.addEventListener('message', this.handleMessage);
     worker.addEventListener('error', this.handleError);
-    // A worker created after one or more scan resets starts with its own epoch=0.
-    // Synchronize it before the first reconstruct message; Worker message order is
-    // FIFO, so the following request observes the same epoch as this client.
     worker.postMessage({ type: 'reset', epoch: this.epoch });
     this.worker = worker;
     return worker;
