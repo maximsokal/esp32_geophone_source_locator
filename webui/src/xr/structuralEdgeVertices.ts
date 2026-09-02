@@ -8,14 +8,30 @@ import { isScaleSupportedStructuralEdge } from './structuralEdgeScalePolicy';
 const MIN_EDGE_CONFIDENCE = 0.68;
 const MIN_EDGE_GEOMETRY_CONFIDENCE = 0.70;
 const MIN_EDGE_OBSERVATIONS = 3;
-const MAX_ENDPOINT_JOIN_METERS = 0.10;
+const MIN_ENDPOINT_JOIN_METERS = 0.025;
+const MAX_ENDPOINT_JOIN_METERS = 0.060;
+const ENDPOINT_JOIN_SHORT_EDGE_FRACTION = 0.22;
 const MAX_PARALLEL_DIRECTION_DOT = Math.cos((35 * Math.PI) / 180);
 const DEDUPE_METERS = 0.075;
 const MAX_VERTICES = 8;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
+}
 function distance(a: ProjectPoint, b: ProjectPoint): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+function edgeLength(edge: StructuralEdgeCandidate): number {
+  return distance(edge.start, edge.end);
+}
+function endpointJoinGateMeters(first: StructuralEdgeCandidate, second: StructuralEdgeCandidate): number {
+  const shorter = Math.min(edgeLength(first), edgeLength(second));
+  return clamp(
+    shorter * ENDPOINT_JOIN_SHORT_EDGE_FRACTION,
+    MIN_ENDPOINT_JOIN_METERS,
+    MAX_ENDPOINT_JOIN_METERS,
+  );
 }
 function normalize(vector: readonly [number, number, number]): readonly [number, number, number] | null {
   const magnitude = Math.hypot(vector[0], vector[1], vector[2]);
@@ -69,9 +85,15 @@ function mature(edge: StructuralEdgeCandidate): boolean {
  * This covers real furniture/building corners where the depth sensor has a hole
  * exactly at the vertex and only two terminating edges remain measurable.
  * Infinite-line intersections are deliberately not used: both measured segment
- * endpoints must physically converge near the proposed vertex. The same
- * length-dependent support-density policy used by operational line certification
- * is enforced again here so downstream callers cannot bypass physical maturity.
+ * endpoints must physically converge near the proposed vertex. The allowed hole
+ * is proportional to the SHORTER measured edge, so two barely-long-enough 9-cm
+ * fragments cannot bridge the old universal 10-cm gap. Long, densely supported
+ * edges may tolerate a larger sensor hole, but never more than 6 cm; therefore
+ * the inferred midpoint stays within 3 cm of measured finite support.
+ *
+ * The same length-dependent support-density policy used by operational line
+ * certification is enforced again here so downstream callers cannot bypass
+ * physical maturity.
  */
 export function inferStructuralVerticesFromEdges(
   edges: readonly StructuralEdgeCandidate[],
@@ -98,9 +120,10 @@ export function inferStructuralVerticesFromEdges(
       if (directionDot > MAX_PARALLEL_DIRECTION_DOT) continue;
 
       const join = nearestEndpointJoin(first, second);
-      if (!Number.isFinite(join.gap) || join.gap > MAX_ENDPOINT_JOIN_METERS) continue;
+      const joinGateMeters = endpointJoinGateMeters(first, second);
+      if (!Number.isFinite(join.gap) || join.gap > joinGateMeters) continue;
       const position = midpoint(join.a, join.b);
-      const joinScore = clamp01(1 - join.gap / MAX_ENDPOINT_JOIN_METERS);
+      const joinScore = clamp01(1 - join.gap / joinGateMeters);
       const angleScore = clamp01(1 - directionDot / MAX_PARALLEL_DIRECTION_DOT);
       const physicalConfidence = Math.min(first.confidence, second.confidence);
       const geometryConfidence = Math.min(first.geometryConfidence, second.geometryConfidence);
