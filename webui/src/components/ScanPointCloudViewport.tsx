@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import { describeMeshQuality } from '../xr/meshQualityUi';
 import {
   displayFingerprint,
   scanModeLabel,
@@ -218,7 +219,18 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
         certifiedPoints: snapshot.tsdfPointCount,
         integratedPoints: result.integratedPointCount,
         nodes: result.nodeCount,
+        rawTriangles: result.rawTriangleCount,
         triangles: result.triangleCount,
+        quarantinedTriangles: result.quarantinedTriangleCount,
+        discardedTriangles: result.topologyDiscardedTriangleCount,
+        nonManifoldEdges: result.nonManifoldEdgeCount,
+        orientationConflicts: result.orientationConflictCount,
+        selfIntersections: result.selfIntersectionPairCount,
+        selfIntersectionExactTests: result.selfIntersectionExactTestedPairs,
+        selfIntersectionBroadPairs: result.selfIntersectionBroadPhaseCandidatePairs,
+        selfIntersectionTruncated: result.selfIntersectionTruncated,
+        meshNoiseScore: Number(result.meshNoiseScore.toFixed(3)),
+        meshReadiness: Number(result.meshReadiness.toFixed(3)),
         voxelMm: Math.round(result.voxelSizeMeters * 1000),
         truncationMm: Math.round(result.truncationMeters * 1000),
         computeMs: Number(result.computeMs.toFixed(1)),
@@ -244,20 +256,21 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
 
   const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode);
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
+  const meshQuality = tsdfMesh === null ? null : describeMeshQuality(tsdfMesh);
   const meshStatus = snapshot.tsdfPointCount < 60
-    ? 'TSDF SURFACE · SCAN MORE FOR CERTIFIED GEOMETRY'
+    ? 'MESH · SCAN MORE FOR CERTIFIED GEOMETRY'
     : tsdfError !== null
-      ? 'TSDF SURFACE · UNAVAILABLE'
-      : tsdfMesh === null
-        ? 'TSDF SURFACE · BUILDING…'
-        : `TSDF SURFACE · ${tsdfMesh.triangleCount.toLocaleString()} triangles · ${snapshot.tsdfPointCount.toLocaleString()} certified surfels`;
+      ? 'MESH · UNAVAILABLE'
+      : meshQuality === null
+        ? 'MESH · BUILDING…'
+        : `${meshQuality.label} · ${snapshot.tsdfPointCount.toLocaleString()} surfels`;
 
   return <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume" data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
     <div className="scan-source-badge">SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()} · EDGES {snapshot.operatorEdges.length.toLocaleString()}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
     {display.dimensions && <div className="scan-dimension-overlay">X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m</div>}
-    {display.mesh && <div className="scan-mesh-overlay">{meshStatus}</div>}
+    {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
     <div className="axis-note">1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height</div>
   </div>;
 }
