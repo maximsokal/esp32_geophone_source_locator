@@ -20,6 +20,7 @@ import {
   computeScanCapabilityReadiness,
   ScanViewpointHistory,
 } from '../xr/scanCapabilityReadiness';
+import { compactScanReadinessLabel } from '../xr/scanReadinessUi';
 import { certifyOperationalStructuralEdges } from '../xr/structuralEdgeCertification';
 import { inferStructuralVerticesFromEdges } from '../xr/structuralEdgeVertices';
 import { detectEdgeEndpointObservations } from '../xr/structuralEdgeEndpoints';
@@ -560,17 +561,17 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     void clientDiagnostics.flush();
   };
 
-  const meshStatus = readiness.mesh === null ? 'MESH --' : `MESH ${percent(readiness.mesh.progress)}`;
-  const growthHint = readiness.objectTooSmall && readiness.structural.growthNeededPercent !== null
-    ? ` · AREA +${readiness.structural.growthNeededPercent}%`
-    : '';
-  const resultHint = result === null
-    ? ''
-    : ` · ${projectedCorners.length}/${certifiedCandidates.length}C · ${certifiedEdgeCandidates.length}E`;
+  const rgbActive = result !== null && visualCheckActive(visualFrames);
+  const readinessLabel = compactScanReadinessLabel(readiness, {
+    visibleCorners: projectedCorners.length,
+    certifiedCorners: certifiedCandidates.length,
+    certifiedEdges: certifiedEdgeCandidates.length,
+    rgbCorroboration: rgbActive,
+  });
   const readinessTitle = [
     `Structural readiness ${percent(readiness.structural.progress)} (${readiness.structural.limitingMetric})`,
     readiness.mesh === null ? 'Mesh scale not measured yet' : `Mesh readiness ${percent(readiness.mesh.progress)} (${readiness.mesh.limitingMetric})`,
-    `View coverage ${percent(readiness.viewCoverage)}; ${readiness.viewSectors}/${readiness.totalViewSectors} azimuth sectors`,
+    `View coverage ${percent(readiness.viewCoverage)}; ${readiness.viewSectors}/${readiness.totalViewSectors} camera azimuth sectors`,
     `Camera baseline ${readiness.cameraBaselineMeters.toFixed(2)} m`,
     readiness.objectMajorExtentMeters === null || readiness.objectMinorExtentMeters === null
       ? 'Object extent not measured yet'
@@ -580,7 +581,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
   return (
     <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
       <div className="xr-structural-guide-status" title={readinessTitle}>
-        STRUCT {percent(readiness.structural.progress)} · {meshStatus} · VIEWS {percent(readiness.viewCoverage)}{growthHint}{resultHint}{result !== null && visualCheckActive(visualFrames) ? ' · RGB' : ''}
+        {readinessLabel}
       </div>
 
       {projectedEdges.map((edge) => {
