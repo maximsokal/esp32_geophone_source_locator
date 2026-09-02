@@ -57,6 +57,12 @@ import {
   depthSensingPauseAction,
   shouldPauseXrScan,
 } from './webxrDepthPausePolicy';
+import type { XrPlaneFrameLike } from './webxrPlaneGuidance';
+import {
+  captureLatestStructuralPlanePriors,
+  getLatestStructuralPlanePriorCount,
+  resetXrPlaneGuidanceRegistry,
+} from './xrPlaneGuidanceRegistry';
 
 export type XrRuntimePhase = 'idle'|'starting'|'running'|'stopping'|'ended'|'interrupted'|'error';
 
@@ -144,7 +150,7 @@ interface XrReferenceSpaceLike {}
 interface XrLightProbeLike {}
 interface XrLightEstimateLike { primaryLightIntensity:XrPointLike; }
 interface XrViewerPoseLike { transform:XrRigidTransformLike; views:readonly XrViewLike[]; }
-interface XrFrameLike {
+interface XrFrameLike extends XrPlaneFrameLike {
   session:XrSessionLike;
   getViewerPose(referenceSpace:XrReferenceSpaceLike):XrViewerPoseLike|null;
   getDepthInformation?(view:XrViewLike):CpuDepthInformationLike|null;
@@ -195,6 +201,7 @@ const LIGHT_ESTIMATE_INTERVAL_MS=500;
 const CLIENT_TELEMETRY_INTERVAL_MS=5000;
 const RGB_CAPTURE_INTERVAL_MS=520;
 const VISUAL_EVIDENCE_INTERVAL_MS=760;
+const PLANE_GUIDANCE_INTERVAL_MS=350;
 
 const initialRuntimeState:WebXrRuntimeState={
   phase:'idle',referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,
@@ -254,7 +261,7 @@ export class WebXrRuntime{
   private explicitStopRequested=false;private scanPaused=false;private frameCount=0;private lastUiUpdateMs=0;
   private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
   private lastLightEstimateMs=Number.NEGATIVE_INFINITY;private lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
-  private lastRgbCaptureMs=Number.NEGATIVE_INFINITY;private lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;
+  private lastRgbCaptureMs=Number.NEGATIVE_INFINITY;private lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;private lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;
   private depthFrameCount=0;private sampledDepthFrames=0;private pointCloudVersion=0;private depthWidth:number|null=null;private depthHeight:number|null=null;
   private depthFailureReported=false;private depthReadyLogged=false;private depthEnabled=false;private depthSensingPausedByApp=false;private motionRejectedFrames=0;
   private motionState:FusionMotionState|'paused'|null=null;private motionQuality=0;private linearSpeedMetersPerSecond=0;
@@ -315,7 +322,7 @@ export class WebXrRuntime{
       // available, and float32 remains the final compatibility fallback.
       const depthFormats=['luminance-alpha','unsigned-short','float32'];
       session=await xr.requestSession('immersive-ar',{
-        optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access'],domOverlay:{root:document.body},
+        optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access','plane-detection'],domOverlay:{root:document.body},
         depthSensing:{usagePreference:['cpu-optimized'],dataFormatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
       });
       this.session=session;session.addEventListener('end',this.handleSessionEnd);session.addEventListener('visibilitychange',this.handleSessionVisibilityChange);
@@ -333,7 +340,7 @@ export class WebXrRuntime{
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
         coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
         depthError:depthConfiguration.enabled?null:'WebXR tracking is running, but CPU depth was not enabled.',error:null});
-      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
+      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true,planeDetectionRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
       void clientDiagnostics.flush();session.requestAnimationFrame(this.handleFrame);
     }catch(error){
       if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*best effort*/}}
@@ -347,10 +354,10 @@ export class WebXrRuntime{
   private publish(patch:Partial<WebXrRuntimeState>):void{this.state={...this.state,...patch};for(const listener of this.listeners)listener(this.state);}
 
   private resetScanState():void{
-    this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetLatestProjectionMatrices();
+    this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
     this.hasLatestProjection=false;this.explicitStopRequested=false;this.scanPaused=false;this.depthSensingPausedByApp=false;this.frameCount=0;this.lastUiUpdateMs=0;this.lastDepthSampleMs=Number.NEGATIVE_INFINITY;
     this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.lastLightEstimateMs=Number.NEGATIVE_INFINITY;this.lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
-    this.lastRgbCaptureMs=Number.NEGATIVE_INFINITY;this.lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;this.depthFrameCount=0;this.sampledDepthFrames=0;this.pointCloudVersion=0;
+    this.lastRgbCaptureMs=Number.NEGATIVE_INFINITY;this.lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;this.lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;this.depthFrameCount=0;this.sampledDepthFrames=0;this.pointCloudVersion=0;
     this.depthWidth=null;this.depthHeight=null;this.depthFailureReported=false;this.depthReadyLogged=false;this.depthEnabled=false;this.motionRejectedFrames=0;this.motionState=null;
     this.motionQuality=0;this.linearSpeedMetersPerSecond=0;this.angularSpeedRadiansPerSecond=0;this.linearAccelerationMetersPerSecond2=0;
     this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.coverageVisibleCells=0;this.coverageReadyCells=0;this.coverageTotalCells=0;
@@ -360,7 +367,7 @@ export class WebXrRuntime{
 
   private cleanupRuntime():void{
     document.documentElement.classList.remove('xr-session-active');this.coverageRenderer?.dispose();this.coverageRenderer=null;this.cameraCapture?.dispose();this.cameraCapture=null;this.cameraBinding=null;
-    setLatestRgbGuidance(null);resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();releaseWebGlContext(this.gl);this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
+    setLatestRgbGuidance(null);resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();releaseWebGlContext(this.gl);this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
     this.scanPaused=false;this.depthEnabled=false;this.depthSensingPausedByApp=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
   }
 
@@ -427,6 +434,13 @@ export class WebXrRuntime{
     catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_CAPTURE_FAILED',error);}
   }
 
+  private captureNativePlaneGuidance(time:number,frame:XrFrameLike,referenceSpace:XrReferenceSpaceLike):void{
+    if(time-this.lastPlaneGuidanceMs<PLANE_GUIDANCE_INTERVAL_MS)return;
+    this.lastPlaneGuidanceMs=time;
+    try{captureLatestStructuralPlanePriors(frame,referenceSpace);}
+    catch(error){resetXrPlaneGuidanceRegistry();clientDiagnostics.warn('XR_PLANE_GUIDANCE_CAPTURE_FAILED',error);}
+  }
+
   private maybeRecordVisualEvidence(time:number,keyframeId:number,view:XrViewLike):void{
     if(time-this.lastVisualEvidenceMs<VISUAL_EVIDENCE_INTERVAL_MS)return;const guidance=getFreshRgbGuidance(time,300);if(guidance===null)return;
     const detected=detectVisualLines(guidance);this.lastVisualEvidenceMs=time;
@@ -454,7 +468,7 @@ export class WebXrRuntime{
 
   private reportClientTelemetry(time:number):void{
     if(time-this.lastClientTelemetryMs<CLIENT_TELEMETRY_INTERVAL_MS)return;this.lastClientTelemetryMs=time;
-    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
+    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',visualEvidenceFrames:getVisualEvidenceFrameCount(),nativePlanePriors:getLatestStructuralPlanePriorCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
   }
 
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
@@ -463,6 +477,7 @@ export class WebXrRuntime{
     // WebXR requires pauseDepthSensing()/resumeDepthSensing() while this current
     // XR animation frame is active. Visibility handlers only change scanPaused.
     this.syncDepthSensingPauseInsideFrame();
+    this.captureNativePlaneGuidance(time,frame,referenceSpace);
     gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     const pose=frame.getViewerPose(referenceSpace);
     if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);}
