@@ -90,7 +90,11 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
   };
 
-  const tracked = tracker.update(input, 0);
+  // Production corners are always supplied by the uncertainty-aware certified
+  // solvers below. Skip the legacy raw triple-patch corner loop here while
+  // retaining its default behavior for direct tests/tools and keeping the finite
+  // support edge tracker active.
+  const tracked = tracker.update(input, 0, false);
   // A two-plane edge that repeatedly survives independent camera views should
   // not remain permanently unusable because the historical geometry/temporal
   // blend tops out a few points below the UI's 0.66 gate. Keep raw geometry and
