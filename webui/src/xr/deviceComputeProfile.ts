@@ -31,10 +31,14 @@ interface NavigatorComputeLike {
   };
 }
 
+interface SharedArrayBufferConstructorLike {
+  new (byteLength: number): object;
+}
+
 interface GlobalComputeLike {
   crossOriginIsolated?: boolean;
   Worker?: unknown;
-  SharedArrayBuffer?: unknown;
+  SharedArrayBuffer?: SharedArrayBufferConstructorLike;
   WebAssembly?: typeof WebAssembly;
 }
 
@@ -91,12 +95,12 @@ export function deriveDeviceComputeProfile(signals: DeviceComputeSignals): Devic
 function detectWasmSharedMemory(globalScope: GlobalComputeLike): boolean {
   if (
     globalScope.crossOriginIsolated !== true ||
-    typeof globalScope.SharedArrayBuffer === 'undefined' ||
+    globalScope.SharedArrayBuffer === undefined ||
     globalScope.WebAssembly === undefined
   ) return false;
   try {
     const memory = new globalScope.WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-    return typeof globalScope.SharedArrayBuffer !== 'undefined' && memory.buffer instanceof globalScope.SharedArrayBuffer;
+    return memory.buffer instanceof globalScope.SharedArrayBuffer;
   } catch {
     return false;
   }
@@ -119,7 +123,7 @@ export async function probeDeviceComputeProfile(): Promise<DeviceComputeProfile>
   );
   const workerApi = typeof globalScope.Worker !== 'undefined';
   const crossOriginIsolated = globalScope.crossOriginIsolated === true;
-  const sharedArrayBufferApi = typeof globalScope.SharedArrayBuffer !== 'undefined';
+  const sharedArrayBufferApi = globalScope.SharedArrayBuffer !== undefined;
   const wasmApi = globalScope.WebAssembly !== undefined;
   const wasmSharedMemory = detectWasmSharedMemory(globalScope);
   const webGpuApi = navigatorLike.gpu !== undefined && typeof navigatorLike.gpu.requestAdapter === 'function';
