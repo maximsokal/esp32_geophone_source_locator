@@ -240,6 +240,23 @@ export class RawCameraGuidanceCapture {
 
   get usesNonBlockingReadback(): boolean { return this.asyncReadback !== null; }
 
+  /**
+   * Poll a previously queued WebGL2 PBO without waiting. The runtime calls this
+   * every XR RAF, independently of the lower camera-capture cadence, so a fence
+   * that signals after 1-2 render frames is consumed immediately rather than
+   * accumulating an artificial ~RGB_CAPTURE_INTERVAL delay.
+   */
+  pollReady(): RgbDepthGuidanceFrame | null {
+    if (this.disposed || this.asyncReadback === null) return null;
+    const previous = captureWebGlState(this.gl, this.positionLocation);
+    try {
+      const ready = this.asyncReadback.poll();
+      return ready === null ? null : buildGuidance(ready.pixels, ready.metadata);
+    } finally {
+      restoreWebGlState(this.gl, this.positionLocation, previous);
+    }
+  }
+
   capture(
     binding: XrWebGlBindingLike,
     view: XrCameraViewLike,
@@ -255,10 +272,8 @@ export class RawCameraGuidanceCapture {
     const metadata = captureMetadata(view, capturedAtMs);
 
     try {
-      // Poll first: timeout=0 means the XR thread never waits for the GPU. The
-      // returned pixels retain the pose/projection from the frame that queued
-      // them, so asynchronous readback cannot accidentally pair old RGB with a
-      // newer camera transform.
+      // Standalone callers that do not poll per RAF can still harvest an older
+      // completed frame here. The production runtime normally drains it earlier.
       const ready = this.asyncReadback?.poll() ?? null;
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
