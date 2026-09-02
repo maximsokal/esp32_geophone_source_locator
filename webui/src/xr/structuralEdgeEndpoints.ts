@@ -384,11 +384,17 @@ export class StructuralEdgeEndpointTracker {
   ): readonly StructuralCornerCandidate[] {
     const observations = detectEdgeEndpointObservations(snapshot);
     const keyframeId = viewpoint?.keyframeId ?? snapshot.pointCount;
+    // A physical endpoint track can consume at most one observation per analysis
+    // frame. Multiple seeds may rediscover the same neighbourhood; allowing them
+    // to update one track repeatedly would move its filtered position without
+    // adding independent evidence and can alias two nearby endpoints.
+    const matchedTrackIds = new Set<number>();
 
     for (const observation of observations) {
       let best: EndpointTrack | null = null;
       let bestDistance = Number.POSITIVE_INFINITY;
       for (const track of this.tracks) {
+        if (matchedTrackIds.has(track.id)) continue;
         const positionDistance = distance3(track.position, observation.position);
         const directionDot = Math.abs(dot3(track.direction, observation.direction));
         if (positionDistance > TRACK_RADIUS_METERS || directionDot < TRACK_DIRECTION_DOT) continue;
@@ -410,7 +416,7 @@ export class StructuralEdgeEndpointTracker {
             freeBeyond: observation.freeBeyond,
           });
         }
-        this.tracks.push({
+        const created: EndpointTrack = {
           id: this.nextId++,
           position: observation.position,
           direction: observation.direction,
@@ -420,10 +426,13 @@ export class StructuralEdgeEndpointTracker {
           lastSeenKeyframe: keyframeId,
           freeVotes: observation.freeBeyond && evidence.length > 0 ? 1 : 0,
           evidence,
-        });
+        };
+        this.tracks.push(created);
+        matchedTrackIds.add(created.id);
         continue;
       }
 
+      matchedTrackIds.add(best.id);
       best.lastSeenKeyframe = keyframeId;
       best.position = [
         best.position[0] * 0.58 + observation.position[0] * 0.42,
