@@ -110,6 +110,17 @@ describe('connected structural edge assembly', () => {
     expect(merged).toHaveLength(2);
   });
 
+  it('preserves finite segments instead of bridging a gap when measured span coverage is below 70 percent', () => {
+    const merged = mergeConnectedStructuralEdges([
+      fragment('edge:e1', 0.00, 0.09),
+      fragment('edge:e2', 0.17, 0.26),
+    ]);
+    // The 8-cm gap is narrowly inside the neighbour gate, but 18 cm of actual
+    // segments cover only ~69% of the proposed 26-cm merged span.
+    expect(merged).toHaveLength(2);
+    expect(merged.map((item) => item.id).sort()).toEqual(['edge:e1', 'edge:e2']);
+  });
+
   it('is deterministic under input permutation', () => {
     const source = [
       fragment('edge:e1', 0.00, 0.12),
