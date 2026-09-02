@@ -1,9 +1,11 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import { deviceComputeProfilePromise } from './deviceComputeProfile';
 import {
   assessMeshReconstructionPreflight,
   type MeshReconstructionPreflight,
 } from './meshReconstructionPreflight';
 import { optionalMonocularPrior } from './monocularPriorRuntime';
+import { ParallelDirectionalTsdfClient } from './parallelDirectionalTsdfClient';
 import SparseTsdfWorker from './sparseTsdf.worker?worker&inline';
 import type { SparseTsdfMesh } from './sparseTsdf';
 
@@ -156,11 +158,13 @@ export class SparseTsdfMeshClient {
   private epoch = 0;
   private generation = 0;
   private pending: Pending | null = null;
+  private readonly parallelDirectional = new ParallelDirectionalTsdfClient();
 
   constructor(private readonly workerFactory: () => Worker = () => new SparseTsdfWorker()) {}
 
   async reconstruct(input: SparseTsdfReconstructInput): Promise<SparseTsdfMesh> {
     this.resetPending('Sparse TSDF reconstruction superseded by a newer scan.');
+    this.parallelDirectional.reset('Parallel TSDF reconstruction superseded by a newer scan.');
     const generation = ++this.generation;
     const epoch = this.epoch;
     const preflightStarted = performance.now();
@@ -229,6 +233,26 @@ export class SparseTsdfMeshClient {
       throw new Error('Sparse TSDF reconstruction superseded before worker dispatch.');
     }
 
+    const computeProfile = await deviceComputeProfilePromise;
+    if (generation !== this.generation || epoch !== this.epoch) {
+      throw new Error('Sparse TSDF reconstruction superseded during compute-budget negotiation.');
+    }
+    if (computeProfile.postScanWorkerBudget >= 2) {
+      clientDiagnostics.info('SCAN_TSDF_MULTI_CORE_ENABLED', {
+        postScanWorkerBudget: computeProfile.postScanWorkerBudget,
+        logicalProcessors: computeProfile.reportedLogicalProcessors,
+        tier: computeProfile.tier,
+      });
+      const result = await this.parallelDirectional.reconstruct(
+        reconstructionInput,
+        computeProfile.postScanWorkerBudget,
+      );
+      if (generation !== this.generation || epoch !== this.epoch) {
+        throw new Error('Sparse TSDF reconstruction superseded during multi-core reconstruction.');
+      }
+      return result;
+    }
+
     const id = this.nextRequestId++;
     const worker = this.ensureWorker();
     return new Promise((resolve, reject) => {
@@ -258,12 +282,14 @@ export class SparseTsdfMeshClient {
     this.generation += 1;
     this.epoch += 1;
     this.resetPending('Sparse TSDF reconstruction reset.');
+    this.parallelDirectional.reset();
     this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
   dispose(): void {
     this.generation += 1;
     this.resetPending('Sparse TSDF worker disposed.');
+    this.parallelDirectional.dispose();
     if (this.worker !== null) {
       this.worker.removeEventListener('message', this.handleMessage);
       this.worker.removeEventListener('error', this.handleError);
