@@ -154,21 +154,24 @@ export function captureStructuralPlanePriors(
   referenceSpace: object,
   maximumPlanes = MAX_CAPTURED_PLANES,
 ): readonly StructuralPlanePrior[] {
-  if (frame.detectedPlanes === undefined || typeof frame.getPose !== 'function') return [];
-  const captured: StructuralPlanePrior[] = [];
+  if (typeof frame.getPose !== 'function') return [];
   try {
-    for (const plane of frame.detectedPlanes) {
+    // detectedPlanes/getPose are frame-scoped WebXR APIs. Even capability probing
+    // must therefore happen inside the guarded active-frame access.
+    const detectedPlanes = frame.detectedPlanes;
+    if (detectedPlanes === undefined) return [];
+    const captured: StructuralPlanePrior[] = [];
+    for (const plane of detectedPlanes) {
       const prior = captureStructuralPlanePrior(plane, frame, referenceSpace);
       if (prior !== null) captured.push(prior);
     }
+    const cap = Number.isFinite(maximumPlanes) ? Math.max(1, Math.min(48, Math.floor(maximumPlanes))) : MAX_CAPTURED_PLANES;
+    // Prefer larger physically meaningful planes when the native tracker exposes
+    // many small fragments. Semantics are intentionally not used for geometry.
+    captured.sort((a, b) => b.areaSquareMeters - a.areaSquareMeters || b.extentRadiusMeters - a.extentRadiusMeters);
+    return captured.slice(0, cap);
   } catch {
-    // detectedPlanes/getPose are frame-scoped WebXR APIs. A UA/context failure is
-    // advisory and must never interrupt physical depth fusion.
+    // A UA/context failure is advisory and must never interrupt physical depth fusion.
     return [];
   }
-  const cap = Number.isFinite(maximumPlanes) ? Math.max(1, Math.min(48, Math.floor(maximumPlanes))) : MAX_CAPTURED_PLANES;
-  // Prefer larger physically meaningful planes when the native tracker exposes
-  // many small fragments. Semantics are intentionally not used for geometry.
-  captured.sort((a, b) => b.areaSquareMeters - a.areaSquareMeters || b.extentRadiusMeters - a.extentRadiusMeters);
-  return captured.slice(0, cap);
 }
