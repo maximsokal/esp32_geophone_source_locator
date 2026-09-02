@@ -216,6 +216,12 @@ export function mergeConnectedStructuralEdges(
     }
     const combined = mergeGroup(group);
     if (combined !== null) merged.push(combined);
+    else {
+      // Geometrically nearby fragments can still leave too much unmeasured span
+      // to justify one long line. Preserve their finite measured segments rather
+      // than either bridging the gap or dropping otherwise valid edges.
+      merged.push(...group);
+    }
   }
   return merged.sort((a, b) => b.confidence - a.confidence || a.id.localeCompare(b.id));
 }
