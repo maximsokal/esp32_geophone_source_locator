@@ -16,7 +16,12 @@ function snapshot(
   };
 }
 
-describe('three-family structural surface clustering', () => {
+function normal(angleDegrees: number): readonly [number, number, number] {
+  const angle = angleDegrees * Math.PI / 180;
+  return [Math.sin(angle), 0, Math.cos(angle)];
+}
+
+describe('feature-aware structural surface clustering', () => {
   it('keeps three orthogonal surface families in the same fine structural cell', () => {
     const result = clusterStructuralSurfaceFamilies(snapshot(
       [
@@ -88,5 +93,44 @@ describe('three-family structural surface clustering', () => {
       ],
     ));
     expect(result.pointCount).toBe(2);
+  });
+
+  it('preserves more representatives on a convex bend than on a flat patch', () => {
+    const positions = [
+      [0.004, 0.010, 0.010],
+      [0.014, 0.010, 0.010],
+      [0.024, 0.010, 0.010],
+      [0.034, 0.010, 0.010],
+      [0.044, 0.010, 0.010],
+      [0.052, 0.010, 0.010],
+    ] as const;
+    const flat = clusterStructuralSurfaceFamilies(snapshot(
+      positions,
+      positions.map(() => normal(0)),
+    ));
+    const convex = clusterStructuralSurfaceFamilies(snapshot(
+      positions,
+      [-28, -18, -8, 8, 18, 28].map(normal),
+    ));
+
+    expect(flat.pointCount).toBe(1);
+    expect(convex.pointCount).toBeGreaterThan(flat.pointCount);
+    expect(convex.pointCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('does not over-segment a flat patch because of one abnormal normal', () => {
+    const positions = [
+      [0.004, 0.010, 0.010],
+      [0.014, 0.010, 0.010],
+      [0.024, 0.010, 0.010],
+      [0.034, 0.010, 0.010],
+      [0.044, 0.010, 0.010],
+      [0.052, 0.010, 0.010],
+    ] as const;
+    const result = clusterStructuralSurfaceFamilies(snapshot(
+      positions,
+      [normal(-2), normal(-1), normal(0), normal(1), normal(2), normal(88)],
+    ));
+    expect(result.pointCount).toBeLessThanOrEqual(2);
   });
 });
