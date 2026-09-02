@@ -56,6 +56,25 @@ describe('surface feature complexity', () => {
     expect(feature.score).toBeLessThan(0.2);
   });
 
+  it('is invariant to surfel arrival order and normal sign flips', () => {
+    const ordered = [
+      normal(-18, 0.78), normal(-8, 0.91), normal(2, 0.83),
+      normal(74, 0.87), normal(88, 0.93), normal(96, 0.81),
+    ];
+    const shuffledAndFlipped = [
+      normal(276, 0.81), normal(182, 0.83), normal(254, 0.87),
+      normal(172, 0.91), normal(162, 0.78), normal(268, 0.93),
+    ];
+    const a = estimateSurfaceFeatureComplexity(ordered);
+    const b = estimateSurfaceFeatureComplexity(shuffledAndFlipped);
+
+    expect(b.matureOrientationFamilies).toBe(a.matureOrientationFamilies);
+    expect(b.usableNormals).toBe(a.usableNormals);
+    expect(b.score).toBeCloseTo(a.score, 10);
+    expect(b.robustSpreadRadians).toBeCloseTo(a.robustSpreadRadians, 10);
+    expect(b.strongestFamilySeparationRadians).toBeCloseTo(a.strongestFamilySeparationRadians, 10);
+  });
+
   it('scales the feature bonus down with global memory pressure and respects the cap', () => {
     expect(featureAwareCellQuota(8, 1)).toBe(14);
     expect(featureAwareCellQuota(28, 1)).toBe(48);
