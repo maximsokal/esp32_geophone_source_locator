@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { detectCertifiedStructuralCorners } from './certifiedStructuralGeometry';
+import { CertifiedStructuralCornerTracker } from './certifiedStructuralGeometry';
 import { stabilizeMeasuredSurfelsWithNativePlanes } from './nativePlaneSurfelGuidance';
 import {
   applyMaturityAwareEdgeConfidence,
@@ -39,6 +39,7 @@ interface ResetMessage { type: 'reset'; epoch: number; }
 type WorkerMessage = AnalyzeMessage | ResetMessage;
 
 const tracker = new StructuralGuideTracker();
+const threePlaneCornerTracker = new CertifiedStructuralCornerTracker();
 const endpointTracker = new StructuralEdgeEndpointTracker();
 const lifecycleTelemetry = new StructuralLifecycleTelemetry();
 let currentEpoch = 0;
@@ -58,6 +59,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   if (message.type === 'reset') {
     currentEpoch = message.epoch;
     tracker.reset();
+    threePlaneCornerTracker.reset();
     endpointTracker.reset();
     lifecycleTelemetry.reset();
     analysisSequence = 0;
@@ -90,15 +92,10 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
   };
 
-  // Production corners are always supplied by the uncertainty-aware certified
-  // solvers below. Skip the legacy raw triple-patch corner loop here while
-  // retaining its default behavior for direct tests/tools and keeping the finite
-  // support edge tracker active.
+  // Production corners are supplied by the uncertainty-aware certified trackers
+  // below. Skip the legacy raw triple-patch corner loop while retaining the
+  // finite-support edge tracker.
   const tracked = tracker.update(input, 0, false);
-  // A two-plane edge that repeatedly survives independent camera views should
-  // not remain permanently unusable because the historical geometry/temporal
-  // blend tops out a few points below the UI's 0.66 gate. Keep raw geometry and
-  // tracking unchanged; only calibrate the aggregate operational confidence.
   const operationalEdges = tracked.edges
     .map(applyMaturityAwareEdgeConfidence)
     .sort((left, right) => right.confidence - left.confidence);
@@ -119,14 +116,14 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
 
   // Both uncertainty-aware solvers are deliberately expensive. Geometry changes
   // much more slowly than the XR frame rate, so after the initial seed pass they
-  // alternate. Every cached candidate is independently re-certified on the main
-  // thread before display, so stale candidates cannot bypass validation.
+  // alternate. Each solver owns candidate-specific multi-view state: a single
+  // robust geometry solve is never mislabeled as three physical observations.
   analysisSequence += 1;
   if (analysisSequence === 1) {
-    lastThreePlaneCorners = detectCertifiedStructuralCorners(certifiedSnapshot);
+    lastThreePlaneCorners = threePlaneCornerTracker.update(certifiedSnapshot, message.viewpoint ?? null);
     lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
   } else if ((analysisSequence & 1) === 1) {
-    lastThreePlaneCorners = detectCertifiedStructuralCorners(certifiedSnapshot);
+    lastThreePlaneCorners = threePlaneCornerTracker.update(certifiedSnapshot, message.viewpoint ?? null);
   } else {
     lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
   }
