@@ -6,6 +6,7 @@ import {
   normalsCompatible,
   type ProjectVector,
 } from './surfelEvidence';
+import { analyzeSurfaceComponents } from './surfaceComponents';
 
 export interface MeshPreviewInput {
   positions: Float32Array;
@@ -19,9 +20,15 @@ export interface MeshPreview {
   trianglePositions: Float32Array;
   triangleCount: number;
   sourcePointCount: number;
+  /** Points that passed confidence/readiness and belong to mesh-sized components. */
   acceptedPointCount: number;
+  /** Confidence-valid points before physical component-size gating. */
+  certifiedPointCount: number;
   rejectedTriangleCount: number;
   searchRadiusMeters: number;
+  componentCount: number;
+  eligibleComponentCount: number;
+  meshReadiness: number;
 }
 
 interface PointRecord {
@@ -117,15 +124,17 @@ function triangleNormal(
   return crossVector(subtract(b, a), subtract(c, a));
 }
 
-function recordsFromInput(input: MeshPreviewInput): PointRecord[] {
+function recordsFromInput(input: MeshPreviewInput, eligiblePointMask: Uint8Array): PointRecord[] {
   const count = Math.min(
     Math.floor(input.positions.length / 3),
     Math.floor(input.normals.length / 3),
     input.confidence.length,
+    eligiblePointMask.length,
     MESH_MAX_POINTS,
   );
   const records: PointRecord[] = [];
   for (let index = 0; index < count; index += 1) {
+    if (eligiblePointMask[index] === 0) continue;
     const offset = index * 3;
     const confidence = clamp01(input.confidence[index]);
     if (confidence < MESH_MIN_CONFIDENCE) continue;
@@ -144,11 +153,17 @@ function recordsFromInput(input: MeshPreviewInput): PointRecord[] {
 /**
  * Conservative GP3-style local triangulation for the phone preview.
  *
- * This is intentionally not a watertight Poisson reconstruction. It follows
- * the same safety principles as PCL GreedyProjectionTriangulation: spatial
- * search radius, tangent-plane neighbour ordering, triangle-angle limits and a
- * maximum normal/surface angle so opposite sides of a sharp edge are not
- * connected merely because they are spatially close.
+ * Before triangulation, a bounded voxel-hash component pass rejects dense but
+ * physically tiny islands and one-dimensional point chains. Only components
+ * with enough measured 2-D extent, occupied cells and support density can enter
+ * the GP3-style local triangulator. This prevents a few centimetres of noise or
+ * a short edge from becoming a visually convincing "surface".
+ *
+ * The triangulation itself follows the same safety principles as PCL
+ * GreedyProjectionTriangulation: spatial search radius, tangent-plane neighbour
+ * ordering, triangle-angle limits and a maximum normal/surface angle so opposite
+ * sides of a sharp edge are not connected merely because they are spatially
+ * close.
  */
 export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
   const sourcePointCount = Math.min(
@@ -156,13 +171,30 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
     Math.floor(input.normals.length / 3),
     input.confidence.length,
   );
-  const points = recordsFromInput(input);
+  const componentAnalysis = analyzeSurfaceComponents({
+    positions: input.positions,
+    normals: input.normals,
+    confidence: input.confidence,
+    voxelSizeMeters: input.voxelSizeMeters,
+    minimumConfidence: MESH_MIN_CONFIDENCE,
+    maxPoints: MESH_MAX_POINTS,
+  });
+  const points = recordsFromInput(input, componentAnalysis.eligiblePointMask);
   const searchRadiusMeters = clamp(input.voxelSizeMeters * 3.2, 0.065, 0.18);
+  const baseResult = {
+    sourcePointCount,
+    acceptedPointCount: points.length,
+    certifiedPointCount: componentAnalysis.acceptedPointCount,
+    componentCount: componentAnalysis.componentCount,
+    eligibleComponentCount: componentAnalysis.eligibleComponentCount,
+    meshReadiness: componentAnalysis.bestMeshComponent?.meshReadiness ?? 0,
+    searchRadiusMeters,
+  };
   if (points.length < 3) {
     return {
+      ...baseResult,
       trianglePositions: new Float32Array(0), triangleCount: 0,
-      sourcePointCount, acceptedPointCount: points.length,
-      rejectedTriangleCount: 0, searchRadiusMeters,
+      rejectedTriangleCount: 0,
     };
   }
 
@@ -247,11 +279,9 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
   }
 
   return {
+    ...baseResult,
     trianglePositions: Float32Array.from(triangles),
     triangleCount: triangles.length / 9,
-    sourcePointCount,
-    acceptedPointCount: points.length,
     rejectedTriangleCount,
-    searchRadiusMeters,
   };
 }
