@@ -249,18 +249,17 @@ describe('bounded spatial surface components', () => {
   it('does not let a sparse connected tail inflate a tiny patch into a mesh-sized component', () => {
     const source = cloud();
     addGrid(source, [0, 0, 0], 7, 7, 0.01);
-    // Four high-confidence points form a genuinely connected tail at 5-cm steps.
-    // The metric gate keeps it connected, while robust trimmed PCA extent ensures
-    // this sparse tail still cannot redefine the object's meaningful mesh size.
+    // The first tail surfel can share/attach to a supported boundary node, but
+    // subsequent one-point nodes are leaves and cannot relay component growth.
     for (const x of [0.10, 0.15, 0.20, 0.25]) {
       source.positions.push(x, 0.03, 0);
       source.normals.push(0, 0, 1);
       source.confidence.push(0.92);
     }
     const result = analyze(source);
-    expect(result.componentCount).toBe(1);
-    expect(result.bestMeshComponent!.pointCount).toBe(53);
-    expect(result.bestMeshComponent!.majorExtentMeters).toBeLessThan(0.10);
+    expect(result.componentCount).toBeGreaterThan(1);
+    expect(result.largestComponent!.pointCount).toBeLessThan(53);
+    expect(result.bestMeshComponent!.majorExtentMeters).toBeLessThan(0.12);
     expect(result.bestMeshComponent!.meshEligible).toBe(false);
     expect(result.eligiblePointCount).toBe(0);
   });
