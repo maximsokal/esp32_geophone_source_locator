@@ -960,9 +960,19 @@ export class DepthPointCloudAccumulator {
 
     if (normalEstimate !== null) {
       const beta = clamp01(alpha * (0.35 + normalEstimate.confidence * 0.65));
-      const nx = point.normalX * (1 - beta) + normalEstimate.normal[0] * beta;
-      const ny = point.normalY * (1 - beta) + normalEstimate.normal[1] * beta;
-      const nz = point.normalZ * (1 - beta) + normalEstimate.normal[2] * beta;
+      // Surface-normal sign is view-dependent here: the fresh estimate is
+      // oriented toward the current camera, while the stored surfel may have
+      // been created from the opposite side. Association is intentionally
+      // sign-invariant, therefore fusion must first align both normals to the
+      // same hemisphere or n + (-n) can collapse into an unstable direction.
+      const normalSign = (
+        point.normalX * normalEstimate.normal[0] +
+        point.normalY * normalEstimate.normal[1] +
+        point.normalZ * normalEstimate.normal[2]
+      ) < 0 ? -1 : 1;
+      const nx = point.normalX * (1 - beta) + normalEstimate.normal[0] * normalSign * beta;
+      const ny = point.normalY * (1 - beta) + normalEstimate.normal[1] * normalSign * beta;
+      const nz = point.normalZ * (1 - beta) + normalEstimate.normal[2] * normalSign * beta;
       const length = Math.hypot(nx, ny, nz) || 1;
       point.normalX = nx / length; point.normalY = ny / length; point.normalZ = nz / length;
       point.normalConfidence = clamp01(
