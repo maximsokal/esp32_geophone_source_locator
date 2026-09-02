@@ -25,10 +25,10 @@ function addPlane(
   }
 }
 
-function addTinyDensePlane(target: Cloud): void {
+function addTinyDensePlane(target: Cloud, originX = 0): void {
   for (let ix = 0; ix < 10; ix += 1) {
     for (let iy = 0; iy < 10; iy += 1) {
-      target.positions.push(ix * 0.006, iy * 0.006, 0);
+      target.positions.push(originX + ix * 0.006, iy * 0.006, 0);
       target.normals.push(0, 0, 1);
       target.confidence.push(0.94);
     }
@@ -89,6 +89,28 @@ describe('sparse weighted TSDF reconstruction', () => {
     expect(mesh.rejectedComponentPoints).toBe(100);
     expect(mesh.integratedPointCount).toBe(0);
     expect(mesh.triangleCount).toBe(0);
+  });
+
+  it('integrates the valid slab but rejects a disconnected dense tiny island inside the worker', () => {
+    const source = cloud();
+    addPlane(source, 0);
+    addTinyDensePlane(source, 1.2);
+    const mesh = buildSparseTsdfMesh(input(source));
+
+    expect(mesh.sourcePointCount).toBe(181);
+    expect(mesh.componentCount).toBe(2);
+    expect(mesh.eligibleComponentCount).toBe(1);
+    expect(mesh.rejectedComponentPoints).toBe(100);
+    expect(mesh.integratedPointCount).toBeLessThanOrEqual(81);
+    expect(mesh.integratedPointCount).toBeGreaterThan(60);
+    expect(mesh.triangleCount).toBeGreaterThan(20);
+
+    // No retained triangle may jump into the rejected island around x=1.2m.
+    let maximumX = Number.NEGATIVE_INFINITY;
+    for (let offset = 0; offset < mesh.trianglePositions.length; offset += 3) {
+      maximumX = Math.max(maximumX, mesh.trianglePositions[offset]);
+    }
+    expect(maximumX).toBeLessThan(0.5);
   });
 
   it('does not bridge two disconnected measured surface islands', () => {
