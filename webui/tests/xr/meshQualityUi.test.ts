@@ -43,6 +43,11 @@ describe('mesh quality UI status', () => {
     expect(result).toEqual({ label: 'MESH OK · 120△', severity: 'ok', rescanRecommended: false });
   });
 
+  it('asks for a wider scan when reconstruction preflight deferred the mesh', () => {
+    const result = describeMeshQuality(mesh({ meshReadiness: 0.64, triangleCount: 0, rawTriangleCount: 0 }));
+    expect(result).toEqual({ label: 'MESH 64% · SCAN WIDER', severity: 'warning', rescanRecommended: false });
+  });
+
   it('recommends rescan when a mature component was quarantined', () => {
     const result = describeMeshQuality(mesh({ meshNoiseScore: 0.73, quarantinedTriangleCount: 24 }));
     expect(result.severity).toBe('bad');
@@ -56,6 +61,11 @@ describe('mesh quality UI status', () => {
     expect(result.severity).toBe('bad');
     expect(result.rescanRecommended).toBe(true);
     expect(result.label).toContain('CHECK LIMITED');
+  });
+
+  it('recommends rescan when a ready reconstruction unexpectedly produces no retained triangles', () => {
+    const result = describeMeshQuality(mesh({ triangleCount: 0, rawTriangleCount: 12 }));
+    expect(result).toEqual({ label: 'MESH EMPTY · RESCAN', severity: 'bad', rescanRecommended: true });
   });
 
   it('shows a warning without forcing rescan for isolated low-score topology evidence', () => {
