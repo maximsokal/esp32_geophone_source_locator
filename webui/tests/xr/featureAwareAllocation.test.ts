@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DepthPointCloudAccumulator,
+  MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME,
   type CpuDepthInformationLike,
   type DepthFusionFrameContext,
   type DepthSampleView,
@@ -40,15 +41,21 @@ const frame: DepthFusionFrameContext = {
 };
 
 describe('feature-aware upstream surfel allocation', () => {
-  it('retains extra measured detail on a smooth convex patch without increasing the global budget', () => {
+  it('retains and actively re-probes extra measured detail on a smooth convex patch without increasing global memory', () => {
     const flat = new DepthPointCloudAccumulator(0.01, 1000, 5);
     const convex = new DepthPointCloudAccumulator(0.01, 1000, 5);
-
-    flat.sampleDepthFrame(depthSurface(() => 1.44), view, frame);
-    convex.sampleDepthFrame(depthSurface((u) => {
+    const flatDepth = depthSurface(() => 1.44);
+    const convexDepth = depthSurface((u) => {
       const normalized = (u - 0.5) / 0.5;
       return 1.40 + 0.07 * normalized * normalized;
-    }), view, frame);
+    });
+
+    flat.sampleDepthFrame(flatDepth, view, frame);
+    convex.sampleDepthFrame(convexDepth, view, frame);
+    // The second sampled frame starts with a physically measured normal field in
+    // the cell, allowing bounded feature-directed probes without any AI/native-plane trigger.
+    const flatResult = flat.sampleDepthFrame(flatDepth, view, { ...frame, keyframeId: 2 });
+    const convexResult = convex.sampleDepthFrame(convexDepth, view, { ...frame, keyframeId: 2 });
 
     expect(flat.coverageCount).toBe(1);
     expect(convex.coverageCount).toBe(1);
@@ -58,5 +65,9 @@ describe('feature-aware upstream surfel allocation', () => {
     expect(convex.pointCount).toBeGreaterThan(28);
     expect(convex.pointCount).toBeLessThanOrEqual(48);
     expect(convex.pointCount).toBeLessThanOrEqual(convex.memoryBudget);
+    expect(flatResult.featureSupersampleProbes).toBe(0);
+    expect(convexResult.featureSupersampleProbes).toBeGreaterThan(0);
+    expect(convexResult.featureSupersampleProbes).toBeLessThanOrEqual(MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME);
+    expect(convexResult.featureSupersampleProbes % 2).toBe(0);
   });
 });
