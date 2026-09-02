@@ -206,9 +206,13 @@ export function activeXrPerformancePressure(): XrPerformanceSnapshot['pressure']
 
 export function activeXrRenderPolicy(): XrRenderPolicy {
   if (activeProfiler === null) return { pointBudget: LOW_PRESSURE_POINT_BUDGET, drawIntervalMs: 0 };
+  // Percentiles sort bounded rolling windows. Compute them once per policy read
+  // instead of calling two recommendation helpers that each build an identical
+  // full snapshot.
+  const snapshot = activeProfiler.snapshot();
   return {
-    pointBudget: activeProfiler.recommendedCoveragePointBudget(),
-    drawIntervalMs: activeProfiler.recommendedCoverageDrawIntervalMs(),
+    pointBudget: snapshot.adaptiveCoveragePointBudget,
+    drawIntervalMs: snapshot.adaptiveCoverageDrawIntervalMs,
   };
 }
 
