@@ -25,6 +25,20 @@ function positionedNormal(
   return { ...normal(angleDegrees, confidence), x, y, z };
 }
 
+function maturePositionedNormal(
+  angleDegrees: number,
+  x: number,
+  y: number,
+  z = 0,
+  confidence = 0.9,
+) {
+  return {
+    ...positionedNormal(angleDegrees, x, y, z, confidence),
+    promoted: true,
+    independentViews: 2,
+  };
+}
+
 describe('surface feature complexity', () => {
   it('keeps a slightly noisy flat plane at the base density', () => {
     const feature = estimateSurfaceFeatureComplexity([-3, -2, 0, 1, 2, 3].map((angle) => normal(angle)));
@@ -66,6 +80,45 @@ describe('surface feature complexity', () => {
     expect(feature.strongestFamilySeparationRadians).toBeGreaterThan(70 * Math.PI / 180);
     expect(feature.score).toBeGreaterThan(0.7);
     expect(featureAwareCellQuota(28, feature.score)).toBeGreaterThanOrEqual(42);
+  });
+
+  it('does not let tentative conflicting surfels trigger feature density', () => {
+    const feature = estimateSurfaceFeatureComplexity([
+      { ...positionedNormal(0, 0.00, 0.00), promoted: false, independentViews: 1 },
+      { ...positionedNormal(1, 0.03, 0.00), promoted: false, independentViews: 1 },
+      { ...positionedNormal(-1, 0.06, 0.00), promoted: false, independentViews: 1 },
+      { ...positionedNormal(88, 0.00, 0.01), promoted: false, independentViews: 1 },
+      { ...positionedNormal(90, 0.00, 0.04), promoted: false, independentViews: 1 },
+      { ...positionedNormal(92, 0.00, 0.07), promoted: false, independentViews: 1 },
+    ]);
+    expect(feature.usableNormals).toBe(0);
+    expect(feature.matureOrientationFamilies).toBe(0);
+    expect(feature.score).toBe(0);
+    expect(featureAwareCellQuota(28, feature.score)).toBe(28);
+  });
+
+  it('does not treat a nominally promoted single-view sample as mature feature evidence', () => {
+    const feature = estimateSurfaceFeatureComplexity([
+      { ...positionedNormal(0, 0.00, 0.00), promoted: true, independentViews: 1 },
+      { ...positionedNormal(90, 0.00, 0.06), promoted: true, independentViews: 1 },
+    ]);
+    expect(feature.usableNormals).toBe(0);
+    expect(feature.score).toBe(0);
+  });
+
+  it('restores feature density once the same geometry has independent physical support', () => {
+    const feature = estimateSurfaceFeatureComplexity([
+      maturePositionedNormal(0, 0.00, 0.00),
+      maturePositionedNormal(1, 0.03, 0.00),
+      maturePositionedNormal(-1, 0.06, 0.00),
+      maturePositionedNormal(88, 0.00, 0.01),
+      maturePositionedNormal(90, 0.00, 0.04),
+      maturePositionedNormal(92, 0.00, 0.07),
+    ]);
+    expect(feature.usableNormals).toBe(6);
+    expect(feature.spatiallySupportedFamilies).toBeGreaterThanOrEqual(2);
+    expect(feature.score).toBeGreaterThan(0.55);
+    expect(featureAwareCellQuota(28, feature.score)).toBeGreaterThan(34);
   });
 
   it('does not give a hard-feature density bonus to conflicting normals packed into one tiny spot', () => {
