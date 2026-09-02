@@ -195,6 +195,15 @@ export function recordActiveXrPerformanceMetric(metric: XrPerfMetric, durationMs
   activeProfiler?.record(metric, durationMs);
 }
 
+/**
+ * Scheduler-facing live pressure hint. It intentionally reuses the same bounded
+ * rolling profiler as renderer adaptation instead of running a CPU benchmark or
+ * a second telemetry loop. Heavy jobs query it only when they are about to start.
+ */
+export function activeXrPerformancePressure(): XrPerformanceSnapshot['pressure'] {
+  return activeProfiler?.snapshot().pressure ?? 'low';
+}
+
 export function activeXrRenderPolicy(): XrRenderPolicy {
   if (activeProfiler === null) return { pointBudget: LOW_PRESSURE_POINT_BUDGET, drawIntervalMs: 0 };
   return {
