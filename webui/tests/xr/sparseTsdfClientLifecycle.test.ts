@@ -40,6 +40,8 @@ function result(sourcePointCount: number): SparseTsdfMesh {
     selfIntersectionBroadPhaseCandidatePairs: 0,
     selfIntersectionTruncated: false,
     selfIntersectionOversizedTriangleCount: 0,
+    localNoiseHotspotCount: 0,
+    localNoiseHotspotTriangleCount: 0,
     meshNoiseScore: 0,
     sourcePointCount,
     integratedPointCount: sourcePointCount,
@@ -120,6 +122,8 @@ describe('SparseTsdfMeshClient lazy worker lifecycle', () => {
     expect(mesh.selfIntersectionBroadPhaseCandidatePairs).toBe(0);
     expect(mesh.selfIntersectionTruncated).toBe(false);
     expect(mesh.selfIntersectionOversizedTriangleCount).toBe(0);
+    expect(mesh.localNoiseHotspotCount).toBe(0);
+    expect(mesh.localNoiseHotspotTriangleCount).toBe(0);
     expect(mesh.meshNoiseScore).toBe(0);
     expect(factoryCalls).toBe(0);
     client.dispose();
