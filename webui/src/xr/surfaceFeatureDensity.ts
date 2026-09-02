@@ -28,12 +28,35 @@ const MIN_MATURE_FAMILY_MEMBERS = 2;
 const CURVATURE_START_RADIANS = (9 * Math.PI) / 180;
 const CURVATURE_FULL_RADIANS = (34 * Math.PI) / 180;
 const FAMILY_SEPARATION_FULL_RADIANS = (65 * Math.PI) / 180;
+const CANONICAL_EPSILON = 1e-7;
 export const MAX_FEATURE_POINTS_PER_COVERAGE_CELL = 48;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 function normalize(x: number, y: number, z: number): readonly [number, number, number] | null {
   const length = Math.hypot(x, y, z);
   return Number.isFinite(length) && length > 1e-7 ? [x / length, y / length, z / length] : null;
+}
+function canonicalizeNormal(normal: readonly [number, number, number]): readonly [number, number, number] {
+  // Surface orientation is axial rather than directional here: n and -n are the
+  // same physical tangent plane. Pick one deterministic hemisphere so greedy
+  // family construction cannot depend on the order/sign in which surfels arrive.
+  const sign = Math.abs(normal[0]) > CANONICAL_EPSILON
+    ? Math.sign(normal[0])
+    : Math.abs(normal[1]) > CANONICAL_EPSILON
+      ? Math.sign(normal[1])
+      : Math.sign(normal[2]) || 1;
+  return sign < 0 ? [-normal[0], -normal[1], -normal[2]] : normal;
+}
+function compareCanonicalSamples(
+  a: { normal: readonly [number, number, number]; confidence: number },
+  b: { normal: readonly [number, number, number]; confidence: number },
+): number {
+  // Strong evidence seeds families first. Canonical XYZ tie-breakers make the
+  // result invariant to insertion order for equal-confidence measured surfels.
+  if (a.confidence !== b.confidence) return b.confidence - a.confidence;
+  if (a.normal[0] !== b.normal[0]) return a.normal[0] - b.normal[0];
+  if (a.normal[1] !== b.normal[1]) return a.normal[1] - b.normal[1];
+  return a.normal[2] - b.normal[2];
 }
 function absDot(
   a: readonly [number, number, number],
@@ -66,6 +89,10 @@ function percentile75(values: number[]): number {
  * orientation is never enough to declare an edge/corner. Smooth curvature is
  * captured by robust within-family angular spread; hard edges/corners are
  * captured by two or three independently supported orientation families.
+ *
+ * Inputs are canonicalized and sorted before family construction. This keeps the
+ * bounded greedy clustering deterministic under surfel arrival-order changes,
+ * which matters when cells are updated by different XR viewpoints.
  */
 export function estimateSurfaceFeatureComplexity(
   evidence: Iterable<SurfaceNormalEvidence>,
@@ -74,10 +101,11 @@ export function estimateSurfaceFeatureComplexity(
   for (const sample of evidence) {
     const confidence = Number(sample.normalConfidence);
     if (!Number.isFinite(confidence) || confidence < MIN_NORMAL_CONFIDENCE) continue;
-    const normal = normalize(sample.normalX, sample.normalY, sample.normalZ);
-    if (normal === null) continue;
-    normals.push({ normal, confidence: clamp01(confidence) });
+    const normalized = normalize(sample.normalX, sample.normalY, sample.normalZ);
+    if (normalized === null) continue;
+    normals.push({ normal: canonicalizeNormal(normalized), confidence: clamp01(confidence) });
   }
+  normals.sort(compareCanonicalSamples);
   if (normals.length < 2) {
     return {
       score: 0,
