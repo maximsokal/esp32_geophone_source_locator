@@ -40,11 +40,11 @@ describe('mesh reconstruction preflight', () => {
     expect(result.limitingReason).toBe('extent-or-density');
   });
 
-  it('blocks a long but physically narrow strip that is not a meaningful 2-D mesh region', () => {
+  it('blocks a long but physically narrow strip even after the point gate is satisfied', () => {
     const source = cloud();
-    addGrid(source, 0, 12, 2, 0.04);
+    addGrid(source, 0, 30, 2, 0.04);
     const result = assess(source);
-    expect(result.sourcePointCount).toBe(24);
+    expect(result.sourcePointCount).toBe(60);
     expect(result.ready).toBe(false);
     expect(result.eligibleComponentCount).toBe(0);
     expect(result.eligiblePointCount).toBe(0);
