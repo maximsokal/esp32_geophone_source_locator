@@ -40,6 +40,18 @@ describe('mesh reconstruction preflight', () => {
     expect(result.limitingReason).toBe('extent-or-density');
   });
 
+  it('blocks a long but physically narrow strip that is not a meaningful 2-D mesh region', () => {
+    const source = cloud();
+    addGrid(source, 0, 12, 2, 0.04);
+    const result = assess(source);
+    expect(result.sourcePointCount).toBe(24);
+    expect(result.ready).toBe(false);
+    expect(result.eligibleComponentCount).toBe(0);
+    expect(result.eligiblePointCount).toBe(0);
+    expect(result.meshReadiness).toBeLessThan(1);
+    expect(result.limitingReason).toBe('extent-or-density');
+  });
+
   it('allows a genuinely two-dimensional connected surface', () => {
     const source = cloud();
     addGrid(source, 0, 9, 9, 0.04);
