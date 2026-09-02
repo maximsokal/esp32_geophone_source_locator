@@ -21,7 +21,7 @@ function lineFrame() {
 }
 
 describe('visual line evidence client', () => {
-  it('keeps the non-worker fallback asynchronous and backpressured', async () => {
+  it('keeps the non-worker fallback asynchronous and backpressured for offline callers', async () => {
     const client = new VisualLineEvidenceClient();
     try {
       if (client.workerBacked) return;
@@ -47,6 +47,20 @@ describe('visual line evidence client', () => {
       // a new scan therefore cannot stack another synchronous Hough fallback.
       expect(client.busy).toBe(true);
       await expect(pending).rejects.toThrow('obsolete scan epoch');
+      expect(client.busy).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('never executes the heavy fallback for a live-XR configured client', async () => {
+    const client = new VisualLineEvidenceClient({
+      allowMainThreadFallback: false,
+      deferWorkerUntilAnalyze: true,
+    });
+    try {
+      if (client.workerBacked) return;
+      await expect(client.analyze(lineFrame(), 9, identity, identity)).rejects.toThrow(/Worker/);
       expect(client.busy).toBe(false);
     } finally {
       client.dispose();
