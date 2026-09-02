@@ -64,8 +64,24 @@ describe('robust uncertainty-aware plane geometry', () => {
       expect(plane.support).toBeGreaterThanOrEqual(8);
       expect(plane.rmsResidualMeters).toBeLessThan(0.008);
       expect(plane.offsetSigmaMeters).toBeLessThan(0.008);
+      expect(plane.tangentSpreadMeters).toBeGreaterThan(0.018);
       expect(plane.confidence).toBeGreaterThan(0.6);
     }
+  });
+
+  it('rejects a long narrow strip instead of treating one large tangent eigenvalue as a plane', () => {
+    const strip: RobustPlaneSample[] = [];
+    for (let x = -0.20; x <= 0.2001; x += 0.02) {
+      strip.push(sample([x, -0.002, 0], [0, 0, 1]));
+      strip.push(sample([x, 0.002, 0], [0, 0, 1]));
+    }
+    const planes = extractRobustPlanes(strip, {
+      maxPlanes: 1,
+      minSupport: 8,
+      inlierThresholdMeters: 0.008,
+      minimumTangentSpreadMeters: 0.012,
+    });
+    expect(planes).toHaveLength(0);
   });
 
   it('reports a bounded uncertainty for a strong two-plane edge', () => {
