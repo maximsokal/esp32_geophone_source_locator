@@ -1058,16 +1058,25 @@ export class DepthPointCloudAccumulator {
   }
 
   private insertCandidate(cell: CoverageCell, candidate: RepresentativePoint): boolean {
-    // Include the candidate normal in the projected complexity. A genuine second
-    // supported orientation can therefore earn extra local retention; one noisy
-    // singleton cannot, because feature complexity requires robust support.
-    const projectedComplexity = this.cellFeatureComplexity(cell, candidate);
-    const localQuota = featureAwareCellQuota(this.adaptiveQuota, projectedComplexity);
+    // The normal-family/curvature analysis is intentionally lazy. Most cells are
+    // below their fair-share quota and global memory is not saturated, so their
+    // normal sets never need to be clustered in this hot path.
+    let projectedComplexity: number | null = null;
+    const getProjectedComplexity = (): number => {
+      if (projectedComplexity === null) projectedComplexity = this.cellFeatureComplexity(cell, candidate);
+      return projectedComplexity;
+    };
+
+    let localQuota = this.adaptiveQuota;
+    if (cell.representatives.size >= this.adaptiveQuota) {
+      localQuota = featureAwareCellQuota(this.adaptiveQuota, getProjectedComplexity());
+    }
     if (cell.representatives.size >= localQuota) {
       const worst = this.findWorstRepresentative(cell);
       if (worst === null || representativeScore(candidate) >= worst.score) return false;
       this.removeRepresentative(worst.point); this.replacementCount += 1;
-    } else if (!this.ensureGlobalSlot(candidate.coverageKey, projectedComplexity)) return false;
+    } else if (!this.ensureGlobalSlot(candidate.coverageKey, getProjectedComplexity)) return false;
+
     cell.representatives.set(candidate.id, candidate);
     this.representatives.set(candidate.id, candidate);
     const bucket = this.voxelIndex.get(candidate.voxelIndexKey) ?? [];
@@ -1096,19 +1105,26 @@ export class DepthPointCloudAccumulator {
       }
     }
   }
-  private ensureGlobalSlot(preferredCoverageKey: string, preferredComplexity: number): boolean {
+  private ensureGlobalSlot(preferredCoverageKey: string, preferredComplexity: () => number): boolean {
     if (this.representativeCount < this.memoryBudgetPoints) return true;
     this.updateAdaptiveQuota();
     if (this.representativeCount < this.memoryBudgetPoints) return true;
 
+    // Only after global saturation do we pay for normal-family analysis. Flat
+    // requested cells skip donor complexity entirely because there is no feature
+    // advantage to preserve; quality/surplus ranking remains the old fast path.
+    const requestedComplexity = preferredComplexity();
+    const useFeatureBias = requestedComplexity >= 0.15;
     let donor: RepresentativePoint | null = null;
     let donorEvictionScore = Number.NEGATIVE_INFINITY;
     for (const [coverageKey, cell] of this.coverageCells) {
       if (coverageKey === preferredCoverageKey || cell.representatives.size <= MIN_POINTS_PER_COVERAGE_CELL) continue;
       const worst = this.findWorstRepresentative(cell);
       if (worst === null) continue;
-      const donorComplexity = this.cellFeatureComplexity(cell);
-      const complexityAdvantage = clamp(preferredComplexity - donorComplexity, -1, 1);
+      const donorComplexity = useFeatureBias ? this.cellFeatureComplexity(cell) : 0;
+      const complexityAdvantage = useFeatureBias
+        ? clamp(requestedComplexity - donorComplexity, -1, 1)
+        : 0;
       // More-complex requested cells preferentially borrow from flatter cells.
       // Existing point quality remains the primary eviction signal, so this is a
       // bounded bias rather than a rule that can protect bad feature evidence.
