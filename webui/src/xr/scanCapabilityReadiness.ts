@@ -31,6 +31,7 @@ export interface ScanCapabilityReadiness {
 
 const STRUCTURAL_TARGET_POINTS = 180;
 const STRUCTURAL_TARGET_KEYFRAMES = 8;
+const STRUCTURAL_TARGET_BASELINE_METERS = 0.12;
 const STRUCTURAL_COMPONENT_POINTS = 18;
 const STRUCTURAL_MAJOR_EXTENT_METERS = 0.12;
 const STRUCTURAL_MINOR_EXTENT_METERS = 0.045;
@@ -75,11 +76,13 @@ function azimuthCoverage(
 }
 
 type SurfaceComponent = SurfaceComponentAnalysis['components'][number];
-
-function componentStructuralProgress(component: SurfaceComponent): {
+interface StructuralComponentCandidate {
+  component: SurfaceComponent;
   progress: number;
   limitingMetric: CapabilityProgress['limitingMetric'];
-} {
+}
+
+function componentStructuralProgress(component: SurfaceComponent): Omit<StructuralComponentCandidate, 'component'> {
   const pointProgress = ratio(component.pointCount, STRUCTURAL_COMPONENT_POINTS);
   const majorProgress = ratio(component.majorExtentMeters, STRUCTURAL_MAJOR_EXTENT_METERS);
   const minorProgress = ratio(component.minorExtentMeters, STRUCTURAL_MINOR_EXTENT_METERS);
@@ -88,20 +91,20 @@ function componentStructuralProgress(component: SurfaceComponent): {
   return { progress, limitingMetric: 'extent' };
 }
 
-function bestStructuralComponent(surface: SurfaceComponentAnalysis | null | undefined): {
-  component: SurfaceComponent;
-  progress: number;
-  limitingMetric: CapabilityProgress['limitingMetric'];
-} | null {
+function bestStructuralComponent(
+  surface: SurfaceComponentAnalysis | null | undefined,
+): StructuralComponentCandidate | null {
   if (surface === null || surface === undefined || surface.components.length === 0) return null;
-  let best: ReturnType<typeof bestStructuralComponent> = null;
+  let best: StructuralComponentCandidate | null = null;
   for (const component of surface.components) {
     const candidate = componentStructuralProgress(component);
+    const area = component.majorExtentMeters * component.minorExtentMeters;
+    const bestArea = best === null ? -1 : best.component.majorExtentMeters * best.component.minorExtentMeters;
     if (
       best === null ||
       candidate.progress > best.progress ||
-      (candidate.progress === best.progress && component.majorExtentMeters * component.minorExtentMeters > best.component.majorExtentMeters * best.component.minorExtentMeters) ||
-      (candidate.progress === best.progress && component.majorExtentMeters * component.minorExtentMeters === best.component.majorExtentMeters * best.component.minorExtentMeters && component.pointCount > best.component.pointCount)
+      (candidate.progress === best.progress && area > bestArea) ||
+      (candidate.progress === best.progress && area === bestArea && component.pointCount > best.component.pointCount)
     ) {
       best = { component, ...candidate };
     }
@@ -112,17 +115,22 @@ function bestStructuralComponent(surface: SurfaceComponentAnalysis | null | unde
 /**
  * Capability readiness is a conjunction, not a score average. One excellent
  * signal cannot hide a missing prerequisite: many points cannot compensate for
- * a physically tiny patch, and a large patch cannot compensate for missing
- * independent views. Percentages therefore use the weakest required branch.
+ * a physically tiny patch, keyframe count cannot compensate for a stationary
+ * camera, and a large patch cannot compensate for missing independent views.
  */
 export function computeScanCapabilityReadiness(input: ScanCapabilityInput): ScanCapabilityReadiness {
   const pointsProgress = ratio(input.stablePointCount, STRUCTURAL_TARGET_POINTS);
   const keyframeProgress = ratio(input.keyframeCount, STRUCTURAL_TARGET_KEYFRAMES);
+  const viewpoints = input.viewpoints ?? [];
+  const baseline = cameraBaseline(viewpoints);
+  const translationProgress = ratio(baseline, STRUCTURAL_TARGET_BASELINE_METERS);
   const scale = bestStructuralComponent(input.surfaceAnalysis);
-  const structuralTerms = [pointsProgress, keyframeProgress];
+  const structuralTerms = [pointsProgress, keyframeProgress, translationProgress];
   if (scale !== null) structuralTerms.push(scale.progress);
   const structuralProgress = Math.min(...structuralTerms);
-  let structuralLimit: CapabilityProgress['limitingMetric'] = pointsProgress <= keyframeProgress ? 'points' : 'views';
+  let structuralLimit: CapabilityProgress['limitingMetric'] = 'views';
+  if (pointsProgress <= structuralProgress + 1e-9) structuralLimit = 'points';
+  else if (keyframeProgress <= structuralProgress + 1e-9 || translationProgress <= structuralProgress + 1e-9) structuralLimit = 'views';
   if (scale !== null && scale.progress <= structuralProgress + 1e-9) structuralLimit = scale.limitingMetric;
 
   const bestMesh = input.surfaceAnalysis?.bestMeshComponent ?? null;
@@ -135,8 +143,6 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
     growthNeededPercent: relativeGrowthNeeded(bestMesh.meshReadiness),
   };
 
-  const viewpoints = input.viewpoints ?? [];
-  const baseline = cameraBaseline(viewpoints);
   const structuralComponent = scale?.component ?? null;
   const azimuth = azimuthCoverage(viewpoints, structuralComponent?.center ?? null);
   const viewCoverage = structuralComponent === null
