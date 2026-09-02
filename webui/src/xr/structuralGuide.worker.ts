@@ -69,10 +69,10 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   if (message.epoch !== currentEpoch) return;
 
   const started = performance.now();
-  // These arrays were transferred into this worker, so normal/confidence
+  // These arrays were transferred into this worker, so advisory normal
   // stabilization is allocation-free on the main thread. Native plane guidance
-  // never changes positions or creates surfels; physical measurements remain the
-  // only geometry source.
+  // never changes positions/confidence or creates surfels; physical measurements
+  // remain the only geometry and occupancy source.
   const nativePlaneStabilizedSurfels = stabilizeMeasuredSurfelsWithNativePlanes(
     message.positions,
     message.normals,
