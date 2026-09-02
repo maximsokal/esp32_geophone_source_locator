@@ -140,6 +140,8 @@ export class SparseTsdfMeshClient {
   private generation = 0;
   private pending: Pending | null = null;
 
+  constructor(private readonly workerFactory: () => Worker = () => new SparseTsdfWorker()) {}
+
   async reconstruct(input: SparseTsdfReconstructInput): Promise<SparseTsdfMesh> {
     this.resetPending('Sparse TSDF reconstruction superseded by a newer scan.');
     const generation = ++this.generation;
@@ -259,9 +261,13 @@ export class SparseTsdfMeshClient {
 
   private ensureWorker(): Worker {
     if (this.worker !== null) return this.worker;
-    const worker = new SparseTsdfWorker();
+    const worker = this.workerFactory();
     worker.addEventListener('message', this.handleMessage);
     worker.addEventListener('error', this.handleError);
+    // A worker created after one or more scan resets starts with its own epoch=0.
+    // Synchronize it before the first reconstruct message; Worker message order is
+    // FIFO, so the following request observes the same epoch as this client.
+    worker.postMessage({ type: 'reset', epoch: this.epoch });
     this.worker = worker;
     return worker;
   }
