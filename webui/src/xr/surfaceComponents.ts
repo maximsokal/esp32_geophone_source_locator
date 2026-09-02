@@ -99,6 +99,7 @@ const MESH_MIN_OCCUPIED_CELLS = 7;
 const MESH_MIN_OCCUPANCY_RATIO = 0.30;
 const ROBUST_EXTENT_TRIM_FRACTION = 0.10;
 const MIN_POINTS_FOR_ROBUST_EXTENT = 20;
+const MAX_NODE_CONNECTION_SAMPLES = 8;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -153,22 +154,57 @@ function nodeSupportGapMeters(a: OrientationNode, b: OrientationNode): number {
   return Math.hypot(dx, dy, dz);
 }
 
+function boundedConnectionIndices(indices: readonly number[]): readonly number[] {
+  if (indices.length <= MAX_NODE_CONNECTION_SAMPLES) return indices;
+  const output = new Array<number>(MAX_NODE_CONNECTION_SAMPLES);
+  const last = indices.length - 1;
+  for (let cursor = 0; cursor < MAX_NODE_CONNECTION_SAMPLES; cursor += 1) {
+    output[cursor] = indices[Math.round(cursor * last / (MAX_NODE_CONNECTION_SAMPLES - 1))];
+  }
+  return output;
+}
+
+function nodesHaveNearbyMeasuredSupport(
+  a: OrientationNode,
+  b: OrientationNode,
+  input: SurfaceComponentInput,
+  maximumDistanceMeters: number,
+): boolean {
+  const samplesA = boundedConnectionIndices(a.pointIndices);
+  const samplesB = boundedConnectionIndices(b.pointIndices);
+  const maximumSquared = maximumDistanceMeters * maximumDistanceMeters;
+  for (const indexA of samplesA) {
+    const offsetA = indexA * 3;
+    const ax = Number(input.positions[offsetA]);
+    const ay = Number(input.positions[offsetA + 1]);
+    const az = Number(input.positions[offsetA + 2]);
+    for (const indexB of samplesB) {
+      const offsetB = indexB * 3;
+      const dx = ax - Number(input.positions[offsetB]);
+      const dy = ay - Number(input.positions[offsetB + 1]);
+      const dz = az - Number(input.positions[offsetB + 2]);
+      if (dx * dx + dy * dy + dz * dz <= maximumSquared) return true;
+    }
+  }
+  return false;
+}
+
 function nodeSupportsConnect(
   a: OrientationNode,
   b: OrientationNode,
+  input: SurfaceComponentInput,
   voxelSizeMeters: number,
   connectionCellSizeMeters: number,
 ): boolean {
-  // Grid adjacency is only a broad phase. Two samples can occupy neighbouring
-  // cells while sitting on opposite cell boundaries, which previously glued a
-  // floating island to the main surface and inflated physical extents/readiness.
-  // Require actual measured support to bridge the gap as well.
+  // Grid adjacency and AABB distance are broad phases only. Wide AABBs can overlap
+  // even when all actual surfels live on opposite corners of their cells, so the
+  // final link must be supported by bounded real point-to-point evidence.
   const maximumSupportGapMeters = clamp(voxelSizeMeters * 1.75, 0.045, 0.12);
   if (nodeSupportGapMeters(a, b) > maximumSupportGapMeters) return false;
 
-  // The AABB test can be fooled by one tail sample. A bounded centroid gate keeps
-  // the link local while still allowing diagonal neighbours of an ordinary
-  // voxel-spaced surface. Nodes themselves never span more than one hash cell.
+  // The AABB test can also be fooled by one tail sample. A bounded centroid gate
+  // cheaply rejects obviously separate families before the <=8x8 exact-support
+  // check. Nodes themselves never span more than one hash cell.
   const centerA = nodeCenter(a);
   const centerB = nodeCenter(b);
   if (centerA === null || centerB === null) return false;
@@ -177,7 +213,8 @@ function nodeSupportsConnect(
     centerA[1] - centerB[1],
     centerA[2] - centerB[2],
   );
-  return centerDistance <= connectionCellSizeMeters * 2.20;
+  if (centerDistance > connectionCellSizeMeters * 2.20) return false;
+  return nodesHaveNearbyMeasuredSupport(a, b, input, maximumSupportGapMeters);
 }
 
 function compareSamples(left: CellSample, right: CellSample): number {
@@ -344,11 +381,12 @@ function componentMetrics(
  * a voxel hash. Each occupied cell may form at most twelve bounded provisional
  * normal families; they are ranked deterministically by measured support and only
  * the strongest three survive into component traversal. BFS then visits only the
- * 3x3x3 neighbouring occupied cells, but grid adjacency is only a broad phase:
- * compatible families must also have metrically close measured support. This
- * keeps memory O(N), preserves sharp boundaries, prevents false bridges across
- * empty space, and avoids arrival order/noisy normals deciding which surfaces
- * survive the per-cell cap.
+ * 3x3x3 neighbouring occupied cells. Grid adjacency, AABB gap and centroid range
+ * are only broad phases: compatible families must finally have real measured
+ * support within the metric link radius, using at most 8x8 deterministic support
+ * comparisons. This keeps memory O(N), preserves sharp boundaries, prevents false
+ * bridges across empty space, and avoids arrival order/noisy normals deciding
+ * which surfaces survive the per-cell cap.
  */
 export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceComponentAnalysis {
   const sourceCount = Math.min(
@@ -473,7 +511,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
               if (visited[neighbour.id] !== 0) continue;
               const neighbourNormal = nodeNormal(neighbour);
               if (neighbourNormal === null || absDot(currentNormal, neighbourNormal) < COMPONENT_NORMAL_DOT) continue;
-              if (!nodeSupportsConnect(current, neighbour, voxel, connectionCellSizeMeters)) continue;
+              if (!nodeSupportsConnect(current, neighbour, input, voxel, connectionCellSizeMeters)) continue;
               visited[neighbour.id] = 1;
               queue.push(neighbour);
             }
