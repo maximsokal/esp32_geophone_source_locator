@@ -85,20 +85,28 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     Math.floor(message.normals.length / 3),
     message.confidence.length,
   );
-
-  // All CPU-heavy structural preprocessing now happens after transfer. Family
-  // clustering is based on physical measured normals before any native-plane
-  // advisory stabilization, preserving the invariant that XRPlane geometry cannot
-  // create/merge physical surface families. The local certificate then rejects
-  // unsupported measured outliers and supplies residual/normal quality arrays.
-  const clusteredSurface = clusterStructuralSurfaceFamilies({
+  const rawSurface = {
     positions: message.positions,
     normals: message.normals,
     confidence: message.confidence,
     pointCount: rawPointCount,
     keyframeCount: message.keyframeCount,
     voxelSizeMeters: message.voxelSizeMeters,
-  });
+  };
+
+  // Mesh readiness must follow the same locally certified physical surfels that
+  // the post-scan TSDF branch will receive. Do this directly on raw promoted
+  // physical surfels: structural-family clustering is useful for plane/edge
+  // fitting, but it is not part of the mesh input policy and must not distort Mxx.
+  // Native XR planes are applied later and therefore cannot improve mesh readiness.
+  const meshSurface = filterStructuralSurface(rawSurface);
+
+  // All CPU-heavy structural preprocessing now happens after transfer. Family
+  // clustering is based on physical measured normals before any native-plane
+  // advisory stabilization, preserving the invariant that XRPlane geometry cannot
+  // create/merge physical surface families. The local certificate then rejects
+  // unsupported measured outliers and supplies residual/normal quality arrays.
+  const clusteredSurface = clusterStructuralSurfaceFamilies(rawSurface);
   const surface = filterStructuralSurface(clusteredSurface);
 
   // Advisory native planes can rotate normals only after physical clustering and
@@ -110,17 +118,28 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     message.planePriors,
   );
 
-  // Connected-component/PCA readiness belongs in the CPU worker too. Returning
-  // only the best structural + mesh component avoids main-thread O(N) analysis
-  // and avoids cloning island lists or eligible-point masks back to the UI.
-  const componentAnalysis = analyzeSurfaceComponents({
+  // Connected-component/PCA readiness belongs in the CPU worker too. Structural
+  // readiness is evaluated on structural-family geometry, while mesh readiness is
+  // evaluated independently on the actual certified physical TSDF input. Only the
+  // two compact component records cross back to the UI.
+  const structuralComponentAnalysis = analyzeSurfaceComponents({
     positions: surface.positions,
     normals: surface.normals,
     confidence: surface.confidence,
     voxelSizeMeters: surface.voxelSizeMeters,
     minimumConfidence: 0.58,
   });
-  const surfaceReadiness: SurfaceComponentReadinessSummary = summarizeSurfaceComponentReadiness(componentAnalysis);
+  const meshComponentAnalysis = analyzeSurfaceComponents({
+    positions: meshSurface.positions,
+    normals: meshSurface.normals,
+    confidence: meshSurface.confidence,
+    voxelSizeMeters: meshSurface.voxelSizeMeters,
+    minimumConfidence: 0.58,
+  });
+  const surfaceReadiness: SurfaceComponentReadinessSummary = summarizeSurfaceComponentReadiness(
+    structuralComponentAnalysis,
+    meshComponentAnalysis,
+  );
   const structuralSurface = computeSurfaceStructuralReadiness(surfaceReadiness);
 
   // A small/narrow/sparsely supported measured component is useful scan evidence,
@@ -146,6 +165,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
       rawStructuralPoints: rawPointCount,
       clusteredStructuralPoints: clusteredSurface.pointCount,
       certifiedStructuralPoints: surface.pointCount,
+      certifiedMeshPoints: meshSurface.pointCount,
       structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
       structuralSurfaceLimit: structuralSurface.limitingMetric,
       structuralGeometryDeferred: true,
@@ -233,6 +253,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     rawStructuralPoints: rawPointCount,
     clusteredStructuralPoints: clusteredSurface.pointCount,
     certifiedStructuralPoints: surface.pointCount,
+    certifiedMeshPoints: meshSurface.pointCount,
     structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
     structuralSurfaceLimit: structuralSurface.limitingMetric,
     structuralGeometryDeferred: false,
