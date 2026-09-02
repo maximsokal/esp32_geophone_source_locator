@@ -1,10 +1,14 @@
 import type { PointCloudBounds } from './depthPointCloudV2';
+import { detectWeakSurfaceBridgeEvidence } from './surfaceBridgeEvidence';
 import type { SurfaceComponent, SurfaceComponentAnalysis } from './surfaceComponents';
 
 export interface OperationalSurfaceEnvelope {
   bounds: PointCloudBounds | null;
   retainedComponentIds: readonly number[];
   quarantinedComponentIds: readonly number[];
+  /** Quarantined islands touched by a bounded cluster of weak measured bridge surfels. */
+  rescanBridgeComponentIds: readonly number[];
+  bridgeEvidenceTruncated: boolean;
   retainedPointCount: number;
   quarantinedPointCount: number;
 }
@@ -66,6 +70,11 @@ function selectPrimaryComponent(analysis: SurfaceComponentAnalysis): SurfaceComp
  * its own repeated spatial support: points, occupied cells, two-dimensional
  * extent, occupancy density and partial mesh-scale readiness must all agree.
  *
+ * Weak/unassigned measured surfels are independently checked for bounded clusters
+ * that touch both retained structure and a quarantined island. Such an island is
+ * marked RESCAN-BRIDGE metadata only. It remains quarantined from the UNKNOWN
+ * envelope until its own physical support passes the ordinary gates.
+ *
  * This does NOT delete a secondary island from the physical point cloud or
  * occupancy evidence. Weak islands are only quarantined from expanding the
  * combinatorial UNKNOWN candidate volume until the operator scans them better.
@@ -88,6 +97,8 @@ export function computeOperationalSurfaceEnvelope(
       bounds: fallbackBounds,
       retainedComponentIds: [],
       quarantinedComponentIds: [],
+      rescanBridgeComponentIds: [],
+      bridgeEvidenceTruncated: false,
       retainedPointCount: 0,
       quarantinedPointCount: 0,
     };
@@ -103,6 +114,14 @@ export function computeOperationalSurfaceEnvelope(
       quarantined.add(component.id);
     }
   }
+
+  const bridgeEvidence = detectWeakSurfaceBridgeEvidence({
+    positions,
+    componentIdByPoint: labels,
+    retainedComponentIds: retained,
+    quarantinedComponentIds: quarantined,
+    voxelSizeMeters,
+  });
 
   const pointCount = Math.min(labels.length, Math.floor(positions.length / 3));
   let minX = Number.POSITIVE_INFINITY; let minY = Number.POSITIVE_INFINITY; let minZ = Number.POSITIVE_INFINITY;
@@ -133,6 +152,8 @@ export function computeOperationalSurfaceEnvelope(
     bounds,
     retainedComponentIds: [...retained].sort((a, b) => a - b),
     quarantinedComponentIds: [...quarantined].sort((a, b) => a - b),
+    rescanBridgeComponentIds: bridgeEvidence.rescanComponentIds,
+    bridgeEvidenceTruncated: bridgeEvidence.truncated,
     retainedPointCount,
     quarantinedPointCount,
   };
