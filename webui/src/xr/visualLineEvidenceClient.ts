@@ -84,6 +84,47 @@ export class VisualLineEvidenceClient {
     this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
+  private analyzeFallback(
+    frame: RgbDepthGuidanceFrame,
+    keyframeId: number,
+    projectionMatrix: ArrayLike<number>,
+    worldFromView: ArrayLike<number>,
+  ): Promise<VisualEvidenceFrame> {
+    if (!this.allowMainThreadFallback) {
+      return Promise.reject(new Error('Visual evidence requires a Dedicated Worker during live XR.'));
+    }
+    const matrices = cloneMatrices(projectionMatrix, worldFromView);
+    const requestEpoch = this.epoch;
+    this.fallbackInFlight += 1;
+    return new Promise<VisualEvidenceFrame>((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          if (this.disposed || requestEpoch !== this.epoch) {
+            reject(new Error('Visual evidence fallback belongs to an obsolete scan epoch.'));
+            return;
+          }
+          const detected = detectVisualLinesNow(frame);
+          if (this.disposed || requestEpoch !== this.epoch) {
+            reject(new Error('Visual evidence fallback belongs to an obsolete scan epoch.'));
+            return;
+          }
+          resolve({
+            keyframeId,
+            capturedAtMs: frame.capturedAtMs,
+            lines: detected.lines,
+            junctions: detected.junctions,
+            projectionMatrix: matrices.projectionMatrix,
+            worldFromView: matrices.worldFromView,
+          });
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          this.fallbackInFlight = Math.max(0, this.fallbackInFlight - 1);
+        }
+      }, 0);
+    });
+  }
+
   analyze(
     frame: RgbDepthGuidanceFrame,
     keyframeId: number,
@@ -98,54 +139,20 @@ export class VisualLineEvidenceClient {
         if (this.disposed || requestEpoch !== this.epoch) {
           throw new Error('Visual evidence worker startup belongs to an obsolete scan epoch.');
         }
-        if (compute.liveWorkerBudget < 1 || !this.tryCreateWorker()) {
-          if (!this.allowMainThreadFallback) {
-            throw new Error('No safe live Worker slot is available for visual evidence.');
-          }
+        if (compute.liveWorkerBudget >= 1 && this.tryCreateWorker()) {
+          return this.analyze(frame, keyframeId, projectionMatrix, worldFromView);
         }
-        return this.analyze(frame, keyframeId, projectionMatrix, worldFromView);
+        return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
       }).finally(() => {
         this.workerStartupInFlight = Math.max(0, this.workerStartupInFlight - 1);
       });
     }
 
-    const matrices = cloneMatrices(projectionMatrix, worldFromView);
-
     if (this.worker === null) {
-      if (!this.allowMainThreadFallback) {
-        return Promise.reject(new Error('Visual evidence requires a Dedicated Worker during live XR.'));
-      }
-      const requestEpoch = this.epoch;
-      this.fallbackInFlight += 1;
-      return new Promise<VisualEvidenceFrame>((resolve, reject) => {
-        setTimeout(() => {
-          try {
-            if (this.disposed || requestEpoch !== this.epoch) {
-              reject(new Error('Visual evidence fallback belongs to an obsolete scan epoch.'));
-              return;
-            }
-            const detected = detectVisualLinesNow(frame);
-            if (this.disposed || requestEpoch !== this.epoch) {
-              reject(new Error('Visual evidence fallback belongs to an obsolete scan epoch.'));
-              return;
-            }
-            resolve({
-              keyframeId,
-              capturedAtMs: frame.capturedAtMs,
-              lines: detected.lines,
-              junctions: detected.junctions,
-              projectionMatrix: matrices.projectionMatrix,
-              worldFromView: matrices.worldFromView,
-            });
-          } catch (error) {
-            reject(error instanceof Error ? error : new Error(String(error)));
-          } finally {
-            this.fallbackInFlight = Math.max(0, this.fallbackInFlight - 1);
-          }
-        }, 0);
-      });
+      return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
     }
 
+    const matrices = cloneMatrices(projectionMatrix, worldFromView);
     const requestId = ++this.requestId;
     return new Promise<VisualEvidenceFrame>((resolve, reject) => {
       this.pending.set(requestId, {
@@ -165,7 +172,7 @@ export class VisualLineEvidenceClient {
         gradientX.buffer as ArrayBuffer,
         gradientY.buffer as ArrayBuffer,
       ];
-      this.worker!.postMessage({
+      this.worker.postMessage({
         type: 'analyze',
         requestId,
         epoch: this.epoch,
