@@ -4,6 +4,7 @@ import {
   extractRobustPlanes,
   intersectTwoRobustPlanes,
   solveThreeRobustPlanes,
+  type RobustPlane,
   type RobustPlaneSample,
 } from '../../src/xr/robustPlaneGeometry';
 
@@ -30,6 +31,25 @@ function threePlanesWithOutliers(): RobustPlaneSample[] {
   output.push(sample([-0.09, 0.07, -0.08], [0.7, 0.1, 0.7], 0.25));
   output.push(sample([0.04, -0.09, 0.10], [0.4, 0.8, 0.2], 0.2));
   return output;
+}
+
+function axisPlane(
+  normal: readonly [number, number, number],
+  confidence: number,
+): RobustPlane {
+  return {
+    center: [0, 0, 0],
+    normal,
+    d: 0,
+    support: 12,
+    supportWeight: 10,
+    rmsResidualMeters: 0.004,
+    robustScaleMeters: 0.004,
+    tangentSpreadMeters: 0.08,
+    offsetSigmaMeters: 0.005,
+    confidence,
+    inlierIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  };
 }
 
 describe('robust uncertainty-aware plane geometry', () => {
@@ -62,6 +82,24 @@ describe('robust uncertainty-aware plane geometry', () => {
     expect(corner!.conditionNumber).toBeLessThan(10);
     expect(corner!.maxStdDevMeters).toBeLessThan(0.02);
     expect(Math.hypot(...corner!.position)).toBeLessThan(0.015);
+  });
+
+  it('propagates weak plane confidence into corner covariance instead of treating it as confidence one', () => {
+    const x = axisPlane([1, 0, 0], 0.95);
+    const y = axisPlane([0, 1, 0], 0.95);
+    const strongZ = axisPlane([0, 0, 1], 0.95);
+    const weakZ = axisPlane([0, 0, 1], 0.20);
+
+    const strong = solveThreeRobustPlanes(x, y, strongZ);
+    const weak = solveThreeRobustPlanes(x, y, weakZ);
+    expect(strong).not.toBeNull();
+    expect(weak).not.toBeNull();
+    // For three independent exact equations the intersection itself is the same;
+    // plane confidence belongs in the information/covariance, not as a fake
+    // coordinate displacement. The weak axis must therefore be measurably less certain.
+    expect(Math.hypot(...weak!.position)).toBeCloseTo(Math.hypot(...strong!.position), 8);
+    expect(weak!.maxStdDevMeters).toBeGreaterThan(strong!.maxStdDevMeters * 1.8);
+    expect(weak!.confidence).toBeLessThan(strong!.confidence);
   });
 
   it('rejects a nearly parallel plane system instead of inventing a distant corner', () => {
