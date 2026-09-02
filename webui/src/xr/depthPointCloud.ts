@@ -17,6 +17,7 @@ import {
 import { optionalMonocularPrior } from './monocularPriorRuntime';
 import {
   SparseOccupancyGrid,
+  type OccupancyBounds,
   type OccupancySnapshot,
 } from './occupancyEvidence';
 import {
@@ -82,6 +83,11 @@ export interface MonocularSurfacePrior {
 }
 
 const TSDF_MIN_CERTIFIED_POINTS = 60;
+// Structural geometry is locally supported: patch pairing is bounded to 24 cm,
+// edge support to 34 cm and corner support to 12.5 cm. Sixty centimetres around
+// the full measured surfel AABB therefore keeps a deliberately generous FREE-veto
+// halo without transferring ray-cleared air from the operator's entire trajectory.
+const STRUCTURAL_FREE_EVIDENCE_MARGIN_METERS = 0.60;
 
 function guidedSurfaceDepth(
   depth: CpuDepthInformationLike,
@@ -97,6 +103,24 @@ function guidedSurfaceDepth(
       return surfaceFusionDepthInMeters(depth, u, v, guidance);
     },
   };
+}
+
+function physicalBoundsForPositions(positions: ArrayLike<number>): OccupancyBounds | null {
+  const count = Math.floor(positions.length / 3);
+  let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY, maxZ = Number.NEGATIVE_INFINITY;
+  let accepted = 0;
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 3;
+    const x = Number(positions[offset]);
+    const y = Number(positions[offset + 1]);
+    const z = Number(positions[offset + 2]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
+    accepted += 1;
+  }
+  return accepted > 0 ? { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] } : null;
 }
 
 export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulator {
@@ -162,32 +186,39 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
   }
 
   /**
-   * Cheap live worker handoff. It copies only promoted physical surfels plus the
-   * conservative FREE-space snapshot. Structural family clustering and local
-   * certification intentionally happen after transfer in the Dedicated Worker.
+   * Cheap live worker handoff. It copies only promoted physical surfels and the
+   * solver-specific physical FREE evidence near those measured surfels. Structural
+   * family clustering/local certification happen after transfer in the Worker.
    */
   structuralWorkerSnapshot(): StructuralGuideSnapshot {
     const surface = super.structuralGuideSnapshot();
-    const occupancy = this.occupancy.snapshot(null);
+    const free = this.occupancy.freeSpaceEvidenceSnapshot(
+      physicalBoundsForPositions(surface.positions),
+      STRUCTURAL_FREE_EVIDENCE_MARGIN_METERS,
+    );
     return {
       ...surface,
-      freeSpacePositions: occupancy.freeAirPositions,
-      freeSpaceVoxelSizeMeters: occupancy.occupancyVoxelSizeMeters,
+      freeSpacePositions: free.freeAirPositions,
+      freeSpaceVoxelSizeMeters: free.occupancyVoxelSizeMeters,
     };
   }
 
   /**
    * Fully certified structural snapshot retained for manual placement and the
    * independent fresh certificate applied to corner suggestions before UI use.
+   * FREE veto uses the same solver evidence contract, never the display cap.
    */
   override structuralGuideSnapshot(): StructuralGuideSnapshot {
     const clustered = clusterStructuralSurfaceFamilies(super.structuralGuideSnapshot());
     const surface = filterStructuralSurface(clustered);
-    const occupancy = this.occupancy.snapshot(null);
+    const free = this.occupancy.freeSpaceEvidenceSnapshot(
+      physicalBoundsForPositions(surface.positions),
+      STRUCTURAL_FREE_EVIDENCE_MARGIN_METERS,
+    );
     return {
       ...surface,
-      freeSpacePositions: occupancy.freeAirPositions,
-      freeSpaceVoxelSizeMeters: occupancy.occupancyVoxelSizeMeters,
+      freeSpacePositions: free.freeAirPositions,
+      freeSpaceVoxelSizeMeters: free.occupancyVoxelSizeMeters,
     };
   }
 
