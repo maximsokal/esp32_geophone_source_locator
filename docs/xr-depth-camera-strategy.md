@@ -148,11 +148,13 @@ Mesh generation is not started merely because many points exist. Connected physi
 
 For the current ~4 cm surfel association scale, a component needs all of the following before it is eligible for TSDF reconstruction:
 
-- at least 24 accepted points;
+- at least 60 accepted points;
 - at least seven occupied connection cells;
 - occupied-cell density of at least 0.30;
 - a major physical extent of at least `max(0.14 m, 3.5 × voxel)`;
 - a minor/two-dimensional extent of at least `max(0.075 m, 1.85 × voxel)`.
+
+The 60-point floor is shared by live `Mxx` readiness, the preflight, the certified TSDF handoff, the TSDF worker component mask and the result viewport. Structural `Sxx` and mesh `Mxx` are intentionally computed from different certified sources: `Sxx` uses the structural-family-clustered physical cloud used by plane/edge/corner fitting, while `Mxx` uses the independently locally certified promoted physical cloud used by the post-scan TSDF branch. Native XR plane guidance is applied only after the structural readiness source has been formed and therefore cannot increase mesh readiness.
 
 This prevents a dense tiny blob or a long one-dimensional strip from activating expensive triangulation. The main-thread preflight avoids unnecessary worker work, and the TSDF worker independently recomputes the connected-component mask and integrates only mesh-eligible points as defense in depth. Disconnected undersized islands therefore cannot borrow the point count of a valid slab.
 
