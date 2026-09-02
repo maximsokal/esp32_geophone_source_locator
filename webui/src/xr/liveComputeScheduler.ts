@@ -74,6 +74,22 @@ export class LiveComputeScheduler {
   ) {}
 
   /**
+   * Start a fresh scan window without pretending the device thermally recovered.
+   *
+   * Medium/low streak counters belong to one XR session and are reset. The last
+   * safety cap is deliberately preserved: ending and immediately restarting AR
+   * does not cool a phone. Fresh low-pressure telemetry must earn W2 back through
+   * the ordinary recovery hysteresis. Outstanding leases are also left alone;
+   * scan lifecycle code must reset/terminate their owning clients explicitly.
+   */
+  beginScan(): void {
+    this.mediumSamples = 0;
+    this.lowRecoverySamples = 0;
+    this.lastHysteresisSampleMs = Number.NEGATIVE_INFINITY;
+    this.refreshEffectiveBudget();
+  }
+
+  /**
    * Feed runtime pressure into the live cap. High pressure is intentionally
    * immediate. Medium/low transitions are sampled at a bounded cadence so the
    * 100-ms UI snapshot loop cannot accidentally count as five independent
