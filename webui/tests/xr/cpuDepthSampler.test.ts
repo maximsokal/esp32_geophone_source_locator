@@ -55,6 +55,13 @@ describe('zero-copy XRCPUDepthInformation sampler', () => {
     expect(prepared.sampler.getDepthInMeters(0.75, 0.75)).toBeCloseTo(2.5, 6);
   });
 
+  it('preserves zero as WebXR invalid/no-depth instead of inventing a metric value', () => {
+    const source = sourceWithRaw(new Uint16Array([0, 250]), 2, 1, 0.001);
+    const sampler = prepareCpuDepthSampler(source, 'unsigned-short').sampler;
+    expect(sampler.getDepthInMeters(0.1, 0.5)).toBe(0);
+    expect(sampler.getDepthInMeters(0.9, 0.5)).toBeCloseTo(0.25, 6);
+  });
+
   it('applies normDepthBufferFromNormView before depth-buffer indexing', () => {
     const translated = new Float32Array(identity);
     translated[12] = 0.5;
