@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { detectCertifiedStructuralCorners } from './certifiedStructuralGeometry';
+import { stabilizeMeasuredSurfelsWithNativePlanes } from './nativePlaneSurfelGuidance';
 import {
   applyMaturityAwareEdgeConfidence,
   summarizeStructuralCandidates,
@@ -13,6 +14,7 @@ import {
   type StructuralGuideViewpoint,
 } from './structuralGuide';
 import { StructuralLifecycleTelemetry } from './structuralLifecycleTelemetry';
+import type { StructuralPlanePrior } from './webxrPlaneGuidance';
 
 interface AnalyzeMessage {
   type: 'analyze';
@@ -30,6 +32,7 @@ interface AnalyzeMessage {
   viewpoint?: StructuralGuideViewpoint | null;
   freeSpacePositions?: Float32Array;
   freeSpaceVoxelSizeMeters?: number;
+  planePriors?: readonly StructuralPlanePrior[];
 }
 
 interface ResetMessage { type: 'reset'; epoch: number; }
@@ -66,6 +69,16 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   if (message.epoch !== currentEpoch) return;
 
   const started = performance.now();
+  // These arrays were transferred into this worker, so normal/confidence
+  // stabilization is allocation-free on the main thread. Native plane guidance
+  // never changes positions or creates surfels; physical measurements remain the
+  // only geometry source.
+  const nativePlaneStabilizedSurfels = stabilizeMeasuredSurfelsWithNativePlanes(
+    message.positions,
+    message.normals,
+    message.confidence,
+    message.planePriors,
+  );
   const input: StructuralGuideInput = {
     positions: message.positions,
     normals: message.normals,
@@ -134,6 +147,8 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   const diagnostics = {
     ...summarizeStructuralCandidates(tracked.edges, operationalEdges, result.corners),
     ...lifecycleTelemetry.update(tracked.edges, result.corners),
+    nativePlanePriors: message.planePriors?.length ?? 0,
+    nativePlaneStabilizedSurfels,
   };
 
   self.postMessage({
