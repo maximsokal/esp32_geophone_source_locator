@@ -4,6 +4,7 @@ import {
   calibrateMonocularDepthPrior,
   calibrateMonocularDepthPriorDetailed,
   calibratedPriorDepthMeters,
+  createTransformersRawImageInput,
   type MonocularDepthPriorFrame,
 } from '../../src/xr/monocularDepthPrior';
 
@@ -34,6 +35,36 @@ function sampledAnchors(
 }
 
 describe('monocular depth prior calibration', () => {
+  it('passes staged RGBA directly to Transformers RawImage without JPEG/canvas conversion', () => {
+    class FakeRawImage {
+      constructor(
+        readonly data: Uint8Array | Uint8ClampedArray,
+        readonly width: number,
+        readonly height: number,
+        readonly channels: 4,
+      ) {}
+    }
+    const rgba = new Uint8Array([
+      10, 20, 30, 255,
+      40, 50, 60, 255,
+    ]);
+    const input = createTransformersRawImageInput(rgba, 2, 1, FakeRawImage) as FakeRawImage;
+    expect(input).toBeInstanceOf(FakeRawImage);
+    expect(input.data).toBe(rgba);
+    expect(input.width).toBe(2);
+    expect(input.height).toBe(1);
+    expect(input.channels).toBe(4);
+    expect(Array.from(input.data)).toEqual(Array.from(rgba));
+  });
+
+  it('rejects malformed raw image dimensions before model invocation', () => {
+    class FakeRawImage {
+      constructor(_data: Uint8Array | Uint8ClampedArray, _width: number, _height: number, _channels: 4) {}
+    }
+    expect(createTransformersRawImageInput(new Uint8Array(7), 2, 1, FakeRawImage)).toBeNull();
+    expect(createTransformersRawImageInput(new Uint8Array(8), 0, 1, FakeRawImage)).toBeNull();
+  });
+
   it('recovers a robust metric mapping in the presence of outliers', () => {
     const frame = prior();
     const a = 1.28, b = Math.log(1.7);
