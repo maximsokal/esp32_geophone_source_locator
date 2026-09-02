@@ -59,6 +59,24 @@ function verticalGridPatch(
   return output;
 }
 
+function thinWhisker(): number[] {
+  const output: number[] = [];
+  // Shares the right boundary edge of gridPatch(5, 3). The first triangle is
+  // broad enough to weld to the real patch; the rest tapers into a long, narrow
+  // appendage whose total width/area stays below one 4-cm reconstruction voxel.
+  const a: Point = [0.20, 0.00, 0];
+  const b: Point = [0.20, 0.04, 0];
+  const c: Point = [0.24, 0.02, 0];
+  const d: Point = [0.28, 0.018, 0];
+  const e: Point = [0.32, 0.022, 0];
+  const f: Point = [0.36, 0.018, 0];
+  pushTriangle(output, a, b, c);
+  pushTriangle(output, b, d, c);
+  pushTriangle(output, c, d, e);
+  pushTriangle(output, d, f, e);
+  return output;
+}
+
 function zNormalSign(positions: Float32Array, triangle: number): number {
   const offset = triangle * 9;
   const ax = positions[offset]; const ay = positions[offset + 1];
@@ -80,9 +98,24 @@ describe('mesh topology sanity', () => {
     expect(result.selfIntersectionPairCount).toBe(0);
     expect(result.localNoiseHotspotCount).toBe(0);
     expect(result.localNoiseHotspotTriangleCount).toBe(0);
+    expect(result.subscaleBranchCount).toBe(0);
+    expect(result.subscaleBranchTriangleCount).toBe(0);
     expect(result.components.every((component) => component.diagnosticsComplete)).toBe(true);
     const signs = Array.from({ length: result.triangleCount }, (_, index) => zNormalSign(result.trianglePositions, index));
     expect(new Set(signs).size).toBe(1);
+  });
+
+  it('quarantines a sub-voxel whisker without discarding its substantial parent surface', () => {
+    const base = gridPatch(5, 3, 0.04, [0, 0, 0]);
+    const whisker = thinWhisker();
+    const result = sanitizeMeshTopology(Float32Array.from([...base, ...whisker]), 0.04);
+    expect(result.components).toHaveLength(1);
+    expect(result.components[0].disposition).toBe('retain');
+    expect(result.subscaleBranchCount).toBeGreaterThanOrEqual(1);
+    expect(result.subscaleBranchTriangleCount).toBe(4);
+    expect(result.retainedTriangleCount).toBe(30);
+    expect(result.quarantinedTriangleCount).toBe(4);
+    expect(result.discardedTriangleCount).toBe(0);
   });
 
   it('does not render a tiny disconnected triangle as a physical mesh island', () => {
@@ -151,6 +184,8 @@ describe('mesh topology sanity', () => {
     expect(result.components[0].disposition).toBe('retain');
     expect(result.localNoiseHotspotCount).toBe(0);
     expect(result.localNoiseHotspotTriangleCount).toBe(0);
+    expect(result.subscaleBranchCount).toBe(0);
+    expect(result.subscaleBranchTriangleCount).toBe(0);
     expect(result.retainedTriangleCount).toBe(result.sourceTriangleCount);
   });
 
@@ -213,6 +248,8 @@ describe('mesh topology sanity', () => {
     expect(second.selfIntersectionExactTestedPairs).toBe(first.selfIntersectionExactTestedPairs);
     expect(second.localNoiseHotspotCount).toBe(first.localNoiseHotspotCount);
     expect(second.localNoiseHotspotTriangleCount).toBe(first.localNoiseHotspotTriangleCount);
+    expect(second.subscaleBranchCount).toBe(first.subscaleBranchCount);
+    expect(second.subscaleBranchTriangleCount).toBe(first.subscaleBranchTriangleCount);
     expect(Array.from(second.trianglePositions)).toEqual(Array.from(first.trianglePositions));
   });
 });
