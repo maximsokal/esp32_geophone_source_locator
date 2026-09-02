@@ -163,19 +163,39 @@ describe('mesh topology sanity', () => {
     expect(result.quarantinedTriangleCount).toBeGreaterThan(0);
   });
 
-  it('never certifies retained mesh when a bounded diagnostic is incomplete', () => {
+  it('locally certifies a healthy isolated slab when a far pathological island truncates the global diagnostic', () => {
     const source: number[] = [...gridPatch(3, 2, 0.04, [0, 0, 0])];
-    // This isolated giant face spans far more than the diagnostic spatial-cell
-    // budget. The healthy slab would normally be retained, but the complete
-    // triangle soup cannot be certified in this pass once verification truncates.
+    // This giant disconnected face exceeds bounded diagnostic cell budgets, but
+    // it is metres away from the healthy slab and cannot intersect it or be hit
+    // by the short normal-intrusion ray. The healthy component may therefore earn
+    // its own bounded local certificate instead of being globally quarantined.
     pushTriangle(source, [2, 0, 0], [5, 0, 0], [2, 3, 0]);
 
     const result = sanitizeMeshTopology(Float32Array.from(source), 0.04);
     expect(result.selfIntersectionTruncated).toBe(true);
-    expect(result.components.some((component) => !component.diagnosticsComplete)).toBe(true);
+    const healthy = result.components.find((component) => component.triangleCount === 12);
+    const pathological = result.components.find((component) => component.triangleCount === 1);
+    expect(healthy?.diagnosticsComplete).toBe(true);
+    expect(healthy?.disposition).toBe('retain');
+    expect(pathological?.diagnosticsComplete).toBe(false);
+    expect(pathological?.disposition).toBe('discard');
+    expect(result.retainedTriangleCount).toBe(12);
+  });
+
+  it('does not locally certify a healthy-looking slab when an unverified giant island is close enough to interact', () => {
+    const source: number[] = [...gridPatch(3, 2, 0.04, [0, 0, 0])];
+    // Topologically disconnected, but only 3 cm above the slab. The giant face
+    // makes the global pass incomplete and lies well inside the normal-intrusion
+    // interaction margin, so a local-only recheck would miss cross-component
+    // evidence and must not be treated as a complete certificate.
+    pushTriangle(source, [-0.02, -0.02, 0.03], [3, -0.02, 0.03], [-0.02, 3, 0.03]);
+
+    const result = sanitizeMeshTopology(Float32Array.from(source), 0.04);
+    expect(result.selfIntersectionTruncated).toBe(true);
+    const healthy = result.components.find((component) => component.triangleCount === 12);
+    expect(healthy?.diagnosticsComplete).toBe(false);
+    expect(healthy?.disposition).not.toBe('retain');
     expect(result.retainedTriangleCount).toBe(0);
-    expect(result.quarantinedTriangleCount).toBeGreaterThan(0);
-    expect(result.discardedTriangleCount).toBeGreaterThan(0);
   });
 
   it('is deterministic for identical triangle soup', () => {
