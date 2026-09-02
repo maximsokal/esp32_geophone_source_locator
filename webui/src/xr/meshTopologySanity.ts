@@ -4,6 +4,7 @@ import {
 } from './meshNormalIntrusion';
 import { detectLocalMeshNoiseHotspots } from './meshNoiseHotspots';
 import { quarantineDetachedMeshRepairFragments } from './meshRepairFragments';
+import { quarantineSubscaleMeshBranches } from './meshThinBranches';
 import {
   diagnoseMeshSelfIntersections,
   type MeshSelfIntersectionComponentStats,
@@ -62,6 +63,10 @@ export interface MeshTopologySanityResult {
   localNoiseHotspotCount: number;
   /** Hotspot repair triangles omitted from otherwise retained mesh components. */
   localNoiseHotspotTriangleCount: number;
+  /** Long leaf branches thinner than one reconstruction voxel proposed for quarantine. */
+  subscaleBranchCount: number;
+  /** Proposed subscale-branch triangles that survived the combined fail-open repair. */
+  subscaleBranchTriangleCount: number;
   components: readonly MeshTopologyComponentQuality[];
 }
 
@@ -581,7 +586,9 @@ function componentQuality(
  * on the ordinary whole-component quarantine path. If hotspot removal cuts a
  * retained component, only newly detached sub-threshold mesh fragments are also
  * omitted; two substantial fragments survive, and destructive local repair fails
- * open instead of erasing the component.
+ * open instead of erasing the component. Long but sub-voxel-width leaf branches
+ * are also quarantined only after the parent already passed retain gates; their
+ * removal is merged with hotspot repair and rechecked fail-open before rendering.
  *
  * A truncated global diagnostic is incomplete evidence, but it no longer poisons
  * an unrelated island automatically. Spatially isolated substantial components
@@ -619,6 +626,8 @@ export function sanitizeMeshTopology(
       normalIntrusionOversizedTriangleCount: 0,
       localNoiseHotspotCount: 0,
       localNoiseHotspotTriangleCount: 0,
+      subscaleBranchCount: 0,
+      subscaleBranchTriangleCount: 0,
       components: [],
     };
   }
@@ -696,13 +705,13 @@ export function sanitizeMeshTopology(
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
 
   // Only components that already passed all mesh-quality gates may enter local
-  // hotspot repair. There is no value in repartitioning an island that will be
-  // quarantined/discarded wholesale, and avoiding it bounds work on noisy scans.
+  // repair. No local heuristic is allowed to make a quarantined/discarded island
+  // look certified merely by trimming it.
   const repairableComponentMask = new Uint8Array(components.length);
   for (const component of components) {
     if (component.disposition === 'retain') repairableComponentMask[component.id] = 1;
   }
-  const repairedLocalNoise = localNoiseHotspots.quarantinedTriangleCount > 0
+  const repairedHotspots = localNoiseHotspots.quarantinedTriangleCount > 0
     ? quarantineDetachedMeshRepairFragments(
       triangles,
       orientation.componentByTriangle,
@@ -718,10 +727,39 @@ export function sanitizeMeshTopology(
       revertedComponentCount: 0,
     };
 
+  const thinBranches = quarantineSubscaleMeshBranches(
+    triangles,
+    orientation.componentByTriangle,
+    orientation.componentTriangles.length,
+    repairableComponentMask,
+    voxelSizeMeters,
+  );
+
+  // Hotspot repair and branch repair are individually conservative, but their
+  // union could in theory remove the two different pieces that made a marginal
+  // component substantial. Re-run the existing fragment scale/fail-open gate on
+  // the union whenever branch quarantine contributes anything.
+  let finalLocalRepair = repairedHotspots;
+  if (thinBranches.quarantinedTriangleCount > 0) {
+    const combinedSeedMask = repairedHotspots.quarantineMask.slice();
+    for (let index = 0; index < combinedSeedMask.length; index += 1) {
+      if (thinBranches.quarantineMask[index] !== 0) combinedSeedMask[index] = 1;
+    }
+    finalLocalRepair = quarantineDetachedMeshRepairFragments(
+      triangles,
+      orientation.componentByTriangle,
+      orientation.componentTriangles.length,
+      combinedSeedMask,
+      repairableComponentMask,
+      voxelSizeMeters,
+    );
+  }
+
   const output: number[] = [];
   let retainedTriangleCount = 0;
   let quarantinedTriangleCount = 0;
   let localNoiseHotspotTriangleCount = 0;
+  let subscaleBranchTriangleCount = 0;
   let discardedTriangleCount =
     Math.max(0, sourceTriangleCount - parsed.length) +
     nonManifoldRepair.removedTriangleCount;
@@ -735,9 +773,10 @@ export function sanitizeMeshTopology(
       discardedTriangleCount += 1;
       continue;
     }
-    if (repairedLocalNoise.quarantineMask[index] !== 0) {
+    if (finalLocalRepair.quarantineMask[index] !== 0) {
       quarantinedTriangleCount += 1;
-      localNoiseHotspotTriangleCount += 1;
+      if (repairedHotspots.quarantineMask[index] !== 0) localNoiseHotspotTriangleCount += 1;
+      if (thinBranches.quarantineMask[index] !== 0) subscaleBranchTriangleCount += 1;
       continue;
     }
     const [a, b, c] = triangles[index].vertices;
@@ -770,6 +809,8 @@ export function sanitizeMeshTopology(
     normalIntrusionOversizedTriangleCount: normalIntrusion.oversizedTriangleCount,
     localNoiseHotspotCount: localNoiseHotspots.hotspotCount,
     localNoiseHotspotTriangleCount,
+    subscaleBranchCount: thinBranches.branchCount,
+    subscaleBranchTriangleCount,
     components,
   };
 }
