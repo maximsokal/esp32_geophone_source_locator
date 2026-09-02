@@ -97,11 +97,29 @@ Per sampled XR frame the adaptive center-probe budgets are hard capped:
 
 This replaces the older one-recursion-level edge sampler, whose recursion depth was bounded but whose total child-probe count could still grow with every detected discontinuity in a frame.
 
+## Finite measured support for edges and corners
+
+A fitted mathematical plane is infinite, while a phone has only measured a finite patch. Therefore an infinite-plane intersection is never accepted as structural geometry by itself.
+
+Each robust structural plane patch retains the actual physical inlier/support points that survived its fit. Candidate geometry is then bounded by those measurements:
+
+- a two-plane edge is evaluated only where both fitted surfaces have measured points close to the mathematical intersection line;
+- support points from each plane are projected onto the line and the candidate edge is clipped to the overlapping measured interval;
+- non-overlapping support intervals reject the edge even when the infinite fitted planes intersect nearby;
+- a three-plane corner requires local measured inliers from all three surfaces around the solved point, not merely nearby plane centroids;
+- the uncertainty-aware three-plane solver weights its information/covariance by both offset variance and bounded physical plane-fit confidence;
+- a weak plane therefore increases reported corner uncertainty rather than pretending to contribute the same information as a strong plane;
+- the endpoint-based two-plane corner path requires finite support from both faces, no measured continuation beyond the endpoint, multi-view stability, and ray-verified FREE beyond the endpoint.
+
+Candidate tracking also remains local. A tracked edge must satisfy direction, lateral-distance and finite-segment overlap gates before it can reuse an ID. Mature tracks use an innovation history to tighten their association radius. Multi-view evidence is generated from the current raw candidate position rather than the temporally smoothed track state. Endpoint tracks consume at most one observation per analysis frame so duplicated seeds cannot drag the same track several times during one keyframe.
+
+These rules specifically prevent the failure mode where locally plausible infinite planes produce an intersection deep in empty space and temporal smoothing then makes that false candidate appear persistent.
+
 ## Safety pipeline
 
 The live structural path is therefore:
 
-**ARCore raw/smooth physical depth (+ ToF automatically when available) → physical surfels → robust feature density + bounded physical re-probing → optional polygon-bounded WebXR plane normal stabilization → worker plane/edge/corner hypotheses → physical FREE-space veto → candidate-specific multi-view tracking → pose-synchronised RGB reprojection/corroboration → manual/automatic target workflow.**
+**ARCore raw/smooth physical depth (+ ToF automatically when available) → physical surfels → robust feature density + bounded physical re-probing → optional polygon-bounded WebXR plane normal stabilization → finite-support robust plane/edge/corner hypotheses → physical FREE-space veto → candidate-specific multi-view tracking → pose-synchronised RGB reprojection/corroboration → manual/automatic target workflow.**
 
 Learned depth is not a geometry source in this path. Unknown volume stays UNKNOWN until physical evidence changes its state.
 
@@ -113,4 +131,5 @@ Learned depth is not a geometry source in this path. Unknown volume stays UNKNOW
 - Google ARCore Depth API: https://developers.google.com/ar/develop/depth
 - Google ARCore Raw Depth / confidence: https://developers.google.com/ar/develop/java/depth/raw-depth
 - PCL normal estimation / local covariance: https://pointclouds.org/documentation/tutorials/normal_estimation.html
+- Open3D point-cloud plane segmentation: https://www.open3d.org/docs/latest/tutorial/geometry/pointcloud.html#Plane-segmentation
 - MDN WebGL best practices: https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices
