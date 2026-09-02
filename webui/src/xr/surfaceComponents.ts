@@ -147,15 +147,6 @@ function nodeCenter(node: OrientationNode): SurfaceComponentPoint | null {
   ];
 }
 
-function pointAt(input: SurfaceComponentInput, index: number): SurfaceComponentPoint {
-  const offset = index * 3;
-  return [
-    Number(input.positions[offset]),
-    Number(input.positions[offset + 1]),
-    Number(input.positions[offset + 2]),
-  ];
-}
-
 function axisGap(minA: number, maxA: number, minB: number, maxB: number): number {
   if (maxA < minB) return minB - maxA;
   if (maxB < minA) return minA - maxB;
@@ -174,15 +165,19 @@ function comparePointLexicographic(
   left: number,
   right: number,
 ): number {
-  const a = pointAt(input, left);
-  const b = pointAt(input, right);
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  const leftOffset = left * 3;
+  const rightOffset = right * 3;
+  return Number(input.positions[leftOffset]) - Number(input.positions[rightOffset]) ||
+    Number(input.positions[leftOffset + 1]) - Number(input.positions[rightOffset + 1]) ||
+    Number(input.positions[leftOffset + 2]) - Number(input.positions[rightOffset + 2]);
 }
 
 /**
  * Pick at most eight real surfels once per node. Axis extrema protect contacts at
  * hash-cell faces/edges/corners that an index/quantile-only sampler can miss.
  * Near/far-center and deterministic quantile fill retain some interior coverage.
+ * Position tuples are intentionally not allocated in these loops: this path runs
+ * once for every orientation node and noisy mobile scans can contain many nodes.
  */
 function selectConnectionPointIndices(
   node: OrientationNode,
@@ -200,35 +195,69 @@ function selectConnectionPointIndices(
     selectedSet.add(index);
     selected.push(index);
   };
-  const best = [indices[0], indices[0], indices[0], indices[0], indices[0], indices[0]];
-  for (const index of indices) {
-    const point = pointAt(input, index);
-    const bxMin = pointAt(input, best[0]);
-    const bxMax = pointAt(input, best[1]);
-    const byMin = pointAt(input, best[2]);
-    const byMax = pointAt(input, best[3]);
-    const bzMin = pointAt(input, best[4]);
-    const bzMax = pointAt(input, best[5]);
-    if (point[0] < bxMin[0] || (point[0] === bxMin[0] && comparePointLexicographic(input, index, best[0]) < 0)) best[0] = index;
-    if (point[0] > bxMax[0] || (point[0] === bxMax[0] && comparePointLexicographic(input, index, best[1]) < 0)) best[1] = index;
-    if (point[1] < byMin[1] || (point[1] === byMin[1] && comparePointLexicographic(input, index, best[2]) < 0)) best[2] = index;
-    if (point[1] > byMax[1] || (point[1] === byMax[1] && comparePointLexicographic(input, index, best[3]) < 0)) best[3] = index;
-    if (point[2] < bzMin[2] || (point[2] === bzMin[2] && comparePointLexicographic(input, index, best[4]) < 0)) best[4] = index;
-    if (point[2] > bzMax[2] || (point[2] === bzMax[2] && comparePointLexicographic(input, index, best[5]) < 0)) best[5] = index;
-  }
-  for (const index of best) add(index);
 
-  const center = nodeCenter(node);
-  if (center !== null && selected.length < MAX_NODE_CONNECTION_SAMPLES) {
+  let minXIndex = indices[0];
+  let maxXIndex = indices[0];
+  let minYIndex = indices[0];
+  let maxYIndex = indices[0];
+  let minZIndex = indices[0];
+  let maxZIndex = indices[0];
+  const firstOffset = indices[0] * 3;
+  let minX = Number(input.positions[firstOffset]);
+  let maxX = minX;
+  let minY = Number(input.positions[firstOffset + 1]);
+  let maxY = minY;
+  let minZ = Number(input.positions[firstOffset + 2]);
+  let maxZ = minZ;
+
+  for (const index of indices) {
+    const offset = index * 3;
+    const x = Number(input.positions[offset]);
+    const y = Number(input.positions[offset + 1]);
+    const z = Number(input.positions[offset + 2]);
+    if (x < minX || (x === minX && comparePointLexicographic(input, index, minXIndex) < 0)) {
+      minX = x;
+      minXIndex = index;
+    }
+    if (x > maxX || (x === maxX && comparePointLexicographic(input, index, maxXIndex) < 0)) {
+      maxX = x;
+      maxXIndex = index;
+    }
+    if (y < minY || (y === minY && comparePointLexicographic(input, index, minYIndex) < 0)) {
+      minY = y;
+      minYIndex = index;
+    }
+    if (y > maxY || (y === maxY && comparePointLexicographic(input, index, maxYIndex) < 0)) {
+      maxY = y;
+      maxYIndex = index;
+    }
+    if (z < minZ || (z === minZ && comparePointLexicographic(input, index, minZIndex) < 0)) {
+      minZ = z;
+      minZIndex = index;
+    }
+    if (z > maxZ || (z === maxZ && comparePointLexicographic(input, index, maxZIndex) < 0)) {
+      maxZ = z;
+      maxZIndex = index;
+    }
+  }
+  for (const index of [minXIndex, maxXIndex, minYIndex, maxYIndex, minZIndex, maxZIndex]) add(index);
+
+  if (
+    selected.length < MAX_NODE_CONNECTION_SAMPLES &&
+    Number.isFinite(node.positionWeight) && node.positionWeight > 1e-8
+  ) {
+    const centerX = node.positionX / node.positionWeight;
+    const centerY = node.positionY / node.positionWeight;
+    const centerZ = node.positionZ / node.positionWeight;
     let nearest = -1;
     let nearestSquared = Number.POSITIVE_INFINITY;
     let farthest = -1;
     let farthestSquared = Number.NEGATIVE_INFINITY;
     for (const index of indices) {
-      const point = pointAt(input, index);
-      const dx = point[0] - center[0];
-      const dy = point[1] - center[1];
-      const dz = point[2] - center[2];
+      const offset = index * 3;
+      const dx = Number(input.positions[offset]) - centerX;
+      const dy = Number(input.positions[offset + 1]) - centerY;
+      const dz = Number(input.positions[offset + 2]) - centerZ;
       const squared = dx * dx + dy * dy + dz * dz;
       if (
         squared < nearestSquared ||
