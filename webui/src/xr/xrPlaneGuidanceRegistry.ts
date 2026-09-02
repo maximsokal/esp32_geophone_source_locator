@@ -11,6 +11,9 @@ function clonePrior(prior: StructuralPlanePrior): StructuralPlanePrior {
     ...prior,
     center: [...prior.center] as readonly [number, number, number],
     normal: [...prior.normal] as readonly [number, number, number],
+    tangentU: [...prior.tangentU] as readonly [number, number, number],
+    tangentV: [...prior.tangentV] as readonly [number, number, number],
+    polygonUv: prior.polygonUv.map((point) => [point[0], point[1]] as const),
   };
 }
 
