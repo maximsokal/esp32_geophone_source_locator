@@ -2,6 +2,10 @@ import type {
   StructuralGuidePointCloudSnapshot,
   ProjectPoint,
 } from './depthPointCloudV2';
+import {
+  estimateSurfaceFeatureComplexity,
+  type SurfaceNormalEvidence,
+} from './surfaceFeatureDensity';
 
 type Vector3 = readonly [number, number, number];
 
@@ -15,9 +19,21 @@ interface Family {
   members: number;
 }
 
+interface SourceSample extends SurfaceNormalEvidence {
+  index: number;
+  position: ProjectPoint;
+  normal: Vector3;
+  confidence: number;
+  baseCellKey: string;
+}
+
 const MAX_FAMILIES_PER_CELL = 3;
-const FAMILY_NORMAL_DOT = Math.cos((38 * Math.PI) / 180);
+const FLAT_FAMILY_NORMAL_DOT = Math.cos((38 * Math.PI) / 180);
+const FEATURE_FAMILY_NORMAL_DOT = Math.cos((24 * Math.PI) / 180);
 const MIN_CLUSTER_CONFIDENCE = 0.42;
+const FEATURE_DETAIL_THRESHOLD = 0.20;
+const FEATURE_CELL_SCALE = 0.58;
+const MIN_FEATURE_CELL_METERS = 0.028;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 function normalize(x: number, y: number, z: number): Vector3 | null {
@@ -35,11 +51,15 @@ function cellKey(point: ProjectPoint, size: number): string {
 }
 
 /**
- * Collapse promoted surfels into up to three orientation families per fine
- * structural cell. This is intentionally downstream of live fusion: the phone
- * can retain its bounded display/memory policy while structural inference sees
- * separate wall/floor/side hypotheses instead of averaging them into a diagonal
- * normal. Opposite normal signs belong to the same physical surface family.
+ * Collapse promoted surfels into orientation families without flattening the
+ * very geometry the structural guide needs most.
+ *
+ * Flat regions use coarse cells and a tolerant normal family. Cells that show
+ * robust normal variation (smooth convex curvature or multiple supported
+ * surfaces) are subdivided and use a tighter family angle. This preserves more
+ * structural samples around bends/edges/corners while leaving the upstream
+ * physical acceptance, multi-view promotion and global memory budget untouched.
+ * Opposite normal signs still belong to the same physical surface family.
  */
 export function clusterStructuralSurfaceFamilies(
   source: StructuralGuidePointCloudSnapshot,
@@ -52,8 +72,10 @@ export function clusterStructuralSurfaceFamilies(
   );
   if (count === 0) return source;
 
-  const cellSize = Math.max(0.045, Math.min(0.075, source.voxelSizeMeters * 1.35));
-  const cells = new Map<string, Family[]>();
+  const baseCellSize = Math.max(0.045, Math.min(0.075, source.voxelSizeMeters * 1.35));
+  const featureCellSize = Math.max(MIN_FEATURE_CELL_METERS, baseCellSize * FEATURE_CELL_SCALE);
+  const samples: SourceSample[] = [];
+  const normalEvidenceByBaseCell = new Map<string, SurfaceNormalEvidence[]>();
 
   for (let index = 0; index < count; index += 1) {
     const confidence = clamp01(Number(source.confidence[index]));
@@ -72,49 +94,86 @@ export function clusterStructuralSurfaceFamilies(
     );
     if (rawNormal === null) continue;
     const normal = canonical(rawNormal);
-    const key = cellKey(position, cellSize);
-    const families = cells.get(key) ?? [];
+    const baseCellKey = cellKey(position, baseCellSize);
+    const sample: SourceSample = {
+      index,
+      position,
+      normal,
+      confidence,
+      normalX: normal[0],
+      normalY: normal[1],
+      normalZ: normal[2],
+      normalConfidence: confidence,
+      baseCellKey,
+    };
+    samples.push(sample);
+    const evidence = normalEvidenceByBaseCell.get(baseCellKey) ?? [];
+    evidence.push(sample);
+    normalEvidenceByBaseCell.set(baseCellKey, evidence);
+  }
+  if (samples.length === 0) return source;
+
+  const featureScoreByBaseCell = new Map<string, number>();
+  for (const [key, evidence] of normalEvidenceByBaseCell) {
+    featureScoreByBaseCell.set(key, estimateSurfaceFeatureComplexity(evidence).score);
+  }
+
+  const cells = new Map<string, Family[]>();
+  for (const sample of samples) {
+    const featureScore = featureScoreByBaseCell.get(sample.baseCellKey) ?? 0;
+    const featureRich = featureScore >= FEATURE_DETAIL_THRESHOLD;
+    const localCellKey = featureRich
+      ? `${sample.baseCellKey}|feature:${cellKey(sample.position, featureCellSize)}`
+      : `${sample.baseCellKey}|flat`;
+    const familyNormalDot = featureRich ? FEATURE_FAMILY_NORMAL_DOT : FLAT_FAMILY_NORMAL_DOT;
+    const families = cells.get(localCellKey) ?? [];
 
     let best: Family | null = null;
-    let bestDot = FAMILY_NORMAL_DOT;
+    let bestDot = familyNormalDot;
     for (const family of families) {
-      const similarity = Math.abs(dot(family.referenceNormal, normal));
+      const similarity = Math.abs(dot(family.referenceNormal, sample.normal));
       if (similarity >= bestDot) { best = family; bestDot = similarity; }
     }
 
     if (best === null) {
       if (families.length >= MAX_FAMILIES_PER_CELL) {
-        // A fourth conflicting orientation in one tiny cell is more likely
-        // mixed/flying evidence than a real fourth manifold. Keep the three
-        // strongest established families rather than rotating them frame-to-frame.
+        // A fourth conflicting orientation in one tiny feature cell is more
+        // likely mixed/flying evidence than a real fourth manifold.
         continue;
       }
       const created: Family = {
-        cellKey: key,
-        weight: confidence,
-        confidenceWeighted: confidence * confidence,
-        positionWeighted: [position[0] * confidence, position[1] * confidence, position[2] * confidence],
-        normalWeighted: [normal[0] * confidence, normal[1] * confidence, normal[2] * confidence],
-        referenceNormal: normal,
+        cellKey: localCellKey,
+        weight: sample.confidence,
+        confidenceWeighted: sample.confidence * sample.confidence,
+        positionWeighted: [
+          sample.position[0] * sample.confidence,
+          sample.position[1] * sample.confidence,
+          sample.position[2] * sample.confidence,
+        ],
+        normalWeighted: [
+          sample.normal[0] * sample.confidence,
+          sample.normal[1] * sample.confidence,
+          sample.normal[2] * sample.confidence,
+        ],
+        referenceNormal: sample.normal,
         members: 1,
       };
       families.push(created);
-      cells.set(key, families);
+      cells.set(localCellKey, families);
       continue;
     }
 
-    // Align sign to the established family before accumulation.
-    const aligned: Vector3 = dot(best.referenceNormal, normal) < 0
-      ? [-normal[0], -normal[1], -normal[2]]
-      : normal;
-    best.weight += confidence;
-    best.confidenceWeighted += confidence * confidence;
-    best.positionWeighted[0] += position[0] * confidence;
-    best.positionWeighted[1] += position[1] * confidence;
-    best.positionWeighted[2] += position[2] * confidence;
-    best.normalWeighted[0] += aligned[0] * confidence;
-    best.normalWeighted[1] += aligned[1] * confidence;
-    best.normalWeighted[2] += aligned[2] * confidence;
+    const aligned: Vector3 = dot(best.referenceNormal, sample.normal) < 0
+      ? [-sample.normal[0], -sample.normal[1], -sample.normal[2]]
+      : sample.normal;
+    best.weight += sample.confidence;
+    best.confidenceWeighted += sample.confidence * sample.confidence;
+    best.positionWeighted[0] += sample.position[0] * sample.confidence;
+    best.positionWeighted[1] += sample.position[1] * sample.confidence;
+    best.positionWeighted[2] += sample.position[2] * sample.confidence;
+    best.normalWeighted[0] += aligned[0] * sample.confidence;
+    best.normalWeighted[1] += aligned[1] * sample.confidence;
+    best.normalWeighted[2] += aligned[2] * sample.confidence;
     best.members += 1;
     const updated = normalize(best.normalWeighted[0], best.normalWeighted[1], best.normalWeighted[2]);
     if (updated !== null) best.referenceNormal = canonical(updated);
