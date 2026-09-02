@@ -17,10 +17,11 @@ function add(
   cloud: MutableCloud,
   point: readonly [number, number, number],
   normal: readonly [number, number, number],
+  confidence = 0.93,
 ): void {
   cloud.positions.push(...point);
   cloud.normals.push(...normal);
-  cloud.confidence.push(0.93);
+  cloud.confidence.push(confidence);
 }
 
 function snapshot(cloud: MutableCloud): ManualPlacementSurfaceSnapshot {
@@ -33,20 +34,74 @@ function snapshot(cloud: MutableCloud): ManualPlacementSurfaceSnapshot {
   };
 }
 
-function cornerCloud(includeThirdPlane = true): MutableCloud {
-  const cloud: MutableCloud = { positions: [], normals: [], confidence: [] };
+function reversedSnapshot(cloud: MutableCloud): ManualPlacementSurfaceSnapshot {
+  const reversed: MutableCloud = { positions: [], normals: [], confidence: [] };
+  for (let index = cloud.confidence.length - 1; index >= 0; index -= 1) {
+    const offset = index * 3;
+    add(
+      reversed,
+      [cloud.positions[offset], cloud.positions[offset + 1], cloud.positions[offset + 2]],
+      [cloud.normals[offset], cloud.normals[offset + 1], cloud.normals[offset + 2]],
+      cloud.confidence[index],
+    );
+  }
+  return snapshot(reversed);
+}
+
+function appendCorner(
+  cloud: MutableCloud,
+  origin: readonly [number, number, number] = [0, 0, 0],
+  includeThirdPlane = true,
+  confidence = 0.93,
+): void {
+  const [ox, oy, oz] = origin;
   for (const y of [-0.10, -0.06, -0.02, 0.02, 0.06, 0.10]) {
-    for (const z of [-0.06, -0.02, 0.02, 0.06]) add(cloud, [0, y, z], [1, 0, 0]);
+    for (const z of [-0.06, -0.02, 0.02, 0.06]) add(cloud, [ox, oy + y, oz + z], [1, 0, 0], confidence);
   }
   for (const x of [-0.10, -0.06, -0.02, 0.02, 0.06, 0.10]) {
-    for (const z of [-0.06, -0.02, 0.02, 0.06]) add(cloud, [x, 0, z], [0, 1, 0]);
+    for (const z of [-0.06, -0.02, 0.02, 0.06]) add(cloud, [ox + x, oy, oz + z], [0, 1, 0], confidence);
   }
   if (includeThirdPlane) {
     for (const x of [-0.10, -0.06, -0.02, 0.02, 0.06, 0.10]) {
-      for (const y of [-0.06, -0.02, 0.02, 0.06]) add(cloud, [x, y, 0], [0, 0, 1]);
+      for (const y of [-0.06, -0.02, 0.02, 0.06]) add(cloud, [ox + x, oy + y, oz], [0, 0, 1], confidence);
     }
   }
+}
+
+function cornerCloud(includeThirdPlane = true): MutableCloud {
+  const cloud: MutableCloud = { positions: [], normals: [], confidence: [] };
+  appendCorner(cloud, [0, 0, 0], includeThirdPlane);
   return cloud;
+}
+
+function addManyHighConfidenceFlatSeedCells(cloud: MutableCloud, count = 80): void {
+  // More than MAX_SEEDS=72 high-confidence flat seed cells. They live in coarse
+  // regions away from the real corner and must not starve that corner merely
+  // because their confidence is higher. Two points per 13-cm seed cell make each
+  // eligible for seeding while remaining far too sparse/flat for corner evidence.
+  for (let index = 0; index < count; index += 1) {
+    const x = 2.0 + (index % 10) * 0.16;
+    const y = Math.floor(index / 10) * 0.16;
+    add(cloud, [x, y, 0], [0, 0, 1], 0.99);
+    add(cloud, [x + 0.018, y + 0.018, 0], [0, 0, 1], 0.99);
+  }
+}
+
+function nearestTo(
+  corners: ReturnType<typeof detectCertifiedStructuralCorners>,
+  target: readonly [number, number, number],
+) {
+  return [...corners].sort((left, right) =>
+    Math.hypot(
+      left.position[0] - target[0],
+      left.position[1] - target[1],
+      left.position[2] - target[2],
+    ) - Math.hypot(
+      right.position[0] - target[0],
+      right.position[1] - target[1],
+      right.position[2] - target[2],
+    )
+  )[0];
 }
 
 function viewpoint(
@@ -60,9 +115,7 @@ describe('certified structural geometry', () => {
   it('discovers a measured three-plane corner without legacy patch hypotheses', () => {
     const corners = detectCertifiedStructuralCorners(snapshot(cornerCloud(true)));
     expect(corners.length).toBeGreaterThan(0);
-    const nearest = corners.reduce((best, candidate) =>
-      Math.hypot(...candidate.position) < Math.hypot(...best.position) ? candidate : best,
-    );
+    const nearest = nearestTo(corners, [0, 0, 0]);
     expect(Math.hypot(...nearest.position)).toBeLessThan(0.03);
     expect(nearest.confidence).toBeGreaterThanOrEqual(0.72);
     expect(nearest.confidence).toBeLessThan(1);
@@ -83,6 +136,36 @@ describe('certified structural geometry', () => {
       coverageReady: new Uint8Array(base.pointCount),
     });
     expect(blocked).toHaveLength(0);
+  });
+
+  it('is invariant to equivalent reversed surfel insertion order', () => {
+    const source = cornerCloud(true);
+    const forward = detectCertifiedStructuralCorners(snapshot(source));
+    const reversed = detectCertifiedStructuralCorners(reversedSnapshot(source));
+    expect(forward.length).toBeGreaterThan(0);
+    expect(reversed.length).toBe(forward.length);
+    const first = nearestTo(forward, [0, 0, 0]);
+    const second = nearestTo(reversed, [0, 0, 0]);
+    expect(second.position[0]).toBeCloseTo(first.position[0], 6);
+    expect(second.position[1]).toBeCloseTo(first.position[1], 6);
+    expect(second.position[2]).toBeCloseTo(first.position[2], 6);
+    expect(second.confidence).toBeCloseTo(first.confidence, 6);
+  });
+
+  it('does not let more than 72 stronger flat seed cells starve a real corner in another region', () => {
+    const source: MutableCloud = { positions: [], normals: [], confidence: [] };
+    addManyHighConfidenceFlatSeedCells(source, 80);
+    const target = [5.0, 0, 0] as const;
+    appendCorner(source, target, true, 0.93);
+
+    const corners = detectCertifiedStructuralCorners(snapshot(source));
+    const nearest = nearestTo(corners, target);
+    expect(nearest).toBeDefined();
+    expect(Math.hypot(
+      nearest.position[0] - target[0],
+      nearest.position[1] - target[1],
+      nearest.position[2] - target[2],
+    )).toBeLessThan(0.04);
   });
 });
 
