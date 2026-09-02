@@ -93,6 +93,7 @@ export class RawCameraGuidanceCapture {
   private readonly targetTexture: WebGLTexture;
   private readonly vertexBuffer: WebGLBuffer;
   private readonly positionLocation: number;
+  private readonly samplerLocation: WebGLUniformLocation;
   private readonly vertexArray: WebGLVertexArrayObject | null;
   private readonly pixels = new Uint8Array(TARGET_WIDTH * TARGET_HEIGHT * 4);
   private disposed = false;
@@ -110,12 +111,25 @@ export class RawCameraGuidanceCapture {
 
     const program = createProgram(gl);
     const positionLocation = gl.getAttribLocation(program, 'a_position');
-    if (positionLocation < 0) {
+    const samplerLocation = gl.getUniformLocation(program, 'u_camera');
+    if (positionLocation < 0 || samplerLocation === null) {
       gl.deleteProgram(program);
       gl.deleteFramebuffer(framebuffer);
       gl.deleteTexture(texture);
       gl.deleteBuffer(buffer);
-      throw new Error('Raw-camera guidance position attribute is unavailable.');
+      throw new Error('Raw-camera guidance shader inputs are unavailable.');
+    }
+
+    const gl2 = webGl2Context(gl);
+    const vertexArray = gl2?.createVertexArray() ?? null;
+    // Falling back to mutating the caller's WebGL2 VAO would defeat the state
+    // isolation guarantee. WebGL1 has no core VAO and is restored explicitly.
+    if (gl2 !== null && vertexArray === null) {
+      gl.deleteProgram(program);
+      gl.deleteFramebuffer(framebuffer);
+      gl.deleteTexture(texture);
+      gl.deleteBuffer(buffer);
+      throw new Error('Unable to allocate isolated raw-camera WebGL2 vertex array.');
     }
 
     this.program = program;
@@ -123,9 +137,7 @@ export class RawCameraGuidanceCapture {
     this.targetTexture = texture;
     this.vertexBuffer = buffer;
     this.positionLocation = positionLocation;
-
-    const gl2 = webGl2Context(gl);
-    const vertexArray = gl2?.createVertexArray() ?? null;
+    this.samplerLocation = samplerLocation;
     this.vertexArray = vertexArray;
     const previous = captureWebGlState(gl, positionLocation);
 
@@ -198,8 +210,7 @@ export class RawCameraGuidanceCapture {
       }
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
-      const sampler = gl.getUniformLocation(this.program, 'u_camera');
-      gl.uniform1i(sampler, 0);
+      gl.uniform1i(this.samplerLocation, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.readPixels(0, 0, TARGET_WIDTH, TARGET_HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
       const guidance = buildRgbDepthGuidanceFrame(
