@@ -241,20 +241,15 @@ export class RawCameraGuidanceCapture {
   get usesNonBlockingReadback(): boolean { return this.asyncReadback !== null; }
 
   /**
-   * Poll a previously queued WebGL2 PBO without waiting. The runtime calls this
-   * every XR RAF, independently of the lower camera-capture cadence, so a fence
-   * that signals after 1-2 render frames is consumed immediately rather than
-   * accumulating an artificial ~RGB_CAPTURE_INTERVAL delay.
+   * Poll a previously queued WebGL2 PBO without waiting. The ring itself touches
+   * no GL binding while the oldest fence is unsignalled and preserves only the
+   * PIXEL_PACK_BUFFER binding when a completed readback actually needs it. This
+   * method is therefore safe to call every XR RAF without a full state snapshot.
    */
   pollReady(): RgbDepthGuidanceFrame | null {
     if (this.disposed || this.asyncReadback === null) return null;
-    const previous = captureWebGlState(this.gl, this.positionLocation);
-    try {
-      const ready = this.asyncReadback.poll();
-      return ready === null ? null : buildGuidance(ready.pixels, ready.metadata);
-    } finally {
-      restoreWebGlState(this.gl, this.positionLocation, previous);
-    }
+    const ready = this.asyncReadback.poll();
+    return ready === null ? null : buildGuidance(ready.pixels, ready.metadata);
   }
 
   capture(
