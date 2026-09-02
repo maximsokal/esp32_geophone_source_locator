@@ -48,10 +48,14 @@ describe('XR plane guidance registry', () => {
     const first = getLatestStructuralPlanePriors();
     expect(first).toHaveLength(1);
     expect(first[0].center).toEqual([0, 0, 0]);
+    expect(first[0].polygonUv).toEqual([[-0.4, -0.2], [0.4, -0.2], [0.4, 0.2], [-0.4, 0.2]]);
 
-    // Returned snapshots are clones: consumer mutation cannot poison later worker analyses.
-    (first[0].center as number[])[0] = 99;
-    expect(getLatestStructuralPlanePriors()[0].center[0]).toBe(0);
+    // Returned snapshots are deep clones: consumer mutation cannot poison later worker analyses.
+    (first[0].center as unknown as number[])[0] = 99;
+    (first[0].polygonUv[0] as unknown as number[])[0] = 99;
+    const second = getLatestStructuralPlanePriors();
+    expect(second[0].center[0]).toBe(0);
+    expect(second[0].polygonUv[0][0]).toBeCloseTo(-0.4, 6);
   });
 
   it('clears stale priors when Plane Detection is unsupported for the current frame', () => {
