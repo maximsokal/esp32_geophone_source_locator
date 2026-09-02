@@ -1,4 +1,5 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import { deviceComputeProfilePromise } from './deviceComputeProfile';
 import type { StructuralCandidateDiagnostics } from './structuralCandidatePolicy';
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
@@ -40,58 +41,75 @@ interface PendingAnalysis {
 }
 
 export class StructuralGuideClient {
-  private readonly worker: Worker;
+  private worker: Worker | null = null;
   private nextRequestId = 1;
   private epoch = 0;
   private pending: PendingAnalysis | null = null;
+  private starting = false;
+  private disposed = false;
 
-  constructor() {
-    // Vite inlines the worker payload into the application bundle. It still runs
-    // in a dedicated browser thread, while the ESP firmware keeps the existing
-    // single-JS-asset contract and needs no extra HTTP route.
-    this.worker = new StructuralGuideWorker();
-    this.worker.addEventListener('message', this.handleMessage);
-    this.worker.addEventListener('error', this.handleError);
+  get busy(): boolean { return this.pending !== null || this.starting; }
+
+  private ensureWorker(): Worker {
+    if (this.disposed) throw new Error('Structural guide worker disposed.');
+    if (this.worker !== null) return this.worker;
+    // Vite inlines the payload into the single ESP WebUI JS asset, but the code
+    // still executes in a Dedicated Worker scheduled independently of the XR/UI
+    // main thread. Creation is deliberately lazy: a tiny scan never pays for it.
+    const worker = new StructuralGuideWorker();
+    worker.addEventListener('message', this.handleMessage);
+    worker.addEventListener('error', this.handleError);
+    this.worker = worker;
+    return worker;
   }
 
-  get busy(): boolean { return this.pending !== null; }
-
-  analyze(input: AnalyzeInput): Promise<StructuralGuideResult> {
-    if (this.pending !== null) return Promise.reject(new Error('Structural guide analysis is already running.'));
-    const id = this.nextRequestId++;
-    const epoch = this.epoch;
-    // Callers may explicitly override priors for deterministic tests. Production
-    // analyses otherwise consume the latest frame-owned numeric plane snapshot.
-    // Native planes remain advisory: the worker can only rotate normals of
-    // already-measured physical surfels and cannot create OCCUPIED/FREE geometry.
-    const planePriors = input.planePriors ?? getLatestStructuralPlanePriors();
-    return new Promise((resolve, reject) => {
-      this.pending = { id, epoch, resolve, reject, started: performance.now() };
-      const transfer: Transferable[] = [input.positions.buffer, input.normals.buffer, input.confidence.buffer];
-      if (input.residualMeters !== undefined) transfer.push(input.residualMeters.buffer);
-      if (input.normalConfidence !== undefined) transfer.push(input.normalConfidence.buffer);
-      if (input.coverageConfidence !== undefined) transfer.push(input.coverageConfidence.buffer);
-      if (input.coverageReady !== undefined) transfer.push(input.coverageReady.buffer);
-      if (input.freeSpacePositions !== undefined) transfer.push(input.freeSpacePositions.buffer);
-      this.worker.postMessage({
-        type: 'analyze',
-        requestId: id,
-        epoch,
-        positions: input.positions,
-        normals: input.normals,
-        confidence: input.confidence,
-        residualMeters: input.residualMeters,
-        normalConfidence: input.normalConfidence,
-        coverageConfidence: input.coverageConfidence,
-        coverageReady: input.coverageReady,
-        keyframeCount: input.keyframeCount,
-        voxelSizeMeters: input.voxelSizeMeters,
-        viewpoint: input.viewpoint ?? null,
-        freeSpacePositions: input.freeSpacePositions,
-        freeSpaceVoxelSizeMeters: input.freeSpaceVoxelSizeMeters,
-        planePriors,
-      }, transfer);
-    });
+  async analyze(input: AnalyzeInput): Promise<StructuralGuideResult> {
+    if (this.busy) throw new Error('Structural guide analysis is already running.');
+    if (this.disposed) throw new Error('Structural guide worker disposed.');
+    this.starting = true;
+    try {
+      const compute = await deviceComputeProfilePromise;
+      if (compute.liveWorkerBudget < 1) {
+        throw new Error('No safe live Worker slot is available for structural analysis.');
+      }
+      const worker = this.ensureWorker();
+      const id = this.nextRequestId++;
+      const epoch = this.epoch;
+      // Callers may explicitly override priors for deterministic tests. Production
+      // analyses otherwise consume the latest frame-owned numeric plane snapshot.
+      // Native planes remain advisory: the worker can only rotate normals of
+      // already-measured physical surfels and cannot create OCCUPIED/FREE geometry.
+      const planePriors = input.planePriors ?? getLatestStructuralPlanePriors();
+      return await new Promise<StructuralGuideResult>((resolve, reject) => {
+        this.pending = { id, epoch, resolve, reject, started: performance.now() };
+        const transfer: Transferable[] = [input.positions.buffer, input.normals.buffer, input.confidence.buffer];
+        if (input.residualMeters !== undefined) transfer.push(input.residualMeters.buffer);
+        if (input.normalConfidence !== undefined) transfer.push(input.normalConfidence.buffer);
+        if (input.coverageConfidence !== undefined) transfer.push(input.coverageConfidence.buffer);
+        if (input.coverageReady !== undefined) transfer.push(input.coverageReady.buffer);
+        if (input.freeSpacePositions !== undefined) transfer.push(input.freeSpacePositions.buffer);
+        worker.postMessage({
+          type: 'analyze',
+          requestId: id,
+          epoch,
+          positions: input.positions,
+          normals: input.normals,
+          confidence: input.confidence,
+          residualMeters: input.residualMeters,
+          normalConfidence: input.normalConfidence,
+          coverageConfidence: input.coverageConfidence,
+          coverageReady: input.coverageReady,
+          keyframeCount: input.keyframeCount,
+          voxelSizeMeters: input.voxelSizeMeters,
+          viewpoint: input.viewpoint ?? null,
+          freeSpacePositions: input.freeSpacePositions,
+          freeSpaceVoxelSizeMeters: input.freeSpaceVoxelSizeMeters,
+          planePriors,
+        }, transfer);
+      });
+    } finally {
+      this.starting = false;
+    }
   }
 
   reset(): void {
@@ -100,17 +118,21 @@ export class StructuralGuideClient {
       this.pending.reject(new Error('Structural guide analysis reset for a new scan.'));
       this.pending = null;
     }
-    this.worker.postMessage({ type: 'reset', epoch: this.epoch });
+    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide worker disposed.'));
       this.pending = null;
     }
-    this.worker.removeEventListener('message', this.handleMessage);
-    this.worker.removeEventListener('error', this.handleError);
-    this.worker.terminate();
+    if (this.worker !== null) {
+      this.worker.removeEventListener('message', this.handleMessage);
+      this.worker.removeEventListener('error', this.handleError);
+      this.worker.terminate();
+      this.worker = null;
+    }
   }
 
   private readonly handleMessage = (event: MessageEvent<WorkerResultMessage>): void => {
