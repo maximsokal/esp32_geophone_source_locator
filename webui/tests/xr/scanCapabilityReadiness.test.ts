@@ -173,6 +173,47 @@ describe('scan capability readiness', () => {
     expect(readiness.mesh?.ready).toBe(false);
   });
 
+  it('labels a remaining scale-aware mesh deficit as extent after point and density gates pass', () => {
+    const readiness = computeScanCapabilityReadiness({
+      stablePointCount: 400,
+      keyframeCount: 16,
+      visibleCoverageCells: 18,
+      readyCoverageCells: 15,
+      surfaceAnalysis: analysis({
+        pointCount: 90,
+        occupiedCellCount: 20,
+        occupancyRatio: 0.72,
+        // These dimensions are above the old hard-coded 14/7.5 cm UI gate but
+        // can still be below the real voxel-scaled mesh threshold.
+        majorExtentMeters: 0.22,
+        minorExtentMeters: 0.12,
+        meshReadiness: 0.63,
+        meshEligible: false,
+      }),
+      viewpoints: [view(1, 0.5, 0), view(2, -0.5, 0)],
+    });
+    expect(readiness.mesh?.ready).toBe(false);
+    expect(readiness.mesh?.limitingMetric).toBe('extent');
+  });
+
+  it('keeps surface-density as the mesh reason when occupied cells are the limiting gate', () => {
+    const readiness = computeScanCapabilityReadiness({
+      stablePointCount: 400,
+      keyframeCount: 16,
+      visibleCoverageCells: 18,
+      readyCoverageCells: 15,
+      surfaceAnalysis: analysis({
+        pointCount: 90,
+        occupiedCellCount: 4,
+        occupancyRatio: 0.72,
+        meshReadiness: 0.57,
+        meshEligible: false,
+      }),
+      viewpoints: [view(1, 0.5, 0), view(2, -0.5, 0)],
+    });
+    expect(readiness.mesh?.limitingMetric).toBe('surface-density');
+  });
+
   it('uses actual occupied azimuth sectors once a measured component centre exists', () => {
     const readiness = computeScanCapabilityReadiness({
       stablePointCount: 240,
