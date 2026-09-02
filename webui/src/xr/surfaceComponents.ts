@@ -59,6 +59,8 @@ const DEFAULT_MINIMUM_CONFIDENCE = 0.58;
 const MESH_MIN_POINTS = 24;
 const MESH_MIN_OCCUPIED_CELLS = 7;
 const MESH_MIN_OCCUPANCY_RATIO = 0.30;
+const ROBUST_EXTENT_TRIM_FRACTION = 0.10;
+const MIN_POINTS_FOR_ROBUST_EXTENT = 20;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -114,6 +116,34 @@ function readinessRatio(value: number, target: number): number {
   return target <= 0 ? 1 : clamp01(value / target);
 }
 
+function robustProjectedExtent(
+  pointIndices: readonly number[],
+  input: SurfaceComponentInput,
+  center: SurfaceComponentPoint,
+  axis: SurfaceComponentNormal,
+  cellSizeMeters: number,
+): number {
+  if (pointIndices.length <= 1) return cellSizeMeters;
+  const projected = new Array<number>(pointIndices.length);
+  for (let cursor = 0; cursor < pointIndices.length; cursor += 1) {
+    const offset = pointIndices[cursor] * 3;
+    projected[cursor] =
+      (Number(input.positions[offset]) - center[0]) * axis[0] +
+      (Number(input.positions[offset + 1]) - center[1]) * axis[1] +
+      (Number(input.positions[offset + 2]) - center[2]) * axis[2];
+  }
+  projected.sort((a, b) => a - b);
+  const trim = pointIndices.length >= MIN_POINTS_FOR_ROBUST_EXTENT
+    ? Math.min(
+      Math.floor((pointIndices.length - 1) * ROBUST_EXTENT_TRIM_FRACTION),
+      Math.floor((pointIndices.length - 2) / 2),
+    )
+    : 0;
+  const low = projected[trim];
+  const high = projected[projected.length - 1 - trim];
+  return Math.max(cellSizeMeters, Number.isFinite(high - low) ? high - low : 0);
+}
+
 function componentMetrics(
   id: number,
   pointIndices: readonly number[],
@@ -143,12 +173,17 @@ function componentMetrics(
     xx * inverse, xy * inverse, xz * inverse,
     yy * inverse, yz * inverse, zz * inverse,
   ]);
-  // For a roughly uniformly sampled interval, sqrt(12 * variance) estimates
-  // physical span. Cell size is a conservative floor so a one-cell component
-  // does not report an exact zero extent.
-  const thicknessMeters = Math.max(cellSizeMeters, Math.sqrt(12 * Math.max(0, eigen.values[0])));
-  const minorExtentMeters = Math.max(cellSizeMeters, Math.sqrt(12 * Math.max(0, eigen.values[1])));
-  const majorExtentMeters = Math.max(cellSizeMeters, Math.sqrt(12 * Math.max(0, eigen.values[2])));
+
+  // Covariance gives stable principal directions, but sqrt(variance) alone is
+  // not a robust physical size estimate: a few connected flying/tail surfels can
+  // inflate it substantially. Measure the central projected range on each PCA
+  // axis instead. With >=20 points, trimming 10% from both ends removes sparse
+  // tails while preserving full extents of ordinary sampled grids (each boundary
+  // row/column contributes many points). The cell size remains a conservative
+  // lower bound for unresolved dimensions.
+  const thicknessMeters = robustProjectedExtent(pointIndices, input, center, eigen.vectors[0], cellSizeMeters);
+  const minorExtentMeters = robustProjectedExtent(pointIndices, input, center, eigen.vectors[1], cellSizeMeters);
+  const majorExtentMeters = robustProjectedExtent(pointIndices, input, center, eigen.vectors[2], cellSizeMeters);
   const expectedSurfaceCells = Math.max(
     1,
     Math.ceil(majorExtentMeters / cellSizeMeters) * Math.ceil(minorExtentMeters / cellSizeMeters),
