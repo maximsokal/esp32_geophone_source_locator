@@ -1,4 +1,8 @@
-import { analyzeSurfaceComponents, type SurfaceComponentAnalysis } from './surfaceComponents';
+import {
+  MESH_MIN_POINTS,
+  analyzeSurfaceComponents,
+  type SurfaceComponentAnalysis,
+} from './surfaceComponents';
 
 export interface MeshReconstructionPreflightInput {
   positions: ArrayLike<number>;
@@ -24,10 +28,11 @@ const MIN_SURFACE_CONFIDENCE = 0.58;
 /**
  * Cheap O(N) physical gate before expensive post-scan AI or TSDF worker work.
  *
- * This deliberately uses the same connected-component implementation as the
- * reconstruction itself. A global point count is not enough: at least one
- * physically connected 2-D component must satisfy point, cell, metric-extent
- * and occupancy-density requirements before reconstruction is worth starting.
+ * This deliberately uses the same connected-component implementation and point
+ * threshold as reconstruction itself. A global point count is not enough: at
+ * least one physically connected 2-D component must satisfy point, cell,
+ * metric-extent and occupancy-density requirements before reconstruction is
+ * worth starting.
  */
 export function assessMeshReconstructionPreflight(
   input: MeshReconstructionPreflightInput,
@@ -48,7 +53,7 @@ export function assessMeshReconstructionPreflight(
   const ready = analysis.eligibleComponentCount > 0 && analysis.eligiblePointCount > 0;
   const limitingReason = ready
     ? 'ready'
-    : sourcePointCount < 24 || (best?.pointCount ?? 0) < 24
+    : sourcePointCount < MESH_MIN_POINTS || (best?.pointCount ?? 0) < MESH_MIN_POINTS
       ? 'points'
       : 'extent-or-density';
   return {
