@@ -89,7 +89,12 @@ const MAX_PROVISIONAL_ORIENTATION_NODES_PER_CELL = 12;
 const ORIENTATION_FAMILY_DOT = Math.cos((34 * Math.PI) / 180);
 const COMPONENT_NORMAL_DOT = Math.cos((52 * Math.PI) / 180);
 const DEFAULT_MINIMUM_CONFIDENCE = 0.58;
-const MESH_MIN_POINTS = 24;
+/**
+ * Actual post-scan TSDF handoff already requires 60 locally certified surfels.
+ * Keep connected-component readiness on the same point gate so the live Mxx bar
+ * cannot reach 100% while reconstruction is still guaranteed to remain disabled.
+ */
+export const MESH_MIN_POINTS = 60;
 const MESH_MIN_OCCUPIED_CELLS = 7;
 const MESH_MIN_OCCUPANCY_RATIO = 0.30;
 const ROBUST_EXTENT_TRIM_FRACTION = 0.10;
