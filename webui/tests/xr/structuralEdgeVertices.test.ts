@@ -54,6 +54,24 @@ describe('structural vertices from mature finite edges', () => {
     ])).toHaveLength(0);
   });
 
+  it('does not let two minimum-scale edges bridge a five-centimetre hole', () => {
+    expect(inferStructuralVerticesFromEdges([
+      edge('a', [0, 0, 0], [0.10, 0, 0], { support: 8 }),
+      edge('b', [0.15, 0, 0], [0.15, 0.10, 0], { support: 8 }),
+    ])).toHaveLength(0);
+  });
+
+  it('allows a bounded sensor hole only when both measured edges are long and dense', () => {
+    const vertices = inferStructuralVerticesFromEdges([
+      edge('a', [0, 0, 0], [0.50, 0, 0], { support: 24 }),
+      edge('b', [0.55, 0, 0], [0.55, 0.50, 0], { support: 24 }),
+    ]);
+    expect(vertices).toHaveLength(1);
+    // The 5-cm hole is allowed for long mature edges, but the inferred vertex
+    // remains only half that distance from each measured finite endpoint.
+    expect(vertices[0].position[0]).toBeCloseTo(0.525, 3);
+  });
+
   it('requires independent maturity on both contributing edges', () => {
     expect(inferStructuralVerticesFromEdges([
       edge('a', [0, 0, 0], [0.5, 0, 0]),
