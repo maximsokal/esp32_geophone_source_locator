@@ -20,6 +20,7 @@ function fakeWebGl2() {
   };
   let bound: FakeBuffer | null = null;
   let nextPixels = new Uint8Array(8);
+  let throwOnReadback = false;
   const syncs: FakeSync[] = [];
   let readbackCalls = 0;
 
@@ -52,6 +53,7 @@ function fakeWebGl2() {
     getBufferSubData(target: number, offset: number, destination: Uint8Array) {
       if (target !== constants.PIXEL_PACK_BUFFER || bound === null) throw new Error('No PBO bound');
       readbackCalls += 1;
+      if (throwOnReadback) throw new Error('simulated context loss');
       destination.set(bound.data.subarray(offset, offset + destination.length));
     },
   } as unknown as WebGL2RenderingContext;
@@ -60,6 +62,7 @@ function fakeWebGl2() {
     gl,
     syncs,
     setNextPixels(values: readonly number[]) { nextPixels = Uint8Array.from(values); },
+    setThrowOnReadback(value: boolean) { throwOnReadback = value; },
     signal(index: number) { syncs[index].status = constants.ALREADY_SIGNALED; },
     fail(index: number) { syncs[index].status = constants.WAIT_FAILED; },
     get readbackCalls() { return readbackCalls; },
@@ -113,6 +116,20 @@ describe('NonBlockingRgbaReadback', () => {
     expect(ring.poll()).toBeNull();
     expect(ring.pendingCount).toBe(0);
     expect(fake.readbackCalls).toBe(0);
+    expect(ring.enqueue({ frame: 2 })).toBe(true);
+  });
+
+  it('releases the slot when getBufferSubData throws after a signalled fence', () => {
+    const fake = fakeWebGl2();
+    const ring = new NonBlockingRgbaReadback<{ frame: number }>(fake.gl, 2, 1, 2);
+    ring.enqueue({ frame: 1 });
+    fake.signal(0);
+    fake.setThrowOnReadback(true);
+
+    expect(() => ring.poll()).toThrow('simulated context loss');
+    expect(ring.pendingCount).toBe(0);
+
+    fake.setThrowOnReadback(false);
     expect(ring.enqueue({ frame: 2 })).toBe(true);
   });
 
