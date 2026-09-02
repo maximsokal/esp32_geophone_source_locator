@@ -11,6 +11,7 @@ interface FakeState {
   viewport: Int32Array;
   program: object | null;
   arrayBuffer: object | null;
+  pixelPackBuffer: object | null;
   vao: object | null;
   attribEnabled: boolean;
   attribBuffer: object | null;
@@ -41,6 +42,8 @@ function fakeGl(webgl2: boolean) {
     VERTEX_ARRAY_BINDING: 113,
     READ_FRAMEBUFFER: 114,
     DRAW_FRAMEBUFFER: 115,
+    PIXEL_PACK_BUFFER: 116,
+    PIXEL_PACK_BUFFER_BINDING: 117,
   };
   const state: FakeState = {
     activeTexture: 103,
@@ -51,6 +54,7 @@ function fakeGl(webgl2: boolean) {
     viewport: new Int32Array([7, 8, 640, 480]),
     program: { id: 'program' },
     arrayBuffer: { id: 'array' },
+    pixelPackBuffer: { id: 'pack' },
     vao: { id: 'vao' },
     attribEnabled: false,
     attribBuffer: { id: 'attrib-buffer' },
@@ -69,6 +73,7 @@ function fakeGl(webgl2: boolean) {
         case constants.VIEWPORT: return state.viewport;
         case constants.CURRENT_PROGRAM: return state.program;
         case constants.ARRAY_BUFFER_BINDING: return state.arrayBuffer;
+        case constants.PIXEL_PACK_BUFFER_BINDING: return state.pixelPackBuffer;
         case constants.VERTEX_ARRAY_BINDING: return state.vao;
         default: return null;
       }
@@ -80,7 +85,10 @@ function fakeGl(webgl2: boolean) {
       else if (webgl2 && target === constants.DRAW_FRAMEBUFFER) state.drawFramebuffer = framebuffer;
       else state.framebuffer = framebuffer;
     },
-    bindBuffer(_target: number, buffer: object | null) { state.arrayBuffer = buffer; },
+    bindBuffer(target: number, buffer: object | null) {
+      if (webgl2 && target === constants.PIXEL_PACK_BUFFER) state.pixelPackBuffer = buffer;
+      else state.arrayBuffer = buffer;
+    },
     useProgram(program: object | null) { state.program = program; },
     viewport(x: number, y: number, width: number, height: number) { state.viewport = new Int32Array([x, y, width, height]); },
     getVertexAttrib(_location: number, parameter: number) {
@@ -117,6 +125,7 @@ function disturb(state: FakeState): void {
   state.viewport = new Int32Array([0, 0, 256, 144]);
   state.program = { id: 'capture-program' };
   state.arrayBuffer = { id: 'capture-array' };
+  state.pixelPackBuffer = { id: 'capture-pack' };
   state.vao = { id: 'capture-vao' };
   state.attribEnabled = true;
   state.attribBuffer = { id: 'capture-attrib' };
@@ -145,7 +154,7 @@ describe('raw-camera WebGL state guard', () => {
     expect(state.attribPointer).toEqual({ size: 3, type: 5126, normalized: true, stride: 20, offset: 8 });
   });
 
-  it('restores independent WebGL2 READ/DRAW framebuffers and VAO', () => {
+  it('restores independent WebGL2 READ/DRAW framebuffers, VAO and pixel-pack buffer', () => {
     const { gl, state } = fakeGl(true);
     const snapshot = captureWebGlState(gl, 2);
     disturb(state);
@@ -155,5 +164,6 @@ describe('raw-camera WebGL state guard', () => {
     expect((state.readFramebuffer as { id: string }).id).toBe('read');
     expect((state.drawFramebuffer as { id: string }).id).toBe('draw');
     expect((state.vao as { id: string }).id).toBe('vao');
+    expect((state.pixelPackBuffer as { id: string }).id).toBe('pack');
   });
 });
