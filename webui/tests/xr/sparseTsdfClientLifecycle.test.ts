@@ -26,6 +26,21 @@ function result(sourcePointCount: number): SparseTsdfMesh {
   return {
     trianglePositions: new Float32Array(0),
     triangleCount: 0,
+    rawTriangleCount: 0,
+    quarantinedTriangleCount: 0,
+    topologyDiscardedTriangleCount: 0,
+    nonManifoldEdgeCount: 0,
+    nonManifoldRepairTriangleCount: 0,
+    orientationRepairCount: 0,
+    orientationConflictCount: 0,
+    meshTopologyComponentCount: 0,
+    selfIntersectionPairCount: 0,
+    selfIntersectionAffectedTriangleCount: 0,
+    selfIntersectionExactTestedPairs: 0,
+    selfIntersectionBroadPhaseCandidatePairs: 0,
+    selfIntersectionTruncated: false,
+    selfIntersectionOversizedTriangleCount: 0,
+    meshNoiseScore: 0,
     sourcePointCount,
     integratedPointCount: sourcePointCount,
     skippedLowConfidence: 0,
@@ -91,6 +106,21 @@ describe('SparseTsdfMeshClient lazy worker lifecycle', () => {
     const mesh = await client.reconstruct(gridInput(8, 8, 0.006));
     expect(mesh.triangleCount).toBe(0);
     expect(mesh.meshReadiness).toBeLessThan(1);
+    expect(mesh.rawTriangleCount).toBe(0);
+    expect(mesh.quarantinedTriangleCount).toBe(0);
+    expect(mesh.topologyDiscardedTriangleCount).toBe(0);
+    expect(mesh.nonManifoldEdgeCount).toBe(0);
+    expect(mesh.nonManifoldRepairTriangleCount).toBe(0);
+    expect(mesh.orientationRepairCount).toBe(0);
+    expect(mesh.orientationConflictCount).toBe(0);
+    expect(mesh.meshTopologyComponentCount).toBe(0);
+    expect(mesh.selfIntersectionPairCount).toBe(0);
+    expect(mesh.selfIntersectionAffectedTriangleCount).toBe(0);
+    expect(mesh.selfIntersectionExactTestedPairs).toBe(0);
+    expect(mesh.selfIntersectionBroadPhaseCandidatePairs).toBe(0);
+    expect(mesh.selfIntersectionTruncated).toBe(false);
+    expect(mesh.selfIntersectionOversizedTriangleCount).toBe(0);
+    expect(mesh.meshNoiseScore).toBe(0);
     expect(factoryCalls).toBe(0);
     client.dispose();
   });
