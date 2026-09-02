@@ -4,7 +4,6 @@ const MIN_NORMAL_DOT = Math.cos((16 * Math.PI) / 180);
 const MAX_PLANE_DISTANCE_METERS = 0.045;
 const EXTENT_MARGIN_METERS = 0.12;
 const MAX_NORMAL_BLEND = 0.20;
-const MAX_CONFIDENCE_BONUS = 0.025;
 const MIN_SURFEL_CONFIDENCE = 0.50;
 
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
@@ -17,12 +16,13 @@ function normalize(x: number, y: number, z: number): readonly [number, number, n
 
 /**
  * Softly stabilize ALREADY MEASURED surfel normals with matching native XRPlane
- * orientation. Positions are immutable and no surfel is created or removed.
+ * orientation. Positions and physical confidence are immutable and no surfel is
+ * created or removed.
  *
  * The arrays are intentionally modified in-place: structural worker input is
  * transferred from the main thread and is worker-owned at this point, avoiding
- * another full point-cloud allocation. The native plane API exposes no numeric
- * confidence, so influence is deliberately small and bounded by geometric match.
+ * another full point-cloud allocation. WebXR Plane Detection exposes no numeric
+ * plane confidence, so the prior is never allowed to promote surfel confidence.
  */
 export function stabilizeMeasuredSurfelsWithNativePlanes(
   positions: Float32Array,
@@ -46,7 +46,6 @@ export function stabilizeMeasuredSurfelsWithNativePlanes(
     const measured = normalize(normals[offset], normals[offset + 1], normals[offset + 2]);
     if (measured === null) continue;
 
-    let bestPrior: StructuralPlanePrior | null = null;
     let bestNormal: readonly [number, number, number] | null = null;
     let bestScore = 0;
     for (const prior of priors) {
@@ -69,12 +68,11 @@ export function stabilizeMeasuredSurfelsWithNativePlanes(
       const score = normalScore * 0.62 + distanceScore * 0.38;
       if (score > bestScore) {
         bestScore = score;
-        bestPrior = prior;
         bestNormal = signedDot < 0 ? [-native[0], -native[1], -native[2]] : native;
       }
     }
 
-    if (bestPrior === null || bestNormal === null) continue;
+    if (bestNormal === null) continue;
     const blend = Math.min(MAX_NORMAL_BLEND, 0.08 + bestScore * 0.12);
     const blended = normalize(
       measured[0] * (1 - blend) + bestNormal[0] * blend,
@@ -85,7 +83,6 @@ export function stabilizeMeasuredSurfelsWithNativePlanes(
     normals[offset] = blended[0];
     normals[offset + 1] = blended[1];
     normals[offset + 2] = blended[2];
-    confidence[index] = clamp01(confidence[index] + MAX_CONFIDENCE_BONUS * bestScore);
     stabilized += 1;
   }
   return stabilized;
