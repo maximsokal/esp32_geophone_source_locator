@@ -276,12 +276,11 @@ export function diagnoseMeshSelfIntersections(
   const aabbs = triangles.map(aabbForTriangle);
   const cellSizeMeters = clamp(Math.abs(voxelSizeMeters) * 2.5, 0.065, 0.24);
   const epsilonMeters = clamp(Math.abs(voxelSizeMeters) * 0.015, 1e-5, 8e-4);
+  const priorities = triangles.map((triangle, index) => stableTrianglePriority(triangle, aabbs[index], cellSizeMeters));
   const buckets = new Map<string, number[]>();
   const seenPairs = new Set<number>();
   const order = Array.from({ length: triangleCount }, (_, index) => index).sort((left, right) =>
-    stableTrianglePriority(triangles[left], aabbs[left], cellSizeMeters) -
-      stableTrianglePriority(triangles[right], aabbs[right], cellSizeMeters) ||
-    left - right
+    priorities[left] - priorities[right] || left - right
   );
   let broadPhaseCandidatePairs = 0;
   let exactTestedPairs = 0;
