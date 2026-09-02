@@ -1,23 +1,25 @@
 import type { StructuralGuideViewpoint } from './structuralGuide';
-import type { SurfaceComponentAnalysis, SurfaceComponentPoint } from './surfaceComponents';
+import {
+  MESH_MIN_POINTS,
+  type SurfaceComponentAnalysis,
+  type SurfaceComponentPoint,
+} from './surfaceComponents';
 
 type SurfaceComponent = SurfaceComponentAnalysis['components'][number];
+type ReadinessSurface = Pick<SurfaceComponentAnalysis, 'components' | 'bestMeshComponent'>;
 
 /**
  * Small worker -> UI contract. The full component analysis can contain hundreds
  * of disconnected islands and large point masks; none of that is needed by the
  * readiness bar. Keep only the component that best supports structural geometry
- * and the independently best mesh component.
+ * and the independently best component from the actual mesh input policy.
  */
 export interface SurfaceComponentReadinessSummary {
   structuralComponent: SurfaceComponent | null;
   bestMeshComponent: SurfaceComponent | null;
 }
 
-type LegacySurfaceReadinessInput = Pick<
-  SurfaceComponentAnalysis,
-  'components' | 'bestMeshComponent'
->;
+type LegacySurfaceReadinessInput = ReadinessSurface;
 export type SurfaceComponentReadinessInput = SurfaceComponentReadinessSummary | LegacySurfaceReadinessInput;
 
 export interface ScanCapabilityInput {
@@ -62,7 +64,6 @@ const STRUCTURAL_TARGET_BASELINE_METERS = 0.12;
 const STRUCTURAL_COMPONENT_POINTS = 18;
 const STRUCTURAL_MAJOR_EXTENT_METERS = 0.12;
 const STRUCTURAL_MINOR_EXTENT_METERS = 0.045;
-const MESH_MIN_POINTS = 24;
 const MESH_MIN_OCCUPIED_CELLS = 7;
 const MESH_MIN_OCCUPANCY_RATIO = 0.30;
 const VIEW_SECTORS = 16;
@@ -145,13 +146,23 @@ function isCompactSurfaceReadiness(
   return 'structuralComponent' in surface;
 }
 
-/** Build the bounded worker -> UI summary without returning masks or island lists. */
+/**
+ * Build the bounded worker -> UI summary without returning masks or island lists.
+ *
+ * Structural and mesh readiness may intentionally use different physical views of
+ * the same scan. Structural geometry uses clustered normal families so sharp
+ * manifolds survive robust fitting; mesh readiness must use the locally certified
+ * surfels that the TSDF path will actually receive, without structural-family
+ * clustering. Supplying `meshSurface` keeps Mxx honest without changing the
+ * historical one-argument API used by tests/legacy callers.
+ */
 export function summarizeSurfaceComponentReadiness(
-  surface: Pick<SurfaceComponentAnalysis, 'components' | 'bestMeshComponent'>,
+  structuralSurface: ReadinessSurface,
+  meshSurface: ReadinessSurface = structuralSurface,
 ): SurfaceComponentReadinessSummary {
   return {
-    structuralComponent: bestStructuralComponent(surface.components)?.component ?? null,
-    bestMeshComponent: surface.bestMeshComponent,
+    structuralComponent: bestStructuralComponent(structuralSurface.components)?.component ?? null,
+    bestMeshComponent: meshSurface.bestMeshComponent,
   };
 }
 
@@ -189,7 +200,7 @@ export function computeSurfaceStructuralReadiness(
  * SurfaceComponents computes meshReadiness from five conjunctive physical gates:
  * points, occupied cells, scale-aware major extent, scale-aware minor extent and
  * occupancy ratio. The two extent targets depend on voxel size. Do not duplicate
- * old fixed centimetre thresholds here: once the fixed point/density gates are
+ * old fixed centimetre thresholds here: once the shared point/density gates are
  * satisfied, any remaining readiness deficit necessarily comes from metric scale.
  */
 function meshLimitingMetric(component: SurfaceComponent): CapabilityProgress['limitingMetric'] {
