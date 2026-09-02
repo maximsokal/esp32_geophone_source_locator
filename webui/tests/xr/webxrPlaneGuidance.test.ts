@@ -38,7 +38,7 @@ const identity = new Float32Array([
 ]);
 
 describe('WebXR native plane guidance capture', () => {
-  it('converts plane center, +Y normal and polygon extent into project coordinates', () => {
+  it('converts plane center, basis, polygon and extent into project coordinates', () => {
     const matrix = new Float32Array(identity);
     matrix[12] = 1;
     matrix[13] = 2;
@@ -48,10 +48,13 @@ describe('WebXR native plane guidance capture', () => {
 
     expect(prior).not.toBeNull();
     expect(prior!.center).toEqual([1, -3, 2]);
-    // Reference +Y maps to project +Z.
+    // Reference +Y maps to project +Z; +X stays +X; +Z maps to project -Y.
     expect(prior!.normal[0]).toBeCloseTo(0, 6);
     expect(prior!.normal[1]).toBeCloseTo(0, 6);
     expect(prior!.normal[2]).toBeCloseTo(1, 6);
+    expect(prior!.tangentU).toEqual([1, 0, 0]);
+    expect(prior!.tangentV).toEqual([0, -1, 0]);
+    expect(prior!.polygonUv).toEqual([[-0.5, -0.25], [0.5, -0.25], [0.5, 0.25], [-0.5, 0.25]]);
     expect(prior!.extentRadiusMeters).toBeCloseTo(Math.hypot(0.5, 0.25), 6);
     expect(prior!.areaSquareMeters).toBeCloseTo(0.5, 6);
     expect(prior!.polygonVertexCount).toBe(4);
@@ -93,6 +96,18 @@ describe('WebXR native plane guidance capture', () => {
     expect(result).toHaveLength(2);
     expect(result[0].areaSquareMeters).toBeGreaterThan(result[1].areaSquareMeters);
     expect(result.some((item) => item.areaSquareMeters < 0.02)).toBe(false);
+  });
+
+  it('bounds copied polygon memory for highly fragmented tracker output', () => {
+    const vertices = Array.from({ length: 200 }, (_, index) => {
+      const angle = index * 2 * Math.PI / 200;
+      return { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
+    });
+    const source = plane({ polygon: vertices });
+    const prior = captureStructuralPlanePrior(source, frameFor([source], identity), {});
+    expect(prior).not.toBeNull();
+    expect(prior!.polygonUv.length).toBe(64);
+    expect(prior!.polygonVertexCount).toBe(200);
   });
 
   it('fails advisory when frame-scoped detectedPlanes access throws', () => {
