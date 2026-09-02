@@ -126,7 +126,6 @@ function orientAndPartition(
   componentByTriangle: Int32Array;
   componentTriangles: number[][];
   orientationRepairCount: number;
-  orientationConflictCount: number;
 } {
   const flips = new Uint8Array(triangles.length);
   const assigned = new Uint8Array(triangles.length);
@@ -145,7 +144,6 @@ function orientAndPartition(
   }
 
   const componentTriangles: number[][] = [];
-  let orientationConflictCount = 0;
   for (let seed = 0; seed < triangles.length; seed += 1) {
     if (assigned[seed] !== 0) continue;
     const componentId = componentTriangles.length;
@@ -157,14 +155,12 @@ function orientAndPartition(
       const current = queue[read];
       members.push(current);
       for (const relation of adjacency[current]) {
-        const requiredFlip = (relation.sameDirection ? 1 : 0) ^ flips[current];
+        const requiredFlip = ((relation.sameDirection ? 1 : 0) ^ flips[current]) as 0 | 1;
         if (assigned[relation.neighbour] === 0) {
           assigned[relation.neighbour] = 1;
           flips[relation.neighbour] = requiredFlip;
           componentByTriangle[relation.neighbour] = componentId;
           queue.push(relation.neighbour);
-        } else if (flips[relation.neighbour] !== requiredFlip) {
-          orientationConflictCount += 1;
         }
       }
     }
@@ -173,24 +169,36 @@ function orientAndPartition(
 
   let orientationRepairCount = 0;
   for (const flip of flips) if (flip !== 0) orientationRepairCount += 1;
-  return {
-    flips,
-    componentByTriangle,
-    componentTriangles,
-    orientationRepairCount,
-    // Each contradictory adjacency is observed from both traversal directions.
-    orientationConflictCount: Math.ceil(orientationConflictCount / 2),
-  };
+  return { flips, componentByTriangle, componentTriangles, orientationRepairCount };
+}
+
+function componentOrientationConflicts(
+  id: number,
+  flips: Uint8Array,
+  componentByTriangle: Int32Array,
+  edges: Map<string, EdgeUse[]>,
+): number {
+  let conflicts = 0;
+  for (const uses of edges.values()) {
+    if (uses.length !== 2) continue;
+    const first = uses[0];
+    const second = uses[1];
+    if (componentByTriangle[first.triangle] !== id || componentByTriangle[second.triangle] !== id) continue;
+    const sameDirection = first.from === second.from && first.to === second.to;
+    const effectiveSame = sameDirection !== (flips[first.triangle] !== flips[second.triangle]);
+    if (effectiveSame) conflicts += 1;
+  }
+  return conflicts;
 }
 
 function componentQuality(
   id: number,
   members: readonly number[],
   triangles: readonly Triangle[],
+  flips: Uint8Array,
   componentByTriangle: Int32Array,
   edges: Map<string, EdgeUse[]>,
   voxelSizeMeters: number,
-  globalOrientationConflicts: number,
 ): MeshTopologyComponentQuality {
   let area = 0;
   let minX = Number.POSITIVE_INFINITY; let minY = Number.POSITIVE_INFINITY; let minZ = Number.POSITIVE_INFINITY;
@@ -214,9 +222,10 @@ function componentQuality(
     if (usesInComponent === 0) continue;
     componentEdges += 1;
     if (usesInComponent === 1) boundaryEdges += 1;
-    if (usesInComponent > 2) nonManifoldEdgeCount += 1;
+    if (uses.length > 2) nonManifoldEdgeCount += 1;
   }
   const boundaryEdgeRatio = componentEdges > 0 ? boundaryEdges / componentEdges : 1;
+  const orientationConflictCount = componentOrientationConflicts(id, flips, componentByTriangle, edges);
 
   const safeVoxel = clamp(Math.abs(voxelSizeMeters), 0.01, 0.12);
   const minimumMajor = clamp(safeVoxel * 2.5, 0.085, 0.18);
@@ -225,7 +234,7 @@ function componentQuality(
     MIN_AREA_ABSOLUTE_SQUARE_METERS,
     minimumMajor * minimumWidth * 0.45,
   );
-  const topologyClean = nonManifoldEdgeCount === 0 && globalOrientationConflicts === 0;
+  const topologyClean = nonManifoldEdgeCount === 0 && orientationConflictCount === 0;
   const retain =
     topologyClean &&
     members.length >= MIN_TRIANGLES_RETAINED_COMPONENT &&
@@ -247,7 +256,7 @@ function componentQuality(
     effectiveWidthMeters,
     boundaryEdgeRatio,
     nonManifoldEdgeCount,
-    orientationConflictCount: topologyClean ? 0 : globalOrientationConflicts,
+    orientationConflictCount,
     disposition: retain ? 'retain' : quarantine ? 'quarantine' : 'discard',
   };
 }
@@ -291,11 +300,12 @@ export function sanitizeMeshTopology(
     id,
     members,
     triangles,
+    orientation.flips,
     orientation.componentByTriangle,
     edges,
     voxelSizeMeters,
-    orientation.orientationConflictCount,
   ));
+  const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
 
   const output: number[] = [];
   let retainedTriangleCount = 0;
@@ -325,7 +335,7 @@ export function sanitizeMeshTopology(
     quarantinedTriangleCount,
     discardedTriangleCount,
     orientationRepairCount: orientation.orientationRepairCount,
-    orientationConflictCount: orientation.orientationConflictCount,
+    orientationConflictCount,
     nonManifoldEdgeCount,
     components,
   };
