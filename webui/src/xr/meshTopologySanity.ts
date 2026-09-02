@@ -1,4 +1,8 @@
 import {
+  diagnoseMeshNormalIntrusions,
+  type MeshNormalIntrusionComponentStats,
+} from './meshNormalIntrusion';
+import {
   diagnoseMeshSelfIntersections,
   type MeshSelfIntersectionComponentStats,
 } from './meshSelfIntersection';
@@ -18,6 +22,8 @@ export interface MeshTopologyComponentQuality {
   selfIntersectionPairCount: number;
   /** Fraction of this component's faces touched by at least one such pair. */
   selfIntersectionAffectedTriangleRatio: number;
+  /** Fraction of faces whose short normal ray pierces a non-adjacent face. */
+  normalIntrusionAffectedTriangleRatio: number;
   /** Combined diagnostic only; a sharp fold is never discarded from this score alone. */
   meshNoiseScore: number;
   disposition: MeshComponentDisposition;
@@ -73,8 +79,8 @@ const MIN_AREA_ABSOLUTE_SQUARE_METERS = 0.0015;
 const MIN_EFFECTIVE_WIDTH_ABSOLUTE_METERS = 0.032;
 const MAX_BOUNDARY_RATIO_FOR_SMALL_COMPONENT = 0.86;
 // Noise can quarantine a rendered component, but never discard physical evidence.
-// 0.60 requires either widespread self-intersection or self-intersection combined
-// with a very open boundary; a localized genuine sharp fold stays below the gate.
+// 0.60 requires widespread self-intersection or repeated normal intrusions plus
+// weak/open topology. A welded sharp fold does not enter either diagnostic.
 const MAX_RETAIN_MESH_NOISE_SCORE = 0.60;
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -289,6 +295,7 @@ function componentQuality(
   triangles: readonly Triangle[],
   edgeStats: ComponentEdgeStats,
   selfIntersection: MeshSelfIntersectionComponentStats,
+  normalIntrusion: MeshNormalIntrusionComponentStats,
   voxelSizeMeters: number,
 ): MeshTopologyComponentQuality {
   let area = 0;
@@ -314,15 +321,20 @@ function componentQuality(
     minimumMajor * minimumWidth * 0.45,
   );
 
-  // Self-intersections are deliberately a diagnostic score rather than a hard
-  // topology veto. Two independently reconstructed surfaces can form a genuine
-  // sharp rubble corner without sharing exact vertices. Repeated intersections
-  // become actionable only together with weak/open topology evidence.
+  // Self-intersections and normal-ray intrusions are evidence, not geometric
+  // truth. A real thin two-sided surface can trigger normal intrusion and two
+  // independently reconstructed faces can meet at a sharp corner without welded
+  // vertices. Intrusion contributes only when another weakness is already present.
   const intersectionNoise = clamp(selfIntersection.affectedTriangleRatio / 0.24, 0, 1);
+  const normalIntrusionNoise = clamp(normalIntrusion.intrudingTriangleRatio / 0.22, 0, 1);
   const boundaryNoise = clamp((boundaryEdgeRatio - 0.50) / 0.45, 0, 1);
   const hardTopologyNoise = edgeStats.nonManifoldEdgeCount > 0 || edgeStats.orientationConflictCount > 0 ? 1 : 0;
+  const intrusionContext = Math.max(boundaryNoise, intersectionNoise * 0.60, hardTopologyNoise);
   const meshNoiseScore = clamp(
-    intersectionNoise * 0.62 + boundaryNoise * 0.22 + hardTopologyNoise * 0.16,
+    intersectionNoise * 0.62 +
+    boundaryNoise * 0.22 +
+    hardTopologyNoise * 0.16 +
+    normalIntrusionNoise * intrusionContext * 0.24,
     0,
     1,
   );
@@ -353,6 +365,7 @@ function componentQuality(
     orientationConflictCount: edgeStats.orientationConflictCount,
     selfIntersectionPairCount: selfIntersection.intersectingPairCount,
     selfIntersectionAffectedTriangleRatio: selfIntersection.affectedTriangleRatio,
+    normalIntrusionAffectedTriangleRatio: normalIntrusion.intrudingTriangleRatio,
     meshNoiseScore,
     disposition: retain ? 'retain' : quarantine ? 'quarantine' : 'discard',
   };
@@ -364,10 +377,10 @@ function componentQuality(
  * It never changes the physical surfel/occupancy map. It only decides whether a
  * triangle island is trustworthy enough to be shown/consumed as a mesh. Tiny
  * non-manifold faces are removed locally first, shared manifold edges then repair
- * winding consistently. Self-intersection is measured with a bounded spatial
- * broad phase and contributes a noise diagnostic. High combined noise can
- * quarantine a component from the rendered/consumed mesh, but never discards the
- * underlying physical surfels and never treats one sharp fold as sufficient proof.
+ * winding consistently. Self-intersection and short normal intrusions are both
+ * bounded spatial diagnostics. High combined noise can quarantine a component
+ * from the rendered/consumed mesh, but never discards the underlying physical
+ * surfels and never treats one sharp fold or one nearby shell as sufficient proof.
  */
 export function sanitizeMeshTopology(
   trianglePositions: Float32Array,
@@ -414,12 +427,19 @@ export function sanitizeMeshTopology(
     orientation.componentTriangles.length,
     voxelSizeMeters,
   );
+  const normalIntrusion = diagnoseMeshNormalIntrusions(
+    triangles,
+    orientation.componentByTriangle,
+    orientation.componentTriangles.length,
+    voxelSizeMeters,
+  );
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
     triangles,
     componentEdgeStats[id],
     selfIntersection.componentStats[id],
+    normalIntrusion.componentStats[id],
     voxelSizeMeters,
   ));
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
