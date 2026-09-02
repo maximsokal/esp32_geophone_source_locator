@@ -1,12 +1,17 @@
 import type { StructuralGuideViewpoint } from './structuralGuide';
 import type { SurfaceComponentAnalysis, SurfaceComponentPoint } from './surfaceComponents';
 
+export type SurfaceComponentReadinessSummary = Pick<
+  SurfaceComponentAnalysis,
+  'components' | 'bestMeshComponent'
+>;
+
 export interface ScanCapabilityInput {
   stablePointCount: number;
   keyframeCount: number;
   visibleCoverageCells: number;
   readyCoverageCells: number;
-  surfaceAnalysis?: SurfaceComponentAnalysis | null;
+  surfaceAnalysis?: SurfaceComponentReadinessSummary | null;
   viewpoints?: readonly StructuralGuideViewpoint[];
 }
 
@@ -15,6 +20,13 @@ export interface CapabilityProgress {
   ready: boolean;
   limitingMetric: 'points' | 'views' | 'extent' | 'surface-density' | 'unknown';
   growthNeededPercent: number | null;
+}
+
+export interface StructuralSurfaceReadiness {
+  progress: number;
+  ready: boolean;
+  limitingMetric: CapabilityProgress['limitingMetric'];
+  component: SurfaceComponentAnalysis['components'][number] | null;
 }
 
 export interface ScanCapabilityReadiness {
@@ -96,7 +108,7 @@ function componentStructuralProgress(component: SurfaceComponent): Omit<Structur
 }
 
 function bestStructuralComponent(
-  surface: SurfaceComponentAnalysis | null | undefined,
+  surface: SurfaceComponentReadinessSummary | null | undefined,
 ): StructuralComponentCandidate | null {
   if (surface === null || surface === undefined || surface.components.length === 0) return null;
   let best: StructuralComponentCandidate | null = null;
@@ -114,6 +126,31 @@ function bestStructuralComponent(
     }
   }
   return best;
+}
+
+/**
+ * Cheap policy boundary shared by the worker and the UI. It contains only the
+ * physical connected-surface prerequisites for structural geometry; camera
+ * baseline/keyframe prerequisites remain part of computeScanCapabilityReadiness.
+ */
+export function computeSurfaceStructuralReadiness(
+  surface: SurfaceComponentReadinessSummary | null | undefined,
+): StructuralSurfaceReadiness {
+  const candidate = bestStructuralComponent(surface);
+  if (candidate === null) {
+    return {
+      progress: 0,
+      ready: false,
+      limitingMetric: 'surface-density',
+      component: null,
+    };
+  }
+  return {
+    progress: candidate.progress,
+    ready: candidate.progress >= 1 - 1e-9,
+    limitingMetric: candidate.limitingMetric,
+    component: candidate.component,
+  };
 }
 
 /**
@@ -145,14 +182,14 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
   const viewpoints = input.viewpoints ?? [];
   const baseline = cameraBaseline(viewpoints);
   const translationProgress = ratio(baseline, STRUCTURAL_TARGET_BASELINE_METERS);
-  const scale = bestStructuralComponent(input.surfaceAnalysis);
+  const scale = computeSurfaceStructuralReadiness(input.surfaceAnalysis);
   const structuralTerms = [pointsProgress, keyframeProgress, translationProgress];
-  if (scale !== null) structuralTerms.push(scale.progress);
+  if (scale.component !== null) structuralTerms.push(scale.progress);
   const structuralProgress = Math.min(...structuralTerms);
   let structuralLimit: CapabilityProgress['limitingMetric'] = 'views';
   if (pointsProgress <= structuralProgress + 1e-9) structuralLimit = 'points';
   else if (keyframeProgress <= structuralProgress + 1e-9 || translationProgress <= structuralProgress + 1e-9) structuralLimit = 'views';
-  if (scale !== null && scale.progress <= structuralProgress + 1e-9) structuralLimit = scale.limitingMetric;
+  if (scale.component !== null && scale.progress <= structuralProgress + 1e-9) structuralLimit = scale.limitingMetric;
 
   const bestMesh = input.surfaceAnalysis?.bestMeshComponent ?? null;
   const mesh = bestMesh === null ? null : {
@@ -162,7 +199,7 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
     growthNeededPercent: relativeGrowthNeeded(bestMesh.meshReadiness),
   };
 
-  const structuralComponent = scale?.component ?? null;
+  const structuralComponent = scale.component;
   const azimuth = azimuthCoverage(viewpoints, structuralComponent?.center ?? null);
   const viewCoverage = structuralComponent === null
     ? Math.min(ratio(viewpoints.length, STRUCTURAL_TARGET_KEYFRAMES), ratio(baseline, TARGET_CAMERA_BASELINE_METERS))
