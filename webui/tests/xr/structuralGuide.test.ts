@@ -28,6 +28,25 @@ function addPlaneY(cloud: CloudBuilder, y = 0): void {
 function addPlaneZ(cloud: CloudBuilder, z = 0): void {
   for (let x = -0.22; x <= 0.2201; x += 0.035) for (let y = -0.22; y <= 0.2201; y += 0.035) addPoint(cloud, [x, y, z], [0, 0, 1]);
 }
+
+/**
+ * Build two valid 2-D local plane patches while controlling only their samples
+ * close enough to support the mathematical intersection line. Far rows keep the
+ * plane fit healthy but sit outside the 7.5-cm finite-line support radius.
+ */
+function addControlledEdgeSupport(
+  cloud: CloudBuilder,
+  nearZForX: readonly number[],
+  nearZForY: readonly number[],
+): void {
+  for (const z of [0.005, 0.025, 0.045, 0.065, 0.085, 0.095]) {
+    for (const y of [0.085, 0.095]) addPoint(cloud, [0, y, z], [1, 0, 0]);
+    for (const x of [0.085, 0.095]) addPoint(cloud, [x, 0, z], [0, 1, 0]);
+  }
+  for (const z of nearZForX) addPoint(cloud, [0, 0.010, z], [1, 0, 0]);
+  for (const z of nearZForY) addPoint(cloud, [0.010, 0, z], [0, 1, 0]);
+}
+
 function inputFrom(
   cloud: CloudBuilder,
   keyframeCount = 10,
@@ -82,6 +101,25 @@ describe('structural guide geometry', () => {
     expect(result.edges[0].geometryConfidence).toBeGreaterThan(0.48);
     expect(Math.abs(result.edges[0].direction[2])).toBeGreaterThan(0.65);
     expect(result.corners).toHaveLength(0);
+  });
+
+  it('rejects two valid planes when the intersection line has too few distributed physical samples', () => {
+    const cloud = builder();
+    addControlledEdgeSupport(cloud, [0.010, 0.085], [0.010, 0.085]);
+    const result = detectStructuralGuideGeometry(inputFrom(cloud));
+    expect(result.planarPatches).toBeGreaterThanOrEqual(2);
+    expect(result.edges).toHaveLength(0);
+    expect(result.corners).toHaveLength(0);
+  });
+
+  it('does not let display margins bridge non-overlapping measured edge intervals', () => {
+    const cloud = builder();
+    // Before the common-span gate, the +/-2.5-cm display margin could bridge
+    // this 1-cm physical gap into a plausible-looking ~4-cm edge.
+    addControlledEdgeSupport(cloud, [0.005, 0.025, 0.045], [0.055, 0.075, 0.095]);
+    const result = detectStructuralGuideGeometry(inputFrom(cloud));
+    expect(result.planarPatches).toBeGreaterThanOrEqual(2);
+    expect(result.edges).toHaveLength(0);
   });
 
   it('finds a three-plane corner near the true intersection', () => {
