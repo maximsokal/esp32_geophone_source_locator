@@ -15,6 +15,7 @@ const MIN_CORNER_CONFIDENCE = 0.72;
 const MAX_CORNER_UNCERTAINTY_METERS = 0.030;
 const DEDUPE_METERS = 0.095;
 const TRACK_RADIUS_METERS = 0.085;
+const MIN_VIEW_TRANSLATION_METERS = 0.035;
 const MIN_VIEW_BASELINE_METERS = 0.085;
 const MIN_VIEW_RAY_ANGLE_RADIANS = (9 * Math.PI) / 180;
 const MAX_TRACK_EVIDENCE = 6;
@@ -95,6 +96,10 @@ function independentEvidence(existing: readonly CornerEvidence[], next: CornerEv
   if (existing.length === 0) return true;
   for (const previous of existing) {
     const baseline = distance(previous.camera, next.camera);
+    // Angular change without actual translation can be manufactured by candidate
+    // jitter while the phone rotates in place. Metric depth maturity therefore
+    // always requires a non-trivial change of camera origin first.
+    if (baseline < MIN_VIEW_TRANSLATION_METERS) return false;
     const rayDot = Math.max(-1, Math.min(1, dot(previous.ray, next.ray)));
     const angle = Math.acos(rayDot);
     if (baseline < MIN_VIEW_BASELINE_METERS && angle < MIN_VIEW_RAY_ANGLE_RADIANS) return false;
