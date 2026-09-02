@@ -1,4 +1,5 @@
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
+import { liveComputeScheduler } from './liveComputeScheduler';
 import {
   setVisualLineDetectionDeferred,
   type VisualEvidenceFrame,
@@ -88,9 +89,20 @@ export function getVisualEvidenceFrameCount(): number { return visualStore.size;
 export function isVisualEvidenceWorkerBacked(): boolean { return visualClient.workerBacked; }
 export function getVisualEvidenceDetectionError(): string | null { return visualDetectionError; }
 
+/**
+ * Reset all pose-synchronised guidance for a new immersive scan epoch.
+ *
+ * WebXrRuntime calls this from resetScanState(), making this the existing XR scan
+ * lifecycle boundary shared by visual evidence. Reset the scheduler's session
+ * hysteresis counters here as well. LiveComputeScheduler.beginScan() deliberately
+ * preserves the last pressure cap, so a hot phone cannot recover W2 merely by
+ * ending and immediately restarting WebXR; sustained low-pressure windows must
+ * earn the extra slot back.
+ */
 export function resetXrGuidanceRegistry(): void {
   latestRgb = null;
   visualStore.reset();
   visualClient.reset();
+  liveComputeScheduler.beginScan();
   visualDetectionError = null;
 }
