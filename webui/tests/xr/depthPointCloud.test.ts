@@ -244,6 +244,29 @@ describe('surface reconstruction behaviour', () => {
     expect(unitLike).toBeGreaterThan(snapshot.pointCount * 0.8);
   });
 
+  it('hemisphere-aligns opposite-view normals before multi-view fusion', () => {
+    const accumulator = new DepthPointCloudAccumulator();
+    const flat = depthPlane(() => 1.5);
+    // Keep the same physical surface inside the residual gate, but add a small
+    // tangent slope on the opposite-side observation. Without hemisphere
+    // alignment, near-cancellation of n and -n magnifies that tiny slope into a
+    // badly tilted fused normal.
+    const slightlySloped = depthPlane((u) => 1.5 + 0.06 * (u - 0.5));
+    accumulator.sampleDepthFrame(flat, view, context(1, true, [0, 0, 0]));
+    accumulator.sampleDepthFrame(slightlySloped, view, context(2, true, [0, 3, 0]));
+    const snapshot = accumulator.snapshot(2, 2);
+    expect(snapshot.pointCount).toBeGreaterThan(50);
+    let stableDominantAxis = 0;
+    for (let index = 0; index < snapshot.normals.length; index += 3) {
+      const nx = snapshot.normals[index];
+      const ny = snapshot.normals[index + 1];
+      const nz = snapshot.normals[index + 2];
+      const length = Math.hypot(nx, ny, nz);
+      if (Math.abs(length - 1) < 0.05 && Math.abs(ny) >= 0.98) stableDominantAxis += 1;
+    }
+    expect(stableDominantAxis).toBeGreaterThan(snapshot.pointCount * 0.75);
+  });
+
   it('keeps a hard memory budget under a long translated scan', () => {
     const accumulator = new DepthPointCloudAccumulator(0.04, 1000, 5);
     const flat = depthPlane(() => 1.5);
