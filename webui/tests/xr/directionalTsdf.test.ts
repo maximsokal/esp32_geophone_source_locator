@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildDirectionalTsdfMesh } from '../../src/xr/directionalTsdf';
+import {
+  buildDirectionalTsdfMesh,
+  finalizeDirectionalTsdfPlan,
+  prepareDirectionalTsdfPlan,
+} from '../../src/xr/directionalTsdf';
+import { buildSparseTsdfMesh } from '../../src/xr/sparseTsdf';
 
 function appendPlane(
   positions: number[], normals: number[], confidence: number[],
@@ -48,6 +53,8 @@ describe('directional TSDF', () => {
     expect(mesh.meshReadiness).toBe(1);
     expect(mesh.orientationConflictCount).toBe(0);
     expect(mesh.meshTopologyComponentCount).toBeGreaterThan(0);
+    expect(Number.isFinite(mesh.localNoiseHotspotCount)).toBe(true);
+    expect(Number.isFinite(mesh.localNoiseHotspotTriangleCount)).toBe(true);
   });
 
   it('keeps opposite thin surfaces separated instead of averaging them together', () => {
@@ -74,6 +81,43 @@ describe('directional TSDF', () => {
     });
     expect(mesh.rawTriangleCount).toBeLessThanOrEqual(600);
     expect(mesh.triangleCount).toBeLessThanOrEqual(600);
+  });
+
+  it('keeps explicit plan -> channel -> finalize equivalent to the sequential wrapper', () => {
+    const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
+    appendPlane(positions, normals, confidence, 0, 0, [1, 0, 0]);
+    appendPlane(positions, normals, confidence, 1, 0, [0, 1, 0]);
+    appendPlane(positions, normals, confidence, 2, 0, [0, 0, 1]);
+    const input = {
+      positions: Float32Array.from(positions),
+      normals: Float32Array.from(normals),
+      confidence: Float32Array.from(confidence),
+      voxelSizeMeters: 0.04,
+      maxTriangles: 12000,
+    };
+    const sequential = buildDirectionalTsdfMesh({
+      ...input,
+      positions: input.positions.slice(),
+      normals: input.normals.slice(),
+      confidence: input.confidence.slice(),
+    });
+    const plan = prepareDirectionalTsdfPlan(input, true);
+    const channelMeshes = plan.channelInputs.map((channelInput) => buildSparseTsdfMesh(channelInput));
+    const planned = finalizeDirectionalTsdfPlan(plan, channelMeshes);
+
+    expect(plan.mode).toBe('multi');
+    expect(plan.directionalChannelCount).toBeGreaterThanOrEqual(3);
+    for (const channelInput of plan.channelInputs) {
+      expect(channelInput.freeSpacePositions).toBeUndefined();
+      expect(channelInput.freeSpaceVoxelSizeMeters).toBeUndefined();
+    }
+    expect(planned.directionalChannelCount).toBe(sequential.directionalChannelCount);
+    expect(planned.channelTriangleCounts).toEqual(sequential.channelTriangleCounts);
+    expect(planned.triangleCount).toBe(sequential.triangleCount);
+    expect(planned.rawTriangleCount).toBe(sequential.rawTriangleCount);
+    expect(planned.localNoiseHotspotCount).toBe(sequential.localNoiseHotspotCount);
+    expect(planned.localNoiseHotspotTriangleCount).toBe(sequential.localNoiseHotspotTriangleCount);
+    expect(Array.from(planned.trianglePositions)).toEqual(Array.from(sequential.trianglePositions));
   });
 
   it('does not build a directional mesh from many points on a physically tiny patch', () => {
