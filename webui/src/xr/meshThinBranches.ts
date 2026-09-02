@@ -28,6 +28,13 @@ function edgeKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+function maximumBranchTriangles(componentSize: number): number {
+  return Math.min(
+    MAX_BRANCH_TRIANGLES,
+    Math.max(1, Math.floor(componentSize * MAX_BRANCH_COMPONENT_FRACTION)),
+  );
+}
+
 interface BranchMetrics {
   areaSquareMeters: number;
   majorExtentMeters: number;
@@ -86,13 +93,9 @@ function branchMetrics(
 
 function isSubscaleBranch(
   members: readonly number[],
-  componentSize: number,
   triangles: readonly MeshBranchTriangle[],
   voxelSizeMeters: number,
 ): boolean {
-  const maximumByFraction = Math.max(1, Math.floor(componentSize * MAX_BRANCH_COMPONENT_FRACTION));
-  if (members.length > MAX_BRANCH_TRIANGLES || members.length > maximumByFraction) return false;
-
   const safeVoxel = clamp(Math.abs(voxelSizeMeters), 0.01, 0.12);
   const metrics = branchMetrics(members, triangles);
   const minimumMajor = Math.max(MIN_BRANCH_MAJOR_ABSOLUTE_METERS, safeVoxel * MIN_BRANCH_MAJOR_VOXELS);
@@ -184,6 +187,7 @@ export function quarantineSubscaleMeshBranches(
     if (component >= repairableComponentMask.length || repairableComponentMask[component] === 0) continue;
     const members = membersByComponent[component];
     if (members.length < MIN_REMAINING_TRIANGLES + 2) continue;
+    const candidateLimit = maximumBranchTriangles(members.length);
 
     const order: number[] = [];
     const bridgeChildren: number[] = [];
@@ -237,7 +241,9 @@ export function quarantineSubscaleMeshBranches(
       const complementSize = members.length - childSize;
       const useSubtree = childSize <= complementSize;
       const candidateSize = useSubtree ? childSize : complementSize;
-      if (candidateSize <= 0) continue;
+      // Important mobile bound: do not materialize large bridge sides merely to
+      // discover afterwards that they exceed the local-whisker policy.
+      if (candidateSize <= 0 || candidateSize > candidateLimit) continue;
 
       let candidate: number[];
       const start = orderStart[child];
@@ -250,7 +256,7 @@ export function quarantineSubscaleMeshBranches(
           return position < start || position >= end;
         });
       }
-      if (!isSubscaleBranch(candidate, members.length, triangles, voxelSizeMeters)) continue;
+      if (!isSubscaleBranch(candidate, triangles, voxelSizeMeters)) continue;
       candidates.push(candidate.sort((a, b) => a - b));
     }
 
