@@ -110,6 +110,11 @@ export default function App() {
         operatorEdges: snapshot.operatorEdges.length,
         freeVoxels: snapshot.knownFreeVoxelCount,
         unknownVoxels: snapshot.unknownCandidateVoxelCount,
+        occupancyEnvelopeComponents: snapshot.occupancyEnvelopeComponentCount,
+        quarantinedSurfaceComponents: snapshot.occupancyQuarantinedSurfaceComponentCount,
+        quarantinedSurfacePoints: snapshot.occupancyQuarantinedSurfacePointCount,
+        bridgeRescanComponents: snapshot.occupancyBridgeRescanComponentCount,
+        bridgeEvidenceTruncated: snapshot.occupancyBridgeEvidenceTruncated,
       });
       void clientDiagnostics.flush();
     }
@@ -221,6 +226,9 @@ export default function App() {
                 <div><dt>Known free air voxels</dt><dd>{scanSnapshot.knownFreeVoxelCount.toLocaleString()}</dd></div>
                 <div><dt>Observed surface voxels</dt><dd>{scanSnapshot.occupiedSurfaceVoxelCount.toLocaleString()}</dd></div>
                 <div><dt>Unknown / candidate voxels</dt><dd>{scanSnapshot.unknownCandidateVoxelCount.toLocaleString()}</dd></div>
+                {scanSnapshot.occupancyBridgeRescanComponentCount > 0 && (
+                  <div><dt>Rescan bridge islands</dt><dd>{scanSnapshot.occupancyBridgeRescanComponentCount.toLocaleString()}</dd></div>
+                )}
                 <div><dt>Surface residual</dt><dd>{Math.round(scanSnapshot.averageStableResidualMeters * 1000)} mm</dd></div>
                 {extent !== null && (
                   <>
@@ -231,6 +239,12 @@ export default function App() {
                 )}
               </dl>
 
+              {scanSnapshot.occupancyBridgeRescanComponentCount > 0 && (
+                <p className="scan-volume-note">
+                  Weak measured surfels suggest a possible bridge from retained structure to {scanSnapshot.occupancyBridgeRescanComponentCount} quarantined island(s). Rescan those boundaries. They are not allowed to expand the UNKNOWN search envelope until their own physical support becomes sufficient.
+                </p>
+              )}
+
               <p className="scan-volume-note">
                 Red and yellow points are still uncertain. Green surfels are the stable measured boundary. Blue voxels are ray-verified free air. Amber voxels are still unknown and therefore remain valid seismic-source search volume. Magenta pins and lines are operator-confirmed structural constraints.
               </p>
@@ -240,6 +254,11 @@ export default function App() {
                 <dl className="status-list">
                   <div><dt>Retained surface hypotheses</dt><dd>{scanSnapshot.rawPointCount.toLocaleString()}</dd></div>
                   <div><dt>Promoted surfels</dt><dd>{scanSnapshot.promotedPointCount.toLocaleString()}</dd></div>
+                  <div><dt>UNKNOWN envelope components</dt><dd>{scanSnapshot.occupancyEnvelopeComponentCount.toLocaleString()}</dd></div>
+                  <div><dt>Quarantined surface components</dt><dd>{scanSnapshot.occupancyQuarantinedSurfaceComponentCount.toLocaleString()}</dd></div>
+                  <div><dt>Quarantined surface points</dt><dd>{scanSnapshot.occupancyQuarantinedSurfacePointCount.toLocaleString()}</dd></div>
+                  <div><dt>Weak-bridge rescan components</dt><dd>{scanSnapshot.occupancyBridgeRescanComponentCount.toLocaleString()}</dd></div>
+                  <div><dt>Weak-bridge diagnostic</dt><dd>{scanSnapshot.occupancyBridgeEvidenceTruncated ? 'bounded / incomplete' : 'complete'}</dd></div>
                   <div><dt>Ready coverage cells</dt><dd>{scanSnapshot.readyCoverageCellCount.toLocaleString()}</dd></div>
                   <div><dt>Independent keyframes</dt><dd>{scanSnapshot.integrationKeyframes.toLocaleString()}</dd></div>
                   <div><dt>Coverage cells</dt><dd>{scanSnapshot.coverageCellCount.toLocaleString()}</dd></div>
