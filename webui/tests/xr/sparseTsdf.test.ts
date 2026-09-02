@@ -25,6 +25,16 @@ function addPlane(
   }
 }
 
+function addTinyDensePlane(target: Cloud): void {
+  for (let ix = 0; ix < 10; ix += 1) {
+    for (let iy = 0; iy < 10; iy += 1) {
+      target.positions.push(ix * 0.006, iy * 0.006, 0);
+      target.normals.push(0, 0, 1);
+      target.confidence.push(0.94);
+    }
+  }
+}
+
 function input(source: Cloud) {
   return {
     positions: Float32Array.from(source.positions),
@@ -45,6 +55,8 @@ describe('sparse weighted TSDF reconstruction', () => {
     addPlane(source, 0);
     const mesh = buildSparseTsdfMesh(input(source));
 
+    expect(mesh.eligibleComponentCount).toBe(1);
+    expect(mesh.meshReadiness).toBe(1);
     expect(mesh.integratedPointCount).toBeGreaterThan(60);
     expect(mesh.nodeCount).toBeGreaterThan(100);
     expect(mesh.triangleCount).toBeGreaterThan(20);
@@ -63,11 +75,25 @@ describe('sparse weighted TSDF reconstruction', () => {
     expect(mesh.triangleCount).toBe(0);
   });
 
+  it('does not manufacture a mesh from many points packed into a physically tiny island', () => {
+    const source = cloud();
+    addTinyDensePlane(source);
+    const mesh = buildSparseTsdfMesh(input(source));
+    expect(mesh.sourcePointCount).toBe(100);
+    expect(mesh.componentCount).toBe(1);
+    expect(mesh.eligibleComponentCount).toBe(0);
+    expect(mesh.meshReadiness).toBeLessThan(1);
+    expect(mesh.rejectedComponentPoints).toBe(100);
+    expect(mesh.integratedPointCount).toBe(0);
+    expect(mesh.triangleCount).toBe(0);
+  });
+
   it('does not bridge two disconnected measured surface islands', () => {
     const source = cloud();
     addPlane(source, -0.55);
     addPlane(source, 0.55);
     const mesh = buildSparseTsdfMesh(input(source));
+    expect(mesh.eligibleComponentCount).toBe(2);
     expect(mesh.triangleCount).toBeGreaterThan(30);
 
     let maximumTriangleSpan = 0;
