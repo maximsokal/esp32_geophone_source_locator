@@ -22,8 +22,12 @@ const MIN_SEED_FEATURE_SCORE = 0.20;
 const MIN_SEED_ORIENTATION_FAMILIES = 2;
 const MIN_CORNER_CONFIDENCE = 0.72;
 const MAX_CORNER_UNCERTAINTY_METERS = 0.030;
-const DEDUPE_METERS = 0.095;
-const TRACK_RADIUS_METERS = 0.085;
+const CORNER_ID_QUANTIZATION_METERS = 0.040;
+const MIN_CORNER_ASSOCIATION_METERS = 0.035;
+const MAX_CORNER_ASSOCIATION_METERS = 0.060;
+const CORNER_ASSOCIATION_DRIFT_METERS = 0.012;
+const CORNER_ASSOCIATION_UNCERTAINTY_FACTOR = 1.5;
+const CORNER_ASSOCIATION_ARM_FRACTION = 0.95;
 const MIN_VIEW_TRANSLATION_METERS = 0.035;
 const MIN_VIEW_BASELINE_METERS = 0.085;
 const MIN_VIEW_RAY_ANGLE_RADIANS = (9 * Math.PI) / 180;
@@ -39,6 +43,11 @@ interface Seed {
   count: number;
 }
 
+interface CertifiedCornerObservation extends StructuralCornerCandidate {
+  uncertaintyMeters: number;
+  minimumArmSpanMeters: number;
+}
+
 interface CornerEvidence {
   position: ProjectPoint;
   camera: ProjectPoint;
@@ -51,6 +60,8 @@ interface CornerTrack {
   position: ProjectPoint;
   confidence: number;
   support: number;
+  uncertaintyMeters: number;
+  minimumArmSpanMeters: number;
   lastSeenKeyframe: number;
   evidence: CornerEvidence[];
 }
@@ -69,6 +80,10 @@ function distance(a: ProjectPoint, b: ProjectPoint): number {
 
 function comparePoint(left: ProjectPoint, right: ProjectPoint): number {
   return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function seedScore(seed: Seed): number {
@@ -112,8 +127,38 @@ function spatiallyFairSeeds(candidates: readonly Seed[]): Seed[] {
 }
 
 function cornerId(position: ProjectPoint): string {
-  const q = DEDUPE_METERS;
+  const q = CORNER_ID_QUANTIZATION_METERS;
   return `robust:${Math.round(position[0] / q)}:${Math.round(position[1] / q)}:${Math.round(position[2] / q)}`;
+}
+
+/**
+ * Spatial association is bounded by BOTH numerical uncertainty and measured
+ * physical scale. A noisy solve may move slightly between views, but a universal
+ * 8-10 cm radius must not merge two distinct small structural corners.
+ */
+export function certifiedCornerAssociationGateMeters(
+  firstUncertaintyMeters: number,
+  secondUncertaintyMeters: number,
+  firstMinimumArmSpanMeters: number,
+  secondMinimumArmSpanMeters: number,
+): number {
+  const uncertainty = Math.max(
+    Number.isFinite(firstUncertaintyMeters) ? Math.max(0, firstUncertaintyMeters) : 0,
+    Number.isFinite(secondUncertaintyMeters) ? Math.max(0, secondUncertaintyMeters) : 0,
+  );
+  const uncertaintyGate =
+    CORNER_ASSOCIATION_DRIFT_METERS +
+    Math.min(MAX_CORNER_UNCERTAINTY_METERS, uncertainty) * CORNER_ASSOCIATION_UNCERTAINTY_FACTOR;
+  const armCandidates = [firstMinimumArmSpanMeters, secondMinimumArmSpanMeters]
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const armGate = armCandidates.length > 0
+    ? Math.min(...armCandidates) * CORNER_ASSOCIATION_ARM_FRACTION
+    : MAX_CORNER_ASSOCIATION_METERS;
+  return clamp(
+    Math.min(uncertaintyGate, armGate),
+    MIN_CORNER_ASSOCIATION_METERS,
+    MAX_CORNER_ASSOCIATION_METERS,
+  );
 }
 
 function normalize(vector: readonly [number, number, number]): readonly [number, number, number] | null {
@@ -259,7 +304,7 @@ function structuralFeatureNearSeed(
  */
 export function detectCertifiedStructuralCorners(
   snapshot: ManualPlacementSurfaceSnapshot,
-): readonly StructuralCornerCandidate[] {
+): readonly CertifiedCornerObservation[] {
   const count = Math.min(
     snapshot.pointCount,
     Math.floor(snapshot.positions.length / 3),
@@ -300,20 +345,22 @@ export function detectCertifiedStructuralCorners(
   );
   const spatialIndex = new BoundedSpatialPointIndex(snapshot.positions, count, FEATURE_INDEX_CELL_METERS);
 
-  const corners: StructuralCornerCandidate[] = [];
+  const corners: CertifiedCornerObservation[] = [];
   for (const seed of seeds) {
     if (!structuralFeatureNearSeed(snapshot, spatialIndex, seed)) continue;
     const result = solveManualPlacementOnStableSurface(seed.position, snapshot);
+    const uncertaintyMeters = result.uncertaintyMeters ?? Number.POSITIVE_INFINITY;
+    const minimumArmSpanMeters = result.minimumCornerArmSpanMeters ?? 0;
     if (
       !result.accepted ||
       result.mode !== 'corner' ||
       result.position === null ||
       result.confidence < MIN_CORNER_CONFIDENCE ||
-      (result.uncertaintyMeters ?? Number.POSITIVE_INFINITY) > MAX_CORNER_UNCERTAINTY_METERS
+      uncertaintyMeters > MAX_CORNER_UNCERTAINTY_METERS ||
+      minimumArmSpanMeters <= 0
     ) continue;
 
-    const existing = corners.find((corner) => distance(corner.position, result.position!) <= DEDUPE_METERS);
-    const candidate: StructuralCornerCandidate = {
+    const candidate: CertifiedCornerObservation = {
       id: cornerId(result.position),
       kind: 'corner',
       position: result.position,
@@ -321,7 +368,17 @@ export function detectCertifiedStructuralCorners(
       geometryConfidence: result.confidence,
       support: result.supportCount,
       observations: 1,
+      uncertaintyMeters,
+      minimumArmSpanMeters,
     };
+    const existing = corners.find((corner) =>
+      distance(corner.position, candidate.position) <= certifiedCornerAssociationGateMeters(
+        corner.uncertaintyMeters,
+        candidate.uncertaintyMeters,
+        corner.minimumArmSpanMeters,
+        candidate.minimumArmSpanMeters,
+      )
+    );
     if (existing === undefined) {
       corners.push(candidate);
     } else if (
@@ -366,7 +423,13 @@ export class CertifiedStructuralCornerTracker {
       for (const track of this.tracks) {
         if (matchedTrackIds.has(track.id)) continue;
         const candidateDistance = distance(track.position, candidate.position);
-        if (candidateDistance > TRACK_RADIUS_METERS || candidateDistance >= bestDistance) continue;
+        const associationGate = certifiedCornerAssociationGateMeters(
+          track.uncertaintyMeters,
+          candidate.uncertaintyMeters,
+          track.minimumArmSpanMeters,
+          candidate.minimumArmSpanMeters,
+        );
+        if (candidateDistance > associationGate || candidateDistance >= bestDistance) continue;
         best = track;
         bestDistance = candidateDistance;
       }
@@ -379,6 +442,8 @@ export class CertifiedStructuralCornerTracker {
           position: candidate.position,
           confidence: candidate.confidence,
           support: candidate.support,
+          uncertaintyMeters: candidate.uncertaintyMeters,
+          minimumArmSpanMeters: candidate.minimumArmSpanMeters,
           lastSeenKeyframe: keyframeId,
           evidence,
         };
@@ -396,6 +461,12 @@ export class CertifiedStructuralCornerTracker {
       ];
       best.confidence = Math.max(best.confidence * 0.86, candidate.confidence);
       best.support = Math.max(best.support, candidate.support);
+      best.uncertaintyMeters = clamp(
+        best.uncertaintyMeters * 0.65 + candidate.uncertaintyMeters * 0.35,
+        0,
+        MAX_CORNER_UNCERTAINTY_METERS,
+      );
+      best.minimumArmSpanMeters = Math.min(best.minimumArmSpanMeters, candidate.minimumArmSpanMeters);
       if (nextEvidence !== null && independentEvidence(best.evidence, nextEvidence)) {
         best.evidence.push(nextEvidence);
         if (best.evidence.length > MAX_TRACK_EVIDENCE) best.evidence.shift();
