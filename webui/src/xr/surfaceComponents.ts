@@ -51,6 +51,7 @@ interface OrientationNode {
   gz: number;
   spatialKey: string;
   pointIndices: number[];
+  connectionPointIndices: number[];
   normalX: number;
   normalY: number;
   normalZ: number;
@@ -100,6 +101,11 @@ const MESH_MIN_OCCUPANCY_RATIO = 0.30;
 const ROBUST_EXTENT_TRIM_FRACTION = 0.10;
 const MIN_POINTS_FOR_ROBUST_EXTENT = 20;
 const MAX_NODE_CONNECTION_SAMPLES = 8;
+// Attach and propagation are deliberately different. One sparse physical surfel
+// may extend a real surface by one cell, but it must not relay BFS indefinitely.
+const MIN_NODE_PROPAGATION_POINTS = 3;
+const MIN_LOCAL_PROPAGATION_SUPPORT_POINTS = 6;
+const MAX_NEIGHBOUR_PROPAGATION_CONTRIBUTION = 2;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -141,6 +147,15 @@ function nodeCenter(node: OrientationNode): SurfaceComponentPoint | null {
   ];
 }
 
+function pointAt(input: SurfaceComponentInput, index: number): SurfaceComponentPoint {
+  const offset = index * 3;
+  return [
+    Number(input.positions[offset]),
+    Number(input.positions[offset + 1]),
+    Number(input.positions[offset + 2]),
+  ];
+}
+
 function axisGap(minA: number, maxA: number, minB: number, maxB: number): number {
   if (maxA < minB) return minB - maxA;
   if (maxB < minA) return minA - maxB;
@@ -154,14 +169,90 @@ function nodeSupportGapMeters(a: OrientationNode, b: OrientationNode): number {
   return Math.hypot(dx, dy, dz);
 }
 
-function boundedConnectionIndices(indices: readonly number[]): readonly number[] {
-  if (indices.length <= MAX_NODE_CONNECTION_SAMPLES) return indices;
-  const output = new Array<number>(MAX_NODE_CONNECTION_SAMPLES);
-  const last = indices.length - 1;
-  for (let cursor = 0; cursor < MAX_NODE_CONNECTION_SAMPLES; cursor += 1) {
-    output[cursor] = indices[Math.round(cursor * last / (MAX_NODE_CONNECTION_SAMPLES - 1))];
+function comparePointLexicographic(
+  input: SurfaceComponentInput,
+  left: number,
+  right: number,
+): number {
+  const a = pointAt(input, left);
+  const b = pointAt(input, right);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+/**
+ * Pick at most eight real surfels once per node. Axis extrema protect contacts at
+ * hash-cell faces/edges/corners that an index/quantile-only sampler can miss.
+ * Near/far-center and deterministic quantile fill retain some interior coverage.
+ */
+function selectConnectionPointIndices(
+  node: OrientationNode,
+  input: SurfaceComponentInput,
+): number[] {
+  const indices = node.pointIndices;
+  if (indices.length <= MAX_NODE_CONNECTION_SAMPLES) {
+    return [...indices].sort((a, b) => comparePointLexicographic(input, a, b));
   }
-  return output;
+
+  const selected: number[] = [];
+  const selectedSet = new Set<number>();
+  const add = (index: number): void => {
+    if (index < 0 || selected.length >= MAX_NODE_CONNECTION_SAMPLES || selectedSet.has(index)) return;
+    selectedSet.add(index);
+    selected.push(index);
+  };
+  const best = [indices[0], indices[0], indices[0], indices[0], indices[0], indices[0]];
+  for (const index of indices) {
+    const point = pointAt(input, index);
+    const bxMin = pointAt(input, best[0]);
+    const bxMax = pointAt(input, best[1]);
+    const byMin = pointAt(input, best[2]);
+    const byMax = pointAt(input, best[3]);
+    const bzMin = pointAt(input, best[4]);
+    const bzMax = pointAt(input, best[5]);
+    if (point[0] < bxMin[0] || (point[0] === bxMin[0] && comparePointLexicographic(input, index, best[0]) < 0)) best[0] = index;
+    if (point[0] > bxMax[0] || (point[0] === bxMax[0] && comparePointLexicographic(input, index, best[1]) < 0)) best[1] = index;
+    if (point[1] < byMin[1] || (point[1] === byMin[1] && comparePointLexicographic(input, index, best[2]) < 0)) best[2] = index;
+    if (point[1] > byMax[1] || (point[1] === byMax[1] && comparePointLexicographic(input, index, best[3]) < 0)) best[3] = index;
+    if (point[2] < bzMin[2] || (point[2] === bzMin[2] && comparePointLexicographic(input, index, best[4]) < 0)) best[4] = index;
+    if (point[2] > bzMax[2] || (point[2] === bzMax[2] && comparePointLexicographic(input, index, best[5]) < 0)) best[5] = index;
+  }
+  for (const index of best) add(index);
+
+  const center = nodeCenter(node);
+  if (center !== null && selected.length < MAX_NODE_CONNECTION_SAMPLES) {
+    let nearest = -1;
+    let nearestSquared = Number.POSITIVE_INFINITY;
+    let farthest = -1;
+    let farthestSquared = Number.NEGATIVE_INFINITY;
+    for (const index of indices) {
+      const point = pointAt(input, index);
+      const dx = point[0] - center[0];
+      const dy = point[1] - center[1];
+      const dz = point[2] - center[2];
+      const squared = dx * dx + dy * dy + dz * dz;
+      if (
+        squared < nearestSquared ||
+        (squared === nearestSquared && (nearest < 0 || comparePointLexicographic(input, index, nearest) < 0))
+      ) { nearest = index; nearestSquared = squared; }
+      if (
+        squared > farthestSquared ||
+        (squared === farthestSquared && (farthest < 0 || comparePointLexicographic(input, index, farthest) < 0))
+      ) { farthest = index; farthestSquared = squared; }
+    }
+    add(nearest);
+    add(farthest);
+  }
+
+  // Extrema may collapse on lines/planes. Fill remaining slots from the already
+  // deterministic point order; this remains bounded and is computed once/node.
+  if (selected.length < MAX_NODE_CONNECTION_SAMPLES) {
+    const ordered = [...indices].sort((a, b) => comparePointLexicographic(input, a, b));
+    const last = ordered.length - 1;
+    for (let cursor = 0; cursor < MAX_NODE_CONNECTION_SAMPLES && selected.length < MAX_NODE_CONNECTION_SAMPLES; cursor += 1) {
+      add(ordered[Math.round(cursor * last / (MAX_NODE_CONNECTION_SAMPLES - 1))]);
+    }
+  }
+  return selected;
 }
 
 function nodesHaveNearbyMeasuredSupport(
@@ -170,8 +261,8 @@ function nodesHaveNearbyMeasuredSupport(
   input: SurfaceComponentInput,
   maximumDistanceMeters: number,
 ): boolean {
-  const samplesA = boundedConnectionIndices(a.pointIndices);
-  const samplesB = boundedConnectionIndices(b.pointIndices);
+  const samplesA = a.connectionPointIndices.length > 0 ? a.connectionPointIndices : a.pointIndices;
+  const samplesB = b.connectionPointIndices.length > 0 ? b.connectionPointIndices : b.pointIndices;
   const maximumSquared = maximumDistanceMeters * maximumDistanceMeters;
   for (const indexA of samplesA) {
     const offsetA = indexA * 3;
@@ -258,6 +349,56 @@ function accumulateSample(node: OrientationNode, sample: CellSample): void {
   node.maxY = Math.max(node.maxY, sample.y);
   node.maxZ = Math.max(node.maxZ, sample.z);
   node.pointIndices.push(sample.index);
+}
+
+function buildNodeAdjacency(
+  nodes: readonly OrientationNode[],
+  nodesByCell: ReadonlyMap<string, readonly OrientationNode[]>,
+  input: SurfaceComponentInput,
+  voxelSizeMeters: number,
+  connectionCellSizeMeters: number,
+): number[][] {
+  const adjacency: number[][] = Array.from({ length: nodes.length }, () => []);
+  for (const current of nodes) {
+    const currentNormal = nodeNormal(current);
+    if (currentNormal === null) continue;
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const neighbours = nodesByCell.get(key(current.gx + dx, current.gy + dy, current.gz + dz));
+          if (neighbours === undefined) continue;
+          for (const neighbour of neighbours) {
+            if (neighbour.id <= current.id) continue;
+            const neighbourNormal = nodeNormal(neighbour);
+            if (neighbourNormal === null || absDot(currentNormal, neighbourNormal) < COMPONENT_NORMAL_DOT) continue;
+            if (!nodeSupportsConnect(current, neighbour, input, voxelSizeMeters, connectionCellSizeMeters)) continue;
+            adjacency[current.id].push(neighbour.id);
+            adjacency[neighbour.id].push(current.id);
+          }
+        }
+      }
+    }
+  }
+  for (const neighbours of adjacency) neighbours.sort((a, b) => a - b);
+  return adjacency;
+}
+
+function nodeCanPropagate(
+  nodeId: number,
+  nodes: readonly OrientationNode[],
+  adjacency: readonly (readonly number[])[],
+): boolean {
+  const node = nodes[nodeId];
+  if (node.pointIndices.length >= MIN_NODE_PROPAGATION_POINTS) return true;
+  let support = node.pointIndices.length;
+  for (const neighbourId of adjacency[nodeId]) {
+    support += Math.min(
+      MAX_NEIGHBOUR_PROPAGATION_CONTRIBUTION,
+      nodes[neighbourId].pointIndices.length,
+    );
+    if (support >= MIN_LOCAL_PROPAGATION_SUPPORT_POINTS) return true;
+  }
+  return false;
 }
 
 function meshThresholds(voxelSizeMeters: number): {
@@ -380,13 +521,13 @@ function componentMetrics(
  * We intentionally do not run all-point DBSCAN on the phone. Points first enter
  * a voxel hash. Each occupied cell may form at most twelve bounded provisional
  * normal families; they are ranked deterministically by measured support and only
- * the strongest three survive into component traversal. BFS then visits only the
- * 3x3x3 neighbouring occupied cells. Grid adjacency, AABB gap and centroid range
- * are only broad phases: compatible families must finally have real measured
- * support within the metric link radius, using at most 8x8 deterministic support
- * comparisons. This keeps memory O(N), preserves sharp boundaries, prevents false
- * bridges across empty space, and avoids arrival order/noisy normals deciding
- * which surfaces survive the per-cell cap.
+ * the strongest three survive. A bounded adjacency graph then visits only 3x3x3
+ * neighbouring cells. Grid adjacency, AABB gap and centroid range are broad phases;
+ * compatible families must still have real measured support within the metric link
+ * radius, using at most 8x8 preselected real surfels. Sparse nodes may attach as
+ * leaves, but only locally supported nodes propagate component growth. This keeps
+ * smooth/convex measured surfaces connected without allowing a 1-point gradual-
+ * normal chain to bridge otherwise separate objects.
  */
 export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceComponentAnalysis {
   const sourceCount = Math.min(
@@ -455,6 +596,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
           gz: bucket.gz,
           spatialKey: bucket.spatialKey,
           pointIndices: [],
+          connectionPointIndices: [],
           normalX: 0,
           normalY: 0,
           normalZ: 0,
@@ -480,17 +622,31 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
       .slice(0, MAX_ORIENTATION_NODES_PER_CELL);
     for (const node of retained) {
       node.id = nodes.length;
+      node.connectionPointIndices = selectConnectionPointIndices(node, input);
       nodes.push(node);
       acceptedPointCount += node.pointIndices.length;
     }
     if (retained.length > 0) nodesByCell.set(bucket.spatialKey, retained);
   }
 
+  const adjacency = buildNodeAdjacency(nodes, nodesByCell, input, voxel, connectionCellSizeMeters);
+  const propagationReady = new Uint8Array(nodes.length);
+  for (const node of nodes) {
+    if (nodeCanPropagate(node.id, nodes, adjacency)) propagationReady[node.id] = 1;
+  }
+  // Strong/local-supported nodes seed components first so a weak bridge node is
+  // claimed as a leaf by a real surface rather than becoming an order-dependent
+  // relay before that surface is visited.
+  const traversalSeeds = [...nodes].sort((left, right) =>
+    propagationReady[right.id] - propagationReady[left.id] ||
+    right.pointIndices.length - left.pointIndices.length ||
+    left.id - right.id
+  );
   const visited = new Uint8Array(nodes.length);
   const components: SurfaceComponent[] = [];
   const componentPointIndices: number[][] = [];
 
-  for (const seed of nodes) {
+  for (const seed of traversalSeeds) {
     if (visited[seed.id] !== 0) continue;
     visited[seed.id] = 1;
     const queue: OrientationNode[] = [seed];
@@ -500,23 +656,11 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
       const current = queue[read];
       points.push(...current.pointIndices);
       occupiedCells.add(current.spatialKey);
-      const currentNormal = nodeNormal(current);
-      if (currentNormal === null) continue;
-      for (let dx = -1; dx <= 1; dx += 1) {
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dz = -1; dz <= 1; dz += 1) {
-            const neighbours = nodesByCell.get(key(current.gx + dx, current.gy + dy, current.gz + dz));
-            if (neighbours === undefined) continue;
-            for (const neighbour of neighbours) {
-              if (visited[neighbour.id] !== 0) continue;
-              const neighbourNormal = nodeNormal(neighbour);
-              if (neighbourNormal === null || absDot(currentNormal, neighbourNormal) < COMPONENT_NORMAL_DOT) continue;
-              if (!nodeSupportsConnect(current, neighbour, input, voxel, connectionCellSizeMeters)) continue;
-              visited[neighbour.id] = 1;
-              queue.push(neighbour);
-            }
-          }
-        }
+      if (propagationReady[current.id] === 0) continue;
+      for (const neighbourId of adjacency[current.id]) {
+        if (visited[neighbourId] !== 0) continue;
+        visited[neighbourId] = 1;
+        queue.push(nodes[neighbourId]);
       }
     }
     const component = componentMetrics(
