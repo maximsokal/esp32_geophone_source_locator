@@ -65,10 +65,7 @@ type StructuralGuideResultWithReadiness = StructuralGuideResult & {
 };
 
 const MIN_STABLE_POINTS = 180;
-// Structural-family clustering intentionally reduces the physical surfel set.
-// Do not demand the original 180 points a second time after that reduction;
-// worker-side physical component size/density is the authoritative post-cluster gate.
-const MIN_CLUSTERED_POINTS = 60;
+const MIN_RAW_STRUCTURAL_POINTS = 60;
 const MIN_KEYFRAMES = 8;
 const MIN_KEYFRAME_ADVANCE = 4;
 const BASE_ANALYSIS_INTERVAL_MS = 1900;
@@ -346,9 +343,12 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     lastAnalysisMs.current = now;
     lastAnalysisKeyframe.current = runtimeState.keyframeCount;
     const snapshotStarted = performance.now();
-    const snapshot = runtime.getStructuralGuideSnapshot();
+    // This is deliberately the raw one-shot worker handoff. Structural-family
+    // clustering/PCA/local certification now run after transfer off the XR/UI
+    // thread. The certified getter remains reserved for fresh corner validation.
+    const snapshot = runtime.getStructuralWorkerSnapshot();
     const snapshotMs = performance.now() - snapshotStarted;
-    if (snapshot.positions.length < MIN_CLUSTERED_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) {
+    if (snapshot.positions.length < MIN_RAW_STRUCTURAL_POINTS * 3 || snapshot.normals.length !== snapshot.positions.length) {
       setResult(null);
       setValidationSnapshot(null);
       return;
@@ -359,10 +359,6 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       positions: snapshot.positions,
       normals: snapshot.normals,
       confidence: snapshot.confidence,
-      residualMeters: snapshot.residualMeters,
-      normalConfidence: snapshot.normalConfidence,
-      coverageConfidence: snapshot.coverageConfidence,
-      coverageReady: snapshot.coverageReady,
       keyframeCount: snapshot.keyframeCount,
       voxelSizeMeters: snapshot.voxelSizeMeters,
       viewpoint,
