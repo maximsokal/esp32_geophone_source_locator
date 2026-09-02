@@ -19,8 +19,9 @@ interface ReadbackSlot<T> {
  * If every slot is still in flight, the new advisory RGB frame is dropped.
  * Physical XR depth/fusion is therefore never delayed by camera guidance.
  *
- * The caller owns surrounding WebGL state restoration; RawCameraGuidanceCapture
- * wraps enqueue/poll in webGlStateGuard so PIXEL_PACK_BUFFER state is preserved.
+ * PIXEL_PACK_BUFFER binding is preserved internally only around operations that
+ * actually bind a PBO. An unsignalled poll performs no getParameter()/bindBuffer
+ * calls, which keeps the every-RAF readiness check free of avoidable GL stalls.
  */
 export class NonBlockingRgbaReadback<T> {
   private readonly slots: ReadbackSlot<T>[] = [];
@@ -78,13 +79,14 @@ export class NonBlockingRgbaReadback<T> {
     if (slot === undefined) return false;
 
     const gl = this.gl;
+    const previous = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) as WebGLBuffer | null;
     let sync: WebGLSync | null = null;
     try {
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.buffer);
       gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
       sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     } finally {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, previous);
     }
     if (sync === null) return false;
 
@@ -118,12 +120,13 @@ export class NonBlockingRgbaReadback<T> {
     if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED) return null;
 
     const metadata = oldest.metadata;
+    const previous = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) as WebGLBuffer | null;
     try {
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, oldest.buffer);
       gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.output);
       return { pixels: this.output, metadata };
     } finally {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, previous);
       // A context-loss/readback error must not poison this slot forever.
       this.releaseSlot(oldest);
     }
