@@ -102,6 +102,26 @@ describe('scan capability readiness', () => {
     expect(readiness.mesh?.ready).toBe(false);
   });
 
+  it('does not label AREA when points are the actual weaker prerequisite', () => {
+    const readiness = computeScanCapabilityReadiness({
+      stablePointCount: 36,
+      keyframeCount: 20,
+      visibleCoverageCells: 20,
+      readyCoverageCells: 18,
+      surfaceAnalysis: analysis({
+        pointCount: 80,
+        majorExtentMeters: 0.10,
+        minorExtentMeters: 0.04,
+        meshReadiness: 0.60,
+        meshEligible: false,
+      }),
+      viewpoints: [view(1, 0.5, 0), view(2, -0.5, 0)],
+    });
+    expect(readiness.structural.limitingMetric).toBe('points');
+    expect(readiness.structural.progress).toBeCloseTo(0.20, 6);
+    expect(readiness.objectTooSmall).toBe(false);
+  });
+
   it('selects the physically useful component instead of the densest tiny island', () => {
     const tinyDense = baseComponent({
       id: 0,
