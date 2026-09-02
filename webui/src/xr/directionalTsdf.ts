@@ -41,8 +41,16 @@ function key(x: number, y: number, z: number): string { return `${x}:${y}:${z}`;
 
 function buildFreeIndex(input: SparseTsdfInput): FreeIndex | null {
   const positions = input.freeSpacePositions;
-  const size = input.freeSpaceVoxelSizeMeters;
-  if (positions === undefined || positions.length < 3 || size === undefined || !Number.isFinite(size) || size <= 0) return null;
+  const requestedSize = input.freeSpaceVoxelSizeMeters;
+  if (
+    positions === undefined || positions.length < 3 ||
+    requestedSize === undefined || !Number.isFinite(requestedSize) || requestedSize <= 0
+  ) return null;
+  // This must stay bit-for-bit policy-equivalent to sparseTsdf.buildFreeIndex().
+  // Transfer-safe directional channels omit FREE after this planner has oriented
+  // their normals, so any difference here could change which side becomes the
+  // positive TSDF side in parallel reconstruction.
+  const size = Math.max(requestedSize, 0.04);
   const buckets = new Map<string, Point3[]>();
   for (let offset = 0; offset + 2 < positions.length; offset += 3) {
     const point: Point3 = [positions[offset], positions[offset + 1], positions[offset + 2]];
@@ -70,9 +78,11 @@ function orientedNormal(
     const gx = Math.floor(px / free.size), gy = Math.floor(py / free.size), gz = Math.floor(pz / free.size);
     let bestSquared = (free.size * 3.5) ** 2;
     let best: readonly [number, number, number] | null = null;
-    for (let dx = -3; dx <= 3; dx += 1) {
-      for (let dy = -3; dy <= 3; dy += 1) {
-        for (let dz = -3; dz <= 3; dz += 1) {
+    // Match sparseTsdf.nearestFreeDirection(): the planner may only pre-orient
+    // from FREE cells that the scalar channel would itself have considered.
+    for (let dx = -2; dx <= 2; dx += 1) {
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dz = -2; dz <= 2; dz += 1) {
           const bucket = free.buckets.get(key(gx + dx, gy + dy, gz + dz));
           if (bucket === undefined) continue;
           for (const point of bucket) {
