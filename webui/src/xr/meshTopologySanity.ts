@@ -22,7 +22,9 @@ export interface MeshTopologySanityResult {
   discardedTriangleCount: number;
   orientationRepairCount: number;
   orientationConflictCount: number;
+  /** Non-manifold edges detected before local smallest-triangle repair. */
   nonManifoldEdgeCount: number;
+  nonManifoldRepairTriangleCount: number;
   components: readonly MeshTopologyComponentQuality[];
 }
 
@@ -116,6 +118,41 @@ function buildEdgeUses(triangles: readonly Triangle[]): Map<string, EdgeUse[]> {
     }
   }
   return edges;
+}
+
+/**
+ * Open3D-style local repair: for an edge touched by >2 faces, keep the two
+ * largest adjacent triangles and remove the smaller ambiguous faces. Doing this
+ * locally preserves a large healthy component instead of quarantining it because
+ * of one tiny overlapping triangle near a noisy scan boundary.
+ */
+function pruneNonManifoldTriangles(triangles: readonly Triangle[]): {
+  triangles: Triangle[];
+  detectedEdgeCount: number;
+  removedTriangleCount: number;
+} {
+  const edges = buildEdgeUses(triangles);
+  const removed = new Uint8Array(triangles.length);
+  let detectedEdgeCount = 0;
+  for (const uses of edges.values()) {
+    if (uses.length <= 2) continue;
+    detectedEdgeCount += 1;
+    const ranked = [...uses].sort((left, right) =>
+      triangles[right.triangle].area - triangles[left.triangle].area ||
+      triangles[left.triangle].originalIndex - triangles[right.triangle].originalIndex
+    );
+    for (let index = 2; index < ranked.length; index += 1) removed[ranked[index].triangle] = 1;
+  }
+  let removedTriangleCount = 0;
+  const output: Triangle[] = [];
+  for (let index = 0; index < triangles.length; index += 1) {
+    if (removed[index] !== 0) {
+      removedTriangleCount += 1;
+      continue;
+    }
+    output.push(triangles[index]);
+  }
+  return { triangles: output, detectedEdgeCount, removedTriangleCount };
 }
 
 function orientAndPartition(
@@ -265,11 +302,11 @@ function componentQuality(
  * Conservative post-triangulation sanity pass.
  *
  * It never changes the physical surfel/occupancy map. It only decides whether a
- * triangle island is trustworthy enough to be shown/consumed as a mesh. Shared
- * manifold edges are used to repair winding consistently. Non-manifold or
- * non-orientable topology is quarantined instead of being rendered as a strong
- * surface. Small disconnected islands are discarded from the mesh preview while
- * their original physical points remain available to later rescans.
+ * triangle island is trustworthy enough to be shown/consumed as a mesh. Tiny
+ * non-manifold faces are removed locally first, shared manifold edges then repair
+ * winding consistently. Remaining non-orientable topology is quarantined. Small
+ * disconnected islands are discarded from the mesh preview while their original
+ * physical points remain available to later rescans.
  */
 export function sanitizeMeshTopology(
   trianglePositions: Float32Array,
@@ -287,15 +324,17 @@ export function sanitizeMeshTopology(
       orientationRepairCount: 0,
       orientationConflictCount: 0,
       nonManifoldEdgeCount: 0,
+      nonManifoldRepairTriangleCount: 0,
       components: [],
     };
   }
 
   const quantizationMeters = clamp(Math.abs(voxelSizeMeters) * 0.02, 1e-5, 8e-4);
-  const triangles = parseTriangles(trianglePositions, quantizationMeters);
+  const parsed = parseTriangles(trianglePositions, quantizationMeters);
+  const nonManifoldRepair = pruneNonManifoldTriangles(parsed);
+  const triangles = nonManifoldRepair.triangles;
   const edges = buildEdgeUses(triangles);
   const orientation = orientAndPartition(triangles, edges);
-  const nonManifoldEdgeCount = [...edges.values()].filter((uses) => uses.length > 2).length;
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
@@ -310,7 +349,9 @@ export function sanitizeMeshTopology(
   const output: number[] = [];
   let retainedTriangleCount = 0;
   let quarantinedTriangleCount = 0;
-  let discardedTriangleCount = Math.max(0, sourceTriangleCount - triangles.length);
+  let discardedTriangleCount =
+    Math.max(0, sourceTriangleCount - parsed.length) +
+    nonManifoldRepair.removedTriangleCount;
   for (let index = 0; index < triangles.length; index += 1) {
     const component = components[orientation.componentByTriangle[index]];
     if (component.disposition === 'quarantine') {
@@ -336,7 +377,8 @@ export function sanitizeMeshTopology(
     discardedTriangleCount,
     orientationRepairCount: orientation.orientationRepairCount,
     orientationConflictCount,
-    nonManifoldEdgeCount,
+    nonManifoldEdgeCount: nonManifoldRepair.detectedEdgeCount,
+    nonManifoldRepairTriangleCount: nonManifoldRepair.removedTriangleCount,
     components,
   };
 }
