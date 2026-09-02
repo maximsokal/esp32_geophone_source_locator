@@ -34,8 +34,6 @@ describe('live XR compute scheduler', () => {
     });
 
     structural!.release();
-    // W1 is not spare capacity: optional Hough must never steal the only heavy
-    // slot from a structural keyframe that can arrive immediately afterwards.
     expect(await scheduler.tryAcquire('visual')).toBeNull();
     expect((await scheduler.tryAcquire('structural'))).not.toBeNull();
   });
@@ -46,8 +44,6 @@ describe('live XR compute scheduler', () => {
     expect(visual).not.toBeNull();
     expect(await scheduler.tryAcquire('visual')).toBeNull();
 
-    // Even though visual won the timing race, one slot remained reserved and the
-    // critical structural branch can still start.
     const structural = await scheduler.tryAcquire('structural');
     expect(structural).not.toBeNull();
     expect(snapshotCore(scheduler).active).toBe(2);
@@ -123,6 +119,34 @@ describe('live XR compute scheduler', () => {
     scheduler.observeRuntimePressure('low', 4100);
     expect(scheduler.snapshot().effectiveBudget).toBe(2);
     expect(scheduler.snapshot().degraded).toBe(false);
+  });
+
+  it('preserves a hot-device W1 cap across a scan restart', async () => {
+    const scheduler = new LiveComputeScheduler(async () => 2, () => 'low', () => 0);
+    const warm = await scheduler.tryAcquire('structural');
+    warm!.release();
+    scheduler.observeRuntimePressure('high', 100);
+    expect(scheduler.snapshot().effectiveBudget).toBe(1);
+
+    scheduler.beginScan();
+    expect(scheduler.snapshot().effectiveBudget).toBe(1);
+    expect(scheduler.snapshot().degraded).toBe(true);
+    expect(await scheduler.tryAcquire('visual')).toBeNull();
+  });
+
+  it('resets recovery streaks at a scan boundary instead of inheriting four healthy samples', async () => {
+    const scheduler = new LiveComputeScheduler(async () => 2, () => 'low', () => 0);
+    const warm = await scheduler.tryAcquire('structural');
+    warm!.release();
+    scheduler.observeRuntimePressure('high', 100);
+    for (const time of [900, 1700, 2500, 3300]) scheduler.observeRuntimePressure('low', time);
+    expect(scheduler.snapshot().effectiveBudget).toBe(1);
+
+    scheduler.beginScan();
+    // A new session must earn five fresh low-pressure windows; one healthy sample
+    // cannot complete the previous scan's nearly finished recovery streak.
+    scheduler.observeRuntimePressure('low', 4100);
+    expect(scheduler.snapshot().effectiveBudget).toBe(1);
   });
 
   it('does not count rapid UI snapshots as independent hysteresis windows', async () => {
