@@ -61,6 +61,20 @@ describe('structural vertices from mature finite edges', () => {
     ])).toHaveLength(0);
   });
 
+  it('requires the operational minimum physical edge length before corner inference', () => {
+    expect(inferStructuralVerticesFromEdges([
+      edge('a', [0, 0, 0], [0.08, 0, 0]),
+      edge('b', [0.08, 0, 0], [0.08, 0.08, 0]),
+    ])).toHaveLength(0);
+  });
+
+  it('does not let long but under-supported lines create a vertex', () => {
+    expect(inferStructuralVerticesFromEdges([
+      edge('a', [0, 0, 0], [0.5, 0, 0], { support: 8 }),
+      edge('b', [0.5, 0, 0], [0.5, 0.5, 0], { support: 8 }),
+    ])).toHaveLength(0);
+  });
+
   it('deduplicates three mature edges meeting at one physical vertex', () => {
     const vertices = inferStructuralVerticesFromEdges([
       edge('x', [0, 0, 0], [0.5, 0, 0]),
