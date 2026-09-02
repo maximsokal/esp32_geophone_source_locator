@@ -21,6 +21,8 @@ function mesh(overrides: Partial<SparseTsdfMesh> = {}): SparseTsdfMesh {
     selfIntersectionBroadPhaseCandidatePairs: 0,
     selfIntersectionTruncated: false,
     selfIntersectionOversizedTriangleCount: 0,
+    localNoiseHotspotCount: 0,
+    localNoiseHotspotTriangleCount: 0,
     meshNoiseScore: 0,
     sourcePointCount: 100,
     integratedPointCount: 100,
@@ -54,6 +56,35 @@ describe('mesh quality UI status', () => {
     expect(result.rescanRecommended).toBe(true);
     expect(result.label).toContain('MESH NOISY 73%');
     expect(result.label).toContain('Q24');
+  });
+
+  it('reports a bounded successful local hotspot cleanup without forcing a full rescan', () => {
+    const result = describeMeshQuality(mesh({
+      triangleCount: 116,
+      rawTriangleCount: 120,
+      quarantinedTriangleCount: 4,
+      localNoiseHotspotCount: 1,
+      localNoiseHotspotTriangleCount: 4,
+      meshNoiseScore: 0.18,
+    }));
+    expect(result).toEqual({
+      label: 'MESH REPAIRED · H1 · 116△',
+      severity: 'warning',
+      rescanRecommended: false,
+    });
+  });
+
+  it('still forces rescan when local repair exists but additional whole-component quarantine remains', () => {
+    const result = describeMeshQuality(mesh({
+      triangleCount: 100,
+      quarantinedTriangleCount: 20,
+      localNoiseHotspotCount: 1,
+      localNoiseHotspotTriangleCount: 4,
+      meshNoiseScore: 0.28,
+    }));
+    expect(result.severity).toBe('bad');
+    expect(result.rescanRecommended).toBe(true);
+    expect(result.label).toContain('Q16');
   });
 
   it('treats a bounded diagnostic truncation as incomplete rather than clean', () => {
