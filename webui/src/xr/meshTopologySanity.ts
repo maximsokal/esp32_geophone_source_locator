@@ -24,7 +24,7 @@ export interface MeshTopologyComponentQuality {
   selfIntersectionAffectedTriangleRatio: number;
   /** Fraction of faces whose short normal ray pierces a non-adjacent face. */
   normalIntrusionAffectedTriangleRatio: number;
-  /** False when a bounded diagnostic stopped before it could certify the mesh. */
+  /** False when a bounded diagnostic stopped before it could certify this component. */
   diagnosticsComplete: boolean;
   /** Combined diagnostic only; a sharp fold is never discarded from this score alone. */
   meshNoiseScore: number;
@@ -48,7 +48,7 @@ export interface MeshTopologySanityResult {
   selfIntersectionAffectedTriangleCount: number;
   selfIntersectionExactTestedPairs: number;
   selfIntersectionBroadPhaseCandidatePairs: number;
-  /** Legacy downstream flag: true when either bounded mesh diagnostic was incomplete. */
+  /** Legacy global flag. Individual isolated components may still be locally certified. */
   selfIntersectionTruncated: boolean;
   selfIntersectionOversizedTriangleCount: number;
   normalIntrusionAffectedTriangleCount: number;
@@ -81,11 +81,23 @@ interface ComponentEdgeStats {
   orientationConflictCount: number;
 }
 
+interface ComponentBounds {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+}
+
 const MIN_TRIANGLES_RETAINED_COMPONENT = 6;
 const MIN_TRIANGLES_QUARANTINED_COMPONENT = 3;
 const MIN_AREA_ABSOLUTE_SQUARE_METERS = 0.0015;
 const MIN_EFFECTIVE_WIDTH_ABSOLUTE_METERS = 0.032;
 const MAX_BOUNDARY_RATIO_FOR_SMALL_COMPONENT = 0.86;
+const MAX_COMPONENT_INTERACTION_CELLS = 96;
+const MAX_COMPONENT_INTERACTION_PAIR_CHECKS = 20_000;
+const MAX_LOCAL_COMPONENT_RECHECKS = 4;
 // Noise can quarantine a rendered component, but never discard physical evidence.
 // 0.60 requires widespread self-intersection or repeated normal intrusions plus
 // weak/open topology. A welded sharp fold does not enter either diagnostic.
@@ -297,6 +309,172 @@ function buildComponentEdgeStats(
   return stats;
 }
 
+function componentBounds(members: readonly number[], triangles: readonly Triangle[]): ComponentBounds {
+  let minX = Number.POSITIVE_INFINITY; let minY = Number.POSITIVE_INFINITY; let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY; let maxY = Number.NEGATIVE_INFINITY; let maxZ = Number.NEGATIVE_INFINITY;
+  for (const index of members) {
+    for (const point of triangles[index].vertices) {
+      minX = Math.min(minX, point[0]); minY = Math.min(minY, point[1]); minZ = Math.min(minZ, point[2]);
+      maxX = Math.max(maxX, point[0]); maxY = Math.max(maxY, point[1]); maxZ = Math.max(maxZ, point[2]);
+    }
+  }
+  return { minX, minY, minZ, maxX, maxY, maxZ };
+}
+
+function expandedBounds(bounds: ComponentBounds, margin: number): ComponentBounds {
+  return {
+    minX: bounds.minX - margin,
+    minY: bounds.minY - margin,
+    minZ: bounds.minZ - margin,
+    maxX: bounds.maxX + margin,
+    maxY: bounds.maxY + margin,
+    maxZ: bounds.maxZ + margin,
+  };
+}
+
+function boundsOverlap(a: ComponentBounds, b: ComponentBounds): boolean {
+  return !(
+    a.maxX < b.minX || b.maxX < a.minX ||
+    a.maxY < b.minY || b.maxY < a.minY ||
+    a.maxZ < b.minZ || b.maxZ < a.minZ
+  );
+}
+
+function spatialCoordinate(value: number, cellSize: number): number {
+  return Math.floor(value / cellSize);
+}
+
+function spatialKey(x: number, y: number, z: number): string {
+  return `${x}:${y}:${z}`;
+}
+
+function componentIsolation(
+  componentTriangles: readonly (readonly number[])[],
+  triangles: readonly Triangle[],
+  interactionMarginMeters: number,
+): Uint8Array {
+  const count = componentTriangles.length;
+  const isolated = new Uint8Array(count);
+  isolated.fill(1);
+  if (count <= 1) return isolated;
+
+  const bounds = componentTriangles.map((members) => componentBounds(members, triangles));
+  const expanded = bounds.map((value) => expandedBounds(value, interactionMarginMeters));
+  const cellSize = clamp(interactionMarginMeters * 2.25, 0.12, 0.36);
+  const buckets = new Map<string, number[]>();
+  const oversized: number[] = [];
+  const seenPairs = new Set<number>();
+  let pairChecks = 0;
+
+  const checkPair = (first: number, second: number): boolean => {
+    if (first === second) return true;
+    const low = Math.min(first, second), high = Math.max(first, second);
+    const encoded = low * count + high;
+    if (seenPairs.has(encoded)) return true;
+    seenPairs.add(encoded);
+    pairChecks += 1;
+    if (pairChecks > MAX_COMPONENT_INTERACTION_PAIR_CHECKS) {
+      isolated.fill(0);
+      return false;
+    }
+    if (boundsOverlap(expanded[first], expanded[second])) {
+      isolated[first] = 0;
+      isolated[second] = 0;
+    }
+    return true;
+  };
+
+  for (let id = 0; id < count; id += 1) {
+    const value = expanded[id];
+    const minX = spatialCoordinate(value.minX, cellSize), maxX = spatialCoordinate(value.maxX, cellSize);
+    const minY = spatialCoordinate(value.minY, cellSize), maxY = spatialCoordinate(value.maxY, cellSize);
+    const minZ = spatialCoordinate(value.minZ, cellSize), maxZ = spatialCoordinate(value.maxZ, cellSize);
+    const cells = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+    if (cells > MAX_COMPONENT_INTERACTION_CELLS) {
+      oversized.push(id);
+      continue;
+    }
+    for (let gx = minX; gx <= maxX; gx += 1) {
+      for (let gy = minY; gy <= maxY; gy += 1) {
+        for (let gz = minZ; gz <= maxZ; gz += 1) {
+          const key = spatialKey(gx, gy, gz);
+          const bucket = buckets.get(key);
+          if (bucket !== undefined) {
+            for (const other of bucket) if (!checkPair(id, other)) return isolated;
+            bucket.push(id);
+          } else {
+            buckets.set(key, [id]);
+          }
+        }
+      }
+    }
+  }
+
+  // Large component AABBs are not inserted into every hash cell because doing so
+  // could itself become pathological. Compare them exactly against every component
+  // under the same hard pair cap; a far-away giant island therefore does not poison
+  // a healthy slab, while any possibly interacting neighbour remains conservative.
+  for (const id of oversized) {
+    for (let other = 0; other < count; other += 1) {
+      if (!checkPair(id, other)) return isolated;
+    }
+  }
+  return isolated;
+}
+
+function mergeSelfIntersectionStats(
+  global: MeshSelfIntersectionComponentStats,
+  local: MeshSelfIntersectionComponentStats,
+): MeshSelfIntersectionComponentStats {
+  return {
+    intersectingPairCount: Math.max(global.intersectingPairCount, local.intersectingPairCount),
+    affectedTriangleCount: Math.max(global.affectedTriangleCount, local.affectedTriangleCount),
+    affectedTriangleRatio: Math.max(global.affectedTriangleRatio, local.affectedTriangleRatio),
+  };
+}
+
+function mergeNormalIntrusionStats(
+  global: MeshNormalIntrusionComponentStats,
+  local: MeshNormalIntrusionComponentStats,
+): MeshNormalIntrusionComponentStats {
+  return {
+    intrudingTriangleCount: Math.max(global.intrudingTriangleCount, local.intrudingTriangleCount),
+    intrudingTriangleRatio: Math.max(global.intrudingTriangleRatio, local.intrudingTriangleRatio),
+  };
+}
+
+function recoverIsolatedComponentDiagnostics(
+  componentTriangles: readonly (readonly number[])[],
+  triangles: readonly Triangle[],
+  voxelSizeMeters: number,
+  selfStats: MeshSelfIntersectionComponentStats[],
+  normalStats: MeshNormalIntrusionComponentStats[],
+  complete: Uint8Array,
+): void {
+  const safeVoxel = clamp(Math.abs(voxelSizeMeters), 0.01, 0.12);
+  const interactionMarginMeters = clamp(safeVoxel * 1.75, 0.05, 0.16) + clamp(safeVoxel * 0.015, 1e-5, 8e-4);
+  const isolated = componentIsolation(componentTriangles, triangles, interactionMarginMeters);
+  const candidates = componentTriangles
+    .map((members, id) => ({ id, members }))
+    .filter(({ id, members }) => isolated[id] !== 0 && members.length >= MIN_TRIANGLES_RETAINED_COMPONENT)
+    .sort((left, right) => right.members.length - left.members.length || left.id - right.id)
+    .slice(0, MAX_LOCAL_COMPONENT_RECHECKS);
+
+  for (const { id, members } of candidates) {
+    const localTriangles = members.map((index) => triangles[index]);
+    const labels = new Int32Array(localTriangles.length);
+    const localSelf = diagnoseMeshSelfIntersections(localTriangles, labels, 1, voxelSizeMeters);
+    const localNormal = diagnoseMeshNormalIntrusions(localTriangles, labels, 1, voxelSizeMeters);
+    const localComplete =
+      !localSelf.truncated && localSelf.oversizedTriangleCount === 0 &&
+      !localNormal.truncated && localNormal.oversizedTriangleCount === 0;
+    if (!localComplete) continue;
+    complete[id] = 1;
+    selfStats[id] = mergeSelfIntersectionStats(selfStats[id], localSelf.componentStats[0]);
+    normalStats[id] = mergeNormalIntrusionStats(normalStats[id], localNormal.componentStats[0]);
+  }
+}
+
 function componentQuality(
   id: number,
   members: readonly number[],
@@ -393,10 +571,11 @@ function componentQuality(
  * from the rendered/consumed mesh, but never discards the underlying physical
  * surfels and never treats one sharp fold or one nearby shell as sufficient proof.
  *
- * A bounded diagnostic that reports truncation is incomplete evidence, never a
- * clean bill of health. In that case no component is promoted to retained mesh in
- * this pass; sufficiently substantial components are quarantined while the
- * underlying physical surfels remain untouched and available for rescanning.
+ * A truncated global diagnostic is incomplete evidence, but it no longer poisons
+ * an unrelated island automatically. Spatially isolated substantial components
+ * may earn a bounded local re-check. Components close enough for a missed
+ * cross-island intersection/normal intrusion stay quarantined until a complete
+ * global pass; physical surfels remain untouched in every case.
  */
 export function sanitizeMeshTopology(
   trianglePositions: Float32Array,
@@ -454,23 +633,32 @@ export function sanitizeMeshTopology(
     orientation.componentTriangles.length,
     voxelSizeMeters,
   );
-  // Normal-intrusion oversized targets are globally bounded. Treat any such
-  // target conservatively as incomplete here: a giant face is not something the
-  // mobile mesh pass should certify as trusted merely because the bounded ray
-  // diagnostic happened to include it in its small fallback list.
-  const diagnosticsComplete =
-    !selfIntersection.truncated &&
-    !normalIntrusion.truncated &&
-    normalIntrusion.oversizedTriangleCount === 0;
+
+  const globalDiagnosticsComplete =
+    !selfIntersection.truncated && selfIntersection.oversizedTriangleCount === 0 &&
+    !normalIntrusion.truncated && normalIntrusion.oversizedTriangleCount === 0;
+  const selfStats = selfIntersection.componentStats.map((value) => ({ ...value }));
+  const normalStats = normalIntrusion.componentStats.map((value) => ({ ...value }));
+  const componentDiagnosticsComplete = new Uint8Array(orientation.componentTriangles.length);
+  if (globalDiagnosticsComplete) componentDiagnosticsComplete.fill(1);
+  else recoverIsolatedComponentDiagnostics(
+    orientation.componentTriangles,
+    triangles,
+    voxelSizeMeters,
+    selfStats,
+    normalStats,
+    componentDiagnosticsComplete,
+  );
+
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
     triangles,
     componentEdgeStats[id],
-    selfIntersection.componentStats[id],
-    normalIntrusion.componentStats[id],
+    selfStats[id],
+    normalStats[id],
     voxelSizeMeters,
-    diagnosticsComplete,
+    componentDiagnosticsComplete[id] !== 0,
   ));
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
 
@@ -511,7 +699,7 @@ export function sanitizeMeshTopology(
     selfIntersectionAffectedTriangleCount: selfIntersection.affectedTriangleCount,
     selfIntersectionExactTestedPairs: selfIntersection.exactTestedPairs,
     selfIntersectionBroadPhaseCandidatePairs: selfIntersection.broadPhaseCandidatePairs,
-    selfIntersectionTruncated: selfIntersection.truncated || normalIntrusion.truncated || normalIntrusion.oversizedTriangleCount > 0,
+    selfIntersectionTruncated: selfIntersection.truncated || selfIntersection.oversizedTriangleCount > 0 || normalIntrusion.truncated || normalIntrusion.oversizedTriangleCount > 0,
     selfIntersectionOversizedTriangleCount: selfIntersection.oversizedTriangleCount,
     normalIntrusionAffectedTriangleCount: normalIntrusion.intrudingTriangleCount,
     normalIntrusionExactTestedPairs: normalIntrusion.exactTestedPairs,
