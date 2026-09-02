@@ -36,6 +36,9 @@ const STRUCTURAL_TARGET_BASELINE_METERS = 0.12;
 const STRUCTURAL_COMPONENT_POINTS = 18;
 const STRUCTURAL_MAJOR_EXTENT_METERS = 0.12;
 const STRUCTURAL_MINOR_EXTENT_METERS = 0.045;
+const MESH_MIN_POINTS = 24;
+const MESH_MIN_OCCUPIED_CELLS = 7;
+const MESH_MIN_OCCUPANCY_RATIO = 0.30;
 const VIEW_SECTORS = 16;
 const MIN_VIEW_RADIUS_METERS = 0.10;
 const TARGET_CAMERA_BASELINE_METERS = 0.28;
@@ -114,6 +117,23 @@ function bestStructuralComponent(
 }
 
 /**
+ * SurfaceComponents computes meshReadiness from five conjunctive physical gates:
+ * points, occupied cells, scale-aware major extent, scale-aware minor extent and
+ * occupancy ratio. The two extent targets depend on voxel size. Do not duplicate
+ * old fixed centimetre thresholds here: once the fixed point/density gates are
+ * satisfied, any remaining readiness deficit necessarily comes from metric scale.
+ */
+function meshLimitingMetric(component: SurfaceComponent): CapabilityProgress['limitingMetric'] {
+  if (component.pointCount < MESH_MIN_POINTS) return 'points';
+  if (
+    component.occupiedCellCount < MESH_MIN_OCCUPIED_CELLS ||
+    component.occupancyRatio < MESH_MIN_OCCUPANCY_RATIO
+  ) return 'surface-density';
+  if (!component.meshEligible || component.meshReadiness < 1 - 1e-9) return 'extent';
+  return 'surface-density';
+}
+
+/**
  * Capability readiness is a conjunction, not a score average. One excellent
  * signal cannot hide a missing prerequisite: many points cannot compensate for
  * a physically tiny patch, keyframe count cannot compensate for a stationary
@@ -138,9 +158,7 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
   const mesh = bestMesh === null ? null : {
     progress: clamp01(bestMesh.meshReadiness),
     ready: bestMesh.meshEligible,
-    limitingMetric: bestMesh.pointCount < 24 ? 'points' as const
-      : bestMesh.majorExtentMeters < 0.14 || bestMesh.minorExtentMeters < 0.075 ? 'extent' as const
-        : 'surface-density' as const,
+    limitingMetric: meshLimitingMetric(bestMesh),
     growthNeededPercent: relativeGrowthNeeded(bestMesh.meshReadiness),
   };
 
