@@ -19,6 +19,8 @@ import {
   type StructuralGuideViewpoint,
 } from './structuralGuide';
 import { StructuralLifecycleTelemetry } from './structuralLifecycleTelemetry';
+import { clusterStructuralSurfaceFamilies } from './structuralSurfaceClustering';
+import { filterStructuralSurface } from './structuralSurfacePreprocess';
 import { analyzeSurfaceComponents } from './surfaceComponents';
 import type { StructuralPlanePrior } from './webxrPlaneGuidance';
 
@@ -29,6 +31,7 @@ interface AnalyzeMessage {
   positions: Float32Array;
   normals: Float32Array;
   confidence: Float32Array;
+  /** Legacy/preprocessed callers may still supply these; live raw snapshots do not. */
   residualMeters?: Float32Array;
   normalConfidence?: Float32Array;
   coverageConfidence?: Float32Array;
@@ -77,40 +80,57 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   if (message.epoch !== currentEpoch) return;
 
   const started = performance.now();
-  // These arrays were transferred into this worker, so advisory normal
-  // stabilization is allocation-free on the main thread. Native plane guidance
-  // never changes positions/confidence or creates surfels; physical measurements
-  // remain the only geometry and occupancy source.
+  const rawPointCount = Math.min(
+    Math.floor(message.positions.length / 3),
+    Math.floor(message.normals.length / 3),
+    message.confidence.length,
+  );
+
+  // All CPU-heavy structural preprocessing now happens after transfer. Family
+  // clustering is based on physical measured normals before any native-plane
+  // advisory stabilization, preserving the invariant that XRPlane geometry cannot
+  // create/merge physical surface families. The local certificate then rejects
+  // unsupported measured outliers and supplies residual/normal quality arrays.
+  const clusteredSurface = clusterStructuralSurfaceFamilies({
+    positions: message.positions,
+    normals: message.normals,
+    confidence: message.confidence,
+    pointCount: rawPointCount,
+    keyframeCount: message.keyframeCount,
+    voxelSizeMeters: message.voxelSizeMeters,
+  });
+  const surface = filterStructuralSurface(clusteredSurface);
+
+  // Advisory native planes can rotate normals only after physical clustering and
+  // filtering. They never change position/confidence, create surfels or occupancy.
   const nativePlaneStabilizedSurfels = stabilizeMeasuredSurfelsWithNativePlanes(
-    message.positions,
-    message.normals,
-    message.confidence,
+    surface.positions,
+    surface.normals,
+    surface.confidence,
     message.planePriors,
   );
 
   // Connected-component/PCA readiness belongs in the CPU worker too. Returning
-  // only the best structural + mesh component avoids the old main-thread O(N)
-  // analysis and avoids cloning island lists or eligible-point masks back across
-  // postMessage on noisy scans.
+  // only the best structural + mesh component avoids main-thread O(N) analysis
+  // and avoids cloning island lists or eligible-point masks back to the UI.
   const componentAnalysis = analyzeSurfaceComponents({
-    positions: message.positions,
-    normals: message.normals,
-    confidence: message.confidence,
-    voxelSizeMeters: message.voxelSizeMeters,
+    positions: surface.positions,
+    normals: surface.normals,
+    confidence: surface.confidence,
+    voxelSizeMeters: surface.voxelSizeMeters,
     minimumConfidence: 0.58,
   });
   const surfaceReadiness: SurfaceComponentReadinessSummary = summarizeSurfaceComponentReadiness(componentAnalysis);
   const structuralSurface = computeSurfaceStructuralReadiness(surfaceReadiness);
 
   // A small/narrow/sparsely supported measured component is useful scan evidence,
-  // but not yet large enough to justify the expensive plane-intersection and
-  // uncertainty-aware corner branches. Keep tracker history intact and return a
-  // readiness-only result; a later keyframe can re-probe after the scan grows.
+  // but not yet large enough to justify plane intersections or certified corners.
+  // Keep tracker history intact and let a later keyframe re-probe after scan growth.
   if (!structuralSurface.ready) {
     const result = {
       corners: [],
       edges: [],
-      analyzedPoints: componentAnalysis.acceptedPointCount,
+      analyzedPoints: surface.pointCount,
       planarPatches: 0,
       computeMs: performance.now() - started,
       keyframeCount: message.keyframeCount,
@@ -123,6 +143,9 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
       ...lifecycleTelemetry.update([], []),
       nativePlanePriors: message.planePriors?.length ?? 0,
       nativePlaneStabilizedSurfels,
+      rawStructuralPoints: rawPointCount,
+      clusteredStructuralPoints: clusteredSurface.pointCount,
+      certifiedStructuralPoints: surface.pointCount,
       structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
       structuralSurfaceLimit: structuralSurface.limitingMetric,
       structuralGeometryDeferred: true,
@@ -138,9 +161,9 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   }
 
   const input: StructuralGuideInput = {
-    positions: message.positions,
-    normals: message.normals,
-    confidence: message.confidence,
+    positions: surface.positions,
+    normals: surface.normals,
+    confidence: surface.confidence,
     keyframeCount: message.keyframeCount,
     voxelSizeMeters: message.voxelSizeMeters,
     viewpoint: message.viewpoint ?? null,
@@ -157,15 +180,15 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     .sort((left, right) => right.confidence - left.confidence);
 
   const certifiedSnapshot = {
-    positions: message.positions,
-    normals: message.normals,
-    confidence: message.confidence,
-    residualMeters: message.residualMeters,
-    normalConfidence: message.normalConfidence,
-    coverageConfidence: message.coverageConfidence,
-    coverageReady: message.coverageReady,
-    pointCount: Math.floor(message.positions.length / 3),
-    voxelSizeMeters: message.voxelSizeMeters,
+    positions: surface.positions,
+    normals: surface.normals,
+    confidence: surface.confidence,
+    residualMeters: surface.residualMeters,
+    normalConfidence: surface.normalConfidence,
+    coverageConfidence: surface.coverageConfidence,
+    coverageReady: surface.coverageReady,
+    pointCount: surface.pointCount,
+    voxelSizeMeters: surface.voxelSizeMeters,
     freeSpacePositions: message.freeSpacePositions,
     freeSpaceVoxelSizeMeters: message.freeSpaceVoxelSizeMeters,
   };
@@ -207,6 +230,9 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     ...lifecycleTelemetry.update(tracked.edges, result.corners),
     nativePlanePriors: message.planePriors?.length ?? 0,
     nativePlaneStabilizedSurfels,
+    rawStructuralPoints: rawPointCount,
+    clusteredStructuralPoints: clusteredSurface.pointCount,
+    certifiedStructuralPoints: surface.pointCount,
     structuralSurfaceReadiness: Number(structuralSurface.progress.toFixed(3)),
     structuralSurfaceLimit: structuralSurface.limitingMetric,
     structuralGeometryDeferred: false,
