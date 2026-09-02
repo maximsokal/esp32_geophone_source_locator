@@ -1,3 +1,4 @@
+import { sanitizeMeshTopology } from './meshTopologySanity';
 import { analyzeSurfaceComponents } from './surfaceComponents';
 
 export type Point3 = readonly [number, number, number];
@@ -18,6 +19,14 @@ export interface SparseTsdfInput {
 export interface SparseTsdfMesh {
   trianglePositions: Float32Array;
   triangleCount: number;
+  rawTriangleCount: number;
+  quarantinedTriangleCount: number;
+  topologyDiscardedTriangleCount: number;
+  nonManifoldEdgeCount: number;
+  nonManifoldRepairTriangleCount: number;
+  orientationRepairCount: number;
+  orientationConflictCount: number;
+  meshTopologyComponentCount: number;
   sourcePointCount: number;
   integratedPointCount: number;
   skippedLowConfidence: number;
@@ -224,6 +233,11 @@ function polygonizeTetra(
  * or unsupported regions are never filled merely to make a watertight mesh.
  * Verified FREE voxels are used only to orient the positive side of local
  * surface normals. UNKNOWN volume is not converted to occupied/free evidence.
+ *
+ * The extracted triangle soup passes through the same conservative topology
+ * sanitizer as the live preview. Topology cleanup never feeds back into physical
+ * occupancy; it only decides which reconstructed faces are trustworthy enough to
+ * expose as a mesh.
  */
 export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -365,10 +379,19 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     }
   }
 
+  const topology = sanitizeMeshTopology(Float32Array.from(triangles), voxelSizeMeters);
   const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
   return {
-    trianglePositions: Float32Array.from(triangles),
-    triangleCount: triangles.length / 9,
+    trianglePositions: topology.trianglePositions,
+    triangleCount: topology.triangleCount,
+    rawTriangleCount: topology.sourceTriangleCount,
+    quarantinedTriangleCount: topology.quarantinedTriangleCount,
+    topologyDiscardedTriangleCount: topology.discardedTriangleCount,
+    nonManifoldEdgeCount: topology.nonManifoldEdgeCount,
+    nonManifoldRepairTriangleCount: topology.nonManifoldRepairTriangleCount,
+    orientationRepairCount: topology.orientationRepairCount,
+    orientationConflictCount: topology.orientationConflictCount,
+    meshTopologyComponentCount: topology.components.length,
     sourcePointCount,
     integratedPointCount,
     skippedLowConfidence,
