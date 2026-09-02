@@ -114,6 +114,10 @@ export interface DepthFusionResult {
   createdPoints: number;
   promotedPoints: number;
   rejectedResiduals: number;
+  /** Extra center probes issued around raw depth discontinuities this frame. */
+  edgeSupersampleProbes: number;
+  /** Extra center probes issued only around physically measured complex surface cells. */
+  featureSupersampleProbes: number;
 }
 
 interface RepresentativePoint {
@@ -198,6 +202,15 @@ export const MAX_SURFELS_PER_FINE_VOXEL = 3;
 
 // Keep roughly the old 40x22 compute budget but remove its permanent lattice.
 const BASE_DEPTH_SAMPLES_PER_FRAME = 880;
+// Extra physical probes are hard-capped per sampled XR frame. The previous
+// one-level recursion was bounded in depth but not in count: a pathological
+// discontinuity-rich frame could issue two children for nearly every base probe.
+export const MAX_EDGE_SUPERSAMPLE_PROBES_PER_FRAME = 64;
+export const MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME = 96;
+const FEATURE_PROBE_MIN_REPRESENTATIVES = 6;
+const FEATURE_PROBE_COMPLEXITY_THRESHOLD = 0.22;
+const FEATURE_PROBE_PIXEL_RADIUS = 2.0;
+const GOLDEN_ANGLE_RADIANS = Math.PI * (3 - Math.sqrt(5));
 const SAMPLE_MARGIN = 0.025;
 const MIN_DEPTH_METERS = 0.18;
 const EDGE_PROBE_PIXEL_OFFSET = 0.75;
@@ -521,9 +534,28 @@ export class DepthPointCloudAccumulator {
     if (context.evidenceKeyframe) this.integrationKeyframes += 1; else this.polishFrames += 1;
     const phase = context.keyframeId * 131 + this.sampleEpoch * 17 + (context.evidenceKeyframe ? 0 : 71);
     let changedPoints = 0; let acceptedSamples = 0; let createdPoints = 0; let promotedPoints = 0;
+    let edgeSupersampleProbes = 0; let featureSupersampleProbes = 0; let featureProbeSequence = 0;
     const residualBefore = this.residualRejectedSamples;
+    // A cell's normal-family score changes slowly inside one frame. Cache at most
+    // one clustering pass per touched cell so feature-directed sampling remains
+    // bounded in both depth reads and CPU work.
+    const featureScoreCache = new Map<string, number>();
 
-    const integrateAt = (u: number, v: number, expandEdges: boolean): LocalQuality | null => {
+    const featureScoreForProject = (project: ProjectPoint): number => {
+      const key = cellKey(project[0], project[1], project[2], COVERAGE_CELL_METERS);
+      const cached = featureScoreCache.get(key);
+      if (cached !== undefined) return cached;
+      const cell = this.coverageCells.get(key);
+      if (cell === undefined || cell.representatives.size < FEATURE_PROBE_MIN_REPRESENTATIVES) {
+        featureScoreCache.set(key, 0);
+        return 0;
+      }
+      const score = this.cellFeatureComplexity(cell);
+      featureScoreCache.set(key, score);
+      return score;
+    };
+
+    const integrateAt = (u: number, v: number, allowAdaptiveExpansion: boolean): LocalQuality | null => {
       if (u <= SAMPLE_MARGIN || u >= 1 - SAMPLE_MARGIN || v <= SAMPLE_MARGIN || v >= 1 - SAMPLE_MARGIN) return null;
       const depthMeters = depth.getDepthInMeters(u, v);
       if (!finite(depthMeters) || depthMeters < MIN_DEPTH_METERS || depthMeters > this.maxDepthMeters) return null;
@@ -553,11 +585,37 @@ export class DepthPointCloudAccumulator {
       if (outcome.created) createdPoints += 1;
       if (outcome.promoted) promotedPoints += 1;
 
-      // This is deliberately bounded one-level edge supersampling, not unbounded recursion:
-      // children are always invoked with expandEdges=false and therefore cannot recurse again.
-      if (expandEdges && local.edge && local.dominantAxis !== 'none') {
+      if (allowAdaptiveExpansion && outcome.accepted) {
+        const complexity = featureScoreForProject(project);
+        if (
+          complexity >= FEATURE_PROBE_COMPLEXITY_THRESHOLD &&
+          featureSupersampleProbes + 2 <= MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME
+        ) {
+          // Opposite points on a deterministic rotating stencil provide local
+          // density without introducing a permanent image-grid pattern. This is
+          // still physical depth only: learned/native plane priors cannot enter
+          // this accumulator or request probes.
+          const angle = (phase * 0.17320508075688773 + featureProbeSequence * GOLDEN_ANGLE_RADIANS) % (Math.PI * 2);
+          featureProbeSequence += 1;
+          const du = Math.cos(angle) * FEATURE_PROBE_PIXEL_RADIUS / Math.max(1, depth.width);
+          const dv = Math.sin(angle) * FEATURE_PROBE_PIXEL_RADIUS / Math.max(1, depth.height);
+          featureSupersampleProbes += 2;
+          integrateAt(u - du, v - dv, false);
+          integrateAt(u + du, v + dv, false);
+          return local;
+        }
+      }
+
+      // A raw discontinuity remains useful for a narrow fallback supersample,
+      // but now has a true frame-wide budget rather than only a recursion-depth
+      // bound. Feature-confirmed cells above take priority over generic edges.
+      if (
+        allowAdaptiveExpansion && local.edge && local.dominantAxis !== 'none' &&
+        edgeSupersampleProbes + 2 <= MAX_EDGE_SUPERSAMPLE_PROBES_PER_FRAME
+      ) {
         const du = EDGE_PROBE_PIXEL_OFFSET / Math.max(1, depth.width);
         const dv = EDGE_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
+        edgeSupersampleProbes += 2;
         if (local.dominantAxis === 'u') {
           integrateAt(u - du, v, false); integrateAt(u + du, v, false);
         } else {
@@ -585,6 +643,8 @@ export class DepthPointCloudAccumulator {
       createdPoints,
       promotedPoints,
       rejectedResiduals: this.residualRejectedSamples - residualBefore,
+      edgeSupersampleProbes,
+      featureSupersampleProbes,
     };
   }
 
@@ -1050,7 +1110,14 @@ export class DepthPointCloudAccumulator {
 
   private cellFeatureComplexity(cell: CoverageCell, candidate?: RepresentativePoint): number {
     if (candidate === undefined) return estimateSurfaceFeatureComplexity(cell.representatives.values()).score;
-    return estimateSurfaceFeatureComplexity([...cell.representatives.values(), candidate]).score;
+    const existing = cell.representatives.values();
+    const withCandidate: Iterable<RepresentativePoint> = {
+      *[Symbol.iterator](): Iterator<RepresentativePoint> {
+        yield* existing;
+        yield candidate;
+      },
+    };
+    return estimateSurfaceFeatureComplexity(withCandidate).score;
   }
 
   private cellRetentionQuota(cell: CoverageCell, candidate?: RepresentativePoint, baseQuota = this.adaptiveQuota): number {
@@ -1189,6 +1256,14 @@ export class DepthPointCloudAccumulator {
     return { min: [x[low], y[low], z[low]], max: [x[high], y[high], z[high]] };
   }
   private emptyResult(): DepthFusionResult {
-    return { changedPoints: 0, acceptedSamples: 0, createdPoints: 0, promotedPoints: 0, rejectedResiduals: 0 };
+    return {
+      changedPoints: 0,
+      acceptedSamples: 0,
+      createdPoints: 0,
+      promotedPoints: 0,
+      rejectedResiduals: 0,
+      edgeSupersampleProbes: 0,
+      featureSupersampleProbes: 0,
+    };
   }
 }
