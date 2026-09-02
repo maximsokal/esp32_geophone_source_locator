@@ -25,6 +25,7 @@ export interface MeshPreview {
   /** Confidence-valid points before physical component-size gating. */
   certifiedPointCount: number;
   rejectedTriangleCount: number;
+  /** Absolute maximum triangulation radius; each point uses a smaller density-adaptive radius when possible. */
   searchRadiusMeters: number;
   componentCount: number;
   eligibleComponentCount: number;
@@ -51,6 +52,8 @@ const MESH_MAX_TRIANGLE_ANGLE_RADIANS = (120 * Math.PI) / 180;
 const MESH_MAX_NEIGHBOURS = 12;
 const MESH_MAX_TRIANGLES = 30000;
 const MESH_MAX_POINTS = 12000;
+const MESH_DENSITY_MU = 2.8;
+const MESH_DENSITY_REFERENCE_NEIGHBOUR = 2;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -116,6 +119,29 @@ export function triangleGeometryAcceptable(
   );
 }
 
+/**
+ * GP3-style density multiplier: the global search radius remains a hard maximum,
+ * but dense local surfels should create correspondingly smaller triangles.
+ *
+ * We use the third compatible neighbour rather than the absolute nearest point.
+ * The accumulator may retain multiple close surfels around sharp features, and a
+ * single near-duplicate must not collapse the triangulation radius to millimetres.
+ */
+export function adaptiveMeshSearchRadius(
+  neighbourDistances: readonly number[],
+  maximumRadiusMeters: number,
+  voxelSizeMeters: number,
+): number {
+  const maximum = Math.max(1e-4, Number.isFinite(maximumRadiusMeters) ? maximumRadiusMeters : 0.1);
+  const finite = neighbourDistances
+    .filter((value) => Number.isFinite(value) && value > 1e-5 && value <= maximum)
+    .sort((a, b) => a - b);
+  if (finite.length < 2) return maximum;
+  const reference = finite[Math.min(MESH_DENSITY_REFERENCE_NEIGHBOUR, finite.length - 1)];
+  const minimum = Math.min(maximum, Math.max(0.025, Math.abs(voxelSizeMeters) * 0.70));
+  return clamp(reference * MESH_DENSITY_MU, minimum, maximum);
+}
+
 function triangleNormal(
   a: readonly [number, number, number],
   b: readonly [number, number, number],
@@ -156,14 +182,13 @@ function recordsFromInput(input: MeshPreviewInput, eligiblePointMask: Uint8Array
  * Before triangulation, a bounded voxel-hash component pass rejects dense but
  * physically tiny islands and one-dimensional point chains. Only components
  * with enough measured 2-D extent, occupied cells and support density can enter
- * the GP3-style local triangulator. This prevents a few centimetres of noise or
- * a short edge from becoming a visually convincing "surface".
+ * the local triangulator.
  *
- * The triangulation itself follows the same safety principles as PCL
- * GreedyProjectionTriangulation: spatial search radius, tangent-plane neighbour
- * ordering, triangle-angle limits and a maximum normal/surface angle so opposite
- * sides of a sharp edge are not connected merely because they are spatially
- * close.
+ * The triangulation follows PCL GP3 safety principles: an absolute search radius,
+ * a local mu-style radius derived from measured neighbour spacing, tangent-plane
+ * neighbour ordering, triangle-angle limits and a maximum normal/surface angle.
+ * More depth samples on a convex feature therefore increase local detail instead
+ * of permitting large triangles across the denser measurements.
  */
 export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
   const sourcePointCount = Math.min(
@@ -241,9 +266,16 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
       }
     }
 
-    neighbours.sort((left, right) => left.distance - right.distance);
-    const selected = neighbours.slice(0, MESH_MAX_NEIGHBOURS);
-    selected.sort((left, right) => left.angle - right.angle);
+    neighbours.sort((left, right) => left.distance - right.distance || left.point.index - right.point.index);
+    const localRadiusMeters = adaptiveMeshSearchRadius(
+      neighbours.map((neighbour) => neighbour.distance),
+      searchRadiusMeters,
+      input.voxelSizeMeters,
+    );
+    const selected = neighbours
+      .filter((neighbour) => neighbour.distance <= localRadiusMeters)
+      .slice(0, MESH_MAX_NEIGHBOURS);
+    selected.sort((left, right) => left.angle - right.angle || left.point.index - right.point.index);
     if (selected.length < 2) continue;
 
     for (let index = 0; index < selected.length; index += 1) {
@@ -255,7 +287,7 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
       if (emitted.has(triangleKey)) continue;
       emitted.add(triangleKey);
 
-      if (!triangleGeometryAcceptable(center.position, first.position, second.position, searchRadiusMeters)) {
+      if (!triangleGeometryAcceptable(center.position, first.position, second.position, localRadiusMeters)) {
         rejectedTriangleCount += 1;
         continue;
       }
