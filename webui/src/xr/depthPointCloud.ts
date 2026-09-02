@@ -5,6 +5,7 @@ import {
   type DepthFusionResult,
   type DepthSampleView,
   type LiveCoverageSnapshot,
+  type PointCloudBounds,
   type ProjectPoint,
   type ScanPointCloudSnapshot as SurfaceScanPointCloudSnapshot,
   type StructuralGuidePointCloudSnapshot,
@@ -24,6 +25,8 @@ import {
   surfaceFusionDepthInMeters,
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
+import { analyzeSurfaceComponents } from './surfaceComponents';
+import { computeOperationalSurfaceEnvelope } from './surfaceOperationalEnvelope';
 import { clusterStructuralSurfaceFamilies } from './structuralSurfaceClustering';
 import { getFreshRgbGuidance } from './xrGuidanceRegistry';
 import { recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
@@ -39,6 +42,11 @@ export type {
 } from './depthPointCloudV2';
 
 export interface ScanPointCloudSnapshot extends SurfaceScanPointCloudSnapshot, OccupancySnapshot {
+  /** Component-aware bounds used only to enumerate UNKNOWN source candidates. */
+  occupancyEnvelopeBounds: PointCloudBounds | null;
+  occupancyEnvelopeComponentCount: number;
+  occupancyQuarantinedSurfaceComponentCount: number;
+  occupancyQuarantinedSurfacePointCount: number;
   tsdfPositions: Float32Array;
   tsdfNormals: Float32Array;
   tsdfConfidence: Float32Array;
@@ -286,7 +294,23 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
 
   override snapshot(depthFrameCount: number, sampledDepthFrames: number): ScanPointCloudSnapshot {
     const surface = super.snapshot(depthFrameCount, sampledDepthFrames);
-    const occupancy = this.occupancy.snapshot(surface.bounds);
+    // UNKNOWN candidate enumeration is the only consumer of this stricter
+    // component-aware envelope. Physical surface points, full/robust display
+    // bounds and ray-derived occupancy evidence remain untouched.
+    const envelopeAnalysis = analyzeSurfaceComponents({
+      positions: surface.positions,
+      normals: surface.normals,
+      confidence: surface.confidence,
+      voxelSizeMeters: surface.voxelSizeMeters,
+      minimumConfidence: STRUCTURAL_MIN_CONFIDENCE,
+    });
+    const envelope = computeOperationalSurfaceEnvelope(
+      surface.positions,
+      envelopeAnalysis,
+      surface.voxelSizeMeters,
+      surface.bounds,
+    );
+    const occupancy = this.occupancy.snapshot(envelope.bounds);
     // Keep dense physically certified surfels for Directional TSDF. Optional
     // calibrated AI filtering happens later in SparseTsdfMeshClient, after the
     // XR session has finished, so taking a point-cloud snapshot is model-free.
@@ -298,6 +322,10 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     return {
       ...surface,
       ...occupancy,
+      occupancyEnvelopeBounds: envelope.bounds,
+      occupancyEnvelopeComponentCount: envelope.retainedComponentIds.length,
+      occupancyQuarantinedSurfaceComponentCount: envelope.quarantinedComponentIds.length,
+      occupancyQuarantinedSurfacePointCount: envelope.quarantinedPointCount,
       tsdfPositions: hasTsdfCertificate ? certified.positions : new Float32Array(0),
       tsdfNormals: hasTsdfCertificate ? certified.normals : new Float32Array(0),
       tsdfConfidence: hasTsdfCertificate ? certified.confidence : new Float32Array(0),
