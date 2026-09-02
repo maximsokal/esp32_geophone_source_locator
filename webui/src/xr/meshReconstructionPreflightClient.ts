@@ -50,11 +50,15 @@ export class MeshReconstructionPreflightClient {
   private worker: Worker | null = null;
   private rejectPending: ((reason: unknown) => void) | null = null;
 
+  constructor(
+    private readonly workerFactory: () => Worker = () => new MeshReconstructionPreflightWorker(),
+  ) {}
+
   analyze(arrays: MeshPreflightOwnedArrays): Promise<MeshPreflightWorkerResult> {
     this.reset('Mesh reconstruction preflight superseded by a newer request.');
     const generation = this.generation;
     const requestId = this.nextRequestId++;
-    const worker = new MeshReconstructionPreflightWorker();
+    const worker = this.workerFactory();
     this.worker = worker;
 
     return new Promise<MeshPreflightWorkerResult>((resolve, reject) => {
