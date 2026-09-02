@@ -60,6 +60,7 @@ const ENDPOINT_OUTSIDE_GAP_METERS = 0.045;
 const ENDPOINT_FREE_PROBES_METERS = [0.045, 0.085, 0.125] as const;
 const TRACK_RADIUS_METERS = 0.075;
 const TRACK_DIRECTION_DOT = Math.cos((22 * Math.PI) / 180);
+const MIN_VIEW_TRANSLATION_METERS = 0.035;
 const MIN_VIEW_BASELINE_METERS = 0.09;
 const MIN_VIEW_RAY_ANGLE = (9 * Math.PI) / 180;
 const MIN_MATURE_OBSERVATIONS = 3;
@@ -294,8 +295,6 @@ export function detectEdgeEndpointObservations(snapshot: EdgeEndpointSnapshot): 
       normalGateRadians: (38 * Math.PI) / 180,
       minimumTangentSpreadMeters: clamp(snapshot.voxelSizeMeters * 0.55, 0.020, 0.032),
     });
-    // Three independently supported planes are handled by the 3-plane corner
-    // solver. Endpoint evidence exists specifically for the 2-plane ambiguity.
     if (planes.length !== 2) continue;
 
     const edge = intersectTwoRobustPlanes(planes[0], planes[1], seed.position);
@@ -351,6 +350,7 @@ function independentEvidence(track: EndpointTrack, viewpoint: StructuralGuideVie
   for (const evidence of track.evidence) {
     if (evidence.keyframeId === viewpoint.keyframeId) return false;
     const baseline = distance3(evidence.camera, viewpoint.position);
+    if (baseline < MIN_VIEW_TRANSLATION_METERS) return false;
     const cosine = clamp(dot3(evidence.ray, ray), -1, 1);
     const angle = Math.acos(cosine);
     if (baseline < MIN_VIEW_BASELINE_METERS && angle < MIN_VIEW_RAY_ANGLE) return false;
@@ -384,10 +384,6 @@ export class StructuralEdgeEndpointTracker {
   ): readonly StructuralCornerCandidate[] {
     const observations = detectEdgeEndpointObservations(snapshot);
     const keyframeId = viewpoint?.keyframeId ?? snapshot.pointCount;
-    // A physical endpoint track can consume at most one observation per analysis
-    // frame. Multiple seeds may rediscover the same neighbourhood; allowing them
-    // to update one track repeatedly would move its filtered position without
-    // adding independent evidence and can alias two nearby endpoints.
     const matchedTrackIds = new Set<number>();
 
     for (const observation of observations) {
