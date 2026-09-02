@@ -13,6 +13,7 @@ import {
 } from '../xr/scanDisplayModes';
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../xr/sparseTsdf';
+import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import type { ViewCommand } from './SceneViewport';
 
@@ -193,7 +194,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
     tsdfClient.reset();
     setTsdfMesh(null);
     setTsdfError(null);
-    if (snapshot.tsdfPointCount < 60) return () => { cancelled = true; };
+    if (snapshot.tsdfPointCount < MESH_MIN_POINTS) return () => { cancelled = true; };
 
     const started = performance.now();
     const maxTriangles = Math.max(3000, Math.min(18000, snapshot.tsdfPointCount * 14));
@@ -257,7 +258,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
   const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode);
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
   const meshQuality = tsdfMesh === null ? null : describeMeshQuality(tsdfMesh);
-  const meshStatus = snapshot.tsdfPointCount < 60
+  const meshStatus = snapshot.tsdfPointCount < MESH_MIN_POINTS
     ? 'MESH · SCAN MORE FOR CERTIFIED GEOMETRY'
     : tsdfError !== null
       ? 'MESH · UNAVAILABLE'
