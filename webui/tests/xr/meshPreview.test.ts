@@ -54,8 +54,20 @@ describe('GP3-style mesh preview', () => {
   it('builds local triangles on a dense planar point set', () => {
     const cloud = planeGrid(12, 12);
     const mesh = buildSurfaceMeshPreview({ ...cloud, voxelSizeMeters: 0.04 });
+    expect(mesh.eligibleComponentCount).toBeGreaterThan(0);
+    expect(mesh.meshReadiness).toBe(1);
     expect(mesh.triangleCount).toBeGreaterThan(100);
     expect(mesh.trianglePositions.length).toBe(mesh.triangleCount * 9);
+  });
+
+  it('does not triangulate a dense but physically tiny patch', () => {
+    const cloud = planeGrid(9, 9, 0.008);
+    const mesh = buildSurfaceMeshPreview({ ...cloud, voxelSizeMeters: 0.04 });
+    expect(mesh.certifiedPointCount).toBe(81);
+    expect(mesh.eligibleComponentCount).toBe(0);
+    expect(mesh.acceptedPointCount).toBe(0);
+    expect(mesh.meshReadiness).toBeLessThan(1);
+    expect(mesh.triangleCount).toBe(0);
   });
 
   it('filters low-confidence points before triangulation', () => {
@@ -85,6 +97,7 @@ describe('GP3-style mesh preview', () => {
       confidence[countA + i] = 0.9;
     }
     const mesh = buildSurfaceMeshPreview({ positions, normals, confidence, voxelSizeMeters: 0.04 });
+    expect(mesh.eligibleComponentCount).toBeGreaterThanOrEqual(2);
     expect(mesh.triangleCount).toBeGreaterThan(20);
     for (let i = 0; i < mesh.trianglePositions.length; i += 9) {
       const tri = mesh.trianglePositions.subarray(i, i + 9);
