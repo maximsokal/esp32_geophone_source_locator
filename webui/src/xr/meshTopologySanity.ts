@@ -46,6 +46,7 @@ export interface MeshTopologySanityResult {
   selfIntersectionAffectedTriangleCount: number;
   selfIntersectionExactTestedPairs: number;
   selfIntersectionBroadPhaseCandidatePairs: number;
+  /** Legacy downstream flag: true when either bounded mesh diagnostic was incomplete. */
   selfIntersectionTruncated: boolean;
   selfIntersectionOversizedTriangleCount: number;
   normalIntrusionAffectedTriangleCount: number;
@@ -491,7 +492,7 @@ export function sanitizeMeshTopology(
     selfIntersectionAffectedTriangleCount: selfIntersection.affectedTriangleCount,
     selfIntersectionExactTestedPairs: selfIntersection.exactTestedPairs,
     selfIntersectionBroadPhaseCandidatePairs: selfIntersection.broadPhaseCandidatePairs,
-    selfIntersectionTruncated: selfIntersection.truncated,
+    selfIntersectionTruncated: selfIntersection.truncated || normalIntrusion.truncated,
     selfIntersectionOversizedTriangleCount: selfIntersection.oversizedTriangleCount,
     normalIntrusionAffectedTriangleCount: normalIntrusion.intrudingTriangleCount,
     normalIntrusionExactTestedPairs: normalIntrusion.exactTestedPairs,
