@@ -11,6 +11,22 @@ export interface DirectionalTsdfMesh extends SparseTsdfMesh {
   channelTriangleCounts: readonly number[];
 }
 
+export type DirectionalTsdfPlanMode = 'scalar' | 'single' | 'multi';
+
+export interface DirectionalTsdfPlanSummary {
+  mode: DirectionalTsdfPlanMode;
+  sourcePointCount: number;
+  skippedLowConfidence: number;
+  rejectedUndersizedChannelPoints: number;
+  totalTriangleBudget: number;
+  inputVoxelSizeMeters: number;
+  directionalChannelCount: number;
+}
+
+export interface DirectionalTsdfPlan extends DirectionalTsdfPlanSummary {
+  channelInputs: readonly SparseTsdfInput[];
+}
+
 type Channel = 0 | 1 | 2 | 3 | 4 | 5;
 
 interface FreeIndex {
@@ -83,6 +99,7 @@ function subsetInput(
   input: SparseTsdfInput,
   indices: readonly number[],
   normalsByIndex: Map<number, readonly [number, number, number]>,
+  keepFreeSpace: boolean,
 ): SparseTsdfInput {
   const positions = new Float32Array(indices.length * 3);
   const normals = new Float32Array(indices.length * 3);
@@ -99,6 +116,8 @@ function subsetInput(
     positions,
     normals,
     confidence,
+    freeSpacePositions: keepFreeSpace ? input.freeSpacePositions : undefined,
+    freeSpaceVoxelSizeMeters: keepFreeSpace ? input.freeSpaceVoxelSizeMeters : undefined,
     maxInputPoints: Math.min(indices.length, input.maxInputPoints ?? indices.length),
   };
 }
@@ -120,21 +139,20 @@ function maximumMeshReadiness(meshes: readonly SparseTsdfMesh[]): number {
 }
 
 /**
- * Directional TSDF wrapper: locally opposite/orthogonal surfaces never share a
- * scalar field. Each signed dominant-normal family is fused independently and
- * resulting triangles are deduplicated only after zero-crossing extraction.
+ * Partition one post-scan physical surfel cloud into signed dominant-normal
+ * families. The work here is deterministic and intentionally independent of
+ * Worker scheduling, so sequential and multi-worker reconstruction share the
+ * same geometry policy.
  *
- * A directional channel must contain at least the same 24 physical samples that
- * a connected surface component needs before mesh eligibility. Smaller normal
- * islands are not worth allocating a TSDF field and are counted as rejected
- * component evidence rather than being allowed to contaminate a mature channel.
- *
- * Per-channel meshes are sanitized independently by buildSparseTsdfMesh. After
- * channel merge we sanitize once again: valid faces from two channels can still
- * overlap or create a non-manifold edge at a directional boundary.
+ * When `transferSafeChannels` is true, mature channel inputs omit the shared
+ * FREE-space buffer. Their normals have already been oriented against that exact
+ * FREE evidence here, avoiding N copies of a potentially large free-space array
+ * when channel buffers are transferred to independent Workers.
  */
-export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsdfMesh {
-  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
+export function prepareDirectionalTsdfPlan(
+  input: SparseTsdfInput,
+  transferSafeChannels = false,
+): DirectionalTsdfPlan {
   const count = Math.min(
     Math.floor(input.positions.length / 3),
     Math.floor(input.normals.length / 3),
@@ -159,60 +177,105 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
     channels[channelFor(normal)].push(index);
   }
 
-  const totalBudget = Math.max(1, Math.floor(input.maxTriangles ?? 50000));
+  const totalTriangleBudget = Math.max(1, Math.floor(input.maxTriangles ?? 50000));
   const active = channels.filter((items) => items.length >= MIN_DIRECTIONAL_CHANNEL_POINTS);
   const highConfidencePointCount = count - skippedLowConfidence;
   const activePointCount = active.reduce((sum, items) => sum + items.length, 0);
   const rejectedUndersizedChannelPoints = Math.max(0, highConfidencePointCount - activePointCount);
 
-  // No directional family is large enough yet. Let the scalar implementation
-  // make the final connected-component decision over the whole measured cloud;
-  // this preserves a smooth curved component whose normals legitimately span
-  // several small directional bins.
   if (active.length === 0) {
-    const scalar = buildSparseTsdfMesh(input);
+    return {
+      mode: 'scalar',
+      sourcePointCount: count,
+      skippedLowConfidence,
+      rejectedUndersizedChannelPoints,
+      totalTriangleBudget,
+      inputVoxelSizeMeters: input.voxelSizeMeters,
+      directionalChannelCount: 0,
+      channelInputs: [input],
+    };
+  }
+
+  if (active.length === 1) {
+    return {
+      mode: 'single',
+      sourcePointCount: count,
+      skippedLowConfidence,
+      rejectedUndersizedChannelPoints,
+      totalTriangleBudget,
+      inputVoxelSizeMeters: input.voxelSizeMeters,
+      directionalChannelCount: 1,
+      channelInputs: [subsetInput(input, active[0], normalsByIndex, !transferSafeChannels)],
+    };
+  }
+
+  const perChannelBudget = Math.max(32, Math.floor(totalTriangleBudget / active.length));
+  return {
+    mode: 'multi',
+    sourcePointCount: count,
+    skippedLowConfidence,
+    rejectedUndersizedChannelPoints,
+    totalTriangleBudget,
+    inputVoxelSizeMeters: input.voxelSizeMeters,
+    directionalChannelCount: active.length,
+    channelInputs: active.map((indices) => ({
+      ...subsetInput(input, indices, normalsByIndex, !transferSafeChannels),
+      maxTriangles: perChannelBudget,
+    })),
+  };
+}
+
+/**
+ * Merge already-sanitized channel meshes and run one final cross-channel
+ * topology pass. This function contains no channel reconstruction work, which
+ * lets post-scan callers execute mature channels on multiple CPU Workers while
+ * preserving the same final topology contract as the sequential fallback.
+ */
+export function finalizeDirectionalTsdfPlan(
+  plan: DirectionalTsdfPlanSummary,
+  meshes: readonly SparseTsdfMesh[],
+  totalComputeMs?: number,
+): DirectionalTsdfMesh {
+  if (meshes.length === 0) throw new Error('Directional TSDF finalization requires at least one channel mesh.');
+
+  if (plan.mode === 'scalar') {
+    const scalar = meshes[0];
     return { ...scalar, directionalChannelCount: 0, channelTriangleCounts: [scalar.triangleCount] };
   }
 
-  // With one mature directional family, exclude smaller conflicting normal
-  // islands before scalar fusion so they cannot create a false zero crossing.
-  if (active.length === 1) {
-    const scalar = buildSparseTsdfMesh(subsetInput(input, active[0], normalsByIndex));
+  if (plan.mode === 'single') {
+    const scalar = meshes[0];
     return {
       ...scalar,
-      sourcePointCount: count,
-      skippedLowConfidence,
-      rejectedComponentPoints: scalar.rejectedComponentPoints + rejectedUndersizedChannelPoints,
+      sourcePointCount: plan.sourcePointCount,
+      skippedLowConfidence: plan.skippedLowConfidence,
+      rejectedComponentPoints: scalar.rejectedComponentPoints + plan.rejectedUndersizedChannelPoints,
       directionalChannelCount: 1,
       channelTriangleCounts: [scalar.triangleCount],
     };
   }
 
-  const meshes: SparseTsdfMesh[] = [];
-  const perChannelBudget = Math.max(32, Math.floor(totalBudget / active.length));
-  for (const indices of active) {
-    meshes.push(buildSparseTsdfMesh({
-      ...subsetInput(input, indices, normalsByIndex),
-      maxTriangles: perChannelBudget,
-    }));
+  if (meshes.length !== plan.directionalChannelCount) {
+    throw new Error(`Directional TSDF expected ${plan.directionalChannelCount} channel meshes, received ${meshes.length}.`);
   }
 
   const combined: number[] = [];
   const seen = new Set<string>();
-  const quantization = Math.max(0.002, (meshes[0]?.voxelSizeMeters ?? input.voxelSizeMeters) * 0.10);
+  const quantization = Math.max(0.002, (meshes[0]?.voxelSizeMeters ?? plan.inputVoxelSizeMeters) * 0.10);
   outer: for (const mesh of meshes) {
     for (let offset = 0; offset + 8 < mesh.trianglePositions.length; offset += 9) {
       const signature = triangleKey(mesh.trianglePositions, offset, quantization);
       if (seen.has(signature)) continue;
       seen.add(signature);
       for (let index = 0; index < 9; index += 1) combined.push(mesh.trianglePositions[offset + index]);
-      if (combined.length / 9 >= totalBudget) break outer;
+      if (combined.length / 9 >= plan.totalTriangleBudget) break outer;
     }
   }
 
-  const voxelSizeMeters = meshes[0]?.voxelSizeMeters ?? input.voxelSizeMeters;
+  const voxelSizeMeters = meshes[0]?.voxelSizeMeters ?? plan.inputVoxelSizeMeters;
   const finalTopology = sanitizeMeshTopology(Float32Array.from(combined), voxelSizeMeters);
-  const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
+  const channelHotspotCount = meshes.reduce((sum, mesh) => sum + mesh.localNoiseHotspotCount, 0);
+  const channelHotspotTriangles = meshes.reduce((sum, mesh) => sum + mesh.localNoiseHotspotTriangleCount, 0);
   return {
     trianglePositions: finalTopology.trianglePositions,
     triangleCount: finalTopology.triangleCount,
@@ -236,27 +299,49 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
       finalTopology.orientationConflictCount +
       meshes.reduce((sum, mesh) => sum + mesh.orientationConflictCount, 0),
     meshTopologyComponentCount: finalTopology.components.length,
-    // Self-intersection describes the final merged visible mesh. Do not add the
-    // same pairs again from per-channel intermediate meshes.
     selfIntersectionPairCount: finalTopology.selfIntersectionPairCount,
     selfIntersectionAffectedTriangleCount: finalTopology.selfIntersectionAffectedTriangleCount,
     selfIntersectionExactTestedPairs: finalTopology.selfIntersectionExactTestedPairs,
     selfIntersectionBroadPhaseCandidatePairs: finalTopology.selfIntersectionBroadPhaseCandidatePairs,
     selfIntersectionTruncated: finalTopology.selfIntersectionTruncated,
     selfIntersectionOversizedTriangleCount: finalTopology.selfIntersectionOversizedTriangleCount,
+    localNoiseHotspotCount: finalTopology.localNoiseHotspotCount + channelHotspotCount,
+    localNoiseHotspotTriangleCount: finalTopology.localNoiseHotspotTriangleCount + channelHotspotTriangles,
     meshNoiseScore: finalTopology.components.reduce((maximum, component) => Math.max(maximum, component.meshNoiseScore), 0),
-    sourcePointCount: count,
+    sourcePointCount: plan.sourcePointCount,
     integratedPointCount: meshes.reduce((sum, mesh) => sum + mesh.integratedPointCount, 0),
-    skippedLowConfidence,
-    rejectedComponentPoints: rejectedUndersizedChannelPoints + meshes.reduce((sum, mesh) => sum + mesh.rejectedComponentPoints, 0),
+    skippedLowConfidence: plan.skippedLowConfidence,
+    rejectedComponentPoints: plan.rejectedUndersizedChannelPoints + meshes.reduce((sum, mesh) => sum + mesh.rejectedComponentPoints, 0),
     componentCount: meshes.reduce((sum, mesh) => sum + mesh.componentCount, 0),
     eligibleComponentCount: meshes.reduce((sum, mesh) => sum + mesh.eligibleComponentCount, 0),
     meshReadiness: maximumMeshReadiness(meshes),
     nodeCount: meshes.reduce((sum, mesh) => sum + mesh.nodeCount, 0),
     voxelSizeMeters,
-    truncationMeters: meshes[0]?.truncationMeters ?? input.voxelSizeMeters * 2.75,
-    computeMs: elapsed,
-    directionalChannelCount: active.length,
+    truncationMeters: meshes[0]?.truncationMeters ?? plan.inputVoxelSizeMeters * 2.75,
+    computeMs: totalComputeMs ?? meshes.reduce((sum, mesh) => sum + mesh.computeMs, 0),
+    directionalChannelCount: plan.directionalChannelCount,
     channelTriangleCounts: meshes.map((mesh) => mesh.triangleCount),
   };
+}
+
+/**
+ * Directional TSDF wrapper: locally opposite/orthogonal surfaces never share a
+ * scalar field. Each signed dominant-normal family is fused independently and
+ * resulting triangles are deduplicated only after zero-crossing extraction.
+ *
+ * A directional channel must contain at least the same 24 physical samples that
+ * a connected surface component needs before mesh eligibility. Smaller normal
+ * islands are not worth allocating a TSDF field and are counted as rejected
+ * component evidence rather than being allowed to contaminate a mature channel.
+ *
+ * Per-channel meshes are sanitized independently by buildSparseTsdfMesh. After
+ * channel merge we sanitize once again: valid faces from two channels can still
+ * overlap or create a non-manifold edge at a directional boundary.
+ */
+export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsdfMesh {
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const plan = prepareDirectionalTsdfPlan(input, false);
+  const meshes = plan.channelInputs.map((channelInput) => buildSparseTsdfMesh(channelInput));
+  const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
+  return finalizeDirectionalTsdfPlan(plan, meshes, plan.mode === 'multi' ? elapsed : undefined);
 }
