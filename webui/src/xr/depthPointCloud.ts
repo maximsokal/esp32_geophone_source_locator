@@ -52,6 +52,10 @@ export interface ScanPointCloudSnapshot extends SurfaceScanPointCloudSnapshot, O
   occupancyEnvelopeComponentCount: number;
   occupancyQuarantinedSurfaceComponentCount: number;
   occupancyQuarantinedSurfacePointCount: number;
+  /** Quarantined components that have weak measured bridge evidence and merit rescan. */
+  occupancyBridgeRescanComponentCount: number;
+  /** True when the bounded weak-bridge diagnostic hit its mobile work cap. */
+  occupancyBridgeEvidenceTruncated: boolean;
   tsdfPositions: Float32Array;
   tsdfNormals: Float32Array;
   tsdfConfidence: Float32Array;
@@ -255,6 +259,8 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
       occupancyEnvelopeComponentCount: envelope.retainedComponentIds.length,
       occupancyQuarantinedSurfaceComponentCount: envelope.quarantinedComponentIds.length,
       occupancyQuarantinedSurfacePointCount: envelope.quarantinedPointCount,
+      occupancyBridgeRescanComponentCount: envelope.rescanBridgeComponentIds.length,
+      occupancyBridgeEvidenceTruncated: envelope.bridgeEvidenceTruncated,
       tsdfPositions: hasTsdfCertificate ? certified.positions : new Float32Array(0),
       tsdfNormals: hasTsdfCertificate ? certified.normals : new Float32Array(0),
       tsdfConfidence: hasTsdfCertificate ? certified.confidence : new Float32Array(0),
