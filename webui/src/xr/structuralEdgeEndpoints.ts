@@ -9,6 +9,7 @@ import {
   type RobustPlaneSample,
 } from './robustPlaneGeometry';
 import type { StructuralCornerCandidate, StructuralGuideViewpoint } from './structuralGuide';
+import { isScaleSupportedStructuralEdge } from './structuralEdgeScalePolicy';
 
 export interface EdgeEndpointSnapshot extends ManualPlacementSurfaceSnapshot {
   freeSpacePositions?: Float32Array;
@@ -54,7 +55,6 @@ const LOCAL_RADIUS_METERS = 0.18;
 const EDGE_BAND_METERS = 0.065;
 const MIN_PLANE_SUPPORT = 7;
 const MIN_EDGE_SIDE_SUPPORT = 4;
-const MIN_EDGE_LENGTH_METERS = 0.085;
 const ENDPOINT_INSIDE_WINDOW_METERS = 0.075;
 const ENDPOINT_OUTSIDE_GAP_METERS = 0.045;
 const ENDPOINT_FREE_PROBES_METERS = [0.045, 0.085, 0.125] as const;
@@ -189,6 +189,12 @@ function endpointSupportCount(values: readonly number[], endpoint: number, sign:
   return support;
 }
 
+function intervalSupportCount(values: readonly number[], low: number, high: number): number {
+  let support = 0;
+  for (const value of values) if (value >= low - 0.012 && value <= high + 0.012) support += 1;
+  return support;
+}
+
 function hasMeasuredSupportBeyond(values: readonly number[], endpoint: number, sign: -1 | 1): boolean {
   return values.some((value) => (value - endpoint) * sign >= ENDPOINT_OUTSIDE_GAP_METERS);
 }
@@ -238,10 +244,12 @@ function seedKey(point: ProjectPoint): string {
  *
  * A two-plane intersection alone defines an infinite 3D line, not a corner.
  * We therefore estimate only the interval where BOTH measured planes have
- * near-line support. An endpoint is retained only when support exists on the
- * inside, no measured continuation exists outside, and ray-verified FREE can
- * be observed beyond the endpoint. Multi-view persistence is handled by the
- * tracker below; a single frame never becomes an automatic corner.
+ * near-line support. Before endpoints can be considered, that complete measured
+ * interval must pass the same physical line-length and length-dependent support
+ * policy as operational LINE suggestions. An endpoint additionally needs dense
+ * support immediately inside it, no measured continuation outside it, and
+ * ray-verified FREE beyond it. Multi-view persistence is handled by the tracker;
+ * a single frame never becomes an automatic corner.
  */
 export function detectEdgeEndpointObservations(snapshot: EdgeEndpointSnapshot): readonly EdgeEndpointObservation[] {
   const count = Math.min(
@@ -310,7 +318,18 @@ export function detectEdgeEndpointObservations(snapshot: EdgeEndpointSnapshot): 
     const secondHigh = quantile(secondValues, 0.90);
     const low = Math.max(firstLow, secondLow);
     const high = Math.min(firstHigh, secondHigh);
-    if (!Number.isFinite(low) || !Number.isFinite(high) || high - low < MIN_EDGE_LENGTH_METERS) continue;
+    if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) continue;
+
+    const measuredStart = addScaled(edge.point, direction, low);
+    const measuredEnd = addScaled(edge.point, direction, high);
+    const intervalSupport =
+      intervalSupportCount(firstValues, low, high) +
+      intervalSupportCount(secondValues, low, high);
+    if (!isScaleSupportedStructuralEdge({
+      start: measuredStart,
+      end: measuredEnd,
+      support: intervalSupport,
+    })) continue;
 
     for (const [parameter, sign] of [[low, -1], [high, 1]] as const) {
       const observation = makeEndpointObservation(
