@@ -16,6 +16,7 @@ export interface WebGlStateSnapshot {
   viewport: Int32Array;
   program: WebGLProgram | null;
   arrayBuffer: WebGLBuffer | null;
+  pixelPackBuffer: WebGLBuffer | null;
   activeTexture: number;
   activeTextureBinding2D: WebGLTexture | null;
   texture0Binding2D: WebGLTexture | null;
@@ -76,6 +77,9 @@ export function captureWebGlState(gl: Gl, vertexAttribLocation: number): WebGlSt
     viewport: cloneViewport(gl.getParameter(gl.VIEWPORT)),
     program: gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null,
     arrayBuffer: gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null,
+    pixelPackBuffer: gl2 === null
+      ? null
+      : gl2.getParameter(gl2.PIXEL_PACK_BUFFER_BINDING) as WebGLBuffer | null,
     activeTexture,
     activeTextureBinding2D,
     texture0Binding2D,
@@ -122,6 +126,7 @@ export function restoreWebGlState(gl: Gl, vertexAttribLocation: number, snapshot
     gl2.bindVertexArray(snapshot.vertexArray);
     gl2.bindFramebuffer(gl2.READ_FRAMEBUFFER, snapshot.readFramebuffer);
     gl2.bindFramebuffer(gl2.DRAW_FRAMEBUFFER, snapshot.drawFramebuffer);
+    gl2.bindBuffer(gl2.PIXEL_PACK_BUFFER, snapshot.pixelPackBuffer);
   } else {
     restoreAttrib(gl, vertexAttribLocation, snapshot.vertexAttrib);
     gl.bindFramebuffer(gl.FRAMEBUFFER, snapshot.framebuffer);
