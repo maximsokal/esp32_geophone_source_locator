@@ -10,7 +10,8 @@ The immersive WebXR session requests:
 - raw depth first, with smoothed depth as a fallback;
 - a 16-bit CPU format when supported, with other specification formats as fallbacks;
 - depth matched to the current `XRView`;
-- `camera-access` for pose-synchronised RGB guidance.
+- `camera-access` for pose-synchronised RGB guidance;
+- optional `plane-detection` as advisory native structural metadata.
 
 `XRCPUDepthInformation` is treated as frame-local data. Its raw `data` buffer is consumed synchronously inside the active XR animation-frame callback and is never retained as a live browser depth object after that callback. Values are transformed from normalized view coordinates through `normDepthBufferFromNormView`, indexed in the row-major depth buffer and multiplied by `rawValueToMeters`. A raw value of zero remains invalid/no-depth evidence.
 
@@ -47,28 +48,68 @@ The browser implementation intentionally uses only:
 1. physical WebXR/ARCore depth for metric geometry and occupancy;
 2. pose-synchronised XR RGB for boundary/line/junction guidance;
 3. optional calibrated monocular AI only as post-scan surface prior/veto;
-4. verified physical depth rays only for FREE-space evidence.
+4. verified physical depth rays only for FREE-space evidence;
+5. optional native XR planes only as bounded normal-orientation guidance for already measured surfels.
 
-Unknown/occluded interior volume is never converted to FREE merely because it is not visible to RGB or depth.
+Unknown/occluded interior volume is never converted to FREE or OCCUPIED merely because a native plane tracker extrapolates a surface behind an occluder.
 
-## Feature-aware structural density
+## Native WebXR plane guidance
+
+When Plane Detection is available, `XRFrame.detectedPlanes` is copied only while the XR animation frame is active. The application retains no `XRPlane` or `XRSpace` objects; it stores only bounded numeric snapshots:
+
+- project-space center and normal;
+- project-space tangents corresponding to plane-local X/Z;
+- an owned copy of the detected polygon in plane-local X/Z coordinates;
+- polygon area, extent and tracker metadata for diagnostics/ranking.
+
+The copied polygon, not its circumscribed radius, is the authoritative support region. The worker first applies radius and UV-AABB rejects, then exact point-in-polygon support with a small physical jitter margin. A native plane can only softly rotate the normal of an already measured, sufficiently confident physical surfel that lies close to that plane and inside the polygon. It cannot:
+
+- create or delete surfels;
+- change a surfel position;
+- increase physical surfel confidence;
+- create FREE or OCCUPIED voxels;
+- certify a corner/edge by itself.
+
+This makes system planes useful for stabilizing measured wall/table normals without allowing tracker extrapolation behind furniture to manufacture geometry.
+
+## Feature-aware structural density and physical re-probing
 
 Uniform downsampling is undesirable for rubble geometry because a flat wall and a corner do not carry the same structural information. The structural layer therefore estimates local geometric complexity from already accepted surfel normals:
 
 - normal sign is ignored, because opposite normal directions can represent the same physical surface;
+- normal evidence is canonicalized and processed deterministically so arrival order/view order does not change the family result;
 - one abnormal normal is insufficient to declare a feature;
 - smooth convex curvature is detected from robust angular spread;
-- hard edges/corners are detected from multiple supported orientation families;
+- hard edges/corners are detected from multiple independently supported orientation families;
 - complexity is evaluated over neighbouring spatial cells so a real edge is not lost merely because it lies on a hash-cell boundary;
 - feature-rich regions use smaller structural cells and tighter normal-family clustering, retaining more representatives than flat regions;
 - the number of orientation families per tiny cell remains bounded to reject mixed/flying-depth manifolds.
 
-The next allocator-level step is to let saturated scan-memory cells use this same complexity estimate when sharing the existing global point budget: flat cells can donate excess representatives while feature-rich cells retain more. The global memory ceiling must not increase merely because a region is classified as complex.
+The same physical complexity estimate now also controls upstream memory and sampling without raising the global scan-memory ceiling. Flat saturated cells can donate excess representatives while feature-rich cells retain more measured surfels.
+
+The depth sampler also performs bounded feature-directed physical re-probing. A cell must already contain several accepted physical surfels and cross a robust complexity threshold before it can request extra probes. Extra probes use a deterministic rotating local stencil and read the same physical WebXR depth source; AI output and native planes have no path to request them.
+
+Per sampled XR frame the adaptive center-probe budgets are hard capped:
+
+- at most 64 generic depth-discontinuity/edge probes;
+- at most 96 feature-directed convex/edge/corner probes;
+- 880 base low-discrepancy probes remain unchanged.
+
+This replaces the older one-recursion-level edge sampler, whose recursion depth was bounded but whose total child-probe count could still grow with every detected discontinuity in a frame.
+
+## Safety pipeline
+
+The live structural path is therefore:
+
+**ARCore raw/smooth physical depth (+ ToF automatically when available) → physical surfels → robust feature density + bounded physical re-probing → optional polygon-bounded WebXR plane normal stabilization → worker plane/edge/corner hypotheses → physical FREE-space veto → candidate-specific multi-view tracking → pose-synchronised RGB reprojection/corroboration → manual/automatic target workflow.**
+
+Learned depth is not a geometry source in this path. Unknown volume stays UNKNOWN until physical evidence changes its state.
 
 ## Primary references
 
 - WebXR Depth Sensing Module: https://immersive-web.github.io/depth-sensing/
 - WebXR Raw Camera Access Module: https://immersive-web.github.io/raw-camera-access/
+- WebXR Plane Detection Module: https://immersive-web.github.io/real-world-geometry/plane-detection.html
 - Google ARCore Depth API: https://developers.google.com/ar/develop/depth
 - Google ARCore Raw Depth / confidence: https://developers.google.com/ar/develop/java/depth/raw-depth
 - PCL normal estimation / local covariance: https://pointclouds.org/documentation/tutorials/normal_estimation.html
