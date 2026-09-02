@@ -1,3 +1,4 @@
+import { deviceComputeProfilePromise } from './deviceComputeProfile';
 import VisualLineEvidenceWorker from './visualLineEvidence.worker.ts?worker&inline';
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
 import { detectVisualLinesNow, type VisualEvidenceFrame, type VisualJunction, type VisualLineSegment } from './visualLineEvidence';
@@ -20,6 +21,13 @@ interface PendingRequest {
   reject: (reason: Error) => void;
 }
 
+export interface VisualLineEvidenceClientOptions {
+  /** Keep isolated tests/offline tools compatible; production XR sets false. */
+  allowMainThreadFallback?: boolean;
+  /** Production XR waits for the pre-scan compute profile before allocating. */
+  deferWorkerUntilAnalyze?: boolean;
+}
+
 function cloneMatrices(
   projectionMatrix: ArrayLike<number>,
   worldFromView: ArrayLike<number>,
@@ -36,10 +44,19 @@ export class VisualLineEvidenceClient {
   private epoch = 1;
   private pending = new Map<number, PendingRequest>();
   private fallbackInFlight = 0;
+  private workerStartupInFlight = 0;
   private disposed = false;
+  private readonly allowMainThreadFallback: boolean;
+  private readonly deferWorkerUntilAnalyze: boolean;
 
-  constructor() {
-    if (typeof Worker === 'undefined') return;
+  constructor(options: VisualLineEvidenceClientOptions = {}) {
+    this.allowMainThreadFallback = options.allowMainThreadFallback ?? true;
+    this.deferWorkerUntilAnalyze = options.deferWorkerUntilAnalyze ?? false;
+    if (!this.deferWorkerUntilAnalyze) this.tryCreateWorker();
+  }
+
+  private tryCreateWorker(): boolean {
+    if (this.disposed || this.worker !== null || typeof Worker === 'undefined') return this.worker !== null;
     try {
       // Inline Vite worker keeps ESP deployment to the existing one-JS/one-CSS
       // contract. No hashed worker asset or extra HTTPS URI is required.
@@ -47,12 +64,14 @@ export class VisualLineEvidenceClient {
       this.worker.addEventListener('message', this.handleWorkerMessage);
       this.worker.addEventListener('error', this.handleWorkerError);
       this.worker.postMessage({ type: 'reset', epoch: this.epoch });
+      return true;
     } catch {
       this.worker = null;
+      return false;
     }
   }
 
-  get busy(): boolean { return this.pending.size > 0 || this.fallbackInFlight > 0; }
+  get busy(): boolean { return this.pending.size > 0 || this.fallbackInFlight > 0 || this.workerStartupInFlight > 0; }
   get workerBacked(): boolean { return this.worker !== null; }
 
   reset(): void {
@@ -72,9 +91,30 @@ export class VisualLineEvidenceClient {
     worldFromView: ArrayLike<number>,
   ): Promise<VisualEvidenceFrame> {
     if (this.disposed) return Promise.reject(new Error('Visual evidence client is disposed.'));
+    if (this.worker === null && this.deferWorkerUntilAnalyze) {
+      const requestEpoch = this.epoch;
+      this.workerStartupInFlight += 1;
+      return deviceComputeProfilePromise.then((compute) => {
+        if (this.disposed || requestEpoch !== this.epoch) {
+          throw new Error('Visual evidence worker startup belongs to an obsolete scan epoch.');
+        }
+        if (compute.liveWorkerBudget < 1 || !this.tryCreateWorker()) {
+          if (!this.allowMainThreadFallback) {
+            throw new Error('No safe live Worker slot is available for visual evidence.');
+          }
+        }
+        return this.analyze(frame, keyframeId, projectionMatrix, worldFromView);
+      }).finally(() => {
+        this.workerStartupInFlight = Math.max(0, this.workerStartupInFlight - 1);
+      });
+    }
+
     const matrices = cloneMatrices(projectionMatrix, worldFromView);
 
     if (this.worker === null) {
+      if (!this.allowMainThreadFallback) {
+        return Promise.reject(new Error('Visual evidence requires a Dedicated Worker during live XR.'));
+      }
       const requestEpoch = this.epoch;
       this.fallbackInFlight += 1;
       return new Promise<VisualEvidenceFrame>((resolve, reject) => {
@@ -180,8 +220,8 @@ export class VisualLineEvidenceClient {
     const error = new Error(event.message || 'Visual evidence worker failed.');
     for (const request of this.pending.values()) request.reject(error);
     this.pending.clear();
-    // Subsequent analyses use the bounded async fallback instead of continuing
-    // to post into a worker that has already raised an uncaught error.
+    // A broken live worker must never silently migrate a heavy Hough pass back to
+    // the XR main thread. Offline/test clients can still opt into the fallback.
     this.detachBrokenWorker();
   };
 }
