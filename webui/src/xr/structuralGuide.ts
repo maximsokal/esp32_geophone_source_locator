@@ -286,7 +286,7 @@ function robustPlaneFit(points: readonly WeightedPoint[]): { center: ProjectPoin
     const ratio = residual / scale; return ratio <= 1 ? 1 : 1 / ratio;
   });
   fit = weightedPlaneFit(points, robustWeights) ?? fit;
-  if ((fit.planarity < PATCH_MIN_PLANANITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS) && points.length >= 6) {
+  if ((fit.planarity < PATCH_MIN_PLANARITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS) && points.length >= 6) {
     let bestInliers: number[] = []; let bestResidual = Number.POSITIVE_INFINITY;
     const trials = Math.min(RANSAC_MAX_TRIALS, points.length * 2);
     for (let trial = 0; trial < trials; trial += 1) {
@@ -627,7 +627,7 @@ export function distancePointToSegment(point: ProjectPoint, start: ProjectPoint,
 }
 export interface ManualPointLike { id: number; position: ProjectPoint; }
 export function matchEdgeToManualPoints(edge: StructuralEdgeCandidate, points: readonly ManualPointLike[], radiusMeters = 0.14): readonly [ManualPointLike, ManualPointLike] | null {
-  if (points.length < 2) return null; let best: null | { a: ManualPointLike; b: ManualPointLike; score: number } | null = null;
+  if (points.length < 2) return null; let best: null | { a: ManualPointLike; b: ManualPointLike; score: number } = null;
   for (let i = 0; i < points.length; i += 1) for (let j = i + 1; j < points.length; j += 1) {
     const p = points[i]; const q = points[j]; const direct = distance(p.position, edge.start) + distance(q.position, edge.end); const reverse = distance(p.position, edge.end) + distance(q.position, edge.start); const score = Math.min(direct, reverse);
     if (score > radiusMeters * 2 || distancePointToSegment(midpoint(p.position, q.position), edge.start, edge.end) > radiusMeters) continue;
