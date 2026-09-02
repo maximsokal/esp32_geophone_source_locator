@@ -190,6 +190,105 @@ function cornerArmSupport(
   };
 }
 
+interface SignedLineSupport {
+  positive: number[];
+  negative: number[];
+}
+
+function signedLineSupport(
+  plane: RobustPlane,
+  samples: readonly LocalSample[],
+  origin: ProjectPoint,
+  direction: ProjectVector,
+  lineGateMeters: number,
+): SignedLineSupport {
+  const positive: number[] = [];
+  const negative: number[] = [];
+  for (const localIndex of plane.inlierIndices) {
+    const sample = samples[localIndex];
+    if (sample === undefined) continue;
+    const dx = sample.position[0] - origin[0];
+    const dy = sample.position[1] - origin[1];
+    const dz = sample.position[2] - origin[2];
+    const t = dx * direction[0] + dy * direction[1] + dz * direction[2];
+    const closest: ProjectPoint = [
+      origin[0] + direction[0] * t,
+      origin[1] + direction[1] * t,
+      origin[2] + direction[2] * t,
+    ];
+    if (distance3(sample.position, closest) > lineGateMeters) continue;
+    if (t >= 0) positive.push(t);
+    else negative.push(-t);
+  }
+  return { positive, negative };
+}
+
+function robustLineSpan(values: readonly number[]): number {
+  return values.length < 2 ? 0 : robustQuantile([...values], 0.80);
+}
+
+/**
+ * Three finite surface patches can individually pass the corner-arm test while
+ * still failing to share the SAME physical edges. For every pair of planes we
+ * therefore require measured inliers from BOTH planes near their intersection
+ * line and on the same side of the solved vertex. Opposite-only support (+t on
+ * one surface, -t on the other) is a mathematical crossing, not a measured edge.
+ */
+function cornerPairEdgeSupport(
+  planes: readonly [RobustPlane, RobustPlane, RobustPlane],
+  samples: readonly LocalSample[],
+  corner: ProjectPoint,
+  voxelSizeMeters: number,
+): CornerArmSupport {
+  const lineGateMeters = clamp(Math.abs(voxelSizeMeters) * 1.15, 0.035, 0.060);
+  const minimumRequiredSpan = clamp(Math.abs(voxelSizeMeters) * 1.35, 0.050, 0.080);
+  const pairs = [[0, 1], [0, 2], [1, 2]] as const;
+  let minimumSpanMeters = Number.POSITIVE_INFINITY;
+
+  for (const [firstIndex, secondIndex] of pairs) {
+    const first = planes[firstIndex];
+    const second = planes[secondIndex];
+    const edge = intersectTwoRobustPlanes(first, second, corner);
+    if (edge === null || edge.uncertaintyMeters > MAX_EDGE_UNCERTAINTY_METERS) {
+      return { accepted: false, minimumSpanMeters: 0 };
+    }
+    if (distance3(edge.point, corner) > lineGateMeters) {
+      return { accepted: false, minimumSpanMeters: 0 };
+    }
+
+    const firstSupport = signedLineSupport(first, samples, corner, edge.direction, lineGateMeters);
+    const secondSupport = signedLineSupport(second, samples, corner, edge.direction, lineGateMeters);
+    const positiveSpan = Math.min(
+      robustLineSpan(firstSupport.positive),
+      robustLineSpan(secondSupport.positive),
+    );
+    const negativeSpan = Math.min(
+      robustLineSpan(firstSupport.negative),
+      robustLineSpan(secondSupport.negative),
+    );
+    const usePositive = positiveSpan >= negativeSpan;
+    const commonSpan = usePositive ? positiveSpan : negativeSpan;
+    const firstSide = usePositive ? firstSupport.positive : firstSupport.negative;
+    const secondSide = usePositive ? secondSupport.positive : secondSupport.negative;
+    const usefulGate = minimumRequiredSpan * 0.55;
+    const firstUseful = firstSide.filter((value) => value >= usefulGate).length;
+    const secondUseful = secondSide.filter((value) => value >= usefulGate).length;
+
+    if (commonSpan < minimumRequiredSpan || firstUseful < 2 || secondUseful < 2) {
+      return {
+        accepted: false,
+        minimumSpanMeters: Number.isFinite(minimumSpanMeters) ? Math.min(minimumSpanMeters, commonSpan) : commonSpan,
+      };
+    }
+    minimumSpanMeters = Math.min(minimumSpanMeters, commonSpan);
+  }
+
+  return {
+    accepted: true,
+    minimumSpanMeters: Number.isFinite(minimumSpanMeters) ? minimumSpanMeters : 0,
+  };
+}
+
 function bestEdge(
   planes: readonly RobustPlane[],
   candidate: ProjectPoint,
@@ -298,9 +397,13 @@ export function solveManualPlacementOnStableSurface(
     const arms = corner === null
       ? { accepted: false, minimumSpanMeters: 0 }
       : cornerArmSupport(cornerPlanes, samples, corner.position, snapshot.voxelSizeMeters);
+    const pairEdges = corner === null
+      ? { accepted: false, minimumSpanMeters: 0 }
+      : cornerPairEdgeSupport(cornerPlanes, samples, corner.position, snapshot.voxelSizeMeters);
     if (
       corner !== null &&
       arms.accepted &&
+      pairEdges.accepted &&
       corner.conditionNumber <= MAX_CORNER_CONDITION_NUMBER &&
       corner.maxStdDevMeters <= MAX_CORNER_UNCERTAINTY_METERS &&
       distance3(corner.position, candidate) <= searchRadius &&
@@ -323,8 +426,8 @@ export function solveManualPlacementOnStableSurface(
           sourceDistanceMeters: nearestDistance,
           uncertaintyMeters: corner.maxStdDevMeters,
           conditionNumber: corner.conditionNumber,
-          minimumCornerArmSpanMeters: arms.minimumSpanMeters,
-          message: 'CORNER LOCK · robust 3-plane intersection with measured physical arms.',
+          minimumCornerArmSpanMeters: Math.min(arms.minimumSpanMeters, pairEdges.minimumSpanMeters),
+          message: 'CORNER LOCK · robust 3-plane intersection with finite measured pair edges.',
         };
       }
     }
