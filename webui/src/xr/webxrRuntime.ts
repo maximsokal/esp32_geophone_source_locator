@@ -63,6 +63,7 @@ export interface ScanPointCloudSnapshot extends DepthScanPointCloudSnapshot {
 
 export interface WebXrCapabilities {
   secureContext: boolean;
+  /** Pre-session availability of XRWebGLBinding, not generic getUserMedia(). */
   cameraApi: boolean;
   webGl: boolean;
   xrApi: boolean;
@@ -156,6 +157,8 @@ interface XrSessionLike extends EventTarget {
   updateRenderState(state:{baseLayer:XrWebGlLayerLike}):void|Promise<void>;
   end():Promise<void>;
   requestLightProbe?():Promise<XrLightProbeLike>;
+  pauseDepthSensing?():void;
+  resumeDepthSensing?():void;
   domOverlayState?:{type:string}|null;
   environmentBlendMode?:string;
   visibilityState?:'visible'|'visible-blurred'|'hidden';
@@ -164,7 +167,7 @@ interface XrSessionLike extends EventTarget {
 interface XrSessionInitLike {
   optionalFeatures?:string[]; domOverlay?:{root:Element};
   depthSensing?:{
-    usagePreference:string[]; dataFormatPreference:string[]; formatPreference?:string[];
+    usagePreference:string[]; dataFormatPreference:string[];
     depthTypeRequest?:string[]; matchDepthView?:boolean;
   };
 }
@@ -234,7 +237,7 @@ export function composeCoverageRenderSnapshot(coverage:LiveCoverageSnapshot,manu
 export async function probeWebXrCapabilities():Promise<WebXrCapabilities>{
   const xr=(navigator as NavigatorWithXr).xr;const xrApi=xr!==undefined;let immersiveAr=false;
   if(xrApi&&window.isSecureContext){try{immersiveAr=await xr.isSessionSupported('immersive-ar');}catch{immersiveAr=false;}}
-  return{secureContext:window.isSecureContext===true,cameraApi:Boolean(navigator.mediaDevices?.getUserMedia),webGl:hasWebGl(),xrApi,immersiveAr,wakeLockApi:(navigator as NavigatorWithWakeLock).wakeLock!==undefined};
+  return{secureContext:window.isSecureContext===true,cameraApi:Boolean((window as WindowWithXr).XRWebGLBinding),webGl:hasWebGl(),xrApi,immersiveAr,wakeLockApi:(navigator as NavigatorWithWakeLock).wakeLock!==undefined};
 }
 
 export class WebXrRuntime{
@@ -249,7 +252,7 @@ export class WebXrRuntime{
   private lastLightEstimateMs=Number.NEGATIVE_INFINITY;private lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
   private lastRgbCaptureMs=Number.NEGATIVE_INFINITY;private lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;
   private depthFrameCount=0;private sampledDepthFrames=0;private pointCloudVersion=0;private depthWidth:number|null=null;private depthHeight:number|null=null;
-  private depthFailureReported=false;private depthReadyLogged=false;private depthEnabled=false;private motionRejectedFrames=0;
+  private depthFailureReported=false;private depthReadyLogged=false;private depthEnabled=false;private depthSensingPausedByApp=false;private motionRejectedFrames=0;
   private motionState:FusionMotionState|'paused'|null=null;private motionQuality=0;private linearSpeedMetersPerSecond=0;
   private angularSpeedRadiansPerSecond=0;private linearAccelerationMetersPerSecond2=0;
   private coverageGuideActive=false;private coverageGuideRenderPoints=0;private coverageVisibleCells=0;private coverageReadyCells=0;
@@ -303,10 +306,13 @@ export class WebXrRuntime{
     this.resetScanState();this.publish({...initialRuntimeState,phase:'starting',monocularPriorStatus:optionalMonocularPrior.status});
     let session:XrSessionLike|null=null;
     try{
-      const depthFormats=['luminance-alpha','float32'];
+      // luminance-alpha remains first because every depth-capable UA MUST support
+      // it; unsigned-short is the cleaner current 16-bit representation when
+      // available, and float32 remains the final compatibility fallback.
+      const depthFormats=['luminance-alpha','unsigned-short','float32'];
       session=await xr.requestSession('immersive-ar',{
         optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access'],domOverlay:{root:document.body},
-        depthSensing:{usagePreference:['cpu-optimized'],dataFormatPreference:depthFormats,formatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
+        depthSensing:{usagePreference:['cpu-optimized'],dataFormatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
       });
       this.session=session;session.addEventListener('end',this.handleSessionEnd);session.addEventListener('visibilitychange',this.handleSessionVisibilityChange);
       const gl=createWebGlContext();if(gl===null)throw new Error('Unable to create WebGL for WebXR.');await gl.makeXRCompatible?.();
@@ -323,7 +329,7 @@ export class WebXrRuntime{
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
         coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
         depthError:depthConfiguration.enabled?null:'WebXR tracking is running, but CPU depth was not enabled.',error:null});
-      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true,monocularPriorStatus:optionalMonocularPrior.status});
+      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
       void clientDiagnostics.flush();session.requestAnimationFrame(this.handleFrame);
     }catch(error){
       if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*best effort*/}}
@@ -338,7 +344,7 @@ export class WebXrRuntime{
 
   private resetScanState():void{
     this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetLatestProjectionMatrices();
-    this.hasLatestProjection=false;this.explicitStopRequested=false;this.scanPaused=false;this.frameCount=0;this.lastUiUpdateMs=0;this.lastDepthSampleMs=Number.NEGATIVE_INFINITY;
+    this.hasLatestProjection=false;this.explicitStopRequested=false;this.scanPaused=false;this.depthSensingPausedByApp=false;this.frameCount=0;this.lastUiUpdateMs=0;this.lastDepthSampleMs=Number.NEGATIVE_INFINITY;
     this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.lastLightEstimateMs=Number.NEGATIVE_INFINITY;this.lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
     this.lastRgbCaptureMs=Number.NEGATIVE_INFINITY;this.lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;this.depthFrameCount=0;this.sampledDepthFrames=0;this.pointCloudVersion=0;
     this.depthWidth=null;this.depthHeight=null;this.depthFailureReported=false;this.depthReadyLogged=false;this.depthEnabled=false;this.motionRejectedFrames=0;this.motionState=null;
@@ -351,14 +357,22 @@ export class WebXrRuntime{
   private cleanupRuntime():void{
     document.documentElement.classList.remove('xr-session-active');this.coverageRenderer?.dispose();this.coverageRenderer=null;this.cameraCapture?.dispose();this.cameraCapture=null;this.cameraBinding=null;
     setLatestRgbGuidance(null);resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();releaseWebGlContext(this.gl);this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
-    this.scanPaused=false;this.depthEnabled=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
+    this.scanPaused=false;this.depthEnabled=false;this.depthSensingPausedByApp=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
+  }
+
+  private setDepthSensingPaused(paused:boolean):void{
+    const session=this.session;if(session===null||!this.depthEnabled||this.depthSensingPausedByApp===paused)return;
+    try{
+      if(paused){if(typeof session.pauseDepthSensing!=='function')return;session.pauseDepthSensing();this.depthSensingPausedByApp=true;clientDiagnostics.info('XR_DEPTH_SENSING_PAUSED');}
+      else{if(typeof session.resumeDepthSensing!=='function')return;session.resumeDepthSensing();this.depthSensingPausedByApp=false;clientDiagnostics.info('XR_DEPTH_SENSING_RESUMED');}
+    }catch(error){clientDiagnostics.warn('XR_DEPTH_SENSING_PAUSE_CONTROL_FAILED',error);}
   }
 
   private async acquireWakeLock():Promise<void>{if(this.session===null||document.visibilityState!=='visible'||(this.wakeLock!==null&&!this.wakeLock.released))return;const api=(navigator as NavigatorWithWakeLock).wakeLock;if(api===undefined){this.publish({wakeLockActive:false,wakeLockError:'Screen Wake Lock API unavailable.'});return;}try{const sentinel=await api.request('screen');this.wakeLock=sentinel;sentinel.addEventListener('release',this.handleWakeLockRelease);this.publish({wakeLockActive:true,wakeLockError:null});}catch(error){this.wakeLock=null;this.publish({wakeLockActive:false,wakeLockError:errorText(error)});}}
   private async releaseWakeLock():Promise<void>{const sentinel=this.wakeLock;this.wakeLock=null;if(sentinel===null)return;sentinel.removeEventListener('release',this.handleWakeLockRelease);if(!sentinel.released){try{await sentinel.release();}catch{/*released*/}}}
   private readonly handleWakeLockRelease=():void=>{this.wakeLock=null;this.publish({wakeLockActive:false});};
-  private readonly handleDocumentVisibilityChange=():void=>{const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=hidden||this.session.visibilityState==='hidden';this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!hidden)void this.acquireWakeLock();}};
-  private readonly handleSessionVisibilityChange=():void=>{const session=this.session;if(session===null)return;this.scanPaused=document.visibilityState!=='visible'||session.visibilityState==='hidden';this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!this.scanPaused)void this.acquireWakeLock();};
+  private readonly handleDocumentVisibilityChange=():void=>{const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=hidden||this.session.visibilityState==='hidden';this.setDepthSensingPaused(this.scanPaused);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!hidden)void this.acquireWakeLock();}};
+  private readonly handleSessionVisibilityChange=():void=>{const session=this.session;if(session===null)return;this.scanPaused=document.visibilityState!=='visible'||session.visibilityState==='hidden';this.setDepthSensingPaused(this.scanPaused);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!this.scanPaused)void this.acquireWakeLock();};
 
   private readonly handleSessionEnd=():void=>{
     const normalFinish=this.explicitStopRequested;const snapshot=this.getPointCloudSnapshot();const performance=this.performanceProfiler.snapshot();const session=this.session;
@@ -387,9 +401,18 @@ export class WebXrRuntime{
     try{const estimate=frame.getLightEstimate(this.lightProbe);if(estimate===null)return;const i=estimate.primaryLightIntensity;const magnitude=Math.sqrt((i.x*i.x+i.y*i.y+i.z*i.z)/3);if(Number.isFinite(magnitude)){this.lightingEstimateAvailable=true;this.primaryLightIntensity=magnitude;}}catch{/*advisory*/}
   }
 
+  private acceptRgbGuidance(guidance:ReturnType<RawCameraGuidanceCapture['pollReady']>):void{
+    if(guidance===null)return;setLatestRgbGuidance(guidance);this.rgbGuidanceAvailable=true;this.rgbGuidanceWidth=guidance.width;this.rgbGuidanceHeight=guidance.height;
+  }
+
   private captureRgbGuidance(time:number,view:XrViewLike):void{
-    if(this.cameraBinding===null||this.cameraCapture===null||view.camera==null||time-this.lastRgbCaptureMs<RGB_CAPTURE_INTERVAL_MS)return;this.lastRgbCaptureMs=time;
-    try{const guidance=this.cameraCapture.capture(this.cameraBinding,view,time);if(guidance===null)return;setLatestRgbGuidance(guidance);this.rgbGuidanceAvailable=true;this.rgbGuidanceWidth=guidance.width;this.rgbGuidanceHeight=guidance.height;}
+    const capture=this.cameraCapture;if(capture===null)return;
+    // WebGL2 PBO readback is polled every RAF with timeout=0, independently of
+    // the lower capture cadence. This avoids both GPU stalls and a 520 ms
+    // artificial delivery delay.
+    try{this.acceptRgbGuidance(capture.pollReady());}catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_READBACK_FAILED',error);}
+    if(this.cameraBinding===null||view.camera==null||time-this.lastRgbCaptureMs<RGB_CAPTURE_INTERVAL_MS)return;this.lastRgbCaptureMs=time;
+    try{this.acceptRgbGuidance(capture.capture(this.cameraBinding,view,time));}
     catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_CAPTURE_FAILED',error);}
   }
 
@@ -420,7 +443,7 @@ export class WebXrRuntime{
 
   private reportClientTelemetry(time:number):void{
     if(time-this.lastClientTelemetryMs<CLIENT_TELEMETRY_INTERVAL_MS)return;this.lastClientTelemetryMs=time;
-    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
+    clientDiagnostics.info('XR_PROGRESS',{frames:this.frameCount,depthFrames:this.depthFrameCount,integratedFrames:this.sampledDepthFrames,stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,polishFrames:this.pointCloud.polishFrameCount,readyCells:this.coverageReadyCells,visibleCells:this.coverageVisibleCells,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,motion:this.motionState,rgbGuidance:this.rgbGuidanceAvailable,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance:this.performanceProfiler.snapshot()});void clientDiagnostics.flush();
   }
 
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
