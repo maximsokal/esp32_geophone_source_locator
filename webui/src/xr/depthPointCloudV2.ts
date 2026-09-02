@@ -1,4 +1,8 @@
 import {
+  estimateSurfaceFeatureComplexity,
+  featureAwareCellQuota,
+} from './surfaceFeatureDensity';
+import {
   classifyDepthNeighbourhood,
   clamp01,
   crossVector,
@@ -447,6 +451,7 @@ export class DepthPointCloudAccumulator {
   private readonly representatives = new Map<string, RepresentativePoint>();
   private representativeCount = 0;
   private promotedRepresentativeCount = 0;
+  /** Fair-share base quota. Feature cells may retain more, but never exceed global memory. */
   private adaptiveQuota = MAX_POINTS_PER_COVERAGE_CELL;
   private candidateSampleCount = 0;
   private discardedSampleCount = 0;
@@ -1042,12 +1047,27 @@ export class DepthPointCloudAccumulator {
       confidence >= 0.72;
     return { confidence, visible, ready, promotedPoints };
   }
+
+  private cellFeatureComplexity(cell: CoverageCell, candidate?: RepresentativePoint): number {
+    if (candidate === undefined) return estimateSurfaceFeatureComplexity(cell.representatives.values()).score;
+    return estimateSurfaceFeatureComplexity([...cell.representatives.values(), candidate]).score;
+  }
+
+  private cellRetentionQuota(cell: CoverageCell, candidate?: RepresentativePoint, baseQuota = this.adaptiveQuota): number {
+    return featureAwareCellQuota(baseQuota, this.cellFeatureComplexity(cell, candidate));
+  }
+
   private insertCandidate(cell: CoverageCell, candidate: RepresentativePoint): boolean {
-    if (cell.representatives.size >= this.adaptiveQuota) {
+    // Include the candidate normal in the projected complexity. A genuine second
+    // supported orientation can therefore earn extra local retention; one noisy
+    // singleton cannot, because feature complexity requires robust support.
+    const projectedComplexity = this.cellFeatureComplexity(cell, candidate);
+    const localQuota = featureAwareCellQuota(this.adaptiveQuota, projectedComplexity);
+    if (cell.representatives.size >= localQuota) {
       const worst = this.findWorstRepresentative(cell);
       if (worst === null || representativeScore(candidate) >= worst.score) return false;
       this.removeRepresentative(worst.point); this.replacementCount += 1;
-    } else if (!this.ensureGlobalSlot(candidate.coverageKey)) return false;
+    } else if (!this.ensureGlobalSlot(candidate.coverageKey, projectedComplexity)) return false;
     cell.representatives.set(candidate.id, candidate);
     this.representatives.set(candidate.id, candidate);
     const bucket = this.voxelIndex.get(candidate.voxelIndexKey) ?? [];
@@ -1066,23 +1086,40 @@ export class DepthPointCloudAccumulator {
     if (desired >= this.adaptiveQuota) return;
     this.adaptiveQuota = desired; this.trimAllCellsToQuota(desired);
   }
-  private trimAllCellsToQuota(quota: number): void {
+  private trimAllCellsToQuota(baseQuota: number): void {
     for (const cell of this.coverageCells.values()) {
-      if (cell.representatives.size <= quota) continue;
+      const localQuota = this.cellRetentionQuota(cell, undefined, baseQuota);
+      if (cell.representatives.size <= localQuota) continue;
       const ranked = [...cell.representatives.values()].sort((a, b) => representativeScore(a) - representativeScore(b));
-      for (let i = quota; i < ranked.length; i += 1) {
+      for (let i = localQuota; i < ranked.length; i += 1) {
         this.removeRepresentative(ranked[i]); this.rebalanceEvictionCount += 1;
       }
     }
   }
-  private ensureGlobalSlot(preferredCoverageKey: string): boolean {
+  private ensureGlobalSlot(preferredCoverageKey: string, preferredComplexity: number): boolean {
     if (this.representativeCount < this.memoryBudgetPoints) return true;
     this.updateAdaptiveQuota();
     if (this.representativeCount < this.memoryBudgetPoints) return true;
+
     let donor: RepresentativePoint | null = null;
-    for (const point of this.representatives.values()) {
-      if (point.coverageKey === preferredCoverageKey) continue;
-      if (donor === null || representativeScore(point) > representativeScore(donor)) donor = point;
+    let donorEvictionScore = Number.NEGATIVE_INFINITY;
+    for (const [coverageKey, cell] of this.coverageCells) {
+      if (coverageKey === preferredCoverageKey || cell.representatives.size <= MIN_POINTS_PER_COVERAGE_CELL) continue;
+      const worst = this.findWorstRepresentative(cell);
+      if (worst === null) continue;
+      const donorComplexity = this.cellFeatureComplexity(cell);
+      const complexityAdvantage = clamp(preferredComplexity - donorComplexity, -1, 1);
+      // More-complex requested cells preferentially borrow from flatter cells.
+      // Existing point quality remains the primary eviction signal, so this is a
+      // bounded bias rather than a rule that can protect bad feature evidence.
+      const featureBias = 1 + complexityAdvantage * 0.65;
+      const aboveBase = Math.max(0, cell.representatives.size - this.adaptiveQuota);
+      const surplusBias = 1 + Math.min(0.35, aboveBase * 0.035);
+      const evictionScore = worst.score * featureBias * surplusBias;
+      if (evictionScore > donorEvictionScore) {
+        donor = worst.point;
+        donorEvictionScore = evictionScore;
+      }
     }
     if (donor === null) { this.coverageRejectedCount += 1; return false; }
     this.removeRepresentative(donor); this.rebalanceEvictionCount += 1; return true;
