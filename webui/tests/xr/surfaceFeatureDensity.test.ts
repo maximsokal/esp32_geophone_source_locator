@@ -15,6 +15,16 @@ function normal(angleDegrees: number, confidence = 0.9) {
   };
 }
 
+function positionedNormal(
+  angleDegrees: number,
+  x: number,
+  y: number,
+  z = 0,
+  confidence = 0.9,
+) {
+  return { ...normal(angleDegrees, confidence), x, y, z };
+}
+
 describe('surface feature complexity', () => {
   it('keeps a slightly noisy flat plane at the base density', () => {
     const feature = estimateSurfaceFeatureComplexity([-3, -2, 0, 1, 2, 3].map((angle) => normal(angle)));
@@ -37,6 +47,16 @@ describe('surface feature complexity', () => {
     expect(featureAwareCellQuota(28, feature.score)).toBeGreaterThan(32);
   });
 
+  it('keeps a spatially extended convex surface feature-rich with metric positions', () => {
+    const feature = estimateSurfaceFeatureComplexity(
+      [-28, -20, -12, -4, 4, 12, 20, 28].map((angle, index) =>
+        positionedNormal(angle, index * 0.025, 0)
+      ),
+    );
+    expect(feature.spatialSpanMeters).toBeGreaterThan(0.15);
+    expect(feature.score).toBeGreaterThan(0.25);
+  });
+
   it('gives a strong density bonus to a supported two-plane corner', () => {
     const feature = estimateSurfaceFeatureComplexity([
       normal(0), normal(1), normal(-1),
@@ -46,6 +66,35 @@ describe('surface feature complexity', () => {
     expect(feature.strongestFamilySeparationRadians).toBeGreaterThan(70 * Math.PI / 180);
     expect(feature.score).toBeGreaterThan(0.7);
     expect(featureAwareCellQuota(28, feature.score)).toBeGreaterThanOrEqual(42);
+  });
+
+  it('does not give a hard-feature density bonus to conflicting normals packed into one tiny spot', () => {
+    const feature = estimateSurfaceFeatureComplexity([
+      positionedNormal(0, 0.000, 0.000),
+      positionedNormal(1, 0.004, 0.000),
+      positionedNormal(-1, 0.007, 0.002),
+      positionedNormal(88, 0.001, 0.003),
+      positionedNormal(90, 0.005, 0.004),
+      positionedNormal(92, 0.008, 0.005),
+    ]);
+    expect(feature.matureOrientationFamilies).toBeGreaterThanOrEqual(2);
+    expect(feature.spatiallySupportedFamilies).toBeLessThan(2);
+    expect(feature.spatialSpanMeters).toBeLessThan(0.02);
+    expect(feature.score).toBeLessThan(0.15);
+  });
+
+  it('restores a strong hard-feature score once both surfaces have real metric support', () => {
+    const feature = estimateSurfaceFeatureComplexity([
+      positionedNormal(0, 0.00, 0.00),
+      positionedNormal(1, 0.03, 0.00),
+      positionedNormal(-1, 0.06, 0.00),
+      positionedNormal(88, 0.00, 0.01),
+      positionedNormal(90, 0.00, 0.04),
+      positionedNormal(92, 0.00, 0.07),
+    ]);
+    expect(feature.spatiallySupportedFamilies).toBeGreaterThanOrEqual(2);
+    expect(feature.spatialSpanMeters).toBeGreaterThan(0.07);
+    expect(feature.score).toBeGreaterThan(0.55);
   });
 
   it('does not let one outlier normal turn a flat cell into a feature cell', () => {
@@ -73,6 +122,20 @@ describe('surface feature complexity', () => {
     expect(b.score).toBeCloseTo(a.score, 10);
     expect(b.robustSpreadRadians).toBeCloseTo(a.robustSpreadRadians, 10);
     expect(b.strongestFamilySeparationRadians).toBeCloseTo(a.strongestFamilySeparationRadians, 10);
+  });
+
+  it('is spatially invariant to input permutation when positions are supplied', () => {
+    const ordered = [
+      positionedNormal(0, 0.00, 0.00, 0, 0.9),
+      positionedNormal(1, 0.03, 0.00, 0, 0.9),
+      positionedNormal(90, 0.00, 0.02, 0, 0.9),
+      positionedNormal(91, 0.00, 0.06, 0, 0.9),
+    ];
+    const a = estimateSurfaceFeatureComplexity(ordered);
+    const b = estimateSurfaceFeatureComplexity([ordered[3], ordered[0], ordered[2], ordered[1]]);
+    expect(b.score).toBeCloseTo(a.score, 10);
+    expect(b.spatialSpanMeters).toBeCloseTo(a.spatialSpanMeters, 10);
+    expect(b.spatiallySupportedFamilies).toBe(a.spatiallySupportedFamilies);
   });
 
   it('scales the feature bonus down with global memory pressure and respects the cap', () => {
