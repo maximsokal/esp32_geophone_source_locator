@@ -45,6 +45,8 @@ interface Neighbour {
   angle: number;
 }
 
+type DistanceEvidence = number | { readonly distance: number };
+
 const MESH_MIN_CONFIDENCE = 0.58;
 const MESH_MAX_SURFACE_ANGLE_RADIANS = (45 * Math.PI) / 180;
 const MESH_MIN_TRIANGLE_ANGLE_RADIANS = (10 * Math.PI) / 180;
@@ -53,7 +55,6 @@ const MESH_MAX_NEIGHBOURS = 12;
 const MESH_MAX_TRIANGLES = 30000;
 const MESH_MAX_POINTS = 12000;
 const MESH_DENSITY_MU = 2.8;
-const MESH_DENSITY_REFERENCE_NEIGHBOUR = 2;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -126,18 +127,33 @@ export function triangleGeometryAcceptable(
  * We use the third compatible neighbour rather than the absolute nearest point.
  * The accumulator may retain multiple close surfels around sharp features, and a
  * single near-duplicate must not collapse the triangulation radius to millimetres.
+ * The three-nearest selection is allocation-free so this helper can run once per
+ * mesh center without adding mobile GC pressure.
  */
 export function adaptiveMeshSearchRadius(
-  neighbourDistances: readonly number[],
+  neighbourDistances: readonly DistanceEvidence[],
   maximumRadiusMeters: number,
   voxelSizeMeters: number,
 ): number {
   const maximum = Math.max(1e-4, Number.isFinite(maximumRadiusMeters) ? maximumRadiusMeters : 0.1);
-  const finite = neighbourDistances
-    .filter((value) => Number.isFinite(value) && value > 1e-5 && value <= maximum)
-    .sort((a, b) => a - b);
-  if (finite.length < 2) return maximum;
-  const reference = finite[Math.min(MESH_DENSITY_REFERENCE_NEIGHBOUR, finite.length - 1)];
+  let first = Number.POSITIVE_INFINITY;
+  let second = Number.POSITIVE_INFINITY;
+  let third = Number.POSITIVE_INFINITY;
+  let count = 0;
+  for (const item of neighbourDistances) {
+    const value = typeof item === 'number' ? item : item.distance;
+    if (!Number.isFinite(value) || value <= 1e-5 || value > maximum) continue;
+    count += 1;
+    if (value < first) {
+      third = second; second = first; first = value;
+    } else if (value < second) {
+      third = second; second = value;
+    } else if (value < third) {
+      third = value;
+    }
+  }
+  if (count < 2) return maximum;
+  const reference = Number.isFinite(third) ? third : second;
   const minimum = Math.min(maximum, Math.max(0.025, Math.abs(voxelSizeMeters) * 0.70));
   return clamp(reference * MESH_DENSITY_MU, minimum, maximum);
 }
@@ -268,7 +284,7 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
 
     neighbours.sort((left, right) => left.distance - right.distance || left.point.index - right.point.index);
     const localRadiusMeters = adaptiveMeshSearchRadius(
-      neighbours.map((neighbour) => neighbour.distance),
+      neighbours,
       searchRadiusMeters,
       input.voxelSizeMeters,
     );
