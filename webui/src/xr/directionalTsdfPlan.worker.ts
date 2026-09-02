@@ -1,10 +1,11 @@
 /// <reference lib="webworker" />
 
 import {
+  finalizeDirectionalTsdfPlan,
   prepareDirectionalTsdfPlan,
   type DirectionalTsdfPlanSummary,
 } from './directionalTsdf';
-import type { SparseTsdfInput } from './sparseTsdf';
+import { buildSparseTsdfMesh, type SparseTsdfInput } from './sparseTsdf';
 
 interface PlanMessage {
   type: 'plan';
@@ -28,6 +29,21 @@ self.addEventListener('message', (event: MessageEvent<PlanMessage>) => {
 
   const plan = prepareDirectionalTsdfPlan(message.input, true);
   const { channelInputs, ...summary } = plan;
+
+  // Flat/single-family scans are common. Finish them in the planner Worker so
+  // they pay for only one Worker startup instead of planner -> channel -> merge.
+  if (summary.mode !== 'multi') {
+    const meshes = channelInputs.map((input) => buildSparseTsdfMesh(input));
+    const result = finalizeDirectionalTsdfPlan(summary, meshes);
+    self.postMessage({
+      type: 'plan-direct-result',
+      requestId: message.requestId,
+      summary: summary satisfies DirectionalTsdfPlanSummary,
+      result,
+    }, [result.trianglePositions.buffer]);
+    return;
+  }
+
   const transfers: Transferable[] = [];
   const seen = new Set<ArrayBuffer>();
   for (const input of channelInputs) {
