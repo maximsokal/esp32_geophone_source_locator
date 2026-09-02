@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { PoseDiverseVisualEvidenceStore } from '../../src/xr/visualEvidenceReservoir';
 import type { VisualEvidenceFrame } from '../../src/xr/visualLineEvidence';
 
-function frame(keyframeId: number, x: number): VisualEvidenceFrame {
+function frame(keyframeId: number, x: number, capturedAtMs = keyframeId * 100): VisualEvidenceFrame {
   return {
     keyframeId,
-    capturedAtMs: keyframeId * 100,
+    capturedAtMs,
     projectionMatrix: new Float32Array([
       1,0,0,0,
       0,1,0,0,
@@ -20,7 +20,7 @@ function frame(keyframeId: number, x: number): VisualEvidenceFrame {
       x,0,0,1,
     ]),
     lines: [{
-      id: `line:${keyframeId}`,
+      id: `line:${keyframeId}:${capturedAtMs}`,
       start: [0.2,0.5],
       end: [0.8,0.5],
       direction: [1,0],
@@ -54,7 +54,28 @@ describe('pose-diverse visual evidence reservoir', () => {
     }
     expect(store.size).toBe(8);
     const retained = store.snapshot();
-    expect(retained.some((item) => item.keyframeId <= 20)).toBe(true);
-    expect(retained.some((item) => item.keyframeId >= 80)).toBe(true);
+    expect(retained.some((item) => item.capturedAtMs <= 2000)).toBe(true);
+    expect(retained.some((item) => item.capturedAtMs >= 8000)).toBe(true);
+  });
+
+  it('keeps different RGB captures even when async delivery labels them with the same depth keyframe', () => {
+    const store = new PoseDiverseVisualEvidenceStore(4);
+    store.add(frame(10, 0.00, 1000));
+    store.add(frame(10, 0.20, 1520));
+
+    const retained = store.snapshot();
+    expect(retained).toHaveLength(2);
+    expect(retained.map((item) => item.capturedAtMs)).toEqual([1000, 1520]);
+  });
+
+  it('replaces duplicate processing of the same RGB capture even if it arrives under another keyframe id', () => {
+    const store = new PoseDiverseVisualEvidenceStore(4);
+    store.add(frame(10, 0.00, 1000));
+    store.add(frame(11, 0.00, 1000));
+
+    const retained = store.snapshot();
+    expect(retained).toHaveLength(1);
+    expect(retained[0].keyframeId).toBe(11);
+    expect(retained[0].capturedAtMs).toBe(1000);
   });
 });
