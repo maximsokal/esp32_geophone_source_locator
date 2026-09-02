@@ -9,6 +9,7 @@ import {
   type ScanPointCloudSnapshot as SurfaceScanPointCloudSnapshot,
   type StructuralGuidePointCloudSnapshot,
 } from './depthPointCloudV2';
+import { prepareCpuDepthSampler } from './cpuDepthSampler';
 import {
   registerManualPlacementResolver,
   solveManualPlacementOnStableSurface,
@@ -240,6 +241,11 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     fallbackView: DepthSampleView,
     context: DepthFusionFrameContext,
   ): DepthFusionResult {
+    // XRCPUDepthInformation exposes the same row-major buffer used by
+    // getDepthInMeters(). Prepare one zero-copy sampler per frame so the many
+    // normal/edge/occupancy probes do not repeatedly cross the browser API
+    // boundary. Test doubles and older UAs automatically keep the native path.
+    const physicalDepth = prepareCpuDepthSampler(depth).sampler;
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const freshGuidance = getFreshRgbGuidance(nowMs);
     const guidance = freshGuidance !== null && rgbGuidanceMatchesView(freshGuidance, fallbackView.transform.matrix)
@@ -250,18 +256,18 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     // is intentionally forbidden from the XR hot loop after real-device tests
     // showed multi-second mobile stalls. The model runs after Finish & save.
     if (context.evidenceKeyframe && guidance !== null && this.monocularPrior.isEnabled) {
-      this.monocularPrior.stagePostScan?.(guidance, depth);
+      this.monocularPrior.stagePostScan?.(guidance, physicalDepth);
     }
 
     const result = super.sampleDepthFrame(
-      guidedSurfaceDepth(depth, guidance),
+      guidedSurfaceDepth(physicalDepth, guidance),
       fallbackView,
       context,
     );
     // Safety invariant: RGB can veto SURFACE evidence, but occupancy/FREE always
     // sees untouched physical XR depth. ONNX is not executed in this path and
     // the injected model interface has no occupancy handle.
-    this.occupancy.integrateDepthFrame(depth, fallbackView, { ...context, maxDepthMeters: this.maxDepth });
+    this.occupancy.integrateDepthFrame(physicalDepth, fallbackView, { ...context, maxDepthMeters: this.maxDepth });
     return result;
   }
 
