@@ -8,7 +8,13 @@ import { VisualLineEvidenceClient } from './visualLineEvidenceClient';
 
 let latestRgb: RgbDepthGuidanceFrame | null = null;
 const visualStore = new PoseDiverseVisualEvidenceStore(64);
-const visualClient = new VisualLineEvidenceClient();
+// Live XR never runs Hough on the UI/XR thread. The worker is allocated lazily
+// after the pre-scan compute capability promise resolves; if no worker slot is
+// available, visual corroboration simply remains unavailable/fail-open.
+const visualClient = new VisualLineEvidenceClient({
+  allowMainThreadFallback: false,
+  deferWorkerUntilAnalyze: true,
+});
 let visualDetectionError: string | null = null;
 const POSE_TAGGED_RGB_MAX_AGE_MS = 650;
 
