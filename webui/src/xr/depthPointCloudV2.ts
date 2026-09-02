@@ -207,6 +207,10 @@ const BASE_DEPTH_SAMPLES_PER_FRAME = 880;
 // discontinuity-rich frame could issue two children for nearly every base probe.
 export const MAX_EDGE_SUPERSAMPLE_PROBES_PER_FRAME = 64;
 export const MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME = 96;
+// One complex/noisy 30-cm coverage cell must not monopolize all 96 feature probes.
+// Six opposite probe pairs are enough to densify one local feature in one frame
+// while leaving budget for at least eight independent cells across the object.
+export const MAX_FEATURE_SUPERSAMPLE_PROBES_PER_CELL_PER_FRAME = 12;
 const FEATURE_PROBE_MIN_REPRESENTATIVES = 6;
 const FEATURE_PROBE_COMPLEXITY_THRESHOLD = 0.22;
 const FEATURE_PROBE_PIXEL_RADIUS = 2.0;
@@ -540,6 +544,7 @@ export class DepthPointCloudAccumulator {
     // one clustering pass per touched cell so feature-directed sampling remains
     // bounded in both depth reads and CPU work.
     const featureScoreCache = new Map<string, number>();
+    const featureProbeCountsByCell = new Map<string, number>();
 
     const featureScoreForProject = (project: ProjectPoint): number => {
       const key = cellKey(project[0], project[1], project[2], COVERAGE_CELL_METERS);
@@ -586,20 +591,25 @@ export class DepthPointCloudAccumulator {
       if (outcome.promoted) promotedPoints += 1;
 
       if (allowAdaptiveExpansion && outcome.accepted) {
+        const featureCoverageKey = cellKey(project[0], project[1], project[2], COVERAGE_CELL_METERS);
+        const cellFeatureProbes = featureProbeCountsByCell.get(featureCoverageKey) ?? 0;
         const complexity = featureScoreForProject(project);
         if (
           complexity >= FEATURE_PROBE_COMPLEXITY_THRESHOLD &&
-          featureSupersampleProbes + 2 <= MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME
+          featureSupersampleProbes + 2 <= MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME &&
+          cellFeatureProbes + 2 <= MAX_FEATURE_SUPERSAMPLE_PROBES_PER_CELL_PER_FRAME
         ) {
           // Opposite points on a deterministic rotating stencil provide local
           // density without introducing a permanent image-grid pattern. This is
           // still physical depth only: learned/native plane priors cannot enter
-          // this accumulator or request probes.
+          // this accumulator or request probes. Per-cell fairness prevents one
+          // noisy/complex patch from consuming the entire frame-wide budget.
           const angle = (phase * 0.17320508075688773 + featureProbeSequence * GOLDEN_ANGLE_RADIANS) % (Math.PI * 2);
           featureProbeSequence += 1;
           const du = Math.cos(angle) * FEATURE_PROBE_PIXEL_RADIUS / Math.max(1, depth.width);
           const dv = Math.sin(angle) * FEATURE_PROBE_PIXEL_RADIUS / Math.max(1, depth.height);
           featureSupersampleProbes += 2;
+          featureProbeCountsByCell.set(featureCoverageKey, cellFeatureProbes + 2);
           integrateAt(u - du, v - dv, false);
           integrateAt(u + du, v + dv, false);
           return local;
