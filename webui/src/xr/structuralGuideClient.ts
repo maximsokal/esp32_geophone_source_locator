@@ -3,6 +3,7 @@ import type { StructuralCandidateDiagnostics } from './structuralCandidatePolicy
 import StructuralGuideWorker from './structuralGuide.worker?worker&inline';
 import type { StructuralGuideResult, StructuralGuideViewpoint } from './structuralGuide';
 import { isCurrentStructuralGuideWorkerResult } from './structuralGuideProtocol';
+import type { StructuralPlanePrior } from './webxrPlaneGuidance';
 
 interface AnalyzeInput {
   positions: Float32Array;
@@ -17,6 +18,8 @@ interface AnalyzeInput {
   viewpoint?: StructuralGuideViewpoint | null;
   freeSpacePositions?: Float32Array;
   freeSpaceVoxelSizeMeters?: number;
+  /** Small structured-cloned advisory list; never transferred as physical geometry. */
+  planePriors?: readonly StructuralPlanePrior[];
 }
 
 interface WorkerResultMessage {
@@ -24,7 +27,7 @@ interface WorkerResultMessage {
   requestId: number;
   epoch: number;
   result: StructuralGuideResult;
-  diagnostics?: StructuralCandidateDiagnostics;
+  diagnostics?: StructuralCandidateDiagnostics & { nativePlanePriors?: number; nativePlaneStabilizedSurfels?: number };
 }
 
 interface PendingAnalysis {
@@ -80,6 +83,7 @@ export class StructuralGuideClient {
         viewpoint: input.viewpoint ?? null,
         freeSpacePositions: input.freeSpacePositions,
         freeSpaceVoxelSizeMeters: input.freeSpaceVoxelSizeMeters,
+        planePriors: input.planePriors ?? [],
       }, transfer);
     });
   }
