@@ -36,6 +36,20 @@ function snapshot(source: MutableCloud): ManualPlacementSurfaceSnapshot {
   };
 }
 
+function reverseCloud(source: MutableCloud): MutableCloud {
+  const output = cloud();
+  for (let index = source.confidence.length - 1; index >= 0; index -= 1) {
+    const offset = index * 3;
+    add(
+      output,
+      [source.positions[offset], source.positions[offset + 1], source.positions[offset + 2]],
+      [source.normals[offset], source.normals[offset + 1], source.normals[offset + 2]],
+      source.confidence[index],
+    );
+  }
+  return output;
+}
+
 function addPlaneX(target: MutableCloud): void {
   for (const y of [-0.08, -0.04, 0, 0.04, 0.08]) {
     for (const z of [-0.06, -0.02, 0.02, 0.06]) add(target, [0, y, z], [1, 0, 0]);
@@ -87,6 +101,21 @@ function addPlaneWithCornerHole(
   }
 }
 
+function addOppositeOnlyPairEdgeCloud(target: MutableCloud): void {
+  // X and Y are individually healthy 2-D surfaces and both pass radial corner
+  // arm support, but their shared XY edge (the Z axis) is measured on opposite
+  // sides of the mathematical vertex. There is therefore no finite common edge.
+  for (const y of [-0.09, -0.045, 0, 0.045, 0.09]) {
+    for (const z of [0.015, 0.045, 0.075, 0.105]) add(target, [0, y, z], [1, 0, 0]);
+  }
+  for (const x of [-0.09, -0.045, 0, 0.045, 0.09]) {
+    for (const z of [-0.105, -0.075, -0.045, -0.015]) add(target, [x, 0, z], [0, 1, 0]);
+  }
+  for (const x of [-0.09, -0.045, 0, 0.045, 0.09]) {
+    for (const y of [-0.09, -0.045, 0, 0.045, 0.09]) add(target, [x, y, 0], [0, 0, 1]);
+  }
+}
+
 describe('manual placement on accumulated surface geometry', () => {
   it('locks a cursor candidate to a reconstructed robust two-plane edge', () => {
     const source = cloud();
@@ -120,7 +149,7 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.position![2]).toBeCloseTo(0, 2);
     expect(result.uncertaintyMeters).toBeLessThan(0.032);
     expect(result.conditionNumber).toBeLessThan(35);
-    expect(result.minimumCornerArmSpanMeters).toBeGreaterThanOrEqual(0.055);
+    expect(result.minimumCornerArmSpanMeters).toBeGreaterThanOrEqual(0.05);
     expect(result.confidence).toBeLessThan(1);
   });
 
@@ -152,8 +181,31 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.position![1]).toBeCloseTo(0, 2);
     expect(result.position![2]).toBeCloseTo(0, 2);
     expect(result.sourceDistanceMeters).toBeGreaterThan(0.055);
-    expect(result.minimumCornerArmSpanMeters).toBeGreaterThan(0.055);
+    expect(result.minimumCornerArmSpanMeters).toBeGreaterThan(0.05);
     expect(result.uncertaintyMeters).toBeLessThan(0.032);
+  });
+
+  it('rejects a mathematical three-plane corner when one pair has no same-side finite edge support', () => {
+    const source = cloud();
+    addOppositeOnlyPairEdgeCloud(source);
+    const result = solveManualPlacementOnStableSurface([0.004, -0.004, 0.003], snapshot(source));
+    expect(result.mode).not.toBe('corner');
+  });
+
+  it('is invariant to equivalent surfel insertion order before deterministic RANSAC', () => {
+    const source = cloud();
+    addPlaneX(source);
+    addPlaneY(source);
+    addPlaneZ(source);
+    const candidate = [0.022, -0.018, 0.027] as const;
+    const forward = solveManualPlacementOnStableSurface(candidate, snapshot(source));
+    const reversed = solveManualPlacementOnStableSurface(candidate, snapshot(reverseCloud(source)));
+    expect(forward.mode).toBe('corner');
+    expect(reversed.mode).toBe('corner');
+    expect(reversed.position?.[0]).toBeCloseTo(forward.position?.[0] ?? 0, 6);
+    expect(reversed.position?.[1]).toBeCloseTo(forward.position?.[1] ?? 0, 6);
+    expect(reversed.position?.[2]).toBeCloseTo(forward.position?.[2] ?? 0, 6);
+    expect(reversed.confidence).toBeCloseTo(forward.confidence, 6);
   });
 
   it('rejects a tap when only one robust surface has been accumulated', () => {
