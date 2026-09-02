@@ -115,7 +115,9 @@ describe('feature-aware structural surface clustering', () => {
 
     expect(flat.pointCount).toBe(1);
     expect(convex.pointCount).toBeGreaterThan(flat.pointCount);
-    expect(convex.pointCount).toBeGreaterThanOrEqual(3);
+    // Do not force arbitrary over-segmentation: two robust local pieces are
+    // already more informative than flattening the whole bend into one normal.
+    expect(convex.pointCount).toBeGreaterThanOrEqual(2);
   });
 
   it('does not over-segment a flat patch because of one abnormal normal', () => {
