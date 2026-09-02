@@ -25,6 +25,7 @@ export interface MeshSelfIntersectionDiagnostic {
 export const MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS = 60_000;
 export const MAX_SELF_INTERSECTION_EXACT_TESTS = 12_000;
 export const MAX_SELF_INTERSECTION_CELLS_PER_TRIANGLE = 64;
+const BARYCENTRIC_EPSILON = 1e-6;
 
 interface Aabb {
   minX: number;
@@ -118,7 +119,7 @@ function coplanarTrianglesOverlap(
   a: MeshIntersectionTriangle,
   b: MeshIntersectionTriangle,
   normal: MeshIntersectionPoint,
-  epsilon: number,
+  epsilonMeters: number,
 ): boolean {
   const dropAxis = dominantAxis(normal);
   const ta = [project2(a.vertices[0], dropAxis), project2(a.vertices[1], dropAxis), project2(a.vertices[2], dropAxis)] as const;
@@ -136,7 +137,7 @@ function coplanarTrianglesOverlap(
       if (!intervalsOverlap(
         projectionInterval(ta, axisX, axisY),
         projectionInterval(tb, axisX, axisY),
-        epsilon,
+        epsilonMeters,
       )) return false;
     }
   }
@@ -147,7 +148,6 @@ function segmentIntersectsTriangle(
   start: MeshIntersectionPoint,
   end: MeshIntersectionPoint,
   triangle: MeshIntersectionTriangle,
-  epsilon: number,
 ): boolean {
   const direction = subtract(end, start);
   const edge1 = subtract(triangle.vertices[1], triangle.vertices[0]);
@@ -158,12 +158,12 @@ function segmentIntersectsTriangle(
   const inverse = 1 / determinant;
   const s = subtract(start, triangle.vertices[0]);
   const u = inverse * dot(s, h);
-  if (u < -epsilon || u > 1 + epsilon) return false;
+  if (u < -BARYCENTRIC_EPSILON || u > 1 + BARYCENTRIC_EPSILON) return false;
   const q = cross(s, edge1);
   const v = inverse * dot(direction, q);
-  if (v < -epsilon || u + v > 1 + epsilon) return false;
+  if (v < -BARYCENTRIC_EPSILON || u + v > 1 + BARYCENTRIC_EPSILON) return false;
   const t = inverse * dot(edge2, q);
-  return t >= -epsilon && t <= 1 + epsilon;
+  return t >= -BARYCENTRIC_EPSILON && t <= 1 + BARYCENTRIC_EPSILON;
 }
 
 function trianglePlaneSideRejected(
@@ -171,14 +171,14 @@ function trianglePlaneSideRejected(
   planeOrigin: MeshIntersectionPoint,
   planeNormal: MeshIntersectionPoint,
   normalLength: number,
-  epsilon: number,
+  epsilonMeters: number,
 ): boolean {
   let positive = 0;
   let negative = 0;
   for (const point of triangle.vertices) {
     const distance = dot(subtract(point, planeOrigin), planeNormal) / normalLength;
-    if (distance > epsilon) positive += 1;
-    else if (distance < -epsilon) negative += 1;
+    if (distance > epsilonMeters) positive += 1;
+    else if (distance < -epsilonMeters) negative += 1;
   }
   return positive === 3 || negative === 3;
 }
@@ -197,10 +197,10 @@ export function trianglesIntersect(
   const lengthA = Math.hypot(normalA[0], normalA[1], normalA[2]);
   const lengthB = Math.hypot(normalB[0], normalB[1], normalB[2]);
   if (lengthA <= 1e-12 || lengthB <= 1e-12) return false;
-  const epsilon = clamp(Math.abs(epsilonMeters), 1e-7, 0.002);
+  const metricEpsilon = clamp(Math.abs(epsilonMeters), 1e-7, 0.002);
 
-  if (trianglePlaneSideRejected(b, a.vertices[0], normalA, lengthA, epsilon)) return false;
-  if (trianglePlaneSideRejected(a, b.vertices[0], normalB, lengthB, epsilon)) return false;
+  if (trianglePlaneSideRejected(b, a.vertices[0], normalA, lengthA, metricEpsilon)) return false;
+  if (trianglePlaneSideRejected(a, b.vertices[0], normalB, lengthB, metricEpsilon)) return false;
 
   const normalCross = cross(normalA, normalB);
   const sine = Math.hypot(normalCross[0], normalCross[1], normalCross[2]) / (lengthA * lengthB);
@@ -208,12 +208,12 @@ export function trianglesIntersect(
     const maximumPlaneDistance = Math.max(
       ...b.vertices.map((point) => Math.abs(dot(subtract(point, a.vertices[0]), normalA)) / lengthA),
     );
-    return maximumPlaneDistance <= epsilon && coplanarTrianglesOverlap(a, b, normalA, epsilon);
+    return maximumPlaneDistance <= metricEpsilon && coplanarTrianglesOverlap(a, b, normalA, metricEpsilon);
   }
 
   for (let edge = 0; edge < 3; edge += 1) {
-    if (segmentIntersectsTriangle(a.vertices[edge], a.vertices[(edge + 1) % 3], b, epsilon)) return true;
-    if (segmentIntersectsTriangle(b.vertices[edge], b.vertices[(edge + 1) % 3], a, epsilon)) return true;
+    if (segmentIntersectsTriangle(a.vertices[edge], a.vertices[(edge + 1) % 3], b)) return true;
+    if (segmentIntersectsTriangle(b.vertices[edge], b.vertices[(edge + 1) % 3], a)) return true;
   }
   return false;
 }
@@ -232,15 +232,24 @@ function pairKey(a: number, b: number, triangleCount: number): number {
   return low * triangleCount + high;
 }
 
-function stableTrianglePriority(aabb: Aabb, index: number, cellSizeMeters: number): number {
+function stableTrianglePriority(
+  triangle: MeshIntersectionTriangle,
+  aabb: Aabb,
+  cellSizeMeters: number,
+): number {
+  const quantization = Math.max(cellSizeMeters / 16, 1e-5);
+  const vertices = triangle.vertices
+    .map((point) => [
+      Math.round(point[0] / quantization),
+      Math.round(point[1] / quantization),
+      Math.round(point[2] / quantization),
+    ] as const)
+    .sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
   const cx = Math.round(((aabb.minX + aabb.maxX) * 0.5) / cellSizeMeters);
   const cy = Math.round(((aabb.minY + aabb.maxY) * 0.5) / cellSizeMeters);
   const cz = Math.round(((aabb.minZ + aabb.maxZ) * 0.5) / cellSizeMeters);
   let hash = 0x811c9dc5;
-  hash = Math.imul(hash ^ cx, 0x01000193);
-  hash = Math.imul(hash ^ cy, 0x01000193);
-  hash = Math.imul(hash ^ cz, 0x01000193);
-  hash = Math.imul(hash ^ index, 0x01000193);
+  for (const value of [cx, cy, cz, ...vertices.flat()]) hash = Math.imul(hash ^ value, 0x01000193);
   hash ^= hash >>> 16;
   return hash >>> 0;
 }
@@ -270,7 +279,8 @@ export function diagnoseMeshSelfIntersections(
   const buckets = new Map<string, number[]>();
   const seenPairs = new Set<number>();
   const order = Array.from({ length: triangleCount }, (_, index) => index).sort((left, right) =>
-    stableTrianglePriority(aabbs[left], left, cellSizeMeters) - stableTrianglePriority(aabbs[right], right, cellSizeMeters) ||
+    stableTrianglePriority(triangles[left], aabbs[left], cellSizeMeters) -
+      stableTrianglePriority(triangles[right], aabbs[right], cellSizeMeters) ||
     left - right
   );
   let broadPhaseCandidatePairs = 0;
@@ -301,16 +311,18 @@ export function diagnoseMeshSelfIntersections(
           const bucket = buckets.get(key);
           if (bucket !== undefined) {
             for (const otherIndex of bucket) {
+              const triangle = triangles[triangleIndex];
+              const other = triangles[otherIndex];
+              // Adjacent manifold faces and cell-coincident but non-overlapping
+              // AABBs are cheap rejects and must not consume the bounded pair budget.
+              if (sharedVertex(triangle, other) || !aabbOverlap(bounds, aabbs[otherIndex], epsilonMeters)) continue;
               const encoded = pairKey(triangleIndex, otherIndex, triangleCount);
               if (seenPairs.has(encoded)) continue;
-              seenPairs.add(encoded);
-              if (seenPairs.size > MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS) {
+              if (broadPhaseCandidatePairs >= MAX_SELF_INTERSECTION_BROAD_PHASE_PAIRS) {
                 truncated = true;
                 break outer;
               }
-              const triangle = triangles[triangleIndex];
-              const other = triangles[otherIndex];
-              if (sharedVertex(triangle, other) || !aabbOverlap(bounds, aabbs[otherIndex], epsilonMeters)) continue;
+              seenPairs.add(encoded);
               broadPhaseCandidatePairs += 1;
               if (exactTestedPairs >= MAX_SELF_INTERSECTION_EXACT_TESTS) {
                 truncated = true;
