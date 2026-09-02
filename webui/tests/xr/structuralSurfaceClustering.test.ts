@@ -120,6 +120,49 @@ describe('feature-aware structural surface clustering', () => {
     expect(convex.pointCount).toBeGreaterThanOrEqual(2);
   });
 
+  it('does not lose a hard edge merely because it falls exactly across base-cell boundaries', () => {
+    // baseCellSize is 0.054 m for the default 0.04 m voxel size. Each half below
+    // is internally flat, so a per-cell-only classifier would see two flat cells
+    // and fail to request feature detail. Neighbourhood classification must see
+    // both supported normal families across the 0.054 m boundary.
+    const positions = [
+      [0.034, 0.010, 0.010],
+      [0.044, 0.010, 0.010],
+      [0.052, 0.010, 0.010],
+      [0.056, 0.010, 0.010],
+      [0.068, 0.010, 0.010],
+      [0.082, 0.010, 0.010],
+    ] as const;
+    const flat = clusterStructuralSurfaceFamilies(snapshot(
+      positions,
+      positions.map(() => normal(0)),
+    ));
+    const acrossBoundaryEdge = clusterStructuralSurfaceFamilies(snapshot(
+      positions,
+      [normal(0), normal(0), normal(0), normal(62), normal(62), normal(62)],
+    ));
+
+    expect(flat.pointCount).toBe(2);
+    expect(acrossBoundaryEdge.pointCount).toBeGreaterThan(flat.pointCount);
+  });
+
+  it('keeps a smooth bend crossing a base-cell boundary denser than the equivalent flat strip', () => {
+    const positions = [
+      [0.034, 0.010, 0.010],
+      [0.044, 0.010, 0.010],
+      [0.052, 0.010, 0.010],
+      [0.056, 0.010, 0.010],
+      [0.068, 0.010, 0.010],
+      [0.082, 0.010, 0.010],
+    ] as const;
+    const flat = clusterStructuralSurfaceFamilies(snapshot(positions, positions.map(() => normal(0))));
+    const convex = clusterStructuralSurfaceFamilies(snapshot(
+      positions,
+      [-28, -18, -8, 8, 18, 28].map(normal),
+    ));
+    expect(convex.pointCount).toBeGreaterThan(flat.pointCount);
+  });
+
   it('does not over-segment a flat patch because of one abnormal normal', () => {
     const positions = [
       [0.004, 0.010, 0.010],
