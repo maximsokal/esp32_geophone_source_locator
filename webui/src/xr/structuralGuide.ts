@@ -435,7 +435,10 @@ function dedupeEdges(raw: RawEdge[]): RawEdge[] {
   return output;
 }
 
-export function detectStructuralGuideGeometry(input: StructuralGuideInput): GeometryDetectionResult {
+export function detectStructuralGuideGeometry(
+  input: StructuralGuideInput,
+  includeRawCorners = true,
+): GeometryDetectionResult {
   const patches = buildPlanePatches(input); const patchByCell = new Map<string, number[]>();
   for (let index = 0; index < patches.length; index += 1) {
     const patch = patches[index]; const key = cellKeyFromCoords(patch.ix, patch.iy, patch.iz); const bucket = patchByCell.get(key) ?? []; bucket.push(index); patchByCell.set(key, bucket);
@@ -460,6 +463,16 @@ export function detectStructuralGuideGeometry(input: StructuralGuideInput): Geom
         edges.push(edge); const forA = adjacency.get(i) ?? new Set<number>(); const forB = adjacency.get(j) ?? new Set<number>(); forA.add(j); forB.add(i); adjacency.set(i, forA); adjacency.set(j, forB);
       }
     }
+  }
+  if (!includeRawCorners) {
+    return {
+      corners: [],
+      edges: dedupeEdges(edges),
+      analyzedPoints: Math.min(Math.floor(input.positions.length / 3), input.confidence.length),
+      planarPatches: patches.length,
+      rejectedByFreeSpace,
+      candidateComparisons,
+    };
   }
   const corners: RawCorner[] = [];
   for (const [i, neighboursSet] of adjacency) {
@@ -531,8 +544,8 @@ function edgeOverlapRatio(a: RawEdge, b: RawEdge): number {
 export class StructuralGuideTracker {
   private corners = new Map<number, TrackedCorner>(); private edges = new Map<number, TrackedEdge>(); private nextCornerId = 1; private nextEdgeId = 1;
   reset(): void { this.corners.clear(); this.edges.clear(); this.nextCornerId = 1; this.nextEdgeId = 1; }
-  update(input: StructuralGuideInput, computeMs = 0): StructuralGuideResult {
-    const raw = detectStructuralGuideGeometry(input); const matchedCorners = new Set<number>(); const matchedEdges = new Set<number>();
+  update(input: StructuralGuideInput, computeMs = 0, includeRawCorners = true): StructuralGuideResult {
+    const raw = detectStructuralGuideGeometry(input, includeRawCorners); const matchedCorners = new Set<number>(); const matchedEdges = new Set<number>();
     for (const candidate of raw.corners) {
       let best: TrackedCorner | null = null; let bestDistance = Number.POSITIVE_INFINITY;
       for (const track of this.corners.values()) {
