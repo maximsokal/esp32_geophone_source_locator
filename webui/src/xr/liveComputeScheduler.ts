@@ -90,6 +90,18 @@ export class LiveComputeScheduler {
   }
 
   /**
+   * Resolve the fixed hardware/capability ceiling before immersive XR starts.
+   * This is negotiation only: the budget provider reads browser capability hints
+   * and never runs a CPU benchmark. Runtime pressure can subsequently reduce the
+   * effective budget but cannot exceed this pre-scan maximum.
+   */
+  async prepare(): Promise<LiveComputeSchedulerSnapshot> {
+    await this.resolveMaximumBudget();
+    this.refreshEffectiveBudget();
+    return this.snapshot();
+  }
+
+  /**
    * Feed runtime pressure into the live cap. High pressure is intentionally
    * immediate. Medium/low transitions are sampled at a bounded cadence so the
    * 100-ms UI snapshot loop cannot accidentally count as five independent
