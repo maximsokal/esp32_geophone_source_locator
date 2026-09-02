@@ -107,7 +107,9 @@ export function detectLocalMeshNoiseHotspots(
 
   // Build candidates first. Overlapping 3x3x3 neighbourhoods are unioned later,
   // so one noisy patch cannot be counted/removed repeatedly merely because it
-  // straddles hash-cell boundaries.
+  // straddles hash-cell boundaries. Crucially, each seed examines only components
+  // that actually occur in those 27 nearby buckets; we never multiply suspicious
+  // cells by all disconnected component ids in a noisy scan.
   const candidateByComponent: Array<Set<number>> = Array.from(
     { length: componentCount },
     () => new Set<number>(),
@@ -120,22 +122,28 @@ export function detectLocalMeshNoiseHotspots(
   for (const cellKey of suspiciousCells) {
     const seed = buckets.get(cellKey)?.[0];
     if (seed === undefined) continue;
-    for (let component = 0; component < componentCount; component += 1) {
-      if (componentSizes[component] < MIN_COMPONENT_TRIANGLES_FOR_LOCAL_REPAIR) continue;
-      const local = new Map<number, SpatialTriangle>();
-      for (let dx = -1; dx <= 1; dx += 1) {
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dz = -1; dz <= 1; dz += 1) {
-            const bucket = buckets.get(key(seed.gx + dx, seed.gy + dy, seed.gz + dz));
-            if (bucket === undefined) continue;
-            for (const triangle of bucket) {
-              if (triangle.component !== component) continue;
+    const localByComponent = new Map<number, Map<number, SpatialTriangle>>();
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const bucket = buckets.get(key(seed.gx + dx, seed.gy + dy, seed.gz + dz));
+          if (bucket === undefined) continue;
+          for (const triangle of bucket) {
+            if (componentSizes[triangle.component] < MIN_COMPONENT_TRIANGLES_FOR_LOCAL_REPAIR) continue;
+            let local = localByComponent.get(triangle.component);
+            if (local === undefined) {
+              local = new Map<number, SpatialTriangle>();
+              localByComponent.set(triangle.component, local);
+            }
+            if (local.size < MAX_HOTSPOT_NEIGHBOURHOOD_TRIANGLES) {
               local.set(triangle.index, triangle);
-              if (local.size >= MAX_HOTSPOT_NEIGHBOURHOOD_TRIANGLES) break;
             }
           }
         }
       }
+    }
+
+    for (const [component, local] of localByComponent) {
       if (local.size < MIN_SUSPICIOUS_TRIANGLES) continue;
       let selfCount = 0;
       let normalCount = 0;
