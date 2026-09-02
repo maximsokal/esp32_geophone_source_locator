@@ -43,6 +43,13 @@ interface EdgeUse {
   to: string;
 }
 
+interface ComponentEdgeStats {
+  edgeCount: number;
+  boundaryEdgeCount: number;
+  nonManifoldEdgeCount: number;
+  orientationConflictCount: number;
+}
+
 const MIN_TRIANGLES_RETAINED_COMPONENT = 6;
 const MIN_TRIANGLES_QUARANTINED_COMPONENT = 3;
 const MIN_AREA_ABSOLUTE_SQUARE_METERS = 0.0015;
@@ -70,6 +77,10 @@ function triangleArea(a: Point, b: Point, c: Point): number {
   return 0.5 * Math.hypot(normal[0], normal[1], normal[2]);
 }
 
+function finitePoint(point: Point): boolean {
+  return Number.isFinite(point[0]) && Number.isFinite(point[1]) && Number.isFinite(point[2]);
+}
+
 function vertexKey(point: Point, quantizationMeters: number): string {
   return `${Math.round(point[0] / quantizationMeters)}:${Math.round(point[1] / quantizationMeters)}:${Math.round(point[2] / quantizationMeters)}`;
 }
@@ -89,7 +100,7 @@ function parseTriangles(
     const a: Point = [positions[offset], positions[offset + 1], positions[offset + 2]];
     const b: Point = [positions[offset + 3], positions[offset + 4], positions[offset + 5]];
     const c: Point = [positions[offset + 6], positions[offset + 7], positions[offset + 8]];
-    if (![...a, ...b, ...c].every(Number.isFinite)) continue;
+    if (!finitePoint(a) || !finitePoint(b) || !finitePoint(c)) continue;
     const area = triangleArea(a, b, c);
     if (!Number.isFinite(area) || area <= 1e-10) continue;
     output.push({
@@ -112,9 +123,9 @@ function buildEdgeUses(triangles: readonly Triangle[]): Map<string, EdgeUse[]> {
     const keys = triangles[index].keys;
     for (const [from, to] of [[keys[0], keys[1]], [keys[1], keys[2]], [keys[2], keys[0]]] as const) {
       const key = edgeKey(from, to);
-      const uses = edges.get(key) ?? [];
-      uses.push({ triangle: index, from, to });
-      edges.set(key, uses);
+      const uses = edges.get(key);
+      if (uses === undefined) edges.set(key, [{ triangle: index, from, to }]);
+      else uses.push({ triangle: index, from, to });
     }
   }
   return edges;
@@ -209,32 +220,60 @@ function orientAndPartition(
   return { flips, componentByTriangle, componentTriangles, orientationRepairCount };
 }
 
-function componentOrientationConflicts(
-  id: number,
+/**
+ * Accumulate all component edge diagnostics in ONE edge pass.
+ *
+ * The previous implementation rescanned every edge for every disconnected mesh
+ * component, turning a fragmented scan into O(componentCount * edgeCount). That
+ * is especially harmful after TSDF extraction, where tens of thousands of faces
+ * can coexist with many tiny boundary islands. This keeps sanitation O(T + E + C).
+ */
+function buildComponentEdgeStats(
+  componentCount: number,
   flips: Uint8Array,
   componentByTriangle: Int32Array,
   edges: Map<string, EdgeUse[]>,
-): number {
-  let conflicts = 0;
+): ComponentEdgeStats[] {
+  const stats: ComponentEdgeStats[] = Array.from({ length: componentCount }, () => ({
+    edgeCount: 0,
+    boundaryEdgeCount: 0,
+    nonManifoldEdgeCount: 0,
+    orientationConflictCount: 0,
+  }));
+
   for (const uses of edges.values()) {
+    if (uses.length === 0) continue;
+    const touchedComponents = new Set<number>();
+    for (const use of uses) {
+      const componentId = componentByTriangle[use.triangle];
+      if (componentId >= 0) touchedComponents.add(componentId);
+    }
+    for (const componentId of touchedComponents) {
+      const component = stats[componentId];
+      component.edgeCount += 1;
+      let usesInComponent = 0;
+      for (const use of uses) if (componentByTriangle[use.triangle] === componentId) usesInComponent += 1;
+      if (usesInComponent === 1) component.boundaryEdgeCount += 1;
+      if (uses.length > 2) component.nonManifoldEdgeCount += 1;
+    }
+
     if (uses.length !== 2) continue;
     const first = uses[0];
     const second = uses[1];
-    if (componentByTriangle[first.triangle] !== id || componentByTriangle[second.triangle] !== id) continue;
+    const componentId = componentByTriangle[first.triangle];
+    if (componentId < 0 || componentByTriangle[second.triangle] !== componentId) continue;
     const sameDirection = first.from === second.from && first.to === second.to;
     const effectiveSame = sameDirection !== (flips[first.triangle] !== flips[second.triangle]);
-    if (effectiveSame) conflicts += 1;
+    if (effectiveSame) stats[componentId].orientationConflictCount += 1;
   }
-  return conflicts;
+  return stats;
 }
 
 function componentQuality(
   id: number,
   members: readonly number[],
   triangles: readonly Triangle[],
-  flips: Uint8Array,
-  componentByTriangle: Int32Array,
-  edges: Map<string, EdgeUse[]>,
+  edgeStats: ComponentEdgeStats,
   voxelSizeMeters: number,
 ): MeshTopologyComponentQuality {
   let area = 0;
@@ -250,19 +289,7 @@ function componentQuality(
   }
   const majorExtentMeters = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
   const effectiveWidthMeters = area / Math.max(majorExtentMeters, 1e-6);
-
-  let boundaryEdges = 0;
-  let componentEdges = 0;
-  let nonManifoldEdgeCount = 0;
-  for (const uses of edges.values()) {
-    const usesInComponent = uses.filter((use) => componentByTriangle[use.triangle] === id).length;
-    if (usesInComponent === 0) continue;
-    componentEdges += 1;
-    if (usesInComponent === 1) boundaryEdges += 1;
-    if (uses.length > 2) nonManifoldEdgeCount += 1;
-  }
-  const boundaryEdgeRatio = componentEdges > 0 ? boundaryEdges / componentEdges : 1;
-  const orientationConflictCount = componentOrientationConflicts(id, flips, componentByTriangle, edges);
+  const boundaryEdgeRatio = edgeStats.edgeCount > 0 ? edgeStats.boundaryEdgeCount / edgeStats.edgeCount : 1;
 
   const safeVoxel = clamp(Math.abs(voxelSizeMeters), 0.01, 0.12);
   const minimumMajor = clamp(safeVoxel * 2.5, 0.085, 0.18);
@@ -271,7 +298,7 @@ function componentQuality(
     MIN_AREA_ABSOLUTE_SQUARE_METERS,
     minimumMajor * minimumWidth * 0.45,
   );
-  const topologyClean = nonManifoldEdgeCount === 0 && orientationConflictCount === 0;
+  const topologyClean = edgeStats.nonManifoldEdgeCount === 0 && edgeStats.orientationConflictCount === 0;
   const retain =
     topologyClean &&
     members.length >= MIN_TRIANGLES_RETAINED_COMPONENT &&
@@ -292,8 +319,8 @@ function componentQuality(
     majorExtentMeters,
     effectiveWidthMeters,
     boundaryEdgeRatio,
-    nonManifoldEdgeCount,
-    orientationConflictCount,
+    nonManifoldEdgeCount: edgeStats.nonManifoldEdgeCount,
+    orientationConflictCount: edgeStats.orientationConflictCount,
     disposition: retain ? 'retain' : quarantine ? 'quarantine' : 'discard',
   };
 }
@@ -335,13 +362,17 @@ export function sanitizeMeshTopology(
   const triangles = nonManifoldRepair.triangles;
   const edges = buildEdgeUses(triangles);
   const orientation = orientAndPartition(triangles, edges);
+  const componentEdgeStats = buildComponentEdgeStats(
+    orientation.componentTriangles.length,
+    orientation.flips,
+    orientation.componentByTriangle,
+    edges,
+  );
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
     triangles,
-    orientation.flips,
-    orientation.componentByTriangle,
-    edges,
+    componentEdgeStats[id],
     voxelSizeMeters,
   ));
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
