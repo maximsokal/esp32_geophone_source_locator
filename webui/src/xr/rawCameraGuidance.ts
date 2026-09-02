@@ -2,6 +2,11 @@ import {
   buildRgbDepthGuidanceFrame,
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
+import {
+  captureWebGlState,
+  restoreWebGlState,
+  webGl2Context,
+} from './webGlStateGuard';
 
 export interface XrCameraLike {
   width: number;
@@ -45,9 +50,8 @@ function compileShader(
 
 function createProgram(gl: WebGLRenderingContext | WebGL2RenderingContext): WebGLProgram {
   // GLSL ES 1.00 is used because the runtime may fall back to WebGL1. Chromium
-  // exposes the XR camera as a normal bottom-left-origin WebGL texture. We keep
-  // that convention in the GPU blit; buildRgbDepthGuidanceFrame flips the
-  // readPixels rows exactly once into WebXR's top-left normalized convention.
+  // exposes the XR camera as a normal bottom-left-origin opaque WebGL texture.
+  // We only sample it; ownership and lifetime remain with the user agent.
   const vertex = compileShader(gl, gl.VERTEX_SHADER, `
     attribute vec2 a_position;
     varying vec2 v_uv;
@@ -88,6 +92,8 @@ export class RawCameraGuidanceCapture {
   private readonly framebuffer: WebGLFramebuffer;
   private readonly targetTexture: WebGLTexture;
   private readonly vertexBuffer: WebGLBuffer;
+  private readonly positionLocation: number;
+  private readonly vertexArray: WebGLVertexArrayObject | null;
   private readonly pixels = new Uint8Array(TARGET_WIDTH * TARGET_HEIGHT * 4);
   private disposed = false;
 
@@ -101,35 +107,69 @@ export class RawCameraGuidanceCapture {
       if (buffer !== null) gl.deleteBuffer(buffer);
       throw new Error('Unable to allocate raw-camera guidance GPU resources.');
     }
-    this.program = createProgram(gl);
+
+    const program = createProgram(gl);
+    const positionLocation = gl.getAttribLocation(program, 'a_position');
+    if (positionLocation < 0) {
+      gl.deleteProgram(program);
+      gl.deleteFramebuffer(framebuffer);
+      gl.deleteTexture(texture);
+      gl.deleteBuffer(buffer);
+      throw new Error('Raw-camera guidance position attribute is unavailable.');
+    }
+
+    this.program = program;
     this.framebuffer = framebuffer;
     this.targetTexture = texture;
     this.vertexBuffer = buffer;
+    this.positionLocation = positionLocation;
 
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA, TARGET_WIDTH, TARGET_HEIGHT, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, null,
-    );
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-      this.dispose();
-      throw new Error('Raw-camera guidance framebuffer is incomplete.');
+    const gl2 = webGl2Context(gl);
+    const vertexArray = gl2?.createVertexArray() ?? null;
+    this.vertexArray = vertexArray;
+    const previous = captureWebGlState(gl, positionLocation);
+
+    try {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, TARGET_WIDTH, TARGET_HEIGHT, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, null,
+      );
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error('Raw-camera guidance framebuffer is incomplete.');
+      }
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1, 1, -1, -1, 1,
+        -1, 1, 1, -1, 1, 1,
+      ]), gl.STATIC_DRAW);
+
+      // A private VAO avoids touching the XR renderer's vertex-attrib state on
+      // WebGL2. WebGL1 is protected by the state guard on each capture call.
+      if (gl2 !== null && vertexArray !== null) {
+        gl2.bindVertexArray(vertexArray);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.enableVertexAttribArray(positionLocation);
+        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+      }
+    } catch (error) {
+      if (gl2 !== null && vertexArray !== null) gl2.deleteVertexArray(vertexArray);
+      gl.deleteProgram(program);
+      gl.deleteFramebuffer(framebuffer);
+      gl.deleteTexture(texture);
+      gl.deleteBuffer(buffer);
+      throw error;
+    } finally {
+      restoreWebGlState(gl, positionLocation, previous);
     }
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      -1, -1, 1, -1, -1, 1,
-      -1, 1, 1, -1, 1, 1,
-    ]), gl.STATIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, null);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   capture(
@@ -142,21 +182,20 @@ export class RawCameraGuidanceCapture {
     if (cameraTexture === null) return null;
 
     const gl = this.gl;
-    const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-    const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null;
-    const previousArrayBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null;
-    const previousActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE) as number;
-    const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
-    const previousViewport = gl.getParameter(gl.VIEWPORT) as Int32Array;
+    const gl2 = webGl2Context(gl);
+    const previous = captureWebGlState(gl, this.positionLocation);
 
     try {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
       gl.viewport(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
       gl.useProgram(this.program);
-      const location = gl.getAttribLocation(this.program, 'a_position');
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-      gl.enableVertexAttribArray(location);
-      gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+      if (gl2 !== null && this.vertexArray !== null) {
+        gl2.bindVertexArray(this.vertexArray);
+      } else {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+        gl.enableVertexAttribArray(this.positionLocation);
+        gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+      }
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
       const sampler = gl.getUniformLocation(this.program, 'u_camera');
@@ -184,18 +223,15 @@ export class RawCameraGuidanceCapture {
       }
       return guidance;
     } finally {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
-      gl.useProgram(previousProgram);
-      gl.bindBuffer(gl.ARRAY_BUFFER, previousArrayBuffer);
-      gl.activeTexture(previousActiveTexture);
-      gl.bindTexture(gl.TEXTURE_2D, previousTexture);
-      gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+      restoreWebGlState(gl, this.positionLocation, previous);
     }
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    const gl2 = webGl2Context(this.gl);
+    if (gl2 !== null && this.vertexArray !== null) gl2.deleteVertexArray(this.vertexArray);
     this.gl.deleteProgram(this.program);
     this.gl.deleteFramebuffer(this.framebuffer);
     this.gl.deleteTexture(this.targetTexture);
