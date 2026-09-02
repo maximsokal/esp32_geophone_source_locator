@@ -4,6 +4,7 @@ import { CertifiedStructuralCornerTracker } from './certifiedStructuralGeometry'
 import { stabilizeMeasuredSurfelsWithNativePlanes } from './nativePlaneSurfelGuidance';
 import {
   computeSurfaceStructuralReadiness,
+  summarizeSurfaceComponentReadiness,
   type SurfaceComponentReadinessSummary,
 } from './scanCapabilityReadiness';
 import {
@@ -88,8 +89,9 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   );
 
   // Connected-component/PCA readiness belongs in the CPU worker too. Returning
-  // only compact component metrics avoids the old main-thread O(N) analysis and
-  // avoids cloning the large eligible-point masks back across postMessage.
+  // only the best structural + mesh component avoids the old main-thread O(N)
+  // analysis and avoids cloning island lists or eligible-point masks back across
+  // postMessage on noisy scans.
   const componentAnalysis = analyzeSurfaceComponents({
     positions: message.positions,
     normals: message.normals,
@@ -97,10 +99,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     voxelSizeMeters: message.voxelSizeMeters,
     minimumConfidence: 0.58,
   });
-  const surfaceReadiness: SurfaceComponentReadinessSummary = {
-    components: componentAnalysis.components,
-    bestMeshComponent: componentAnalysis.bestMeshComponent,
-  };
+  const surfaceReadiness: SurfaceComponentReadinessSummary = summarizeSurfaceComponentReadiness(componentAnalysis);
   const structuralSurface = computeSurfaceStructuralReadiness(surfaceReadiness);
 
   // A small/narrow/sparsely supported measured component is useful scan evidence,
