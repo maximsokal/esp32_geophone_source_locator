@@ -1,3 +1,5 @@
+import { analyzeSurfaceComponents } from './surfaceComponents';
+
 export type Point3 = readonly [number, number, number];
 export type Vector3 = readonly [number, number, number];
 
@@ -19,6 +21,10 @@ export interface SparseTsdfMesh {
   sourcePointCount: number;
   integratedPointCount: number;
   skippedLowConfidence: number;
+  rejectedComponentPoints: number;
+  componentCount: number;
+  eligibleComponentCount: number;
+  meshReadiness: number;
   nodeCount: number;
   voxelSizeMeters: number;
   truncationMeters: number;
@@ -207,10 +213,15 @@ function polygonizeTetra(
 /**
  * Build a sparse confidence-weighted TSDF from oriented promoted surfels.
  *
+ * A bounded voxel-hash component pass runs before field integration. Dense but
+ * physically tiny islands and one-dimensional chains cannot create a mesh just
+ * because the global scan contains many points. Only independently connected
+ * surface components with enough two-dimensional metric extent are integrated.
+ *
  * Curless/Levoy style signed-distance fusion is represented here as an implicit
- * field over sparse grid nodes. Each surfel contributes only inside a bounded
- * truncation band and a bounded tangent footprint; therefore disconnected or
- * unsupported regions are never filled merely to make a watertight mesh.
+ * field over sparse grid nodes. Each eligible surfel contributes only inside a
+ * bounded truncation band and a bounded tangent footprint; therefore disconnected
+ * or unsupported regions are never filled merely to make a watertight mesh.
  * Verified FREE voxels are used only to orient the positive side of local
  * surface normals. UNKNOWN volume is not converted to occupied/free evidence.
  */
@@ -221,6 +232,13 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     Math.floor(input.normals.length / 3),
     input.confidence.length,
   );
+  const componentAnalysis = analyzeSurfaceComponents({
+    positions: input.positions,
+    normals: input.normals,
+    confidence: input.confidence,
+    voxelSizeMeters: input.voxelSizeMeters,
+    minimumConfidence: MIN_SURFACE_CONFIDENCE,
+  });
   const voxelSizeMeters = clamp(
     Number.isFinite(input.voxelSizeMeters) ? input.voxelSizeMeters * 1.15 : 0.046,
     0.035,
@@ -234,15 +252,29 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
   const maxTriangles = Math.max(1, Math.floor(input.maxTriangles ?? DEFAULT_MAX_TRIANGLES));
   const freeIndex = buildFreeIndex(input.freeSpacePositions, input.freeSpaceVoxelSizeMeters);
   const nodes = new Map<string, TsdfNode>();
-  let integratedPointCount = 0;
+  const eligibleIndices: number[] = [];
   let skippedLowConfidence = 0;
+  let rejectedComponentPoints = 0;
+  for (let index = 0; index < sourcePointCount; index += 1) {
+    const confidence = Number(input.confidence[index]);
+    if (!Number.isFinite(confidence) || confidence < MIN_SURFACE_CONFIDENCE) {
+      skippedLowConfidence += 1;
+      continue;
+    }
+    if (index >= componentAnalysis.eligiblePointMask.length || componentAnalysis.eligiblePointMask[index] === 0) {
+      rejectedComponentPoints += 1;
+      continue;
+    }
+    eligibleIndices.push(index);
+  }
 
-  const stride = Math.max(1, Math.ceil(sourcePointCount / maxInputPoints));
+  let integratedPointCount = 0;
+  const stride = Math.max(1, Math.ceil(eligibleIndices.length / maxInputPoints));
   const radiusNodes = Math.ceil(truncationMeters / voxelSizeMeters);
-  for (let index = 0; index < sourcePointCount; index += stride) {
+  for (let cursor = 0; cursor < eligibleIndices.length; cursor += stride) {
+    const index = eligibleIndices[cursor];
     const raw = sampleAt(input, index);
-    if (raw === null) continue;
-    if (raw.confidence < MIN_SURFACE_CONFIDENCE) { skippedLowConfidence += 1; continue; }
+    if (raw === null || raw.confidence < MIN_SURFACE_CONFIDENCE) continue;
     const sample = orientTowardVerifiedFree(raw, freeIndex);
     integratedPointCount += 1;
     const cx = grid(sample.position[0], voxelSizeMeters);
@@ -340,6 +372,10 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     sourcePointCount,
     integratedPointCount,
     skippedLowConfidence,
+    rejectedComponentPoints,
+    componentCount: componentAnalysis.componentCount,
+    eligibleComponentCount: componentAnalysis.eligibleComponentCount,
+    meshReadiness: componentAnalysis.bestMeshComponent?.meshReadiness ?? 0,
     nodeCount: nodes.size,
     voxelSizeMeters,
     truncationMeters,
