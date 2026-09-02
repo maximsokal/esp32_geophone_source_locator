@@ -367,18 +367,33 @@ function intersectTwoPlanesNear(a: PlanePatch, b: PlanePatch, anchor: ProjectPoi
   const direction = normalize(cross(a.normal, b.normal)); return direction === null ? null : { point, direction: canonicalDirection(direction) };
 }
 function supportIntervalOnIntersection(patch: PlanePatch, linePoint: ProjectPoint, direction: ProjectVector): SupportInterval | null {
-  let min = Number.POSITIVE_INFINITY; let max = Number.NEGATIVE_INFINITY; let count = 0; let perpendicularSum = 0;
+  const parameters: number[] = [];
+  let perpendicularSum = 0;
   for (const point of patch.supportPoints) {
     const delta: ProjectVector = [point[0] - linePoint[0], point[1] - linePoint[1], point[2] - linePoint[2]];
     const t = dot(delta, direction);
     const closest = addScaled(linePoint, direction, t);
     const perpendicular = distance(point, closest);
     if (perpendicular > LOCAL_EDGE_SUPPORT_RADIUS_METERS) continue;
-    min = Math.min(min, t); max = Math.max(max, t); count += 1; perpendicularSum += perpendicular;
+    parameters.push(t);
+    perpendicularSum += perpendicular;
   }
-  return count >= MIN_EDGE_LOCAL_SUPPORT_POINTS && Number.isFinite(min) && Number.isFinite(max)
-    ? { min, max, count, meanPerpendicularMeters: perpendicularSum / count }
-    : null;
+  const count = parameters.length;
+  if (count < MIN_EDGE_LOCAL_SUPPORT_POINTS) return null;
+  parameters.sort((a, b) => a - b);
+  // One spatially isolated but plane-consistent inlier must not stretch the
+  // finite edge support. With >=5 points trim at least one sample from each tail;
+  // small patches keep exact extrema so sparse genuine edges remain detectable.
+  const trim = count >= 5 ? Math.max(1, Math.floor(count * 0.10)) : 0;
+  const low = trim;
+  const high = count - 1 - trim;
+  if (high <= low) return null;
+  return {
+    min: parameters[low],
+    max: parameters[high],
+    count,
+    meanPerpendicularMeters: perpendicularSum / count,
+  };
 }
 function supportedEdgeFromPatches(a: PlanePatch, b: PlanePatch, intersection: { point: ProjectPoint; direction: ProjectVector }): RawEdge | null {
   const supportA = supportIntervalOnIntersection(a, intersection.point, intersection.direction);
@@ -546,6 +561,7 @@ export class StructuralGuideTracker {
   reset(): void { this.corners.clear(); this.edges.clear(); this.nextCornerId = 1; this.nextEdgeId = 1; }
   update(input: StructuralGuideInput, computeMs = 0, includeRawCorners = true): StructuralGuideResult {
     const raw = detectStructuralGuideGeometry(input, includeRawCorners); const matchedCorners = new Set<number>(); const matchedEdges = new Set<number>();
+    if (!includeRawCorners && this.corners.size > 0) this.corners.clear();
     for (const candidate of raw.corners) {
       let best: TrackedCorner | null = null; let bestDistance = Number.POSITIVE_INFINITY;
       for (const track of this.corners.values()) {
