@@ -118,6 +118,16 @@ describe('certified three-plane candidate-specific tracking', () => {
     expect(tracker.update(source, null)).toHaveLength(0);
   });
 
+  it('withdraws a mature corner immediately when the current solve no longer has three-plane support', () => {
+    const tracker = new CertifiedStructuralCornerTracker();
+    const complete = snapshot(cornerCloud(true));
+    tracker.update(complete, viewpoint(10, [0.5, 0.5, 0.5]));
+    expect(tracker.update(complete, viewpoint(14, [0.28, 0.50, 0.55])).length).toBeGreaterThan(0);
+
+    const missingThirdPlane = snapshot(cornerCloud(false));
+    expect(tracker.update(missingThirdPlane, viewpoint(18, [0.15, 0.45, 0.55]))).toHaveLength(0);
+  });
+
   it('reset discards candidate-specific maturity', () => {
     const tracker = new CertifiedStructuralCornerTracker();
     const source = snapshot(cornerCloud(true));
