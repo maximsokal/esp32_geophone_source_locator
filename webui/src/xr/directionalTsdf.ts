@@ -1,3 +1,4 @@
+import { sanitizeMeshTopology } from './meshTopologySanity';
 import {
   buildSparseTsdfMesh,
   type Point3,
@@ -127,6 +128,10 @@ function maximumMeshReadiness(meshes: readonly SparseTsdfMesh[]): number {
  * a connected surface component needs before mesh eligibility. Smaller normal
  * islands are not worth allocating a TSDF field and are counted as rejected
  * component evidence rather than being allowed to contaminate a mature channel.
+ *
+ * Per-channel meshes are sanitized independently by buildSparseTsdfMesh. After
+ * channel merge we sanitize once again: valid faces from two channels can still
+ * overlap or create a non-manifold edge at a directional boundary.
  */
 export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsdfMesh {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -205,10 +210,32 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
     }
   }
 
+  const voxelSizeMeters = meshes[0]?.voxelSizeMeters ?? input.voxelSizeMeters;
+  const finalTopology = sanitizeMeshTopology(Float32Array.from(combined), voxelSizeMeters);
   const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
   return {
-    trianglePositions: Float32Array.from(combined),
-    triangleCount: Math.floor(combined.length / 9),
+    trianglePositions: finalTopology.trianglePositions,
+    triangleCount: finalTopology.triangleCount,
+    rawTriangleCount: finalTopology.sourceTriangleCount,
+    quarantinedTriangleCount:
+      finalTopology.quarantinedTriangleCount +
+      meshes.reduce((sum, mesh) => sum + mesh.quarantinedTriangleCount, 0),
+    topologyDiscardedTriangleCount:
+      finalTopology.discardedTriangleCount +
+      meshes.reduce((sum, mesh) => sum + mesh.topologyDiscardedTriangleCount, 0),
+    nonManifoldEdgeCount:
+      finalTopology.nonManifoldEdgeCount +
+      meshes.reduce((sum, mesh) => sum + mesh.nonManifoldEdgeCount, 0),
+    nonManifoldRepairTriangleCount:
+      finalTopology.nonManifoldRepairTriangleCount +
+      meshes.reduce((sum, mesh) => sum + mesh.nonManifoldRepairTriangleCount, 0),
+    orientationRepairCount:
+      finalTopology.orientationRepairCount +
+      meshes.reduce((sum, mesh) => sum + mesh.orientationRepairCount, 0),
+    orientationConflictCount:
+      finalTopology.orientationConflictCount +
+      meshes.reduce((sum, mesh) => sum + mesh.orientationConflictCount, 0),
+    meshTopologyComponentCount: finalTopology.components.length,
     sourcePointCount: count,
     integratedPointCount: meshes.reduce((sum, mesh) => sum + mesh.integratedPointCount, 0),
     skippedLowConfidence,
@@ -217,7 +244,7 @@ export function buildDirectionalTsdfMesh(input: SparseTsdfInput): DirectionalTsd
     eligibleComponentCount: meshes.reduce((sum, mesh) => sum + mesh.eligibleComponentCount, 0),
     meshReadiness: maximumMeshReadiness(meshes),
     nodeCount: meshes.reduce((sum, mesh) => sum + mesh.nodeCount, 0),
-    voxelSizeMeters: meshes[0]?.voxelSizeMeters ?? input.voxelSizeMeters,
+    voxelSizeMeters,
     truncationMeters: meshes[0]?.truncationMeters ?? input.voxelSizeMeters * 2.75,
     computeMs: elapsed,
     directionalChannelCount: active.length,
