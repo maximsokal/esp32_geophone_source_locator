@@ -33,6 +33,11 @@ export interface SurfaceComponentAnalysis {
   eligibleComponentCount: number;
   eligiblePointCount: number;
   eligiblePointMask: Uint8Array;
+  /**
+   * Source-point -> connected component label, -1 for rejected/unassigned input.
+   * Optional so hand-authored fixtures and older callers remain source-compatible.
+   */
+  componentIdByPoint?: Int32Array;
   components: readonly SurfaceComponent[];
   largestComponent: SurfaceComponent | null;
   bestMeshComponent: SurfaceComponent | null;
@@ -101,11 +106,7 @@ function meshThresholds(voxelSizeMeters: number): {
 } {
   const voxel = clamp(Number.isFinite(voxelSizeMeters) ? voxelSizeMeters : 0.04, 0.025, 0.10);
   return {
-    // Surface reconstruction below roughly 3.5 source voxels has no useful
-    // metric shape at the resolution used by this project.
     major: Math.max(0.14, voxel * 3.5),
-    // A mesh needs genuine 2-D support. A long one-dimensional chain of points
-    // is an edge candidate, not a surface to triangulate.
     minor: Math.max(0.075, voxel * 1.85),
     points: MESH_MIN_POINTS,
     cells: MESH_MIN_OCCUPIED_CELLS,
@@ -247,7 +248,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
       Number(input.normals[offset + 1]),
       Number(input.normals[offset + 2]),
     );
-    if (![x, y, z].every(Number.isFinite) || rawNormal === null) continue;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || rawNormal === null) continue;
     const normal = canonical(rawNormal);
     const gx = grid(x, connectionCellSizeMeters);
     const gy = grid(y, connectionCellSizeMeters);
@@ -332,10 +333,14 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
   }
 
   const eligiblePointMask = new Uint8Array(sourceCount);
+  const componentIdByPoint = new Int32Array(sourceCount);
+  componentIdByPoint.fill(-1);
   let eligiblePointCount = 0;
   let eligibleComponentCount = 0;
   for (let componentIndex = 0; componentIndex < components.length; componentIndex += 1) {
-    if (!components[componentIndex].meshEligible) continue;
+    const component = components[componentIndex];
+    for (const pointIndex of componentPointIndices[componentIndex]) componentIdByPoint[pointIndex] = component.id;
+    if (!component.meshEligible) continue;
     eligibleComponentCount += 1;
     for (const pointIndex of componentPointIndices[componentIndex]) {
       if (eligiblePointMask[pointIndex] !== 0) continue;
@@ -361,6 +366,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
     eligibleComponentCount,
     eligiblePointCount,
     eligiblePointMask,
+    componentIdByPoint,
     components,
     largestComponent: bySize[0] ?? null,
     bestMeshComponent: byMesh[0] ?? null,
