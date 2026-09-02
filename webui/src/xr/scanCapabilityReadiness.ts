@@ -1,17 +1,31 @@
 import type { StructuralGuideViewpoint } from './structuralGuide';
 import type { SurfaceComponentAnalysis, SurfaceComponentPoint } from './surfaceComponents';
 
-export type SurfaceComponentReadinessSummary = Pick<
+type SurfaceComponent = SurfaceComponentAnalysis['components'][number];
+
+/**
+ * Small worker -> UI contract. The full component analysis can contain hundreds
+ * of disconnected islands and large point masks; none of that is needed by the
+ * readiness bar. Keep only the component that best supports structural geometry
+ * and the independently best mesh component.
+ */
+export interface SurfaceComponentReadinessSummary {
+  structuralComponent: SurfaceComponent | null;
+  bestMeshComponent: SurfaceComponent | null;
+}
+
+type LegacySurfaceReadinessInput = Pick<
   SurfaceComponentAnalysis,
   'components' | 'bestMeshComponent'
 >;
+export type SurfaceComponentReadinessInput = SurfaceComponentReadinessSummary | LegacySurfaceReadinessInput;
 
 export interface ScanCapabilityInput {
   stablePointCount: number;
   keyframeCount: number;
   visibleCoverageCells: number;
   readyCoverageCells: number;
-  surfaceAnalysis?: SurfaceComponentReadinessSummary | null;
+  surfaceAnalysis?: SurfaceComponentReadinessInput | null;
   viewpoints?: readonly StructuralGuideViewpoint[];
 }
 
@@ -26,7 +40,7 @@ export interface StructuralSurfaceReadiness {
   progress: number;
   ready: boolean;
   limitingMetric: CapabilityProgress['limitingMetric'];
-  component: SurfaceComponentAnalysis['components'][number] | null;
+  component: SurfaceComponent | null;
 }
 
 export interface ScanCapabilityReadiness {
@@ -91,7 +105,6 @@ function azimuthCoverage(
   return { sectors: sectors.size, fraction: sectors.size / VIEW_SECTORS };
 }
 
-type SurfaceComponent = SurfaceComponentAnalysis['components'][number];
 interface StructuralComponentCandidate {
   component: SurfaceComponent;
   progress: number;
@@ -107,12 +120,10 @@ function componentStructuralProgress(component: SurfaceComponent): Omit<Structur
   return { progress, limitingMetric: 'extent' };
 }
 
-function bestStructuralComponent(
-  surface: SurfaceComponentReadinessSummary | null | undefined,
-): StructuralComponentCandidate | null {
-  if (surface === null || surface === undefined || surface.components.length === 0) return null;
+function bestStructuralComponent(components: readonly SurfaceComponent[]): StructuralComponentCandidate | null {
+  if (components.length === 0) return null;
   let best: StructuralComponentCandidate | null = null;
-  for (const component of surface.components) {
+  for (const component of components) {
     const candidate = componentStructuralProgress(component);
     const area = component.majorExtentMeters * component.minorExtentMeters;
     const bestArea = best === null ? -1 : best.component.majorExtentMeters * best.component.minorExtentMeters;
@@ -128,16 +139,36 @@ function bestStructuralComponent(
   return best;
 }
 
+function isCompactSurfaceReadiness(
+  surface: SurfaceComponentReadinessInput,
+): surface is SurfaceComponentReadinessSummary {
+  return 'structuralComponent' in surface;
+}
+
+/** Build the bounded worker -> UI summary without returning masks or island lists. */
+export function summarizeSurfaceComponentReadiness(
+  surface: Pick<SurfaceComponentAnalysis, 'components' | 'bestMeshComponent'>,
+): SurfaceComponentReadinessSummary {
+  return {
+    structuralComponent: bestStructuralComponent(surface.components)?.component ?? null,
+    bestMeshComponent: surface.bestMeshComponent,
+  };
+}
+
 /**
  * Cheap policy boundary shared by the worker and the UI. It contains only the
  * physical connected-surface prerequisites for structural geometry; camera
  * baseline/keyframe prerequisites remain part of computeScanCapabilityReadiness.
  */
 export function computeSurfaceStructuralReadiness(
-  surface: SurfaceComponentReadinessSummary | null | undefined,
+  surface: SurfaceComponentReadinessInput | null | undefined,
 ): StructuralSurfaceReadiness {
-  const candidate = bestStructuralComponent(surface);
-  if (candidate === null) {
+  const component = surface === null || surface === undefined
+    ? null
+    : isCompactSurfaceReadiness(surface)
+      ? surface.structuralComponent
+      : bestStructuralComponent(surface.components)?.component ?? null;
+  if (component === null) {
     return {
       progress: 0,
       ready: false,
@@ -145,11 +176,12 @@ export function computeSurfaceStructuralReadiness(
       component: null,
     };
   }
+  const candidate = componentStructuralProgress(component);
   return {
     progress: candidate.progress,
     ready: candidate.progress >= 1 - 1e-9,
     limitingMetric: candidate.limitingMetric,
-    component: candidate.component,
+    component,
   };
 }
 
@@ -168,6 +200,13 @@ function meshLimitingMetric(component: SurfaceComponent): CapabilityProgress['li
   ) return 'surface-density';
   if (!component.meshEligible || component.meshReadiness < 1 - 1e-9) return 'extent';
   return 'surface-density';
+}
+
+function bestMeshComponent(
+  surface: SurfaceComponentReadinessInput | null | undefined,
+): SurfaceComponent | null {
+  if (surface === null || surface === undefined) return null;
+  return surface.bestMeshComponent;
 }
 
 /**
@@ -191,7 +230,7 @@ export function computeScanCapabilityReadiness(input: ScanCapabilityInput): Scan
   else if (keyframeProgress <= structuralProgress + 1e-9 || translationProgress <= structuralProgress + 1e-9) structuralLimit = 'views';
   if (scale.component !== null && scale.progress <= structuralProgress + 1e-9) structuralLimit = scale.limitingMetric;
 
-  const bestMesh = input.surfaceAnalysis?.bestMeshComponent ?? null;
+  const bestMesh = bestMeshComponent(input.surfaceAnalysis);
   const mesh = bestMesh === null ? null : {
     progress: clamp01(bestMesh.meshReadiness),
     ready: bestMesh.meshEligible,
