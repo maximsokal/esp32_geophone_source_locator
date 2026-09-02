@@ -126,6 +126,21 @@ describe('finite local support for structural intersections', () => {
     const result = detectStructuralGuideGeometry(inputFrom(cloud));
     expect(result.corners).toHaveLength(0);
   });
+
+  it('can skip legacy raw corner solving while preserving finite-support edges for the production worker', () => {
+    const cloud = builder();
+    addPlaneXRegion(cloud, 0, -0.08, 0.08, -0.08, 0.18, 0.025);
+    addPlaneYRegion(cloud, 0, -0.08, 0.08, -0.08, 0.18, 0.025);
+    addPlaneZRegion(cloud, 0, -0.08, 0.08, -0.08, 0.08, 0.025);
+
+    const full = detectStructuralGuideGeometry(inputFrom(cloud), true);
+    const edgeOnly = detectStructuralGuideGeometry(inputFrom(cloud), false);
+    expect(full.corners.length).toBeGreaterThan(0);
+    expect(edgeOnly.corners).toHaveLength(0);
+    expect(edgeOnly.edges.length).toBe(full.edges.length);
+    expect(edgeOnly.planarPatches).toBe(full.planarPatches);
+    expect(edgeOnly.candidateComparisons).toBe(full.candidateComparisons);
+  });
 });
 
 describe('structural candidate association hardening', () => {
