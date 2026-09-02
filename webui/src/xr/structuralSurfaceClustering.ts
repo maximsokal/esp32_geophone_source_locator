@@ -72,7 +72,18 @@ function compareNormalEvidence(a: SurfaceNormalEvidence, b: SurfaceNormalEvidenc
   const bn = normalize(b.normalX, b.normalY, b.normalZ);
   if (an === null) return bn === null ? 0 : 1;
   if (bn === null) return -1;
-  return compareVector(canonical(an), canonical(bn));
+  const normalOrder = compareVector(canonical(an), canonical(bn));
+  if (normalOrder !== 0) return normalOrder;
+  // When bounded neighbourhoods contain many identical normals, position is the
+  // deterministic tiebreaker. Otherwise Array.sort stability would preserve the
+  // incoming camera-dependent order and the 96-point stride could sample a
+  // different physical region from an equivalent permuted cloud.
+  const ax = Number(a.x), ay = Number(a.y), az = Number(a.z);
+  const bx = Number(b.x), by = Number(b.y), bz = Number(b.z);
+  if (Number.isFinite(ax) && Number.isFinite(bx) && ax !== bx) return ax - bx;
+  if (Number.isFinite(ay) && Number.isFinite(by) && ay !== by) return ay - by;
+  if (Number.isFinite(az) && Number.isFinite(bz) && az !== bz) return az - bz;
+  return 0;
 }
 function compareSourceSamples(a: SourceSample, b: SourceSample): number {
   if (a.confidence !== b.confidence) return b.confidence - a.confidence;
@@ -101,9 +112,6 @@ function boundedNeighbourhoodEvidence(
       }
     }
   }
-  // The source point order can change with camera motion/worker snapshots. Sort
-  // before the bounded stride so dense neighbourhood classification is invariant
-  // to insertion order instead of sampling whichever bucket happened to arrive first.
   combined.sort(compareNormalEvidence);
   if (combined.length <= MAX_COMPLEXITY_EVIDENCE) return combined;
 
@@ -125,14 +133,9 @@ function boundedNeighbourhoodEvidence(
  * evaluated over the neighbouring 3x3x3 base cells so a real edge that happens
  * to lie exactly on a hash-cell boundary cannot disappear simply because each
  * side looked locally flat in isolation. The neighbourhood sample is bounded.
- *
- * Samples and bounded normal evidence are sorted before greedy family creation,
- * making the result deterministic under surfel arrival-order changes.
- *
- * This preserves more structural samples around bends/edges/corners while
- * leaving physical acceptance, multi-view promotion and the global memory
- * budget untouched. Opposite normal signs still belong to the same physical
- * surface family.
+ * Metric positions are carried into the complexity estimator, so a few
+ * conflicting normals in one tiny physical spot no longer trigger the same
+ * refinement as a bend/edge/corner supported over measurable extent.
  */
 export function clusterStructuralSurfaceFamilies(
   source: StructuralGuidePointCloudSnapshot,
@@ -171,6 +174,9 @@ export function clusterStructuralSurfaceFamilies(
     const sample: SourceSample = {
       index,
       position,
+      x: position[0],
+      y: position[1],
+      z: position[2],
       normal,
       confidence,
       normalX: normal[0],
@@ -188,8 +194,6 @@ export function clusterStructuralSurfaceFamilies(
   samples.sort(compareSourceSamples);
 
   const featureScoreByBaseCell = new Map<string, number>();
-  // Cell keys are sorted as well so Map insertion order cannot leak into later
-  // output ordering/diagnostics when equivalent point clouds arrive permuted.
   const baseCellKeys = [...normalEvidenceByBaseCell.keys()].sort();
   for (const key of baseCellKeys) {
     const neighbourhood = boundedNeighbourhoodEvidence(key, normalEvidenceByBaseCell);
@@ -214,11 +218,7 @@ export function clusterStructuralSurfaceFamilies(
     }
 
     if (best === null) {
-      if (families.length >= MAX_FAMILIES_PER_CELL) {
-        // A fourth conflicting orientation in one tiny feature cell is more
-        // likely mixed/flying evidence than a real fourth manifold.
-        continue;
-      }
+      if (families.length >= MAX_FAMILIES_PER_CELL) continue;
       const created: Family = {
         cellKey: localCellKey,
         weight: sample.confidence,
