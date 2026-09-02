@@ -42,15 +42,18 @@ const MAX_CAPTURED_PLANES = 24;
 const MAX_CAPTURED_POLYGON_VERTICES = 64;
 const MIN_EXTENT_METERS = 0.035;
 const MAX_EXTENT_METERS = 12;
+const ZERO_EPSILON = 1e-12;
 
 function finite(value: number): boolean { return Number.isFinite(value); }
+function cleanZero(value: number): number { return Math.abs(value) < ZERO_EPSILON ? 0 : value; }
 function projectPointFromReference(x: number, y: number, z: number): ProjectPoint {
-  return [x, -z, y];
+  return [cleanZero(x), cleanZero(-z), cleanZero(y)];
 }
 function projectVectorFromReference(x: number, y: number, z: number): ProjectVector | null {
   const px = x, py = -z, pz = y;
   const magnitude = Math.hypot(px, py, pz);
-  return finite(magnitude) && magnitude > 1e-8 ? [px / magnitude, py / magnitude, pz / magnitude] : null;
+  if (!finite(magnitude) || magnitude <= 1e-8) return null;
+  return [cleanZero(px / magnitude), cleanZero(py / magnitude), cleanZero(pz / magnitude)];
 }
 function finiteMatrix16(matrix: ArrayLike<number>): boolean {
   if (matrix.length < 16) return false;
@@ -78,7 +81,7 @@ function polygonAreaLocalXZ(polygon: readonly XrPlanePointLike[]): number {
 function capturePolygonUv(polygon: readonly XrPlanePointLike[]): readonly PlanePolygonUv[] {
   const finiteVertices = polygon
     .filter((vertex) => Number.isFinite(vertex.x) && Number.isFinite(vertex.z))
-    .map((vertex) => [Number(vertex.x), Number(vertex.z)] as const);
+    .map((vertex) => [cleanZero(Number(vertex.x)), cleanZero(Number(vertex.z))] as const);
   if (finiteVertices.length <= MAX_CAPTURED_POLYGON_VERTICES) return finiteVertices;
   const sampled: PlanePolygonUv[] = [];
   for (let index = 0; index < MAX_CAPTURED_POLYGON_VERTICES; index += 1) {
