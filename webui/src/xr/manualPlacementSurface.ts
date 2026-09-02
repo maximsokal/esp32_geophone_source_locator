@@ -233,6 +233,8 @@ function robustLineSpan(values: readonly number[]): number {
  * therefore require measured inliers from BOTH planes near their intersection
  * line and on the same side of the solved vertex. Opposite-only support (+t on
  * one surface, -t on the other) is a mathematical crossing, not a measured edge.
+ * The perpendicular gate deliberately tolerates a small physical depth hole at
+ * the vertex/edge, but never invents longitudinal support across that hole.
  */
 function cornerPairEdgeSupport(
   planes: readonly [RobustPlane, RobustPlane, RobustPlane],
@@ -240,7 +242,7 @@ function cornerPairEdgeSupport(
   corner: ProjectPoint,
   voxelSizeMeters: number,
 ): CornerArmSupport {
-  const lineGateMeters = clamp(Math.abs(voxelSizeMeters) * 1.15, 0.035, 0.060);
+  const lineGateMeters = clamp(Math.abs(voxelSizeMeters) * 1.75, 0.055, 0.085);
   const minimumRequiredSpan = clamp(Math.abs(voxelSizeMeters) * 1.35, 0.050, 0.080);
   const pairs = [[0, 1], [0, 2], [1, 2]] as const;
   let minimumSpanMeters = Number.POSITIVE_INFINITY;
@@ -314,6 +316,17 @@ function bestEdge(
   return best;
 }
 
+function compareLocalSamples(left: LocalSample, right: LocalSample): number {
+  return left.distance - right.distance ||
+    left.position[0] - right.position[0] ||
+    left.position[1] - right.position[1] ||
+    left.position[2] - right.position[2] ||
+    Number(left.normal?.[0] ?? 0) - Number(right.normal?.[0] ?? 0) ||
+    Number(left.normal?.[1] ?? 0) - Number(right.normal?.[1] ?? 0) ||
+    Number(left.normal?.[2] ?? 0) - Number(right.normal?.[2] ?? 0) ||
+    right.weight - left.weight;
+}
+
 export function solveManualPlacementOnStableSurface(
   candidate: ProjectPoint,
   snapshot: ManualPlacementSurfaceSnapshot,
@@ -364,7 +377,7 @@ export function solveManualPlacementOnStableSurface(
     });
   }
 
-  local.sort((left, right) => left.distance - right.distance);
+  local.sort(compareLocalSamples);
   const samples = local.slice(0, MAX_LOCAL_SAMPLES);
   if (samples.length < MIN_LOCAL_SAMPLES || nearestDistance > sourceGate) {
     return reject(
