@@ -11,6 +11,7 @@ interface CpuDepthRawBufferLike extends CpuDepthInformationLike {
 export interface PreparedCpuDepthSampler {
   sampler: CpuDepthInformationLike;
   directBuffer: boolean;
+  inferredFormat: 'uint16' | 'float32' | null;
 }
 
 function finiteMatrix16(matrix: ArrayLike<number> | undefined): matrix is ArrayLike<number> {
@@ -24,16 +25,26 @@ function finiteMatrix16(matrix: ArrayLike<number> | undefined): matrix is ArrayL
 function rawView(
   data: ArrayBuffer,
   format: WebXrDepthDataFormat,
-  minimumEntries: number,
-): Uint16Array | Float32Array | null {
+  entries: number,
+): { values: Uint16Array | Float32Array; inferredFormat: 'uint16' | 'float32' } | null {
   try {
     if (format === 'luminance-alpha' || format === 'unsigned-short') {
-      const view = new Uint16Array(data);
-      return view.length >= minimumEntries ? view : null;
+      const values = new Uint16Array(data);
+      return values.length >= entries ? { values, inferredFormat: 'uint16' } : null;
     }
     if (format === 'float32') {
-      const view = new Float32Array(data);
-      return view.length >= minimumEntries ? view : null;
+      const values = new Float32Array(data);
+      return values.length >= entries ? { values, inferredFormat: 'float32' } : null;
+    }
+
+    // The wrapper layer does not always know XRSession.depthDataFormat. The
+    // specification fixes CPU entry sizes, so an exact frame-sized byte length
+    // identifies the representation without guessing from the depth values.
+    if (data.byteLength === entries * Uint16Array.BYTES_PER_ELEMENT) {
+      return { values: new Uint16Array(data), inferredFormat: 'uint16' };
+    }
+    if (data.byteLength === entries * Float32Array.BYTES_PER_ELEMENT) {
+      return { values: new Float32Array(data), inferredFormat: 'float32' };
     }
   } catch {
     return null;
@@ -42,20 +53,21 @@ function rawView(
 }
 
 /**
- * Prepare a synchronous, allocation-free sampler for one active WebXR frame.
+ * Prepare a synchronous, zero-copy sampler for one active WebXR frame.
  *
  * XRCPUDepthInformation.data is row-major and getDepthInMeters() is specified as
  * exactly: normalized-view -> normDepthBufferFromNormView -> depth pixel -> raw
- * value * rawValueToMeters. Repeating that browser call for every surfel probe is
- * unnecessary overhead, so we perform the same algorithm in JS over the exposed
- * ArrayBuffer. The buffer is never mutated or retained beyond the frame call.
+ * value * rawValueToMeters. Repeating that browser method for every centre,
+ * normal probe, edge probe and occupancy ray creates avoidable hot-path overhead,
+ * so we perform the same normative algorithm over the exposed ArrayBuffer.
  *
- * If any required field is absent (older UA / test double / unknown format), the
- * original browser sampler is returned unchanged.
+ * The returned typed view never mutates the user-agent-owned buffer and must not
+ * escape the current XR animation-frame callback. If any required field is
+ * absent, the original browser sampler is returned unchanged.
  */
 export function prepareCpuDepthSampler(
   source: CpuDepthInformationLike,
-  dataFormat: WebXrDepthDataFormat,
+  dataFormat: WebXrDepthDataFormat = null,
 ): PreparedCpuDepthSampler {
   const raw = source as CpuDepthRawBufferLike;
   const width = Math.floor(Number(source.width));
@@ -68,11 +80,12 @@ export function prepareCpuDepthSampler(
     !Number.isFinite(scale) || scale <= 0 ||
     !finiteMatrix16(transform)
   ) {
-    return { sampler: source, directBuffer: false };
+    return { sampler: source, directBuffer: false, inferredFormat: null };
   }
 
-  const values = rawView(raw.data, dataFormat, width * height);
-  if (values === null) return { sampler: source, directBuffer: false };
+  const prepared = rawView(raw.data, dataFormat, width * height);
+  if (prepared === null) return { sampler: source, directBuffer: false, inferredFormat: null };
+  const values = prepared.values;
 
   const m0 = Number(transform[0]);
   const m1 = Number(transform[1]);
@@ -99,5 +112,5 @@ export function prepareCpuDepthSampler(
       return Number(values[row * width + column]) * scale;
     },
   };
-  return { sampler, directBuffer: true };
+  return { sampler, directBuffer: true, inferredFormat: prepared.inferredFormat };
 }
