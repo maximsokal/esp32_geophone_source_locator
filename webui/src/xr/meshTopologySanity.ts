@@ -24,6 +24,8 @@ export interface MeshTopologyComponentQuality {
   selfIntersectionAffectedTriangleRatio: number;
   /** Fraction of faces whose short normal ray pierces a non-adjacent face. */
   normalIntrusionAffectedTriangleRatio: number;
+  /** False when a bounded diagnostic stopped before it could certify the mesh. */
+  diagnosticsComplete: boolean;
   /** Combined diagnostic only; a sharp fold is never discarded from this score alone. */
   meshNoiseScore: number;
   disposition: MeshComponentDisposition;
@@ -303,6 +305,7 @@ function componentQuality(
   selfIntersection: MeshSelfIntersectionComponentStats,
   normalIntrusion: MeshNormalIntrusionComponentStats,
   voxelSizeMeters: number,
+  diagnosticsComplete: boolean,
 ): MeshTopologyComponentQuality {
   let area = 0;
   let minX = Number.POSITIVE_INFINITY; let minY = Number.POSITIVE_INFINITY; let minZ = Number.POSITIVE_INFINITY;
@@ -347,6 +350,7 @@ function componentQuality(
 
   const topologyClean = edgeStats.nonManifoldEdgeCount === 0 && edgeStats.orientationConflictCount === 0;
   const retain =
+    diagnosticsComplete &&
     topologyClean &&
     meshNoiseScore <= MAX_RETAIN_MESH_NOISE_SCORE &&
     members.length >= MIN_TRIANGLES_RETAINED_COMPONENT &&
@@ -372,6 +376,7 @@ function componentQuality(
     selfIntersectionPairCount: selfIntersection.intersectingPairCount,
     selfIntersectionAffectedTriangleRatio: selfIntersection.affectedTriangleRatio,
     normalIntrusionAffectedTriangleRatio: normalIntrusion.intrudingTriangleRatio,
+    diagnosticsComplete,
     meshNoiseScore,
     disposition: retain ? 'retain' : quarantine ? 'quarantine' : 'discard',
   };
@@ -387,6 +392,11 @@ function componentQuality(
  * bounded spatial diagnostics. High combined noise can quarantine a component
  * from the rendered/consumed mesh, but never discards the underlying physical
  * surfels and never treats one sharp fold or one nearby shell as sufficient proof.
+ *
+ * A bounded diagnostic that reports truncation is incomplete evidence, never a
+ * clean bill of health. In that case no component is promoted to retained mesh in
+ * this pass; sufficiently substantial components are quarantined while the
+ * underlying physical surfels remain untouched and available for rescanning.
  */
 export function sanitizeMeshTopology(
   trianglePositions: Float32Array,
@@ -444,6 +454,14 @@ export function sanitizeMeshTopology(
     orientation.componentTriangles.length,
     voxelSizeMeters,
   );
+  // Normal-intrusion oversized targets are globally bounded. Treat any such
+  // target conservatively as incomplete here: a giant face is not something the
+  // mobile mesh pass should certify as trusted merely because the bounded ray
+  // diagnostic happened to include it in its small fallback list.
+  const diagnosticsComplete =
+    !selfIntersection.truncated &&
+    !normalIntrusion.truncated &&
+    normalIntrusion.oversizedTriangleCount === 0;
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
@@ -452,6 +470,7 @@ export function sanitizeMeshTopology(
     selfIntersection.componentStats[id],
     normalIntrusion.componentStats[id],
     voxelSizeMeters,
+    diagnosticsComplete,
   ));
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
 
@@ -492,12 +511,12 @@ export function sanitizeMeshTopology(
     selfIntersectionAffectedTriangleCount: selfIntersection.affectedTriangleCount,
     selfIntersectionExactTestedPairs: selfIntersection.exactTestedPairs,
     selfIntersectionBroadPhaseCandidatePairs: selfIntersection.broadPhaseCandidatePairs,
-    selfIntersectionTruncated: selfIntersection.truncated || normalIntrusion.truncated,
+    selfIntersectionTruncated: selfIntersection.truncated || normalIntrusion.truncated || normalIntrusion.oversizedTriangleCount > 0,
     selfIntersectionOversizedTriangleCount: selfIntersection.oversizedTriangleCount,
     normalIntrusionAffectedTriangleCount: normalIntrusion.intrudingTriangleCount,
     normalIntrusionExactTestedPairs: normalIntrusion.exactTestedPairs,
     normalIntrusionBroadPhaseCandidatePairs: normalIntrusion.candidatePairs,
-    normalIntrusionTruncated: normalIntrusion.truncated,
+    normalIntrusionTruncated: normalIntrusion.truncated || normalIntrusion.oversizedTriangleCount > 0,
     normalIntrusionOversizedTriangleCount: normalIntrusion.oversizedTriangleCount,
     components,
   };
