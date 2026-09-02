@@ -1,3 +1,8 @@
+import {
+  diagnoseMeshSelfIntersections,
+  type MeshSelfIntersectionComponentStats,
+} from './meshSelfIntersection';
+
 export type MeshComponentDisposition = 'retain' | 'quarantine' | 'discard';
 
 export interface MeshTopologyComponentQuality {
@@ -9,6 +14,12 @@ export interface MeshTopologyComponentQuality {
   boundaryEdgeRatio: number;
   nonManifoldEdgeCount: number;
   orientationConflictCount: number;
+  /** Non-adjacent triangle pairs that geometrically intersect. */
+  selfIntersectionPairCount: number;
+  /** Fraction of this component's faces touched by at least one such pair. */
+  selfIntersectionAffectedTriangleRatio: number;
+  /** Combined diagnostic only; a sharp fold is never rejected from this score alone. */
+  meshNoiseScore: number;
   disposition: MeshComponentDisposition;
 }
 
@@ -25,6 +36,12 @@ export interface MeshTopologySanityResult {
   /** Non-manifold edges detected before local smallest-triangle repair. */
   nonManifoldEdgeCount: number;
   nonManifoldRepairTriangleCount: number;
+  selfIntersectionPairCount: number;
+  selfIntersectionAffectedTriangleCount: number;
+  selfIntersectionExactTestedPairs: number;
+  selfIntersectionBroadPhaseCandidatePairs: number;
+  selfIntersectionTruncated: boolean;
+  selfIntersectionOversizedTriangleCount: number;
   components: readonly MeshTopologyComponentQuality[];
 }
 
@@ -220,14 +237,7 @@ function orientAndPartition(
   return { flips, componentByTriangle, componentTriangles, orientationRepairCount };
 }
 
-/**
- * Accumulate all component edge diagnostics in ONE edge pass.
- *
- * The previous implementation rescanned every edge for every disconnected mesh
- * component, turning a fragmented scan into O(componentCount * edgeCount). That
- * is especially harmful after TSDF extraction, where tens of thousands of faces
- * can coexist with many tiny boundary islands. This keeps sanitation O(T + E + C).
- */
+/** Accumulate all component edge diagnostics in one O(E) pass. */
 function buildComponentEdgeStats(
   componentCount: number,
   flips: Uint8Array,
@@ -274,6 +284,7 @@ function componentQuality(
   members: readonly number[],
   triangles: readonly Triangle[],
   edgeStats: ComponentEdgeStats,
+  selfIntersection: MeshSelfIntersectionComponentStats,
   voxelSizeMeters: number,
 ): MeshTopologyComponentQuality {
   let area = 0;
@@ -298,6 +309,20 @@ function componentQuality(
     MIN_AREA_ABSOLUTE_SQUARE_METERS,
     minimumMajor * minimumWidth * 0.45,
   );
+
+  // Self-intersections are deliberately a diagnostic score rather than a hard
+  // topology veto. Two independently reconstructed surfaces can form a genuine
+  // sharp rubble corner without sharing exact vertices. Repeated intersections
+  // become actionable only together with weak/open topology evidence.
+  const intersectionNoise = clamp(selfIntersection.affectedTriangleRatio / 0.24, 0, 1);
+  const boundaryNoise = clamp((boundaryEdgeRatio - 0.50) / 0.45, 0, 1);
+  const hardTopologyNoise = edgeStats.nonManifoldEdgeCount > 0 || edgeStats.orientationConflictCount > 0 ? 1 : 0;
+  const meshNoiseScore = clamp(
+    intersectionNoise * 0.62 + boundaryNoise * 0.22 + hardTopologyNoise * 0.16,
+    0,
+    1,
+  );
+
   const topologyClean = edgeStats.nonManifoldEdgeCount === 0 && edgeStats.orientationConflictCount === 0;
   const retain =
     topologyClean &&
@@ -321,6 +346,9 @@ function componentQuality(
     boundaryEdgeRatio,
     nonManifoldEdgeCount: edgeStats.nonManifoldEdgeCount,
     orientationConflictCount: edgeStats.orientationConflictCount,
+    selfIntersectionPairCount: selfIntersection.intersectingPairCount,
+    selfIntersectionAffectedTriangleRatio: selfIntersection.affectedTriangleRatio,
+    meshNoiseScore,
     disposition: retain ? 'retain' : quarantine ? 'quarantine' : 'discard',
   };
 }
@@ -331,9 +359,10 @@ function componentQuality(
  * It never changes the physical surfel/occupancy map. It only decides whether a
  * triangle island is trustworthy enough to be shown/consumed as a mesh. Tiny
  * non-manifold faces are removed locally first, shared manifold edges then repair
- * winding consistently. Remaining non-orientable topology is quarantined. Small
- * disconnected islands are discarded from the mesh preview while their original
- * physical points remain available to later rescans.
+ * winding consistently. Self-intersection is measured with a bounded spatial
+ * broad phase and contributes a noise diagnostic, but never rejects a genuine
+ * sharp fold by itself. Small disconnected islands are discarded from the mesh
+ * preview while their original physical points remain available to later rescans.
  */
 export function sanitizeMeshTopology(
   trianglePositions: Float32Array,
@@ -352,6 +381,12 @@ export function sanitizeMeshTopology(
       orientationConflictCount: 0,
       nonManifoldEdgeCount: 0,
       nonManifoldRepairTriangleCount: 0,
+      selfIntersectionPairCount: 0,
+      selfIntersectionAffectedTriangleCount: 0,
+      selfIntersectionExactTestedPairs: 0,
+      selfIntersectionBroadPhaseCandidatePairs: 0,
+      selfIntersectionTruncated: false,
+      selfIntersectionOversizedTriangleCount: 0,
       components: [],
     };
   }
@@ -368,11 +403,18 @@ export function sanitizeMeshTopology(
     orientation.componentByTriangle,
     edges,
   );
+  const selfIntersection = diagnoseMeshSelfIntersections(
+    triangles,
+    orientation.componentByTriangle,
+    orientation.componentTriangles.length,
+    voxelSizeMeters,
+  );
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
     triangles,
     componentEdgeStats[id],
+    selfIntersection.componentStats[id],
     voxelSizeMeters,
   ));
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
@@ -410,6 +452,12 @@ export function sanitizeMeshTopology(
     orientationConflictCount,
     nonManifoldEdgeCount: nonManifoldRepair.detectedEdgeCount,
     nonManifoldRepairTriangleCount: nonManifoldRepair.removedTriangleCount,
+    selfIntersectionPairCount: selfIntersection.intersectingPairCount,
+    selfIntersectionAffectedTriangleCount: selfIntersection.affectedTriangleCount,
+    selfIntersectionExactTestedPairs: selfIntersection.exactTestedPairs,
+    selfIntersectionBroadPhaseCandidatePairs: selfIntersection.broadPhaseCandidatePairs,
+    selfIntersectionTruncated: selfIntersection.truncated,
+    selfIntersectionOversizedTriangleCount: selfIntersection.oversizedTriangleCount,
     components,
   };
 }
