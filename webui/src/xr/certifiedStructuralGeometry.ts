@@ -1,3 +1,4 @@
+import { BoundedSpatialPointIndex } from './boundedSpatialPointIndex';
 import {
   solveManualPlacementOnStableSurface,
   type ManualPlacementSurfaceSnapshot,
@@ -7,10 +8,17 @@ import type {
   StructuralCornerCandidate,
   StructuralGuideViewpoint,
 } from './structuralGuide';
+import { estimateSurfaceFeatureComplexity, type SurfaceNormalEvidence } from './surfaceFeatureDensity';
 
 const SEED_CELL_METERS = 0.13;
 const MAX_SEEDS = 72;
 const MAX_CORNERS = 8;
+const FEATURE_INDEX_CELL_METERS = 0.09;
+const FEATURE_QUERY_RADIUS_METERS = 0.18;
+const MAX_FEATURE_EVIDENCE = 96;
+const MIN_FEATURE_EVIDENCE = 10;
+const MIN_SEED_FEATURE_SCORE = 0.20;
+const MIN_SEED_ORIENTATION_FAMILIES = 2;
 const MIN_CORNER_CONFIDENCE = 0.72;
 const MAX_CORNER_UNCERTAINTY_METERS = 0.030;
 const DEDUPE_METERS = 0.095;
@@ -73,6 +81,12 @@ function dot(
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+function optionalAt(array: ArrayLike<number> | undefined, index: number, fallback: number): number {
+  if (array === undefined || index >= array.length) return fallback;
+  const value = Number(array[index]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function evidenceFrom(
   candidate: ProjectPoint,
   viewpoint: StructuralGuideViewpoint | null | undefined,
@@ -96,9 +110,6 @@ function independentEvidence(existing: readonly CornerEvidence[], next: CornerEv
   if (existing.length === 0) return true;
   for (const previous of existing) {
     const baseline = distance(previous.camera, next.camera);
-    // Angular change without actual translation can be manufactured by candidate
-    // jitter while the phone rotates in place. Metric depth maturity therefore
-    // always requires a non-trivial change of camera origin first.
     if (baseline < MIN_VIEW_TRANSLATION_METERS) return false;
     const rayDot = Math.max(-1, Math.min(1, dot(previous.ray, next.ray)));
     const angle = Math.acos(rayDot);
@@ -119,14 +130,57 @@ function evidenceSpread(evidence: readonly CornerEvidence[]): number {
   );
 }
 
+function boundedFeatureIndices(indices: readonly number[]): readonly number[] {
+  if (indices.length <= MAX_FEATURE_EVIDENCE) return indices;
+  const sampled = new Array<number>(MAX_FEATURE_EVIDENCE);
+  const stride = indices.length / MAX_FEATURE_EVIDENCE;
+  for (let index = 0; index < MAX_FEATURE_EVIDENCE; index += 1) {
+    sampled[index] = indices[Math.min(indices.length - 1, Math.floor((index + 0.5) * stride))];
+  }
+  return sampled;
+}
+
+function structuralFeatureNearSeed(
+  snapshot: ManualPlacementSurfaceSnapshot,
+  spatialIndex: BoundedSpatialPointIndex,
+  seed: Seed,
+): boolean {
+  const usable = spatialIndex.queryRadius(seed.position, FEATURE_QUERY_RADIUS_METERS).filter((index) => {
+    const confidence = optionalAt(snapshot.confidence, index, 0);
+    const ready = optionalAt(snapshot.coverageReady, index, 1) > 0;
+    const residual = optionalAt(snapshot.residualMeters, index, 0.012);
+    const normalConfidence = optionalAt(snapshot.normalConfidence, index, confidence);
+    return ready && confidence >= 0.62 && residual <= 0.040 && normalConfidence >= 0.22;
+  });
+  if (usable.length < MIN_FEATURE_EVIDENCE) return false;
+
+  const evidence: SurfaceNormalEvidence[] = [];
+  for (const index of boundedFeatureIndices(usable)) {
+    const offset = index * 3;
+    evidence.push({
+      normalX: snapshot.normals[offset],
+      normalY: snapshot.normals[offset + 1],
+      normalZ: snapshot.normals[offset + 2],
+      normalConfidence: optionalAt(snapshot.normalConfidence, index, snapshot.confidence[index]),
+      x: snapshot.positions[offset],
+      y: snapshot.positions[offset + 1],
+      z: snapshot.positions[offset + 2],
+    });
+  }
+  const feature = estimateSurfaceFeatureComplexity(evidence);
+  return feature.spatiallySupportedFamilies >= MIN_SEED_ORIENTATION_FAMILIES && feature.score >= MIN_SEED_FEATURE_SCORE;
+}
+
 /**
  * Spatially sparse robust corner discovery on the already fused surface map.
  *
- * The legacy guide starts from many tiny planar patches. This complementary
- * detector starts from at most one strong seed per 13-cm cell, then asks the
- * uncertainty-aware local solver whether THREE supported planes really
- * intersect near measured data. It therefore cannot promote a 2-plane edge to
- * a corner merely because several patch normals happen to be available.
+ * One strong seed per 13-cm cell is considered, but flat cells are discarded by
+ * bounded local normal-family evidence before the expensive uncertainty solver
+ * scans the surface. Two spatially supported orientation families are sufficient
+ * for this prefilter: requiring three here would miss real corners with a depth
+ * hole at the vertex. The robust solver remains authoritative and still requires
+ * THREE supported planes, bounded uncertainty and measured support near the
+ * solved intersection.
  *
  * This detector certifies geometry only. Candidate-specific temporal maturity is
  * handled by CertifiedStructuralCornerTracker; a single analysis is exactly one
@@ -138,6 +192,7 @@ export function detectCertifiedStructuralCorners(
   const count = Math.min(
     snapshot.pointCount,
     Math.floor(snapshot.positions.length / 3),
+    Math.floor(snapshot.normals.length / 3),
     snapshot.confidence.length,
   );
   if (count < 24) return [];
@@ -174,9 +229,11 @@ export function detectCertifiedStructuralCorners(
       return rightScore - leftScore;
     })
     .slice(0, MAX_SEEDS);
+  const spatialIndex = new BoundedSpatialPointIndex(snapshot.positions, count, FEATURE_INDEX_CELL_METERS);
 
   const corners: StructuralCornerCandidate[] = [];
   for (const seed of seeds) {
+    if (!structuralFeatureNearSeed(snapshot, spatialIndex, seed)) continue;
     const result = solveManualPlacementOnStableSurface(seed.position, snapshot);
     if (
       !result.accepted ||
