@@ -20,6 +20,10 @@ function normal(angleDegrees: number): readonly [number, number, number] {
   const angle = angleDegrees * Math.PI / 180;
   return [Math.sin(angle), 0, Math.cos(angle)];
 }
+function expectFloatArraysClose(a: Float32Array, b: Float32Array, digits = 6): void {
+  expect(a.length).toBe(b.length);
+  for (let index = 0; index < a.length; index += 1) expect(a[index]).toBeCloseTo(b[index], digits);
+}
 
 describe('feature-aware structural surface clustering', () => {
   it('keeps three orthogonal surface families in the same fine structural cell', () => {
@@ -177,5 +181,45 @@ describe('feature-aware structural surface clustering', () => {
       [normal(-2), normal(-1), normal(0), normal(1), normal(2), normal(88)],
     ));
     expect(result.pointCount).toBeLessThanOrEqual(2);
+  });
+
+  it('produces the same structural families when identical surfels arrive in a different order', () => {
+    const positions = [
+      [0.004, 0.010, 0.010], [0.014, 0.010, 0.010], [0.024, 0.010, 0.010],
+      [0.034, 0.010, 0.010], [0.044, 0.010, 0.010], [0.052, 0.010, 0.010],
+      [0.056, 0.010, 0.010], [0.068, 0.010, 0.010], [0.082, 0.010, 0.010],
+    ] as const;
+    const normals = [normal(-22), normal(-12), normal(-2), normal(8), normal(18), normal(28), normal(72), normal(82), normal(92)];
+    const permutation = [8, 2, 6, 0, 4, 7, 1, 5, 3];
+    const ordered = clusterStructuralSurfaceFamilies(snapshot(positions, normals));
+    const permuted = clusterStructuralSurfaceFamilies(snapshot(
+      permutation.map((index) => positions[index]),
+      permutation.map((index) => normals[index]),
+    ));
+
+    expect(permuted.pointCount).toBe(ordered.pointCount);
+    expectFloatArraysClose(permuted.positions, ordered.positions);
+    expectFloatArraysClose(permuted.normals, ordered.normals);
+    expectFloatArraysClose(permuted.confidence, ordered.confidence);
+  });
+
+  it('keeps bounded dense-neighbourhood feature classification invariant to input order', () => {
+    const positions: Array<readonly [number, number, number]> = [];
+    const normals: Array<readonly [number, number, number]> = [];
+    for (let index = 0; index < 140; index += 1) {
+      const x = 0.004 + (index % 14) * 0.0032;
+      const y = 0.010 + Math.floor(index / 14) * 0.0015;
+      positions.push([x, y, 0.010]);
+      normals.push(normal(index % 2 === 0 ? -24 + (index % 7) : 58 + (index % 9)));
+    }
+    const reversedPositions = [...positions].reverse();
+    const reversedNormals = [...normals].reverse();
+    const ordered = clusterStructuralSurfaceFamilies(snapshot(positions, normals));
+    const reversed = clusterStructuralSurfaceFamilies(snapshot(reversedPositions, reversedNormals));
+
+    expect(reversed.pointCount).toBe(ordered.pointCount);
+    expectFloatArraysClose(reversed.positions, ordered.positions);
+    expectFloatArraysClose(reversed.normals, ordered.normals);
+    expectFloatArraysClose(reversed.confidence, ordered.confidence);
   });
 });
