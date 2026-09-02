@@ -45,6 +45,14 @@ describe('live XR compute scheduler', () => {
     expect(scheduler.snapshot().budget).toBe(0);
   });
 
+  it('fails closed instead of leaking a rejected capability probe into clients', async () => {
+    const scheduler = new LiveComputeScheduler(async () => {
+      throw new Error('probe failed');
+    });
+    expect(await scheduler.tryAcquire('visual')).toBeNull();
+    expect(scheduler.snapshot()).toEqual({ budget: 0, active: 0, structural: 0, visual: 0 });
+  });
+
   it('does not queue stale work behind a busy slot', async () => {
     const scheduler = new LiveComputeScheduler(async () => 1);
     const first = await scheduler.tryAcquire('visual');
