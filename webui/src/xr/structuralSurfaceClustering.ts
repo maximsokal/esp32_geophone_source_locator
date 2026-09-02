@@ -61,13 +61,33 @@ function parseCoordinateKey(key: string): readonly [number, number, number] | nu
   const x = Number(values[0]), y = Number(values[1]), z = Number(values[2]);
   return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) ? [x, y, z] : null;
 }
+function compareVector(a: Vector3, b: Vector3): number {
+  if (a[0] !== b[0]) return a[0] - b[0];
+  if (a[1] !== b[1]) return a[1] - b[1];
+  return a[2] - b[2];
+}
+function compareNormalEvidence(a: SurfaceNormalEvidence, b: SurfaceNormalEvidence): number {
+  if (a.normalConfidence !== b.normalConfidence) return b.normalConfidence - a.normalConfidence;
+  const an = normalize(a.normalX, a.normalY, a.normalZ);
+  const bn = normalize(b.normalX, b.normalY, b.normalZ);
+  if (an === null) return bn === null ? 0 : 1;
+  if (bn === null) return -1;
+  return compareVector(canonical(an), canonical(bn));
+}
+function compareSourceSamples(a: SourceSample, b: SourceSample): number {
+  if (a.confidence !== b.confidence) return b.confidence - a.confidence;
+  if (a.position[0] !== b.position[0]) return a.position[0] - b.position[0];
+  if (a.position[1] !== b.position[1]) return a.position[1] - b.position[1];
+  if (a.position[2] !== b.position[2]) return a.position[2] - b.position[2];
+  return compareVector(a.normal, b.normal);
+}
 
 function boundedNeighbourhoodEvidence(
   key: string,
   evidenceByCell: ReadonlyMap<string, readonly SurfaceNormalEvidence[]>,
 ): readonly SurfaceNormalEvidence[] {
   const coordinate = parseCoordinateKey(key);
-  if (coordinate === null) return evidenceByCell.get(key) ?? [];
+  if (coordinate === null) return [...(evidenceByCell.get(key) ?? [])].sort(compareNormalEvidence);
   const combined: SurfaceNormalEvidence[] = [];
   for (let dx = -1; dx <= 1; dx += 1) {
     for (let dy = -1; dy <= 1; dy += 1) {
@@ -81,12 +101,12 @@ function boundedNeighbourhoodEvidence(
       }
     }
   }
+  // The source point order can change with camera motion/worker snapshots. Sort
+  // before the bounded stride so dense neighbourhood classification is invariant
+  // to insertion order instead of sampling whichever bucket happened to arrive first.
+  combined.sort(compareNormalEvidence);
   if (combined.length <= MAX_COMPLEXITY_EVIDENCE) return combined;
 
-  // Structural inference already runs off the XR render path, but keep feature
-  // classification bounded even in unusually dense local scans. A deterministic
-  // stride samples the whole 3x3x3 neighbourhood instead of letting the first
-  // spatial bucket dominate the normal distribution.
   const sampled = new Array<SurfaceNormalEvidence>(MAX_COMPLEXITY_EVIDENCE);
   const stride = combined.length / MAX_COMPLEXITY_EVIDENCE;
   for (let index = 0; index < MAX_COMPLEXITY_EVIDENCE; index += 1) {
@@ -105,6 +125,9 @@ function boundedNeighbourhoodEvidence(
  * evaluated over the neighbouring 3x3x3 base cells so a real edge that happens
  * to lie exactly on a hash-cell boundary cannot disappear simply because each
  * side looked locally flat in isolation. The neighbourhood sample is bounded.
+ *
+ * Samples and bounded normal evidence are sorted before greedy family creation,
+ * making the result deterministic under surfel arrival-order changes.
  *
  * This preserves more structural samples around bends/edges/corners while
  * leaving physical acceptance, multi-view promotion and the global memory
@@ -162,9 +185,13 @@ export function clusterStructuralSurfaceFamilies(
     normalEvidenceByBaseCell.set(baseCellKey, evidence);
   }
   if (samples.length === 0) return source;
+  samples.sort(compareSourceSamples);
 
   const featureScoreByBaseCell = new Map<string, number>();
-  for (const key of normalEvidenceByBaseCell.keys()) {
+  // Cell keys are sorted as well so Map insertion order cannot leak into later
+  // output ordering/diagnostics when equivalent point clouds arrive permuted.
+  const baseCellKeys = [...normalEvidenceByBaseCell.keys()].sort();
+  for (const key of baseCellKeys) {
     const neighbourhood = boundedNeighbourhoodEvidence(key, normalEvidenceByBaseCell);
     featureScoreByBaseCell.set(key, estimateSurfaceFeatureComplexity(neighbourhood).score);
   }
@@ -230,7 +257,9 @@ export function clusterStructuralSurfaceFamilies(
     if (updated !== null) best.referenceNormal = canonical(updated);
   }
 
-  const families = [...cells.values()].flat();
+  const families = [...cells.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([, value]) => value);
   if (families.length === 0) return source;
   const positions = new Float32Array(families.length * 3);
   const normals = new Float32Array(families.length * 3);
