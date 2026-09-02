@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import {
@@ -291,11 +291,18 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     }
   }, [client, runtimeState.phase]);
 
-  useEffect(() => {
+  const recordCurrentKeyframeViewpoint = useEffectEvent(() => {
     if (runtimeState.phase !== 'running') return;
     if (viewpointHistory.current.record(structuralGuideViewpointFromState(runtimeState))) {
       setViewHistoryRevision((value) => value + 1);
     }
+  });
+
+  useEffect(() => {
+    // Only a physical keyframe/phase transition should add a viewpoint. The
+    // Effect Event still reads the latest committed pose and motion snapshot,
+    // so exhaustive-deps stays honest without sampling at XR render frequency.
+    recordCurrentKeyframeViewpoint();
   }, [runtimeState.keyframeCount, runtimeState.phase]);
 
   const readiness = useMemo(() => computeScanCapabilityReadiness({
