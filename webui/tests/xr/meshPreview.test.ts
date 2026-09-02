@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  adaptiveMeshSearchRadius,
   buildSurfaceMeshPreview,
   triangleGeometryAcceptable,
 } from '../../src/xr/meshPreview';
@@ -39,6 +40,31 @@ describe('triangle geometry gate', () => {
 
   it('rejects degenerate collinear triangles by angle constraints', () => {
     expect(triangleGeometryAcceptable([0, 0, 0], [0.04, 0, 0], [0.08, 0, 0], 0.1)).toBe(false);
+  });
+});
+
+describe('density-adaptive GP3 radius', () => {
+  it('shrinks triangle radius in a dense local neighbourhood', () => {
+    const radius = adaptiveMeshSearchRadius([0.020, 0.021, 0.024, 0.04], 0.14, 0.04);
+    expect(radius).toBeGreaterThanOrEqual(0.025);
+    expect(radius).toBeLessThan(0.08);
+  });
+
+  it('keeps the absolute radius cap for sparse neighbourhoods', () => {
+    expect(adaptiveMeshSearchRadius([0.10, 0.11, 0.12], 0.14, 0.04)).toBeCloseTo(0.14, 6);
+  });
+
+  it('ignores one near-duplicate by using the third compatible neighbour', () => {
+    const radius = adaptiveMeshSearchRadius([0.001, 0.04, 0.041, 0.042], 0.14, 0.04);
+    expect(radius).toBeGreaterThan(0.10);
+    expect(radius).toBeLessThanOrEqual(0.14);
+  });
+
+  it('accepts neighbour records directly without allocating a distance copy', () => {
+    const radius = adaptiveMeshSearchRadius([
+      { distance: 0.03 }, { distance: 0.032 }, { distance: 0.034 },
+    ], 0.14, 0.04);
+    expect(radius).toBeCloseTo(0.034 * 2.8, 6);
   });
 });
 
