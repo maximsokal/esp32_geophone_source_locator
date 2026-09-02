@@ -6,11 +6,12 @@ import {
   type RobustPlane,
   type RobustPlaneSample,
 } from './robustPlaneGeometry';
+import { VerifiedFreeSpaceIndex, type VerifiedFreeSpaceSnapshot } from './verifiedFreeSpace';
 
 export type ProjectPoint = readonly [number, number, number];
 export type ProjectVector = readonly [number, number, number];
 
-export interface ManualPlacementSurfaceSnapshot {
+export interface ManualPlacementSurfaceSnapshot extends VerifiedFreeSpaceSnapshot {
   positions: Float32Array;
   normals: Float32Array;
   confidence: Float32Array;
@@ -340,6 +341,7 @@ export function solveManualPlacementOnStableSurface(
   if (count < MIN_LOCAL_SAMPLES) {
     return reject('SCAN MORE · not enough stable 3D support here.', count, null);
   }
+  const verifiedFree = VerifiedFreeSpaceIndex.from(snapshot);
 
   // Keep the neighbourhood local enough that a bed edge cannot borrow the floor
   // or a remote wall simply because their projections overlap in the image.
@@ -430,12 +432,22 @@ export function solveManualPlacementOnStableSurface(
         planeQuality * 0.42 + corner.confidence * 0.28 + uncertaintyScore * 0.20 + proximityScore * 0.10,
       ));
       if (confidence >= 0.68) {
+        const supportCount = cornerPlanes[0].support + cornerPlanes[1].support + cornerPlanes[2].support;
+        if (verifiedFree?.contains(corner.position)) {
+          return reject(
+            'SCAN MORE · inferred corner lies in ray-verified FREE space.',
+            supportCount,
+            nearestDistance,
+            corner.maxStdDevMeters,
+            corner.conditionNumber,
+          );
+        }
         return {
           accepted: true,
           position: corner.position,
           mode: 'corner',
           confidence,
-          supportCount: cornerPlanes[0].support + cornerPlanes[1].support + cornerPlanes[2].support,
+          supportCount,
           sourceDistanceMeters: nearestDistance,
           uncertaintyMeters: corner.maxStdDevMeters,
           conditionNumber: corner.conditionNumber,
@@ -471,6 +483,14 @@ export function solveManualPlacementOnStableSurface(
   if (confidence < 0.64) {
     return reject(
       'SCAN MORE · edge uncertainty is still too high.',
+      edge.support,
+      nearestDistance,
+      edge.uncertainty,
+    );
+  }
+  if (verifiedFree?.contains(edge.position)) {
+    return reject(
+      'SCAN MORE · inferred edge lies in ray-verified FREE space.',
       edge.support,
       nearestDistance,
       edge.uncertainty,
