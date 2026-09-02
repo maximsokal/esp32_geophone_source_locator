@@ -147,3 +147,10 @@ export async function probeDeviceComputeProfile(): Promise<DeviceComputeProfile>
     webGpuAdapter,
   });
 }
+
+/**
+ * Module evaluation starts the non-invasive capability negotiation immediately,
+ * so worker budgets are ready by the time the user presses Start scan. Static
+ * imports of scanner clients make this run during normal WebUI bootstrap.
+ */
+export const deviceComputeProfilePromise: Promise<DeviceComputeProfile> = probeDeviceComputeProfile();
