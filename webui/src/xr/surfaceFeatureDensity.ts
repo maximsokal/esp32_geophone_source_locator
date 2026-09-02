@@ -7,6 +7,15 @@ export interface SurfaceNormalEvidence {
   x?: number;
   y?: number;
   z?: number;
+  /**
+   * Optional physical-maturity signal from the live surfel accumulator.
+   * Explicitly tentative representatives must never request extra feature probes
+   * or steal retention quota merely because their noisy normals disagree.
+   * Callers without this field preserve the generic normal-analysis behaviour.
+   */
+  promoted?: boolean;
+  /** Optional number of independent physical camera views supporting this surfel. */
+  independentViews?: number;
 }
 
 export interface SurfaceFeatureComplexity {
@@ -41,6 +50,7 @@ interface CanonicalSample {
 }
 
 const MIN_NORMAL_CONFIDENCE = 0.35;
+const MIN_PHYSICAL_FEATURE_VIEWS = 2;
 const FAMILY_ANGLE_RADIANS = (24 * Math.PI) / 180;
 const FAMILY_DOT = Math.cos(FAMILY_ANGLE_RADIANS);
 const MIN_MATURE_FAMILY_MEMBERS = 2;
@@ -118,15 +128,22 @@ function addPosition(family: OrientationFamily, position: readonly [number, numb
 }
 
 /**
- * Estimate local surface complexity from already-accepted surfel normals.
+ * Estimate local surface complexity from physically mature surfel normals.
  *
- * Angular evidence alone is insufficient when metric positions are available:
- * two conflicting normals packed into one tiny patch must not request the same
- * memory/probe budget as a measured bend, edge or corner that persists across a
- * meaningful surface extent. Each mature orientation family therefore needs
- * both repeated members and local metric span; smooth-curvature bonuses also
- * require spatial baseline. Callers without position data preserve the original
- * normal-only behaviour for compatibility/tests, but production surfels supply it.
+ * When the caller supplies live accumulator maturity metadata, explicitly
+ * unpromoted or single-view representatives are ignored. They are legitimate
+ * tentative measurements, but their normals are not yet trustworthy enough to
+ * trigger additional depth probes or protect extra memory. This prevents noise
+ * from forming a positive feedback loop: conflicting tentative normals -> more
+ * samples -> larger quota -> more conflicting tentative normals.
+ *
+ * Angular evidence alone is also insufficient when metric positions are
+ * available: two conflicting normals packed into one tiny patch must not request
+ * the same budget as a measured bend, edge or corner that persists across a
+ * meaningful surface extent. Each mature orientation family therefore needs both
+ * repeated members and local metric span; smooth-curvature bonuses also require
+ * spatial baseline. Generic callers without maturity/position metadata preserve
+ * the normal-only compatibility behaviour used by offline analysis/tests.
  */
 export function estimateSurfaceFeatureComplexity(
   evidence: Iterable<SurfaceNormalEvidence>,
@@ -136,6 +153,12 @@ export function estimateSurfaceFeatureComplexity(
   let minX = Number.POSITIVE_INFINITY; let minY = Number.POSITIVE_INFINITY; let minZ = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY; let maxY = Number.NEGATIVE_INFINITY; let maxZ = Number.NEGATIVE_INFINITY;
   for (const sample of evidence) {
+    if (sample.promoted === false) continue;
+    const independentViews = sample.independentViews;
+    if (
+      independentViews !== undefined &&
+      (!Number.isFinite(independentViews) || independentViews < MIN_PHYSICAL_FEATURE_VIEWS)
+    ) continue;
     const confidence = Number(sample.normalConfidence);
     if (!Number.isFinite(confidence) || confidence < MIN_NORMAL_CONFIDENCE) continue;
     const normalized = normalize(sample.normalX, sample.normalY, sample.normalZ);
