@@ -33,6 +33,9 @@ export interface SparseTsdfMesh {
   selfIntersectionBroadPhaseCandidatePairs: number;
   selfIntersectionTruncated: boolean;
   selfIntersectionOversizedTriangleCount: number;
+  /** Small correlated local noise regions omitted from otherwise retained mesh components. */
+  localNoiseHotspotCount: number;
+  localNoiseHotspotTriangleCount: number;
   /** Maximum component-level topology/noise diagnostic; never changes physical occupancy. */
   meshNoiseScore: number;
   sourcePointCount: number;
@@ -406,6 +409,8 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     selfIntersectionBroadPhaseCandidatePairs: topology.selfIntersectionBroadPhaseCandidatePairs,
     selfIntersectionTruncated: topology.selfIntersectionTruncated,
     selfIntersectionOversizedTriangleCount: topology.selfIntersectionOversizedTriangleCount,
+    localNoiseHotspotCount: topology.localNoiseHotspotCount,
+    localNoiseHotspotTriangleCount: topology.localNoiseHotspotTriangleCount,
     meshNoiseScore: topology.components.reduce((maximum, component) => Math.max(maximum, component.meshNoiseScore), 0),
     sourcePointCount,
     integratedPointCount,
