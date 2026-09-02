@@ -223,6 +223,8 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
         rawTriangles: result.rawTriangleCount,
         triangles: result.triangleCount,
         quarantinedTriangles: result.quarantinedTriangleCount,
+        localHotspots: result.localNoiseHotspotCount,
+        localHotspotTriangles: result.localNoiseHotspotTriangleCount,
         discardedTriangles: result.topologyDiscardedTriangleCount,
         nonManifoldEdges: result.nonManifoldEdgeCount,
         orientationConflicts: result.orientationConflictCount,
