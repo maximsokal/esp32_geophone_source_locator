@@ -7,6 +7,7 @@ import {
   summarizeStructuralCandidates,
 } from './structuralCandidatePolicy';
 import { StructuralEdgeEndpointTracker } from './structuralEdgeEndpoints';
+import { rejectStructuralCandidatesInVerifiedFreeSpace } from './structuralFreeSpaceGate';
 import {
   StructuralGuideTracker,
   type StructuralCornerCandidate,
@@ -137,6 +138,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
       structuralSurfaceReadiness: Number(structuralReadiness.progress.toFixed(3)),
       structuralSurfaceLimit: structuralReadiness.limitingMetric,
       structuralGeometryDeferred: true,
+      cornerFreeSpaceRejected: 0,
     };
     self.postMessage({
       type: 'result',
@@ -195,22 +197,33 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     lastEndpointCorners = endpointTracker.update(certifiedSnapshot, message.viewpoint ?? null);
   }
 
-  const corners = [...lastThreePlaneCorners];
+  const mergedCorners = [...lastThreePlaneCorners];
   for (const endpoint of lastEndpointCorners) {
-    const duplicate = corners.find((corner) => pointDistance(corner.position, endpoint.position) <= 0.075);
+    const duplicate = mergedCorners.find((corner) => pointDistance(corner.position, endpoint.position) <= 0.075);
     if (duplicate === undefined) {
-      corners.push(endpoint);
+      mergedCorners.push(endpoint);
     } else if (endpoint.confidence > duplicate.confidence) {
-      corners[corners.indexOf(duplicate)] = endpoint;
+      mergedCorners[mergedCorners.indexOf(duplicate)] = endpoint;
     }
   }
-  corners.sort((left, right) => right.confidence - left.confidence);
+
+  // Final detector-independent safety invariant. A robust three-plane solve or
+  // endpoint tracker may use different internal evidence, but neither may emit a
+  // point whose final metric position is already ray-verified FREE. Exact-cell
+  // semantics deliberately do not expand FREE into neighbouring UNKNOWN voxels.
+  const cornerFreeSpaceGate = rejectStructuralCandidatesInVerifiedFreeSpace(
+    mergedCorners,
+    certifiedSnapshot,
+  );
+  const corners = cornerFreeSpaceGate.candidates
+    .sort((left, right) => right.confidence - left.confidence);
 
   const result = {
     ...tracked,
     edges: operationalEdges,
     corners: corners.slice(0, 8),
     computeMs: performance.now() - started,
+    rejectedByFreeSpace: tracked.rejectedByFreeSpace + cornerFreeSpaceGate.rejectedByFreeSpace,
     surfaceReadiness,
   };
   const diagnostics = {
@@ -226,6 +239,7 @@ self.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
     structuralSurfaceReadiness: Number(structuralReadiness.progress.toFixed(3)),
     structuralSurfaceLimit: structuralReadiness.limitingMetric,
     structuralGeometryDeferred: false,
+    cornerFreeSpaceRejected: cornerFreeSpaceGate.rejectedByFreeSpace,
   };
 
   self.postMessage({
