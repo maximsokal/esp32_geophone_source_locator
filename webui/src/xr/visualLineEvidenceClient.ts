@@ -1,5 +1,5 @@
-import { deviceComputeProfilePromise } from './deviceComputeProfile';
 import VisualLineEvidenceWorker from './visualLineEvidence.worker.ts?worker&inline';
+import { liveComputeScheduler } from './liveComputeScheduler';
 import type { RgbDepthGuidanceFrame } from './rgbDepthGuidance';
 import { detectVisualLinesNow, type VisualEvidenceFrame, type VisualJunction, type VisualLineSegment } from './visualLineEvidence';
 
@@ -125,33 +125,13 @@ export class VisualLineEvidenceClient {
     });
   }
 
-  analyze(
+  private analyzeWithWorker(
     frame: RgbDepthGuidanceFrame,
     keyframeId: number,
     projectionMatrix: ArrayLike<number>,
     worldFromView: ArrayLike<number>,
   ): Promise<VisualEvidenceFrame> {
-    if (this.disposed) return Promise.reject(new Error('Visual evidence client is disposed.'));
-    if (this.worker === null && this.deferWorkerUntilAnalyze) {
-      const requestEpoch = this.epoch;
-      this.workerStartupInFlight += 1;
-      return deviceComputeProfilePromise.then((compute) => {
-        if (this.disposed || requestEpoch !== this.epoch) {
-          throw new Error('Visual evidence worker startup belongs to an obsolete scan epoch.');
-        }
-        if (compute.liveWorkerBudget >= 1 && this.tryCreateWorker()) {
-          return this.analyze(frame, keyframeId, projectionMatrix, worldFromView);
-        }
-        return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
-      }).finally(() => {
-        this.workerStartupInFlight = Math.max(0, this.workerStartupInFlight - 1);
-      });
-    }
-
-    if (this.worker === null) {
-      return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
-    }
-
+    if (this.worker === null) return Promise.reject(new Error('Visual evidence worker is unavailable.'));
     const matrices = cloneMatrices(projectionMatrix, worldFromView);
     const requestId = ++this.requestId;
     return new Promise<VisualEvidenceFrame>((resolve, reject) => {
@@ -172,7 +152,7 @@ export class VisualLineEvidenceClient {
         gradientX.buffer as ArrayBuffer,
         gradientY.buffer as ArrayBuffer,
       ];
-      this.worker.postMessage({
+      this.worker!.postMessage({
         type: 'analyze',
         requestId,
         epoch: this.epoch,
@@ -184,6 +164,43 @@ export class VisualLineEvidenceClient {
         gradientY,
       }, transfer);
     });
+  }
+
+  async analyze(
+    frame: RgbDepthGuidanceFrame,
+    keyframeId: number,
+    projectionMatrix: ArrayLike<number>,
+    worldFromView: ArrayLike<number>,
+  ): Promise<VisualEvidenceFrame> {
+    if (this.disposed) throw new Error('Visual evidence client is disposed.');
+
+    // Offline/tests keep the historical eager worker/fallback behavior. Live XR
+    // opts into deferred mode, where every heavy Hough pass must hold one slot
+    // from the same global scheduler used by structural analysis.
+    if (!this.deferWorkerUntilAnalyze) {
+      if (this.worker === null) return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
+      return this.analyzeWithWorker(frame, keyframeId, projectionMatrix, worldFromView);
+    }
+
+    const requestEpoch = this.epoch;
+    this.workerStartupInFlight += 1;
+    const lease = await liveComputeScheduler.tryAcquire('visual');
+    if (lease === null) {
+      this.workerStartupInFlight = Math.max(0, this.workerStartupInFlight - 1);
+      throw new Error('Live compute budget is busy; visual evidence frame was dropped.');
+    }
+    try {
+      if (this.disposed || requestEpoch !== this.epoch) {
+        throw new Error('Visual evidence worker startup belongs to an obsolete scan epoch.');
+      }
+      if (this.worker === null && !this.tryCreateWorker()) {
+        return await this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
+      }
+      return await this.analyzeWithWorker(frame, keyframeId, projectionMatrix, worldFromView);
+    } finally {
+      lease.release();
+      this.workerStartupInFlight = Math.max(0, this.workerStartupInFlight - 1);
+    }
   }
 
   dispose(): void {
