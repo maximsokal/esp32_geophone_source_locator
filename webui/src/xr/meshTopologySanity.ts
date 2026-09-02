@@ -48,6 +48,11 @@ export interface MeshTopologySanityResult {
   selfIntersectionBroadPhaseCandidatePairs: number;
   selfIntersectionTruncated: boolean;
   selfIntersectionOversizedTriangleCount: number;
+  normalIntrusionAffectedTriangleCount: number;
+  normalIntrusionExactTestedPairs: number;
+  normalIntrusionBroadPhaseCandidatePairs: number;
+  normalIntrusionTruncated: boolean;
+  normalIntrusionOversizedTriangleCount: number;
   components: readonly MeshTopologyComponentQuality[];
 }
 
@@ -405,6 +410,11 @@ export function sanitizeMeshTopology(
       selfIntersectionBroadPhaseCandidatePairs: 0,
       selfIntersectionTruncated: false,
       selfIntersectionOversizedTriangleCount: 0,
+      normalIntrusionAffectedTriangleCount: 0,
+      normalIntrusionExactTestedPairs: 0,
+      normalIntrusionBroadPhaseCandidatePairs: 0,
+      normalIntrusionTruncated: false,
+      normalIntrusionOversizedTriangleCount: 0,
       components: [],
     };
   }
@@ -483,6 +493,11 @@ export function sanitizeMeshTopology(
     selfIntersectionBroadPhaseCandidatePairs: selfIntersection.broadPhaseCandidatePairs,
     selfIntersectionTruncated: selfIntersection.truncated,
     selfIntersectionOversizedTriangleCount: selfIntersection.oversizedTriangleCount,
+    normalIntrusionAffectedTriangleCount: normalIntrusion.intrudingTriangleCount,
+    normalIntrusionExactTestedPairs: normalIntrusion.exactTestedPairs,
+    normalIntrusionBroadPhaseCandidatePairs: normalIntrusion.candidatePairs,
+    normalIntrusionTruncated: normalIntrusion.truncated,
+    normalIntrusionOversizedTriangleCount: normalIntrusion.oversizedTriangleCount,
     components,
   };
 }
