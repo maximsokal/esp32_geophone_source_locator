@@ -31,7 +31,7 @@ function appendTinyPatch(
 }
 
 describe('directional TSDF', () => {
-  it('keeps orthogonal box faces in separate directional channels', () => {
+  it('keeps orthogonal box faces in separate directional channels and sanitizes the merged mesh', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendPlane(positions, normals, confidence, 0, 0, [1, 0, 0]);
     appendPlane(positions, normals, confidence, 1, 0, [0, 1, 0]);
@@ -41,10 +41,13 @@ describe('directional TSDF', () => {
       voxelSizeMeters: 0.04, maxTriangles: 12000,
     });
     expect(mesh.directionalChannelCount).toBeGreaterThanOrEqual(3);
+    expect(mesh.rawTriangleCount).toBeGreaterThanOrEqual(mesh.triangleCount);
     expect(mesh.triangleCount).toBeGreaterThan(0);
     expect(mesh.triangleCount).toBeLessThanOrEqual(12000);
     expect(mesh.eligibleComponentCount).toBeGreaterThanOrEqual(3);
     expect(mesh.meshReadiness).toBe(1);
+    expect(mesh.orientationConflictCount).toBe(0);
+    expect(mesh.meshTopologyComponentCount).toBeGreaterThan(0);
   });
 
   it('keeps opposite thin surfaces separated instead of averaging them together', () => {
@@ -57,9 +60,11 @@ describe('directional TSDF', () => {
     });
     expect(mesh.directionalChannelCount).toBe(2);
     expect(mesh.channelTriangleCounts.filter((count) => count > 0).length).toBe(2);
+    expect(mesh.rawTriangleCount).toBeGreaterThanOrEqual(mesh.triangleCount);
+    expect(mesh.orientationConflictCount).toBe(0);
   });
 
-  it('still obeys the total triangle budget across channels', () => {
+  it('still obeys the total triangle budget across channels before and after sanitation', () => {
     const positions: number[] = [], normals: number[] = [], confidence: number[] = [];
     appendPlane(positions, normals, confidence, 0, 0, [1, 0, 0]);
     appendPlane(positions, normals, confidence, 1, 0, [0, 1, 0]);
@@ -67,6 +72,7 @@ describe('directional TSDF', () => {
       positions: Float32Array.from(positions), normals: Float32Array.from(normals), confidence: Float32Array.from(confidence),
       voxelSizeMeters: 0.04, maxTriangles: 600,
     });
+    expect(mesh.rawTriangleCount).toBeLessThanOrEqual(600);
     expect(mesh.triangleCount).toBeLessThanOrEqual(600);
   });
 
@@ -83,6 +89,7 @@ describe('directional TSDF', () => {
     expect(mesh.meshReadiness).toBeLessThan(1);
     expect(mesh.eligibleComponentCount).toBe(0);
     expect(mesh.integratedPointCount).toBe(0);
+    expect(mesh.rawTriangleCount).toBe(0);
     expect(mesh.triangleCount).toBe(0);
   });
 
@@ -105,6 +112,7 @@ describe('directional TSDF', () => {
     expect(mesh.eligibleComponentCount).toBe(1);
     expect(mesh.meshReadiness).toBe(1);
     expect(mesh.rejectedComponentPoints).toBeGreaterThanOrEqual(20);
+    expect(mesh.rawTriangleCount).toBeGreaterThanOrEqual(mesh.triangleCount);
     expect(mesh.triangleCount).toBeGreaterThan(0);
   });
 });
