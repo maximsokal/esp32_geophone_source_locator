@@ -1,8 +1,7 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
-import {
-  finalizeDirectionalTsdfPlan,
-  type DirectionalTsdfMesh,
-  type DirectionalTsdfPlanSummary,
+import type {
+  DirectionalTsdfMesh,
+  DirectionalTsdfPlanSummary,
 } from './directionalTsdf';
 import DirectionalTsdfMergeWorker from './directionalTsdfMerge.worker?worker&inline';
 import DirectionalTsdfPlanWorker from './directionalTsdfPlan.worker?worker&inline';
@@ -16,6 +15,15 @@ interface PlanResultMessage {
   channelInputs: SparseTsdfInput[];
 }
 
+interface PlanDirectResultMessage {
+  type: 'plan-direct-result';
+  requestId: number;
+  summary: DirectionalTsdfPlanSummary;
+  result: DirectionalTsdfMesh;
+}
+
+type PlannerMessage = PlanResultMessage | PlanDirectResultMessage;
+
 interface ChannelResultMessage {
   type: 'channel-result';
   requestId: number;
@@ -28,6 +36,10 @@ interface MergeResultMessage {
   requestId: number;
   result: DirectionalTsdfMesh;
 }
+
+type PlannedResult =
+  | { kind: 'direct'; summary: DirectionalTsdfPlanSummary; result: DirectionalTsdfMesh }
+  | { kind: 'multi'; summary: DirectionalTsdfPlanSummary; channelInputs: SparseTsdfInput[] };
 
 const MAX_CONCURRENT_TSDF_CHANNEL_WORKERS = 3;
 
@@ -87,6 +99,18 @@ export class ParallelDirectionalTsdfClient {
     const planned = await this.plan(input);
     this.assertGeneration(generation);
 
+    if (planned.kind === 'direct') {
+      clientDiagnostics.info('SCAN_TSDF_PARALLEL_PLAN', {
+        mode: planned.summary.mode,
+        channels: planned.summary.directionalChannelCount,
+        channelJobs: 1,
+        concurrentWorkers: 1,
+        postScanWorkerBudget: finiteInteger(postScanWorkerBudget, 0),
+      });
+      planned.result.computeMs = performance.now() - started;
+      return planned.result;
+    }
+
     const concurrency = recommendedParallelTsdfChannelWorkers(
       postScanWorkerBudget,
       planned.summary.directionalChannelCount,
@@ -101,15 +125,7 @@ export class ParallelDirectionalTsdfClient {
 
     const meshes = await this.runChannels(planned.channelInputs, concurrency);
     this.assertGeneration(generation);
-
-    let result: DirectionalTsdfMesh;
-    if (planned.summary.mode === 'multi') {
-      result = await this.merge(planned.summary, meshes);
-    } else {
-      // Scalar/single finalization only adjusts metadata and performs no topology
-      // work, so avoid paying for an otherwise empty merge Worker startup.
-      result = finalizeDirectionalTsdfPlan(planned.summary, meshes);
-    }
+    const result = await this.merge(planned.summary, meshes);
     this.assertGeneration(generation);
     result.computeMs = performance.now() - started;
     return result;
@@ -134,16 +150,17 @@ export class ParallelDirectionalTsdfClient {
     }
   }
 
-  private async plan(input: SparseTsdfInput): Promise<{
-    summary: DirectionalTsdfPlanSummary;
-    channelInputs: SparseTsdfInput[];
-  }> {
+  private async plan(input: SparseTsdfInput): Promise<PlannedResult> {
     const requestId = this.nextRequestId++;
     const worker = new DirectionalTsdfPlanWorker();
-    return this.runOneShotWorker<PlanResultMessage, { summary: DirectionalTsdfPlanSummary; channelInputs: SparseTsdfInput[] }>(
+    return this.runOneShotWorker<PlannerMessage, PlannedResult>(
       worker,
-      (message) => message?.type === 'plan-result' && message.requestId === requestId,
-      (message) => ({ summary: message.summary, channelInputs: message.channelInputs }),
+      (message) =>
+        (message?.type === 'plan-result' || message?.type === 'plan-direct-result') &&
+        message.requestId === requestId,
+      (message) => message.type === 'plan-direct-result'
+        ? { kind: 'direct', summary: message.summary, result: message.result }
+        : { kind: 'multi', summary: message.summary, channelInputs: message.channelInputs },
       () => worker.postMessage({ type: 'plan', requestId, input }, inputTransfers(input)),
     );
   }
