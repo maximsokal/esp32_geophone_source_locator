@@ -17,6 +17,27 @@ function snapshotCore(scheduler: LiveComputeScheduler) {
 }
 
 describe('live XR compute scheduler', () => {
+  it('resolves the fixed compute ceiling during pre-scan preparation without acquiring work', async () => {
+    let probes = 0;
+    const scheduler = new LiveComputeScheduler(async () => {
+      probes += 1;
+      return 2;
+    });
+
+    expect(scheduler.snapshot().maximumBudget).toBeNull();
+    const prepared = await scheduler.prepare();
+    expect(prepared.maximumBudget).toBe(2);
+    expect(prepared.effectiveBudget).toBe(2);
+    expect(prepared.active).toBe(0);
+    expect(probes).toBe(1);
+
+    await scheduler.prepare();
+    const lease = await scheduler.tryAcquire('structural');
+    expect(lease).not.toBeNull();
+    expect(probes).toBe(1);
+    lease!.release();
+  });
+
   it('reserves a single negotiated live slot for structural geometry', async () => {
     const scheduler = new LiveComputeScheduler(async () => 1);
     const structural = await scheduler.tryAcquire('structural');
