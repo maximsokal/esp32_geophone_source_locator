@@ -78,6 +78,8 @@ describe('mesh topology sanity', () => {
     expect(result.orientationRepairCount).toBeGreaterThan(0);
     expect(result.orientationConflictCount).toBe(0);
     expect(result.selfIntersectionPairCount).toBe(0);
+    expect(result.localNoiseHotspotCount).toBe(0);
+    expect(result.localNoiseHotspotTriangleCount).toBe(0);
     expect(result.components.every((component) => component.diagnosticsComplete)).toBe(true);
     const signs = Array.from({ length: result.triangleCount }, (_, index) => zNormalSign(result.trianglePositions, index));
     expect(new Set(signs).size).toBe(1);
@@ -147,6 +149,8 @@ describe('mesh topology sanity', () => {
     expect(result.components).toHaveLength(1);
     expect(result.components[0].meshNoiseScore).toBeLessThanOrEqual(0.60);
     expect(result.components[0].disposition).toBe('retain');
+    expect(result.localNoiseHotspotCount).toBe(0);
+    expect(result.localNoiseHotspotTriangleCount).toBe(0);
     expect(result.retainedTriangleCount).toBe(result.sourceTriangleCount);
   });
 
@@ -173,6 +177,7 @@ describe('mesh topology sanity', () => {
 
     const result = sanitizeMeshTopology(Float32Array.from(source), 0.04);
     expect(result.selfIntersectionTruncated).toBe(true);
+    expect(result.localNoiseHotspotTriangleCount).toBe(0);
     const healthy = result.components.find((component) => component.triangleCount === 12);
     const pathological = result.components.find((component) => component.triangleCount === 1);
     expect(healthy?.diagnosticsComplete).toBe(true);
@@ -192,6 +197,7 @@ describe('mesh topology sanity', () => {
 
     const result = sanitizeMeshTopology(Float32Array.from(source), 0.04);
     expect(result.selfIntersectionTruncated).toBe(true);
+    expect(result.localNoiseHotspotTriangleCount).toBe(0);
     const healthy = result.components.find((component) => component.triangleCount === 12);
     expect(healthy?.diagnosticsComplete).toBe(false);
     expect(healthy?.disposition).not.toBe('retain');
@@ -205,6 +211,8 @@ describe('mesh topology sanity', () => {
     expect(second.components).toEqual(first.components);
     expect(second.selfIntersectionPairCount).toBe(first.selfIntersectionPairCount);
     expect(second.selfIntersectionExactTestedPairs).toBe(first.selfIntersectionExactTestedPairs);
+    expect(second.localNoiseHotspotCount).toBe(first.localNoiseHotspotCount);
+    expect(second.localNoiseHotspotTriangleCount).toBe(first.localNoiseHotspotTriangleCount);
     expect(Array.from(second.trianglePositions)).toEqual(Array.from(first.trianglePositions));
   });
 });
