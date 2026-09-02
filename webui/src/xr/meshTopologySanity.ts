@@ -3,6 +3,7 @@ import {
   type MeshNormalIntrusionComponentStats,
 } from './meshNormalIntrusion';
 import { detectLocalMeshNoiseHotspots } from './meshNoiseHotspots';
+import { quarantineDetachedMeshRepairFragments } from './meshRepairFragments';
 import {
   diagnoseMeshSelfIntersections,
   type MeshSelfIntersectionComponentStats,
@@ -59,7 +60,7 @@ export interface MeshTopologySanityResult {
   normalIntrusionOversizedTriangleCount: number;
   /** Small correlated self-intersection + normal-intrusion regions detected locally. */
   localNoiseHotspotCount: number;
-  /** Hotspot triangles actually omitted from otherwise retained mesh components. */
+  /** Hotspot repair triangles omitted from otherwise retained mesh components. */
   localNoiseHotspotTriangleCount: number;
   components: readonly MeshTopologyComponentQuality[];
 }
@@ -577,7 +578,10 @@ function componentQuality(
  * surfels and never treats one sharp fold or one nearby shell as sufficient proof.
  * Small correlated self-intersection + normal-intrusion hotspots may be omitted
  * locally only after both global diagnostics completed; widespread noise remains
- * on the ordinary whole-component quarantine path.
+ * on the ordinary whole-component quarantine path. If hotspot removal cuts a
+ * retained component, only newly detached sub-threshold mesh fragments are also
+ * omitted; two substantial fragments survive, and destructive local repair fails
+ * open instead of erasing the component.
  *
  * A truncated global diagnostic is incomplete evidence, but it no longer poisons
  * an unrelated island automatically. Spatially isolated substantial components
@@ -691,6 +695,29 @@ export function sanitizeMeshTopology(
   ));
   const orientationConflictCount = components.reduce((sum, component) => sum + component.orientationConflictCount, 0);
 
+  // Only components that already passed all mesh-quality gates may enter local
+  // hotspot repair. There is no value in repartitioning an island that will be
+  // quarantined/discarded wholesale, and avoiding it bounds work on noisy scans.
+  const repairableComponentMask = new Uint8Array(components.length);
+  for (const component of components) {
+    if (component.disposition === 'retain') repairableComponentMask[component.id] = 1;
+  }
+  const repairedLocalNoise = localNoiseHotspots.quarantinedTriangleCount > 0
+    ? quarantineDetachedMeshRepairFragments(
+      triangles,
+      orientation.componentByTriangle,
+      orientation.componentTriangles.length,
+      localNoiseHotspots.quarantineMask,
+      repairableComponentMask,
+      voxelSizeMeters,
+    )
+    : {
+      quarantineMask: localNoiseHotspots.quarantineMask,
+      detachedFragmentCount: 0,
+      detachedTriangleCount: 0,
+      revertedComponentCount: 0,
+    };
+
   const output: number[] = [];
   let retainedTriangleCount = 0;
   let quarantinedTriangleCount = 0;
@@ -708,7 +735,7 @@ export function sanitizeMeshTopology(
       discardedTriangleCount += 1;
       continue;
     }
-    if (localNoiseHotspots.quarantineMask[index] !== 0) {
+    if (repairedLocalNoise.quarantineMask[index] !== 0) {
       quarantinedTriangleCount += 1;
       localNoiseHotspotTriangleCount += 1;
       continue;
