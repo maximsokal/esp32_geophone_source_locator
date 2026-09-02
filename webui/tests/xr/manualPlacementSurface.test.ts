@@ -54,6 +54,21 @@ function addPlaneZ(target: MutableCloud): void {
   }
 }
 
+function addTinyPlane(target: MutableCloud, axis: 0 | 1 | 2): void {
+  const offsets = [-0.035, -0.012, 0.012, 0.035];
+  for (const first of offsets) {
+    for (const second of offsets) {
+      const position: [number, number, number] = [0, 0, 0];
+      const normal: [number, number, number] = [0, 0, 0];
+      normal[axis] = 1;
+      const tangentAxes = ([0, 1, 2] as const).filter((candidate) => candidate !== axis);
+      position[tangentAxes[0]] = first;
+      position[tangentAxes[1]] = second;
+      add(target, position, normal);
+    }
+  }
+}
+
 function addPlaneWithCornerHole(
   target: MutableCloud,
   axis: 0 | 1 | 2,
@@ -105,7 +120,19 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.position![2]).toBeCloseTo(0, 2);
     expect(result.uncertaintyMeters).toBeLessThan(0.032);
     expect(result.conditionNumber).toBeLessThan(35);
+    expect(result.minimumCornerArmSpanMeters).toBeGreaterThanOrEqual(0.055);
     expect(result.confidence).toBeLessThan(1);
+  });
+
+  it('does not promote three tiny but mathematically clean patches to a structural corner', () => {
+    const source = cloud();
+    addTinyPlane(source, 0);
+    addTinyPlane(source, 1);
+    addTinyPlane(source, 2);
+
+    const result = solveManualPlacementOnStableSurface([0.005, -0.005, 0.004], snapshot(source));
+    expect(result.mode).not.toBe('corner');
+    expect(result.minimumCornerArmSpanMeters ?? 0).toBeLessThan(0.055);
   });
 
   it('infers a three-plane corner even when consumer depth has no sample at the physical vertex', () => {
@@ -125,6 +152,7 @@ describe('manual placement on accumulated surface geometry', () => {
     expect(result.position![1]).toBeCloseTo(0, 2);
     expect(result.position![2]).toBeCloseTo(0, 2);
     expect(result.sourceDistanceMeters).toBeGreaterThan(0.055);
+    expect(result.minimumCornerArmSpanMeters).toBeGreaterThan(0.055);
     expect(result.uncertaintyMeters).toBeLessThan(0.032);
   });
 
