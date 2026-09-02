@@ -7,6 +7,7 @@ import {
   type ProjectVector,
 } from './surfelEvidence';
 import { analyzeSurfaceComponents } from './surfaceComponents';
+import { sanitizeMeshTopology } from './meshTopologySanity';
 
 export interface MeshPreviewInput {
   positions: Float32Array;
@@ -19,12 +20,20 @@ export interface MeshPreview {
   /** Expanded XYZ triangles in project coordinates for WebGL drawArrays. */
   trianglePositions: Float32Array;
   triangleCount: number;
+  /** Triangles produced before topology sanitation. */
+  rawTriangleCount: number;
   sourcePointCount: number;
   /** Points that passed confidence/readiness and belong to mesh-sized components. */
   acceptedPointCount: number;
   /** Confidence-valid points before physical component-size gating. */
   certifiedPointCount: number;
   rejectedTriangleCount: number;
+  quarantinedTriangleCount: number;
+  topologyDiscardedTriangleCount: number;
+  meshTopologyComponentCount: number;
+  nonManifoldEdgeCount: number;
+  orientationRepairCount: number;
+  orientationConflictCount: number;
   /** Absolute maximum triangulation radius; each point uses a smaller density-adaptive radius when possible. */
   searchRadiusMeters: number;
   componentCount: number;
@@ -192,6 +201,18 @@ function recordsFromInput(input: MeshPreviewInput, eligiblePointMask: Uint8Array
   return records;
 }
 
+function emptyTopologyDiagnostics() {
+  return {
+    rawTriangleCount: 0,
+    quarantinedTriangleCount: 0,
+    topologyDiscardedTriangleCount: 0,
+    meshTopologyComponentCount: 0,
+    nonManifoldEdgeCount: 0,
+    orientationRepairCount: 0,
+    orientationConflictCount: 0,
+  };
+}
+
 /**
  * Conservative GP3-style local triangulation for the phone preview.
  *
@@ -205,6 +226,10 @@ function recordsFromInput(input: MeshPreviewInput, eligiblePointMask: Uint8Array
  * neighbour ordering, triangle-angle limits and a maximum normal/surface angle.
  * More depth samples on a convex feature therefore increase local detail instead
  * of permitting large triangles across the denser measurements.
+ *
+ * A final topology pass never edits physical surfels/occupancy. It only removes
+ * tiny or topologically suspect triangle islands from the mesh representation,
+ * repairs local winding and reports non-manifold/orientation diagnostics.
  */
 export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
   const sourcePointCount = Math.min(
@@ -234,6 +259,7 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
   if (points.length < 3) {
     return {
       ...baseResult,
+      ...emptyTopologyDiagnostics(),
       trianglePositions: new Float32Array(0), triangleCount: 0,
       rejectedTriangleCount: 0,
     };
@@ -250,7 +276,7 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
 
   const triangles: number[] = [];
   const emitted = new Set<string>();
-  let rejectedTriangleCount = 0;
+  let geometryRejectedTriangleCount = 0;
 
   for (const center of points) {
     if (triangles.length / 9 >= MESH_MAX_TRIANGLES) break;
@@ -304,7 +330,7 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
       emitted.add(triangleKey);
 
       if (!triangleGeometryAcceptable(center.position, first.position, second.position, localRadiusMeters)) {
-        rejectedTriangleCount += 1;
+        geometryRejectedTriangleCount += 1;
         continue;
       }
       const triNormal = triangleNormal(center.position, first.position, second.position);
@@ -313,23 +339,38 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
         !normalsCompatible(triNormal, first.normal, MESH_MAX_SURFACE_ANGLE_RADIANS) ||
         !normalsCompatible(triNormal, second.normal, MESH_MAX_SURFACE_ANGLE_RADIANS)
       ) {
-        rejectedTriangleCount += 1;
+        geometryRejectedTriangleCount += 1;
         continue;
       }
 
-      triangles.push(
-        ...center.position,
-        ...first.position,
-        ...second.position,
-      );
+      // normalsCompatible is intentionally sign-invariant because fused surfel
+      // normals may arrive with either sign. For actual mesh winding we still
+      // choose the sign that agrees with the measured center surfel. The topology
+      // pass below then propagates consistent winding across shared manifold edges.
+      if (dotVector(triNormal, center.normal) < 0) {
+        triangles.push(...center.position, ...second.position, ...first.position);
+      } else {
+        triangles.push(...center.position, ...first.position, ...second.position);
+      }
       if (triangles.length / 9 >= MESH_MAX_TRIANGLES) break;
     }
   }
 
+  const topology = sanitizeMeshTopology(Float32Array.from(triangles), input.voxelSizeMeters);
   return {
     ...baseResult,
-    trianglePositions: Float32Array.from(triangles),
-    triangleCount: triangles.length / 9,
-    rejectedTriangleCount,
+    trianglePositions: topology.trianglePositions,
+    triangleCount: topology.triangleCount,
+    rawTriangleCount: topology.sourceTriangleCount,
+    rejectedTriangleCount:
+      geometryRejectedTriangleCount +
+      topology.quarantinedTriangleCount +
+      topology.discardedTriangleCount,
+    quarantinedTriangleCount: topology.quarantinedTriangleCount,
+    topologyDiscardedTriangleCount: topology.discardedTriangleCount,
+    meshTopologyComponentCount: topology.components.length,
+    nonManifoldEdgeCount: topology.nonManifoldEdgeCount,
+    orientationRepairCount: topology.orientationRepairCount,
+    orientationConflictCount: topology.orientationConflictCount,
   };
 }
