@@ -159,10 +159,15 @@ export class SparseTsdfMeshClient {
   private epoch = 0;
   private generation = 0;
   private pending: Pending | null = null;
-  private readonly preflightClient = new MeshReconstructionPreflightClient();
+  private readonly preflightClient: MeshReconstructionPreflightClient;
   private readonly parallelDirectional = new ParallelDirectionalTsdfClient();
 
-  constructor(private readonly workerFactory: () => Worker = () => new SparseTsdfWorker()) {}
+  constructor(
+    private readonly workerFactory: () => Worker = () => new SparseTsdfWorker(),
+    preflightWorkerFactory?: () => Worker,
+  ) {
+    this.preflightClient = new MeshReconstructionPreflightClient(preflightWorkerFactory);
+  }
 
   async reconstruct(input: SparseTsdfReconstructInput): Promise<SparseTsdfMesh> {
     this.resetPending('Sparse TSDF reconstruction superseded by a newer scan.');
@@ -181,7 +186,7 @@ export class SparseTsdfMeshClient {
     if (generation !== this.generation || epoch !== this.epoch) {
       throw new Error('Sparse TSDF reconstruction superseded during physical mesh preflight.');
     }
-    let physicalInput: SparseTsdfReconstructInput = {
+    const physicalInput: SparseTsdfReconstructInput = {
       ...input,
       positions: physicalWorkerResult.arrays.positions,
       normals: physicalWorkerResult.arrays.normals,
