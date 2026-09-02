@@ -27,6 +27,14 @@ export interface SparseTsdfMesh {
   orientationRepairCount: number;
   orientationConflictCount: number;
   meshTopologyComponentCount: number;
+  selfIntersectionPairCount: number;
+  selfIntersectionAffectedTriangleCount: number;
+  selfIntersectionExactTestedPairs: number;
+  selfIntersectionBroadPhaseCandidatePairs: number;
+  selfIntersectionTruncated: boolean;
+  selfIntersectionOversizedTriangleCount: number;
+  /** Maximum component-level topology/noise diagnostic; never changes physical occupancy. */
+  meshNoiseScore: number;
   sourcePointCount: number;
   integratedPointCount: number;
   skippedLowConfidence: number;
@@ -392,6 +400,13 @@ export function buildSparseTsdfMesh(input: SparseTsdfInput): SparseTsdfMesh {
     orientationRepairCount: topology.orientationRepairCount,
     orientationConflictCount: topology.orientationConflictCount,
     meshTopologyComponentCount: topology.components.length,
+    selfIntersectionPairCount: topology.selfIntersectionPairCount,
+    selfIntersectionAffectedTriangleCount: topology.selfIntersectionAffectedTriangleCount,
+    selfIntersectionExactTestedPairs: topology.selfIntersectionExactTestedPairs,
+    selfIntersectionBroadPhaseCandidatePairs: topology.selfIntersectionBroadPhaseCandidatePairs,
+    selfIntersectionTruncated: topology.selfIntersectionTruncated,
+    selfIntersectionOversizedTriangleCount: topology.selfIntersectionOversizedTriangleCount,
+    meshNoiseScore: topology.components.reduce((maximum, component) => Math.max(maximum, component.meshNoiseScore), 0),
     sourcePointCount,
     integratedPointCount,
     skippedLowConfidence,
