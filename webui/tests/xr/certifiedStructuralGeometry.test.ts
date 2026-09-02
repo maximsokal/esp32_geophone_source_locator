@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CertifiedStructuralCornerTracker,
+  certifiedCornerAssociationGateMeters,
   detectCertifiedStructuralCorners,
 } from '../../src/xr/certifiedStructuralGeometry';
 import type { ManualPlacementSurfaceSnapshot } from '../../src/xr/manualPlacementSurface';
@@ -75,10 +76,6 @@ function cornerCloud(includeThirdPlane = true): MutableCloud {
 }
 
 function addManyHighConfidenceFlatSeedCells(cloud: MutableCloud, count = 80): void {
-  // More than MAX_SEEDS=72 high-confidence flat seed cells. They live in coarse
-  // regions away from the real corner and must not starve that corner merely
-  // because their confidence is higher. Two points per 13-cm seed cell make each
-  // eligible for seeding while remaining far too sparse/flat for corner evidence.
   for (let index = 0; index < count; index += 1) {
     const x = 2.0 + (index % 10) * 0.16;
     const y = Math.floor(index / 10) * 0.16;
@@ -119,8 +116,8 @@ describe('certified structural geometry', () => {
     expect(Math.hypot(...nearest.position)).toBeLessThan(0.03);
     expect(nearest.confidence).toBeGreaterThanOrEqual(0.72);
     expect(nearest.confidence).toBeLessThan(1);
-    // Geometry detection is one current observation. Temporal maturity belongs
-    // to CertifiedStructuralCornerTracker and cannot be fabricated here.
+    expect(nearest.uncertaintyMeters).toBeLessThanOrEqual(0.030);
+    expect(nearest.minimumArmSpanMeters).toBeGreaterThan(0.05);
     expect(nearest.observations).toBe(1);
   });
 
@@ -166,6 +163,33 @@ describe('certified structural geometry', () => {
       nearest.position[1] - target[1],
       nearest.position[2] - target[2],
     )).toBeLessThan(0.04);
+  });
+});
+
+describe('certified corner spatial association policy', () => {
+  it('does not inherit the old universal 8-10 cm merge radius', () => {
+    const gate = certifiedCornerAssociationGateMeters(0.010, 0.012, 0.070, 0.075);
+    expect(gate).toBeGreaterThanOrEqual(0.035);
+    expect(gate).toBeLessThan(0.05);
+  });
+
+  it('allows more drift for a less certain solve but remains hard bounded', () => {
+    const precise = certifiedCornerAssociationGateMeters(0.006, 0.008, 0.12, 0.12);
+    const noisy = certifiedCornerAssociationGateMeters(0.025, 0.030, 0.12, 0.12);
+    expect(noisy).toBeGreaterThan(precise);
+    expect(noisy).toBeLessThanOrEqual(0.060);
+  });
+
+  it('lets the measured arm scale tighten association for a small certified corner', () => {
+    const largeArms = certifiedCornerAssociationGateMeters(0.030, 0.030, 0.20, 0.20);
+    const smallArms = certifiedCornerAssociationGateMeters(0.030, 0.030, 0.055, 0.060);
+    expect(largeArms).toBeCloseTo(0.057, 6);
+    expect(smallArms).toBeLessThan(largeArms);
+    expect(smallArms).toBeCloseTo(0.055 * 0.95, 6);
+  });
+
+  it('never shrinks below the minimum jitter gate even for an extremely precise solve', () => {
+    expect(certifiedCornerAssociationGateMeters(0, 0, 0.20, 0.20)).toBeCloseTo(0.035, 6);
   });
 });
 
