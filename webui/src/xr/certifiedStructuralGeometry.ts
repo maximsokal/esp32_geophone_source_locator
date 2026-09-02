@@ -274,6 +274,7 @@ export class CertifiedStructuralCornerTracker {
 
     return this.tracks
       .filter((track) =>
+        matchedTrackIds.has(track.id) &&
         track.evidence.length >= MIN_MATURE_OBSERVATIONS &&
         evidenceSpread(track.evidence) <= MAX_TRACK_SPREAD_METERS &&
         track.confidence >= MIN_CORNER_CONFIDENCE
