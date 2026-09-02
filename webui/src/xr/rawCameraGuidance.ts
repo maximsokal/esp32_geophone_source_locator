@@ -2,6 +2,7 @@ import {
   buildRgbDepthGuidanceFrame,
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
+import { NonBlockingRgbaReadback } from './webGlPixelReadback';
 import {
   captureWebGlState,
   restoreWebGlState,
@@ -27,6 +28,12 @@ export type XrWebGlBindingConstructorLike = new (
   session: object,
   context: WebGLRenderingContext | WebGL2RenderingContext,
 ) => XrWebGlBindingLike;
+
+interface CameraReadbackMetadata {
+  capturedAtMs: number;
+  projectionMatrix?: Float32Array;
+  worldFromView?: Float32Array;
+}
 
 const TARGET_WIDTH = 256;
 const TARGET_HEIGHT = 144;
@@ -87,6 +94,43 @@ function createProgram(gl: WebGLRenderingContext | WebGL2RenderingContext): WebG
   return program;
 }
 
+function captureMetadata(view: XrCameraViewLike, capturedAtMs: number): CameraReadbackMetadata {
+  if (
+    view.projectionMatrix !== undefined && view.projectionMatrix.length >= 16 &&
+    view.transform?.matrix !== undefined && view.transform.matrix.length >= 16
+  ) {
+    return {
+      capturedAtMs,
+      projectionMatrix: Float32Array.from(view.projectionMatrix),
+      worldFromView: Float32Array.from(view.transform.matrix),
+    };
+  }
+  return { capturedAtMs };
+}
+
+function buildGuidance(
+  pixels: Uint8Array,
+  metadata: CameraReadbackMetadata,
+): RgbDepthGuidanceFrame {
+  const guidance = buildRgbDepthGuidanceFrame(
+    pixels,
+    TARGET_WIDTH,
+    TARGET_HEIGHT,
+    TARGET_WIDTH,
+    TARGET_HEIGHT,
+    'bottom-left',
+    metadata.capturedAtMs,
+  );
+  if (metadata.projectionMatrix !== undefined && metadata.worldFromView !== undefined) {
+    return {
+      ...guidance,
+      projectionMatrix: metadata.projectionMatrix,
+      worldFromView: metadata.worldFromView,
+    };
+  }
+  return guidance;
+}
+
 export class RawCameraGuidanceCapture {
   private readonly program: WebGLProgram;
   private readonly framebuffer: WebGLFramebuffer;
@@ -95,6 +139,7 @@ export class RawCameraGuidanceCapture {
   private readonly positionLocation: number;
   private readonly samplerLocation: WebGLUniformLocation;
   private readonly vertexArray: WebGLVertexArrayObject | null;
+  private readonly asyncReadback: NonBlockingRgbaReadback<CameraReadbackMetadata> | null;
   private readonly pixels = new Uint8Array(TARGET_WIDTH * TARGET_HEIGHT * 4);
   private disposed = false;
 
@@ -182,7 +227,18 @@ export class RawCameraGuidanceCapture {
     } finally {
       restoreWebGlState(gl, positionLocation, previous);
     }
+
+    // WebGL2 gets a non-blocking PBO ring. Failure is advisory: old/limited
+    // implementations still retain the WebGL1-style synchronous fallback.
+    let asyncReadback: NonBlockingRgbaReadback<CameraReadbackMetadata> | null = null;
+    if (gl2 !== null) {
+      try { asyncReadback = new NonBlockingRgbaReadback(gl2, TARGET_WIDTH, TARGET_HEIGHT, 3); }
+      catch { asyncReadback = null; }
+    }
+    this.asyncReadback = asyncReadback;
   }
+
+  get usesNonBlockingReadback(): boolean { return this.asyncReadback !== null; }
 
   capture(
     binding: XrWebGlBindingLike,
@@ -196,8 +252,15 @@ export class RawCameraGuidanceCapture {
     const gl = this.gl;
     const gl2 = webGl2Context(gl);
     const previous = captureWebGlState(gl, this.positionLocation);
+    const metadata = captureMetadata(view, capturedAtMs);
 
     try {
+      // Poll first: timeout=0 means the XR thread never waits for the GPU. The
+      // returned pixels retain the pose/projection from the frame that queued
+      // them, so asynchronous readback cannot accidentally pair old RGB with a
+      // newer camera transform.
+      const ready = this.asyncReadback?.poll() ?? null;
+
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
       gl.viewport(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
       gl.useProgram(this.program);
@@ -212,27 +275,16 @@ export class RawCameraGuidanceCapture {
       gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
       gl.uniform1i(this.samplerLocation, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.readPixels(0, 0, TARGET_WIDTH, TARGET_HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
-      const guidance = buildRgbDepthGuidanceFrame(
-        this.pixels,
-        TARGET_WIDTH,
-        TARGET_HEIGHT,
-        TARGET_WIDTH,
-        TARGET_HEIGHT,
-        'bottom-left',
-        capturedAtMs,
-      );
-      if (
-        view.projectionMatrix !== undefined && view.projectionMatrix.length >= 16 &&
-        view.transform?.matrix !== undefined && view.transform.matrix.length >= 16
-      ) {
-        return {
-          ...guidance,
-          projectionMatrix: Float32Array.from(view.projectionMatrix),
-          worldFromView: Float32Array.from(view.transform.matrix),
-        };
+
+      if (this.asyncReadback !== null) {
+        // Advisory RGB may be dropped when all PBOs are still in flight. Never
+        // block physical depth fusion just to obtain a visual guidance frame.
+        this.asyncReadback.enqueue(metadata);
+        return ready === null ? null : buildGuidance(ready.pixels, ready.metadata);
       }
-      return guidance;
+
+      gl.readPixels(0, 0, TARGET_WIDTH, TARGET_HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
+      return buildGuidance(this.pixels, metadata);
     } finally {
       restoreWebGlState(gl, this.positionLocation, previous);
     }
@@ -241,6 +293,7 @@ export class RawCameraGuidanceCapture {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.asyncReadback?.dispose();
     const gl2 = webGl2Context(this.gl);
     if (gl2 !== null && this.vertexArray !== null) gl2.deleteVertexArray(this.vertexArray);
     this.gl.deleteProgram(this.program);
