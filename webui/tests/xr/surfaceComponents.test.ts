@@ -10,6 +10,16 @@ interface Cloud {
 
 function cloud(): Cloud { return { positions: [], normals: [], confidence: [] }; }
 
+function addPoint(
+  target: Cloud,
+  point: readonly [number, number, number],
+  normal: readonly [number, number, number] = [0, 0, 1],
+): void {
+  target.positions.push(...point);
+  target.normals.push(...normal);
+  target.confidence.push(0.92);
+}
+
 function addGrid(
   target: Cloud,
   origin: readonly [number, number, number],
@@ -133,6 +143,45 @@ describe('bounded spatial surface components', () => {
     expect(result.acceptedPointCount).toBe(8);
     expect(result.componentCount).toBe(2);
     expect(result.components.map((component) => component.pointCount).sort((a, b) => a - b)).toEqual([4, 4]);
+  });
+
+  it('rejects an AABB-and-centroid false bridge when no actual surfel pair is within the metric link radius', () => {
+    const source = cloud();
+    // Both same-normal families occupy adjacent 6-cm hash cells. Their AABBs have
+    // only a 2-mm x gap and overlap on y/z, and their centroids are only ~8.4 cm
+    // apart, so the former broad-phase-only link accepted them. Yet the nearest
+    // measured pair is ~8.2 cm apart, above the 7-cm physical support gate.
+    for (const point of [
+      [0.059, 0.001, 0.001],
+      [0.001, 0.059, 0.001],
+      [0.001, 0.001, 0.059],
+      [0.061, 0.059, 0.059],
+      [0.119, 0.001, 0.059],
+      [0.119, 0.059, 0.001],
+    ] as const) addPoint(source, point);
+
+    const result = analyze(source);
+    expect(result.connectionCellSizeMeters).toBeCloseTo(0.06);
+    expect(result.acceptedPointCount).toBe(6);
+    expect(result.componentCount).toBe(2);
+    expect(result.components.map((component) => component.pointCount).sort((a, b) => a - b)).toEqual([3, 3]);
+  });
+
+  it('still connects dense measured support across a hash boundary when nodes exceed the bounded exact-sample cap', () => {
+    const source = cloud();
+    // Twelve points per node exercise the <=8 representative support check. The
+    // two measured strips are genuinely only 1 cm apart across x=6 cm and should
+    // remain one physical component despite bounded exact checking.
+    for (let index = 0; index < 12; index += 1) {
+      const y = 0.003 + (index % 6) * 0.009;
+      const z = 0.003 + Math.floor(index / 6) * 0.018;
+      addPoint(source, [0.055, y, z]);
+      addPoint(source, [0.065, y, z]);
+    }
+    const result = analyze(source);
+    expect(result.acceptedPointCount).toBe(24);
+    expect(result.componentCount).toBe(1);
+    expect(result.components[0].pointCount).toBe(24);
   });
 
   it('still connects physically close support across a hash-cell boundary', () => {
