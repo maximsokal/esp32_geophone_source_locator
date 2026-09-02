@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { analyzeSurfaceComponents } from '../../src/xr/surfaceComponents';
+import { MESH_MIN_POINTS, analyzeSurfaceComponents } from '../../src/xr/surfaceComponents';
 
 interface Cloud {
   positions: number[];
@@ -76,6 +76,26 @@ describe('bounded spatial surface components', () => {
     expect(result.bestMeshComponent!.majorExtentMeters).toBeLessThan(0.10);
     expect(result.bestMeshComponent!.meshReadiness).toBeLessThan(1);
     expect(result.eligiblePointCount).toBe(0);
+  });
+
+  it('uses the same sixty-point boundary as the certified TSDF handoff', () => {
+    expect(MESH_MIN_POINTS).toBe(60);
+    const below = cloud();
+    addGrid(below, [0, 0, 0], 10, 6, 0.04);
+    below.positions.splice(-3, 3);
+    below.normals.splice(-3, 3);
+    below.confidence.splice(-1, 1);
+    const belowResult = analyze(below);
+    expect(belowResult.bestMeshComponent?.pointCount).toBe(59);
+    expect(belowResult.eligibleComponentCount).toBe(0);
+    expect(belowResult.bestMeshComponent?.meshReadiness).toBeLessThan(1);
+
+    const atGate = cloud();
+    addGrid(atGate, [0, 0, 0], 10, 6, 0.04);
+    const atGateResult = analyze(atGate);
+    expect(atGateResult.bestMeshComponent?.pointCount).toBe(60);
+    expect(atGateResult.eligibleComponentCount).toBe(1);
+    expect(atGateResult.bestMeshComponent?.meshReadiness).toBe(1);
   });
 
   it('accepts a sufficiently large, dense two-dimensional measured surface', () => {
