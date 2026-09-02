@@ -4,11 +4,32 @@ export interface CompactGuideCounts {
   visibleCorners: number;
   certifiedCorners: number;
   certifiedEdges: number;
+  /** Robust plane patches produced by the current physical structural solve. */
+  planarPatches?: number;
+  /** Finite-support worker edges before final scale/visual certification. */
+  workerEdges?: number;
   rgbCorroboration: boolean;
 }
 
+export type StructuralFeatureStage = 0 | 1 | 2 | 3;
+
 function wholePercent(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 100);
+}
+
+/**
+ * Compact feature maturity is intentionally a stage, not a fake percentage:
+ * F0 no two-plane evidence yet; F1 >=2 robust physical plane patches exist;
+ * F2 a finite locally-supported worker edge is being tracked; F3 at least one
+ * edge passed final metric scale/support certification. The stage never creates
+ * geometry and does not claim a corner exists merely because enough points were
+ * collected.
+ */
+export function structuralFeatureStage(counts: CompactGuideCounts): StructuralFeatureStage {
+  if (counts.certifiedEdges > 0) return 3;
+  if ((counts.workerEdges ?? 0) > 0) return 2;
+  if ((counts.planarPatches ?? 0) >= 2) return 1;
+  return 0;
 }
 
 /**
@@ -16,7 +37,8 @@ function wholePercent(value: number): number {
  * Vn/16 means camera azimuth sectors around a measured component center, not
  * percentage of object surface. Before that center exists we show a plain view
  * progress percentage instead. SIZE+n is the additional linear scale implied by
- * the currently limiting measured extent, not an area percentage.
+ * the currently limiting measured extent, not an area percentage. F0..F3 reports
+ * actual solver feature maturity and therefore remains meaningful even at S100.
  */
 export function compactScanReadinessLabel(
   readiness: ScanCapabilityReadiness,
@@ -29,6 +51,7 @@ export function compactScanReadinessLabel(
   parts.push(hasMeasuredCenter
     ? `V${readiness.viewSectors}/${readiness.totalViewSectors}`
     : `V${wholePercent(readiness.viewCoverage)}`);
+  parts.push(`F${structuralFeatureStage(counts)}`);
 
   if (readiness.objectTooSmall && readiness.structural.growthNeededPercent !== null) {
     parts.push(`SIZE+${readiness.structural.growthNeededPercent}`);
