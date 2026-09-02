@@ -2,6 +2,7 @@ import {
   diagnoseMeshNormalIntrusions,
   type MeshNormalIntrusionComponentStats,
 } from './meshNormalIntrusion';
+import { detectLocalMeshNoiseHotspots } from './meshNoiseHotspots';
 import {
   diagnoseMeshSelfIntersections,
   type MeshSelfIntersectionComponentStats,
@@ -56,6 +57,10 @@ export interface MeshTopologySanityResult {
   normalIntrusionBroadPhaseCandidatePairs: number;
   normalIntrusionTruncated: boolean;
   normalIntrusionOversizedTriangleCount: number;
+  /** Small correlated self-intersection + normal-intrusion regions detected locally. */
+  localNoiseHotspotCount: number;
+  /** Hotspot triangles actually omitted from otherwise retained mesh components. */
+  localNoiseHotspotTriangleCount: number;
   components: readonly MeshTopologyComponentQuality[];
 }
 
@@ -570,6 +575,9 @@ function componentQuality(
  * bounded spatial diagnostics. High combined noise can quarantine a component
  * from the rendered/consumed mesh, but never discards the underlying physical
  * surfels and never treats one sharp fold or one nearby shell as sufficient proof.
+ * Small correlated self-intersection + normal-intrusion hotspots may be omitted
+ * locally only after both global diagnostics completed; widespread noise remains
+ * on the ordinary whole-component quarantine path.
  *
  * A truncated global diagnostic is incomplete evidence, but it no longer poisons
  * an unrelated island automatically. Spatially isolated substantial components
@@ -605,6 +613,8 @@ export function sanitizeMeshTopology(
       normalIntrusionBroadPhaseCandidatePairs: 0,
       normalIntrusionTruncated: false,
       normalIntrusionOversizedTriangleCount: 0,
+      localNoiseHotspotCount: 0,
+      localNoiseHotspotTriangleCount: 0,
       components: [],
     };
   }
@@ -650,6 +660,25 @@ export function sanitizeMeshTopology(
     componentDiagnosticsComplete,
   );
 
+  // Local triangle quarantine is intentionally disabled when either global
+  // diagnostic was truncated. Positive hits from a partial pass remain useful for
+  // component scoring, but incomplete absence-of-hit evidence is not strong enough
+  // to justify cutting a local hole in an otherwise measured surface.
+  const localNoiseHotspots = globalDiagnosticsComplete
+    ? detectLocalMeshNoiseHotspots(
+      triangles,
+      orientation.componentByTriangle,
+      orientation.componentTriangles.length,
+      selfIntersection.triangleIntersectionHits,
+      normalIntrusion.triangleIntrusionHits,
+      voxelSizeMeters,
+    )
+    : {
+      quarantineMask: new Uint8Array(triangles.length),
+      hotspotCount: 0,
+      quarantinedTriangleCount: 0,
+    };
+
   const components = orientation.componentTriangles.map((members, id) => componentQuality(
     id,
     members,
@@ -665,6 +694,7 @@ export function sanitizeMeshTopology(
   const output: number[] = [];
   let retainedTriangleCount = 0;
   let quarantinedTriangleCount = 0;
+  let localNoiseHotspotTriangleCount = 0;
   let discardedTriangleCount =
     Math.max(0, sourceTriangleCount - parsed.length) +
     nonManifoldRepair.removedTriangleCount;
@@ -676,6 +706,11 @@ export function sanitizeMeshTopology(
     }
     if (component.disposition === 'discard') {
       discardedTriangleCount += 1;
+      continue;
+    }
+    if (localNoiseHotspots.quarantineMask[index] !== 0) {
+      quarantinedTriangleCount += 1;
+      localNoiseHotspotTriangleCount += 1;
       continue;
     }
     const [a, b, c] = triangles[index].vertices;
@@ -706,6 +741,8 @@ export function sanitizeMeshTopology(
     normalIntrusionBroadPhaseCandidatePairs: normalIntrusion.candidatePairs,
     normalIntrusionTruncated: normalIntrusion.truncated || normalIntrusion.oversizedTriangleCount > 0,
     normalIntrusionOversizedTriangleCount: normalIntrusion.oversizedTriangleCount,
+    localNoiseHotspotCount: localNoiseHotspots.hotspotCount,
+    localNoiseHotspotTriangleCount,
     components,
   };
 }
