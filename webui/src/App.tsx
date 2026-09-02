@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import './scan.css';
 
@@ -7,6 +7,10 @@ import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
 import { countCoverageQualityBands } from './xr/coverageQuality';
+import {
+  deviceComputeProfilePromise,
+  type DeviceComputeProfile,
+} from './xr/deviceComputeProfile';
 import {
   displayForScanMode,
   type ScanDisplayOptions,
@@ -29,9 +33,22 @@ function extentFromBounds(
   ];
 }
 
+function computeProfileTitle(profile: DeviceComputeProfile): string {
+  return [
+    `${profile.reportedLogicalProcessors} browser-reported logical processors`,
+    `${profile.liveWorkerBudget} heavy live XR worker slot(s)`,
+    `${profile.postScanWorkerBudget} post-scan worker slot(s)`,
+    `shared memory ${profile.sharedMemory ? 'available' : 'unavailable'}`,
+    `Wasm threads ${profile.wasmThreads ? 'available' : 'unavailable'}`,
+    `WebGPU ${profile.webGpu ? 'available' : 'unavailable'}`,
+    `tier ${profile.tier}`,
+  ].join(' · ');
+}
+
 export default function App() {
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
+  const [computeProfile, setComputeProfile] = useState<DeviceComputeProfile | null>(null);
   const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
@@ -39,6 +56,27 @@ export default function App() {
     preset: 'perspective',
     sequence: 0,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    void deviceComputeProfilePromise.then((profile) => {
+      if (cancelled) return;
+      setComputeProfile(profile);
+      clientDiagnostics.info('DEVICE_COMPUTE_PROFILE', {
+        logicalProcessors: profile.reportedLogicalProcessors,
+        reservedProcessors: profile.reservedLogicalProcessors,
+        liveWorkerBudget: profile.liveWorkerBudget,
+        postScanWorkerBudget: profile.postScanWorkerBudget,
+        crossOriginIsolated: profile.crossOriginIsolated,
+        sharedMemory: profile.sharedMemory,
+        wasmThreads: profile.wasmThreads,
+        webGpu: profile.webGpu,
+        tier: profile.tier,
+      });
+      void clientDiagnostics.flush();
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const requestView = useCallback((preset: ViewPreset): void => {
     clientDiagnostics.info('SCAN_VIEW_PRESET', { preset });
@@ -107,6 +145,14 @@ export default function App() {
             </span>
             <span className={`badge ${webXrReady ? 'good' : 'warning'}`}>
               WEBXR {webXrReady ? '✓' : '—'}
+            </span>
+            <span
+              className={`badge ${computeProfile !== null && computeProfile.liveWorkerBudget > 0 ? 'good' : 'warning'}`}
+              title={computeProfile === null ? 'Compute capability negotiation in progress' : computeProfileTitle(computeProfile)}
+            >
+              {computeProfile === null
+                ? 'CPU …'
+                : `CPU ${computeProfile.reportedLogicalProcessors} · W${computeProfile.liveWorkerBudget}`}
             </span>
             <span className={`badge ${hasMeasuredScan ? 'good' : 'warning'}`}>
               {hasMeasuredScan ? 'VOLUME READY' : 'READY'}
