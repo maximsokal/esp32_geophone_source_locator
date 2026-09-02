@@ -1,14 +1,15 @@
 import { certifyEdgeByVisualReprojection } from './reprojectionCertificate';
 import type { ProjectPoint, ProjectVector, StructuralEdgeCandidate } from './structuralGuide';
+import {
+  isScaleSupportedStructuralEdge,
+  MIN_CERTIFIED_EDGE_LENGTH_METERS,
+} from './structuralEdgeScalePolicy';
 import { applyStructuralVisualCorroboration } from './structuralVisualCorroboration';
 import type { VisualEvidenceFrame } from './visualLineEvidence';
 
+export { MIN_CERTIFIED_EDGE_LENGTH_METERS } from './structuralEdgeScalePolicy';
 export const MIN_CERTIFIED_EDGE_CONFIDENCE = 0.66;
 export const MIN_CERTIFIED_EDGE_OBSERVATIONS = 2;
-// A structural line shorter than roughly two nominal 4-cm source voxels is not
-// a useful metric constraint. Local patch fragments may be shorter and are
-// merged before this final gate.
-export const MIN_CERTIFIED_EDGE_LENGTH_METERS = 0.09;
 const MIN_LOCAL_EDGE_FRAGMENT_METERS = 0.035;
 const MIN_VISUAL_STRUCTURE_STRENGTH = 0.30;
 const MIN_VISUAL_FRAMES = 3;
@@ -16,9 +17,6 @@ const MERGE_DIRECTION_DOT = Math.cos((15 * Math.PI) / 180);
 const MERGE_MAX_LATERAL_METERS = 0.055;
 const MERGE_MAX_AXIAL_GAP_METERS = 0.085;
 const MIN_SPAN_COVERAGE_RATIO = 0.70;
-const MIN_EDGE_SUPPORT = 6;
-const EDGE_SUPPORT_INTERVAL_METERS = 0.075;
-const MIN_SUPPORT_DENSITY_PER_METER = 22;
 
 interface Interval {
   min: number;
@@ -162,6 +160,7 @@ function mergeGroup(group: readonly StructuralEdgeCandidate[]): StructuralEdgeCa
   const span = high - low;
   if (!Number.isFinite(span) || span <= 0) return null;
   const coverageRatio = clamp01(unionLength(intervals) / span);
+  if (coverageRatio < MIN_SPAN_COVERAGE_RATIO) return null;
   const effectiveSupport = Math.max(
     strongestSupport,
     Math.round(supportSum * (0.55 + coverageRatio * 0.25)),
@@ -225,20 +224,6 @@ function hasUsableLineCoverage(frames: readonly VisualEvidenceFrame[]): boolean 
   return frames.filter((frame) => frame.lines.some((line) => line.strength >= MIN_VISUAL_STRUCTURE_STRENGTH)).length >= MIN_VISUAL_FRAMES;
 }
 
-function scaleSupportAcceptable(edge: StructuralEdgeCandidate): boolean {
-  const length = distance(edge.start, edge.end);
-  if (!Number.isFinite(length) || length < MIN_CERTIFIED_EDGE_LENGTH_METERS) return false;
-  // Support must grow with measured line length. The absolute floor protects
-  // short edges; the interval term prevents a metre-long line from being
-  // certified by the same handful of points that would justify a 10-cm edge.
-  const requiredSupport = Math.max(
-    MIN_EDGE_SUPPORT,
-    Math.ceil(length / EDGE_SUPPORT_INTERVAL_METERS) * 2,
-  );
-  const supportDensity = edge.support / Math.max(length, MIN_CERTIFIED_EDGE_LENGTH_METERS);
-  return edge.support >= requiredSupport && supportDensity >= MIN_SUPPORT_DENSITY_PER_METER;
-}
-
 /**
  * Final edge gate before the shared manual/overlay registry.
  *
@@ -256,7 +241,7 @@ export function certifyOperationalStructuralEdges(
   const checkVisual = hasUsableLineCoverage(visualFrames);
   const output: StructuralEdgeCandidate[] = [];
   for (const edge of mergeConnectedStructuralEdges(edges)) {
-    if (!scaleSupportAcceptable(edge)) continue;
+    if (!isScaleSupportedStructuralEdge(edge)) continue;
     if (!checkVisual) {
       output.push(edge);
       continue;
