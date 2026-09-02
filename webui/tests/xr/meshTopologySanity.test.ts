@@ -38,6 +38,27 @@ function gridPatch(
   return output;
 }
 
+function verticalGridPatch(
+  cellsX: number,
+  cellsZ: number,
+  spacing = 0.04,
+  origin: Point = [0, 0, 0],
+): number[] {
+  const output: number[] = [];
+  for (let z = 0; z < cellsZ; z += 1) {
+    for (let x = 0; x < cellsX; x += 1) {
+      const x0 = origin[0] + x * spacing;
+      const x1 = x0 + spacing;
+      const z0 = origin[2] + z * spacing;
+      const z1 = z0 + spacing;
+      const y = origin[1];
+      pushTriangle(output, [x0, y, z0], [x1, y, z1], [x1, y, z0]);
+      pushTriangle(output, [x0, y, z0], [x0, y, z1], [x1, y, z1]);
+    }
+  }
+  return output;
+}
+
 function zNormalSign(positions: Float32Array, triangle: number): number {
   const offset = triangle * 9;
   const ax = positions[offset]; const ay = positions[offset + 1];
@@ -113,6 +134,32 @@ describe('mesh topology sanity', () => {
     // These two faces are too small to render for the ordinary component-size
     // reason; the test deliberately does not assert deletion *because* they intersect.
     expect(result.discardedTriangleCount).toBe(2);
+  });
+
+  it('keeps a welded 90-degree structural fold because adjacent faces are not self-intersections', () => {
+    const source = Float32Array.from([
+      ...gridPatch(3, 2, 0.04, [0, 0, 0]),
+      ...verticalGridPatch(3, 2, 0.04, [0, 0, 0]),
+    ]);
+    const result = sanitizeMeshTopology(source, 0.04);
+    expect(result.selfIntersectionPairCount).toBe(0);
+    expect(result.components).toHaveLength(1);
+    expect(result.components[0].meshNoiseScore).toBeLessThanOrEqual(0.60);
+    expect(result.components[0].disposition).toBe('retain');
+    expect(result.retainedTriangleCount).toBe(result.sourceTriangleCount);
+  });
+
+  it('quarantines a substantial crossing triangle soup when intersection noise is widespread', () => {
+    const source = Float32Array.from([
+      ...gridPatch(4, 3, 0.04, [0, 0, 0]),
+      ...verticalGridPatch(4, 3, 0.04, [0.01, 0.055, -0.06]),
+    ]);
+    const result = sanitizeMeshTopology(source, 0.04);
+    expect(result.selfIntersectionPairCount).toBeGreaterThan(0);
+    const noisy = result.components.filter((component) => component.meshNoiseScore > 0.60);
+    expect(noisy.length).toBeGreaterThan(0);
+    expect(noisy.every((component) => component.disposition === 'quarantine')).toBe(true);
+    expect(result.quarantinedTriangleCount).toBeGreaterThan(0);
   });
 
   it('is deterministic for identical triangle soup', () => {
