@@ -55,6 +55,16 @@ interface OrientationNode {
   normalY: number;
   normalZ: number;
   normalWeight: number;
+  positionX: number;
+  positionY: number;
+  positionZ: number;
+  positionWeight: number;
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
 }
 
 interface CellSample {
@@ -116,6 +126,55 @@ function nodeNormal(node: OrientationNode): SurfaceComponentNormal | null {
   return normalize(node.normalX, node.normalY, node.normalZ);
 }
 
+function nodeCenter(node: OrientationNode): SurfaceComponentPoint | null {
+  if (!Number.isFinite(node.positionWeight) || node.positionWeight <= 1e-8) return null;
+  return [
+    node.positionX / node.positionWeight,
+    node.positionY / node.positionWeight,
+    node.positionZ / node.positionWeight,
+  ];
+}
+
+function axisGap(minA: number, maxA: number, minB: number, maxB: number): number {
+  if (maxA < minB) return minB - maxA;
+  if (maxB < minA) return minA - maxB;
+  return 0;
+}
+
+function nodeSupportGapMeters(a: OrientationNode, b: OrientationNode): number {
+  const dx = axisGap(a.minX, a.maxX, b.minX, b.maxX);
+  const dy = axisGap(a.minY, a.maxY, b.minY, b.maxY);
+  const dz = axisGap(a.minZ, a.maxZ, b.minZ, b.maxZ);
+  return Math.hypot(dx, dy, dz);
+}
+
+function nodeSupportsConnect(
+  a: OrientationNode,
+  b: OrientationNode,
+  voxelSizeMeters: number,
+  connectionCellSizeMeters: number,
+): boolean {
+  // Grid adjacency is only a broad phase. Two samples can occupy neighbouring
+  // cells while sitting on opposite cell boundaries, which previously glued a
+  // floating island to the main surface and inflated physical extents/readiness.
+  // Require actual measured support to bridge the gap as well.
+  const maximumSupportGapMeters = clamp(voxelSizeMeters * 1.75, 0.045, 0.12);
+  if (nodeSupportGapMeters(a, b) > maximumSupportGapMeters) return false;
+
+  // The AABB test can be fooled by one tail sample. A bounded centroid gate keeps
+  // the link local while still allowing diagonal neighbours of an ordinary
+  // voxel-spaced surface. Nodes themselves never span more than one hash cell.
+  const centerA = nodeCenter(a);
+  const centerB = nodeCenter(b);
+  if (centerA === null || centerB === null) return false;
+  const centerDistance = Math.hypot(
+    centerA[0] - centerB[0],
+    centerA[1] - centerB[1],
+    centerA[2] - centerB[2],
+  );
+  return centerDistance <= connectionCellSizeMeters * 2.20;
+}
+
 function compareSamples(left: CellSample, right: CellSample): number {
   return right.confidence - left.confidence ||
     left.normal[0] - right.normal[0] ||
@@ -146,6 +205,16 @@ function accumulateSample(node: OrientationNode, sample: CellSample): void {
   node.normalY += sample.normal[1] * weight * sign;
   node.normalZ += sample.normal[2] * weight * sign;
   node.normalWeight += weight;
+  node.positionX += sample.x * weight;
+  node.positionY += sample.y * weight;
+  node.positionZ += sample.z * weight;
+  node.positionWeight += weight;
+  node.minX = Math.min(node.minX, sample.x);
+  node.minY = Math.min(node.minY, sample.y);
+  node.minZ = Math.min(node.minZ, sample.z);
+  node.maxX = Math.max(node.maxX, sample.x);
+  node.maxY = Math.max(node.maxY, sample.y);
+  node.maxZ = Math.max(node.maxZ, sample.z);
   node.pointIndices.push(sample.index);
 }
 
@@ -270,9 +339,11 @@ function componentMetrics(
  * a voxel hash. Each occupied cell may form at most twelve bounded provisional
  * normal families; they are ranked deterministically by measured support and only
  * the strongest three survive into component traversal. BFS then visits only the
- * 3x3x3 neighbouring occupied cells. This keeps memory O(N), preserves sharp
- * boundaries, and prevents arrival order or a few noisy normals from deciding
- * which real surfaces survive the per-cell cap.
+ * 3x3x3 neighbouring occupied cells, but grid adjacency is only a broad phase:
+ * compatible families must also have metrically close measured support. This
+ * keeps memory O(N), preserves sharp boundaries, prevents false bridges across
+ * empty space, and avoids arrival order/noisy normals deciding which surfaces
+ * survive the per-cell cap.
  */
 export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceComponentAnalysis {
   const sourceCount = Math.min(
@@ -345,6 +416,16 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
           normalY: 0,
           normalZ: 0,
           normalWeight: 0,
+          positionX: 0,
+          positionY: 0,
+          positionZ: 0,
+          positionWeight: 0,
+          minX: Number.POSITIVE_INFINITY,
+          minY: Number.POSITIVE_INFINITY,
+          minZ: Number.POSITIVE_INFINITY,
+          maxX: Number.NEGATIVE_INFINITY,
+          maxY: Number.NEGATIVE_INFINITY,
+          maxZ: Number.NEGATIVE_INFINITY,
         };
         provisional.push(best);
       }
@@ -387,6 +468,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
               if (visited[neighbour.id] !== 0) continue;
               const neighbourNormal = nodeNormal(neighbour);
               if (neighbourNormal === null || absDot(currentNormal, neighbourNormal) < COMPONENT_NORMAL_DOT) continue;
+              if (!nodeSupportsConnect(current, neighbour, voxel, connectionCellSizeMeters)) continue;
               visited[neighbour.id] = 1;
               queue.push(neighbour);
             }
