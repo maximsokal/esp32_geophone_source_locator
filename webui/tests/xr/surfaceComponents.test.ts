@@ -27,6 +27,23 @@ function addGrid(
   }
 }
 
+function addFamily(
+  target: Cloud,
+  count: number,
+  normal: readonly [number, number, number],
+  offset: number,
+): void {
+  for (let index = 0; index < count; index += 1) {
+    target.positions.push(
+      0.004 + ((index + offset) % 3) * 0.006,
+      0.004 + (Math.floor((index + offset) / 3) % 3) * 0.006,
+      0.004 + (Math.floor((index + offset) / 9) % 2) * 0.006,
+    );
+    target.normals.push(...normal);
+    target.confidence.push(0.92);
+  }
+}
+
 function analyze(source: Cloud) {
   return analyzeSurfaceComponents({
     positions: Float32Array.from(source.positions),
@@ -85,6 +102,27 @@ describe('bounded spatial surface components', () => {
     const result = analyze(source);
     expect(result.componentCount).toBeGreaterThanOrEqual(2);
     expect(result.eligibleComponentCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the three strongest normal families in a crowded voxel independent of arrival order', () => {
+    const first = cloud();
+    addFamily(first, 10, [1, 0, 0], 0);
+    addFamily(first, 8, [0, 1, 0], 20);
+    addFamily(first, 6, [0, 0, 1], 40);
+    addFamily(first, 4, [0.577350269, 0.577350269, 0.577350269], 60);
+
+    const reversed = cloud();
+    addFamily(reversed, 4, [0.577350269, 0.577350269, 0.577350269], 60);
+    addFamily(reversed, 6, [0, 0, 1], 40);
+    addFamily(reversed, 8, [0, 1, 0], 20);
+    addFamily(reversed, 10, [1, 0, 0], 0);
+
+    const a = analyze(first);
+    const b = analyze(reversed);
+    expect(a.acceptedPointCount).toBe(24);
+    expect(b.acceptedPointCount).toBe(24);
+    expect(a.components.map((component) => component.pointCount).sort((x, y) => y - x)).toEqual([10, 8, 6]);
+    expect(b.components.map((component) => component.pointCount).sort((x, y) => y - x)).toEqual([10, 8, 6]);
   });
 
   it('respects a coverage-ready mask before component growth', () => {
