@@ -34,9 +34,12 @@ export class NonBlockingRgbaReadback<T> {
     readonly height: number,
     slotCount = 3,
   ) {
-    const byteLength = Math.max(1, Math.floor(width)) * Math.max(1, Math.floor(height)) * 4;
+    const safeWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1;
+    const safeHeight = Number.isFinite(height) ? Math.max(1, Math.floor(height)) : 1;
+    const byteLength = safeWidth * safeHeight * 4;
     this.output = new Uint8Array(byteLength);
-    const count = Math.max(2, Math.min(4, Math.floor(slotCount)));
+    const requestedSlots = Number.isFinite(slotCount) ? Math.floor(slotCount) : 3;
+    const count = Math.max(2, Math.min(4, requestedSlots));
     const previous = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) as WebGLBuffer | null;
     try {
       for (let index = 0; index < count; index += 1) {
@@ -61,6 +64,13 @@ export class NonBlockingRgbaReadback<T> {
     return count;
   }
 
+  private releaseSlot(slot: ReadbackSlot<T>): void {
+    if (slot.sync !== null) this.gl.deleteSync(slot.sync);
+    slot.sync = null;
+    slot.metadata = null;
+    slot.sequence = 0;
+  }
+
   /** Queue the currently bound READ framebuffer without a CPU readback. */
   enqueue(metadata: T): boolean {
     if (this.disposed) return false;
@@ -68,10 +78,14 @@ export class NonBlockingRgbaReadback<T> {
     if (slot === undefined) return false;
 
     const gl = this.gl;
-    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.buffer);
-    gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
-    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    let sync: WebGLSync | null = null;
+    try {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.buffer);
+      gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+      sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    } finally {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    }
     if (sync === null) return false;
 
     slot.sync = sync;
@@ -98,34 +112,29 @@ export class NonBlockingRgbaReadback<T> {
     const status = gl.clientWaitSync(oldest.sync, 0, 0);
     if (status === gl.TIMEOUT_EXPIRED) return null;
     if (status === gl.WAIT_FAILED) {
-      gl.deleteSync(oldest.sync);
-      oldest.sync = null;
-      oldest.metadata = null;
-      oldest.sequence = 0;
+      this.releaseSlot(oldest);
       return null;
     }
     if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED) return null;
 
     const metadata = oldest.metadata;
-    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, oldest.buffer);
-    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.output);
-    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-    gl.deleteSync(oldest.sync);
-    oldest.sync = null;
-    oldest.metadata = null;
-    oldest.sequence = 0;
-    return { pixels: this.output, metadata };
+    try {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, oldest.buffer);
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.output);
+      return { pixels: this.output, metadata };
+    } finally {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      // A context-loss/readback error must not poison this slot forever.
+      this.releaseSlot(oldest);
+    }
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     for (const slot of this.slots) {
-      if (slot.sync !== null) this.gl.deleteSync(slot.sync);
+      this.releaseSlot(slot);
       this.gl.deleteBuffer(slot.buffer);
-      slot.sync = null;
-      slot.metadata = null;
-      slot.sequence = 0;
     }
     this.slots.length = 0;
   }
