@@ -102,4 +102,23 @@ describe('bounded spatial surface components', () => {
     expect(result.acceptedPointCount).toBe(12);
     expect(result.eligibleComponentCount).toBe(0);
   });
+
+  it('does not let a sparse connected tail inflate a tiny patch into a mesh-sized component', () => {
+    const source = cloud();
+    addGrid(source, [0, 0, 0], 7, 7, 0.01);
+    // Four high-confidence points form a connected tail through neighbouring
+    // 6-cm hash cells. A covariance-only extent can be dominated by this tail,
+    // but it is not enough measured area to redefine the physical object size.
+    for (const x of [0.10, 0.15, 0.20, 0.25]) {
+      source.positions.push(x, 0.03, 0);
+      source.normals.push(0, 0, 1);
+      source.confidence.push(0.92);
+    }
+    const result = analyze(source);
+    expect(result.componentCount).toBe(1);
+    expect(result.bestMeshComponent!.pointCount).toBe(53);
+    expect(result.bestMeshComponent!.majorExtentMeters).toBeLessThan(0.10);
+    expect(result.bestMeshComponent!.meshEligible).toBe(false);
+    expect(result.eligiblePointCount).toBe(0);
+  });
 });
