@@ -11,6 +11,7 @@ import type {
 import { estimateSurfaceFeatureComplexity, type SurfaceNormalEvidence } from './surfaceFeatureDensity';
 
 const SEED_CELL_METERS = 0.13;
+const SEED_REGION_METERS = 0.52;
 const MAX_SEEDS = 72;
 const MAX_CORNERS = 8;
 const FEATURE_INDEX_CELL_METERS = 0.09;
@@ -58,8 +59,56 @@ function key(point: ProjectPoint): string {
   return `${Math.floor(point[0] / SEED_CELL_METERS)}:${Math.floor(point[1] / SEED_CELL_METERS)}:${Math.floor(point[2] / SEED_CELL_METERS)}`;
 }
 
+function regionKey(point: ProjectPoint): string {
+  return `${Math.floor(point[0] / SEED_REGION_METERS)}:${Math.floor(point[1] / SEED_REGION_METERS)}:${Math.floor(point[2] / SEED_REGION_METERS)}`;
+}
+
 function distance(a: ProjectPoint, b: ProjectPoint): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+function comparePoint(left: ProjectPoint, right: ProjectPoint): number {
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
+
+function seedScore(seed: Seed): number {
+  return seed.confidence + Math.min(8, seed.count) * 0.012;
+}
+
+function compareSeeds(left: Seed, right: Seed): number {
+  return seedScore(right) - seedScore(left) || comparePoint(left.position, right.position);
+}
+
+/**
+ * Keep the global solver budget bounded without allowing one large, high-quality
+ * flat region to consume all 72 seeds before feature rejection. Round-robin over
+ * coarse spatial regions preserves broad object coverage. A small scan with only
+ * one region still receives the entire budget, so this is fairness rather than a
+ * per-region quality cap.
+ */
+function spatiallyFairSeeds(candidates: readonly Seed[]): Seed[] {
+  const regions = new Map<string, Seed[]>();
+  for (const seed of candidates) {
+    const region = regionKey(seed.position);
+    const bucket = regions.get(region) ?? [];
+    bucket.push(seed);
+    regions.set(region, bucket);
+  }
+  const orderedRegions = [...regions.entries()]
+    .map(([region, seeds]) => ({ region, seeds: seeds.sort(compareSeeds), cursor: 0 }))
+    .sort((left, right) => left.region.localeCompare(right.region));
+  const output: Seed[] = [];
+  let advanced = true;
+  while (output.length < MAX_SEEDS && advanced) {
+    advanced = false;
+    for (const region of orderedRegions) {
+      if (output.length >= MAX_SEEDS) break;
+      if (region.cursor >= region.seeds.length) continue;
+      output.push(region.seeds[region.cursor++]);
+      advanced = true;
+    }
+  }
+  return output;
 }
 
 function cornerId(position: ProjectPoint): string {
@@ -130,12 +179,32 @@ function evidenceSpread(evidence: readonly CornerEvidence[]): number {
   );
 }
 
-function boundedFeatureIndices(indices: readonly number[]): readonly number[] {
-  if (indices.length <= MAX_FEATURE_EVIDENCE) return indices;
+function compareFeatureIndices(
+  snapshot: ManualPlacementSurfaceSnapshot,
+  leftIndex: number,
+  rightIndex: number,
+): number {
+  const left = leftIndex * 3;
+  const right = rightIndex * 3;
+  return snapshot.positions[left] - snapshot.positions[right] ||
+    snapshot.positions[left + 1] - snapshot.positions[right + 1] ||
+    snapshot.positions[left + 2] - snapshot.positions[right + 2] ||
+    snapshot.normals[left] - snapshot.normals[right] ||
+    snapshot.normals[left + 1] - snapshot.normals[right + 1] ||
+    snapshot.normals[left + 2] - snapshot.normals[right + 2] ||
+    snapshot.confidence[rightIndex] - snapshot.confidence[leftIndex];
+}
+
+function boundedFeatureIndices(
+  snapshot: ManualPlacementSurfaceSnapshot,
+  indices: readonly number[],
+): readonly number[] {
+  const ordered = [...indices].sort((left, right) => compareFeatureIndices(snapshot, left, right));
+  if (ordered.length <= MAX_FEATURE_EVIDENCE) return ordered;
   const sampled = new Array<number>(MAX_FEATURE_EVIDENCE);
-  const stride = indices.length / MAX_FEATURE_EVIDENCE;
+  const stride = ordered.length / MAX_FEATURE_EVIDENCE;
   for (let index = 0; index < MAX_FEATURE_EVIDENCE; index += 1) {
-    sampled[index] = indices[Math.min(indices.length - 1, Math.floor((index + 0.5) * stride))];
+    sampled[index] = ordered[Math.min(ordered.length - 1, Math.floor((index + 0.5) * stride))];
   }
   return sampled;
 }
@@ -155,7 +224,7 @@ function structuralFeatureNearSeed(
   if (usable.length < MIN_FEATURE_EVIDENCE) return false;
 
   const evidence: SurfaceNormalEvidence[] = [];
-  for (const index of boundedFeatureIndices(usable)) {
+  for (const index of boundedFeatureIndices(snapshot, usable)) {
     const offset = index * 3;
     evidence.push({
       normalX: snapshot.normals[offset],
@@ -176,11 +245,13 @@ function structuralFeatureNearSeed(
  *
  * One strong seed per 13-cm cell is considered, but flat cells are discarded by
  * bounded local normal-family evidence before the expensive uncertainty solver
- * scans the surface. Two spatially supported orientation families are sufficient
+ * scans the surface. The bounded seed budget is distributed across coarse spatial
+ * regions so a large flat/high-confidence area cannot starve a smaller true
+ * feature elsewhere. Two spatially supported orientation families are sufficient
  * for this prefilter: requiring three here would miss real corners with a depth
  * hole at the vertex. The robust solver remains authoritative and still requires
- * THREE supported planes, bounded uncertainty and measured support near the
- * solved intersection.
+ * THREE supported planes, bounded uncertainty and measured pair-edge support near
+ * the solved intersection.
  *
  * This detector certifies geometry only. Candidate-specific temporal maturity is
  * handled by CertifiedStructuralCornerTracker; a single analysis is exactly one
@@ -215,20 +286,18 @@ export function detectCertifiedStructuralCorners(
       continue;
     }
     existing.count += 1;
-    if (confidence > existing.confidence) {
+    if (
+      confidence > existing.confidence ||
+      (confidence === existing.confidence && comparePoint(position, existing.position) < 0)
+    ) {
       existing.position = position;
       existing.confidence = confidence;
     }
   }
 
-  const seeds = [...cells.values()]
-    .filter((seed) => seed.count >= 2)
-    .sort((left, right) => {
-      const leftScore = left.confidence + Math.min(8, left.count) * 0.012;
-      const rightScore = right.confidence + Math.min(8, right.count) * 0.012;
-      return rightScore - leftScore;
-    })
-    .slice(0, MAX_SEEDS);
+  const seeds = spatiallyFairSeeds(
+    [...cells.values()].filter((seed) => seed.count >= 2),
+  );
   const spatialIndex = new BoundedSpatialPointIndex(snapshot.positions, count, FEATURE_INDEX_CELL_METERS);
 
   const corners: StructuralCornerCandidate[] = [];
@@ -255,14 +324,17 @@ export function detectCertifiedStructuralCorners(
     };
     if (existing === undefined) {
       corners.push(candidate);
-    } else if (candidate.confidence > existing.confidence) {
+    } else if (
+      candidate.confidence > existing.confidence ||
+      (candidate.confidence === existing.confidence && comparePoint(candidate.position, existing.position) < 0)
+    ) {
       const index = corners.indexOf(existing);
       corners[index] = candidate;
     }
   }
 
   return corners
-    .sort((left, right) => right.confidence - left.confidence)
+    .sort((left, right) => right.confidence - left.confidence || comparePoint(left.position, right.position))
     .slice(0, MAX_CORNERS);
 }
 
@@ -350,7 +422,7 @@ export class CertifiedStructuralCornerTracker {
         support: track.support,
         observations: track.evidence.length,
       }))
-      .sort((left, right) => right.confidence - left.confidence)
+      .sort((left, right) => right.confidence - left.confidence || comparePoint(left.position, right.position))
       .slice(0, MAX_CORNERS);
   }
 }
