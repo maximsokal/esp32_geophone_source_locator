@@ -6,12 +6,14 @@ import {
 } from '../../src/xr/scanCapabilityReadiness';
 import type { SurfaceComponentAnalysis } from '../../src/xr/surfaceComponents';
 
-function analysis(overrides: Partial<SurfaceComponentAnalysis['components'][number]> = {}): SurfaceComponentAnalysis {
-  const component = {
+type Component = SurfaceComponentAnalysis['components'][number];
+
+function baseComponent(overrides: Partial<Component> = {}): Component {
+  return {
     id: 0,
     pointCount: 80,
     occupiedCellCount: 18,
-    center: [0, 0, 0] as const,
+    center: [0, 0, 0],
     majorExtentMeters: 0.32,
     minorExtentMeters: 0.20,
     thicknessMeters: 0.05,
@@ -20,16 +22,27 @@ function analysis(overrides: Partial<SurfaceComponentAnalysis['components'][numb
     meshEligible: true,
     ...overrides,
   };
+}
+
+function analysis(overrides: Partial<Component> = {}): SurfaceComponentAnalysis {
+  const component = baseComponent(overrides);
+  return analysisFromComponents([component]);
+}
+
+function analysisFromComponents(components: Component[]): SurfaceComponentAnalysis {
+  const largestComponent = [...components].sort((a, b) => b.pointCount - a.pointCount)[0] ?? null;
+  const bestMeshComponent = [...components].sort((a, b) => b.meshReadiness - a.meshReadiness)[0] ?? null;
+  const pointCount = components.reduce((sum, component) => sum + component.pointCount, 0);
   return {
-    pointCount: component.pointCount,
-    acceptedPointCount: component.pointCount,
-    componentCount: 1,
-    eligibleComponentCount: component.meshEligible ? 1 : 0,
-    eligiblePointCount: component.meshEligible ? component.pointCount : 0,
-    eligiblePointMask: new Uint8Array(component.pointCount).fill(component.meshEligible ? 1 : 0),
-    components: [component],
-    largestComponent: component,
-    bestMeshComponent: component,
+    pointCount,
+    acceptedPointCount: pointCount,
+    componentCount: components.length,
+    eligibleComponentCount: components.filter((component) => component.meshEligible).length,
+    eligiblePointCount: components.filter((component) => component.meshEligible).reduce((sum, component) => sum + component.pointCount, 0),
+    eligiblePointMask: new Uint8Array(pointCount),
+    components,
+    largestComponent,
+    bestMeshComponent,
     connectionCellSizeMeters: 0.06,
   };
 }
@@ -53,6 +66,22 @@ describe('scan capability readiness', () => {
     expect(readiness.structural.ready).toBe(false);
   });
 
+  it('requires actual camera translation even after enough keyframes exist', () => {
+    const viewpoints = Array.from({ length: 8 }, (_, index) => view(index + 1, index * 0.005, 0));
+    const readiness = computeScanCapabilityReadiness({
+      stablePointCount: 500,
+      keyframeCount: 8,
+      visibleCoverageCells: 20,
+      readyCoverageCells: 18,
+      surfaceAnalysis: analysis(),
+      viewpoints,
+    });
+    expect(readiness.cameraBaselineMeters).toBeLessThan(0.04);
+    expect(readiness.structural.progress).toBeLessThan(0.35);
+    expect(readiness.structural.limitingMetric).toBe('views');
+    expect(readiness.structural.ready).toBe(false);
+  });
+
   it('keeps structural analysis blocked when many points occupy a physically tiny component', () => {
     const readiness = computeScanCapabilityReadiness({
       stablePointCount: 500,
@@ -71,6 +100,38 @@ describe('scan capability readiness', () => {
     expect(readiness.structural.limitingMetric).toBe('extent');
     expect(readiness.objectTooSmall).toBe(true);
     expect(readiness.mesh?.ready).toBe(false);
+  });
+
+  it('selects the physically useful component instead of the densest tiny island', () => {
+    const tinyDense = baseComponent({
+      id: 0,
+      pointCount: 160,
+      center: [1, 1, 0],
+      majorExtentMeters: 0.06,
+      minorExtentMeters: 0.025,
+      meshReadiness: 0.30,
+      meshEligible: false,
+    });
+    const useful = baseComponent({
+      id: 1,
+      pointCount: 45,
+      center: [0, 0, 0],
+      majorExtentMeters: 0.22,
+      minorExtentMeters: 0.10,
+      meshReadiness: 0.92,
+      meshEligible: false,
+    });
+    const readiness = computeScanCapabilityReadiness({
+      stablePointCount: 500,
+      keyframeCount: 20,
+      visibleCoverageCells: 20,
+      readyCoverageCells: 18,
+      surfaceAnalysis: analysisFromComponents([tinyDense, useful]),
+      viewpoints: [view(1, 0.5, 0), view(2, -0.5, 0)],
+    });
+    expect(readiness.objectMajorExtentMeters).toBeCloseTo(0.22, 6);
+    expect(readiness.objectMinorExtentMeters).toBeCloseTo(0.10, 6);
+    expect(readiness.structural.ready).toBe(true);
   });
 
   it('reports mesh readiness independently from structural readiness', () => {
