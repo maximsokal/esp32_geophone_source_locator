@@ -6,6 +6,16 @@
 #include "esp_lvgl_port.h"
 
 
+/*
+ * Object names are persisted as UTF-8 bytes and may use the full
+ * OBJECT_FORMAT_NAME_SIZE contract. Keep enough room for the complete object
+ * id/name plus the longest decoration currently rendered by this screen.
+ * This avoids format-truncation warnings without silently shortening names.
+ */
+#define UI_OBJECTS_TEXT_SIZE \
+    (OBJECT_FORMAT_ID_SIZE + OBJECT_FORMAT_NAME_SIZE + sizeof("ACTIVE    [ACTIVE]"))
+
+
 static void ui_objects_render_notice(lv_obj_t *screen)
 {
     ui_context_t *context = ui_context();
@@ -39,7 +49,7 @@ static void ui_objects_render_menu(lv_obj_t *screen)
     }
 
     if (object_service_get_active(&active) == ESP_OK) {
-        char text[64];
+        char text[UI_OBJECTS_TEXT_SIZE];
         snprintf(
             text,
             sizeof(text),
@@ -136,7 +146,7 @@ static void ui_objects_render_list(lv_obj_t *screen)
             break;
         }
 
-        char text[64];
+        char text[UI_OBJECTS_TEXT_SIZE];
         snprintf(
             text,
             sizeof(text),
@@ -186,7 +196,7 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
         context->object_count > 0 &&
         context->object_index < context->object_count
     ) {
-        char text[80];
+        char text[UI_OBJECTS_TEXT_SIZE];
         snprintf(
             text,
             sizeof(text),
