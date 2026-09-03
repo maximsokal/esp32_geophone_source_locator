@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -10,6 +11,7 @@
 #include "storage_manager.h"
 
 #define OBJECT_STORE_JSON_BUFFER_SIZE 4096
+#define OBJECT_STORE_SETTINGS_BUFFER_SIZE 1024U
 #define OBJECT_STORE_SETTINGS_PATH STORAGE_MANAGER_ROOT_PATH "/settings.json"
 #define OBJECT_STORE_MIN_CABLE_LENGTH_M 0.1f
 #define OBJECT_STORE_MAX_CABLE_LENGTH_M 100.0f
@@ -41,13 +43,19 @@ static esp_err_t object_store_load_metadata_locked(const char *object_id, cJSON 
         return err;
     }
 
-    char buffer[OBJECT_STORE_JSON_BUFFER_SIZE];
-    err = storage_manager_read_text(path, buffer, sizeof(buffer));
+    char *buffer = malloc(OBJECT_STORE_JSON_BUFFER_SIZE);
+    if (buffer == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = storage_manager_read_text(path, buffer, OBJECT_STORE_JSON_BUFFER_SIZE);
     if (err != ESP_OK) {
+        free(buffer);
         return err;
     }
 
     cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
     if (root == NULL || !cJSON_IsObject(root)) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
@@ -84,13 +92,23 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
         return ESP_OK;
     }
 
-    char buffer[1024];
-    esp_err_t err = storage_manager_read_text(OBJECT_STORE_SETTINGS_PATH, buffer, sizeof(buffer));
+    char *buffer = malloc(OBJECT_STORE_SETTINGS_BUFFER_SIZE);
+    if (buffer == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = storage_manager_read_text(
+        OBJECT_STORE_SETTINGS_PATH,
+        buffer,
+        OBJECT_STORE_SETTINGS_BUFFER_SIZE
+    );
     if (err != ESP_OK) {
+        free(buffer);
         return err;
     }
 
     cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
     if (root == NULL) {
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -202,11 +220,17 @@ static void object_store_read_location(cJSON *root, object_store_location_t *loc
     }
 }
 
-static void object_store_read_cables(cJSON *root, float lengths[OBJECT_STORE_POD_COUNT])
+static void object_store_read_cables(
+    cJSON *root,
+    const float defaults[OBJECT_STORE_POD_COUNT],
+    float lengths[OBJECT_STORE_POD_COUNT]
+)
 {
-    if (object_store_settings_load_locked(lengths) != ESP_OK) {
-        object_store_default_cables(lengths);
-    }
+    memcpy(
+        lengths,
+        defaults,
+        sizeof(float) * OBJECT_STORE_POD_COUNT
+    );
 
     cJSON *pods = cJSON_GetObjectItemCaseSensitive(root, "pods");
     if (!cJSON_IsArray(pods)) {
@@ -224,13 +248,14 @@ static void object_store_read_cables(cJSON *root, float lengths[OBJECT_STORE_POD
     }
 }
 
-esp_err_t object_store_json_read_profile_locked(
+static esp_err_t object_store_json_read_profile_with_defaults_locked(
     const char *object_id,
     bool active,
+    const float defaults[OBJECT_STORE_POD_COUNT],
     object_store_profile_t *profile
 )
 {
-    if (profile == NULL) {
+    if (profile == NULL || defaults == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -245,9 +270,28 @@ esp_err_t object_store_json_read_profile_locked(
     object_store_copy_name(root, object_id, profile->summary.name, sizeof(profile->summary.name));
     profile->summary.active = active;
     object_store_read_location(root, &profile->location);
-    object_store_read_cables(root, profile->cable_lengths_m);
+    object_store_read_cables(root, defaults, profile->cable_lengths_m);
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+esp_err_t object_store_json_read_profile_locked(
+    const char *object_id,
+    bool active,
+    object_store_profile_t *profile
+)
+{
+    float defaults[OBJECT_STORE_POD_COUNT];
+    if (object_store_settings_load_locked(defaults) != ESP_OK) {
+        object_store_default_cables(defaults);
+    }
+
+    return object_store_json_read_profile_with_defaults_locked(
+        object_id,
+        active,
+        defaults,
+        profile
+    );
 }
 
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile)
@@ -274,13 +318,19 @@ esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t
     return err;
 }
 
-esp_err_t object_store_list_profiles(
+esp_err_t object_store_list_profiles_with_defaults(
     object_store_profile_t *objects,
     size_t max_objects,
-    size_t *object_count
+    size_t *object_count,
+    float default_cable_lengths_m[OBJECT_STORE_POD_COUNT]
 )
 {
-    if (objects == NULL || object_count == NULL || max_objects == 0) {
+    if (
+        objects == NULL ||
+        object_count == NULL ||
+        default_cable_lengths_m == NULL ||
+        max_objects == 0
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -288,16 +338,26 @@ esp_err_t object_store_list_profiles(
     esp_err_t err = object_store_internal_begin_file_operation();
     if (err != ESP_OK) return err;
 
-    object_store_summary_t summaries[OBJECT_STORE_MAX_OBJECTS];
     size_t count = 0;
     const size_t bounded = max_objects < OBJECT_STORE_MAX_OBJECTS ? max_objects : OBJECT_STORE_MAX_OBJECTS;
+    object_store_summary_t *summaries = calloc(bounded, sizeof(*summaries));
+    if (summaries == NULL) {
+        object_store_internal_end_file_operation();
+        return ESP_ERR_NO_MEM;
+    }
+
     err = object_store_fs_list(summaries, bounded, &count, object_store_internal_active_id());
+
+    if (object_store_settings_load_locked(default_cable_lengths_m) != ESP_OK) {
+        object_store_default_cables(default_cable_lengths_m);
+    }
 
     if (err == ESP_OK) {
         for (size_t i = 0; i < count; ++i) {
-            err = object_store_json_read_profile_locked(
+            err = object_store_json_read_profile_with_defaults_locked(
                 summaries[i].id,
                 summaries[i].active,
+                default_cable_lengths_m,
                 &objects[i]
             );
             if (err != ESP_OK) break;
@@ -305,8 +365,24 @@ esp_err_t object_store_list_profiles(
     }
 
     if (err == ESP_OK) *object_count = count;
+    free(summaries);
     object_store_internal_end_file_operation();
     return err;
+}
+
+esp_err_t object_store_list_profiles(
+    object_store_profile_t *objects,
+    size_t max_objects,
+    size_t *object_count
+)
+{
+    float defaults[OBJECT_STORE_POD_COUNT];
+    return object_store_list_profiles_with_defaults(
+        objects,
+        max_objects,
+        object_count,
+        defaults
+    );
 }
 
 static esp_err_t object_store_mutation_begin(const char *object_id, cJSON **root_out)
