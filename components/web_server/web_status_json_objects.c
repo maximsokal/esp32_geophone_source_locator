@@ -1,5 +1,7 @@
 #include "web_server_internal.h"
 
+#include <stdlib.h>
+
 #include "object_store.h"
 
 static bool web_status_json_add_location(
@@ -27,7 +29,12 @@ bool web_status_json_add_objects(cJSON *root)
     cJSON *store = cJSON_AddObjectToObject(root, "object_store");
     if (store == NULL) return false;
 
-    object_store_profile_t profiles[OBJECT_STORE_MAX_OBJECTS];
+    object_store_profile_t *profiles = calloc(
+        OBJECT_STORE_MAX_OBJECTS,
+        sizeof(*profiles)
+    );
+    if (profiles == NULL) return false;
+
     size_t count = 0;
     esp_err_t err = object_store_list_profiles(
         profiles,
@@ -36,6 +43,7 @@ bool web_status_json_add_objects(cJSON *root)
     );
 
     if (cJSON_AddBoolToObject(store, "available", err == ESP_OK) == NULL) {
+        free(profiles);
         return false;
     }
 
@@ -44,6 +52,7 @@ bool web_status_json_add_objects(cJSON *root)
         cJSON_AddStringToObject(store, "error", esp_err_to_name(err));
         cJSON_AddArrayToObject(store, "default_cable_lengths_m");
         cJSON_AddArrayToObject(store, "objects");
+        free(profiles);
         return true;
     }
 
@@ -66,34 +75,51 @@ bool web_status_json_add_objects(cJSON *root)
 
     cJSON *default_array = cJSON_AddArrayToObject(store, "default_cable_lengths_m");
     cJSON *objects = cJSON_AddArrayToObject(store, "objects");
-    if (default_array == NULL || objects == NULL) return false;
+    if (default_array == NULL || objects == NULL) {
+        free(profiles);
+        return false;
+    }
 
     for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
         cJSON *number = cJSON_CreateNumber(defaults[i]);
-        if (number == NULL) return false;
+        if (number == NULL) {
+            free(profiles);
+            return false;
+        }
         cJSON_AddItemToArray(default_array, number);
     }
 
     for (size_t i = 0; i < count; ++i) {
         cJSON *object = cJSON_CreateObject();
-        if (object == NULL) return false;
+        if (object == NULL) {
+            free(profiles);
+            return false;
+        }
         cJSON_AddItemToArray(objects, object);
 
         if (cJSON_AddStringToObject(object, "id", profiles[i].summary.id) == NULL ||
             cJSON_AddStringToObject(object, "name", profiles[i].summary.name) == NULL ||
             cJSON_AddBoolToObject(object, "active", profiles[i].summary.active) == NULL ||
             !web_status_json_add_location(object, &profiles[i].location)) {
+            free(profiles);
             return false;
         }
 
         cJSON *cables = cJSON_AddArrayToObject(object, "cable_lengths_m");
-        if (cables == NULL) return false;
+        if (cables == NULL) {
+            free(profiles);
+            return false;
+        }
         for (size_t pod = 0; pod < OBJECT_STORE_POD_COUNT; ++pod) {
             cJSON *number = cJSON_CreateNumber(profiles[i].cable_lengths_m[pod]);
-            if (number == NULL) return false;
+            if (number == NULL) {
+                free(profiles);
+                return false;
+            }
             cJSON_AddItemToArray(cables, number);
         }
     }
 
+    free(profiles);
     return true;
 }
