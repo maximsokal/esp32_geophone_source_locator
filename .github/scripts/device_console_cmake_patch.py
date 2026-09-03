@@ -44,6 +44,13 @@ replacements = [
         '        "web_status_json_pods.c"',
     ),
     (
+        '        "web_status_json_objects.c"\n'
+        '        "web_status_json_pods.c"',
+        '        "web_status_json_objects.c"\n'
+        '        "web_status_json_recording.c"\n'
+        '        "web_status_json_pods.c"',
+    ),
+    (
         '        device_status\n'
         '        sd_card\n'
         '        seismic_buffer',
@@ -52,6 +59,15 @@ replacements = [
         '        sd_card\n'
         '        seismic_acquisition\n'
         '        seismic_buffer',
+    ),
+    (
+        '        seismic_acquisition\n'
+        '        seismic_buffer\n'
+        '        wifi_manager',
+        '        seismic_acquisition\n'
+        '        seismic_buffer\n'
+        '        seismic_recorder\n'
+        '        wifi_manager',
     ),
 ]
 
