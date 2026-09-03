@@ -105,8 +105,11 @@ function cString(value) {
   return JSON.stringify(value);
 }
 function embeddedSymbolBase(fileName) {
-  const embeddedPath = `generated_webui_chunks/${fileName}.gz`;
-  return `_binary_${embeddedPath.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  // ESP-IDF 5.5.4 target_add_binary_data() turns an EMBED_FILES path into an
+  // absolute path and then uses only its basename when generating _binary_*
+  // symbols. Match that emitted basename exactly; directories are not part of it.
+  const embeddedName = `${fileName}.gz`;
+  return `_binary_${embeddedName.replace(/[^A-Za-z0-9_]/g, '_')}`;
 }
 
 const declarations = [];
