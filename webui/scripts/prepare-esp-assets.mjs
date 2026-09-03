@@ -10,7 +10,11 @@ const distDir = join(webuiDir, 'dist');
 const distAssetsDir = join(distDir, 'assets');
 const espDir = join(webuiDir, 'esp-dist');
 const espAssetsDir = join(espDir, 'assets');
-const MAX_SECONDARY_JS_CHUNKS = 24;
+const MAX_SECONDARY_ASSETS = 32;
+
+const manifest = JSON.parse(await readFile(join(distDir, '.vite', 'manifest.json'), 'utf8'));
+const appEntry = Object.values(manifest).find((value) => value.isEntry === true);
+if (appEntry === undefined) throw new Error('Vite manifest has no application entry.');
 
 const entries = await readdir(distAssetsDir, { withFileTypes: true });
 const jsFiles = entries
@@ -25,33 +29,48 @@ const cssFiles = entries
 if (!jsFiles.includes('app.js')) {
   throw new Error(`Expected stable Vite entry assets/app.js, got JS=${jsFiles.join(', ') || '(none)'}.`);
 }
-if (cssFiles.length !== 1) {
-  throw new Error(`Expected one production CSS asset, got CSS=${cssFiles.length}.`);
+
+const initialCss = (appEntry.css ?? []).map((path) => basename(path));
+if (initialCss.length !== 1 || !cssFiles.includes(initialCss[0])) {
+  throw new Error(`Expected exactly one initial CSS asset from the Vite manifest, got ${initialCss.join(', ') || '(none)'}.`);
 }
-const secondaryJsFiles = jsFiles.filter((name) => name !== 'app.js');
-if (secondaryJsFiles.length === 0) {
-  throw new Error('Expected at least one secondary JS chunk; lazy/code-split build regressed to a single bundle.');
+const cssName = initialCss[0];
+
+const secondaryNames = [
+  ...jsFiles.filter((name) => name !== 'app.js'),
+  ...cssFiles.filter((name) => name !== cssName),
+].sort();
+if (secondaryNames.length === 0) {
+  throw new Error('Expected secondary lazy/code-split assets; build regressed to a single entry payload.');
 }
-if (secondaryJsFiles.length > MAX_SECONDARY_JS_CHUNKS) {
-  throw new Error(`Refusing to embed ${secondaryJsFiles.length} secondary JS chunks; bounded limit is ${MAX_SECONDARY_JS_CHUNKS}.`);
+if (secondaryNames.length > MAX_SECONDARY_ASSETS) {
+  throw new Error(`Refusing to embed ${secondaryNames.length} secondary assets; bounded limit is ${MAX_SECONDARY_ASSETS}.`);
 }
 
-const cssName = cssFiles[0];
+function contentType(name) {
+  if (name.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (name.endsWith('.css')) return 'text/css; charset=utf-8';
+  throw new Error(`Unsupported secondary asset type: ${name}`);
+}
+
 const sourceIndex = await readFile(join(distDir, 'index.html'), 'utf8');
 const sourceJs = await readFile(join(distAssetsDir, 'app.js'));
 const sourceCss = await readFile(join(distAssetsDir, cssName));
 const secondaryAssets = await Promise.all(
-  secondaryJsFiles.map(async (name) => ({ name, data: await readFile(join(distAssetsDir, name)) })),
+  secondaryNames.map(async (name) => ({
+    name,
+    type: contentType(name),
+    data: await readFile(join(distAssetsDir, name)),
+  })),
 );
 
 const originalJsPath = './assets/app.js';
-const originalCssPath = `./assets/${basename(cssName)}`;
+const originalCssPath = `./assets/${cssName}`;
 if (!sourceIndex.includes(originalJsPath) || !sourceIndex.includes(originalCssPath)) {
   throw new Error('Vite index.html does not reference the expected entry JS/CSS assets.');
 }
 
-let espIndex = sourceIndex
-  .replaceAll(originalCssPath, './assets/app.css');
+let espIndex = sourceIndex.replaceAll(originalCssPath, './assets/app.css');
 
 const digest = createHash('sha256');
 const digestSeparator = Uint8Array.of(0);
@@ -72,16 +91,13 @@ const buildId = digest.digest('hex').slice(0, 20);
 espIndex = espIndex
   .replaceAll('./assets/app.js', `./assets/app.js?v=${buildId}`)
   .replaceAll('./assets/app.css', `./assets/app.css?v=${buildId}`)
-  .replace(
-    '</head>',
-    `<meta name="geolocator-webui-build" content="${buildId}"></head>`,
-  );
+  .replace('</head>', `<meta name="geolocator-webui-build" content="${buildId}"></head>`);
 
 const gzipOptions = { level: 9, mtime: 0 };
 const jsGzip = gzipSync(sourceJs, gzipOptions);
 const cssGzip = gzipSync(sourceCss, gzipOptions);
 const secondaryGzip = secondaryAssets.map((asset) => ({
-  name: asset.name,
+  ...asset,
   data: gzipSync(asset.data, gzipOptions),
 }));
 
@@ -102,7 +118,7 @@ secondaryGzip.forEach((asset, index) => {
   declarations.push(`extern const unsigned char ${alias}_end[] asm(${cString(`${symbol}_end`)});`);
   tableRows.push(
     `    { ${cString(`/assets/${asset.name}`)}, ${cString(`/assets/${asset.name}.gz`)}, ` +
-    `${cString('application/javascript; charset=utf-8')}, ${alias}_start, ${alias}_end },`,
+    `${cString(asset.type)}, ${alias}_start, ${alias}_end },`,
   );
 });
 const generatedTable = [
@@ -134,6 +150,6 @@ console.log(`  assets/app.css.gz ${cssGzip.length} bytes`);
 let secondaryTotal = 0;
 for (const asset of secondaryGzip) {
   secondaryTotal += asset.data.length;
-  console.log(`  assets/${asset.name}.gz ${asset.data.length} bytes`);
+  console.log(`  assets/${asset.name}.gz ${asset.data.length} bytes (${asset.type})`);
 }
-console.log(`  secondary chunks  ${secondaryGzip.length} files / ${secondaryTotal} gzip bytes`);
+console.log(`  secondary assets  ${secondaryGzip.length} files / ${secondaryTotal} gzip bytes`);
