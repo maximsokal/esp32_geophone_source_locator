@@ -6,6 +6,7 @@
 
 #include "object_store.h"
 #include "seismic_acquisition.h"
+#include "seismic_recorder.h"
 #include "esp_log.h"
 
 #define WEB_CONTROL_MAX_BODY 1024
@@ -65,6 +66,9 @@ static esp_err_t web_control_send_result(
     else if (result == ESP_ERR_NOT_FOUND) {
         httpd_resp_set_status(request, "404 Not Found");
     }
+    else if (result == ESP_ERR_INVALID_STATE || result == ESP_ERR_TIMEOUT) {
+        httpd_resp_set_status(request, "409 Conflict");
+    }
     else if (result != ESP_OK) {
         httpd_resp_set_status(request, "500 Internal Server Error");
     }
@@ -86,6 +90,37 @@ static bool web_control_number(cJSON *root, const char *key, double *value)
     if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble)) return false;
     *value = item->valuedouble;
     return true;
+}
+
+static esp_err_t web_control_recording_start(const char *object_id)
+{
+    if (object_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!seismic_acquisition_is_running()) {
+        esp_err_t err = seismic_acquisition_start();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    return seismic_recorder_start(object_id);
+}
+
+static esp_err_t web_control_acquisition_stop(void)
+{
+    seismic_recorder_snapshot_t recorder;
+    esp_err_t err = seismic_recorder_get_snapshot(&recorder);
+    if (err == ESP_OK && recorder.running) {
+        err = seismic_recorder_stop();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    seismic_acquisition_stop();
+    return ESP_OK;
 }
 
 static esp_err_t web_control_process(
@@ -117,7 +152,9 @@ static esp_err_t web_control_process(
         return object_id == NULL ? ESP_ERR_INVALID_ARG : object_store_set_active(object_id);
     }
     if (strcmp(action, "delete_object") == 0) {
-        return object_id == NULL ? ESP_ERR_INVALID_ARG : object_store_delete(object_id);
+        if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+        if (seismic_recorder_is_recording_object(object_id)) return ESP_ERR_INVALID_STATE;
+        return object_store_delete(object_id);
     }
     if (strcmp(action, "rename_object") == 0) {
         const char *name = web_control_string(root, "name");
@@ -179,12 +216,17 @@ static esp_err_t web_control_process(
         }
         return object_store_set_location(object_id, &location);
     }
+    if (strcmp(action, "recording_start") == 0) {
+        return web_control_recording_start(object_id);
+    }
+    if (strcmp(action, "recording_stop") == 0) {
+        return seismic_recorder_stop();
+    }
     if (strcmp(action, "acquisition_start") == 0) {
         return seismic_acquisition_start();
     }
     if (strcmp(action, "acquisition_stop") == 0) {
-        seismic_acquisition_stop();
-        return ESP_OK;
+        return web_control_acquisition_stop();
     }
 
     return ESP_ERR_NOT_SUPPORTED;
