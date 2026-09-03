@@ -36,10 +36,12 @@ bool web_status_json_add_objects(cJSON *root)
     if (profiles == NULL) return false;
 
     size_t count = 0;
-    esp_err_t err = object_store_list_profiles(
+    float defaults[OBJECT_STORE_POD_COUNT];
+    esp_err_t err = object_store_list_profiles_with_defaults(
         profiles,
         OBJECT_STORE_MAX_OBJECTS,
-        &count
+        &count,
+        defaults
     );
 
     if (cJSON_AddBoolToObject(store, "available", err == ESP_OK) == NULL) {
@@ -65,13 +67,6 @@ bool web_status_json_add_objects(cJSON *root)
     }
     if (active_id != NULL) cJSON_AddStringToObject(store, "active_id", active_id);
     else cJSON_AddNullToObject(store, "active_id");
-
-    float defaults[OBJECT_STORE_POD_COUNT];
-    if (object_store_get_cable_defaults(defaults) != ESP_OK) {
-        for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
-            defaults[i] = OBJECT_STORE_DEFAULT_CABLE_LENGTH_M;
-        }
-    }
 
     cJSON *default_array = cJSON_AddArrayToObject(store, "default_cable_lengths_m");
     cJSON *objects = cJSON_AddArrayToObject(store, "objects");
