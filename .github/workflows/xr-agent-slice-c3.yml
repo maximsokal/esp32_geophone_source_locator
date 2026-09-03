@@ -1,0 +1,55 @@
+name: XR Agent Slice C Verify
+
+on:
+  push:
+    branches:
+      - agent/xr-perf-guide
+    paths:
+      - .github/workflows/xr-agent-slice-c3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  implement-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/xr-perf-guide
+          fetch-depth: 0
+
+      - name: Apply allocation patch
+        run: python .github/scripts/xr_slice_c_patch.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Typecheck WebUI
+        working-directory: webui
+        run: npm run typecheck
+
+      - name: Run Slice C post-AI regressions
+        working-directory: webui
+        run: npx --yes vitest@4.1.11 run tests/xr/monocularPostScanBulkFilter.test.ts tests/xr/monocularPostScanRuntime.test.ts tests/xr/monocularPriorRuntime.test.ts tests/xr/monocularPostScanFailure.test.ts tests/xr/monocularDepthPrior.test.ts
+
+      - name: Record full XR baseline without blocking Slice C
+        continue-on-error: true
+        working-directory: webui
+        run: npm run test:xr
+
+      - name: Commit verified Slice C
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add webui/src/xr/monocularPriorRuntime.ts webui/src/xr/sparseTsdfClient.ts
+          git diff --cached --quiet && { echo 'Expected post-AI source changes are missing.' >&2; exit 1; }
+          git commit -m 'reduce post-scan AI surfel allocation churn'
+          git push origin HEAD:agent/xr-perf-guide
