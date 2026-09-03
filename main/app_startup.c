@@ -17,6 +17,7 @@
 #include "power_control.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
+#include "seismic_recorder.h"
 #include "spi_bus.h"
 #include "storage_manager.h"
 #include "storage_service.h"
@@ -161,6 +162,18 @@ static void app_startup_initialize_services(void)
 
     app_startup_log_elapsed(
         "object_store_init",
+        stage_started_ms
+    );
+
+    stage_started_ms =
+        esp_log_timestamp();
+
+    ESP_ERROR_CHECK(
+        seismic_recorder_init()
+    );
+
+    app_startup_log_elapsed(
+        "seismic_recorder_init",
         stage_started_ms
     );
 
