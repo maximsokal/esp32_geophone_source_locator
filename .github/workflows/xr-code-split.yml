@@ -6,6 +6,7 @@ on:
       - agent/xr-perf-guide
     paths:
       - .github/scripts/xr_code_split_patch.py
+      - .github/scripts/xr_code_split_fix.py
       - .github/workflows/xr-code-split.yml
 
 permissions:
@@ -23,7 +24,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply reviewed code-splitting patch
-        run: python .github/scripts/xr_code_split_patch.py
+        run: |
+          python .github/scripts/xr_code_split_patch.py
+          python .github/scripts/xr_code_split_fix.py
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -93,9 +96,10 @@ jobs:
 
           git rm -f \
             .github/scripts/xr_code_split_patch.py \
+            .github/scripts/xr_code_split_fix.py \
             .github/workflows/xr-code-split.yml
 
-          unexpected=$(git status --porcelain --untracked-files=no | grep -vE '^(M |A |D ) (webui/|components/web_server/|\.github/scripts/xr_code_split_patch.py|\.github/workflows/xr-code-split.yml)' || true)
+          unexpected=$(git status --porcelain --untracked-files=no | grep -vE '^(M |A |D ) (webui/|components/web_server/|\.github/scripts/xr_code_split_patch.py|\.github/scripts/xr_code_split_fix.py|\.github/workflows/xr-code-split.yml)' || true)
           if [ -n "$unexpected" ]; then
             echo 'Unexpected tracked changes:' >&2
             printf '%s\n' "$unexpected" >&2
