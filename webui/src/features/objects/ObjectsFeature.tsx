@@ -1,5 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import type { DeviceStatus, ObjectStoreState, PhoneLocationInput } from '../../domain/device';
+import type {
+  DeviceStatus,
+  ObjectStoreState,
+  PhoneLocationInput,
+  RecordingSessionCollection,
+} from '../../domain/device';
 import { formatCoordinate, normalizeCableLength } from '../../domain/device';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
@@ -7,6 +12,7 @@ const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
 interface Props {
   status: DeviceStatus | null;
   store: ObjectStoreState | null;
+  sessions: RecordingSessionCollection | null;
   selectedId: string | null;
   busy: boolean;
   error: string | null;
@@ -19,11 +25,19 @@ interface Props {
   onCable: (id: string, podId: number, length: number) => Promise<void>;
   onDefaultCable: (podId: number, length: number) => Promise<void>;
   onAcquisition: (running: boolean) => Promise<void>;
+  onRecording: (id: string, running: boolean) => Promise<void>;
   onOpenScanner: (id: string) => void;
 }
 
+function formatDuration(milliseconds: number | undefined): string {
+  const seconds = Math.max(0, Math.floor((milliseconds ?? 0) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${remainder.toString().padStart(2, '0')}`;
+}
+
 export default function ObjectsFeature(props: Props) {
-  const { status, store, selectedId, busy, error } = props;
+  const { status, store, sessions, selectedId, busy, error } = props;
   const selected = store?.objects.find((object) => object.id === selectedId)
     ?? store?.objects.find((object) => object.active)
     ?? null;
@@ -42,6 +56,15 @@ export default function ObjectsFeature(props: Props) {
   useEffect(() => {
     setDefaults(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
   }, [store?.default_cable_lengths_m]);
+
+  const recording = status?.recording;
+  const selectedRecording = selected !== null
+    && recording?.running === true
+    && recording.object_id === selected.id;
+  const anotherRecording = recording?.running === true && !selectedRecording;
+  const selectedSessions = selected !== null && sessions?.object_id === selected.id
+    ? sessions.sessions
+    : [];
 
   return (
     <section className="console-page object-layout">
@@ -123,7 +146,12 @@ export default function ObjectsFeature(props: Props) {
               <div className="console-actions">
                 {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>Set active</button>}
                 <button disabled={busy} className="secondary" onClick={() => props.onOpenScanner(selected.id)}>3D phone scan</button>
-                <button disabled={busy} className="danger" onClick={() => { if (window.confirm(`Delete ${selected.name}?`)) void props.onDelete(selected.id); }}>Delete</button>
+                <button
+                  disabled={busy || selectedRecording}
+                  className="danger"
+                  title={selectedRecording ? 'Stop the active recording before deleting this object.' : undefined}
+                  onClick={() => { if (window.confirm(`Delete ${selected.name}?`)) void props.onDelete(selected.id); }}
+                >Delete</button>
               </div>
             </article>
 
@@ -181,16 +209,67 @@ export default function ObjectsFeature(props: Props) {
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">SEISMIC</span><h2>Live geophone acquisition</h2></div>
-                <span className={`state-pill ${status?.acquisition.running ? 'ready' : 'offline'}`}>{status?.acquisition.running ? 'RUNNING' : 'STOPPED'}</span>
+                <div><span className="eyebrow">SEISMIC</span><h2>Acquisition & recording</h2></div>
+                <span className={`state-pill ${selectedRecording ? 'ready' : status?.acquisition.running ? 'ready' : 'offline'}`}>
+                  {selectedRecording ? 'RECORDING' : status?.acquisition.running ? 'LIVE' : 'STOPPED'}
+                </span>
               </div>
-              <p>Live acquisition feeds the ring buffer and web waveform. Persistent recordings are a separate writer so SD I/O cannot silently become part of the acquisition hot path.</p>
+              <p>Live acquisition stays independent from SD recording. Record drains the lock-free ring in bounded batches, so FAT/SD latency never becomes part of the acquisition producer hot path.</p>
+
+              {selectedRecording && (
+                <dl className="console-dl">
+                  <div><dt>Session</dt><dd>{recording?.session_id ?? '—'}</dd></div>
+                  <div><dt>Elapsed</dt><dd>{formatDuration(recording?.recording_ms)}</dd></div>
+                  <div><dt>Written</dt><dd>{(recording?.samples_written ?? 0).toLocaleString()} frames</dd></div>
+                  <div><dt>Ring drops</dt><dd>{(recording?.dropped_frames ?? 0).toLocaleString()}</dd></div>
+                </dl>
+              )}
+
+              {anotherRecording && (
+                <div className="console-alert">
+                  Recording {recording?.session_id ?? ''} belongs to object {recording?.object_id}. Stop it before starting another object.
+                </div>
+              )}
+
               <div className="console-actions">
                 <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>Start acquisition</button>
-                <button disabled={busy || status?.acquisition.running !== true} onClick={() => void props.onAcquisition(false)}>Stop</button>
+                <button disabled={busy || status?.acquisition.running !== true} onClick={() => void props.onAcquisition(false)}>Stop acquisition</button>
                 <button className="secondary" onClick={() => setShowLive((value) => !value)}>{showLive ? 'Hide' : 'Show'} live signal</button>
-                <button disabled title="Persistent session writer is the next backend slice">Record session</button>
+                <button
+                  disabled={busy || anotherRecording}
+                  className={selectedRecording ? 'danger' : undefined}
+                  onClick={() => void props.onRecording(selected.id, !selectedRecording)}
+                >
+                  {selectedRecording ? 'Stop recording' : 'Record session'}
+                </button>
               </div>
+            </article>
+
+            <article className="console-card">
+              <div className="card-heading">
+                <div><span className="eyebrow">SESSIONS</span><h2>Saved measurements</h2></div>
+                <span>{selectedSessions.length}</span>
+              </div>
+              {sessions?.available === false && sessions.object_id === selected.id ? (
+                <p>Session list unavailable: {sessions.error ?? 'storage error'}</p>
+              ) : selectedSessions.length === 0 ? (
+                <p>No saved geophone sessions for this object yet.</p>
+              ) : (
+                <div className="session-list">
+                  {selectedSessions.map((session) => (
+                    <div className="session-row" key={session.session_id}>
+                      <span>
+                        <strong>{session.session_id}</strong>
+                        <small>{session.sample_rate_hz.toLocaleString()} Hz · {session.channel_count} ch · {formatDuration(session.recording_ms)}</small>
+                      </span>
+                      <span>
+                        <strong>{session.samples_written.toLocaleString()}</strong>
+                        <small>{session.dropped_frames > 0 ? `${session.dropped_frames.toLocaleString()} dropped` : session.complete ? 'complete' : 'incomplete'}</small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </article>
 
             {showLive && (
