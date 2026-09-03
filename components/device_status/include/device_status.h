@@ -102,6 +102,46 @@ typedef struct
 typedef struct
 {
     bool valid;
+    bool temperature_valid;
+    bool humidity_valid;
+
+    float temperature_c;
+    float humidity_percent;
+
+} device_pod_environment_status_t;
+
+
+typedef struct
+{
+    bool local_valid;
+    float local_x_m;
+    float local_y_m;
+
+    bool global_valid;
+    double latitude;
+    double longitude;
+
+    bool altitude_valid;
+    double altitude_m;
+
+} device_pod_position_status_t;
+
+
+typedef struct
+{
+    bool barometer;
+    bool environment;
+    bool imu;
+    bool geophone;
+    bool local_position;
+    bool global_position;
+
+} device_pod_capabilities_t;
+
+
+typedef struct
+{
+    bool valid;
 
     float instant_uv;
     float rms_uv;
@@ -117,9 +157,12 @@ typedef struct
 {
     pod_state_t state;
 
+    device_pod_capabilities_t capabilities;
     device_barometer_status_t barometer;
+    device_pod_environment_status_t environment;
     device_imu_status_t imu;
     device_geophone_status_t geophone;
+    device_pod_position_status_t position;
 
 } device_pod_status_t;
 
@@ -239,7 +282,7 @@ esp_err_t device_status_set_pod_state(
 
 
 /*
- * Update one pod BMP580 measurement.
+ * Update one pod barometer measurement.
  */
 esp_err_t device_status_set_pod_barometer(
     size_t pod_index,
@@ -261,6 +304,47 @@ esp_err_t device_status_set_pod_imu(
     float roll_deg,
     float pitch_deg,
     float yaw_relative_deg,
+    bool valid
+);
+
+
+/*
+ * Update temperature/humidity values published by the pod environmental
+ * sensor. Capability becomes known as soon as a driver calls this function;
+ * individual validity remains false until that value is actually measured.
+ */
+esp_err_t device_status_set_pod_environment(
+    size_t pod_index,
+    float temperature_c,
+    bool temperature_valid,
+    float humidity_percent,
+    bool humidity_valid
+);
+
+
+/*
+ * Publish a local pod position from a real positioning transport. Calling
+ * this with valid=false advertises transport capability without inventing a
+ * coordinate.
+ */
+esp_err_t device_status_set_pod_local_position(
+    size_t pod_index,
+    float local_x_m,
+    float local_y_m,
+    bool valid
+);
+
+
+/*
+ * Publish resolved global coordinates. Until a real transport/localization
+ * layer calls this setter, global_position capability and validity stay false.
+ */
+esp_err_t device_status_set_pod_global_position(
+    size_t pod_index,
+    double latitude,
+    double longitude,
+    double altitude_m,
+    bool altitude_valid,
     bool valid
 );
 
