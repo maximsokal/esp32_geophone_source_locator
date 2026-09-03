@@ -1,4 +1,4 @@
-name: XR Agent Slice C Final
+name: XR Agent Slice D Core
 
 on:
   push:
@@ -19,10 +19,8 @@ jobs:
           ref: agent/xr-perf-guide
           fetch-depth: 0
 
-      - name: Apply allocation patch
-        run: |
-          python .github/scripts/xr_slice_c_patch.py
-          python -c "from pathlib import Path; p=Path('webui/src/xr/monocularPriorRuntime.ts'); s=p.read_text(); s=s.replace('viewFromWorld === null || vp === null', 'viewFromWorld == null || vp == null'); p.write_text(s)"
+      - name: Apply Slice D core patch
+        run: python .github/scripts/xr_slice_d_patch.py
 
       - uses: actions/setup-node@v4
         with:
@@ -38,20 +36,71 @@ jobs:
         working-directory: webui
         run: npm run typecheck
 
-      - name: Run Slice C post-AI regressions
+      - name: Run Slice D non-mesh regressions
         working-directory: webui
-        run: npx --yes vitest@4.1.11 run tests/xr/monocularPostScanBulkFilter.test.ts tests/xr/monocularPostScanRuntime.test.ts tests/xr/monocularPriorRuntime.test.ts tests/xr/monocularPostScanFailure.test.ts tests/xr/monocularDepthPrior.test.ts
+        run: >-
+          npx --yes vitest@4.1.11 run
+          tests/xr/surfaceFeatureDensity.test.ts
+          tests/xr/featureAwareAllocation.test.ts
+          tests/xr/structuralSurfaceClustering.test.ts
+          tests/xr/structuralEdgeEndpoints.test.ts
+          tests/xr/structuralGuideReadiness.test.ts
+          tests/xr/occupancyEvidence.test.ts
+          tests/xr/sparseTsdfClientLifecycle.test.ts
+          tests/xr/visualLineEvidenceClient.test.ts
 
-      - name: Record full XR baseline without blocking Slice C
+      - name: Diagnose mesh preview after core fixes
         continue-on-error: true
         working-directory: webui
-        run: npm run test:xr
-
-      - name: Commit verified Slice C
         run: |
+          cat > tests/xr/__sliceDMeshDiag.test.ts <<'EOF'
+          import { describe, it } from 'vitest';
+          import { buildSurfaceMeshPreview } from '../../src/xr/meshPreview';
+
+          function planeGrid(width: number, height: number, spacing = 0.04, z = 0) {
+            const positions = new Float32Array(width * height * 3);
+            const normals = new Float32Array(width * height * 3);
+            const confidence = new Float32Array(width * height);
+            let point = 0;
+            for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+              const o = point * 3;
+              positions[o] = x * spacing; positions[o + 1] = y * spacing; positions[o + 2] = z;
+              normals[o + 2] = 1; confidence[point] = 0.9; point += 1;
+            }
+            return { positions, normals, confidence };
+          }
+
+          describe('slice D mesh diagnostics', () => {
+            it('prints planar diagnostics', () => {
+              const mesh = buildSurfaceMeshPreview({ ...planeGrid(12, 12), voxelSizeMeters: 0.04 });
+              console.log('SLICE_D_MESH_PLANAR', JSON.stringify(mesh, (key, value) => key === 'trianglePositions' ? `[${value.length}]` : value));
+            });
+            it('prints orthogonal diagnostics', () => {
+              const a = planeGrid(8, 8, 0.04, 0);
+              const countA = a.confidence.length;
+              const positions = new Float32Array(countA * 6);
+              const normals = new Float32Array(countA * 6);
+              const confidence = new Float32Array(countA * 2);
+              positions.set(a.positions); normals.set(a.normals); confidence.set(a.confidence);
+              for (let i = 0; i < countA; i += 1) {
+                const o = (countA + i) * 3;
+                positions[o] = (i % 8) * 0.04; positions[o + 1] = 0; positions[o + 2] = Math.floor(i / 8) * 0.04;
+                normals[o + 1] = 1; confidence[countA + i] = 0.9;
+              }
+              const mesh = buildSurfaceMeshPreview({ positions, normals, confidence, voxelSizeMeters: 0.04 });
+              console.log('SLICE_D_MESH_ORTHO', JSON.stringify(mesh, (key, value) => key === 'trianglePositions' ? `[${value.length}]` : value));
+            });
+          });
+          EOF
+          npx --yes vitest@4.1.11 run tests/xr/meshPreview.test.ts tests/xr/__sliceDMeshDiag.test.ts
+          rm -f tests/xr/__sliceDMeshDiag.test.ts
+
+      - name: Commit verified Slice D core
+        run: |
+          rm -f webui/tests/xr/__sliceDMeshDiag.test.ts
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add webui/src/xr/monocularPriorRuntime.ts webui/src/xr/sparseTsdfClient.ts
-          git diff --cached --quiet && { echo 'Expected post-AI source changes are missing.' >&2; exit 1; }
-          git commit -m 'reduce post-scan AI surfel allocation churn'
+          git add webui/src/xr/surfaceFeatureDensity.ts webui/src/xr/depthPointCloudV2.ts webui/src/xr/structuralSurfaceClustering.ts webui/src/xr/structuralEdgeEndpoints.ts webui/src/data/clientDiagnostics.ts webui/tests/xr/surfaceFeatureDensity.test.ts webui/tests/xr/featureAwareAllocation.test.ts webui/tests/xr/structuralGuideReadiness.test.ts webui/tests/xr/occupancyEvidence.test.ts webui/tests/xr/visualLineEvidenceClient.test.ts
+          git diff --cached --quiet && { echo 'Expected Slice D source/test changes are missing.' >&2; exit 1; }
+          git commit -m 'separate feature probing from certified retention'
           git push origin HEAD:agent/xr-perf-guide
