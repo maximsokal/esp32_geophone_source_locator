@@ -24,6 +24,7 @@ jobs:
           python3 .github/scripts/device_console_cmake_patch.py
           python3 .github/scripts/device_console_perf_patch.py
           python3 .github/scripts/device_console_next_patch.py
+          python3 .github/scripts/device_console_comment_fix.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -49,11 +50,11 @@ jobs:
           set -e
           test ! -e components/web_server/web_static_assets.c
           ! grep -q 'web_static_assets_register' components/web_server/web_server_internal.h
-          grep -q 'max_uri_handlers =.*' components/web_server/web_server.c || true
           grep -A1 'config.httpd.max_uri_handlers' components/web_server/web_server.c | grep -q '10;'
           grep -q 'object_store_json_read_profile_with_defaults_locked' components/object_store/object_store_profile.c
           grep -q 'capabilities.local_position' components/device_status/device_status_pods.c
           grep -q '"position"' components/web_server/web_status_json_pods.c
+          ! grep -q '/assets/\\*' components/web_server/web_server.c
       - name: Show split assets
         working-directory: webui
         run: |
@@ -70,6 +71,7 @@ jobs:
           python3 .github/scripts/device_console_cmake_patch.py
           python3 .github/scripts/device_console_perf_patch.py
           python3 .github/scripts/device_console_next_patch.py
+          python3 .github/scripts/device_console_comment_fix.py
       - name: Build firmware with ESP-IDF 5.5.4 and Node 22
         run: |
           docker run --rm \
@@ -102,6 +104,7 @@ jobs:
           python3 .github/scripts/device_console_cmake_patch.py
           python3 .github/scripts/device_console_perf_patch.py
           python3 .github/scripts/device_console_next_patch.py
+          python3 .github/scripts/device_console_comment_fix.py
           if git diff --quiet -- components main webui; then
             echo 'Verified production changes are already committed.'
             exit 0
