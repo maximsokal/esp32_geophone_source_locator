@@ -72,6 +72,25 @@ static void seismic_buffer_snapshot_metadata(
 }
 
 
+static void seismic_buffer_publish_info(
+    const seismic_metadata_t *metadata,
+    seismic_buffer_info_t *info
+)
+{
+    info->source =
+        metadata->source;
+
+    info->sample_rate_hz =
+        metadata->sample_rate_hz;
+
+    info->buffered_frames =
+        metadata->frame_count;
+
+    info->total_frames =
+        metadata->total_frames;
+}
+
+
 static void seismic_buffer_write_slot(
     seismic_slot_t *slot,
     uint64_t frame_number,
@@ -384,17 +403,10 @@ esp_err_t seismic_buffer_copy_latest(
                 max_frames;
         }
 
-        info->source =
-            metadata.source;
-
-        info->sample_rate_hz =
-            metadata.sample_rate_hz;
-
-        info->buffered_frames =
-            metadata.frame_count;
-
-        info->total_frames =
-            metadata.total_frames;
+        seismic_buffer_publish_info(
+            &metadata,
+            info
+        );
 
         if (count == 0) {
             *frame_count =
@@ -452,6 +464,116 @@ esp_err_t seismic_buffer_copy_latest(
      * A producer wrap raced every retry. This is transient and,
      * importantly, never stalls the acquisition task.
      */
+    return ESP_ERR_TIMEOUT;
+}
+
+
+esp_err_t seismic_buffer_copy_since(
+    uint64_t *cursor,
+    seismic_frame_t *frames,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *dropped_frames,
+    seismic_buffer_info_t *info
+)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (
+        cursor == NULL ||
+        frames == NULL ||
+        frame_count == NULL ||
+        dropped_frames == NULL ||
+        info == NULL ||
+        max_frames == 0
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *frame_count = 0;
+    *dropped_frames = 0;
+
+    for (
+        unsigned snapshot_attempt = 0;
+        snapshot_attempt < SEISMIC_SNAPSHOT_RETRIES;
+        ++snapshot_attempt
+    ) {
+        seismic_metadata_t metadata;
+        seismic_buffer_snapshot_metadata(&metadata);
+        seismic_buffer_publish_info(&metadata, info);
+
+        if (*cursor > metadata.total_frames) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (metadata.frame_count == 0 || *cursor == metadata.total_frames) {
+            return ESP_OK;
+        }
+
+        const uint64_t oldest_frame_number =
+            metadata.total_frames -
+            (uint64_t)metadata.frame_count +
+            1U;
+
+        uint64_t first_frame_number =
+            *cursor + 1U;
+
+        uint64_t dropped = 0;
+        if (first_frame_number < oldest_frame_number) {
+            dropped =
+                oldest_frame_number -
+                first_frame_number;
+            first_frame_number =
+                oldest_frame_number;
+        }
+
+        uint64_t available =
+            metadata.total_frames -
+            first_frame_number +
+            1U;
+
+        size_t count =
+            available > (uint64_t)max_frames
+                ? max_frames
+                : (size_t)available;
+
+        bool consistent = true;
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t expected_frame_number =
+                first_frame_number +
+                (uint64_t)i;
+
+            const size_t source_index =
+                (size_t)(
+                    (expected_frame_number - 1U) %
+                    SEISMIC_BUFFER_CAPACITY
+                );
+
+            if (!seismic_buffer_read_slot(
+                    &s_slots[source_index],
+                    expected_frame_number,
+                    &frames[i]
+                )) {
+                consistent = false;
+                break;
+            }
+        }
+
+        if (!consistent) {
+            continue;
+        }
+
+        *dropped_frames = dropped;
+        *frame_count = count;
+        *cursor =
+            first_frame_number +
+            (uint64_t)count -
+            1U;
+        return ESP_OK;
+    }
+
     return ESP_ERR_TIMEOUT;
 }
 
