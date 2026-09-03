@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
-    if new in text:
+    if new in text and old not in text:
         return text
     if old not in text:
         raise SystemExit(f'Expected fragment not found for {label}:\n{old}')
@@ -64,12 +64,13 @@ json_text = replace_once(
     '''    size_t count = 0;\n    float defaults[OBJECT_STORE_POD_COUNT];\n    esp_err_t err = object_store_list_profiles_with_defaults(\n        profiles,\n        OBJECT_STORE_MAX_OBJECTS,\n        &count,\n        defaults\n    );\n''',
     'web object combined read model',
 )
-json_text = replace_once(
-    json_text,
-    '''    float defaults[OBJECT_STORE_POD_COUNT];\n    if (object_store_get_cable_defaults(defaults) != ESP_OK) {\n        for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {\n            defaults[i] = OBJECT_STORE_DEFAULT_CABLE_LENGTH_M;\n        }\n    }\n\n    cJSON *default_array = cJSON_AddArrayToObject(store, "default_cable_lengths_m");\n''',
-    '''    cJSON *default_array = cJSON_AddArrayToObject(store, "default_cable_lengths_m");\n''',
-    'remove second settings read from status JSON',
-)
+legacy_defaults_read = '''    float defaults[OBJECT_STORE_POD_COUNT];\n    if (object_store_get_cable_defaults(defaults) != ESP_OK) {\n        for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {\n            defaults[i] = OBJECT_STORE_DEFAULT_CABLE_LENGTH_M;\n        }\n    }\n\n'''
+if legacy_defaults_read in json_text:
+    json_text = json_text.replace(legacy_defaults_read, '', 1)
+if 'object_store_get_cable_defaults(defaults)' in json_text:
+    raise SystemExit('Second settings read is still present in status JSON')
+if json_text.count('float defaults[OBJECT_STORE_POD_COUNT];') != 1:
+    raise SystemExit('Status JSON must declare cable defaults exactly once')
 if json_text != json_original:
     json_path.write_text(json_text, encoding='utf-8')
     print('Removed second settings.json read from ?objects=1 status response.')
