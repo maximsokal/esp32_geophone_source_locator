@@ -10,6 +10,8 @@ webui/dist/
 webui/esp-dist/
 webui/.vite/
 components/web_server/generated_webui/
+components/web_server/generated_webui_chunks/
+components/web_server/generated_webui_chunk_table.inc
 components/web_server/generated_webui_index.html
 components/web_server/generated_webui_assets_app.js.gz
 components/web_server/generated_webui_assets_app.css.gz
