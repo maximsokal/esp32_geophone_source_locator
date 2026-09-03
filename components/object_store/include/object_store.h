@@ -40,6 +40,12 @@ esp_err_t object_store_init(void);
 esp_err_t object_store_create(object_store_summary_t *created_object);
 esp_err_t object_store_list(object_store_summary_t *objects, size_t max_objects, size_t *object_count);
 esp_err_t object_store_list_profiles(object_store_profile_t *objects, size_t max_objects, size_t *object_count);
+esp_err_t object_store_list_profiles_with_defaults(
+    object_store_profile_t *objects,
+    size_t max_objects,
+    size_t *object_count,
+    float default_cable_lengths_m[OBJECT_STORE_POD_COUNT]
+);
 esp_err_t object_store_get_active(object_store_summary_t *object);
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile);
 esp_err_t object_store_set_active(const char *object_id);
