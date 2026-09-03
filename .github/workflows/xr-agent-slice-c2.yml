@@ -1,0 +1,163 @@
+name: XR Agent Slice C Retry
+
+on:
+  push:
+    branches:
+      - agent/xr-perf-guide
+    paths:
+      - .github/workflows/xr-agent-slice-c2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  implement-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/xr-perf-guide
+          fetch-depth: 0
+
+      - name: Remove post-AI per-surfel allocation churn
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def sub_once(text: str, pattern: str, replacement: str, label: str, flags: int = 0) -> str:
+              next_text, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+              if count != 1:
+                  raise SystemExit(f'{label} matched {count} times')
+              return next_text
+
+          runtime_path = Path('webui/src/xr/monocularPriorRuntime.ts')
+          runtime = runtime_path.read_text(encoding='utf-8')
+          runtime = sub_once(
+              runtime,
+              r"import \{ projectProjectPointToNormalized \} from './projectionMath';",
+              "import {\n  multiplyMat4,\n  projectProjectPointToNormalized,\n  rigidInverse,\n} from './projectionMath';",
+              'projectionMath import',
+          )
+          runtime = sub_once(
+              runtime,
+              r"(  /\*\* Sparse physical frontmost depth from exactly the same staged XR view\. \*/\n  physicalGuard: PhysicalDepthGuardFrame;\n)(})",
+              r"\1  /** Cached once per calibrated frame; bulk filtering must not rebuild matrices per surfel. */\n  viewFromWorld: Float32Array | null;\n  viewProjection: Float32Array | null;\n\2",
+              'CalibratedPrior cache fields',
+          )
+          runtime = sub_once(
+              runtime,
+              r"  if \(frame\.rgba !== undefined && frame\.rgba\.length >= expected\) \{\n\s*return frame\.rgba\.length === expected \? frame\.rgba\.slice\(\) : frame\.rgba\.slice\(0, expected\);\n  \}",
+              "  if (frame.rgba !== undefined && frame.rgba.length >= expected) {\n    // stagePostScan already owns this cloned packet; avoid a second full-frame copy.\n    return frame.rgba.length === expected ? frame.rgba : frame.rgba.subarray(0, expected);\n  }",
+              'guidanceAsRgba owned-buffer path',
+          )
+          runtime = sub_once(
+              runtime,
+              r"    this\.staged = \{\n      guidance: cloneGuidance\(guidance\),\n      anchors: anchors\.map\(\(anchor\) => \(\{ \.\.\.anchor \}\)\),\n      physicalGuard: \{\n        width: physicalGuard\.width,\n        height: physicalGuard\.height,\n        depthMeters: physicalGuard\.depthMeters\.slice\(\),\n      \},\n    \};",
+              "    this.staged = {\n      guidance: cloneGuidance(guidance),\n      // These collectors already return newly-owned objects/typed arrays.\n      anchors,\n      physicalGuard,\n    };",
+              'stagePostScan redundant clones',
+          )
+          runtime = sub_once(
+              runtime,
+              r"      this\.calibrated = \{\n        frame: prior,\n        calibration,\n        captureGuidance: staged\.guidance,\n        physicalGuard: staged\.physicalGuard,\n      \};",
+              "      const viewFromWorld = staged.guidance.worldFromView === undefined\n        ? null\n        : rigidInverse(staged.guidance.worldFromView);\n      const viewProjection = viewFromWorld === null || staged.guidance.projectionMatrix === undefined\n        ? null\n        : multiplyMat4(staged.guidance.projectionMatrix, viewFromWorld);\n      this.calibrated = {\n        frame: prior,\n        calibration,\n        captureGuidance: staged.guidance,\n        physicalGuard: staged.physicalGuard,\n        viewFromWorld,\n        viewProjection,\n      };",
+              'calibrated projection cache',
+          )
+
+          bulk_method = r'''  /**
+   * Allocation-light bulk path for the post-scan TSDF handoff. Unavailable,
+   * invalid and occluded cases deliberately fail open; false means a calibrated
+   * prior contradicted the same physically frontmost surface.
+   */
+  postScanAcceptsSurfaceXYZ(projectX: number, projectY: number, projectZ: number): boolean {
+    const calibrated = this.calibrated;
+    const viewFromWorld = calibrated?.viewFromWorld;
+    const vp = calibrated?.viewProjection;
+    if (!this.enabled || calibrated === null || viewFromWorld === null || vp === null) return true;
+    if (!Number.isFinite(projectX) || !Number.isFinite(projectY) || !Number.isFinite(projectZ)) return true;
+
+    const x = projectX;
+    const y = projectZ;
+    const z = -projectY;
+    const viewZ = viewFromWorld[2] * x + viewFromWorld[6] * y + viewFromWorld[10] * z + viewFromWorld[14];
+    const physicalMeters = -viewZ;
+    if (!validPhysicalDepth(physicalMeters)) return true;
+
+    const clipX = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
+    const clipY = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
+    const clipZ = vp[2] * x + vp[6] * y + vp[10] * z + vp[14];
+    const clipW = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+    if (!Number.isFinite(clipX) || !Number.isFinite(clipY) || !Number.isFinite(clipZ) ||
+        !Number.isFinite(clipW) || clipW <= 1e-6) return true;
+    const ndcX = clipX / clipW;
+    const ndcY = clipY / clipW;
+    const ndcZ = clipZ / clipW;
+    const u = (ndcX + 1) * 0.5;
+    const v = (1 - ndcY) * 0.5;
+    if (u < 0 || u > 1 || v < 0 || v > 1 || ndcZ < -1 || ndcZ > 1) return true;
+    if (!physicalDepthGuardAllowsAiVeto(calibrated.physicalGuard, u, v, physicalMeters)) return true;
+
+    const priorMeters = calibratedPriorDepthMeters(calibrated.frame, calibrated.calibration, u, v);
+    if (priorMeters === null) return true;
+    const vetoThreshold = Math.max(0.32, physicalMeters * 0.30);
+    return Math.abs(priorMeters - physicalMeters) <= vetoThreshold;
+  }
+
+'''
+          anchor = '  postScanSurfaceAgreement(position: ProjectPoint): MonocularSurfaceAgreement {'
+          if runtime.count(anchor) != 1:
+              raise SystemExit('postScanSurfaceAgreement anchor mismatch')
+          runtime = runtime.replace(anchor, bulk_method + anchor, 1)
+          runtime_path.write_text(runtime, encoding='utf-8')
+
+          sparse_path = Path('webui/src/xr/sparseTsdfClient.ts')
+          sparse = sparse_path.read_text(encoding='utf-8')
+          sparse = sub_once(
+              sparse,
+              r"  const accepted: number\[\] = \[\];\n  for \(let index = 0; index < pointCount; index \+= 1\) \{\n    const offset = index \* 3;\n    const agreement = optionalMonocularPrior\.postScanSurfaceAgreement\(\[\n      input\.positions\[offset\],\n      input\.positions\[offset \+ 1\],\n      input\.positions\[offset \+ 2\],\n    \]\);\n    if \(!agreement\.available \|\| agreement\.accepted\) accepted\.push\(index\);\n  \}\n\n  const rejected = pointCount - accepted\.length;\n  if \(rejected === 0\) return \{ input, rejected: 0, applied: true \};\n  const rejectFraction = rejected / pointCount;\n  if \(rejectFraction > MAX_AI_REJECT_FRACTION \|\| accepted\.length < MIN_POST_AI_SURFELS\) \{",
+              "  const retained = new Uint8Array(pointCount);\n  let acceptedCount = 0;\n  for (let index = 0; index < pointCount; index += 1) {\n    const offset = index * 3;\n    if (!optionalMonocularPrior.postScanAcceptsSurfaceXYZ(\n      input.positions[offset], input.positions[offset + 1], input.positions[offset + 2],\n    )) continue;\n    retained[index] = 1;\n    acceptedCount += 1;\n  }\n\n  const rejected = pointCount - acceptedCount;\n  if (rejected === 0) return { input, rejected: 0, applied: true };\n  const rejectFraction = rejected / pointCount;\n  if (rejectFraction > MAX_AI_REJECT_FRACTION || acceptedCount < MIN_POST_AI_SURFELS) {",
+              'post-AI mask pass',
+          )
+          sparse = sub_once(
+              sparse,
+              r"  const positions = new Float32Array\(accepted\.length \* 3\);\n  const normals = new Float32Array\(accepted\.length \* 3\);\n  const confidence = new Float32Array\(accepted\.length\);\n  accepted\.forEach\(\(source, target\) => \{(?P<body>.*?)\n  \}\);\n\n  return \{\n    input: \{ \.\.\.input, positions, normals, confidence, maxInputPoints: Math\.min\(input\.maxInputPoints \?\? accepted\.length, accepted\.length\) \},",
+              "  const positions = new Float32Array(acceptedCount * 3);\n  const normals = new Float32Array(acceptedCount * 3);\n  const confidence = new Float32Array(acceptedCount);\n  let target = 0;\n  for (let source = 0; source < pointCount; source += 1) {\n    if (retained[source] === 0) continue;\n    const sourceOffset = source * 3;\n    const targetOffset = target * 3;\n    positions[targetOffset] = input.positions[sourceOffset];\n    positions[targetOffset + 1] = input.positions[sourceOffset + 1];\n    positions[targetOffset + 2] = input.positions[sourceOffset + 2];\n    normals[targetOffset] = input.normals[sourceOffset];\n    normals[targetOffset + 1] = input.normals[sourceOffset + 1];\n    normals[targetOffset + 2] = input.normals[sourceOffset + 2];\n    confidence[target] = input.confidence[source];\n    target += 1;\n  }\n\n  return {\n    input: { ...input, positions, normals, confidence, maxInputPoints: Math.min(input.maxInputPoints ?? acceptedCount, acceptedCount) },",
+              'post-AI compact typed-array copy',
+              re.S,
+          )
+          sparse_path.write_text(sparse, encoding='utf-8')
+          PY
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Typecheck WebUI
+        working-directory: webui
+        run: npm run typecheck
+
+      - name: Run Slice C post-AI regressions
+        working-directory: webui
+        run: npx --yes vitest@4.1.11 run tests/xr/monocularPostScanBulkFilter.test.ts tests/xr/monocularPostScanRuntime.test.ts tests/xr/monocularPriorRuntime.test.ts tests/xr/monocularPostScanFailure.test.ts tests/xr/monocularDepthPrior.test.ts
+
+      - name: Record full XR baseline without blocking Slice C
+        continue-on-error: true
+        working-directory: webui
+        run: npm run test:xr
+
+      - name: Commit verified Slice C
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add webui/src/xr/monocularPriorRuntime.ts webui/src/xr/sparseTsdfClient.ts
+          git diff --cached --quiet && { echo 'Expected post-AI source changes are missing.' >&2; exit 1; }
+          git commit -m 'reduce post-scan AI surfel allocation churn'
+          git push origin HEAD:agent/xr-perf-guide
