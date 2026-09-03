@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 
 import './scan.css';
 
-import { ScanPointCloudViewport } from './components/ScanPointCloudViewport';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
@@ -17,6 +16,41 @@ import {
   type ScanMode,
 } from './xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot, WebXrCapabilities } from './xr/webxrRuntime';
+
+const ScanPointCloudViewport = lazy(async () => {
+  const module = await import('./components/ScanPointCloudViewport');
+  return { default: module.ScanPointCloudViewport };
+});
+
+class ResultViewportErrorBoundary extends Component<
+  { children: ReactNode },
+  { message: string | null }
+> {
+  state: { message: string | null } = { message: null };
+
+  static getDerivedStateFromError(error: unknown): { message: string } {
+    return { message: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo): void {
+    clientDiagnostics.warn('SCAN_RESULT_RENDERER_LOAD_FAILED', {
+      error: error instanceof Error ? error.message : String(error),
+      componentStack: info.componentStack ?? '',
+    });
+    void clientDiagnostics.flush();
+  }
+
+  render(): ReactNode {
+    if (this.state.message !== null) {
+      return (
+        <div className="viewport-shell scan-viewport" role="alert">
+          3D result renderer could not be loaded. Reload the page to retry. ({this.state.message})
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function formatMeters(value: number): string {
   return `${value.toFixed(2)} m`;
@@ -208,12 +242,22 @@ export default function App() {
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
         <section className="workspace">
-          <ScanPointCloudViewport
-            snapshot={scanSnapshot}
-            viewCommand={viewCommand}
-            display={display}
-            mode={scanMode}
-          />
+          <ResultViewportErrorBoundary>
+            <Suspense
+              fallback={
+                <div className="viewport-shell scan-viewport" role="status" aria-live="polite">
+                  Loading 3D result renderer…
+                </div>
+              }
+            >
+              <ScanPointCloudViewport
+                snapshot={scanSnapshot}
+                viewCommand={viewCommand}
+                display={display}
+                mode={scanMode}
+              />
+            </Suspense>
+          </ResultViewportErrorBoundary>
 
           <aside className="side-panel scan-result-panel">
             <section className="panel-card">
