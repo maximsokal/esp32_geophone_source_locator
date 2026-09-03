@@ -12,6 +12,7 @@ idf_component_register(
         "object_store_fs_active.c"
         "object_store_delete_fs.c"
         "object_store_json.c"
+        "object_store_profile.c"
 
     INCLUDE_DIRS
         "include"
