@@ -432,11 +432,17 @@ esp_err_t seismic_recorder_fs_list_sessions(
                     &summary
                 ) != ESP_OK
             ) {
-                snprintf(
+                const size_t session_id_length = strnlen(
+                    entry->d_name,
+                    sizeof(summary.session_id)
+                );
+                if (session_id_length >= sizeof(summary.session_id)) {
+                    continue;
+                }
+                memcpy(
                     summary.session_id,
-                    sizeof(summary.session_id),
-                    "%s",
-                    entry->d_name
+                    entry->d_name,
+                    session_id_length + 1U
                 );
                 summary.complete = false;
             }
