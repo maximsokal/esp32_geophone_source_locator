@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: device-console-verify-${{ github.ref }}
@@ -19,13 +19,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Apply pending production optimizations
-        run: |
-          python3 .github/scripts/device_console_cmake_patch.py
-          python3 .github/scripts/device_console_perf_patch.py
-          python3 .github/scripts/device_console_next_patch.py
-          python3 .github/scripts/device_console_comment_fix.py
-          python3 .github/scripts/device_console_read_model_fix.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -46,19 +39,23 @@ jobs:
       - name: Verify code split contract
         working-directory: webui
         run: npm run verify:bundle
-      - name: Verify optimization source contracts
+      - name: Verify production optimization contracts
         run: |
           set -e
           test ! -e components/web_server/web_static_assets.c
           ! grep -q 'web_static_assets_register' components/web_server/web_server_internal.h
-          grep -A1 'config.httpd.max_uri_handlers' components/web_server/web_server.c | grep -q '10;'
+          grep -A4 'max_uri_handlers' components/web_server/web_server.c | head -n 5 | grep -q '10;'
+          grep -q 'assets/\*.css.gz' components/web_server/CMakeLists.txt
+          grep -q 'web_api_control.c' components/web_server/CMakeLists.txt
+          grep -q 'object_store' components/web_server/CMakeLists.txt
+          grep -q 'seismic_recorder' components/web_server/CMakeLists.txt
           grep -q 'object_store_json_read_profile_with_defaults_locked' components/object_store/object_store_profile.c
           grep -q 'object_store_list_profiles_with_defaults' components/object_store/object_store_profile.c
           grep -q 'object_store_list_profiles_with_defaults' components/web_server/web_status_json_objects.c
           ! grep -q 'object_store_get_cable_defaults' components/web_server/web_status_json_objects.c
           grep -q 'capabilities.local_position' components/device_status/device_status_pods.c
           grep -q '"position"' components/web_server/web_status_json_pods.c
-          ! grep -q '/assets/\\*' components/web_server/web_server.c
+          grep -q 'generated_webui_chunks/' .gitignore
       - name: Show split assets
         working-directory: webui
         run: |
@@ -70,14 +67,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Apply pending production optimizations
-        run: |
-          python3 .github/scripts/device_console_cmake_patch.py
-          python3 .github/scripts/device_console_perf_patch.py
-          python3 .github/scripts/device_console_next_patch.py
-          python3 .github/scripts/device_console_comment_fix.py
-          python3 .github/scripts/device_console_read_model_fix.py
-      - name: Build firmware with ESP-IDF 5.5.4 and Node 22
+      - name: Build production firmware with ESP-IDF 5.5.4 and Node 22
         run: |
           docker run --rm \
             -v "$PWD:/project" \
@@ -94,29 +84,3 @@ jobs:
               npm --version
               idf.py build
             '
-
-  finalize-production:
-    needs: [webui, firmware]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Persist all verified production changes
-        run: |
-          set -e
-          python3 .github/scripts/device_console_cmake_patch.py
-          python3 .github/scripts/device_console_perf_patch.py
-          python3 .github/scripts/device_console_next_patch.py
-          python3 .github/scripts/device_console_comment_fix.py
-          python3 .github/scripts/device_console_read_model_fix.py
-          if git diff --quiet -- components main webui; then
-            echo 'Verified production changes are already committed.'
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A components main webui
-          git commit -m 'optimize object reads routes and pod status model'
-          git push origin HEAD:agent/xr-perf-guide
