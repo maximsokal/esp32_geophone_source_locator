@@ -1,0 +1,206 @@
+import { lazy, Suspense, useEffect, useState } from 'react';
+import type { DeviceStatus, ObjectStoreState, PhoneLocationInput } from '../../domain/device';
+import { formatCoordinate, normalizeCableLength } from '../../domain/device';
+
+const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
+
+interface Props {
+  status: DeviceStatus | null;
+  store: ObjectStoreState | null;
+  selectedId: string | null;
+  busy: boolean;
+  error: string | null;
+  onSelect: (id: string) => void;
+  onCreate: (name: string) => Promise<void>;
+  onActivate: (id: string) => Promise<void>;
+  onRename: (id: string, name: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onBindGps: (id: string) => Promise<PhoneLocationInput>;
+  onCable: (id: string, podId: number, length: number) => Promise<void>;
+  onDefaultCable: (podId: number, length: number) => Promise<void>;
+  onAcquisition: (running: boolean) => Promise<void>;
+  onOpenScanner: (id: string) => void;
+}
+
+export default function ObjectsFeature(props: Props) {
+  const { status, store, selectedId, busy, error } = props;
+  const selected = store?.objects.find((object) => object.id === selectedId)
+    ?? store?.objects.find((object) => object.active)
+    ?? null;
+  const [newName, setNewName] = useState('');
+  const [rename, setRename] = useState(selected?.name ?? '');
+  const [cables, setCables] = useState<number[]>(selected?.cable_lengths_m ?? [5, 5, 5, 5]);
+  const [defaults, setDefaults] = useState<number[]>(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
+  const [showLive, setShowLive] = useState(false);
+  const [gpsMessage, setGpsMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRename(selected?.name ?? '');
+    setCables(selected?.cable_lengths_m ?? [5, 5, 5, 5]);
+  }, [selected?.id, selected?.name, selected?.cable_lengths_m]);
+
+  useEffect(() => {
+    setDefaults(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
+  }, [store?.default_cable_lengths_m]);
+
+  return (
+    <section className="console-page object-layout">
+      {error !== null && <div className="console-alert" role="alert">{error}</div>}
+
+      <aside className="console-card object-list-card">
+        <div className="card-heading">
+          <div><span className="eyebrow">DATABASE</span><h2>Objects</h2></div>
+          <span>{store?.objects.length ?? 0}</span>
+        </div>
+        <form
+          className="inline-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const name = newName.trim();
+            void props.onCreate(name).then(() => setNewName(''));
+          }}
+        >
+          <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="New object name" maxLength={31} />
+          <button disabled={busy}>Create</button>
+        </form>
+
+        <div className="object-list">
+          {(store?.objects ?? []).map((object) => (
+            <button
+              type="button"
+              key={object.id}
+              className={`object-row ${selected?.id === object.id ? 'selected' : ''}`}
+              onClick={() => props.onSelect(object.id)}
+            >
+              <span><strong>{object.name}</strong><small>{object.id}</small></span>
+              {object.active && <i>ACTIVE</i>}
+            </button>
+          ))}
+          {store?.available === false && <p>SD/object database unavailable.</p>}
+        </div>
+
+        <details className="settings-details">
+          <summary>Global cable defaults</summary>
+          <p>New objects copy these values. Existing objects retain their object-specific cable lengths.</p>
+          {defaults.map((length, index) => (
+            <label key={index}>
+              Pod {index + 1}
+              <input
+                type="number"
+                min="0.1"
+                max="100"
+                step="0.1"
+                value={length}
+                onChange={(event) => {
+                  const next = [...defaults];
+                  next[index] = Number(event.target.value);
+                  setDefaults(next);
+                }}
+                onBlur={() => void props.onDefaultCable(index + 1, normalizeCableLength(defaults[index]))}
+              /> m
+            </label>
+          ))}
+        </details>
+      </aside>
+
+      <div className="object-workspace">
+        {selected === null ? (
+          <article className="console-card empty-card">
+            <h2>Select an object</h2>
+            <p>Create or select an SD object to bind GPS, configure sensor geometry and start measurements.</p>
+          </article>
+        ) : (
+          <>
+            <article className="console-card">
+              <div className="card-heading">
+                <div><span className="eyebrow">OBJECT {selected.id}</span><h1>{selected.name}</h1></div>
+                <span className={`state-pill ${selected.active ? 'ready' : 'offline'}`}>{selected.active ? 'ACTIVE' : 'INACTIVE'}</span>
+              </div>
+              <div className="inline-form">
+                <input value={rename} maxLength={31} onChange={(event) => setRename(event.target.value)} />
+                <button disabled={busy || rename.trim().length === 0 || rename.trim() === selected.name} onClick={() => void props.onRename(selected.id, rename.trim())}>Rename</button>
+              </div>
+              <div className="console-actions">
+                {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>Set active</button>}
+                <button disabled={busy} className="secondary" onClick={() => props.onOpenScanner(selected.id)}>3D phone scan</button>
+                <button disabled={busy} className="danger" onClick={() => { if (window.confirm(`Delete ${selected.name}?`)) void props.onDelete(selected.id); }}>Delete</button>
+              </div>
+            </article>
+
+            <article className="console-card">
+              <div className="card-heading">
+                <div><span className="eyebrow">BASE STATION</span><h2>Phone GPS anchor</h2></div>
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    setGpsMessage('Requesting high-accuracy phone position…');
+                    void props.onBindGps(selected.id)
+                      .then((position) => setGpsMessage(`Saved ±${position.accuracy_m.toFixed(1)} m`))
+                      .catch((reason) => setGpsMessage(reason instanceof Error ? reason.message : String(reason)));
+                  }}
+                >Bind current GPS</button>
+              </div>
+              {selected.location.valid ? (
+                <dl className="console-dl">
+                  <div><dt>Latitude</dt><dd>{formatCoordinate(selected.location.latitude)}</dd></div>
+                  <div><dt>Longitude</dt><dd>{formatCoordinate(selected.location.longitude)}</dd></div>
+                  <div><dt>Accuracy</dt><dd>±{selected.location.accuracy_m.toFixed(1)} m</dd></div>
+                  <div><dt>Altitude</dt><dd>{selected.location.altitude_valid ? `${selected.location.altitude_m.toFixed(1)} m` : 'not reported by phone'}</dd></div>
+                  <div><dt>Source</dt><dd>{selected.location.source}</dd></div>
+                </dl>
+              ) : <p>No global base coordinate is bound to this object.</p>}
+              {gpsMessage !== null && <small>{gpsMessage}</small>}
+            </article>
+
+            <article className="console-card">
+              <div className="card-heading">
+                <div><span className="eyebrow">GEOMETRY</span><h2>Sensor cable lengths</h2></div>
+                <small>object override</small>
+              </div>
+              <div className="cable-grid">
+                {cables.map((length, index) => (
+                  <label key={index}>
+                    <span>Pod {index + 1}</span>
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="100"
+                      step="0.1"
+                      value={length}
+                      onChange={(event) => {
+                        const next = [...cables];
+                        next[index] = Number(event.target.value);
+                        setCables(next);
+                      }}
+                    />
+                    <button disabled={busy} onClick={() => void props.onCable(selected.id, index + 1, normalizeCableLength(cables[index]))}>Save</button>
+                  </label>
+                ))}
+              </div>
+            </article>
+
+            <article className="console-card">
+              <div className="card-heading">
+                <div><span className="eyebrow">SEISMIC</span><h2>Live geophone acquisition</h2></div>
+                <span className={`state-pill ${status?.acquisition.running ? 'ready' : 'offline'}`}>{status?.acquisition.running ? 'RUNNING' : 'STOPPED'}</span>
+              </div>
+              <p>Live acquisition feeds the ring buffer and web waveform. Persistent recordings are a separate writer so SD I/O cannot silently become part of the acquisition hot path.</p>
+              <div className="console-actions">
+                <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>Start acquisition</button>
+                <button disabled={busy || status?.acquisition.running !== true} onClick={() => void props.onAcquisition(false)}>Stop</button>
+                <button className="secondary" onClick={() => setShowLive((value) => !value)}>{showLive ? 'Hide' : 'Show'} live signal</button>
+                <button disabled title="Persistent session writer is the next backend slice">Record session</button>
+              </div>
+            </article>
+
+            {showLive && (
+              <Suspense fallback={<div className="console-card">Loading waveform module…</div>}>
+                <LiveSeismicPanel />
+              </Suspense>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
