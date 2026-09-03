@@ -2,6 +2,7 @@ import {
   estimateSurfaceFeatureComplexity,
   featureAwareCellQuota,
 } from './surfaceFeatureDensity';
+import { metricFeatureProbeRadius } from './metricFeatureProbe';
 import {
   classifyDepthNeighbourhood,
   clamp01,
@@ -213,7 +214,6 @@ export const MAX_FEATURE_SUPERSAMPLE_PROBES_PER_FRAME = 96;
 export const MAX_FEATURE_SUPERSAMPLE_PROBES_PER_CELL_PER_FRAME = 12;
 const FEATURE_PROBE_MIN_REPRESENTATIVES = 6;
 const FEATURE_PROBE_COMPLEXITY_THRESHOLD = 0.22;
-const FEATURE_PROBE_PIXEL_RADIUS = 2.0;
 const GOLDEN_ANGLE_RADIANS = Math.PI * (3 - Math.sqrt(5));
 const SAMPLE_MARGIN = 0.025;
 const MIN_DEPTH_METERS = 0.18;
@@ -604,15 +604,25 @@ export class DepthPointCloudAccumulator {
           // still physical depth only: learned/native plane priors cannot enter
           // this accumulator or request probes. Per-cell fairness prevents one
           // noisy/complex patch from consuming the entire frame-wide budget.
-          const angle = (phase * 0.17320508075688773 + featureProbeSequence * GOLDEN_ANGLE_RADIANS) % (Math.PI * 2);
-          featureProbeSequence += 1;
-          const du = Math.cos(angle) * FEATURE_PROBE_PIXEL_RADIUS / Math.max(1, depth.width);
-          const dv = Math.sin(angle) * FEATURE_PROBE_PIXEL_RADIUS / Math.max(1, depth.height);
-          featureSupersampleProbes += 2;
-          featureProbeCountsByCell.set(featureCoverageKey, cellFeatureProbes + 2);
-          integrateAt(u - du, v - dv, false);
-          integrateAt(u + du, v + dv, false);
-          return local;
+          const probeRadius = metricFeatureProbeRadius({
+            depthMeters,
+            voxelSizeMeters: this.voxelSizeMeters,
+            projectionScaleX: p00,
+            projectionScaleY: p11,
+            depthWidth: depth.width,
+            depthHeight: depth.height,
+          });
+          if (probeRadius !== null) {
+            const angle = (phase * 0.17320508075688773 + featureProbeSequence * GOLDEN_ANGLE_RADIANS) % (Math.PI * 2);
+            featureProbeSequence += 1;
+            const du = Math.cos(angle) * probeRadius.normalizedRadiusU;
+            const dv = Math.sin(angle) * probeRadius.normalizedRadiusV;
+            featureSupersampleProbes += 2;
+            featureProbeCountsByCell.set(featureCoverageKey, cellFeatureProbes + 2);
+            integrateAt(u - du, v - dv, false);
+            integrateAt(u + du, v + dv, false);
+            return local;
+          }
         }
       }
 
