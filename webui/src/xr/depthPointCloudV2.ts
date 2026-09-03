@@ -165,6 +165,11 @@ interface CoverageCell {
   firstCameraZ: number;
   hasFirstCamera: boolean;
   maxBaselineMeters: number;
+  /** Monotonic revision of fields consumed by retention feature complexity. */
+  retentionComplexityRevision: number;
+  /** Revision for which retentionComplexityCachedScore is valid. */
+  retentionComplexityCachedRevision: number;
+  retentionComplexityCachedScore: number;
 }
 
 interface CellQuality {
@@ -1026,6 +1031,7 @@ export class DepthPointCloudAccumulator {
       point.promoted = true;
       this.promotedRepresentativeCount += 1;
     }
+    this.markRetentionComplexityDirty(this.coverageCells.get(point.coverageKey));
   }
 
   private registerContradictionIfApplicable(
@@ -1045,6 +1051,7 @@ export class DepthPointCloudAccumulator {
     if (point.promoted && point.contradictionWeight >= 2.75) {
       point.promoted = false;
       this.promotedRepresentativeCount = Math.max(0, this.promotedRepresentativeCount - 1);
+      this.markRetentionComplexityDirty(this.coverageCells.get(point.coverageKey));
     }
   }
 
@@ -1098,6 +1105,9 @@ export class DepthPointCloudAccumulator {
       representatives: new Map(), lastEvidenceKeyframe: -1, evidenceKeyframes: 0,
       firstCameraX: 0, firstCameraY: 0, firstCameraZ: 0, hasFirstCamera: false,
       maxBaselineMeters: 0,
+      retentionComplexityRevision: 0,
+      retentionComplexityCachedRevision: -1,
+      retentionComplexityCachedScore: 0,
     };
   }
   private recordCellEvidence(cell: CoverageCell, context: DepthFusionFrameContext): void {
@@ -1140,8 +1150,21 @@ export class DepthPointCloudAccumulator {
     return { confidence, visible, ready, promotedPoints };
   }
 
+  private markRetentionComplexityDirty(cell: CoverageCell | undefined): void {
+    if (cell === undefined) return;
+    cell.retentionComplexityRevision += 1;
+  }
+
   private cellFeatureComplexity(cell: CoverageCell, candidate?: RepresentativePoint): number {
-    if (candidate === undefined) return estimateSurfaceFeatureComplexity(cell.representatives.values()).score;
+    if (candidate === undefined) {
+      if (cell.retentionComplexityCachedRevision === cell.retentionComplexityRevision) {
+        return cell.retentionComplexityCachedScore;
+      }
+      const score = estimateSurfaceFeatureComplexity(cell.representatives.values()).score;
+      cell.retentionComplexityCachedScore = score;
+      cell.retentionComplexityCachedRevision = cell.retentionComplexityRevision;
+      return score;
+    }
     const existing = cell.representatives.values();
     const withCandidate: Iterable<RepresentativePoint> = {
       *[Symbol.iterator](): Iterator<RepresentativePoint> {
@@ -1177,6 +1200,7 @@ export class DepthPointCloudAccumulator {
     } else if (!this.ensureGlobalSlot(candidate.coverageKey, getProjectedComplexity)) return false;
 
     cell.representatives.set(candidate.id, candidate);
+    this.markRetentionComplexityDirty(cell);
     this.representatives.set(candidate.id, candidate);
     const bucket = this.voxelIndex.get(candidate.voxelIndexKey) ?? [];
     bucket.push(candidate); this.voxelIndex.set(candidate.voxelIndexKey, bucket);
@@ -1248,7 +1272,9 @@ export class DepthPointCloudAccumulator {
     return worst === null ? null : { point: worst, score };
   }
   private removeRepresentative(point: RepresentativePoint): void {
-    const cell = this.coverageCells.get(point.coverageKey); cell?.representatives.delete(point.id);
+    const cell = this.coverageCells.get(point.coverageKey);
+    const removedFromCell = cell?.representatives.delete(point.id) ?? false;
+    if (removedFromCell) this.markRetentionComplexityDirty(cell);
     this.representatives.delete(point.id);
     const bucket = this.voxelIndex.get(point.voxelIndexKey);
     if (bucket !== undefined) {
