@@ -1,4 +1,4 @@
-name: XR Agent Slice D Verification
+name: XR Agent Slice D Certificate Diagnostics
 
 on:
   push:
@@ -8,78 +8,60 @@ on:
       - .github/workflows/xr-agent-slice-c4.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  verify-and-commit:
+  diagnose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/xr-perf-guide
-          fetch-depth: 0
-
-      - name: Apply Slice D patches
+      - name: Apply Slice D candidate patches
         run: |
           python .github/scripts/xr_slice_d_patch.py
           python .github/scripts/xr_slice_d2_patch.py
+      - name: Instrument endpoint and mesh certificates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('webui/src/xr/structuralEdgeEndpoints.ts')
+          s = p.read_text()
+          old = """    if (local.length < MIN_PLANE_SUPPORT * 2) continue;\n\n    const planes = extractRobustPlanes(local, {"""
+          new = """    if (local.length < MIN_PLANE_SUPPORT * 2) continue;\n    console.log('D_EP_LOCAL', JSON.stringify({ seed: seed.position, local: local.length }));\n\n    const planes = extractRobustPlanes(local, {"""
+          if s.count(old) != 1: raise SystemExit('endpoint local anchor mismatch')
+          s = s.replace(old, new, 1)
+          old = """    if (planes.length !== 2) continue;\n\n    const edge = intersectTwoRobustPlanes(planes[0], planes[1], seed.position);\n    if (edge === null || edge.uncertaintyMeters > 0.035) continue;"""
+          new = """    console.log('D_EP_PLANES', JSON.stringify(planes.map((plane) => ({ support: plane.support, tangent: plane.tangentSpreadMeters, confidence: plane.confidence, normal: plane.normal }))));\n    if (planes.length !== 2) continue;\n\n    const edge = intersectTwoRobustPlanes(planes[0], planes[1], seed.position);\n    console.log('D_EP_EDGE', JSON.stringify(edge));\n    if (edge === null || edge.uncertaintyMeters > 0.035) continue;"""
+          if s.count(old) != 1: raise SystemExit('endpoint plane anchor mismatch')
+          s = s.replace(old, new, 1)
+          old = """    if (firstValues.length < MIN_EDGE_SIDE_SUPPORT || secondValues.length < MIN_EDGE_SIDE_SUPPORT) continue;"""
+          new = """    console.log('D_EP_VALUES', JSON.stringify({ first: firstValues.length, second: secondValues.length }));\n    if (firstValues.length < MIN_EDGE_SIDE_SUPPORT || secondValues.length < MIN_EDGE_SIDE_SUPPORT) continue;"""
+          if s.count(old) != 1: raise SystemExit('endpoint values anchor mismatch')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
 
+          p = Path('webui/src/xr/meshPreview.ts')
+          s = p.read_text()
+          old = """  const topology = sanitizeMeshTopology(Float32Array.from(triangles), input.voxelSizeMeters);\n  return {"""
+          new = """  const topology = sanitizeMeshTopology(Float32Array.from(triangles), input.voxelSizeMeters);\n  if (sourcePointCount >= 100) {\n    console.log('D_MESH_TOPOLOGY', JSON.stringify({\n      generated: triangles.length / 9,\n      topology: {\n        triangleCount: topology.triangleCount,\n        sourceTriangleCount: topology.sourceTriangleCount,\n        retainedTriangleCount: topology.retainedTriangleCount,\n        quarantinedTriangleCount: topology.quarantinedTriangleCount,\n        discardedTriangleCount: topology.discardedTriangleCount,\n        nonManifoldEdgeCount: topology.nonManifoldEdgeCount,\n        selfIntersectionPairCount: topology.selfIntersectionPairCount,\n        selfIntersectionAffectedTriangleCount: topology.selfIntersectionAffectedTriangleCount,\n        selfIntersectionTruncated: topology.selfIntersectionTruncated,\n        normalIntrusionAffectedTriangleCount: topology.normalIntrusionAffectedTriangleCount,\n        normalIntrusionTruncated: topology.normalIntrusionTruncated,\n        components: topology.components,\n      },\n    }));\n  }\n  return {"""
+          if s.count(old) != 1: raise SystemExit('mesh topology anchor mismatch')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: webui/package-lock.json
-
-      - name: Install WebUI dependencies
+      - name: Install
         working-directory: webui
         run: npm ci
-
-      - name: Typecheck WebUI
+      - name: Diagnose endpoint
+        continue-on-error: true
         working-directory: webui
-        run: npm run typecheck
-
-      - name: Run Slice D targeted regressions
+        run: npx --yes vitest@4.1.11 run tests/xr/structuralEdgeEndpoints.test.ts
+      - name: Diagnose mesh
+        continue-on-error: true
         working-directory: webui
-        run: >-
-          npx --yes vitest@4.1.11 run
-          tests/xr/surfaceFeatureDensity.test.ts
-          tests/xr/featureAwareAllocation.test.ts
-          tests/xr/structuralSurfaceClustering.test.ts
-          tests/xr/structuralEdgeEndpoints.test.ts
-          tests/xr/structuralGuideReadiness.test.ts
-          tests/xr/occupancyEvidence.test.ts
-          tests/xr/sparseTsdfClientLifecycle.test.ts
-          tests/xr/visualLineEvidenceClient.test.ts
-          tests/xr/meshPreview.test.ts
-          tests/xr/meshTopologySanity.test.ts
-          tests/xr/meshSelfIntersection.test.ts
-          tests/xr/meshNormalIntrusion.test.ts
-          tests/xr/meshThinBranches.test.ts
-          tests/xr/meshNoiseHotspots.test.ts
-          tests/xr/meshRepairFragments.test.ts
-          tests/xr/boundedSpatialPointIndex.test.ts
-
-      - name: Run full XR suite
-        working-directory: webui
-        run: npm run test:xr
-
-      - name: Commit verified Slice D
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            webui/src/xr/surfaceFeatureDensity.ts \
-            webui/src/xr/depthPointCloudV2.ts \
-            webui/src/xr/structuralSurfaceClustering.ts \
-            webui/src/xr/structuralEdgeEndpoints.ts \
-            webui/src/xr/meshPreview.ts \
-            webui/src/data/clientDiagnostics.ts \
-            webui/tests/xr/surfaceFeatureDensity.test.ts \
-            webui/tests/xr/featureAwareAllocation.test.ts \
-            webui/tests/xr/structuralGuideReadiness.test.ts \
-            webui/tests/xr/occupancyEvidence.test.ts \
-            webui/tests/xr/visualLineEvidenceClient.test.ts \
-            webui/tests/xr/meshPreview.test.ts
-          git diff --cached --quiet && { echo 'Expected Slice D changes are missing.' >&2; exit 1; }
-          git commit -m 'fix adaptive feature density and mesh topology'
-          git push origin HEAD:agent/xr-perf-guide
+        run: npx --yes vitest@4.1.11 run tests/xr/meshPreview.test.ts
