@@ -26,7 +26,7 @@
 
 
 /*
- * Core 0 application-owned service/UI tasks.
+ * Core 0 application-owned service/UI/storage tasks.
  */
 #define APP_TASK_PRIORITY_UI_EVENT        6
 #define APP_TASK_STACK_UI_EVENT        6144
@@ -50,3 +50,11 @@
 
 #define APP_TASK_PRIORITY_OBJECT_SERVICE  3
 #define APP_TASK_STACK_OBJECT_SERVICE  8192
+
+/*
+ * Recorder drains the lock-free seismic ring in bounded batches and performs
+ * SD writes on the service core. It deliberately runs below UI/object/storage
+ * service priority and never executes on the real-time acquisition core.
+ */
+#define APP_TASK_PRIORITY_SEISMIC_RECORDER 2
+#define APP_TASK_STACK_SEISMIC_RECORDER  4096
