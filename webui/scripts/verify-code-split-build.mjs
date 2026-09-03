@@ -1,9 +1,10 @@
 import { gzipSync } from 'node:zlib';
 import { readFile, readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const dist = join(root, 'dist');
+const espDist = join(root, 'esp-dist');
 const manifest = JSON.parse(await readFile(join(dist, '.vite', 'manifest.json'), 'utf8'));
 const entries = Object.entries(manifest);
 const appEntry = entries.find(([, value]) => value.isEntry === true);
@@ -17,6 +18,11 @@ function requireDynamic(sourceSuffix, label) {
     throw new Error(`${label} must remain a dynamic entry; static import would regress the phone home screen.`);
   }
   return [key, value];
+}
+
+function embeddedSymbolBase(fileName) {
+  const embeddedName = `${fileName}.gz`;
+  return `_binary_${embeddedName.replace(/[^A-Za-z0-9_]/g, '_')}`;
 }
 
 const [scannerKey, scanner] = requireDynamic('src/App.tsx', 'WebXR scanner');
@@ -53,11 +59,55 @@ for (const name of jsNames) {
   rows.push({ name, rawBytes: data.length, gzipBytes });
 }
 
-const appFile = entryValue.file.replace(/^assets\//, '');
+const appFile = basename(entryValue.file);
 const appRow = rows.find((row) => row.name === appFile);
 if (appRow === undefined) throw new Error(`Entry asset ${entryValue.file} not found in dist/assets.`);
 if (appRow.rawBytes >= 250_000) {
   throw new Error(`Initial console entry is too large: ${appRow.rawBytes} bytes (target < 250000).`);
+}
+
+const initialCssNames = (entryValue.css ?? []).map((path) => basename(path));
+if (initialCssNames.length !== 1 || !cssNames.includes(initialCssNames[0])) {
+  throw new Error(`Expected exactly one initial CSS asset, got ${initialCssNames.join(', ') || '(none)'}.`);
+}
+const secondaryNames = [
+  ...jsNames.filter((name) => name !== appFile),
+  ...cssNames.filter((name) => !initialCssNames.includes(name)),
+].sort();
+if (secondaryNames.length === 0) {
+  throw new Error('Expected secondary lazy/code-split assets for ESP embedding.');
+}
+
+const espAssetNames = (await readdir(join(espDist, 'assets'))).sort();
+const generatedChunkTable = await readFile(
+  join(espDist, 'generated_webui_chunk_table.inc'),
+  'utf8',
+);
+if (generatedChunkTable.includes('_binary_generated_webui_chunks_')) {
+  throw new Error(
+    'ESP chunk table still contains path-prefixed _binary_generated_webui_chunks_* symbols; ESP-IDF 5.5.4 emits basename-only symbols.',
+  );
+}
+
+for (const name of secondaryNames) {
+  const gzipName = `${name}.gz`;
+  if (!espAssetNames.includes(gzipName)) {
+    throw new Error(`Prepared ESP asset is missing: esp-dist/assets/${gzipName}.`);
+  }
+  const gzipData = await readFile(join(espDist, 'assets', gzipName));
+  if (gzipData.length === 0) {
+    throw new Error(`Prepared ESP asset is empty: esp-dist/assets/${gzipName}.`);
+  }
+
+  const symbol = embeddedSymbolBase(name);
+  const startDeclaration = `asm("${symbol}_start")`;
+  const endDeclaration = `asm("${symbol}_end")`;
+  if (!generatedChunkTable.includes(startDeclaration)) {
+    throw new Error(`Missing ESP-IDF basename start symbol for ${gzipName}: ${symbol}_start.`);
+  }
+  if (!generatedChunkTable.includes(endDeclaration)) {
+    throw new Error(`Missing ESP-IDF basename end symbol for ${gzipName}: ${symbol}_end.`);
+  }
 }
 
 console.log('Device-console code-split JS assets:');
@@ -67,6 +117,7 @@ for (const row of rows) {
 console.log(`Initial console entry: ${appRow.name} raw=${appRow.rawBytes} gzip=${appRow.gzipBytes}`);
 console.log(`Total JS: raw=${totalRaw} gzip=${totalGzip}`);
 console.log(`CSS assets: ${cssNames.join(', ')}`);
+console.log(`ESP secondary assets: ${secondaryNames.length} basename-symbol pairs verified`);
 console.log(`Dynamic scanner: ${scannerKey}`);
 console.log(`Dynamic objects: ${objectsKey}`);
 console.log(`Dynamic sensors: ${sensorsKey}`);
