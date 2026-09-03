@@ -33,8 +33,15 @@ async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function fetchDeviceStatus(includeObjects = false): Promise<DeviceStatus> {
-  return jsonRequest<DeviceStatus>(includeObjects ? '/api/status?objects=1' : '/api/status');
+export function fetchDeviceStatus(
+  includeObjects = false,
+  sessionsObjectId?: string | null,
+): Promise<DeviceStatus> {
+  const query = new URLSearchParams();
+  if (includeObjects) query.set('objects', '1');
+  if (sessionsObjectId) query.set('sessions', sessionsObjectId);
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return jsonRequest<DeviceStatus>(`/api/status${suffix}`);
 }
 
 export async function sendControl(action: string, payload: Record<string, unknown> = {}): Promise<void> {
