@@ -1,4 +1,4 @@
-name: XR Agent Slice D Final Verification
+name: XR Agent Slice E Verification
 
 on:
   push:
@@ -18,12 +18,8 @@ jobs:
         with:
           ref: agent/xr-perf-guide
           fetch-depth: 0
-      - name: Apply Slice D patches
-        run: |
-          python .github/scripts/xr_slice_d_patch.py
-          python .github/scripts/xr_slice_d2_patch.py
-          python .github/scripts/xr_slice_d3_patch.py
-          python .github/scripts/xr_slice_d4_patch.py
+      - name: Apply Slice E integration
+        run: python .github/scripts/xr_slice_e_patch.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -35,34 +31,23 @@ jobs:
       - name: Typecheck
         working-directory: webui
         run: npm run typecheck
-      - name: Run Slice D regressions
+      - name: Run Slice E capability regressions
         working-directory: webui
         run: >-
           npx --yes vitest@4.1.11 run
-          tests/xr/surfaceFeatureDensity.test.ts
-          tests/xr/featureAwareAllocation.test.ts
-          tests/xr/structuralSurfaceClustering.test.ts
-          tests/xr/structuralEdgeEndpoints.test.ts
-          tests/xr/structuralGuideReadiness.test.ts
-          tests/xr/occupancyEvidence.test.ts
-          tests/xr/sparseTsdfClientLifecycle.test.ts
-          tests/xr/visualLineEvidenceClient.test.ts
-          tests/xr/meshPreview.test.ts
-          tests/xr/meshTopologySanity.test.ts
-          tests/xr/meshSelfIntersection.test.ts
-          tests/xr/meshNormalIntrusion.test.ts
-          tests/xr/meshThinBranches.test.ts
-          tests/xr/meshNoiseHotspots.test.ts
-          tests/xr/meshRepairFragments.test.ts
-          tests/xr/boundedSpatialPointIndex.test.ts
+          tests/xr/xrCapabilityProfile.test.ts
+          tests/xr/deviceComputeProfile.test.ts
+          tests/xr/webxrRuntimeHelpers.test.ts
+          tests/xr/rawCameraGuidance.test.ts
+          tests/xr/cpuDepthSampler.test.ts
       - name: Run full XR suite
         working-directory: webui
         run: npm run test:xr
-      - name: Commit verified Slice D
+      - name: Commit verified Slice E integration
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add webui/src webui/tests/xr
-          git diff --cached --quiet && { echo 'Expected Slice D changes are missing.' >&2; exit 1; }
-          git commit -m 'fix adaptive feature density and mesh topology'
+          git add webui/src/xr/webxrRuntime.ts webui/src/components/XrRuntimePanel.tsx
+          git diff --cached --quiet && { echo 'Expected Slice E integration changes are missing.' >&2; exit 1; }
+          git commit -m 'expose negotiated XR device capabilities'
           git push origin HEAD:agent/xr-perf-guide
