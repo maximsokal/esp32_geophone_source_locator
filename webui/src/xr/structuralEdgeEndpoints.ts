@@ -302,7 +302,12 @@ export function detectEdgeEndpointObservations(snapshot: EdgeEndpointSnapshot): 
       minSupport: MIN_PLANE_SUPPORT,
       inlierThresholdMeters: clamp(snapshot.voxelSizeMeters * 0.40, 0.011, 0.020),
       normalGateRadians: (38 * Math.PI) / 180,
-      minimumTangentSpreadMeters: clamp(snapshot.voxelSizeMeters * 0.55, 0.020, 0.032),
+      // RobustPlane.tangentSpreadMeters is PCA sigma, not full patch width.
+      // A ~36 mm measured strip has sigma ~14.7 mm; requiring 20-22 mm sigma
+      // accidentally rejected legitimate long two-plane edges before the
+      // explicit 9 cm edge-scale certificate could run. Keep a real width floor
+      // here, but express it in the same sigma scale as the fitter.
+      minimumTangentSpreadMeters: clamp(snapshot.voxelSizeMeters * 0.35, 0.014, 0.024),
     });
     if (planes.length !== 2) continue;
 

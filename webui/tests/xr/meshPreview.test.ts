@@ -82,6 +82,7 @@ describe('GP3-style mesh preview', () => {
     const mesh = buildSurfaceMeshPreview({ ...cloud, voxelSizeMeters: 0.04 });
     expect(mesh.eligibleComponentCount).toBeGreaterThan(0);
     expect(mesh.meshReadiness).toBe(1);
+    expect(mesh.nonManifoldEdgeCount).toBe(0);
     expect(mesh.triangleCount).toBeGreaterThan(100);
     expect(mesh.trianglePositions.length).toBe(mesh.triangleCount * 9);
   });

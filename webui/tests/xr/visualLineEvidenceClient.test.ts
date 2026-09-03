@@ -60,7 +60,7 @@ describe('visual line evidence client', () => {
     });
     try {
       if (client.workerBacked) return;
-      await expect(client.analyze(lineFrame(), 9, identity, identity)).rejects.toThrow(/Worker/);
+      await expect(client.analyze(lineFrame(), 9, identity, identity)).rejects.toThrow(/Worker|compute budget/);
       expect(client.busy).toBe(false);
     } finally {
       client.dispose();

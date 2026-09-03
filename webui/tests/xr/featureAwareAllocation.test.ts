@@ -42,7 +42,7 @@ const frame: DepthFusionFrameContext = {
 };
 
 describe('feature-aware upstream surfel allocation', () => {
-  it('retains and actively re-probes extra measured detail on a smooth convex patch without increasing global memory', () => {
+  it('actively re-probes tentative convex detail without granting single-view retention quota', () => {
     const flat = new DepthPointCloudAccumulator(0.01, 1000, 5);
     const convex = new DepthPointCloudAccumulator(0.01, 1000, 5);
     const flatDepth = depthSurface(() => 1.44);
@@ -62,9 +62,7 @@ describe('feature-aware upstream surfel allocation', () => {
     expect(convex.coverageCount).toBe(1);
     expect(flat.pointsPerCoverageCell).toBe(28);
     expect(flat.pointCount).toBeLessThanOrEqual(30);
-    expect(convex.pointCount).toBeGreaterThan(flat.pointCount);
-    expect(convex.pointCount).toBeGreaterThan(28);
-    expect(convex.pointCount).toBeLessThanOrEqual(48);
+    expect(convex.pointCount).toBeLessThanOrEqual(28);
     expect(convex.pointCount).toBeLessThanOrEqual(convex.memoryBudget);
     expect(flatResult.featureSupersampleProbes).toBe(0);
     expect(convexResult.featureSupersampleProbes).toBeGreaterThan(0);

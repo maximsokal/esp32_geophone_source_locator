@@ -77,6 +77,50 @@ function key(x: number, y: number, z: number): string {
   return `${x}:${y}:${z}`;
 }
 
+function meshEdgeKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function compareMeshEdges(a0: number, a1: number, b0: number, b1: number): number {
+  const amin = Math.min(a0, a1), amax = Math.max(a0, a1);
+  const bmin = Math.min(b0, b1), bmax = Math.max(b0, b1);
+  return amin - bmin || amax - bmax;
+}
+
+function gabrielEdgeAllowed(
+  first: PointRecord,
+  second: PointRecord,
+  localPool: readonly PointRecord[],
+): boolean {
+  const dx = second.position[0] - first.position[0];
+  const dy = second.position[1] - first.position[1];
+  const dz = second.position[2] - first.position[2];
+  const edgeLengthSquared = dx * dx + dy * dy + dz * dz;
+  if (!Number.isFinite(edgeLengthSquared) || edgeLengthSquared <= 1e-10) return false;
+  const mx = (first.position[0] + second.position[0]) * 0.5;
+  const my = (first.position[1] + second.position[1]) * 0.5;
+  const mz = (first.position[2] + second.position[2]) * 0.5;
+  const radiusSquared = edgeLengthSquared * 0.25;
+  const tolerance = Math.max(1e-10, radiusSquared * 1e-5);
+  const boundary: number[] = [];
+  for (const candidate of localPool) {
+    if (candidate.index === first.index || candidate.index === second.index) continue;
+    const px = candidate.position[0] - mx;
+    const py = candidate.position[1] - my;
+    const pz = candidate.position[2] - mz;
+    const squared = px * px + py * py + pz * pz;
+    if (squared < radiusSquared - tolerance) return false;
+    if (Math.abs(squared - radiusSquared) <= tolerance) boundary.push(candidate.index);
+  }
+  if (boundary.length >= 2) {
+    boundary.sort((left, right) => left - right);
+    // Four co-circular samples admit two Delaunay diagonals. Choose one globally
+    // by source-index edge order so adjacent center fans cannot choose both.
+    if (compareMeshEdges(first.index, second.index, boundary[0], boundary[1]) > 0) return false;
+  }
+  return true;
+}
+
 function subtract(
   a: readonly [number, number, number],
   b: readonly [number, number, number],
@@ -276,7 +320,9 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
 
   const triangles: number[] = [];
   const emitted = new Set<string>();
+  const emittedEdgeUseCount = new Map<string, number>();
   let geometryRejectedTriangleCount = 0;
+  let manifoldRejectedTriangleCount = 0;
 
   for (const center of points) {
     if (triangles.length / 9 >= MESH_MAX_TRIANGLES) break;
@@ -314,9 +360,14 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
       searchRadiusMeters,
       input.voxelSizeMeters,
     );
-    const selected = neighbours
-      .filter((neighbour) => neighbour.distance <= localRadiusMeters)
-      .slice(0, MESH_MAX_NEIGHBOURS);
+    const localNeighbours = neighbours
+      .filter((neighbour) => neighbour.distance <= localRadiusMeters);
+    // Bounded pool for the empty-diameter edge test. Twice the fan budget is
+    // enough to see closer blockers while keeping mobile work deterministic.
+    const gabrielPool = [center, ...localNeighbours.slice(0, MESH_MAX_NEIGHBOURS * 2).map((item) => item.point)];
+    const selected = localNeighbours
+      .slice(0, MESH_MAX_NEIGHBOURS)
+      .filter((neighbour) => gabrielEdgeAllowed(center, neighbour.point, gabrielPool));
     selected.sort((left, right) => left.angle - right.angle || left.point.index - right.point.index);
     if (selected.length < 2) continue;
 
@@ -333,6 +384,10 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
         geometryRejectedTriangleCount += 1;
         continue;
       }
+      if (!gabrielEdgeAllowed(first, second, gabrielPool)) {
+        geometryRejectedTriangleCount += 1;
+        continue;
+      }
       const triNormal = triangleNormal(center.position, first.position, second.position);
       if (
         !normalsCompatible(triNormal, center.normal, MESH_MAX_SURFACE_ANGLE_RADIANS) ||
@@ -340,6 +395,16 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
         !normalsCompatible(triNormal, second.normal, MESH_MAX_SURFACE_ANGLE_RADIANS)
       ) {
         geometryRejectedTriangleCount += 1;
+        continue;
+      }
+
+      const edgeKeys = [
+        meshEdgeKey(center.index, first.index),
+        meshEdgeKey(first.index, second.index),
+        meshEdgeKey(second.index, center.index),
+      ] as const;
+      if (edgeKeys.some((edgeKey) => (emittedEdgeUseCount.get(edgeKey) ?? 0) >= 2)) {
+        manifoldRejectedTriangleCount += 1;
         continue;
       }
 
@@ -351,6 +416,9 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
         triangles.push(...center.position, ...second.position, ...first.position);
       } else {
         triangles.push(...center.position, ...first.position, ...second.position);
+      }
+      for (const edgeKey of edgeKeys) {
+        emittedEdgeUseCount.set(edgeKey, (emittedEdgeUseCount.get(edgeKey) ?? 0) + 1);
       }
       if (triangles.length / 9 >= MESH_MAX_TRIANGLES) break;
     }
@@ -364,6 +432,7 @@ export function buildSurfaceMeshPreview(input: MeshPreviewInput): MeshPreview {
     rawTriangleCount: topology.sourceTriangleCount,
     rejectedTriangleCount:
       geometryRejectedTriangleCount +
+      manifoldRejectedTriangleCount +
       topology.quarantinedTriangleCount +
       topology.discardedTriangleCount,
     quarantinedTriangleCount: topology.quarantinedTriangleCount,

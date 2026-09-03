@@ -46,7 +46,7 @@ function enqueue(level: ClientLogLevel, message: string, details?: unknown): voi
 
 function scheduleFlush(delayMs: number): void {
   if (flushTimer !== null) return;
-  flushTimer = window.setTimeout(() => {
+  flushTimer = globalThis.setTimeout(() => {
     flushTimer = null;
     void flush();
   }, delayMs);
