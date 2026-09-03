@@ -244,6 +244,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         )
         file(GLOB WEB_SERVER_WEBUI_CHUNK_SOURCES
             "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/*.js.gz"
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/*.css.gz"
         )
         list(SORT WEB_SERVER_WEBUI_CHUNK_SOURCES)
         set(WEB_SERVER_WEBUI_CHUNK_COUNT 0)
@@ -253,7 +254,10 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
                 "${WEB_SERVER_WEBUI_CHUNK_SOURCE}"
                 NAME
             )
-            if(WEB_SERVER_WEBUI_CHUNK_NAME STREQUAL "app.js.gz")
+            if(
+                WEB_SERVER_WEBUI_CHUNK_NAME STREQUAL "app.js.gz"
+                OR WEB_SERVER_WEBUI_CHUNK_NAME STREQUAL "app.css.gz"
+            )
                 continue()
             endif()
             math(EXPR WEB_SERVER_WEBUI_CHUNK_COUNT "${WEB_SERVER_WEBUI_CHUNK_COUNT} + 1")
@@ -268,7 +272,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         endforeach()
         if(WEB_SERVER_WEBUI_CHUNK_COUNT EQUAL 0)
             message(FATAL_ERROR
-                "GeoLocator WebUI split build produced no secondary JS chunks"
+                "GeoLocator WebUI split build produced no secondary JS/CSS assets"
             )
         endif()
 
@@ -304,14 +308,16 @@ idf_component_register(
         "web_server.c"
         "web_server_prepare.c"
         "web_server_routes.c"
-        "web_static_assets.c"
         "web_static_asset_data.c"
         "web_webui.c"
         "web_webui_flash.c"
         "web_page.c"
         "web_api_status.c"
+        "web_api_control.c"
         "web_client_log.c"
         "web_status_json.c"
+        "web_status_json_objects.c"
+        "web_status_json_recording.c"
         "web_status_json_pods.c"
         "web_json_writer.c"
         "web_seismic.c"
@@ -335,8 +341,11 @@ idf_component_register(
         app_config
         app_event_bus
         device_status
+        object_store
         sd_card
+        seismic_acquisition
         seismic_buffer
+        seismic_recorder
         wifi_manager
         esp_http_server
         esp_https_server
