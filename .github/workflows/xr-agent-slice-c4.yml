@@ -1,4 +1,4 @@
-name: XR Agent Slice D Diagnostics
+name: XR Agent Slice D Verification
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
       - .github/workflows/xr-agent-slice-c4.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  verify-and-commit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,8 +19,10 @@ jobs:
           ref: agent/xr-perf-guide
           fetch-depth: 0
 
-      - name: Apply Slice D core patch
-        run: python .github/scripts/xr_slice_d_patch.py
+      - name: Apply Slice D patches
+        run: |
+          python .github/scripts/xr_slice_d_patch.py
+          python .github/scripts/xr_slice_d2_patch.py
 
       - uses: actions/setup-node@v4
         with:
@@ -36,78 +38,48 @@ jobs:
         working-directory: webui
         run: npm run typecheck
 
-      - name: Verify already-fixed Slice D regressions
+      - name: Run Slice D targeted regressions
         working-directory: webui
         run: >-
           npx --yes vitest@4.1.11 run
           tests/xr/surfaceFeatureDensity.test.ts
           tests/xr/featureAwareAllocation.test.ts
           tests/xr/structuralSurfaceClustering.test.ts
+          tests/xr/structuralEdgeEndpoints.test.ts
           tests/xr/structuralGuideReadiness.test.ts
           tests/xr/occupancyEvidence.test.ts
           tests/xr/sparseTsdfClientLifecycle.test.ts
           tests/xr/visualLineEvidenceClient.test.ts
+          tests/xr/meshPreview.test.ts
+          tests/xr/meshTopologySanity.test.ts
+          tests/xr/meshSelfIntersection.test.ts
+          tests/xr/meshNormalIntrusion.test.ts
+          tests/xr/meshThinBranches.test.ts
+          tests/xr/meshNoiseHotspots.test.ts
+          tests/xr/meshRepairFragments.test.ts
+          tests/xr/boundedSpatialPointIndex.test.ts
 
-      - name: Instrument endpoint scale path
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('webui/src/xr/structuralEdgeEndpoints.ts')
-          s = p.read_text()
-          old = """    if (!isScaleSupportedStructuralEdge({\n      start: measuredStart,\n      end: measuredEnd,\n      support: intervalSupport,\n    })) continue;"""
-          new = """    const scaleSupported = isScaleSupportedStructuralEdge({\n      start: measuredStart,\n      end: measuredEnd,\n      support: intervalSupport,\n    });\n    console.log('SLICE_D_EDGE_SCALE', JSON.stringify({ low, high, length: high - low, intervalSupport, scaleSupported }));\n    if (!scaleSupported) continue;"""
-          if s.count(old) != 1: raise SystemExit('endpoint scale instrumentation anchor mismatch')
-          s = s.replace(old, new, 1)
-          old2 = """  if (firstSupport < MIN_EDGE_SIDE_SUPPORT || secondSupport < MIN_EDGE_SIDE_SUPPORT) return null;\n  if (hasMeasuredSupportBeyond(firstValues, parameter, sign) || hasMeasuredSupportBeyond(secondValues, parameter, sign)) return null;"""
-          new2 = """  if (firstSupport < MIN_EDGE_SIDE_SUPPORT || secondSupport < MIN_EDGE_SIDE_SUPPORT) {\n    console.log('SLICE_D_ENDPOINT_SUPPORT_REJECT', JSON.stringify({ parameter, sign, firstSupport, secondSupport }));\n    return null;\n  }\n  const firstBeyond = hasMeasuredSupportBeyond(firstValues, parameter, sign);\n  const secondBeyond = hasMeasuredSupportBeyond(secondValues, parameter, sign);\n  if (firstBeyond || secondBeyond) {\n    console.log('SLICE_D_ENDPOINT_CONTINUATION_REJECT', JSON.stringify({ parameter, sign, firstBeyond, secondBeyond }));\n    return null;\n  }"""
-          if s.count(old2) != 1: raise SystemExit('endpoint observation instrumentation anchor mismatch')
-          s = s.replace(old2, new2, 1)
-          old3 = """  const freeBeyond = verifiedFreeBeyond(position, direction, sign, freeIndex);"""
-          new3 = """  const freeBeyond = verifiedFreeBeyond(position, direction, sign, freeIndex);\n  console.log('SLICE_D_ENDPOINT_ACCEPT', JSON.stringify({ parameter, sign, firstSupport, secondSupport, freeBeyond, position }));"""
-          if s.count(old3) != 1: raise SystemExit('endpoint accept instrumentation anchor mismatch')
-          p.write_text(s)
-          PY
-
-      - name: Diagnose endpoint regression
-        continue-on-error: true
+      - name: Run full XR suite
         working-directory: webui
-        run: npx --yes vitest@4.1.11 run tests/xr/structuralEdgeEndpoints.test.ts
+        run: npm run test:xr
 
-      - name: Diagnose mesh preview
-        continue-on-error: true
-        working-directory: webui
+      - name: Commit verified Slice D
         run: |
-          cat > tests/xr/__sliceDMeshDiag.test.ts <<'EOF'
-          import { describe, it } from 'vitest';
-          import { buildSurfaceMeshPreview } from '../../src/xr/meshPreview';
-          function planeGrid(width: number, height: number, spacing = 0.04, z = 0) {
-            const positions = new Float32Array(width * height * 3);
-            const normals = new Float32Array(width * height * 3);
-            const confidence = new Float32Array(width * height);
-            let point = 0;
-            for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-              const o = point * 3;
-              positions[o] = x * spacing; positions[o + 1] = y * spacing; positions[o + 2] = z;
-              normals[o + 2] = 1; confidence[point] = 0.9; point += 1;
-            }
-            return { positions, normals, confidence };
-          }
-          describe('slice D mesh diagnostics', () => {
-            it('prints planar diagnostics', () => {
-              const mesh = buildSurfaceMeshPreview({ ...planeGrid(12, 12), voxelSizeMeters: 0.04 });
-              console.log('SLICE_D_MESH_PLANAR', JSON.stringify({
-                triangleCount: mesh.triangleCount, rawTriangleCount: mesh.rawTriangleCount,
-                rejectedTriangleCount: mesh.rejectedTriangleCount,
-                quarantinedTriangleCount: mesh.quarantinedTriangleCount,
-                topologyDiscardedTriangleCount: mesh.topologyDiscardedTriangleCount,
-                meshTopologyComponentCount: mesh.meshTopologyComponentCount,
-                nonManifoldEdgeCount: mesh.nonManifoldEdgeCount,
-                orientationConflictCount: mesh.orientationConflictCount,
-                orientationRepairCount: mesh.orientationRepairCount,
-                acceptedPointCount: mesh.acceptedPointCount,
-                eligibleComponentCount: mesh.eligibleComponentCount,
-              }));
-            });
-          });
-          EOF
-          npx --yes vitest@4.1.11 run tests/xr/meshPreview.test.ts tests/xr/__sliceDMeshDiag.test.ts
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            webui/src/xr/surfaceFeatureDensity.ts \
+            webui/src/xr/depthPointCloudV2.ts \
+            webui/src/xr/structuralSurfaceClustering.ts \
+            webui/src/xr/structuralEdgeEndpoints.ts \
+            webui/src/xr/meshPreview.ts \
+            webui/src/data/clientDiagnostics.ts \
+            webui/tests/xr/surfaceFeatureDensity.test.ts \
+            webui/tests/xr/featureAwareAllocation.test.ts \
+            webui/tests/xr/structuralGuideReadiness.test.ts \
+            webui/tests/xr/occupancyEvidence.test.ts \
+            webui/tests/xr/visualLineEvidenceClient.test.ts \
+            webui/tests/xr/meshPreview.test.ts
+          git diff --cached --quiet && { echo 'Expected Slice D changes are missing.' >&2; exit 1; }
+          git commit -m 'fix adaptive feature density and mesh topology'
+          git push origin HEAD:agent/xr-perf-guide
