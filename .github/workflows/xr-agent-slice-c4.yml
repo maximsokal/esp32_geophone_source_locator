@@ -1,4 +1,4 @@
-name: XR Agent Slice E Verification
+name: XR Agent Final Verification And Cleanup
 
 on:
   push:
@@ -11,15 +11,13 @@ permissions:
   contents: write
 
 jobs:
-  verify-and-commit:
+  verify-cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/xr-perf-guide
           fetch-depth: 0
-      - name: Apply Slice E integration
-        run: python .github/scripts/xr_slice_e_patch.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -28,26 +26,34 @@ jobs:
       - name: Install
         working-directory: webui
         run: npm ci
-      - name: Typecheck
+      - name: Typecheck final WebUI
         working-directory: webui
         run: npm run typecheck
-      - name: Run Slice E capability regressions
-        working-directory: webui
-        run: >-
-          npx --yes vitest@4.1.11 run
-          tests/xr/xrCapabilityProfile.test.ts
-          tests/xr/deviceComputeProfile.test.ts
-          tests/xr/webxrRuntimeHelpers.test.ts
-          tests/xr/rawCameraGuidance.test.ts
-          tests/xr/cpuDepthSampler.test.ts
-      - name: Run full XR suite
+      - name: Run final full XR suite
         working-directory: webui
         run: npm run test:xr
-      - name: Commit verified Slice E integration
+      - name: Build final WebUI
+        working-directory: webui
+        run: npm run build
+      - name: Remove agent-only CI scaffolding and commit final tree
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add webui/src/xr/webxrRuntime.ts webui/src/components/XrRuntimePanel.tsx
-          git diff --cached --quiet && { echo 'Expected Slice E integration changes are missing.' >&2; exit 1; }
-          git commit -m 'expose negotiated XR device capabilities'
+          git rm -f .github/workflows/xr-agent-slice-c.yml \
+                    .github/workflows/xr-agent-slice-c2.yml \
+                    .github/workflows/xr-agent-slice-c3.yml \
+                    .github/workflows/xr-agent-slice-c4.yml \
+                    .github/scripts/xr_slice_c_patch.py \
+                    .github/scripts/xr_slice_d_patch.py \
+                    .github/scripts/xr_slice_d2_patch.py \
+                    .github/scripts/xr_slice_d3_patch.py \
+                    .github/scripts/xr_slice_d4_patch.py \
+                    .github/scripts/xr_slice_e_patch.py
+          git diff --cached --name-only
+          test -z "$(git status --porcelain --untracked-files=no | grep -v '^D  .github/' || true)" || {
+            echo 'Unexpected tracked changes outside agent-only cleanup.' >&2
+            git status --short
+            exit 1
+          }
+          git commit -m 'remove temporary XR agent verification scaffolding'
           git push origin HEAD:agent/xr-perf-guide
