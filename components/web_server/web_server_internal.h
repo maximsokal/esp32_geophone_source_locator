@@ -67,11 +67,17 @@ const char *web_static_asset_data(web_static_asset_id_t asset);
 esp_err_t web_static_assets_register(httpd_handle_t server);
 
 esp_err_t web_status_json_build(char **json_out);
-esp_err_t web_status_json_build_extended(char **json_out, bool include_objects);
+esp_err_t web_status_json_build_extended(
+    char **json_out,
+    bool include_objects,
+    const char *sessions_object_id
+);
 void web_status_json_free(char *json);
 
 bool web_status_json_add_pods(cJSON *root, const device_status_snapshot_t *status);
 bool web_status_json_add_objects(cJSON *root);
+bool web_status_json_add_recording(cJSON *root);
+bool web_status_json_add_sessions(cJSON *root, const char *object_id);
 
 void web_json_writer_init(web_json_writer_t *writer, httpd_req_t *request);
 esp_err_t web_json_writer_write(web_json_writer_t *writer, const char *text);
