@@ -64,7 +64,6 @@ esp_err_t web_seismic_api_register(httpd_handle_t server);
 esp_err_t web_seismic_page_send(httpd_req_t *request);
 
 const char *web_static_asset_data(web_static_asset_id_t asset);
-esp_err_t web_static_assets_register(httpd_handle_t server);
 
 esp_err_t web_status_json_build(char **json_out);
 esp_err_t web_status_json_build_extended(
