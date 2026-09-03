@@ -8,23 +8,15 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 
-
 #define WEB_JSON_WRITER_BUFFER_SIZE  768
-
 
 typedef struct
 {
     httpd_req_t *request;
-
-    char buffer[
-        WEB_JSON_WRITER_BUFFER_SIZE
-    ];
-
+    char buffer[WEB_JSON_WRITER_BUFFER_SIZE];
     size_t length;
     esp_err_t status;
-
 } web_json_writer_t;
-
 
 typedef struct
 {
@@ -33,9 +25,7 @@ typedef struct
     const char *content_type;
     const unsigned char *start;
     const unsigned char *end;
-
 } web_webui_chunk_asset_t;
-
 
 typedef enum
 {
@@ -46,14 +36,13 @@ typedef enum
     WEB_STATIC_ASSET_SEISMIC_CSS,
     WEB_STATIC_ASSET_SEISMIC_JS,
     WEB_STATIC_ASSET_COUNT
-
 } web_static_asset_id_t;
-
 
 esp_err_t web_server_bootstrap_routes_register(httpd_handle_t server);
 esp_err_t web_server_routes_register(httpd_handle_t server);
 
 esp_err_t web_api_status_register(httpd_handle_t server);
+esp_err_t web_api_control_register(httpd_handle_t server);
 
 esp_err_t web_page_send_index(httpd_req_t *request);
 
@@ -78,57 +67,25 @@ const char *web_static_asset_data(web_static_asset_id_t asset);
 esp_err_t web_static_assets_register(httpd_handle_t server);
 
 esp_err_t web_status_json_build(char **json_out);
+esp_err_t web_status_json_build_extended(char **json_out, bool include_objects);
 void web_status_json_free(char *json);
 
-bool web_status_json_add_pods(
-    cJSON *root,
-    const device_status_snapshot_t *status
-);
+bool web_status_json_add_pods(cJSON *root, const device_status_snapshot_t *status);
+bool web_status_json_add_objects(cJSON *root);
 
-void web_json_writer_init(
-    web_json_writer_t *writer,
-    httpd_req_t *request
-);
-
-esp_err_t web_json_writer_write(
-    web_json_writer_t *writer,
-    const char *text
-);
-
-esp_err_t web_json_writer_printf(
-    web_json_writer_t *writer,
-    const char *format,
-    ...
-);
-
+void web_json_writer_init(web_json_writer_t *writer, httpd_req_t *request);
+esp_err_t web_json_writer_write(web_json_writer_t *writer, const char *text);
+esp_err_t web_json_writer_printf(web_json_writer_t *writer, const char *format, ...);
 esp_err_t web_json_writer_finish(web_json_writer_t *writer);
 
 esp_err_t web_wifi_setup_send_page(httpd_req_t *request);
 esp_err_t web_wifi_setup_register(httpd_handle_t server);
-
-esp_err_t web_wifi_setup_url_decode(
-    const char *source,
-    char *destination,
-    size_t destination_size
-);
-
-esp_err_t web_wifi_setup_form_parse(
-    char *body,
-    char *ssid,
-    size_t ssid_size,
-    char *password,
-    size_t password_size
-);
-
+esp_err_t web_wifi_setup_url_decode(const char *source, char *destination, size_t destination_size);
+esp_err_t web_wifi_setup_form_parse(char *body, char *ssid, size_t ssid_size, char *password, size_t password_size);
 esp_err_t web_wifi_setup_page_send_form(httpd_req_t *request);
 esp_err_t web_wifi_setup_page_send_saved(httpd_req_t *request);
 esp_err_t web_wifi_setup_page_open_handler(httpd_req_t *request);
-
-esp_err_t web_wifi_setup_request_read_body(
-    httpd_req_t *request,
-    char *body,
-    size_t body_size
-);
+esp_err_t web_wifi_setup_request_read_body(httpd_req_t *request, char *body, size_t body_size);
 
 esp_err_t web_https_onboarding_bootstrap_register(httpd_handle_t server);
 esp_err_t web_https_onboarding_secure_register(httpd_handle_t server);
