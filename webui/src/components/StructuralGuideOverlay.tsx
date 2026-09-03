@@ -580,6 +580,8 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     visibleCorners: projectedCorners.length,
     certifiedCorners: certifiedCandidates.length,
     certifiedEdges: certifiedEdgeCandidates.length,
+    planarPatches: result?.planarPatches ?? 0,
+    workerEdges: result?.edges.length ?? 0,
     rgbCorroboration: rgbActive,
   });
   const readinessTitle = [
