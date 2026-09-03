@@ -1,8 +1,13 @@
 import {
+  CertifiedStructuralCornerTracker,
+  detectCertifiedStructuralCorners,
+} from '/src/xr/certifiedStructuralGeometry.ts';
+import { applyCoverageRenderBudget } from '/src/xr/liveCoverageRenderer.ts';
+import { rejectStructuralCandidatesInVerifiedFreeSpace } from '/src/xr/structuralFreeSpaceGate.ts';
+import {
   StructuralGuideTracker,
   detectStructuralGuideGeometry,
 } from '/src/xr/structuralGuide.ts';
-import { applyCoverageRenderBudget } from '/src/xr/liveCoverageRenderer.ts';
 import { XrPerformanceProfiler } from '/src/xr/xrPerformanceProfiler.ts';
 
 const statusElement = document.getElementById('status');
@@ -92,6 +97,20 @@ function guideInput(cloud, keyframeCount, camera, freeSpacePositions) {
   };
 }
 
+function certifiedSnapshot(cloud, freeSpacePositions) {
+  return {
+    ...cloud,
+    pointCount: cloud.confidence.length,
+    voxelSizeMeters: 0.04,
+    freeSpacePositions,
+    freeSpaceVoxelSizeMeters: freeSpacePositions ? 0.18 : undefined,
+  };
+}
+
+function certifiedViewpoint(keyframeId, position) {
+  return { keyframeId, position };
+}
+
 function makeRenderSnapshot(regularCount, manualCount) {
   const pointCount = regularCount + manualCount;
   const positions = new Float32Array(pointCount * 3);
@@ -107,27 +126,48 @@ function makeRenderSnapshot(regularCount, manualCount) {
 
 async function run() {
   const initialCloud = scene(0);
-  const baseline = detectStructuralGuideGeometry(guideInput(initialCloud, 10, [0.55, 0.55, 0.55]));
-  assertMetric(baseline.corners.length > 0, 'baseline 3-plane scene produced no corner');
-  assertMetric(baseline.edges.length > 0, 'baseline 3-plane scene produced no edge');
 
-  const nearestCorner = [...baseline.corners].sort((a, b) => Math.hypot(...a.position) - Math.hypot(...b.position))[0];
-  const freePosition = nearestCorner ? Float32Array.from(occupancyVoxelCenter(nearestCorner.position)) : undefined;
-  const freeVoxelKey = freePosition ? occupancyVoxelKey(freePosition) : null;
-  const contradicted = detectStructuralGuideGeometry(guideInput(initialCloud, 11, [0.55, 0.55, 0.55], freePosition));
-  assertMetric(contradicted.rejectedByFreeSpace > 0, 'verified FREE space rejected no structural hypotheses');
-  assertMetric(
-    freeVoxelKey === null || !contradicted.corners.some((corner) => occupancyVoxelKey(corner.position) === freeVoxelKey),
-    'FREE-space corner survived structural validation',
+  // Production corners no longer come from the legacy triple-patch loop. Match
+  // the worker contract: certified uncertainty-aware corners own point geometry,
+  // while StructuralGuideTracker remains responsible for finite-support edges.
+  const baselineCorners = detectCertifiedStructuralCorners(certifiedSnapshot(initialCloud));
+  const baselineGuide = detectStructuralGuideGeometry(
+    guideInput(initialCloud, 10, [0.55, 0.55, 0.55]),
+    false,
   );
+  assertMetric(baselineCorners.length > 0, 'production certified 3-plane scene produced no corner');
+  assertMetric(baselineGuide.edges.length > 0, 'baseline 3-plane scene produced no edge');
 
-  const staticTracker = new StructuralGuideTracker();
-  for (const keyframe of [10, 20, 40, 80]) {
-    const result = staticTracker.update(guideInput(initialCloud, keyframe, [0.55, 0.55, 0.55]));
-    assertMetric(result.corners.length === 0, `same viewpoint matured a corner at keyframe ${keyframe}`);
+  let freeSpaceRejected = 0;
+  const nearestCorner = [...baselineCorners].sort((a, b) => Math.hypot(...a.position) - Math.hypot(...b.position))[0];
+  if (nearestCorner !== undefined) {
+    const freePosition = Float32Array.from(occupancyVoxelCenter(nearestCorner.position));
+    const freeVoxelKey = occupancyVoxelKey(freePosition);
+    const contradicted = rejectStructuralCandidatesInVerifiedFreeSpace(
+      baselineCorners,
+      certifiedSnapshot(initialCloud, freePosition),
+    );
+    freeSpaceRejected = contradicted.rejectedByFreeSpace;
+    assertMetric(contradicted.rejectedByFreeSpace > 0, 'verified FREE space rejected no certified structural hypotheses');
+    assertMetric(
+      !contradicted.candidates.some((corner) => occupancyVoxelKey(corner.position) === freeVoxelKey),
+      'FREE-space certified corner survived production gate',
+    );
   }
-  const matured = staticTracker.update(guideInput(initialCloud, 84, [0.28, 0.52, 0.60]));
-  assertMetric(matured.corners.length > 0, 'independent viewpoint did not mature a persistent corner');
+
+  const certifiedTracker = new CertifiedStructuralCornerTracker();
+  for (const keyframe of [10, 20, 40, 80]) {
+    const result = certifiedTracker.update(
+      certifiedSnapshot(initialCloud),
+      certifiedViewpoint(keyframe, [0.55, 0.55, 0.55]),
+    );
+    assertMetric(result.length === 0, `same viewpoint matured a certified corner at keyframe ${keyframe}`);
+  }
+  const matured = certifiedTracker.update(
+    certifiedSnapshot(initialCloud),
+    certifiedViewpoint(84, [0.28, 0.52, 0.60]),
+  );
+  assertMetric(matured.length > 0, 'independent viewpoint did not mature a persistent certified corner');
 
   const profiler = new XrPerformanceProfiler();
   for (let index = 0; index < 80; index += 1) {
@@ -155,12 +195,12 @@ async function run() {
     const angle = iteration * 0.052;
     const camera = [0.42 + 0.22 * Math.cos(angle), 0.50 + 0.16 * Math.sin(angle), 0.56 + 0.08 * Math.sin(angle * 0.7)];
     const before = performance.now();
-    const result = tracker.update(guideInput(cloud, 100 + iteration, camera));
+    const result = tracker.update(guideInput(cloud, 100 + iteration, camera), 0, false);
     const elapsed = performance.now() - before;
     guideTimes.push(elapsed);
     maxComparisons = Math.max(maxComparisons, result.candidateComparisons);
     maxPatches = Math.max(maxPatches, result.planarPatches);
-    assertMetric(result.corners.length <= 8, `corner display cap exceeded at iteration ${iteration}`);
+    assertMetric(result.corners.length === 0, `legacy raw corner loop unexpectedly ran at iteration ${iteration}`);
     assertMetric(result.edges.length <= 10, `edge display cap exceeded at iteration ${iteration}`);
     if (iteration % 12 === 0) await new Promise((resolve) => requestAnimationFrame(resolve));
   }
@@ -189,10 +229,10 @@ async function run() {
       comparisonRatio,
     },
     structural: {
-      baselineCorners: baseline.corners.length,
-      baselineEdges: baseline.edges.length,
-      freeSpaceRejected: contradicted.rejectedByFreeSpace,
-      maturedCorners: matured.corners.length,
+      baselineCorners: baselineCorners.length,
+      baselineEdges: baselineGuide.edges.length,
+      freeSpaceRejected,
+      maturedCorners: matured.length,
       p50Ms: percentile(guideTimes, 0.50),
       p95Ms: p95,
       maxMs: max,
