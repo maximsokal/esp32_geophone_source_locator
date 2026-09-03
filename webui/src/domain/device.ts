@@ -76,6 +76,33 @@ export interface PodImu extends ValidValue {
   yaw_relative_deg: number;
 }
 
+export interface PodEnvironment extends ValidValue {
+  temperature_valid: boolean;
+  temperature_c: number;
+  humidity_valid: boolean;
+  humidity_percent: number;
+}
+
+export interface PodPosition {
+  local_valid: boolean;
+  local_x_m: number;
+  local_y_m: number;
+  global_valid: boolean;
+  latitude: number;
+  longitude: number;
+  altitude_valid: boolean;
+  altitude_m: number;
+}
+
+export interface PodCapabilities {
+  barometer: boolean;
+  environment: boolean;
+  imu: boolean;
+  geophone: boolean;
+  local_position: boolean;
+  global_position: boolean;
+}
+
 export interface PodGeophone extends ValidValue {
   instant_uv: number;
   rms_uv: number;
@@ -87,9 +114,12 @@ export interface PodGeophone extends ValidValue {
 export interface DevicePod {
   id: number;
   state: string;
+  capabilities: PodCapabilities;
   barometer: PodBarometer;
+  environment: PodEnvironment;
   imu: PodImu;
   geophone: PodGeophone;
+  position: PodPosition;
 }
 
 export interface DeviceStatus {
