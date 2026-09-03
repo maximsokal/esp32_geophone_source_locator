@@ -212,7 +212,7 @@ describe('OctoMap-style free / occupied / unknown evidence', () => {
 });
 
 describe('surface reconstruction + occupancy integration', () => {
-  it('returns surface, known-air and unknown-candidate layers from one scan snapshot', () => {
+  it('returns measured surface/free layers without inventing UNKNOWN thickness for a single plane', () => {
     const accumulator = new DepthPointCloudAccumulator();
     const depth = flatDepth();
     const cameras: Array<readonly [number, number, number]> = [
@@ -240,6 +240,6 @@ describe('surface reconstruction + occupancy integration', () => {
     expect(snapshot.occupancyVoxelSizeMeters).toBeGreaterThan(snapshot.voxelSizeMeters);
     expect(snapshot.knownFreeVoxelCount).toBeGreaterThan(0);
     expect(snapshot.occupiedSurfaceVoxelCount).toBeGreaterThan(0);
-    expect(snapshot.unknownCandidateVoxelCount).toBeGreaterThan(0);
+    expect(snapshot.unknownCandidateVoxelCount).toBe(0);
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   estimateSurfaceFeatureComplexity,
+  estimateSurfaceProbeComplexity,
   featureAwareCellQuota,
 } from '../../src/xr/surfaceFeatureDensity';
 
@@ -80,6 +81,26 @@ describe('surface feature complexity', () => {
     expect(feature.strongestFamilySeparationRadians).toBeGreaterThan(70 * Math.PI / 180);
     expect(feature.score).toBeGreaterThan(0.7);
     expect(featureAwareCellQuota(28, feature.score)).toBeGreaterThanOrEqual(42);
+  });
+
+  it('lets tentative measured curvature request probes without granting retention density', () => {
+    const samples = [-28, -20, -12, -4, 4, 12, 20, 28].map((angle, index) => ({
+      ...positionedNormal(angle, index * 0.025, 0),
+      promoted: false,
+      independentViews: 1,
+    }));
+    expect(estimateSurfaceFeatureComplexity(samples).score).toBe(0);
+    expect(estimateSurfaceProbeComplexity(samples).score).toBeGreaterThan(0.25);
+    expect(featureAwareCellQuota(28, estimateSurfaceFeatureComplexity(samples).score)).toBe(28);
+  });
+
+  it('keeps probe-only classification robust to one abnormal normal on a flat patch', () => {
+    const feature = estimateSurfaceProbeComplexity([
+      positionedNormal(-2, 0.00, 0), positionedNormal(-1, 0.02, 0),
+      positionedNormal(0, 0.04, 0), positionedNormal(1, 0.06, 0),
+      positionedNormal(2, 0.08, 0), positionedNormal(90, 0.10, 0),
+    ]);
+    expect(feature.score).toBeLessThan(0.20);
   });
 
   it('does not let tentative conflicting surfels trigger feature density', () => {

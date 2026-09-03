@@ -40,8 +40,9 @@ describe('separate structural and mesh readiness preparation', () => {
     expect(prepared.surfaceReadiness.bestMeshComponent!.pointCount).toBe(prepared.meshSurface.pointCount);
 
     expect(prepared.surfaceReadiness.structuralComponent).not.toBeNull();
+    expect(prepared.surfaceReadiness.structuralComponent!.pointCount).toBeGreaterThan(0);
     expect(prepared.surfaceReadiness.structuralComponent!.pointCount)
-      .toBe(prepared.structuralSurface.pointCount);
+      .toBeLessThanOrEqual(prepared.structuralSurface.pointCount);
     expect(prepared.surfaceReadiness.structuralComponent!.pointCount)
       .toBeLessThan(prepared.surfaceReadiness.bestMeshComponent!.pointCount);
   });

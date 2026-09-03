@@ -1,5 +1,6 @@
 import {
   estimateSurfaceFeatureComplexity,
+  estimateSurfaceProbeComplexity,
   featureAwareCellQuota,
 } from './surfaceFeatureDensity';
 import { metricFeatureProbeRadius } from './metricFeatureProbe';
@@ -540,9 +541,10 @@ export class DepthPointCloudAccumulator {
     let changedPoints = 0; let acceptedSamples = 0; let createdPoints = 0; let promotedPoints = 0;
     let edgeSupersampleProbes = 0; let featureSupersampleProbes = 0; let featureProbeSequence = 0;
     const residualBefore = this.residualRejectedSamples;
-    // A cell's normal-family score changes slowly inside one frame. Cache at most
-    // one clustering pass per touched cell so feature-directed sampling remains
-    // bounded in both depth reads and CPU work.
+    // Probe-only physical normal complexity changes slowly inside one frame.
+    // Tentative representatives may request bounded extra depth reads, while the
+    // separate retention path below still requires multi-view maturity. Cache at
+    // most one clustering pass per touched cell to bound CPU work.
     const featureScoreCache = new Map<string, number>();
     const featureProbeCountsByCell = new Map<string, number>();
 
@@ -555,7 +557,7 @@ export class DepthPointCloudAccumulator {
         featureScoreCache.set(key, 0);
         return 0;
       }
-      const score = this.cellFeatureComplexity(cell);
+      const score = estimateSurfaceProbeComplexity(cell.representatives.values()).score;
       featureScoreCache.set(key, score);
       return score;
     };

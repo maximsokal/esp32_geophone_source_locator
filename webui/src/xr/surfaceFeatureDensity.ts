@@ -145,17 +145,19 @@ function addPosition(family: OrientationFamily, position: readonly [number, numb
  * spatial baseline. Generic callers without maturity/position metadata preserve
  * the normal-only compatibility behaviour used by offline analysis/tests.
  */
-export function estimateSurfaceFeatureComplexity(
+function estimateSurfaceFeatureComplexityInternal(
   evidence: Iterable<SurfaceNormalEvidence>,
+  requireMultiViewMaturity: boolean,
 ): SurfaceFeatureComplexity {
   const normals: CanonicalSample[] = [];
   let positionedNormals = 0;
   let minX = Number.POSITIVE_INFINITY; let minY = Number.POSITIVE_INFINITY; let minZ = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY; let maxY = Number.NEGATIVE_INFINITY; let maxZ = Number.NEGATIVE_INFINITY;
   for (const sample of evidence) {
-    if (sample.promoted === false) continue;
+    if (requireMultiViewMaturity && sample.promoted === false) continue;
     const independentViews = sample.independentViews;
     if (
+      requireMultiViewMaturity &&
       independentViews !== undefined &&
       (!Number.isFinite(independentViews) || independentViews < MIN_PHYSICAL_FEATURE_VIEWS)
     ) continue;
@@ -272,6 +274,25 @@ export function estimateSurfaceFeatureComplexity(
     usableNormals: normals.length,
     spatialSpanMeters,
   };
+}
+
+/** Multi-view-certified complexity used for persistent surfel retention. */
+export function estimateSurfaceFeatureComplexity(
+  evidence: Iterable<SurfaceNormalEvidence>,
+): SurfaceFeatureComplexity {
+  return estimateSurfaceFeatureComplexityInternal(evidence, true);
+}
+
+/**
+ * Probe-only complexity from physical depth normals. Tentative/single-view
+ * representatives may request a bounded extra depth read, but this signal is
+ * never allowed to increase persistent retention quota. Metric span, robust
+ * orientation families and confidence gates still reject tiny/noisy conflicts.
+ */
+export function estimateSurfaceProbeComplexity(
+  evidence: Iterable<SurfaceNormalEvidence>,
+): SurfaceFeatureComplexity {
+  return estimateSurfaceFeatureComplexityInternal(evidence, false);
 }
 
 export function featureAwareCellQuota(
