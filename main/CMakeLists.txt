@@ -27,6 +27,7 @@ idf_component_register(
         device_status
         seismic_buffer
         seismic_acquisition
+        seismic_recorder
         localization
         wifi_manager
         web_server
