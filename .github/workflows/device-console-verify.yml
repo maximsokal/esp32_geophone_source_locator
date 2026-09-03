@@ -6,12 +6,17 @@ on:
       - agent/xr-perf-guide
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   webui:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Apply pending production wiring
+        run: python3 .github/scripts/device_console_cmake_patch.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -40,13 +45,47 @@ jobs:
 
   firmware:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Build firmware with ESP-IDF 5.5.4
+      - name: Apply pending production wiring
+        run: python3 .github/scripts/device_console_cmake_patch.py
+      - name: Build firmware with ESP-IDF 5.5.4 and Node 22
         run: |
           docker run --rm \
             -v "$PWD:/project" \
             -w /project \
             espressif/idf:v5.5.4 \
-            bash -lc 'idf.py build'
+            bash -lc '
+              set -e
+              git config --global --add safe.directory /project
+              apt-get update >/dev/null
+              apt-get install -y curl ca-certificates gnupg >/dev/null
+              curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+              apt-get install -y nodejs >/dev/null
+              node --version
+              npm --version
+              idf.py build
+            '
+
+  finalize-wiring:
+    needs: [webui, firmware]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Persist verified CMake wiring
+        run: |
+          set -e
+          python3 .github/scripts/device_console_cmake_patch.py
+          if git diff --quiet -- components/web_server/CMakeLists.txt; then
+            echo 'Verified CMake wiring is already committed.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add components/web_server/CMakeLists.txt
+          git commit -m 'wire device console API and split web assets'
+          git push origin HEAD:agent/xr-perf-guide
