@@ -152,6 +152,47 @@ control = replace_once(
 )
 control = replace_once(
     control,
+    '''static esp_err_t web_control_recording_start(const char *object_id)
+{
+    if (object_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!seismic_acquisition_is_running()) {
+        esp_err_t err = seismic_acquisition_start();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    return seismic_recorder_start(object_id);
+}
+''',
+    '''static esp_err_t web_control_recording_start(const char *object_id)
+{
+    if (object_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = object_store_set_active(object_id);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (!seismic_acquisition_is_running()) {
+        err = seismic_acquisition_start();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    return seismic_recorder_start(object_id);
+}
+''',
+    'recording active-object alignment',
+)
+control = replace_once(
+    control,
     '''static esp_err_t web_api_control_handler(httpd_req_t *request)
 {
     char body[WEB_CONTROL_MAX_BODY];
@@ -182,6 +223,6 @@ control = replace_once(
 )
 if control != control_original:
     control_path.write_text(control, encoding='utf-8')
-    print('Optimized web control HTTP task stack usage.')
+    print('Optimized web control task stack and recording object alignment.')
 else:
-    print('web control HTTP task stack optimization already applied.')
+    print('web control optimization already applied.')
