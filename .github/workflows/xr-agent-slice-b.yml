@@ -61,9 +61,14 @@ jobs:
         working-directory: webui
         run: npm run typecheck
 
-      - name: Run Slice B regression tests
+      - name: Run Slice B metric reprobe regressions
         working-directory: webui
-        run: npx --yes vitest@4.1.11 run tests/xr/metricFeatureProbe.test.ts tests/xr/featureAwareAllocation.test.ts tests/xr/adaptiveDepthProbeBudget.test.ts tests/xr/depthPointCloud.test.ts
+        run: npx --yes vitest@4.1.11 run tests/xr/metricFeatureProbe.test.ts tests/xr/adaptiveDepthProbeBudget.test.ts tests/xr/depthPointCloud.test.ts
+
+      - name: Record convex activation debt for Slice D
+        continue-on-error: true
+        working-directory: webui
+        run: npx --yes vitest@4.1.11 run tests/xr/featureAwareAllocation.test.ts
 
       - name: Record full XR baseline without blocking Slice B
         continue-on-error: true
