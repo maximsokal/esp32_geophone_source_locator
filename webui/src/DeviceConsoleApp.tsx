@@ -1,7 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import './console.css';
 import { capturePhoneLocation, fetchDeviceStatus, sendControl } from './api/deviceApi';
-import type { DeviceStatus, ObjectStoreState, PhoneLocationInput } from './domain/device';
+import type {
+  DeviceStatus,
+  ObjectStoreState,
+  PhoneLocationInput,
+  RecordingSessionCollection,
+} from './domain/device';
 import DeviceDashboard from './features/dashboard/DeviceDashboard';
 
 const ObjectsFeature = lazy(() => import('./features/objects/ObjectsFeature'));
@@ -14,6 +19,7 @@ export default function DeviceConsoleApp() {
   const [screen, setScreen] = useState<Screen>('dashboard');
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [objects, setObjects] = useState<ObjectStoreState | null>(null);
+  const [sessions, setSessions] = useState<RecordingSessionCollection | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,16 +37,17 @@ export default function DeviceConsoleApp() {
 
   const refreshObjects = useCallback(async () => {
     try {
-      const next = await fetchDeviceStatus(true);
+      const next = await fetchDeviceStatus(true, selectedId);
       setStatus(next);
       setObjects(next.object_store ?? null);
+      setSessions(next.recording_sessions ?? null);
       setSelectedId((current) => current ?? next.object_store?.active_id ?? next.object_store?.objects[0]?.id ?? null);
       setError(null);
     }
     catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, []);
+  }, [selectedId]);
 
   useEffect(() => {
     void refreshStatus();
@@ -125,6 +132,7 @@ export default function DeviceConsoleApp() {
           <ObjectsFeature
             status={status}
             store={objects}
+            sessions={sessions}
             selectedId={selectedId}
             busy={busy}
             error={error}
@@ -141,6 +149,7 @@ export default function DeviceConsoleApp() {
             onCable={(id, podId, length) => runControl('set_object_cable_length', { object_id: id, pod_id: podId, length_m: length })}
             onDefaultCable={(podId, length) => runControl('set_default_cable_length', { pod_id: podId, length_m: length })}
             onAcquisition={(running) => runControl(running ? 'acquisition_start' : 'acquisition_stop')}
+            onRecording={(id, running) => runControl(running ? 'recording_start' : 'recording_stop', running ? { object_id: id } : {})}
             onOpenScanner={(id) => { setSelectedId(id); setScreen('scanner'); }}
           />
         </Suspense>
