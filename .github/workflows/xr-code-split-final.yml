@@ -1,0 +1,89 @@
+name: XR Code Split Final Verification
+
+on:
+  push:
+    branches:
+      - agent/xr-perf-guide
+    paths:
+      - webui/scripts/prepare-esp-assets.mjs
+      - .github/workflows/xr-code-split-final.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify-cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: agent/xr-perf-guide
+          fetch-depth: 0
+
+      - name: Assert asset generator is normal text
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          data = Path('webui/scripts/prepare-esp-assets.mjs').read_bytes()
+          if b'\x00' in data:
+              raise SystemExit('literal NUL remains in prepare-esp-assets.mjs')
+          data.decode('utf-8')
+          print(f'asset generator UTF-8 bytes={len(data)}; literal NUL=0')
+          PY
+          git diff --numstat d1f8454cc550f0d8252b5e434da73b2bcc6c0a4a..HEAD -- webui/scripts/prepare-esp-assets.mjs
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install
+        working-directory: webui
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: webui
+        run: npm run typecheck
+
+      - name: Full XR suite
+        working-directory: webui
+        run: npm run test:xr
+
+      - name: Production build
+        working-directory: webui
+        run: npm run build
+
+      - name: Bundle contract
+        working-directory: webui
+        run: npm run verify:bundle
+
+      - name: ESP split package contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s webui/esp-dist/generated_webui_chunk_table.inc
+          secondary_count=$(find webui/esp-dist/assets -maxdepth 1 -type f -name '*.js.gz' ! -name 'app.js.gz' | wc -l)
+          test "$secondary_count" -ge 1
+          echo "secondary=$secondary_count"
+          stat -c 'app.js.gz=%s' webui/esp-dist/assets/app.js.gz
+          git diff --check
+
+      - name: Remove temporary verification workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/xr-code-split-final.yml
+          test -z "$(git status --porcelain --untracked-files=no | grep -v '^D  .github/workflows/xr-code-split-final.yml' || true)" || {
+            git status --short
+            exit 1
+          }
+          git commit -m 'remove code split verification workflow'
+          git push origin HEAD:agent/xr-perf-guide
