@@ -1,0 +1,52 @@
+name: device-console-verify
+
+on:
+  push:
+    branches:
+      - agent/xr-perf-guide
+  workflow_dispatch:
+
+jobs:
+  webui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: webui
+        run: npm run typecheck
+      - name: XR tests
+        working-directory: webui
+        run: npm run test:xr
+      - name: Production build and ESP asset preparation
+        working-directory: webui
+        run: npm run build
+      - name: Verify code split contract
+        working-directory: webui
+        run: npm run verify:bundle
+      - name: Show split assets
+        working-directory: webui
+        run: |
+          find dist/assets -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+          find esp-dist/assets -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build firmware with ESP-IDF 5.5.4
+        run: |
+          docker run --rm \
+            -v "$PWD:/project" \
+            -w /project \
+            espressif/idf:v5.5.4 \
+            bash -lc 'idf.py build'
