@@ -11,7 +11,11 @@ import {
   type MonocularDepthProvider,
   type MonocularDepthProviderStatus,
 } from './monocularDepthPrior';
-import { projectProjectPointToNormalized } from './projectionMath';
+import {
+  multiplyMat4,
+  projectProjectPointToNormalized,
+  rigidInverse,
+} from './projectionMath';
 import {
   rgbGuidanceMatchesView,
   sampleRgbGuidance,
@@ -31,6 +35,9 @@ interface CalibratedPrior {
   captureGuidance: RgbDepthGuidanceFrame;
   /** Sparse physical frontmost depth from exactly the same staged XR view. */
   physicalGuard: PhysicalDepthGuardFrame;
+  /** Cached once per calibrated frame; bulk filtering must not rebuild matrices per surfel. */
+  viewFromWorld: Float32Array | null;
+  viewProjection: Float32Array | null;
 }
 
 interface StagedPostScanPrior {
@@ -79,7 +86,8 @@ function cloneGuidance(frame: RgbDepthGuidanceFrame): RgbDepthGuidanceFrame {
 function guidanceAsRgba(frame: RgbDepthGuidanceFrame): Uint8Array {
   const expected = frame.width * frame.height * 4;
   if (frame.rgba !== undefined && frame.rgba.length >= expected) {
-    return frame.rgba.length === expected ? frame.rgba.slice() : frame.rgba.slice(0, expected);
+    // stagePostScan already owns this cloned packet; avoid a second full-frame copy.
+    return frame.rgba.length === expected ? frame.rgba : frame.rgba.subarray(0, expected);
   }
   const rgba = new Uint8Array(expected);
   for (let index = 0; index < frame.luma.length; index += 1) {
@@ -236,12 +244,9 @@ export class MonocularPriorRuntime {
     const wasStaged = this.staged !== null;
     this.staged = {
       guidance: cloneGuidance(guidance),
-      anchors: anchors.map((anchor) => ({ ...anchor })),
-      physicalGuard: {
-        width: physicalGuard.width,
-        height: physicalGuard.height,
-        depthMeters: physicalGuard.depthMeters.slice(),
-      },
+      // These collectors already return newly-owned objects/typed arrays.
+      anchors,
+      physicalGuard,
     };
     if (!wasStaged) this.notify();
     return true;
@@ -280,11 +285,19 @@ export class MonocularPriorRuntime {
         this.lastError = `Monocular prior did not pass physical-anchor calibration (model=${selected}).`;
         return false;
       }
+      const viewFromWorld = staged.guidance.worldFromView === undefined
+        ? null
+        : rigidInverse(staged.guidance.worldFromView);
+      const viewProjection = viewFromWorld === null || staged.guidance.projectionMatrix === undefined
+        ? null
+        : multiplyMat4(staged.guidance.projectionMatrix, viewFromWorld);
       this.calibrated = {
         frame: prior,
         calibration,
         captureGuidance: staged.guidance,
         physicalGuard: staged.physicalGuard,
+        viewFromWorld,
+        viewProjection,
       };
       this.lastError = null;
       return true;
@@ -355,6 +368,45 @@ export class MonocularPriorRuntime {
       disagreementMeters,
       calibrationConfidence: calibrated.calibration.confidence,
     };
+  }
+
+  /**
+   * Allocation-light bulk path for the post-scan TSDF handoff. Unavailable,
+   * invalid and occluded cases deliberately fail open; false means a calibrated
+   * prior contradicted the same physically frontmost surface.
+   */
+  postScanAcceptsSurfaceXYZ(projectX: number, projectY: number, projectZ: number): boolean {
+    const calibrated = this.calibrated;
+    const viewFromWorld = calibrated?.viewFromWorld;
+    const vp = calibrated?.viewProjection;
+    if (!this.enabled || calibrated === null || viewFromWorld == null || vp == null) return true;
+    if (!Number.isFinite(projectX) || !Number.isFinite(projectY) || !Number.isFinite(projectZ)) return true;
+
+    const x = projectX;
+    const y = projectZ;
+    const z = -projectY;
+    const viewZ = viewFromWorld[2] * x + viewFromWorld[6] * y + viewFromWorld[10] * z + viewFromWorld[14];
+    const physicalMeters = -viewZ;
+    if (!validPhysicalDepth(physicalMeters)) return true;
+
+    const clipX = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
+    const clipY = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
+    const clipZ = vp[2] * x + vp[6] * y + vp[10] * z + vp[14];
+    const clipW = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+    if (!Number.isFinite(clipX) || !Number.isFinite(clipY) || !Number.isFinite(clipZ) ||
+        !Number.isFinite(clipW) || clipW <= 1e-6) return true;
+    const ndcX = clipX / clipW;
+    const ndcY = clipY / clipW;
+    const ndcZ = clipZ / clipW;
+    const u = (ndcX + 1) * 0.5;
+    const v = (1 - ndcY) * 0.5;
+    if (u < 0 || u > 1 || v < 0 || v > 1 || ndcZ < -1 || ndcZ > 1) return true;
+    if (!physicalDepthGuardAllowsAiVeto(calibrated.physicalGuard, u, v, physicalMeters)) return true;
+
+    const priorMeters = calibratedPriorDepthMeters(calibrated.frame, calibrated.calibration, u, v);
+    if (priorMeters === null) return true;
+    const vetoThreshold = Math.max(0.32, physicalMeters * 0.30);
+    return Math.abs(priorMeters - physicalMeters) <= vetoThreshold;
   }
 
   postScanSurfaceAgreement(position: ProjectPoint): MonocularSurfaceAgreement {
