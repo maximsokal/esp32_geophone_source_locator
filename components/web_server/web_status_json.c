@@ -74,7 +74,11 @@ static bool web_status_json_add_acquisition(cJSON *root, const device_acquisitio
     return true;
 }
 
-esp_err_t web_status_json_build_extended(char **json_out, bool include_objects)
+esp_err_t web_status_json_build_extended(
+    char **json_out,
+    bool include_objects,
+    const char *sessions_object_id
+)
 {
     if (json_out == NULL) return ESP_ERR_INVALID_ARG;
     *json_out = NULL;
@@ -92,10 +96,15 @@ esp_err_t web_status_json_build_extended(char **json_out, bool include_objects)
         web_status_json_add_environment(root, &status.environment) &&
         web_status_json_add_mux(root, &status.mux) &&
         web_status_json_add_pods(root, &status) &&
-        web_status_json_add_acquisition(root, &status.acquisition);
+        web_status_json_add_acquisition(root, &status.acquisition) &&
+        web_status_json_add_recording(root);
 
     if (ok && include_objects) {
         ok = web_status_json_add_objects(root);
+    }
+
+    if (ok && sessions_object_id != NULL && sessions_object_id[0] != '\0') {
+        ok = web_status_json_add_sessions(root, sessions_object_id);
     }
 
     if (!ok) {
@@ -113,7 +122,7 @@ esp_err_t web_status_json_build_extended(char **json_out, bool include_objects)
 
 esp_err_t web_status_json_build(char **json_out)
 {
-    return web_status_json_build_extended(json_out, false);
+    return web_status_json_build_extended(json_out, false, NULL);
 }
 
 void web_status_json_free(char *json)
