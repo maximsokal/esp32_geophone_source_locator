@@ -4,28 +4,54 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "object_store.h"
 
 static const char *TAG = "WEB_API_STATUS";
 
-static bool web_api_status_include_objects(httpd_req_t *request)
+typedef struct
 {
+    bool include_objects;
+    char sessions_object_id[OBJECT_STORE_ID_SIZE];
+} web_status_query_t;
+
+static void web_api_status_parse_query(
+    httpd_req_t *request,
+    web_status_query_t *result
+)
+{
+    memset(result, 0, sizeof(*result));
+
     const size_t query_length = httpd_req_get_url_query_len(request);
-    if (query_length == 0 || query_length >= 64) return false;
+    if (query_length == 0 || query_length >= 128) return;
 
-    char query[64];
-    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) return false;
+    char query[128];
+    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) return;
 
-    char value[8];
-    return httpd_query_key_value(query, "objects", value, sizeof(value)) == ESP_OK &&
-        strcmp(value, "1") == 0;
+    char objects[8];
+    result->include_objects =
+        httpd_query_key_value(query, "objects", objects, sizeof(objects)) == ESP_OK &&
+        strcmp(objects, "1") == 0;
+
+    (void)httpd_query_key_value(
+        query,
+        "sessions",
+        result->sessions_object_id,
+        sizeof(result->sessions_object_id)
+    );
 }
 
 static esp_err_t web_api_status_handler(httpd_req_t *request)
 {
+    web_status_query_t query;
+    web_api_status_parse_query(request, &query);
+
     char *json = NULL;
     esp_err_t err = web_status_json_build_extended(
         &json,
-        web_api_status_include_objects(request)
+        query.include_objects,
+        query.sessions_object_id[0] == '\0'
+            ? NULL
+            : query.sessions_object_id
     );
 
     if (err != ESP_OK) {
@@ -61,6 +87,9 @@ esp_err_t web_api_status_register(httpd_handle_t server)
         return err;
     }
 
-    ESP_LOGI(TAG, "Registered GET /api/status (?objects=1 for SD object read model)");
+    ESP_LOGI(
+        TAG,
+        "Registered GET /api/status (?objects=1, ?sessions=OBJECT_ID for SD read models)"
+    );
     return ESP_OK;
 }
