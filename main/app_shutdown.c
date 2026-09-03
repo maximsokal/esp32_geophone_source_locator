@@ -8,6 +8,7 @@
 #include "power_control.h"
 #include "sd_card.h"
 #include "seismic_acquisition.h"
+#include "seismic_recorder.h"
 #include "storage_manager.h"
 #include "storage_service.h"
 #include "ui.h"
@@ -119,6 +120,25 @@ void app_shutdown_wait_and_run(void)
     storage_service_shutdown();
 
     object_service_shutdown();
+
+    /*
+     * Finalize an active session while acquisition is still publishing. The
+     * recorder captures a stop cursor and drains exactly to that boundary.
+     * Only then reset the seismic buffer by stopping acquisition.
+     */
+    esp_err_t recorder_err =
+        seismic_recorder_stop();
+
+    if (
+        recorder_err != ESP_OK &&
+        recorder_err != ESP_ERR_INVALID_STATE
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Recorder shutdown failed: %s",
+            esp_err_to_name(recorder_err)
+        );
+    }
 
     seismic_acquisition_stop();
 
