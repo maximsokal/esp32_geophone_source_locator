@@ -117,8 +117,12 @@ static esp_err_t web_server_https_start_internal(void)
     httpd_ssl_config_t config =
         HTTPD_SSL_CONFIG_DEFAULT();
 
+    /*
+     * Secure routes use ten handler slots after legacy dashboard/seismic
+     * assets were consolidated under one wildcard asset handler.
+     */
     config.httpd.max_uri_handlers =
-        14;
+        10;
 
     config.httpd.uri_match_fn =
         httpd_uri_match_wildcard;
