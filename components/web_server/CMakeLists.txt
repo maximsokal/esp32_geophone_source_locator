@@ -30,6 +30,14 @@ set(WEB_SERVER_WEBUI_GENERATED_CSS
     "${CMAKE_CURRENT_LIST_DIR}/generated_webui_assets_app.css.gz"
 )
 
+set(WEB_SERVER_WEBUI_GENERATED_CHUNK_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_chunks"
+)
+
+set(WEB_SERVER_WEBUI_GENERATED_CHUNK_TABLE
+    "${CMAKE_CURRENT_LIST_DIR}/generated_webui_chunk_table.inc"
+)
+
 set(WEB_SERVER_TLS_EMBED_FILES)
 set(WEB_SERVER_WEBUI_EMBED_FILES)
 set(WEB_SERVER_WEBUI_EMBED_TXTFILES)
@@ -194,11 +202,16 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
 
     file(REMOVE_RECURSE
         "${CMAKE_CURRENT_LIST_DIR}/generated_webui"
+        "${WEB_SERVER_WEBUI_GENERATED_CHUNK_DIR}"
+    )
+    file(REMOVE
+        "${WEB_SERVER_WEBUI_GENERATED_CHUNK_TABLE}"
     )
 
     if(
         EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/index.html"
         AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"
+        AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/generated_webui_chunk_table.inc"
         AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.js.gz"
         AND EXISTS "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/app.css.gz"
     )
@@ -219,6 +232,45 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
             "${WEB_SERVER_WEBUI_GENERATED_CSS}"
             COPYONLY
         )
+
+        configure_file(
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/generated_webui_chunk_table.inc"
+            "${WEB_SERVER_WEBUI_GENERATED_CHUNK_TABLE}"
+            COPYONLY
+        )
+
+        file(MAKE_DIRECTORY
+            "${WEB_SERVER_WEBUI_GENERATED_CHUNK_DIR}"
+        )
+        file(GLOB WEB_SERVER_WEBUI_CHUNK_SOURCES
+            "${WEB_SERVER_WEBUI_SOURCE_DIR}/assets/*.js.gz"
+        )
+        list(SORT WEB_SERVER_WEBUI_CHUNK_SOURCES)
+        set(WEB_SERVER_WEBUI_CHUNK_COUNT 0)
+        foreach(WEB_SERVER_WEBUI_CHUNK_SOURCE IN LISTS WEB_SERVER_WEBUI_CHUNK_SOURCES)
+            get_filename_component(
+                WEB_SERVER_WEBUI_CHUNK_NAME
+                "${WEB_SERVER_WEBUI_CHUNK_SOURCE}"
+                NAME
+            )
+            if(WEB_SERVER_WEBUI_CHUNK_NAME STREQUAL "app.js.gz")
+                continue()
+            endif()
+            math(EXPR WEB_SERVER_WEBUI_CHUNK_COUNT "${WEB_SERVER_WEBUI_CHUNK_COUNT} + 1")
+            configure_file(
+                "${WEB_SERVER_WEBUI_CHUNK_SOURCE}"
+                "${WEB_SERVER_WEBUI_GENERATED_CHUNK_DIR}/${WEB_SERVER_WEBUI_CHUNK_NAME}"
+                COPYONLY
+            )
+            list(APPEND WEB_SERVER_WEBUI_EMBED_FILES
+                "generated_webui_chunks/${WEB_SERVER_WEBUI_CHUNK_NAME}"
+            )
+        endforeach()
+        if(WEB_SERVER_WEBUI_CHUNK_COUNT EQUAL 0)
+            message(FATAL_ERROR
+                "GeoLocator WebUI split build produced no secondary JS chunks"
+            )
+        endif()
 
         file(READ
             "${WEB_SERVER_WEBUI_SOURCE_DIR}/build-id.txt"

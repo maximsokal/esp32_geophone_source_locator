@@ -26,6 +26,17 @@ typedef struct
 } web_json_writer_t;
 
 
+typedef struct
+{
+    const char *uri;
+    const char *sd_suffix;
+    const char *content_type;
+    const unsigned char *start;
+    const unsigned char *end;
+
+} web_webui_chunk_asset_t;
+
+
 typedef enum
 {
     WEB_STATIC_ASSET_INDEX_HTML = 0,

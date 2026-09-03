@@ -120,6 +120,9 @@ static esp_err_t web_server_https_start_internal(void)
     config.httpd.max_uri_handlers =
         14;
 
+    config.httpd.uri_match_fn =
+        httpd_uri_match_wildcard;
+
     /*
      * Chrome may establish speculative/preconnect TLS sessions before the
      * navigation request itself. With only two sockets those idle sessions

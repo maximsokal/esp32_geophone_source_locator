@@ -35,6 +35,8 @@ extern const unsigned char webui_css_gz_start[]
     asm("_binary_generated_webui_assets_app_css_gz_start");
 extern const unsigned char webui_css_gz_end[]
     asm("_binary_generated_webui_assets_app_css_gz_end");
+
+#include "generated_webui_chunk_table.inc"
 #endif
 
 
@@ -429,6 +431,21 @@ static bool web_webui_sd_has_bundle(void)
         }
     }
 
+#if WEB_SERVER_WEBUI_SEED_EMBEDDED
+    for (size_t index = 0; index < WEB_WEBUI_CHUNK_ASSET_COUNT; ++index) {
+        if (
+            !web_webui_build_path(
+                path,
+                sizeof(path),
+                s_webui_chunk_assets[index].sd_suffix
+            ) ||
+            !web_webui_file_exists(path)
+        ) {
+            return false;
+        }
+    }
+#endif
+
     return true;
 }
 
@@ -532,6 +549,28 @@ static esp_err_t web_webui_seed_sd(void)
 
     if (err != ESP_OK) {
         return err;
+    }
+
+    for (size_t index = 0; index < WEB_WEBUI_CHUNK_ASSET_COUNT; ++index) {
+        const web_webui_chunk_asset_t *asset = &s_webui_chunk_assets[index];
+        if (
+            !web_webui_build_path(
+                path,
+                sizeof(path),
+                asset->sd_suffix
+            )
+        ) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        err = web_webui_write_atomic(
+            path,
+            asset->start,
+            (size_t)(asset->end - asset->start)
+        );
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     if (
