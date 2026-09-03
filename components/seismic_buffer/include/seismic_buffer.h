@@ -59,11 +59,6 @@ esp_err_t seismic_buffer_push(
 );
 
 
-esp_err_t seismic_buffer_get_info(
-    seismic_buffer_info_t *info
-);
-
-
 esp_err_t seismic_buffer_copy_latest(
     seismic_frame_t *frames,
     size_t max_frames,
