@@ -1,5 +1,12 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import { countCoverageQualityBands } from './coverageQuality';
+import { deviceComputeProfilePromise } from './deviceComputeProfile';
+import {
+  deriveNegotiatedXrDepthCapability,
+  probeVideoInputInventory,
+  summarizeComputeCapabilities,
+  type NegotiatedXrDepthCapability,
+} from './xrCapabilityProfile';
 import {
   DepthPointCloudAccumulator,
   type CpuDepthInformationLike,
@@ -73,12 +80,24 @@ export interface ScanPointCloudSnapshot extends DepthScanPointCloudSnapshot {
 
 export interface WebXrCapabilities {
   secureContext: boolean;
-  /** Pre-session availability of XRWebGLBinding, not generic getUserMedia(). */
+  /** Backward-compatible alias for rawXrRgbApi. */
   cameraApi: boolean;
+  /** XRWebGLBinding exists; actual raw RGB is only proven by runtime capture. */
+  rawXrRgbApi: boolean;
   webGl: boolean;
   xrApi: boolean;
   immersiveAr: boolean;
   wakeLockApi: boolean;
+  videoInputEnumeration: boolean;
+  videoInputsEnumerated: boolean;
+  videoInputCount: number | null;
+  videoInputLabelsExposed: boolean;
+  /** Browser capability only: physical ToF/LiDAR/IR identity is never inferred. */
+  hardwareDepthSensor: 'unknown';
+  workerApi: boolean;
+  sharedMemory: boolean;
+  wasmThreads: boolean;
+  webGpu: boolean;
 }
 
 export interface WebXrPoseSnapshot {
@@ -193,7 +212,7 @@ interface WakeLockSentinelLike extends EventTarget { released:boolean; release()
 interface WakeLockLike { request(type:'screen'):Promise<WakeLockSentinelLike>; }
 type NavigatorWithWakeLock=Navigator&{wakeLock?:WakeLockLike};
 type RuntimeListener=(state:WebXrRuntimeState)=>void;
-interface DepthConfiguration { enabled:boolean; usage:string|null; dataFormat:string|null; type:string|null; }
+type DepthConfiguration = NegotiatedXrDepthCapability & { enabled:boolean; };
 
 const DEPTH_SAMPLE_INTERVAL_MS=140;
 const COVERAGE_GPU_UPLOAD_INTERVAL_MS=550;
@@ -227,8 +246,8 @@ function releaseWebGlContext(context:XrCompatibleGl|null):void{context?.getExten
 function hasWebGl():boolean{const c=createWebGlContext();if(c===null)return false;releaseWebGlContext(c);return true;}
 function errorText(error:unknown):string{return error instanceof Error?error.message:String(error);}
 function readDepthConfiguration(session:XrSessionLike):DepthConfiguration{
-  try{const usage=session.depthUsage??null;const dataFormat=session.depthDataFormat??null;const type=session.depthType??null;return{enabled:usage==='cpu-optimized'&&session.depthActive!==false,usage,dataFormat,type};}
-  catch{return{enabled:false,usage:null,dataFormat:null,type:null};}
+  try{const negotiated=deriveNegotiatedXrDepthCapability(session);return{...negotiated,enabled:negotiated.cpuDepth};}
+  catch{return{enabled:false,active:false,usage:null,dataFormat:null,type:null,rawDepth:false,smoothDepth:false,cpuDepth:false,gpuDepth:false};}
 }
 function depthGeometry(depth:CpuDepthInformationLike,fallbackView:XrViewLike):DepthSampleView{
   if(depth.projectionMatrix!==undefined&&depth.projectionMatrix.length>=16&&depth.transform!==undefined&&depth.transform.matrix.length>=16)return{projectionMatrix:depth.projectionMatrix,transform:depth.transform};
@@ -248,7 +267,19 @@ export function composeCoverageRenderSnapshot(coverage:LiveCoverageSnapshot,manu
 export async function probeWebXrCapabilities():Promise<WebXrCapabilities>{
   const xr=(navigator as NavigatorWithXr).xr;const xrApi=xr!==undefined;let immersiveAr=false;
   if(xrApi&&window.isSecureContext){try{immersiveAr=await xr.isSessionSupported('immersive-ar');}catch{immersiveAr=false;}}
-  return{secureContext:window.isSecureContext===true,cameraApi:Boolean((window as WindowWithXr).XRWebGLBinding),webGl:hasWebGl(),xrApi,immersiveAr,wakeLockApi:(navigator as NavigatorWithWakeLock).wakeLock!==undefined};
+  const [computeProfile,videoInputs]=await Promise.all([
+    deviceComputeProfilePromise,
+    probeVideoInputInventory(typeof navigator==='undefined'?undefined:navigator.mediaDevices),
+  ]);
+  const compute=summarizeComputeCapabilities(computeProfile);
+  const rawXrRgbApi=Boolean((window as WindowWithXr).XRWebGLBinding);
+  return{
+    secureContext:window.isSecureContext===true,cameraApi:rawXrRgbApi,rawXrRgbApi,webGl:hasWebGl(),xrApi,immersiveAr,
+    wakeLockApi:(navigator as NavigatorWithWakeLock).wakeLock!==undefined,
+    videoInputEnumeration:videoInputs.enumerationAvailable,videoInputsEnumerated:videoInputs.enumerated,
+    videoInputCount:videoInputs.videoInputCount,videoInputLabelsExposed:videoInputs.labelsExposed,
+    hardwareDepthSensor:videoInputs.hardwareDepthSensor,...compute,
+  };
 }
 
 export class WebXrRuntime{
@@ -324,7 +355,7 @@ export class WebXrRuntime{
       const depthFormats=['luminance-alpha','unsigned-short','float32'];
       session=await xr.requestSession('immersive-ar',{
         optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access','plane-detection'],domOverlay:{root:document.body},
-        depthSensing:{usagePreference:['cpu-optimized'],dataFormatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
+        depthSensing:{usagePreference:['cpu-optimized','gpu-optimized'],dataFormatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
       });
       this.session=session;session.addEventListener('end',this.handleSessionEnd);session.addEventListener('visibilitychange',this.handleSessionVisibilityChange);
       const gl=createWebGlContext();if(gl===null)throw new Error('Unable to create WebGL for WebXR.');await gl.makeXRCompatible?.();
@@ -340,8 +371,8 @@ export class WebXrRuntime{
       this.publish({phase:'running',referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
         coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
-        depthError:depthConfiguration.enabled?null:'WebXR tracking is running, but CPU depth was not enabled.',error:null});
-      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,cameraAccessRequested:true,planeDetectionRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
+        depthError:depthConfiguration.enabled?null:depthConfiguration.gpuDepth?'WebXR negotiated GPU-optimized depth, but metric surfel fusion currently requires CPU depth access.':'WebXR tracking is running, but CPU depth was not enabled.',error:null});
+      clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthActive:depthConfiguration.active,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,rawDepth:depthConfiguration.rawDepth,smoothDepth:depthConfiguration.smoothDepth,cpuDepth:depthConfiguration.cpuDepth,gpuDepth:depthConfiguration.gpuDepth,cameraAccessRequested:true,rawXrRgbApi:Binding!==undefined,planeDetectionRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
       void clientDiagnostics.flush();session.requestAnimationFrame(this.handleFrame);
     }catch(error){
       if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*best effort*/}}
