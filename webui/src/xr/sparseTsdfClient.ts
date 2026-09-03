@@ -106,21 +106,21 @@ function filterWithCalibratedPostScanPrior(
     return { input, rejected: 0, applied: false };
   }
 
-  const accepted: number[] = [];
+  const retained = new Uint8Array(pointCount);
+  let acceptedCount = 0;
   for (let index = 0; index < pointCount; index += 1) {
     const offset = index * 3;
-    const agreement = optionalMonocularPrior.postScanSurfaceAgreement([
-      input.positions[offset],
-      input.positions[offset + 1],
-      input.positions[offset + 2],
-    ]);
-    if (!agreement.available || agreement.accepted) accepted.push(index);
+    if (!optionalMonocularPrior.postScanAcceptsSurfaceXYZ(
+      input.positions[offset], input.positions[offset + 1], input.positions[offset + 2],
+    )) continue;
+    retained[index] = 1;
+    acceptedCount += 1;
   }
 
-  const rejected = pointCount - accepted.length;
+  const rejected = pointCount - acceptedCount;
   if (rejected === 0) return { input, rejected: 0, applied: true };
   const rejectFraction = rejected / pointCount;
-  if (rejectFraction > MAX_AI_REJECT_FRACTION || accepted.length < MIN_POST_AI_SURFELS) {
+  if (rejectFraction > MAX_AI_REJECT_FRACTION || acceptedCount < MIN_POST_AI_SURFELS) {
     clientDiagnostics.warn('SCAN_AI_POST_SCAN_FAIL_OPEN', {
       sourcePoints: pointCount,
       proposedRejected: rejected,
@@ -131,10 +131,12 @@ function filterWithCalibratedPostScanPrior(
     return { input, rejected: 0, applied: false };
   }
 
-  const positions = new Float32Array(accepted.length * 3);
-  const normals = new Float32Array(accepted.length * 3);
-  const confidence = new Float32Array(accepted.length);
-  accepted.forEach((source, target) => {
+  const positions = new Float32Array(acceptedCount * 3);
+  const normals = new Float32Array(acceptedCount * 3);
+  const confidence = new Float32Array(acceptedCount);
+  let target = 0;
+  for (let source = 0; source < pointCount; source += 1) {
+    if (retained[source] === 0) continue;
     const sourceOffset = source * 3;
     const targetOffset = target * 3;
     positions[targetOffset] = input.positions[sourceOffset];
@@ -144,10 +146,11 @@ function filterWithCalibratedPostScanPrior(
     normals[targetOffset + 1] = input.normals[sourceOffset + 1];
     normals[targetOffset + 2] = input.normals[sourceOffset + 2];
     confidence[target] = input.confidence[source];
-  });
+    target += 1;
+  }
 
   return {
-    input: { ...input, positions, normals, confidence, maxInputPoints: Math.min(input.maxInputPoints ?? accepted.length, accepted.length) },
+    input: { ...input, positions, normals, confidence, maxInputPoints: Math.min(input.maxInputPoints ?? acceptedCount, acceptedCount) },
     rejected,
     applied: true,
   };
