@@ -1,6 +1,26 @@
 #include "web_server_internal.h"
 
 
+static bool web_status_json_add_capabilities(
+    cJSON *pod_object,
+    const device_pod_capabilities_t *capabilities
+)
+{
+    cJSON *object = cJSON_AddObjectToObject(pod_object, "capabilities");
+    if (object == NULL) {
+        return false;
+    }
+
+    return
+        cJSON_AddBoolToObject(object, "barometer", capabilities->barometer) != NULL &&
+        cJSON_AddBoolToObject(object, "environment", capabilities->environment) != NULL &&
+        cJSON_AddBoolToObject(object, "imu", capabilities->imu) != NULL &&
+        cJSON_AddBoolToObject(object, "geophone", capabilities->geophone) != NULL &&
+        cJSON_AddBoolToObject(object, "local_position", capabilities->local_position) != NULL &&
+        cJSON_AddBoolToObject(object, "global_position", capabilities->global_position) != NULL;
+}
+
+
 static bool web_status_json_add_barometer(
     cJSON *pod_object,
     const device_barometer_status_t *barometer
@@ -41,6 +61,25 @@ static bool web_status_json_add_barometer(
     );
 
     return true;
+}
+
+
+static bool web_status_json_add_environment(
+    cJSON *pod_object,
+    const device_pod_environment_status_t *environment
+)
+{
+    cJSON *object = cJSON_AddObjectToObject(pod_object, "environment");
+    if (object == NULL) {
+        return false;
+    }
+
+    return
+        cJSON_AddBoolToObject(object, "valid", environment->valid) != NULL &&
+        cJSON_AddBoolToObject(object, "temperature_valid", environment->temperature_valid) != NULL &&
+        cJSON_AddNumberToObject(object, "temperature_c", environment->temperature_c) != NULL &&
+        cJSON_AddBoolToObject(object, "humidity_valid", environment->humidity_valid) != NULL &&
+        cJSON_AddNumberToObject(object, "humidity_percent", environment->humidity_percent) != NULL;
 }
 
 
@@ -142,6 +181,28 @@ static bool web_status_json_add_geophone(
 }
 
 
+static bool web_status_json_add_position(
+    cJSON *pod_object,
+    const device_pod_position_status_t *position
+)
+{
+    cJSON *object = cJSON_AddObjectToObject(pod_object, "position");
+    if (object == NULL) {
+        return false;
+    }
+
+    return
+        cJSON_AddBoolToObject(object, "local_valid", position->local_valid) != NULL &&
+        cJSON_AddNumberToObject(object, "local_x_m", position->local_x_m) != NULL &&
+        cJSON_AddNumberToObject(object, "local_y_m", position->local_y_m) != NULL &&
+        cJSON_AddBoolToObject(object, "global_valid", position->global_valid) != NULL &&
+        cJSON_AddNumberToObject(object, "latitude", position->latitude) != NULL &&
+        cJSON_AddNumberToObject(object, "longitude", position->longitude) != NULL &&
+        cJSON_AddBoolToObject(object, "altitude_valid", position->altitude_valid) != NULL &&
+        cJSON_AddNumberToObject(object, "altitude_m", position->altitude_m) != NULL;
+}
+
+
 bool web_status_json_add_pods(
     cJSON *root,
     const device_status_snapshot_t *status
@@ -192,9 +253,27 @@ bool web_status_json_add_pods(
         );
 
         if (
+            !web_status_json_add_capabilities(
+                pod_object,
+                &pod->capabilities
+            )
+        ) {
+            return false;
+        }
+
+        if (
             !web_status_json_add_barometer(
                 pod_object,
                 &pod->barometer
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            !web_status_json_add_environment(
+                pod_object,
+                &pod->environment
             )
         ) {
             return false;
@@ -213,6 +292,15 @@ bool web_status_json_add_pods(
             !web_status_json_add_geophone(
                 pod_object,
                 &pod->geophone
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            !web_status_json_add_position(
+                pod_object,
+                &pod->position
             )
         ) {
             return false;
