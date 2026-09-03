@@ -67,6 +67,28 @@ esp_err_t seismic_buffer_copy_latest(
 );
 
 
+/*
+ * Copy frames published after *cursor without blocking the producer.
+ *
+ * cursor is the last consumed frame number. It is advanced only after a
+ * consistent batch has been copied. If the consumer falls behind farther than
+ * the bounded ring can retain, skipped frames are reported through
+ * dropped_frames and copying resumes from the oldest still-published frame.
+ *
+ * ESP_ERR_INVALID_STATE means the acquisition generation changed (for example
+ * stop/start reset total_frames below the cursor). A recorder must treat that
+ * as a session boundary rather than mixing independent acquisitions.
+ */
+esp_err_t seismic_buffer_copy_since(
+    uint64_t *cursor,
+    seismic_frame_t *frames,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *dropped_frames,
+    seismic_buffer_info_t *info
+);
+
+
 const char *seismic_buffer_source_name(
     seismic_source_t source
 );
