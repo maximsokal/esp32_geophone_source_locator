@@ -26,6 +26,40 @@ export interface ObjectStoreState {
   error?: string;
 }
 
+export interface RecordingState {
+  available: boolean;
+  running?: boolean;
+  state?: 'IDLE' | 'RECORDING' | 'STOPPING' | 'ERROR';
+  object_id?: string;
+  session_id?: string;
+  source?: string;
+  sample_rate_hz?: number;
+  channel_count?: number;
+  samples_written?: number;
+  dropped_frames?: number;
+  recording_ms?: number;
+  last_error?: number;
+  last_error_name?: string;
+  error?: string;
+}
+
+export interface RecordingSessionSummary {
+  session_id: string;
+  complete: boolean;
+  sample_rate_hz: number;
+  channel_count: number;
+  samples_written: number;
+  dropped_frames: number;
+  recording_ms: number;
+}
+
+export interface RecordingSessionCollection {
+  object_id: string;
+  available: boolean;
+  sessions: RecordingSessionSummary[];
+  error?: string;
+}
+
 export interface ValidValue {
   valid: boolean;
 }
@@ -65,7 +99,9 @@ export interface DeviceStatus {
   mux: ValidValue & { active_channel: number; active_pod: number };
   pods: DevicePod[];
   acquisition: { running: boolean; sample_rate_hz: number; samples_recorded: number; recording_ms: number };
+  recording?: RecordingState;
   object_store?: ObjectStoreState;
+  recording_sessions?: RecordingSessionCollection;
 }
 
 export interface SeismicChannel {
