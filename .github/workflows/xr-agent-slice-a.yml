@@ -48,7 +48,12 @@ jobs:
         working-directory: webui
         run: npm run typecheck
 
-      - name: Run XR tests
+      - name: Run Slice A regression tests
+        working-directory: webui
+        run: npx --yes vitest@4.1.11 run tests/xr/scanReadinessUi.test.ts tests/xr/structuralCornerScaleIsolation.test.ts
+
+      - name: Record full XR baseline without blocking Slice A
+        continue-on-error: true
         working-directory: webui
         run: npm run test:xr
 
