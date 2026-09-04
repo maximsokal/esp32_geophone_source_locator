@@ -102,10 +102,7 @@ const initialCssNames = (entryValue.css ?? []).map((path) => basename(path));
 if (initialCssNames.length !== 1 || !cssNames.includes(initialCssNames[0])) {
   throw new Error(`Expected exactly one initial CSS asset, got ${initialCssNames.join(', ') || '(none)'}.`);
 }
-const secondaryNames = [
-  ...jsNames.filter((name) => name !== appFile),
-  ...cssNames.filter((name) => !initialCssNames.includes(name)),
-].sort();
+const secondaryNames = jsNames.filter((name) => name !== appFile).sort();
 if (secondaryNames.length === 0) {
   throw new Error('Expected secondary lazy/code-split JavaScript assets for ESP embedding.');
 }
@@ -119,6 +116,22 @@ if (generatedChunkTable.includes('_binary_generated_webui_chunks_')) {
   throw new Error(
     'ESP chunk table still contains path-prefixed _binary_generated_webui_chunks_* symbols; ESP-IDF 5.5.4 emits basename-only symbols.',
   );
+}
+
+/*
+ * Vite's dynamic preload runtime may request the original hashed initial CSS
+ * name even though index.html is rewritten to /assets/app.css. The ESP table
+ * must therefore expose a zero-copy URI alias backed by the same app.css symbols.
+ */
+const hashedCssName = initialCssNames[0];
+if (!generatedChunkTable.includes(`"/assets/${hashedCssName}"`)) {
+  throw new Error(`Prepared ESP chunk table is missing the hashed initial-CSS alias /assets/${hashedCssName}.`);
+}
+if (!generatedChunkTable.includes('webui_css_gz_start, webui_css_gz_end')) {
+  throw new Error('Hashed initial-CSS alias must reuse the embedded app.css symbols instead of duplicating flash data.');
+}
+if (espAssetNames.includes(`${hashedCssName}.gz`)) {
+  throw new Error(`Hashed CSS ${hashedCssName}.gz was embedded twice; it must remain a zero-copy alias of app.css.gz.`);
 }
 
 for (const name of secondaryNames) {
@@ -150,8 +163,8 @@ console.log(`Initial console entry: ${appRow.name} raw=${appRow.rawBytes} gzip=$
 console.log(`Initial vendor requests: ${initialVendorNames.length} (${initialVendorNames.join(', ')})`);
 console.log('Initial HTML modulepreload: disabled');
 console.log(`Total JS: raw=${totalRaw} gzip=${totalGzip}`);
-console.log(`CSS assets: ${cssNames.join(', ')} (single initial asset; scanner/result CSS cannot lazy-load)`);
-console.log(`ESP secondary assets: ${secondaryNames.length} basename-symbol pairs verified`);
+console.log(`CSS assets: ${cssNames.join(', ')} (single initial asset; hashed URI aliases app.css in flash)`);
+console.log(`ESP secondary JS assets: ${secondaryNames.length} basename-symbol pairs verified`);
 console.log('Core console tabs: Objects + Sensors are statically reachable from app.js');
 console.log(`Dynamic scanner: ${scannerKey}`);
 console.log(`Dynamic seismic: ${seismicKey}`);
