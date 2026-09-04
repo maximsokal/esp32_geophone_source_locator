@@ -58,3 +58,10 @@
  */
 #define APP_TASK_PRIORITY_SEISMIC_RECORDER 2
 #define APP_TASK_STACK_SEISMIC_RECORDER  4096
+
+/*
+ * Slow 1 Hz power telemetry. Keep it below recorder/UI/storage work so I2C
+ * housekeeping cannot interfere with real-time acquisition or SD draining.
+ */
+#define APP_TASK_PRIORITY_INA3221          1
+#define APP_TASK_STACK_INA3221          4096
