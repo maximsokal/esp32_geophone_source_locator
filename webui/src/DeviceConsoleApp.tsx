@@ -9,6 +9,10 @@ import type {
 } from './domain/device';
 import DeviceDashboard from './features/dashboard/DeviceDashboard';
 import ObjectsFeature from './features/objects/ObjectsFeature';
+import {
+  reconcileObjectSelection,
+  type ObjectSelectionMode,
+} from './features/objects/objectSelection';
 import SensorsFeature from './features/sensors/SensorsFeature';
 
 const XrScannerFeature = lazy(() => import('./App'));
@@ -56,34 +60,38 @@ export default function DeviceConsoleApp() {
     }
   }, []);
 
-  const refreshObjects = useCallback(async (sessionsObjectId: string | null = null): Promise<boolean> => {
+  const refreshObjects = useCallback(async (
+    sessionsObjectId: string | null = null,
+    preferredSelectedId: string | null = null,
+    selectionMode: ObjectSelectionMode = 'preserve',
+  ): Promise<ObjectStoreState | null> => {
     const epoch = ++objectRefreshEpoch.current;
     try {
       const next = await fetchDeviceStatus(true, sessionsObjectId);
-      if (epoch !== objectRefreshEpoch.current) return true;
+      if (epoch !== objectRefreshEpoch.current) return null;
 
       const nextStore = next.object_store ?? null;
       setStatus(next);
       setObjects(nextStore);
       setSessions(next.recording_sessions ?? null);
-      setSelectedId((current) => {
-        if (current !== null && nextStore?.objects.some((object) => object.id === current)) {
-          return current;
-        }
-        return nextStore?.active_id ?? nextStore?.objects[0]?.id ?? null;
-      });
+      setSelectedId((current) => reconcileObjectSelection(
+        nextStore,
+        current,
+        preferredSelectedId,
+        selectionMode,
+      ));
       setLinkError(null);
       setWorkspaceError(nextStore?.available === false
         ? `Object database unavailable: ${nextStore.error ?? 'storage error'}`
         : null);
-      return nextStore?.available !== false;
+      return nextStore?.available === false ? null : nextStore;
     }
     catch (reason) {
-      if (epoch !== objectRefreshEpoch.current) return false;
+      if (epoch !== objectRefreshEpoch.current) return null;
       const message = errorMessage(reason);
       setLinkError(message);
       setWorkspaceError(message);
-      return false;
+      return null;
     }
   }, []);
 
@@ -136,16 +144,27 @@ export default function DeviceConsoleApp() {
     action: string,
     payload: Record<string, unknown> = {},
   ): Promise<boolean> => {
+    const activeBefore = objects?.active_id ?? null;
+    const followsActive = action === 'create_object' || action === 'activate_object';
+    const selectionMode: ObjectSelectionMode = followsActive ? 'active' : 'preserve';
+
     setBusy(true);
     try {
-      await sendControl(action, payload);
+      const result = await sendControl(action, payload);
+      const preferredSelectedId = action === 'create_object'
+        ? result.object_id ?? null
+        : null;
+
+      if (preferredSelectedId !== null) {
+        setSelectedId(preferredSelectedId);
+      }
       setWorkspaceError(null);
 
       if (OBJECT_MUTATION_ACTIONS.has(action) || SESSION_REFRESH_ACTIONS.has(action)) {
         const withSessions = screen === 'objects' && SESSION_REFRESH_ACTIONS.has(action)
           ? selectedId
           : null;
-        await refreshObjects(withSessions);
+        await refreshObjects(withSessions, preferredSelectedId, selectionMode);
       }
       else {
         await refreshStatus();
@@ -153,6 +172,42 @@ export default function DeviceConsoleApp() {
       return true;
     }
     catch (reason) {
+      /*
+       * Control writes are intentionally never retried: a TLS reset can happen
+       * after the ESP has already committed the mutation. Re-read authoritative
+       * state instead. For create/activate, following active is deliberate; an
+       * ordinary periodic refresh still preserves an operator-selected inactive
+       * object.
+       */
+      let reconciledStore: ObjectStoreState | null = null;
+      if (OBJECT_MUTATION_ACTIONS.has(action) || SESSION_REFRESH_ACTIONS.has(action)) {
+        const withSessions = screen === 'objects' && SESSION_REFRESH_ACTIONS.has(action)
+          ? selectedId
+          : null;
+        reconciledStore = await refreshObjects(withSessions, null, selectionMode);
+      }
+
+      if (
+        action === 'create_object'
+        && reconciledStore?.active_id !== null
+        && reconciledStore?.active_id !== activeBefore
+      ) {
+        /* The POST response was lost, but the subsequent GET proves create committed. */
+        setWorkspaceError(null);
+        setLinkError(null);
+        return true;
+      }
+
+      if (
+        action === 'activate_object'
+        && typeof payload.object_id === 'string'
+        && reconciledStore?.active_id === payload.object_id
+      ) {
+        setWorkspaceError(null);
+        setLinkError(null);
+        return true;
+      }
+
       const message = errorMessage(reason);
       setWorkspaceError(message);
       if (message.includes('network error') || message.includes('timeout')) setLinkError(message);
@@ -161,7 +216,7 @@ export default function DeviceConsoleApp() {
     finally {
       setBusy(false);
     }
-  }, [refreshObjects, refreshStatus, screen, selectedId]);
+  }, [objects, refreshObjects, refreshStatus, screen, selectedId]);
 
   const selectedObject = useMemo(
     () => objects?.objects.find((object) => object.id === selectedId)
