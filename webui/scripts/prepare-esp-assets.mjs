@@ -122,7 +122,16 @@ function embeddedSymbolBase(fileName) {
 }
 
 const declarations = [];
-const tableRows = [];
+/*
+ * Vite's dynamic-preload helper keeps the original hashed initial-CSS URL in
+ * lazy JS even though index.html is rewritten to the stable /assets/app.css.
+ * Serve that hashed URL as a zero-copy alias of the SAME embedded app.css gzip
+ * symbols. Do not embed the stylesheet twice just to satisfy the preload helper.
+ */
+const tableRows = [
+  `    { ${cString(`/assets/${cssName}`)}, ${cString(`/assets/${cssName}.gz`)}, ` +
+  `"text/css; charset=utf-8", webui_css_gz_start, webui_css_gz_end },`,
+];
 secondaryGzip.forEach((asset, index) => {
   const alias = `webui_chunk_${index}`;
   const symbol = embeddedSymbolBase(asset.name);
@@ -158,7 +167,7 @@ await Promise.all([
 console.log(`ESP Web UI bundle prepared: ${buildId}`);
 console.log(`  index.html        ${Buffer.byteLength(espIndex)} bytes`);
 console.log(`  assets/app.js.gz  ${jsGzip.length} bytes`);
-console.log(`  assets/app.css.gz ${cssGzip.length} bytes`);
+console.log(`  assets/app.css.gz ${cssGzip.length} bytes (alias /assets/${cssName})`);
 let secondaryTotal = 0;
 for (const asset of secondaryGzip) {
   secondaryTotal += asset.data.length;
