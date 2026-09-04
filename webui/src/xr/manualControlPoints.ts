@@ -99,7 +99,14 @@ function resolvePlacement(position: ProjectPoint): {
    * and applies its ray-verified FREE-space veto before accepting a placement.
    */
   const resolution = resolveManualPlacementCandidate(position);
-  if (resolution === null) return { position, mode: null, confidence: null, surfaceLocked: false };
+  if (resolution === null) {
+    if (registry.active) {
+      throw new ManualPlacementRejectedError(
+        'No physical stable-surface resolver is available for this empty certified registry. Keep scanning.',
+      );
+    }
+    return { position, mode: null, confidence: null, surfaceLocked: false };
+  }
   if (!resolution.accepted || resolution.position === null) throw new ManualPlacementRejectedError(resolution.message);
   return { position: resolution.position, mode: resolution.mode, confidence: resolution.confidence, surfaceLocked: true };
 }
