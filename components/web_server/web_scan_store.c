@@ -31,27 +31,38 @@ static esp_err_t web_scan_send_json(
 )
 {
     char body[224];
-    const int written = snprintf(
-        body,
-        sizeof(body),
-        result == ESP_OK
-            ? "{\"ok\":true,\"action\":\"%s\",\"object_id\":\"%s\",\"bytes\":%u}"
-            : "{\"ok\":false,\"action\":\"%s\",\"object_id\":\"%s\",\"error\":\"%s\"}",
-        action,
-        object_id,
-        result == ESP_OK ? (unsigned)bytes : esp_err_to_name(result)
-    );
+    int written = 0;
+    if (result == ESP_OK) {
+        written = snprintf(
+            body,
+            sizeof(body),
+            "{\"ok\":true,\"action\":\"%s\",\"object_id\":\"%s\",\"bytes\":%u}",
+            action,
+            object_id,
+            (unsigned)bytes
+        );
+    }
+    else {
+        written = snprintf(
+            body,
+            sizeof(body),
+            "{\"ok\":false,\"action\":\"%s\",\"object_id\":\"%s\",\"error\":\"%s\"}",
+            action,
+            object_id,
+            esp_err_to_name(result)
+        );
+    }
     if (written <= 0 || (size_t)written >= sizeof(body)) return ESP_ERR_INVALID_SIZE;
 
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    if (result == ESP_ERR_INVALID_ARG || result == ESP_ERR_INVALID_SIZE) {
+    if (result == ESP_ERR_INVALID_ARG || result == ESP_ERR_INVALID_SIZE || result == ESP_ERR_NOT_SUPPORTED) {
         httpd_resp_set_status(request, "400 Bad Request");
     }
     else if (result == ESP_ERR_NOT_FOUND) {
         httpd_resp_set_status(request, "404 Not Found");
     }
-    else if (result == ESP_ERR_INVALID_STATE) {
+    else if (result == ESP_ERR_INVALID_STATE || result == ESP_ERR_TIMEOUT) {
         httpd_resp_set_status(request, "409 Conflict");
     }
     else if (result != ESP_OK) {
@@ -67,22 +78,16 @@ static esp_err_t web_scan_query_value(
     size_t value_size
 )
 {
-    if (request == NULL || key == NULL || value == NULL || value_size == 0U) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
+    if (request == NULL || key == NULL || value == NULL || value_size == 0U) return ESP_ERR_INVALID_ARG;
     const size_t query_length = httpd_req_get_url_query_len(request);
     if (query_length == 0U) return ESP_ERR_NOT_FOUND;
     if (query_length >= WEB_SCAN_QUERY_SIZE) return ESP_ERR_INVALID_SIZE;
 
     char query[WEB_SCAN_QUERY_SIZE];
-    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (httpd_query_key_value(query, key, value, value_size) != ESP_OK) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    return ESP_OK;
+    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) return ESP_ERR_INVALID_ARG;
+    return httpd_query_key_value(query, key, value, value_size) == ESP_OK
+        ? ESP_OK
+        : ESP_ERR_NOT_FOUND;
 }
 
 static esp_err_t web_scan_paths(
@@ -93,7 +98,6 @@ static esp_err_t web_scan_paths(
 )
 {
     if (!object_format_id_is_valid(object_id)) return ESP_ERR_INVALID_ARG;
-
     const int final_written = snprintf(
         final_path,
         WEB_SCAN_PATH_SIZE,
@@ -102,13 +106,12 @@ static esp_err_t web_scan_paths(
         object_id,
         SCAN_FILE_NAME
     );
+    if (final_written <= 0 || final_written >= (int)WEB_SCAN_PATH_SIZE) return ESP_ERR_INVALID_SIZE;
     const int temp_written = snprintf(temp_path, WEB_SCAN_PATH_SIZE, "%s.tmp", final_path);
     const int backup_written = snprintf(backup_path, WEB_SCAN_PATH_SIZE, "%s.bak", final_path);
     if (
-        final_written <= 0 || temp_written <= 0 || backup_written <= 0 ||
-        final_written >= (int)WEB_SCAN_PATH_SIZE ||
-        temp_written >= (int)WEB_SCAN_PATH_SIZE ||
-        backup_written >= (int)WEB_SCAN_PATH_SIZE
+        temp_written <= 0 || backup_written <= 0 ||
+        temp_written >= (int)WEB_SCAN_PATH_SIZE || backup_written >= (int)WEB_SCAN_PATH_SIZE
     ) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -128,7 +131,7 @@ static esp_err_t web_scan_verify_object(const char *object_id)
     return object_store_get_profile(object_id, &profile);
 }
 
-/* Must be called while storage_manager_operation_begin() is held. */
+/* storage_manager_operation_begin() must be held by the caller. */
 static esp_err_t web_scan_recover_file(
     const char *final_path,
     const char *temp_path,
@@ -140,28 +143,21 @@ static esp_err_t web_scan_recover_file(
         (void)remove(backup_path);
         return ESP_OK;
     }
-
     (void)remove(temp_path);
     if (!web_scan_file_exists(backup_path)) return ESP_ERR_NOT_FOUND;
-    if (rename(backup_path, final_path) != 0) return ESP_FAIL;
-    return ESP_OK;
+    return rename(backup_path, final_path) == 0 ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
 {
-    if (
-        request->content_len <= 0 ||
-        (size_t)request->content_len > WEB_SCAN_MAX_BYTES
-    ) {
+    if (request->content_len <= 0 || (size_t)request->content_len > WEB_SCAN_MAX_BYTES) {
         return web_scan_send_json(request, "scan_save", object_id, ESP_ERR_INVALID_SIZE, 0U);
     }
 
     esp_err_t err = web_scan_verify_object(object_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, err, 0U);
 
-    char final_path[WEB_SCAN_PATH_SIZE];
-    char temp_path[WEB_SCAN_PATH_SIZE];
-    char backup_path[WEB_SCAN_PATH_SIZE];
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, err, 0U);
 
@@ -181,8 +177,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
         err = ESP_FAIL;
         goto cleanup;
     }
-
-    buffer = malloc(WEB_SCAN_IO_BUFFER_SIZE);
+    buffer = heap_caps_malloc(WEB_SCAN_IO_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buffer == NULL) {
         err = ESP_ERR_NO_MEM;
         goto cleanup;
@@ -190,11 +185,10 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
 
     while (received_total < (size_t)request->content_len) {
         const size_t remaining = (size_t)request->content_len - received_total;
-        const size_t requested = remaining < WEB_SCAN_IO_BUFFER_SIZE ? remaining : WEB_SCAN_IO_BUFFER_SIZE;
-        const int received = httpd_req_recv(request, (char *)buffer, requested);
+        const size_t request_size = remaining < WEB_SCAN_IO_BUFFER_SIZE ? remaining : WEB_SCAN_IO_BUFFER_SIZE;
+        const int received = httpd_req_recv(request, (char *)buffer, request_size);
         if (received == HTTPD_SOCK_ERR_TIMEOUT) {
-            timeout_count += 1U;
-            if (timeout_count >= WEB_SCAN_RECV_TIMEOUTS) {
+            if (++timeout_count >= WEB_SCAN_RECV_TIMEOUTS) {
                 err = ESP_ERR_TIMEOUT;
                 goto cleanup;
             }
@@ -234,7 +228,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
     err = ESP_OK;
 
 cleanup:
-    if (file != NULL) fclose(file);
+    if (file != NULL) (void)fclose(file);
     free(buffer);
     if (err != ESP_OK) (void)remove(temp_path);
     storage_manager_operation_end();
@@ -254,9 +248,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
     esp_err_t err = web_scan_verify_object(object_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, err, 0U);
 
-    char final_path[WEB_SCAN_PATH_SIZE];
-    char temp_path[WEB_SCAN_PATH_SIZE];
-    char backup_path[WEB_SCAN_PATH_SIZE];
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, err, 0U);
 
@@ -270,7 +262,6 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
 
     err = web_scan_recover_file(final_path, temp_path, backup_path);
     if (err != ESP_OK) goto cleanup;
-
     file = fopen(final_path, "rb");
     if (file == NULL) {
         err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
@@ -309,16 +300,15 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
     err = ESP_OK;
 
 cleanup:
-    if (file != NULL) fclose(file);
+    if (file != NULL) (void)fclose(file);
     storage_manager_operation_end();
-
     if (err != ESP_OK) {
         free(data);
         return web_scan_send_json(request, "scan_load", object_id, err, 0U);
     }
 
     char size_header[24];
-    snprintf(size_header, sizeof(size_header), "%u", (unsigned)size);
+    (void)snprintf(size_header, sizeof(size_header), "%u", (unsigned)size);
     httpd_resp_set_type(request, "application/octet-stream");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     httpd_resp_set_hdr(request, "X-Geo-Scan-Bytes", size_header);
@@ -340,15 +330,12 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id)
     esp_err_t err = web_scan_verify_object(object_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
 
-    char final_path[WEB_SCAN_PATH_SIZE];
-    char temp_path[WEB_SCAN_PATH_SIZE];
-    char backup_path[WEB_SCAN_PATH_SIZE];
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
 
     err = storage_manager_operation_begin();
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
-
     if (remove(final_path) != 0 && errno != ENOENT) err = ESP_FAIL;
     if (remove(temp_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
     if (remove(backup_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
@@ -367,15 +354,12 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
     esp_err_t err = web_scan_query_value(request, "scan", action, sizeof(action));
     if (err == ESP_ERR_NOT_FOUND) return ESP_OK;
     *handled = true;
-    if (err != ESP_OK) {
-        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid scan query");
-    }
+    if (err != ESP_OK) return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid scan query");
 
     char object_id[OBJECT_STORE_ID_SIZE];
     err = web_scan_query_value(request, "object_id", object_id, sizeof(object_id));
     if (err != ESP_OK || !object_format_id_is_valid(object_id)) {
-        snprintf(object_id, sizeof(object_id), "INVALID");
-        return web_scan_send_json(request, "scan", object_id, ESP_ERR_INVALID_ARG, 0U);
+        return web_scan_send_json(request, "scan", "INVALID", ESP_ERR_INVALID_ARG, 0U);
     }
 
     if (strcmp(action, "save") == 0) return web_scan_save(request, object_id);
