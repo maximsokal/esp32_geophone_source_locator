@@ -41,6 +41,9 @@ esp_err_t device_status_init(void)
     s_status.mode =
         DEVICE_MODE_IDLE;
 
+    s_status.power.source =
+        DEVICE_POWER_SOURCE_UNKNOWN;
+
 
     s_status.mux.valid =
         false;
@@ -162,6 +165,25 @@ const char *device_status_mode_name(
         case DEVICE_MODE_IDLE:
         default:
             return "IDLE";
+    }
+}
+
+
+const char *device_status_power_source_name(
+    device_power_source_t source
+)
+{
+    switch (source) {
+
+        case DEVICE_POWER_SOURCE_BATTERY:
+            return "BATTERY";
+
+        case DEVICE_POWER_SOURCE_USB:
+            return "USB";
+
+        case DEVICE_POWER_SOURCE_UNKNOWN:
+        default:
+            return "UNKNOWN";
     }
 }
 
