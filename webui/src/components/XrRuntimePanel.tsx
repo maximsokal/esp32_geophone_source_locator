@@ -95,7 +95,13 @@ export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabi
 
   const running=runtimeState.phase==='running',busy=computePreparing||runtimeState.phase==='starting'||runtimeState.phase==='stopping';const canStart=canAttemptImmersiveAr(capabilities)&&!running&&!busy;const readyVisible=`${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
   const computeScheduler=liveComputeScheduler.snapshot();const computeMaximum=computeScheduler.maximumBudget;const computeEffective=computeScheduler.effectiveBudget;const computeLabel=computeMaximum===null?'W?/?':`W${computeEffective??0}/${computeMaximum}`;
-  const certifiedGeometry=getCertifiedGuideRegistrySummary();const showManualToggle=running&&(manualMode||certifiedGeometry.hasTargets);
+  const certifiedGeometry=getCertifiedGuideRegistrySummary();
+  /*
+   * Manual marking must be ENTERABLE before a worker happens to certify a target.
+   * The placement resolver still rejects release unless EDGE/CORNER LOCK is
+   * physically certified, so exposing the button does not weaken geometry safety.
+   */
+  const showManualToggle=running;
   const aiPriorUi=describeAiPrior({
     enabled:aiPriorEnabled,
     phase:runtimeState.phase,
