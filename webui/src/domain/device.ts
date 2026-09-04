@@ -122,13 +122,34 @@ export interface DevicePod {
   position: PodPosition;
 }
 
+export interface DeviceSystemStatus {
+  state: 'NOT_READY' | 'DEGRADED' | 'READY' | 'FAULT' | string;
+  mode: string;
+  uptime_ms: number;
+  acquisition_ready: boolean;
+  ready_pods: number;
+  required_pods: number;
+}
+
+export interface DeviceAcquisitionStatus {
+  running: boolean;
+  requested_running: boolean;
+  hardware_ready: boolean;
+  source: string;
+  last_error: number;
+  last_error_name: string;
+  sample_rate_hz: number;
+  samples_recorded: number;
+  recording_ms: number;
+}
+
 export interface DeviceStatus {
-  system: { state: string; mode: string; uptime_ms: number };
+  system: DeviceSystemStatus;
   power: ValidValue & { voltage_v: number; current_a: number; power_w: number };
   environment: ValidValue & { temperature_c: number; humidity_percent: number; pressure_pa: number };
   mux: ValidValue & { active_channel: number; active_pod: number };
   pods: DevicePod[];
-  acquisition: { running: boolean; sample_rate_hz: number; samples_recorded: number; recording_ms: number };
+  acquisition: DeviceAcquisitionStatus;
   recording?: RecordingState;
   object_store?: ObjectStoreState;
   recording_sessions?: RecordingSessionCollection;

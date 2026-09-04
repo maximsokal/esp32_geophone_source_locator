@@ -15,6 +15,20 @@
 
 static const char *TAG = "WEB_API_CONTROL";
 
+static bool web_control_invalidates_object_cache(const char *action)
+{
+    if (action == NULL) return false;
+    return
+        strcmp(action, "create_object") == 0 ||
+        strcmp(action, "activate_object") == 0 ||
+        strcmp(action, "delete_object") == 0 ||
+        strcmp(action, "rename_object") == 0 ||
+        strcmp(action, "set_object_cable_length") == 0 ||
+        strcmp(action, "set_default_cable_length") == 0 ||
+        strcmp(action, "set_object_location") == 0 ||
+        strcmp(action, "recording_start") == 0;
+}
+
 static esp_err_t web_control_read_body(
     httpd_req_t *request,
     char *buffer,
@@ -338,6 +352,16 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     char object_id[OBJECT_STORE_ID_SIZE];
     err = web_control_process(root, action_copy, object_id);
     cJSON_Delete(root);
+
+    /*
+     * Invalidate even after a failed compound mutation: recording_start can
+     * successfully activate an object before ADC start fails, and create can
+     * partially mutate storage before rollback. A cold refresh is safer than
+     * serving stale metadata after either path.
+     */
+    if (web_control_invalidates_object_cache(action_copy)) {
+        web_status_json_objects_invalidate();
+    }
 
     ESP_LOGI(TAG, "%s -> %s", action_copy, esp_err_to_name(err));
     return web_control_send_result(

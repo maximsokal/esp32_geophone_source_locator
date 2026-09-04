@@ -20,23 +20,30 @@ function requireDynamic(sourceSuffix, label) {
   return [key, value];
 }
 
+function forbidDynamic(sourceSuffix, label) {
+  const pair = entries.find(([key]) => key.endsWith(sourceSuffix));
+  if (pair !== undefined && pair[1].isDynamicEntry === true) {
+    throw new Error(`${label} must be part of the core console bundle; a dynamic chunk can strand the tab on a flaky ESP HTTPS link.`);
+  }
+}
+
 function embeddedSymbolBase(fileName) {
   const embeddedName = `${fileName}.gz`;
   return `_binary_${embeddedName.replace(/[^A-Za-z0-9_]/g, '_')}`;
 }
 
 const [scannerKey, scanner] = requireDynamic('src/App.tsx', 'WebXR scanner');
-const [objectsKey] = requireDynamic('src/features/objects/ObjectsFeature.tsx', 'Object workspace');
-const [sensorsKey] = requireDynamic('src/features/sensors/SensorsFeature.tsx', 'Sensor diagnostics');
 const [seismicKey] = requireDynamic('src/features/seismic/LiveSeismicPanel.tsx', 'Live seismic panel');
 const [viewportKey] = requireDynamic('src/components/ScanPointCloudViewport.tsx', '3D result viewport');
+forbidDynamic('src/features/objects/ObjectsFeature.tsx', 'Object workspace');
+forbidDynamic('src/features/sensors/SensorsFeature.tsx', 'Sensor diagnostics');
 
 if ((scanner.css ?? []).length === 0) {
   throw new Error('WebXR scanner must own at least one lazy CSS asset; scan.css leaked into the initial page or was lost.');
 }
 
 const [entryKey, entryValue] = appEntry;
-for (const dynamicKey of [scannerKey, objectsKey, sensorsKey, seismicKey, viewportKey]) {
+for (const dynamicKey of [scannerKey, seismicKey, viewportKey]) {
   if ((entryValue.imports ?? []).includes(dynamicKey)) {
     throw new Error(`${dynamicKey} unexpectedly appears in the static entry dependency list.`);
   }
@@ -118,9 +125,8 @@ console.log(`Initial console entry: ${appRow.name} raw=${appRow.rawBytes} gzip=$
 console.log(`Total JS: raw=${totalRaw} gzip=${totalGzip}`);
 console.log(`CSS assets: ${cssNames.join(', ')}`);
 console.log(`ESP secondary assets: ${secondaryNames.length} basename-symbol pairs verified`);
+console.log('Core console tabs: Objects + Sensors are statically reachable from app.js');
 console.log(`Dynamic scanner: ${scannerKey}`);
-console.log(`Dynamic objects: ${objectsKey}`);
-console.log(`Dynamic sensors: ${sensorsKey}`);
 console.log(`Dynamic seismic: ${seismicKey}`);
 console.log(`Dynamic 3D viewport: ${viewportKey}`);
 console.log(`Entry: ${entryKey}`);

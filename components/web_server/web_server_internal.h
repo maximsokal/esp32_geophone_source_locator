@@ -75,6 +75,7 @@ void web_status_json_free(char *json);
 
 bool web_status_json_add_pods(cJSON *root, const device_status_snapshot_t *status);
 bool web_status_json_add_objects(cJSON *root);
+void web_status_json_objects_invalidate(void);
 bool web_status_json_add_recording(cJSON *root);
 bool web_status_json_add_sessions(cJSON *root, const char *object_id);
 

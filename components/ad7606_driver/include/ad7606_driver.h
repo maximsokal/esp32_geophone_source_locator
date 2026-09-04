@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -32,6 +33,16 @@ void ad7606_driver_deinit(void);
 esp_err_t ad7606_driver_read(
     ad7606_sample_t *sample
 );
+
+/*
+ * Physical presence is established from real BUSY LOW-HIGH-LOW conversion
+ * pulses, not from SPI receiving a plausible constant byte pattern. This is
+ * intentionally separate from transport initialization because an open MISO
+ * line can still complete an SPI transaction.
+ */
+esp_err_t ad7606_driver_presence_monitor_start(void);
+void ad7606_driver_presence_monitor_stop(void);
+bool ad7606_driver_presence_is_healthy(void);
 
 float ad7606_raw_to_uv(
     int16_t raw

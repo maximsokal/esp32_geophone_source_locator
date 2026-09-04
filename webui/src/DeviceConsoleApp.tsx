@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './console.css';
 import { capturePhoneLocation, fetchDeviceStatus, sendControl } from './api/deviceApi';
 import type {
@@ -8,12 +8,29 @@ import type {
   RecordingSessionCollection,
 } from './domain/device';
 import DeviceDashboard from './features/dashboard/DeviceDashboard';
+import ObjectsFeature from './features/objects/ObjectsFeature';
+import SensorsFeature from './features/sensors/SensorsFeature';
 
-const ObjectsFeature = lazy(() => import('./features/objects/ObjectsFeature'));
-const SensorsFeature = lazy(() => import('./features/sensors/SensorsFeature'));
 const XrScannerFeature = lazy(() => import('./App'));
 
 type Screen = 'dashboard' | 'objects' | 'sensors' | 'scanner';
+
+const OBJECT_MUTATION_ACTIONS = new Set([
+  'create_object',
+  'activate_object',
+  'delete_object',
+  'rename_object',
+  'set_object_cable_length',
+  'set_default_cable_length',
+  'set_object_location',
+  'recording_start',
+]);
+
+const SESSION_REFRESH_ACTIONS = new Set(['recording_start', 'recording_stop']);
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
 
 export default function DeviceConsoleApp() {
   const [screen, setScreen] = useState<Screen>('dashboard');
@@ -21,23 +38,30 @@ export default function DeviceConsoleApp() {
   const [objects, setObjects] = useState<ObjectStoreState | null>(null);
   const [sessions, setSessions] = useState<RecordingSessionCollection | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const objectRefreshEpoch = useRef(0);
 
-  const refreshStatus = useCallback(async () => {
+  const refreshStatus = useCallback(async (): Promise<boolean> => {
     try {
       const next = await fetchDeviceStatus(false);
       setStatus(next);
-      setError(null);
+      setLinkError(null);
+      return true;
     }
     catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setLinkError(errorMessage(reason));
+      return false;
     }
   }, []);
 
-  const refreshObjects = useCallback(async (sessionsObjectId: string | null = null) => {
+  const refreshObjects = useCallback(async (sessionsObjectId: string | null = null): Promise<boolean> => {
+    const epoch = ++objectRefreshEpoch.current;
     try {
       const next = await fetchDeviceStatus(true, sessionsObjectId);
+      if (epoch !== objectRefreshEpoch.current) return true;
+
       const nextStore = next.object_store ?? null;
       setStatus(next);
       setObjects(nextStore);
@@ -48,38 +72,57 @@ export default function DeviceConsoleApp() {
         }
         return nextStore?.active_id ?? nextStore?.objects[0]?.id ?? null;
       });
-      setError(null);
+      setLinkError(null);
+      setWorkspaceError(nextStore?.available === false
+        ? `Object database unavailable: ${nextStore.error ?? 'storage error'}`
+        : null);
+      return nextStore?.available !== false;
     }
     catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (epoch !== objectRefreshEpoch.current) return false;
+      const message = errorMessage(reason);
+      setLinkError(message);
+      setWorkspaceError(message);
+      return false;
     }
   }, []);
 
   /*
-   * The lightweight status endpoint is RAM-backed and safe to poll frequently.
-   * Keep it independent from the object-store refresh so a slow SD request can
-   * never restart this timer or create a second request storm.
+   * The extended boot request already contains the RAM-backed status snapshot.
+   * Start the fast poll only after the page has had time to load instead of
+   * racing a second TLS request against the initial object/database request.
+   * Back off on failures so an unstable Wi-Fi/TLS link cannot become a request
+   * storm that prevents the next useful request from succeeding.
    */
   useEffect(() => {
-    void refreshStatus();
-    const fast = window.setInterval(() => void refreshStatus(), 2000);
-    return () => window.clearInterval(fast);
+    let cancelled = false;
+    let timer: number | null = null;
+    let failures = 0;
+
+    const poll = async (): Promise<void> => {
+      const ok = await refreshStatus();
+      if (cancelled) return;
+      failures = ok ? 0 : Math.min(failures + 1, 4);
+      const delay = ok ? 2000 : Math.min(15000, 2000 * (2 ** failures));
+      timer = window.setTimeout(() => void poll(), delay);
+    };
+
+    timer = window.setTimeout(() => void poll(), 2000);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [refreshStatus]);
 
-  /*
-   * Populate the dashboard/object header once at boot. Extended status walks
-   * object metadata on SD, so it must not run every few seconds while the user
-   * is on Home/Sensors/Scanner.
-   */
+  /* Populate Home/Objects from one extended request. */
   useEffect(() => {
     void refreshObjects(null);
   }, [refreshObjects]);
 
   /*
-   * While the object workspace is actually visible, keep it eventually
-   * consistent with changes made from the physical UI or another browser.
-   * Mutations still trigger an immediate refresh below; 30 s is only the
-   * background reconciliation interval.
+   * Object metadata is cached by firmware. While this page is visible, a slow
+   * 30 s reconciliation keeps physical-UI/other-client changes eventually
+   * consistent without hammering FATFS on every status poll.
    */
   useEffect(() => {
     if (screen !== 'objects') return undefined;
@@ -89,25 +132,36 @@ export default function DeviceConsoleApp() {
     return () => window.clearInterval(slow);
   }, [refreshObjects, screen, selectedId]);
 
-  const runControl = useCallback(async (action: string, payload: Record<string, unknown> = {}) => {
+  const runControl = useCallback(async (
+    action: string,
+    payload: Record<string, unknown> = {},
+  ): Promise<boolean> => {
     setBusy(true);
     try {
       await sendControl(action, payload);
-      await refreshObjects(
-        screen === 'objects' && action !== 'delete_object'
+      setWorkspaceError(null);
+
+      if (OBJECT_MUTATION_ACTIONS.has(action) || SESSION_REFRESH_ACTIONS.has(action)) {
+        const withSessions = screen === 'objects' && SESSION_REFRESH_ACTIONS.has(action)
           ? selectedId
-          : null,
-      );
-      setError(null);
+          : null;
+        await refreshObjects(withSessions);
+      }
+      else {
+        await refreshStatus();
+      }
+      return true;
     }
     catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      throw reason;
+      const message = errorMessage(reason);
+      setWorkspaceError(message);
+      if (message.includes('network error') || message.includes('timeout')) setLinkError(message);
+      return false;
     }
     finally {
       setBusy(false);
     }
-  }, [refreshObjects, screen, selectedId]);
+  }, [refreshObjects, refreshStatus, screen, selectedId]);
 
   const selectedObject = useMemo(
     () => objects?.objects.find((object) => object.id === selectedId)
@@ -133,6 +187,10 @@ export default function DeviceConsoleApp() {
     );
   }
 
+  const apiOnline = status !== null && linkError === null;
+  const apiLabel = status === null && linkError === null ? 'CONNECTING' : apiOnline ? 'ESP LINK' : 'API ERROR';
+  const pageError = workspaceError ?? linkError;
+
   return (
     <main className="device-console-shell">
       <header className="console-topbar">
@@ -145,53 +203,60 @@ export default function DeviceConsoleApp() {
           <button aria-pressed={screen === 'objects'} onClick={() => setScreen('objects')}>Objects</button>
           <button aria-pressed={screen === 'sensors'} onClick={() => setScreen('sensors')}>Sensors</button>
         </nav>
-        <div className={`device-dot ${error === null ? 'online' : 'offline'}`}>{error === null ? 'ESP LINK' : 'API ERROR'}</div>
+        <div className={`device-dot ${apiOnline ? 'online' : 'offline'}`}>{apiLabel}</div>
       </header>
 
       {screen === 'dashboard' && (
         <DeviceDashboard
           status={status}
           objects={objects}
-          error={error}
+          error={pageError}
           onOpenObjects={() => setScreen('objects')}
           onOpenSensors={() => setScreen('sensors')}
           onOpenActiveObject={openActive}
-          onRefresh={() => { void refreshStatus(); void refreshObjects(null); }}
+          onRefresh={() => { void refreshObjects(null); }}
         />
       )}
 
       {screen === 'objects' && (
-        <Suspense fallback={<div className="console-loading">Loading object workspace…</div>}>
-          <ObjectsFeature
-            status={status}
-            store={objects}
-            sessions={sessions}
-            selectedId={selectedId}
-            busy={busy}
-            error={error}
-            onSelect={setSelectedId}
-            onCreate={(name) => runControl('create_object', name ? { name } : {})}
-            onActivate={(id) => runControl('activate_object', { object_id: id })}
-            onRename={(id, name) => runControl('rename_object', { object_id: id, name })}
-            onDelete={async (id) => { await runControl('delete_object', { object_id: id }); setSelectedId(null); }}
-            onBindGps={async (id): Promise<PhoneLocationInput> => {
-              const position = await capturePhoneLocation();
-              await runControl('set_object_location', { object_id: id, ...position });
-              return position;
-            }}
-            onCable={(id, podId, length) => runControl('set_object_cable_length', { object_id: id, pod_id: podId, length_m: length })}
-            onDefaultCable={(podId, length) => runControl('set_default_cable_length', { pod_id: podId, length_m: length })}
-            onAcquisition={(running) => runControl(running ? 'acquisition_start' : 'acquisition_stop')}
-            onRecording={(id, running) => runControl(running ? 'recording_start' : 'recording_stop', running ? { object_id: id } : {})}
-            onOpenScanner={(id) => { setSelectedId(id); setScreen('scanner'); }}
-          />
-        </Suspense>
+        <ObjectsFeature
+          status={status}
+          store={objects}
+          sessions={sessions}
+          selectedId={selectedId}
+          busy={busy}
+          error={pageError}
+          onSelect={setSelectedId}
+          onCreate={async (name) => { await runControl('create_object', name ? { name } : {}); }}
+          onActivate={async (id) => { await runControl('activate_object', { object_id: id }); }}
+          onRename={async (id, name) => { await runControl('rename_object', { object_id: id, name }); }}
+          onDelete={async (id) => {
+            if (await runControl('delete_object', { object_id: id })) setSelectedId(null);
+          }}
+          onBindGps={async (id): Promise<PhoneLocationInput> => {
+            const position = await capturePhoneLocation();
+            const saved = await runControl('set_object_location', { object_id: id, ...position });
+            if (!saved) throw new Error('ESP did not save the phone GPS position. See the API error above.');
+            return position;
+          }}
+          onCable={async (id, podId, length) => {
+            await runControl('set_object_cable_length', { object_id: id, pod_id: podId, length_m: length });
+          }}
+          onDefaultCable={async (podId, length) => {
+            await runControl('set_default_cable_length', { pod_id: podId, length_m: length });
+          }}
+          onAcquisition={async (running) => {
+            await runControl(running ? 'acquisition_start' : 'acquisition_stop');
+          }}
+          onRecording={async (id, running) => {
+            await runControl(running ? 'recording_start' : 'recording_stop', running ? { object_id: id } : {});
+          }}
+          onOpenScanner={(id) => { setSelectedId(id); setScreen('scanner'); }}
+        />
       )}
 
       {screen === 'sensors' && (
-        <Suspense fallback={<div className="console-loading">Loading sensor diagnostics…</div>}>
-          <SensorsFeature status={status} object={selectedObject} />
-        </Suspense>
+        <SensorsFeature status={status} object={selectedObject} error={linkError} />
       )}
     </main>
   );

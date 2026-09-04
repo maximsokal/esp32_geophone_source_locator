@@ -1,10 +1,14 @@
 #include "web_server_internal.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "object_store.h"
+
+#define WEB_STATUS_SLOW_BUILD_US 100000LL
 
 static const char *TAG = "WEB_API_STATUS";
 
@@ -45,6 +49,7 @@ static esp_err_t web_api_status_handler(httpd_req_t *request)
     web_status_query_t query;
     web_api_status_parse_query(request, &query);
 
+    const int64_t started_us = esp_timer_get_time();
     char *json = NULL;
     esp_err_t err = web_status_json_build_extended(
         &json,
@@ -53,9 +58,15 @@ static esp_err_t web_api_status_handler(httpd_req_t *request)
             ? NULL
             : query.sessions_object_id
     );
+    const int64_t build_us = esp_timer_get_time() - started_us;
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to build status JSON: %s", esp_err_to_name(err));
+        ESP_LOGE(
+            TAG,
+            "Failed to build status JSON after %lld ms: %s",
+            build_us / 1000LL,
+            esp_err_to_name(err)
+        );
         return httpd_resp_send_err(
             request,
             HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -63,8 +74,27 @@ static esp_err_t web_api_status_handler(httpd_req_t *request)
         );
     }
 
+    if (build_us >= WEB_STATUS_SLOW_BUILD_US) {
+        ESP_LOGW(
+            TAG,
+            "Slow status build: %lld ms objects=%d sessions=%s",
+            build_us / 1000LL,
+            query.include_objects ? 1 : 0,
+            query.sessions_object_id[0] == '\0' ? "none" : query.sessions_object_id
+        );
+    }
+
+    char timing[48];
+    (void)snprintf(
+        timing,
+        sizeof(timing),
+        "status-build;dur=%.1f",
+        (double)build_us / 1000.0
+    );
+
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "Server-Timing", timing);
     err = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
     web_status_json_free(json);
     return err;

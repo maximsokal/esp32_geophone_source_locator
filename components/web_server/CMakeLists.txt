@@ -316,6 +316,7 @@ idf_component_register(
         "web_api_control.c"
         "web_client_log.c"
         "web_status_json.c"
+        "web_status_policy.c"
         "web_status_json_objects.c"
         "web_status_json_recording.c"
         "web_status_json_pods.c"

@@ -22,10 +22,19 @@ export default function DeviceDashboard({
 }: Props) {
   const active = activeObject(objects);
   const connected = connectedPodCount(status);
+  const systemState = status?.system.state ?? 'CONNECTING…';
+  const acquisition = status?.acquisition;
+  const hardwareProblem = status !== null && status.system.state !== 'READY';
 
   return (
     <section className="console-page dashboard-grid">
       {error !== null && <div className="console-alert" role="alert">ESP API: {error}</div>}
+      {hardwareProblem && (
+        <div className="console-alert" role="status">
+          Hardware {status.system.state}: acquisition {acquisition?.hardware_ready ? 'verified' : 'not verified'}; ready pods {status.system.ready_pods}/{status.system.required_pods}
+          {acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? `; ADC error ${acquisition.last_error_name}` : ''}.
+        </div>
+      )}
 
       <article className="console-card hero-card">
         <div className="eyebrow">ESP32 GEOLOCATOR</div>
@@ -39,16 +48,19 @@ export default function DeviceDashboard({
       </article>
 
       <article className="console-card metric-card">
-        <span>DEVICE</span><strong>{status?.system.state ?? 'CONNECTING…'}</strong>
+        <span>DEVICE</span><strong>{systemState}</strong>
         <small>mode {status?.system.mode ?? '—'}</small>
       </article>
       <article className="console-card metric-card">
         <span>SENSOR PODS</span><strong>{connected}/4</strong>
-        <small>connected / reporting</small>
+        <small>{status ? `${status.system.ready_pods}/4 ready` : 'waiting for status'}</small>
       </article>
       <article className="console-card metric-card">
-        <span>ACQUISITION</span><strong>{status?.acquisition.running ? 'RUNNING' : 'STOPPED'}</strong>
-        <small>{status?.acquisition.sample_rate_hz ? `${status.acquisition.sample_rate_hz} Hz` : 'no active source'}</small>
+        <span>ACQUISITION</span>
+        <strong>{acquisition?.running ? 'RUNNING' : acquisition?.hardware_ready ? 'STOPPED' : 'NOT VERIFIED'}</strong>
+        <small>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK'
+          ? acquisition.last_error_name
+          : acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz · ${acquisition.source}` : 'no verified source'}</small>
       </article>
       <article className="console-card metric-card">
         <span>OBJECTS</span><strong>{objects?.available ? objects.objects.length : '—'}</strong>
