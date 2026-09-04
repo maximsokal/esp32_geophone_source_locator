@@ -14,8 +14,9 @@ export interface ControlResult {
 const statusRequests = new Map<string, Promise<DeviceStatus>>();
 let extendedStatusRequest: Promise<DeviceStatus> | null = null;
 let seismicRequest: Promise<SeismicSnapshot> | null = null;
-let apiRequestTail: Promise<void> = Promise.resolve();
+let apiRequestActive = false;
 let pendingApiRequests = 0;
+const apiRequestQueue: Array<() => void> = [];
 
 function errorText(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -96,13 +97,34 @@ function jsonRequest<T>(
    * timeout accounting starts when a request can actually run.
    */
   pendingApiRequests += 1;
-  const run = apiRequestTail.then(
-    () => performJsonRequest<T>(url, init, timeoutMs),
-    () => performJsonRequest<T>(url, init, timeoutMs),
-  );
-  apiRequestTail = run.then(() => undefined, () => undefined);
-  return run.finally(() => {
-    pendingApiRequests = Math.max(0, pendingApiRequests - 1);
+
+  return new Promise<T>((resolve, reject) => {
+    const start = (): void => {
+      apiRequestActive = true;
+      void performJsonRequest<T>(url, init, timeoutMs).then(
+        (value) => {
+          finish();
+          resolve(value);
+        },
+        (reason) => {
+          finish();
+          reject(reason);
+        },
+      );
+    };
+
+    const finish = (): void => {
+      pendingApiRequests = Math.max(0, pendingApiRequests - 1);
+      const next = apiRequestQueue.shift();
+      if (next === undefined) {
+        apiRequestActive = false;
+        return;
+      }
+      next();
+    };
+
+    if (apiRequestActive) apiRequestQueue.push(start);
+    else start();
   });
 }
 
