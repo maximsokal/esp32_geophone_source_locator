@@ -54,6 +54,8 @@ function enqueue(level: ClientLogLevel, message: string, details?: unknown): voi
 }
 
 function scheduleFlush(delayMs: number): void {
+  /* XR/domain modules also use diagnostics in Node-based unit tests. */
+  if (typeof window === 'undefined') return;
   if (flushTimer !== null) return;
   const backoffRemaining = Math.max(0, nextAllowedFlushMs - performance.now());
   const delay = Math.max(delayMs, backoffRemaining);
