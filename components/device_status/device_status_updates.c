@@ -98,6 +98,65 @@ esp_err_t device_status_set_power_channel(
 }
 
 
+esp_err_t device_status_set_power_battery(
+    float battery_voltage_v,
+    float battery_current_a,
+    float battery_percent_estimate,
+    bool battery_present,
+    bool battery_percent_valid,
+    bool usb_present,
+    bool charging,
+    device_power_source_t source
+)
+{
+    if (
+        source < DEVICE_POWER_SOURCE_UNKNOWN ||
+        source > DEVICE_POWER_SOURCE_USB
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    device_status_snapshot_t *status;
+
+    esp_err_t err =
+        device_status_internal_lock(
+            &status
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    status->power.source =
+        source;
+
+    status->power.battery_present =
+        battery_present;
+
+    status->power.battery_percent_valid =
+        battery_percent_valid;
+
+    status->power.battery_voltage_v =
+        battery_voltage_v;
+
+    status->power.battery_current_a =
+        battery_current_a;
+
+    status->power.battery_percent_estimate =
+        battery_percent_estimate;
+
+    status->power.usb_present =
+        usb_present;
+
+    status->power.charging =
+        charging;
+
+    device_status_internal_unlock();
+
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_environment(
     float temperature_c,
     float humidity_percent,
