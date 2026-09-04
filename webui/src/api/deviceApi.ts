@@ -3,11 +3,13 @@ import type { DeviceStatus, PhoneLocationInput, SeismicSnapshot } from '../domai
 export const DEVICE_API_FAST_TIMEOUT_MS = 5000;
 export const DEVICE_API_EXTENDED_TIMEOUT_MS = 12000;
 export const DEVICE_API_CONTROL_TIMEOUT_MS = 12000;
+export const DEVICE_API_SCAN_TIMEOUT_MS = 30000;
 
 export interface ControlResult {
   ok: boolean;
   action: string;
   object_id?: string;
+  bytes?: number;
   error?: string;
 }
 
@@ -84,24 +86,19 @@ async function performJsonRequest<T>(
   }
 }
 
-function jsonRequest<T>(
-  url: string,
-  init: RequestInit = {},
-  timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
-): Promise<T> {
+function queuedApiRequest<T>(operation: () => Promise<T>): Promise<T> {
   /*
    * ESP-IDF's HTTPS server executes application handlers serially. Opening a
-   * second fetch while the first request is doing a multi-second FATFS write
-   * only starts another TLS/socket timeout on the phone; it cannot make the
-   * ESP finish sooner. Serialize the control-plane requests in the browser so
-   * timeout accounting starts when a request can actually run.
+   * second fetch while the first request is doing an SD write only starts a
+   * second TLS/socket timeout; it cannot make the ESP finish sooner. Keep JSON,
+   * seismic and binary scan transfers behind the same browser-side gate.
    */
   pendingApiRequests += 1;
 
   return new Promise<T>((resolve, reject) => {
     const start = (): void => {
       apiRequestActive = true;
-      void performJsonRequest<T>(url, init, timeoutMs).then(
+      void operation().then(
         (value) => {
           finish();
           resolve(value);
@@ -126,6 +123,91 @@ function jsonRequest<T>(
     if (apiRequestActive) apiRequestQueue.push(start);
     else start();
   });
+}
+
+function jsonRequest<T>(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
+): Promise<T> {
+  return queuedApiRequest(() => performJsonRequest<T>(url, init, timeoutMs));
+}
+
+function scanControlUrl(action: 'save' | 'load' | 'delete', objectId: string): string {
+  const query = new URLSearchParams({ scan: action, object_id: objectId });
+  return `/api/control?${query.toString()}`;
+}
+
+async function performScanSave(objectId: string, artifact: Uint8Array): Promise<ControlResult> {
+  const url = scanControlUrl('save', objectId);
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
+  try {
+    let response: Response;
+    let text: string;
+    try {
+      const body = artifact.slice().buffer;
+      response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/octet-stream',
+        },
+        body,
+      });
+      text = await response.text();
+    }
+    catch (reason) {
+      if (controller.signal.aborted) throw new Error(`ESP scan save timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
+      throw new Error(`ESP scan save network error: ${errorText(reason)}`);
+    }
+
+    let body: unknown = null;
+    if (text.length > 0) {
+      try { body = JSON.parse(text); }
+      catch { body = text; }
+    }
+    if (!response.ok) throw new Error(`ESP scan save ${response.status}: ${responseError(body, response)}`);
+    return body as ControlResult;
+  }
+  finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
+
+async function performScanLoad(objectId: string): Promise<Uint8Array | null> {
+  const url = scanControlUrl('load', objectId);
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
+  try {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        signal: controller.signal,
+        headers: { Accept: 'application/octet-stream' },
+      });
+    }
+    catch (reason) {
+      if (controller.signal.aborted) throw new Error(`ESP scan load timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
+      throw new Error(`ESP scan load network error: ${errorText(reason)}`);
+    }
+
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`ESP scan load ${response.status}: ${responseError(text, response)}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  finally {
+    globalThis.clearTimeout(timeout);
+  }
 }
 
 export function deviceApiHasPendingRequest(): boolean {
@@ -179,6 +261,20 @@ export function sendControl(
     method: 'POST',
     body: JSON.stringify({ action, ...payload }),
   }, DEVICE_API_CONTROL_TIMEOUT_MS);
+}
+
+export function saveObjectScanArtifact(objectId: string, artifact: Uint8Array): Promise<ControlResult> {
+  return queuedApiRequest(() => performScanSave(objectId, artifact));
+}
+
+export function loadObjectScanArtifact(objectId: string): Promise<Uint8Array | null> {
+  return queuedApiRequest(() => performScanLoad(objectId));
+}
+
+export function deleteObjectScanArtifact(objectId: string): Promise<ControlResult> {
+  return jsonRequest<ControlResult>(scanControlUrl('delete', objectId), {
+    method: 'POST',
+  }, DEVICE_API_SCAN_TIMEOUT_MS);
 }
 
 export function fetchSeismic(points = 180): Promise<SeismicSnapshot> {
