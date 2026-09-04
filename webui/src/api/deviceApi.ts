@@ -4,6 +4,13 @@ export const DEVICE_API_FAST_TIMEOUT_MS = 3000;
 export const DEVICE_API_EXTENDED_TIMEOUT_MS = 8000;
 export const DEVICE_API_CONTROL_TIMEOUT_MS = 8000;
 
+export interface ControlResult {
+  ok: boolean;
+  action: string;
+  object_id?: string;
+  error?: string;
+}
+
 const statusRequests = new Map<string, Promise<DeviceStatus>>();
 let extendedStatusRequest: Promise<DeviceStatus> | null = null;
 
@@ -108,8 +115,11 @@ export function fetchDeviceStatus(
   return request;
 }
 
-export async function sendControl(action: string, payload: Record<string, unknown> = {}): Promise<void> {
-  await jsonRequest('/api/control', {
+export function sendControl(
+  action: string,
+  payload: Record<string, unknown> = {},
+): Promise<ControlResult> {
+  return jsonRequest<ControlResult>('/api/control', {
     method: 'POST',
     body: JSON.stringify({ action, ...payload }),
   }, DEVICE_API_CONTROL_TIMEOUT_MS);
