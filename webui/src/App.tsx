@@ -8,7 +8,7 @@ import {
   saveObjectScanArtifact,
 } from './api/deviceApi';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
-import { XrRuntimePanel } from './components/XrRuntimePanel';
+import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
 import { countCoverageQualityBands } from './xr/coverageQuality';
 import {
@@ -16,6 +16,7 @@ import {
   type DeviceComputeProfile,
 } from './xr/deviceComputeProfile';
 import { decodeScanArtifact, encodeScanArtifact } from './xr/scanArtifact';
+import { registerAndMergeScanContinuation } from './xr/scanContinuation';
 import {
   displayForScanMode,
   type ScanDisplayOptions,
@@ -129,6 +130,8 @@ export default function App({ objectId }: AppProps) {
     sequence: 0,
   });
   const storageGeneration = useRef(0);
+  const scanIntent = useRef<ScanStartIntent>('fresh');
+  const continuationBase = useRef<ScanPointCloudSnapshot | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,6 +192,8 @@ export default function App({ objectId }: AppProps) {
   /* Restore the object-owned scan every time the scanner feature is opened. */
   useEffect(() => {
     const generation = ++storageGeneration.current;
+    scanIntent.current = 'fresh';
+    continuationBase.current = null;
     setScanSnapshot(null);
     setScanStorageError(null);
 
@@ -246,16 +251,96 @@ export default function App({ objectId }: AppProps) {
     return () => { cancelled = true; };
   }, [objectId, selectMode]);
 
-  const handleScanReady = useCallback((snapshot: ScanPointCloudSnapshot | null): void => {
-    setScanSnapshot(snapshot);
+  const handleScanIntent = useCallback((intent: ScanStartIntent): boolean => {
+    setScanStorageError(null);
+    if (intent === 'continue') {
+      const durable = scanStoragePhase === 'saved' || scanStoragePhase === 'loaded';
+      if (!durable || scanSnapshot === null || scanSnapshot.pointCount <= 0) {
+        setScanStorageError('No durable saved 3D scan is available to continue. Open or finish a scan first.');
+        return false;
+      }
+      continuationBase.current = scanSnapshot;
+      scanIntent.current = 'continue';
+      clientDiagnostics.info('SCAN_CONTINUATION_REQUEST', {
+        objectId,
+        stablePoints: scanSnapshot.pointCount,
+        freeVoxels: scanSnapshot.knownFreeVoxelCount,
+        unknownVoxels: scanSnapshot.unknownCandidateVoxelCount,
+      });
+      void clientDiagnostics.flush();
+      return true;
+    }
+
+    scanIntent.current = 'fresh';
+    continuationBase.current = null;
+    clientDiagnostics.info('SCAN_REPLACEMENT_REQUEST', {
+      objectId,
+      previousSavedScanKeptUntilCommit: scanStoragePhase === 'saved' || scanStoragePhase === 'loaded',
+    });
+    void clientDiagnostics.flush();
+    return true;
+  }, [objectId, scanSnapshot, scanStoragePhase]);
+
+  const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null): void => {
     setScanStorageError(null);
 
-    if (snapshot === null) {
-      /* Existing durable scan is intentionally retained until a replacement saves successfully. */
+    if (incoming === null) {
+      /*
+       * Starting a continuation must not make the already durable result vanish
+       * from parent state. WebXR uses a fresh local frame; the saved base remains
+       * authoritative until the extension is successfully registered and saved.
+       */
+      if (scanIntent.current === 'continue' && continuationBase.current !== null) {
+        setScanSnapshot(continuationBase.current);
+      }
+      else {
+        setScanSnapshot(null);
+      }
       setScanStoragePhase(objectId === null ? 'unbound' : 'scanning');
       return;
     }
 
+    let snapshot = incoming;
+    if (scanIntent.current === 'continue') {
+      const base = continuationBase.current;
+      if (base === null) {
+        setScanStorageError('Continuation finished without its saved base; nothing was overwritten.');
+        setScanStoragePhase('error');
+        clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', { objectId, reason: 'missing durable base' });
+        void clientDiagnostics.flush();
+        return;
+      }
+
+      const merged = registerAndMergeScanContinuation(base, incoming);
+      if (!merged.ok) {
+        setScanSnapshot(base);
+        setScanStoragePhase('loaded');
+        setScanStorageError(`Continuation NOT saved. ${merged.reason}`);
+        clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', {
+          objectId,
+          reason: merged.reason,
+          diagnostics: merged.diagnostics,
+        });
+        scanIntent.current = 'fresh';
+        continuationBase.current = null;
+        void clientDiagnostics.flush();
+        return;
+      }
+
+      snapshot = merged.snapshot;
+      clientDiagnostics.info('SCAN_CONTINUATION_REGISTERED', {
+        objectId,
+        inliers: merged.diagnostics.inliers,
+        overlapPercent: Math.round(merged.diagnostics.overlapRatio * 100),
+        rmsMm: Math.round(merged.diagnostics.rmsMeters * 1000),
+        yawDegrees: Number((merged.diagnostics.yawRadians * 180 / Math.PI).toFixed(1)),
+        translation: merged.diagnostics.translation.map((value) => Number(value.toFixed(3))),
+        mergedStablePoints: snapshot.pointCount,
+      });
+      void clientDiagnostics.flush();
+    }
+
+    setScanSnapshot(snapshot);
     selectMode('quality');
     clientDiagnostics.info('SCAN_RESULT_READY', {
       stablePoints: snapshot.pointCount,
@@ -298,6 +383,8 @@ export default function App({ objectId }: AppProps) {
         if (generation !== storageGeneration.current) return;
         setScanStoragePhase('saved');
         setScanStorageError(null);
+        scanIntent.current = 'fresh';
+        continuationBase.current = null;
         clientDiagnostics.info('SCAN_RESULT_SAVED', {
           objectId,
           bytes: result.bytes ?? artifact.byteLength,
@@ -319,6 +406,8 @@ export default function App({ objectId }: AppProps) {
   }, [objectId, selectMode]);
 
   const deleteSavedScan = useCallback((): void => {
+    scanIntent.current = 'fresh';
+    continuationBase.current = null;
     if (objectId === null) {
       setScanSnapshot(null);
       setScanStoragePhase('unbound');
@@ -436,6 +525,8 @@ export default function App({ objectId }: AppProps) {
       )}
 
       <XrRuntimePanel
+        savedScanAvailable={storageGood && hasMeasuredScan}
+        onScanIntent={handleScanIntent}
         onSessionActiveChange={setXrSessionActive}
         onPointCloudReady={handleScanReady}
         onCapabilitiesChange={setXrCapabilities}
