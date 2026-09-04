@@ -85,6 +85,15 @@ function restoreBatch(entries: ClientLogEntry[]): void {
 }
 
 async function flush(): Promise<void> {
+  /*
+   * XR/domain modules call diagnostics from Node-based unit tests. In that
+   * environment there is deliberately no browser origin to POST to. Treat an
+   * explicit flush exactly like scheduleFlush(): a no-op until a real browser
+   * runtime exists. This guard must happen before taking a batch so test-only
+   * calls cannot consume or mutate the browser delivery queue.
+   */
+  if (typeof window === 'undefined') return;
+
   if (flushing || queue.length === 0) return;
   if (performance.now() < nextAllowedFlushMs) {
     scheduleFlush(0);
