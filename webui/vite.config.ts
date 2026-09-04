@@ -11,6 +11,15 @@ export default defineConfig({
     manifest: true,
     target: 'es2022',
     assetsDir: 'assets',
+
+    /*
+     * An ESP32 HTTPS endpoint has a deliberately small TLS connection budget.
+     * Browser modulepreload can otherwise create a speculative burst of
+     * parallel TLS requests before app.js has even executed. Keep initial
+     * loading demand-driven; lazy WebXR/seismic/3D features remain split.
+     */
+    modulePreload: false,
+
     rolldownOptions: {
       output: {
         entryFileNames: 'assets/app.js',
@@ -18,15 +27,20 @@ export default defineConfig({
         codeSplitting: {
           groups: [
             {
+              /*
+               * Keep the core third-party runtime in one initial vendor file.
+               * A maxSize here previously split it into several independent
+               * initial-vendor requests, which is counterproductive on the
+               * ESP32's constrained HTTPS server.
+               */
               name: 'initial-vendor',
-              test: /node_modules[\/]/,
+              test: /node_modules[\\/]/,
               tags: ['$initial'],
-              maxSize: 320_000,
               priority: 20,
             },
             {
               name: 'lazy-vendor',
-              test: /node_modules[\/]/,
+              test: /node_modules[\\/]/,
               maxSize: 420_000,
               priority: 10,
             },
