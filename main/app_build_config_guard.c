@@ -50,6 +50,24 @@
 #error "GeoLocator requires CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL <= 2048 so large object/Web buffers prefer PSRAM. Regenerate sdkconfig from project defaults."
 #endif
 
+/*
+ * Chrome opens multiple HTTPS sockets over the lifetime of the dashboard.
+ * Session tickets allow successful clients to resume TLS 1.2 without doing a
+ * full RSA certificate handshake every time. Both mbedTLS support and the
+ * ESP-TLS server wrapper must be enabled for httpd_ssl_config_t::session_tickets.
+ */
+#if !defined(CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS) || !CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS
+#error "GeoLocator HTTPS requires mbedTLS server session-ticket support. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_ESP_TLS_SERVER_SESSION_TICKETS) || !CONFIG_ESP_TLS_SERVER_SESSION_TICKETS
+#error "GeoLocator HTTPS requires ESP-TLS server session tickets. Regenerate sdkconfig from project defaults."
+#endif
+
+#if defined(CONFIG_MBEDTLS_SSL_RENEGOTIATION) && CONFIG_MBEDTLS_SSL_RENEGOTIATION
+#error "GeoLocator disables legacy TLS renegotiation. Regenerate sdkconfig from project defaults."
+#endif
+
 /* Keep a real translation unit so the guard is always compiled. */
 void app_build_config_guard_link_anchor(void)
 {
