@@ -526,7 +526,9 @@ export default function App({ objectId }: AppProps) {
 
       <XrRuntimePanel
         savedScanAvailable={storageGood && hasMeasuredScan}
+        savedScanBusy={storageBusy}
         onScanIntent={handleScanIntent}
+        onDeleteSavedScan={deleteSavedScan}
         onSessionActiveChange={setXrSessionActive}
         onPointCloudReady={handleScanReady}
         onCapabilitiesChange={setXrCapabilities}
