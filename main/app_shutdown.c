@@ -3,6 +3,7 @@
 #include "app_poweroff.h"
 
 #include "display.h"
+#include "ina3221_monitor.h"
 #include "keypad.h"
 #include "object_service.h"
 #include "power_control.h"
@@ -114,6 +115,8 @@ void app_shutdown_wait_and_run(void)
     );
 
     keypad_stop_event_monitor();
+
+    ina3221_monitor_stop();
 
     ui_shutdown();
 
