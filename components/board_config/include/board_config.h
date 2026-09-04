@@ -19,6 +19,11 @@
 // microSD
 #define BOARD_SD_CS_GPIO        GPIO_NUM_17
 
+// Sensor I2C bus. INA3221 currently owns/creates this bus.
+#define BOARD_SENSOR_I2C_SDA_GPIO     GPIO_NUM_9
+#define BOARD_SENSOR_I2C_SCL_GPIO     GPIO_NUM_10
+#define BOARD_INA3221_I2C_ADDRESS     0x40
+
 // Dedicated AD7606 acquisition bus on SPI3.
 // MOSI is intentionally unused: AD7606 serial mode is read-only.
 #define BOARD_AD7606_SPI_HOST       SPI3_HOST
