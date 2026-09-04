@@ -70,6 +70,11 @@ jobs:
           grep -q 'seismic_recorder' components/web_server/CMakeLists.txt
           grep -q 'object_store_json_read_profile_with_defaults_locked' components/object_store/object_store_profile.c
           grep -q 'object_store_list_profiles_with_defaults' components/object_store/object_store_profile.c
+          grep -q 'OBJECT_STORE_INDEX_RECONCILE_INTERVAL_US' components/object_store/object_store_profile.c
+          grep -q 's_settings_cache_valid' components/object_store/object_store_profile.c
+          grep -q 'object_store_profile_index_reconcile_locked' components/object_store/object_store_profile.c
+          ! grep -q 'object_store_fs_object_exists(entry->d_name)' components/object_store/object_store_fs_list.c
+          grep -q 'object_store_internal_begin_state_operation' components/object_store/object_store_state.c
           grep -q 'object_store_list_profiles_with_defaults' components/web_server/web_status_json_objects.c
           ! grep -q 'object_store_get_cable_defaults' components/web_server/web_status_json_objects.c
           grep -q 'WEB_OBJECT_CACHE_TTL_US' components/web_server/web_status_json_objects.c
@@ -86,6 +91,10 @@ jobs:
           grep -q 'generated_webui_chunks/' .gitignore
           grep -q 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' sdkconfig.tls.defaults
           grep -q 'CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y' sdkconfig.tls.defaults
+          grep -q 'CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS=y' sdkconfig.tls.defaults
+          grep -q 'CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y' sdkconfig.tls.defaults
+          grep -q 'config.session_tickets = true' components/web_server/web_server.c
+          grep -q 'WEB_TLS_FATAL_ALERT_CODE 0x7780' components/web_server/web_server.c
           grep -q 'app_build_config_guard.c' main/CMakeLists.txt
       - name: Show split assets
         working-directory: webui
