@@ -44,3 +44,17 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
 # wpa_supplicant in PSRAM, freeing internal static DRAM without moving the
 # HTTPD task stack out of internal memory.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# GeoLocator is a local browser dashboard. Chrome commonly opens fresh TLS
+# sockets while loading/navigating the app. RFC5077 server session tickets let
+# the browser resume a previously authenticated TLS 1.2 session instead of
+# repeating the full RSA certificate handshake on every new socket. ESP-IDF
+# 5.5.4 exposes this through httpd_ssl_config_t::session_tickets.
+CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS=y
+CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
+CONFIG_ESP_TLS_SERVER_SESSION_TICKET_TIMEOUT=3600
+
+# We do not use post-handshake client authentication or key-refresh
+# renegotiation. Disabling legacy TLS 1.2 renegotiation saves code/state and
+# removes an unnecessary handshake path on this constrained local server.
+# CONFIG_MBEDTLS_SSL_RENEGOTIATION is not set
