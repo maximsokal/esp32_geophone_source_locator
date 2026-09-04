@@ -34,6 +34,22 @@ static void storage_read_log_io(
 }
 
 
+static esp_err_t storage_read_errno_to_error(
+    int error_number
+)
+{
+    if (error_number == ENOENT) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (error_number == ENOMEM) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_FAIL;
+}
+
+
 esp_err_t storage_manager_read_text(
     const char *path,
     char *buffer,
@@ -100,6 +116,11 @@ esp_err_t storage_manager_read_text(
             "r"
         );
 
+    const int open_errno =
+        file == NULL
+            ? errno
+            : 0;
+
     storage_read_log_io(
         "fopen",
         path,
@@ -108,19 +129,18 @@ esp_err_t storage_manager_read_text(
     );
 
     if (file == NULL) {
-        int open_errno =
-            errno;
-
         storage_manager_operation_end();
 
-        if (
-            open_errno ==
-            ENOENT
-        ) {
-            return ESP_ERR_NOT_FOUND;
-        }
+        ESP_LOGE(
+            TAG,
+            "Could not open %s: errno=%d",
+            path,
+            open_errno
+        );
 
-        return ESP_ERR_NOT_FOUND;
+        return storage_read_errno_to_error(
+            open_errno
+        );
     }
 
     started_us =
@@ -134,16 +154,22 @@ esp_err_t storage_manager_read_text(
             file
         );
 
+    const bool read_failed =
+        ferror(file) != 0;
+
+    const int read_errno =
+        read_failed
+            ? errno
+            : 0;
+
     storage_read_log_io(
         "fread",
         path,
-        ferror(file) ? -1 : (int)count,
+        read_failed ? -1 : (int)count,
         started_us
     );
 
-    if (
-        ferror(file)
-    ) {
+    if (read_failed) {
         started_us =
             esp_timer_get_time();
 
@@ -161,7 +187,16 @@ esp_err_t storage_manager_read_text(
 
         storage_manager_operation_end();
 
-        return ESP_FAIL;
+        ESP_LOGE(
+            TAG,
+            "Read failed for %s: errno=%d",
+            path,
+            read_errno
+        );
+
+        return storage_read_errno_to_error(
+            read_errno
+        );
     }
 
     buffer[count] =
