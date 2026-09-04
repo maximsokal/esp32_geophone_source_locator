@@ -46,6 +46,12 @@ jobs:
             -o /tmp/ad7606_presence_policy_test
           /tmp/ad7606_presence_policy_test
           cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/ina3221_monitor \
+            components/ina3221_monitor/ina3221_policy.c \
+            components/ina3221_monitor/tests/ina3221_policy_test.c \
+            -o /tmp/ina3221_policy_test
+          /tmp/ina3221_policy_test
+          cc -std=c11 -Wall -Wextra -Werror \
             -Icomponents/web_server \
             components/web_server/web_status_policy.c \
             components/web_server/tests/web_status_policy_test.c \
@@ -82,6 +88,13 @@ jobs:
           grep -q 'Server-Timing' components/web_server/web_api_status.c
           grep -q 'ad7606_driver_presence_monitor_start' components/seismic_acquisition/seismic_source_ad7606.c
           grep -q 'GPIO_PULLDOWN_ONLY' components/ad7606_driver/ad7606_presence.c
+          grep -q 'BOARD_SENSOR_I2C_SDA_GPIO.*GPIO_NUM_9' components/board_config/include/board_config.h
+          grep -q 'BOARD_SENSOR_I2C_SCL_GPIO.*GPIO_NUM_10' components/board_config/include/board_config.h
+          grep -q 'BOARD_INA3221_I2C_ADDRESS.*0x40' components/board_config/include/board_config.h
+          grep -q 'ina3221_monitor_start' main/app_startup.c
+          grep -q 'ina3221_monitor_stop' main/app_shutdown.c
+          grep -q '"ESP32_5V"' components/web_server/web_status_json.c
+          grep -q '"AD7606_5V"' components/web_server/web_status_json.c
           grep -q 'capabilities.local_position' components/device_status/device_status_pods.c
           grep -q '"position"' components/web_server/web_status_json_pods.c
           grep -q "import ObjectsFeature from './features/objects/ObjectsFeature'" webui/src/DeviceConsoleApp.tsx
