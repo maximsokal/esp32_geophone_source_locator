@@ -56,6 +56,10 @@ esp_err_t object_store_create(
             object_id
         );
 
+        /* The committed metadata is known; do not force a full SD rescan. */
+        object_store_profile_cache_note_create_locked(object_id);
+        object_store_profile_cache_note_active_locked(object_id);
+
         if (created_object != NULL) {
             object_store_internal_fill_summary(
                 created_object,
@@ -91,47 +95,21 @@ esp_err_t object_store_list(
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t err =
-        object_store_internal_begin_file_operation();
+    object_store_profile_t profiles[OBJECT_STORE_MAX_OBJECTS];
+    size_t count = 0;
+    const size_t bounded = max_objects < OBJECT_STORE_MAX_OBJECTS
+        ? max_objects
+        : OBJECT_STORE_MAX_OBJECTS;
 
+    esp_err_t err = object_store_list_profiles(profiles, bounded, &count);
     if (err != ESP_OK) {
+        *object_count = 0;
         return err;
     }
 
-    err =
-        object_store_fs_list(
-            objects,
-            max_objects,
-            object_count,
-            object_store_internal_active_id()
-        );
-
-    /*
-     * object_store_fs_list() intentionally avoids reading object.json so the
-     * full-profile path does not parse every metadata file twice. The public
-     * summary-only API still promises friendly names, therefore load only the
-     * names here. A damaged/unreadable metadata file keeps the historical
-     * fallback of displaying its object ID.
-     */
-    if (err == ESP_OK) {
-        for (size_t i = 0; i < *object_count; ++i) {
-            if (
-                object_store_json_read_name_locked(
-                    objects[i].id,
-                    objects[i].name,
-                    sizeof(objects[i].name)
-                ) != ESP_OK
-            ) {
-                object_store_fs_copy_id(
-                    objects[i].name,
-                    sizeof(objects[i].name),
-                    objects[i].id
-                );
-            }
-        }
+    for (size_t i = 0; i < count; ++i) {
+        objects[i] = profiles[i].summary;
     }
-
-    object_store_internal_end_file_operation();
-
-    return err;
+    *object_count = count;
+    return ESP_OK;
 }
