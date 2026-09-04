@@ -34,6 +34,8 @@ idf_component_register(
         storage_service
         storage_manager
         seismic_acquisition
+        spi_bus
+        esp_lcd
         esp_lvgl_port
         esp_system
         esp_timer

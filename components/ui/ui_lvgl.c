@@ -2,7 +2,9 @@
 
 #include "app_task_config.h"
 #include "display.h"
+#include "spi_bus.h"
 
+#include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 
@@ -22,6 +24,63 @@ static const char *TAG =
  *   320 * 8 * 2 bytes = 5120 bytes of DMA-capable SRAM.
  */
 #define UI_LVGL_BUFFER_ROWS  8
+
+
+static esp_err_t ui_lvgl_quiesce_shared_spi(void *context)
+{
+    (void)context;
+
+    /*
+     * Stop the LVGL task from submitting another asynchronous color flush.
+     * A zero timeout in esp_lvgl_port means wait indefinitely.
+     */
+    if (!lvgl_port_lock(0)) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_lcd_panel_io_handle_t io =
+        display_io_handle();
+
+    if (io == NULL) {
+        lvgl_port_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /*
+     * esp_lcd_panel_io_tx_param() first acquires the LCD SPI device and drains
+     * every queued tx_color transaction. With lcd_cmd=-1 and no parameters it
+     * becomes a pure synchronization barrier: no LCD command is emitted.
+     *
+     * This is required before SDSPI starts its polling transaction on SPI2.
+     */
+    esp_err_t err =
+        esp_lcd_panel_io_tx_param(
+            io,
+            -1,
+            NULL,
+            0
+        );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to drain LCD SPI queue before SD access: %s",
+            esp_err_to_name(err)
+        );
+
+        lvgl_port_unlock();
+        return err;
+    }
+
+    return ESP_OK;
+}
+
+
+static void ui_lvgl_resume_shared_spi(void *context)
+{
+    (void)context;
+    lvgl_port_unlock();
+}
 
 
 esp_err_t ui_lvgl_init(void)
@@ -125,6 +184,18 @@ esp_err_t ui_lvgl_init(void)
     context->port_ready =
         true;
 
+    err =
+        app_spi_bus_register_display_guard(
+            ui_lvgl_quiesce_shared_spi,
+            ui_lvgl_resume_shared_spi,
+            NULL
+        );
+
+    if (err != ESP_OK) {
+        ui_lvgl_deinit();
+        return err;
+    }
+
     ESP_LOGI(
         TAG,
         "LVGL 9 display ready: %dx%d landscape, Core %d, RGB565 %d-row single DMA buffer",
@@ -146,6 +217,13 @@ void ui_lvgl_deinit(void)
     if (!context->port_ready) {
         return;
     }
+
+    /*
+     * Wait for an active SD operation to leave the shared-bus guard before
+     * tearing down LVGL. After this point no new storage operation will try
+     * to lock a deinitialized LVGL mutex.
+     */
+    app_spi_bus_unregister_display_guard();
 
     if (context->display != NULL) {
         (void)lvgl_port_remove_disp(

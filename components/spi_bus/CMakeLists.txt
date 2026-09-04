@@ -9,5 +9,6 @@ idf_component_register(
         board_config
         esp_driver_gpio
         esp_driver_spi
+        freertos
         log
 )
