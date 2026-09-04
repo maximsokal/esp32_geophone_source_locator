@@ -10,6 +10,7 @@
 #include "app_event_bus.h"
 #include "device_status.h"
 #include "display.h"
+#include "ina3221_monitor.h"
 #include "keypad.h"
 #include "object_recovery.h"
 #include "object_service.h"
@@ -64,6 +65,24 @@ static void app_startup_initialize_core(void)
     ESP_ERROR_CHECK(
         device_status_init()
     );
+
+    /*
+     * INA3221 is useful telemetry, not a boot-critical dependency. The
+     * monitor task keeps retrying when the board is absent or I2C is broken,
+     * so hardware bring-up cannot trap the controller in a reboot loop.
+     */
+    const esp_err_t power_monitor_err =
+        ina3221_monitor_start();
+
+    if (power_monitor_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "INA3221 monitor unavailable: %s",
+            esp_err_to_name(
+                power_monitor_err
+            )
+        );
+    }
 
     ESP_ERROR_CHECK(
         seismic_buffer_init()
