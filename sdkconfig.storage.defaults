@@ -7,3 +7,10 @@
 CONFIG_FATFS_LFN_HEAP=y
 # CONFIG_FATFS_LFN_STACK is not set
 CONFIG_FATFS_MAX_LFN=255
+
+# Keep the FatFs work area and sector window in internal RAM. The SD card is
+# attached through SDSPI, and placing the FatFs work area in PSRAM makes the
+# SD/MMC layer allocate a temporary MALLOC_CAP_DMA bounce buffer for sector
+# reads. Under concurrent HTTPS/TLS clients that internal DMA allocation can
+# fail with ESP_ERR_NO_MEM even though plenty of PSRAM remains.
+# CONFIG_FATFS_ALLOC_PREFER_EXTRAM is not set
