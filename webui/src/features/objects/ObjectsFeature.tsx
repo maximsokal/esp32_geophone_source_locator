@@ -57,6 +57,10 @@ export default function ObjectsFeature(props: Props) {
     setDefaults(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
   }, [store?.default_cable_lengths_m]);
 
+  useEffect(() => {
+    if (status?.acquisition.running !== true) setShowLive(false);
+  }, [status?.acquisition.running]);
+
   const recording = status?.recording;
   const selectedRecording = selected !== null
     && recording?.running === true
@@ -65,6 +69,7 @@ export default function ObjectsFeature(props: Props) {
   const selectedSessions = selected !== null && sessions?.object_id === selected.id
     ? sessions.sessions
     : [];
+  const liveAvailable = status?.acquisition.running === true;
 
   return (
     <section className="console-page object-layout">
@@ -234,7 +239,12 @@ export default function ObjectsFeature(props: Props) {
               <div className="console-actions">
                 <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>Start acquisition</button>
                 <button disabled={busy || status?.acquisition.running !== true} onClick={() => void props.onAcquisition(false)}>Stop acquisition</button>
-                <button className="secondary" onClick={() => setShowLive((value) => !value)}>{showLive ? 'Hide' : 'Show'} live signal</button>
+                <button
+                  className="secondary"
+                  disabled={!liveAvailable}
+                  title={liveAvailable ? undefined : 'Start acquisition before opening the live waveform.'}
+                  onClick={() => setShowLive((value) => !value)}
+                >{showLive ? 'Hide' : 'Show'} live signal</button>
                 <button
                   disabled={busy || anotherRecording}
                   className={selectedRecording ? 'danger' : undefined}
@@ -272,7 +282,7 @@ export default function ObjectsFeature(props: Props) {
               )}
             </article>
 
-            {showLive && (
+            {showLive && liveAvailable && (
               <Suspense fallback={<div className="console-card">Loading waveform module…</div>}>
                 <LiveSeismicPanel />
               </Suspense>
