@@ -31,6 +31,15 @@ typedef enum
 } pod_state_t;
 
 
+typedef enum
+{
+    DEVICE_POWER_SOURCE_UNKNOWN = 0,
+    DEVICE_POWER_SOURCE_BATTERY,
+    DEVICE_POWER_SOURCE_USB
+
+} device_power_source_t;
+
+
 typedef struct
 {
     bool valid;
@@ -49,6 +58,18 @@ typedef struct
     float voltage_v;
     float current_a;
     float power_w;
+
+    device_power_source_t source;
+
+    bool battery_present;
+    bool battery_percent_valid;
+
+    float battery_voltage_v;
+    float battery_current_a;
+    float battery_percent_estimate;
+
+    bool usb_present;
+    bool charging;
 
     device_power_channel_status_t
         channels[DEVICE_STATUS_POWER_CHANNEL_COUNT];
@@ -225,13 +246,32 @@ esp_err_t device_status_set_power(
  * Update one INA3221 measurement channel.
  *
  * channel_index is zero-based:
- * 0, 1 or 2.
+ * 0 = battery branch
+ * 1 = ESP32 5 V rail
+ * 2 = AD7606 5 V rail
  */
 esp_err_t device_status_set_power_channel(
     size_t channel_index,
     float voltage_v,
     float current_a,
     bool valid
+);
+
+
+/*
+ * Publish battery/source inference derived from INA3221 measurements.
+ * battery_percent_estimate is a voltage-based 1S Li-ion estimate, not
+ * coulomb counting, and must only be used when battery_percent_valid is true.
+ */
+esp_err_t device_status_set_power_battery(
+    float battery_voltage_v,
+    float battery_current_a,
+    float battery_percent_estimate,
+    bool battery_present,
+    bool battery_percent_valid,
+    bool usb_present,
+    bool charging,
+    device_power_source_t source
 );
 
 
@@ -383,6 +423,14 @@ esp_err_t device_status_set_acquisition(
  */
 const char *device_status_mode_name(
     device_mode_t mode
+);
+
+
+/*
+ * Power source name suitable for logs and JSON.
+ */
+const char *device_status_power_source_name(
+    device_power_source_t source
 );
 
 
