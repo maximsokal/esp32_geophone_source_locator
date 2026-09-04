@@ -50,11 +50,12 @@ describe('mesh quality UI status', () => {
     expect(result).toEqual({ label: 'MESH 64% · SCAN WIDER', severity: 'warning', rescanRecommended: false });
   });
 
-  it('recommends rescan when a mature component was quarantined', () => {
-    const result = describeMeshQuality(mesh({ meshNoiseScore: 0.73, quarantinedTriangleCount: 24 }));
+  it('recommends rescan when a mature component was quarantined while exposing retained triangles', () => {
+    const result = describeMeshQuality(mesh({ triangleCount: 96, meshNoiseScore: 0.73, quarantinedTriangleCount: 24 }));
     expect(result.severity).toBe('bad');
     expect(result.rescanRecommended).toBe(true);
-    expect(result.label).toContain('MESH NOISY 73%');
+    expect(result.label).toContain('MESH PARTIAL · 96△');
+    expect(result.label).toContain('73% noise');
     expect(result.label).toContain('Q24');
   });
 
@@ -84,14 +85,21 @@ describe('mesh quality UI status', () => {
     }));
     expect(result.severity).toBe('bad');
     expect(result.rescanRecommended).toBe(true);
+    expect(result.label).toContain('MESH PARTIAL · 100△');
     expect(result.label).toContain('Q16');
   });
 
-  it('treats a bounded diagnostic truncation as incomplete rather than clean', () => {
-    const result = describeMeshQuality(mesh({ selfIntersectionTruncated: true, meshNoiseScore: 0.12 }));
+  it('reports retained triangles when bounded self-intersection diagnostics truncate', () => {
+    const result = describeMeshQuality(mesh({
+      triangleCount: 1415,
+      selfIntersectionTruncated: true,
+      meshNoiseScore: 0.46,
+    }));
     expect(result.severity).toBe('bad');
     expect(result.rescanRecommended).toBe(true);
+    expect(result.label).toContain('MESH PARTIAL · 1,415△');
     expect(result.label).toContain('CHECK LIMITED');
+    expect(result.label).toContain('46% noise');
   });
 
   it('recommends rescan when a ready reconstruction unexpectedly produces no retained triangles', () => {
