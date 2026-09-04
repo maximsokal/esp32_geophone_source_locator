@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchSeismic } from '../../api/deviceApi';
 import type { SeismicSnapshot } from '../../domain/device';
 
+const LIVE_REFRESH_MS = 500;
+const LIVE_ERROR_BACKOFF_MIN_MS = 1500;
+const LIVE_ERROR_BACKOFF_MAX_MS = 10000;
+
 function polylinePoints(samples: number[], width: number, height: number): string {
   if (samples.length < 2) return '';
   let maxAbs = 1;
@@ -19,23 +23,45 @@ export default function LiveSeismicPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    const refresh = async () => {
+    let timer: number | null = null;
+    let consecutiveFailures = 0;
+
+    const schedule = (delay: number): void => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void refresh(), delay);
+    };
+
+    const refresh = async (): Promise<void> => {
+      if (cancelled) return;
+      if (document.visibilityState !== 'visible') {
+        schedule(2000);
+        return;
+      }
+
       try {
         const next = await fetchSeismic(220);
-        if (!cancelled) {
-          setSnapshot(next);
-          setError(null);
-        }
+        if (cancelled) return;
+        consecutiveFailures = 0;
+        setSnapshot(next);
+        setError(null);
+        schedule(LIVE_REFRESH_MS);
       }
       catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (cancelled) return;
+        consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
+        setError(reason instanceof Error ? reason.message : String(reason));
+        const delay = Math.min(
+          LIVE_ERROR_BACKOFF_MAX_MS,
+          LIVE_ERROR_BACKOFF_MIN_MS * (2 ** (consecutiveFailures - 1)),
+        );
+        schedule(delay);
       }
     };
+
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 500);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, []);
 
