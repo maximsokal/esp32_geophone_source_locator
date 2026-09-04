@@ -62,6 +62,17 @@ static bool web_status_json_add_system(
         cJSON_AddNumberToObject(system, "required_pods", DEVICE_STATUS_POD_COUNT) != NULL;
 }
 
+static const char *web_status_power_channel_name(size_t index)
+{
+    static const char *const names[DEVICE_STATUS_POWER_CHANNEL_COUNT] = {
+        "BATTERY",
+        "ESP32_5V",
+        "AD7606_5V",
+    };
+
+    return index < DEVICE_STATUS_POWER_CHANNEL_COUNT ? names[index] : "UNKNOWN";
+}
+
 static bool web_status_json_add_power(cJSON *root, const device_power_status_t *power)
 {
     cJSON *object = cJSON_AddObjectToObject(root, "power");
@@ -93,6 +104,7 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
         if (channel_object == NULL) return false;
         cJSON_AddItemToArray(channels, channel_object);
         cJSON_AddNumberToObject(channel_object, "id", i + 1);
+        cJSON_AddStringToObject(channel_object, "name", web_status_power_channel_name(i));
         cJSON_AddBoolToObject(channel_object, "valid", channel->valid);
         cJSON_AddNumberToObject(channel_object, "voltage_v", channel->voltage_v);
         cJSON_AddNumberToObject(channel_object, "current_a", channel->current_a);
