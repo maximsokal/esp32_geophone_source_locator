@@ -33,6 +33,22 @@ static void storage_text_log_io(
 }
 
 
+static esp_err_t storage_text_errno_to_error(
+    int error_number
+)
+{
+    if (error_number == ENOENT) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (error_number == ENOMEM) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_FAIL;
+}
+
+
 esp_err_t storage_manager_sidecar_path(
     const char *path,
     const char *suffix,
@@ -89,6 +105,11 @@ esp_err_t storage_manager_recover_backup_locked(
             &info
         );
 
+    const int primary_stat_errno =
+        primary_stat_result == 0
+            ? 0
+            : errno;
+
     storage_text_log_io(
         "recover-primary-stat",
         path,
@@ -98,6 +119,25 @@ esp_err_t storage_manager_recover_backup_locked(
 
     if (primary_stat_result == 0) {
         return ESP_OK;
+    }
+
+    /*
+     * Only a genuinely missing primary file is a reason to inspect .bak.
+     * FAT/SDSPI I/O failures used to be treated as ENOENT here, causing two
+     * additional sector reads and eventually a false ESP_ERR_NOT_FOUND in the
+     * web object database.
+     */
+    if (primary_stat_errno != ENOENT) {
+        ESP_LOGE(
+            TAG,
+            "Primary stat failed for %s: errno=%d",
+            path,
+            primary_stat_errno
+        );
+
+        return storage_text_errno_to_error(
+            primary_stat_errno
+        );
     }
 
     char backup_path[
@@ -130,6 +170,11 @@ esp_err_t storage_manager_recover_backup_locked(
             &info
         );
 
+    const int backup_stat_errno =
+        backup_stat_result == 0
+            ? 0
+            : errno;
+
     storage_text_log_io(
         "recover-backup-stat",
         backup_path,
@@ -138,7 +183,20 @@ esp_err_t storage_manager_recover_backup_locked(
     );
 
     if (backup_stat_result != 0) {
-        return ESP_OK;
+        if (backup_stat_errno == ENOENT) {
+            return ESP_OK;
+        }
+
+        ESP_LOGE(
+            TAG,
+            "Backup stat failed for %s: errno=%d",
+            backup_path,
+            backup_stat_errno
+        );
+
+        return storage_text_errno_to_error(
+            backup_stat_errno
+        );
     }
 
     ESP_LOGW(
@@ -156,6 +214,11 @@ esp_err_t storage_manager_recover_backup_locked(
             path
         );
 
+    const int rename_errno =
+        rename_result == 0
+            ? 0
+            : errno;
+
     storage_text_log_io(
         "recover-backup-rename",
         path,
@@ -168,10 +231,12 @@ esp_err_t storage_manager_recover_backup_locked(
             TAG,
             "Failed to recover backup for %s, errno=%d",
             path,
-            errno
+            rename_errno
         );
 
-        return ESP_FAIL;
+        return storage_text_errno_to_error(
+            rename_errno
+        );
     }
 
     return ESP_OK;
