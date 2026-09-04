@@ -35,36 +35,69 @@ export default function DeviceConsoleApp() {
     }
   }, []);
 
-  const refreshObjects = useCallback(async () => {
+  const refreshObjects = useCallback(async (sessionsObjectId: string | null = null) => {
     try {
-      const next = await fetchDeviceStatus(true, selectedId);
+      const next = await fetchDeviceStatus(true, sessionsObjectId);
+      const nextStore = next.object_store ?? null;
       setStatus(next);
-      setObjects(next.object_store ?? null);
+      setObjects(nextStore);
       setSessions(next.recording_sessions ?? null);
-      setSelectedId((current) => current ?? next.object_store?.active_id ?? next.object_store?.objects[0]?.id ?? null);
+      setSelectedId((current) => {
+        if (current !== null && nextStore?.objects.some((object) => object.id === current)) {
+          return current;
+        }
+        return nextStore?.active_id ?? nextStore?.objects[0]?.id ?? null;
+      });
       setError(null);
     }
     catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [selectedId]);
+  }, []);
 
+  /*
+   * The lightweight status endpoint is RAM-backed and safe to poll frequently.
+   * Keep it independent from the object-store refresh so a slow SD request can
+   * never restart this timer or create a second request storm.
+   */
   useEffect(() => {
     void refreshStatus();
-    void refreshObjects();
     const fast = window.setInterval(() => void refreshStatus(), 2000);
-    const slow = window.setInterval(() => void refreshObjects(), 8000);
-    return () => {
-      window.clearInterval(fast);
-      window.clearInterval(slow);
-    };
-  }, [refreshObjects, refreshStatus]);
+    return () => window.clearInterval(fast);
+  }, [refreshStatus]);
+
+  /*
+   * Populate the dashboard/object header once at boot. Extended status walks
+   * object metadata on SD, so it must not run every few seconds while the user
+   * is on Home/Sensors/Scanner.
+   */
+  useEffect(() => {
+    void refreshObjects(null);
+  }, [refreshObjects]);
+
+  /*
+   * While the object workspace is actually visible, keep it eventually
+   * consistent with changes made from the physical UI or another browser.
+   * Mutations still trigger an immediate refresh below; 30 s is only the
+   * background reconciliation interval.
+   */
+  useEffect(() => {
+    if (screen !== 'objects') return undefined;
+
+    void refreshObjects(selectedId);
+    const slow = window.setInterval(() => void refreshObjects(selectedId), 30000);
+    return () => window.clearInterval(slow);
+  }, [refreshObjects, screen, selectedId]);
 
   const runControl = useCallback(async (action: string, payload: Record<string, unknown> = {}) => {
     setBusy(true);
     try {
       await sendControl(action, payload);
-      await refreshObjects();
+      await refreshObjects(
+        screen === 'objects' && action !== 'delete_object'
+          ? selectedId
+          : null,
+      );
       setError(null);
     }
     catch (reason) {
@@ -74,7 +107,7 @@ export default function DeviceConsoleApp() {
     finally {
       setBusy(false);
     }
-  }, [refreshObjects]);
+  }, [refreshObjects, screen, selectedId]);
 
   const selectedObject = useMemo(
     () => objects?.objects.find((object) => object.id === selectedId)
@@ -123,7 +156,7 @@ export default function DeviceConsoleApp() {
           onOpenObjects={() => setScreen('objects')}
           onOpenSensors={() => setScreen('sensors')}
           onOpenActiveObject={openActive}
-          onRefresh={() => { void refreshStatus(); void refreshObjects(); }}
+          onRefresh={() => { void refreshStatus(); void refreshObjects(null); }}
         />
       )}
 
