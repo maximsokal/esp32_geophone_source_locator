@@ -26,8 +26,21 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # CONFIG_MBEDTLS_HARDWARE_AES is not set
 # CONFIG_MBEDTLS_AES_USE_INTERRUPT is not set
 
-# Browser HTTPS needs enough internal RAM for two simultaneous sockets while
-# Wi-Fi, LVGL and acquisition stay active. ESP-IDF can place zero-initialized
-# data from lwIP, net80211, libpp and wpa_supplicant in PSRAM, freeing internal
-# static DRAM without moving the HTTPD task stack out of internal memory.
+# Browser HTTPS needs enough internal RAM for simultaneous sockets while
+# Wi-Fi, LVGL, SDSPI and acquisition stay active. Reserve a larger pool that
+# ordinary malloc() cannot consume but MALLOC_CAP_INTERNAL / MALLOC_CAP_DMA
+# users can. SDSPI needs this pool for its 512-byte DMA bounce buffer when a
+# FatFs destination is not directly DMA-capable.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+
+# The generated base sdkconfig historically preferred internal RAM for normal
+# malloc() calls up to 16 KiB. That puts object-store 4 KiB JSON scratch buffers
+# in the same scarce internal heap needed by Wi-Fi/HTTPD/DMA. Prefer PSRAM for
+# ordinary allocations larger than 2 KiB instead; explicit DMA/internal-cap
+# allocations are unaffected by this threshold.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+
+# ESP-IDF can place zero-initialized data from lwIP, net80211, libpp and
+# wpa_supplicant in PSRAM, freeing internal static DRAM without moving the
+# HTTPD task stack out of internal memory.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
