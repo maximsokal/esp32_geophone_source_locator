@@ -31,6 +31,25 @@
 #error "GeoLocator requires CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y for HTTPS internal-RAM headroom. Regenerate sdkconfig from project defaults."
 #endif
 
+/*
+ * SDSPI may need a temporary 512-byte MALLOC_CAP_DMA sector buffer. Browser
+ * TLS sessions, Wi-Fi and display DMA all compete for internal-capable RAM, so
+ * preserve a dedicated pool instead of letting ordinary malloc() consume it.
+ */
+#if !defined(CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL) || (CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL < 65536)
+#error "GeoLocator requires CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL >= 65536 for SDSPI DMA headroom under HTTPS load. Regenerate sdkconfig from project defaults."
+#endif
+
+/*
+ * A high malloc-always-internal threshold previously kept the object store's
+ * 4 KiB JSON scratch buffers in internal RAM exactly while SDSPI needed DMA
+ * memory. Keep only small ordinary allocations internal and prefer PSRAM for
+ * larger scratch buffers.
+ */
+#if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) || (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL > 2048)
+#error "GeoLocator requires CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL <= 2048 so large object/Web buffers prefer PSRAM. Regenerate sdkconfig from project defaults."
+#endif
+
 /* Keep a real translation unit so the guard is always compiled. */
 void app_build_config_guard_link_anchor(void)
 {
