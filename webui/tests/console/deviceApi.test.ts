@@ -97,6 +97,24 @@ describe('device API request pressure and failures', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('returns the created object id from a successful control response', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      ok: true,
+      action: 'create_object',
+      object_id: 'OBJ_0007',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await sendControl('create_object', { name: '2' });
+
+    expect(result).toEqual({
+      ok: true,
+      action: 'create_object',
+      object_id: 'OBJ_0007',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('never retries a failed control mutation', async () => {
     const fetchMock = vi.fn(async () => { throw new TypeError('socket reset'); });
     vi.stubGlobal('fetch', fetchMock);
