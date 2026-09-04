@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  deactivateCertifiedGuideRegistry,
+  setCertifiedGuideCorners,
+  setCertifiedGuideEdges,
+} from '../../src/xr/certifiedCornerRegistry';
+import {
   authorizeCertifiedManualPlacement,
   ManualControlPointStore,
   ManualPlacementRejectedError,
 } from '../../src/xr/manualControlPoints';
 import { registerManualPlacementResolver } from '../../src/xr/manualPlacementSurface';
 
-afterEach(() => registerManualPlacementResolver(null));
+afterEach(() => {
+  deactivateCertifiedGuideRegistry();
+  registerManualPlacementResolver(null);
+});
 
 function rejectEverything() {
   registerManualPlacementResolver(() => ({
@@ -48,5 +56,38 @@ describe('one-shot certified structural placement', () => {
     store.addOrSnap([0.4, 0.2, 0.8]);
     expect(() => store.addOrSnap([0.4, 0.2, 0.8])).toThrow(ManualPlacementRejectedError);
     expect(store.size).toBe(1);
+  });
+
+  it('uses the robust physical-surface resolver when the certified worker registry is active but empty', () => {
+    setCertifiedGuideCorners([]);
+    setCertifiedGuideEdges([]);
+    registerManualPlacementResolver((candidate) => ({
+      accepted: true,
+      position: [candidate[0], candidate[1], candidate[2]],
+      mode: 'edge',
+      confidence: 0.81,
+      supportCount: 18,
+      sourceDistanceMeters: 0.01,
+      message: 'EDGE LOCK · robust physical two-plane support',
+    }));
+
+    const store = new ManualControlPointStore();
+    const result = store.addOrSnap([0.3, 0.4, 0.5]);
+
+    expect(result.created).toBe(true);
+    expect(result.snapped).toBe(true);
+    expect(result.placementMode).toBe('edge');
+    expect(result.placementConfidence).toBeCloseTo(0.81, 6);
+    expect(result.position).toEqual([0.3, 0.4, 0.5]);
+  });
+
+  it('does not turn an empty certified registry into permission to store arbitrary air points', () => {
+    setCertifiedGuideCorners([]);
+    setCertifiedGuideEdges([]);
+    rejectEverything();
+
+    const store = new ManualControlPointStore();
+    expect(() => store.addOrSnap([8, 8, 8])).toThrow(ManualPlacementRejectedError);
+    expect(store.size).toBe(0);
   });
 });
