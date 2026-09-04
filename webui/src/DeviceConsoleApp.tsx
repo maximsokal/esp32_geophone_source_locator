@@ -189,8 +189,9 @@ export default function DeviceConsoleApp() {
 
       if (
         action === 'create_object'
-        && reconciledStore?.active_id !== null
-        && reconciledStore?.active_id !== activeBefore
+        && reconciledStore !== null
+        && reconciledStore.active_id !== null
+        && reconciledStore.active_id !== activeBefore
       ) {
         /* The POST response was lost, but the subsequent GET proves create committed. */
         setWorkspaceError(null);
