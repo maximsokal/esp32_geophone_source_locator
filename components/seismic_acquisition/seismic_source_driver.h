@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -18,6 +19,7 @@ typedef struct
 
     esp_err_t (*start)(void);
     void (*stop)(void);
+    bool (*is_healthy)(void);
     esp_err_t (*populate_snapshot)(
         seismic_acquisition_snapshot_t *snapshot
     );

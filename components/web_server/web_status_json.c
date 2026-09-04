@@ -3,17 +3,63 @@
 #include <stddef.h>
 
 #include "esp_timer.h"
+#include "seismic_acquisition.h"
+#include "web_status_policy.h"
 
-static bool web_status_json_add_system(cJSON *root, const device_status_snapshot_t *status)
+static size_t web_status_ready_pods(
+    const device_status_snapshot_t *status,
+    bool *has_error
+)
+{
+    size_t ready = 0;
+    bool error = false;
+
+    for (size_t i = 0; i < DEVICE_STATUS_POD_COUNT; ++i) {
+        if (status->pods[i].state == POD_STATE_READY) {
+            ready++;
+        }
+        else if (status->pods[i].state == POD_STATE_ERROR) {
+            error = true;
+        }
+    }
+
+    if (has_error != NULL) {
+        *has_error = error;
+    }
+    return ready;
+}
+
+static bool web_status_json_add_system(
+    cJSON *root,
+    const device_status_snapshot_t *status,
+    bool acquisition_running,
+    bool acquisition_healthy,
+    esp_err_t acquisition_error
+)
 {
     cJSON *system = cJSON_AddObjectToObject(root, "system");
     if (system == NULL) return false;
 
-    cJSON_AddStringToObject(system, "state", "READY");
-    cJSON_AddStringToObject(system, "mode", device_status_mode_name(status->mode));
+    bool pod_error = false;
+    const size_t ready_pods = web_status_ready_pods(status, &pod_error);
+    const web_system_state_t state = web_status_policy_evaluate(
+        acquisition_running,
+        status->acquisition.running,
+        acquisition_healthy,
+        acquisition_error != ESP_OK,
+        ready_pods,
+        pod_error,
+        DEVICE_STATUS_POD_COUNT
+    );
+
     const uint64_t uptime_ms = (uint64_t)(esp_timer_get_time() / 1000);
-    cJSON_AddNumberToObject(system, "uptime_ms", (double)uptime_ms);
-    return true;
+    return
+        cJSON_AddStringToObject(system, "state", web_status_policy_name(state)) != NULL &&
+        cJSON_AddStringToObject(system, "mode", device_status_mode_name(status->mode)) != NULL &&
+        cJSON_AddNumberToObject(system, "uptime_ms", (double)uptime_ms) != NULL &&
+        cJSON_AddBoolToObject(system, "acquisition_ready", acquisition_healthy) != NULL &&
+        cJSON_AddNumberToObject(system, "ready_pods", (double)ready_pods) != NULL &&
+        cJSON_AddNumberToObject(system, "required_pods", DEVICE_STATUS_POD_COUNT) != NULL;
 }
 
 static bool web_status_json_add_power(cJSON *root, const device_power_status_t *power)
@@ -63,15 +109,27 @@ static bool web_status_json_add_mux(cJSON *root, const device_mux_status_t *mux)
     return true;
 }
 
-static bool web_status_json_add_acquisition(cJSON *root, const device_acquisition_status_t *acquisition)
+static bool web_status_json_add_acquisition(
+    cJSON *root,
+    const device_acquisition_status_t *acquisition,
+    bool running,
+    bool hardware_ready,
+    esp_err_t last_error
+)
 {
     cJSON *object = cJSON_AddObjectToObject(root, "acquisition");
     if (object == NULL) return false;
-    cJSON_AddBoolToObject(object, "running", acquisition->running);
-    cJSON_AddNumberToObject(object, "sample_rate_hz", acquisition->sample_rate_hz);
-    cJSON_AddNumberToObject(object, "samples_recorded", (double)acquisition->samples_recorded);
-    cJSON_AddNumberToObject(object, "recording_ms", (double)acquisition->recording_ms);
-    return true;
+
+    return
+        cJSON_AddBoolToObject(object, "running", running) != NULL &&
+        cJSON_AddBoolToObject(object, "requested_running", acquisition->running) != NULL &&
+        cJSON_AddBoolToObject(object, "hardware_ready", hardware_ready) != NULL &&
+        cJSON_AddStringToObject(object, "source", seismic_acquisition_source_name()) != NULL &&
+        cJSON_AddNumberToObject(object, "last_error", last_error) != NULL &&
+        cJSON_AddStringToObject(object, "last_error_name", esp_err_to_name(last_error)) != NULL &&
+        cJSON_AddNumberToObject(object, "sample_rate_hz", running ? acquisition->sample_rate_hz : 0) != NULL &&
+        cJSON_AddNumberToObject(object, "samples_recorded", (double)acquisition->samples_recorded) != NULL &&
+        cJSON_AddNumberToObject(object, "recording_ms", (double)acquisition->recording_ms) != NULL;
 }
 
 esp_err_t web_status_json_build_extended(
@@ -87,16 +145,32 @@ esp_err_t web_status_json_build_extended(
     esp_err_t err = device_status_get_snapshot(&status);
     if (err != ESP_OK) return err;
 
+    const bool acquisition_running = seismic_acquisition_is_running();
+    const bool acquisition_healthy = seismic_acquisition_source_healthy();
+    const esp_err_t acquisition_error = seismic_acquisition_last_error();
+
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
 
     bool ok =
-        web_status_json_add_system(root, &status) &&
+        web_status_json_add_system(
+            root,
+            &status,
+            acquisition_running,
+            acquisition_healthy,
+            acquisition_error
+        ) &&
         web_status_json_add_power(root, &status.power) &&
         web_status_json_add_environment(root, &status.environment) &&
         web_status_json_add_mux(root, &status.mux) &&
         web_status_json_add_pods(root, &status) &&
-        web_status_json_add_acquisition(root, &status.acquisition) &&
+        web_status_json_add_acquisition(
+            root,
+            &status.acquisition,
+            acquisition_running,
+            acquisition_healthy,
+            acquisition_error
+        ) &&
         web_status_json_add_recording(root);
 
     if (ok && include_objects) {

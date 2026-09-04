@@ -1,5 +1,6 @@
 #include "seismic_source_driver.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "sdkconfig.h"
@@ -7,6 +8,36 @@
 #include "ad7606_acquisition.h"
 #include "ad7606_driver.h"
 #include "app_task_config.h"
+
+
+static esp_err_t seismic_source_ad7606_start(void)
+{
+    esp_err_t err = ad7606_acquisition_start();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = ad7606_driver_presence_monitor_start();
+    if (err != ESP_OK) {
+        ad7606_acquisition_stop();
+        return err;
+    }
+
+    return ESP_OK;
+}
+
+
+static void seismic_source_ad7606_stop(void)
+{
+    ad7606_driver_presence_monitor_stop();
+    ad7606_acquisition_stop();
+}
+
+
+static bool seismic_source_ad7606_is_healthy(void)
+{
+    return ad7606_driver_presence_is_healthy();
+}
 
 
 static esp_err_t seismic_source_ad7606_snapshot(
@@ -54,7 +85,8 @@ const seismic_source_driver_t g_seismic_source_ad7606 = {
     .sample_rate_hz = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
     .channel_count = AD7606_CHANNEL_COUNT,
     .core_id = APP_TASK_CORE_REALTIME,
-    .start = ad7606_acquisition_start,
-    .stop = ad7606_acquisition_stop,
+    .start = seismic_source_ad7606_start,
+    .stop = seismic_source_ad7606_stop,
+    .is_healthy = seismic_source_ad7606_is_healthy,
     .populate_snapshot = seismic_source_ad7606_snapshot,
 };

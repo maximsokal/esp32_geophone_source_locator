@@ -3,20 +3,41 @@ import type { DeviceStatus, ObjectProfile } from '../../domain/device';
 interface Props {
   status: DeviceStatus | null;
   object: ObjectProfile | null;
+  error: string | null;
 }
 
 function measured(valid: boolean, text: string): string {
   return valid ? text : 'unavailable';
 }
 
-export default function SensorsFeature({ status, object }: Props) {
+export default function SensorsFeature({ status, object, error }: Props) {
   const pods = status?.pods ?? [];
+  const acquisition = status?.acquisition;
+
   return (
     <section className="console-page">
+      {error !== null && <div className="console-alert" role="alert">ESP API: {error}</div>}
+
       <div className="section-heading">
-        <div><span className="eyebrow">SENSOR PODS</span><h1>Four remote assemblies</h1></div>
-        <p>Only measurements explicitly marked valid by firmware are shown. Future nRF54L15 coordinates remain unavailable until a real positioning transport publishes them.</p>
+        <div><span className="eyebrow">HARDWARE DIAGNOSTICS</span><h1>Acquisition + four remote assemblies</h1></div>
+        <p>READY is only reported from explicit hardware evidence. Missing ADC/pods remain unavailable instead of being inferred from configured drivers.</p>
       </div>
+
+      <article className="console-card wide-card">
+        <div className="card-heading">
+          <div><span className="eyebrow">BASE ADC</span><h2>{acquisition?.source ?? 'Acquisition source'}</h2></div>
+          <span className={`state-pill ${acquisition?.hardware_ready ? 'ready' : 'offline'}`}>
+            {acquisition?.hardware_ready ? 'DETECTED' : 'NOT DETECTED'}
+          </span>
+        </div>
+        <dl className="console-dl">
+          <div><dt>Hardware proof</dt><dd>{acquisition?.hardware_ready ? 'BUSY pulse train verified' : 'no verified conversion pulse train'}</dd></div>
+          <div><dt>Acquisition</dt><dd>{acquisition?.running ? 'running' : acquisition?.requested_running ? 'requested but unhealthy' : 'stopped'}</dd></div>
+          <div><dt>Last error</dt><dd>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? acquisition.last_error_name : 'none'}</dd></div>
+          <div><dt>Sample rate</dt><dd>{acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz` : '—'}</dd></div>
+        </dl>
+      </article>
+
       <div className="pod-grid">
         {[0, 1, 2, 3].map((index) => {
           const pod = pods[index];

@@ -7,9 +7,11 @@ interface ClientLogEntry {
 }
 
 const ENDPOINT = '/api/client-log';
-const FLUSH_INTERVAL_MS = 2000;
-const RETRY_INTERVAL_MS = 1500;
-const HEARTBEAT_INTERVAL_MS = 15000;
+const FLUSH_INTERVAL_MS = 5000;
+const ERROR_FLUSH_DELAY_MS = 250;
+const HEARTBEAT_INTERVAL_MS = 30000;
+const REQUEST_TIMEOUT_MS = 2500;
+const MAX_RETRY_BACKOFF_MS = 60000;
 const MAX_BATCH_ENTRIES = 24;
 const MAX_ENTRY_CHARS = 420;
 const MAX_BATCH_CHARS = 3600;
@@ -22,6 +24,8 @@ let heartbeatTimer: number | null = null;
 let flushing = false;
 let deliveredBatches = 0;
 let failedBatches = 0;
+let consecutiveFailures = 0;
+let nextAllowedFlushMs = 0;
 
 function safeString(value: unknown): string {
   if (value instanceof Error) return `${value.name}: ${value.message}`;
@@ -37,19 +41,26 @@ function buildId(): string {
   return document.querySelector<HTMLMetaElement>('meta[name="geolocator-webui-build"]')?.content ?? 'unknown';
 }
 
+function retryBackoffMs(): number {
+  if (consecutiveFailures <= 0) return 0;
+  return Math.min(MAX_RETRY_BACKOFF_MS, 5000 * (2 ** Math.min(consecutiveFailures - 1, 4)));
+}
+
 function enqueue(level: ClientLogLevel, message: string, details?: unknown): void {
   const suffix = details === undefined ? '' : ` | ${safeString(details)}`;
   queue.push({ level, timeMs: Math.round(performance.now()), message: sanitize(`${message}${suffix}`) });
   if (queue.length > MAX_QUEUED_ENTRIES) queue = queue.slice(-MAX_QUEUED_ENTRIES);
-  scheduleFlush(level === 'ERROR' ? 60 : FLUSH_INTERVAL_MS);
+  scheduleFlush(level === 'ERROR' ? ERROR_FLUSH_DELAY_MS : FLUSH_INTERVAL_MS);
 }
 
 function scheduleFlush(delayMs: number): void {
   if (flushTimer !== null) return;
-  flushTimer = globalThis.setTimeout(() => {
+  const backoffRemaining = Math.max(0, nextAllowedFlushMs - performance.now());
+  const delay = Math.max(delayMs, backoffRemaining);
+  flushTimer = window.setTimeout(() => {
     flushTimer = null;
     void flush();
-  }, delayMs);
+  }, delay);
 }
 
 function takeBatch(): { entries: ClientLogEntry[]; body: string } {
@@ -73,9 +84,16 @@ function restoreBatch(entries: ClientLogEntry[]): void {
 
 async function flush(): Promise<void> {
   if (flushing || queue.length === 0) return;
+  if (performance.now() < nextAllowedFlushMs) {
+    scheduleFlush(0);
+    return;
+  }
+
   const batch = takeBatch();
   if (batch.entries.length === 0 || batch.body.length === 0) return;
 
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   flushing = true;
   try {
     const response = await fetch(ENDPOINT, {
@@ -84,16 +102,24 @@ async function flush(): Promise<void> {
       cache: 'no-store',
       credentials: 'same-origin',
       keepalive: true,
+      signal: controller.signal,
       body: batch.body,
     });
     if (!response.ok) throw new Error(`client log HTTP ${response.status}`);
     deliveredBatches += 1;
-  } catch {
+    consecutiveFailures = 0;
+    nextAllowedFlushMs = 0;
+  }
+  catch {
     failedBatches += 1;
+    consecutiveFailures += 1;
+    nextAllowedFlushMs = performance.now() + retryBackoffMs();
     restoreBatch(batch.entries);
-  } finally {
+  }
+  finally {
+    window.clearTimeout(timeout);
     flushing = false;
-    if (queue.length > 0) scheduleFlush(failedBatches > 0 ? RETRY_INTERVAL_MS : FLUSH_INTERVAL_MS);
+    if (queue.length > 0) scheduleFlush(consecutiveFailures > 0 ? retryBackoffMs() : FLUSH_INTERVAL_MS);
   }
 }
 
@@ -113,7 +139,8 @@ async function clearOriginCachesBestEffort(): Promise<void> {
       cacheCount = keys.length;
       await Promise.all(keys.map((key) => caches.delete(key)));
     }
-  } catch (error) {
+  }
+  catch (error) {
     enqueue('WARN', 'CACHE_STORAGE_CLEAR_FAILED', error);
   }
 
@@ -124,11 +151,11 @@ async function clearOriginCachesBestEffort(): Promise<void> {
       workerCount = registrations.length;
       await Promise.all(registrations.map((registration) => registration.unregister()));
     }
-  } catch (error) {
+  }
+  catch (error) {
     enqueue('WARN', 'SERVICE_WORKER_CLEAR_FAILED', error);
   }
   enqueue('INFO', 'CACHE_CLEANUP', { cacheCount, workerCount });
-  await flush();
 }
 
 export const clientDiagnostics = {
@@ -166,6 +193,7 @@ export function installClientDiagnostics(): void {
   });
   window.addEventListener('online', () => {
     enqueue('INFO', 'BROWSER_ONLINE');
+    nextAllowedFlushMs = 0;
     void flush();
   });
   window.addEventListener('pagehide', flushWithBeacon);
@@ -177,19 +205,22 @@ export function installClientDiagnostics(): void {
     secure: window.isSecureContext,
   });
 
-  // Push the first batch immediately. This makes a successful browser->ESP log
-  // path visible in UART before the operator even starts WebXR.
-  void flush();
+  /*
+   * Diagnostics are secondary to the control plane. Do not open a competing
+   * HTTPS POST during the page's initial status/assets burst. Failed delivery
+   * backs off exponentially instead of retrying every 1.5 s forever.
+   */
   void clearOriginCachesBestEffort();
 
   heartbeatTimer = window.setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
     enqueue('INFO', 'WEBUI_HEARTBEAT', {
       visibility: document.visibilityState,
       deliveredBatches,
       failedBatches,
       queued: queue.length,
+      consecutiveFailures,
     });
-    void flush();
   }, HEARTBEAT_INTERVAL_MS);
 
   window.addEventListener('beforeunload', () => {

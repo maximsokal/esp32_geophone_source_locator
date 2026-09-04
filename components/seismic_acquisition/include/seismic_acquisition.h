@@ -45,7 +45,14 @@ esp_err_t seismic_acquisition_start(void);
 
 void seismic_acquisition_stop(void);
 
+/* True only while the selected backend is started and still healthy. */
 bool seismic_acquisition_is_running(void);
+
+/* Physical/backend health independent from the cached device_status flag. */
+bool seismic_acquisition_source_healthy(void);
+
+/* Last start/probe failure; ESP_OK after a successful start. */
+esp_err_t seismic_acquisition_last_error(void);
 
 const char *seismic_acquisition_source_name(void);
 

@@ -30,9 +30,27 @@ jobs:
       - name: Typecheck
         working-directory: webui
         run: npm run typecheck
+      - name: Console API tests
+        working-directory: webui
+        run: npm run test:console
       - name: XR tests
         working-directory: webui
         run: npm run test:xr
+      - name: Host hardware/status policy tests
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/ad7606_driver \
+            components/ad7606_driver/ad7606_presence_policy.c \
+            components/ad7606_driver/tests/ad7606_presence_policy_test.c \
+            -o /tmp/ad7606_presence_policy_test
+          /tmp/ad7606_presence_policy_test
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/web_server \
+            components/web_server/web_status_policy.c \
+            components/web_server/tests/web_status_policy_test.c \
+            -o /tmp/web_status_policy_test
+          /tmp/web_status_policy_test
       - name: Production build and ESP asset preparation
         working-directory: webui
         run: npm run build
@@ -47,14 +65,24 @@ jobs:
           grep -A4 'max_uri_handlers' components/web_server/web_server.c | head -n 5 | grep -q '10;'
           grep -q 'assets/\*.css.gz' components/web_server/CMakeLists.txt
           grep -q 'web_api_control.c' components/web_server/CMakeLists.txt
+          grep -q 'web_status_policy.c' components/web_server/CMakeLists.txt
           grep -q 'object_store' components/web_server/CMakeLists.txt
           grep -q 'seismic_recorder' components/web_server/CMakeLists.txt
           grep -q 'object_store_json_read_profile_with_defaults_locked' components/object_store/object_store_profile.c
           grep -q 'object_store_list_profiles_with_defaults' components/object_store/object_store_profile.c
           grep -q 'object_store_list_profiles_with_defaults' components/web_server/web_status_json_objects.c
           ! grep -q 'object_store_get_cable_defaults' components/web_server/web_status_json_objects.c
+          grep -q 'WEB_OBJECT_CACHE_TTL_US' components/web_server/web_status_json_objects.c
+          grep -q 'web_status_json_objects_invalidate' components/web_server/web_api_control.c
+          grep -q 'Server-Timing' components/web_server/web_api_status.c
+          grep -q 'ad7606_driver_presence_monitor_start' components/seismic_acquisition/seismic_source_ad7606.c
+          grep -q 'GPIO_PULLDOWN_ONLY' components/ad7606_driver/ad7606_presence.c
           grep -q 'capabilities.local_position' components/device_status/device_status_pods.c
           grep -q '"position"' components/web_server/web_status_json_pods.c
+          grep -q "import ObjectsFeature from './features/objects/ObjectsFeature'" webui/src/DeviceConsoleApp.tsx
+          grep -q "import SensorsFeature from './features/sensors/SensorsFeature'" webui/src/DeviceConsoleApp.tsx
+          ! grep -q "lazy(() => import('./features/objects/ObjectsFeature'))" webui/src/DeviceConsoleApp.tsx
+          ! grep -q "lazy(() => import('./features/sensors/SensorsFeature'))" webui/src/DeviceConsoleApp.tsx
           grep -q 'generated_webui_chunks/' .gitignore
           grep -q 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' sdkconfig.tls.defaults
           grep -q 'CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y' sdkconfig.tls.defaults

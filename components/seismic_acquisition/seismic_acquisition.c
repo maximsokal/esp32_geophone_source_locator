@@ -12,11 +12,24 @@
 static const char *TAG = "SEISMIC_ACQ";
 
 static bool s_running = false;
+static esp_err_t s_last_error = ESP_OK;
 
 
 static const seismic_source_driver_t *seismic_driver(void)
 {
     return seismic_source_registry_selected();
+}
+
+
+static bool seismic_driver_healthy(void)
+{
+    const seismic_source_driver_t *driver = seismic_driver();
+
+    if (!s_running) {
+        return false;
+    }
+
+    return driver->is_healthy == NULL || driver->is_healthy();
 }
 
 
@@ -55,7 +68,15 @@ static void seismic_acquisition_reset_failed_start(void)
 esp_err_t seismic_acquisition_start(void)
 {
     if (s_running) {
-        return ESP_OK;
+        if (seismic_driver_healthy()) {
+            return ESP_OK;
+        }
+
+        ESP_LOGW(
+            TAG,
+            "Selected source was running but is no longer healthy; restarting"
+        );
+        seismic_acquisition_reset_failed_start();
     }
 
     const seismic_source_driver_t *driver = seismic_driver();
@@ -64,12 +85,20 @@ esp_err_t seismic_acquisition_start(void)
 
     esp_err_t err = driver->start();
     if (err != ESP_OK) {
+        s_last_error = err;
         seismic_acquisition_reset_failed_start();
+        ESP_LOGE(
+            TAG,
+            "Source %s unavailable: %s",
+            driver->name,
+            esp_err_to_name(err)
+        );
         return err;
     }
 
     err = seismic_acquisition_publish_status(true);
     if (err != ESP_OK) {
+        s_last_error = err;
         ESP_LOGE(
             TAG,
             "Unable to publish running acquisition status: %s",
@@ -81,6 +110,7 @@ esp_err_t seismic_acquisition_start(void)
     }
 
     s_running = true;
+    s_last_error = ESP_OK;
     return ESP_OK;
 }
 
@@ -113,7 +143,19 @@ void seismic_acquisition_stop(void)
 
 bool seismic_acquisition_is_running(void)
 {
-    return s_running;
+    return s_running && seismic_driver_healthy();
+}
+
+
+bool seismic_acquisition_source_healthy(void)
+{
+    return seismic_driver_healthy();
+}
+
+
+esp_err_t seismic_acquisition_last_error(void)
+{
+    return s_last_error;
 }
 
 
@@ -149,8 +191,8 @@ esp_err_t seismic_acquisition_get_snapshot(
         }
     }
 
-    /* A backend cannot report RUN if the orchestrator is stopped. */
-    snapshot->running = snapshot->running && s_running;
+    /* A backend cannot report RUN if the orchestrator or source health is down. */
+    snapshot->running = snapshot->running && s_running && seismic_driver_healthy();
 
     return ESP_OK;
 }
