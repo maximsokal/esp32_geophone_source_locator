@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  deactivateCertifiedGuideRegistry,
+  setCertifiedGuideCorners,
+  setCertifiedGuideEdges,
+} from '../../src/xr/certifiedCornerRegistry';
 import {
   manualPreviewLabel,
   previewManualPlacementFromStableSurface,
@@ -60,6 +65,8 @@ const projector = (point: readonly [number, number, number]) => ({
   visible: true,
 });
 
+afterEach(() => deactivateCertifiedGuideRegistry());
+
 describe('manual placement live preview', () => {
   it('shows EDGE LOCK only where projected stable multi-view geometry exists', () => {
     const source = cloud();
@@ -83,6 +90,20 @@ describe('manual placement live preview', () => {
     expect(preview.resolution.mode).toBe('corner');
     expect(preview.resolution.confidence).toBeLessThan(1);
     expect(manualPreviewLabel(preview)).toBe('CORNER LOCK');
+  });
+
+  it('falls through an active-but-empty certified registry to the robust physical surface preview', () => {
+    setCertifiedGuideCorners([]);
+    setCertifiedGuideEdges([]);
+    const source = cloud();
+    addPlaneX(source);
+    addPlaneY(source);
+
+    const preview = previewManualPlacementFromStableSurface(0.5, 0.5, snapshot(source), projector);
+
+    expect(preview.resolution.accepted).toBe(true);
+    expect(preview.resolution.mode).toBe('edge');
+    expect(manualPreviewLabel(preview)).toBe('EDGE LOCK');
   });
 
   it('shows SCAN MORE when the cursor is away from stable projected geometry', () => {
