@@ -36,20 +36,20 @@ esp_err_t object_store_fs_list(
     struct dirent *entry;
     while ((entry = readdir(directory)) != NULL) {
         if (*object_count >= max_objects) break;
-        if (!object_format_id_is_valid(entry->d_name) || !object_store_fs_object_exists(entry->d_name)) continue;
+        if (!object_format_id_is_valid(entry->d_name)) continue;
+
+        /*
+         * Keep this as a cheap directory census. The old implementation did
+         * stat(object.json) for every ID, adding about 100 ms/object before any
+         * profile was read. Recovery/profile parsing remains authoritative for
+         * metadata validity. DT_UNKNOWN is accepted for FAT implementations
+         * that do not populate d_type.
+         */
+        if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) continue;
 
         object_store_summary_t *item = &objects[*object_count];
         object_store_fs_copy_id(item->id, sizeof(item->id), entry->d_name);
-
-        /*
-         * Keep the filesystem scan metadata-only. Profile callers immediately
-         * parse object.json and used to pay for the same file twice: once here
-         * only to obtain the name and then again for the full profile. Default
-         * the summary name to the stable object ID; object_store_list() fills
-         * friendly names for the summary-only API after this scan.
-         */
         object_store_fs_copy_id(item->name, sizeof(item->name), entry->d_name);
-
         item->active = active_object_id != NULL && strcmp(active_object_id, entry->d_name) == 0;
         (*object_count)++;
     }
