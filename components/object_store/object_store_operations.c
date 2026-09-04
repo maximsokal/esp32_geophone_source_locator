@@ -106,6 +106,31 @@ esp_err_t object_store_list(
             object_store_internal_active_id()
         );
 
+    /*
+     * object_store_fs_list() intentionally avoids reading object.json so the
+     * full-profile path does not parse every metadata file twice. The public
+     * summary-only API still promises friendly names, therefore load only the
+     * names here. A damaged/unreadable metadata file keeps the historical
+     * fallback of displaying its object ID.
+     */
+    if (err == ESP_OK) {
+        for (size_t i = 0; i < *object_count; ++i) {
+            if (
+                object_store_json_read_name_locked(
+                    objects[i].id,
+                    objects[i].name,
+                    sizeof(objects[i].name)
+                ) != ESP_OK
+            ) {
+                object_store_fs_copy_id(
+                    objects[i].name,
+                    sizeof(objects[i].name),
+                    objects[i].id
+                );
+            }
+        }
+    }
+
     object_store_internal_end_file_operation();
 
     return err;
