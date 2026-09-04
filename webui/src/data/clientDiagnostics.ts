@@ -1,3 +1,5 @@
+import { deviceApiHasPendingRequest } from '../api/deviceApi';
+
 type ClientLogLevel = 'INFO' | 'WARN' | 'ERROR';
 
 interface ClientLogEntry {
@@ -97,6 +99,16 @@ async function flush(): Promise<void> {
   if (flushing || queue.length === 0) return;
   if (performance.now() < nextAllowedFlushMs) {
     scheduleFlush(0);
+    return;
+  }
+
+  /*
+   * Diagnostics are best-effort and must never compete with a control/status
+   * transaction. The ESP HTTPS server is intentionally low-concurrency and a
+   * FATFS mutation can occupy its handler for seconds.
+   */
+  if (deviceApiHasPendingRequest()) {
+    scheduleFlush(1000);
     return;
   }
 
