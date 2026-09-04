@@ -1,8 +1,8 @@
 import type { DeviceStatus, PhoneLocationInput, SeismicSnapshot } from '../domain/device';
 
-export const DEVICE_API_FAST_TIMEOUT_MS = 3000;
-export const DEVICE_API_EXTENDED_TIMEOUT_MS = 8000;
-export const DEVICE_API_CONTROL_TIMEOUT_MS = 8000;
+export const DEVICE_API_FAST_TIMEOUT_MS = 5000;
+export const DEVICE_API_EXTENDED_TIMEOUT_MS = 12000;
+export const DEVICE_API_CONTROL_TIMEOUT_MS = 12000;
 
 export interface ControlResult {
   ok: boolean;
@@ -13,6 +13,9 @@ export interface ControlResult {
 
 const statusRequests = new Map<string, Promise<DeviceStatus>>();
 let extendedStatusRequest: Promise<DeviceStatus> | null = null;
+let seismicRequest: Promise<SeismicSnapshot> | null = null;
+let apiRequestTail: Promise<void> = Promise.resolve();
+let pendingApiRequests = 0;
 
 function errorText(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -26,7 +29,11 @@ function responseError(body: unknown, response: Response): string {
   return response.statusText || 'request failed';
 }
 
-async function jsonRequest<T>(url: string, init: RequestInit = {}, timeoutMs = DEVICE_API_FAST_TIMEOUT_MS): Promise<T> {
+async function performJsonRequest<T>(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
+): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
@@ -74,6 +81,33 @@ async function jsonRequest<T>(url: string, init: RequestInit = {}, timeoutMs = D
   finally {
     globalThis.clearTimeout(timeout);
   }
+}
+
+function jsonRequest<T>(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
+): Promise<T> {
+  /*
+   * ESP-IDF's HTTPS server executes application handlers serially. Opening a
+   * second fetch while the first request is doing a multi-second FATFS write
+   * only starts another TLS/socket timeout on the phone; it cannot make the
+   * ESP finish sooner. Serialize the control-plane requests in the browser so
+   * timeout accounting starts when a request can actually run.
+   */
+  pendingApiRequests += 1;
+  const run = apiRequestTail.then(
+    () => performJsonRequest<T>(url, init, timeoutMs),
+    () => performJsonRequest<T>(url, init, timeoutMs),
+  );
+  apiRequestTail = run.then(() => undefined, () => undefined);
+  return run.finally(() => {
+    pendingApiRequests = Math.max(0, pendingApiRequests - 1);
+  });
+}
+
+export function deviceApiHasPendingRequest(): boolean {
+  return pendingApiRequests > 0;
 }
 
 export function fetchDeviceStatus(
@@ -126,8 +160,26 @@ export function sendControl(
 }
 
 export function fetchSeismic(points = 180): Promise<SeismicSnapshot> {
+  if (seismicRequest !== null) return seismicRequest;
+
   const bounded = Math.max(16, Math.min(1200, Math.round(points)));
-  return jsonRequest<SeismicSnapshot>(`/api/seismic?points=${bounded}`, {}, DEVICE_API_FAST_TIMEOUT_MS);
+  let request: Promise<SeismicSnapshot>;
+  request = jsonRequest<SeismicSnapshot>(
+    `/api/seismic?points=${bounded}`,
+    {},
+    DEVICE_API_FAST_TIMEOUT_MS,
+  ).then(
+    (value) => {
+      if (seismicRequest === request) seismicRequest = null;
+      return value;
+    },
+    (reason) => {
+      if (seismicRequest === request) seismicRequest = null;
+      throw reason;
+    },
+  );
+  seismicRequest = request;
+  return request;
 }
 
 export function capturePhoneLocation(): Promise<PhoneLocationInput> {
