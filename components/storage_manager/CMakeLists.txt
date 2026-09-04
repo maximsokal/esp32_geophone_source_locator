@@ -19,4 +19,5 @@ idf_component_register(
         freertos
         esp_timer
         log
+        spi_bus
 )

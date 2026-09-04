@@ -6,9 +6,47 @@
 
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 
 static const char *TAG =
     "SPI_BUS";
+
+
+static SemaphoreHandle_t s_runtime_mutex =
+    NULL;
+
+static app_spi_bus_quiesce_callback_t s_display_quiesce =
+    NULL;
+
+static app_spi_bus_resume_callback_t s_display_resume =
+    NULL;
+
+static void *s_display_guard_context =
+    NULL;
+
+
+static esp_err_t app_spi_bus_create_runtime_mutex(void)
+{
+    if (s_runtime_mutex != NULL) {
+        return ESP_OK;
+    }
+
+    s_runtime_mutex =
+        xSemaphoreCreateRecursiveMutex();
+
+    if (s_runtime_mutex == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Failed to create SPI2 runtime arbitration mutex"
+        );
+
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
 
 
 static esp_err_t app_spi_bus_set_level_checked(
@@ -113,6 +151,13 @@ static esp_err_t app_spi_bus_prepare_device_idle_levels(void)
 esp_err_t app_spi_bus_init(void)
 {
     esp_err_t err =
+        app_spi_bus_create_runtime_mutex();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
         app_spi_bus_prepare_device_idle_levels();
 
     if (err != ESP_OK) {
@@ -206,4 +251,125 @@ esp_err_t app_spi_bus_init(void)
 spi_host_device_t app_spi_bus_get_host(void)
 {
     return BOARD_SPI_HOST;
+}
+
+
+esp_err_t app_spi_bus_register_display_guard(
+    app_spi_bus_quiesce_callback_t quiesce,
+    app_spi_bus_resume_callback_t resume,
+    void *context
+)
+{
+    if (
+        quiesce == NULL ||
+        resume == NULL ||
+        s_runtime_mutex == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTakeRecursive(
+        s_runtime_mutex,
+        portMAX_DELAY
+    );
+
+    s_display_quiesce =
+        quiesce;
+
+    s_display_resume =
+        resume;
+
+    s_display_guard_context =
+        context;
+
+    xSemaphoreGiveRecursive(
+        s_runtime_mutex
+    );
+
+    ESP_LOGI(
+        TAG,
+        "SPI2 runtime display/SD arbitration enabled"
+    );
+
+    return ESP_OK;
+}
+
+
+void app_spi_bus_unregister_display_guard(void)
+{
+    if (s_runtime_mutex == NULL) {
+        return;
+    }
+
+    xSemaphoreTakeRecursive(
+        s_runtime_mutex,
+        portMAX_DELAY
+    );
+
+    s_display_quiesce =
+        NULL;
+
+    s_display_resume =
+        NULL;
+
+    s_display_guard_context =
+        NULL;
+
+    xSemaphoreGiveRecursive(
+        s_runtime_mutex
+    );
+}
+
+
+esp_err_t app_spi_bus_sd_operation_begin(void)
+{
+    if (s_runtime_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTakeRecursive(
+        s_runtime_mutex,
+        portMAX_DELAY
+    );
+
+    if (s_display_quiesce == NULL) {
+        return ESP_OK;
+    }
+
+    esp_err_t err =
+        s_display_quiesce(
+            s_display_guard_context
+        );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to quiesce TFT before SD access: %s",
+            esp_err_to_name(err)
+        );
+
+        xSemaphoreGiveRecursive(
+            s_runtime_mutex
+        );
+    }
+
+    return err;
+}
+
+
+void app_spi_bus_sd_operation_end(void)
+{
+    if (s_runtime_mutex == NULL) {
+        return;
+    }
+
+    if (s_display_resume != NULL) {
+        s_display_resume(
+            s_display_guard_context
+        );
+    }
+
+    xSemaphoreGiveRecursive(
+        s_runtime_mutex
+    );
 }

@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "spi_bus.h"
 #include "storage_manager_internal.h"
 
 
@@ -85,6 +86,17 @@ esp_err_t storage_manager_init(void)
         return ESP_OK;
     }
 
+    err =
+        app_spi_bus_sd_operation_begin();
+
+    if (err != ESP_OK) {
+        xSemaphoreGiveRecursive(
+            s_operation_mutex
+        );
+
+        return err;
+    }
+
     struct stat mount_info;
 
     uint32_t stage_started_ms =
@@ -105,6 +117,8 @@ esp_err_t storage_manager_init(void)
     );
 
     if (!mount_available) {
+        app_spi_bus_sd_operation_end();
+
         xSemaphoreGiveRecursive(
             s_operation_mutex
         );
@@ -147,6 +161,8 @@ esp_err_t storage_manager_init(void)
 
     s_ready =
         err == ESP_OK;
+
+    app_spi_bus_sd_operation_end();
 
     xSemaphoreGiveRecursive(
         s_operation_mutex
@@ -243,6 +259,17 @@ esp_err_t storage_manager_operation_begin(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    esp_err_t err =
+        app_spi_bus_sd_operation_begin();
+
+    if (err != ESP_OK) {
+        xSemaphoreGiveRecursive(
+            s_operation_mutex
+        );
+
+        return err;
+    }
+
     return ESP_OK;
 }
 
@@ -252,6 +279,8 @@ void storage_manager_operation_end(void)
     if (s_operation_mutex == NULL) {
         return;
     }
+
+    app_spi_bus_sd_operation_end();
 
     xSemaphoreGiveRecursive(
         s_operation_mutex
