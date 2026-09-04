@@ -53,6 +53,34 @@ void object_store_internal_set_mutex_handle(
 }
 
 
+esp_err_t object_store_internal_begin_state_operation(void)
+{
+    if (
+        !s_initialized ||
+        s_mutex == NULL
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(
+        s_mutex,
+        portMAX_DELAY
+    );
+
+    return ESP_OK;
+}
+
+
+void object_store_internal_end_state_operation(void)
+{
+    if (s_mutex != NULL) {
+        xSemaphoreGive(
+            s_mutex
+        );
+    }
+}
+
+
 esp_err_t object_store_internal_begin_file_operation(void)
 {
     if (
@@ -80,12 +108,7 @@ esp_err_t object_store_internal_begin_file_operation(void)
 
 void object_store_internal_end_file_operation(void)
 {
-    if (s_mutex != NULL) {
-        xSemaphoreGive(
-            s_mutex
-        );
-    }
-
+    object_store_internal_end_state_operation();
     storage_manager_operation_end();
 }
 
