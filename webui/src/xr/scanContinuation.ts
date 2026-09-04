@@ -146,7 +146,13 @@ function collectMatches(
   targetHash: ReadonlyMap<string, Point3[]>,
   transform: RigidTransform,
 ): Match[] {
-  const matches: Match[] = [];
+  /*
+   * Keep at most one source correspondence per saved target point. Without this
+   * constraint a compressed/distorted continuation can collapse many extension
+   * samples onto the same few base samples and fake a high inlier/overlap score.
+   * The smallest-residual source wins deterministically for each target.
+   */
+  const bestByTarget = new Map<number, Match>();
   for (const sourcePoint of source) {
     const transformed = transformPoint(sourcePoint, transform);
     const nearest = nearestPoint(
@@ -155,11 +161,18 @@ function collectMatches(
       REGISTRATION_CELL_METERS,
       REGISTRATION_MAX_DISTANCE_METERS,
     );
-    if (nearest !== null) {
-      matches.push({ source: sourcePoint, target: nearest.point, distanceSquared: nearest.distanceSquared });
+    if (nearest === null) continue;
+    const match: Match = {
+      source: sourcePoint,
+      target: nearest.point,
+      distanceSquared: nearest.distanceSquared,
+    };
+    const previous = bestByTarget.get(nearest.point.sourceIndex);
+    if (previous === undefined || match.distanceSquared < previous.distanceSquared) {
+      bestByTarget.set(nearest.point.sourceIndex, match);
     }
   }
-  return matches;
+  return [...bestByTarget.values()];
 }
 
 function solveYawTranslation(matches: readonly Match[]): RigidTransform | null {
