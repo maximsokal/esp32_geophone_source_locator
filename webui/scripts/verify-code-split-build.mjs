@@ -34,12 +34,21 @@ function embeddedSymbolBase(fileName) {
 
 const [scannerKey, scanner] = requireDynamic('src/App.tsx', 'WebXR scanner');
 const [seismicKey] = requireDynamic('src/features/seismic/LiveSeismicPanel.tsx', 'Live seismic panel');
-const [viewportKey] = requireDynamic('src/components/ScanPointCloudViewport.tsx', '3D result viewport');
+const [viewportKey, viewport] = requireDynamic('src/components/ScanPointCloudViewport.tsx', '3D result viewport');
 forbidDynamic('src/features/objects/ObjectsFeature.tsx', 'Object workspace');
 forbidDynamic('src/features/sensors/SensorsFeature.tsx', 'Sensor diagnostics');
 
-if ((scanner.css ?? []).length === 0) {
-  throw new Error('WebXR scanner must own at least one lazy CSS asset; scan.css leaked into the initial page or was lost.');
+/*
+ * Scanner/viewport JavaScript may stay lazy, but their CSS must never be lazy.
+ * On the ESP32 HTTPS path a failed secondary CSS request previously made the
+ * completed 3D result impossible to render. Keep all visual CSS in the single
+ * versioned app.css fetched with the initial console page.
+ */
+if ((scanner.css ?? []).length !== 0) {
+  throw new Error(`WebXR scanner emitted lazy CSS (${scanner.css.join(', ')}); scanner CSS must live in initial app.css.`);
+}
+if ((viewport.css ?? []).length !== 0) {
+  throw new Error(`3D result viewport emitted lazy CSS (${viewport.css.join(', ')}); result CSS must live in initial app.css.`);
 }
 
 const [entryKey, entryValue] = appEntry;
@@ -60,7 +69,9 @@ const assetNames = (await readdir(join(dist, 'assets'))).sort();
 const jsNames = assetNames.filter((name) => name.endsWith('.js'));
 const cssNames = assetNames.filter((name) => name.endsWith('.css'));
 if (jsNames.length < 5) throw new Error(`Expected feature-split JS output, found ${jsNames.length} JS file(s).`);
-if (cssNames.length < 2) throw new Error(`Expected initial + lazy CSS output, found ${cssNames.length} CSS file(s).`);
+if (cssNames.length !== 1) {
+  throw new Error(`Expected exactly one flash-safe initial CSS asset and no lazy CSS, found ${cssNames.length}: ${cssNames.join(', ') || '(none)'}.`);
+}
 
 const initialVendorNames = jsNames.filter((name) => name.startsWith('initial-vendor-'));
 if (initialVendorNames.length !== 1) {
@@ -96,7 +107,7 @@ const secondaryNames = [
   ...cssNames.filter((name) => !initialCssNames.includes(name)),
 ].sort();
 if (secondaryNames.length === 0) {
-  throw new Error('Expected secondary lazy/code-split assets for ESP embedding.');
+  throw new Error('Expected secondary lazy/code-split JavaScript assets for ESP embedding.');
 }
 
 const espAssetNames = (await readdir(join(espDist, 'assets'))).sort();
@@ -139,7 +150,7 @@ console.log(`Initial console entry: ${appRow.name} raw=${appRow.rawBytes} gzip=$
 console.log(`Initial vendor requests: ${initialVendorNames.length} (${initialVendorNames.join(', ')})`);
 console.log('Initial HTML modulepreload: disabled');
 console.log(`Total JS: raw=${totalRaw} gzip=${totalGzip}`);
-console.log(`CSS assets: ${cssNames.join(', ')}`);
+console.log(`CSS assets: ${cssNames.join(', ')} (single initial asset; scanner/result CSS cannot lazy-load)`);
 console.log(`ESP secondary assets: ${secondaryNames.length} basename-symbol pairs verified`);
 console.log('Core console tabs: Objects + Sensors are statically reachable from app.js');
 console.log(`Dynamic scanner: ${scannerKey}`);
