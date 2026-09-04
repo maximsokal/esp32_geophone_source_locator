@@ -314,6 +314,7 @@ idf_component_register(
         "web_page.c"
         "web_api_status.c"
         "web_api_control.c"
+        "web_scan_store.c"
         "web_client_log.c"
         "web_status_json.c"
         "web_status_policy.c"
@@ -347,6 +348,7 @@ idf_component_register(
         seismic_acquisition
         seismic_buffer
         seismic_recorder
+        storage_manager
         wifi_manager
         esp_http_server
         esp_https_server
