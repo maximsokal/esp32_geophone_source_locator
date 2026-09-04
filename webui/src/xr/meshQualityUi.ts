@@ -38,14 +38,18 @@ export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
   }
   if (mesh.selfIntersectionTruncated) {
     return {
-      label: `MESH CHECK LIMITED · ${noisePercent}% noise · RESCAN`,
+      label: mesh.triangleCount > 0
+        ? `MESH PARTIAL · ${mesh.triangleCount.toLocaleString()}△ · CHECK LIMITED · ${noisePercent}% noise`
+        : `MESH CHECK LIMITED · ${noisePercent}% noise · RESCAN`,
       severity: 'bad',
       rescanRecommended: true,
     };
   }
   if (mesh.meshNoiseScore > NOISY_MESH_SCORE || componentQuarantinedTriangles > 0) {
     return {
-      label: `MESH NOISY ${noisePercent}% · Q${componentQuarantinedTriangles.toLocaleString()} · RESCAN`,
+      label: mesh.triangleCount > 0
+        ? `MESH PARTIAL · ${mesh.triangleCount.toLocaleString()}△ · ${noisePercent}% noise · Q${componentQuarantinedTriangles.toLocaleString()}`
+        : `MESH NOISY ${noisePercent}% · Q${componentQuarantinedTriangles.toLocaleString()} · RESCAN`,
       severity: 'bad',
       rescanRecommended: true,
     };
