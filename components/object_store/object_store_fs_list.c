@@ -40,9 +40,16 @@ esp_err_t object_store_fs_list(
 
         object_store_summary_t *item = &objects[*object_count];
         object_store_fs_copy_id(item->id, sizeof(item->id), entry->d_name);
-        if (object_store_json_read_name_locked(entry->d_name, item->name, sizeof(item->name)) != ESP_OK) {
-            object_store_fs_copy_id(item->name, sizeof(item->name), entry->d_name);
-        }
+
+        /*
+         * Keep the filesystem scan metadata-only. Profile callers immediately
+         * parse object.json and used to pay for the same file twice: once here
+         * only to obtain the name and then again for the full profile. Default
+         * the summary name to the stable object ID; object_store_list() fills
+         * friendly names for the summary-only API after this scan.
+         */
+        object_store_fs_copy_id(item->name, sizeof(item->name), entry->d_name);
+
         item->active = active_object_id != NULL && strcmp(active_object_id, entry->d_name) == 0;
         (*object_count)++;
     }
