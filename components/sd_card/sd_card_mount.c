@@ -91,14 +91,17 @@ esp_err_t sd_card_mount(void)
     }
 
     /*
-     * Follow ESP-IDF's SDSPI production sequence for a shared bus:
+     * Follow the ESP-IDF 5.5.4 SDSPI shared-bus sequence:
      *   1. SPI2 has already been initialized by app_spi_bus_init().
      *   2. Every other device CS (TFT) is held HIGH.
      *   3. The SD card is mounted before the TFT performs any SPI traffic.
      *
-     * SDSPI_HOST_DEFAULT() uses the SD protocol probing clock during card
-     * discovery and then switches to the configured normal runtime ceiling.
-     * For SDSPI that standard ceiling is 20 MHz.
+     * SDSPI_HOST_DEFAULT() probes the card at SDMMC_FREQ_PROBING (400 kHz)
+     * during discovery and then switches to the configured runtime ceiling.
+     * ESP-IDF 5.5.4's official SDSPI example uses SDMMC_FREQ_DEFAULT (20 MHz).
+     *
+     * Do not copy newer-master-only sdmmc_host_t members here. In particular,
+     * unaligned_multi_block_rw_max_chunk_size is not present in ESP-IDF 5.5.4.
      */
     sdmmc_host_t host =
         SDSPI_HOST_DEFAULT();
@@ -108,10 +111,6 @@ esp_err_t sd_card_mount(void)
 
     host.max_freq_khz =
         SD_CARD_SPI_FREQ_KHZ;
-
-    /* Match ESP-IDF 5.5's recommendation for unaligned multi-block I/O. */
-    host.unaligned_multi_block_rw_max_chunk_size =
-        8;
 
     sdspi_device_config_t slot_config =
         SDSPI_DEVICE_CONFIG_DEFAULT();
