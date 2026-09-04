@@ -30,6 +30,8 @@ import {
 
 const AI_PRIOR_STORAGE_KEY = 'xr.optionalMonocularPrior.enabled';
 
+export type ScanStartIntent = 'fresh' | 'continue';
+
 const emptyRuntimeState: WebXrRuntimeState = {
   phase:'idle',referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,
   scanPaused:false,wakeLockActive:false,wakeLockError:null,depthAvailable:false,depthUsage:null,depthDataFormat:null,depthType:null,
@@ -43,6 +45,10 @@ const emptyRuntimeState: WebXrRuntimeState = {
 };
 
 interface XrRuntimePanelProps {
+  savedScanAvailable?: boolean;
+  savedScanBusy?: boolean;
+  onScanIntent?: (intent: ScanStartIntent) => boolean;
+  onDeleteSavedScan?: () => void;
   onSessionActiveChange?: (active:boolean)=>void;
   onPointCloudReady?: (snapshot:ScanPointCloudSnapshot|null)=>void;
   onCapabilitiesChange?: (capabilities:WebXrCapabilities)=>void;
@@ -79,8 +85,16 @@ function previewPhase(preview:ManualPlacementPreview):ManualCursorPhase{return!p
 function previewDistanceMeters(preview:ManualPlacementPreview,state:WebXrRuntimeState):number|null{const target=preview.resolution.position,pose=state.pose;if(target===null||pose===null)return null;return Math.hypot(target[0]-pose.position[0],target[1]+pose.position[2],target[2]-pose.position[1]);}
 function cursorLabel(cursor:ManualCursorState,count:number):string{if(cursor.phase==='dragging'&&cursor.preview===null)return'MOVE RETICLE';if(cursor.phase==='confirmed')return`PIN ${count} ✓`;if(cursor.phase==='scan-more'||cursor.preview===null)return'SCAN MORE';const confidence=Math.round(cursor.preview.resolution.confidence*100);const distance=cursor.distanceMeters===null?'':` · ${cursor.distanceMeters.toFixed(2)} m`;return`${manualPreviewLabel(cursor.preview)} ${confidence}%${distance}`;}
 
-export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabilitiesChange}:XrRuntimePanelProps){
-  const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[computePreparing,setComputePreparing]=useState(false);const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
+export function XrRuntimePanel({
+  savedScanAvailable=false,
+  savedScanBusy=false,
+  onScanIntent,
+  onDeleteSavedScan,
+  onSessionActiveChange,
+  onPointCloudReady,
+  onCapabilitiesChange,
+}:XrRuntimePanelProps){
+  const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange);
   useEffect(()=>{onSessionActiveChangeRef.current=onSessionActiveChange;},[onSessionActiveChange]);useEffect(()=>{onPointCloudReadyRef.current=onPointCloudReady;},[onPointCloudReady]);useEffect(()=>{onCapabilitiesChangeRef.current=onCapabilitiesChange;},[onCapabilitiesChange]);
@@ -99,7 +113,8 @@ export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabi
   /*
    * Manual marking must be ENTERABLE before a worker happens to certify a target.
    * The placement resolver still rejects release unless EDGE/CORNER LOCK is
-   * physically certified, so exposing the button does not weaken geometry safety.
+   * physically certified by either the global registry or the local robust
+   * stable-surface solver, so exposing the button does not weaken geometry safety.
    */
   const showManualToggle=running;
   const aiPriorUi=describeAiPrior({
@@ -135,13 +150,34 @@ export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabi
   };
   const handleManualPointerCancel=(event:React.PointerEvent<HTMLDivElement>):void=>{const pointer=manualPointer.current;clearManualTimer();if(pointer?.captureActive){try{event.currentTarget.releasePointerCapture(event.pointerId);}catch{/*released*/}}manualPointer.current=null;setManualCursor((current)=>({...current,phase:'scan-more'}));clientDiagnostics.info('XR_MANUAL_POINTER_CANCEL');};
   const toggleManualMode=():void=>{setManualMode((value)=>{const next=!value;if(!next){clearManualTimer();manualPointer.current=null;setManualCursor((current)=>({...current,phase:'scan-more',preview:null,distanceMeters:null}));}else refreshManualPreview(.5,.5,true);clientDiagnostics.info('XR_MANUAL_MODE',{enabled:next,points:runtimeState.manualPointCount});void clientDiagnostics.flush();return next;});};
-  const startPreparedScan=async():Promise<void>=>{if(computePreparing)return;setComputePreparing(true);try{await launchImmersiveArFromUserGesture({beginScan:()=>liveComputeScheduler.beginScan(),startRuntime:()=>runtime.start(),prepareCompute:()=>liveComputeScheduler.prepare(),onPrepared:(prepared)=>{clientDiagnostics.info('XR_COMPUTE_BUDGET_PREPARED',{maximumWorkers:prepared.maximumBudget,effectiveWorkers:prepared.effectiveBudget,pressure:prepared.pressure,degraded:prepared.degraded});void clientDiagnostics.flush();}});}finally{setComputePreparing(false);}};
+  const startPreparedScan=async(intent:ScanStartIntent):Promise<void>=>{
+    if(computePreparing||!canStart)return;
+    if(onScanIntent?.(intent)===false)return;
+    setActiveScanIntent(intent);
+    setComputePreparing(true);
+    try{
+      await launchImmersiveArFromUserGesture({beginScan:()=>liveComputeScheduler.beginScan(),startRuntime:()=>runtime.start(),prepareCompute:()=>liveComputeScheduler.prepare(),onPrepared:(prepared)=>{clientDiagnostics.info('XR_COMPUTE_BUDGET_PREPARED',{maximumWorkers:prepared.maximumBudget,effectiveWorkers:prepared.effectiveBudget,pressure:prepared.pressure,degraded:prepared.degraded,scanIntent:intent});void clientDiagnostics.flush();}});
+    }finally{setComputePreparing(false);}
+  };
+
+  const continuationSampleReady=runtimeState.pointCount>=120;
 
   return <>
     <section className="xr-runtime-card xr-runtime-card-compact" aria-label="3D scanner">
       <div className="xr-runtime-heading"><div><div className="panel-title">3D SCANNER</div><strong>ARCore depth · RGB-guided robust fusion</strong></div><span className={`xr-phase ${qualityClass(runtimeState)}`}>{phaseLabel(runtimeState)}</span></div>
       <div className="xr-compact-status"><span className={capabilities?.immersiveAr?'good-text':'bad-text'}>WebXR {capabilities?.immersiveAr?'✓':capabilities===null?'checking…':'—'}</span><span className={runtimeState.depthAvailable?'good-text':''}>Depth {runtimeState.depthAvailable?'✓':runtimeState.phase==='idle'?'on start':'—'}</span><span className={runtimeState.rgbGuidanceAvailable?'good-text':''}>RGB {runtimeState.rgbGuidanceAvailable?'✓':capabilities?.rawXrRgbApi?'on start':'—'}</span><span className={aiPriorUi.good?'good-text':''}>AI prior {aiPriorUi.shortStatus}</span><span className={runtimeState.wakeLockActive?'good-text':''}>Screen {runtimeState.wakeLockActive?'awake ✓':capabilities?.wakeLockApi?'wake-ready':'wake-lock —'}</span></div>
-      <div className="xr-runtime-controls xr-runtime-controls-compact"><button type="button" className="xr-start-button" disabled={!canStart} onClick={()=>void startPreparedScan()}>{computePreparing?'Starting AR…':runtimeState.phase==='interrupted'?'Discard partial & start again':'Start 3D scan'}</button><button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>{aiPriorEnabled?'AI geometry check: ON · after Finish':'AI geometry check: OFF'}</button><div className="xr-finish-explainer">AI is optional and defaults OFF. When enabled, live XR only stages RGB + physical anchors; ONNX inference starts after Finish &amp; save.</div></div>
+      <div className="xr-runtime-controls xr-runtime-controls-compact">
+        {savedScanAvailable ? <>
+          <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('continue')}>{computePreparing?'Starting AR…':'Continue scanning'}</button>
+          <button type="button" className="xr-undo-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('fresh')}>Scan again</button>
+          {onDeleteSavedScan!==undefined&&<button type="button" className="xr-undo-button" disabled={busy||savedScanBusy} onClick={onDeleteSavedScan}>Delete saved scan</button>}
+          <div className="xr-finish-explainer">Continue: begin on a clearly recognizable part of the saved scan and collect several overlapping views before expanding into new space. Scan again starts a replacement scan, but the old SD artifact is kept until the new result saves successfully.</div>
+        </> : <>
+          <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('fresh')}>{computePreparing?'Starting AR…':runtimeState.phase==='interrupted'?'Discard partial & start again':'Start 3D scan'}</button>
+        </>}
+        <button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>{aiPriorEnabled?'AI geometry check: ON · after Finish':'AI geometry check: OFF'}</button>
+        <div className="xr-finish-explainer">AI is optional and defaults OFF. When enabled, live XR only stages RGB + physical anchors; ONNX inference starts after Finish &amp; save.</div>
+      </div>
       {aiPriorEnabled&&optionalMonocularPrior.status==='unavailable'&&<div className="xr-runtime-warning" role="status">Optional AI prior is unavailable on this browser/GPU. Physical ARCore depth and RGB structural validation continue normally.</div>}
       {aiPriorEnabled&&optionalMonocularPrior.status==='error'&&<div className="xr-runtime-warning" role="status">Optional AI prior failed: {optionalMonocularPrior.error??'unknown error'}. Physical ARCore depth remains authoritative.</div>}
       {runtimeState.phase==='interrupted'&&<div className="xr-runtime-warning" role="status">XR session ended unexpectedly. Partial geometry is retained in memory but was not marked READY because a new session may use a different reference frame.</div>}
@@ -158,10 +194,11 @@ export function XrRuntimePanel({onSessionActiveChange,onPointCloudReady,onCapabi
     <StructuralGuideOverlay runtime={runtime} runtimeState={runtimeState} interactionEnabled={running&&!manualMode}/>
     <div className="xr-immersive-overlay" aria-live="polite">
       {running&&manualMode&&<div className="xr-manual-hit-surface" aria-label="Manual corner placement surface" onPointerDown={handleManualPointerDown} onPointerMove={handleManualPointerMove} onPointerUp={handleManualPointerUp} onPointerCancel={handleManualPointerCancel}>
-        <div className={`xr-manual-reticle ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}} aria-hidden="true"/><div className={`xr-manual-cursor-state ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}}>{cursorLabel(manualCursor,runtimeState.manualPointCount)}</div><div className="xr-manual-instruction">Aim at a certified structural edge or corner. EDGE LOCK uses camera-ray × 3D-edge geometry; no depth pixel at the physical edge is required. Release only on EDGE/CORNER LOCK.</div>
+        <div className={`xr-manual-reticle ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}} aria-hidden="true"/><div className={`xr-manual-cursor-state ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}}>{cursorLabel(manualCursor,runtimeState.manualPointCount)}</div><div className="xr-manual-instruction">Aim at a validated structural edge or corner. If the global worker has no certified target yet, local robust multi-plane geometry may still produce EDGE/CORNER LOCK; ray-verified FREE remains a hard veto.</div>
       </div>}
       <div className="xr-overlay-card xr-overlay-card-compact"><div className="xr-overlay-topline"><strong className={runtimeState.motionState==='too-fast'?'bad-text':''}>{phaseLabel(runtimeState)}</strong><span>{runtimeState.wakeLockActive?'SCREEN LOCK ✓':''}</span></div>
         <div className="xr-overlay-scan-grid xr-overlay-scan-grid-compact"><div><span>STABLE</span><strong>{runtimeState.pointCount.toLocaleString()}</strong></div><div><span>READY</span><strong>{readyVisible}</strong></div><div><span>MOTION</span><strong>{formatMotion(runtimeState)}</strong></div><div><span>CPU</span><strong className={computeScheduler.degraded?'bad-text':''}>{computeLabel}</strong></div></div>
+        {running&&activeScanIntent==='continue'&&<div className="xr-overlay-hint">CONTINUE MODE · First scan a recognizable area that is already in the saved model from several viewpoints. {continuationSampleReady?'Enough stable points exist for a registration attempt; keep some old area in view before expanding.':`Registration sample ${runtimeState.pointCount.toLocaleString()} / 120 stable points minimum.`} Finish will keep the old SD scan if rigid registration fails.</div>}
         {runtimeState.scanPaused&&<div className="xr-overlay-warning">Scan paused while XR is hidden. It will continue if this XR session becomes visible again.</div>}{runtimeState.motionState==='too-fast'&&<div className="xr-overlay-warning">Move slower — this depth sample is not being fused.</div>}{(runtimeState.motionState==='stationary'||runtimeState.motionState==='redundant')&&<div className="xr-overlay-hint">Move 5–10 cm and change viewpoint. Standing still can polish geometry but cannot increase coverage confidence.</div>}{runtimeState.manualPointError!==null&&<div className="xr-overlay-warning">{runtimeState.manualPointError}</div>}
         <div className="xr-manual-status"><span>Geometry: <strong>{runtimeState.manualPointCount}</strong> pins · <strong>{runtimeState.manualEdgeCount}</strong> edges{certifiedGeometry.hasTargets?` · ready ${certifiedGeometry.cornerCount}C/${certifiedGeometry.edgeCount}E`:''}</span>{manualMode&&<span>Release only on validated EDGE/CORNER LOCK</span>}</div>
         <div className="xr-overlay-actions">{showManualToggle&&<button type="button" className={manualMode?'xr-manual-toggle active':'xr-manual-toggle'} aria-pressed={manualMode} onClick={toggleManualMode}>{manualMode?'Done marking':'Mark corners'}</button>}<button type="button" className="xr-undo-button" disabled={runtimeState.manualPointCount===0} onClick={()=>runtime.undoLastManualPoint()}>Undo pin</button><button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>AI {aiPriorEnabled?'ON · POST-SCAN':'OFF'}</button></div><button className="xr-finish-button" type="button" onClick={()=>void runtime.stop()}>Finish &amp; save scan</button>
