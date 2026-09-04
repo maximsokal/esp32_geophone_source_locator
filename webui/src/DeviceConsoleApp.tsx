@@ -193,7 +193,6 @@ export default function DeviceConsoleApp() {
     action: string,
     payload: Record<string, unknown> = {},
   ): Promise<boolean> => {
-    const activeBefore = objectsRef.current?.active_id ?? null;
     const followsActive = action === 'create_object' || action === 'activate_object';
     const selectionMode: ObjectSelectionMode = followsActive ? 'active' : 'preserve';
 
@@ -275,11 +274,12 @@ export default function DeviceConsoleApp() {
   };
 
   if (screen === 'scanner') {
+    const scannerObjectId = selectedId ?? objects?.active_id ?? null;
     return (
       <div className="scanner-feature-shell">
         <button className="console-floating-back" onClick={() => setScreen('objects')}>← Object</button>
         <Suspense fallback={<main className="console-loading">Loading WebXR scanner…</main>}>
-          <XrScannerFeature />
+          <XrScannerFeature objectId={scannerObjectId} />
         </Suspense>
       </div>
     );
