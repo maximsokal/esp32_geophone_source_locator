@@ -36,12 +36,22 @@ if (initialCss.length !== 1 || !cssFiles.includes(initialCss[0])) {
 }
 const cssName = initialCss[0];
 
-const secondaryNames = [
-  ...jsFiles.filter((name) => name !== 'app.js'),
-  ...cssFiles.filter((name) => name !== cssName),
-].sort();
+/*
+ * CSS is deliberately NOT part of the lazy asset contract. A completed phone
+ * scan must remain renderable even if a code-split request races a TLS reconnect.
+ * Keep all scanner/XR CSS in the stable app.css entry and fail the firmware build
+ * if a future component import accidentally creates another hashed CSS file.
+ */
+const secondaryCssFiles = cssFiles.filter((name) => name !== cssName);
+if (secondaryCssFiles.length > 0) {
+  throw new Error(
+    `Lazy CSS is forbidden for the ESP flash bundle; move these styles to the eager entry: ${secondaryCssFiles.join(', ')}.`,
+  );
+}
+
+const secondaryNames = jsFiles.filter((name) => name !== 'app.js').sort();
 if (secondaryNames.length === 0) {
-  throw new Error('Expected secondary lazy/code-split assets; build regressed to a single entry payload.');
+  throw new Error('Expected secondary lazy/code-split JS assets; build regressed to a single entry payload.');
 }
 if (secondaryNames.length > MAX_SECONDARY_ASSETS) {
   throw new Error(`Refusing to embed ${secondaryNames.length} secondary assets; bounded limit is ${MAX_SECONDARY_ASSETS}.`);
@@ -49,7 +59,6 @@ if (secondaryNames.length > MAX_SECONDARY_ASSETS) {
 
 function contentType(name) {
   if (name.endsWith('.js')) return 'application/javascript; charset=utf-8';
-  if (name.endsWith('.css')) return 'text/css; charset=utf-8';
   throw new Error(`Unsupported secondary asset type: ${name}`);
 }
 
