@@ -318,12 +318,21 @@ static esp_err_t web_control_process(
 
 static esp_err_t web_api_control_handler(httpd_req_t *request)
 {
+    /*
+     * Large opaque 3D artifacts share this already-budgeted URI so the HTTPS
+     * server does not spend another handler slot/RAM. Query-marked scan traffic
+     * is streamed/binary; ordinary controls keep the small JSON path below.
+     */
+    bool scan_handled = false;
+    esp_err_t err = web_scan_store_try_handle(request, &scan_handled);
+    if (scan_handled || err != ESP_OK) return err;
+
     char *body = malloc(WEB_CONTROL_MAX_BODY);
     if (body == NULL) {
         return web_control_send_result(request, "INVALID", ESP_ERR_NO_MEM, NULL);
     }
 
-    esp_err_t err = web_control_read_body(request, body, WEB_CONTROL_MAX_BODY);
+    err = web_control_read_body(request, body, WEB_CONTROL_MAX_BODY);
     if (err != ESP_OK) {
         free(body);
         return web_control_send_result(request, "INVALID", err, NULL);
