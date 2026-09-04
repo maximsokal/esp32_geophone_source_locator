@@ -1,7 +1,7 @@
 import {
   findCertifiedGuideCorner,
   findCertifiedGuideEdgeAtPoint,
-  isCertifiedGuideRegistryActive,
+  getCertifiedGuideRegistrySummary,
 } from './certifiedCornerRegistry';
 import {
   resolveManualPlacementCandidate,
@@ -74,7 +74,8 @@ export function projectPointToXrReference(point: ProjectPoint): ProjectPoint { r
 function resolvePlacement(position: ProjectPoint): {
   position: ProjectPoint; mode: ManualPlacementMode | null; confidence: number | null; surfaceLocked: boolean;
 } {
-  if (isCertifiedGuideRegistryActive()) {
+  const registry = getCertifiedGuideRegistrySummary();
+  if (registry.active && registry.hasTargets) {
     const certifiedCorner = findCertifiedGuideCorner(position);
     if (certifiedCorner !== null) {
       return { position: certifiedCorner.position, mode: 'corner', confidence: certifiedCorner.confidence, surfaceLocked: true };
@@ -90,6 +91,13 @@ function resolvePlacement(position: ProjectPoint): {
     );
   }
 
+  /*
+   * A worker can legitimately publish an empty certified registry before any
+   * candidate survives the independent certificate. Empty is not a certificate
+   * that the whole scene has no edge/corner. In that state fall back to the
+   * local stable-surface resolver. It still requires robust multi-plane support
+   * and applies its ray-verified FREE-space veto before accepting a placement.
+   */
   const resolution = resolveManualPlacementCandidate(position);
   if (resolution === null) return { position, mode: null, confidence: null, surfaceLocked: false };
   if (!resolution.accepted || resolution.position === null) throw new ManualPlacementRejectedError(resolution.message);
