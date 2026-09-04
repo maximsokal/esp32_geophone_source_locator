@@ -1,7 +1,12 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 
 import './scan.css';
 
+import {
+  deleteObjectScanArtifact,
+  loadObjectScanArtifact,
+  saveObjectScanArtifact,
+} from './api/deviceApi';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
@@ -10,6 +15,7 @@ import {
   deviceComputeProfilePromise,
   type DeviceComputeProfile,
 } from './xr/deviceComputeProfile';
+import { decodeScanArtifact, encodeScanArtifact } from './xr/scanArtifact';
 import {
   displayForScanMode,
   type ScanDisplayOptions,
@@ -21,6 +27,21 @@ const ScanPointCloudViewport = lazy(async () => {
   const module = await import('./components/ScanPointCloudViewport');
   return { default: module.ScanPointCloudViewport };
 });
+
+type ScanStoragePhase =
+  | 'unbound'
+  | 'loading'
+  | 'none'
+  | 'scanning'
+  | 'saving'
+  | 'saved'
+  | 'loaded'
+  | 'deleting'
+  | 'error';
+
+interface AppProps {
+  objectId: string | null;
+}
 
 class ResultViewportErrorBoundary extends Component<
   { children: ReactNode },
@@ -44,7 +65,7 @@ class ResultViewportErrorBoundary extends Component<
     if (this.state.message !== null) {
       return (
         <div className="viewport-shell scan-viewport" role="alert">
-          3D result renderer could not be loaded. Reload the page to retry. ({this.state.message})
+          3D result renderer failed: {this.state.message}
         </div>
       );
     }
@@ -79,17 +100,35 @@ function computeProfileTitle(profile: DeviceComputeProfile): string {
   ].join(' · ');
 }
 
-export default function App() {
+function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null): string {
+  const objectLabel = objectId ?? 'NO OBJECT';
+  switch (phase) {
+    case 'loading': return `LOADING SAVED 3D · ${objectLabel}`;
+    case 'none': return `NO SAVED 3D SCAN · ${objectLabel}`;
+    case 'scanning': return `NEW SCAN IN MEMORY · ${objectLabel}`;
+    case 'saving': return `SAVING 3D TO SD · ${objectLabel}`;
+    case 'saved': return `3D SAVED TO SD · ${objectLabel}`;
+    case 'loaded': return `3D RESTORED FROM SD · ${objectLabel}`;
+    case 'deleting': return `DELETING SAVED 3D · ${objectLabel}`;
+    case 'error': return `3D STORAGE ERROR · ${objectLabel}`;
+    default: return '3D SCAN NOT BOUND TO AN OBJECT';
+  }
+}
+
+export default function App({ objectId }: AppProps) {
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
   const [computeProfile, setComputeProfile] = useState<DeviceComputeProfile | null>(null);
   const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
+  const [scanStoragePhase, setScanStoragePhase] = useState<ScanStoragePhase>(objectId === null ? 'unbound' : 'loading');
+  const [scanStorageError, setScanStorageError] = useState<string | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
   const [viewCommand, setViewCommand] = useState<ViewCommand>({
     preset: 'perspective',
     sequence: 0,
   });
+  const storageGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +149,20 @@ export default function App() {
       void clientDiagnostics.flush();
     });
     return () => { cancelled = true; };
+  }, []);
+
+  /*
+   * Load the heavy renderer while the operator is still on the scanner page,
+   * not at the exact moment Finish closes immersive AR. Its JS then sits in the
+   * browser module cache; all scanner CSS is already resident in stable app.css.
+   */
+  useEffect(() => {
+    void import('./components/ScanPointCloudViewport').catch((reason) => {
+      clientDiagnostics.warn('SCAN_RESULT_RENDERER_PRELOAD_FAILED', {
+        error: reason instanceof Error ? reason.message : String(reason),
+      });
+      void clientDiagnostics.flush();
+    });
   }, []);
 
   const requestView = useCallback((preset: ViewPreset): void => {
@@ -133,26 +186,165 @@ export default function App() {
     });
   }, []);
 
+  /* Restore the object-owned scan every time the scanner feature is opened. */
+  useEffect(() => {
+    const generation = ++storageGeneration.current;
+    setScanSnapshot(null);
+    setScanStorageError(null);
+
+    if (objectId === null) {
+      setScanStoragePhase('unbound');
+      return undefined;
+    }
+
+    setScanStoragePhase('loading');
+    let cancelled = false;
+    void loadObjectScanArtifact(objectId).then(
+      (artifact) => {
+        if (cancelled || generation !== storageGeneration.current) return;
+        if (artifact === null) {
+          setScanStoragePhase('none');
+          clientDiagnostics.info('SCAN_RESULT_NOT_SAVED', { objectId });
+          void clientDiagnostics.flush();
+          return;
+        }
+
+        try {
+          const restored = decodeScanArtifact(artifact);
+          if (restored.pointCount <= 0) throw new Error('saved artifact has no stable measured surface');
+          setScanSnapshot(restored);
+          selectMode('quality');
+          setScanStoragePhase('loaded');
+          clientDiagnostics.info('SCAN_RESULT_RESTORED', {
+            objectId,
+            bytes: artifact.byteLength,
+            stablePoints: restored.pointCount,
+            tentativePoints: restored.tentativePointCount,
+            manualPoints: restored.manualControlPoints.length,
+            operatorEdges: restored.operatorEdges.length,
+          });
+          void clientDiagnostics.flush();
+        }
+        catch (reason) {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          setScanStorageError(message);
+          setScanStoragePhase('error');
+          clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, error: message });
+          void clientDiagnostics.flush();
+        }
+      },
+      (reason) => {
+        if (cancelled || generation !== storageGeneration.current) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setScanStorageError(message);
+        setScanStoragePhase('error');
+        clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, error: message });
+        void clientDiagnostics.flush();
+      },
+    );
+
+    return () => { cancelled = true; };
+  }, [objectId, selectMode]);
+
   const handleScanReady = useCallback((snapshot: ScanPointCloudSnapshot | null): void => {
     setScanSnapshot(snapshot);
-    if (snapshot !== null) {
-      selectMode('quality');
-      clientDiagnostics.info('SCAN_RESULT_READY', {
-        stablePoints: snapshot.pointCount,
-        tentativePoints: snapshot.tentativePointCount,
-        manualPoints: snapshot.manualControlPoints.length,
-        operatorEdges: snapshot.operatorEdges.length,
-        freeVoxels: snapshot.knownFreeVoxelCount,
-        unknownVoxels: snapshot.unknownCandidateVoxelCount,
-        occupancyEnvelopeComponents: snapshot.occupancyEnvelopeComponentCount,
-        quarantinedSurfaceComponents: snapshot.occupancyQuarantinedSurfaceComponentCount,
-        quarantinedSurfacePoints: snapshot.occupancyQuarantinedSurfacePointCount,
-        bridgeRescanComponents: snapshot.occupancyBridgeRescanComponentCount,
-        bridgeEvidenceTruncated: snapshot.occupancyBridgeEvidenceTruncated,
-      });
-      void clientDiagnostics.flush();
+    setScanStorageError(null);
+
+    if (snapshot === null) {
+      /* Existing durable scan is intentionally retained until a replacement saves successfully. */
+      setScanStoragePhase(objectId === null ? 'unbound' : 'scanning');
+      return;
     }
-  }, [selectMode]);
+
+    selectMode('quality');
+    clientDiagnostics.info('SCAN_RESULT_READY', {
+      stablePoints: snapshot.pointCount,
+      tentativePoints: snapshot.tentativePointCount,
+      manualPoints: snapshot.manualControlPoints.length,
+      operatorEdges: snapshot.operatorEdges.length,
+      freeVoxels: snapshot.knownFreeVoxelCount,
+      unknownVoxels: snapshot.unknownCandidateVoxelCount,
+      occupancyEnvelopeComponents: snapshot.occupancyEnvelopeComponentCount,
+      quarantinedSurfaceComponents: snapshot.occupancyQuarantinedSurfaceComponentCount,
+      quarantinedSurfacePoints: snapshot.occupancyQuarantinedSurfacePointCount,
+      bridgeRescanComponents: snapshot.occupancyBridgeRescanComponentCount,
+      bridgeEvidenceTruncated: snapshot.occupancyBridgeEvidenceTruncated,
+    });
+    void clientDiagnostics.flush();
+
+    if (objectId === null) {
+      setScanStorageError('No object is selected; the completed scan exists only in browser memory.');
+      setScanStoragePhase('error');
+      return;
+    }
+
+    let artifact: Uint8Array;
+    try {
+      artifact = encodeScanArtifact(snapshot);
+    }
+    catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setScanStorageError(message);
+      setScanStoragePhase('error');
+      clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, stage: 'encode', error: message });
+      void clientDiagnostics.flush();
+      return;
+    }
+
+    const generation = ++storageGeneration.current;
+    setScanStoragePhase('saving');
+    void saveObjectScanArtifact(objectId, artifact).then(
+      (result) => {
+        if (generation !== storageGeneration.current) return;
+        setScanStoragePhase('saved');
+        setScanStorageError(null);
+        clientDiagnostics.info('SCAN_RESULT_SAVED', {
+          objectId,
+          bytes: result.bytes ?? artifact.byteLength,
+          stablePoints: snapshot.pointCount,
+          manualPoints: snapshot.manualControlPoints.length,
+          operatorEdges: snapshot.operatorEdges.length,
+        });
+        void clientDiagnostics.flush();
+      },
+      (reason) => {
+        if (generation !== storageGeneration.current) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
+        setScanStoragePhase('error');
+        clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, stage: 'transport', error: message });
+        void clientDiagnostics.flush();
+      },
+    );
+  }, [objectId, selectMode]);
+
+  const deleteSavedScan = useCallback((): void => {
+    if (objectId === null) {
+      setScanSnapshot(null);
+      setScanStoragePhase('unbound');
+      return;
+    }
+    const generation = ++storageGeneration.current;
+    setScanStoragePhase('deleting');
+    setScanStorageError(null);
+    void deleteObjectScanArtifact(objectId).then(
+      () => {
+        if (generation !== storageGeneration.current) return;
+        setScanSnapshot(null);
+        setScanStoragePhase('none');
+        clientDiagnostics.info('SCAN_RESULT_DELETED', { objectId });
+        void clientDiagnostics.flush();
+      },
+      (reason) => {
+        if (generation !== storageGeneration.current) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setScanStorageError(message);
+        setScanStoragePhase('error');
+        clientDiagnostics.warn('SCAN_RESULT_DELETE_FAILED', { objectId, error: message });
+        void clientDiagnostics.flush();
+      },
+    );
+  }, [objectId]);
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
   const httpsReady = xrCapabilities?.secureContext === true;
@@ -169,6 +361,8 @@ export default function App() {
     improving: stableBands.improving + tentativeBands.improving,
     stable: stableBands.stable + tentativeBands.stable,
   };
+  const storageGood = scanStoragePhase === 'saved' || scanStoragePhase === 'loaded';
+  const storageBusy = scanStoragePhase === 'loading' || scanStoragePhase === 'saving' || scanStoragePhase === 'deleting';
 
   return (
     <main className="app-shell">
@@ -196,8 +390,15 @@ export default function App() {
             <span className={`badge ${hasMeasuredScan ? 'good' : 'warning'}`}>
               {hasMeasuredScan ? 'VOLUME READY' : 'READY'}
             </span>
+            <span className={`badge ${storageGood ? 'good' : scanStoragePhase === 'error' ? 'warning' : ''}`}>
+              {scanStorageLabel(scanStoragePhase, objectId)}
+            </span>
           </div>
         </header>
+      )}
+
+      {!xrSessionActive && scanStorageError !== null && (
+        <div className="xr-runtime-error" role="alert">{scanStorageError}</div>
       )}
 
       {!xrSessionActive && hasMeasuredScan && (
@@ -242,7 +443,7 @@ export default function App() {
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
         <section className="workspace">
-          <ResultViewportErrorBoundary>
+          <ResultViewportErrorBoundary key={`${objectId ?? 'none'}-${scanSnapshot.depthFrameCount}-${scanSnapshot.pointCount}`}>
             <Suspense
               fallback={
                 <div className="viewport-shell scan-viewport" role="status" aria-live="polite">
@@ -263,6 +464,7 @@ export default function App() {
             <section className="panel-card">
               <div className="panel-title">SEARCH VOLUME</div>
               <dl className="status-list scan-result-primary">
+                <div><dt>SD persistence</dt><dd>{scanStorageLabel(scanStoragePhase, objectId)}</dd></div>
                 <div><dt>Stable boundary points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
                 <div><dt>Tentative boundary points</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
                 <div><dt>Manual corner pins</dt><dd>{scanSnapshot.manualControlPoints.length.toLocaleString()}</dd></div>
@@ -324,8 +526,8 @@ export default function App() {
                 </dl>
               </details>
 
-              <button type="button" className="scan-clear-button" onClick={() => setScanSnapshot(null)}>
-                Clear scan
+              <button type="button" className="scan-clear-button" disabled={storageBusy} onClick={deleteSavedScan}>
+                {scanStoragePhase === 'deleting' ? 'Deleting…' : 'Delete saved scan'}
               </button>
             </section>
           </aside>
