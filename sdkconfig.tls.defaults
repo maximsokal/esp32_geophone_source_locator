@@ -6,6 +6,10 @@
 # Wi-Fi, LVGL and DMA-capable drivers; allocate mbedTLS dynamic state in
 # external SPIRAM instead.
 #
+# IMPORTANT: sdkconfig has higher priority than these defaults. If a local
+# sdkconfig predates this policy, delete/regenerate it. app_build_config_guard.c
+# intentionally fails the build when the effective configuration is stale.
+#
 # Component config -> mbedTLS -> Memory allocation strategy -> External SPIRAM
 #
 # CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
