@@ -49,11 +49,25 @@ for (const dynamicKey of [scannerKey, seismicKey, viewportKey]) {
   }
 }
 
+const indexHtml = await readFile(join(dist, 'index.html'), 'utf8');
+if (/modulepreload/i.test(indexHtml)) {
+  throw new Error(
+    'Initial HTML contains modulepreload links; they can create a speculative parallel TLS burst against the ESP32 HTTPS server.',
+  );
+}
+
 const assetNames = (await readdir(join(dist, 'assets'))).sort();
 const jsNames = assetNames.filter((name) => name.endsWith('.js'));
 const cssNames = assetNames.filter((name) => name.endsWith('.css'));
 if (jsNames.length < 5) throw new Error(`Expected feature-split JS output, found ${jsNames.length} JS file(s).`);
 if (cssNames.length < 2) throw new Error(`Expected initial + lazy CSS output, found ${cssNames.length} CSS file(s).`);
+
+const initialVendorNames = jsNames.filter((name) => name.startsWith('initial-vendor-'));
+if (initialVendorNames.length !== 1) {
+  throw new Error(
+    `Expected exactly one initial-vendor JS request for the constrained ESP HTTPS path, found ${initialVendorNames.length}: ${initialVendorNames.join(', ') || '(none)'}.`,
+  );
+}
 
 let totalRaw = 0;
 let totalGzip = 0;
@@ -122,6 +136,8 @@ for (const row of rows) {
   console.log(`  ${row.name.padEnd(48)} raw=${String(row.rawBytes).padStart(8)} gzip=${String(row.gzipBytes).padStart(8)}`);
 }
 console.log(`Initial console entry: ${appRow.name} raw=${appRow.rawBytes} gzip=${appRow.gzipBytes}`);
+console.log(`Initial vendor requests: ${initialVendorNames.length} (${initialVendorNames.join(', ')})`);
+console.log('Initial HTML modulepreload: disabled');
 console.log(`Total JS: raw=${totalRaw} gzip=${totalGzip}`);
 console.log(`CSS assets: ${cssNames.join(', ')}`);
 console.log(`ESP secondary assets: ${secondaryNames.length} basename-symbol pairs verified`);
