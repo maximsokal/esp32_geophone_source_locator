@@ -13,6 +13,12 @@
 #include "sd_card_internal.h"
 
 
+_Static_assert(
+    SD_CARD_SPI_FREQ_KHZ == SDMMC_FREQ_DEFAULT,
+    "Production SDSPI runtime clock must remain at the ESP-IDF 20 MHz default"
+);
+
+
 static const char *TAG =
     "SD_CARD";
 
@@ -103,7 +109,7 @@ esp_err_t sd_card_mount(void)
     host.max_freq_khz =
         SD_CARD_SPI_FREQ_KHZ;
 
-    /* Match the current ESP-IDF SDSPI example for unaligned multi-block I/O. */
+    /* Match ESP-IDF 5.5's recommendation for unaligned multi-block I/O. */
     host.unaligned_multi_block_rw_max_chunk_size =
         8;
 
