@@ -72,6 +72,19 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
     cJSON_AddNumberToObject(object, "current_a", power->current_a);
     cJSON_AddNumberToObject(object, "power_w", power->power_w);
 
+    cJSON_AddStringToObject(
+        object,
+        "source",
+        device_status_power_source_name(power->source)
+    );
+    cJSON_AddBoolToObject(object, "battery_present", power->battery_present);
+    cJSON_AddBoolToObject(object, "battery_percent_valid", power->battery_percent_valid);
+    cJSON_AddNumberToObject(object, "battery_voltage_v", power->battery_voltage_v);
+    cJSON_AddNumberToObject(object, "battery_current_a", power->battery_current_a);
+    cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate);
+    cJSON_AddBoolToObject(object, "usb_present", power->usb_present);
+    cJSON_AddBoolToObject(object, "charging", power->charging);
+
     cJSON *channels = cJSON_AddArrayToObject(object, "channels");
     if (channels == NULL) return false;
     for (size_t i = 0; i < DEVICE_STATUS_POWER_CHANNEL_COUNT; ++i) {
