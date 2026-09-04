@@ -13,6 +13,8 @@ void object_store_internal_set_initialized(bool initialized);
 void *object_store_internal_mutex_handle(void);
 void object_store_internal_set_mutex_handle(void *mutex);
 void object_store_internal_restore_active(void);
+esp_err_t object_store_internal_begin_state_operation(void);
+void object_store_internal_end_state_operation(void);
 esp_err_t object_store_internal_begin_file_operation(void);
 void object_store_internal_end_file_operation(void);
 const char *object_store_internal_active_id(void);
@@ -36,3 +38,13 @@ esp_err_t object_store_json_write_metadata(const char *object_id);
 esp_err_t object_store_json_read_name_locked(const char *object_id, char *name, size_t name_size);
 esp_err_t object_store_json_read_profile_locked(const char *object_id, bool active, object_store_profile_t *profile);
 esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COUNT]);
+
+/* RAM index over SD metadata. All *_locked hooks require the object-store mutex. */
+void object_store_profile_cache_reset(void);
+void object_store_profile_cache_note_create_locked(const char *object_id);
+void object_store_profile_cache_note_delete_locked(const char *object_id);
+void object_store_profile_cache_note_active_locked(const char *object_id);
+void object_store_profile_cache_note_rename_locked(const char *object_id, const char *name);
+void object_store_profile_cache_note_location_locked(const char *object_id, const object_store_location_t *location);
+void object_store_profile_cache_note_cable_locked(const char *object_id, size_t pod_index, float length_m);
+void object_store_profile_cache_note_default_locked(size_t pod_index, float length_m);
