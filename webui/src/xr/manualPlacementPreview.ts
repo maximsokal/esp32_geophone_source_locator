@@ -1,7 +1,7 @@
 import {
   getCertifiedGuideCorners,
   getCertifiedGuideEdges,
-  isCertifiedGuideRegistryActive,
+  getCertifiedGuideRegistrySummary,
 } from './certifiedCornerRegistry';
 import { getLatestProjectRay } from './latestProjectionRegistry';
 import { intersectCameraRayWithCertifiedEdge } from './manualRayEdgePlacement';
@@ -65,7 +65,15 @@ function previewCertifiedGeometry(
   project: ManualPreviewProjector,
   screenRadius: number,
 ): ManualPlacementPreview | null {
-  if (!isCertifiedGuideRegistryActive()) return null;
+  const registry = getCertifiedGuideRegistrySummary();
+  /*
+   * An active-but-empty worker registry means "no globally certified target yet",
+   * not "the local physical surface resolver is forbidden". Returning null here
+   * hands control to solveManualPlacementOnStableSurface(), which still requires
+   * robust multi-plane measured support and applies the exact ray-verified FREE
+   * veto. Once any certified target exists we keep the stricter registry path.
+   */
+  if (!registry.active || !registry.hasTargets) return null;
   const registered = getCertifiedGuideCorners();
   let nearestScreenDistance = Number.POSITIVE_INFINITY;
   const projected: Array<{ candidateIndex: number; screenDistance: number; viewDepthMeters: number | null }> = [];
@@ -137,11 +145,7 @@ function previewCertifiedGeometry(
     u, v,
     screenDistance: Number.isFinite(nearestScreenDistance) ? nearestScreenDistance : null,
     seedPosition: null, seedViewDepthMeters: null,
-    resolution: rejected(
-      registered.length === 0 && getCertifiedGuideEdges().length === 0
-        ? 'SCAN MORE · no robust edge or corner in the scene has passed certification yet.'
-        : 'SCAN MORE · aim at a certified edge/corner or collect another viewpoint.',
-    ),
+    resolution: rejected('SCAN MORE · aim at a certified edge/corner or collect another viewpoint.'),
   };
 }
 
