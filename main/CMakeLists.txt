@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         main.c
+        app_build_config_guard.c
         app_startup.c
         app_startup_status.c
         app_storage_boot.c
