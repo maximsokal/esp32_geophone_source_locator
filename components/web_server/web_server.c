@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "sdkconfig.h"
 #include "app_config.h"
 #include "wifi_manager.h"
 
@@ -16,360 +17,179 @@
 
 #include "web_server_internal.h"
 
+#define WEB_TLS_FATAL_ALERT_CODE 0x7780
+#define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
 
-static const char *TAG =
-    "WEB_SERVER";
+static const char *TAG = "WEB_SERVER";
 
-
-static httpd_handle_t s_http_server =
-    NULL;
-
-static httpd_handle_t s_https_server =
-    NULL;
-
-static bool s_event_handlers_registered =
-    false;
-
-static unsigned s_https_clients =
-    0;
-
+static httpd_handle_t s_http_server = NULL;
+static httpd_handle_t s_https_server = NULL;
+static bool s_event_handlers_registered = false;
+static unsigned s_https_clients = 0;
+static unsigned s_peer_fatal_alerts = 0;
 
 #if WEB_SERVER_TLS_CREDENTIALS_EMBEDDED
-extern const unsigned char servercert_pem_start[]
-    asm("_binary_servercert_pem_start");
-extern const unsigned char servercert_pem_end[]
-    asm("_binary_servercert_pem_end");
-
-extern const unsigned char prvtkey_pem_start[]
-    asm("_binary_prvtkey_pem_start");
-extern const unsigned char prvtkey_pem_end[]
-    asm("_binary_prvtkey_pem_end");
+extern const unsigned char servercert_pem_start[] asm("_binary_servercert_pem_start");
+extern const unsigned char servercert_pem_end[] asm("_binary_servercert_pem_end");
+extern const unsigned char prvtkey_pem_start[] asm("_binary_prvtkey_pem_start");
+extern const unsigned char prvtkey_pem_end[] asm("_binary_prvtkey_pem_end");
 #endif
 
-
-static void web_server_log_tls_heap(
-    const char *stage
-)
+static void web_server_log_tls_heap(const char *stage)
 {
-    const size_t free_internal =
-        heap_caps_get_free_size(
-            MALLOC_CAP_INTERNAL |
-            MALLOC_CAP_8BIT
-        );
-
-    const size_t largest_internal =
-        heap_caps_get_largest_free_block(
-            MALLOC_CAP_INTERNAL |
-            MALLOC_CAP_8BIT
-        );
-
+    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     ESP_LOGI(
         TAG,
-        "TLS_HEAP %s clients=%u free=%u largest=%u",
+        "TLS_HEAP %s clients=%u free=%u largest=%u peer_alerts=%u",
         stage,
         s_https_clients,
         (unsigned)free_internal,
-        (unsigned)largest_internal
+        (unsigned)largest_internal,
+        s_peer_fatal_alerts
     );
 }
 
-
-static bool web_server_tls_credentials_apply(
-    httpd_ssl_config_t *config
-)
+static bool web_server_tls_credentials_apply(httpd_ssl_config_t *config)
 {
-    if (config == NULL) {
-        return false;
-    }
-
+    if (config == NULL) return false;
 #if WEB_SERVER_TLS_CREDENTIALS_EMBEDDED
-    config->servercert =
-        servercert_pem_start;
-
-    config->servercert_len =
-        servercert_pem_end -
-        servercert_pem_start;
-
-    config->prvtkey_pem =
-        prvtkey_pem_start;
-
-    config->prvtkey_len =
-        prvtkey_pem_end -
-        prvtkey_pem_start;
-
+    config->servercert = servercert_pem_start;
+    config->servercert_len = servercert_pem_end - servercert_pem_start;
+    config->prvtkey_pem = prvtkey_pem_start;
+    config->prvtkey_len = prvtkey_pem_end - prvtkey_pem_start;
     return true;
 #else
     return false;
 #endif
 }
 
-
 static esp_err_t web_server_https_stop_internal(void);
 static esp_err_t web_server_http_stop_internal(void);
 
-
 static esp_err_t web_server_https_start_internal(void)
 {
-    if (s_https_server != NULL) {
-        return ESP_OK;
-    }
+    if (s_https_server != NULL) return ESP_OK;
 
-    httpd_ssl_config_t config =
-        HTTPD_SSL_CONFIG_DEFAULT();
-
-    /*
-     * Secure routes use ten handler slots after legacy dashboard/seismic
-     * assets were consolidated under one wildcard asset handler.
-     */
-    config.httpd.max_uri_handlers =
-        10;
-
-    config.httpd.uri_match_fn =
-        httpd_uri_match_wildcard;
+    httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
+    config.httpd.max_uri_handlers = 10;
+    config.httpd.uri_match_fn = httpd_uri_match_wildcard;
 
     /*
-     * Chrome may establish speculative/preconnect TLS sessions before the
-     * navigation request itself. With only two sockets those idle sessions
-     * can occupy the whole HTTPS capacity and starve the real GET request.
-     *
-     * Three TLS sockets leave one request slot of headroom for the React
-     * index/assets. LRU purge is enabled so a newer useful connection can
-     * replace the least-recently-used idle/speculative session instead of
-     * waiting indefinitely. The WEB-HTTPS-A memory tuning keeps TLS buffers in
-     * PSRAM; hardware logs with two clients still leave enough internal RAM
-     * headroom for this conservative third slot.
+     * Chrome may create speculative connections. Three sockets plus LRU purge
+     * proved enough for the dashboard while preserving internal-RAM headroom.
      */
-    config.httpd.max_open_sockets =
-        3;
+    config.httpd.max_open_sockets = 3;
+    config.httpd.lru_purge_enable = true;
+    config.httpd.recv_wait_timeout = 5;
+    config.httpd.send_wait_timeout = 30;
+    config.port_secure = APP_WEB_HTTPS_PORT;
 
-    config.httpd.lru_purge_enable =
-        true;
+    /*
+     * ESP-IDF 5.5.4 supports RFC5077 server tickets directly in
+     * httpd_ssl_config_t. They do not bypass certificate verification; they
+     * only make later sockets cheap after one trusted full handshake succeeds.
+     */
+    config.session_tickets = true;
+    config.tls_handshake_timeout_ms = WEB_TLS_HANDSHAKE_TIMEOUT_MS;
 
-    config.httpd.recv_wait_timeout =
-        5;
-
-    config.httpd.send_wait_timeout =
-        30;
-
-    config.port_secure =
-        APP_WEB_HTTPS_PORT;
-
-    if (
-        !web_server_tls_credentials_apply(
-            &config
-        )
-    ) {
-        ESP_LOGW(
-            TAG,
-            "HTTPS disabled: local TLS credentials are not embedded"
-        );
-
+    if (!web_server_tls_credentials_apply(&config)) {
+        ESP_LOGW(TAG, "HTTPS disabled: local TLS credentials are not embedded");
         return ESP_ERR_NOT_FOUND;
     }
 
-    web_server_log_tls_heap(
-        "before_start"
-    );
-
+    s_peer_fatal_alerts = 0;
+    web_server_log_tls_heap("before_start");
     ESP_LOGI(
         TAG,
-        "Starting HTTPS server on port %u (max TLS clients=%u, LRU purge=on)",
+        "Starting HTTPS server on port %u (max clients=%u, LRU=on, session tickets=on, handshake timeout=%u ms)",
         (unsigned)config.port_secure,
-        (unsigned)config.httpd.max_open_sockets
+        (unsigned)config.httpd.max_open_sockets,
+        (unsigned)config.tls_handshake_timeout_ms
     );
 
-    esp_err_t err =
-        httpd_ssl_start(
-            &s_https_server,
-            &config
-        );
-
+    esp_err_t err = httpd_ssl_start(&s_https_server, &config);
     if (err != ESP_OK) {
-        s_https_server =
-            NULL;
-
-        ESP_LOGE(
-            TAG,
-            "Failed to start HTTPS server: %s",
-            esp_err_to_name(err)
-        );
-
+        s_https_server = NULL;
+        ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(err));
         return err;
     }
 
-    err =
-        web_server_routes_register(
-            s_https_server
-        );
-
+    err = web_server_routes_register(s_https_server);
     if (err != ESP_OK) {
         (void)web_server_https_stop_internal();
         return err;
     }
 
-    web_server_log_tls_heap(
-        "after_start"
-    );
-
-    ESP_LOGI(
-        TAG,
-        "HTTPS server started: %s",
-        APP_MDNS_WEB_URL
-    );
-
+    web_server_log_tls_heap("after_start");
+    ESP_LOGI(TAG, "HTTPS server started: %s", APP_MDNS_WEB_URL);
     return ESP_OK;
 }
-
 
 static esp_err_t web_server_https_stop_internal(void)
 {
     if (s_https_server == NULL) {
-        s_https_clients =
-            0;
-
+        s_https_clients = 0;
         return ESP_OK;
     }
 
-    ESP_LOGI(
-        TAG,
-        "Stopping HTTPS server"
-    );
-
-    esp_err_t err =
-        httpd_ssl_stop(
-            s_https_server
-        );
-
+    ESP_LOGI(TAG, "Stopping HTTPS server");
+    esp_err_t err = httpd_ssl_stop(s_https_server);
     if (err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Failed to stop HTTPS server: %s",
-            esp_err_to_name(err)
-        );
-
+        ESP_LOGE(TAG, "Failed to stop HTTPS server: %s", esp_err_to_name(err));
         return err;
     }
 
-    s_https_server =
-        NULL;
-
-    s_https_clients =
-        0;
-
-    ESP_LOGI(
-        TAG,
-        "HTTPS server stopped"
-    );
-
+    s_https_server = NULL;
+    s_https_clients = 0;
+    s_peer_fatal_alerts = 0;
+    ESP_LOGI(TAG, "HTTPS server stopped");
     return ESP_OK;
 }
-
 
 static esp_err_t web_server_http_start_internal(void)
 {
-    if (s_http_server != NULL) {
-        return ESP_OK;
-    }
+    if (s_http_server != NULL) return ESP_OK;
 
-    httpd_config_t config =
-        HTTPD_DEFAULT_CONFIG();
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = APP_WEB_HTTP_PORT;
+    config.max_uri_handlers = 6;
+    config.lru_purge_enable = true;
 
-    config.server_port =
-        APP_WEB_HTTP_PORT;
-
-    config.max_uri_handlers =
-        6;
-
-    config.lru_purge_enable =
-        true;
-
-    ESP_LOGI(
-        TAG,
-        "Starting HTTP bootstrap server on port %u",
-        (unsigned)config.server_port
-    );
-
-    esp_err_t err =
-        httpd_start(
-            &s_http_server,
-            &config
-        );
-
+    ESP_LOGI(TAG, "Starting HTTP bootstrap server on port %u", (unsigned)config.server_port);
+    esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
-        s_http_server =
-            NULL;
-
-        ESP_LOGE(
-            TAG,
-            "Failed to start HTTP bootstrap server: %s",
-            esp_err_to_name(err)
-        );
-
+        s_http_server = NULL;
+        ESP_LOGE(TAG, "Failed to start HTTP bootstrap server: %s", esp_err_to_name(err));
         return err;
     }
 
-    err =
-        web_server_bootstrap_routes_register(
-            s_http_server
-        );
-
+    err = web_server_bootstrap_routes_register(s_http_server);
     if (err != ESP_OK) {
-        (void)httpd_stop(
-            s_http_server
-        );
-
-        s_http_server =
-            NULL;
-
+        (void)httpd_stop(s_http_server);
+        s_http_server = NULL;
         return err;
     }
 
-    ESP_LOGI(
-        TAG,
-        "HTTP bootstrap server started"
-    );
-
+    ESP_LOGI(TAG, "HTTP bootstrap server started");
     return ESP_OK;
 }
-
 
 static esp_err_t web_server_http_stop_internal(void)
 {
-    if (s_http_server == NULL) {
-        return ESP_OK;
-    }
+    if (s_http_server == NULL) return ESP_OK;
 
-    ESP_LOGI(
-        TAG,
-        "Stopping HTTP bootstrap server"
-    );
-
-    esp_err_t err =
-        httpd_stop(
-            s_http_server
-        );
-
+    ESP_LOGI(TAG, "Stopping HTTP bootstrap server");
+    esp_err_t err = httpd_stop(s_http_server);
     if (err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Failed to stop HTTP bootstrap server: %s",
-            esp_err_to_name(err)
-        );
-
+        ESP_LOGE(TAG, "Failed to stop HTTP bootstrap server: %s", esp_err_to_name(err));
         return err;
     }
 
-    s_http_server =
-        NULL;
-
-    ESP_LOGI(
-        TAG,
-        "HTTP bootstrap server stopped"
-    );
-
+    s_http_server = NULL;
+    ESP_LOGI(TAG, "HTTP bootstrap server stopped");
     return ESP_OK;
 }
-
 
 static void web_server_network_event_handler(
     void *context,
@@ -381,100 +201,47 @@ static void web_server_network_event_handler(
     (void)context;
     (void)event_data;
 
-    if (
-        event_base == IP_EVENT &&
-        event_id == IP_EVENT_STA_GOT_IP
-    ) {
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         if (s_http_server != NULL) {
-            web_server_log_tls_heap(
-                "before_http_stop"
-            );
-
-            const esp_err_t http_stop_err =
-                web_server_http_stop_internal();
-
+            web_server_log_tls_heap("before_http_stop");
+            const esp_err_t http_stop_err = web_server_http_stop_internal();
             if (http_stop_err != ESP_OK) {
-                ESP_LOGE(
-                    TAG,
-                    "HTTP bootstrap stop after STA IP failed: %s",
-                    esp_err_to_name(http_stop_err)
-                );
-
+                ESP_LOGE(TAG, "HTTP bootstrap stop after STA IP failed: %s", esp_err_to_name(http_stop_err));
                 return;
             }
-
-            web_server_log_tls_heap(
-                "after_http_stop"
-            );
+            web_server_log_tls_heap("after_http_stop");
         }
 
-        const esp_err_t https_start_err =
-            web_server_https_start_internal();
-
-        if (
-            https_start_err != ESP_OK &&
-            https_start_err != ESP_ERR_NOT_FOUND
-        ) {
-            ESP_LOGE(
-                TAG,
-                "HTTPS start after STA IP failed: %s",
-                esp_err_to_name(https_start_err)
-            );
+        const esp_err_t https_start_err = web_server_https_start_internal();
+        if (https_start_err != ESP_OK && https_start_err != ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "HTTPS start after STA IP failed: %s", esp_err_to_name(https_start_err));
         }
-
         return;
     }
 
-    if (
-        event_base == WIFI_EVENT &&
-        event_id == WIFI_EVENT_AP_START
-    ) {
-        /* The project only starts an AP for provisioning/setup mode. */
-        const esp_err_t https_stop_err =
-            web_server_https_stop_internal();
-
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
+        const esp_err_t https_stop_err = web_server_https_stop_internal();
         if (https_stop_err != ESP_OK) {
-            ESP_LOGW(
-                TAG,
-                "HTTPS stop before setup AP failed: %s",
-                esp_err_to_name(https_stop_err)
-            );
+            ESP_LOGW(TAG, "HTTPS stop before setup AP failed: %s", esp_err_to_name(https_stop_err));
         }
 
-        const esp_err_t http_start_err =
-            web_server_http_start_internal();
-
+        const esp_err_t http_start_err = web_server_http_start_internal();
         if (http_start_err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "HTTP bootstrap start for setup AP failed: %s",
-                esp_err_to_name(http_start_err)
-            );
+            ESP_LOGE(TAG, "HTTP bootstrap start for setup AP failed: %s", esp_err_to_name(http_start_err));
         }
-
         return;
     }
 
     if (
         event_base == WIFI_EVENT &&
-        (
-            event_id == WIFI_EVENT_STA_DISCONNECTED ||
-            event_id == WIFI_EVENT_STA_STOP
-        )
+        (event_id == WIFI_EVENT_STA_DISCONNECTED || event_id == WIFI_EVENT_STA_STOP)
     ) {
-        const esp_err_t err =
-            web_server_https_stop_internal();
-
+        const esp_err_t err = web_server_https_stop_internal();
         if (err != ESP_OK) {
-            ESP_LOGW(
-                TAG,
-                "HTTPS stop after STA loss failed: %s",
-                esp_err_to_name(err)
-            );
+            ESP_LOGW(TAG, "HTTPS stop after STA loss failed: %s", esp_err_to_name(err));
         }
     }
 }
-
 
 static void web_server_https_event_handler(
     void *context,
@@ -484,51 +251,44 @@ static void web_server_https_event_handler(
 )
 {
     (void)context;
-
-    if (event_base != ESP_HTTPS_SERVER_EVENT) {
-        return;
-    }
+    if (event_base != ESP_HTTPS_SERVER_EVENT) return;
 
     if (event_id == HTTPS_SERVER_EVENT_START) {
-        web_server_log_tls_heap(
-            "event_start"
-        );
+        web_server_log_tls_heap("event_start");
         return;
     }
 
     if (event_id == HTTPS_SERVER_EVENT_ON_CONNECTED) {
         ++s_https_clients;
-
-        web_server_log_tls_heap(
-            "client_connected"
-        );
+        web_server_log_tls_heap("client_connected");
         return;
     }
 
     if (event_id == HTTPS_SERVER_EVENT_DISCONNECTED) {
-        if (s_https_clients > 0) {
-            --s_https_clients;
-        }
-
-        web_server_log_tls_heap(
-            "client_disconnected"
-        );
+        if (s_https_clients > 0) --s_https_clients;
+        web_server_log_tls_heap("client_disconnected");
         return;
     }
 
-    if (
-        event_id == HTTPS_SERVER_EVENT_ERROR &&
-        event_data != NULL
-    ) {
+    if (event_id == HTTPS_SERVER_EVENT_ERROR && event_data != NULL) {
         const esp_https_server_last_error_t *last_error =
             (const esp_https_server_last_error_t *)event_data;
+
+        if ((unsigned)last_error->esp_tls_error_code == WEB_TLS_FATAL_ALERT_CODE) {
+            ++s_peer_fatal_alerts;
+            ESP_LOGW(
+                TAG,
+                "TLS peer fatal alert (-0x7780): browser rejected/aborted handshake; verify GeoLocator Root CA trust on this client (alerts=%u clients=%u)",
+                s_peer_fatal_alerts,
+                s_https_clients
+            );
+            return;
+        }
 
         ESP_LOGE(
             TAG,
             "HTTPS event error: last=%s tls=%d flags=%d clients=%u",
-            esp_err_to_name(
-                last_error->last_error
-            ),
+            esp_err_to_name(last_error->last_error),
             last_error->esp_tls_error_code,
             last_error->esp_tls_flags,
             s_https_clients
@@ -536,268 +296,138 @@ static void web_server_https_event_handler(
     }
 }
 
-
 static esp_err_t web_server_event_handlers_register(void)
 {
-    if (s_event_handlers_registered) {
-        return ESP_OK;
-    }
+    if (s_event_handlers_registered) return ESP_OK;
 
-    esp_err_t err =
-        esp_event_handler_register(
-            IP_EVENT,
-            IP_EVENT_STA_GOT_IP,
-            web_server_network_event_handler,
-            NULL
-        );
+    esp_err_t err = esp_event_handler_register(
+        IP_EVENT,
+        IP_EVENT_STA_GOT_IP,
+        web_server_network_event_handler,
+        NULL
+    );
+    if (err != ESP_OK) return err;
 
-    if (err != ESP_OK) {
-        return err;
-    }
+    err = esp_event_handler_register(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_DISCONNECTED,
+        web_server_network_event_handler,
+        NULL
+    );
+    if (err != ESP_OK) goto fail_ip;
 
-    err =
-        esp_event_handler_register(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_DISCONNECTED,
-            web_server_network_event_handler,
-            NULL
-        );
+    err = esp_event_handler_register(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_STOP,
+        web_server_network_event_handler,
+        NULL
+    );
+    if (err != ESP_OK) goto fail_disconnect;
 
-    if (err != ESP_OK) {
-        (void)esp_event_handler_unregister(
-            IP_EVENT,
-            IP_EVENT_STA_GOT_IP,
-            web_server_network_event_handler
-        );
+    err = esp_event_handler_register(
+        WIFI_EVENT,
+        WIFI_EVENT_AP_START,
+        web_server_network_event_handler,
+        NULL
+    );
+    if (err != ESP_OK) goto fail_sta_stop;
 
-        return err;
-    }
+    err = esp_event_handler_register(
+        ESP_HTTPS_SERVER_EVENT,
+        ESP_EVENT_ANY_ID,
+        web_server_https_event_handler,
+        NULL
+    );
+    if (err != ESP_OK) goto fail_ap_start;
 
-    err =
-        esp_event_handler_register(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_STOP,
-            web_server_network_event_handler,
-            NULL
-        );
-
-    if (err != ESP_OK) {
-        (void)esp_event_handler_unregister(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_DISCONNECTED,
-            web_server_network_event_handler
-        );
-
-        (void)esp_event_handler_unregister(
-            IP_EVENT,
-            IP_EVENT_STA_GOT_IP,
-            web_server_network_event_handler
-        );
-
-        return err;
-    }
-
-    err =
-        esp_event_handler_register(
-            WIFI_EVENT,
-            WIFI_EVENT_AP_START,
-            web_server_network_event_handler,
-            NULL
-        );
-
-    if (err != ESP_OK) {
-        (void)esp_event_handler_unregister(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_STOP,
-            web_server_network_event_handler
-        );
-
-        (void)esp_event_handler_unregister(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_DISCONNECTED,
-            web_server_network_event_handler
-        );
-
-        (void)esp_event_handler_unregister(
-            IP_EVENT,
-            IP_EVENT_STA_GOT_IP,
-            web_server_network_event_handler
-        );
-
-        return err;
-    }
-
-    err =
-        esp_event_handler_register(
-            ESP_HTTPS_SERVER_EVENT,
-            ESP_EVENT_ANY_ID,
-            web_server_https_event_handler,
-            NULL
-        );
-
-    if (err != ESP_OK) {
-        (void)esp_event_handler_unregister(
-            WIFI_EVENT,
-            WIFI_EVENT_AP_START,
-            web_server_network_event_handler
-        );
-
-        (void)esp_event_handler_unregister(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_STOP,
-            web_server_network_event_handler
-        );
-
-        (void)esp_event_handler_unregister(
-            WIFI_EVENT,
-            WIFI_EVENT_STA_DISCONNECTED,
-            web_server_network_event_handler
-        );
-
-        (void)esp_event_handler_unregister(
-            IP_EVENT,
-            IP_EVENT_STA_GOT_IP,
-            web_server_network_event_handler
-        );
-
-        return err;
-    }
-
-    s_event_handlers_registered =
-        true;
-
+    s_event_handlers_registered = true;
     return ESP_OK;
-}
 
+fail_ap_start:
+    (void)esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_AP_START, web_server_network_event_handler);
+fail_sta_stop:
+    (void)esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_STOP, web_server_network_event_handler);
+fail_disconnect:
+    (void)esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, web_server_network_event_handler);
+fail_ip:
+    (void)esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, web_server_network_event_handler);
+    return err;
+}
 
 static void web_server_event_handlers_unregister(void)
 {
-    if (!s_event_handlers_registered) {
-        return;
-    }
+    if (!s_event_handlers_registered) return;
 
     (void)esp_event_handler_unregister(
         ESP_HTTPS_SERVER_EVENT,
         ESP_EVENT_ANY_ID,
         web_server_https_event_handler
     );
-
     (void)esp_event_handler_unregister(
         WIFI_EVENT,
         WIFI_EVENT_AP_START,
         web_server_network_event_handler
     );
-
     (void)esp_event_handler_unregister(
         WIFI_EVENT,
         WIFI_EVENT_STA_STOP,
         web_server_network_event_handler
     );
-
     (void)esp_event_handler_unregister(
         WIFI_EVENT,
         WIFI_EVENT_STA_DISCONNECTED,
         web_server_network_event_handler
     );
-
     (void)esp_event_handler_unregister(
         IP_EVENT,
         IP_EVENT_STA_GOT_IP,
         web_server_network_event_handler
     );
-
-    s_event_handlers_registered =
-        false;
+    s_event_handlers_registered = false;
 }
-
 
 esp_err_t web_server_start(void)
 {
     if (s_event_handlers_registered) {
-        ESP_LOGW(
-            TAG,
-            "Web server lifecycle already running"
-        );
-
+        ESP_LOGW(TAG, "Web server lifecycle already running");
         return ESP_OK;
     }
 
-    esp_err_t err =
-        web_server_event_handlers_register();
-
-    if (err != ESP_OK) {
-        return err;
-    }
+    esp_err_t err = web_server_event_handlers_register();
+    if (err != ESP_OK) return err;
 
     if (wifi_manager_is_setup_mode()) {
-        err =
-            web_server_http_start_internal();
-
+        err = web_server_http_start_internal();
         if (err != ESP_OK) {
             web_server_event_handlers_unregister();
             return err;
         }
-
         return ESP_OK;
     }
 
     char sta_ip[16];
-
-    if (
-        wifi_manager_sta_ip_string(
-            sta_ip,
-            sizeof(sta_ip)
-        ) == ESP_OK
-    ) {
-        err =
-            web_server_https_start_internal();
-
-        if (
-            err != ESP_OK &&
-            err != ESP_ERR_NOT_FOUND
-        ) {
-            ESP_LOGW(
-                TAG,
-                "HTTPS unavailable at startup: %s",
-                esp_err_to_name(err)
-            );
+    if (wifi_manager_sta_ip_string(sta_ip, sizeof(sta_ip)) == ESP_OK) {
+        err = web_server_https_start_internal();
+        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "HTTPS unavailable at startup: %s", esp_err_to_name(err));
         }
-    } else {
-        ESP_LOGI(
-            TAG,
-            "STA connecting: waiting for IP before starting HTTPS"
-        );
+    }
+    else {
+        ESP_LOGI(TAG, "STA connecting: waiting for IP before starting HTTPS");
     }
 
     return ESP_OK;
 }
 
-
 esp_err_t web_server_stop(void)
 {
     web_server_event_handlers_unregister();
 
-    esp_err_t first_error =
-        ESP_OK;
+    esp_err_t first_error = ESP_OK;
+    esp_err_t err = web_server_https_stop_internal();
+    if (err != ESP_OK) first_error = err;
 
-    esp_err_t err =
-        web_server_https_stop_internal();
-
-    if (err != ESP_OK) {
-        first_error =
-            err;
-    }
-
-    err =
-        web_server_http_stop_internal();
-
-    if (
-        err != ESP_OK &&
-        first_error == ESP_OK
-    ) {
-        first_error =
-            err;
-    }
-
+    err = web_server_http_stop_internal();
+    if (err != ESP_OK && first_error == ESP_OK) first_error = err;
     return first_error;
 }
