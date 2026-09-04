@@ -16,6 +16,7 @@ app_main
        -> app_event_bus_init
        -> power_control_init
        -> device_status_init
+       -> ina3221_monitor_start (non-fatal if hardware is absent)
        -> seismic_buffer_init
        -> adc_service_init
        -> keypad_init
@@ -49,6 +50,7 @@ The project deliberately separates service work from acquisition work.
 - UI event worker
 - analog keypad monitor
 - power-button monitor
+- INA3221 low-rate power monitor
 - object service
 - storage service
 - Wi-Fi / HTTP-facing application work
@@ -80,6 +82,7 @@ Current policy:
 | Keypad | 0 | 4 | 8192 |
 | Storage service | 0 | 3 | 8192 |
 | Object service | 0 | 3 | 8192 |
+| INA3221 monitor | 0 | 1 | 4096 |
 
 Do not introduce new application tasks with ad-hoc priorities. Add them to `app_task_config.h` so the whole scheduling hierarchy stays reviewable in one place.
 
@@ -94,6 +97,8 @@ Do not introduce new application tasks with ad-hoc priorities. Add them to `app_
 | **GPIO1** | analog input | **Temporary geophone/ADC bench voltage-divider node** | **Still physically present. Reserved; do not reuse for AD7606 or homework wiring while the divider remains connected.** This is the ESP32-S3 ADC bench input (ADC1 channel 0). Exact divider resistor values/topology are not currently encoded anywhere in the repository, so they must be measured/recorded before this temporary divider is dismantled rather than guessed later. |
 | **GPIO2** | output | AD7606 `RESET` | Hardware reset line for the AD7606 module. |
 | **GPIO8** | analog input | Keyestudio KS0466 5-button keypad analog signal output | One ADC line represents all five buttons through the keypad's resistor ladder. |
+| **GPIO9** | bidirectional open-drain | INA3221 `SDA` | Sensor I2C data. INA3221 monitor currently owns/creates this bus. |
+| **GPIO10** | output/open-drain | INA3221 `SCL` | Sensor I2C clock, 100 kHz. |
 | **GPIO11** | output | TFT `SDI/MOSI` **and** microSD module `MOSI` | Shared SPI2 MOSI. Both devices share the bus and use separate CS lines. |
 | **GPIO12** | output | TFT `SCK` **and** microSD module `SCK` | Shared SPI2 clock. |
 | **GPIO13** | input | TFT `SDO/MISO` **and** microSD module `MISO` | Shared SPI2 MISO. |
@@ -143,6 +148,37 @@ external / bench signal
 
 **Important:** the repository currently proves that the divider exists and that GPIO1 is its ADC node, but it does **not** contain trustworthy values for the divider resistors or enough information to reconstruct which exact resistor is on each side. Those values must not be invented. Before removing the divider, record its two resistor values and exact connection here (or from a clear photo/multimeter check), then replace this paragraph with the exact schematic. Until then, GPIO1 stays reserved.
 
+#### INA3221 power monitor - current prototype wiring
+
+The INA3221 board is powered from the ESP32 3.3 V rail and uses address `0x40` because `A0` is tied to GND.
+
+```text
+INA3221          ESP32-S3
+-------------------------
+VS       ------  3V3
+GND      ------  GND
+SDA      ------  GPIO9
+SCL      ------  GPIO10
+A0       ------  GND
+
+PV       ------  NC
+CRI      ------  NC
+WAR      ------  NC
+TC       ------  NC
+```
+
+The three measurement branches are fixed in firmware as:
+
+| Software channel | INA3221 physical channel | Branch | Direction |
+| --- | --- | --- | --- |
+| CH0 | Channel 1 | Battery / 18650 branch | source `VI1+` -> onboard `R100` 0.1 Ohm -> load `VI1-` |
+| CH1 | Channel 2 | ESP32 5 V rail | source `VI2+` -> onboard `R100` 0.1 Ohm -> ESP32/load `VI2-` |
+| CH2 | Channel 3 | AD7606 5 V rail | source `VI3+` -> onboard `R100` 0.1 Ohm -> AD7606/load `VI3-`; may remain unpowered until AD7606 supply wiring is added |
+
+With this orientation, positive CH0 current means battery discharge (battery -> load) and negative CH0 current means charging current (load/charger -> battery). INA3221 bus voltage is measured on `VIx-`; firmware adds the signed shunt drop for CH0 to estimate the actual battery-side voltage at `VI1+`.
+
+Battery percentage is intentionally an **estimated 1S Li-ion voltage state-of-charge**, not coulomb counting. It is only marked valid when CH0 source voltage is in the plausible 1S range. The current bench condition with no 18650 installed can put CH0 near 5 V while USB powers the unit; firmware treats that as **battery absent**, not as a 100% battery.
+
 ### Debug / flashing wiring
 
 - **COM4 / USB-C:** normal ESP-IDF flashing and USB-connected monitoring path.
@@ -152,12 +188,23 @@ external / bench signal
 
 ### Ground and power notes that must survive disassembly
 
-- ESP32-S3, TFT, microSD, AD7606, keypad, power-control board and any external serial monitor used for signal observation require a **common reference GND** where they exchange logic signals.
+- ESP32-S3, TFT, microSD, INA3221, AD7606, keypad, power-control board and any external serial monitor used for signal observation require a **common reference GND** where they exchange logic signals.
+- INA3221 `VS` is connected to ESP32 **3.3 V**; its measured bus rails may be around 5 V because bus-voltage inputs are separate from `VS`.
 - The GPIO41 pull-up terminates at the ESP32 **3.3 V** rail.
 - The CH340 VCC pin stays disconnected in passive battery-monitor mode; only RXD and GND are connected.
 - Exact present VCC rail routing for every external module is not represented by firmware GPIO definitions. Before a complete prototype teardown, add the measured/verified module power wiring here rather than reconstructing it from memory.
 
 ## Hardware bus ownership
+
+### I2C0 - INA3221 power telemetry
+
+```text
+GPIO9  SDA <-> INA3221 SDA
+GPIO10 SCL  -> INA3221 SCL
+address       0x40 (A0 tied to GND)
+```
+
+`ina3221_monitor` owns the current sensor I2C master bus, configured at 100 kHz. INA3221 runs continuous shunt+bus conversion on all three channels with hardware averaging x16 and 1.1 ms conversion time. A low-priority Core 0 task publishes one status update per second. Missing/faulty INA3221 hardware invalidates power telemetry and is retried without rebooting the device.
 
 ### SPI2 - display and SD
 
@@ -296,6 +343,7 @@ Safe shutdown order:
 
 ```text
 keypad monitor
+  -> INA3221 monitor / I2C release
   -> UI event task / LVGL
   -> storage service
   -> object service
