@@ -150,7 +150,7 @@ export default function ObjectsFeature(props: Props) {
               </div>
               <div className="console-actions">
                 {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>Set active</button>}
-                <button disabled={busy} className="secondary" onClick={() => props.onOpenScanner(selected.id)}>3D phone scan</button>
+                <button disabled={busy} className="secondary" onClick={() => props.onOpenScanner(selected.id)}>Open 3D scan</button>
                 <button
                   disabled={busy || selectedRecording}
                   className="danger"
