@@ -26,6 +26,7 @@ idf_component_register(
         power_control
         keypad
         device_status
+        ina3221_monitor
         seismic_buffer
         seismic_acquisition
         seismic_recorder
