@@ -52,6 +52,14 @@
 #define APP_TASK_STACK_OBJECT_SERVICE  8192
 
 /*
+ * Measurement commands can stop/finalize the recorder and delete a reviewed
+ * session. Keep that work off the LVGL event task while retaining normal
+ * service-core scheduling priority.
+ */
+#define APP_TASK_PRIORITY_MEASUREMENT_SERVICE 3
+#define APP_TASK_STACK_MEASUREMENT_SERVICE  4096
+
+/*
  * Recorder drains the lock-free seismic ring in bounded batches and performs
  * SD writes on the service core. It deliberately runs below UI/object/storage
  * service priority and never executes on the real-time acquisition core.
