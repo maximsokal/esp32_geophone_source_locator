@@ -5,6 +5,7 @@
 #include "display.h"
 #include "ina3221_monitor.h"
 #include "keypad.h"
+#include "measurement_service.h"
 #include "object_service.h"
 #include "power_control.h"
 #include "sd_card.h"
@@ -121,6 +122,12 @@ void app_shutdown_wait_and_run(void)
     ui_shutdown();
 
     storage_service_shutdown();
+
+    /*
+     * Stop accepting UI measurement commands before the object service and
+     * recorder are torn down. A command already in flight is allowed to finish.
+     */
+    measurement_service_shutdown();
 
     object_service_shutdown();
 
