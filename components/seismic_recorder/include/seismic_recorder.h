@@ -89,3 +89,15 @@ esp_err_t seismic_recorder_list_sessions(
     size_t max_sessions,
     size_t *session_count
 );
+
+
+/*
+ * Delete one completed/stopped session directory from the active storage.
+ * Deletion is intentionally rejected while any recording is running so a UI
+ * review action cannot race the recorder's open FILE handles or metadata
+ * finalization.
+ */
+esp_err_t seismic_recorder_delete_session(
+    const char *object_id,
+    const char *session_id
+);
