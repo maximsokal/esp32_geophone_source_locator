@@ -467,3 +467,46 @@ esp_err_t seismic_recorder_fs_list_sessions(
 
     return err;
 }
+
+
+esp_err_t seismic_recorder_fs_delete_session(
+    const char *object_id,
+    const char *session_id
+)
+{
+    if (object_id == NULL || session_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    unsigned session_number = 0U;
+    if (!seismic_recorder_fs_parse_session_number(session_id, &session_number)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    object_store_profile_t profile;
+    esp_err_t err = object_store_get_profile(object_id, &profile);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    char session_path[SEISMIC_RECORDER_PATH_SIZE];
+    err = seismic_recorder_fs_session_path(
+        object_id,
+        session_id,
+        session_path,
+        sizeof(session_path)
+    );
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = storage_manager_remove_tree(session_path);
+
+    storage_manager_operation_end();
+    return err;
+}
