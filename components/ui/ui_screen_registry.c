@@ -38,7 +38,10 @@ static void ui_screen_open_objects(void)
 
 static void ui_screen_open_measurements(void)
 {
-    ui_context()->selected = 0;
+    ui_context_t *context = ui_context();
+
+    context->selected = 0;
+    context->measurement_action = 0;
     ui_set_notice_locked(NULL);
     ui_render_measurements_locked();
 }
@@ -142,7 +145,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
         .home_label = "MEASUREMENTS / AD7606",
         .open = ui_screen_open_measurements,
         .render = ui_render_measurements_locked,
-        .handle_key = ui_screen_handle_back_key,
+        .handle_key = ui_handle_measurements_key_locked,
         .refresh = ui_measurements_refresh_locked,
     },
 
