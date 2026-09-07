@@ -63,6 +63,16 @@ lv_obj_t *ui_create_screen_base_locked(
         0,
         sizeof(context->measurement_channel_labels)
     );
+    memset(
+        context->measurement_charts,
+        0,
+        sizeof(context->measurement_charts)
+    );
+    memset(
+        context->measurement_series,
+        0,
+        sizeof(context->measurement_series)
+    );
     context->measurement_summary = NULL;
     context->measurement_transport = NULL;
     context->measurement_health = NULL;
