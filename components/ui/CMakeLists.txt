@@ -9,6 +9,7 @@ idf_component_register(
         "ui_boot_error.c"
         "ui_home.c"
         "ui_measurements.c"
+        "ui_measurement_trace.c"
         "ui_objects.c"
         "ui_objects_input.c"
         "ui_storage.c"
