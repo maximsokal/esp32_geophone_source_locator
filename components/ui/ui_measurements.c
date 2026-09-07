@@ -3,9 +3,10 @@
 #include <inttypes.h>
 #include <stdio.h>
 
+#include "ui_measurement_trace.h"
+
 
 #define UI_MEASUREMENT_PREVIEW_FRAMES  512U
-#define UI_MEASUREMENT_CHART_POINTS     48U
 #define UI_MEASUREMENT_MIN_SCALE_UV   1000.0f
 
 
@@ -16,17 +17,11 @@ static seismic_frame_t s_preview_frames[
 static int32_t s_trace[
     SEISMIC_CHANNEL_COUNT
 ][
-    UI_MEASUREMENT_CHART_POINTS
+    UI_MEASUREMENT_TRACE_POINTS
 ];
 
 static float s_scale_uv =
     UI_MEASUREMENT_MIN_SCALE_UV;
-
-
-static float ui_measurements_absf(float value)
-{
-    return value < 0.0f ? -value : value;
-}
 
 
 static int32_t ui_measurements_round_to_i32(float value)
@@ -36,81 +31,6 @@ static int32_t ui_measurements_round_to_i32(float value)
     }
 
     return (int32_t)(value - 0.5f);
-}
-
-
-static void ui_measurements_clear_trace(void)
-{
-    for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-        for (size_t point = 0; point < UI_MEASUREMENT_CHART_POINTS; ++point) {
-            s_trace[channel][point] = 0;
-        }
-    }
-}
-
-
-static float ui_measurements_reduce_trace(
-    const seismic_frame_t *frames,
-    size_t frame_count
-)
-{
-    ui_measurements_clear_trace();
-
-    if (frames == NULL || frame_count == 0U) {
-        return 0.0f;
-    }
-
-    const size_t bucket_count =
-        frame_count < UI_MEASUREMENT_CHART_POINTS
-            ? frame_count
-            : UI_MEASUREMENT_CHART_POINTS;
-
-    const size_t output_offset =
-        UI_MEASUREMENT_CHART_POINTS - bucket_count;
-
-    float max_abs_uv = 0.0f;
-
-    for (size_t bucket = 0; bucket < bucket_count; ++bucket) {
-        size_t start =
-            (bucket * frame_count) /
-            bucket_count;
-
-        size_t end =
-            ((bucket + 1U) * frame_count) /
-            bucket_count;
-
-        if (end <= start) {
-            end = start + 1U;
-        }
-
-        if (end > frame_count) {
-            end = frame_count;
-        }
-
-        for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-            float selected = frames[start].channel_uv[channel];
-            float selected_abs = ui_measurements_absf(selected);
-
-            for (size_t index = start + 1U; index < end; ++index) {
-                const float candidate = frames[index].channel_uv[channel];
-                const float candidate_abs = ui_measurements_absf(candidate);
-
-                if (candidate_abs > selected_abs) {
-                    selected = candidate;
-                    selected_abs = candidate_abs;
-                }
-            }
-
-            s_trace[channel][output_offset + bucket] =
-                ui_measurements_round_to_i32(selected);
-
-            if (selected_abs > max_abs_uv) {
-                max_abs_uv = selected_abs;
-            }
-        }
-    }
-
-    return max_abs_uv;
 }
 
 
@@ -190,7 +110,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     lv_obj_remove_flag(chart, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(chart, UI_MEASUREMENT_CHART_POINTS);
+    lv_chart_set_point_count(chart, UI_MEASUREMENT_TRACE_POINTS);
     lv_chart_set_div_line_count(chart, 3, 0);
     lv_chart_set_axis_range(
         chart,
@@ -224,16 +144,11 @@ static void ui_measurements_refresh_charts_locked(void)
         &buffer_info
     );
 
-    float max_abs_uv = 0.0f;
-    if (err == ESP_OK && frame_count > 0U) {
-        max_abs_uv = ui_measurements_reduce_trace(
-            s_preview_frames,
-            frame_count
-        );
-    }
-    else {
-        ui_measurements_clear_trace();
-    }
+    const float max_abs_uv = ui_measurement_trace_reduce(
+        err == ESP_OK ? s_preview_frames : NULL,
+        err == ESP_OK ? frame_count : 0U,
+        s_trace
+    );
 
     const int32_t scale_uv =
         ui_measurements_update_scale(max_abs_uv);
@@ -251,7 +166,7 @@ static void ui_measurements_refresh_charts_locked(void)
                 scale_uv
             );
 
-            for (size_t point = 0; point < UI_MEASUREMENT_CHART_POINTS; ++point) {
+            for (size_t point = 0; point < UI_MEASUREMENT_TRACE_POINTS; ++point) {
                 lv_chart_set_series_value_by_id(
                     chart,
                     series,
