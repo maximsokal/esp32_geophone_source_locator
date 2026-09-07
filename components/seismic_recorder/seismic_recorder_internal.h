@@ -67,6 +67,12 @@ esp_err_t seismic_recorder_fs_list_sessions(
 );
 
 
+esp_err_t seismic_recorder_fs_delete_session(
+    const char *object_id,
+    const char *session_id
+);
+
+
 esp_err_t seismic_recorder_json_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
