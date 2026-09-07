@@ -36,7 +36,7 @@ jobs:
       - name: XR tests
         working-directory: webui
         run: npm run test:xr
-      - name: Host hardware/status policy tests
+      - name: Host hardware/status and measurement tests
         run: |
           set -euo pipefail
           cc -std=c11 -Wall -Wextra -Werror \
@@ -57,6 +57,14 @@ jobs:
             components/web_server/tests/web_status_policy_test.c \
             -o /tmp/web_status_policy_test
           /tmp/web_status_policy_test
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/ui \
+            -Icomponents/ui/tests/stubs \
+            -Icomponents/seismic_buffer/include \
+            components/ui/ui_measurement_trace.c \
+            components/ui/tests/ui_measurement_trace_test.c \
+            -o /tmp/ui_measurement_trace_test
+          /tmp/ui_measurement_trace_test
       - name: Production build and ESP asset preparation
         working-directory: webui
         run: npm run build
