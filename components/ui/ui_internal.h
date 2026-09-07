@@ -8,9 +8,11 @@
 #include "lvgl.h"
 
 #include "keypad.h"
+#include "measurement_service.h"
 #include "object_service.h"
 #include "sd_card_info.h"
 #include "seismic_acquisition.h"
+#include "seismic_buffer.h"
 #include "storage_service.h"
 #include "ui_theme.h"
 
@@ -80,11 +82,18 @@ typedef struct
     lv_obj_t *home_rows[UI_HOME_SCREEN_COUNT];
 
     lv_obj_t *measurement_channel_labels[
-        SEISMIC_ACQUISITION_MAX_CHANNELS
+        SEISMIC_CHANNEL_COUNT
+    ];
+    lv_obj_t *measurement_charts[
+        SEISMIC_CHANNEL_COUNT
+    ];
+    lv_chart_series_t *measurement_series[
+        SEISMIC_CHANNEL_COUNT
     ];
     lv_obj_t *measurement_summary;
     lv_obj_t *measurement_transport;
     lv_obj_t *measurement_health;
+    size_t measurement_action;
 
     lv_obj_t *system_heap;
     lv_obj_t *system_psram;
@@ -227,6 +236,10 @@ void ui_move_index(
     size_t *value,
     size_t count,
     bool down
+);
+
+void ui_handle_measurements_key_locked(
+    keypad_key_t key
 );
 
 void ui_handle_objects_key_locked(
