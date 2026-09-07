@@ -168,7 +168,7 @@ esp_err_t ui_init(void)
 
     s_context.refresh_timer = lv_timer_create(
         ui_refresh_timer_callback,
-        250,
+        200,
         NULL
     );
 
