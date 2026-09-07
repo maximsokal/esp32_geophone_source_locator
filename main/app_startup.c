@@ -12,6 +12,7 @@
 #include "display.h"
 #include "ina3221_monitor.h"
 #include "keypad.h"
+#include "measurement_service.h"
 #include "object_recovery.h"
 #include "object_service.h"
 #include "object_store.h"
@@ -205,6 +206,10 @@ static void app_startup_initialize_services(void)
 
     ESP_ERROR_CHECK(
         object_service_init()
+    );
+
+    ESP_ERROR_CHECK(
+        measurement_service_init()
     );
 
     ESP_ERROR_CHECK(
