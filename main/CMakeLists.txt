@@ -23,6 +23,7 @@ idf_component_register(
         object_recovery
         object_store
         object_service
+        measurement_service
         power_control
         keypad
         device_status
