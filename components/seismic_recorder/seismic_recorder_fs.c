@@ -15,10 +15,14 @@
 #endif
 
 #include "object_format.h"
+#include "esp_log.h"
+#include "esp_timer.h"
 #include "storage_manager.h"
 
 
 #define SEISMIC_RECORDER_BINARY_VERSION  1U
+
+static const char *TAG = "SEISMIC_RECORDER_FS";
 
 static bool seismic_recorder_fs_parse_session_number(
     const char *name,
@@ -189,6 +193,9 @@ esp_err_t seismic_recorder_fs_create_session(
     *samples_file = NULL;
     session_id[0] = '\0';
 
+    const int64_t operation_started_us =
+        esp_timer_get_time();
+
     char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
     if (path == NULL) {
         return ESP_ERR_NO_MEM;
@@ -280,6 +287,13 @@ esp_err_t seismic_recorder_fs_create_session(
 
     storage_manager_operation_end();
     free(path);
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=create-session result=%d elapsed_us=%lld",
+        (int)err,
+        (long long)(esp_timer_get_time() - operation_started_us)
+    );
+    (void)operation_started_us;
     return err;
 }
 
@@ -302,11 +316,22 @@ esp_err_t seismic_recorder_fs_write_frames(
 
     *frames_written = 0U;
 
+    const int64_t operation_started_us =
+        esp_timer_get_time();
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "RECORDER_IO_TIMING op=fwrite requested=%u written=0 fwrite_us=0 operation_us=%lld result=%d",
+            (unsigned)frame_count,
+            (long long)(esp_timer_get_time() - operation_started_us),
+            (int)err
+        );
         return err;
     }
 
+    const int64_t fwrite_started_us =
+        esp_timer_get_time();
     const size_t written = fwrite(
         frames,
         sizeof(seismic_frame_t),
@@ -319,7 +344,21 @@ esp_err_t seismic_recorder_fs_write_frames(
         err = ESP_FAIL;
     }
 
+    const int64_t fwrite_us =
+        esp_timer_get_time() - fwrite_started_us;
+
     storage_manager_operation_end();
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=fwrite requested=%u written=%u fwrite_us=%lld operation_us=%lld result=%d",
+        (unsigned)frame_count,
+        (unsigned)written,
+        (long long)fwrite_us,
+        (long long)(esp_timer_get_time() - operation_started_us),
+        (int)err
+    );
+    (void)operation_started_us;
+    (void)fwrite_us;
     return err;
 }
 
@@ -333,22 +372,107 @@ esp_err_t seismic_recorder_fs_flush(
         return ESP_ERR_INVALID_ARG;
     }
 
+    const int64_t operation_started_us =
+        esp_timer_get_time();
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "RECORDER_IO_TIMING op=flush sync=%u operation_us=%lld result=%d",
+            sync_to_media ? 1U : 0U,
+            (long long)(esp_timer_get_time() - operation_started_us),
+            (int)err
+        );
         return err;
     }
 
-    if (fflush(samples_file) != 0) {
+    const int64_t fflush_started_us =
+        esp_timer_get_time();
+    int64_t fsync_started_us = 0;
+    const int fflush_result = fflush(samples_file);
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=fflush sync=%u elapsed_us=%lld result=%d",
+        sync_to_media ? 1U : 0U,
+        (long long)(esp_timer_get_time() - fflush_started_us),
+        fflush_result
+    );
+    if (fflush_result != 0) {
         err = ESP_FAIL;
     }
-    else if (
-        sync_to_media &&
-        fsync(fileno(samples_file)) != 0
-    ) {
+    else if (sync_to_media) {
+        fsync_started_us = esp_timer_get_time();
+        const int fsync_result = fsync(fileno(samples_file));
+        ESP_LOGI(
+            TAG,
+            "RECORDER_IO_TIMING op=fsync elapsed_us=%lld result=%d",
+            (long long)(esp_timer_get_time() - fsync_started_us),
+            fsync_result
+        );
+        if (fsync_result != 0) {
+            err = ESP_FAIL;
+        }
+    }
+
+    storage_manager_operation_end();
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=flush sync=%u operation_us=%lld result=%d",
+        sync_to_media ? 1U : 0U,
+        (long long)(esp_timer_get_time() - operation_started_us),
+        (int)err
+    );
+    (void)operation_started_us;
+    (void)fflush_started_us;
+    if (sync_to_media) {
+        (void)fsync_started_us;
+    }
+    return err;
+}
+
+
+esp_err_t seismic_recorder_fs_sync(
+    FILE *samples_file
+)
+{
+    if (samples_file == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const int64_t operation_started_us =
+        esp_timer_get_time();
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "RECORDER_IO_TIMING op=fsync operation_us=%lld result=%d",
+            (long long)(esp_timer_get_time() - operation_started_us),
+            (int)err
+        );
+        return err;
+    }
+
+    const int64_t fsync_started_us = esp_timer_get_time();
+    const int fsync_result = fsync(fileno(samples_file));
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=fsync elapsed_us=%lld result=%d",
+        (long long)(esp_timer_get_time() - fsync_started_us),
+        fsync_result
+    );
+    if (fsync_result != 0) {
         err = ESP_FAIL;
     }
 
     storage_manager_operation_end();
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=fsync operation_us=%lld result=%d",
+        (long long)(esp_timer_get_time() - operation_started_us),
+        (int)err
+    );
+    (void)operation_started_us;
+    (void)fsync_started_us;
     return err;
 }
 
@@ -361,23 +485,49 @@ esp_err_t seismic_recorder_fs_close(
         return ESP_ERR_INVALID_ARG;
     }
 
+    const int64_t operation_started_us =
+        esp_timer_get_time();
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        /*
+         * The storage arbitration failed, so the file cannot be flushed or
+         * synced safely. Still release the libc FILE handle on this error
+         * path; the caller must never lose ownership of an open stream.
+         */
+        const int forced_fclose_result = fclose(samples_file);
+        ESP_LOGI(
+            TAG,
+            "RECORDER_IO_TIMING op=close operation_us=%lld result=%d forced_fclose=%d",
+            (long long)(esp_timer_get_time() - operation_started_us),
+            (int)err,
+            forced_fclose_result
+        );
+        (void)forced_fclose_result;
         return err;
     }
 
-    if (fflush(samples_file) != 0) {
-        err = ESP_FAIL;
-    }
-    else if (fsync(fileno(samples_file)) != 0) {
-        err = ESP_FAIL;
-    }
-
-    if (fclose(samples_file) != 0 && err == ESP_OK) {
+    const int64_t fclose_started_us =
+        esp_timer_get_time();
+    const int fclose_result = fclose(samples_file);
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=fclose elapsed_us=%lld result=%d",
+        (long long)(esp_timer_get_time() - fclose_started_us),
+        fclose_result
+    );
+    if (fclose_result != 0 && err == ESP_OK) {
         err = ESP_FAIL;
     }
 
     storage_manager_operation_end();
+    ESP_LOGI(
+        TAG,
+        "RECORDER_IO_TIMING op=close operation_us=%lld result=%d",
+        (long long)(esp_timer_get_time() - operation_started_us),
+        (int)err
+    );
+    (void)operation_started_us;
+    (void)fclose_started_us;
     return err;
 }
 

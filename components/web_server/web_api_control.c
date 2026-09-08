@@ -175,6 +175,11 @@ static esp_err_t web_control_acquisition_stop(void)
         if (err != ESP_OK) {
             return err;
         }
+
+        err = seismic_recorder_wait_for_stop();
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     seismic_acquisition_stop();

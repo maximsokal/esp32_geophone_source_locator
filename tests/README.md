@@ -134,6 +134,11 @@ beat follows event receive and LVGL dispatch, while keypad, power-button and
 acquisition beats follow their poll/read delays and buffer publication. This
 catches a stalled FreeRTOS task automatically, while it still cannot prove TFT
 pixels or electrical button response.
+Recorder STOP is an asynchronous worker state machine, not a wall-clock
+timeout: `DRAIN -> FLUSH -> SYNC -> CLOSE -> METADATA -> COMPLETE/ERROR`.
+`/api/status.recording.stop_stage`, `stop_error_stage` and `stop_stage_error`
+expose the current stage and the first propagated stage failure while the
+measurement service remains in `STOPPING`.
 `-Record -ObjectId` additionally exercises explicit recording start/stop and
 requires the completed session metadata returned by `/api/status?sessions=...`
 to contain the exact newly-created session ID, expected rate, four channels, a

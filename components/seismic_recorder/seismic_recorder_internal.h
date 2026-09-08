@@ -15,7 +15,6 @@
 #define SEISMIC_RECORDER_BATCH_FRAMES         128
 #define SEISMIC_RECORDER_FLUSH_INTERVAL_US     500000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
-#define SEISMIC_RECORDER_STOP_TIMEOUT_MS       5000
 #define SEISMIC_RECORDER_METADATA_BUFFER_SIZE  2048
 
 
@@ -51,6 +50,11 @@ esp_err_t seismic_recorder_fs_write_frames(
 esp_err_t seismic_recorder_fs_flush(
     FILE *samples_file,
     bool sync_to_media
+);
+
+
+esp_err_t seismic_recorder_fs_sync(
+    FILE *samples_file
 );
 
 

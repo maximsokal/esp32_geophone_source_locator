@@ -130,6 +130,10 @@ void app_shutdown_wait_and_run(void)
     esp_err_t recorder_err =
         seismic_recorder_stop();
 
+    if (recorder_err == ESP_OK) {
+        recorder_err = seismic_recorder_wait_for_stop();
+    }
+
     if (
         recorder_err != ESP_OK &&
         recorder_err != ESP_ERR_INVALID_STATE

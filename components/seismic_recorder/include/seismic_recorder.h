@@ -23,12 +23,33 @@ typedef enum
 } seismic_recorder_state_t;
 
 
+typedef enum
+{
+    SEISMIC_RECORDER_STOP_STAGE_NONE = 0,
+    SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+    SEISMIC_RECORDER_STOP_STAGE_FLUSH,
+    SEISMIC_RECORDER_STOP_STAGE_SYNC,
+    SEISMIC_RECORDER_STOP_STAGE_CLOSE,
+    SEISMIC_RECORDER_STOP_STAGE_METADATA,
+    SEISMIC_RECORDER_STOP_STAGE_COMPLETE,
+    SEISMIC_RECORDER_STOP_STAGE_ERROR
+
+} seismic_recorder_stop_stage_t;
+
+
+const char *seismic_recorder_stop_stage_name(
+    seismic_recorder_stop_stage_t stage
+);
+
+
 typedef struct
 {
     bool initialized;
     bool running;
 
     seismic_recorder_state_t state;
+    seismic_recorder_stop_stage_t stop_stage;
+    seismic_recorder_stop_stage_t stop_error_stage;
 
     char object_id[SEISMIC_RECORDER_OBJECT_ID_SIZE];
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
@@ -42,6 +63,7 @@ typedef struct
     uint64_t recording_ms;
 
     esp_err_t last_error;
+    esp_err_t stop_stage_error;
 
 } seismic_recorder_snapshot_t;
 
@@ -70,7 +92,12 @@ esp_err_t seismic_recorder_start(
 );
 
 
+/* Request STOP and return after the stop target has been captured. */
 esp_err_t seismic_recorder_stop(void);
+
+
+/* Wait for an already-requested STOP to finish all SD and metadata I/O. */
+esp_err_t seismic_recorder_wait_for_stop(void);
 
 
 esp_err_t seismic_recorder_get_snapshot(

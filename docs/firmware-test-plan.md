@@ -8,7 +8,7 @@ Scope: existing C firmware on main, starting at `844437f93306e5d4182dc8129162900
 - `board_config` owns wiring; `app_config/app_task_config.h` owns task/core policy.
 - `ad7606_driver` owns dedicated SPI3 conversion/BUSY/readout; `ad7606_acquisition` runs on Core 1. `seismic_acquisition` selects AD7606, ESP ADC bench, or synthetic backend.
 - `seismic_buffer` publishes 4-channel frames to independent cursor consumers. UI, recorder and web must not consume one another's data.
-- `measurement_service` queues commands on Core 0; `seismic_recorder` drains frames and finalizes session files. UI storage commands remain outside LVGL callbacks.
+- `measurement_service` queues commands on Core 0; `seismic_recorder` drains frames and finalizes session files through an asynchronous `DRAIN -> FLUSH -> SYNC -> CLOSE -> METADATA -> COMPLETE/ERROR` worker state machine. UI storage commands remain outside LVGL callbacks.
 - `storage_manager` serializes operations and DMA reserve; `spi_bus` quiesces TFT on shared SPI2; `sd_card` owns mount lifecycle. `object_format`, `object_recovery`, `object_store` and `object_service` own persisted object contracts and recovery.
 - `localization` is a 4..8-sensor 3D TDOA solver, not an event detector or validated end-to-end physical locator.
 - `adc_service` owns ADC1 and channel settling; `keypad` interprets the analog ladder. `ina3221_monitor` publishes battery/system/AD7606 rail telemetry.

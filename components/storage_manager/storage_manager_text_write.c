@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "storage_manager_internal.h"
 
@@ -36,38 +37,69 @@ static esp_err_t storage_manager_write_temp_file(
         return ESP_FAIL;
     }
 
-    bool write_ok =
-        fputs(
-            text,
-            file
-        ) >= 0;
+    const int64_t fputs_started_us =
+        esp_timer_get_time();
+    const int fputs_result = fputs(text, file);
+    ESP_LOGI(
+        TAG,
+        "IO_TIMING: temp-fputs path=%s result=%d elapsed=%lld us",
+        temp_path,
+        fputs_result,
+        (long long)(esp_timer_get_time() - fputs_started_us)
+    );
+    bool write_ok = fputs_result >= 0;
 
-    if (
-        write_ok &&
-        fflush(file) != 0
-    ) {
-        write_ok =
-            false;
+    if (write_ok) {
+        const int64_t fflush_started_us =
+            esp_timer_get_time();
+        const int fflush_result = fflush(file);
+        ESP_LOGI(
+            TAG,
+            "IO_TIMING: temp-fflush path=%s result=%d elapsed=%lld us",
+            temp_path,
+            fflush_result,
+            (long long)(esp_timer_get_time() - fflush_started_us)
+        );
+        if (fflush_result != 0) {
+            write_ok = false;
+        }
     }
 
     if (write_ok) {
         int descriptor =
             fileno(file);
 
-        if (
-            descriptor >= 0 &&
-            fsync(descriptor) != 0
-        ) {
-            write_ok =
-                false;
+        const int64_t fsync_started_us =
+            esp_timer_get_time();
+        const bool fsync_attempted = descriptor >= 0;
+        const int fsync_result =
+            fsync_attempted
+                ? fsync(descriptor)
+                : 0;
+        ESP_LOGI(
+            TAG,
+            "IO_TIMING: temp-fsync path=%s result=%d elapsed=%lld us",
+            temp_path,
+            fsync_result,
+            (long long)(esp_timer_get_time() - fsync_started_us)
+        );
+        if (fsync_attempted && fsync_result != 0) {
+            write_ok = false;
         }
     }
 
-    if (
-        fclose(file) != 0
-    ) {
-        write_ok =
-            false;
+    const int64_t fclose_started_us =
+        esp_timer_get_time();
+    const int fclose_result = fclose(file);
+    ESP_LOGI(
+        TAG,
+        "IO_TIMING: temp-fclose path=%s result=%d elapsed=%lld us",
+        temp_path,
+        fclose_result,
+        (long long)(esp_timer_get_time() - fclose_started_us)
+    );
+    if (fclose_result != 0) {
+        write_ok = false;
     }
 
     if (!write_ok) {

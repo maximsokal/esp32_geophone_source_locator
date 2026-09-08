@@ -29,6 +29,7 @@ static esp_err_t fake_recorder_start_error;
 static esp_err_t fake_recorder_snapshot_error;
 static esp_err_t fake_recorder_stop_error;
 static esp_err_t fake_recorder_delete_error;
+static bool fake_recorder_stop_pending;
 static unsigned fake_recorder_start_calls;
 static unsigned fake_recorder_stop_calls;
 static unsigned fake_recorder_delete_calls;
@@ -174,6 +175,9 @@ esp_err_t seismic_recorder_start(const char *object_id)
     snprintf(fake_recorder.session_id, sizeof(fake_recorder.session_id), "S000001");
     fake_recorder.running = true;
     fake_recorder.state = SEISMIC_RECORDER_RECORDING;
+    fake_recorder.stop_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    fake_recorder.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    fake_recorder.stop_stage_error = ESP_OK;
     fake_recorder.sample_rate_hz = 50U;
     fake_recorder.channel_count = 4U;
     fake_recorder.samples_written = 13U;
@@ -197,9 +201,33 @@ esp_err_t seismic_recorder_stop(void)
     if (fake_recorder_stop_error != ESP_OK) {
         return fake_recorder_stop_error;
     }
-    fake_recorder.running = false;
-    fake_recorder.state = SEISMIC_RECORDER_IDLE;
+    fake_recorder_stop_pending = true;
+    fake_recorder.state = SEISMIC_RECORDER_STOPPING;
+    fake_recorder.stop_stage = SEISMIC_RECORDER_STOP_STAGE_DRAIN;
+    fake_recorder.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    fake_recorder.stop_stage_error = ESP_OK;
     return ESP_OK;
+}
+
+esp_err_t seismic_recorder_wait_for_stop(void)
+{
+    if (fake_recorder_stop_pending) {
+        fake_recorder_stop_pending = false;
+        fake_recorder.running = false;
+        fake_recorder.state =
+            fake_recorder.last_error == ESP_OK
+                ? SEISMIC_RECORDER_IDLE
+                : SEISMIC_RECORDER_ERROR;
+        fake_recorder.stop_stage =
+            fake_recorder.last_error == ESP_OK
+                ? SEISMIC_RECORDER_STOP_STAGE_COMPLETE
+                : SEISMIC_RECORDER_STOP_STAGE_ERROR;
+        if (fake_recorder.last_error != ESP_OK) {
+            fake_recorder.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_DRAIN;
+            fake_recorder.stop_stage_error = fake_recorder.last_error;
+        }
+    }
+    return fake_recorder.last_error;
 }
 
 esp_err_t seismic_recorder_delete_session(const char *object_id, const char *session_id)
@@ -224,6 +252,7 @@ static void reset_fakes(void)
     fake_recorder_start_error = ESP_OK;
     fake_recorder_stop_error = ESP_OK;
     fake_recorder_delete_error = ESP_OK;
+    fake_recorder_stop_pending = false;
     fake_recorder_start_calls = 0U;
     fake_recorder_stop_calls = 0U;
     fake_recorder_delete_calls = 0U;
@@ -297,8 +326,27 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     assert(measurement_service_stop_async() == ESP_OK);
     run_pending_command();
     current = snapshot();
-    assert(current.state == MEASUREMENT_SERVICE_REVIEW);
+    assert(current.state == MEASUREMENT_SERVICE_STOPPING);
+    assert(current.stop_stage == SEISMIC_RECORDER_STOP_STAGE_DRAIN);
     assert(fake_recorder_stop_calls == 1U);
+    assert(measurement_service_start_async() == ESP_ERR_INVALID_STATE);
+    assert(measurement_service_keep_async() == ESP_ERR_INVALID_STATE);
+    assert(measurement_service_delete_async() == ESP_ERR_INVALID_STATE);
+
+    /* 50 x 100 ms service polls model completion beyond five seconds. */
+    for (unsigned poll = 0U; poll < 50U; ++poll) {
+        measurement_service_process_stop_poll();
+    }
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_STOPPING);
+    assert(current.last_error == ESP_OK);
+
+    assert(fake_recorder_stop_pending);
+    assert(seismic_recorder_wait_for_stop() == ESP_OK);
+    measurement_service_process_stop_poll();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_REVIEW);
+    assert(current.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
 
     assert(measurement_service_keep_async() == ESP_OK);
     run_pending_command();
@@ -311,6 +359,9 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     run_pending_command();
     assert(measurement_service_stop_async() == ESP_OK);
     run_pending_command();
+    assert(snapshot().state == MEASUREMENT_SERVICE_STOPPING);
+    assert(seismic_recorder_wait_for_stop() == ESP_OK);
+    measurement_service_process_stop_poll();
     assert(measurement_service_delete_async() == ESP_OK);
     run_pending_command();
     current = snapshot();
@@ -369,6 +420,9 @@ static void test_snapshot_and_delete_errors_preserve_safe_states(void)
     run_pending_command();
     assert(measurement_service_stop_async() == ESP_OK);
     run_pending_command();
+    assert(snapshot().state == MEASUREMENT_SERVICE_STOPPING);
+    assert(seismic_recorder_wait_for_stop() == ESP_OK);
+    measurement_service_process_stop_poll();
     fake_recorder_delete_error = ESP_FAIL;
     assert(measurement_service_delete_async() == ESP_OK);
     run_pending_command();
@@ -379,11 +433,38 @@ static void test_snapshot_and_delete_errors_preserve_safe_states(void)
     stop_service();
 }
 
+static void test_delayed_stop_error_blocks_restart_until_cleanup(void)
+{
+    start_service();
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+
+    assert(measurement_service_stop_async() == ESP_OK);
+    run_pending_command();
+    assert(snapshot().state == MEASUREMENT_SERVICE_STOPPING);
+
+    fake_recorder.last_error = ESP_FAIL;
+    fake_recorder.state = SEISMIC_RECORDER_ERROR;
+    fake_recorder.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_DRAIN;
+    fake_recorder.stop_stage_error = ESP_FAIL;
+    measurement_service_process_stop_poll();
+    assert(snapshot().state == MEASUREMENT_SERVICE_STOPPING);
+    assert(snapshot().last_error == ESP_FAIL);
+    assert(measurement_service_start_async() == ESP_ERR_INVALID_STATE);
+
+    assert(seismic_recorder_wait_for_stop() == ESP_FAIL);
+    measurement_service_process_stop_poll();
+    assert(snapshot().state == MEASUREMENT_SERVICE_ERROR);
+    assert(snapshot().last_error == ESP_FAIL);
+    stop_service();
+}
+
 int main(void)
 {
     test_initial_and_no_active_object();
     test_start_stop_keep_delete_and_repeated_start();
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();
+    test_delayed_stop_error_blocks_restart_until_cleanup();
     return 0;
 }

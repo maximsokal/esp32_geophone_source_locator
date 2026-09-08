@@ -41,6 +41,7 @@ static uint64_t s_cursor = 0U;
 static uint64_t s_stop_target = 0U;
 static int64_t s_started_us = 0;
 static int64_t s_last_flush_us = 0;
+static int64_t s_last_batch_log_us = 0;
 static bool s_stop_requested = false;
 static bool s_starting = false;
 
@@ -54,6 +55,82 @@ static void seismic_recorder_lock(void)
 static void seismic_recorder_unlock(void)
 {
     xSemaphoreGive(s_mutex);
+}
+
+
+const char *seismic_recorder_stop_stage_name(
+    seismic_recorder_stop_stage_t stage
+)
+{
+    switch (stage) {
+        case SEISMIC_RECORDER_STOP_STAGE_DRAIN:
+            return "drain";
+        case SEISMIC_RECORDER_STOP_STAGE_FLUSH:
+            return "flush";
+        case SEISMIC_RECORDER_STOP_STAGE_SYNC:
+            return "sync";
+        case SEISMIC_RECORDER_STOP_STAGE_CLOSE:
+            return "close";
+        case SEISMIC_RECORDER_STOP_STAGE_METADATA:
+            return "metadata";
+        case SEISMIC_RECORDER_STOP_STAGE_COMPLETE:
+            return "complete";
+        case SEISMIC_RECORDER_STOP_STAGE_ERROR:
+            return "error";
+        case SEISMIC_RECORDER_STOP_STAGE_NONE:
+        default:
+            return "none";
+    }
+}
+
+
+static void seismic_recorder_set_stop_stage(
+    seismic_recorder_stop_stage_t stage
+)
+{
+    seismic_recorder_lock();
+    s_snapshot.stop_stage = stage;
+    seismic_recorder_unlock();
+
+    ESP_LOGI(
+        TAG,
+        "STOP_STAGE stage=%s",
+        seismic_recorder_stop_stage_name(stage)
+    );
+}
+
+
+static void seismic_recorder_record_stop_error(
+    seismic_recorder_stop_stage_t failed_stage,
+    esp_err_t error,
+    seismic_recorder_stop_stage_t next_stage
+)
+{
+    if (error == ESP_OK) {
+        return;
+    }
+
+    seismic_recorder_lock();
+    if (s_snapshot.last_error == ESP_OK) {
+        s_snapshot.last_error = error;
+    }
+    if (s_snapshot.stop_stage_error == ESP_OK) {
+        s_snapshot.stop_stage_error = error;
+        s_snapshot.stop_error_stage = failed_stage;
+    }
+    s_snapshot.state = SEISMIC_RECORDER_STOPPING;
+    s_stop_requested = true;
+    s_stop_target = s_cursor;
+    s_snapshot.stop_stage = next_stage;
+    seismic_recorder_unlock();
+
+    ESP_LOGE(
+        TAG,
+        "STOP_STAGE failed=%s err=%s next=%s",
+        seismic_recorder_stop_stage_name(failed_stage),
+        esp_err_to_name(error),
+        seismic_recorder_stop_stage_name(next_stage)
+    );
 }
 
 
@@ -121,20 +198,6 @@ static void seismic_recorder_copy_snapshot_locked(
 }
 
 
-static void seismic_recorder_mark_error(
-    esp_err_t error
-)
-{
-    seismic_recorder_lock();
-    if (s_snapshot.last_error == ESP_OK) {
-        s_snapshot.last_error = error;
-    }
-    s_snapshot.state = SEISMIC_RECORDER_ERROR;
-    s_stop_requested = true;
-    seismic_recorder_unlock();
-}
-
-
 static void seismic_recorder_set_start_error(
     esp_err_t error
 )
@@ -193,87 +256,164 @@ static void seismic_recorder_discard_uncommitted_session(
 }
 
 
-static void seismic_recorder_finalize(void)
+static void seismic_recorder_stop_step(void)
 {
     FILE *file = NULL;
-    object_store_profile_t profile;
-    seismic_recorder_snapshot_t final_snapshot;
+    seismic_recorder_stop_stage_t stage;
 
     seismic_recorder_lock();
     file = s_samples_file;
-    profile = s_profile;
-    s_snapshot.state = SEISMIC_RECORDER_STOPPING;
-    s_snapshot.recording_ms = seismic_recorder_elapsed_ms_locked();
-    seismic_recorder_copy_snapshot_locked(&final_snapshot);
+    stage = s_snapshot.stop_stage;
     seismic_recorder_unlock();
 
-    esp_err_t close_err = ESP_OK;
-    if (file != NULL) {
-        close_err = seismic_recorder_fs_close(file);
-    }
-
-    seismic_recorder_lock();
-    s_samples_file = NULL;
-    s_snapshot.running = false;
-    s_snapshot.recording_ms = seismic_recorder_elapsed_ms_locked();
-    if (close_err != ESP_OK && s_snapshot.last_error == ESP_OK) {
-        s_snapshot.last_error = close_err;
-    }
-    s_snapshot.state =
-        s_snapshot.last_error == ESP_OK
-            ? SEISMIC_RECORDER_IDLE
-            : SEISMIC_RECORDER_ERROR;
-    s_stop_requested = false;
-    s_stop_target = s_cursor;
-    seismic_recorder_copy_snapshot_locked(&final_snapshot);
-    seismic_recorder_unlock();
-
-    const char *status =
-        final_snapshot.last_error == ESP_OK
-            ? "complete"
-            : "error";
-
-    const esp_err_t metadata_err =
-        seismic_recorder_json_write_metadata(
-            &profile,
-            &final_snapshot,
-            status
-        );
-
-    if (metadata_err != ESP_OK) {
-        seismic_recorder_lock();
-        if (s_snapshot.last_error == ESP_OK) {
-            s_snapshot.last_error = metadata_err;
+    switch (stage) {
+        case SEISMIC_RECORDER_STOP_STAGE_FLUSH: {
+            const esp_err_t err =
+                file == NULL
+                    ? ESP_ERR_INVALID_STATE
+                    : seismic_recorder_fs_flush(file, false);
+            if (err != ESP_OK) {
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_FLUSH,
+                    err,
+                    SEISMIC_RECORDER_STOP_STAGE_SYNC
+                );
+            }
+            else {
+                seismic_recorder_set_stop_stage(
+                    SEISMIC_RECORDER_STOP_STAGE_SYNC
+                );
+            }
+            break;
         }
-        s_snapshot.state = SEISMIC_RECORDER_ERROR;
-        seismic_recorder_unlock();
+
+        case SEISMIC_RECORDER_STOP_STAGE_SYNC: {
+            const esp_err_t err =
+                file == NULL
+                    ? ESP_ERR_INVALID_STATE
+                    : seismic_recorder_fs_sync(file);
+            if (err != ESP_OK) {
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_SYNC,
+                    err,
+                    SEISMIC_RECORDER_STOP_STAGE_CLOSE
+                );
+            }
+            else {
+                seismic_recorder_set_stop_stage(
+                    SEISMIC_RECORDER_STOP_STAGE_CLOSE
+                );
+            }
+            break;
+        }
+
+        case SEISMIC_RECORDER_STOP_STAGE_CLOSE: {
+            const esp_err_t err =
+                file == NULL
+                    ? ESP_ERR_INVALID_STATE
+                    : seismic_recorder_fs_close(file);
+
+            seismic_recorder_lock();
+            if (file == s_samples_file) {
+                s_samples_file = NULL;
+            }
+            seismic_recorder_unlock();
+
+            if (err != ESP_OK) {
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_CLOSE,
+                    err,
+                    SEISMIC_RECORDER_STOP_STAGE_METADATA
+                );
+            }
+            else {
+                seismic_recorder_set_stop_stage(
+                    SEISMIC_RECORDER_STOP_STAGE_METADATA
+                );
+            }
+            break;
+        }
+
+        case SEISMIC_RECORDER_STOP_STAGE_METADATA: {
+            seismic_recorder_snapshot_t final_snapshot;
+
+            seismic_recorder_lock();
+            s_snapshot.recording_ms = seismic_recorder_elapsed_ms_locked();
+            seismic_recorder_copy_snapshot_locked(&final_snapshot);
+            final_snapshot.running = false;
+            final_snapshot.state =
+                final_snapshot.last_error == ESP_OK
+                    ? SEISMIC_RECORDER_IDLE
+                    : SEISMIC_RECORDER_ERROR;
+            final_snapshot.stop_stage =
+                SEISMIC_RECORDER_STOP_STAGE_METADATA;
+            seismic_recorder_unlock();
+
+            const char *status =
+                final_snapshot.last_error == ESP_OK
+                    ? "complete"
+                    : "error";
+            const esp_err_t metadata_err =
+                seismic_recorder_json_write_metadata(
+                    &s_profile,
+                    &final_snapshot,
+                    status
+                );
+            if (metadata_err != ESP_OK) {
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_METADATA,
+                    metadata_err,
+                    SEISMIC_RECORDER_STOP_STAGE_ERROR
+                );
+            }
+
+            seismic_recorder_lock();
+            const bool complete = s_snapshot.last_error == ESP_OK;
+            s_snapshot.running = false;
+            s_snapshot.state =
+                complete
+                    ? SEISMIC_RECORDER_IDLE
+                    : SEISMIC_RECORDER_ERROR;
+            s_stop_requested = false;
+            s_stop_target = s_cursor;
+            s_snapshot.stop_stage =
+                complete
+                    ? SEISMIC_RECORDER_STOP_STAGE_COMPLETE
+                    : SEISMIC_RECORDER_STOP_STAGE_ERROR;
+            seismic_recorder_copy_snapshot_locked(&final_snapshot);
+            seismic_recorder_unlock();
+
+            ESP_LOGI(
+                TAG,
+                "STOP_COMPLETE stage=%s error_stage=%s stage_error=%s session=%s samples=%llu drops=%llu err=%s",
+                seismic_recorder_stop_stage_name(final_snapshot.stop_stage),
+                seismic_recorder_stop_stage_name(final_snapshot.stop_error_stage),
+                esp_err_to_name(final_snapshot.stop_stage_error),
+                final_snapshot.session_id,
+                (unsigned long long)final_snapshot.samples_written,
+                (unsigned long long)final_snapshot.dropped_frames,
+                esp_err_to_name(final_snapshot.last_error)
+            );
+
+            xEventGroupSetBits(
+                s_events,
+                SEISMIC_RECORDER_EVENT_STOPPED
+            );
+            break;
+        }
+
+        case SEISMIC_RECORDER_STOP_STAGE_NONE:
+        case SEISMIC_RECORDER_STOP_STAGE_DRAIN:
+        case SEISMIC_RECORDER_STOP_STAGE_COMPLETE:
+        case SEISMIC_RECORDER_STOP_STAGE_ERROR:
+        default:
+            seismic_recorder_record_stop_error(
+                stage,
+                ESP_ERR_INVALID_STATE,
+                SEISMIC_RECORDER_STOP_STAGE_FLUSH
+            );
+            break;
     }
-
-    ESP_LOGI(
-        TAG,
-        "Session %s stopped: samples=%llu drops=%llu err=%s",
-        final_snapshot.session_id,
-        (unsigned long long)final_snapshot.samples_written,
-        (unsigned long long)final_snapshot.dropped_frames,
-        esp_err_to_name(
-            final_snapshot.last_error == ESP_OK
-                ? metadata_err
-                : final_snapshot.last_error
-        )
-    );
-
-    xEventGroupSetBits(
-        s_events,
-        SEISMIC_RECORDER_EVENT_STOPPED
-    );
-}
-
-
-static bool seismic_recorder_should_finalize_locked(void)
-{
-    return
-        s_stop_requested &&
-        s_cursor >= s_stop_target;
 }
 
 
@@ -300,7 +440,11 @@ static void seismic_recorder_flush_if_due(
     const esp_err_t err = seismic_recorder_fs_flush(file, false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Periodic SD flush failed: %s", esp_err_to_name(err));
-        seismic_recorder_mark_error(err);
+        seismic_recorder_record_stop_error(
+            SEISMIC_RECORDER_STOP_STAGE_FLUSH,
+            err,
+            SEISMIC_RECORDER_STOP_STAGE_SYNC
+        );
     }
 }
 
@@ -315,6 +459,7 @@ static void seismic_recorder_task(void *argument)
         uint64_t stop_target = 0U;
         bool running = false;
         bool stop_requested = false;
+        seismic_recorder_stop_stage_t stop_stage;
 
         seismic_recorder_lock();
         running = s_snapshot.running;
@@ -322,19 +467,43 @@ static void seismic_recorder_task(void *argument)
         cursor = s_cursor;
         stop_requested = s_stop_requested;
         stop_target = s_stop_target;
-        const bool finalize_now =
-            running &&
-            seismic_recorder_should_finalize_locked();
+        stop_stage = s_snapshot.stop_stage;
         seismic_recorder_unlock();
 
-        if (finalize_now) {
-            seismic_recorder_finalize();
+        if (!running) {
+            vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_IDLE_DELAY_MS));
             seismic_recorder_observe();
             continue;
         }
 
-        if (!running || file == NULL) {
-            vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_IDLE_DELAY_MS));
+        /*
+         * STOP is a command to this worker, not a synchronous call-chain.
+         * Once drain is complete, execute exactly one I/O stage per worker
+         * turn. The service task can continue polling and every stage result
+         * is published through the recorder snapshot.
+         */
+        if (stop_requested && stop_stage != SEISMIC_RECORDER_STOP_STAGE_DRAIN) {
+            seismic_recorder_stop_step();
+            seismic_recorder_observe();
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        if (stop_requested && cursor >= stop_target) {
+            seismic_recorder_set_stop_stage(
+                SEISMIC_RECORDER_STOP_STAGE_FLUSH
+            );
+            seismic_recorder_observe();
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        if (file == NULL) {
+            seismic_recorder_record_stop_error(
+                SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                ESP_ERR_INVALID_STATE,
+                SEISMIC_RECORDER_STOP_STAGE_FLUSH
+            );
             seismic_recorder_observe();
             continue;
         }
@@ -365,10 +534,11 @@ static void seismic_recorder_task(void *argument)
                 "Recorder lost acquisition generation: %s",
                 esp_err_to_name(read_err)
             );
-            seismic_recorder_mark_error(read_err);
-            seismic_recorder_lock();
-            s_stop_target = s_cursor;
-            seismic_recorder_unlock();
+            seismic_recorder_record_stop_error(
+                SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                read_err,
+                SEISMIC_RECORDER_STOP_STAGE_FLUSH
+            );
             seismic_recorder_observe();
             continue;
         }
@@ -432,6 +602,10 @@ static void seismic_recorder_task(void *argument)
             );
         }
 
+        uint64_t cursor_after = cursor;
+        uint64_t total_dropped = 0U;
+        bool batch_log_due = false;
+
         seismic_recorder_lock();
         if (s_snapshot.running && file == s_samples_file) {
             s_snapshot.dropped_frames += effective_dropped;
@@ -447,31 +621,52 @@ static void seismic_recorder_task(void *argument)
                 s_cursor += effective_dropped;
             }
 
-            if (write_err != ESP_OK) {
-                if (s_snapshot.last_error == ESP_OK) {
-                    s_snapshot.last_error = write_err;
-                }
-                s_snapshot.state = SEISMIC_RECORDER_ERROR;
-                s_stop_requested = true;
-                s_stop_target = s_cursor;
+            cursor_after = s_cursor;
+            total_dropped = s_snapshot.dropped_frames;
+
+            const int64_t now_us = esp_timer_get_time();
+            if (
+                (frames_written > 0U || effective_dropped > 0U) &&
+                (
+                    s_last_batch_log_us == 0 ||
+                    now_us - s_last_batch_log_us >= 1000000LL
+                )
+            ) {
+                s_last_batch_log_us = now_us;
+                batch_log_due = true;
             }
         }
-        const bool done =
-            s_snapshot.running &&
-            seismic_recorder_should_finalize_locked();
         seismic_recorder_unlock();
 
         if (write_err != ESP_OK) {
             ESP_LOGE(TAG, "SD sample write failed: %s", esp_err_to_name(write_err));
+            seismic_recorder_record_stop_error(
+                SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                write_err,
+                SEISMIC_RECORDER_STOP_STAGE_FLUSH
+            );
         }
 
-        if (done) {
-            seismic_recorder_finalize();
-            seismic_recorder_observe();
-            continue;
+        if (batch_log_due) {
+            const uint64_t backlog =
+                info.total_frames > cursor_after
+                    ? info.total_frames - cursor_after
+                    : 0U;
+            ESP_LOGI(
+                TAG,
+                "RECORDER_BATCH requested=%u written=%u cursor=%llu producer_total=%llu backlog=%llu dropped=%llu total_dropped=%llu stop=%u",
+                (unsigned)allowed_count,
+                (unsigned)frames_written,
+                (unsigned long long)cursor_after,
+                (unsigned long long)info.total_frames,
+                (unsigned long long)backlog,
+                (unsigned long long)dropped,
+                (unsigned long long)total_dropped,
+                stop_requested ? 1U : 0U
+            );
         }
 
-        if (frames_written > 0U) {
+        if (write_err == ESP_OK && frames_written > 0U) {
             seismic_recorder_flush_if_due(file);
             seismic_recorder_observe();
             continue;
@@ -511,6 +706,7 @@ esp_err_t seismic_recorder_init(void)
     s_snapshot.state = SEISMIC_RECORDER_IDLE;
     s_snapshot.last_error = ESP_OK;
     s_starting = false;
+    s_last_batch_log_us = 0;
 
     xEventGroupSetBits(s_events, SEISMIC_RECORDER_EVENT_STOPPED);
 
@@ -617,9 +813,12 @@ esp_err_t seismic_recorder_start(
     initial_snapshot.initialized = true;
     initial_snapshot.running = true;
     initial_snapshot.state = SEISMIC_RECORDER_RECORDING;
+    initial_snapshot.stop_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    initial_snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
     initial_snapshot.sample_rate_hz = acquisition.sample_rate_hz;
     initial_snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
     initial_snapshot.last_error = ESP_OK;
+    initial_snapshot.stop_stage_error = ESP_OK;
 
     snprintf(
         initial_snapshot.object_id,
@@ -709,6 +908,7 @@ esp_err_t seismic_recorder_start(
     s_cursor = buffer_info.total_frames;
     s_stop_target = s_cursor;
     s_stop_requested = false;
+    s_last_batch_log_us = started_us;
     s_started_us = started_us;
     s_last_flush_us = started_us;
     s_starting = false;
@@ -742,11 +942,15 @@ esp_err_t seismic_recorder_stop(void)
         seismic_recorder_unlock();
         return ESP_OK;
     }
+    if (s_stop_requested) {
+        seismic_recorder_unlock();
+        return ESP_OK;
+    }
     seismic_recorder_unlock();
 
     seismic_frame_t scratch;
     size_t scratch_count = 0U;
-    seismic_buffer_info_t info;
+    seismic_buffer_info_t info = {0};
     const esp_err_t info_err = seismic_buffer_copy_latest(
         &scratch,
         1U,
@@ -762,28 +966,69 @@ esp_err_t seismic_recorder_stop(void)
 
     s_stop_requested = true;
     s_snapshot.state = SEISMIC_RECORDER_STOPPING;
+    s_snapshot.stop_stage = SEISMIC_RECORDER_STOP_STAGE_DRAIN;
+    s_snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    s_snapshot.stop_stage_error = ESP_OK;
     s_stop_target =
         info_err == ESP_OK && info.total_frames >= s_cursor
             ? info.total_frames
             : s_cursor;
+    const uint64_t target = s_stop_target;
+    const uint64_t cursor = s_cursor;
     seismic_recorder_unlock();
 
-    const EventBits_t bits = xEventGroupWaitBits(
+    const uint64_t backlog =
+        info.total_frames > cursor
+            ? info.total_frames - cursor
+            : 0U;
+    ESP_LOGI(
+        TAG,
+        "STOP_REQUEST stage=drain cursor=%llu target=%llu producer_total=%llu buffered=%u backlog=%llu info_err=%s",
+        (unsigned long long)cursor,
+        (unsigned long long)target,
+        (unsigned long long)info.total_frames,
+        (unsigned)info.buffered_frames,
+        (unsigned long long)backlog,
+        esp_err_to_name(info_err)
+    );
+
+    return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_wait_for_stop(void)
+{
+    if (s_mutex == NULL || s_events == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    seismic_recorder_lock();
+    const bool running = s_snapshot.running;
+    const bool stopping =
+        s_stop_requested ||
+        s_snapshot.state == SEISMIC_RECORDER_STOPPING;
+    const esp_err_t current_error = s_snapshot.last_error;
+    seismic_recorder_unlock();
+
+    if (!running) {
+        return current_error;
+    }
+
+    if (!stopping) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    (void)xEventGroupWaitBits(
         s_events,
         SEISMIC_RECORDER_EVENT_STOPPED,
         pdFALSE,
         pdTRUE,
-        pdMS_TO_TICKS(SEISMIC_RECORDER_STOP_TIMEOUT_MS)
+        portMAX_DELAY
     );
 
-    if ((bits & SEISMIC_RECORDER_EVENT_STOPPED) == 0U) {
-        ESP_LOGE(TAG, "Timed out stopping recorder");
-        return ESP_ERR_TIMEOUT;
-    }
-
     seismic_recorder_snapshot_t snapshot;
-    (void)seismic_recorder_get_snapshot(&snapshot);
-    return snapshot.last_error;
+    const esp_err_t err = seismic_recorder_get_snapshot(&snapshot);
+    return err == ESP_OK ? snapshot.last_error : err;
 }
 
 

@@ -6,6 +6,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -50,6 +51,15 @@ static void *s_dma_reserve =
 
 static unsigned s_operation_depth =
     0U;
+
+static int64_t s_outer_operation_started_us =
+    0;
+
+static int64_t s_outer_mutex_wait_us =
+    0;
+
+static int64_t s_outer_tft_quiesce_us =
+    0;
 
 
 static void storage_manager_log_dma_headroom(
@@ -348,12 +358,27 @@ esp_err_t storage_manager_operation_begin(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    const int64_t operation_started_us =
+        esp_timer_get_time();
+
     xSemaphoreTakeRecursive(
         s_operation_mutex,
         portMAX_DELAY
     );
 
+    const int64_t mutex_wait_us =
+        esp_timer_get_time() - operation_started_us;
+    const bool outermost = s_operation_depth == 0U;
+
+    if (outermost) {
+        s_outer_operation_started_us = operation_started_us;
+        s_outer_mutex_wait_us = mutex_wait_us;
+    }
+
     if (!s_ready) {
+        s_outer_operation_started_us = 0;
+        s_outer_mutex_wait_us = 0;
+        s_outer_tft_quiesce_us = 0;
         xSemaphoreGiveRecursive(
             s_operation_mutex
         );
@@ -361,18 +386,42 @@ esp_err_t storage_manager_operation_begin(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err =
-        app_spi_bus_sd_operation_begin();
+    esp_err_t err = ESP_OK;
+    if (outermost) {
+        const int64_t quiesce_started_us =
+            esp_timer_get_time();
+        err = app_spi_bus_sd_operation_begin();
+        s_outer_tft_quiesce_us =
+            esp_timer_get_time() - quiesce_started_us;
 
-    if (err != ESP_OK) {
-        xSemaphoreGiveRecursive(
-            s_operation_mutex
-        );
+        if (err != ESP_OK) {
+            const int64_t elapsed_us =
+                esp_timer_get_time() - operation_started_us;
+            const int64_t logged_mutex_wait_us =
+                s_outer_mutex_wait_us;
+            const int64_t logged_tft_quiesce_us =
+                s_outer_tft_quiesce_us;
+            const unsigned logged_depth =
+                s_operation_depth;
+            s_outer_operation_started_us = 0;
+            xSemaphoreGiveRecursive(
+                s_operation_mutex
+            );
 
-        return err;
+            ESP_LOGI(
+                TAG,
+                "STORAGE_OP_TIMING stage=begin-failed mutex_wait_us=%lld tft_quiesce_us=%lld depth=%u result=%d elapsed_us=%lld",
+                (long long)logged_mutex_wait_us,
+                (long long)logged_tft_quiesce_us,
+                logged_depth,
+                (int)err,
+                (long long)elapsed_us
+            );
+            return err;
+        }
     }
 
-    if (s_operation_depth == 0U) {
+    if (outermost) {
         storage_manager_dma_reserve_release();
 
         const size_t largest_dma =
@@ -388,7 +437,25 @@ esp_err_t storage_manager_operation_begin(void)
 
             storage_manager_dma_reserve_acquire();
             app_spi_bus_sd_operation_end();
+            const int64_t elapsed_us =
+                esp_timer_get_time() - operation_started_us;
+            const int64_t logged_mutex_wait_us =
+                s_outer_mutex_wait_us;
+            const int64_t logged_tft_quiesce_us =
+                s_outer_tft_quiesce_us;
+            const unsigned logged_depth =
+                s_operation_depth;
+            s_outer_operation_started_us = 0;
             xSemaphoreGiveRecursive(s_operation_mutex);
+            ESP_LOGI(
+                TAG,
+                "STORAGE_OP_TIMING stage=begin-failed mutex_wait_us=%lld tft_quiesce_us=%lld depth=%u result=%d elapsed_us=%lld",
+                (long long)logged_mutex_wait_us,
+                (long long)logged_tft_quiesce_us,
+                logged_depth,
+                (int)ESP_ERR_NO_MEM,
+                (long long)elapsed_us
+            );
             return ESP_ERR_NO_MEM;
         }
 
@@ -399,6 +466,17 @@ esp_err_t storage_manager_operation_begin(void)
     }
 
     s_operation_depth++;
+
+    if (outermost) {
+        ESP_LOGI(
+            TAG,
+            "STORAGE_OP_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=%lld depth=%u elapsed_us=%lld",
+            (long long)s_outer_mutex_wait_us,
+            (long long)s_outer_tft_quiesce_us,
+            s_operation_depth,
+            (long long)(esp_timer_get_time() - operation_started_us)
+        );
+    }
 
     return ESP_OK;
 }
@@ -415,17 +493,43 @@ void storage_manager_operation_end(void)
         return;
     }
 
+    const bool outermost = s_operation_depth == 1U;
     s_operation_depth--;
 
-    if (s_operation_depth == 0U) {
+    if (outermost) {
         storage_manager_dma_reserve_acquire();
         storage_manager_log_dma_headroom(
             "sd-operation-end",
             false
         );
-    }
 
-    app_spi_bus_sd_operation_end();
+        const int64_t resume_started_us =
+            esp_timer_get_time();
+        app_spi_bus_sd_operation_end();
+        const int64_t resume_us =
+            esp_timer_get_time() - resume_started_us;
+        const int64_t elapsed_us =
+            esp_timer_get_time() - s_outer_operation_started_us;
+        const int64_t logged_mutex_wait_us =
+            s_outer_mutex_wait_us;
+        const unsigned logged_depth =
+            s_operation_depth;
+
+        s_outer_operation_started_us = 0;
+        xSemaphoreGiveRecursive(
+            s_operation_mutex
+        );
+
+        ESP_LOGI(
+            TAG,
+            "STORAGE_OP_TIMING stage=end mutex_wait_us=%lld tft_resume_us=%lld depth=%u elapsed_us=%lld",
+            (long long)logged_mutex_wait_us,
+            (long long)resume_us,
+            logged_depth,
+            (long long)elapsed_us
+        );
+        return;
+    }
 
     xSemaphoreGiveRecursive(
         s_operation_mutex
