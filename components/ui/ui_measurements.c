@@ -1,7 +1,11 @@
 #include "ui_internal.h"
 
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
+
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 
 #include "ui_measurement_trace.h"
 
@@ -10,9 +14,16 @@
 #define UI_MEASUREMENT_MIN_SCALE_UV   1000.0f
 
 
-static seismic_frame_t s_preview_frames[
-    UI_MEASUREMENT_PREVIEW_FRAMES
-];
+static const char *TAG = "UI_MEASUREMENTS";
+
+/*
+ * A 512-frame preview is about 12 KiB. Keeping that array in normal .bss
+ * permanently removes the same amount from scarce internal DRAM, including
+ * before HTTPS has created its server task. Allocate it from the board's 8 MiB
+ * PSRAM only when the measurement screen is actually used instead.
+ */
+static seismic_frame_t *s_preview_frames = NULL;
+static bool s_preview_allocation_attempted = false;
 
 static int32_t s_trace[
     SEISMIC_CHANNEL_COUNT
@@ -22,6 +33,47 @@ static int32_t s_trace[
 
 static float s_scale_uv =
     UI_MEASUREMENT_MIN_SCALE_UV;
+
+
+static bool ui_measurements_ensure_preview_buffer(void)
+{
+    if (s_preview_frames != NULL) {
+        return true;
+    }
+
+    if (s_preview_allocation_attempted) {
+        return false;
+    }
+
+    s_preview_allocation_attempted = true;
+
+    const size_t bytes =
+        sizeof(seismic_frame_t) *
+        UI_MEASUREMENT_PREVIEW_FRAMES;
+
+    s_preview_frames = heap_caps_malloc(
+        bytes,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+
+    if (s_preview_frames == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Unable to allocate %u-byte measurement preview in PSRAM",
+            (unsigned)bytes
+        );
+        return false;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Measurement preview allocated in PSRAM: %u frames, %u bytes",
+        (unsigned)UI_MEASUREMENT_PREVIEW_FRAMES,
+        (unsigned)bytes
+    );
+
+    return true;
+}
 
 
 static int32_t ui_measurements_round_to_i32(float value)
@@ -137,12 +189,15 @@ static void ui_measurements_refresh_charts_locked(void)
     size_t frame_count = 0U;
     seismic_buffer_info_t buffer_info;
 
-    const esp_err_t err = seismic_buffer_copy_latest(
-        s_preview_frames,
-        UI_MEASUREMENT_PREVIEW_FRAMES,
-        &frame_count,
-        &buffer_info
-    );
+    esp_err_t err = ESP_ERR_NO_MEM;
+    if (ui_measurements_ensure_preview_buffer()) {
+        err = seismic_buffer_copy_latest(
+            s_preview_frames,
+            UI_MEASUREMENT_PREVIEW_FRAMES,
+            &frame_count,
+            &buffer_info
+        );
+    }
 
     const float max_abs_uv = ui_measurement_trace_reduce(
         err == ESP_OK ? s_preview_frames : NULL,
@@ -528,8 +583,15 @@ void ui_handle_measurements_key_locked(
 
     if (key == KEYPAD_KEY_LEFT) {
         if (snapshot.state == MEASUREMENT_SERVICE_RECORDING) {
-            ui_set_notice_locked("STOP RECORDING BEFORE LEAVING");
-            ui_measurements_refresh_locked();
+            const esp_err_t err = measurement_service_stop_async();
+            ui_set_notice_locked(
+                err == ESP_OK
+                    ? "STOPPING RECORDING..."
+                    : "STOP FAILED"
+            );
+            if (err == ESP_OK) {
+                ui_measurements_refresh_locked();
+            }
             return;
         }
 
