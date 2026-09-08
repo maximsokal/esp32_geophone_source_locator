@@ -1,5 +1,6 @@
 #include "ad7606_acquisition.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -21,6 +22,9 @@
 
 static const char *TAG =
     "AD7606_ACQ";
+
+static const char *DIAG_TAG =
+    "AD7606_DIAG";
 
 
 static TaskHandle_t s_task =
@@ -44,6 +48,154 @@ typedef struct
     esp_err_t result;
 
 } ad7606_start_context_t;
+
+
+typedef struct
+{
+    uint32_t count;
+    int16_t min_raw;
+    int16_t max_raw;
+    int64_t sum_raw;
+    double sum_sq_raw;
+    uint32_t saturation_count;
+
+} ad7606_diag_channel_t;
+
+
+static ad7606_diag_channel_t s_diag[
+    SEISMIC_CHANNEL_COUNT
+];
+
+
+static void ad7606_diag_reset(void)
+{
+    memset(s_diag, 0, sizeof(s_diag));
+
+    for (
+        size_t channel = 0;
+        channel < SEISMIC_CHANNEL_COUNT;
+        ++channel
+    ) {
+        s_diag[channel].min_raw = INT16_MAX;
+        s_diag[channel].max_raw = INT16_MIN;
+    }
+}
+
+
+static void ad7606_diag_record(
+    const ad7606_sample_t *sample
+)
+{
+    for (
+        size_t channel = 0;
+        channel < SEISMIC_CHANNEL_COUNT;
+        ++channel
+    ) {
+        ad7606_diag_channel_t *diag = &s_diag[channel];
+        const int16_t raw = sample->raw[channel];
+
+        if (raw < diag->min_raw) {
+            diag->min_raw = raw;
+        }
+
+        if (raw > diag->max_raw) {
+            diag->max_raw = raw;
+        }
+
+        diag->count++;
+        diag->sum_raw += raw;
+        diag->sum_sq_raw += (double)raw * (double)raw;
+
+        if (raw == INT16_MIN || raw == INT16_MAX) {
+            diag->saturation_count++;
+        }
+    }
+}
+
+
+static const char *ad7606_diag_state(
+    const ad7606_diag_channel_t *diag
+)
+{
+    if (diag->saturation_count > 0U) {
+        return "CLIP";
+    }
+
+    if (diag->count > 0U && diag->min_raw == diag->max_raw) {
+        return "FLAT";
+    }
+
+    return "VAR";
+}
+
+
+static void ad7606_diag_log_and_reset(void)
+{
+    /* One raw ADC code in millivolts for the configured bipolar range. */
+    const double lsb_mv =
+        (double)ad7606_raw_to_uv(1) /
+        1000.0;
+
+    for (
+        size_t channel = 0;
+        channel < SEISMIC_CHANNEL_COUNT;
+        ++channel
+    ) {
+        const ad7606_diag_channel_t *diag = &s_diag[channel];
+
+        if (diag->count == 0U) {
+            ESP_LOGW(
+                DIAG_TAG,
+                "CH%u no samples",
+                (unsigned)(channel + 1U)
+            );
+            continue;
+        }
+
+        const double count = (double)diag->count;
+        const double mean_raw = (double)diag->sum_raw / count;
+
+        double variance_raw =
+            (diag->sum_sq_raw / count) -
+            (mean_raw * mean_raw);
+
+        /* Protect sqrt() from a tiny negative caused by rounding. */
+        if (variance_raw < 0.0) {
+            variance_raw = 0.0;
+        }
+
+        const double rms_raw = sqrt(variance_raw);
+        const double p2p_raw =
+            (double)diag->max_raw -
+            (double)diag->min_raw;
+
+        const double max_from_mean =
+            fabs((double)diag->max_raw - mean_raw);
+        const double min_from_mean =
+            fabs((double)diag->min_raw - mean_raw);
+        const double peak_raw =
+            max_from_mean > min_from_mean
+                ? max_from_mean
+                : min_from_mean;
+
+        ESP_LOGI(
+            DIAG_TAG,
+            "CH%u n=%u mean=%+.3fmV rms=%.3fmV p2p=%.3fmV peak=%.3fmV min=%+.3fmV max=%+.3fmV sat=%u %s",
+            (unsigned)(channel + 1U),
+            (unsigned)diag->count,
+            mean_raw * lsb_mv,
+            rms_raw * lsb_mv,
+            p2p_raw * lsb_mv,
+            peak_raw * lsb_mv,
+            (double)diag->min_raw * lsb_mv,
+            (double)diag->max_raw * lsb_mv,
+            (unsigned)diag->saturation_count,
+            ad7606_diag_state(diag)
+        );
+    }
+
+    ad7606_diag_reset();
+}
 
 
 static void ad7606_status_reset(void)
@@ -152,38 +304,6 @@ static void ad7606_timer_callback(
             s_task
         );
     }
-}
-
-
-static void ad7606_log_sample(
-    const ad7606_sample_t *sample
-)
-{
-    ESP_LOGI(
-        TAG,
-        "raw=[%d,%d,%d,%d,%d,%d,%d,%d]",
-        (int)sample->raw[0],
-        (int)sample->raw[1],
-        (int)sample->raw[2],
-        (int)sample->raw[3],
-        (int)sample->raw[4],
-        (int)sample->raw[5],
-        (int)sample->raw[6],
-        (int)sample->raw[7]
-    );
-
-    ESP_LOGI(
-        TAG,
-        "mV=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
-        ad7606_raw_to_uv(sample->raw[0]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[1]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[2]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[3]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[4]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[5]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[6]) / 1000.0f,
-        ad7606_raw_to_uv(sample->raw[7]) / 1000.0f
-    );
 }
 
 
@@ -354,6 +474,8 @@ static void ad7606_worker(
     uint32_t successful_samples =
         0;
 
+    ad7606_diag_reset();
+
     while (s_running) {
         (void)ulTaskNotifyTake(
             pdTRUE,
@@ -412,6 +534,8 @@ static void ad7606_worker(
             all_channels_uv
         );
 
+        ad7606_diag_record(&sample);
+
         float seismic_channels[
             SEISMIC_CHANNEL_COUNT
         ];
@@ -447,9 +571,7 @@ static void ad7606_worker(
             CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ ==
             0
         ) {
-            ad7606_log_sample(
-                &sample
-            );
+            ad7606_diag_log_and_reset();
         }
     }
 
