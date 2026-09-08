@@ -17,7 +17,10 @@
 #include "storage_manager.h"
 
 
-#define SEISMIC_RECORDER_EVENT_STOPPED  BIT0
+#define SEISMIC_RECORDER_EVENT_STOPPED          BIT0
+#define SEISMIC_RECORDER_WRITE_PERIOD_MS        200U
+#define SEISMIC_RECORDER_MIN_WRITE_FRAMES         8U
+#define SEISMIC_RECORDER_BATCH_WAIT_MS            10U
 
 
 static const char *TAG = "SEISMIC_RECORDER";
@@ -47,6 +50,25 @@ static void seismic_recorder_lock(void)
 static void seismic_recorder_unlock(void)
 {
     xSemaphoreGive(s_mutex);
+}
+
+
+static size_t seismic_recorder_target_batch_frames(
+    uint32_t sample_rate_hz
+)
+{
+    size_t target =
+        (size_t)(((uint64_t)sample_rate_hz * SEISMIC_RECORDER_WRITE_PERIOD_MS) / 1000ULL);
+
+    if (target < SEISMIC_RECORDER_MIN_WRITE_FRAMES) {
+        target = SEISMIC_RECORDER_MIN_WRITE_FRAMES;
+    }
+
+    if (target > SEISMIC_RECORDER_BATCH_FRAMES) {
+        target = SEISMIC_RECORDER_BATCH_FRAMES;
+    }
+
+    return target;
 }
 
 
@@ -264,6 +286,22 @@ static void seismic_recorder_task(void *argument)
             continue;
         }
 
+        /*
+         * Do not open a TFT/SD arbitration window for every 500 Hz sample.
+         * Wait until roughly 200 ms of frames are ready, then write one
+         * bounded batch. STOP bypasses this threshold so the exact stop cursor
+         * can still be drained immediately.
+         */
+        if (!stop_requested && dropped == 0U && frame_count > 0U) {
+            const size_t target_batch =
+                seismic_recorder_target_batch_frames(info.sample_rate_hz);
+
+            if (frame_count < target_batch) {
+                vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_BATCH_WAIT_MS));
+                continue;
+            }
+        }
+
         size_t allowed_count = frame_count;
         uint64_t effective_dropped = dropped;
         uint64_t first_frame =
@@ -405,9 +443,10 @@ esp_err_t seismic_recorder_init(void)
 
     ESP_LOGI(
         TAG,
-        "Recorder ready on core %d; batch=%u frames",
+        "Recorder ready on core %d; batch=%u frames, write window=%u ms",
         APP_TASK_CORE_SERVICES,
-        (unsigned)SEISMIC_RECORDER_BATCH_FRAMES
+        (unsigned)SEISMIC_RECORDER_BATCH_FRAMES,
+        (unsigned)SEISMIC_RECORDER_WRITE_PERIOD_MS
     );
 
     return ESP_OK;
@@ -537,11 +576,12 @@ esp_err_t seismic_recorder_start(
 
     ESP_LOGI(
         TAG,
-        "Recording %s/%s at %lu Hz from cursor %llu",
+        "Recording %s/%s at %lu Hz from cursor %llu (target batch=%u)",
         object_id,
         session_id,
         (unsigned long)acquisition.sample_rate_hz,
-        (unsigned long long)buffer_info.total_frames
+        (unsigned long long)buffer_info.total_frames,
+        (unsigned)seismic_recorder_target_batch_frames(acquisition.sample_rate_hz)
     );
 
     return ESP_OK;
