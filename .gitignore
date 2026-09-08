@@ -1,8 +1,15 @@
 ﻿# ESP-IDF build output
 build/
+tests/.venv-tests/
+build/host-tests/
+.tools/
+test_app/build-s3/
 managed_components/
 sdkconfig
 sdkconfig.old
+*.obj
+**/.pytest_cache/
+**/__pycache__/
 
 # Web UI build output
 webui/node_modules/
@@ -21,7 +28,8 @@ components/web_server/certs/*
 !components/web_server/certs/README.md
 
 # IDE / editor
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .vscode.zip
 .idea/
 .settings/

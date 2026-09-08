@@ -6,6 +6,8 @@
 
 #include "power_button_input.h"
 
+#include "runtime_observability.h"
+
 
 static const char *TAG =
     "POWER_BUTTON";
@@ -66,6 +68,8 @@ void power_button_monitor_worker(
     unsigned high_samples =
         0;
 
+    uint64_t poll_count = 0U;
+
     while (state->running) {
         if (
             power_button_input_is_high()
@@ -99,6 +103,11 @@ void power_button_monitor_worker(
             pdMS_TO_TICKS(
                 BUTTON_POLL_MS
             )
+        );
+
+        runtime_observability_beat(
+            RUNTIME_TASK_POWER_BUTTON,
+            ++poll_count
         );
     }
 

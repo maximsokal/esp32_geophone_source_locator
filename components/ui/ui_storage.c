@@ -156,7 +156,7 @@ void ui_render_storage_locked(void)
             10,
             56,
             280,
-            "SD LIMIT LOCKED TO 2 MHz FOR STABILITY",
+            "SD RUNTIME CEILING 20 MHz",
             UI_STORAGE_COLOR_MUTED
         );
     } else {

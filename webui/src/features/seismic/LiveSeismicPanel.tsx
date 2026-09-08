@@ -6,7 +6,7 @@ const LIVE_REFRESH_MS = 500;
 const LIVE_ERROR_BACKOFF_MIN_MS = 1500;
 const LIVE_ERROR_BACKOFF_MAX_MS = 10000;
 
-function polylinePoints(samples: number[], width: number, height: number): string {
+export function polylinePoints(samples: number[], width: number, height: number): string {
   if (samples.length < 2) return '';
   let maxAbs = 1;
   for (const sample of samples) maxAbs = Math.max(maxAbs, Math.abs(sample));

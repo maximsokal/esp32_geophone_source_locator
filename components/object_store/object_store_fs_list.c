@@ -45,7 +45,11 @@ esp_err_t object_store_fs_list(
          * metadata validity. DT_UNKNOWN is accepted for FAT implementations
          * that do not populate d_type.
          */
+#if defined(DT_DIR) && defined(DT_UNKNOWN)
         if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) continue;
+#elif defined(DT_DIR)
+        if (entry->d_type != DT_DIR) continue;
+#endif
 
         object_store_summary_t *item = &objects[*object_count];
         object_store_fs_copy_id(item->id, sizeof(item->id), entry->d_name);

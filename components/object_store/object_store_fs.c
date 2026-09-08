@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "object_format.h"
 #include "storage_manager.h"
 
 
@@ -14,7 +15,8 @@ esp_err_t object_store_fs_object_path(
 {
     if (
         object_id == NULL ||
-        path == NULL
+        path == NULL ||
+        !object_format_id_is_valid(object_id)
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -45,7 +47,8 @@ esp_err_t object_store_fs_metadata_path(
 {
     if (
         object_id == NULL ||
-        path == NULL
+        path == NULL ||
+        !object_format_id_is_valid(object_id)
     ) {
         return ESP_ERR_INVALID_ARG;
     }

@@ -6,13 +6,55 @@
 #include "freertos/FreeRTOS.h"
 
 
+/* ESP-IDF builds use GCC's C11-compatible atomic builtins. MSVC does not
+ * expose those builtins, so keep the host contract on the same sequentially
+ * consistent 32-bit operations through its interlocked primitives. */
+#if defined(_MSC_VER)
+#include <intrin.h>
+
+static uint32_t seismic_sequence_load(const volatile uint32_t *sequence)
+{
+    return (uint32_t)_InterlockedCompareExchange(
+        (volatile long *)sequence,
+        0L,
+        0L
+    );
+}
+
+static void seismic_sequence_store(
+    volatile uint32_t *sequence,
+    uint32_t value
+)
+{
+    (void)_InterlockedExchange(
+        (volatile long *)sequence,
+        (long)value
+    );
+}
+#else
+
+static uint32_t seismic_sequence_load(const volatile uint32_t *sequence)
+{
+    return __atomic_load_n(sequence, __ATOMIC_SEQ_CST);
+}
+
+static void seismic_sequence_store(
+    volatile uint32_t *sequence,
+    uint32_t value
+)
+{
+    __atomic_store_n(sequence, value, __ATOMIC_SEQ_CST);
+}
+#endif
+
+
 #define SEISMIC_SLOT_READ_RETRIES      4
 #define SEISMIC_SNAPSHOT_RETRIES       4
 
 
 typedef struct
 {
-    uint32_t sequence;
+    volatile uint32_t sequence;
     uint64_t frame_number;
     seismic_frame_t frame;
 
@@ -99,9 +141,8 @@ static void seismic_buffer_write_slot(
 )
 {
     uint32_t sequence =
-        __atomic_load_n(
-            &slot->sequence,
-            __ATOMIC_SEQ_CST
+        seismic_sequence_load(
+            &slot->sequence
         );
 
     if ((sequence & 1U) != 0U) {
@@ -112,10 +153,9 @@ static void seismic_buffer_write_slot(
      * Odd sequence means the producer is mutating this slot.
      * Readers never wait for the producer; they simply retry.
      */
-    __atomic_store_n(
+    seismic_sequence_store(
         &slot->sequence,
-        sequence + 1U,
-        __ATOMIC_SEQ_CST
+        sequence + 1U
     );
 
     slot->frame_number =
@@ -136,10 +176,9 @@ static void seismic_buffer_write_slot(
     /*
      * Publishing an even sequence releases the completed frame.
      */
-    __atomic_store_n(
+    seismic_sequence_store(
         &slot->sequence,
-        sequence + 2U,
-        __ATOMIC_SEQ_CST
+        sequence + 2U
     );
 }
 
@@ -156,9 +195,8 @@ static bool seismic_buffer_read_slot(
         ++attempt
     ) {
         const uint32_t before =
-            __atomic_load_n(
-                &slot->sequence,
-                __ATOMIC_SEQ_CST
+            seismic_sequence_load(
+                &slot->sequence
             );
 
         if ((before & 1U) != 0U) {
@@ -172,9 +210,8 @@ static bool seismic_buffer_read_slot(
             slot->frame;
 
         const uint32_t after =
-            __atomic_load_n(
-                &slot->sequence,
-                __ATOMIC_SEQ_CST
+            seismic_sequence_load(
+                &slot->sequence
             );
 
         if (

@@ -183,6 +183,8 @@ static esp_err_t web_webui_flash_send(
             (esp_timer_get_time() - started_us) /
             1000
         );
+    /* Keep the timing value observable even when host log stubs compile out. */
+    (void)elapsed_ms;
 
     if (err == ESP_OK) {
         ESP_LOGI(

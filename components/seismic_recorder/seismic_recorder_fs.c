@@ -3,12 +3,26 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#define fsync _commit
+#ifdef _MSC_VER
+#define fileno _fileno
+#endif
+#else
 #include <unistd.h>
+#endif
 
+#include "object_format.h"
 #include "storage_manager.h"
 
 
 #define SEISMIC_RECORDER_BINARY_VERSION  1U
+
+static bool seismic_recorder_fs_parse_session_number(
+    const char *name,
+    unsigned *number
+);
 
 
 static esp_err_t seismic_recorder_fs_sessions_path(
@@ -17,6 +31,10 @@ static esp_err_t seismic_recorder_fs_sessions_path(
     size_t path_size
 )
 {
+    if (!object_format_id_is_valid(object_id)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     int written = snprintf(
         path,
         path_size,
@@ -39,6 +57,14 @@ static esp_err_t seismic_recorder_fs_session_path(
     size_t path_size
 )
 {
+    unsigned session_number = 0U;
+    if (
+        !object_format_id_is_valid(object_id) ||
+        !seismic_recorder_fs_parse_session_number(session_id, &session_number)
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     int written = snprintf(
         path,
         path_size,

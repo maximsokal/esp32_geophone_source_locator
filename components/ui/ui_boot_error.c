@@ -43,7 +43,7 @@ void ui_render_boot_error_locked(const char *message)
         14,
         76,
         260,
-        "SD SPI FIXED AT 2 MHz",
+        "SD SPI CEILING 20 MHz",
         UI_COLOR_WARNING
     );
 

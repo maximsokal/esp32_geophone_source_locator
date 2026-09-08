@@ -4,6 +4,7 @@ import {
   fetchSeismic,
   sendControl,
 } from '../../src/api/deviceApi';
+import { polylinePoints } from '../../src/features/seismic/LiveSeismicPanel';
 
 function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response {
   return new Response(JSON.stringify(body), {
@@ -64,8 +65,60 @@ describe('serialized ESP API traffic', () => {
       buffered_frames: 0,
       total_frames: 0,
       timestamps_ms: [],
-      channels: [],
+      channels: [1, 2, 3, 4].map((id) => ({ id, samples_uv: [] })),
     }));
     await Promise.all([first, second]);
+  });
+
+  it('carries a signed API impulse through polling normalization into waveform points', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      source: 'AD7606',
+      sample_rate_hz: 500,
+      count: 3,
+      buffered_frames: 3,
+      total_frames: 103,
+      timestamps_ms: [1000, 1002, 1004],
+      channels: [1, 2, 3, 4].map((id) => ({
+        id,
+        samples_uv: id === 1 ? [-100, 100, -50] : [0, 0, 0],
+      })),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const snapshot = await fetchSeismic(220);
+    const points = polylinePoints(snapshot.channels[0].samples_uv, 720, 120);
+
+    expect(snapshot.channels[0].samples_uv).toEqual([-100, 100, -50]);
+    expect(points.split(' ')).toHaveLength(3);
+    expect(points).toContain('0.0,112.8');
+    expect(points).toContain('360.0,7.2');
+    expect(points).toContain('720.0,86.4');
+  });
+
+  it('rejects a malformed seismic channel before it reaches the renderer', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      source: 'AD7606',
+      sample_rate_hz: 500,
+      count: 1,
+      buffered_frames: 1,
+      total_frames: 1,
+      timestamps_ms: [1000],
+      channels: [1, 2, 3, 8].map((id) => ({ id, samples_uv: [1] })),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchSeismic(220)).rejects.toThrow('invalid channel shape');
+
+    fetchMock.mockResolvedValue(jsonResponse({
+      source: 'AD7606',
+      sample_rate_hz: 500,
+      count: 2,
+      buffered_frames: 2,
+      total_frames: 2,
+      timestamps_ms: [1000, 1002],
+      channels: [1, 2, 3, 4].map((id) => ({ id, samples_uv: [0, 1] })),
+    }));
+    await expect(fetchSeismic(220)).resolves.toMatchObject({ count: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

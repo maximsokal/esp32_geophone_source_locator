@@ -78,6 +78,21 @@ static void test_register_conversion(void)
         0.100f,
         0.0001f
     );
+
+    /* Exercise the signed 13-bit endpoints and the invalid shunt boundary. */
+    assert_near(
+        ina3221_policy_shunt_raw_to_volts(0x7FF8u),
+        0.16380f,
+        0.000001f
+    );
+    assert_near(
+        ina3221_policy_shunt_raw_to_volts(0x8000u),
+        -0.16384f,
+        0.000001f
+    );
+    assert(
+        ina3221_policy_current_from_shunt(1.0f, 0.0f) == 0.0f
+    );
 }
 
 

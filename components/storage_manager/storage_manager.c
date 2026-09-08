@@ -14,6 +14,11 @@
 #include "storage_manager_internal.h"
 
 
+#ifndef S_ISDIR
+#define S_ISDIR(mode) (((mode) & _S_IFMT) == _S_IFDIR)
+#endif
+
+
 static const char *TAG =
     "STORAGE_MANAGER";
 
@@ -405,9 +410,12 @@ void storage_manager_operation_end(void)
         return;
     }
 
-    if (s_operation_depth > 0U) {
-        s_operation_depth--;
+    /* An unmatched end cannot release an SPI operation it never acquired. */
+    if (s_operation_depth == 0U) {
+        return;
     }
+
+    s_operation_depth--;
 
     if (s_operation_depth == 0U) {
         storage_manager_dma_reserve_acquire();

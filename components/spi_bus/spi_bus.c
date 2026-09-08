@@ -1,5 +1,7 @@
 #include "spi_bus.h"
 
+#include <stddef.h>
+
 #include "board_config.h"
 
 #include "driver/gpio.h"
@@ -55,6 +57,9 @@ static esp_err_t app_spi_bus_set_level_checked(
     const char *name
 )
 {
+    /* Keep the diagnostic label available even when log macros are compiled out. */
+    (void)name;
+
     esp_err_t err =
         gpio_set_level(
             pin,
@@ -150,6 +155,9 @@ static esp_err_t app_spi_bus_prepare_device_idle_levels(void)
 
 esp_err_t app_spi_bus_init(void)
 {
+    /* Host log stubs may compile ESP_LOG* calls out completely. */
+    (void)TAG;
+
     esp_err_t err =
         app_spi_bus_create_runtime_mutex();
 
