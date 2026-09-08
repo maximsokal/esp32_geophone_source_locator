@@ -6,6 +6,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 
 static const char *TAG = "WEB_WEBUI_FLASH";
 
@@ -14,6 +17,14 @@ static const char *WEB_CACHE_NO_STORE =
 
 static const char *WEB_CACHE_IMMUTABLE =
     "public, max-age=31536000, immutable";
+
+/*
+ * Keep individual TLS writes small. The ESP32-S3 has PSRAM, but the Wi-Fi,
+ * HTTPD socket and SDSPI paths still compete for scarce internal RAM. A 2 KiB
+ * payload avoids one long blocking 10+ KiB mbedTLS write while requiring only
+ * a handful of records for the small dashboard entry bundle.
+ */
+#define WEB_FLASH_SEND_CHUNK_BYTES  2048U
 
 
 #if WEB_SERVER_WEBUI_SEED_EMBEDDED
@@ -80,6 +91,24 @@ static esp_err_t web_webui_flash_send(
         return err;
     }
 
+    /*
+     * Do not leave a TLS client parked in HTTP keep-alive after an asset has
+     * been delivered. A persistent browser session consumes enough internal
+     * RAM to starve the SDSPI 512-byte DMA bounce allocation. Session tickets
+     * make the next HTTPS connection cheap while Connection: close returns the
+     * TLS client memory to the device between requests.
+     */
+    err =
+        httpd_resp_set_hdr(
+            request,
+            "Connection",
+            "close"
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
     if (gzip_encoded) {
         err =
             httpd_resp_set_hdr(
@@ -93,24 +122,61 @@ static esp_err_t web_webui_flash_send(
         }
     }
 
-    /*
-     * The embedded asset length is known up-front. Use one fixed-length HTTP
-     * response rather than a stream of 1 KiB HTTP chunks. httpd_resp_send()
-     * writes the response with Content-Length and lets ESP-IDF handle partial
-     * socket/TLS writes internally. The old 1 KiB send_chunk loop generated
-     * hundreds of TLS records for a vendor bundle and could strand Chrome
-     * with ERR_INCOMPLETE_CHUNKED_ENCODING if a connection died before the
-     * terminating chunk was delivered.
-     */
     const int64_t started_us =
         esp_timer_get_time();
 
-    err =
-        httpd_resp_send(
-            request,
-            (const char *)start,
-            (ssize_t)length
-        );
+    ESP_LOGI(
+        TAG,
+        "FLASH_SEND_BEGIN uri=%s bytes=%u gzip=%d",
+        request->uri != NULL ? request->uri : "?",
+        (unsigned)length,
+        gzip_encoded ? 1 : 0
+    );
+
+    if (length <= WEB_FLASH_SEND_CHUNK_BYTES) {
+        err =
+            httpd_resp_send(
+                request,
+                (const char *)start,
+                (ssize_t)length
+            );
+    }
+    else {
+        size_t offset = 0U;
+
+        while (
+            err == ESP_OK &&
+            offset < length
+        ) {
+            size_t chunk_length =
+                length - offset;
+
+            if (chunk_length > WEB_FLASH_SEND_CHUNK_BYTES) {
+                chunk_length = WEB_FLASH_SEND_CHUNK_BYTES;
+            }
+
+            err =
+                httpd_resp_send_chunk(
+                    request,
+                    (const char *)(start + offset),
+                    (ssize_t)chunk_length
+                );
+
+            if (err == ESP_OK) {
+                offset += chunk_length;
+                taskYIELD();
+            }
+        }
+
+        if (err == ESP_OK) {
+            err =
+                httpd_resp_send_chunk(
+                    request,
+                    NULL,
+                    0
+                );
+        }
+    }
 
     const uint32_t elapsed_ms =
         (uint32_t)(
