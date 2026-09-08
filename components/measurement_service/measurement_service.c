@@ -137,8 +137,20 @@ static void measurement_service_process_start(void)
     );
     measurement_service_unlock();
 
+    ESP_LOGI(
+        TAG,
+        "Starting recording object=%s",
+        object.id
+    );
+
     err = seismic_recorder_start(object.id);
     if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Recording start failed object=%s err=%s",
+            object.id,
+            esp_err_to_name(err)
+        );
         measurement_service_set_error(err);
         return;
     }
@@ -561,22 +573,38 @@ esp_err_t measurement_service_get_snapshot(
         }
     }
 
-    seismic_recorder_snapshot_t recorder;
-    if (seismic_recorder_get_snapshot(&recorder) == ESP_OK) {
-        if (
-            recorder.running ||
-            snapshot->state == MEASUREMENT_SERVICE_RECORDING ||
-            snapshot->state == MEASUREMENT_SERVICE_STOPPING
-        ) {
-            snprintf(
-                snapshot->session_id,
-                sizeof(snapshot->session_id),
-                "%s",
-                recorder.session_id
-            );
-            snapshot->samples_written = recorder.samples_written;
-            snapshot->dropped_frames = recorder.dropped_frames;
-            snapshot->recording_ms = recorder.recording_ms;
+    /*
+     * Do not ask the recorder for its mutex while START is doing SD work.
+     * The measurement screen refresh runs with the LVGL lock held, while an
+     * SD operation must quiesce LVGL before using the shared TFT/SD SPI2 bus.
+     * Reading the recorder snapshot here during STARTING therefore created a
+     * lock inversion:
+     *
+     *   recorder START: recorder mutex -> waits for LVGL lock
+     *   LVGL refresh:    LVGL lock      -> waits for recorder mutex
+     *
+     * The service snapshot already contains all information the UI needs in
+     * STARTING. Once seismic_recorder_start() returns, the worker copies the
+     * real recorder snapshot and changes the state to RECORDING.
+     */
+    if (snapshot->state != MEASUREMENT_SERVICE_STARTING) {
+        seismic_recorder_snapshot_t recorder;
+        if (seismic_recorder_get_snapshot(&recorder) == ESP_OK) {
+            if (
+                recorder.running ||
+                snapshot->state == MEASUREMENT_SERVICE_RECORDING ||
+                snapshot->state == MEASUREMENT_SERVICE_STOPPING
+            ) {
+                snprintf(
+                    snapshot->session_id,
+                    sizeof(snapshot->session_id),
+                    "%s",
+                    recorder.session_id
+                );
+                snapshot->samples_written = recorder.samples_written;
+                snapshot->dropped_frames = recorder.dropped_frames;
+                snapshot->recording_ms = recorder.recording_ms;
+            }
         }
     }
 
