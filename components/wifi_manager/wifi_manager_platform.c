@@ -12,13 +12,12 @@ static const char *TAG =
 
 
 /*
- * ESP-IDF allocates every static Wi-Fi RX buffer from DMA-capable internal
- * SRAM. The project also uses SPI LCD/SD/AD7606 DMA, so the default value of
- * 10 leaves too little contiguous DMA memory for the ESP32-S3 AES engine
- * during WPA2 SoftAP authentication. Espressif documents 6 as a supported
- * memory-saving value while AMPDU RX remains enabled.
+ * Static Wi-Fi RX buffers live in DMA-capable internal SRAM. The runtime also
+ * needs that scarce memory class for the SPI LCD and SDSPI 512-byte bounce
+ * buffer. Four static RX buffers are enough for this low-throughput local
+ * dashboard and return 3.2 KiB of contiguous DMA-capable SRAM versus six.
  */
-#define WIFI_MANAGER_STATIC_RX_BUFFERS  6
+#define WIFI_MANAGER_STATIC_RX_BUFFERS  4
 
 
 static esp_netif_t *s_ap_netif =

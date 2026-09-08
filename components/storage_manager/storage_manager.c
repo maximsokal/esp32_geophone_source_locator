@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <sys/stat.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -17,12 +18,95 @@ static const char *TAG =
     "STORAGE_MANAGER";
 
 
+/*
+ * FatFs/SDSPI sometimes has to allocate a temporary 512-byte DMA-capable
+ * sector buffer when its destination is not DMA-capable. Runtime TLS, Wi-Fi
+ * and LVGL can otherwise fragment the internal DMA heap until that tiny
+ * allocation fails with sdmmc_read_sectors: not enough mem.
+ *
+ * Keep one small contiguous DMA block parked while SD is idle. The outermost
+ * storage operation releases it only after TFT/LVGL has been quiesced, giving
+ * SDSPI a deterministic contiguous block to use. It is reacquired before the
+ * display is allowed to resume.
+ */
+#define STORAGE_MANAGER_DMA_RESERVE_BYTES  1536U
+#define STORAGE_MANAGER_DMA_REQUIRED_BYTES  512U
+
+
 static SemaphoreHandle_t s_operation_mutex =
     NULL;
 
 
 static bool s_ready =
     false;
+
+static void *s_dma_reserve =
+    NULL;
+
+static unsigned s_operation_depth =
+    0U;
+
+
+static void storage_manager_log_dma_headroom(
+    const char *stage,
+    bool force
+)
+{
+    const size_t free_dma =
+        heap_caps_get_free_size(MALLOC_CAP_DMA);
+
+    const size_t largest_dma =
+        heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+
+    if (
+        !force &&
+        largest_dma >= 2048U
+    ) {
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "DMA_HEADROOM %s free=%u largest=%u reserve=%s depth=%u",
+        stage,
+        (unsigned)free_dma,
+        (unsigned)largest_dma,
+        s_dma_reserve != NULL ? "held" : "released",
+        s_operation_depth
+    );
+}
+
+
+static void storage_manager_dma_reserve_acquire(void)
+{
+    if (s_dma_reserve != NULL) {
+        return;
+    }
+
+    s_dma_reserve =
+        heap_caps_malloc(
+            STORAGE_MANAGER_DMA_RESERVE_BYTES,
+            MALLOC_CAP_DMA
+        );
+
+    if (s_dma_reserve == NULL) {
+        storage_manager_log_dma_headroom(
+            "reserve-allocation-failed",
+            true
+        );
+    }
+}
+
+
+static void storage_manager_dma_reserve_release(void)
+{
+    if (s_dma_reserve == NULL) {
+        return;
+    }
+
+    heap_caps_free(s_dma_reserve);
+    s_dma_reserve = NULL;
+}
 
 
 static void storage_manager_log_boot_timing(
@@ -162,6 +246,14 @@ esp_err_t storage_manager_init(void)
     s_ready =
         err == ESP_OK;
 
+    if (s_ready) {
+        storage_manager_dma_reserve_acquire();
+        storage_manager_log_dma_headroom(
+            "initialized",
+            false
+        );
+    }
+
     app_spi_bus_sd_operation_end();
 
     xSemaphoreGiveRecursive(
@@ -204,6 +296,11 @@ esp_err_t storage_manager_shutdown(void)
 
     s_ready =
         false;
+
+    s_operation_depth =
+        0U;
+
+    storage_manager_dma_reserve_release();
 
     xSemaphoreGiveRecursive(
         s_operation_mutex
@@ -270,6 +367,34 @@ esp_err_t storage_manager_operation_begin(void)
         return err;
     }
 
+    if (s_operation_depth == 0U) {
+        storage_manager_dma_reserve_release();
+
+        const size_t largest_dma =
+            heap_caps_get_largest_free_block(
+                MALLOC_CAP_DMA
+            );
+
+        if (largest_dma < STORAGE_MANAGER_DMA_REQUIRED_BYTES) {
+            storage_manager_log_dma_headroom(
+                "sd-operation-no-sector-buffer",
+                true
+            );
+
+            storage_manager_dma_reserve_acquire();
+            app_spi_bus_sd_operation_end();
+            xSemaphoreGiveRecursive(s_operation_mutex);
+            return ESP_ERR_NO_MEM;
+        }
+
+        storage_manager_log_dma_headroom(
+            "sd-operation-begin",
+            false
+        );
+    }
+
+    s_operation_depth++;
+
     return ESP_OK;
 }
 
@@ -278,6 +403,18 @@ void storage_manager_operation_end(void)
 {
     if (s_operation_mutex == NULL) {
         return;
+    }
+
+    if (s_operation_depth > 0U) {
+        s_operation_depth--;
+    }
+
+    if (s_operation_depth == 0U) {
+        storage_manager_dma_reserve_acquire();
+        storage_manager_log_dma_headroom(
+            "sd-operation-end",
+            false
+        );
     }
 
     app_spi_bus_sd_operation_end();
