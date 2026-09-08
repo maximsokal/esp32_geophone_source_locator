@@ -106,9 +106,12 @@ static void measurement_service_copy_recorder_snapshot(
         recorder->session_id
     );
 
+    s_snapshot.stop_stage = recorder->stop_stage;
+    s_snapshot.stop_error_stage = recorder->stop_error_stage;
     s_snapshot.samples_written = recorder->samples_written;
     s_snapshot.dropped_frames = recorder->dropped_frames;
     s_snapshot.recording_ms = recorder->recording_ms;
+    s_snapshot.stop_stage_error = recorder->stop_stage_error;
 
     measurement_service_unlock();
 }
@@ -119,6 +122,9 @@ static void measurement_service_process_start(void)
     measurement_service_lock();
     s_snapshot.state = MEASUREMENT_SERVICE_STARTING;
     s_snapshot.last_error = ESP_OK;
+    s_snapshot.stop_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    s_snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
+    s_snapshot.stop_stage_error = ESP_OK;
     s_snapshot.session_id[0] = '\0';
     s_snapshot.samples_written = 0U;
     s_snapshot.dropped_frames = 0U;
@@ -176,8 +182,15 @@ static void measurement_service_process_start(void)
     seismic_recorder_snapshot_t recorder;
     err = seismic_recorder_get_snapshot(&recorder);
     if (err != ESP_OK) {
-        (void)seismic_recorder_stop();
-        measurement_service_set_error(err);
+        esp_err_t cleanup_err = seismic_recorder_stop();
+        if (cleanup_err == ESP_OK) {
+            cleanup_err = seismic_recorder_wait_for_stop();
+        }
+        measurement_service_set_error(
+            cleanup_err != ESP_OK
+                ? cleanup_err
+                : err
+        );
         return;
     }
 
@@ -197,31 +210,66 @@ static void measurement_service_process_start(void)
 }
 
 
-static void measurement_service_process_stop(void)
+static void measurement_service_process_stop_poll(void)
 {
     measurement_service_lock();
-    s_snapshot.state = MEASUREMENT_SERVICE_STOPPING;
-    s_snapshot.last_error = ESP_OK;
+    const bool stopping =
+        s_snapshot.state == MEASUREMENT_SERVICE_STOPPING;
     measurement_service_unlock();
 
-    esp_err_t err = seismic_recorder_stop();
-    measurement_service_log_stack_hwm("after-stop");
+    if (!stopping) {
+        return;
+    }
 
     seismic_recorder_snapshot_t recorder;
     const esp_err_t snapshot_err =
         seismic_recorder_get_snapshot(&recorder);
 
-    if (snapshot_err == ESP_OK) {
-        measurement_service_copy_recorder_snapshot(&recorder);
-    }
-
-    if (err != ESP_OK) {
-        measurement_service_set_error(err);
+    if (snapshot_err != ESP_OK) {
+        measurement_service_set_error(snapshot_err);
         return;
     }
 
-    if (snapshot_err != ESP_OK) {
-        measurement_service_set_error(snapshot_err);
+    measurement_service_copy_recorder_snapshot(&recorder);
+
+    if (
+        recorder.last_error != ESP_OK ||
+        recorder.state == SEISMIC_RECORDER_ERROR
+    ) {
+        const esp_err_t recorder_error =
+            recorder.last_error != ESP_OK
+                ? recorder.last_error
+                : ESP_FAIL;
+        const bool recorder_still_finishing =
+            recorder.running ||
+            recorder.state == SEISMIC_RECORDER_STOPPING;
+        measurement_service_lock();
+        s_snapshot.last_error = recorder_error;
+        if (!recorder_still_finishing) {
+            s_snapshot.state = MEASUREMENT_SERVICE_ERROR;
+        }
+        measurement_service_unlock();
+        return;
+    }
+
+    if (
+        recorder.running ||
+        recorder.state == SEISMIC_RECORDER_STOPPING
+    ) {
+        return;
+    }
+
+    if (recorder.state != SEISMIC_RECORDER_IDLE) {
+        measurement_service_set_error(ESP_ERR_INVALID_STATE);
+        return;
+    }
+
+    if (recorder.stop_stage != SEISMIC_RECORDER_STOP_STAGE_COMPLETE) {
+        measurement_service_set_error(
+            recorder.stop_stage_error != ESP_OK
+                ? recorder.stop_stage_error
+                : ESP_ERR_INVALID_STATE
+        );
         return;
     }
 
@@ -230,6 +278,7 @@ static void measurement_service_process_stop(void)
     s_snapshot.last_error = ESP_OK;
     measurement_service_unlock();
 
+    measurement_service_log_stack_hwm("after-stop");
     ESP_LOGI(
         TAG,
         "Recording stopped state=REVIEW session=%s samples=%llu drops=%llu",
@@ -237,6 +286,25 @@ static void measurement_service_process_stop(void)
         (unsigned long long)recorder.samples_written,
         (unsigned long long)recorder.dropped_frames
     );
+}
+
+
+static void measurement_service_process_stop(void)
+{
+    measurement_service_lock();
+    s_snapshot.state = MEASUREMENT_SERVICE_STOPPING;
+    s_snapshot.last_error = ESP_OK;
+    measurement_service_unlock();
+
+    esp_err_t err = seismic_recorder_stop();
+
+    if (err != ESP_OK) {
+        measurement_service_set_error(err);
+        return;
+    }
+
+    /* STOP is an asynchronous request; completion is observed by the worker. */
+    measurement_service_process_stop_poll();
 }
 
 
@@ -309,14 +377,23 @@ static void measurement_service_task(void *argument)
 
     for (;;) {
         measurement_command_t command;
+        measurement_service_lock();
+        const bool stopping =
+            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING;
+        measurement_service_unlock();
 
         if (
             xQueueReceive(
                 s_queue,
                 &command,
-                portMAX_DELAY
+                stopping
+                    ? pdMS_TO_TICKS(100)
+                    : portMAX_DELAY
             ) != pdTRUE
         ) {
+            if (stopping) {
+                measurement_service_process_stop_poll();
+            }
             continue;
         }
 

@@ -114,6 +114,9 @@ static void reset_fake_state(void)
     fake_mutex_give_calls = 0U;
     fake_frees = 0U;
     fake_malloc_fail = false;
+    s_outer_operation_started_us = 0;
+    s_outer_mutex_wait_us = 0;
+    s_outer_tft_quiesce_us = 0;
 }
 
 static void test_unready_and_spi_failure(void)
@@ -148,23 +151,23 @@ static void test_begin_end_reserves_dma_and_pairs_spi(void)
     assert(fake_mutex_give_calls == 1U);
 }
 
-static void test_nested_operations_pair_each_boundary(void)
+static void test_nested_operations_share_one_spi_boundary(void)
 {
     reset_fake_state();
     assert(storage_manager_operation_begin() == ESP_OK);
     assert(storage_manager_operation_begin() == ESP_OK);
     assert(s_operation_depth == 2U);
-    assert(fake_spi_begin_calls == 2U);
+    assert(fake_spi_begin_calls == 1U);
 
     storage_manager_operation_end();
     assert(s_operation_depth == 1U);
     assert(s_dma_reserve == NULL);
-    assert(fake_spi_end_calls == 1U);
+    assert(fake_spi_end_calls == 0U);
 
     storage_manager_operation_end();
     assert(s_operation_depth == 0U);
     assert(s_dma_reserve != NULL);
-    assert(fake_spi_end_calls == 2U);
+    assert(fake_spi_end_calls == 1U);
 }
 
 static void test_dma_failure_restores_reserve_and_spi_pairing(void)
@@ -219,7 +222,7 @@ int main(void)
 {
     test_unready_and_spi_failure();
     test_begin_end_reserves_dma_and_pairs_spi();
-    test_nested_operations_pair_each_boundary();
+    test_nested_operations_share_one_spi_boundary();
     test_dma_failure_restores_reserve_and_spi_pairing();
     test_reserve_allocation_failure_is_recoverable();
     test_unmatched_end_is_noop();

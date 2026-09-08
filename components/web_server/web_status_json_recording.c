@@ -52,6 +52,21 @@ bool web_status_json_add_recording(cJSON *root)
             "state",
             web_status_recording_state_name(snapshot.state)
         ) == NULL ||
+        cJSON_AddStringToObject(
+            object,
+            "stop_stage",
+            seismic_recorder_stop_stage_name(snapshot.stop_stage)
+        ) == NULL ||
+        cJSON_AddStringToObject(
+            object,
+            "stop_error_stage",
+            seismic_recorder_stop_stage_name(snapshot.stop_error_stage)
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            object,
+            "stop_stage_error",
+            snapshot.stop_stage_error
+        ) == NULL ||
         cJSON_AddStringToObject(object, "object_id", snapshot.object_id) == NULL ||
         cJSON_AddStringToObject(object, "session_id", snapshot.session_id) == NULL ||
         cJSON_AddStringToObject(object, "source", snapshot.source_name) == NULL ||

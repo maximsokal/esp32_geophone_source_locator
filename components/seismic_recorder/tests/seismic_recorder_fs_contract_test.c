@@ -146,6 +146,7 @@ static void test_invalid_arguments(void)
     assert(seismic_recorder_fs_create_session("OBJ_0001", 50, 0, session, &file) == ESP_ERR_INVALID_ARG);
     assert(seismic_recorder_fs_write_frames(NULL, NULL, 1, NULL) == ESP_ERR_INVALID_ARG);
     assert(seismic_recorder_fs_flush(NULL, false) == ESP_ERR_INVALID_ARG);
+    assert(seismic_recorder_fs_sync(NULL) == ESP_ERR_INVALID_ARG);
     assert(seismic_recorder_fs_close(NULL) == ESP_ERR_INVALID_ARG);
     assert(seismic_recorder_fs_delete_session("OBJ_0001", "S000001/..") == ESP_ERR_INVALID_ARG);
 }
@@ -178,9 +179,13 @@ static void test_session_header_and_frames(void)
     assert(frames_written == 2U);
     assert(storage_begin_calls == 2U);
     assert(storage_end_calls == 2U);
+    assert(seismic_recorder_fs_flush(file, false) == ESP_OK);
+    assert(seismic_recorder_fs_sync(file) == ESP_OK);
+    assert(storage_begin_calls == 4U);
+    assert(storage_end_calls == 4U);
     assert(seismic_recorder_fs_close(file) == ESP_OK);
-    assert(storage_begin_calls == 3U);
-    assert(storage_end_calls == 3U);
+    assert(storage_begin_calls == 5U);
+    assert(storage_end_calls == 5U);
 
     file = fopen(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/samples.bin", "rb");
     assert(file != NULL);

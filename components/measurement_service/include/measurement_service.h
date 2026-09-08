@@ -33,11 +33,15 @@ typedef struct
     char object_name[OBJECT_FORMAT_NAME_SIZE];
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 
+    seismic_recorder_stop_stage_t stop_stage;
+    seismic_recorder_stop_stage_t stop_error_stage;
+
     uint64_t samples_written;
     uint64_t dropped_frames;
     uint64_t recording_ms;
 
     esp_err_t last_error;
+    esp_err_t stop_stage_error;
 
 } measurement_service_snapshot_t;
 

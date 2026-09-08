@@ -7,6 +7,7 @@
 #include "driver/gpio.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -335,19 +336,36 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    const int64_t started_us =
+        esp_timer_get_time();
+
     xSemaphoreTakeRecursive(
         s_runtime_mutex,
         portMAX_DELAY
     );
 
+    const int64_t mutex_wait_us =
+        esp_timer_get_time() - started_us;
+
     if (s_display_quiesce == NULL) {
+        ESP_LOGI(
+            TAG,
+            "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=0 result=%d",
+            (long long)mutex_wait_us,
+            (int)ESP_OK
+        );
+        (void)mutex_wait_us;
         return ESP_OK;
     }
 
+    const int64_t quiesce_started_us =
+        esp_timer_get_time();
     esp_err_t err =
         s_display_quiesce(
             s_display_guard_context
         );
+    const int64_t quiesce_us =
+        esp_timer_get_time() - quiesce_started_us;
 
     if (err != ESP_OK) {
         ESP_LOGE(
@@ -361,6 +379,16 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
         );
     }
 
+    ESP_LOGI(
+        TAG,
+        "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=%lld result=%d",
+        (long long)mutex_wait_us,
+        (long long)quiesce_us,
+        (int)err
+    );
+    (void)mutex_wait_us;
+    (void)quiesce_us;
+
     return err;
 }
 
@@ -371,13 +399,25 @@ void app_spi_bus_sd_operation_end(void)
         return;
     }
 
+    const int64_t started_us =
+        esp_timer_get_time();
     if (s_display_resume != NULL) {
         s_display_resume(
             s_display_guard_context
         );
     }
+    const int64_t resume_us =
+        esp_timer_get_time() - started_us;
 
     xSemaphoreGiveRecursive(
         s_runtime_mutex
     );
+
+    ESP_LOGI(
+        TAG,
+        "STORAGE_SPI_TIMING stage=end tft_resume_us=%lld elapsed_us=%lld",
+        (long long)resume_us,
+        (long long)(esp_timer_get_time() - started_us)
+    );
+    (void)resume_us;
 }

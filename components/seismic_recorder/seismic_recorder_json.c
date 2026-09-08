@@ -5,10 +5,14 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "esp_log.h"
+#include "esp_timer.h"
 #include "storage_manager.h"
 
 
 #define SEISMIC_RECORDER_SESSION_SCHEMA_VERSION  1
+
+static const char *TAG = "SEISMIC_RECORDER_JSON";
 
 
 static esp_err_t seismic_recorder_json_metadata_path(
@@ -110,6 +114,21 @@ esp_err_t seismic_recorder_json_write_metadata(
         cJSON_AddStringToObject(root, "object_name", profile->summary.name) != NULL &&
         cJSON_AddStringToObject(root, "session_id", snapshot->session_id) != NULL &&
         cJSON_AddStringToObject(root, "status", status) != NULL &&
+        cJSON_AddStringToObject(
+            root,
+            "stop_stage",
+            seismic_recorder_stop_stage_name(snapshot->stop_stage)
+        ) != NULL &&
+        cJSON_AddStringToObject(
+            root,
+            "stop_error_stage",
+            seismic_recorder_stop_stage_name(snapshot->stop_error_stage)
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            root,
+            "stop_stage_error",
+            snapshot->stop_stage_error
+        ) != NULL &&
         cJSON_AddStringToObject(root, "source", snapshot->source_name) != NULL &&
         cJSON_AddNumberToObject(root, "sample_rate_hz", snapshot->sample_rate_hz) != NULL &&
         cJSON_AddNumberToObject(root, "channel_count", snapshot->channel_count) != NULL &&
@@ -164,9 +183,18 @@ esp_err_t seismic_recorder_json_write_metadata(
         SEISMIC_RECORDER_PATH_SIZE
     );
 
+    const int64_t write_started_us =
+        esp_timer_get_time();
     if (err == ESP_OK) {
         err = storage_manager_atomic_write_text(path, json);
     }
+
+    ESP_LOGI(
+        TAG,
+        "JSON_TIMING op=metadata-atomic-write result=%d elapsed_us=%lld",
+        (int)err,
+        (long long)(esp_timer_get_time() - write_started_us)
+    );
 
     free(path);
     cJSON_free(json);
