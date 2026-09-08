@@ -19,6 +19,8 @@
 
 #define WEB_TLS_FATAL_ALERT_CODE 0x7780
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
+#define WEB_HTTPS_TASK_STACK_BYTES   8192U
+#define WEB_HTTPS_MAX_CLIENTS           1U
 
 static const char *TAG = "WEB_SERVER";
 
@@ -76,12 +78,22 @@ static esp_err_t web_server_https_start_internal(void)
     config.httpd.uri_match_fn = httpd_uri_match_wildcard;
 
     /*
-     * Chrome may create speculative connections. Three sockets plus LRU purge
-     * proved enough for the dashboard while preserving internal-RAM headroom.
+     * The device has plenty of PSRAM but very little contiguous internal DRAM
+     * after Wi-Fi, LVGL and the HTTPS task are running. The field log showed
+     * one successful TLS client reducing internal free RAM from ~13.8 KiB to
+     * ~4.4 KiB; Chrome's second speculative TLS socket then failed during
+     * session creation and mDNS also started failing allocations.
+     *
+     * Serve the local dashboard over one persistent HTTP/1.1 TLS connection.
+     * Browsers can serialize asset requests on it. LRU purge and a short read
+     * timeout prevent an abandoned speculative socket from monopolizing the
+     * device indefinitely. Reducing the HTTPD task stack from the ESP-IDF
+     * HTTPS default (10 KiB) to 8 KiB also returns 2 KiB of internal DRAM.
      */
-    config.httpd.max_open_sockets = 3;
+    config.httpd.max_open_sockets = WEB_HTTPS_MAX_CLIENTS;
+    config.httpd.stack_size = WEB_HTTPS_TASK_STACK_BYTES;
     config.httpd.lru_purge_enable = true;
-    config.httpd.recv_wait_timeout = 5;
+    config.httpd.recv_wait_timeout = 3;
     config.httpd.send_wait_timeout = 30;
     config.port_secure = APP_WEB_HTTPS_PORT;
 
@@ -102,9 +114,10 @@ static esp_err_t web_server_https_start_internal(void)
     web_server_log_tls_heap("before_start");
     ESP_LOGI(
         TAG,
-        "Starting HTTPS server on port %u (max clients=%u, LRU=on, session tickets=on, handshake timeout=%u ms)",
+        "Starting HTTPS server on port %u (max clients=%u, stack=%u, LRU=on, session tickets=on, handshake timeout=%u ms)",
         (unsigned)config.port_secure,
         (unsigned)config.httpd.max_open_sockets,
+        (unsigned)config.httpd.stack_size,
         (unsigned)config.tls_handshake_timeout_ms
     );
 
