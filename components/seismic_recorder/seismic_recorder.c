@@ -3,6 +3,7 @@
 #include "runtime_observability.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "app_task_config.h"
@@ -562,9 +563,14 @@ esp_err_t seismic_recorder_start(
         return ESP_ERR_INVALID_STATE;
     }
 
-    object_store_profile_t profile;
-    err = object_store_get_profile(object_id, &profile);
+    object_store_profile_t *profile = malloc(sizeof(*profile));
+    if (profile == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = object_store_get_profile(object_id, profile);
     if (err != ESP_OK) {
+        free(profile);
         return err;
     }
 
@@ -578,6 +584,7 @@ esp_err_t seismic_recorder_start(
     seismic_recorder_lock();
     if (s_starting || s_snapshot.running || s_samples_file != NULL) {
         seismic_recorder_unlock();
+        free(profile);
         return ESP_ERR_INVALID_STATE;
     }
     s_starting = true;
@@ -600,6 +607,7 @@ esp_err_t seismic_recorder_start(
         &file
     );
     if (err != ESP_OK) {
+        free(profile);
         seismic_recorder_set_start_error(err);
         return err;
     }
@@ -639,11 +647,12 @@ esp_err_t seismic_recorder_start(
      * No recorder mutex is held across this SD transaction.
      */
     err = seismic_recorder_json_write_metadata(
-        &profile,
+        profile,
         &initial_snapshot,
         "recording"
     );
     if (err != ESP_OK) {
+        free(profile);
         seismic_recorder_discard_uncommitted_session(
             object_id,
             session_id,
@@ -668,6 +677,7 @@ esp_err_t seismic_recorder_start(
         &buffer_info
     );
     if (err != ESP_OK) {
+        free(profile);
         seismic_recorder_discard_uncommitted_session(
             object_id,
             session_id,
@@ -684,6 +694,7 @@ esp_err_t seismic_recorder_start(
         s_starting = false;
         seismic_recorder_unlock();
 
+        free(profile);
         seismic_recorder_discard_uncommitted_session(
             object_id,
             session_id,
@@ -693,7 +704,7 @@ esp_err_t seismic_recorder_start(
     }
 
     s_snapshot = initial_snapshot;
-    s_profile = profile;
+    s_profile = *profile;
     s_samples_file = file;
     s_cursor = buffer_info.total_frames;
     s_stop_target = s_cursor;
@@ -704,6 +715,7 @@ esp_err_t seismic_recorder_start(
 
     xEventGroupClearBits(s_events, SEISMIC_RECORDER_EVENT_STOPPED);
     seismic_recorder_unlock();
+    free(profile);
 
     ESP_LOGI(
         TAG,

@@ -15,3 +15,10 @@ BaseType_t xTaskCreatePinnedToCore(
 );
 void vTaskDelete(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
+
+/* Host tests do not model or claim a real FreeRTOS task stack. */
+static inline UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
+{
+    (void)task;
+    return 0U;
+}

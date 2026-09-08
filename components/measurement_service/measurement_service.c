@@ -37,6 +37,20 @@ static measurement_service_snapshot_t s_snapshot;
 static bool s_initialized = false;
 
 
+static void measurement_service_log_stack_hwm(
+    const char *stage
+)
+{
+    ESP_LOGI(
+        TAG,
+        "STACK_HWM task=measurement_service stage=%s free=%u margin=%u",
+        stage,
+        (unsigned)uxTaskGetStackHighWaterMark(NULL),
+        (unsigned)APP_TASK_STACK_MEASUREMENT_SERVICE_HWM_SAFETY_MARGIN_BYTES
+    );
+}
+
+
 static void measurement_service_lock(void)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -122,6 +136,8 @@ static void measurement_service_process_start(void)
         return;
     }
 
+    measurement_service_log_stack_hwm("after-object");
+
     measurement_service_lock();
     snprintf(
         s_snapshot.object_id,
@@ -143,7 +159,9 @@ static void measurement_service_process_start(void)
         object.id
     );
 
+    measurement_service_log_stack_hwm("before-start");
     err = seismic_recorder_start(object.id);
+    measurement_service_log_stack_hwm("after-recorder-start");
     if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
@@ -172,7 +190,7 @@ static void measurement_service_process_start(void)
 
     ESP_LOGI(
         TAG,
-        "Recording started object=%s session=%s",
+        "Recording started state=RECORDING object=%s session=%s",
         object.id,
         recorder.session_id
     );
@@ -187,6 +205,7 @@ static void measurement_service_process_stop(void)
     measurement_service_unlock();
 
     esp_err_t err = seismic_recorder_stop();
+    measurement_service_log_stack_hwm("after-stop");
 
     seismic_recorder_snapshot_t recorder;
     const esp_err_t snapshot_err =
@@ -213,7 +232,7 @@ static void measurement_service_process_stop(void)
 
     ESP_LOGI(
         TAG,
-        "Recording stopped session=%s samples=%llu drops=%llu",
+        "Recording stopped state=REVIEW session=%s samples=%llu drops=%llu",
         recorder.session_id,
         (unsigned long long)recorder.samples_written,
         (unsigned long long)recorder.dropped_frames
@@ -286,6 +305,7 @@ static void measurement_service_task(void *argument)
         "Worker started core=%d",
         APP_TASK_CORE_SERVICES
     );
+    measurement_service_log_stack_hwm("idle");
 
     for (;;) {
         measurement_command_t command;
@@ -327,6 +347,7 @@ static void measurement_service_task(void *argument)
         }
 
         measurement_service_release_gate();
+        measurement_service_log_stack_hwm("idle");
     }
 
     ESP_LOGI(TAG, "Worker stopped");
