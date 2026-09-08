@@ -91,24 +91,6 @@ static esp_err_t web_webui_flash_send(
         return err;
     }
 
-    /*
-     * Do not leave a TLS client parked in HTTP keep-alive after an asset has
-     * been delivered. A persistent browser session consumes enough internal
-     * RAM to starve the SDSPI 512-byte DMA bounce allocation. Session tickets
-     * make the next HTTPS connection cheap while Connection: close returns the
-     * TLS client memory to the device between requests.
-     */
-    err =
-        httpd_resp_set_hdr(
-            request,
-            "Connection",
-            "close"
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
     if (gzip_encoded) {
         err =
             httpd_resp_set_hdr(

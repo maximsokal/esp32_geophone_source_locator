@@ -74,3 +74,11 @@
  */
 #define APP_TASK_PRIORITY_INA3221          1
 #define APP_TASK_STACK_INA3221          4096
+
+/*
+ * Low-priority runtime diagnostics. Its stack is allocated explicitly from
+ * PSRAM by runtime_observability; this task never runs during flash-cache-off
+ * code and does not participate in the acquisition path.
+ */
+#define APP_TASK_PRIORITY_RUNTIME_OBSERVABILITY 1
+#define APP_TASK_STACK_RUNTIME_OBSERVABILITY 4096

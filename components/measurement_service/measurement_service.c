@@ -5,9 +5,13 @@
 
 #include "app_task_config.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
+#include "runtime_observability.h"
+
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -207,6 +211,8 @@ static void measurement_service_process_start(void)
         object.id,
         recorder.session_id
     );
+
+    runtime_observability_log_snapshot("recording-active");
 }
 
 
@@ -279,6 +285,7 @@ static void measurement_service_process_stop_poll(void)
     measurement_service_unlock();
 
     measurement_service_log_stack_hwm("after-stop");
+    runtime_observability_log_snapshot("after-recorder-finalization");
     ESP_LOGI(
         TAG,
         "Recording stopped state=REVIEW session=%s samples=%llu drops=%llu",
@@ -430,7 +437,7 @@ static void measurement_service_task(void *argument)
     ESP_LOGI(TAG, "Worker stopped");
 
     s_task = NULL;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 
@@ -531,14 +538,15 @@ esp_err_t measurement_service_init(void)
 
     (void)xSemaphoreGive(s_gate);
 
-    const BaseType_t result = xTaskCreatePinnedToCore(
+    const BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
         measurement_service_task,
         "measurement_service",
         APP_TASK_STACK_MEASUREMENT_SERVICE,
         NULL,
         APP_TASK_PRIORITY_MEASUREMENT_SERVICE,
         &s_task,
-        APP_TASK_CORE_SERVICES
+        APP_TASK_CORE_SERVICES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
 
     if (result != pdPASS) {
@@ -553,7 +561,12 @@ esp_err_t measurement_service_init(void)
 
     s_initialized = true;
 
-    ESP_LOGI(TAG, "Initialized");
+    ESP_LOGI(
+        TAG,
+        "Initialized core=%d stack=%u stack_caps=spiram|8bit",
+        APP_TASK_CORE_SERVICES,
+        APP_TASK_STACK_MEASUREMENT_SERVICE
+    );
     return ESP_OK;
 }
 

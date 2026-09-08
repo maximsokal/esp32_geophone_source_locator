@@ -149,14 +149,12 @@ static void assert_common_headers(bool gzip)
 {
     assert(type_calls == 1U);
     assert(strcmp(last_type, "application/octet-stream") == 0);
-    assert(header_calls == (gzip ? 3U : 2U));
+    assert(header_calls == (gzip ? 2U : 1U));
     assert(strcmp(header_fields[0], "Cache-Control") == 0);
     assert(strcmp(header_values[0], "no-store") == 0);
-    assert(strcmp(header_fields[1], "Connection") == 0);
-    assert(strcmp(header_values[1], "close") == 0);
     if (gzip) {
-        assert(strcmp(header_fields[2], "Content-Encoding") == 0);
-        assert(strcmp(header_values[2], "gzip") == 0);
+        assert(strcmp(header_fields[1], "Content-Encoding") == 0);
+        assert(strcmp(header_values[1], "gzip") == 0);
     }
 }
 

@@ -17,6 +17,7 @@ idf_component_register(
     REQUIRES
         app_config
         object_format
+        heap
         freertos
         log
 

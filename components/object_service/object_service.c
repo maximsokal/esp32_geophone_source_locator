@@ -5,9 +5,12 @@
 #include "app_task_config.h"
 #include "object_store.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 
 
 static const char *TAG =
@@ -37,14 +40,15 @@ esp_err_t object_service_init(void)
         false;
 
     BaseType_t result =
-        xTaskCreatePinnedToCore(
+        xTaskCreatePinnedToCoreWithCaps(
             object_service_internal_worker,
             "object_service",
             APP_TASK_STACK_OBJECT_SERVICE,
             NULL,
             APP_TASK_PRIORITY_OBJECT_SERVICE,
             &state->worker_task,
-            APP_TASK_CORE_SERVICES
+            APP_TASK_CORE_SERVICES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
         );
 
     if (result != pdPASS) {
@@ -63,8 +67,9 @@ esp_err_t object_service_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized core=%d",
-        APP_TASK_CORE_SERVICES
+        "Initialized core=%d stack=%u stack_caps=spiram|8bit",
+        APP_TASK_CORE_SERVICES,
+        APP_TASK_STACK_OBJECT_SERVICE
     );
 
     return ESP_OK;

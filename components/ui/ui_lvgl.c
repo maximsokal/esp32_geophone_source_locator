@@ -1,5 +1,7 @@
 #include "ui_internal.h"
 
+#include <stdint.h>
+
 #include "app_task_config.h"
 #include "display.h"
 #include "spi_bus.h"
@@ -200,6 +202,12 @@ esp_err_t ui_lvgl_init(void)
         DISPLAY_HEIGHT,
         APP_TASK_CORE_SERVICES,
         UI_LVGL_BUFFER_ROWS
+    );
+
+    ESP_LOGI(
+        TAG,
+        "DMA_RUNTIME owner=tft location=internal bytes=%u mode=lvgl_dma_buffer",
+        (unsigned)(DISPLAY_WIDTH * UI_LVGL_BUFFER_ROWS * sizeof(uint16_t))
     );
 
     return ESP_OK;

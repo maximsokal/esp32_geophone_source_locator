@@ -26,6 +26,7 @@
 #include "ui.h"
 #include "web_server.h"
 #include "wifi_manager.h"
+#include "runtime_observability.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -132,6 +133,8 @@ static void app_startup_initialize_services(void)
         ui_boot_init()
     );
 
+    runtime_observability_log_snapshot("after-lvgl");
+
     app_startup_log_elapsed(
         "boot_screen",
         stage_started_ms
@@ -216,6 +219,8 @@ static void app_startup_initialize_services(void)
         storage_service_init()
     );
 
+    runtime_observability_log_snapshot("after-service-tasks");
+
     ESP_ERROR_CHECK(
         wifi_manager_init()
     );
@@ -223,6 +228,8 @@ static void app_startup_initialize_services(void)
     ESP_ERROR_CHECK(
         wifi_manager_start()
     );
+
+    runtime_observability_log_snapshot("after-wifi");
 
     ESP_ERROR_CHECK(
         web_server_start()
@@ -277,6 +284,10 @@ void app_startup_run(void)
     const uint32_t startup_started_ms =
         esp_log_timestamp();
 
+    if (!runtime_observability_start()) {
+        ESP_LOGW(TAG, "Runtime observability unavailable");
+    }
+
     app_startup_initialize_core();
 
     const uint32_t sd_started_ms =
@@ -310,6 +321,8 @@ void app_startup_run(void)
     app_startup_initialize_services();
 
     app_startup_log_success();
+
+    runtime_observability_log_snapshot("boot");
 
     app_startup_log_elapsed(
         "startup_total",

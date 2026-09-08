@@ -574,18 +574,28 @@ esp_err_t seismic_recorder_fs_list_sessions(
 
     *session_count = 0U;
 
-    object_store_profile_t profile;
-    esp_err_t err = object_store_get_profile(object_id, &profile);
+    object_store_profile_t *profile = malloc(sizeof(*profile));
+    if (profile == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = object_store_get_profile(object_id, profile);
+    free(profile);
     if (err != ESP_OK) {
         return err;
+    }
+
+    char *sessions_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (sessions_path == NULL) {
+        return ESP_ERR_NO_MEM;
     }
 
     err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        free(sessions_path);
         return err;
     }
 
-    char sessions_path[SEISMIC_RECORDER_PATH_SIZE];
     err = seismic_recorder_fs_sessions_path(
         object_id,
         sessions_path,
@@ -646,6 +656,7 @@ esp_err_t seismic_recorder_fs_list_sessions(
     }
 
     storage_manager_operation_end();
+    free(sessions_path);
 
     if (err == ESP_OK) {
         seismic_recorder_fs_sort_sessions(
@@ -672,30 +683,42 @@ esp_err_t seismic_recorder_fs_delete_session(
         return ESP_ERR_INVALID_ARG;
     }
 
-    object_store_profile_t profile;
-    esp_err_t err = object_store_get_profile(object_id, &profile);
+    object_store_profile_t *profile = malloc(sizeof(*profile));
+    if (profile == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = object_store_get_profile(object_id, profile);
+    free(profile);
     if (err != ESP_OK) {
         return err;
     }
 
-    char session_path[SEISMIC_RECORDER_PATH_SIZE];
+    char *session_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (session_path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     err = seismic_recorder_fs_session_path(
         object_id,
         session_id,
         session_path,
-        sizeof(session_path)
+        SEISMIC_RECORDER_PATH_SIZE
     );
     if (err != ESP_OK) {
+        free(session_path);
         return err;
     }
 
     err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        free(session_path);
         return err;
     }
 
     err = storage_manager_remove_tree(session_path);
 
     storage_manager_operation_end();
+    free(session_path);
     return err;
 }

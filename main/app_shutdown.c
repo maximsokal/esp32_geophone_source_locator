@@ -16,6 +16,7 @@
 #include "ui.h"
 #include "web_server.h"
 #include "wifi_manager.h"
+#include "runtime_observability.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -145,6 +146,8 @@ void app_shutdown_wait_and_run(void)
         );
     }
 
+    runtime_observability_log_snapshot("after-recorder-finalization");
+
     /* No recorder SD traffic remains after this point, so LVGL can exit. */
     ui_shutdown();
 
@@ -163,6 +166,8 @@ void app_shutdown_wait_and_run(void)
     app_shutdown_stop_storage();
 
     app_shutdown_stop_display();
+
+    runtime_observability_stop();
 
     ESP_LOGI(
         TAG,
