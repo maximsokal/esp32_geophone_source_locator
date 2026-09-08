@@ -294,6 +294,7 @@ static const char *ui_measurements_state_name(
 void ui_render_measurements_locked(void)
 {
     ui_context_t *context = ui_context();
+    context->measurement_exit_after_stop = false;
 
     lv_obj_t *screen = ui_create_screen_base_locked(
         "MEASUREMENTS",
@@ -387,6 +388,34 @@ void ui_measurements_refresh_locked(void)
             0
         );
         return;
+    }
+
+    /*
+     * LEFT is a real Back action even during recording. The first press queues
+     * a safe recorder stop; once the asynchronous stop reaches REVIEW, keep the
+     * completed session and leave the measurement screen automatically.
+     */
+    if (
+        context->measurement_exit_after_stop &&
+        measurement.state == MEASUREMENT_SERVICE_REVIEW &&
+        !measurement.busy
+    ) {
+        const esp_err_t keep_err = measurement_service_keep_async();
+        if (keep_err == ESP_OK) {
+            context->measurement_exit_after_stop = false;
+            ui_screen_open_locked(UI_SCREEN_HOME);
+            return;
+        }
+
+        context->measurement_exit_after_stop = false;
+        ui_set_notice_locked("FAILED TO LEAVE MEASUREMENT");
+    }
+
+    if (
+        context->measurement_exit_after_stop &&
+        measurement.state == MEASUREMENT_SERVICE_ERROR
+    ) {
+        context->measurement_exit_after_stop = false;
     }
 
     const unsigned long sample_rate_hz =
@@ -583,10 +612,16 @@ void ui_handle_measurements_key_locked(
 
     if (key == KEYPAD_KEY_LEFT) {
         if (snapshot.state == MEASUREMENT_SERVICE_RECORDING) {
+            context->measurement_exit_after_stop = true;
+
             const esp_err_t err = measurement_service_stop_async();
+            if (err != ESP_OK) {
+                context->measurement_exit_after_stop = false;
+            }
+
             ui_set_notice_locked(
                 err == ESP_OK
-                    ? "STOPPING RECORDING..."
+                    ? "STOPPING AND LEAVING..."
                     : "STOP FAILED"
             );
             if (err == ESP_OK) {
@@ -594,6 +629,8 @@ void ui_handle_measurements_key_locked(
             }
             return;
         }
+
+        context->measurement_exit_after_stop = false;
 
         if (snapshot.state == MEASUREMENT_SERVICE_REVIEW) {
             const esp_err_t err = measurement_service_keep_async();
