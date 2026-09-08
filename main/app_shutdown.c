@@ -119,23 +119,14 @@ void app_shutdown_wait_and_run(void)
 
     ina3221_monitor_stop();
 
-    ui_shutdown();
-
-    storage_service_shutdown();
-
     /*
-     * Stop accepting UI measurement commands before the object service and
-     * recorder are torn down. A command already in flight is allowed to finish.
+     * Stop measurement commands first, then finalize the recorder while the
+     * LVGL display guard is still alive. The recorder and TFT share SPI2 with
+     * the SD card; tearing LVGL down first can otherwise leave shutdown waiting
+     * on the same display/storage arbitration that an active recording needs.
      */
     measurement_service_shutdown();
 
-    object_service_shutdown();
-
-    /*
-     * Finalize an active session while acquisition is still publishing. The
-     * recorder captures a stop cursor and drains exactly to that boundary.
-     * Only then reset the seismic buffer by stopping acquisition.
-     */
     esp_err_t recorder_err =
         seismic_recorder_stop();
 
@@ -150,6 +141,17 @@ void app_shutdown_wait_and_run(void)
         );
     }
 
+    /* No recorder SD traffic remains after this point, so LVGL can exit. */
+    ui_shutdown();
+
+    storage_service_shutdown();
+
+    object_service_shutdown();
+
+    /*
+     * Acquisition remains alive until the recording stop cursor has been
+     * drained above. Only now is it safe to reset the seismic buffer.
+     */
     seismic_acquisition_stop();
 
     app_shutdown_stop_network();
