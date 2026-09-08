@@ -151,18 +151,24 @@ esp_err_t seismic_recorder_json_write_metadata(
         return ESP_ERR_NO_MEM;
     }
 
-    char path[SEISMIC_RECORDER_PATH_SIZE];
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        cJSON_free(json);
+        return ESP_ERR_NO_MEM;
+    }
+
     esp_err_t err = seismic_recorder_json_metadata_path(
         snapshot->object_id,
         snapshot->session_id,
         path,
-        sizeof(path)
+        SEISMIC_RECORDER_PATH_SIZE
     );
 
     if (err == ESP_OK) {
         err = storage_manager_atomic_write_text(path, json);
     }
 
+    free(path);
     cJSON_free(json);
     return err;
 }

@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 
 #include "esp_log.h"
@@ -140,16 +141,17 @@ esp_err_t storage_manager_recover_backup_locked(
         );
     }
 
-    char backup_path[
-        STORAGE_MANAGER_PATH_BUFFER_SIZE
-    ];
+    char *backup_path = malloc(STORAGE_MANAGER_PATH_BUFFER_SIZE);
+    if (backup_path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
 
     esp_err_t err =
         storage_manager_sidecar_path(
             path,
             ".bak",
             backup_path,
-            sizeof(backup_path)
+            STORAGE_MANAGER_PATH_BUFFER_SIZE
         );
 
     if (err != ESP_OK) {
@@ -158,6 +160,7 @@ esp_err_t storage_manager_recover_backup_locked(
             "Backup path is too long"
         );
 
+        free(backup_path);
         return err;
     }
 
@@ -184,6 +187,7 @@ esp_err_t storage_manager_recover_backup_locked(
 
     if (backup_stat_result != 0) {
         if (backup_stat_errno == ENOENT) {
+            free(backup_path);
             return ESP_OK;
         }
 
@@ -194,9 +198,11 @@ esp_err_t storage_manager_recover_backup_locked(
             backup_stat_errno
         );
 
-        return storage_text_errno_to_error(
+        err = storage_text_errno_to_error(
             backup_stat_errno
         );
+        free(backup_path);
+        return err;
     }
 
     ESP_LOGW(
@@ -234,10 +240,13 @@ esp_err_t storage_manager_recover_backup_locked(
             rename_errno
         );
 
-        return storage_text_errno_to_error(
+        err = storage_text_errno_to_error(
             rename_errno
         );
+        free(backup_path);
+        return err;
     }
 
+    free(backup_path);
     return ESP_OK;
 }

@@ -30,6 +30,10 @@ size_t strnlen(const char *string, size_t max_length);
 
 static unsigned storage_begin_calls;
 static unsigned storage_end_calls;
+static esp_err_t storage_begin_error;
+static bool fail_create_directory;
+static unsigned remove_tree_calls;
+static char removed_tree_path[256];
 
 static int make_directory(const char *path)
 {
@@ -87,7 +91,7 @@ static void remove_layout(void)
 esp_err_t storage_manager_operation_begin(void)
 {
     ++storage_begin_calls;
-    return ESP_OK;
+    return storage_begin_error;
 }
 
 void storage_manager_operation_end(void)
@@ -97,12 +101,16 @@ void storage_manager_operation_end(void)
 
 esp_err_t storage_manager_create_directory(const char *path)
 {
+    if (fail_create_directory) {
+        return ESP_FAIL;
+    }
     return make_directory(path) == 0 ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t storage_manager_remove_tree(const char *path)
 {
-    (void)path;
+    ++remove_tree_calls;
+    (void)snprintf(removed_tree_path, sizeof(removed_tree_path), "%s", path);
     return ESP_OK;
 }
 
@@ -148,6 +156,10 @@ static void test_session_header_and_frames(void)
     make_layout();
     storage_begin_calls = 0;
     storage_end_calls = 0;
+    storage_begin_error = ESP_OK;
+    fail_create_directory = false;
+    remove_tree_calls = 0U;
+    removed_tree_path[0] = '\0';
 
     char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
     FILE *file = NULL;
@@ -189,6 +201,41 @@ static void test_session_header_and_frames(void)
     remove_layout();
 }
 
+static void test_session_error_cleanup(void)
+{
+    remove_layout();
+    make_layout();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    storage_begin_error = ESP_ERR_INVALID_STATE;
+    fail_create_directory = false;
+    remove_tree_calls = 0U;
+    removed_tree_path[0] = '\0';
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = "stale";
+    FILE *file = (FILE *)1;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 50, 4, session, &file) == ESP_ERR_INVALID_STATE);
+    assert(session[0] == '\0');
+    assert(file == NULL);
+    assert(storage_begin_calls == 1U);
+    assert(storage_end_calls == 0U);
+
+    storage_begin_error = ESP_OK;
+    fail_create_directory = true;
+    remove_tree_calls = 0U;
+    removed_tree_path[0] = '\0';
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 50, 4, session, &file) == ESP_FAIL);
+    assert(session[0] != '\0');
+    assert(file == NULL);
+    assert(storage_begin_calls == 2U);
+    assert(storage_end_calls == 1U);
+    assert(remove_tree_calls == 1U);
+    assert(strcmp(removed_tree_path, STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001") == 0);
+
+    fail_create_directory = false;
+    remove_layout();
+}
+
 static void test_session_id_increments(void)
 {
     remove_layout();
@@ -212,6 +259,7 @@ int main(void)
 {
     test_invalid_arguments();
     test_session_header_and_frames();
+    test_session_error_cleanup();
     test_session_id_increments();
     return 0;
 }

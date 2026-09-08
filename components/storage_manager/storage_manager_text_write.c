@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -95,6 +96,12 @@ esp_err_t storage_manager_atomic_write_text(
         return ESP_ERR_INVALID_ARG;
     }
 
+    storage_manager_atomic_paths_t *paths =
+        malloc(sizeof(*paths));
+    if (paths == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     esp_err_t err =
         storage_manager_operation_begin();
 
@@ -104,23 +111,16 @@ esp_err_t storage_manager_atomic_write_text(
             "Storage is not ready"
         );
 
+        free(paths);
         return err;
     }
-
-    char temp_path[
-        STORAGE_MANAGER_PATH_BUFFER_SIZE
-    ];
-
-    char backup_path[
-        STORAGE_MANAGER_PATH_BUFFER_SIZE
-    ];
 
     err =
         storage_manager_sidecar_path(
             path,
             ".tmp",
-            temp_path,
-            sizeof(temp_path)
+            paths->temp_path,
+            sizeof(paths->temp_path)
         );
 
     if (err == ESP_OK) {
@@ -128,15 +128,13 @@ esp_err_t storage_manager_atomic_write_text(
             storage_manager_sidecar_path(
                 path,
                 ".bak",
-                backup_path,
-                sizeof(backup_path)
+                paths->backup_path,
+                sizeof(paths->backup_path)
             );
     }
 
     if (err != ESP_OK) {
-        storage_manager_operation_end();
-
-        return err;
+        goto done;
     }
 
     err =
@@ -145,29 +143,24 @@ esp_err_t storage_manager_atomic_write_text(
         );
 
     if (err != ESP_OK) {
-        storage_manager_operation_end();
-
-        return err;
+        goto done;
     }
 
     remove(
-        temp_path
+        paths->temp_path
     );
 
     err =
         storage_manager_write_temp_file(
-            temp_path,
+            paths->temp_path,
             text
         );
 
     if (err != ESP_OK) {
         remove(
-            temp_path
+            paths->temp_path
         );
-
-        storage_manager_operation_end();
-
-        return err;
+        goto done;
     }
 
     struct stat info;
@@ -180,13 +173,13 @@ esp_err_t storage_manager_atomic_write_text(
 
     if (had_original) {
         remove(
-            backup_path
+            paths->backup_path
         );
 
         if (
             rename(
                 path,
-                backup_path
+                paths->backup_path
             ) != 0
         ) {
             ESP_LOGE(
@@ -196,18 +189,16 @@ esp_err_t storage_manager_atomic_write_text(
             );
 
             remove(
-                temp_path
+                paths->temp_path
             );
-
-            storage_manager_operation_end();
-
-            return ESP_FAIL;
+            err = ESP_FAIL;
+            goto done;
         }
     }
 
     if (
         rename(
-            temp_path,
+            paths->temp_path,
             path
         ) != 0
     ) {
@@ -219,27 +210,26 @@ esp_err_t storage_manager_atomic_write_text(
 
         if (had_original) {
             rename(
-                backup_path,
+                paths->backup_path,
                 path
             );
         }
 
         remove(
-            temp_path
+            paths->temp_path
         );
-
-        storage_manager_operation_end();
-
-        return ESP_FAIL;
+        err = ESP_FAIL;
+        goto done;
     }
 
     if (had_original) {
         remove(
-            backup_path
+            paths->backup_path
         );
     }
 
+done:
     storage_manager_operation_end();
-
-    return ESP_OK;
+    free(paths);
+    return err;
 }

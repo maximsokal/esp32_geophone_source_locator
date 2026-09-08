@@ -8,6 +8,14 @@
 #define STORAGE_MANAGER_PATH_BUFFER_SIZE  256
 
 
+typedef struct
+{
+    char temp_path[STORAGE_MANAGER_PATH_BUFFER_SIZE];
+    char backup_path[STORAGE_MANAGER_PATH_BUFFER_SIZE];
+
+} storage_manager_atomic_paths_t;
+
+
 /*
  * Internal helpers are called only while the recursive storage
  * operation guard is already owned by the current task.

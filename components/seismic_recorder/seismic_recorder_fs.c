@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
 #include <io.h>
@@ -110,18 +111,24 @@ static esp_err_t seismic_recorder_fs_next_session_id(
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE]
 )
 {
-    char sessions_path[SEISMIC_RECORDER_PATH_SIZE];
+    char *sessions_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (sessions_path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     esp_err_t err = seismic_recorder_fs_sessions_path(
         object_id,
         sessions_path,
-        sizeof(sessions_path)
+        SEISMIC_RECORDER_PATH_SIZE
     );
     if (err != ESP_OK) {
+        free(sessions_path);
         return err;
     }
 
     DIR *directory = opendir(sessions_path);
     if (directory == NULL) {
+        free(sessions_path);
         return ESP_FAIL;
     }
 
@@ -141,6 +148,7 @@ static esp_err_t seismic_recorder_fs_next_session_id(
     }
 
     closedir(directory);
+    free(sessions_path);
 
     if (highest >= 999999U) {
         return ESP_ERR_NO_MEM;
@@ -179,9 +187,16 @@ esp_err_t seismic_recorder_fs_create_session(
     }
 
     *samples_file = NULL;
+    session_id[0] = '\0';
+
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
 
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        free(path);
         return err;
     }
 
@@ -190,36 +205,34 @@ esp_err_t seismic_recorder_fs_create_session(
         session_id
     );
 
-    char session_path[SEISMIC_RECORDER_PATH_SIZE];
     if (err == ESP_OK) {
         err = seismic_recorder_fs_session_path(
             object_id,
             session_id,
-            session_path,
-            sizeof(session_path)
+            path,
+            SEISMIC_RECORDER_PATH_SIZE
         );
     }
 
     if (err == ESP_OK) {
-        err = storage_manager_create_directory(session_path);
+        err = storage_manager_create_directory(path);
     }
 
-    char samples_path[SEISMIC_RECORDER_PATH_SIZE];
     if (err == ESP_OK) {
-        int written = snprintf(
-            samples_path,
-            sizeof(samples_path),
-            "%s/samples.bin",
-            session_path
-        );
-        if (written < 0 || written >= (int)sizeof(samples_path)) {
+        static const char samples_suffix[] = "/samples.bin";
+        const size_t path_length = strlen(path);
+        const size_t suffix_length = sizeof(samples_suffix) - 1U;
+        if (path_length + suffix_length >= SEISMIC_RECORDER_PATH_SIZE) {
             err = ESP_ERR_INVALID_SIZE;
+        }
+        else {
+            memcpy(path + path_length, samples_suffix, suffix_length + 1U);
         }
     }
 
     FILE *file = NULL;
     if (err == ESP_OK) {
-        file = fopen(samples_path, "wb");
+        file = fopen(path, "wb");
         if (file == NULL) {
             err = ESP_FAIL;
         }
@@ -249,16 +262,15 @@ esp_err_t seismic_recorder_fs_create_session(
             fclose(file);
         }
         if (session_id[0] != '\0') {
-            char failed_path[SEISMIC_RECORDER_PATH_SIZE];
             if (
                 seismic_recorder_fs_session_path(
                     object_id,
                     session_id,
-                    failed_path,
-                    sizeof(failed_path)
+                    path,
+                    SEISMIC_RECORDER_PATH_SIZE
                 ) == ESP_OK
             ) {
-                (void)storage_manager_remove_tree(failed_path);
+                (void)storage_manager_remove_tree(path);
             }
         }
     }
@@ -267,6 +279,7 @@ esp_err_t seismic_recorder_fs_create_session(
     }
 
     storage_manager_operation_end();
+    free(path);
     return err;
 }
 
@@ -426,7 +439,7 @@ esp_err_t seismic_recorder_fs_list_sessions(
     err = seismic_recorder_fs_sessions_path(
         object_id,
         sessions_path,
-        sizeof(sessions_path)
+        SEISMIC_RECORDER_PATH_SIZE
     );
 
     DIR *directory = NULL;

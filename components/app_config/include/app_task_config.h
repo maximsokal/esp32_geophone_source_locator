@@ -57,7 +57,8 @@
  * service-core scheduling priority.
  */
 #define APP_TASK_PRIORITY_MEASUREMENT_SERVICE 3
-#define APP_TASK_STACK_MEASUREMENT_SERVICE  4096
+#define APP_TASK_STACK_MEASUREMENT_SERVICE  8192
+#define APP_TASK_STACK_MEASUREMENT_SERVICE_HWM_SAFETY_MARGIN_BYTES  1024
 
 /*
  * Recorder drains the lock-free seismic ring in bounded batches and performs

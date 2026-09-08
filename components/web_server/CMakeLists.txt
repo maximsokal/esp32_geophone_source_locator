@@ -343,6 +343,7 @@ idf_component_register(
         app_config
         app_event_bus
         device_status
+        measurement_service
         object_store
         runtime_observability
         sd_card

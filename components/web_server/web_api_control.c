@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "object_store.h"
+#include "measurement_service.h"
 #include "seismic_acquisition.h"
 #include "seismic_recorder.h"
 #include "esp_log.h"
@@ -26,7 +27,8 @@ static bool web_control_invalidates_object_cache(const char *action)
         strcmp(action, "set_object_cable_length") == 0 ||
         strcmp(action, "set_default_cable_length") == 0 ||
         strcmp(action, "set_object_location") == 0 ||
-        strcmp(action, "recording_start") == 0;
+        strcmp(action, "recording_start") == 0 ||
+        strcmp(action, "measurement_start") == 0;
 }
 
 static esp_err_t web_control_read_body(
@@ -302,6 +304,14 @@ static esp_err_t web_control_process(
     }
     if (strcmp(action, "recording_start") == 0) {
         return web_control_recording_start(object_id);
+    }
+    if (strcmp(action, "measurement_start") == 0) {
+        if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+        esp_err_t err = object_store_set_active(object_id);
+        return err == ESP_OK ? measurement_service_start_async() : err;
+    }
+    if (strcmp(action, "measurement_stop") == 0) {
+        return measurement_service_stop_async();
     }
     if (strcmp(action, "recording_stop") == 0) {
         return seismic_recorder_stop();
