@@ -39,6 +39,7 @@ static uint64_t s_stop_target = 0U;
 static int64_t s_started_us = 0;
 static int64_t s_last_flush_us = 0;
 static bool s_stop_requested = false;
+static bool s_starting = false;
 
 
 static void seismic_recorder_lock(void)
@@ -107,6 +108,64 @@ static void seismic_recorder_mark_error(
     s_snapshot.state = SEISMIC_RECORDER_ERROR;
     s_stop_requested = true;
     seismic_recorder_unlock();
+}
+
+
+static void seismic_recorder_set_start_error(
+    esp_err_t error
+)
+{
+    seismic_recorder_lock();
+    s_starting = false;
+    if (!s_snapshot.running && s_samples_file == NULL) {
+        s_snapshot.last_error = error;
+        s_snapshot.state = SEISMIC_RECORDER_ERROR;
+    }
+    seismic_recorder_unlock();
+}
+
+
+static void seismic_recorder_discard_uncommitted_session(
+    const char *object_id,
+    const char *session_id,
+    FILE *file
+)
+{
+    if (file != NULL) {
+        const esp_err_t close_err = seismic_recorder_fs_close(file);
+        if (close_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Failed to close uncommitted session file: %s",
+                esp_err_to_name(close_err)
+            );
+        }
+    }
+
+    if (
+        object_id != NULL &&
+        session_id != NULL &&
+        session_id[0] != '\0'
+    ) {
+        const esp_err_t delete_err =
+            seismic_recorder_fs_delete_session(
+                object_id,
+                session_id
+            );
+
+        if (
+            delete_err != ESP_OK &&
+            delete_err != ESP_ERR_NOT_FOUND
+        ) {
+            ESP_LOGW(
+                TAG,
+                "Failed to remove uncommitted session %s/%s: %s",
+                object_id,
+                session_id,
+                esp_err_to_name(delete_err)
+            );
+        }
+    }
 }
 
 
@@ -419,6 +478,7 @@ esp_err_t seismic_recorder_init(void)
     s_snapshot.initialized = true;
     s_snapshot.state = SEISMIC_RECORDER_IDLE;
     s_snapshot.last_error = ESP_OK;
+    s_starting = false;
 
     xEventGroupSetBits(s_events, SEISMIC_RECORDER_EVENT_STOPPED);
 
@@ -477,6 +537,96 @@ esp_err_t seismic_recorder_start(
         return err;
     }
 
+    /*
+     * Reserve the START operation with the recorder mutex, then release it
+     * before any SD access. SD operations quiesce LVGL because TFT and SD share
+     * SPI2. Holding the recorder mutex while waiting for that LVGL lock caused
+     * the measurement screen to deadlock when its refresh path tried to read
+     * the recorder snapshot while already holding LVGL.
+     */
+    seismic_recorder_lock();
+    if (s_starting || s_snapshot.running || s_samples_file != NULL) {
+        seismic_recorder_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_starting = true;
+    seismic_recorder_unlock();
+
+    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = "";
+    FILE *file = NULL;
+
+    ESP_LOGI(
+        TAG,
+        "Preparing session for object=%s",
+        object_id
+    );
+
+    err = seismic_recorder_fs_create_session(
+        object_id,
+        acquisition.sample_rate_hz,
+        SEISMIC_CHANNEL_COUNT,
+        session_id,
+        &file
+    );
+    if (err != ESP_OK) {
+        seismic_recorder_set_start_error(err);
+        return err;
+    }
+
+    seismic_recorder_snapshot_t initial_snapshot;
+    memset(&initial_snapshot, 0, sizeof(initial_snapshot));
+    initial_snapshot.initialized = true;
+    initial_snapshot.running = true;
+    initial_snapshot.state = SEISMIC_RECORDER_RECORDING;
+    initial_snapshot.sample_rate_hz = acquisition.sample_rate_hz;
+    initial_snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
+    initial_snapshot.last_error = ESP_OK;
+
+    snprintf(
+        initial_snapshot.object_id,
+        sizeof(initial_snapshot.object_id),
+        "%s",
+        object_id
+    );
+    snprintf(
+        initial_snapshot.session_id,
+        sizeof(initial_snapshot.session_id),
+        "%s",
+        session_id
+    );
+    snprintf(
+        initial_snapshot.source_name,
+        sizeof(initial_snapshot.source_name),
+        "%s",
+        acquisition.source_name != NULL
+            ? acquisition.source_name
+            : "UNKNOWN"
+    );
+
+    /*
+     * Write the initial metadata before publishing the recorder as RUNNING.
+     * No recorder mutex is held across this SD transaction.
+     */
+    err = seismic_recorder_json_write_metadata(
+        &profile,
+        &initial_snapshot,
+        "recording"
+    );
+    if (err != ESP_OK) {
+        seismic_recorder_discard_uncommitted_session(
+            object_id,
+            session_id,
+            file
+        );
+        seismic_recorder_set_start_error(err);
+        return err;
+    }
+
+    /*
+     * Session creation and metadata can take hundreds of milliseconds on FATFS.
+     * Start the data cursor at the newest frame only after that setup completes,
+     * so the recording does not include stale pre-START samples.
+     */
     seismic_frame_t scratch;
     size_t scratch_count = 0U;
     seismic_buffer_info_t buffer_info;
@@ -487,92 +637,42 @@ esp_err_t seismic_recorder_start(
         &buffer_info
     );
     if (err != ESP_OK) {
+        seismic_recorder_discard_uncommitted_session(
+            object_id,
+            session_id,
+            file
+        );
+        seismic_recorder_set_start_error(err);
         return err;
     }
+
+    const int64_t started_us = esp_timer_get_time();
 
     seismic_recorder_lock();
     if (s_snapshot.running || s_samples_file != NULL) {
+        s_starting = false;
         seismic_recorder_unlock();
+
+        seismic_recorder_discard_uncommitted_session(
+            object_id,
+            session_id,
+            file
+        );
         return ESP_ERR_INVALID_STATE;
     }
 
-    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = "";
-    FILE *file = NULL;
-    err = seismic_recorder_fs_create_session(
-        object_id,
-        acquisition.sample_rate_hz,
-        SEISMIC_CHANNEL_COUNT,
-        session_id,
-        &file
-    );
-    if (err != ESP_OK) {
-        s_snapshot.last_error = err;
-        s_snapshot.state = SEISMIC_RECORDER_ERROR;
-        seismic_recorder_unlock();
-        return err;
-    }
-
-    memset(&s_snapshot, 0, sizeof(s_snapshot));
-    s_snapshot.initialized = true;
-    s_snapshot.running = true;
-    s_snapshot.state = SEISMIC_RECORDER_RECORDING;
-    s_snapshot.sample_rate_hz = acquisition.sample_rate_hz;
-    s_snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
-    s_snapshot.last_error = ESP_OK;
-
-    snprintf(
-        s_snapshot.object_id,
-        sizeof(s_snapshot.object_id),
-        "%s",
-        object_id
-    );
-    snprintf(
-        s_snapshot.session_id,
-        sizeof(s_snapshot.session_id),
-        "%s",
-        session_id
-    );
-    snprintf(
-        s_snapshot.source_name,
-        sizeof(s_snapshot.source_name),
-        "%s",
-        acquisition.source_name != NULL
-            ? acquisition.source_name
-            : "UNKNOWN"
-    );
-
+    s_snapshot = initial_snapshot;
     s_profile = profile;
     s_samples_file = file;
     s_cursor = buffer_info.total_frames;
     s_stop_target = s_cursor;
     s_stop_requested = false;
-    s_started_us = esp_timer_get_time();
-    s_last_flush_us = s_started_us;
+    s_started_us = started_us;
+    s_last_flush_us = started_us;
+    s_starting = false;
 
     xEventGroupClearBits(s_events, SEISMIC_RECORDER_EVENT_STOPPED);
-
-    seismic_recorder_snapshot_t initial_snapshot;
-    seismic_recorder_copy_snapshot_locked(&initial_snapshot);
-
-    err = seismic_recorder_json_write_metadata(
-        &s_profile,
-        &initial_snapshot,
-        "recording"
-    );
-
-    if (err != ESP_OK) {
-        s_snapshot.last_error = err;
-        s_snapshot.state = SEISMIC_RECORDER_ERROR;
-        s_stop_requested = true;
-        s_stop_target = s_cursor;
-    }
-
     seismic_recorder_unlock();
-
-    if (err != ESP_OK) {
-        (void)seismic_recorder_stop();
-        return err;
-    }
 
     ESP_LOGI(
         TAG,
