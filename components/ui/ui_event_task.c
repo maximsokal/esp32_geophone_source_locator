@@ -1,6 +1,7 @@
 #include "ui_internal.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "app_event_bus.h"
 #include "app_task_config.h"
@@ -16,7 +17,9 @@ static const char *TAG =
     "UI_EVENT";
 
 
-#define UI_EVENT_RECEIVE_TIMEOUT_MS  100
+#define UI_EVENT_RECEIVE_TIMEOUT_MS      100U
+#define UI_EVENT_LVGL_LOCK_SLICE_MS      100U
+#define UI_EVENT_LVGL_WARN_INTERVAL_MS  1000U
 
 
 static TaskHandle_t s_task =
@@ -24,6 +27,38 @@ static TaskHandle_t s_task =
 
 static volatile bool s_running =
     false;
+
+
+/*
+ * Storage and TFT share SPI2. While an SD operation is active the display
+ * guard intentionally holds the LVGL mutex so no new LCD transfer can be
+ * queued. A keypad event must therefore wait for that bounded storage window
+ * instead of being discarded after one short lock timeout.
+ *
+ * Use short lock slices so shutdown can still stop this task promptly.
+ */
+static bool ui_event_lock_lvgl(void)
+{
+    uint32_t waited_ms = 0U;
+
+    while (s_running) {
+        if (lvgl_port_lock(UI_EVENT_LVGL_LOCK_SLICE_MS)) {
+            return true;
+        }
+
+        waited_ms += UI_EVENT_LVGL_LOCK_SLICE_MS;
+        if (waited_ms >= UI_EVENT_LVGL_WARN_INTERVAL_MS) {
+            ESP_LOGW(
+                TAG,
+                "Waiting for LVGL lock (%u ms); preserving queued UI event",
+                (unsigned)waited_ms
+            );
+            waited_ms = 0U;
+        }
+    }
+
+    return false;
+}
 
 
 static void ui_event_task_main(
@@ -59,13 +94,8 @@ static void ui_event_task_main(
             break;
         }
 
-        if (!lvgl_port_lock(250)) {
-            ESP_LOGW(
-                TAG,
-                "LVGL lock timeout"
-            );
-
-            continue;
+        if (!ui_event_lock_lvgl()) {
+            break;
         }
 
         if (event.type == APP_EVENT_KEYPAD) {
