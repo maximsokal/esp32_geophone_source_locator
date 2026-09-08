@@ -3,7 +3,7 @@ name: device-console-verify
 on:
   push:
     branches:
-      - agent/xr-perf-guide
+      - main
   workflow_dispatch:
 
 permissions:
