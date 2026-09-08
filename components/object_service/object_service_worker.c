@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
@@ -63,7 +64,5 @@ void object_service_internal_worker(
     state->worker_task =
         NULL;
 
-    vTaskDelete(
-        NULL
-    );
+    vTaskDeleteWithCaps(NULL);
 }

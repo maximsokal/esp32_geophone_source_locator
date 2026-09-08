@@ -4,9 +4,11 @@
 
 #include "app_task_config.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -142,9 +144,7 @@ static void storage_service_task(
     s_task =
         NULL;
 
-    vTaskDelete(
-        NULL
-    );
+    vTaskDeleteWithCaps(NULL);
 }
 
 
@@ -224,14 +224,15 @@ esp_err_t storage_service_init(void)
     );
 
     BaseType_t result =
-        xTaskCreatePinnedToCore(
+        xTaskCreatePinnedToCoreWithCaps(
             storage_service_task,
             "storage_service",
             APP_TASK_STACK_STORAGE_SERVICE,
             NULL,
             APP_TASK_PRIORITY_STORAGE_SERVICE,
             &s_task,
-            APP_TASK_CORE_SERVICES
+            APP_TASK_CORE_SERVICES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
         );
 
     if (result != pdPASS) {
@@ -257,7 +258,9 @@ esp_err_t storage_service_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized"
+        "Initialized core=%d stack=%u stack_caps=spiram|8bit",
+        APP_TASK_CORE_SERVICES,
+        APP_TASK_STACK_STORAGE_SERVICE
     );
 
     return ESP_OK;

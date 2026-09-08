@@ -189,3 +189,26 @@ header, frame bytes, sample-rate/timestamp metadata, and signed impulse values
 in the captured chunked JSON response. Narrow host fakes stand in for the SD
 mount and HTTP server; physical media, Wi-Fi, SPI DMA and task scheduling still
 require HIL evidence.
+
+## WebUI/TLS memory HIL
+
+`tools/run_webui_memory_hil.ps1` is a separate, non-destructive observer for
+the memory/performance workload. It never flashes, erases, creates or deletes
+objects. A live run requires an already-created dedicated object whose name
+starts with `HIL_MEMORY_TEST`; it loads `/`, `app.css` and `app.js` while
+recording, waits for asynchronous recorder finalization, and checks target
+runtime/heap/HWM markers. The finalization wait is a test-run bound only; it is
+not a firmware stall timeout:
+
+```powershell
+powershell -File tools/run_webui_memory_hil.ps1 `
+  -BaseUrl https://geolocator.local -ObjectId OBJ_HIL_MEMORY_TEST -Cycles 20
+powershell -File tools/run_webui_memory_hil.ps1 `
+  -LogPath .\build\hil\webui-memory.log
+```
+
+Replay is parser evidence only and intentionally reports `BLOCKED` for target
+proof. The board must already contain the firmware installed by a separately
+authorized operator action, and the local CA must be trusted by PowerShell.
+The existing `run_measurement_stack_hil.ps1 -Cycles 20` remains the dedicated
+recorder stack/state-machine scenario.

@@ -15,12 +15,13 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 
+#include "runtime_observability.h"
 #include "web_server_internal.h"
 
 #define WEB_TLS_FATAL_ALERT_CODE 0x7780
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define WEB_HTTPS_TASK_STACK_BYTES   8192U
-#define WEB_HTTPS_MAX_CLIENTS           1U
+#define WEB_HTTPS_MAX_CLIENTS           2U
 
 static const char *TAG = "WEB_SERVER";
 
@@ -111,6 +112,7 @@ static esp_err_t web_server_https_start_internal(void)
     }
 
     s_peer_fatal_alerts = 0;
+    runtime_observability_log_snapshot("before-https");
     web_server_log_tls_heap("before_start");
     ESP_LOGI(
         TAG,
@@ -135,6 +137,7 @@ static esp_err_t web_server_https_start_internal(void)
     }
 
     web_server_log_tls_heap("after_start");
+    runtime_observability_log_snapshot("after-https");
     ESP_LOGI(TAG, "HTTPS server started: %s", APP_MDNS_WEB_URL);
     return ESP_OK;
 }
@@ -274,12 +277,14 @@ static void web_server_https_event_handler(
     if (event_id == HTTPS_SERVER_EVENT_ON_CONNECTED) {
         ++s_https_clients;
         web_server_log_tls_heap("client_connected");
+        runtime_observability_request_snapshot("tls-connected");
         return;
     }
 
     if (event_id == HTTPS_SERVER_EVENT_DISCONNECTED) {
         if (s_https_clients > 0) --s_https_clients;
         web_server_log_tls_heap("client_disconnected");
+        runtime_observability_request_snapshot("tls-disconnected");
         return;
     }
 

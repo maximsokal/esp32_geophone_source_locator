@@ -231,19 +231,25 @@ esp_err_t seismic_recorder_json_read_summary(
 
     memset(summary, 0, sizeof(*summary));
 
-    char path[SEISMIC_RECORDER_PATH_SIZE];
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     esp_err_t err = seismic_recorder_json_metadata_path(
         object_id,
         session_id,
         path,
-        sizeof(path)
+        SEISMIC_RECORDER_PATH_SIZE
     );
     if (err != ESP_OK) {
+        free(path);
         return err;
     }
 
     char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
     if (buffer == NULL) {
+        free(path);
         return ESP_ERR_NO_MEM;
     }
 
@@ -254,12 +260,14 @@ esp_err_t seismic_recorder_json_read_summary(
     );
     if (err != ESP_OK) {
         free(buffer);
+        free(path);
         return err;
     }
 
     cJSON *root = cJSON_Parse(buffer);
     free(buffer);
     if (root == NULL) {
+        free(path);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
@@ -291,5 +299,6 @@ esp_err_t seismic_recorder_json_read_summary(
     summary->recording_ms = seismic_recorder_json_uint64(root, "recording_ms");
 
     cJSON_Delete(root);
+    free(path);
     return ESP_OK;
 }

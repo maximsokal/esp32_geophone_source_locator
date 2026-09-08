@@ -6,6 +6,9 @@ idf_component_register(
         "include"
 
     REQUIRES
+        app_config
         esp_timer
         freertos
+        heap
+        log
 )

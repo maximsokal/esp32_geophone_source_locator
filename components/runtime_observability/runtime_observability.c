@@ -4,6 +4,19 @@
 
 #include "freertos/FreeRTOS.h"
 
+#ifdef ESP_PLATFORM
+
+#include <string.h>
+
+#include "app_task_config.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "freertos/idf_additions.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+#endif
+
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -77,3 +90,538 @@ const char *runtime_observability_task_name(
             return "unknown";
     }
 }
+
+
+#ifdef ESP_PLATFORM
+
+
+static const char *TAG = "RUNTIME_OBSERVABILITY";
+
+#define RUNTIME_OBSERVABILITY_PERIOD_MS 10000U
+#define RUNTIME_OBSERVABILITY_CPU_COUNT 2U
+#define RUNTIME_OBSERVABILITY_STAGE_SIZE 32U
+
+static SemaphoreHandle_t s_snapshot_mutex = NULL;
+static TaskHandle_t s_snapshot_task = NULL;
+static TaskStatus_t *s_previous_status = NULL;
+static TaskStatus_t *s_current_status = NULL;
+static UBaseType_t s_status_capacity = 0U;
+static UBaseType_t s_previous_count = 0U;
+static uint64_t s_previous_snapshot_us = 0U;
+static uint64_t s_previous_idle_us[RUNTIME_OBSERVABILITY_CPU_COUNT];
+static bool s_have_previous_snapshot = false;
+static portMUX_TYPE s_request_lock = portMUX_INITIALIZER_UNLOCKED;
+static char s_requested_stage[RUNTIME_OBSERVABILITY_STAGE_SIZE];
+static bool s_snapshot_requested = false;
+
+
+static const char *runtime_stage_or_unknown(const char *stage)
+{
+    return stage != NULL ? stage : "unknown";
+}
+
+
+static void runtime_copy_stage(
+    char *destination,
+    size_t destination_size,
+    const char *stage
+)
+{
+    const char *source = runtime_stage_or_unknown(stage);
+    const size_t length = strnlen(source, destination_size - 1U);
+    memcpy(destination, source, length);
+    destination[length] = '\0';
+}
+
+
+static bool runtime_take_requested_stage(
+    char *stage,
+    size_t stage_size
+)
+{
+    bool requested = false;
+
+    portENTER_CRITICAL(&s_request_lock);
+    if (s_snapshot_requested) {
+        runtime_copy_stage(stage, stage_size, s_requested_stage);
+        s_snapshot_requested = false;
+        requested = true;
+    }
+    portEXIT_CRITICAL(&s_request_lock);
+
+    return requested;
+}
+
+
+static unsigned runtime_percent_tenths(
+    uint64_t numerator,
+    uint64_t denominator
+)
+{
+    if (denominator == 0U) {
+        return 0U;
+    }
+
+    const uint64_t scaled =
+        numerator > UINT64_MAX / 1000U
+            ? UINT64_MAX
+            : numerator * 1000U;
+
+    const uint64_t result = scaled / denominator;
+    return result > 1000U ? 1000U : (unsigned)result;
+}
+
+
+static bool runtime_task_is_interesting(const char *name)
+{
+    if (name == NULL) {
+        return false;
+    }
+
+    static const char *const needles[] = {
+        "ad7606",
+        "lvgl",
+        "ui_event",
+        "keypad",
+        "storage_service",
+        "object_service",
+        "measurement_service",
+        "seismic_recorder",
+        "ina3221",
+        "http",
+        "wifi",
+        "tcpip",
+        "IDLE0",
+        "IDLE1",
+        "runtime_observability",
+    };
+
+    for (size_t i = 0; i < sizeof(needles) / sizeof(needles[0]); ++i) {
+        if (strstr(name, needles[i]) != NULL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+static bool runtime_status_arrays_ensure(UBaseType_t task_count)
+{
+    if (task_count == 0U) {
+        task_count = 1U;
+    }
+
+    if (
+        s_current_status != NULL &&
+        s_previous_status != NULL &&
+        s_status_capacity >= task_count
+    ) {
+        return true;
+    }
+
+    const size_t bytes =
+        (size_t)task_count * sizeof(TaskStatus_t);
+
+    TaskStatus_t *new_previous =
+        heap_caps_malloc(
+            bytes,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+    TaskStatus_t *new_current =
+        heap_caps_malloc(
+            bytes,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+
+    if (new_previous == NULL || new_current == NULL) {
+        heap_caps_free(new_previous);
+        heap_caps_free(new_current);
+
+        /* Diagnostics must remain useful on a board without enough PSRAM,
+         * but this fallback is explicit and visible in the UART log. */
+        new_previous =
+            heap_caps_malloc(
+                bytes,
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+            );
+        new_current =
+            heap_caps_malloc(
+                bytes,
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+            );
+
+        if (new_previous == NULL || new_current == NULL) {
+            heap_caps_free(new_previous);
+            heap_caps_free(new_current);
+            return false;
+        }
+
+        ESP_LOGW(
+            TAG,
+            "RUNTIME_SNAPSHOT_STATUS_STORAGE fallback=internal bytes=%u",
+            (unsigned)(bytes * 2U)
+        );
+    }
+
+    if (s_previous_status != NULL && s_previous_count > 0U) {
+        memcpy(
+            new_previous,
+            s_previous_status,
+            (size_t)s_previous_count * sizeof(TaskStatus_t)
+        );
+    }
+
+    heap_caps_free(s_previous_status);
+    heap_caps_free(s_current_status);
+    s_previous_status = new_previous;
+    s_current_status = new_current;
+    s_status_capacity = task_count;
+    return true;
+}
+
+
+static const TaskStatus_t *runtime_find_previous(
+    const TaskStatus_t *current
+)
+{
+    if (current == NULL) {
+        return NULL;
+    }
+
+    for (UBaseType_t i = 0U; i < s_previous_count; ++i) {
+        if (s_previous_status[i].xHandle == current->xHandle) {
+            return &s_previous_status[i];
+        }
+    }
+
+    return NULL;
+}
+
+
+static int runtime_task_core(const TaskStatus_t *status)
+{
+#if CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID
+    if (status->xCoreID == tskNO_AFFINITY) {
+        return -1;
+    }
+    return (int)status->xCoreID;
+#else
+    (void)status;
+    return -1;
+#endif
+}
+
+
+void runtime_observability_log_memory(const char *stage)
+{
+    const uint32_t internal_caps =
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const uint32_t dma_caps =
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
+    const uint32_t psram_caps =
+        MALLOC_CAP_SPIRAM;
+    const uint32_t psram_dma_caps =
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA;
+
+    ESP_LOGI(
+        TAG,
+        "MEM_RUNTIME stage=%s internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u psram_dma_free=%u psram_dma_largest=%u",
+        runtime_stage_or_unknown(stage),
+        (unsigned)heap_caps_get_free_size(internal_caps),
+        (unsigned)heap_caps_get_largest_free_block(internal_caps),
+        (unsigned)heap_caps_get_free_size(dma_caps),
+        (unsigned)heap_caps_get_largest_free_block(dma_caps),
+        (unsigned)heap_caps_get_free_size(psram_caps),
+        (unsigned)heap_caps_get_largest_free_block(psram_caps),
+        (unsigned)heap_caps_get_free_size(psram_dma_caps),
+        (unsigned)heap_caps_get_largest_free_block(psram_dma_caps)
+    );
+}
+
+
+void runtime_observability_log_snapshot(const char *stage)
+{
+    runtime_observability_log_memory(stage);
+
+    if (s_snapshot_mutex == NULL) {
+        ESP_LOGW(
+            TAG,
+            "RUNTIME_SNAPSHOT_ERROR stage=%s reason=not_started",
+            runtime_stage_or_unknown(stage)
+        );
+        return;
+    }
+
+    if (xSemaphoreTake(s_snapshot_mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(
+            TAG,
+            "RUNTIME_SNAPSHOT_ERROR stage=%s reason=mutex",
+            runtime_stage_or_unknown(stage)
+        );
+        return;
+    }
+
+    const UBaseType_t requested_count = uxTaskGetNumberOfTasks();
+    if (!runtime_status_arrays_ensure(requested_count)) {
+        xSemaphoreGive(s_snapshot_mutex);
+        ESP_LOGW(
+            TAG,
+            "RUNTIME_SNAPSHOT_ERROR stage=%s reason=status_alloc tasks=%u",
+            runtime_stage_or_unknown(stage),
+            (unsigned)requested_count
+        );
+        return;
+    }
+
+    configRUN_TIME_COUNTER_TYPE total_runtime = 0U;
+    const UBaseType_t count =
+        uxTaskGetSystemState(
+            s_current_status,
+            s_status_capacity,
+            &total_runtime
+        );
+
+    const uint64_t now_us =
+        (uint64_t)esp_timer_get_time();
+    const uint64_t window_us =
+        s_have_previous_snapshot && now_us > s_previous_snapshot_us
+            ? now_us - s_previous_snapshot_us
+            : 0U;
+
+    uint64_t idle_us[RUNTIME_OBSERVABILITY_CPU_COUNT] = {0U, 0U};
+    unsigned idle_tenths[RUNTIME_OBSERVABILITY_CPU_COUNT] = {0U, 0U};
+    unsigned busy_tenths[RUNTIME_OBSERVABILITY_CPU_COUNT] = {0U, 0U};
+
+    for (unsigned core = 0U; core < RUNTIME_OBSERVABILITY_CPU_COUNT; ++core) {
+        idle_us[core] =
+            (uint64_t)ulTaskGetIdleRunTimeCounterForCore((BaseType_t)core);
+
+        if (s_have_previous_snapshot && idle_us[core] >= s_previous_idle_us[core]) {
+            idle_tenths[core] = runtime_percent_tenths(
+                idle_us[core] - s_previous_idle_us[core],
+                window_us
+            );
+        }
+
+        busy_tenths[core] = 1000U - idle_tenths[core];
+    }
+
+    ESP_LOGI(
+        TAG,
+        "RUNTIME_CPU stage=%s window_ms=%u valid=%d cpu0_busy=%u.%u cpu0_idle=%u.%u cpu1_busy=%u.%u cpu1_idle=%u.%u",
+        runtime_stage_or_unknown(stage),
+        (unsigned)(window_us / 1000U),
+        s_have_previous_snapshot ? 1 : 0,
+        busy_tenths[0] / 10U,
+        busy_tenths[0] % 10U,
+        idle_tenths[0] / 10U,
+        idle_tenths[0] % 10U,
+        busy_tenths[1] / 10U,
+        busy_tenths[1] % 10U,
+        idle_tenths[1] / 10U,
+        idle_tenths[1] % 10U
+    );
+
+    for (UBaseType_t i = 0U; i < count; ++i) {
+        const TaskStatus_t *status = &s_current_status[i];
+        if (!runtime_task_is_interesting(status->pcTaskName)) {
+            continue;
+        }
+
+        const TaskStatus_t *previous =
+            s_have_previous_snapshot
+                ? runtime_find_previous(status)
+                : NULL;
+        const uint64_t previous_runtime =
+            previous != NULL
+                ? (uint64_t)previous->ulRunTimeCounter
+                : (uint64_t)status->ulRunTimeCounter;
+        const uint64_t current_runtime =
+            (uint64_t)status->ulRunTimeCounter;
+        const uint64_t runtime_delta =
+            current_runtime >= previous_runtime
+                ? current_runtime - previous_runtime
+                : 0U;
+        const unsigned cpu_tenths =
+            previous != NULL
+                ? runtime_percent_tenths(runtime_delta, window_us)
+                : 0U;
+
+        ESP_LOGI(
+            TAG,
+            "RUNTIME_TASK name=%s core=%d priority=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
+            status->pcTaskName != NULL ? status->pcTaskName : "?",
+            runtime_task_core(status),
+            (unsigned)status->uxCurrentPriority,
+            (unsigned long long)runtime_delta,
+            cpu_tenths / 10U,
+            cpu_tenths % 10U,
+            (unsigned)status->usStackHighWaterMark
+        );
+    }
+
+    if (count > 0U) {
+        memcpy(
+            s_previous_status,
+            s_current_status,
+            (size_t)count * sizeof(TaskStatus_t)
+        );
+    }
+
+    TaskStatus_t *swapped = s_previous_status;
+    s_previous_status = s_current_status;
+    s_current_status = swapped;
+    s_previous_count = count;
+    s_previous_snapshot_us = now_us;
+    for (unsigned core = 0U; core < RUNTIME_OBSERVABILITY_CPU_COUNT; ++core) {
+        s_previous_idle_us[core] = idle_us[core];
+    }
+    s_have_previous_snapshot = true;
+
+    xSemaphoreGive(s_snapshot_mutex);
+}
+
+
+static void runtime_observability_task(void *argument)
+{
+    (void)argument;
+
+    for (;;) {
+        const uint32_t notified = ulTaskNotifyTake(
+            pdTRUE,
+            pdMS_TO_TICKS(RUNTIME_OBSERVABILITY_PERIOD_MS)
+        );
+        char requested_stage[RUNTIME_OBSERVABILITY_STAGE_SIZE];
+        if (runtime_take_requested_stage(requested_stage, sizeof(requested_stage))) {
+            runtime_observability_log_snapshot(requested_stage);
+        } else if (notified == 0U) {
+            runtime_observability_log_snapshot("periodic");
+        }
+    }
+}
+
+
+void runtime_observability_request_snapshot(const char *stage)
+{
+    if (s_snapshot_task == NULL) {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_request_lock);
+    runtime_copy_stage(s_requested_stage, sizeof(s_requested_stage), stage);
+    s_snapshot_requested = true;
+    portEXIT_CRITICAL(&s_request_lock);
+
+    (void)xTaskNotifyGive(s_snapshot_task);
+}
+
+
+bool runtime_observability_start(void)
+{
+    if (s_snapshot_task != NULL) {
+        return true;
+    }
+
+    s_snapshot_mutex = xSemaphoreCreateMutex();
+    if (s_snapshot_mutex == NULL) {
+        ESP_LOGE(TAG, "RUNTIME_START_ERROR reason=mutex_alloc");
+        return false;
+    }
+
+    const BaseType_t result =
+        xTaskCreatePinnedToCoreWithCaps(
+            runtime_observability_task,
+            "runtime_observability",
+            APP_TASK_STACK_RUNTIME_OBSERVABILITY,
+            NULL,
+            APP_TASK_PRIORITY_RUNTIME_OBSERVABILITY,
+            &s_snapshot_task,
+            APP_TASK_CORE_SERVICES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+
+    if (result != pdPASS) {
+        vSemaphoreDelete(s_snapshot_mutex);
+        s_snapshot_mutex = NULL;
+        ESP_LOGE(TAG, "RUNTIME_START_ERROR reason=task_alloc");
+        return false;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "RUNTIME_START core=%d period_ms=%u stack=%u stack_caps=spiram|8bit",
+        APP_TASK_CORE_SERVICES,
+        RUNTIME_OBSERVABILITY_PERIOD_MS,
+        APP_TASK_STACK_RUNTIME_OBSERVABILITY
+    );
+    return true;
+}
+
+
+void runtime_observability_stop(void)
+{
+    portENTER_CRITICAL(&s_request_lock);
+    s_snapshot_requested = false;
+    s_requested_stage[0] = '\0';
+    portEXIT_CRITICAL(&s_request_lock);
+
+    if (s_snapshot_mutex != NULL) {
+        (void)xSemaphoreTake(s_snapshot_mutex, portMAX_DELAY);
+    }
+
+    if (s_snapshot_task != NULL) {
+        vTaskDeleteWithCaps(s_snapshot_task);
+        s_snapshot_task = NULL;
+    }
+
+    heap_caps_free(s_previous_status);
+    heap_caps_free(s_current_status);
+    s_previous_status = NULL;
+    s_current_status = NULL;
+    s_status_capacity = 0U;
+    s_previous_count = 0U;
+    s_previous_snapshot_us = 0U;
+    s_have_previous_snapshot = false;
+
+    if (s_snapshot_mutex != NULL) {
+        xSemaphoreGive(s_snapshot_mutex);
+        vSemaphoreDelete(s_snapshot_mutex);
+        s_snapshot_mutex = NULL;
+    }
+}
+
+
+#else
+
+
+bool runtime_observability_start(void)
+{
+    return true;
+}
+
+
+void runtime_observability_stop(void)
+{
+}
+
+
+void runtime_observability_log_snapshot(const char *stage)
+{
+    (void)stage;
+}
+
+
+void runtime_observability_log_memory(const char *stage)
+{
+    (void)stage;
+}
+
+
+void runtime_observability_request_snapshot(const char *stage)
+{
+    (void)stage;
+}
+
+
+#endif

@@ -411,7 +411,20 @@ esp_err_t object_store_json_read_profile_locked(
 static esp_err_t object_store_profile_index_build_locked(void)
 {
     const int64_t started_us = esp_timer_get_time();
-    object_store_summary_t summaries[OBJECT_STORE_MAX_OBJECTS];
+    /*
+     * This census is non-realtime storage work.  Keeping 32 summaries on the
+     * caller's stack made index rebuild/reconcile consume roughly 2.7 KiB
+     * before their FATFS/cJSON callees.  Heap ownership is local to this
+     * operation and is released on every return path.
+     */
+    object_store_summary_t *summaries = calloc(
+        OBJECT_STORE_MAX_OBJECTS,
+        sizeof(*summaries)
+    );
+    if (summaries == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     size_t count = 0;
 
     esp_err_t err = object_store_fs_list(
@@ -420,7 +433,10 @@ static esp_err_t object_store_profile_index_build_locked(void)
         &count,
         object_store_internal_active_id()
     );
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        free(summaries);
+        return err;
+    }
 
     float defaults[OBJECT_STORE_POD_COUNT];
     if (object_store_settings_load_locked(defaults) != ESP_OK) {
@@ -439,6 +455,7 @@ static esp_err_t object_store_profile_index_build_locked(void)
             s_profile_index_count = 0;
             s_profile_index_valid = false;
             ESP_LOGW(TAG, "Index build failed at %s: %s", summaries[i].id, esp_err_to_name(err));
+            free(summaries);
             return err;
         }
         s_profile_index_count++;
@@ -452,6 +469,7 @@ static esp_err_t object_store_profile_index_build_locked(void)
         (unsigned)s_profile_index_count,
         (s_profile_index_reconcile_us - started_us) / 1000LL
     );
+    free(summaries);
     return ESP_OK;
 }
 
@@ -470,7 +488,15 @@ static bool object_store_summary_contains_id(
 static esp_err_t object_store_profile_index_reconcile_locked(void)
 {
     const int64_t started_us = esp_timer_get_time();
-    object_store_summary_t summaries[OBJECT_STORE_MAX_OBJECTS];
+    /* The directory census is bounded but too large for a service call stack. */
+    object_store_summary_t *summaries = calloc(
+        OBJECT_STORE_MAX_OBJECTS,
+        sizeof(*summaries)
+    );
+    if (summaries == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     size_t count = 0;
     esp_err_t err = object_store_fs_list(
         summaries,
@@ -478,7 +504,10 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
         &count,
         object_store_internal_active_id()
     );
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        free(summaries);
+        return err;
+    }
 
     size_t removed = 0;
     for (size_t i = 0; i < s_profile_index_count;) {
@@ -519,6 +548,7 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
         );
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Reconcile failed for new %s: %s", summaries[i].id, esp_err_to_name(err));
+            free(summaries);
             return err;
         }
         s_profile_index_count++;
@@ -538,6 +568,7 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
         (unsigned)removed,
         (s_profile_index_reconcile_us - started_us) / 1000LL
     );
+    free(summaries);
     return ESP_OK;
 }
 

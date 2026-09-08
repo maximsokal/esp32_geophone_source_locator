@@ -9,6 +9,8 @@ idf_component_register(
         app_config
         object_service
         seismic_recorder
+        runtime_observability
         freertos
+        heap
         log
 )
