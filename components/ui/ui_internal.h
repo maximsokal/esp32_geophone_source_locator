@@ -219,54 +219,64 @@ void ui_screen_refresh_locked(
 );
 
 
-/* Home screen. */
+/* Screen renderers. */
 void ui_render_home_locked(void);
-void ui_handle_home_key_locked(keypad_key_t key);
-
-/* Measurements screen. */
 void ui_render_measurements_locked(void);
 void ui_measurements_refresh_locked(void);
-void ui_handle_measurements_key_locked(keypad_key_t key);
-
-/* Objects screen. */
 void ui_render_objects_locked(void);
-void ui_objects_refresh_locked(void);
-void ui_handle_objects_key_locked(keypad_key_t key);
-void ui_objects_input_reset_locked(void);
-
-/* Storage screen. */
 void ui_render_storage_locked(void);
-void ui_storage_refresh_locked(void);
-void ui_handle_storage_key_locked(keypad_key_t key);
-void ui_storage_input_reset_locked(void);
-
-/* Wi-Fi screen. */
 void ui_render_wifi_locked(void);
-void ui_wifi_refresh_locked(void);
-void ui_handle_wifi_key_locked(keypad_key_t key);
-void ui_wifi_input_reset_locked(void);
-
-/* System screen. */
 void ui_render_system_locked(void);
 void ui_system_refresh_locked(void);
-void ui_handle_system_key_locked(keypad_key_t key);
 
 
-/* Event/task integration. */
+/* Navigation/input policy. */
+void ui_open_home_locked(void);
+
+void ui_move_index(
+    size_t *value,
+    size_t count,
+    bool down
+);
+
+void ui_handle_measurements_key_locked(
+    keypad_key_t key
+);
+
+void ui_handle_objects_key_locked(
+    keypad_key_t key
+);
+
+void ui_handle_storage_key_locked(
+    keypad_key_t key
+);
+
+void ui_handle_wifi_key_locked(
+    keypad_key_t key
+);
+
+void ui_dispatch_key_locked(
+    keypad_key_t key
+);
+
+void ui_dispatch_app_event_locked(
+    int event_type,
+    int32_t event_value
+);
+
+
+/* Application event worker. */
 esp_err_t ui_event_task_start(void);
 void ui_event_task_stop(void);
 
-void ui_dispatch_key_locked(keypad_key_t key);
-void ui_dispatch_app_event_locked(int event_type, int32_t value);
 
+/* Async service callbacks. */
 void ui_object_service_event(
-    object_service_event_t event,
-    esp_err_t result,
+    const object_service_event_t *event,
     void *user_context
 );
 
 void ui_storage_service_event(
-    storage_service_event_t event,
-    esp_err_t result,
+    const storage_service_event_t *event,
     void *user_context
 );
