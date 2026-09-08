@@ -245,12 +245,27 @@ static void ui_measurements_refresh_charts_locked(void)
                     .channel_uv[channel] /
                 1000.0;
 
+            float min_uv = s_preview_frames[0].channel_uv[channel];
+            float max_uv = min_uv;
+            for (size_t frame = 1U; frame < frame_count; ++frame) {
+                const float value = s_preview_frames[frame].channel_uv[channel];
+                if (value < min_uv) {
+                    min_uv = value;
+                }
+                if (value > max_uv) {
+                    max_uv = value;
+                }
+            }
+
+            const bool flat = min_uv == max_uv;
+
             snprintf(
                 text,
                 sizeof(text),
-                "CH%u  %+7.2f mV",
+                "CH%u %+6.2fmV %s",
                 (unsigned)(channel + 1U),
-                latest_mv
+                latest_mv,
+                flat ? "FLAT" : "VAR"
             );
         }
         else {
@@ -391,31 +406,41 @@ void ui_measurements_refresh_locked(void)
     }
 
     /*
-     * LEFT is a real Back action even during recording. The first press queues
-     * a safe recorder stop; once the asynchronous stop reaches REVIEW, keep the
-     * completed session and leave the measurement screen automatically.
+     * BACK may be requested while START/STOP is still in progress. Remember
+     * that intent instead of discarding LEFT. Once START reaches RECORDING we
+     * queue STOP; once STOP reaches REVIEW we keep the completed session and
+     * return home. If START failed, leave the measurement screen as well.
      */
-    if (
-        context->measurement_exit_after_stop &&
-        measurement.state == MEASUREMENT_SERVICE_REVIEW &&
-        !measurement.busy
-    ) {
-        const esp_err_t keep_err = measurement_service_keep_async();
-        if (keep_err == ESP_OK) {
+    if (context->measurement_exit_after_stop && !measurement.busy) {
+        if (measurement.state == MEASUREMENT_SERVICE_RECORDING) {
+            const esp_err_t stop_err = measurement_service_stop_async();
+            if (stop_err == ESP_OK) {
+                ui_set_notice_locked("STOPPING AND LEAVING...");
+                return;
+            }
+
+            context->measurement_exit_after_stop = false;
+            ui_set_notice_locked("STOP FAILED");
+        }
+        else if (measurement.state == MEASUREMENT_SERVICE_REVIEW) {
+            const esp_err_t keep_err = measurement_service_keep_async();
+            if (keep_err == ESP_OK) {
+                context->measurement_exit_after_stop = false;
+                ui_screen_open_locked(UI_SCREEN_HOME);
+                return;
+            }
+
+            context->measurement_exit_after_stop = false;
+            ui_set_notice_locked("FAILED TO LEAVE MEASUREMENT");
+        }
+        else if (
+            measurement.state == MEASUREMENT_SERVICE_LIVE ||
+            measurement.state == MEASUREMENT_SERVICE_ERROR
+        ) {
             context->measurement_exit_after_stop = false;
             ui_screen_open_locked(UI_SCREEN_HOME);
             return;
         }
-
-        context->measurement_exit_after_stop = false;
-        ui_set_notice_locked("FAILED TO LEAVE MEASUREMENT");
-    }
-
-    if (
-        context->measurement_exit_after_stop &&
-        measurement.state == MEASUREMENT_SERVICE_ERROR
-    ) {
-        context->measurement_exit_after_stop = false;
     }
 
     const unsigned long sample_rate_hz =
@@ -573,7 +598,14 @@ void ui_measurements_refresh_locked(void)
         case MEASUREMENT_SERVICE_STOPPING:
         case MEASUREMENT_SERVICE_DELETING:
         default:
-            snprintf(text, sizeof(text), "PLEASE WAIT...");
+            snprintf(
+                text,
+                sizeof(text),
+                "%s",
+                context->measurement_exit_after_stop
+                    ? "PLEASE WAIT - LEAVING..."
+                    : "PLEASE WAIT..."
+            );
             action_color = UI_COLOR_WARNING;
             break;
     }
@@ -599,18 +631,23 @@ void ui_handle_measurements_key_locked(
         return;
     }
 
-    const bool transitional =
-        snapshot.busy ||
-        snapshot.state == MEASUREMENT_SERVICE_STARTING ||
-        snapshot.state == MEASUREMENT_SERVICE_STOPPING ||
-        snapshot.state == MEASUREMENT_SERVICE_DELETING;
-
-    if (transitional) {
-        ui_set_notice_locked("MEASUREMENT OPERATION IN PROGRESS");
-        return;
-    }
-
+    /*
+     * LEFT must never be swallowed by an asynchronous START/STOP/DELETE.
+     * During a transition we remember the user's request and complete a safe
+     * stop/keep sequence from the periodic refresh once the worker is free.
+     */
     if (key == KEYPAD_KEY_LEFT) {
+        if (
+            snapshot.state == MEASUREMENT_SERVICE_STARTING ||
+            snapshot.state == MEASUREMENT_SERVICE_STOPPING ||
+            snapshot.state == MEASUREMENT_SERVICE_DELETING ||
+            snapshot.busy
+        ) {
+            context->measurement_exit_after_stop = true;
+            ui_set_notice_locked("LEAVING WHEN OPERATION FINISHES...");
+            return;
+        }
+
         if (snapshot.state == MEASUREMENT_SERVICE_RECORDING) {
             context->measurement_exit_after_stop = true;
 
@@ -641,6 +678,17 @@ void ui_handle_measurements_key_locked(
         }
 
         ui_screen_open_locked(UI_SCREEN_HOME);
+        return;
+    }
+
+    const bool transitional =
+        snapshot.busy ||
+        snapshot.state == MEASUREMENT_SERVICE_STARTING ||
+        snapshot.state == MEASUREMENT_SERVICE_STOPPING ||
+        snapshot.state == MEASUREMENT_SERVICE_DELETING;
+
+    if (transitional) {
+        ui_set_notice_locked("MEASUREMENT OPERATION IN PROGRESS");
         return;
     }
 
