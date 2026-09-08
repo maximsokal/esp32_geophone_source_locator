@@ -1,4 +1,9 @@
-import type { DeviceStatus, PhoneLocationInput, SeismicSnapshot } from '../domain/device';
+import {
+  normalizeSeismicSnapshot,
+  type DeviceStatus,
+  type PhoneLocationInput,
+  type SeismicSnapshot,
+} from '../domain/device';
 
 export const DEVICE_API_FAST_TIMEOUT_MS = 5000;
 export const DEVICE_API_EXTENDED_TIMEOUT_MS = 12000;
@@ -286,16 +291,9 @@ export function fetchSeismic(points = 180): Promise<SeismicSnapshot> {
     `/api/seismic?points=${bounded}`,
     {},
     DEVICE_API_FAST_TIMEOUT_MS,
-  ).then(
-    (value) => {
+  ).then((value) => normalizeSeismicSnapshot(value)).finally(() => {
       if (seismicRequest === request) seismicRequest = null;
-      return value;
-    },
-    (reason) => {
-      if (seismicRequest === request) seismicRequest = null;
-      throw reason;
-    },
-  );
+  });
   seismicRequest = request;
   return request;
 }

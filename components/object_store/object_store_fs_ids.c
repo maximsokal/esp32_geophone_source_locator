@@ -42,6 +42,16 @@ esp_err_t object_store_fs_next_id(
                 )
         ) != NULL
     ) {
+#if defined(DT_DIR) && defined(DT_UNKNOWN)
+        if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
+            continue;
+        }
+#elif defined(DT_DIR)
+        if (entry->d_type != DT_DIR) {
+            continue;
+        }
+#endif
+
         if (
             !object_format_id_is_valid(
                 entry->d_name

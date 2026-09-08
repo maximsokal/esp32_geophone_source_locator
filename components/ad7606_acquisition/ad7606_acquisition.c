@@ -9,6 +9,9 @@
 #include "sdkconfig.h"
 
 #include "ad7606_driver.h"
+#include "ad7606_acquisition_timing.h"
+
+#include "runtime_observability.h"
 #include "app_task_config.h"
 #include "seismic_buffer.h"
 
@@ -63,7 +66,8 @@ typedef struct
 
 
 static ad7606_diag_channel_t s_diag[
-    SEISMIC_CHANNEL_COUNT
+    /* Diagnostics cover every ADC word; the app buffer remains four-channel. */
+    AD7606_CHANNEL_COUNT
 ];
 
 
@@ -73,7 +77,7 @@ static void ad7606_diag_reset(void)
 
     for (
         size_t channel = 0;
-        channel < SEISMIC_CHANNEL_COUNT;
+        channel < AD7606_CHANNEL_COUNT;
         ++channel
     ) {
         s_diag[channel].min_raw = INT16_MAX;
@@ -88,7 +92,7 @@ static void ad7606_diag_record(
 {
     for (
         size_t channel = 0;
-        channel < SEISMIC_CHANNEL_COUNT;
+        channel < AD7606_CHANNEL_COUNT;
         ++channel
     ) {
         ad7606_diag_channel_t *diag = &s_diag[channel];
@@ -138,7 +142,7 @@ static void ad7606_diag_log_and_reset(void)
 
     for (
         size_t channel = 0;
-        channel < SEISMIC_CHANNEL_COUNT;
+        channel < AD7606_CHANNEL_COUNT;
         ++channel
     ) {
         const ad7606_diag_channel_t *diag = &s_diag[channel];
@@ -387,8 +391,9 @@ static esp_err_t ad7606_worker_initialize(void)
     }
 
     const uint64_t period_us =
-        1000000ULL /
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+        ad7606_acquisition_period_us(
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+        );
 
     s_running =
         true;
@@ -511,6 +516,12 @@ static void ad7606_worker(
                 );
             }
 
+            /* Beat only after the potentially blocking read has returned. */
+            runtime_observability_beat(
+                RUNTIME_TASK_ACQUISITION,
+                successful_samples
+            );
+
             continue;
         }
 
@@ -565,6 +576,11 @@ static void ad7606_worker(
         }
 
         successful_samples++;
+
+        runtime_observability_beat(
+            RUNTIME_TASK_ACQUISITION,
+            successful_samples
+        );
 
         if (
             successful_samples %

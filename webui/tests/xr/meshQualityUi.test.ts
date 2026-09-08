@@ -97,7 +97,7 @@ describe('mesh quality UI status', () => {
     }));
     expect(result.severity).toBe('bad');
     expect(result.rescanRecommended).toBe(true);
-    expect(result.label).toContain('MESH PARTIAL · 1,415△');
+    expect(result.label).toContain(`MESH PARTIAL · ${(1415).toLocaleString()}△`);
     expect(result.label).toContain('CHECK LIMITED');
     expect(result.label).toContain('46% noise');
   });

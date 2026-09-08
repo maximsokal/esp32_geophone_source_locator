@@ -6,6 +6,8 @@
 #include "app_event_bus.h"
 #include "app_task_config.h"
 
+#include "runtime_observability.h"
+
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 
@@ -61,6 +63,17 @@ static bool ui_event_lock_lvgl(void)
 }
 
 
+static void ui_event_observe(
+    uint64_t handled_events
+)
+{
+    runtime_observability_beat(
+        RUNTIME_TASK_UI,
+        handled_events
+    );
+}
+
+
 static void ui_event_task_main(
     void *argument
 )
@@ -68,6 +81,7 @@ static void ui_event_task_main(
     (void)argument;
 
     app_event_t event;
+    uint64_t handled_events = 0U;
 
     while (s_running) {
         esp_err_t err =
@@ -77,6 +91,7 @@ static void ui_event_task_main(
             );
 
         if (err == ESP_ERR_TIMEOUT) {
+            ui_event_observe(handled_events);
             continue;
         }
 
@@ -87,6 +102,7 @@ static void ui_event_task_main(
                 esp_err_to_name(err)
             );
 
+            ui_event_observe(handled_events);
             continue;
         }
 
@@ -109,7 +125,10 @@ static void ui_event_task_main(
             );
         }
 
+        handled_events++;
+
         lvgl_port_unlock();
+        ui_event_observe(handled_events);
     }
 
     s_running =

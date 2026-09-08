@@ -18,4 +18,5 @@ idf_component_register(
         board_config
         freertos
         log
+        runtime_observability
 )

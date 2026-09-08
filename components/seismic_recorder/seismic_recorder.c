@@ -1,5 +1,7 @@
 #include "seismic_recorder.h"
 
+#include "runtime_observability.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -51,6 +53,27 @@ static void seismic_recorder_lock(void)
 static void seismic_recorder_unlock(void)
 {
     xSemaphoreGive(s_mutex);
+}
+
+
+/*
+ * Publish recorder liveness only after the current service operation has
+ * returned. In particular, this must follow buffer copies, SD writes and
+ * flushes so a blocked storage path cannot look healthy merely because the
+ * task entered its loop.
+ */
+static void seismic_recorder_observe(void)
+{
+    uint64_t samples_written;
+
+    seismic_recorder_lock();
+    samples_written = s_snapshot.samples_written;
+    seismic_recorder_unlock();
+
+    runtime_observability_beat(
+        RUNTIME_TASK_RECORDER,
+        samples_written
+    );
 }
 
 
@@ -305,11 +328,13 @@ static void seismic_recorder_task(void *argument)
 
         if (finalize_now) {
             seismic_recorder_finalize();
+            seismic_recorder_observe();
             continue;
         }
 
         if (!running || file == NULL) {
             vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_IDLE_DELAY_MS));
+            seismic_recorder_observe();
             continue;
         }
 
@@ -329,6 +354,7 @@ static void seismic_recorder_task(void *argument)
 
         if (read_err == ESP_ERR_TIMEOUT) {
             taskYIELD();
+            seismic_recorder_observe();
             continue;
         }
 
@@ -342,6 +368,7 @@ static void seismic_recorder_task(void *argument)
             seismic_recorder_lock();
             s_stop_target = s_cursor;
             seismic_recorder_unlock();
+            seismic_recorder_observe();
             continue;
         }
 
@@ -357,6 +384,7 @@ static void seismic_recorder_task(void *argument)
 
             if (frame_count < target_batch) {
                 vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_BATCH_WAIT_MS));
+                seismic_recorder_observe();
                 continue;
             }
         }
@@ -438,15 +466,18 @@ static void seismic_recorder_task(void *argument)
 
         if (done) {
             seismic_recorder_finalize();
+            seismic_recorder_observe();
             continue;
         }
 
         if (frames_written > 0U) {
             seismic_recorder_flush_if_due(file);
+            seismic_recorder_observe();
             continue;
         }
 
         vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_IDLE_DELAY_MS));
+        seismic_recorder_observe();
     }
 }
 

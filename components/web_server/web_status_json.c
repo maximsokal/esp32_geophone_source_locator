@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "esp_timer.h"
+#include "runtime_observability.h"
 #include "seismic_acquisition.h"
 #include "web_status_policy.h"
 
@@ -139,7 +140,9 @@ static bool web_status_json_add_acquisition(
     const device_acquisition_status_t *acquisition,
     bool running,
     bool hardware_ready,
-    esp_err_t last_error
+    esp_err_t last_error,
+    const seismic_acquisition_snapshot_t *source_snapshot,
+    bool source_snapshot_available
 )
 {
     cJSON *object = cJSON_AddObjectToObject(root, "acquisition");
@@ -154,7 +157,56 @@ static bool web_status_json_add_acquisition(
         cJSON_AddStringToObject(object, "last_error_name", esp_err_to_name(last_error)) != NULL &&
         cJSON_AddNumberToObject(object, "sample_rate_hz", running ? acquisition->sample_rate_hz : 0) != NULL &&
         cJSON_AddNumberToObject(object, "samples_recorded", (double)acquisition->samples_recorded) != NULL &&
-        cJSON_AddNumberToObject(object, "recording_ms", (double)acquisition->recording_ms) != NULL;
+        cJSON_AddNumberToObject(object, "recording_ms", (double)acquisition->recording_ms) != NULL &&
+        cJSON_AddBoolToObject(object, "error_counters_available", source_snapshot_available) != NULL &&
+        cJSON_AddNumberToObject(
+            object,
+            "read_errors",
+            source_snapshot_available ? (double)source_snapshot->read_errors : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            object,
+            "consecutive_failures",
+            source_snapshot_available ? (double)source_snapshot->consecutive_failures : 0.0
+        ) != NULL;
+}
+
+static bool web_status_json_add_runtime(
+    cJSON *root
+)
+{
+    runtime_observability_snapshot_t snapshot;
+    runtime_observability_get_snapshot(&snapshot);
+
+    cJSON *runtime = cJSON_AddObjectToObject(root, "runtime");
+    if (runtime == NULL) return false;
+
+    if (cJSON_AddNumberToObject(runtime, "now_ms", (double)snapshot.now_ms) == NULL) {
+        return false;
+    }
+
+    cJSON *tasks = cJSON_AddObjectToObject(runtime, "tasks");
+    if (tasks == NULL) return false;
+
+    for (int i = 0; i < RUNTIME_TASK_COUNT; ++i) {
+        const runtime_observability_task_status_t *status =
+            &snapshot.tasks[i];
+        cJSON *task = cJSON_AddObjectToObject(
+            tasks,
+            runtime_observability_task_name((runtime_observability_task_t)i)
+        );
+        if (
+            task == NULL ||
+            cJSON_AddBoolToObject(task, "observed", status->observed) == NULL ||
+            cJSON_AddNumberToObject(task, "heartbeat", (double)status->heartbeat) == NULL ||
+            cJSON_AddNumberToObject(task, "progress", (double)status->progress) == NULL ||
+            cJSON_AddNumberToObject(task, "last_heartbeat_ms", (double)status->last_heartbeat_ms) == NULL
+        ) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 esp_err_t web_status_json_build_extended(
@@ -173,6 +225,9 @@ esp_err_t web_status_json_build_extended(
     const bool acquisition_running = seismic_acquisition_is_running();
     const bool acquisition_healthy = seismic_acquisition_source_healthy();
     const esp_err_t acquisition_error = seismic_acquisition_last_error();
+    seismic_acquisition_snapshot_t acquisition_snapshot;
+    const bool acquisition_snapshot_available =
+        seismic_acquisition_get_snapshot(&acquisition_snapshot) == ESP_OK;
 
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
@@ -194,8 +249,11 @@ esp_err_t web_status_json_build_extended(
             &status.acquisition,
             acquisition_running,
             acquisition_healthy,
-            acquisition_error
+            acquisition_error,
+            &acquisition_snapshot,
+            acquisition_snapshot_available
         ) &&
+        web_status_json_add_runtime(root) &&
         web_status_json_add_recording(root);
 
     if (ok && include_objects) {

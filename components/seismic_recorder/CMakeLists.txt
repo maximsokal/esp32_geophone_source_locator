@@ -14,6 +14,7 @@ idf_component_register(
     REQUIRES
         app_config
         object_store
+        runtime_observability
         seismic_acquisition
         seismic_buffer
         storage_manager

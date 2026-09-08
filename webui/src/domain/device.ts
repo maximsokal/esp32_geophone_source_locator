@@ -170,6 +170,74 @@ export interface SeismicSnapshot {
   channels: SeismicChannel[];
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
+/** Validate the four-channel /api/seismic boundary before rendering it. */
+export function normalizeSeismicSnapshot(value: unknown): SeismicSnapshot {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('ESP seismic API returned a non-object payload.');
+  }
+
+  const payload = value as Record<string, unknown>;
+  const source = payload.source;
+  const sampleRate = payload.sample_rate_hz;
+  const count = payload.count;
+  const bufferedFrames = payload.buffered_frames;
+  const totalFrames = payload.total_frames;
+  const timestamps = payload.timestamps_ms;
+  const channels = payload.channels;
+
+  if (
+    typeof source !== 'string' ||
+    !isFiniteNumber(sampleRate) || sampleRate < 0 ||
+    !isNonNegativeInteger(count) ||
+    !isNonNegativeInteger(bufferedFrames) ||
+    !isNonNegativeInteger(totalFrames) ||
+    !Array.isArray(timestamps) || timestamps.length !== count ||
+    !timestamps.every(isFiniteNumber) ||
+    !Array.isArray(channels) || channels.length !== 4
+  ) {
+    throw new Error('ESP seismic API returned an invalid snapshot shape.');
+  }
+
+  const normalizedChannels = channels.map((channel, index) => {
+    if (typeof channel !== 'object' || channel === null) {
+      throw new Error('ESP seismic API returned an invalid channel.');
+    }
+
+    const candidate = channel as Record<string, unknown>;
+    if (
+      candidate.id !== index + 1 ||
+      !Array.isArray(candidate.samples_uv) ||
+      candidate.samples_uv.length !== count ||
+      !candidate.samples_uv.every(isFiniteNumber)
+    ) {
+      throw new Error('ESP seismic API returned an invalid channel shape.');
+    }
+
+    return {
+      id: index + 1,
+      samples_uv: candidate.samples_uv,
+    };
+  });
+
+  return {
+    source,
+    sample_rate_hz: sampleRate,
+    count,
+    buffered_frames: bufferedFrames,
+    total_frames: totalFrames,
+    timestamps_ms: timestamps,
+    channels: normalizedChannels,
+  };
+}
+
 export interface PhoneLocationInput {
   latitude: number;
   longitude: number;

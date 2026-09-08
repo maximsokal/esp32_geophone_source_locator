@@ -6,6 +6,8 @@
 
 #include "keypad.h"
 
+#include "runtime_observability.h"
+
 
 static const char *TAG =
     "KEYPAD";
@@ -86,6 +88,8 @@ void keypad_event_worker(
     int candidate_count =
         0;
 
+    uint64_t poll_count = 0U;
+
     ESP_LOGI(
         TAG,
         "Key event monitor started"
@@ -111,6 +115,11 @@ void keypad_event_worker(
                 pdMS_TO_TICKS(
                     KEYPAD_POLL_PERIOD_MS
                 )
+            );
+
+            runtime_observability_beat(
+                RUNTIME_TASK_KEYPAD,
+                ++poll_count
             );
 
             continue;
@@ -144,6 +153,11 @@ void keypad_event_worker(
             pdMS_TO_TICKS(
                 KEYPAD_POLL_PERIOD_MS
             )
+        );
+
+        runtime_observability_beat(
+            RUNTIME_TASK_KEYPAD,
+            ++poll_count
         );
     }
 

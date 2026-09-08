@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "runtime_observability",
+      "sources": [
+        "components/runtime_observability/runtime_observability.c",
+        "tests/host/runtime_observability_contract_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/runtime_observability",
+        "components/runtime_observability/include"
+      ]
+    },
+    {
+      "name": "ad7606_presence_policy",
+      "sources": [
+        "components/ad7606_driver/ad7606_presence_policy.c",
+        "components/ad7606_driver/tests/ad7606_presence_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_driver"
+      ]
+    },
+    {
+      "name": "ad7606_driver",
+      "sources": [
+        "components/ad7606_driver/ad7606_driver.c",
+        "components/ad7606_driver/tests/ad7606_driver_host_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_driver/tests/stubs",
+        "components/ad7606_driver/include",
+        "components/ad7606_driver"
+      ]
+    },
+    {
+      "name": "ad7606_acquisition_timing",
+      "sources": [
+        "components/ad7606_acquisition/ad7606_acquisition_timing.c",
+        "components/ad7606_acquisition/tests/ad7606_acquisition_timing_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_acquisition/include"
+      ]
+    },
+    {
+      "name": "ina3221_policy",
+      "sources": [
+        "components/ina3221_monitor/ina3221_policy.c",
+        "components/ina3221_monitor/tests/ina3221_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ]
+    },
+    {
+      "name": "keypad",
+      "sources": [
+        "components/keypad/keypad_decode.c",
+        "components/keypad/keypad_event_worker.c",
+        "tests/host/stubs/runtime_observability/noop.c",
+        "components/keypad/tests/keypad_test.c"
+      ],
+      "include_dirs": [
+        "components/keypad/tests/stubs",
+        "tests/host/stubs/runtime_observability",
+        "components/keypad/include",
+        "components/keypad",
+        "components/runtime_observability/include"
+      ]
+    },
+    {
+      "name": "localization",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization/tests/localization_tdoa_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "measurement_service",
+      "sources": [
+        "components/measurement_service/tests/measurement_service_worker_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/tests/stubs",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include"
+      ]
+    },
+    {
+      "name": "object_format",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/object_format/tests/object_format_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/object_format/include"
+      ]
+    },
+    {
+      "name": "object_store_fs",
+      "sources": [
+        "components/object_store/tests/object_store_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/tests/stubs",
+        "components/object_store",
+        "components/object_store/include",
+        "components/object_format/include"
+      ]
+    },
+    {
+      "name": "object_recovery",
+      "sources": [
+        "components/object_recovery/object_recovery_fs.c",
+        "components/object_recovery/object_recovery_metadata.c",
+        "components/object_recovery/object_recovery_metadata_validate.c",
+        "components/object_recovery/object_recovery_scan.c",
+        "components/object_recovery/tests/stubs/cJSON.c",
+        "components/object_format/object_format.c",
+        "components/object_recovery/tests/object_recovery_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/object_recovery/tests/stubs",
+        "components/object_recovery",
+        "components/object_format/include",
+        "components/storage_manager/include"
+      ]
+    },
+    {
+      "name": "spi_bus_arbitration",
+      "sources": [
+        "components/spi_bus/spi_bus.c",
+        "components/spi_bus/tests/spi_bus_arbitration_test.c"
+      ],
+      "include_dirs": [
+        "components/spi_bus/tests/stubs",
+        "components/spi_bus/include"
+      ]
+    },
+    {
+      "name": "power_button_policy",
+      "sources": [
+        "components/power_control/power_button_monitor_state.c",
+        "components/power_control/power_button_monitor_wait.c",
+        "components/power_control/tests/power_button_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/power_control/tests/stubs",
+        "components/power_control",
+        "components/power_control/include"
+      ]
+    },
+    {
+      "name": "seismic_buffer",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/tests/seismic_buffer_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_buffer/tests/stubs",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "seismic_pipeline_scheduling_contract",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/ui/ui_measurement_trace.c",
+        "tests/host/seismic_pipeline_scheduling_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_buffer/tests/stubs",
+        "components/seismic_buffer/include",
+        "components/ui",
+        "components/app_config/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_web_pipeline_contract",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/object_format/object_format.c",
+        "tests/host/seismic_recorder_web_pipeline_contract_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_pipeline",
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_buffer/include",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "seismic_recorder",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "storage_manager",
+      "sources": [
+        "components/storage_manager/tests/storage_manager_dma_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/storage_manager/tests/stubs",
+        "components/storage_manager",
+        "components/storage_manager/include"
+      ]
+    },
+    {
+      "name": "web_status_policy",
+      "sources": [
+        "components/web_server/web_status_policy.c",
+        "components/web_server/tests/web_status_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "web_webui_flash",
+      "sources": [
+        "components/web_server/tests/web_webui_flash_host_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server/tests/stubs",
+        "components/web_server"
+      ],
+      "defines": [
+        "WEB_SERVER_WEBUI_SEED_EMBEDDED=0"
+      ]
+    },
+    {
+      "name": "ui_measurement_trace",
+      "sources": [
+        "components/ui/ui_measurement_trace.c",
+        "components/ui/tests/ui_measurement_trace_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/ui/tests/stubs",
+        "components/seismic_buffer/include"
+      ]
+    }
+  ]
+}

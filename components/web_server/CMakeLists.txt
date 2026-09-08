@@ -344,6 +344,7 @@ idf_component_register(
         app_event_bus
         device_status
         object_store
+        runtime_observability
         sd_card
         seismic_acquisition
         seismic_buffer

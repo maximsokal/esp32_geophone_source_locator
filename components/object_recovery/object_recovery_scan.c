@@ -6,8 +6,14 @@
 
 #include "esp_log.h"
 
+#include "object_format.h"
 #include "object_recovery_fs.h"
 #include "storage_manager.h"
+
+
+#ifndef S_ISDIR
+#define S_ISDIR(mode) (((mode) & _S_IFMT) == _S_IFDIR)
+#endif
 
 
 static const char *TAG =
@@ -40,6 +46,7 @@ esp_err_t object_recovery_check_one(
 {
     if (
         object_id == NULL ||
+        !object_format_id_is_valid(object_id) ||
         removed == NULL
     ) {
         return ESP_ERR_INVALID_ARG;

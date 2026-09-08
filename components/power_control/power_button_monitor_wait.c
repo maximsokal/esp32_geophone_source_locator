@@ -18,6 +18,9 @@ bool power_button_wait_for_level(
     bool stop_sensitive
 )
 {
+    /* Host log stubs may compile ESP_LOGI out completely. */
+    (void)TAG;
+
     power_button_monitor_state_t *state =
         power_button_monitor_state();
 

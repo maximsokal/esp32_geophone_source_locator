@@ -33,6 +33,7 @@ idf_component_register(
         wifi_manager
         object_service
         measurement_service
+        runtime_observability
         storage_service
         storage_manager
         seismic_acquisition

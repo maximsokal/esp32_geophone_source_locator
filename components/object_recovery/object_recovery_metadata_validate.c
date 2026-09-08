@@ -13,6 +13,11 @@
 #include "object_format.h"
 
 
+#ifndef S_ISREG
+#define S_ISREG(mode) (((mode) & _S_IFMT) == _S_IFREG)
+#endif
+
+
 static const char *TAG =
     "OBJECT_RECOVERY_IO";
 
@@ -43,6 +48,13 @@ bool object_recovery_fs_metadata_valid(
     const char *expected_id
 )
 {
+    if (
+        path == NULL ||
+        !object_format_id_is_valid(expected_id)
+    ) {
+        return false;
+    }
+
     struct stat info;
 
     int64_t started_us =

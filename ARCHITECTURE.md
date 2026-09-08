@@ -82,6 +82,8 @@ Current policy:
 | Keypad | 0 | 4 | 8192 |
 | Storage service | 0 | 3 | 8192 |
 | Object service | 0 | 3 | 8192 |
+| Measurement service | 0 | 3 | 4096 |
+| Seismic recorder | 0 | 2 | 4096 |
 | INA3221 monitor | 0 | 1 | 4096 |
 
 Do not introduce new application tasks with ad-hoc priorities. Add them to `app_task_config.h` so the whole scheduling hierarchy stays reviewable in one place.
@@ -218,7 +220,7 @@ GPIO16      -> TFT RESET
 GPIO17      -> SD CS
 ```
 
-The SD card stays at 2 MHz on the current prototype because higher rates were not stable on the physical assembly.
+The current source sets the SD runtime ceiling to `SDMMC_FREQ_DEFAULT` (20 MHz), after 400 kHz discovery. This replaces the older 2 MHz setting in this document; physical stability on the current assembly still requires a separate hardware check.
 
 ### SPI3 - AD7606 only
 
@@ -344,6 +346,8 @@ Safe shutdown order:
 ```text
 keypad monitor
   -> INA3221 monitor / I2C release
+  -> measurement service shutdown
+  -> recorder stop / drain / finalize (LVGL display guard still alive)
   -> UI event task / LVGL
   -> storage service
   -> object service

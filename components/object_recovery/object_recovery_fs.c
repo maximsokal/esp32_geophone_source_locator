@@ -2,7 +2,12 @@
 
 #include <errno.h>
 #include <stdio.h>
+#ifdef _MSC_VER
+#include <io.h>
+#define unlink _unlink
+#else
 #include <unistd.h>
+#endif
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -70,6 +75,10 @@ esp_err_t object_recovery_fs_unlink_if_exists(
     const char *path
 )
 {
+    if (path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     errno =
         0;
 
@@ -107,6 +116,10 @@ esp_err_t object_recovery_fs_restore_file(
     const char *destination
 )
 {
+    if (source == NULL || destination == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     esp_err_t err =
         object_recovery_fs_unlink_if_exists(
             destination

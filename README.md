@@ -28,7 +28,7 @@ SPI2 is shared only by the TFT and microSD card:
 | TFT RESET | 16 |
 | microSD CS | 17 |
 
-The microSD SPI clock is intentionally limited to **2 MHz** because higher rates were not stable on the current physical assembly.
+The current firmware sets the microSD SPI runtime ceiling to **20 MHz** (`SDMMC_FREQ_DEFAULT`); discovery starts at 400 kHz. This is the configured ceiling, not a claim that the present wiring has been physically validated at that rate.
 
 ### SPI3: dedicated AD7606 acquisition bus
 
@@ -223,6 +223,8 @@ The shutdown sequence stops producers/services before cutting power:
 
 ```text
 keypad monitor
+-> INA3221 monitor
+-> measurement service / recorder finalization (LVGL guard still alive)
 -> UI event worker / LVGL port
 -> storage service
 -> object service
@@ -240,7 +242,7 @@ The TFT Storage screen requires a second confirmation before application-data er
 
 ## Web interface
 
-The firmware starts a local HTTP server and exposes device/seismic APIs including:
+The firmware starts a local HTTPS server on port 443 (`https://geolocator.local/`) and exposes device/seismic APIs including:
 
 - `/api/status`
 - `/api/seismic`
@@ -250,6 +252,8 @@ The firmware starts a local HTTP server and exposes device/seismic APIs includin
 The web component exposes only `include/web_server.h` publicly. Internal routes, JSON helpers, setup parsing and static-asset declarations share one private `web_server_internal.h` instead of a separate private header for every `.c` file.
 
 ## Build
+
+For local firmware tests, the risk-based coverage plan and host/target verification boundaries, see [docs/firmware-test-plan.md](docs/firmware-test-plan.md).
 
 Install ESP-IDF v5.5.4 and open an ESP-IDF terminal in the repository directory.
 
@@ -274,6 +278,35 @@ idf.py menuconfig
 Then open **Seismic Acquisition** and select the required source.
 
 ## Flash and monitor
+
+For repeatable local verification, use the tasks in `.vscode/tasks.json`:
+
+* `Tests: All (no flash)` runs all host/Python/WebUI checks and both ESP builds.
+* `ESP: Unity tests (flash COM4 + logs COM6)` runs the target Unity cases with
+  a live COM4 preflight, an explicit test-app flash, and a bounded COM6 log
+  capture.
+* `ESP: Production pipeline HIL (COM4 + COM6)` builds the production image,
+  prompts for the HTTPS base URL and an existing object ID, then runs the live
+  acquisition/recorder/API gate with explicit COM4 flash and COM6 logging.
+* `ESP: Flash production (COM4)` and `ESP: Monitor logs (COM6)` remain separate
+  tasks for production firmware, each with its matching live-port preflight.
+
+The host contracts cover the AD7606 DMA configuration; the production HIL
+runner reports AD7606 startup, configured-rate frame cadence, recorder/session
+metadata, exact seismic channel IDs and bounded timestamp jitter,
+`/api/seismic`/`/api/status` checks (including zero AD7606 read errors and
+consecutive failures) and advancing FreeRTOS heartbeats for the
+acquisition, recorder, UI, keypad and power-button loops. During recording it
+also requires acquisition and recorder progress to advance. It uses the device
+monotonic `runtime.now_ms` to reject task heartbeats older than the configured
+`-MaxTaskHeartbeatAgeMs` (default 1000 ms). TFT pixels and
+keypad/power-button responsiveness still require a human observation during the
+live Measurements run; use `-RequireFullPipeline` so missing API, SD or physical
+evidence is reported as `BLOCKED` instead of being mistaken for a complete pass.
+After observing the live screen, keypad navigation and ordered shutdown, repeat
+the explicit command with `-ConfirmTftRendering -ConfirmKeypadResponsive
+-ConfirmPowerButtonResponsive` to record those three manual attestations as
+`PASS`.
 
 Use the board programming port for flashing:
 
@@ -307,7 +340,7 @@ A normal AD7606 start should contain messages equivalent to:
 ```text
 AD7606_DRIVER: GPIO configured: RESET=2 CONVST=42 BUSY=47 CS=41
 AD7606_DRIVER: Initializing dedicated SPI3: MISO=39 SCLK=40
-AD7606_DRIVER: SPI3 initialized successfully
+AD7606_DRIVER: SPI3 initialized successfully: DMA=auto (SPI_DMA_CH_AUTO)
 AD7606_DRIVER: Self-test conversion + SPI read OK
 AD7606_ACQ: Started: 500 Hz, 8 channels, SPI3 dedicated, core=1
 ```

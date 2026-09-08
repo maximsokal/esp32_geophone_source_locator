@@ -257,7 +257,7 @@ static esp_err_t ad7606_init_spi_bus(void)
 
     ESP_LOGI(
         TAG,
-        "SPI3 initialized successfully"
+        "SPI3 initialized successfully: DMA=auto (SPI_DMA_CH_AUTO)"
     );
 
     return ESP_OK;

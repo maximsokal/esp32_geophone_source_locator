@@ -1,0 +1,572 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Tests: Host C",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/run_host_tests.py",
+                "--keep-going"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build and run all manifest-driven native C contract suites with the local compiler."
+        },
+        {
+            "label": "Tests: Host C (Clang ASan+UBSan)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/tools/run_host_tests.py",
+                "--compiler",
+                "${workspaceFolder}/.tools/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin/clang.exe",
+                "--sanitizers",
+                "address,undefined",
+                "--keep-going"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Optional native Clang sanitizer pass; no ESP-IDF or hardware action."
+        },
+        {
+            "label": "Tests: Python",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-m",
+                "pytest",
+                "-q"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run deterministic pytest checks; the HIL-marked test remains gated by explicit --hil and GEOLOCATOR_HIL=1."
+        },
+        {
+            "label": "Tests: Web Console",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "test:console"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/webui"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run the WebUI console Vitest suite."
+        },
+        {
+            "label": "Tests: Web XR",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "test:xr"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/webui"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run the WebUI WebXR Vitest suite."
+        },
+        {
+            "label": "Tests: Web Typecheck",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "run",
+                "typecheck"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/webui"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Type-check the WebUI independently from the Vitest suites."
+        },
+        {
+            "label": "Tests: Web",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_suite.ps1",
+                "-Suite",
+                "Web"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "detail": "Run Web Console, WebXR, and typecheck sequentially and print a final SUITE_RESULT report."
+        },
+        {
+            "label": "Build: ESP production",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "build",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-Jobs",
+                "2"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Build the production ESP32-S3 firmware with the repository's cached ESP-IDF 5.5.4 Python environment."
+        },
+        {
+            "label": "Build: ESP Unity",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "build",
+                "-ProjectPath",
+                "test_app",
+                "-BuildDir",
+                "build-s3",
+                "-Target",
+                "esp32s3",
+                "-Jobs",
+                "2"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Build the standalone Unity target application; this task does not flash hardware."
+        },
+        {
+            "label": "Tests: All (no flash)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_suite.ps1",
+                "-Suite",
+                "All"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "detail": "Run host C, Python, WebUI, Unity-target, and production-build steps with a final SUITE_RESULT report; no flash."
+        },
+        {
+            "label": "ESP: Check COM4",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/check_serial_ports.ps1",
+                "-Ports",
+                "COM4"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Confirm that the programming port COM4 is live before a flash task."
+        },
+        {
+            "label": "ESP: Check COM6",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/check_serial_ports.ps1",
+                "-Ports",
+                "COM6"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Confirm that the passive log port COM6 is live before a monitor task."
+        },
+        {
+            "label": "ESP: Check serial ports",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "ESP: Check COM4",
+                "ESP: Check COM6"
+            ],
+            "problemMatcher": [],
+            "detail": "Confirm the programming port COM4 and passive log port COM6 before a combined HIL task."
+        },
+        {
+            "label": "ESP: Flash production (COM4)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "flash",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-Port",
+                "COM4"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "ESP: Check COM4",
+                "Build: ESP production"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit hardware write: flash the production image through COM4."
+        },
+        {
+            "label": "ESP: Flash Unity app (COM4)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "flash",
+                "-ProjectPath",
+                "test_app",
+                "-BuildDir",
+                "build-s3",
+                "-Port",
+                "COM4"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "ESP: Check COM4",
+                "Build: ESP Unity"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit hardware write: flash the standalone Unity test app through COM4."
+        },
+        {
+            "label": "ESP: Production pipeline HIL (COM4 + COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_pipeline_hil.ps1",
+                "-FlashPort",
+                "COM4",
+                "-LogPort",
+                "COM6",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-RequireFullPipeline",
+                "-BaseUrl",
+                "${input:pipelineBaseUrl}",
+                "-Record",
+                "-ObjectId",
+                "${input:pipelineObjectId}"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Build: ESP production"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Explicit production HIL: monitor COM6, flash production through COM4, require full serial/API pipeline checks, and report PIPELINE_HIL_RESULT; add the three -Confirm... switches in a direct PowerShell run after the manual TFT/keypad/power observations."
+        },
+        {
+            "label": "ESP: Monitor logs (COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "monitor",
+                "-ProjectPath",
+                ".",
+                "-BuildDir",
+                "build",
+                "-Port",
+                "COM6"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "ESP: Check COM6"
+            ],
+            "isBackground": true,
+            "runOptions": {
+                "instanceLimit": 1
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "owner": "esp-monitor",
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".*"
+                }
+            },
+            "detail": "Passive 115200-baud log monitor on COM6; stop it with Ctrl+C or the task stop control."
+        },
+        {
+            "label": "ESP: Monitor Unity logs (COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_idf.ps1",
+                "-Action",
+                "monitor",
+                "-ProjectPath",
+                "test_app",
+                "-BuildDir",
+                "build-s3",
+                "-Port",
+                "COM6"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "ESP: Check COM6"
+            ],
+            "isBackground": true,
+            "runOptions": {
+                "instanceLimit": 1
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false
+            },
+            "problemMatcher": {
+                "owner": "esp-monitor",
+                "pattern": {
+                    "regexp": "^(.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".*"
+                }
+            },
+            "detail": "Passive Unity test-result monitor on COM6; start this before flashing the Unity app when using separate tasks."
+        },
+        {
+            "label": "ESP: Unity tests (flash COM4 + logs COM6)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_unity_hil.ps1",
+                "-FlashPort",
+                "COM4",
+                "-LogPort",
+                "COM6",
+                "-ProjectPath",
+                "test_app",
+                "-BuildDir",
+                "build-s3"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "Build: ESP Unity"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run all Unity cases on the board: start COM6 monitor, flash the test app via COM4, and require TEST_APP_RESULT: PASS."
+        }
+    ],
+    "inputs": [
+        {
+            "id": "pipelineBaseUrl",
+            "type": "promptString",
+            "description": "Base URL for the production /api checks",
+            "default": "https://geolocator.local"
+        },
+        {
+            "id": "pipelineObjectId",
+            "type": "promptString",
+            "description": "Existing object ID used for recording start/stop",
+            "default": "OBJ_0001"
+        }
+    ]
+}
