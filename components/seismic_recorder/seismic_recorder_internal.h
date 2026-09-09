@@ -16,6 +16,7 @@
 #define SEISMIC_RECORDER_FLUSH_INTERVAL_US     500000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
 #define SEISMIC_RECORDER_METADATA_BUFFER_SIZE  2048
+#define SEISMIC_RECORDER_BINARY_VERSION        1U
 
 
 typedef struct
@@ -28,6 +29,33 @@ typedef struct
     uint32_t reserved;
 
 } seismic_recorder_binary_header_t;
+
+
+esp_err_t seismic_recorder_fs_build_session_path(
+    const char *object_id,
+    const char *session_id,
+    char *path,
+    size_t path_size
+);
+
+
+bool seismic_recorder_json_metadata_exists(
+    const char *object_id,
+    const char *session_id
+);
+
+
+esp_err_t seismic_recorder_waveform_read_file(
+    FILE *samples_file,
+    uint64_t file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t max_points,
+    seismic_recorder_waveform_point_t *points,
+    size_t point_capacity,
+    seismic_recorder_waveform_info_t *info
+);
 
 
 esp_err_t seismic_recorder_fs_create_session(

@@ -301,7 +301,8 @@ esp_err_t ina3221_driver_read_channels(
             );
 
         channels[i].current_a =
-            ina3221_policy_current_from_shunt(
+            ina3221_policy_current_for_channel(
+                i,
                 channels[i].shunt_voltage_v,
                 INA3221_SHUNT_RESISTANCE_OHM
             );

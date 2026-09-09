@@ -1,5 +1,6 @@
 #include "seismic_recorder_internal.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,13 +23,22 @@ static esp_err_t seismic_recorder_json_metadata_path(
     size_t path_size
 )
 {
-    int written = snprintf(
+    char session_path[SEISMIC_RECORDER_PATH_SIZE];
+    esp_err_t err = seismic_recorder_fs_build_session_path(
+        object_id,
+        session_id,
+        session_path,
+        sizeof(session_path)
+    );
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const int written = snprintf(
         path,
         path_size,
-        "%s/%s/sessions/%s/session.json",
-        STORAGE_MANAGER_OBJECTS_PATH,
-        object_id,
-        session_id
+        "%s/session.json",
+        session_path
     );
 
     return
@@ -202,16 +212,63 @@ esp_err_t seismic_recorder_json_write_metadata(
 }
 
 
-static uint64_t seismic_recorder_json_uint64(
+static bool seismic_recorder_json_uint64(
     const cJSON *root,
-    const char *name
+    const char *name,
+    uint64_t *value
+)
+{
+    if (value == NULL) {
+        return false;
+    }
+
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
+    if (
+        !cJSON_IsNumber(item) ||
+        !isfinite(item->valuedouble) ||
+        item->valuedouble < 0.0 ||
+        item->valuedouble >= 18446744073709551616.0 ||
+        floor(item->valuedouble) != item->valuedouble
+    ) {
+        return false;
+    }
+
+    *value = (uint64_t)item->valuedouble;
+    return true;
+}
+
+
+static bool seismic_recorder_json_uint32(
+    const cJSON *root,
+    const char *name,
+    uint32_t *value
+)
+{
+    uint64_t parsed = 0U;
+    if (
+        value == NULL ||
+        !seismic_recorder_json_uint64(root, name, &parsed) ||
+        parsed > UINT32_MAX
+    ) {
+        return false;
+    }
+
+    *value = (uint32_t)parsed;
+    return true;
+}
+
+
+static bool seismic_recorder_json_string_equals(
+    const cJSON *root,
+    const char *name,
+    const char *expected
 )
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
-    if (!cJSON_IsNumber(item) || item->valuedouble < 0.0) {
-        return 0U;
-    }
-    return (uint64_t)item->valuedouble;
+    return
+        cJSON_IsString(item) &&
+        item->valuestring != NULL &&
+        strcmp(item->valuestring, expected) == 0;
 }
 
 
@@ -271,34 +328,136 @@ esp_err_t seismic_recorder_json_read_summary(
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    bool valid =
+        seismic_recorder_json_string_equals(
+            root,
+            "object_id",
+            object_id
+        ) &&
+        seismic_recorder_json_string_equals(
+            root,
+            "session_id",
+            session_id
+        );
+
+    const cJSON *schema = cJSON_GetObjectItemCaseSensitive(root, "schema_version");
+    valid = valid &&
+        cJSON_IsNumber(schema) &&
+        isfinite(schema->valuedouble) &&
+        schema->valuedouble == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION;
+
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
+    const bool complete =
+        cJSON_IsString(status) &&
+        status->valuestring != NULL &&
+        strcmp(status->valuestring, "complete") == 0;
+    const bool errored =
+        cJSON_IsString(status) &&
+        status->valuestring != NULL &&
+        strcmp(status->valuestring, "error") == 0;
+    valid = valid && (complete || errored);
+
+    const cJSON *source = cJSON_GetObjectItemCaseSensitive(root, "source");
+    valid = valid &&
+        cJSON_IsString(source) &&
+        source->valuestring != NULL &&
+        source->valuestring[0] != '\0' &&
+        strnlen(source->valuestring, SEISMIC_RECORDER_SOURCE_NAME_SIZE) <
+            SEISMIC_RECORDER_SOURCE_NAME_SIZE;
+
+    uint32_t sample_rate_hz = 0U;
+    valid = valid &&
+        seismic_recorder_json_uint32(
+            root,
+            "sample_rate_hz",
+            &sample_rate_hz
+        ) &&
+        sample_rate_hz > 0U;
+
+    uint32_t channel_count = 0U;
+    valid = valid &&
+        seismic_recorder_json_uint32(
+            root,
+            "channel_count",
+            &channel_count
+        ) &&
+        channel_count == SEISMIC_CHANNEL_COUNT;
+
+    uint64_t samples_written = 0U;
+    uint64_t dropped_frames = 0U;
+    uint64_t recording_ms = 0U;
+    valid = valid &&
+        seismic_recorder_json_uint64(root, "samples_written", &samples_written) &&
+        seismic_recorder_json_uint64(root, "dropped_frames", &dropped_frames) &&
+        seismic_recorder_json_uint64(root, "recording_ms", &recording_ms);
+
+    if (!valid) {
+        cJSON_Delete(root);
+        free(path);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
     snprintf(
         summary->session_id,
         sizeof(summary->session_id),
         "%s",
         session_id
     );
-
-    const cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
-    summary->complete =
-        cJSON_IsString(status) &&
-        status->valuestring != NULL &&
-        strcmp(status->valuestring, "complete") == 0;
-
-    const cJSON *sample_rate = cJSON_GetObjectItemCaseSensitive(root, "sample_rate_hz");
-    if (cJSON_IsNumber(sample_rate) && sample_rate->valuedouble > 0.0) {
-        summary->sample_rate_hz = (uint32_t)sample_rate->valuedouble;
-    }
-
-    const cJSON *channels = cJSON_GetObjectItemCaseSensitive(root, "channel_count");
-    if (cJSON_IsNumber(channels) && channels->valuedouble > 0.0) {
-        summary->channel_count = (uint8_t)channels->valuedouble;
-    }
-
-    summary->samples_written = seismic_recorder_json_uint64(root, "samples_written");
-    summary->dropped_frames = seismic_recorder_json_uint64(root, "dropped_frames");
-    summary->recording_ms = seismic_recorder_json_uint64(root, "recording_ms");
+    snprintf(
+        summary->source_name,
+        sizeof(summary->source_name),
+        "%s",
+        source->valuestring
+    );
+    summary->complete = complete;
+    summary->sample_rate_hz = sample_rate_hz;
+    summary->channel_count = (uint8_t)channel_count;
+    summary->samples_written = samples_written;
+    summary->dropped_frames = dropped_frames;
+    summary->recording_ms = recording_ms;
 
     cJSON_Delete(root);
     free(path);
     return ESP_OK;
+}
+
+
+bool seismic_recorder_json_metadata_exists(
+    const char *object_id,
+    const char *session_id
+)
+{
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        return false;
+    }
+
+    const esp_err_t path_err = seismic_recorder_json_metadata_path(
+        object_id,
+        session_id,
+        path,
+        SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (path_err != ESP_OK) {
+        free(path);
+        return false;
+    }
+
+    if (storage_manager_path_exists(path)) {
+        free(path);
+        return true;
+    }
+
+    const size_t path_length = strlen(path);
+    const bool backup_path_fits =
+        path_length + sizeof(".bak") - 1U < SEISMIC_RECORDER_PATH_SIZE;
+    if (backup_path_fits) {
+        memcpy(path + path_length, ".bak", sizeof(".bak"));
+    }
+
+    const bool exists =
+        backup_path_fits &&
+        storage_manager_path_exists(path);
+    free(path);
+    return exists;
 }

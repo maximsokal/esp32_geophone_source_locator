@@ -73,6 +73,54 @@ float ina3221_policy_current_from_shunt(
 }
 
 
+float ina3221_policy_current_for_channel(
+    size_t channel_index,
+    float shunt_voltage_v,
+    float shunt_resistance_ohm
+)
+{
+    const float measured_current =
+        ina3221_policy_current_from_shunt(
+            shunt_voltage_v,
+            shunt_resistance_ohm
+        );
+
+    /*
+     * The battery shunt is oriented source-to-load, while the two 5 V rail
+     * shunts are installed load-to-source. Keep the signed INA reading for
+     * CH1 because battery discharge is positive and charging is negative.
+     */
+    if (
+        channel_index == INA3221_POLICY_ESP32_INDEX ||
+        channel_index == INA3221_POLICY_AD7606_INDEX
+    ) {
+        return -measured_current;
+    }
+
+    return measured_current;
+}
+
+
+const char *ina3221_policy_channel_name(
+    size_t channel_index
+)
+{
+    switch (channel_index) {
+        case INA3221_POLICY_BATTERY_INDEX:
+            return "INA_CH1_BATTERY";
+
+        case INA3221_POLICY_ESP32_INDEX:
+            return "INA_CH2_ESP32_5V";
+
+        case INA3221_POLICY_AD7606_INDEX:
+            return "INA_CH3_AD7606_5V";
+
+        default:
+            return "INA_UNKNOWN";
+    }
+}
+
+
 float ina3221_policy_battery_source_voltage(
     const ina3221_channel_sample_t *battery
 )
@@ -227,7 +275,7 @@ ina3221_power_state_t ina3221_policy_classify_instant(
     }
 
     /*
-     * CH1 is a 5 V rail, so it exists on USB and on boosted battery power.
+     * CH2 is the ESP32 5 V rail, so it exists on USB and on boosted battery power.
      * The battery-current direction therefore has priority above. If the
      * battery is not discharging and the 5 V rail is alive, USB is the best
      * inference available from the approved three-channel wiring.

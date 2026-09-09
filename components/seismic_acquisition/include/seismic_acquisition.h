@@ -32,6 +32,17 @@ typedef struct
     uint64_t read_errors;
     uint32_t consecutive_failures;
 
+    /* AD7606 serial observability. Other sources leave these at defaults. */
+    bool serial_suspicious;
+    const char *serial_pattern;
+    uint32_t serial_suspicious_streak;
+    uint32_t serial_repeated_frame_streak;
+    uint32_t serial_all_zero_frames;
+    uint32_t serial_all_ff_frames;
+    uint32_t serial_all_identical_frames;
+    uint32_t serial_varied_frames;
+    int serial_busy_level;
+
     int64_t last_sample_timestamp_us;
 
     float latest_uv[

@@ -81,7 +81,46 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
 
+    char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
+
 } seismic_recorder_session_summary_t;
+
+
+#define SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT  4U
+#define SEISMIC_RECORDER_MAX_WAVEFORM_POINTS     1200U
+
+
+typedef struct
+{
+    int64_t timestamp_us;
+    float min_uv[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT];
+    float max_uv[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT];
+
+} seismic_recorder_waveform_point_t;
+
+
+typedef struct
+{
+    bool complete;
+    char object_id[SEISMIC_RECORDER_OBJECT_ID_SIZE];
+    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+    char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
+
+    uint32_t sample_rate_hz;
+    uint8_t channel_count;
+
+    uint64_t samples_written;
+    uint64_t dropped_frames;
+    uint64_t recording_ms;
+
+    uint64_t source_frame_count;
+    uint64_t start_frame;
+    uint64_t frame_count;
+    size_t point_count;
+    int64_t start_timestamp_us;
+    int64_t end_timestamp_us;
+
+} seismic_recorder_waveform_info_t;
 
 
 esp_err_t seismic_recorder_init(void);
@@ -127,4 +166,17 @@ esp_err_t seismic_recorder_list_sessions(
 esp_err_t seismic_recorder_delete_session(
     const char *object_id,
     const char *session_id
+);
+
+
+/* Read one bounded session range as min/max envelopes for WebUI rendering. */
+esp_err_t seismic_recorder_read_session(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t max_points,
+    seismic_recorder_waveform_point_t *points,
+    size_t point_capacity,
+    seismic_recorder_waveform_info_t *info
 );

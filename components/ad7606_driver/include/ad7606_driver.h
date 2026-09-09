@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "ad7606_serial.h"
 
 
 #define AD7606_CHANNEL_COUNT          8
@@ -11,6 +12,10 @@
 #define AD7606_SPI_MODE                2U
 #define AD7606_INPUT_RANGE_V           5.0f
 #define AD7606_OVERSAMPLING_RATIO      1U
+
+#if AD7606_CHANNEL_COUNT != AD7606_SERIAL_WORD_COUNT
+#error "AD7606 channel count must match the serial frame word count"
+#endif
 
 
 typedef struct
@@ -26,12 +31,30 @@ typedef struct
 } ad7606_sample_t;
 
 
+typedef struct
+{
+    bool conversion_complete;
+    bool spi_transaction_ok;
+    int busy_level;
+
+    ad7606_serial_pattern_t pattern;
+    uint8_t rx[AD7606_SERIAL_RX_BYTES];
+
+} ad7606_serial_observation_t;
+
+
 esp_err_t ad7606_driver_init(void);
 
 void ad7606_driver_deinit(void);
 
 esp_err_t ad7606_driver_read(
     ad7606_sample_t *sample
+);
+
+
+/* Snapshot the most recent successful serial transaction for diagnostics. */
+esp_err_t ad7606_driver_get_last_serial_observation(
+    ad7606_serial_observation_t *observation
 );
 
 /*

@@ -17,6 +17,16 @@ typedef struct
     uint64_t read_errors;
     uint32_t consecutive_failures;
 
+    bool serial_suspicious;
+    ad7606_serial_pattern_t serial_pattern;
+    uint32_t suspicious_streak;
+    uint32_t repeated_frame_streak;
+    uint32_t all_zero_frames;
+    uint32_t all_ff_frames;
+    uint32_t all_identical_frames;
+    uint32_t varied_frames;
+    int busy_level;
+
     int64_t last_sample_timestamp_us;
 
     float latest_uv[AD7606_CHANNEL_COUNT];

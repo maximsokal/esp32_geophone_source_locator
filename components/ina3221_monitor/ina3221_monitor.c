@@ -107,7 +107,8 @@ static void ina3221_monitor_publish(
 
     /*
      * The primary power values consumed by existing UI/status code are the
-     * actual ESP32 5 V rail at INA3221 CH1 / IN- (after the R100 shunt).
+     * actual ESP32 5 V rail at physical INA3221 CH2 / IN- (after the R100
+     * shunt). The status array index is the physical channel minus one.
      */
     (void)device_status_set_power(
         channels[1].bus_voltage_v,
@@ -139,7 +140,7 @@ static void ina3221_monitor_log_sample(
     if (decision->battery_present) {
         ESP_LOGI(
             TAG,
-            "source=%s battery=%.3fV %+.3fA %.0f%% usb=%s charging=%s ESP32_5V=%.3fV %+.3fA AD7606_5V=%.3fV %+.3fA",
+            "source=%s INA_CH1_BATTERY=%.3fV %+.3fA %.0f%% usb=%s charging=%s INA_CH2_ESP32_5V=%.3fV %+.3fA INA_CH3_AD7606_5V=%.3fV %+.3fA",
             ina3221_policy_state_name(
                 decision->state
             ),
@@ -159,7 +160,7 @@ static void ina3221_monitor_log_sample(
 
     ESP_LOGI(
         TAG,
-        "source=%s battery=absent CH0=%.3fV %+.3fA usb=%s ESP32_5V=%.3fV %+.3fA AD7606_5V=%.3fV %+.3fA",
+        "source=%s INA_CH1_BATTERY=absent %.3fV %+.3fA usb=%s INA_CH2_ESP32_5V=%.3fV %+.3fA INA_CH3_AD7606_5V=%.3fV %+.3fA",
         ina3221_policy_state_name(
             decision->state
         ),

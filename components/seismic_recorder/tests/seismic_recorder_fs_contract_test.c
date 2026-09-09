@@ -21,6 +21,7 @@
 #define STORAGE_MANAGER_MOUNT_POINT "seismic_recorder_contract_tmp"
 
 #include "seismic_recorder.h"
+#include "seismic_buffer.h"
 #include "object_store.h"
 #include "storage_manager.h"
 
@@ -34,6 +35,8 @@ static esp_err_t storage_begin_error;
 static bool fail_create_directory;
 static unsigned remove_tree_calls;
 static char removed_tree_path[256];
+static bool fake_metadata_present;
+static esp_err_t fake_summary_error = ESP_FAIL;
 
 static int make_directory(const char *path)
 {
@@ -129,9 +132,27 @@ esp_err_t seismic_recorder_json_read_summary(
 )
 {
     (void)object_id;
+    if (fake_summary_error != ESP_OK || summary == NULL) {
+        return fake_summary_error;
+    }
+    memset(summary, 0, sizeof(*summary));
+    snprintf(summary->session_id, sizeof(summary->session_id), "%s", session_id);
+    snprintf(summary->source_name, sizeof(summary->source_name), "AD7606");
+    summary->complete = true;
+    summary->sample_rate_hz = 500U;
+    summary->channel_count = SEISMIC_CHANNEL_COUNT;
+    summary->samples_written = 5U;
+    return ESP_OK;
+}
+
+bool seismic_recorder_json_metadata_exists(
+    const char *object_id,
+    const char *session_id
+)
+{
+    (void)object_id;
     (void)session_id;
-    (void)summary;
-    return ESP_FAIL;
+    return fake_metadata_present;
 }
 
 #include "../seismic_recorder_fs.c"
@@ -260,11 +281,58 @@ static void test_session_id_increments(void)
     remove_layout();
 }
 
+
+static void test_listing_missing_and_malformed_metadata_is_safe(void)
+{
+    remove_layout();
+    make_layout();
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001") == 0);
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002") == 0);
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003") == 0);
+
+    seismic_recorder_session_summary_t sessions[4] = {0};
+    size_t count = 0U;
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    storage_begin_error = ESP_OK;
+    fake_metadata_present = false;
+    fake_summary_error = ESP_OK;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
+    assert(count == 3U);
+    for (size_t index = 0U; index < count; ++index) {
+        assert(!sessions[index].complete);
+        assert(sessions[index].source_name[0] == '\0');
+    }
+
+    fake_metadata_present = true;
+    fake_summary_error = ESP_ERR_INVALID_RESPONSE;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
+    assert(count == 3U);
+    for (size_t index = 0U; index < count; ++index) {
+        assert(!sessions[index].complete);
+    }
+
+    fake_summary_error = ESP_OK;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
+    assert(count == 3U);
+    for (size_t index = 0U; index < count; ++index) {
+        assert(sessions[index].complete);
+        assert(strcmp(sessions[index].source_name, "AD7606") == 0);
+    }
+    assert(storage_begin_calls == storage_end_calls);
+    fake_metadata_present = false;
+    fake_summary_error = ESP_FAIL;
+    remove_layout();
+}
+
 int main(void)
 {
     test_invalid_arguments();
     test_session_header_and_frames();
     test_session_error_cleanup();
     test_session_id_increments();
+    test_listing_missing_and_malformed_metadata_is_safe();
     return 0;
 }

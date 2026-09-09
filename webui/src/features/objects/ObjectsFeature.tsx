@@ -6,8 +6,10 @@ import type {
   RecordingSessionCollection,
 } from '../../domain/device';
 import { formatCoordinate, normalizeCableLength } from '../../domain/device';
+import '../seismic/SavedSeismicViewer.css';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
+const SavedSeismicViewer = lazy(() => import('../seismic/SavedSeismicViewer'));
 
 interface Props {
   status: DeviceStatus | null;
@@ -46,12 +48,17 @@ export default function ObjectsFeature(props: Props) {
   const [cables, setCables] = useState<number[]>(selected?.cable_lengths_m ?? [5, 5, 5, 5]);
   const [defaults, setDefaults] = useState<number[]>(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
   const [showLive, setShowLive] = useState(false);
+  const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [gpsMessage, setGpsMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setRename(selected?.name ?? '');
     setCables(selected?.cable_lengths_m ?? [5, 5, 5, 5]);
   }, [selected?.id, selected?.name, selected?.cable_lengths_m]);
+
+  useEffect(() => {
+    setOpenSessionId(null);
+  }, [selected?.id]);
 
   useEffect(() => {
     setDefaults(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
@@ -69,6 +76,7 @@ export default function ObjectsFeature(props: Props) {
   const selectedSessions = selected !== null && sessions?.object_id === selected.id
     ? sessions.sessions
     : [];
+  const openSession = selectedSessions.find((session) => session.session_id === openSessionId && session.complete) ?? null;
   const liveAvailable = status?.acquisition.running === true;
 
   return (
@@ -267,7 +275,14 @@ export default function ObjectsFeature(props: Props) {
               ) : (
                 <div className="session-list">
                   {selectedSessions.map((session) => (
-                    <div className="session-row" key={session.session_id}>
+                    <button
+                      type="button"
+                      className="session-row"
+                      key={session.session_id}
+                      disabled={!session.complete || busy}
+                      title={session.complete ? 'Open saved waveform viewer' : 'Only completed sessions can be viewed'}
+                      onClick={() => setOpenSessionId(session.session_id)}
+                    >
                       <span>
                         <strong>{session.session_id}</strong>
                         <small>{session.sample_rate_hz.toLocaleString()} Hz · {session.channel_count} ch · {formatDuration(session.recording_ms)}</small>
@@ -276,11 +291,22 @@ export default function ObjectsFeature(props: Props) {
                         <strong>{session.samples_written.toLocaleString()}</strong>
                         <small>{session.dropped_frames > 0 ? `${session.dropped_frames.toLocaleString()} dropped` : session.complete ? 'complete' : 'incomplete'}</small>
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
             </article>
+
+            {openSession !== null && (
+              <Suspense fallback={<div className="console-card">Loading saved waveform module…</div>}>
+                <SavedSeismicViewer
+                  objectId={selected.id}
+                  sessionId={openSession.session_id}
+                  summary={openSession}
+                  onClose={() => setOpenSessionId(null)}
+                />
+              </Suspense>
+            )}
 
             {showLive && liveAvailable && (
               <Suspense fallback={<div className="console-card">Loading waveform module…</div>}>

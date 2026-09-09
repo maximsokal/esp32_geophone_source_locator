@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "ad7606_driver.h"
 #include "board_config.h"
@@ -162,6 +163,28 @@ static void test_spi_error_does_not_publish_sample(void)
     ad7606_driver_deinit();
 }
 
+static void test_constant_payload_is_observable_but_not_transport_failure(void)
+{
+    reset_fake();
+    memset(fake_rx, 0x00, sizeof(fake_rx));
+    assert(ad7606_driver_init() == ESP_OK);
+
+    ad7606_serial_observation_t observation = {0};
+    assert(ad7606_driver_get_last_serial_observation(&observation) == ESP_OK);
+    assert(observation.conversion_complete);
+    assert(observation.spi_transaction_ok);
+    assert(observation.pattern == AD7606_SERIAL_PATTERN_ALL_00);
+    assert(observation.rx[0] == 0x00U && observation.rx[15] == 0x00U);
+    ad7606_driver_deinit();
+
+    reset_fake();
+    memset(fake_rx, 0xFF, sizeof(fake_rx));
+    assert(ad7606_driver_init() == ESP_OK);
+    assert(ad7606_driver_get_last_serial_observation(&observation) == ESP_OK);
+    assert(observation.pattern == AD7606_SERIAL_PATTERN_ALL_FF);
+    ad7606_driver_deinit();
+}
+
 static void test_busy_timeout_fails_initialization_and_releases_bus(void)
 {
     reset_fake();
@@ -188,6 +211,7 @@ int main(void)
 {
     test_successful_init_and_conversion();
     test_spi_error_does_not_publish_sample();
+    test_constant_payload_is_observable_but_not_transport_failure();
     test_busy_timeout_fails_initialization_and_releases_bus();
     test_spi_initialization_error_is_returned();
     puts("AD7606 driver host tests passed");

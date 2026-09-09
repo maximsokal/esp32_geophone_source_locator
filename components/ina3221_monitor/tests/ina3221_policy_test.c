@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 
 static void assert_near(
@@ -170,6 +171,38 @@ static void test_battery_source_voltage_and_percent(void)
 }
 
 
+static void test_physical_channel_polarity(void)
+{
+    /* 10 mV across the 100 mOhm shunt is 100 mA before topology polarity. */
+    assert_near(
+        ina3221_policy_current_for_channel(INA3221_POLICY_BATTERY_INDEX, 0.010f, 0.1f),
+        0.100f,
+        0.0001f
+    );
+    assert_near(
+        ina3221_policy_current_for_channel(INA3221_POLICY_ESP32_INDEX, 0.010f, 0.1f),
+        -0.100f,
+        0.0001f
+    );
+    assert_near(
+        ina3221_policy_current_for_channel(INA3221_POLICY_AD7606_INDEX, 0.010f, 0.1f),
+        -0.100f,
+        0.0001f
+    );
+
+    /* The current contract remains: battery discharge is positive. */
+    assert_near(
+        ina3221_policy_current_for_channel(INA3221_POLICY_BATTERY_INDEX, -0.010f, 0.1f),
+        -0.100f,
+        0.0001f
+    );
+
+    assert(strcmp(ina3221_policy_channel_name(0U), "INA_CH1_BATTERY") == 0);
+    assert(strcmp(ina3221_policy_channel_name(1U), "INA_CH2_ESP32_5V") == 0);
+    assert(strcmp(ina3221_policy_channel_name(2U), "INA_CH3_AD7606_5V") == 0);
+}
+
+
 static void test_power_state_policy(void)
 {
     ina3221_channel_sample_t channels[INA3221_POLICY_CHANNEL_COUNT] = {
@@ -323,6 +356,7 @@ int main(void)
 {
     test_register_conversion();
     test_battery_source_voltage_and_percent();
+    test_physical_channel_polarity();
     test_power_state_policy();
     test_hysteresis();
     test_decision_fields();
