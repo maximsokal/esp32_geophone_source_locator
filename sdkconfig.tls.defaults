@@ -1,43 +1,50 @@
 # GeoLocator TLS runtime memory policy.
 #
-# ESP32-S3 N16R8 has 8 MB PSRAM. HTTPS handshakes were exhausting the
-# fragmented internal DRAM after Wi-Fi/LVGL/server startup with
-# MBEDTLS_ERR_SSL_ALLOC_FAILED (-0x7F00). Keep scarce internal RAM for
-# Wi-Fi, LVGL and DMA-capable drivers; allocate mbedTLS dynamic state in
-# external SPIRAM instead.
+# ESP32-S3 N16R8 has 8 MB PSRAM, but target logs showed that forcing *all*
+# mbedTLS allocations into PSRAM is not stable for the browser workload. After
+# several HTTPS handshakes the PSRAM TLSF heap asserted in block_locate_free()
+# while mbedTLS was parsing the RSA private key for a new server session.
+#
+# Keep the 2 KiB malloc threshold and use ESP-IDF's normal allocator instead:
+# small crypto/key/session allocations prefer internal DRAM, while large TLS
+# RX/TX buffers prefer PSRAM. This is exactly the split we want on N16R8 and
+# avoids sending every short-lived MPI allocation through the PSRAM heap.
 #
 # IMPORTANT: sdkconfig has higher priority than these defaults. If a local
 # sdkconfig predates this policy, delete/regenerate it. app_build_config_guard.c
 # intentionally fails the build when the effective configuration is stale.
 #
-# Component config -> mbedTLS -> Memory allocation strategy -> External SPIRAM
+# Component config -> mbedTLS -> Memory allocation strategy -> Default allocator
 #
 # CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
-CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC is not set
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 
-# ESP32-S3 hardware AES uses DMA. When mbedTLS buffers live in PSRAM the AES
-# port may need temporary MALLOC_CAP_DMA buffers in internal RAM (up to a
-# 1600-byte processing chunk per buffer). With the display, Wi-Fi, HTTPD and
-# concurrent browser TLS sessions this fragmented the remaining internal heap
-# enough to make HTTPS writes fail with "esp-aes: Failed to allocate memory".
-# The local dashboard workload is small, so prefer software AES and preserve
-# internal DMA memory for the rest of the device.
-#
+# Dynamic TX/RX buffers save memory on smaller targets, but this board has 8 MB
+# PSRAM and the observed failure followed repeated TLS allocation/free churn.
+# Keep one RX/TX pair for the lifetime of each TLS session instead of repeatedly
+# allocating and freeing those buffers. With at most two HTTPS clients this is
+# a small, bounded PSRAM cost compared with the available external heap.
+# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
+
+# ESP32-S3 hardware AES uses DMA. Large TLS buffers now normally live in PSRAM,
+# so hardware AES can still require temporary MALLOC_CAP_DMA bounce buffers in
+# scarce internal RAM. Keep software AES until a target benchmark proves the
+# hardware path is both faster and memory-safe under concurrent recording.
 # CONFIG_MBEDTLS_HARDWARE_AES is not set
 # CONFIG_MBEDTLS_AES_USE_INTERRUPT is not set
 
 # Browser HTTPS needs enough internal RAM for simultaneous sockets while
-# Wi-Fi, LVGL, SDSPI and acquisition stay active. Reserve a larger pool that
-# ordinary malloc() cannot consume but MALLOC_CAP_INTERNAL / MALLOC_CAP_DMA
-# users can. SDSPI needs this pool for its 512-byte DMA bounce buffer when a
-# FatFs destination is not directly DMA-capable.
+# Wi-Fi, LVGL, SDSPI and acquisition stay active. Reserve a pool that ordinary
+# malloc() cannot consume but MALLOC_CAP_INTERNAL / MALLOC_CAP_DMA users can.
+# SDSPI needs this pool for its 512-byte DMA bounce buffer when a FatFs
+# destination is not directly DMA-capable.
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
-# The generated base sdkconfig historically preferred internal RAM for normal
-# malloc() calls up to 16 KiB. That puts object-store 4 KiB JSON scratch buffers
-# in the same scarce internal heap needed by Wi-Fi/HTTPD/DMA. Prefer PSRAM for
-# ordinary allocations larger than 2 KiB instead; explicit DMA/internal-cap
-# allocations are unaffected by this threshold.
+# Standard malloc/calloc uses this threshold when PSRAM is enabled:
+# <= 2 KiB prefers internal RAM, > 2 KiB prefers PSRAM, with fallback to the
+# other heap if the preferred one cannot satisfy the request. This keeps RSA
+# MPI/key bookkeeping internal while 4 KiB/16 KiB TLS buffers prefer PSRAM.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
 
 # ESP-IDF can place zero-initialized data from lwIP, net80211, libpp and
@@ -48,13 +55,12 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 # GeoLocator is a local browser dashboard. Chrome commonly opens fresh TLS
 # sockets while loading/navigating the app. RFC5077 server session tickets let
 # the browser resume a previously authenticated TLS 1.2 session instead of
-# repeating the full RSA certificate handshake on every new socket. ESP-IDF
-# 5.5.4 exposes this through httpd_ssl_config_t::session_tickets.
+# repeating the full RSA certificate handshake on every new socket.
 CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS=y
 CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
 CONFIG_ESP_TLS_SERVER_SESSION_TICKET_TIMEOUT=3600
 
 # We do not use post-handshake client authentication or key-refresh
-# renegotiation. Disabling legacy TLS 1.2 renegotiation saves code/state and
-# removes an unnecessary handshake path on this constrained local server.
+# renegotiation. Disabling legacy TLS 1.2 renegotiation removes an unnecessary
+# handshake path on this constrained local server.
 # CONFIG_MBEDTLS_SSL_RENEGOTIATION is not set
