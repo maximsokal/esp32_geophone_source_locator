@@ -209,7 +209,7 @@ esp_err_t web_wifi_setup_register(
     };
 
     esp_err_t err =
-        httpd_register_uri_handler(
+        web_server_register_uri_handler(
             server,
             &open_uri
         );
@@ -225,7 +225,7 @@ esp_err_t web_wifi_setup_register(
         .user_ctx = NULL,
     };
 
-    return httpd_register_uri_handler(
+    return web_server_register_uri_handler(
         server,
         &save_uri
     );

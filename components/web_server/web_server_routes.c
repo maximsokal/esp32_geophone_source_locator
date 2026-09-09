@@ -55,7 +55,7 @@ static esp_err_t web_server_register_root_and_health(
         .handler = root_handler,
         .user_ctx = NULL,
     };
-    esp_err_t err = httpd_register_uri_handler(server, &index_uri);
+    esp_err_t err = web_server_register_uri_handler(server, &index_uri);
     if (err != ESP_OK) return err;
 
     const httpd_uri_t health_uri = {
@@ -64,7 +64,7 @@ static esp_err_t web_server_register_root_and_health(
         .handler = web_server_health_handler,
         .user_ctx = NULL,
     };
-    return httpd_register_uri_handler(server, &health_uri);
+    return web_server_register_uri_handler(server, &health_uri);
 }
 
 esp_err_t web_server_bootstrap_routes_register(httpd_handle_t server)

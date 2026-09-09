@@ -5,15 +5,22 @@
 #include "app_event_bus.h"
 #include "object_service.h"
 #include "storage_service.h"
+#include "ui_frame_scheduler.h"
 #include "ui_internal.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
 
 
 static const char *TAG = "UI";
 
 static ui_context_t s_context;
+static ui_frame_scheduler_t s_frame_scheduler;
+static uint64_t s_refresh_generation;
+static int64_t s_perf_started_us;
+static uint64_t s_render_total_us;
+static uint64_t s_render_max_us;
 
 
 ui_context_t *ui_context(void)
@@ -30,7 +37,32 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
         return;
     }
 
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    ui_frame_scheduler_submit(&s_frame_scheduler, ++s_refresh_generation);
+    if (!ui_frame_scheduler_take(&s_frame_scheduler, now_us, NULL)) return;
+
+    const int64_t started_us = esp_timer_get_time();
     ui_refresh_dynamic_locked();
+    const uint64_t render_us = (uint64_t)(esp_timer_get_time() - started_us);
+    s_render_total_us += render_us;
+    if (render_us > s_render_max_us) s_render_max_us = render_us;
+
+    if ((int64_t)now_us - s_perf_started_us >= 10000000LL) {
+        const uint64_t frames = s_frame_scheduler.frames_rendered;
+        const uint64_t elapsed_us = now_us - (uint64_t)s_perf_started_us;
+        ESP_LOGI(TAG,
+                 "UI_PERF: target_fps=%u actual_fps=%.1f frames_rendered=%llu frames_coalesced=%llu max_render_us=%llu avg_render_us=%llu",
+                 (unsigned)UI_FRAME_TARGET_FPS,
+                 elapsed_us > 0U ? (double)frames * 1000000.0 / (double)elapsed_us : 0.0,
+                 (unsigned long long)frames,
+                 (unsigned long long)s_frame_scheduler.frames_coalesced,
+                 (unsigned long long)s_render_max_us,
+                 (unsigned long long)(frames > 0U ? s_render_total_us / frames : 0U));
+        ui_frame_scheduler_init(&s_frame_scheduler, now_us + UI_FRAME_MIN_PERIOD_US);
+        s_perf_started_us = (int64_t)now_us;
+        s_render_total_us = 0U;
+        s_render_max_us = 0U;
+    }
 }
 
 
@@ -158,6 +190,12 @@ esp_err_t ui_init(void)
     s_context.screen = UI_SCREEN_HOME;
     s_context.selected = 0;
     s_context.notice[0] = '\0';
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    ui_frame_scheduler_init(&s_frame_scheduler, now_us);
+    s_refresh_generation = 0U;
+    s_perf_started_us = (int64_t)now_us;
+    s_render_total_us = 0U;
+    s_render_max_us = 0U;
 
     if (!lvgl_port_lock(1000)) {
         ui_runtime_init_rollback();
@@ -168,7 +206,7 @@ esp_err_t ui_init(void)
 
     s_context.refresh_timer = lv_timer_create(
         ui_refresh_timer_callback,
-        200,
+        42,
         NULL
     );
 

@@ -630,7 +630,7 @@ esp_err_t web_https_onboarding_bootstrap_register(
     };
 
     esp_err_t err =
-        httpd_register_uri_handler(
+        web_server_register_uri_handler(
             server,
             &ca_page_uri
         );
@@ -646,7 +646,7 @@ esp_err_t web_https_onboarding_bootstrap_register(
         .user_ctx = NULL,
     };
 
-    return httpd_register_uri_handler(
+    return web_server_register_uri_handler(
         server,
         &ca_file_uri
     );
@@ -677,7 +677,7 @@ esp_err_t web_https_onboarding_secure_register(
     };
 
     esp_err_t err =
-        httpd_register_uri_handler(
+        web_server_register_uri_handler(
             server,
             &verify_page_uri
         );
@@ -694,7 +694,7 @@ esp_err_t web_https_onboarding_secure_register(
     };
 
     err =
-        httpd_register_uri_handler(
+        web_server_register_uri_handler(
             server,
             &verify_report_uri
         );

@@ -262,6 +262,16 @@
       ]
     },
     {
+      "name": "web_route_capacity",
+      "sources": [
+        "components/web_server/web_route_capacity.c",
+        "components/web_server/tests/web_route_capacity_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
       "name": "web_status_policy",
       "sources": [
         "components/web_server/web_status_policy.c",
@@ -282,6 +292,16 @@
       ],
       "defines": [
         "WEB_SERVER_WEBUI_SEED_EMBEDDED=0"
+      ]
+    },
+    {
+      "name": "ui_frame_scheduler",
+      "sources": [
+        "components/ui/ui_frame_scheduler.c",
+        "components/ui/tests/ui_frame_scheduler_test.c"
+      ],
+      "include_dirs": [
+        "components/ui"
       ]
     },
     {

@@ -1,4 +1,5 @@
 #include "web_client_log.h"
+#include "web_server_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -105,7 +106,7 @@ esp_err_t web_client_log_register(httpd_handle_t server)
         .user_ctx = NULL,
     };
 
-    const esp_err_t err = httpd_register_uri_handler(server, &route);
+    const esp_err_t err = web_server_register_uri_handler(server, &route);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Registered POST /api/client-log (max %u bytes)", WEB_CLIENT_LOG_MAX_BODY_BYTES);
     }

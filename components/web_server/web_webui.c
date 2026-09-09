@@ -1032,7 +1032,7 @@ esp_err_t web_webui_register(
         ++index
     ) {
         const esp_err_t err =
-            httpd_register_uri_handler(
+            web_server_register_uri_handler(
                 server,
                 &routes[index]
             );

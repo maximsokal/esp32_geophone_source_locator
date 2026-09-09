@@ -111,7 +111,7 @@ esp_err_t web_api_status_register(httpd_handle_t server)
         .user_ctx = NULL,
     };
 
-    esp_err_t err = httpd_register_uri_handler(server, &status_uri);
+    esp_err_t err = web_server_register_uri_handler(server, &status_uri);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register /api/status: %s", esp_err_to_name(err));
         return err;
