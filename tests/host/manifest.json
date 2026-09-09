@@ -26,12 +26,23 @@
       "name": "ad7606_driver",
       "sources": [
         "components/ad7606_driver/ad7606_driver.c",
+        "components/ad7606_driver/ad7606_serial.c",
         "components/ad7606_driver/tests/ad7606_driver_host_test.c"
       ],
       "include_dirs": [
         "components/ad7606_driver/tests/stubs",
         "components/ad7606_driver/include",
         "components/ad7606_driver"
+      ]
+    },
+    {
+      "name": "ad7606_serial",
+      "sources": [
+        "components/ad7606_driver/ad7606_serial.c",
+        "components/ad7606_driver/tests/ad7606_serial_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_driver/include"
       ]
     },
     {
@@ -192,6 +203,8 @@
       "sources": [
         "components/seismic_buffer/seismic_buffer.c",
         "components/object_format/object_format.c",
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/seismic_recorder_reader.c",
         "tests/host/seismic_recorder_web_pipeline_contract_test.c"
       ],
       "include_dirs": [
@@ -219,6 +232,21 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/storage_manager/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_waveform",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/tests/seismic_recorder_waveform_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
         "components/seismic_buffer/include"
       ]
     },

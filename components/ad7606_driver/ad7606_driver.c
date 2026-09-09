@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "board_config.h"
 
@@ -48,6 +49,10 @@ static bool s_initialized =
 
 static bool s_busy_release_error_logged =
     false;
+
+static ad7606_serial_observation_t s_last_serial_observation = {
+    .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
+};
 
 
 /*
@@ -432,6 +437,11 @@ static esp_err_t ad7606_read_once(
     sample->timestamp_us =
         0;
 
+    s_last_serial_observation =
+        (ad7606_serial_observation_t) {
+            .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
+        };
+
     /*
      * Start simultaneous conversion.
      * CVA and CVB are physically tied together to GPIO42.
@@ -508,6 +518,13 @@ static esp_err_t ad7606_read_once(
         AD7606_POST_CONVERSION_DELAY_US
     );
 
+    s_last_serial_observation.conversion_complete =
+        true;
+    s_last_serial_observation.busy_level =
+        gpio_get_level(
+            BOARD_AD7606_BUSY_GPIO
+        );
+
     uint8_t rx[
         AD7606_CHANNEL_COUNT * 2
     ] = {0};
@@ -530,23 +547,20 @@ static esp_err_t ad7606_read_once(
         return err;
     }
 
-    for (
-        size_t channel = 0;
-        channel < AD7606_CHANNEL_COUNT;
-        ++channel
-    ) {
-        const uint16_t word =
-            (
-                (uint16_t)rx[
-                    channel * 2
-                ] << 8
-            ) |
-            (uint16_t)rx[
-                channel * 2 + 1
-            ];
+    memcpy(
+        s_last_serial_observation.rx,
+        rx,
+        sizeof(rx)
+    );
+    s_last_serial_observation.pattern =
+        ad7606_serial_classify(
+            rx
+        );
+    s_last_serial_observation.spi_transaction_ok =
+        true;
 
-        sample->raw[channel] =
-            (int16_t)word;
+    if (!ad7606_serial_decode_frame(rx, sample->raw)) {
+        return ESP_ERR_INVALID_RESPONSE;
     }
 
     return ESP_OK;
@@ -590,9 +604,27 @@ static esp_err_t ad7606_self_test(void)
         return err;
     }
 
+    ad7606_serial_diag_state_t self_test_diag;
+    ad7606_serial_diag_event_t self_test_event;
+    ad7606_serial_diag_reset(&self_test_diag);
+    (void)ad7606_serial_diag_observe(
+        &self_test_diag,
+        s_last_serial_observation.rx,
+        &self_test_event
+    );
+
     ESP_LOGI(
         TAG,
-        "Self-test conversion + SPI read OK"
+        "AD7606_SELF_TEST conversion=%s spi=%s payload=%s pattern=%s busy=%d",
+        s_last_serial_observation.conversion_complete ? "OK" : "FAIL",
+        s_last_serial_observation.spi_transaction_ok ? "OK" : "FAIL",
+        s_last_serial_observation.pattern == AD7606_SERIAL_PATTERN_VARIED
+            ? "PLAUSIBLE"
+            : "SUSPICIOUS",
+        ad7606_serial_pattern_name(
+            s_last_serial_observation.pattern
+        ),
+        s_last_serial_observation.busy_level
     );
 
     ESP_LOGI(
@@ -606,6 +638,45 @@ static esp_err_t ad7606_self_test(void)
         sample.raw[5],
         sample.raw[6],
         sample.raw[7]
+    );
+
+    ESP_LOGI(
+        TAG,
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s busy=%d samples=0 streak=%u all_zero=%u all_ff=%u identical=%u varied=%u suspicious=%s",
+        s_last_serial_observation.rx[0],
+        s_last_serial_observation.rx[1],
+        s_last_serial_observation.rx[2],
+        s_last_serial_observation.rx[3],
+        s_last_serial_observation.rx[4],
+        s_last_serial_observation.rx[5],
+        s_last_serial_observation.rx[6],
+        s_last_serial_observation.rx[7],
+        s_last_serial_observation.rx[8],
+        s_last_serial_observation.rx[9],
+        s_last_serial_observation.rx[10],
+        s_last_serial_observation.rx[11],
+        s_last_serial_observation.rx[12],
+        s_last_serial_observation.rx[13],
+        s_last_serial_observation.rx[14],
+        s_last_serial_observation.rx[15],
+        sample.raw[0],
+        sample.raw[1],
+        sample.raw[2],
+        sample.raw[3],
+        sample.raw[4],
+        sample.raw[5],
+        sample.raw[6],
+        sample.raw[7],
+        ad7606_serial_pattern_name(
+            s_last_serial_observation.pattern
+        ),
+        s_last_serial_observation.busy_level,
+        (unsigned)self_test_diag.suspicious_streak,
+        (unsigned)self_test_diag.all_zero_frames,
+        (unsigned)self_test_diag.all_ff_frames,
+        (unsigned)self_test_diag.all_identical_frames,
+        (unsigned)self_test_diag.varied_frames,
+        self_test_diag.serial_suspicious ? "yes" : "no"
     );
 
     return ESP_OK;
@@ -761,6 +832,21 @@ esp_err_t ad7606_driver_read(
         ad7606_read_once(
             sample
         );
+}
+
+
+esp_err_t ad7606_driver_get_last_serial_observation(
+    ad7606_serial_observation_t *observation
+)
+{
+    if (observation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *observation =
+        s_last_serial_observation;
+
+    return ESP_OK;
 }
 
 

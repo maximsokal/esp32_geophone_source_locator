@@ -35,6 +35,8 @@ export default function SensorsFeature({ status, object, error }: Props) {
           <div><dt>Acquisition</dt><dd>{acquisition?.running ? 'running' : acquisition?.requested_running ? 'requested but unhealthy' : 'stopped'}</dd></div>
           <div><dt>Last error</dt><dd>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? acquisition.last_error_name : 'none'}</dd></div>
           <div><dt>Sample rate</dt><dd>{acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz` : '—'}</dd></div>
+          <div><dt>Serial stream</dt><dd>{acquisition?.serial?.suspicious ? `ADC DATA STUCK (${acquisition.serial.pattern})` : acquisition?.serial?.pattern ?? 'not observed'}</dd></div>
+          <div><dt>Serial streak</dt><dd>{acquisition?.serial ? `${acquisition.serial.suspicious_streak} abnormal · ${acquisition.serial.busy_level} BUSY` : 'not observed'}</dd></div>
         </dl>
       </article>
 

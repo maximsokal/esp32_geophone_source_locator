@@ -20,8 +20,6 @@
 #include "storage_manager.h"
 
 
-#define SEISMIC_RECORDER_BINARY_VERSION  1U
-
 static const char *TAG = "SEISMIC_RECORDER_FS";
 
 static bool seismic_recorder_fs_parse_session_number(
@@ -55,7 +53,7 @@ static esp_err_t seismic_recorder_fs_sessions_path(
 }
 
 
-static esp_err_t seismic_recorder_fs_session_path(
+esp_err_t seismic_recorder_fs_build_session_path(
     const char *object_id,
     const char *session_id,
     char *path,
@@ -213,7 +211,7 @@ esp_err_t seismic_recorder_fs_create_session(
     );
 
     if (err == ESP_OK) {
-        err = seismic_recorder_fs_session_path(
+        err = seismic_recorder_fs_build_session_path(
             object_id,
             session_id,
             path,
@@ -270,7 +268,7 @@ esp_err_t seismic_recorder_fs_create_session(
         }
         if (session_id[0] != '\0') {
             if (
-                seismic_recorder_fs_session_path(
+                seismic_recorder_fs_build_session_path(
                     object_id,
                     session_id,
                     path,
@@ -624,7 +622,14 @@ esp_err_t seismic_recorder_fs_list_sessions(
             seismic_recorder_session_summary_t summary;
             memset(&summary, 0, sizeof(summary));
 
+            const bool metadata_present =
+                seismic_recorder_json_metadata_exists(
+                    object_id,
+                    entry->d_name
+                );
+
             if (
+                !metadata_present ||
                 seismic_recorder_json_read_summary(
                     object_id,
                     entry->d_name,
@@ -699,7 +704,7 @@ esp_err_t seismic_recorder_fs_delete_session(
         return ESP_ERR_NO_MEM;
     }
 
-    err = seismic_recorder_fs_session_path(
+    err = seismic_recorder_fs_build_session_path(
         object_id,
         session_id,
         session_path,

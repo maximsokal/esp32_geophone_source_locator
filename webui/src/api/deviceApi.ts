@@ -1,7 +1,9 @@
 import {
   normalizeSeismicSnapshot,
+  normalizeSavedSeismicSnapshot,
   type DeviceStatus,
   type PhoneLocationInput,
+  type SavedSeismicSnapshot,
   type SeismicSnapshot,
 } from '../domain/device';
 
@@ -296,6 +298,43 @@ export function fetchSeismic(points = 180): Promise<SeismicSnapshot> {
   });
   seismicRequest = request;
   return request;
+}
+
+export interface SavedSeismicRequestOptions {
+  startFrame?: number;
+  frameCount?: number;
+  points?: number;
+}
+
+export function fetchSavedSeismicSession(
+  objectId: string,
+  sessionId: string,
+  options: SavedSeismicRequestOptions = {},
+): Promise<SavedSeismicSnapshot> {
+  if (objectId.trim().length === 0 || sessionId.trim().length === 0) {
+    return Promise.reject(new Error('Saved seismic object and session are required.'));
+  }
+
+  const query = new URLSearchParams({
+    object_id: objectId,
+    session_id: sessionId,
+  });
+  if (options.startFrame !== undefined) {
+    query.set('start_frame', String(Math.max(0, Math.floor(options.startFrame))));
+  }
+  if (options.frameCount !== undefined) {
+    query.set('frame_count', String(Math.max(0, Math.floor(options.frameCount))));
+  }
+  if (options.points !== undefined) {
+    const bounded = Math.max(16, Math.min(1200, Math.round(options.points)));
+    query.set('points', String(bounded));
+  }
+
+  return jsonRequest<unknown>(
+    `/api/seismic/session?${query.toString()}`,
+    {},
+    DEVICE_API_EXTENDED_TIMEOUT_MS,
+  ).then(normalizeSavedSeismicSnapshot);
 }
 
 export function capturePhoneLocation(): Promise<PhoneLocationInput> {

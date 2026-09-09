@@ -1,11 +1,17 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 
 #define INA3221_POLICY_CHANNEL_COUNT   3
 #define INA3221_POLICY_STABLE_SAMPLES  3
+
+/* Array indices are the physical INA3221 channels, not display channels. */
+#define INA3221_POLICY_BATTERY_INDEX   0U  /* physical INA CH1 */
+#define INA3221_POLICY_ESP32_INDEX     1U  /* physical INA CH2 */
+#define INA3221_POLICY_AD7606_INDEX    2U  /* physical INA CH3 */
 
 
 typedef enum
@@ -69,6 +75,17 @@ float ina3221_policy_shunt_raw_to_volts(
 float ina3221_policy_current_from_shunt(
     float shunt_voltage_v,
     float shunt_resistance_ohm
+);
+
+/* Apply the installed shunt orientation for a physical INA3221 channel. */
+float ina3221_policy_current_for_channel(
+    size_t channel_index,
+    float shunt_voltage_v,
+    float shunt_resistance_ohm
+);
+
+const char *ina3221_policy_channel_name(
+    size_t channel_index
 );
 
 float ina3221_policy_battery_source_voltage(

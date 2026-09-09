@@ -1,5 +1,6 @@
 #include "ad7606_acquisition.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -43,6 +44,13 @@ static portMUX_TYPE s_status_lock =
     portMUX_INITIALIZER_UNLOCKED;
 
 static ad7606_acquisition_status_t s_status;
+
+
+#define AD7606_SERIAL_DIAG_LOG_INTERVAL_US  1000000LL
+
+static ad7606_serial_diag_state_t s_serial_diag;
+static int64_t s_serial_diag_last_log_us = 0;
+static bool s_serial_diag_log_pending = false;
 
 
 typedef struct
@@ -214,6 +222,12 @@ static void ad7606_status_reset(void)
         sizeof(s_status)
     );
 
+    s_status.serial_pattern =
+        AD7606_SERIAL_PATTERN_UNKNOWN;
+
+    s_status.busy_level =
+        -1;
+
     portEXIT_CRITICAL(
         &s_status_lock
     );
@@ -261,7 +275,9 @@ static uint32_t ad7606_status_record_failure(void)
 
 static void ad7606_status_record_sample(
     const ad7606_sample_t *sample,
-    const float latest_uv[AD7606_CHANNEL_COUNT]
+    const float latest_uv[AD7606_CHANNEL_COUNT],
+    const ad7606_serial_diag_state_t *serial_diag,
+    int busy_level
 )
 {
     portENTER_CRITICAL(
@@ -272,6 +288,33 @@ static void ad7606_status_record_sample(
 
     s_status.consecutive_failures =
         0;
+
+    s_status.serial_suspicious =
+        serial_diag->serial_suspicious;
+
+    s_status.serial_pattern =
+        serial_diag->pattern;
+
+    s_status.suspicious_streak =
+        serial_diag->suspicious_streak;
+
+    s_status.repeated_frame_streak =
+        serial_diag->repeated_frame_streak;
+
+    s_status.all_zero_frames =
+        serial_diag->all_zero_frames;
+
+    s_status.all_ff_frames =
+        serial_diag->all_ff_frames;
+
+    s_status.all_identical_frames =
+        serial_diag->all_identical_frames;
+
+    s_status.varied_frames =
+        serial_diag->varied_frames;
+
+    s_status.busy_level =
+        busy_level;
 
     s_status.latest_valid =
         true;
@@ -291,6 +334,95 @@ static void ad7606_status_record_sample(
     portEXIT_CRITICAL(
         &s_status_lock
     );
+}
+
+
+static void ad7606_serial_diag_log_frame(
+    const ad7606_serial_observation_t *observation,
+    const ad7606_serial_diag_state_t *serial_diag,
+    const ad7606_serial_diag_event_t *event,
+    uint64_t samples
+)
+{
+    const int64_t now_us = esp_timer_get_time();
+    const bool periodic_due =
+        serial_diag->suspicious_streak > 0U &&
+        (
+            s_serial_diag_last_log_us == 0 ||
+            now_us - s_serial_diag_last_log_us >=
+                AD7606_SERIAL_DIAG_LOG_INTERVAL_US
+        );
+
+    if (
+        event->pattern_changed ||
+        event->abnormal_started ||
+        event->suspicious_started ||
+        periodic_due
+    ) {
+        s_serial_diag_log_pending = true;
+    }
+
+    if (!s_serial_diag_log_pending) {
+        return;
+    }
+
+    if (
+        s_serial_diag_last_log_us != 0 &&
+        now_us - s_serial_diag_last_log_us <
+            AD7606_SERIAL_DIAG_LOG_INTERVAL_US
+    ) {
+        return;
+    }
+
+    int16_t words[AD7606_SERIAL_WORD_COUNT] = {0};
+    (void)ad7606_serial_decode_frame(
+        observation->rx,
+        words
+    );
+
+    ESP_LOGI(
+        DIAG_TAG,
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u suspicious=%s",
+        observation->rx[0],
+        observation->rx[1],
+        observation->rx[2],
+        observation->rx[3],
+        observation->rx[4],
+        observation->rx[5],
+        observation->rx[6],
+        observation->rx[7],
+        observation->rx[8],
+        observation->rx[9],
+        observation->rx[10],
+        observation->rx[11],
+        observation->rx[12],
+        observation->rx[13],
+        observation->rx[14],
+        observation->rx[15],
+        words[0],
+        words[1],
+        words[2],
+        words[3],
+        words[4],
+        words[5],
+        words[6],
+        words[7],
+        ad7606_serial_pattern_name(
+            serial_diag->pattern
+        ),
+        observation->busy_level,
+        samples,
+        (unsigned)serial_diag->suspicious_streak,
+        (unsigned)serial_diag->repeated_frame_streak,
+        (unsigned)serial_diag->all_zero_frames,
+        (unsigned)serial_diag->all_ff_frames,
+        (unsigned)serial_diag->all_identical_frames,
+        (unsigned)serial_diag->varied_frames,
+        serial_diag->serial_suspicious ? "yes" : "no"
+    );
+
+    s_serial_diag_last_log_us = now_us;
+    s_serial_diag_log_pending = false;
 }
 
 
@@ -480,6 +612,11 @@ static void ad7606_worker(
         0;
 
     ad7606_diag_reset();
+    ad7606_serial_diag_reset(
+        &s_serial_diag
+    );
+    s_serial_diag_last_log_us = 0;
+    s_serial_diag_log_pending = false;
 
     while (s_running) {
         (void)ulTaskNotifyTake(
@@ -525,6 +662,27 @@ static void ad7606_worker(
             continue;
         }
 
+        ad7606_serial_observation_t serial_observation;
+        if (
+            ad7606_driver_get_last_serial_observation(
+                &serial_observation
+            ) != ESP_OK ||
+            !serial_observation.spi_transaction_ok
+        ) {
+            ESP_LOGW(
+                DIAG_TAG,
+                "SPI transaction returned OK without a serial observation"
+            );
+            continue;
+        }
+
+        ad7606_serial_diag_event_t serial_event;
+        (void)ad7606_serial_diag_observe(
+            &s_serial_diag,
+            serial_observation.rx,
+            &serial_event
+        );
+
         float all_channels_uv[
             AD7606_CHANNEL_COUNT
         ];
@@ -542,7 +700,16 @@ static void ad7606_worker(
 
         ad7606_status_record_sample(
             &sample,
-            all_channels_uv
+            all_channels_uv,
+            &s_serial_diag,
+            serial_observation.busy_level
+        );
+
+        ad7606_serial_diag_log_frame(
+            &serial_observation,
+            &s_serial_diag,
+            &serial_event,
+            (uint64_t)successful_samples + 1U
         );
 
         ad7606_diag_record(&sample);

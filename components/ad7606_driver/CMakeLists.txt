@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "ad7606_driver.c"
+        "ad7606_serial.c"
         "ad7606_presence.c"
         "ad7606_presence_policy.c"
 

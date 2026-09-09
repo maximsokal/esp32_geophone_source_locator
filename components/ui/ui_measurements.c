@@ -182,9 +182,20 @@ static lv_obj_t *ui_measurements_create_chart_locked(
 }
 
 
-static void ui_measurements_refresh_charts_locked(void)
+static void ui_measurements_refresh_charts_locked(
+    const seismic_acquisition_snapshot_t *acquisition
+)
 {
     ui_context_t *context = ui_context();
+
+    const bool serial_suspicious =
+        acquisition != NULL &&
+        acquisition->serial_suspicious;
+    const char *serial_pattern =
+        acquisition != NULL &&
+        acquisition->serial_pattern != NULL
+            ? acquisition->serial_pattern
+            : "UNKNOWN";
 
     size_t frame_count = 0U;
     seismic_buffer_info_t buffer_info;
@@ -239,7 +250,16 @@ static void ui_measurements_refresh_charts_locked(void)
 
         char text[32];
 
-        if (err == ESP_OK && frame_count > 0U) {
+        if (serial_suspicious) {
+            snprintf(
+                text,
+                sizeof(text),
+                "CH%u SERIAL? %s",
+                (unsigned)(channel + 1U),
+                serial_pattern
+            );
+        }
+        else if (err == ESP_OK && frame_count > 0U) {
             const double latest_mv =
                 (double)s_preview_frames[frame_count - 1U]
                     .channel_uv[channel] /
@@ -380,8 +400,6 @@ void ui_measurements_refresh_locked(void)
         return;
     }
 
-    ui_measurements_refresh_charts_locked();
-
     seismic_acquisition_snapshot_t acquisition;
     const esp_err_t acquisition_err =
         seismic_acquisition_get_snapshot(&acquisition);
@@ -389,6 +407,10 @@ void ui_measurements_refresh_locked(void)
     measurement_service_snapshot_t measurement;
     const esp_err_t measurement_err =
         measurement_service_get_snapshot(&measurement);
+
+    ui_measurements_refresh_charts_locked(
+        acquisition_err == ESP_OK ? &acquisition : NULL
+    );
 
     char text[128];
 
@@ -608,6 +630,21 @@ void ui_measurements_refresh_locked(void)
             );
             action_color = UI_COLOR_WARNING;
             break;
+    }
+
+    if (
+        acquisition_err == ESP_OK &&
+        acquisition.serial_suspicious
+    ) {
+        snprintf(
+            text,
+            sizeof(text),
+            "ADC DATA STUCK  %s",
+            acquisition.serial_pattern != NULL
+                ? acquisition.serial_pattern
+                : "UNKNOWN"
+        );
+        action_color = UI_COLOR_ERROR;
     }
 
     lv_label_set_text(context->measurement_health, text);

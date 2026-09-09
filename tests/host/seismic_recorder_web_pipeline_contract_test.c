@@ -33,6 +33,7 @@
 static unsigned storage_begin_calls;
 static unsigned storage_end_calls;
 static httpd_uri_t registered_uri;
+static bool fake_complete_metadata;
 
 static int make_directory(const char *path)
 {
@@ -115,8 +116,29 @@ esp_err_t seismic_recorder_json_read_summary(
 {
     (void)object_id;
     (void)session_id;
-    (void)summary;
-    return ESP_FAIL;
+    if (!fake_complete_metadata || summary == NULL) {
+        return ESP_FAIL;
+    }
+    memset(summary, 0, sizeof(*summary));
+    snprintf(summary->session_id, sizeof(summary->session_id), "%s", session_id);
+    snprintf(summary->source_name, sizeof(summary->source_name), "AD7606");
+    summary->complete = true;
+    summary->sample_rate_hz = 500U;
+    summary->channel_count = SEISMIC_CHANNEL_COUNT;
+    summary->samples_written = 20U;
+    summary->recording_ms = 40U;
+    (void)object_id;
+    return ESP_OK;
+}
+
+bool seismic_recorder_json_metadata_exists(
+    const char *object_id,
+    const char *session_id
+)
+{
+    (void)object_id;
+    (void)session_id;
+    return false;
 }
 
 /* Minimal HTTP server fake that captures the production chunked JSON body. */
@@ -145,20 +167,28 @@ esp_err_t httpd_query_key_value(const char *query, const char *key, char *value,
     if (query == NULL || key == NULL || value == NULL || value_size == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
-    const char *start = strstr(query, "points=");
-    if (start == NULL) {
-        return ESP_ERR_NOT_FOUND;
+    const size_t key_length = strlen(key);
+    const char *cursor = query;
+    while (*cursor != '\0') {
+        const char *end = strchr(cursor, '&');
+        const char *equals = strchr(cursor, '=');
+        if (equals != NULL && (end == NULL || equals < end)) {
+            const size_t candidate_length = (size_t)(equals - cursor);
+            if (candidate_length == key_length && strncmp(cursor, key, key_length) == 0) {
+                const char *start = equals + 1;
+                const size_t length = end == NULL ? strlen(start) : (size_t)(end - start);
+                if (length == 0U || length >= value_size) {
+                    return ESP_ERR_INVALID_SIZE;
+                }
+                memcpy(value, start, length);
+                value[length] = '\0';
+                return ESP_OK;
+            }
+        }
+        if (end == NULL) break;
+        cursor = end + 1;
     }
-    start += strlen("points=");
-    const char *end = strchr(start, '&');
-    const size_t length = end == NULL ? strlen(start) : (size_t)(end - start);
-    if (length == 0U || length >= value_size) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    memcpy(value, start, length);
-    value[length] = '\0';
-    (void)key;
-    return ESP_OK;
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t httpd_resp_set_type(httpd_req_t *request, const char *type)
@@ -238,6 +268,7 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     make_layout();
     storage_begin_calls = 0U;
     storage_end_calls = 0U;
+    fake_complete_metadata = false;
     assert(seismic_buffer_init() == ESP_OK);
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
     push_pipeline_frames(20U);
@@ -276,6 +307,23 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     assert(recorded[6].channel_uv[1] == -12000.0f);
     assert(fgetc(readback) == EOF);
     assert(fclose(readback) == 0);
+
+    fake_complete_metadata = true;
+    char saved_response[32768] = { 0 };
+    httpd_req_t saved_request = {
+        .uri = "/api/seismic/session",
+        .query = "object_id=OBJ_0001&session_id=S000001&start_frame=0&frame_count=20&points=20",
+        .response_body = saved_response,
+        .response_capacity = sizeof(saved_response),
+    };
+    assert(web_seismic_saved_handler(&saved_request) == ESP_OK);
+    assert(saved_request.error_status == 0U);
+    assert(strstr(saved_response, "\"object_id\":\"OBJ_0001\"") != NULL);
+    assert(strstr(saved_response, "\"session_id\":\"S000001\"") != NULL);
+    assert(strstr(saved_response, "\"frame_count\":20") != NULL);
+    assert(strstr(saved_response, "\"min_uv\":18000.000") != NULL);
+    assert(strstr(saved_response, "\"min_uv\":-12000.000") != NULL ||
+           strstr(saved_response, "\"max_uv\":-12000.000") != NULL);
 
     char response[8192] = { 0 };
     httpd_req_t request = {

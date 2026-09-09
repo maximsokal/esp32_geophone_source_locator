@@ -1,0 +1,7 @@
+# Candidate retrospective: saved-session implementation
+
+- Evidence: the first host verification after extending `seismic_recorder.h` failed because the public header referenced `SEISMIC_CHANNEL_COUNT` without exposing `seismic_buffer.h`; the recorder pipeline also needed new test stubs after `fs_list_sessions` gained metadata probing. A later production ESP-IDF compile failed because `seismic_source_ad7606.c` consumed `all_identical_frames` before the public acquisition status exposed it. Both passed after replacing the public constant with the format's fixed four-channel count, adding narrow stubs, and completing the status-field propagation. A manual worst-case review also found the metadata writer's fixed 128-byte scratch buffer could be exceeded by one combined format call; splitting the call kept each write bounded and the final target build passed.
+- Root cause: cross-layer public contracts and finite-buffer assumptions were changed without immediately compiling every host manifest and the target-facing production layer.
+- Recurrence count: 2 confirmed compile/contract episodes in this task; this is enough evidence for a candidate generalized rule, but not for editing shared agent instructions automatically.
+- Minimal follow-up: after public-type, boundary-function, or fixed-buffer changes, run all affected host manifests plus the production target compile before broad UI verification; keep public headers format-independent and review each bounded writer call against its actual maximum.
+- Affected prior tasks: none established.

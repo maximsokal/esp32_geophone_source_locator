@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchDeviceStatus,
+  fetchSavedSeismicSession,
   fetchSeismic,
   sendControl,
 } from '../../src/api/deviceApi';
 import { polylinePoints } from '../../src/features/seismic/LiveSeismicPanel';
+import { envelopePolylinePoints } from '../../src/features/seismic/SavedSeismicViewer';
 
 function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response {
   return new Response(JSON.stringify(body), {
@@ -120,5 +122,94 @@ describe('serialized ESP API traffic', () => {
     }));
     await expect(fetchSeismic(220)).resolves.toMatchObject({ count: 2 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('serializes and normalizes a saved session range with an envelope spike', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      object_id: 'OBJ_0001',
+      session_id: 'S000001',
+      source: 'AD7606',
+      complete: true,
+      sample_rate_hz: 500,
+      channel_count: 4,
+      samples_written: 20,
+      dropped_frames: 0,
+      recording_ms: 40,
+      source_frame_count: 20,
+      start_frame: 4,
+      frame_count: 8,
+      count: 2,
+      start_timestamp_us: 10000,
+      end_timestamp_us: 24000,
+      points: [10000, 20000].map((timestamp_us, index) => ({
+        timestamp_us,
+        channels: [1, 2, 3, 4].map((id) => ({
+          id,
+          min_uv: id === 1 && index === 0 ? -12000 : 0,
+          max_uv: id === 1 && index === 0 ? 18000 : 1,
+        })),
+      })),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const snapshot = await fetchSavedSeismicSession('OBJ_0001', 'S000001', {
+      startFrame: 4,
+      frameCount: 8,
+      points: 240,
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/seismic/session?object_id=OBJ_0001&session_id=S000001&start_frame=4&frame_count=8&points=240',
+    );
+    expect(snapshot.points[0].channels[0]).toEqual({ id: 1, min_uv: -12000, max_uv: 18000 });
+
+    const lines = envelopePolylinePoints(snapshot.points, 0, 720, 120);
+    expect(lines.min).not.toBe('');
+    expect(lines.max).not.toBe('');
+    expect(lines.scale_uv).toBe(20700);
+  });
+
+  it('keeps saved-session requests behind the shared API serialization gate', async () => {
+    let resolveFirst!: (response: Response) => void;
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('S000001')) {
+        return new Promise<Response>((resolve) => { resolveFirst = resolve; });
+      }
+      return Promise.resolve(jsonResponse({
+        object_id: 'OBJ_0001', session_id: 'S000002', source: 'AD7606', complete: true,
+        sample_rate_hz: 500, channel_count: 4, samples_written: 1, dropped_frames: 0, recording_ms: 2,
+        source_frame_count: 1, start_frame: 0, frame_count: 1, count: 1,
+        start_timestamp_us: 1, end_timestamp_us: 1,
+        points: [{ timestamp_us: 1, channels: [1, 2, 3, 4].map((id) => ({ id, min_uv: 0, max_uv: 0 })) }],
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = fetchSavedSeismicSession('OBJ_0001', 'S000001');
+    const second = fetchSavedSeismicSession('OBJ_0001', 'S000002');
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveFirst(jsonResponse({
+      object_id: 'OBJ_0001', session_id: 'S000001', source: 'AD7606', complete: true,
+      sample_rate_hz: 500, channel_count: 4, samples_written: 1, dropped_frames: 0, recording_ms: 2,
+      source_frame_count: 1, start_frame: 0, frame_count: 1, count: 1,
+      start_timestamp_us: 1, end_timestamp_us: 1,
+      points: [{ timestamp_us: 1, channels: [1, 2, 3, 4].map((id) => ({ id, min_uv: 0, max_uv: 0 })) }],
+    }));
+    await Promise.all([first, second]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a saved envelope that reverses min and max', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      object_id: 'OBJ_0001', session_id: 'S000001', source: 'AD7606', complete: true,
+      sample_rate_hz: 500, channel_count: 4, samples_written: 1, dropped_frames: 0, recording_ms: 2,
+      source_frame_count: 1, start_frame: 0, frame_count: 1, count: 1,
+      start_timestamp_us: 1, end_timestamp_us: 1,
+      points: [{ timestamp_us: 1, channels: [1, 2, 3, 4].map((id) => ({ id, min_uv: 1, max_uv: 0 })) }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchSavedSeismicSession('OBJ_0001', 'S000001')).rejects.toThrow('invalid envelope range');
   });
 });

@@ -154,6 +154,7 @@ bool web_status_json_add_sessions(
         if (
             cJSON_AddStringToObject(session, "session_id", sessions[i].session_id) == NULL ||
             cJSON_AddBoolToObject(session, "complete", sessions[i].complete) == NULL ||
+            cJSON_AddStringToObject(session, "source", sessions[i].source_name) == NULL ||
             cJSON_AddNumberToObject(session, "sample_rate_hz", sessions[i].sample_rate_hz) == NULL ||
             cJSON_AddNumberToObject(session, "channel_count", sessions[i].channel_count) == NULL ||
             cJSON_AddNumberToObject(session, "samples_written", (double)sessions[i].samples_written) == NULL ||

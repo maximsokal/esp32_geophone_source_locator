@@ -148,7 +148,7 @@ static bool web_status_json_add_acquisition(
     cJSON *object = cJSON_AddObjectToObject(root, "acquisition");
     if (object == NULL) return false;
 
-    return
+    const bool base_ok =
         cJSON_AddBoolToObject(object, "running", running) != NULL &&
         cJSON_AddBoolToObject(object, "requested_running", acquisition->running) != NULL &&
         cJSON_AddBoolToObject(object, "hardware_ready", hardware_ready) != NULL &&
@@ -168,6 +168,73 @@ static bool web_status_json_add_acquisition(
             object,
             "consecutive_failures",
             source_snapshot_available ? (double)source_snapshot->consecutive_failures : 0.0
+        ) != NULL;
+
+    if (!base_ok) return false;
+
+    cJSON *serial = cJSON_AddObjectToObject(object, "serial");
+    if (serial == NULL) return false;
+
+    const char *pattern =
+        source_snapshot_available && source_snapshot->serial_pattern != NULL
+            ? source_snapshot->serial_pattern
+            : "UNKNOWN";
+
+    return
+        cJSON_AddBoolToObject(
+            serial,
+            "suspicious",
+            source_snapshot_available && source_snapshot->serial_suspicious
+        ) != NULL &&
+        cJSON_AddStringToObject(serial, "pattern", pattern) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "suspicious_streak",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_suspicious_streak
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "repeated_frame_streak",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_repeated_frame_streak
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "all_zero_frames",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_all_zero_frames
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "all_ff_frames",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_all_ff_frames
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "all_identical_frames",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_all_identical_frames
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "varied_frames",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_varied_frames
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "busy_level",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_busy_level
+                : -1.0
         ) != NULL;
 }
 
