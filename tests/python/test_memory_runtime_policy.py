@@ -15,15 +15,25 @@ def read(relative: str) -> str:
     return (REPO_ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_sdkconfig_defaults_keep_external_tls_and_enable_runtime_stats():
+def test_sdkconfig_defaults_keep_hybrid_tls_and_enable_runtime_stats():
     defaults = read("sdkconfig.defaults")
+    tls_defaults = read("sdkconfig.tls.defaults")
+    cmake = read("CMakeLists.txt")
 
-    assert "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048" in defaults
-    assert "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536" in defaults
-    assert "CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y" in defaults
-    assert "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y" in defaults
-    assert "# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set" in defaults
-    assert "CONFIG_MBEDTLS_DYNAMIC_BUFFER=y" in defaults
+    # sdkconfig.tls.defaults is intentionally the last defaults fragment, so it
+    # overrides older generated values still present in sdkconfig.defaults.
+    assert '"sdkconfig.defaults;sdkconfig.storage.defaults;sdkconfig.lvgl.defaults;sdkconfig.tls.defaults"' in cmake
+
+    assert "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048" in tls_defaults
+    assert "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536" in tls_defaults
+    assert "CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y" in tls_defaults
+    assert "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y" in tls_defaults
+    assert "# CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC is not set" in tls_defaults
+    assert "# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set" in tls_defaults
+    assert "# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set" in tls_defaults
+
+    # Fragment sizes and runtime statistics still come from the generated base
+    # config. The later TLS fragment changes allocator policy, not protocol size.
     assert "CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384" in defaults
     assert "CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096" in defaults
     assert "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y" in defaults
@@ -38,6 +48,9 @@ def test_build_guard_covers_tls_and_runtime_stats_contract():
     guard = read("main/app_build_config_guard.c")
 
     for option in (
+        "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC",
+        "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC",
+        "CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC",
         "CONFIG_MBEDTLS_DYNAMIC_BUFFER",
         "CONFIG_FREERTOS_USE_TRACE_FACILITY",
         "CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS",
