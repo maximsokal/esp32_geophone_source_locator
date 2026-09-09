@@ -3,6 +3,8 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -24,6 +26,16 @@ static const char *TAG = "UI_MEASUREMENTS";
  */
 static seismic_frame_t *s_preview_frames = NULL;
 static bool s_preview_allocation_attempted = false;
+static uint64_t s_last_chart_generation = UINT64_MAX;
+
+static bool ui_measurements_label_set_if_changed(lv_obj_t *label, const char *text)
+{
+    if (label == NULL || text == NULL) return false;
+    const char *current = lv_label_get_text(label);
+    if (current != NULL && strcmp(current, text) == 0) return false;
+    lv_label_set_text(label, text);
+    return true;
+}
 
 static int32_t s_trace[
     SEISMIC_CHANNEL_COUNT
@@ -210,6 +222,9 @@ static void ui_measurements_refresh_charts_locked(
         );
     }
 
+    if (err == ESP_OK && buffer_info.total_frames == s_last_chart_generation) return;
+    if (err == ESP_OK) s_last_chart_generation = buffer_info.total_frames;
+
     const float max_abs_uv = ui_measurement_trace_reduce(
         err == ESP_OK ? s_preview_frames : NULL,
         err == ESP_OK ? frame_count : 0U,
@@ -297,7 +312,7 @@ static void ui_measurements_refresh_charts_locked(
             );
         }
 
-        lv_label_set_text(label, text);
+        (void)ui_measurements_label_set_if_changed(label, text);
     }
 }
 
@@ -330,6 +345,7 @@ void ui_render_measurements_locked(void)
 {
     ui_context_t *context = ui_context();
     context->measurement_exit_after_stop = false;
+    s_last_chart_generation = UINT64_MAX;
 
     lv_obj_t *screen = ui_create_screen_base_locked(
         "MEASUREMENTS",
@@ -415,7 +431,7 @@ void ui_measurements_refresh_locked(void)
     char text[128];
 
     if (measurement_err != ESP_OK) {
-        lv_label_set_text(
+        (void)ui_measurements_label_set_if_changed(
             context->measurement_summary,
             "MEASUREMENT SERVICE UNAVAILABLE"
         );
@@ -503,7 +519,7 @@ void ui_measurements_refresh_locked(void)
         );
     }
 
-    lv_label_set_text(context->measurement_summary, text);
+    (void)ui_measurements_label_set_if_changed(context->measurement_summary, text);
 
     uint32_t summary_color = UI_COLOR_TEXT;
     if (measurement.state == MEASUREMENT_SERVICE_RECORDING) {
@@ -541,7 +557,7 @@ void ui_measurements_refresh_locked(void)
         snprintf(text, sizeof(text), "NO ACTIVE OBJECT");
     }
 
-    lv_label_set_text(context->measurement_transport, text);
+    (void)ui_measurements_label_set_if_changed(context->measurement_transport, text);
     lv_obj_set_style_text_color(
         context->measurement_transport,
         lv_color_hex(
@@ -647,7 +663,7 @@ void ui_measurements_refresh_locked(void)
         action_color = UI_COLOR_ERROR;
     }
 
-    lv_label_set_text(context->measurement_health, text);
+    (void)ui_measurements_label_set_if_changed(context->measurement_health, text);
     lv_obj_set_style_text_color(
         context->measurement_health,
         lv_color_hex(action_color),

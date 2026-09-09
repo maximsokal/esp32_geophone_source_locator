@@ -405,5 +405,5 @@ esp_err_t web_api_control_register(httpd_handle_t server)
         .handler = web_api_control_handler,
         .user_ctx = NULL,
     };
-    return httpd_register_uri_handler(server, &uri);
+    return web_server_register_uri_handler(server, &uri);
 }

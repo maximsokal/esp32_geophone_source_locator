@@ -17,6 +17,7 @@
 
 #include "runtime_observability.h"
 #include "web_server_internal.h"
+#include "web_route_capacity.h"
 
 #define WEB_TLS_FATAL_ALERT_CODE 0x7780
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
@@ -75,7 +76,7 @@ static esp_err_t web_server_https_start_internal(void)
     if (s_https_server != NULL) return ESP_OK;
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-    config.httpd.max_uri_handlers = 10;
+    config.httpd.max_uri_handlers = WEB_HTTPS_URI_HANDLERS_CAPACITY;
     config.httpd.uri_match_fn = httpd_uri_match_wildcard;
 
     /*
@@ -114,6 +115,12 @@ static esp_err_t web_server_https_start_internal(void)
     s_peer_fatal_alerts = 0;
     runtime_observability_log_snapshot("before-https");
     web_server_log_tls_heap("before_start");
+    ESP_LOGI(
+        TAG,
+        "URI handlers required=%u capacity=%u",
+        (unsigned)WEB_HTTPS_URI_HANDLERS_REQUIRED,
+        (unsigned)config.httpd.max_uri_handlers
+    );
     ESP_LOGI(
         TAG,
         "Starting HTTPS server on port %u (max clients=%u, stack=%u, LRU=on, session tickets=on, handshake timeout=%u ms)",
@@ -169,9 +176,11 @@ static esp_err_t web_server_http_start_internal(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = APP_WEB_HTTP_PORT;
-    config.max_uri_handlers = 6;
+    config.max_uri_handlers = WEB_HTTP_URI_HANDLERS_CAPACITY;
     config.lru_purge_enable = true;
 
+    ESP_LOGI(TAG, "URI handlers required=%u capacity=%u",
+             (unsigned)WEB_HTTP_URI_HANDLERS_REQUIRED, (unsigned)config.max_uri_handlers);
     ESP_LOGI(TAG, "Starting HTTP bootstrap server on port %u", (unsigned)config.server_port);
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {

@@ -225,7 +225,7 @@ esp_err_t web_https_onboarding_ui_bootstrap_register(
         .user_ctx = NULL,
     };
 
-    esp_err_t err = httpd_register_uri_handler(
+    esp_err_t err = web_server_register_uri_handler(
         server,
         &guide_uri
     );
@@ -241,7 +241,7 @@ esp_err_t web_https_onboarding_ui_bootstrap_register(
         .user_ctx = NULL,
     };
 
-    return httpd_register_uri_handler(
+    return web_server_register_uri_handler(
         server,
         &download_uri
     );
@@ -263,7 +263,7 @@ esp_err_t web_https_onboarding_ui_secure_register(
         .user_ctx = NULL,
     };
 
-    return httpd_register_uri_handler(
+    return web_server_register_uri_handler(
         server,
         &verify_ui_uri
     );

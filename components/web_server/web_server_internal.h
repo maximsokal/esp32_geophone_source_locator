@@ -7,6 +7,22 @@
 #include "device_status.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
+
+static inline esp_err_t web_server_register_uri_handler(
+    httpd_handle_t server,
+    const httpd_uri_t *route
+)
+{
+    const esp_err_t err = httpd_register_uri_handler(server, route);
+    if (err != ESP_OK) {
+        ESP_LOGE("WEB_ROUTES", "Failed to register method=%d uri=%s: %s",
+                 route != NULL ? (int)route->method : -1,
+                 route != NULL && route->uri != NULL ? route->uri : "(null)",
+                 esp_err_to_name(err));
+    }
+    return err;
+}
 
 #define WEB_JSON_WRITER_BUFFER_SIZE  768
 

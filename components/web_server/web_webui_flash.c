@@ -438,7 +438,7 @@ esp_err_t web_webui_flash_register(
     };
 
     return
-        httpd_register_uri_handler(
+        web_server_register_uri_handler(
             server,
             &asset_uri
         );

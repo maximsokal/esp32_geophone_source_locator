@@ -500,7 +500,7 @@ esp_err_t web_seismic_api_register(
         .user_ctx = NULL,
     };
 
-    esp_err_t err = httpd_register_uri_handler(server, &saved_uri);
+    esp_err_t err = web_server_register_uri_handler(server, &saved_uri);
     if (err != ESP_OK) {
         return err;
     }
@@ -512,5 +512,5 @@ esp_err_t web_seismic_api_register(
         .user_ctx = NULL,
     };
 
-    return httpd_register_uri_handler(server, &uri);
+    return web_server_register_uri_handler(server, &uri);
 }

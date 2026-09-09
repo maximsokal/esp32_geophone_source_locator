@@ -252,10 +252,40 @@ static void test_task_policy_keeps_services_independent(void)
     assert(APP_TASK_CORE_REALTIME == 1);
 }
 
+static void test_recorder_survives_expected_sd_stalls(void)
+{
+    const unsigned stall_ms[] = { 500U, 1000U, 2000U };
+    float channels[SEISMIC_CHANNEL_COUNT];
+    assert(seismic_buffer_init() == ESP_OK);
+    for (size_t stall = 0U; stall < sizeof(stall_ms) / sizeof(stall_ms[0]); ++stall) {
+        assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, PIPELINE_SAMPLE_RATE_HZ) == ESP_OK);
+        const uint64_t produced = (uint64_t)stall_ms[stall] * PIPELINE_SAMPLE_RATE_HZ / 1000U;
+        for (uint64_t frame = 1U; frame <= produced; ++frame) {
+            pipeline_channels(frame, channels);
+            assert(seismic_buffer_push((int64_t)frame * 2000LL, channels) == ESP_OK);
+        }
+        uint64_t cursor = 0U;
+        uint64_t consumed = 0U;
+        while (consumed < produced) {
+            seismic_frame_t batch[128];
+            size_t count = 0U;
+            uint64_t dropped = 0U;
+            seismic_buffer_info_t info = { 0 };
+            assert(seismic_buffer_copy_since(&cursor, batch, 128U, &count, &dropped, &info) == ESP_OK);
+            assert(dropped == 0U);
+            assert(count > 0U);
+            for (size_t i = 0U; i < count; ++i) assert_pipeline_frame(&batch[i], consumed + i + 1U);
+            consumed += count;
+        }
+        assert(consumed == produced);
+    }
+}
+
 
 int main(void)
 {
     test_task_policy_keeps_services_independent();
+    test_recorder_survives_expected_sd_stalls();
     test_pipeline_fan_out_preserves_signal();
     puts("seismic pipeline scheduling contract tests passed");
     return 0;
