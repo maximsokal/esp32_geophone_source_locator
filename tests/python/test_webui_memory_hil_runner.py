@@ -31,7 +31,7 @@ def make_log(*, asset_ms: int = 120, failure: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_replay(path: Path) -> subprocess.CompletedProcess[str]:
+def run_replay(path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             "powershell.exe",
@@ -43,6 +43,7 @@ def run_replay(path: Path) -> subprocess.CompletedProcess[str]:
             str(RUNNER),
             "-LogPath",
             str(path),
+            *extra,
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -64,7 +65,9 @@ def test_replay_reports_target_memory_and_webui_checks_without_claiming_hil(tmp_
     assert "Measurement HWM safety margin" in result.stdout
     assert "Target marker RUNTIME_CPU stage" in result.stdout
     assert "WebUI asset latency" in result.stdout
-    assert "PASS      Observed 3 asset timing marker(s); none reached 10s." in result.stdout
+    assert "PASS      Observed 3; required at least 3 asset timings." in result.stdout
+    assert "All measured assets stayed below cold_root=2000ms and subsequent=1000ms." in result.stdout
+    assert "MEMORY_HIL_MIN internal_free=64000 internal_largest=24000 dma_free=32000 dma_largest=16000 psram_free=7000000 psram_largest=6000000 psram_dma_free=0 psram_dma_largest=0" in result.stdout
     assert "BLOCKED" in result.stdout
     assert "WEBUI_MEMORY_HIL_RESULT: BLOCKED" in result.stdout
     assert "never flashes" in result.stdout
@@ -86,6 +89,33 @@ def test_replay_rejects_slow_asset_and_target_failure(tmp_path: Path):
     assert "WEBUI_MEMORY_HIL_RESULT: FAIL" in result.stdout
 
 
+def test_replay_rejects_subsequent_asset_over_one_second(tmp_path: Path):
+    path = tmp_path / "webui-memory-latency.log"
+    path.write_text(make_log(asset_ms=1500), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "WebUI asset latency" in result.stdout
+    assert "reached 1500ms; limit=1000ms" in result.stdout
+    assert "WEBUI_MEMORY_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_replay_rejects_memory_floor_breach(tmp_path: Path):
+    path = tmp_path / "webui-memory-floor.log"
+    path.write_text(
+        make_log().replace("internal_largest=24000", "internal_largest=7000"),
+        encoding="utf-8",
+    )
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "Minimum internal largest block" in result.stdout
+    assert "required >= 8192 bytes" in result.stdout
+    assert "WEBUI_MEMORY_HIL_RESULT: FAIL" in result.stdout
+
+
 def test_live_runner_is_dedicated_and_non_destructive_by_contract():
     source = RUNNER.read_text(encoding="utf-8")
 
@@ -99,9 +129,15 @@ def test_live_runner_is_dedicated_and_non_destructive_by_contract():
     assert '"/assets/app.js"' in source
     assert "RecordSeconds = 30" in source
     assert "StopTimeoutSeconds = 30" in source
+    assert "MaxAssetLatencyMs = 1000" in source
+    assert "MaxColdTlsLatencyMs = 2000" in source
+    assert "MinimumInternalLargestFreeBlockBytes = 8192" in source
+    assert "MEMORY_HIL_MIN" in source
     assert "This is a test-run bound for recorder finalization" in source
     assert "RUNTIME_CPU stage=" in source
     assert "MEM_RUNTIME stage=" in source
+    assert "psram_dma_free" in source
+    assert "psram_dma_largest" in source
     assert "never flashes" in source
     assert '"delete_object"' not in source
     assert "erase" in source

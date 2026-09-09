@@ -23,6 +23,10 @@
 #error "GeoLocator HTTPS must not allocate mbedTLS state from internal DRAM. Regenerate sdkconfig from project defaults."
 #endif
 
+#if !defined(CONFIG_MBEDTLS_DYNAMIC_BUFFER) || !CONFIG_MBEDTLS_DYNAMIC_BUFFER
+#error "GeoLocator HTTPS requires CONFIG_MBEDTLS_DYNAMIC_BUFFER=y so TLS buffers can follow the external-memory policy. Regenerate sdkconfig from project defaults."
+#endif
+
 #if defined(CONFIG_MBEDTLS_HARDWARE_AES) && CONFIG_MBEDTLS_HARDWARE_AES
 #error "GeoLocator TLS policy requires software AES so PSRAM-backed mbedTLS does not fragment scarce internal DMA RAM. Regenerate sdkconfig from project defaults."
 #endif
@@ -66,6 +70,30 @@
 
 #if defined(CONFIG_MBEDTLS_SSL_RENEGOTIATION) && CONFIG_MBEDTLS_SSL_RENEGOTIATION
 #error "GeoLocator disables legacy TLS renegotiation. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_FREERTOS_USE_TRACE_FACILITY) || !CONFIG_FREERTOS_USE_TRACE_FACILITY
+#error "GeoLocator runtime observability requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS) || !CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+#error "GeoLocator runtime observability requires CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS) || !CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS
+#error "GeoLocator runtime observability requires FreeRTOS stats support. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID) || !CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID
+#error "GeoLocator runtime observability requires CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64) || !CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64
+#error "GeoLocator runtime observability requires CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y. Regenerate sdkconfig from project defaults."
+#endif
+
+#if !defined(CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER) || !CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER
+#error "GeoLocator runtime observability requires CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y. Regenerate sdkconfig from project defaults."
 #endif
 
 /* Keep a real translation unit so the guard is always compiled. */

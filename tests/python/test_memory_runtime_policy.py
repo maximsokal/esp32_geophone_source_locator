@@ -27,9 +27,28 @@ def test_sdkconfig_defaults_keep_external_tls_and_enable_runtime_stats():
     assert "CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384" in defaults
     assert "CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096" in defaults
     assert "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y" in defaults
+    assert "CONFIG_FREERTOS_USE_TRACE_FACILITY=y" in defaults
+    assert "CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y" in defaults
     assert "CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y" in defaults
     assert "CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y" in defaults
     assert "CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y" in defaults
+
+
+def test_build_guard_covers_tls_and_runtime_stats_contract():
+    guard = read("main/app_build_config_guard.c")
+
+    for option in (
+        "CONFIG_MBEDTLS_DYNAMIC_BUFFER",
+        "CONFIG_FREERTOS_USE_TRACE_FACILITY",
+        "CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS",
+        "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS",
+        "CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID",
+        "CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64",
+        "CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER",
+    ):
+        assert option in guard
+
+    assert "runtime_observability" in read("main/CMakeLists.txt")
 
 
 def test_runtime_observability_uses_raw_task_status_without_formatted_stats():
@@ -108,3 +127,22 @@ def test_non_realtime_storage_census_and_session_paths_are_heap_owned():
     assert "char path[SEISMIC_RECORDER_PATH_SIZE]" not in recorder_json
     assert "storage_manager_atomic_paths_t *paths" in atomic_write
     assert "storage_manager_atomic_paths_t paths" not in atomic_write
+
+
+def test_measurement_snapshots_are_nonblocking_requests():
+    source = read("components/measurement_service/measurement_service.c")
+
+    assert "runtime_observability_request_snapshot(\"recording-active\")" in source
+    assert "runtime_observability_request_snapshot(\"after-recorder-finalization\")" in source
+    assert "runtime_observability_log_snapshot(\"recording-active\")" not in source
+    assert "runtime_observability_log_snapshot(\"after-recorder-finalization\")" not in source
+
+
+def test_psram_dma_audit_records_installed_idf_decision():
+    audit = read("docs/psram-dma-audit.md")
+
+    assert "esp_driver_spi/src/gpspi/spi_master.c" in audit
+    assert "SPI_TRANS_DMA_USE_PSRAM" in audit
+    assert "esp_driver_sdspi/src/sdspi_host.c" in audit
+    assert "get_block_buf()" in audit
+    assert "internal DMA bounce" in audit

@@ -13,6 +13,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        runtime_observability
         app_event_bus
         adc_service
         spi_bus

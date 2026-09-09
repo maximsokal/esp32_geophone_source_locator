@@ -212,7 +212,7 @@ static void measurement_service_process_start(void)
         recorder.session_id
     );
 
-    runtime_observability_log_snapshot("recording-active");
+    runtime_observability_request_snapshot("recording-active");
 }
 
 
@@ -285,7 +285,7 @@ static void measurement_service_process_stop_poll(void)
     measurement_service_unlock();
 
     measurement_service_log_stack_hwm("after-stop");
-    runtime_observability_log_snapshot("after-recorder-finalization");
+    runtime_observability_request_snapshot("after-recorder-finalization");
     ESP_LOGI(
         TAG,
         "Recording stopped state=REVIEW session=%s samples=%llu drops=%llu",
