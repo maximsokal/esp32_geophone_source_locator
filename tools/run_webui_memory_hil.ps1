@@ -31,8 +31,33 @@ param(
     [ValidateRange(1, 30)]
     [int]$AssetIntervalSeconds = 5,
 
+    # The cold root request includes the first TLS/HTTP setup. Subsequent
+    # assets must stay below the tighter LAN-service budget.
+    [ValidateRange(100, 60000)]
+    [int]$MaxAssetLatencyMs = 1000,
+
+    [ValidateRange(100, 120000)]
+    [int]$MaxColdTlsLatencyMs = 2000,
+
     [ValidateRange(1, 4096)]
-    [int]$MinimumMeasurementServiceHwmBytes = 1024
+    [int]$MinimumMeasurementServiceHwmBytes = 1024,
+
+    # Provisional safety floors. Calibrate them from the first real UART run,
+    # then keep the values explicit in the HIL invocation.
+    [ValidateRange(0, 1048576)]
+    [int]$MinimumInternalFreeBytes = 32768,
+
+    [ValidateRange(0, 1048576)]
+    [int]$MinimumInternalLargestFreeBlockBytes = 8192,
+
+    [ValidateRange(0, 1048576)]
+    [int]$MinimumDmaFreeBytes = 16384,
+
+    [ValidateRange(0, 1048576)]
+    [int]$MinimumDmaLargestFreeBlockBytes = 4096,
+
+    [ValidateRange(0, 8388608)]
+    [int]$MinimumPsramFreeBytes = 1048576
 )
 
 $ErrorActionPreference = "Stop"
@@ -161,7 +186,8 @@ function Invoke-WebUiAsset {
     param(
         [string]$Base,
         [string]$Path,
-        [int]$TimeoutSec
+        [int]$TimeoutSec,
+        [int]$MaxLatencyMs
     )
 
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -175,8 +201,8 @@ function Invoke-WebUiAsset {
     }
 
     Write-Host ("WEBUI_ASSET path={0} elapsed_ms={1} bytes={2}" -f $Path, $elapsedMs, $bytes)
-    if ($elapsedMs -ge ($TimeoutSec * 1000)) {
-        throw "WebUI asset $Path exceeded the ${TimeoutSec}s request budget (${elapsedMs}ms)."
+    if ($elapsedMs -ge $MaxLatencyMs) {
+        throw "WebUI asset $Path exceeded the ${MaxLatencyMs}ms latency budget (${elapsedMs}ms)."
     }
 
     return [pscustomobject]@{
@@ -190,13 +216,15 @@ function Invoke-WebUiAsset {
 function Invoke-WebUiBatch {
     param(
         [string]$Base,
-        [int]$TimeoutSec
+        [int]$TimeoutSec,
+        [int]$MaxAssetLatency,
+        [int]$MaxColdTlsLatency
     )
 
     $results = @()
-    foreach ($path in @("/", "/assets/app.css", "/assets/app.js")) {
-        $results += Invoke-WebUiAsset $Base $path $TimeoutSec
-    }
+    $results += Invoke-WebUiAsset $Base "/" $TimeoutSec $MaxColdTlsLatency
+    $results += Invoke-WebUiAsset $Base "/assets/app.css" $TimeoutSec $MaxAssetLatency
+    $results += Invoke-WebUiAsset $Base "/assets/app.js" $TimeoutSec $MaxAssetLatency
     return $results
 }
 
@@ -326,12 +354,88 @@ function Get-MeasurementHwmStats {
 }
 
 
+function Get-MemoryRuntimeStats {
+    param([string]$Content)
+
+    $fields = @(
+        "internal_free",
+        "internal_largest",
+        "dma_free",
+        "dma_largest",
+        "psram_free",
+        "psram_largest",
+        "psram_dma_free",
+        "psram_dma_largest"
+    )
+    $minimums = @{}
+    foreach ($field in $fields) {
+        $minimums[$field] = $null
+    }
+
+    $matches = [regex]::Matches(
+        $Content,
+        "(?im)MEM_RUNTIME\s+stage=\S+\s+internal_free=(?<internal_free>\d+)\s+internal_largest=(?<internal_largest>\d+)\s+dma_free=(?<dma_free>\d+)\s+dma_largest=(?<dma_largest>\d+)\s+psram_free=(?<psram_free>\d+)\s+psram_largest=(?<psram_largest>\d+)\s+psram_dma_free=(?<psram_dma_free>\d+)\s+psram_dma_largest=(?<psram_dma_largest>\d+)"
+    )
+
+    foreach ($match in $matches) {
+        foreach ($field in $fields) {
+            $group = $match.Groups[$field]
+            if (-not $group.Success) {
+                continue
+            }
+            $value = [uint64]$group.Value
+            if ($null -eq $minimums[$field] -or $value -lt $minimums[$field]) {
+                $minimums[$field] = $value
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Count = $matches.Count
+        MinimumInternalFree = if ($null -eq $minimums["internal_free"]) { -1 } else { $minimums["internal_free"] }
+        MinimumInternalLargest = if ($null -eq $minimums["internal_largest"]) { -1 } else { $minimums["internal_largest"] }
+        MinimumDmaFree = if ($null -eq $minimums["dma_free"]) { -1 } else { $minimums["dma_free"] }
+        MinimumDmaLargest = if ($null -eq $minimums["dma_largest"]) { -1 } else { $minimums["dma_largest"] }
+        MinimumPsramFree = if ($null -eq $minimums["psram_free"]) { -1 } else { $minimums["psram_free"] }
+        MinimumPsramLargest = if ($null -eq $minimums["psram_largest"]) { -1 } else { $minimums["psram_largest"] }
+        MinimumPsramDmaFree = if ($null -eq $minimums["psram_dma_free"]) { -1 } else { $minimums["psram_dma_free"] }
+        MinimumPsramDmaLargest = if ($null -eq $minimums["psram_dma_largest"]) { -1 } else { $minimums["psram_dma_largest"] }
+    }
+}
+
+
+function Get-AssetTimingsFromLog {
+    param([string]$Content)
+
+    $timings = @()
+    $matches = [regex]::Matches(
+        $Content,
+        "(?im)WEBUI_ASSET\s+path=(?<path>\S+)\s+elapsed_ms=(?<elapsed>\d+)"
+    )
+    foreach ($match in $matches) {
+        $timings += [pscustomobject]@{
+            Path = $match.Groups["path"].Value
+            ElapsedMs = [int]$match.Groups["elapsed"].Value
+        }
+    }
+    return $timings
+}
+
+
 function Test-TargetLog {
     param(
         [System.Collections.Generic.List[object]]$Checks,
         [string]$Content,
         [int]$RequiredCycles,
-        [int]$MinimumHwmBytes
+        [int]$MinimumHwmBytes,
+        [int]$MaxAssetLatency,
+        [int]$MaxColdTlsLatency,
+        [int]$MinimumInternalFree,
+        [int]$MinimumInternalLargest,
+        [int]$MinimumDmaFree,
+        [int]$MinimumDmaLargest,
+        [int]$MinimumPsramFree,
+        [object[]]$ObservedAssetTimings = $null
     )
 
     if ([string]::IsNullOrWhiteSpace($Content)) {
@@ -356,6 +460,36 @@ function Test-TargetLog {
         $(if ($reviewCount -ge $RequiredCycles) { "PASS" } else { "FAIL" }) `
         ("Observed {0} REVIEW completions; required at least {1}." -f $reviewCount, $RequiredCycles)
 
+    $memory = Get-MemoryRuntimeStats $Content
+    Write-Host ("MEMORY_HIL_MIN internal_free={0} internal_largest={1} dma_free={2} dma_largest={3} psram_free={4} psram_largest={5} psram_dma_free={6} psram_dma_largest={7} samples={8}" -f `
+        $memory.MinimumInternalFree,
+        $memory.MinimumInternalLargest,
+        $memory.MinimumDmaFree,
+        $memory.MinimumDmaLargest,
+        $memory.MinimumPsramFree,
+        $memory.MinimumPsramLargest,
+        $memory.MinimumPsramDmaFree,
+        $memory.MinimumPsramDmaLargest,
+        $memory.Count)
+    Add-Check $Checks "Memory telemetry coverage" `
+        $(if ($memory.Count -gt 0 -and $memory.MinimumPsramDmaFree -ge 0 -and $memory.MinimumPsramDmaLargest -ge 0) { "PASS" } else { "FAIL" }) `
+        ("Observed {0} complete MEM_RUNTIME snapshot(s); all internal/DMA/PSRAM/PSRAM-DMA minimums are reported above." -f $memory.Count)
+    Add-Check $Checks "Minimum internal free" `
+        $(if ($memory.Count -gt 0 -and $memory.MinimumInternalFree -ge $MinimumInternalFree) { "PASS" } else { "FAIL" }) `
+        ("minimum={0} bytes; required >= {1} bytes." -f $memory.MinimumInternalFree, $MinimumInternalFree)
+    Add-Check $Checks "Minimum internal largest block" `
+        $(if ($memory.Count -gt 0 -and $memory.MinimumInternalLargest -ge $MinimumInternalLargest) { "PASS" } else { "FAIL" }) `
+        ("minimum={0} bytes; required >= {1} bytes." -f $memory.MinimumInternalLargest, $MinimumInternalLargest)
+    Add-Check $Checks "Minimum DMA free" `
+        $(if ($memory.Count -gt 0 -and $memory.MinimumDmaFree -ge $MinimumDmaFree) { "PASS" } else { "FAIL" }) `
+        ("minimum={0} bytes; required >= {1} bytes." -f $memory.MinimumDmaFree, $MinimumDmaFree)
+    Add-Check $Checks "Minimum DMA largest block" `
+        $(if ($memory.Count -gt 0 -and $memory.MinimumDmaLargest -ge $MinimumDmaLargest) { "PASS" } else { "FAIL" }) `
+        ("minimum={0} bytes; required >= {1} bytes." -f $memory.MinimumDmaLargest, $MinimumDmaLargest)
+    Add-Check $Checks "Minimum PSRAM free" `
+        $(if ($memory.Count -gt 0 -and $memory.MinimumPsramFree -ge $MinimumPsramFree) { "PASS" } else { "FAIL" }) `
+        ("minimum={0} bytes; required >= {1} bytes." -f $memory.MinimumPsramFree, $MinimumPsramFree)
+
     foreach ($marker in @("RUNTIME_CPU stage=", "MEM_RUNTIME stage=", "RUNTIME_TASK name=measurement_service")) {
         $count = Count-Pattern $Content ([regex]::Escape($marker))
         Add-Check $Checks ("Target marker {0}" -f $marker.TrimEnd("=")) `
@@ -363,14 +497,29 @@ function Test-TargetLog {
             ("Observed {0} marker(s)." -f $count)
     }
 
-    $assetMatches = [regex]::Matches(
-        $Content,
-        "(?im)WEBUI_ASSET\s+path=(?<path>\S+)\s+elapsed_ms=(?<elapsed>\d+)"
+    $assetTimings = if ($null -ne $ObservedAssetTimings -and @($ObservedAssetTimings).Count -gt 0) {
+        @($ObservedAssetTimings)
+    } else {
+        @(Get-AssetTimingsFromLog $Content)
+    }
+    $requiredAssetMarkers = $RequiredCycles * 3
+    $assetViolations = @(
+        $assetTimings | Where-Object {
+            $limit = if ($_.Path -eq "/") { $MaxColdTlsLatency } else { $MaxAssetLatency }
+            [int]$_.ElapsedMs -ge $limit
+        }
     )
-    $slowAsset = $assetMatches | Where-Object { [int]$_.Groups["elapsed"].Value -ge 10000 } | Select-Object -First 1
+    Add-Check $Checks "WebUI asset marker coverage" `
+        $(if ($assetTimings.Count -ge $requiredAssetMarkers) { "PASS" } else { "FAIL" }) `
+        ("Observed {0}; required at least {1} asset timings." -f $assetTimings.Count, $requiredAssetMarkers)
     Add-Check $Checks "WebUI asset latency" `
-        $(if ($assetMatches.Count -gt 0 -and $null -eq $slowAsset) { "PASS" } else { "FAIL" }) `
-        $(if ($null -eq $slowAsset) { "Observed $($assetMatches.Count) asset timing marker(s); none reached 10s." } else { "Asset $($slowAsset.Groups["path"].Value) reached $($slowAsset.Groups["elapsed"].Value)ms." })
+        $(if ($assetTimings.Count -ge $requiredAssetMarkers -and $assetViolations.Count -eq 0) { "PASS" } else { "FAIL" }) `
+        $(if ($assetViolations.Count -eq 0) {
+            "All measured assets stayed below cold_root={0}ms and subsequent={1}ms." -f $MaxColdTlsLatency, $MaxAssetLatency
+        } else {
+            $firstViolation = $assetViolations[0]
+            "Asset {0} reached {1}ms; limit={2}ms." -f $firstViolation.Path, $firstViolation.ElapsedMs, $(if ($firstViolation.Path -eq "/") { $MaxColdTlsLatency } else { $MaxAssetLatency })
+        })
 
     $panic = [regex]::Match(
         $Content,
@@ -404,11 +553,15 @@ $base = if ([string]::IsNullOrWhiteSpace($BaseUrl)) { "" } else { $BaseUrl.TrimE
 $previousActiveId = $null
 $isReplay = -not [string]::IsNullOrWhiteSpace($LogPath)
 $assetTimings = [System.Collections.Generic.List[object]]::new()
+$liveAssertionsStarted = $false
 
 try {
     if ($isReplay) {
         $logFile = (Resolve-Path -LiteralPath $LogPath).Path
-        Test-TargetLog $checks (Read-TargetLog $logFile) $Cycles $MinimumMeasurementServiceHwmBytes
+        Test-TargetLog $checks (Read-TargetLog $logFile) $Cycles $MinimumMeasurementServiceHwmBytes `
+            $MaxAssetLatencyMs $MaxColdTlsLatencyMs `
+            $MinimumInternalFreeBytes $MinimumInternalLargestFreeBlockBytes `
+            $MinimumDmaFreeBytes $MinimumDmaLargestFreeBlockBytes $MinimumPsramFreeBytes
         Add-Check $checks "Live WebUI/TLS/recording execution" "BLOCKED" "-LogPath validates captured markers only; it cannot prove live TLS, SD, WebUI, or target scheduling."
         Add-Check $checks "User-data safety" "PASS" "Replay mode performs no HTTP mutation, session delete, SD erase, or flash."
     } else {
@@ -440,6 +593,7 @@ try {
             throw "Instrumented measurement_service idle HWM marker was not observed after boot."
         }
         Add-Check $checks "Instrumented target boot" "PASS" "measurement_service emitted an idle STACK_HWM marker."
+        $liveAssertionsStarted = $true
 
         $objectsStatus = Invoke-JsonRequest ("{0}/api/status?objects=1" -f $base) "GET" $null $RequestTimeoutSeconds
         if ($objectsStatus.object_store.available -ne $true) {
@@ -471,7 +625,7 @@ try {
 
         $seenSessions = [System.Collections.Generic.HashSet[string]]::new()
         for ($cycle = 1; $cycle -le $Cycles; ++$cycle) {
-            $assetTimings.AddRange(@(Invoke-WebUiBatch $base $RequestTimeoutSeconds))
+            $assetTimings.AddRange(@(Invoke-WebUiBatch $base $RequestTimeoutSeconds $MaxAssetLatencyMs $MaxColdTlsLatencyMs))
             $startBody = @{ action = "measurement_start"; object_id = $ObjectId } | ConvertTo-Json -Compress
             $start = Invoke-JsonRequest ("{0}/api/control" -f $base) "POST" $startBody $RequestTimeoutSeconds
             if ($start.ok -ne $true) {
@@ -494,7 +648,7 @@ try {
                     throw "cycle $cycle observed recorder dropped_frames=$($status.recording.dropped_frames)."
                 }
                 if ((Get-Date) -ge $nextAssets) {
-                    $assetTimings.AddRange(@(Invoke-WebUiBatch $base $RequestTimeoutSeconds))
+                    $assetTimings.AddRange(@(Invoke-WebUiBatch $base $RequestTimeoutSeconds $MaxAssetLatencyMs $MaxColdTlsLatencyMs))
                     $nextAssets = (Get-Date).AddSeconds($AssetIntervalSeconds)
                 }
                 if ((Get-Date) -lt $recordUntil) {
@@ -509,7 +663,7 @@ try {
             }
 
             $finalStatus = Wait-RecordingStop $base $ObjectId $sessionId $StopTimeoutSeconds $PollIntervalMs $RequestTimeoutSeconds
-            $assetTimings.AddRange(@(Invoke-WebUiBatch $base $RequestTimeoutSeconds))
+            $assetTimings.AddRange(@(Invoke-WebUiBatch $base $RequestTimeoutSeconds $MaxAssetLatencyMs $MaxColdTlsLatencyMs))
             if (-not (Wait-ForLogCount $logFile "(?im)MEASUREMENT_SERVICE:\s+Recording stopped state=REVIEW" $cycle $BootTimeoutSeconds $PollIntervalMs)) {
                 throw "cycle $cycle did not produce the measurement_service REVIEW marker."
             }
@@ -526,10 +680,14 @@ try {
         Add-Check $checks "Concurrent WebUI/TLS workload" "PASS" ("Completed {0} cycle(s); {1} asset requests overlapped recording, slowest={2}ms." -f $Cycles, $assetTimings.Count, $maxAsset[0].ElapsedMs)
         Add-Check $checks "Session/file handle cleanup" "PASS" ("Every cycle reached IDLE with a complete zero-drop session; no delete/erase was issued.")
 
-        Test-TargetLog $checks (Read-TargetLog $logFile) $Cycles $MinimumMeasurementServiceHwmBytes
+        Test-TargetLog $checks (Read-TargetLog $logFile) $Cycles $MinimumMeasurementServiceHwmBytes `
+            $MaxAssetLatencyMs $MaxColdTlsLatencyMs `
+            $MinimumInternalFreeBytes $MinimumInternalLargestFreeBlockBytes `
+            $MinimumDmaFreeBytes $MinimumDmaLargestFreeBlockBytes $MinimumPsramFreeBytes `
+            @($assetTimings)
     }
 } catch {
-    Add-Check $checks "Runner execution" $(if ($isReplay) { "FAIL" } else { "BLOCKED" }) $_.Exception.Message
+    Add-Check $checks "Runner execution" $(if ($isReplay -or $liveAssertionsStarted) { "FAIL" } else { "BLOCKED" }) $_.Exception.Message
 } finally {
     if (-not $isReplay -and $null -ne $monitor -and -not $monitor.HasExited) {
         Stop-Process -Id $monitor.Id -Force -ErrorAction SilentlyContinue
