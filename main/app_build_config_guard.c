@@ -4,31 +4,38 @@
  * GeoLocator HTTPS is deliberately configured for the ESP32-S3 N16R8.
  *
  * sdkconfig.defaults files are only defaults: an old local sdkconfig has
- * higher priority and can silently keep mbedTLS in internal DRAM. On this
- * firmware that leaves too little contiguous internal heap for Chrome TLS
- * handshakes once Wi-Fi, LVGL and the web server are running.
+ * higher priority and can silently keep an obsolete TLS memory policy.
  *
- * Fail the build instead of producing firmware which boots successfully but
- * later degrades into ERR_CONNECTION_RESET / TLS handshake failures.
+ * Target evidence showed that forcing every mbedTLS allocation into PSRAM and
+ * using dynamic TLS buffers could corrupt the PSRAM TLSF heap after repeated
+ * browser handshakes. Use ESP-IDF's default allocator with the project 2 KiB
+ * threshold instead: small crypto/key allocations prefer internal DRAM and
+ * large TLS buffers prefer PSRAM.
+ *
+ * Fail the build instead of producing firmware with a stale allocator policy.
  */
 #if !defined(CONFIG_SPIRAM) || !CONFIG_SPIRAM
 #error "GeoLocator requires PSRAM. Regenerate sdkconfig for target esp32s3."
 #endif
 
-#if !defined(CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC) || !CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC
-#error "GeoLocator HTTPS requires CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y. Delete stale sdkconfig and regenerate it from project defaults."
+#if !defined(CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC) || !CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC
+#error "GeoLocator HTTPS requires CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y. Delete stale sdkconfig and regenerate it from project defaults."
+#endif
+
+#if defined(CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC) && CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC
+#error "GeoLocator HTTPS must not force all mbedTLS allocations into PSRAM; target handshakes corrupted the PSRAM TLSF heap. Regenerate sdkconfig from project defaults."
 #endif
 
 #if defined(CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC) && CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC
-#error "GeoLocator HTTPS must not allocate mbedTLS state from internal DRAM. Regenerate sdkconfig from project defaults."
+#error "GeoLocator HTTPS must use the default hybrid allocator, not internal-only mbedTLS allocation. Regenerate sdkconfig from project defaults."
 #endif
 
-#if !defined(CONFIG_MBEDTLS_DYNAMIC_BUFFER) || !CONFIG_MBEDTLS_DYNAMIC_BUFFER
-#error "GeoLocator HTTPS requires CONFIG_MBEDTLS_DYNAMIC_BUFFER=y so TLS buffers can follow the external-memory policy. Regenerate sdkconfig from project defaults."
+#if defined(CONFIG_MBEDTLS_DYNAMIC_BUFFER) && CONFIG_MBEDTLS_DYNAMIC_BUFFER
+#error "GeoLocator HTTPS disables CONFIG_MBEDTLS_DYNAMIC_BUFFER after target TLSF corruption under repeated browser handshakes. Regenerate sdkconfig from project defaults."
 #endif
 
 #if defined(CONFIG_MBEDTLS_HARDWARE_AES) && CONFIG_MBEDTLS_HARDWARE_AES
-#error "GeoLocator TLS policy requires software AES so PSRAM-backed mbedTLS does not fragment scarce internal DMA RAM. Regenerate sdkconfig from project defaults."
+#error "GeoLocator TLS policy requires software AES so PSRAM-backed TLS buffers do not consume scarce internal DMA RAM. Regenerate sdkconfig from project defaults."
 #endif
 
 #if !defined(CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) || !CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
@@ -45,13 +52,12 @@
 #endif
 
 /*
- * A high malloc-always-internal threshold previously kept the object store's
- * 4 KiB JSON scratch buffers in internal RAM exactly while SDSPI needed DMA
- * memory. Keep only small ordinary allocations internal and prefer PSRAM for
- * larger scratch buffers.
+ * With CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC, this threshold is part of the TLS
+ * policy: small RSA/MPI/session allocations stay internal while 4 KiB/16 KiB
+ * buffers prefer PSRAM. Keep it at or below 2 KiB.
  */
 #if !defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) || (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL > 2048)
-#error "GeoLocator requires CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL <= 2048 so large object/Web buffers prefer PSRAM. Regenerate sdkconfig from project defaults."
+#error "GeoLocator requires CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL <= 2048 so large object/Web/TLS buffers prefer PSRAM. Regenerate sdkconfig from project defaults."
 #endif
 
 /*
