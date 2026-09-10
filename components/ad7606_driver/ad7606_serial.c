@@ -14,12 +14,13 @@ static uint32_t ad7606_serial_saturating_increment(
 enum
 {
     AD7606_SERIAL_FRAME_CLOCK_LIKE = 1U << 0,
-    AD7606_SERIAL_FRAME_RAIL_HIT = 1U << 1,
-    AD7606_SERIAL_FRAME_BAD = 1U << 2,
+    AD7606_SERIAL_FRAME_SIGNAL_RAIL_HIT = 1U << 1,
+    AD7606_SERIAL_FRAME_TRANSPORT_BAD = 1U << 2,
     AD7606_SERIAL_FRAME_REPEATED = 1U << 3,
     AD7606_SERIAL_FRAME_ALL_ZERO = 1U << 4,
     AD7606_SERIAL_FRAME_ALL_FF = 1U << 5,
-    AD7606_SERIAL_FRAME_ALL_IDENTICAL = 1U << 6
+    AD7606_SERIAL_FRAME_ALL_IDENTICAL = 1U << 6,
+    AD7606_SERIAL_FRAME_SIGNAL_HARD_CLIP = 1U << 7
 };
 
 static uint8_t ad7606_serial_frame_metrics(
@@ -42,17 +43,48 @@ static uint8_t ad7606_serial_frame_metrics(
     }
     const bool rail_hit =
         positive_rail_words > 0U || negative_rail_words > 0U;
-    const bool clock_like =
-        clock_like_bytes >= 2U &&
-        (
-            rail_hit ||
-            clock_like_bytes >= 3U
-        );
+    bool hard_clip = false;
+    for (size_t channel = 0U; channel < AD7606_SERIAL_WORD_COUNT; ++channel) {
+        if (words[channel] == INT16_MIN || words[channel] == INT16_MAX) {
+            hard_clip = true;
+            break;
+        }
+    }
+    /* Three or more clock-like bytes are transport evidence on their own. */
+    const bool clock_like = clock_like_bytes >= 3U;
 
     return (uint8_t)(
         (clock_like ? AD7606_SERIAL_FRAME_CLOCK_LIKE : 0U) |
-        (rail_hit ? AD7606_SERIAL_FRAME_RAIL_HIT : 0U)
+        (rail_hit ? AD7606_SERIAL_FRAME_SIGNAL_RAIL_HIT : 0U) |
+        (hard_clip ? AD7606_SERIAL_FRAME_SIGNAL_HARD_CLIP : 0U)
     );
+}
+
+
+static bool ad7606_serial_pattern_has_clock_like_signature(
+    const uint8_t rx[AD7606_SERIAL_RX_BYTES],
+    const int16_t words[AD7606_SERIAL_WORD_COUNT]
+)
+{
+    unsigned clock_like_bytes = 0U;
+    unsigned rail_words = 0U;
+
+    for (size_t i = 0U; i < AD7606_SERIAL_RX_BYTES; ++i) {
+        const uint8_t byte = rx[i];
+        if (byte == 0xAAU || byte == 0x55U || byte == 0x2AU) {
+            ++clock_like_bytes;
+        }
+    }
+
+    for (size_t channel = 0U; channel < AD7606_SERIAL_WORD_COUNT; ++channel) {
+        if (words[channel] >= 30000 || words[channel] <= -30000) {
+            ++rail_words;
+        }
+    }
+
+    /* Preserve the broad diagnostic classifier, but keep quality stricter. */
+    return clock_like_bytes >= 2U &&
+        (rail_words > 0U || clock_like_bytes >= 3U);
 }
 
 
@@ -128,7 +160,7 @@ ad7606_serial_pattern_t ad7606_serial_classify(
     }
 
     if (all_words_identical) return AD7606_SERIAL_PATTERN_ALL_WORDS_IDENTICAL;
-    return (ad7606_serial_frame_metrics(rx, words) & AD7606_SERIAL_FRAME_CLOCK_LIKE) != 0U
+    return ad7606_serial_pattern_has_clock_like_signature(rx, words)
         ? AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE
         : AD7606_SERIAL_PATTERN_VARIED;
 }
@@ -179,6 +211,24 @@ const char *ad7606_serial_quality_name(
 }
 
 
+const char *ad7606_signal_quality_name(
+    ad7606_signal_quality_t quality
+)
+{
+    switch (quality) {
+        case AD7606_SIGNAL_QUALITY_HEALTHY:
+            return "HEALTHY";
+        case AD7606_SIGNAL_QUALITY_DEGRADED:
+            return "DEGRADED";
+        case AD7606_SIGNAL_QUALITY_CLIPPED:
+            return "CLIPPED";
+        case AD7606_SIGNAL_QUALITY_UNKNOWN:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+
 static ad7606_serial_quality_t ad7606_serial_quality_update(
     ad7606_serial_diag_state_t *state
 )
@@ -191,24 +241,20 @@ static ad7606_serial_quality_t ad7606_serial_quality_update(
     const uint32_t frames = state->quality_window_frames;
     const uint32_t bad = state->quality_window_bad_frames;
     const uint32_t digital = state->quality_window_digital_interference_frames;
-    const uint32_t rail = state->quality_window_rail_hit_frames;
-    const uint32_t repeated = state->quality_window_repeated_frames;
-    /* Enter DEGRADED at 2%; leave it only after every metric is <= 1%. */
+    /*
+     * Transport quality deliberately ignores ALL_00/ALL_FF, identical,
+     * repeated and near-rail frames. Those are observable signal patterns;
+     * only clock-like/DOUT anomalies belong in this state machine.
+     */
     const bool fault_level =
         bad * 100U >= frames * 20U ||
-        digital * 100U >= frames * 5U ||
-        rail * 100U >= frames * 20U ||
-        repeated * 100U >= frames * 20U;
+        digital * 100U >= frames * 5U;
     const bool degraded_level =
         bad * 100U >= frames * 2U ||
-        digital * 100U >= frames * 2U ||
-        rail * 100U >= frames * 2U ||
-        repeated * 100U >= frames * 2U;
+        digital * 100U >= frames * 2U;
     const bool healthy_level =
         bad * 100U <= frames * 1U &&
-        digital * 100U <= frames * 1U &&
-        rail * 100U <= frames * 1U &&
-        repeated * 100U <= frames * 1U;
+        digital * 100U <= frames * 1U;
 
     switch (state->quality) {
         case AD7606_SERIAL_QUALITY_FAULT:
@@ -232,6 +278,59 @@ static ad7606_serial_quality_t ad7606_serial_quality_update(
 }
 
 
+static ad7606_signal_quality_t ad7606_signal_quality_update(
+    ad7606_serial_diag_state_t *state
+)
+{
+    const ad7606_signal_quality_t old_quality = state->signal_quality;
+    if (state->quality_window_frames < AD7606_SERIAL_QUALITY_MIN_FRAMES) {
+        return old_quality;
+    }
+
+    const uint32_t frames = state->quality_window_frames;
+    const uint32_t rail = state->signal_quality_window_rail_hit_frames;
+    const uint32_t clips = state->signal_quality_window_clip_frames;
+    /* Near-rail is a signal warning; hard ADC endpoints are clipping. */
+    const bool clipped_level = clips > 0U;
+    const bool degraded_level = rail * 100U >= frames * 2U;
+    const bool healthy_level = rail * 100U <= frames * 1U && clips == 0U;
+
+    switch (state->signal_quality) {
+        case AD7606_SIGNAL_QUALITY_CLIPPED:
+            if (healthy_level) {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_HEALTHY;
+            }
+            else if (!clipped_level) {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_DEGRADED;
+            }
+            break;
+        case AD7606_SIGNAL_QUALITY_DEGRADED:
+            if (clipped_level) {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_CLIPPED;
+            }
+            else if (healthy_level) {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_HEALTHY;
+            }
+            break;
+        case AD7606_SIGNAL_QUALITY_HEALTHY:
+        case AD7606_SIGNAL_QUALITY_UNKNOWN:
+        default:
+            if (clipped_level) {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_CLIPPED;
+            }
+            else if (degraded_level) {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_DEGRADED;
+            }
+            else {
+                state->signal_quality = AD7606_SIGNAL_QUALITY_HEALTHY;
+            }
+            break;
+    }
+
+    return old_quality;
+}
+
+
 static void ad7606_serial_quality_window_observe(
     ad7606_serial_diag_state_t *state,
     uint8_t flags
@@ -240,10 +339,17 @@ static void ad7606_serial_quality_window_observe(
     if (state->quality_window_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES) {
         const uint8_t old_flags =
             state->quality_window_flags[state->quality_window_next];
-        if ((old_flags & AD7606_SERIAL_FRAME_BAD) != 0U) --state->quality_window_bad_frames;
-        if ((old_flags & AD7606_SERIAL_FRAME_RAIL_HIT) != 0U) --state->quality_window_rail_hit_frames;
+        if ((old_flags & AD7606_SERIAL_FRAME_TRANSPORT_BAD) != 0U) {
+            --state->quality_window_bad_frames;
+        }
+        if ((old_flags & AD7606_SERIAL_FRAME_SIGNAL_RAIL_HIT) != 0U) {
+            --state->signal_quality_window_rail_hit_frames;
+        }
         if ((old_flags & AD7606_SERIAL_FRAME_CLOCK_LIKE) != 0U) {
             --state->quality_window_digital_interference_frames;
+        }
+        if ((old_flags & AD7606_SERIAL_FRAME_SIGNAL_HARD_CLIP) != 0U) {
+            --state->signal_quality_window_clip_frames;
         }
         if ((old_flags & AD7606_SERIAL_FRAME_REPEATED) != 0U) {
             --state->quality_window_repeated_frames;
@@ -263,10 +369,17 @@ static void ad7606_serial_quality_window_observe(
     }
 
     state->quality_window_flags[state->quality_window_next] = flags;
-    if ((flags & AD7606_SERIAL_FRAME_BAD) != 0U) ++state->quality_window_bad_frames;
-    if ((flags & AD7606_SERIAL_FRAME_RAIL_HIT) != 0U) ++state->quality_window_rail_hit_frames;
+    if ((flags & AD7606_SERIAL_FRAME_TRANSPORT_BAD) != 0U) {
+        ++state->quality_window_bad_frames;
+    }
+    if ((flags & AD7606_SERIAL_FRAME_SIGNAL_RAIL_HIT) != 0U) {
+        ++state->signal_quality_window_rail_hit_frames;
+    }
     if ((flags & AD7606_SERIAL_FRAME_CLOCK_LIKE) != 0U) {
         ++state->quality_window_digital_interference_frames;
+    }
+    if ((flags & AD7606_SERIAL_FRAME_SIGNAL_HARD_CLIP) != 0U) {
+        ++state->signal_quality_window_clip_frames;
     }
     if ((flags & AD7606_SERIAL_FRAME_REPEATED) != 0U) {
         ++state->quality_window_repeated_frames;
@@ -297,6 +410,7 @@ void ad7606_serial_diag_reset(
     memset(state, 0, sizeof(*state));
     state->pattern = AD7606_SERIAL_PATTERN_UNKNOWN;
     state->quality = AD7606_SERIAL_QUALITY_UNKNOWN;
+    state->signal_quality = AD7606_SIGNAL_QUALITY_UNKNOWN;
 }
 
 
@@ -333,9 +447,13 @@ bool ad7606_serial_diag_observe(
         !state->initialized ||
         state->pattern != pattern;
 
-    const bool abnormal_frame =
-        pattern != AD7606_SERIAL_PATTERN_VARIED ||
-        repeated_frame;
+    /*
+     * ALL_00/ALL_FF/identical/repeated are data observations, not proof of a
+     * broken SPI transport. Only the clock-like DOUT signature is a serial
+     * anomaly; rail/clipping is tracked by the signal-quality state below.
+     */
+    const bool transport_anomaly =
+        (metrics & AD7606_SERIAL_FRAME_CLOCK_LIKE) != 0U;
 
     const uint32_t old_suspicious_streak =
         state->suspicious_streak;
@@ -367,9 +485,14 @@ bool ad7606_serial_diag_observe(
             ad7606_serial_saturating_increment(state->digital_interference_frames);
     }
 
-    if ((metrics & AD7606_SERIAL_FRAME_RAIL_HIT) != 0U) {
-        state->rail_hit_frames =
-            ad7606_serial_saturating_increment(state->rail_hit_frames);
+    if ((metrics & AD7606_SERIAL_FRAME_SIGNAL_RAIL_HIT) != 0U) {
+        state->signal_rail_hit_frames =
+            ad7606_serial_saturating_increment(state->signal_rail_hit_frames);
+    }
+
+    if ((metrics & AD7606_SERIAL_FRAME_SIGNAL_HARD_CLIP) != 0U) {
+        state->signal_clip_frames =
+            ad7606_serial_saturating_increment(state->signal_clip_frames);
     }
 
     if (repeated_frame) {
@@ -380,7 +503,7 @@ bool ad7606_serial_diag_observe(
         state->repeated_frame_streak = 0U;
     }
 
-    if (abnormal_frame) {
+    if (transport_anomaly) {
         state->suspicious_streak =
             ad7606_serial_saturating_increment(state->suspicious_streak);
     }
@@ -389,9 +512,13 @@ bool ad7606_serial_diag_observe(
     }
 
     uint8_t quality_flags = (uint8_t)(
-        (abnormal_frame ? AD7606_SERIAL_FRAME_BAD : 0U) |
+        (transport_anomaly ? AD7606_SERIAL_FRAME_TRANSPORT_BAD : 0U) |
         (repeated_frame ? AD7606_SERIAL_FRAME_REPEATED : 0U) |
-        (metrics & (AD7606_SERIAL_FRAME_CLOCK_LIKE | AD7606_SERIAL_FRAME_RAIL_HIT))
+        (metrics & (
+            AD7606_SERIAL_FRAME_CLOCK_LIKE |
+            AD7606_SERIAL_FRAME_SIGNAL_RAIL_HIT |
+            AD7606_SERIAL_FRAME_SIGNAL_HARD_CLIP
+        ))
     );
     if (pattern == AD7606_SERIAL_PATTERN_ALL_00) {
         quality_flags |= AD7606_SERIAL_FRAME_ALL_ZERO;
@@ -406,6 +533,9 @@ bool ad7606_serial_diag_observe(
     const ad7606_serial_quality_t old_quality = state->quality;
     (void)ad7606_serial_quality_update(state);
     event->quality_changed = old_quality != state->quality;
+    const ad7606_signal_quality_t old_signal_quality = state->signal_quality;
+    (void)ad7606_signal_quality_update(state);
+    event->signal_quality_changed = old_signal_quality != state->signal_quality;
 
     state->serial_suspicious =
         state->suspicious_streak >=
@@ -416,7 +546,7 @@ bool ad7606_serial_diag_observe(
         );
 
     event->abnormal_started =
-        abnormal_frame &&
+        transport_anomaly &&
         old_suspicious_streak == 0U;
     event->suspicious_started =
         !old_suspicious &&

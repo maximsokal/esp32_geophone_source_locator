@@ -63,6 +63,7 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_suspicious = status.serial_suspicious;
     snapshot->serial_pattern = ad7606_serial_pattern_name(status.serial_pattern);
     snapshot->serial_quality = ad7606_serial_quality_name(status.serial_quality);
+    snapshot->signal_quality = ad7606_signal_quality_name(status.signal_quality);
     snapshot->serial_suspicious_streak = status.suspicious_streak;
     snapshot->serial_repeated_frame_streak = status.repeated_frame_streak;
     snapshot->serial_all_zero_frames = status.all_zero_frames;
@@ -70,7 +71,8 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_all_identical_frames = status.all_identical_frames;
     snapshot->serial_varied_frames = status.varied_frames;
     snapshot->serial_digital_interference_frames = status.digital_interference_frames;
-    snapshot->serial_rail_hit_frames = status.rail_hit_frames;
+    snapshot->signal_rail_hit_frames = status.signal_rail_hit_frames;
+    snapshot->signal_clip_frames = status.signal_clip_frames;
     snapshot->serial_quality_window_frames = status.quality_window_frames;
     snapshot->serial_quality_window_bad_frames = status.quality_window_bad_frames;
     snapshot->serial_quality_window_all_zero_frames =
@@ -82,7 +84,10 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_quality_window_repeated_frames = status.quality_window_repeated_frames;
     snapshot->serial_quality_window_digital_interference_frames =
         status.quality_window_digital_interference_frames;
-    snapshot->serial_quality_window_rail_hit_frames = status.quality_window_rail_hit_frames;
+    snapshot->signal_quality_window_rail_hit_frames =
+        status.signal_quality_window_rail_hit_frames;
+    snapshot->signal_quality_window_clip_frames =
+        status.signal_quality_window_clip_frames;
     snapshot->serial_busy_level = status.busy_level;
     snapshot->last_sample_timestamp_us = status.last_sample_timestamp_us;
 

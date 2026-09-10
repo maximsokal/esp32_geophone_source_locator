@@ -225,6 +225,12 @@ static void ad7606_status_reset(void)
     s_status.serial_pattern =
         AD7606_SERIAL_PATTERN_UNKNOWN;
 
+    s_status.serial_quality =
+        AD7606_SERIAL_QUALITY_UNKNOWN;
+
+    s_status.signal_quality =
+        AD7606_SIGNAL_QUALITY_UNKNOWN;
+
     s_status.busy_level =
         -1;
 
@@ -298,6 +304,9 @@ static void ad7606_status_record_sample(
     s_status.serial_quality =
         serial_diag->quality;
 
+    s_status.signal_quality =
+        serial_diag->signal_quality;
+
     s_status.suspicious_streak =
         serial_diag->suspicious_streak;
 
@@ -319,8 +328,11 @@ static void ad7606_status_record_sample(
     s_status.digital_interference_frames =
         serial_diag->digital_interference_frames;
 
-    s_status.rail_hit_frames =
-        serial_diag->rail_hit_frames;
+    s_status.signal_rail_hit_frames =
+        serial_diag->signal_rail_hit_frames;
+
+    s_status.signal_clip_frames =
+        serial_diag->signal_clip_frames;
     s_status.quality_window_frames =
         serial_diag->quality_window_frames;
     s_status.quality_window_bad_frames =
@@ -335,8 +347,11 @@ static void ad7606_status_record_sample(
         serial_diag->quality_window_repeated_frames;
     s_status.quality_window_digital_interference_frames =
         serial_diag->quality_window_digital_interference_frames;
-    s_status.quality_window_rail_hit_frames =
-        serial_diag->quality_window_rail_hit_frames;
+    s_status.signal_quality_window_rail_hit_frames =
+        serial_diag->signal_quality_window_rail_hit_frames;
+
+    s_status.signal_quality_window_clip_frames =
+        serial_diag->signal_quality_window_clip_frames;
 
     s_status.busy_level =
         busy_level;
@@ -383,6 +398,7 @@ static void ad7606_serial_diag_log_frame(
         event->abnormal_started ||
         event->suspicious_started ||
         event->quality_changed ||
+        event->signal_quality_changed ||
         periodic_due
     ) {
         s_serial_diag_log_pending = true;
@@ -408,7 +424,7 @@ static void ad7606_serial_diag_log_frame(
 
     ESP_LOGI(
         DIAG_TAG,
-        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s quality=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u rail_hits=%u window=%u bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u rail=%u suspicious=%s",
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s transport_quality=%s signal_quality=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u signal_rail_hits=%u signal_clips=%u window=%u transport_bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u signal_rail=%u signal_clip=%u serial_suspicious=%s",
         observation->rx[0],
         observation->rx[1],
         observation->rx[2],
@@ -437,6 +453,7 @@ static void ad7606_serial_diag_log_frame(
             serial_diag->pattern
         ),
         ad7606_serial_quality_name(serial_diag->quality),
+        ad7606_signal_quality_name(serial_diag->signal_quality),
         observation->busy_level,
         samples,
         (unsigned)serial_diag->suspicious_streak,
@@ -446,7 +463,8 @@ static void ad7606_serial_diag_log_frame(
         (unsigned)serial_diag->all_identical_frames,
         (unsigned)serial_diag->varied_frames,
         (unsigned)serial_diag->digital_interference_frames,
-        (unsigned)serial_diag->rail_hit_frames,
+        (unsigned)serial_diag->signal_rail_hit_frames,
+        (unsigned)serial_diag->signal_clip_frames,
         (unsigned)serial_diag->quality_window_frames,
         (unsigned)serial_diag->quality_window_bad_frames,
         (unsigned)serial_diag->quality_window_all_zero_frames,
@@ -454,7 +472,8 @@ static void ad7606_serial_diag_log_frame(
         (unsigned)serial_diag->quality_window_all_identical_frames,
         (unsigned)serial_diag->quality_window_repeated_frames,
         (unsigned)serial_diag->quality_window_digital_interference_frames,
-        (unsigned)serial_diag->quality_window_rail_hit_frames,
+        (unsigned)serial_diag->signal_quality_window_rail_hit_frames,
+        (unsigned)serial_diag->signal_quality_window_clip_frames,
         serial_diag->serial_suspicious ? "yes" : "no"
     );
 

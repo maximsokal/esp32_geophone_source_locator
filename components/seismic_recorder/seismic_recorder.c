@@ -767,26 +767,44 @@ esp_err_t seismic_recorder_start(
         return ESP_ERR_INVALID_STATE;
     }
     err = seismic_recorder_start_validate_acquisition(&acquisition);
-    if (err != ESP_OK && !acquisition.running) {
-        ESP_LOGE(
-            TAG,
-            "START rejected: acquisition task is not running source=%s presence=%s serial=%s",
-            acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN",
-            acquisition.source_healthy ? "healthy" : "stale",
-            acquisition.serial_suspicious ? "suspicious" : "not-suspicious"
-        );
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (err != ESP_OK && acquisition.sample_rate_hz == 0U) {
-        ESP_LOGE(
-            TAG,
-            "START rejected: acquisition task has zero sample rate source=%s",
-            acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN"
-        );
-        return ESP_ERR_INVALID_STATE;
-    }
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "START rejected: acquisition admission validation failed err=%s", esp_err_to_name(err));
+        if (!acquisition.running) {
+            ESP_LOGE(
+                TAG,
+                "START rejected: acquisition task is not running source=%s presence=%s serial=%s",
+                acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN",
+                acquisition.source_healthy ? "healthy" : "stale",
+                acquisition.serial_suspicious ? "suspicious" : "not-suspicious"
+            );
+        }
+        else if (acquisition.sample_rate_hz == 0U) {
+            ESP_LOGE(
+                TAG,
+                "START rejected: acquisition task has zero sample rate source=%s",
+                acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN"
+            );
+        }
+        else if (
+            !acquisition.latest_valid ||
+            acquisition.samples == 0U
+        ) {
+            ESP_LOGE(
+                TAG,
+                "START rejected: no successful acquisition sample yet source=%s latest_valid=%s samples=%llu",
+                acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN",
+                acquisition.latest_valid ? "yes" : "no",
+                (unsigned long long)acquisition.samples
+            );
+        }
+        else {
+            ESP_LOGE(
+                TAG,
+                "START rejected: acquisition sample is not fresh source=%s samples=%llu last_sample_us=%lld",
+                acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN",
+                (unsigned long long)acquisition.samples,
+                (long long)acquisition.last_sample_timestamp_us
+            );
+        }
         return err;
     }
     if (!acquisition.source_healthy || acquisition.serial_suspicious) {

@@ -131,8 +131,11 @@ static void test_quality_window_hysteresis(void)
     }
     assert(state.quality == AD7606_SERIAL_QUALITY_FAULT);
     assert(state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
     assert(state.quality_window_digital_interference_frames == 50U);
     assert(state.quality_window_bad_frames == 50U);
+    assert(state.signal_quality_window_rail_hit_frames == 50U);
+    assert(state.signal_quality_window_clip_frames == 50U);
     assert(state.quality_window_frames == 500U);
 
     for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
@@ -142,6 +145,9 @@ static void test_quality_window_hysteresis(void)
     assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
     assert(!state.serial_suspicious);
     assert(state.quality_window_bad_frames == 0U);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_HEALTHY);
+    assert(state.signal_quality_window_rail_hit_frames == 0U);
+    assert(state.signal_quality_window_clip_frames == 0U);
 
     ad7606_serial_diag_reset(&state);
     for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
@@ -152,6 +158,8 @@ static void test_quality_window_hysteresis(void)
     assert(ad7606_serial_diag_observe(&state, interference, NULL));
     assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
     assert(!state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
+    assert(state.signal_quality_window_clip_frames == 1U);
 
     ad7606_serial_diag_reset(&state);
     uint8_t all_ff[AD7606_SERIAL_RX_BYTES];
@@ -159,16 +167,18 @@ static void test_quality_window_hysteresis(void)
     for (uint32_t frame = 0U; frame < AD7606_SERIAL_SUSPICIOUS_STREAK_THRESHOLD; ++frame) {
         assert(ad7606_serial_diag_observe(&state, all_ff, NULL));
     }
-    assert(state.serial_suspicious);
-    assert(state.quality == AD7606_SERIAL_QUALITY_FAULT);
+    assert(!state.serial_suspicious);
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
     assert(ad7606_serial_diag_observe(&state, varied, NULL));
-    assert(state.serial_suspicious);
+    assert(!state.serial_suspicious);
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_HEALTHY);
     assert(state.quality_window_all_ff_frames == 10U);
     assert(state.quality_window_repeated_frames == 9U);
 }
 
 
-static void test_quality_window_all_zero_persistence(void)
+static void test_quiet_frames_are_not_transport_faults(void)
 {
     uint8_t all_zero[AD7606_SERIAL_RX_BYTES] = {0};
     uint8_t varied[AD7606_SERIAL_RX_BYTES] = {0};
@@ -179,15 +189,115 @@ static void test_quality_window_all_zero_persistence(void)
     ad7606_serial_diag_state_t state;
     ad7606_serial_diag_reset(&state);
 
-    /* A single varied frame must not clear a sustained ALL_00 fault. */
+    /* A sustained ALL_00 observation is still a diagnostic, not a transport fault. */
     for (uint32_t frame = 0U; frame < 999U; ++frame) {
         assert(ad7606_serial_diag_observe(&state, all_zero, NULL));
     }
-    assert(state.quality == AD7606_SERIAL_QUALITY_FAULT);
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
     assert(state.quality_window_all_zero_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES);
+    assert(state.quality_window_bad_frames == 0U);
+    assert(state.quality_window_digital_interference_frames == 0U);
     assert(ad7606_serial_diag_observe(&state, varied, NULL));
-    assert(state.quality == AD7606_SERIAL_QUALITY_FAULT);
-    assert(state.serial_suspicious);
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.quality_window_all_zero_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES - 1U);
+
+    ad7606_serial_diag_reset(&state);
+    uint8_t all_ff[AD7606_SERIAL_RX_BYTES];
+    memset(all_ff, 0xFF, sizeof(all_ff));
+    for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
+        assert(ad7606_serial_diag_observe(&state, all_ff, NULL));
+    }
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.quality_window_all_ff_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES);
+    assert(state.quality_window_repeated_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES - 1U);
+}
+
+
+static void test_signal_quality_is_separate_from_transport(void)
+{
+    uint8_t varied[AD7606_SERIAL_RX_BYTES] = {0};
+    for (size_t index = 0U; index < AD7606_SERIAL_WORD_COUNT; ++index) {
+        put_word(varied, index, (uint16_t)(0x1200U + index));
+    }
+
+    uint8_t rail[AD7606_SERIAL_RX_BYTES] = {0};
+    put_word(rail, 0U, 0x7FFFU);
+    put_word(rail, 1U, 0x7531U);
+    put_word(rail, 2U, 0x8ACFU);
+    put_word(rail, 3U, 0x1234U);
+    put_word(rail, 4U, 0x2345U);
+    put_word(rail, 5U, 0x3456U);
+    put_word(rail, 6U, 0x4567U);
+    put_word(rail, 7U, 0x5678U);
+    assert(ad7606_serial_classify(rail) == AD7606_SERIAL_PATTERN_VARIED);
+
+    ad7606_serial_diag_state_t state;
+    ad7606_serial_diag_reset(&state);
+    for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
+        put_word(varied, 7U, (uint16_t)(0x1200U + frame));
+        assert(ad7606_serial_diag_observe(&state, varied, NULL));
+    }
+    assert(ad7606_serial_diag_observe(&state, rail, NULL));
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
+    assert(state.signal_quality_window_rail_hit_frames == 1U);
+    assert(state.signal_quality_window_clip_frames == 1U);
+
+    /* A saturated analog frame may contain two clock-like bytes by chance;
+     * it remains a signal observation, not a transport fault. */
+    uint8_t saturated_with_two_clock_bytes[AD7606_SERIAL_RX_BYTES] = {0};
+    put_word(saturated_with_two_clock_bytes, 0U, 0x7FFFU);
+    put_word(saturated_with_two_clock_bytes, 1U, 0x55AAU);
+    put_word(saturated_with_two_clock_bytes, 2U, 30000U);
+    put_word(saturated_with_two_clock_bytes, 3U, (uint16_t)-30000);
+    put_word(saturated_with_two_clock_bytes, 4U, 0x2345U);
+    put_word(saturated_with_two_clock_bytes, 5U, 0x3456U);
+    put_word(saturated_with_two_clock_bytes, 6U, 0x4567U);
+    put_word(saturated_with_two_clock_bytes, 7U, 0x5678U);
+    assert(
+        ad7606_serial_classify(saturated_with_two_clock_bytes) ==
+        AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE
+    );
+
+    ad7606_serial_diag_reset(&state);
+    for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
+        put_word(varied, 7U, (uint16_t)(0x1800U + frame));
+        assert(ad7606_serial_diag_observe(&state, varied, NULL));
+    }
+    assert(ad7606_serial_diag_observe(&state, saturated_with_two_clock_bytes, NULL));
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
+    assert(state.quality_window_digital_interference_frames == 0U);
+
+    uint8_t near_rail[AD7606_SERIAL_RX_BYTES] = {0};
+    put_word(near_rail, 0U, 30000U);
+    put_word(near_rail, 1U, (uint16_t)-30000);
+    put_word(near_rail, 2U, 0x1234U);
+    put_word(near_rail, 3U, 0x2345U);
+    put_word(near_rail, 4U, 0x3456U);
+    put_word(near_rail, 5U, 0x4567U);
+    put_word(near_rail, 6U, 0x5678U);
+    put_word(near_rail, 7U, 0x6789U);
+    assert(ad7606_serial_classify(near_rail) == AD7606_SERIAL_PATTERN_VARIED);
+
+    ad7606_serial_diag_reset(&state);
+    for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
+        put_word(varied, 7U, (uint16_t)(0x2200U + frame));
+        assert(ad7606_serial_diag_observe(&state, varied, NULL));
+    }
+    for (uint32_t frame = 0U; frame < 10U; ++frame) {
+        assert(ad7606_serial_diag_observe(&state, near_rail, NULL));
+    }
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_DEGRADED);
+    assert(state.signal_quality_window_rail_hit_frames == 10U);
+    assert(state.signal_quality_window_clip_frames == 0U);
 }
 
 
@@ -218,6 +328,8 @@ static void test_quality_window_degraded_band(void)
     assert(state.quality_window_bad_frames == 10U);
     assert(state.quality_window_digital_interference_frames == 10U);
     assert(state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
+    assert(state.signal_quality_window_clip_frames == 10U);
 }
 
 
@@ -227,7 +339,8 @@ int main(void)
     test_frame_classification();
     test_real_log_frames_are_not_plain_varied();
     test_quality_window_hysteresis();
-    test_quality_window_all_zero_persistence();
+    test_quiet_frames_are_not_transport_faults();
+    test_signal_quality_is_separate_from_transport();
     test_quality_window_degraded_band();
     puts("AD7606 serial diagnostics tests passed");
     return 0;

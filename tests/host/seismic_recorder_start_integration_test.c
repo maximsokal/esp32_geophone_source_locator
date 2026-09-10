@@ -58,6 +58,9 @@ int main(void)
     fake_acquisition.source_healthy = false;
     fake_acquisition.source_name = "AD7606";
     fake_acquisition.sample_rate_hz = 500U;
+    fake_acquisition.latest_valid = true;
+    fake_acquisition.samples = 1U;
+    fake_acquisition.last_sample_timestamp_us = 999000;
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
 

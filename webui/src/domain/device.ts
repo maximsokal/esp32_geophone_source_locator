@@ -145,13 +145,26 @@ export interface DeviceAcquisitionStatus {
   serial?: {
     suspicious: boolean;
     pattern: string;
+    quality?: string;
     suspicious_streak: number;
     repeated_frame_streak: number;
     all_zero_frames: number;
     all_ff_frames: number;
     all_identical_frames: number;
     varied_frames: number;
+    digital_interference_frames?: number;
+    quality_window_frames?: number;
+    quality_bad_ratio?: number;
+    quality_digital_interference_ratio?: number;
     busy_level: number;
+  };
+  signal?: {
+    quality: string;
+    rail_hit_frames: number;
+    clip_frames: number;
+    quality_window_frames: number;
+    rail_hit_ratio: number;
+    clip_ratio: number;
   };
 }
 
