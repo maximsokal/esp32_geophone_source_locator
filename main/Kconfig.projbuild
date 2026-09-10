@@ -35,6 +35,17 @@ menu "Seismic Acquisition"
 
 endmenu
 
+menu "TFT diagnostics"
+
+config UI_MEASUREMENTS_GRAPHS_ENABLED
+    bool "Render live measurement graphs"
+    default y
+    help
+        Keep acquisition and SD recording enabled while temporarily disabling
+        live TFT graph objects for a CPU/storage arbitration A/B test.
+
+endmenu
+
 menu "WebUI delivery"
 
 config WEB_SERVER_WEBUI_PSRAM_CACHE

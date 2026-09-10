@@ -70,9 +70,13 @@ def test_runtime_observability_uses_raw_task_status_without_formatted_stats():
     assert "uxTaskGetSystemState(" in source
     assert "ulTaskGetIdleRunTimeCounterForCore(" in source
     assert "RUNTIME_CPU stage=" in source
-    assert "RUNTIME_TASK name=" in source
+    assert "RUNTIME_TASK rank=" in source
     assert "MEM_RUNTIME stage=" in source
     assert "RUNTIME_OBSERVABILITY_PERIOD_MS 10000U" in source
+    assert "RUNTIME_OBSERVABILITY_TOP_TASKS 10U" in source
+    assert "runtime_task_usage_insert" in source
+    assert "runtime_task_is_interesting" not in source
+    assert "needles[]" not in source
     assert "vTaskGetRunTimeStats(" not in source
     assert "TaskStatus_t *s_previous_status" in source
     assert "runtime_observability_request_snapshot" in source
@@ -128,13 +132,57 @@ def test_https_and_tft_policies_preserve_payload_and_dma_safety():
     assert "single and internal" in tft
 
 
-def test_runtime_census_includes_lvgl_and_timer_workers():
+def test_runtime_census_reports_unfiltered_top_tasks():
     runtime = read("components/runtime_observability/runtime_observability.c")
 
-    # esp_lvgl_port uses the mixed-case task name taskLVGL. Without this
-    # explicit needle the CPU census hides the task that owns TFT rendering.
-    assert '"taskLVGL"' in runtime
-    assert '"esp_timer"' in runtime
+    # The census must not depend on guessed task-name needles. The top list is
+    # built from every TaskStatus_t returned by uxTaskGetSystemState(), so the
+    # next board log can identify taskLVGL/httpd/recorder or a new consumer.
+    assert "uxTaskGetSystemState(" in runtime
+    assert "runtime_task_usage_insert(" in runtime
+    assert "const TaskStatus_t *status = &s_current_status[i];" in runtime
+    assert "pcTaskName != NULL ? status->pcTaskName : \"?\"" in runtime
+
+
+def test_status_objects_and_sessions_are_lifecycle_cache_only():
+    objects = read("components/web_server/web_status_json_objects.c")
+    recording = read("components/web_server/web_status_json_recording.c")
+    status_json = read("components/web_server/web_status_json.c")
+    status_api = read("components/web_server/web_api_status.c")
+    internal = read("components/web_server/web_server_internal.h")
+
+    assert "seismic_recorder_list_sessions(" in objects
+    assert "web_status_json_objects_refresh(void)" in objects
+    assert "xTaskCreatePinnedToCoreWithCaps(" in objects
+    assert "xQueueOverwrite(" in objects
+    assert "object_service_event_observer_t" in read("components/object_service/include/object_service.h")
+    assert "web_status_json_objects_object_event" in objects
+    assert "WEB_OBJECT_CACHE_TTL_US" not in objects
+    assert "web_status_json_objects_cache_ready" in internal
+    assert "web_status_json_objects_refresh" not in recording
+    assert "seismic_recorder_list_sessions(" not in recording
+    assert "object_store_list_profiles_with_defaults(" not in status_api
+    assert "web_status_json_objects_cache_ready()" in status_json
+    assert "storage_busy" in status_json
+    assert "503 Service Unavailable" in status_api
+    assert "from RAM/PSRAM cache; 503 while refreshing" in status_api
+
+
+def test_measurement_service_gates_start_and_refreshes_after_storage_completion():
+    header = read("components/measurement_service/include/measurement_service.h")
+    source = read("components/measurement_service/measurement_service.c")
+    web_server = read("components/web_server/web_server.c")
+    web_control = read("components/web_server/web_api_control.c")
+
+    assert "measurement_service_set_start_guard" in header
+    assert "measurement_service_set_storage_refresh_callback" in header
+    assert "s_start_guard" in source
+    assert "s_storage_refresh_callback" in source
+    assert "command == MEASUREMENT_COMMAND_START" in source
+    assert "measurement_service_notify_storage_refresh();" in source
+    assert "web_status_json_objects_refresh();" in web_server
+    assert "web_status_json_objects_start_guard" in web_server
+    assert "web_status_json_objects_cache_ready()" in web_control
 
 
 def test_ui_header_does_not_reinvalidate_unchanged_labels():
@@ -151,10 +199,15 @@ def test_ui_header_does_not_reinvalidate_unchanged_labels():
 def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     measurements = read("components/ui/ui_measurements.c")
     reducer = read("components/ui/ui_measurement_trace.c")
+    kconfig = read("main/Kconfig.projbuild")
 
     assert "lv_chart_set_series_ext_y_array" in measurements
     assert "lv_chart_set_series_value_by_id" not in measurements
     assert "LV_PART_INDICATOR" in measurements
+    assert "config UI_MEASUREMENTS_GRAPHS_ENABLED" in kconfig
+    assert "UI_MEASUREMENT_CHART_PERIOD_US 125000U" in measurements
+    assert "lv_obj_invalidate(context->measurement_screen)" in measurements
+    assert "lv_chart_refresh(chart)" not in measurements
     assert "channel_mean" in reducer
     assert "trace_min" in reducer
     assert "trace_max" in reducer

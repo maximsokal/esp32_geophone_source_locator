@@ -1,22 +1,67 @@
 #include "web_server_internal.h"
 
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_task_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+#include "measurement_service.h"
 #include "object_store.h"
+#include "seismic_recorder.h"
 
-#define WEB_OBJECT_CACHE_TTL_US 30000000LL
 
-static const char *TAG = "WEB_OBJECT_CACHE";
+typedef struct
+{
+    char object_id[OBJECT_STORE_ID_SIZE];
+    seismic_recorder_session_summary_t sessions[SEISMIC_RECORDER_MAX_SESSIONS];
+    size_t count;
+    esp_err_t error;
 
-static object_store_profile_t *s_profiles = NULL;
-static size_t s_profile_count = 0;
-static float s_defaults[OBJECT_STORE_POD_COUNT];
+} web_status_session_cache_t;
+
+
+typedef struct
+{
+    object_store_profile_t profiles[OBJECT_STORE_MAX_OBJECTS];
+    size_t profile_count;
+    float defaults[OBJECT_STORE_POD_COUNT];
+    web_status_session_cache_t session_cache[OBJECT_STORE_MAX_OBJECTS];
+
+} web_status_cache_payload_t;
+
+
+typedef enum
+{
+    WEB_STATUS_CACHE_COMMAND_REFRESH = 0,
+    WEB_STATUS_CACHE_COMMAND_STOP
+
+} web_status_cache_command_t;
+
+
+static const char *TAG = "WEB_STATUS_CACHE";
+
+static web_status_cache_payload_t *s_payload_a = NULL;
+static web_status_cache_payload_t *s_payload_b = NULL;
+static web_status_cache_payload_t *s_active_payload = NULL;
+static SemaphoreHandle_t s_cache_mutex = NULL;
+static SemaphoreHandle_t s_refresh_mutex = NULL;
+static QueueHandle_t s_refresh_queue = NULL;
+static TaskHandle_t s_refresh_task = NULL;
 static bool s_cache_valid = false;
-static int64_t s_cache_timestamp_us = 0;
+static bool s_cache_refreshing = false;
+static char s_active_object_id[OBJECT_STORE_ID_SIZE];
+
 
 static bool web_status_json_add_location(
     cJSON *parent,
@@ -38,105 +83,478 @@ static bool web_status_json_add_location(
         cJSON_AddStringToObject(object, "source", location->source) != NULL;
 }
 
-static esp_err_t web_status_objects_allocate(void)
-{
-    if (s_profiles != NULL) {
-        return ESP_OK;
-    }
 
-    s_profiles = heap_caps_calloc(
-        OBJECT_STORE_MAX_OBJECTS,
-        sizeof(*s_profiles),
+static web_status_cache_payload_t *web_status_cache_payload_allocate(void)
+{
+    web_status_cache_payload_t *payload = heap_caps_calloc(
+        1U,
+        sizeof(*payload),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
 
-    if (s_profiles == NULL) {
-        ESP_LOGW(TAG, "PSRAM profile cache allocation failed; falling back to default heap");
-        s_profiles = calloc(OBJECT_STORE_MAX_OBJECTS, sizeof(*s_profiles));
+    if (payload == NULL) {
+        ESP_LOGW(
+            TAG,
+            "PSRAM object/session cache allocation failed; falling back to default heap bytes=%u",
+            (unsigned)sizeof(*payload)
+        );
+        payload = calloc(1U, sizeof(*payload));
     }
 
-    return s_profiles == NULL ? ESP_ERR_NO_MEM : ESP_OK;
+    return payload;
 }
 
-static esp_err_t web_status_objects_refresh_if_needed(void)
+
+static esp_err_t web_status_cache_payloads_ensure(void)
 {
-    const int64_t now_us = esp_timer_get_time();
-    if (
-        s_cache_valid &&
-        now_us - s_cache_timestamp_us >= 0 &&
-        now_us - s_cache_timestamp_us < WEB_OBJECT_CACHE_TTL_US
-    ) {
+    if (s_payload_a != NULL && s_payload_b != NULL) {
         return ESP_OK;
     }
 
-    esp_err_t err = web_status_objects_allocate();
-    if (err != ESP_OK) {
-        return err;
+    if (s_payload_a == NULL) {
+        s_payload_a = web_status_cache_payload_allocate();
+    }
+    if (s_payload_b == NULL) {
+        s_payload_b = web_status_cache_payload_allocate();
     }
 
-    const int64_t started_us = now_us;
-    size_t count = 0;
-    float defaults[OBJECT_STORE_POD_COUNT] = {0};
-
-    err = object_store_list_profiles_with_defaults(
-        s_profiles,
-        OBJECT_STORE_MAX_OBJECTS,
-        &count,
-        defaults
-    );
-    if (err != ESP_OK) {
-        s_cache_valid = false;
-        ESP_LOGW(TAG, "Cold object refresh failed: %s", esp_err_to_name(err));
-        return err;
+    if (s_payload_a == NULL || s_payload_b == NULL) {
+        return ESP_ERR_NO_MEM;
     }
-
-    s_profile_count = count;
-    memcpy(s_defaults, defaults, sizeof(s_defaults));
-    s_cache_timestamp_us = esp_timer_get_time();
-    s_cache_valid = true;
 
     ESP_LOGI(
         TAG,
-        "Cold object refresh: objects=%u elapsed=%lld ms",
-        (unsigned)count,
-        (s_cache_timestamp_us - started_us) / 1000LL
+        "WEB_STATUS_CACHE storage=double-buffer bytes=%u source=psram-preferred",
+        (unsigned)(sizeof(*s_payload_a) * 2U)
     );
     return ESP_OK;
 }
 
-void web_status_json_objects_invalidate(void)
+
+static bool web_status_cache_storage_is_idle(void)
 {
-    s_cache_valid = false;
+    measurement_service_snapshot_t measurement;
+    if (measurement_service_get_snapshot(&measurement) == ESP_OK) {
+        if (
+            measurement.state == MEASUREMENT_SERVICE_STARTING ||
+            measurement.state == MEASUREMENT_SERVICE_RECORDING ||
+            measurement.state == MEASUREMENT_SERVICE_STOPPING ||
+            measurement.state == MEASUREMENT_SERVICE_DELETING
+        ) {
+            return false;
+        }
+
+        /* The measurement worker keeps its command gate held while invoking
+         * the post-STOP/DELETE callback. State and the recorder snapshot are
+         * the storage-safety boundary; the gate itself is not. */
+    }
+
+    seismic_recorder_snapshot_t recorder;
+    if (seismic_recorder_get_snapshot(&recorder) == ESP_OK) {
+        if (
+            recorder.running ||
+            recorder.state == SEISMIC_RECORDER_STOPPING
+        ) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
-bool web_status_json_add_objects(cJSON *root)
+
+static void web_status_cache_publish_result(
+    web_status_cache_payload_t *payload,
+    esp_err_t error
+)
+{
+    if (s_cache_mutex == NULL) {
+        return;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+
+    if (error == ESP_OK) {
+        s_active_payload = payload;
+        s_active_object_id[0] = '\0';
+        for (size_t i = 0U; i < payload->profile_count; ++i) {
+            if (payload->profiles[i].summary.active) {
+                snprintf(
+                    s_active_object_id,
+                    sizeof(s_active_object_id),
+                    "%s",
+                    payload->profiles[i].summary.id
+                );
+                break;
+            }
+        }
+        s_cache_valid = true;
+    }
+    else {
+        s_cache_valid = false;
+    }
+
+    s_cache_refreshing = false;
+    (void)xSemaphoreGive(s_cache_mutex);
+}
+
+
+esp_err_t web_status_json_objects_refresh(void)
+{
+    if (s_cache_mutex == NULL || s_refresh_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(s_refresh_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!web_status_cache_storage_is_idle()) {
+        (void)xSemaphoreGive(s_refresh_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = web_status_cache_payloads_ensure();
+    if (err != ESP_OK) {
+        (void)xSemaphoreGive(s_refresh_mutex);
+        return err;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    s_cache_refreshing = true;
+    s_cache_valid = false;
+    web_status_cache_payload_t *staging =
+        s_active_payload == s_payload_a ? s_payload_b : s_payload_a;
+    (void)xSemaphoreGive(s_cache_mutex);
+
+    memset(staging, 0, sizeof(*staging));
+    const int64_t started_us = esp_timer_get_time();
+    size_t profile_count = 0U;
+    err = object_store_list_profiles_with_defaults(
+        staging->profiles,
+        OBJECT_STORE_MAX_OBJECTS,
+        &profile_count,
+        staging->defaults
+    );
+
+    size_t session_errors = 0U;
+    if (err == ESP_OK) {
+        staging->profile_count = profile_count;
+        for (size_t i = 0U; i < profile_count; ++i) {
+            web_status_session_cache_t *session_cache =
+                &staging->session_cache[i];
+            snprintf(
+                session_cache->object_id,
+                sizeof(session_cache->object_id),
+                "%s",
+                staging->profiles[i].summary.id
+            );
+            session_cache->error = seismic_recorder_list_sessions(
+                session_cache->object_id,
+                session_cache->sessions,
+                SEISMIC_RECORDER_MAX_SESSIONS,
+                &session_cache->count
+            );
+            if (session_cache->error != ESP_OK) {
+                session_cache->count = 0U;
+                ++session_errors;
+                ESP_LOGW(
+                    TAG,
+                    "Session cache refresh failed object=%s err=%s",
+                    session_cache->object_id,
+                    esp_err_to_name(session_cache->error)
+                );
+            }
+        }
+    }
+
+    web_status_cache_publish_result(staging, err);
+
+    const int64_t elapsed_us = esp_timer_get_time() - started_us;
+    if (err == ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "WEB_STATUS_CACHE refresh=done objects=%u session_errors=%u elapsed_ms=%lld",
+            (unsigned)profile_count,
+            (unsigned)session_errors,
+            elapsed_us / 1000LL
+        );
+    }
+    else {
+        ESP_LOGW(
+            TAG,
+            "WEB_STATUS_CACHE refresh=failed err=%s elapsed_ms=%lld",
+            esp_err_to_name(err),
+            elapsed_us / 1000LL
+        );
+    }
+
+    (void)xSemaphoreGive(s_refresh_mutex);
+    return err;
+}
+
+
+static void web_status_cache_refresh_task(void *argument)
+{
+    (void)argument;
+
+    for (;;) {
+        web_status_cache_command_t command;
+        if (xQueueReceive(s_refresh_queue, &command, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        if (command == WEB_STATUS_CACHE_COMMAND_STOP) {
+            break;
+        }
+
+        const esp_err_t err = web_status_json_objects_refresh();
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(
+                TAG,
+                "WEB_STATUS_CACHE async refresh failed: %s",
+                esp_err_to_name(err)
+            );
+        }
+    }
+
+    s_refresh_task = NULL;
+    vTaskDeleteWithCaps(NULL);
+}
+
+
+esp_err_t web_status_json_objects_init(void)
+{
+    if (s_cache_mutex != NULL) {
+        return ESP_OK;
+    }
+
+    s_cache_mutex = xSemaphoreCreateMutex();
+    s_refresh_mutex = xSemaphoreCreateMutex();
+    s_refresh_queue = xQueueCreate(1U, sizeof(web_status_cache_command_t));
+    if (
+        s_cache_mutex == NULL ||
+        s_refresh_mutex == NULL ||
+        s_refresh_queue == NULL
+    ) {
+        if (s_refresh_queue != NULL) vQueueDelete(s_refresh_queue);
+        if (s_refresh_mutex != NULL) vSemaphoreDelete(s_refresh_mutex);
+        if (s_cache_mutex != NULL) vSemaphoreDelete(s_cache_mutex);
+        s_refresh_queue = NULL;
+        s_refresh_mutex = NULL;
+        s_cache_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    const BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
+        web_status_cache_refresh_task,
+        "web_status_cache",
+        APP_TASK_STACK_WEB_STATUS_CACHE,
+        NULL,
+        APP_TASK_PRIORITY_WEB_STATUS_CACHE,
+        &s_refresh_task,
+        APP_TASK_CORE_SERVICES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (result != pdPASS) {
+        vQueueDelete(s_refresh_queue);
+        vSemaphoreDelete(s_refresh_mutex);
+        vSemaphoreDelete(s_cache_mutex);
+        s_refresh_queue = NULL;
+        s_refresh_mutex = NULL;
+        s_cache_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "WEB_STATUS_CACHE initialized core=%d stack=%u stack_caps=spiram|8bit",
+        APP_TASK_CORE_SERVICES,
+        APP_TASK_STACK_WEB_STATUS_CACHE
+    );
+    return ESP_OK;
+}
+
+
+void web_status_json_objects_shutdown(void)
+{
+    if (s_refresh_task != NULL && s_refresh_queue != NULL) {
+        const web_status_cache_command_t command =
+            WEB_STATUS_CACHE_COMMAND_STOP;
+        (void)xQueueSend(s_refresh_queue, &command, portMAX_DELAY);
+        while (s_refresh_task != NULL) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    if (s_refresh_mutex != NULL) {
+        (void)xSemaphoreTake(s_refresh_mutex, portMAX_DELAY);
+        (void)xSemaphoreGive(s_refresh_mutex);
+    }
+
+    heap_caps_free(s_payload_a);
+    heap_caps_free(s_payload_b);
+    s_payload_a = NULL;
+    s_payload_b = NULL;
+    s_active_payload = NULL;
+    s_cache_valid = false;
+    s_cache_refreshing = false;
+    s_active_object_id[0] = '\0';
+
+    if (s_refresh_queue != NULL) vQueueDelete(s_refresh_queue);
+    if (s_refresh_mutex != NULL) vSemaphoreDelete(s_refresh_mutex);
+    if (s_cache_mutex != NULL) vSemaphoreDelete(s_cache_mutex);
+    s_refresh_queue = NULL;
+    s_refresh_mutex = NULL;
+    s_cache_mutex = NULL;
+}
+
+
+esp_err_t web_status_json_objects_request_refresh(void)
+{
+    if (s_refresh_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const web_status_cache_command_t command =
+        WEB_STATUS_CACHE_COMMAND_REFRESH;
+    return xQueueOverwrite(s_refresh_queue, &command) == pdTRUE
+        ? ESP_OK
+        : ESP_ERR_TIMEOUT;
+}
+
+
+void web_status_json_objects_invalidate(void)
+{
+    if (s_cache_mutex == NULL) {
+        s_cache_valid = false;
+        return;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    s_cache_valid = false;
+    (void)xSemaphoreGive(s_cache_mutex);
+}
+
+
+bool web_status_json_objects_cache_ready(void)
+{
+    if (s_cache_mutex == NULL) {
+        return false;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    const bool ready = s_cache_valid && !s_cache_refreshing;
+    (void)xSemaphoreGive(s_cache_mutex);
+    return ready;
+}
+
+
+bool web_status_json_objects_cache_busy(void)
+{
+    return !web_status_json_objects_cache_ready();
+}
+
+
+esp_err_t web_status_json_objects_start_guard(void *user_context)
+{
+    (void)user_context;
+    return web_status_json_objects_cache_ready()
+        ? ESP_OK
+        : ESP_ERR_INVALID_STATE;
+}
+
+
+void web_status_json_objects_storage_changed(void *user_context)
+{
+    (void)user_context;
+    web_status_json_objects_invalidate();
+    const esp_err_t err = web_status_json_objects_request_refresh();
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "WEB_STATUS_CACHE post-storage refresh request failed: %s",
+            esp_err_to_name(err)
+        );
+    }
+}
+
+
+void web_status_json_objects_object_event(
+    const object_service_event_t *event,
+    void *user_context
+)
+{
+    (void)user_context;
+    if (event == NULL) {
+        return;
+    }
+
+    if (event->type == OBJECT_SERVICE_EVENT_SET_ACTIVE_DONE) {
+        web_status_json_objects_set_active(event->object_id);
+        return;
+    }
+
+    if (
+        event->type != OBJECT_SERVICE_EVENT_CREATE_DONE &&
+        event->type != OBJECT_SERVICE_EVENT_CREATE_FAILED &&
+        event->type != OBJECT_SERVICE_EVENT_DELETE_DONE &&
+        event->type != OBJECT_SERVICE_EVENT_DELETE_FAILED
+    ) {
+        /* LIST events only report a read; keep the prefetched payload usable
+         * during RECORDING instead of turning a UI list refresh into 503. */
+        return;
+    }
+
+    web_status_json_objects_invalidate();
+    const esp_err_t err = web_status_json_objects_request_refresh();
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "WEB_STATUS_CACHE object event refresh request failed type=%d err=%s",
+            (int)event->type,
+            esp_err_to_name(err)
+        );
+    }
+}
+
+
+void web_status_json_objects_set_active(const char *object_id)
+{
+    if (s_cache_mutex == NULL) {
+        return;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    snprintf(
+        s_active_object_id,
+        sizeof(s_active_object_id),
+        "%s",
+        object_id != NULL ? object_id : ""
+    );
+    (void)xSemaphoreGive(s_cache_mutex);
+}
+
+
+static bool web_status_json_add_objects_from_payload(
+    cJSON *root,
+    const web_status_cache_payload_t *payload
+)
 {
     cJSON *store = cJSON_AddObjectToObject(root, "object_store");
     if (store == NULL) return false;
 
-    const esp_err_t err = web_status_objects_refresh_if_needed();
-
-    if (cJSON_AddBoolToObject(store, "available", err == ESP_OK) == NULL) {
+    if (cJSON_AddBoolToObject(store, "available", true) == NULL) {
         return false;
     }
-
-    if (err != ESP_OK) {
-        cJSON_AddNullToObject(store, "active_id");
-        cJSON_AddStringToObject(store, "error", esp_err_to_name(err));
-        cJSON_AddArrayToObject(store, "default_cable_lengths_m");
-        cJSON_AddArrayToObject(store, "objects");
-        return true;
-    }
-
-    const char *active_id = NULL;
-    for (size_t i = 0; i < s_profile_count; ++i) {
-        if (s_profiles[i].summary.active) {
-            active_id = s_profiles[i].summary.id;
-            break;
+    if (s_active_object_id[0] != '\0') {
+        if (cJSON_AddStringToObject(store, "active_id", s_active_object_id) == NULL) {
+            return false;
         }
     }
-    if (active_id != NULL) cJSON_AddStringToObject(store, "active_id", active_id);
-    else cJSON_AddNullToObject(store, "active_id");
+    else if (cJSON_AddNullToObject(store, "active_id") == NULL) {
+        return false;
+    }
 
     cJSON *default_array = cJSON_AddArrayToObject(store, "default_cable_lengths_m");
     cJSON *objects = cJSON_AddArrayToObject(store, "objects");
@@ -144,40 +562,144 @@ bool web_status_json_add_objects(cJSON *root)
         return false;
     }
 
-    for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
-        cJSON *number = cJSON_CreateNumber(s_defaults[i]);
-        if (number == NULL) {
-            return false;
-        }
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        cJSON *number = cJSON_CreateNumber(payload->defaults[i]);
+        if (number == NULL) return false;
         cJSON_AddItemToArray(default_array, number);
     }
 
-    for (size_t i = 0; i < s_profile_count; ++i) {
+    for (size_t i = 0U; i < payload->profile_count; ++i) {
+        const object_store_profile_t *profile = &payload->profiles[i];
+        const bool active = s_active_object_id[0] != '\0'
+            ? strcmp(profile->summary.id, s_active_object_id) == 0
+            : profile->summary.active;
+
         cJSON *object = cJSON_CreateObject();
-        if (object == NULL) {
-            return false;
-        }
+        if (object == NULL) return false;
         cJSON_AddItemToArray(objects, object);
 
-        if (cJSON_AddStringToObject(object, "id", s_profiles[i].summary.id) == NULL ||
-            cJSON_AddStringToObject(object, "name", s_profiles[i].summary.name) == NULL ||
-            cJSON_AddBoolToObject(object, "active", s_profiles[i].summary.active) == NULL ||
-            !web_status_json_add_location(object, &s_profiles[i].location)) {
+        if (
+            cJSON_AddStringToObject(object, "id", profile->summary.id) == NULL ||
+            cJSON_AddStringToObject(object, "name", profile->summary.name) == NULL ||
+            cJSON_AddBoolToObject(object, "active", active) == NULL ||
+            !web_status_json_add_location(object, &profile->location)
+        ) {
             return false;
         }
 
         cJSON *cables = cJSON_AddArrayToObject(object, "cable_lengths_m");
-        if (cables == NULL) {
-            return false;
-        }
-        for (size_t pod = 0; pod < OBJECT_STORE_POD_COUNT; ++pod) {
-            cJSON *number = cJSON_CreateNumber(s_profiles[i].cable_lengths_m[pod]);
-            if (number == NULL) {
-                return false;
-            }
+        if (cables == NULL) return false;
+        for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
+            cJSON *number = cJSON_CreateNumber(profile->cable_lengths_m[pod]);
+            if (number == NULL) return false;
             cJSON_AddItemToArray(cables, number);
         }
     }
 
+    return true;
+}
+
+
+bool web_status_json_add_objects(cJSON *root)
+{
+    if (!web_status_json_objects_cache_ready()) {
+        return false;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    const web_status_cache_payload_t *payload = s_active_payload;
+    const bool ok = payload != NULL
+        ? web_status_json_add_objects_from_payload(root, payload)
+        : false;
+    (void)xSemaphoreGive(s_cache_mutex);
+    return ok;
+}
+
+
+static const web_status_session_cache_t *web_status_find_session_cache(
+    const web_status_cache_payload_t *payload,
+    const char *object_id
+)
+{
+    for (size_t i = 0U; i < payload->profile_count; ++i) {
+        if (strcmp(payload->session_cache[i].object_id, object_id) == 0) {
+            return &payload->session_cache[i];
+        }
+    }
+    return NULL;
+}
+
+
+bool web_status_json_add_sessions(cJSON *root, const char *object_id)
+{
+    if (object_id == NULL || object_id[0] == '\0') {
+        return true;
+    }
+    if (!web_status_json_objects_cache_ready()) {
+        return false;
+    }
+
+    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    const web_status_cache_payload_t *payload = s_active_payload;
+    const web_status_session_cache_t *session_cache = payload != NULL
+        ? web_status_find_session_cache(payload, object_id)
+        : NULL;
+
+    cJSON *collection = cJSON_AddObjectToObject(root, "recording_sessions");
+    if (collection == NULL) {
+        (void)xSemaphoreGive(s_cache_mutex);
+        return false;
+    }
+    if (cJSON_AddStringToObject(collection, "object_id", object_id) == NULL) {
+        (void)xSemaphoreGive(s_cache_mutex);
+        return false;
+    }
+
+    const esp_err_t error = session_cache == NULL
+        ? ESP_ERR_NOT_FOUND
+        : session_cache->error;
+    if (cJSON_AddBoolToObject(collection, "available", error == ESP_OK) == NULL) {
+        (void)xSemaphoreGive(s_cache_mutex);
+        return false;
+    }
+
+    cJSON *array = cJSON_AddArrayToObject(collection, "sessions");
+    if (array == NULL) {
+        (void)xSemaphoreGive(s_cache_mutex);
+        return false;
+    }
+
+    if (error != ESP_OK) {
+        cJSON_AddStringToObject(collection, "error", esp_err_to_name(error));
+        (void)xSemaphoreGive(s_cache_mutex);
+        return true;
+    }
+
+    for (size_t i = 0U; i < session_cache->count; ++i) {
+        const seismic_recorder_session_summary_t *summary =
+            &session_cache->sessions[i];
+        cJSON *session = cJSON_CreateObject();
+        if (session == NULL) {
+            (void)xSemaphoreGive(s_cache_mutex);
+            return false;
+        }
+        cJSON_AddItemToArray(array, session);
+
+        if (
+            cJSON_AddStringToObject(session, "session_id", summary->session_id) == NULL ||
+            cJSON_AddBoolToObject(session, "complete", summary->complete) == NULL ||
+            cJSON_AddStringToObject(session, "source", summary->source_name) == NULL ||
+            cJSON_AddNumberToObject(session, "sample_rate_hz", summary->sample_rate_hz) == NULL ||
+            cJSON_AddNumberToObject(session, "channel_count", summary->channel_count) == NULL ||
+            cJSON_AddNumberToObject(session, "samples_written", (double)summary->samples_written) == NULL ||
+            cJSON_AddNumberToObject(session, "dropped_frames", (double)summary->dropped_frames) == NULL ||
+            cJSON_AddNumberToObject(session, "recording_ms", (double)summary->recording_ms) == NULL
+        ) {
+            (void)xSemaphoreGive(s_cache_mutex);
+            return false;
+        }
+    }
+
+    (void)xSemaphoreGive(s_cache_mutex);
     return true;
 }

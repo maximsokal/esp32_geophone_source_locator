@@ -98,6 +98,24 @@ esp_err_t object_service_set_event_callback(
 }
 
 
+esp_err_t object_service_set_event_observer(
+    object_service_event_observer_t observer,
+    void *user_context
+)
+{
+    object_service_state_t *state =
+        object_service_internal_state();
+
+    if (!state->initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    state->event_observer = observer;
+    state->event_observer_context = user_context;
+    return ESP_OK;
+}
+
+
 esp_err_t object_service_get_active(
     object_service_summary_t *object
 )

@@ -11,7 +11,7 @@ static const char *TAG =
     "OBJECT_SERVICE";
 
 
-static void object_service_notify(
+void object_service_internal_notify(
     object_service_state_t *state
 )
 {
@@ -22,6 +22,13 @@ static void object_service_notify(
         state->event_callback(
             &state->event,
             state->event_user_context
+        );
+    }
+
+    if (state->event_observer != NULL) {
+        state->event_observer(
+            &state->event,
+            state->event_observer_context
         );
     }
 }
@@ -80,7 +87,7 @@ static void object_service_process_create(
         );
     }
 
-    object_service_notify(
+    object_service_internal_notify(
         state
     );
 }
@@ -127,7 +134,7 @@ static void object_service_process_list(
         );
     }
 
-    object_service_notify(
+    object_service_internal_notify(
         state
     );
 }

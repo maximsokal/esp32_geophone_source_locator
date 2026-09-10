@@ -63,6 +63,12 @@ typedef void (*object_service_event_callback_t)(
 );
 
 
+typedef void (*object_service_event_observer_t)(
+    const object_service_event_t *event,
+    void *user_context
+);
+
+
 esp_err_t object_service_init(void);
 
 
@@ -71,6 +77,12 @@ void object_service_shutdown(void);
 
 esp_err_t object_service_set_event_callback(
     object_service_event_callback_t callback,
+    void *user_context
+);
+
+
+esp_err_t object_service_set_event_observer(
+    object_service_event_observer_t observer,
     void *user_context
 );
 

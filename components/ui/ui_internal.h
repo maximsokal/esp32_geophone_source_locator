@@ -87,6 +87,7 @@ typedef struct
     lv_obj_t *measurement_charts[
         SEISMIC_CHANNEL_COUNT
     ];
+    lv_obj_t *measurement_screen;
     lv_chart_series_t *measurement_min_series[
         SEISMIC_CHANNEL_COUNT
     ];

@@ -376,6 +376,16 @@ esp_err_t web_status_json_build_extended(
     if (json_out == NULL) return ESP_ERR_INVALID_ARG;
     *json_out = NULL;
 
+    const bool storage_cache_ready =
+        web_status_json_objects_cache_ready();
+    if (
+        (include_objects ||
+         (sessions_object_id != NULL && sessions_object_id[0] != '\0')) &&
+        !storage_cache_ready
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     device_status_snapshot_t status;
     esp_err_t err = device_status_get_snapshot(&status);
     if (err != ESP_OK) return err;
@@ -389,6 +399,13 @@ esp_err_t web_status_json_build_extended(
 
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
+
+    if (
+        cJSON_AddBoolToObject(root, "storage_busy", !storage_cache_ready) == NULL
+    ) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
 
     bool ok =
         web_status_json_add_system(

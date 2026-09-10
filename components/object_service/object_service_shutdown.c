@@ -64,6 +64,12 @@ void object_service_shutdown(void)
     state->event_user_context =
         NULL;
 
+    state->event_observer =
+        NULL;
+
+    state->event_observer_context =
+        NULL;
+
     state->busy =
         false;
 

@@ -39,6 +39,10 @@ static SemaphoreHandle_t s_mutex = NULL;
 static TaskHandle_t s_task = NULL;
 static measurement_service_snapshot_t s_snapshot;
 static bool s_initialized = false;
+static measurement_service_start_guard_callback_t s_start_guard = NULL;
+static void *s_start_guard_context = NULL;
+static measurement_service_storage_refresh_callback_t s_storage_refresh_callback = NULL;
+static void *s_storage_refresh_context = NULL;
 
 
 static void measurement_service_log_stack_hwm(
@@ -216,6 +220,16 @@ static void measurement_service_process_start(void)
 }
 
 
+static void measurement_service_notify_storage_refresh(void)
+{
+    if (s_storage_refresh_callback == NULL) {
+        return;
+    }
+
+    s_storage_refresh_callback(s_storage_refresh_context);
+}
+
+
 static void measurement_service_process_stop_poll(void)
 {
     measurement_service_lock();
@@ -283,6 +297,8 @@ static void measurement_service_process_stop_poll(void)
     s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;
     s_snapshot.last_error = ESP_OK;
     measurement_service_unlock();
+
+    measurement_service_notify_storage_refresh();
 
     measurement_service_log_stack_hwm("after-stop");
     runtime_observability_request_snapshot("after-recorder-finalization");
@@ -361,6 +377,8 @@ static void measurement_service_process_delete(void)
     s_snapshot.dropped_frames = 0U;
     s_snapshot.recording_ms = 0U;
     measurement_service_unlock();
+
+    measurement_service_notify_storage_refresh();
 
     ESP_LOGI(
         TAG,
@@ -492,6 +510,14 @@ static esp_err_t measurement_service_submit(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (command == MEASUREMENT_COMMAND_START && s_start_guard != NULL) {
+        const esp_err_t guard_err = s_start_guard(s_start_guard_context);
+        if (guard_err != ESP_OK) {
+            measurement_service_release_gate();
+            return guard_err;
+        }
+    }
+
     if (xQueueSend(s_queue, &command, 0) != pdTRUE) {
         measurement_service_release_gate();
         return ESP_ERR_TIMEOUT;
@@ -532,6 +558,10 @@ esp_err_t measurement_service_init(void)
     }
 
     memset(&s_snapshot, 0, sizeof(s_snapshot));
+    s_start_guard = NULL;
+    s_start_guard_context = NULL;
+    s_storage_refresh_callback = NULL;
+    s_storage_refresh_context = NULL;
     s_snapshot.initialized = true;
     s_snapshot.state = MEASUREMENT_SERVICE_LIVE;
     s_snapshot.last_error = ESP_OK;
@@ -607,9 +637,43 @@ void measurement_service_shutdown(void)
     }
 
     memset(&s_snapshot, 0, sizeof(s_snapshot));
+    s_start_guard = NULL;
+    s_start_guard_context = NULL;
+    s_storage_refresh_callback = NULL;
+    s_storage_refresh_context = NULL;
     s_initialized = false;
 
     ESP_LOGI(TAG, "Shutdown complete");
+}
+
+
+esp_err_t measurement_service_set_start_guard(
+    measurement_service_start_guard_callback_t callback,
+    void *user_context
+)
+{
+    if (!s_initialized || s_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_start_guard = callback;
+    s_start_guard_context = user_context;
+    return ESP_OK;
+}
+
+
+esp_err_t measurement_service_set_storage_refresh_callback(
+    measurement_service_storage_refresh_callback_t callback,
+    void *user_context
+)
+{
+    if (!s_initialized || s_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_storage_refresh_callback = callback;
+    s_storage_refresh_context = user_context;
+    return ESP_OK;
 }
 
 

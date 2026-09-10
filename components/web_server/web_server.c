@@ -17,6 +17,8 @@
 #include "esp_wifi.h"
 
 #include "runtime_observability.h"
+#include "measurement_service.h"
+#include "object_service.h"
 #include "web_server_internal.h"
 #include "web_route_capacity.h"
 
@@ -30,8 +32,15 @@ static const char *TAG = "WEB_SERVER";
 static httpd_handle_t s_http_server = NULL;
 static httpd_handle_t s_https_server = NULL;
 static bool s_event_handlers_registered = false;
+static bool s_measurement_hooks_registered = false;
+static bool s_object_observer_registered = false;
 static unsigned s_https_clients = 0;
 static unsigned s_peer_fatal_alerts = 0;
+
+void web_status_json_objects_object_event(
+    const object_service_event_t *event,
+    void *user_context
+);
 
 #if WEB_SERVER_TLS_CREDENTIALS_EMBEDDED
 extern const unsigned char servercert_pem_start[] asm("_binary_servercert_pem_start");
@@ -71,6 +80,70 @@ static bool web_server_tls_credentials_apply(httpd_ssl_config_t *config)
 
 static esp_err_t web_server_https_stop_internal(void);
 static esp_err_t web_server_http_stop_internal(void);
+
+
+static void web_server_status_cache_start(void)
+{
+    esp_err_t err = web_status_json_objects_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Status object/session cache unavailable: %s", esp_err_to_name(err));
+    }
+    else {
+        err = web_status_json_objects_refresh();
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Initial status object/session cache refresh deferred: %s",
+                esp_err_to_name(err)
+            );
+        }
+    }
+
+    const esp_err_t guard_err = measurement_service_set_start_guard(
+        web_status_json_objects_start_guard,
+        NULL
+    );
+    const esp_err_t refresh_err =
+        measurement_service_set_storage_refresh_callback(
+            web_status_json_objects_storage_changed,
+            NULL
+        );
+    const esp_err_t object_observer_err = object_service_set_event_observer(
+        web_status_json_objects_object_event,
+        NULL
+    );
+    s_measurement_hooks_registered =
+        guard_err == ESP_OK || refresh_err == ESP_OK;
+    s_object_observer_registered = object_observer_err == ESP_OK;
+    if (
+        guard_err != ESP_OK ||
+        refresh_err != ESP_OK ||
+        object_observer_err != ESP_OK
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Status-cache hooks unavailable guard=%s refresh=%s object_observer=%s",
+            esp_err_to_name(guard_err),
+            esp_err_to_name(refresh_err),
+            esp_err_to_name(object_observer_err)
+        );
+    }
+}
+
+
+static void web_server_status_cache_stop(void)
+{
+    if (s_measurement_hooks_registered) {
+        (void)measurement_service_set_start_guard(NULL, NULL);
+        (void)measurement_service_set_storage_refresh_callback(NULL, NULL);
+        s_measurement_hooks_registered = false;
+    }
+    if (s_object_observer_registered) {
+        (void)object_service_set_event_observer(NULL, NULL);
+        s_object_observer_registered = false;
+    }
+    web_status_json_objects_shutdown();
+}
 
 static esp_err_t web_server_https_start_internal(void)
 {
@@ -452,13 +525,19 @@ esp_err_t web_server_start(void)
         return ESP_OK;
     }
 
+    web_server_status_cache_start();
+
     esp_err_t err = web_server_event_handlers_register();
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        web_server_status_cache_stop();
+        return err;
+    }
 
     if (wifi_manager_is_setup_mode()) {
         err = web_server_http_start_internal();
         if (err != ESP_OK) {
             web_server_event_handlers_unregister();
+            web_server_status_cache_stop();
             return err;
         }
         return ESP_OK;
@@ -481,6 +560,7 @@ esp_err_t web_server_start(void)
 esp_err_t web_server_stop(void)
 {
     web_server_event_handlers_unregister();
+    web_server_status_cache_stop();
 
     esp_err_t first_error = ESP_OK;
     esp_err_t err = web_server_https_stop_internal();

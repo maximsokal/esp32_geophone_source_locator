@@ -1,5 +1,11 @@
 #include "ui_internal.h"
 
+#if defined(__has_include)
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
+#endif
+
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -19,6 +25,25 @@
 
 static const char *TAG = "UI_MEASUREMENTS";
 
+#if defined(CONFIG_UI_MEASUREMENTS_GRAPHS_ENABLED)
+#define UI_MEASUREMENTS_GRAPHS_ENABLED CONFIG_UI_MEASUREMENTS_GRAPHS_ENABLED
+#else
+#define UI_MEASUREMENTS_GRAPHS_ENABLED 1
+#endif
+
+#define UI_MEASUREMENT_CHART_PERIOD_US 125000U
+
+
+static bool ui_measurements_transport_fault(
+    const seismic_acquisition_snapshot_t *acquisition
+)
+{
+    return acquisition != NULL &&
+        acquisition->serial_quality != NULL &&
+        strcmp(acquisition->serial_quality, "FAULT") == 0;
+}
+
+#if UI_MEASUREMENTS_GRAPHS_ENABLED
 /*
  * A 512-frame preview is about 12 KiB. Keeping that array in normal .bss
  * permanently removes the same amount from scarce internal DRAM, including
@@ -73,16 +98,7 @@ static uint64_t s_measurement_perf_chart_us = 0U;
 static uint64_t s_measurement_perf_label_us = 0U;
 static uint64_t s_measurement_perf_total_us = 0U;
 static uint64_t s_measurement_perf_max_total_us = 0U;
-
-
-static bool ui_measurements_transport_fault(
-    const seismic_acquisition_snapshot_t *acquisition
-)
-{
-    return acquisition != NULL &&
-        acquisition->serial_quality != NULL &&
-        strcmp(acquisition->serial_quality, "FAULT") == 0;
-}
+static uint64_t s_last_chart_refresh_us = 0U;
 
 
 static void ui_measurements_perf_reset(uint64_t started_us)
@@ -239,6 +255,9 @@ static lv_obj_t *ui_measurements_create_chart_locked(
             label,
             UI_COLOR_TEXT
         );
+    context->measurement_charts[channel] = NULL;
+    context->measurement_min_series[channel] = NULL;
+    context->measurement_max_series[channel] = NULL;
 
     lv_obj_t *chart = lv_chart_create(card);
     if (chart == NULL) {
@@ -316,7 +335,18 @@ static void ui_measurements_refresh_charts_locked(
     size_t frame_count = 0U;
     seismic_buffer_info_t buffer_info;
 
-    const int64_t refresh_started_us = esp_timer_get_time();
+    const uint64_t refresh_now_us = (uint64_t)esp_timer_get_time();
+    if (
+        s_last_chart_refresh_us != 0U &&
+        refresh_now_us - s_last_chart_refresh_us < UI_MEASUREMENT_CHART_PERIOD_US &&
+        ui_measurements_transport_fault(acquisition) == s_last_transport_fault
+    ) {
+        ui_measurements_perf_log_if_due(refresh_now_us);
+        return;
+    }
+    s_last_chart_refresh_us = refresh_now_us;
+
+    const int64_t refresh_started_us = (int64_t)refresh_now_us;
     const int64_t copy_started_us = refresh_started_us;
     esp_err_t err = ESP_ERR_NO_MEM;
     if (ui_measurements_ensure_preview_buffer()) {
@@ -384,8 +414,13 @@ static void ui_measurements_refresh_charts_locked(
                 lv_chart_set_series_color(chart, max_series, series_color);
             }
 
-            lv_chart_refresh(chart);
         }
+    }
+    /* External min/max arrays are updated as one batch; invalidate the
+     * measurement screen once instead of issuing one LVGL refresh per point
+     * (or one invalidation per chart). */
+    if (context->measurement_screen != NULL) {
+        lv_obj_invalidate(context->measurement_screen);
     }
     const uint64_t chart_us =
         (uint64_t)(esp_timer_get_time() - (uint64_t)chart_started_us);
@@ -477,6 +512,66 @@ static void ui_measurements_refresh_charts_locked(
     }
     ui_measurements_perf_log_if_due(now_us);
 }
+#else
+
+
+static bool ui_measurements_label_set_if_changed(lv_obj_t *label, const char *text)
+{
+    if (label == NULL || text == NULL) return false;
+    const char *current = lv_label_get_text(label);
+    if (current != NULL && strcmp(current, text) == 0) return false;
+    lv_label_set_text(label, text);
+    return true;
+}
+
+
+static bool ui_measurements_text_color_set_if_changed(lv_obj_t *object, uint32_t color_hex)
+{
+    if (object == NULL) return false;
+    const lv_color_t color = lv_color_hex(color_hex);
+    if (lv_color_eq(lv_obj_get_style_text_color(object, 0), color)) return false;
+    lv_obj_set_style_text_color(object, color, 0);
+    return true;
+}
+
+
+static lv_obj_t *ui_measurements_create_chart_locked(
+    lv_obj_t *screen,
+    size_t channel,
+    int x,
+    int y
+)
+{
+    ui_context_t *context = ui_context();
+    lv_obj_t *card = ui_create_card_locked(screen, x, y, 148, 55);
+    if (card == NULL) return NULL;
+
+    char label[24];
+    snprintf(label, sizeof(label), "CH%u  --", (unsigned)(channel + 1U));
+    context->measurement_channel_labels[channel] = ui_create_label_locked(
+        card,
+        5,
+        2,
+        138,
+        label,
+        UI_COLOR_TEXT
+    );
+    context->measurement_charts[channel] = NULL;
+    context->measurement_min_series[channel] = NULL;
+    context->measurement_max_series[channel] = NULL;
+    return card;
+}
+
+
+static void ui_measurements_refresh_charts_locked(
+    const seismic_acquisition_snapshot_t *acquisition
+)
+{
+    (void)acquisition;
+}
+
+
+#endif
 
 
 static const char *ui_measurements_state_name(
@@ -507,10 +602,14 @@ void ui_render_measurements_locked(void)
 {
     ui_context_t *context = ui_context();
     context->measurement_exit_after_stop = false;
+    context->measurement_screen = NULL;
+#if UI_MEASUREMENTS_GRAPHS_ENABLED
     s_last_chart_generation = UINT64_MAX;
     s_last_applied_scale_uv = 0;
     s_last_transport_fault = false;
+    s_last_chart_refresh_us = 0U;
     ui_measurements_perf_reset((uint64_t)esp_timer_get_time());
+#endif
 
     lv_obj_t *screen = ui_create_screen_base_locked(
         "MEASUREMENTS",
@@ -520,6 +619,7 @@ void ui_render_measurements_locked(void)
     if (screen == NULL) {
         return;
     }
+    context->measurement_screen = screen;
 
     lv_obj_t *summary_card = ui_create_card_locked(
         screen,
@@ -561,7 +661,11 @@ void ui_render_measurements_locked(void)
         12,
         196,
         296,
+#if UI_MEASUREMENTS_GRAPHS_ENABLED
         "OK START",
+#else
+        "TFT GRAPHS OFF  ADC+SD ON",
+#endif
         UI_COLOR_ACCENT
     );
 
@@ -836,6 +940,12 @@ void ui_measurements_refresh_locked(void)
         );
         action_color = UI_COLOR_ERROR;
     }
+
+#if !UI_MEASUREMENTS_GRAPHS_ENABLED
+    char graph_mode_text[128];
+    snprintf(graph_mode_text, sizeof(graph_mode_text), "TFT GRAPHS OFF  %s", text);
+    snprintf(text, sizeof(text), "%s", graph_mode_text);
+#endif
 
     (void)ui_measurements_label_set_if_changed(context->measurement_health, text);
     (void)ui_measurements_text_color_set_if_changed(
