@@ -137,7 +137,13 @@ static esp_err_t web_server_https_start_internal(void)
         return err;
     }
 
+    web_server_route_tracking_begin(config.httpd.max_uri_handlers);
     err = web_server_routes_register(s_https_server);
+    if (err == ESP_OK) {
+        size_t route_count = 0U;
+        const web_route_identity_t *routes = web_https_route_catalog(&route_count);
+        err = web_server_route_tracking_finish(routes, route_count);
+    }
     if (err != ESP_OK) {
         (void)web_server_https_stop_internal();
         return err;
@@ -189,7 +195,13 @@ static esp_err_t web_server_http_start_internal(void)
         return err;
     }
 
+    web_server_route_tracking_begin(config.max_uri_handlers);
     err = web_server_bootstrap_routes_register(s_http_server);
+    if (err == ESP_OK) {
+        size_t route_count = 0U;
+        const web_route_identity_t *routes = web_http_route_catalog(&route_count);
+        err = web_server_route_tracking_finish(routes, route_count);
+    }
     if (err != ESP_OK) {
         (void)httpd_stop(s_http_server);
         s_http_server = NULL;

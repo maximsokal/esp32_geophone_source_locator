@@ -37,6 +37,15 @@ static bool ui_measurements_label_set_if_changed(lv_obj_t *label, const char *te
     return true;
 }
 
+static bool ui_measurements_text_color_set_if_changed(lv_obj_t *object, uint32_t color_hex)
+{
+    if (object == NULL) return false;
+    const lv_color_t color = lv_color_hex(color_hex);
+    if (lv_color_eq(lv_obj_get_style_text_color(object, 0), color)) return false;
+    lv_obj_set_style_text_color(object, color, 0);
+    return true;
+}
+
 static int32_t s_trace[
     SEISMIC_CHANNEL_COUNT
 ][
@@ -435,10 +444,9 @@ void ui_measurements_refresh_locked(void)
             context->measurement_summary,
             "MEASUREMENT SERVICE UNAVAILABLE"
         );
-        lv_obj_set_style_text_color(
+        (void)ui_measurements_text_color_set_if_changed(
             context->measurement_summary,
-            lv_color_hex(UI_COLOR_ERROR),
-            0
+            UI_COLOR_ERROR
         );
         return;
     }
@@ -536,10 +544,9 @@ void ui_measurements_refresh_locked(void)
         summary_color = UI_COLOR_ERROR;
     }
 
-    lv_obj_set_style_text_color(
+    (void)ui_measurements_text_color_set_if_changed(
         context->measurement_summary,
-        lv_color_hex(summary_color),
-        0
+        summary_color
     );
 
     if (measurement.active_object_present) {
@@ -558,14 +565,11 @@ void ui_measurements_refresh_locked(void)
     }
 
     (void)ui_measurements_label_set_if_changed(context->measurement_transport, text);
-    lv_obj_set_style_text_color(
+    (void)ui_measurements_text_color_set_if_changed(
         context->measurement_transport,
-        lv_color_hex(
-            measurement.active_object_present
-                ? UI_COLOR_MUTED
-                : UI_COLOR_ERROR
-        ),
-        0
+        measurement.active_object_present
+            ? UI_COLOR_MUTED
+            : UI_COLOR_ERROR
     );
 
     uint32_t action_color = UI_COLOR_ACCENT;
@@ -664,10 +668,9 @@ void ui_measurements_refresh_locked(void)
     }
 
     (void)ui_measurements_label_set_if_changed(context->measurement_health, text);
-    lv_obj_set_style_text_color(
+    (void)ui_measurements_text_color_set_if_changed(
         context->measurement_health,
-        lv_color_hex(action_color),
-        0
+        action_color
     );
 }
 

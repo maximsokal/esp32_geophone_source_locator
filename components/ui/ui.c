@@ -5,6 +5,7 @@
 #include "app_event_bus.h"
 #include "object_service.h"
 #include "storage_service.h"
+#include "seismic_acquisition.h"
 #include "ui_frame_scheduler.h"
 #include "ui_internal.h"
 
@@ -38,7 +39,11 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     }
 
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
-    ui_frame_scheduler_submit(&s_frame_scheduler, ++s_refresh_generation);
+    seismic_acquisition_snapshot_t acquisition;
+    const uint64_t generation = seismic_acquisition_get_snapshot(&acquisition) == ESP_OK
+        ? acquisition.samples
+        : ++s_refresh_generation;
+    ui_frame_scheduler_submit(&s_frame_scheduler, generation);
     if (!ui_frame_scheduler_take(&s_frame_scheduler, now_us, NULL)) return;
 
     const int64_t started_us = esp_timer_get_time();

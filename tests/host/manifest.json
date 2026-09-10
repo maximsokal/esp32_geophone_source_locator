@@ -205,6 +205,7 @@
         "components/object_format/object_format.c",
         "components/seismic_recorder/seismic_recorder_waveform.c",
         "components/seismic_recorder/seismic_recorder_reader.c",
+        "tests/host/stubs/seismic_pipeline/web_route_tracking.c",
         "tests/host/seismic_recorder_web_pipeline_contract_test.c"
       ],
       "include_dirs": [
@@ -284,6 +285,7 @@
     {
       "name": "web_webui_flash",
       "sources": [
+        "tests/host/stubs/seismic_pipeline/web_route_tracking.c",
         "components/web_server/tests/web_webui_flash_host_test.c"
       ],
       "include_dirs": [

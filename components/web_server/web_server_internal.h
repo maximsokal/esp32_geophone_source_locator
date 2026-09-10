@@ -8,6 +8,11 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "web_route_capacity.h"
+
+void web_server_route_tracking_begin(size_t capacity);
+esp_err_t web_server_route_tracking_finish(const web_route_identity_t *catalog, size_t count);
+esp_err_t web_server_route_tracking_register(const char *uri, int method);
 
 static inline esp_err_t web_server_register_uri_handler(
     httpd_handle_t server,
@@ -21,8 +26,15 @@ static inline esp_err_t web_server_register_uri_handler(
                  route != NULL && route->uri != NULL ? route->uri : "(null)",
                  esp_err_to_name(err));
     }
-    return err;
+    if (err != ESP_OK) return err;
+    return web_server_route_tracking_register(route->uri, (int)route->method);
 }
+
+esp_err_t web_server_unregister_uri_handler(
+    httpd_handle_t server,
+    const char *uri,
+    int method
+);
 
 #define WEB_JSON_WRITER_BUFFER_SIZE  768
 
