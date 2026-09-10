@@ -21,6 +21,8 @@ typedef struct
     ad7606_serial_pattern_t serial_pattern;
     ad7606_serial_quality_t serial_quality;
     ad7606_signal_quality_t signal_quality;
+    ad7606_serial_stream_state_t stream_state;
+    bool stream_stuck;
     uint32_t suspicious_streak;
     uint32_t repeated_frame_streak;
     uint32_t all_zero_frames;

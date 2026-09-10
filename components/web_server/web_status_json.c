@@ -5,6 +5,7 @@
 #include "esp_timer.h"
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
+#include "seismic_buffer.h"
 #include "web_status_policy.h"
 
 static size_t web_status_ready_pods(
@@ -183,6 +184,10 @@ static bool web_status_json_add_acquisition(
         source_snapshot_available && source_snapshot->serial_quality != NULL
             ? source_snapshot->serial_quality
             : "UNKNOWN";
+    const char *stream_state =
+        source_snapshot_available && source_snapshot->serial_stream_state != NULL
+            ? source_snapshot->serial_stream_state
+            : "UNKNOWN";
     const char *signal_quality =
         source_snapshot_available && source_snapshot->signal_quality != NULL
             ? source_snapshot->signal_quality
@@ -222,6 +227,12 @@ static bool web_status_json_add_acquisition(
             source_snapshot_available && source_snapshot->serial_suspicious
         ) != NULL &&
         cJSON_AddStringToObject(serial, "quality", quality) != NULL &&
+        cJSON_AddStringToObject(serial, "stream_state", stream_state) != NULL &&
+        cJSON_AddBoolToObject(
+            serial,
+            "stream_stuck",
+            source_snapshot_available && source_snapshot->serial_stream_stuck
+        ) != NULL &&
         cJSON_AddStringToObject(serial, "pattern", pattern) != NULL &&
         cJSON_AddNumberToObject(
             serial,
@@ -298,6 +309,7 @@ static bool web_status_json_add_acquisition(
 
     return
         cJSON_AddStringToObject(signal, "quality", signal_quality) != NULL &&
+        cJSON_AddNumberToObject(signal, "channel_count", SEISMIC_CHANNEL_COUNT) != NULL &&
         cJSON_AddNumberToObject(
             signal,
             "rail_hit_frames",

@@ -63,6 +63,9 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_suspicious = status.serial_suspicious;
     snapshot->serial_pattern = ad7606_serial_pattern_name(status.serial_pattern);
     snapshot->serial_quality = ad7606_serial_quality_name(status.serial_quality);
+    snapshot->serial_stream_state =
+        ad7606_serial_stream_state_name(status.stream_state);
+    snapshot->serial_stream_stuck = status.stream_stuck;
     snapshot->signal_quality = ad7606_signal_quality_name(status.signal_quality);
     snapshot->serial_suspicious_streak = status.suspicious_streak;
     snapshot->serial_repeated_frame_streak = status.repeated_frame_streak;

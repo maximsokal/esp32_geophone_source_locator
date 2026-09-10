@@ -13,6 +13,16 @@ function measured(valid: boolean, text: string): string {
 export default function SensorsFeature({ status, object, error }: Props) {
   const pods = status?.pods ?? [];
   const acquisition = status?.acquisition;
+  const serial = acquisition?.serial;
+  const streamStuck = serial?.stream_stuck === true || serial?.stream_state === 'STUCK';
+  const serialInterference = serial?.suspicious === true || serial?.stream_state === 'SUSPICIOUS';
+  const serialStream = serial === undefined
+    ? 'not observed'
+    : streamStuck
+      ? `ADC DATA STUCK (${serial.pattern})`
+      : serialInterference
+        ? `SERIAL INTERFERENCE (${serial.pattern})`
+        : serial.pattern;
 
   return (
     <section className="console-page">
@@ -35,10 +45,11 @@ export default function SensorsFeature({ status, object, error }: Props) {
           <div><dt>Acquisition</dt><dd>{acquisition?.running ? 'running' : acquisition?.requested_running ? 'requested but unhealthy' : 'stopped'}</dd></div>
           <div><dt>Last error</dt><dd>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? acquisition.last_error_name : 'none'}</dd></div>
           <div><dt>Sample rate</dt><dd>{acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz` : '—'}</dd></div>
-          <div><dt>Serial stream</dt><dd>{acquisition?.serial?.suspicious ? `ADC DATA STUCK (${acquisition.serial.pattern})` : acquisition?.serial?.pattern ?? 'not observed'}</dd></div>
-          <div><dt>Serial quality</dt><dd>{acquisition?.serial?.quality ?? 'not observed'}</dd></div>
+          <div><dt>Serial stream</dt><dd>{serialStream}</dd></div>
+          <div><dt>Stream state</dt><dd>{serial?.stream_state ?? 'not observed'}</dd></div>
+          <div><dt>Serial quality</dt><dd>{serial?.quality ?? 'not observed'}</dd></div>
           <div><dt>Signal quality</dt><dd>{acquisition?.signal?.quality ?? 'not observed'}</dd></div>
-          <div><dt>Serial streak</dt><dd>{acquisition?.serial ? `${acquisition.serial.suspicious_streak} abnormal · ${acquisition.serial.busy_level} BUSY` : 'not observed'}</dd></div>
+          <div><dt>Serial streak</dt><dd>{serial ? `${serial.suspicious_streak} abnormal · ${serial.busy_level} BUSY` : 'not observed'}</dd></div>
         </dl>
       </article>
 

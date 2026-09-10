@@ -146,6 +146,8 @@ export interface DeviceAcquisitionStatus {
     suspicious: boolean;
     pattern: string;
     quality?: string;
+    stream_state?: string;
+    stream_stuck?: boolean;
     suspicious_streak: number;
     repeated_frame_streak: number;
     all_zero_frames: number;
@@ -160,6 +162,7 @@ export interface DeviceAcquisitionStatus {
   };
   signal?: {
     quality: string;
+    channel_count?: number;
     rail_hit_frames: number;
     clip_frames: number;
     quality_window_frames: number;

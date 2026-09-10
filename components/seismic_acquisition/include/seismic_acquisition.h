@@ -39,6 +39,8 @@ typedef struct
     bool serial_suspicious;
     const char *serial_pattern;
     const char *serial_quality;
+    const char *serial_stream_state;
+    bool serial_stream_stuck;
     const char *signal_quality;
     uint32_t serial_suspicious_streak;
     uint32_t serial_repeated_frame_streak;
