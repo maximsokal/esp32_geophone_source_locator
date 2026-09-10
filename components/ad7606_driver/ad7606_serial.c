@@ -28,13 +28,22 @@ static uint8_t ad7606_serial_frame_metrics(
     const int16_t words[AD7606_SERIAL_WORD_COUNT]
 )
 {
-    unsigned clock_like_bytes = 0U;
+    unsigned clock_like_run = 0U;
+    unsigned longest_clock_like_run = 0U;
     unsigned positive_rail_words = 0U;
     unsigned negative_rail_words = 0U;
     for (size_t i = 0U; i < AD7606_SERIAL_RX_BYTES; ++i) {
         const uint8_t byte = rx[i];
-        if (byte == 0xAAU || byte == 0x55U || byte == 0x2AU) {
-            ++clock_like_bytes;
+        const bool byte_is_clock_like =
+            byte == 0xAAU || byte == 0x55U || byte == 0x2AU;
+        if (byte_is_clock_like) {
+            ++clock_like_run;
+            if (clock_like_run > longest_clock_like_run) {
+                longest_clock_like_run = clock_like_run;
+            }
+        }
+        else {
+            clock_like_run = 0U;
         }
     }
     /* Signal quality is scoped to application channels CH1-CH4. */
@@ -51,8 +60,14 @@ static uint8_t ad7606_serial_frame_metrics(
             break;
         }
     }
-    /* Three or more clock-like bytes are transport evidence on their own. */
-    const bool clock_like = clock_like_bytes >= 3U;
+    /*
+     * Payload bytes can coincidentally equal AA/55/2A. Treating three
+     * scattered values as a transport fault was the cause of false FAULT
+     * windows on otherwise successful SPI transactions. Keep the broad
+     * classifier below for diagnostics; transport quality requires a
+     * contiguous clock-like run.
+    */
+    const bool clock_like = longest_clock_like_run >= 3U;
 
     return (uint8_t)(
         (clock_like ? AD7606_SERIAL_FRAME_CLOCK_LIKE : 0U) |

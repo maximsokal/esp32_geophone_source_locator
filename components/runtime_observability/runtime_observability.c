@@ -181,6 +181,9 @@ static bool runtime_task_is_interesting(const char *name)
     static const char *const needles[] = {
         "ad7606",
         "lvgl",
+        /* esp_lvgl_port names its task taskLVGL, so the lowercase needle
+         * above does not match the actual runtime task name. */
+        "taskLVGL",
         "ui_event",
         "keypad",
         "storage_service",
@@ -191,6 +194,7 @@ static bool runtime_task_is_interesting(const char *name)
         "http",
         "wifi",
         "tcpip",
+        "esp_timer",
         "IDLE0",
         "IDLE1",
         "runtime_observability",

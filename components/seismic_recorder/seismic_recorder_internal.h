@@ -20,9 +20,11 @@
  * seismic_recorder_init), so the larger backlog batch does not consume scarce
  * internal/DMA RAM.  The filesystem writer copies bounded chunks through an
  * internal DMA_ATTR staging buffer before fwrite; this keeps SDSPI on its
- * multi-block path instead of its PSRAM bounce-buffer path. STOP still
- * bypasses this threshold to drain its exact target without adding
- * user-visible latency.
+ * multi-block path instead of its PSRAM bounce-buffer path. Each bounded
+ * fwrite chunk opens its own storage arbitration window so a slow SD write
+ * cannot block the TFT for the entire recorder batch. STOP still bypasses
+ * this threshold to drain its exact target without adding user-visible
+ * latency.
  */
 #define SEISMIC_RECORDER_FLUSH_INTERVAL_US    30000000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10

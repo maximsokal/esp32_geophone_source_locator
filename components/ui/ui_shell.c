@@ -6,6 +6,38 @@
 #include "wifi_manager.h"
 
 
+static void ui_set_label_text_if_changed(
+    lv_obj_t *label,
+    const char *text
+)
+{
+    if (label == NULL || text == NULL) {
+        return;
+    }
+
+    const char *current = lv_label_get_text(label);
+    if (current == NULL || strcmp(current, text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
+
+
+static void ui_set_label_color_if_changed(
+    lv_obj_t *label,
+    uint32_t color_hex
+)
+{
+    if (label == NULL) {
+        return;
+    }
+
+    const lv_color_t color = lv_color_hex(color_hex);
+    if (!lv_color_eq(lv_obj_get_style_text_color(label, 0), color)) {
+        lv_obj_set_style_text_color(label, color, 0);
+    }
+}
+
+
 static void ui_style_screen(lv_obj_t *screen)
 {
     lv_obj_set_style_bg_color(screen, lv_color_hex(UI_COLOR_BACKGROUND), 0);
@@ -69,9 +101,14 @@ lv_obj_t *ui_create_screen_base_locked(
         sizeof(context->measurement_charts)
     );
     memset(
-        context->measurement_series,
+        context->measurement_min_series,
         0,
-        sizeof(context->measurement_series)
+        sizeof(context->measurement_min_series)
+    );
+    memset(
+        context->measurement_max_series,
+        0,
+        sizeof(context->measurement_max_series)
     );
     context->measurement_summary = NULL;
     context->measurement_transport = NULL;
@@ -287,50 +324,41 @@ void ui_refresh_header_locked(void)
             acquisition.running ? "RUN" : "OFF"
         );
 
-        lv_label_set_text(context->header_source, text);
-        lv_obj_set_style_text_color(
+        ui_set_label_text_if_changed(context->header_source, text);
+        ui_set_label_color_if_changed(
             context->header_source,
-            lv_color_hex(
-                acquisition.running
-                    ? UI_COLOR_GOOD
-                    : UI_COLOR_WARNING
-            ),
-            0
+            acquisition.running ? UI_COLOR_GOOD : UI_COLOR_WARNING
         );
     } else {
-        lv_label_set_text(context->header_source, "ADC --");
-        lv_obj_set_style_text_color(
+        ui_set_label_text_if_changed(context->header_source, "ADC --");
+        ui_set_label_color_if_changed(
             context->header_source,
-            lv_color_hex(UI_COLOR_MUTED),
-            0
+            UI_COLOR_MUTED
         );
     }
 
     char ip[24] = {0};
 
     if (wifi_manager_is_setup_mode()) {
-        lv_label_set_text(context->header_wifi, "SETUP");
-        lv_obj_set_style_text_color(
+        ui_set_label_text_if_changed(context->header_wifi, "SETUP");
+        ui_set_label_color_if_changed(
             context->header_wifi,
-            lv_color_hex(UI_COLOR_WARNING),
-            0
+            UI_COLOR_WARNING
         );
     } else if (
         wifi_manager_sta_ip_string(ip, sizeof(ip)) == ESP_OK &&
         ip[0] != '\0'
     ) {
-        lv_label_set_text(context->header_wifi, "NET OK");
-        lv_obj_set_style_text_color(
+        ui_set_label_text_if_changed(context->header_wifi, "NET OK");
+        ui_set_label_color_if_changed(
             context->header_wifi,
-            lv_color_hex(UI_COLOR_GOOD),
-            0
+            UI_COLOR_GOOD
         );
     } else {
-        lv_label_set_text(context->header_wifi, "NET --");
-        lv_obj_set_style_text_color(
+        ui_set_label_text_if_changed(context->header_wifi, "NET --");
+        ui_set_label_color_if_changed(
             context->header_wifi,
-            lv_color_hex(UI_COLOR_MUTED),
-            0
+            UI_COLOR_MUTED
         );
     }
 }

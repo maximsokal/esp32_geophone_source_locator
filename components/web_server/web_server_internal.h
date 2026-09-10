@@ -87,6 +87,8 @@ esp_err_t web_webui_register(httpd_handle_t server);
  */
 esp_err_t web_webui_flash_send_index(httpd_req_t *request);
 esp_err_t web_webui_flash_register(httpd_handle_t server);
+/* Optional immutable copy of the embedded gzip bundle in PSRAM. */
+esp_err_t web_webui_flash_prepare_cache(void);
 
 esp_err_t web_seismic_register(httpd_handle_t server);
 esp_err_t web_seismic_api_register(httpd_handle_t server);

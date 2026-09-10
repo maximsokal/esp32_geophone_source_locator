@@ -388,6 +388,39 @@ static void test_quality_window_degraded_band(void)
 }
 
 
+static void test_scattered_clock_like_payload_stays_diagnostic_only(void)
+{
+    uint8_t varied[AD7606_SERIAL_RX_BYTES] = {0};
+    for (size_t index = 0U; index < AD7606_SERIAL_WORD_COUNT; ++index) {
+        put_word(varied, index, (uint16_t)(0x5000U + index));
+    }
+
+    /* This is the supplied real-log shape: clock-like bytes are scattered,
+     * not a contiguous wire-clock signature. */
+    const uint8_t scattered[AD7606_SERIAL_RX_BYTES] = {
+        0xFFU, 0x80U, 0xABU, 0xFCU, 0x51U, 0xD5U, 0x55U, 0xF8U,
+        0xAAU, 0xA8U, 0x05U, 0x55U, 0x02U, 0xEAU, 0xAAU, 0xB4U,
+    };
+
+    ad7606_serial_diag_state_t state;
+    ad7606_serial_diag_reset(&state);
+    for (uint32_t frame = 0U;
+         frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES;
+         ++frame) {
+        put_word(varied, 7U, (uint16_t)(0x5000U + frame));
+        assert(ad7606_serial_diag_observe(&state, varied, NULL));
+    }
+
+    assert(ad7606_serial_diag_observe(&state, scattered, NULL));
+    assert(state.pattern == AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE);
+    assert(state.digital_interference_frames == 1U);
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.quality_window_digital_interference_frames == 0U);
+    assert(state.quality_window_bad_frames == 0U);
+}
+
+
 int main(void)
 {
     test_big_endian_signed_decode();
@@ -398,6 +431,7 @@ int main(void)
     test_persistent_identical_stream_is_stuck();
     test_signal_quality_is_separate_from_transport();
     test_quality_window_degraded_band();
+    test_scattered_clock_like_payload_stays_diagnostic_only();
     puts("AD7606 serial diagnostics tests passed");
     return 0;
 }
