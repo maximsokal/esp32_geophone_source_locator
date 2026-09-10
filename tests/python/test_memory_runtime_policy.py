@@ -124,6 +124,40 @@ def test_https_and_tft_policies_preserve_payload_and_dma_safety():
     assert '"Connection: close"' not in web_asset
     assert "#define WEB_FLASH_SEND_CHUNK_BYTES  2048U" in read("components/web_server/web_webui_flash.c")
     assert "DMA_RUNTIME owner=tft location=internal" in tft
+    assert "#define UI_LVGL_BUFFER_ROWS  8" in tft
+    assert "single and internal" in tft
+
+
+def test_runtime_census_includes_lvgl_and_timer_workers():
+    runtime = read("components/runtime_observability/runtime_observability.c")
+
+    # esp_lvgl_port uses the mixed-case task name taskLVGL. Without this
+    # explicit needle the CPU census hides the task that owns TFT rendering.
+    assert '"taskLVGL"' in runtime
+    assert '"esp_timer"' in runtime
+
+
+def test_ui_header_does_not_reinvalidate_unchanged_labels():
+    shell = read("components/ui/ui_shell.c")
+    system = read("components/ui/ui_system.c")
+
+    assert "ui_set_label_text_if_changed" in shell
+    assert "ui_set_label_color_if_changed" in shell
+    assert "lv_label_set_text(context->header_source" not in shell
+    assert "lv_label_set_text(context->header_wifi" not in shell
+    assert "ui_system_label_set_if_changed" in system
+
+
+def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
+    measurements = read("components/ui/ui_measurements.c")
+    reducer = read("components/ui/ui_measurement_trace.c")
+
+    assert "lv_chart_set_series_ext_y_array" in measurements
+    assert "lv_chart_set_series_value_by_id" not in measurements
+    assert "LV_PART_INDICATOR" in measurements
+    assert "channel_mean" in reducer
+    assert "trace_min" in reducer
+    assert "trace_max" in reducer
 
 
 def test_non_realtime_storage_census_and_session_paths_are_heap_owned():

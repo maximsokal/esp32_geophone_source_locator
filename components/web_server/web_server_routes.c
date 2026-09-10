@@ -1,6 +1,7 @@
 #include "web_server_internal.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <stddef.h>
 
@@ -72,6 +73,12 @@ static esp_err_t web_server_bootstrap_index_handler(httpd_req_t *request)
 static esp_err_t web_server_secure_index_handler(httpd_req_t *request)
 {
     ESP_LOGI(TAG, "HTTPS GET / entered");
+    ESP_LOGI(
+        TAG,
+        "WEB_TIMING stage=get_root uri=%s ts_us=%lld",
+        request != NULL && request->uri != NULL ? request->uri : "/",
+        (long long)esp_timer_get_time()
+    );
     const esp_err_t webui_err = web_webui_flash_send_index(request);
     if (webui_err == ESP_OK) return ESP_OK;
     if (webui_err != ESP_ERR_NOT_FOUND) {

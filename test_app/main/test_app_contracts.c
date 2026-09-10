@@ -39,7 +39,7 @@ TEST_CASE(
 
 
 TEST_CASE(
-    "trace reduction keeps a signed impulse in its display bucket",
+    "trace reduction keeps a DC-removed min max envelope",
     "[ui]"
 )
 {
@@ -47,17 +47,21 @@ TEST_CASE(
         {.timestamp_us = 1, .channel_uv = {1.0f, -2.0f, 3.0f, 4.0f}},
         {.timestamp_us = 2, .channel_uv = {2.0f, -9.0f, 1.0f, 5.0f}},
     };
-    int32_t trace[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t trace_min[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t trace_max[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
 
     const float maximum = ui_measurement_trace_reduce(
         frames,
         sizeof(frames) / sizeof(frames[0]),
-        trace
+        trace_min,
+        trace_max
     );
 
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.0f, maximum);
-    TEST_ASSERT_EQUAL_INT(-9, trace[1][UI_MEASUREMENT_TRACE_POINTS - 1U]);
-    TEST_ASSERT_EQUAL_INT(0, trace[1][UI_MEASUREMENT_TRACE_POINTS - 2U]);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.5f, maximum);
+    TEST_ASSERT_EQUAL_INT(4, trace_min[1][UI_MEASUREMENT_TRACE_POINTS - 2U]);
+    TEST_ASSERT_EQUAL_INT(4, trace_max[1][UI_MEASUREMENT_TRACE_POINTS - 2U]);
+    TEST_ASSERT_EQUAL_INT(-4, trace_min[1][UI_MEASUREMENT_TRACE_POINTS - 1U]);
+    TEST_ASSERT_EQUAL_INT(-4, trace_max[1][UI_MEASUREMENT_TRACE_POINTS - 1U]);
 }
 
 

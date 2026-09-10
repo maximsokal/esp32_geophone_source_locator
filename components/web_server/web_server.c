@@ -13,6 +13,7 @@
 #include "esp_https_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 
 #include "runtime_observability.h"
@@ -135,6 +136,19 @@ static esp_err_t web_server_https_start_internal(void)
         s_https_server = NULL;
         ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(err));
         return err;
+    }
+
+    const esp_err_t webui_cache_err = web_webui_flash_prepare_cache();
+    if (
+        webui_cache_err != ESP_OK &&
+        webui_cache_err != ESP_ERR_NOT_SUPPORTED &&
+        webui_cache_err != ESP_ERR_NO_MEM
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Optional WebUI PSRAM cache unavailable: %s",
+            esp_err_to_name(webui_cache_err)
+        );
     }
 
     web_server_route_tracking_begin(config.httpd.max_uri_handlers);
@@ -297,6 +311,12 @@ static void web_server_https_event_handler(
 
     if (event_id == HTTPS_SERVER_EVENT_ON_CONNECTED) {
         ++s_https_clients;
+        ESP_LOGI(
+            TAG,
+            "WEB_TIMING stage=tls_connected ts_us=%lld clients=%u",
+            (long long)esp_timer_get_time(),
+            s_https_clients
+        );
         web_server_log_tls_heap("client_connected");
         runtime_observability_request_snapshot("tls-connected");
         return;

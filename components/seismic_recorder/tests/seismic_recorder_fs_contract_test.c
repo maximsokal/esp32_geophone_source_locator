@@ -301,9 +301,9 @@ static void test_large_frame_write_is_chunked_through_staging(void)
     size_t frames_written = 0U;
     assert(seismic_recorder_fs_write_frames(file, frames, frame_count, &frames_written) == ESP_OK);
     assert(frames_written == frame_count);
-    /* One storage operation covers both bounded fwrite chunks. */
-    assert(storage_begin_calls == 2U);
-    assert(storage_end_calls == 2U);
+    /* Each bounded fwrite chunk releases the TFT/SD arbitration window. */
+    assert(storage_begin_calls == 3U);
+    assert(storage_end_calls == 3U);
     assert(seismic_recorder_fs_close(file) == ESP_OK);
 
     file = fopen(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/samples.bin", "rb");

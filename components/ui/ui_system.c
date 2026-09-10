@@ -1,11 +1,28 @@
 #include "ui_internal.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+
+
+static void ui_system_label_set_if_changed(
+    lv_obj_t *label,
+    const char *text
+)
+{
+    if (label == NULL || text == NULL) {
+        return;
+    }
+
+    const char *current = lv_label_get_text(label);
+    if (current == NULL || strcmp(current, text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
 
 
 void ui_render_system_locked(void)
@@ -124,7 +141,7 @@ void ui_system_refresh_locked(void)
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U
         )
     );
-    lv_label_set_text(
+    ui_system_label_set_if_changed(
         context->system_heap,
         text
     );
@@ -137,7 +154,7 @@ void ui_system_refresh_locked(void)
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U
         )
     );
-    lv_label_set_text(
+    ui_system_label_set_if_changed(
         context->system_psram,
         text
     );
@@ -148,7 +165,7 @@ void ui_system_refresh_locked(void)
         "UPTIME   %lld s",
         (long long)(esp_timer_get_time() / 1000000LL)
     );
-    lv_label_set_text(
+    ui_system_label_set_if_changed(
         context->system_uptime,
         text
     );

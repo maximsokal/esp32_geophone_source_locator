@@ -8,6 +8,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "ui_measurement_trace.h"
 
@@ -46,7 +47,13 @@ static bool ui_measurements_text_color_set_if_changed(lv_obj_t *object, uint32_t
     return true;
 }
 
-static int32_t s_trace[
+static int32_t s_trace_min[
+    SEISMIC_CHANNEL_COUNT
+][
+    UI_MEASUREMENT_TRACE_POINTS
+];
+
+static int32_t s_trace_max[
     SEISMIC_CHANNEL_COUNT
 ][
     UI_MEASUREMENT_TRACE_POINTS
@@ -54,6 +61,69 @@ static int32_t s_trace[
 
 static float s_scale_uv =
     UI_MEASUREMENT_MIN_SCALE_UV;
+
+static int32_t s_last_applied_scale_uv = 0;
+static bool s_last_transport_fault = false;
+
+static uint64_t s_measurement_perf_started_us = 0U;
+static uint64_t s_measurement_perf_refreshes = 0U;
+static uint64_t s_measurement_perf_copy_us = 0U;
+static uint64_t s_measurement_perf_reduce_us = 0U;
+static uint64_t s_measurement_perf_chart_us = 0U;
+static uint64_t s_measurement_perf_label_us = 0U;
+static uint64_t s_measurement_perf_total_us = 0U;
+static uint64_t s_measurement_perf_max_total_us = 0U;
+
+
+static bool ui_measurements_transport_fault(
+    const seismic_acquisition_snapshot_t *acquisition
+)
+{
+    return acquisition != NULL &&
+        acquisition->serial_quality != NULL &&
+        strcmp(acquisition->serial_quality, "FAULT") == 0;
+}
+
+
+static void ui_measurements_perf_reset(uint64_t started_us)
+{
+    s_measurement_perf_started_us = started_us;
+    s_measurement_perf_refreshes = 0U;
+    s_measurement_perf_copy_us = 0U;
+    s_measurement_perf_reduce_us = 0U;
+    s_measurement_perf_chart_us = 0U;
+    s_measurement_perf_label_us = 0U;
+    s_measurement_perf_total_us = 0U;
+    s_measurement_perf_max_total_us = 0U;
+}
+
+
+static void ui_measurements_perf_log_if_due(uint64_t now_us)
+{
+    if (s_measurement_perf_started_us == 0U) {
+        ui_measurements_perf_reset(now_us);
+        return;
+    }
+
+    if (now_us - s_measurement_perf_started_us < 10000000U) {
+        return;
+    }
+
+    const uint64_t refreshes = s_measurement_perf_refreshes;
+    ESP_LOGI(
+        TAG,
+        "UI_MEASURE_TIMING window_ms=%u refreshes=%llu avg_total_us=%llu max_total_us=%llu avg_copy_us=%llu avg_reduce_us=%llu avg_chart_us=%llu avg_label_us=%llu",
+        (unsigned)((now_us - s_measurement_perf_started_us) / 1000U),
+        (unsigned long long)refreshes,
+        (unsigned long long)(refreshes > 0U ? s_measurement_perf_total_us / refreshes : 0U),
+        (unsigned long long)s_measurement_perf_max_total_us,
+        (unsigned long long)(refreshes > 0U ? s_measurement_perf_copy_us / refreshes : 0U),
+        (unsigned long long)(refreshes > 0U ? s_measurement_perf_reduce_us / refreshes : 0U),
+        (unsigned long long)(refreshes > 0U ? s_measurement_perf_chart_us / refreshes : 0U),
+        (unsigned long long)(refreshes > 0U ? s_measurement_perf_label_us / refreshes : 0U)
+    );
+    ui_measurements_perf_reset(now_us);
+}
 
 
 static bool ui_measurements_ensure_preview_buffer(void)
@@ -180,6 +250,9 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(chart, 0, 0);
     lv_obj_set_style_pad_all(chart, 0, 0);
+    /* LVGL's default line-chart indicator is a filled bullet per point. */
+    lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
     lv_obj_remove_flag(chart, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
@@ -193,11 +266,31 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     );
 
     context->measurement_charts[channel] = chart;
-    context->measurement_series[channel] = lv_chart_add_series(
+    context->measurement_min_series[channel] = lv_chart_add_series(
         chart,
         lv_color_hex(UI_COLOR_ACCENT),
         LV_CHART_AXIS_PRIMARY_Y
     );
+    context->measurement_max_series[channel] = lv_chart_add_series(
+        chart,
+        lv_color_hex(UI_COLOR_ACCENT),
+        LV_CHART_AXIS_PRIMARY_Y
+    );
+
+    if (context->measurement_min_series[channel] != NULL) {
+        lv_chart_set_series_ext_y_array(
+            chart,
+            context->measurement_min_series[channel],
+            s_trace_min[channel]
+        );
+    }
+    if (context->measurement_max_series[channel] != NULL) {
+        lv_chart_set_series_ext_y_array(
+            chart,
+            context->measurement_max_series[channel],
+            s_trace_max[channel]
+        );
+    }
 
     return card;
 }
@@ -212,6 +305,8 @@ static void ui_measurements_refresh_charts_locked(
     const bool serial_suspicious =
         acquisition != NULL &&
         acquisition->serial_suspicious;
+    const bool transport_fault =
+        ui_measurements_transport_fault(acquisition);
     const char *serial_pattern =
         acquisition != NULL &&
         acquisition->serial_pattern != NULL
@@ -221,6 +316,8 @@ static void ui_measurements_refresh_charts_locked(
     size_t frame_count = 0U;
     seismic_buffer_info_t buffer_info;
 
+    const int64_t refresh_started_us = esp_timer_get_time();
+    const int64_t copy_started_us = refresh_started_us;
     esp_err_t err = ESP_ERR_NO_MEM;
     if (ui_measurements_ensure_preview_buffer()) {
         err = seismic_buffer_copy_latest(
@@ -231,50 +328,87 @@ static void ui_measurements_refresh_charts_locked(
         );
     }
 
-    if (err == ESP_OK && buffer_info.total_frames == s_last_chart_generation) return;
+    const uint64_t copy_us =
+        (uint64_t)(esp_timer_get_time() - copy_started_us);
+
+    if (
+        err == ESP_OK &&
+        buffer_info.total_frames == s_last_chart_generation &&
+        transport_fault == s_last_transport_fault
+    ) {
+        ui_measurements_perf_log_if_due((uint64_t)esp_timer_get_time());
+        return;
+    }
     if (err == ESP_OK) s_last_chart_generation = buffer_info.total_frames;
 
+    const int64_t reduce_started_us = esp_timer_get_time();
     const float max_abs_uv = ui_measurement_trace_reduce(
         err == ESP_OK ? s_preview_frames : NULL,
         err == ESP_OK ? frame_count : 0U,
-        s_trace
+        s_trace_min,
+        s_trace_max
     );
+    const uint64_t reduce_us =
+        (uint64_t)(esp_timer_get_time() - reduce_started_us);
 
     const int32_t scale_uv =
         ui_measurements_update_scale(max_abs_uv);
 
+    const bool scale_changed = s_last_applied_scale_uv != scale_uv;
+    const bool transport_state_changed =
+        s_last_transport_fault != transport_fault;
+
+    const int64_t chart_started_us = esp_timer_get_time();
     for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
         lv_obj_t *chart = context->measurement_charts[channel];
-        lv_chart_series_t *series = context->measurement_series[channel];
-        lv_obj_t *label = context->measurement_channel_labels[channel];
+        lv_chart_series_t *min_series =
+            context->measurement_min_series[channel];
+        lv_chart_series_t *max_series =
+            context->measurement_max_series[channel];
 
-        if (chart != NULL && series != NULL) {
-            lv_chart_set_axis_range(
-                chart,
-                LV_CHART_AXIS_PRIMARY_Y,
-                -scale_uv,
-                scale_uv
-            );
-
-            for (size_t point = 0; point < UI_MEASUREMENT_TRACE_POINTS; ++point) {
-                lv_chart_set_series_value_by_id(
+        if (chart != NULL && min_series != NULL && max_series != NULL) {
+            if (scale_changed) {
+                lv_chart_set_axis_range(
                     chart,
-                    series,
-                    (uint32_t)point,
-                    s_trace[channel][point]
+                    LV_CHART_AXIS_PRIMARY_Y,
+                    -scale_uv,
+                    scale_uv
                 );
+            }
+
+            if (transport_state_changed) {
+                const lv_color_t series_color = lv_color_hex(
+                    transport_fault ? UI_COLOR_ERROR : UI_COLOR_ACCENT
+                );
+                lv_chart_set_series_color(chart, min_series, series_color);
+                lv_chart_set_series_color(chart, max_series, series_color);
             }
 
             lv_chart_refresh(chart);
         }
+    }
+    const uint64_t chart_us =
+        (uint64_t)(esp_timer_get_time() - (uint64_t)chart_started_us);
 
+    const int64_t label_started_us = esp_timer_get_time();
+    for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        lv_obj_t *label = context->measurement_channel_labels[channel];
         if (label == NULL) {
             continue;
         }
 
         char text[32];
 
-        if (serial_suspicious) {
+        if (transport_fault) {
+            snprintf(
+                text,
+                sizeof(text),
+                "CH%u INVALID %s",
+                (unsigned)(channel + 1U),
+                serial_pattern
+            );
+        }
+        else if (serial_suspicious) {
             snprintf(
                 text,
                 sizeof(text),
@@ -323,6 +457,25 @@ static void ui_measurements_refresh_charts_locked(
 
         (void)ui_measurements_label_set_if_changed(label, text);
     }
+    const uint64_t label_us =
+        (uint64_t)(esp_timer_get_time() - (uint64_t)label_started_us);
+
+    s_last_applied_scale_uv = scale_uv;
+    s_last_transport_fault = transport_fault;
+
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    const uint64_t total_us =
+        (uint64_t)(now_us - (uint64_t)refresh_started_us);
+    ++s_measurement_perf_refreshes;
+    s_measurement_perf_copy_us += copy_us;
+    s_measurement_perf_reduce_us += reduce_us;
+    s_measurement_perf_chart_us += chart_us;
+    s_measurement_perf_label_us += label_us;
+    s_measurement_perf_total_us += total_us;
+    if (total_us > s_measurement_perf_max_total_us) {
+        s_measurement_perf_max_total_us = total_us;
+    }
+    ui_measurements_perf_log_if_due(now_us);
 }
 
 
@@ -355,6 +508,9 @@ void ui_render_measurements_locked(void)
     ui_context_t *context = ui_context();
     context->measurement_exit_after_stop = false;
     s_last_chart_generation = UINT64_MAX;
+    s_last_applied_scale_uv = 0;
+    s_last_transport_fault = false;
+    ui_measurements_perf_reset((uint64_t)esp_timer_get_time());
 
     lv_obj_t *screen = ui_create_screen_base_locked(
         "MEASUREMENTS",
@@ -654,12 +810,26 @@ void ui_measurements_refresh_locked(void)
 
     if (
         acquisition_err == ESP_OK &&
+        ui_measurements_transport_fault(&acquisition)
+    ) {
+        snprintf(
+            text,
+            sizeof(text),
+            "ADC INVALID TRANSPORT  %s",
+            acquisition.serial_pattern != NULL
+                ? acquisition.serial_pattern
+                : "UNKNOWN"
+        );
+        action_color = UI_COLOR_ERROR;
+    }
+    else if (
+        acquisition_err == ESP_OK &&
         acquisition.serial_suspicious
     ) {
         snprintf(
             text,
             sizeof(text),
-            "ADC DATA STUCK  %s",
+            "ADC SERIAL?  %s",
             acquisition.serial_pattern != NULL
                 ? acquisition.serial_pattern
                 : "UNKNOWN"

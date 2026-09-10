@@ -178,7 +178,7 @@ static void test_pipeline_fan_out_preserves_signal(void)
     assert(recorder_samples == PIPELINE_INITIAL_FRAMES);
     assert(recorder_cursor == PIPELINE_INITIAL_FRAMES);
 
-    /* The UI's display reducer keeps signed peak values, so a short impulse
+    /* The UI's display reducer keeps the min/max envelope, so a short impulse
      * cannot disappear merely because 96 samples are compressed to 48 points. */
     seismic_frame_t preview[PIPELINE_INITIAL_FRAMES];
     size_t preview_count = 0U;
@@ -190,14 +190,16 @@ static void test_pipeline_fan_out_preserves_signal(void)
         &preview_info
     ) == ESP_OK);
     assert(preview_count == PIPELINE_INITIAL_FRAMES);
-    int32_t trace[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t trace_min[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t trace_max[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
     assert(ui_measurement_trace_reduce(
         preview,
         preview_count,
-        trace
-    ) == 18000.0f);
-    assert(trace_contains(trace, 0U, 18000));
-    assert(trace_contains(trace, 1U, -12000));
+        trace_min,
+        trace_max
+    ) > 17000.0f);
+    assert(trace_contains(trace_max, 0U, 17334));
+    assert(trace_contains(trace_min, 1U, -12354));
 
     /* A delayed recorder loses only the bounded oldest portion; the producer
      * remains publishable and UI/web snapshots still expose the newest data. */

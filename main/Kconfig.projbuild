@@ -34,3 +34,15 @@ menu "Seismic Acquisition"
         default 500
 
 endmenu
+
+menu "WebUI delivery"
+
+config WEB_SERVER_WEBUI_PSRAM_CACHE
+    bool "Cache embedded gzip WebUI assets in PSRAM"
+    default n
+    help
+        Copy the immutable embedded gzip WebUI assets to PSRAM at HTTPS
+        startup. Requests use the PSRAM copy when the allocation succeeds and
+        transparently fall back to the embedded flash assets otherwise.
+
+endmenu

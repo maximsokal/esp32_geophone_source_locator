@@ -76,7 +76,7 @@ fix.
 
 | Path | Decision | Reason |
 |---|---|---|
-| TFT / LVGL | Keep internal DMA buffer, 2560 bytes | Existing `esp_lcd`/LVGL path is stable; the buffer is small and direct PSRAM DMA was not proven for this exact stack. |
+| TFT / LVGL | Keep one internal DMA buffer, 5120 bytes | The former 4-row buffer forced 60 partial flushes for a full frame; 8 rows halves that transaction count while retaining the proven internal-DMA path. Direct PSRAM DMA is still not enabled for this exact stack. |
 | SDSPI / FatFS | Keep IDF internal DMA bounce buffer | `sdspi_host.c` allocates and uses `block_buf` for external application buffers. |
 | AD7606 | Keep 16-byte RX transaction internal | The buffer is too small for meaningful RAM savings; acquisition remains realtime-sensitive on Core 1. |
 | DMA descriptors | Keep internal | Descriptor placement is a driver/SoC requirement and is not interchangeable with payload placement. |

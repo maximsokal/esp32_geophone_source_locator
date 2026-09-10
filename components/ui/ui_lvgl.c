@@ -16,13 +16,13 @@ static const char *TAG =
 
 
 /*
- * Keep the TFT draw buffer deliberately small because it must live in
- * DMA-capable internal SRAM. The measurement screen, SDSPI and Wi-Fi all need
- * the same scarce memory class at runtime. A single 4-row RGB565 buffer costs
- * only 320 * 4 * 2 = 2560 bytes while still being sufficient for this mostly
- * static 320x240 UI.
+ * Keep one TFT draw buffer in DMA-capable internal SRAM, but do not make it
+ * smaller than the rendering path can use efficiently. A 4-row buffer made a
+ * full 320x240 invalidation 60 separate SPI flushes; 8 rows halves that
+ * transaction count while costing only 320 * 8 * 2 = 5120 bytes. The buffer
+ * remains single and internal so SDSPI/Wi-Fi DMA headroom is still explicit.
  */
-#define UI_LVGL_BUFFER_ROWS  4
+#define UI_LVGL_BUFFER_ROWS  8
 
 
 static esp_err_t ui_lvgl_quiesce_shared_spi(void *context)

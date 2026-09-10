@@ -325,23 +325,12 @@ esp_err_t seismic_recorder_fs_write_frames(
 
     *frames_written = 0U;
 
-    const int64_t operation_started_us =
-        esp_timer_get_time();
-    esp_err_t err = storage_manager_operation_begin();
-    if (err != ESP_OK) {
-        ESP_LOGI(
-            TAG,
-            "RECORDER_IO_TIMING op=fwrite requested=%u written=0 fwrite_us=0 operation_us=%lld result=%d",
-            (unsigned)frame_count,
-            (long long)(esp_timer_get_time() - operation_started_us),
-            (int)err
-        );
-        return err;
-    }
-
-    const int64_t fwrite_started_us =
-        esp_timer_get_time();
+    const int64_t operation_started_us = esp_timer_get_time();
+    const int64_t fwrite_started_us = operation_started_us;
+    esp_err_t err = ESP_OK;
     size_t written = 0U;
+    unsigned storage_windows = 0U;
+    int64_t max_storage_window_us = 0;
     while (written < frame_count) {
         const size_t remaining = frame_count - written;
         const size_t chunk = remaining < SEISMIC_RECORDER_WRITE_STAGING_FRAMES
@@ -354,6 +343,14 @@ esp_err_t seismic_recorder_fs_write_frames(
             chunk * sizeof(seismic_frame_t)
         );
 
+        /* Release the LVGL/SPI2 guard between bounded writes. A slow SD
+         * card must not hold the TFT mutex for the whole recorder batch. */
+        const int64_t window_started_us = esp_timer_get_time();
+        err = storage_manager_operation_begin();
+        if (err != ESP_OK) {
+            break;
+        }
+
         const size_t chunk_written = fwrite(
             s_dma_staging,
             sizeof(seismic_frame_t),
@@ -361,6 +358,14 @@ esp_err_t seismic_recorder_fs_write_frames(
             samples_file
         );
         written += chunk_written;
+        storage_manager_operation_end();
+        ++storage_windows;
+
+        const int64_t storage_window_us =
+            esp_timer_get_time() - window_started_us;
+        if (storage_window_us > max_storage_window_us) {
+            max_storage_window_us = storage_window_us;
+        }
 
         if (chunk_written != chunk || ferror(samples_file) != 0) {
             err = ESP_FAIL;
@@ -369,19 +374,23 @@ esp_err_t seismic_recorder_fs_write_frames(
     }
 
     *frames_written = written;
-    if (written != frame_count || ferror(samples_file) != 0) {
+    if (
+        err == ESP_OK &&
+        (written != frame_count || ferror(samples_file) != 0)
+    ) {
         err = ESP_FAIL;
     }
 
     const int64_t fwrite_us =
         esp_timer_get_time() - fwrite_started_us;
 
-    storage_manager_operation_end();
     ESP_LOGI(
         TAG,
-        "RECORDER_IO_TIMING op=fwrite requested=%u written=%u fwrite_us=%lld operation_us=%lld result=%d",
+        "RECORDER_IO_TIMING op=fwrite requested=%u written=%u windows=%u max_window_us=%lld fwrite_us=%lld operation_us=%lld result=%d",
         (unsigned)frame_count,
         (unsigned)written,
+        storage_windows,
+        (long long)max_storage_window_us,
         (long long)fwrite_us,
         (long long)(esp_timer_get_time() - operation_started_us),
         (int)err
