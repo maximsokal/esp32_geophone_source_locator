@@ -12,9 +12,15 @@
 
 
 #define SEISMIC_RECORDER_PATH_SIZE            256
-#define SEISMIC_RECORDER_BATCH_FRAMES         128
-/* Keep sequential writes streaming; final STOP still performs flush+fsync. */
-#define SEISMIC_RECORDER_FLUSH_INTERVAL_US    5000000LL
+#define SEISMIC_RECORDER_BATCH_FRAMES         512U
+/*
+ * Accumulate roughly half a second of samples before opening an SD
+ * arbitration window.  The recorder buffer lives in PSRAM (see
+ * seismic_recorder_init), so the larger batch does not consume scarce
+ * internal/DMA RAM.  STOP still bypasses this threshold to drain its exact
+ * target without adding user-visible latency.
+ */
+#define SEISMIC_RECORDER_FLUSH_INTERVAL_US    30000000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
 #define SEISMIC_RECORDER_METADATA_BUFFER_SIZE  2048
 #define SEISMIC_RECORDER_BINARY_VERSION        1U

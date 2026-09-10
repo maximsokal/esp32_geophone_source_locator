@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -22,7 +23,7 @@
 
 
 #define SEISMIC_RECORDER_EVENT_STOPPED          BIT0
-#define SEISMIC_RECORDER_WRITE_PERIOD_MS        200U
+#define SEISMIC_RECORDER_WRITE_PERIOD_MS        500U
 #define SEISMIC_RECORDER_MIN_WRITE_FRAMES         8U
 #define SEISMIC_RECORDER_BATCH_WAIT_MS            10U
 
@@ -36,7 +37,12 @@ static TaskHandle_t s_task = NULL;
 static FILE *s_samples_file = NULL;
 static object_store_profile_t s_profile;
 static seismic_recorder_snapshot_t s_snapshot;
-static seismic_frame_t s_batch[SEISMIC_RECORDER_BATCH_FRAMES];
+/*
+ * A 512-frame batch is intentionally non-DMA data.  Keep it in PSRAM so a
+ * larger SD write cannot consume the internal heap needed by Wi-Fi, TLS and
+ * the display DMA path.
+ */
+static seismic_frame_t *s_batch = NULL;
 
 static uint64_t s_cursor = 0U;
 static uint64_t s_stop_target = 0U;
@@ -546,7 +552,7 @@ static void seismic_recorder_task(void *argument)
 
         /*
          * Do not open a TFT/SD arbitration window for every 500 Hz sample.
-         * Wait until roughly 200 ms of frames are ready, then write one
+         * Wait until roughly 500 ms of frames are ready, then write one
          * bounded batch. STOP bypasses this threshold so the exact stop cursor
          * can still be drained immediately.
          */
@@ -685,12 +691,29 @@ esp_err_t seismic_recorder_init(void)
         return ESP_OK;
     }
 
+    s_batch = heap_caps_malloc(
+        sizeof(*s_batch) * SEISMIC_RECORDER_BATCH_FRAMES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (s_batch == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Unable to allocate %u-frame recorder batch in PSRAM",
+            (unsigned)SEISMIC_RECORDER_BATCH_FRAMES
+        );
+        return ESP_ERR_NO_MEM;
+    }
+
     if (!storage_manager_is_ready()) {
+        heap_caps_free(s_batch);
+        s_batch = NULL;
         return ESP_ERR_INVALID_STATE;
     }
 
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) {
+        heap_caps_free(s_batch);
+        s_batch = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -698,6 +721,8 @@ esp_err_t seismic_recorder_init(void)
     if (s_events == NULL) {
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
+        heap_caps_free(s_batch);
+        s_batch = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -727,6 +752,8 @@ esp_err_t seismic_recorder_init(void)
         s_events = NULL;
         s_mutex = NULL;
         s_task = NULL;
+        heap_caps_free(s_batch);
+        s_batch = NULL;
         return ESP_ERR_NO_MEM;
     }
 

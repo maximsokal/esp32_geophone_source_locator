@@ -135,6 +135,18 @@ describe('confirmed object mutation projection', () => {
     });
   });
 
+  it('projects measurement_start activation like the legacy recording action', () => {
+    const next = applyConfirmedObjectMutation(
+      store(),
+      'measurement_start',
+      { object_id: 'OBJ_0002' },
+      ok('measurement_start'),
+    );
+
+    expect(next?.active_id).toBe('OBJ_0002');
+    expect(next?.objects.map((object) => object.active)).toEqual([false, true]);
+  });
+
   it('clears active state when the active object is deleted', () => {
     const next = applyConfirmedObjectMutation(
       store(),

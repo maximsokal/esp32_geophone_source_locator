@@ -118,7 +118,7 @@ export function applyConfirmedObjectMutation(
 
   const objectId = payloadString(payload, 'object_id');
 
-  if (action === 'activate_object' || action === 'recording_start') {
+  if (action === 'activate_object' || action === 'measurement_start' || action === 'recording_start') {
     return objectId === null ? store : activateObject(store, objectId);
   }
 

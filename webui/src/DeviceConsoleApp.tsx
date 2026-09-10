@@ -28,10 +28,10 @@ const LOCAL_OBJECT_MUTATION_ACTIONS = new Set([
   'set_object_cable_length',
   'set_default_cable_length',
   'set_object_location',
-  'recording_start',
+  'measurement_start',
 ]);
 
-const SESSION_REFRESH_ACTIONS = new Set(['recording_start', 'recording_stop']);
+const SESSION_REFRESH_ACTIONS = new Set(['measurement_start', 'measurement_stop']);
 
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -208,7 +208,7 @@ export default function DeviceConsoleApp() {
 
       const preferredSelectedId = action === 'create_object'
         ? result.object_id ?? null
-        : (action === 'activate_object' || action === 'recording_start')
+        : (action === 'activate_object' || action === 'measurement_start')
           && typeof payload.object_id === 'string'
           ? payload.object_id
           : null;
@@ -224,7 +224,7 @@ export default function DeviceConsoleApp() {
       setLinkError(null);
 
       if (SESSION_REFRESH_ACTIONS.has(action)) {
-        const sessionObjectId = action === 'recording_start' && typeof payload.object_id === 'string'
+        const sessionObjectId = action === 'measurement_start' && typeof payload.object_id === 'string'
           ? payload.object_id
           : selectedId;
         await refreshSessions(sessionObjectId);
@@ -246,8 +246,8 @@ export default function DeviceConsoleApp() {
       if (transportFailure(message) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
         scheduleObjectReconcile(selectionMode);
       }
-      else if (action === 'recording_start') {
-        /* recording_start can activate before ADC startup fails; reconcile that side effect. */
+      else if (action === 'measurement_start') {
+        /* measurement_start activates before the worker can reject the request. */
         scheduleObjectReconcile('active');
       }
 
@@ -347,7 +347,7 @@ export default function DeviceConsoleApp() {
             await runControl(running ? 'acquisition_start' : 'acquisition_stop');
           }}
           onRecording={async (id, running) => {
-            await runControl(running ? 'recording_start' : 'recording_stop', running ? { object_id: id } : {});
+            await runControl(running ? 'measurement_start' : 'measurement_stop', running ? { object_id: id } : {});
           }}
           onOpenScanner={(id) => { setSelectedId(id); setScreen('scanner'); }}
         />
