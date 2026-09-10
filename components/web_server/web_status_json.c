@@ -179,6 +179,34 @@ static bool web_status_json_add_acquisition(
         source_snapshot_available && source_snapshot->serial_pattern != NULL
             ? source_snapshot->serial_pattern
             : "UNKNOWN";
+    const char *quality =
+        source_snapshot_available && source_snapshot->serial_quality != NULL
+            ? source_snapshot->serial_quality
+            : "UNKNOWN";
+    const double quality_window = source_snapshot_available
+        ? (double)source_snapshot->serial_quality_window_frames
+        : 0.0;
+    const double bad_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_bad_frames / quality_window
+        : 0.0;
+    const double all_zero_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_all_zero_frames / quality_window
+        : 0.0;
+    const double all_ff_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_all_ff_frames / quality_window
+        : 0.0;
+    const double all_identical_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_all_identical_frames / quality_window
+        : 0.0;
+    const double repeated_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_repeated_frames / quality_window
+        : 0.0;
+    const double digital_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_digital_interference_frames / quality_window
+        : 0.0;
+    const double rail_ratio = quality_window > 0.0
+        ? (double)source_snapshot->serial_quality_window_rail_hit_frames / quality_window
+        : 0.0;
 
     return
         cJSON_AddBoolToObject(
@@ -186,6 +214,7 @@ static bool web_status_json_add_acquisition(
             "suspicious",
             source_snapshot_available && source_snapshot->serial_suspicious
         ) != NULL &&
+        cJSON_AddStringToObject(serial, "quality", quality) != NULL &&
         cJSON_AddStringToObject(serial, "pattern", pattern) != NULL &&
         cJSON_AddNumberToObject(
             serial,
@@ -236,6 +265,21 @@ static bool web_status_json_add_acquisition(
                 ? (double)source_snapshot->serial_digital_interference_frames
                 : 0.0
         ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "rail_hit_frames",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_rail_hit_frames
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_window_frames", quality_window) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_bad_ratio", bad_ratio) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_all_00_ratio", all_zero_ratio) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_all_ff_ratio", all_ff_ratio) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_all_identical_ratio", all_identical_ratio) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_repeated_ratio", repeated_ratio) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_digital_interference_ratio", digital_ratio) != NULL &&
+        cJSON_AddNumberToObject(serial, "quality_rail_hit_ratio", rail_ratio) != NULL &&
         cJSON_AddNumberToObject(
             serial,
             "busy_level",

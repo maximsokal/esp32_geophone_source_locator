@@ -237,6 +237,41 @@
       ]
     },
     {
+      "name": "seismic_recorder_start_policy",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "tests/host/seismic_recorder_start_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "tests/host/stubs/seismic_pipeline"
+      ]
+    },
+    {
+      "name": "seismic_recorder_start_integration",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "tests/host/seismic_recorder_start_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
       "name": "seismic_recorder_waveform",
       "sources": [
         "components/seismic_recorder/seismic_recorder_waveform.c",

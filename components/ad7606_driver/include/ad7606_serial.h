@@ -10,6 +10,10 @@
 #define AD7606_SERIAL_RX_BYTES          \
     (AD7606_SERIAL_WORD_COUNT * AD7606_SERIAL_WORD_BYTES)
 
+#define AD7606_SERIAL_QUALITY_WINDOW_FRAMES  500U
+/* Keep the state UNKNOWN until a short initial sample is available. */
+#define AD7606_SERIAL_QUALITY_MIN_FRAMES     10U
+
 /* A single abnormal frame is not enough to declare the serial path broken. */
 #define AD7606_SERIAL_SUSPICIOUS_STREAK_THRESHOLD  10U
 
@@ -26,6 +30,16 @@ typedef enum
 } ad7606_serial_pattern_t;
 
 
+typedef enum
+{
+    AD7606_SERIAL_QUALITY_UNKNOWN = 0,
+    AD7606_SERIAL_QUALITY_HEALTHY,
+    AD7606_SERIAL_QUALITY_DEGRADED,
+    AD7606_SERIAL_QUALITY_FAULT
+
+} ad7606_serial_quality_t;
+
+
 typedef struct
 {
     bool initialized;
@@ -34,6 +48,7 @@ typedef struct
     bool serial_suspicious;
 
     ad7606_serial_pattern_t pattern;
+    ad7606_serial_quality_t quality;
 
     uint32_t suspicious_streak;
     uint32_t repeated_frame_streak;
@@ -42,6 +57,18 @@ typedef struct
     uint32_t all_identical_frames;
     uint32_t varied_frames;
     uint32_t digital_interference_frames;
+    uint32_t rail_hit_frames;
+
+    uint32_t quality_window_frames;
+    uint32_t quality_window_bad_frames;
+    uint32_t quality_window_all_zero_frames;
+    uint32_t quality_window_all_ff_frames;
+    uint32_t quality_window_all_identical_frames;
+    uint32_t quality_window_repeated_frames;
+    uint32_t quality_window_digital_interference_frames;
+    uint32_t quality_window_rail_hit_frames;
+    uint16_t quality_window_next;
+    uint8_t quality_window_flags[AD7606_SERIAL_QUALITY_WINDOW_FRAMES];
 
     uint8_t previous_rx[AD7606_SERIAL_RX_BYTES];
 
@@ -53,6 +80,7 @@ typedef struct
     bool pattern_changed;
     bool abnormal_started;
     bool suspicious_started;
+    bool quality_changed;
 
 } ad7606_serial_diag_event_t;
 
@@ -75,6 +103,11 @@ ad7606_serial_pattern_t ad7606_serial_classify(
 
 const char *ad7606_serial_pattern_name(
     ad7606_serial_pattern_t pattern
+);
+
+
+const char *ad7606_serial_quality_name(
+    ad7606_serial_quality_t quality
 );
 
 
