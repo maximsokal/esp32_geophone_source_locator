@@ -398,6 +398,32 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     stop_service();
 }
 
+static void test_retry_start_after_error_keeps_gate_until_worker_runs(void)
+{
+    start_service();
+    fake_recorder_start_error = ESP_FAIL;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+
+    measurement_service_snapshot_t current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(!current.busy);
+
+    /* The accepted retry still reports the previous ERROR until the worker
+     * dequeues it; the submit gate marks that stale state as in flight. */
+    fake_recorder_start_error = ESP_OK;
+    assert(measurement_service_start_async() == ESP_OK);
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(current.busy);
+
+    run_pending_command();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_RECORDING);
+    assert(!current.busy);
+    stop_service();
+}
+
 static void test_underlying_errors_and_queue_full(void)
 {
     start_service();
@@ -491,6 +517,7 @@ int main(void)
 {
     test_initial_and_no_active_object();
     test_start_stop_keep_delete_and_repeated_start();
+    test_retry_start_after_error_keeps_gate_until_worker_runs();
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();
     test_delayed_stop_error_blocks_restart_until_cleanup();

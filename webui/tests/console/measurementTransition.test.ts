@@ -3,10 +3,11 @@ import type { DeviceStatus } from '../../src/domain/device';
 import {
   isMeasurementTransitionComplete,
   measurementTransitionErrorMessage,
+  measurementTransitionNeedsSessionRefresh,
   waitForMeasurementTransition,
 } from '../../src/features/objects/measurementTransition';
 
-function status(state: string): DeviceStatus {
+function status(state: string, busy = false): DeviceStatus {
   return {
     system: {
       state: 'READY',
@@ -34,6 +35,7 @@ function status(state: string): DeviceStatus {
     measurement: {
       available: true,
       state,
+      busy,
       object_id: 'OBJ_0001',
     },
   };
@@ -55,6 +57,47 @@ describe('measurement transition polling', () => {
     expect(result.measurement?.state).toBe('RECORDING');
     expect(reads).toBe(2);
     expect(sleeps).toEqual([1]);
+  });
+
+  it('keeps polling when a retry still exposes the previous ERROR while busy', async () => {
+    const sequence = [
+      status('ERROR', true),
+      status('STARTING', true),
+      status('RECORDING', false),
+    ];
+    let reads = 0;
+    const sleeps: number[] = [];
+
+    const result = await waitForMeasurementTransition(
+      'measurement_start',
+      async () => sequence[reads++],
+      { intervalMs: 1, timeoutMs: 20, sleep: async (milliseconds) => { sleeps.push(milliseconds); } },
+    );
+
+    expect(result.measurement?.state).toBe('RECORDING');
+    expect(reads).toBe(3);
+    expect(sleeps).toEqual([1, 1]);
+  });
+
+  it('treats ERROR as terminal only after the accepted retry releases busy', async () => {
+    const sequence = [status('ERROR', true), status('ERROR', false)];
+    let reads = 0;
+
+    const result = await waitForMeasurementTransition(
+      'measurement_start',
+      async () => sequence[reads++],
+      { intervalMs: 1, timeoutMs: 20, sleep: async () => undefined },
+    );
+
+    expect(result.measurement?.state).toBe('ERROR');
+    expect(result.measurement?.busy).toBe(false);
+    expect(reads).toBe(2);
+    expect(measurementTransitionErrorMessage(result)).toBe('measurement service error');
+  });
+
+  it('refreshes sessions only after STOP, never at START completion', () => {
+    expect(measurementTransitionNeedsSessionRefresh('measurement_start')).toBe(false);
+    expect(measurementTransitionNeedsSessionRefresh('measurement_stop')).toBe(true);
   });
 
   it('does not refresh the stop result until STOPPING becomes REVIEW', async () => {
@@ -85,7 +128,7 @@ describe('measurement transition polling', () => {
   it('treats ERROR as terminal so the caller can refresh sessions before surfacing it', async () => {
     const result = await waitForMeasurementTransition(
       'measurement_stop',
-      async () => status('ERROR'),
+      async () => status('ERROR', false),
       { intervalMs: 1, timeoutMs: 20, sleep: async () => undefined },
     );
 

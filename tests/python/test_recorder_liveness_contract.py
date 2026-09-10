@@ -11,6 +11,7 @@ RECORDER_FS = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_
 RECORDER_HEADER = REPO_ROOT / "components" / "seismic_recorder" / "include" / "seismic_recorder.h"
 MEASUREMENT_SERVICE = REPO_ROOT / "components" / "measurement_service" / "measurement_service.c"
 WEBUI_CONSOLE = REPO_ROOT / "webui" / "src" / "DeviceConsoleApp.tsx"
+WEBUI_MEASUREMENT_TRANSITION = REPO_ROOT / "webui" / "src" / "features" / "objects" / "measurementTransition.ts"
 WEB_STATUS_JSON = REPO_ROOT / "components" / "web_server" / "web_status_json.c"
 WEB_STATUS_RECORDING = REPO_ROOT / "components" / "web_server" / "web_status_json_recording.c"
 
@@ -162,6 +163,7 @@ def test_status_api_exposes_measurement_service_terminal_states():
 
 def test_console_record_button_uses_the_async_measurement_state_machine():
     source = WEBUI_CONSOLE.read_text(encoding="utf-8")
+    transition_source = WEBUI_MEASUREMENT_TRANSITION.read_text(encoding="utf-8")
     start = source.index("onRecording={async")
     end = source.index("onOpenScanner=", start)
     recording_control = source[start:end]
@@ -169,9 +171,14 @@ def test_console_record_button_uses_the_async_measurement_state_machine():
     assert "running ? 'measurement_start' : 'measurement_stop'" in recording_control
     assert "recording_start" not in recording_control
     assert "recording_stop" not in recording_control
-    assert "const SESSION_REFRESH_ACTIONS = new Set(['measurement_start', 'measurement_stop']);" in source
+    assert "const MEASUREMENT_TRANSITION_ACTIONS = new Set(['measurement_start', 'measurement_stop']);" in source
+    assert "measurementTransitionNeedsSessionRefresh" in source
 
     transition = source.index("waitForMeasurementTransition(")
     refresh = source.index("await refreshSessions(confirmedObjectId)")
     assert transition < refresh
+    refresh_gate = source.index("if (measurementTransitionNeedsSessionRefresh(", transition)
+    assert refresh_gate < refresh
+    assert "const confirmedObjectId = selectedId" in source[refresh_gate:refresh]
     assert "measurementTransitionErrorMessage(transitionStatus)" in source
+    assert "status.measurement?.busy !== true" in transition_source
