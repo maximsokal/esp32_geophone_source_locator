@@ -39,6 +39,7 @@ typedef struct
     bool serial_suspicious;
     const char *serial_pattern;
     const char *serial_quality;
+    const char *signal_quality;
     uint32_t serial_suspicious_streak;
     uint32_t serial_repeated_frame_streak;
     uint32_t serial_all_zero_frames;
@@ -46,7 +47,8 @@ typedef struct
     uint32_t serial_all_identical_frames;
     uint32_t serial_varied_frames;
     uint32_t serial_digital_interference_frames;
-    uint32_t serial_rail_hit_frames;
+    uint32_t signal_rail_hit_frames;
+    uint32_t signal_clip_frames;
     uint32_t serial_quality_window_frames;
     uint32_t serial_quality_window_bad_frames;
     uint32_t serial_quality_window_all_zero_frames;
@@ -54,7 +56,8 @@ typedef struct
     uint32_t serial_quality_window_all_identical_frames;
     uint32_t serial_quality_window_repeated_frames;
     uint32_t serial_quality_window_digital_interference_frames;
-    uint32_t serial_quality_window_rail_hit_frames;
+    uint32_t signal_quality_window_rail_hit_frames;
+    uint32_t signal_quality_window_clip_frames;
     int serial_busy_level;
 
     int64_t last_sample_timestamp_us;

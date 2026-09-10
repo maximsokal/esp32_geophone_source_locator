@@ -247,7 +247,8 @@
         "components/seismic_acquisition/include",
         "components/ad7606_acquisition/include",
         "components/ad7606_driver/include",
-        "tests/host/stubs/seismic_pipeline"
+        "tests/host/stubs/seismic_pipeline",
+        "tests/host/stubs/seismic_recorder_start"
       ]
     },
     {
