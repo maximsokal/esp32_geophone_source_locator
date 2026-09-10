@@ -544,7 +544,7 @@ function Invoke-HttpPipelineChecks {
         }
 
         $recordingBaseline = $status
-        # The recorder intentionally batches roughly 200 ms of frames before
+        # The recorder intentionally batches roughly 500 ms of frames before
         # each SD write; leave one full batch window between progress samples.
         $recordingProgressPollMs = [math]::Max($PollMs, 500)
         Start-Sleep -Milliseconds $recordingProgressPollMs

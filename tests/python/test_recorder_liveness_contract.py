@@ -1,12 +1,15 @@
 """Static contract for recorder liveness placement around blocking operations."""
 
+import re
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RECORDER = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder.c"
+RECORDER_INTERNAL = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_internal.h"
 RECORDER_HEADER = REPO_ROOT / "components" / "seismic_recorder" / "include" / "seismic_recorder.h"
 MEASUREMENT_SERVICE = REPO_ROOT / "components" / "measurement_service" / "measurement_service.c"
+WEBUI_CONSOLE = REPO_ROOT / "webui" / "src" / "DeviceConsoleApp.tsx"
 
 
 def _function_body(source: str, signature: str) -> str:
@@ -21,6 +24,39 @@ def _function_body(source: str, signature: str) -> str:
             if depth == 0:
                 return source[opening:index + 1]
     raise AssertionError(f"unterminated function: {signature}")
+
+
+def _define_int(source: str, name: str, suffix: str) -> int:
+    match = re.search(
+        rf"^#define\s+{re.escape(name)}\s+(\d+){re.escape(suffix)}\s*$",
+        source,
+        re.MULTILINE,
+    )
+    assert match is not None, f"missing numeric define: {name}"
+    return int(match.group(1))
+
+
+def test_recorder_batch_is_psram_backed_and_amortizes_sd_operations():
+    source = RECORDER.read_text(encoding="utf-8")
+    internal = RECORDER_INTERNAL.read_text(encoding="utf-8")
+    init = _function_body(source, "esp_err_t seismic_recorder_init(void)")
+
+    # A 500 Hz stream produces 250 frames in the normal write window. Keep a
+    # bounded headroom batch for a delayed SD operation without putting the
+    # non-DMA copy buffer in scarce internal/DMA RAM.
+    assert _define_int(source, "SEISMIC_RECORDER_WRITE_PERIOD_MS", "U") == 500
+    assert _define_int(internal, "SEISMIC_RECORDER_BATCH_FRAMES", "U") == 512
+    assert _define_int(internal, "SEISMIC_RECORDER_FLUSH_INTERVAL_US", "LL") == 30_000_000
+    assert "static seismic_frame_t *s_batch = NULL;" in source
+    assert "s_batch = heap_caps_malloc(" in init
+    assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in init
+    assert "heap_caps_free(s_batch);" in init
+
+    # Periodic flush is deliberately sparse; durability remains explicit in
+    # the STOP state machine rather than being paid on every small batch.
+    stop_step = _function_body(source, "static void seismic_recorder_stop_step")
+    assert "seismic_recorder_fs_flush(file, false)" in stop_step
+    assert "seismic_recorder_fs_sync(file)" in stop_step
 
 
 def test_recorder_heartbeat_is_post_operation_and_progress_is_snapshot_based():
@@ -96,3 +132,15 @@ def test_measurement_service_polls_until_recorder_really_finishes():
     assert "measurement_service_process_stop_poll();" in stop
     assert "recorder.state == SEISMIC_RECORDER_STOPPING" in poll
     assert "s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;" in poll
+
+
+def test_console_record_button_uses_the_async_measurement_state_machine():
+    source = WEBUI_CONSOLE.read_text(encoding="utf-8")
+    start = source.index("onRecording={async")
+    end = source.index("onOpenScanner=", start)
+    recording_control = source[start:end]
+
+    assert "running ? 'measurement_start' : 'measurement_stop'" in recording_control
+    assert "recording_start" not in recording_control
+    assert "recording_stop" not in recording_control
+    assert "const SESSION_REFRESH_ACTIONS = new Set(['measurement_start', 'measurement_stop']);" in source
