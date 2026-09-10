@@ -25,6 +25,7 @@ typedef struct
     uint32_t all_ff_frames;
     uint32_t all_identical_frames;
     uint32_t varied_frames;
+    uint32_t digital_interference_frames;
     int busy_level;
 
     int64_t last_sample_timestamp_us;

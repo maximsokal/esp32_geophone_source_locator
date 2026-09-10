@@ -68,6 +68,7 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_all_ff_frames = status.all_ff_frames;
     snapshot->serial_all_identical_frames = status.all_identical_frames;
     snapshot->serial_varied_frames = status.varied_frames;
+    snapshot->serial_digital_interference_frames = status.digital_interference_frames;
     snapshot->serial_busy_level = status.busy_level;
     snapshot->last_sample_timestamp_us = status.last_sample_timestamp_us;
 

@@ -11,7 +11,10 @@
 
 typedef struct
 {
+    /* Acquisition worker/backend state; this does not include ADC presence. */
     bool running;
+    /* Physical source health (AD7606 BUSY presence for that backend). */
+    bool source_healthy;
     bool latest_valid;
 
     const char *source_name;
@@ -41,6 +44,7 @@ typedef struct
     uint32_t serial_all_ff_frames;
     uint32_t serial_all_identical_frames;
     uint32_t serial_varied_frames;
+    uint32_t serial_digital_interference_frames;
     int serial_busy_level;
 
     int64_t last_sample_timestamp_us;
@@ -56,7 +60,7 @@ esp_err_t seismic_acquisition_start(void);
 
 void seismic_acquisition_stop(void);
 
-/* True only while the selected backend is started and still healthy. */
+/* True while the selected acquisition task/backend is started. */
 bool seismic_acquisition_is_running(void);
 
 /* Physical/backend health independent from the cached device_status flag. */

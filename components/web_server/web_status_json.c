@@ -231,6 +231,13 @@ static bool web_status_json_add_acquisition(
         ) != NULL &&
         cJSON_AddNumberToObject(
             serial,
+            "digital_interference_frames",
+            source_snapshot_available
+                ? (double)source_snapshot->serial_digital_interference_frames
+                : 0.0
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
             "busy_level",
             source_snapshot_available
                 ? (double)source_snapshot->serial_busy_level

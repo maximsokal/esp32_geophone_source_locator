@@ -68,15 +68,8 @@ static void seismic_acquisition_reset_failed_start(void)
 esp_err_t seismic_acquisition_start(void)
 {
     if (s_running) {
-        if (seismic_driver_healthy()) {
-            return ESP_OK;
-        }
-
-        ESP_LOGW(
-            TAG,
-            "Selected source was running but is no longer healthy; restarting"
-        );
-        seismic_acquisition_reset_failed_start();
+        /* A stale physical-health observation must not restart this task. */
+        return ESP_OK;
     }
 
     const seismic_source_driver_t *driver = seismic_driver();
@@ -143,7 +136,7 @@ void seismic_acquisition_stop(void)
 
 bool seismic_acquisition_is_running(void)
 {
-    return s_running && seismic_driver_healthy();
+    return s_running;
 }
 
 
@@ -191,8 +184,9 @@ esp_err_t seismic_acquisition_get_snapshot(
         }
     }
 
-    /* A backend cannot report RUN if the orchestrator or source health is down. */
-    snapshot->running = snapshot->running && s_running && seismic_driver_healthy();
+    /* Keep task state, physical presence, and serial quality independent. */
+    snapshot->running = snapshot->running && s_running;
+    snapshot->source_healthy = seismic_driver_healthy();
 
     return ESP_OK;
 }

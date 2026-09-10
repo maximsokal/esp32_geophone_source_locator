@@ -313,6 +313,9 @@ static void ad7606_status_record_sample(
     s_status.varied_frames =
         serial_diag->varied_frames;
 
+    s_status.digital_interference_frames =
+        serial_diag->digital_interference_frames;
+
     s_status.busy_level =
         busy_level;
 
@@ -382,7 +385,7 @@ static void ad7606_serial_diag_log_frame(
 
     ESP_LOGI(
         DIAG_TAG,
-        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u suspicious=%s",
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u suspicious=%s",
         observation->rx[0],
         observation->rx[1],
         observation->rx[2],
@@ -418,6 +421,7 @@ static void ad7606_serial_diag_log_frame(
         (unsigned)serial_diag->all_ff_frames,
         (unsigned)serial_diag->all_identical_frames,
         (unsigned)serial_diag->varied_frames,
+        (unsigned)serial_diag->digital_interference_frames,
         serial_diag->serial_suspicious ? "yes" : "no"
     );
 

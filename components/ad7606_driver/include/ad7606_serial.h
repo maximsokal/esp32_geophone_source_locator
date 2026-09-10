@@ -20,7 +20,8 @@ typedef enum
     AD7606_SERIAL_PATTERN_ALL_00,
     AD7606_SERIAL_PATTERN_ALL_FF,
     AD7606_SERIAL_PATTERN_ALL_WORDS_IDENTICAL,
-    AD7606_SERIAL_PATTERN_VARIED
+    AD7606_SERIAL_PATTERN_VARIED,
+    AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE
 
 } ad7606_serial_pattern_t;
 
@@ -40,6 +41,7 @@ typedef struct
     uint32_t all_ff_frames;
     uint32_t all_identical_frames;
     uint32_t varied_frames;
+    uint32_t digital_interference_frames;
 
     uint8_t previous_rx[AD7606_SERIAL_RX_BYTES];
 

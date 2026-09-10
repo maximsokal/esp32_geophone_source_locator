@@ -750,13 +750,47 @@ esp_err_t seismic_recorder_start(
     }
 
     if (s_mutex == NULL || s_events == NULL) {
+        ESP_LOGE(
+            TAG,
+            "START rejected: recorder is not initialized mutex=%s events=%s",
+            s_mutex != NULL ? "ready" : "missing",
+            s_events != NULL ? "ready" : "missing"
+        );
         return ESP_ERR_INVALID_STATE;
     }
 
     seismic_acquisition_snapshot_t acquisition;
     esp_err_t err = seismic_acquisition_get_snapshot(&acquisition);
-    if (err != ESP_OK || !acquisition.running || acquisition.sample_rate_hz == 0U) {
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: acquisition snapshot failed err=%s", esp_err_to_name(err));
         return ESP_ERR_INVALID_STATE;
+    }
+    if (!acquisition.running) {
+        ESP_LOGE(
+            TAG,
+            "START rejected: acquisition task is not running source=%s presence=%s serial=%s",
+            acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN",
+            acquisition.source_healthy ? "healthy" : "stale",
+            acquisition.serial_suspicious ? "suspicious" : "not-suspicious"
+        );
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (acquisition.sample_rate_hz == 0U) {
+        ESP_LOGE(
+            TAG,
+            "START rejected: acquisition task has zero sample rate source=%s",
+            acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN"
+        );
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!acquisition.source_healthy || acquisition.serial_suspicious) {
+        ESP_LOGW(
+            TAG,
+            "START continuing with acquisition task running: presence=%s serial=%s pattern=%s",
+            acquisition.source_healthy ? "healthy" : "stale",
+            acquisition.serial_suspicious ? "suspicious" : "not-suspicious",
+            acquisition.serial_pattern != NULL ? acquisition.serial_pattern : "UNKNOWN"
+        );
     }
 
     object_store_profile_t *profile = malloc(sizeof(*profile));
@@ -779,6 +813,13 @@ esp_err_t seismic_recorder_start(
      */
     seismic_recorder_lock();
     if (s_starting || s_snapshot.running || s_samples_file != NULL) {
+        ESP_LOGE(
+            TAG,
+            "START rejected: recorder busy starting=%s running=%s file=%s",
+            s_starting ? "yes" : "no",
+            s_snapshot.running ? "yes" : "no",
+            s_samples_file != NULL ? "open" : "closed"
+        );
         seismic_recorder_unlock();
         free(profile);
         return ESP_ERR_INVALID_STATE;

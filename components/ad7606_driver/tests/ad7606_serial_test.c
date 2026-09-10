@@ -70,6 +70,13 @@ static void test_frame_classification(void)
     put_word(rx, 7U, 0x1235U);
     assert(ad7606_serial_classify(rx) == AD7606_SERIAL_PATTERN_VARIED);
     assert(strcmp(ad7606_serial_pattern_name(AD7606_SERIAL_PATTERN_ALL_FF), "ALL_FF") == 0);
+
+    put_word(rx, 0U, 0x7FFFU);
+    put_word(rx, 1U, 0x8000U);
+    put_word(rx, 2U, 0x55AAU);
+    put_word(rx, 3U, 0x2A55U);
+    assert(ad7606_serial_classify(rx) == AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE);
+    assert(strcmp(ad7606_serial_pattern_name(AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE), "DIGITAL_INTERFERENCE") == 0);
 }
 
 
@@ -102,6 +109,15 @@ static void test_suspicious_streak_and_recovery(void)
     assert(recovery_event.pattern_changed);
     assert(!state.serial_suspicious);
     assert(state.varied_frames == 1U);
+
+    uint8_t interference[AD7606_SERIAL_RX_BYTES] = {0};
+    put_word(interference, 0U, 0x7FFFU);
+    put_word(interference, 1U, 0x8000U);
+    put_word(interference, 2U, 0x55AAU);
+    put_word(interference, 3U, 0x2A55U);
+    assert(ad7606_serial_diag_observe(&state, interference, NULL));
+    assert(!state.serial_suspicious);
+    assert(state.digital_interference_frames == 1U);
 }
 
 

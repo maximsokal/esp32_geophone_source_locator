@@ -11,6 +11,26 @@ static uint32_t ad7606_serial_saturating_increment(
     return value == UINT32_MAX ? value : value + 1U;
 }
 
+static bool ad7606_serial_has_clock_like_rail_pattern(
+    const uint8_t rx[AD7606_SERIAL_RX_BYTES],
+    const int16_t words[AD7606_SERIAL_WORD_COUNT]
+)
+{
+    bool clock_like_byte = false;
+    unsigned positive_rail_words = 0U;
+    unsigned negative_rail_words = 0U;
+    for (size_t i = 0U; i < AD7606_SERIAL_RX_BYTES; ++i) {
+        const uint8_t byte = rx[i];
+        clock_like_byte = clock_like_byte ||
+            byte == 0xAAU || byte == 0x55U || byte == 0x2AU;
+    }
+    for (size_t channel = 0U; channel < AD7606_SERIAL_WORD_COUNT; ++channel) {
+        if (words[channel] >= 30000) ++positive_rail_words;
+        else if (words[channel] <= -30000) ++negative_rail_words;
+    }
+    return clock_like_byte && positive_rail_words > 0U && negative_rail_words > 0U;
+}
+
 
 int16_t ad7606_serial_decode_word(
     const uint8_t bytes[AD7606_SERIAL_WORD_BYTES]
@@ -83,8 +103,9 @@ ad7606_serial_pattern_t ad7606_serial_classify(
         }
     }
 
-    return all_words_identical
-        ? AD7606_SERIAL_PATTERN_ALL_WORDS_IDENTICAL
+    if (all_words_identical) return AD7606_SERIAL_PATTERN_ALL_WORDS_IDENTICAL;
+    return ad7606_serial_has_clock_like_rail_pattern(rx, words)
+        ? AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE
         : AD7606_SERIAL_PATTERN_VARIED;
 }
 
@@ -105,6 +126,9 @@ const char *ad7606_serial_pattern_name(
 
         case AD7606_SERIAL_PATTERN_VARIED:
             return "VARIED";
+
+        case AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE:
+            return "DIGITAL_INTERFERENCE";
 
         case AD7606_SERIAL_PATTERN_UNKNOWN:
         default:
@@ -184,6 +208,10 @@ bool ad7606_serial_diag_observe(
     else if (pattern == AD7606_SERIAL_PATTERN_VARIED) {
         state->varied_frames =
             ad7606_serial_saturating_increment(state->varied_frames);
+    }
+    else if (pattern == AD7606_SERIAL_PATTERN_DIGITAL_INTERFERENCE) {
+        state->digital_interference_frames =
+            ad7606_serial_saturating_increment(state->digital_interference_frames);
     }
 
     if (repeated_frame) {
