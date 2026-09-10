@@ -86,13 +86,5 @@ void object_service_internal_process_mutation(
         );
     }
 
-    if (
-        state->event_callback !=
-        NULL
-    ) {
-        state->event_callback(
-            &state->event,
-            state->event_user_context
-        );
-    }
+    object_service_internal_notify(state);
 }

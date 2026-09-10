@@ -18,6 +18,30 @@ typedef struct
     char sessions_object_id[OBJECT_STORE_ID_SIZE];
 } web_status_query_t;
 
+
+static esp_err_t web_api_status_send_storage_busy(
+    httpd_req_t *request,
+    int64_t build_us
+)
+{
+    char timing[64];
+    (void)snprintf(
+        timing,
+        sizeof(timing),
+        "status-build;dur=%.1f;storage=busy",
+        (double)build_us / 1000.0
+    );
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "Server-Timing", timing);
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_send(
+        request,
+        "{\"storage_busy\":true}",
+        HTTPD_RESP_USE_STRLEN
+    );
+}
+
 static void web_api_status_parse_query(
     httpd_req_t *request,
     web_status_query_t *result
@@ -61,6 +85,18 @@ static esp_err_t web_api_status_handler(httpd_req_t *request)
     const int64_t build_us = esp_timer_get_time() - started_us;
 
     if (err != ESP_OK) {
+        if (
+            err == ESP_ERR_INVALID_STATE &&
+            (query.include_objects || query.sessions_object_id[0] != '\0')
+        ) {
+            ESP_LOGW(
+                TAG,
+                "Status storage cache unavailable after %lld ms; returning 503",
+                build_us / 1000LL
+            );
+            return web_api_status_send_storage_busy(request, build_us);
+        }
+
         ESP_LOGE(
             TAG,
             "Failed to build status JSON after %lld ms: %s",
@@ -119,7 +155,7 @@ esp_err_t web_api_status_register(httpd_handle_t server)
 
     ESP_LOGI(
         TAG,
-        "Registered GET /api/status (?objects=1, ?sessions=OBJECT_ID for SD read models)"
+        "Registered GET /api/status (?objects=1, ?sessions=OBJECT_ID from RAM/PSRAM cache; 503 while refreshing)"
     );
     return ESP_OK;
 }

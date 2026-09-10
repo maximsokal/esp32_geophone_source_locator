@@ -105,8 +105,17 @@ esp_err_t web_status_json_build_extended(
 void web_status_json_free(char *json);
 
 bool web_status_json_add_pods(cJSON *root, const device_status_snapshot_t *status);
+esp_err_t web_status_json_objects_init(void);
+void web_status_json_objects_shutdown(void);
+esp_err_t web_status_json_objects_refresh(void);
+esp_err_t web_status_json_objects_request_refresh(void);
 bool web_status_json_add_objects(cJSON *root);
 void web_status_json_objects_invalidate(void);
+bool web_status_json_objects_cache_ready(void);
+bool web_status_json_objects_cache_busy(void);
+esp_err_t web_status_json_objects_start_guard(void *user_context);
+void web_status_json_objects_storage_changed(void *user_context);
+void web_status_json_objects_set_active(const char *object_id);
 bool web_status_json_add_recording(cJSON *root);
 bool web_status_json_add_measurement(cJSON *root);
 bool web_status_json_add_sessions(cJSON *root, const char *object_id);

@@ -100,6 +100,7 @@ static const char *TAG = "RUNTIME_OBSERVABILITY";
 #define RUNTIME_OBSERVABILITY_PERIOD_MS 10000U
 #define RUNTIME_OBSERVABILITY_CPU_COUNT 2U
 #define RUNTIME_OBSERVABILITY_STAGE_SIZE 32U
+#define RUNTIME_OBSERVABILITY_TOP_TASKS 10U
 
 static SemaphoreHandle_t s_snapshot_mutex = NULL;
 static TaskHandle_t s_snapshot_task = NULL;
@@ -172,41 +173,54 @@ static unsigned runtime_percent_tenths(
 }
 
 
-static bool runtime_task_is_interesting(const char *name)
+typedef struct
 {
-    if (name == NULL) {
-        return false;
+    const TaskStatus_t *status;
+    uint64_t runtime_delta;
+    unsigned cpu_tenths;
+
+} runtime_task_usage_t;
+
+
+static void runtime_task_usage_insert(
+    runtime_task_usage_t top_tasks[RUNTIME_OBSERVABILITY_TOP_TASKS],
+    size_t *top_count,
+    const TaskStatus_t *status,
+    uint64_t runtime_delta,
+    unsigned cpu_tenths
+)
+{
+    if (top_tasks == NULL || top_count == NULL || status == NULL) {
+        return;
     }
 
-    static const char *const needles[] = {
-        "ad7606",
-        "lvgl",
-        /* esp_lvgl_port names its task taskLVGL, so the lowercase needle
-         * above does not match the actual runtime task name. */
-        "taskLVGL",
-        "ui_event",
-        "keypad",
-        "storage_service",
-        "object_service",
-        "measurement_service",
-        "seismic_recorder",
-        "ina3221",
-        "http",
-        "wifi",
-        "tcpip",
-        "esp_timer",
-        "IDLE0",
-        "IDLE1",
-        "runtime_observability",
-    };
-
-    for (size_t i = 0; i < sizeof(needles) / sizeof(needles[0]); ++i) {
-        if (strstr(name, needles[i]) != NULL) {
-            return true;
-        }
+    if (
+        *top_count >= RUNTIME_OBSERVABILITY_TOP_TASKS &&
+        runtime_delta <= top_tasks[RUNTIME_OBSERVABILITY_TOP_TASKS - 1U].runtime_delta
+    ) {
+        return;
     }
 
-    return false;
+    size_t position =
+        *top_count < RUNTIME_OBSERVABILITY_TOP_TASKS
+            ? *top_count
+            : RUNTIME_OBSERVABILITY_TOP_TASKS - 1U;
+
+    while (
+        position > 0U &&
+        top_tasks[position - 1U].runtime_delta < runtime_delta
+    ) {
+        top_tasks[position] = top_tasks[position - 1U];
+        --position;
+    }
+
+    top_tasks[position].status = status;
+    top_tasks[position].runtime_delta = runtime_delta;
+    top_tasks[position].cpu_tenths = cpu_tenths;
+
+    if (*top_count < RUNTIME_OBSERVABILITY_TOP_TASKS) {
+        ++(*top_count);
+    }
 }
 
 
@@ -427,11 +441,11 @@ void runtime_observability_log_snapshot(const char *stage)
         idle_tenths[1] % 10U
     );
 
+    runtime_task_usage_t top_tasks[RUNTIME_OBSERVABILITY_TOP_TASKS] = {0};
+    size_t top_count = 0U;
+
     for (UBaseType_t i = 0U; i < count; ++i) {
         const TaskStatus_t *status = &s_current_status[i];
-        if (!runtime_task_is_interesting(status->pcTaskName)) {
-            continue;
-        }
 
         const TaskStatus_t *previous =
             s_have_previous_snapshot
@@ -452,15 +466,28 @@ void runtime_observability_log_snapshot(const char *stage)
                 ? runtime_percent_tenths(runtime_delta, window_us)
                 : 0U;
 
+        runtime_task_usage_insert(
+            top_tasks,
+            &top_count,
+            status,
+            runtime_delta,
+            cpu_tenths
+        );
+    }
+
+    for (size_t i = 0U; i < top_count; ++i) {
+        const runtime_task_usage_t *usage = &top_tasks[i];
+        const TaskStatus_t *status = usage->status;
         ESP_LOGI(
             TAG,
-            "RUNTIME_TASK name=%s core=%d priority=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
+            "RUNTIME_TASK rank=%u name=%s core=%d priority=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
+            (unsigned)(i + 1U),
             status->pcTaskName != NULL ? status->pcTaskName : "?",
             runtime_task_core(status),
             (unsigned)status->uxCurrentPriority,
-            (unsigned long long)runtime_delta,
-            cpu_tenths / 10U,
-            cpu_tenths % 10U,
+            (unsigned long long)usage->runtime_delta,
+            usage->cpu_tenths / 10U,
+            usage->cpu_tenths % 10U,
             (unsigned)status->usStackHighWaterMark
         );
     }

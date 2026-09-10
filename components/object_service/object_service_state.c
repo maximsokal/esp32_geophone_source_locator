@@ -6,6 +6,8 @@ static object_service_state_t s_state = {
     .worker_task = NULL,
     .event_callback = NULL,
     .event_user_context = NULL,
+    .event_observer = NULL,
+    .event_observer_context = NULL,
     .busy = false,
     .initialized = false,
 };

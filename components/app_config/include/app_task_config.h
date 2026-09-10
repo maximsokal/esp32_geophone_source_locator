@@ -82,3 +82,10 @@
  */
 #define APP_TASK_PRIORITY_RUNTIME_OBSERVABILITY 1
 #define APP_TASK_STACK_RUNTIME_OBSERVABILITY 4096
+
+/*
+ * Object/session index refreshes run off the HTTP task. The worker is allowed
+ * to spend time in FATFS/SD, but remains below the recorder and UI services.
+ */
+#define APP_TASK_PRIORITY_WEB_STATUS_CACHE 1
+#define APP_TASK_STACK_WEB_STATUS_CACHE 8192

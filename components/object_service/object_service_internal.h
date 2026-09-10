@@ -44,6 +44,10 @@ typedef struct
 
     void *event_user_context;
 
+    object_service_event_observer_t event_observer;
+
+    void *event_observer_context;
+
     volatile bool busy;
 
     bool initialized;
@@ -73,4 +77,9 @@ void object_service_internal_process(
 
 void object_service_internal_process_mutation(
     const object_service_command_t *command
+);
+
+
+void object_service_internal_notify(
+    object_service_state_t *state
 );

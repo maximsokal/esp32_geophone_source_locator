@@ -46,10 +46,32 @@ typedef struct
 } measurement_service_snapshot_t;
 
 
+typedef esp_err_t (*measurement_service_start_guard_callback_t)(
+    void *user_context
+);
+
+
+typedef void (*measurement_service_storage_refresh_callback_t)(
+    void *user_context
+);
+
+
 esp_err_t measurement_service_init(void);
 
 
 void measurement_service_shutdown(void);
+
+
+esp_err_t measurement_service_set_start_guard(
+    measurement_service_start_guard_callback_t callback,
+    void *user_context
+);
+
+
+esp_err_t measurement_service_set_storage_refresh_callback(
+    measurement_service_storage_refresh_callback_t callback,
+    void *user_context
+);
 
 
 esp_err_t measurement_service_start_async(void);

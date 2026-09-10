@@ -16,19 +16,39 @@
 
 static const char *TAG = "WEB_API_CONTROL";
 
-static bool web_control_invalidates_object_cache(const char *action)
+static bool web_control_requires_object_cache_refresh(const char *action)
 {
     if (action == NULL) return false;
     return
         strcmp(action, "create_object") == 0 ||
-        strcmp(action, "activate_object") == 0 ||
         strcmp(action, "delete_object") == 0 ||
         strcmp(action, "rename_object") == 0 ||
         strcmp(action, "set_object_cable_length") == 0 ||
         strcmp(action, "set_default_cable_length") == 0 ||
-        strcmp(action, "set_object_location") == 0 ||
-        strcmp(action, "recording_start") == 0 ||
-        strcmp(action, "measurement_start") == 0;
+        strcmp(action, "set_object_location") == 0;
+}
+
+
+static bool web_control_is_object_storage_mutation(const char *action)
+{
+    return
+        web_control_requires_object_cache_refresh(action) ||
+        (action != NULL && strcmp(action, "activate_object") == 0);
+}
+
+
+static bool web_control_object_storage_is_idle(void)
+{
+    measurement_service_snapshot_t measurement;
+    if (measurement_service_get_snapshot(&measurement) != ESP_OK) {
+        return false;
+    }
+
+    return
+        !measurement.busy &&
+        (measurement.state == MEASUREMENT_SERVICE_LIVE ||
+         measurement.state == MEASUREMENT_SERVICE_REVIEW ||
+         measurement.state == MEASUREMENT_SERVICE_ERROR);
 }
 
 static esp_err_t web_control_read_body(
@@ -151,10 +171,15 @@ static esp_err_t web_control_recording_start(const char *object_id)
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (!web_status_json_objects_cache_ready()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     esp_err_t err = object_store_set_active(object_id);
     if (err != ESP_OK) {
         return err;
     }
+    web_status_json_objects_set_active(object_id);
 
     if (!seismic_acquisition_is_running()) {
         err = seismic_acquisition_start();
@@ -234,7 +259,12 @@ static esp_err_t web_control_process(
     const char *object_id = web_control_string(root, "object_id");
 
     if (strcmp(action, "activate_object") == 0) {
-        return object_id == NULL ? ESP_ERR_INVALID_ARG : object_store_set_active(object_id);
+        if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+        const esp_err_t err = object_store_set_active(object_id);
+        if (err == ESP_OK) {
+            snprintf(object_id_out, OBJECT_STORE_ID_SIZE, "%s", object_id);
+        }
+        return err;
     }
     if (strcmp(action, "delete_object") == 0) {
         if (object_id == NULL) return ESP_ERR_INVALID_ARG;
@@ -312,7 +342,13 @@ static esp_err_t web_control_process(
     }
     if (strcmp(action, "measurement_start") == 0) {
         if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+        if (!web_status_json_objects_cache_ready()) {
+            return ESP_ERR_INVALID_STATE;
+        }
         esp_err_t err = object_store_set_active(object_id);
+        if (err == ESP_OK) {
+            web_status_json_objects_set_active(object_id);
+        }
         return err == ESP_OK ? measurement_service_start_async() : err;
     }
     if (strcmp(action, "measurement_stop") == 0) {
@@ -374,7 +410,17 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     memcpy(action_copy, action, action_length + 1U);
 
     char object_id[OBJECT_STORE_ID_SIZE];
-    err = web_control_process(root, action_copy, object_id);
+    const bool object_storage_mutation =
+        web_control_is_object_storage_mutation(action_copy);
+    const bool object_storage_allowed =
+        !object_storage_mutation || web_control_object_storage_is_idle();
+    if (object_storage_allowed) {
+        err = web_control_process(root, action_copy, object_id);
+    }
+    else {
+        object_id[0] = '\0';
+        err = ESP_ERR_INVALID_STATE;
+    }
     cJSON_Delete(root);
 
     /*
@@ -383,8 +429,25 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
      * partially mutate storage before rollback. A cold refresh is safer than
      * serving stale metadata after either path.
      */
-    if (web_control_invalidates_object_cache(action_copy)) {
+    if (
+        object_storage_allowed &&
+        web_control_requires_object_cache_refresh(action_copy)
+    ) {
         web_status_json_objects_invalidate();
+        const esp_err_t refresh_err = web_status_json_objects_request_refresh();
+        if (refresh_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Object cache refresh request failed: %s",
+                esp_err_to_name(refresh_err)
+            );
+        }
+    }
+    else if (
+        strcmp(action_copy, "activate_object") == 0 &&
+        err == ESP_OK
+    ) {
+        web_status_json_objects_set_active(object_id);
     }
 
     ESP_LOGI(TAG, "%s -> %s", action_copy, esp_err_to_name(err));
