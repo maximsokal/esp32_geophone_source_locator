@@ -161,6 +161,21 @@ def test_status_api_exposes_measurement_service_terminal_states():
     assert 'return "ERROR";' in recording_source
 
 
+def test_measurement_snapshot_captures_state_and_busy_under_one_lock():
+    source = MEASUREMENT_SERVICE.read_text(encoding="utf-8")
+    snapshot = _function_body(
+        source,
+        "esp_err_t measurement_service_get_snapshot("
+    )
+
+    lock = snapshot.index("measurement_service_lock();")
+    state_copy = snapshot.index("*snapshot = s_snapshot;")
+    busy = snapshot.index("snapshot->busy = measurement_service_is_busy();")
+    unlock = snapshot.index("measurement_service_unlock();")
+
+    assert lock < state_copy < busy < unlock
+
+
 def test_console_record_button_uses_the_async_measurement_state_machine():
     source = WEBUI_CONSOLE.read_text(encoding="utf-8")
     transition_source = WEBUI_MEASUREMENT_TRANSITION.read_text(encoding="utf-8")

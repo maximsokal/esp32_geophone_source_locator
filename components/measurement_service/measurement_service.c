@@ -650,11 +650,16 @@ esp_err_t measurement_service_get_snapshot(
         return ESP_ERR_INVALID_STATE;
     }
 
+    /*
+     * Keep the service state and submit gate in one critical section.  A
+     * retry START is accepted while the previous state is ERROR, so reading
+     * busy after releasing the mutex could combine that stale ERROR with a
+     * later worker transition and expose an impossible snapshot.
+     */
     measurement_service_lock();
     *snapshot = s_snapshot;
-    measurement_service_unlock();
-
     snapshot->busy = measurement_service_is_busy();
+    measurement_service_unlock();
 
     object_service_summary_t object;
     const esp_err_t object_err = object_service_get_active(&object);
