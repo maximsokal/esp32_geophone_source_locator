@@ -41,6 +41,10 @@ static measurement_service_snapshot_t s_snapshot;
 static bool s_initialized = false;
 static measurement_service_start_guard_callback_t s_start_guard = NULL;
 static void *s_start_guard_context = NULL;
+static measurement_service_start_reservation_release_callback_t
+    s_start_reservation_release_callback = NULL;
+static void *s_start_reservation_release_context = NULL;
+static bool s_start_reservation_held = false;
 static measurement_service_storage_refresh_callback_t s_storage_refresh_callback = NULL;
 static void *s_storage_refresh_context = NULL;
 
@@ -75,6 +79,25 @@ static void measurement_service_release_gate(void)
 {
     if (s_gate != NULL) {
         (void)xSemaphoreGive(s_gate);
+    }
+}
+
+
+static void measurement_service_release_start_reservation(void)
+{
+    measurement_service_start_reservation_release_callback_t callback = NULL;
+    void *user_context = NULL;
+
+    measurement_service_lock();
+    if (s_start_reservation_held) {
+        s_start_reservation_held = false;
+        callback = s_start_reservation_release_callback;
+        user_context = s_start_reservation_release_context;
+    }
+    measurement_service_unlock();
+
+    if (callback != NULL) {
+        callback(user_context);
     }
 }
 
@@ -138,6 +161,10 @@ static void measurement_service_process_start(void)
     s_snapshot.dropped_frames = 0U;
     s_snapshot.recording_ms = 0U;
     measurement_service_unlock();
+
+    /* The state is now STARTING, so a cache refresh can no longer mistake
+     * this accepted START for an idle LIVE window. */
+    measurement_service_release_start_reservation();
 
     object_service_summary_t object;
     esp_err_t err = object_service_get_active(&object);
@@ -503,6 +530,9 @@ static esp_err_t measurement_service_submit(
     measurement_service_lock();
     const bool allowed =
         measurement_service_command_allowed_locked(command);
+    measurement_service_start_guard_callback_t start_guard =
+        s_start_guard;
+    void *start_guard_context = s_start_guard_context;
     measurement_service_unlock();
 
     if (!allowed) {
@@ -510,15 +540,24 @@ static esp_err_t measurement_service_submit(
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (command == MEASUREMENT_COMMAND_START && s_start_guard != NULL) {
-        const esp_err_t guard_err = s_start_guard(s_start_guard_context);
+    bool start_reservation_held = false;
+    if (command == MEASUREMENT_COMMAND_START && start_guard != NULL) {
+        const esp_err_t guard_err = start_guard(start_guard_context);
         if (guard_err != ESP_OK) {
             measurement_service_release_gate();
             return guard_err;
         }
+
+        measurement_service_lock();
+        s_start_reservation_held = true;
+        measurement_service_unlock();
+        start_reservation_held = true;
     }
 
     if (xQueueSend(s_queue, &command, 0) != pdTRUE) {
+        if (start_reservation_held) {
+            measurement_service_release_start_reservation();
+        }
         measurement_service_release_gate();
         return ESP_ERR_TIMEOUT;
     }
@@ -560,6 +599,9 @@ esp_err_t measurement_service_init(void)
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     s_start_guard = NULL;
     s_start_guard_context = NULL;
+    s_start_reservation_release_callback = NULL;
+    s_start_reservation_release_context = NULL;
+    s_start_reservation_held = false;
     s_storage_refresh_callback = NULL;
     s_storage_refresh_context = NULL;
     s_snapshot.initialized = true;
@@ -621,6 +663,8 @@ void measurement_service_shutdown(void)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+    measurement_service_release_start_reservation();
+
     if (s_mutex != NULL) {
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
@@ -639,6 +683,9 @@ void measurement_service_shutdown(void)
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     s_start_guard = NULL;
     s_start_guard_context = NULL;
+    s_start_reservation_release_callback = NULL;
+    s_start_reservation_release_context = NULL;
+    s_start_reservation_held = false;
     s_storage_refresh_callback = NULL;
     s_storage_refresh_context = NULL;
     s_initialized = false;
@@ -656,8 +703,27 @@ esp_err_t measurement_service_set_start_guard(
         return ESP_ERR_INVALID_STATE;
     }
 
+    measurement_service_lock();
     s_start_guard = callback;
     s_start_guard_context = user_context;
+    measurement_service_unlock();
+    return ESP_OK;
+}
+
+
+esp_err_t measurement_service_set_start_reservation_release_callback(
+    measurement_service_start_reservation_release_callback_t callback,
+    void *user_context
+)
+{
+    if (!s_initialized || s_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    measurement_service_lock();
+    s_start_reservation_release_callback = callback;
+    s_start_reservation_release_context = user_context;
+    measurement_service_unlock();
     return ESP_OK;
 }
 

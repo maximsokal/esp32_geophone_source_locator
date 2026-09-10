@@ -103,6 +103,11 @@ static void web_server_status_cache_start(void)
         web_status_json_objects_start_guard,
         NULL
     );
+    const esp_err_t release_err =
+        measurement_service_set_start_reservation_release_callback(
+            web_status_json_objects_release_start_reservation,
+            NULL
+        );
     const esp_err_t refresh_err =
         measurement_service_set_storage_refresh_callback(
             web_status_json_objects_storage_changed,
@@ -113,17 +118,21 @@ static void web_server_status_cache_start(void)
         NULL
     );
     s_measurement_hooks_registered =
-        guard_err == ESP_OK || refresh_err == ESP_OK;
+        guard_err == ESP_OK ||
+        release_err == ESP_OK ||
+        refresh_err == ESP_OK;
     s_object_observer_registered = object_observer_err == ESP_OK;
     if (
         guard_err != ESP_OK ||
+        release_err != ESP_OK ||
         refresh_err != ESP_OK ||
         object_observer_err != ESP_OK
     ) {
         ESP_LOGW(
             TAG,
-            "Status-cache hooks unavailable guard=%s refresh=%s object_observer=%s",
+            "Status-cache hooks unavailable guard=%s release=%s refresh=%s object_observer=%s",
             esp_err_to_name(guard_err),
+            esp_err_to_name(release_err),
             esp_err_to_name(refresh_err),
             esp_err_to_name(object_observer_err)
         );
@@ -135,6 +144,7 @@ static void web_server_status_cache_stop(void)
 {
     if (s_measurement_hooks_registered) {
         (void)measurement_service_set_start_guard(NULL, NULL);
+        (void)measurement_service_set_start_reservation_release_callback(NULL, NULL);
         (void)measurement_service_set_storage_refresh_callback(NULL, NULL);
         s_measurement_hooks_registered = false;
     }

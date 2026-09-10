@@ -185,6 +185,21 @@ def test_measurement_service_gates_start_and_refreshes_after_storage_completion(
     assert "web_status_json_objects_cache_ready()" in web_control
 
 
+def test_cache_refresh_and_measurement_start_share_reservation():
+    arbitration = read("components/web_server/web_status_cache_arbitration.c")
+    arbitration_header = read("components/web_server/web_status_cache_arbitration.h")
+    measurement = read("components/measurement_service/measurement_service.c")
+    web_server = read("components/web_server/web_server.c")
+
+    assert "try_reserve_refresh" in arbitration_header
+    assert "try_reserve_start" in arbitration_header
+    assert "!arbitration->start_reserved" in arbitration
+    assert "arbitration->start_reserved = true" in arbitration
+    assert "measurement_service_set_start_reservation_release_callback" in measurement
+    assert "measurement_service_release_start_reservation();" in measurement
+    assert "web_status_json_objects_release_start_reservation" in web_server
+
+
 def test_ui_header_does_not_reinvalidate_unchanged_labels():
     shell = read("components/ui/ui_shell.c")
     system = read("components/ui/ui_system.c")
@@ -206,8 +221,14 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     assert "LV_PART_INDICATOR" in measurements
     assert "config UI_MEASUREMENTS_GRAPHS_ENABLED" in kconfig
     assert "UI_MEASUREMENT_CHART_PERIOD_US 125000U" in measurements
-    assert "lv_obj_invalidate(context->measurement_screen)" in measurements
+    assert "ui_measurements_create_graph_container_locked" in measurements
+    assert "lv_obj_invalidate(context->measurement_graphs)" in measurements
+    assert "lv_obj_invalidate(context->measurement_screen)" not in measurements
     assert "lv_chart_refresh(chart)" not in measurements
+    assert "DIGITAL_INTERFERENCE" in measurements
+    assert "DATA? DIGITAL" in measurements
+    assert "s_last_digital_interference" in measurements
+    assert "digital_interference == s_last_digital_interference" in measurements
     assert "channel_mean" in reducer
     assert "trace_min" in reducer
     assert "trace_max" in reducer

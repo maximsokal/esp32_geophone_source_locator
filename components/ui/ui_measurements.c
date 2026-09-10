@@ -43,6 +43,19 @@ static bool ui_measurements_transport_fault(
         strcmp(acquisition->serial_quality, "FAULT") == 0;
 }
 
+
+static bool ui_measurements_digital_interference(
+    const seismic_acquisition_snapshot_t *acquisition
+)
+{
+    return acquisition != NULL &&
+        acquisition->serial_pattern != NULL &&
+        strcmp(
+            acquisition->serial_pattern,
+            "DIGITAL_INTERFERENCE"
+        ) == 0;
+}
+
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
 /*
  * A 512-frame preview is about 12 KiB. Keeping that array in normal .bss
@@ -89,6 +102,7 @@ static float s_scale_uv =
 
 static int32_t s_last_applied_scale_uv = 0;
 static bool s_last_transport_fault = false;
+static bool s_last_digital_interference = false;
 
 static uint64_t s_measurement_perf_started_us = 0U;
 static uint64_t s_measurement_perf_refreshes = 0U;
@@ -315,6 +329,26 @@ static lv_obj_t *ui_measurements_create_chart_locked(
 }
 
 
+static lv_obj_t *ui_measurements_create_graph_container_locked(
+    lv_obj_t *screen
+)
+{
+    lv_obj_t *container = lv_obj_create(screen);
+    if (container == NULL) {
+        return NULL;
+    }
+
+    lv_obj_set_pos(container, 10, 76);
+    lv_obj_set_size(container, 300, 114);
+    lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(container, 0, 0);
+    lv_obj_set_style_pad_all(container, 0, 0);
+    lv_obj_set_style_radius(container, 0, 0);
+    lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+    return container;
+}
+
+
 static void ui_measurements_refresh_charts_locked(
     const seismic_acquisition_snapshot_t *acquisition
 )
@@ -326,6 +360,8 @@ static void ui_measurements_refresh_charts_locked(
         acquisition->serial_suspicious;
     const bool transport_fault =
         ui_measurements_transport_fault(acquisition);
+    const bool digital_interference =
+        ui_measurements_digital_interference(acquisition);
     const char *serial_pattern =
         acquisition != NULL &&
         acquisition->serial_pattern != NULL
@@ -339,7 +375,8 @@ static void ui_measurements_refresh_charts_locked(
     if (
         s_last_chart_refresh_us != 0U &&
         refresh_now_us - s_last_chart_refresh_us < UI_MEASUREMENT_CHART_PERIOD_US &&
-        ui_measurements_transport_fault(acquisition) == s_last_transport_fault
+        transport_fault == s_last_transport_fault &&
+        digital_interference == s_last_digital_interference
     ) {
         ui_measurements_perf_log_if_due(refresh_now_us);
         return;
@@ -364,7 +401,8 @@ static void ui_measurements_refresh_charts_locked(
     if (
         err == ESP_OK &&
         buffer_info.total_frames == s_last_chart_generation &&
-        transport_fault == s_last_transport_fault
+        transport_fault == s_last_transport_fault &&
+        digital_interference == s_last_digital_interference
     ) {
         ui_measurements_perf_log_if_due((uint64_t)esp_timer_get_time());
         return;
@@ -416,11 +454,19 @@ static void ui_measurements_refresh_charts_locked(
 
         }
     }
-    /* External min/max arrays are updated as one batch; invalidate the
-     * measurement screen once instead of issuing one LVGL refresh per point
-     * (or one invalidation per chart). */
-    if (context->measurement_screen != NULL) {
-        lv_obj_invalidate(context->measurement_screen);
+    /* External min/max arrays are updated as one batch. The graph container
+     * is deliberately limited to the four chart cards, so summary/footer
+     * pixels do not become dirty on every preview update. */
+    if (context->measurement_graphs != NULL) {
+        lv_obj_invalidate(context->measurement_graphs);
+    }
+    else {
+        /* Allocation failure fallback: keep invalidation local to each chart. */
+        for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+            if (context->measurement_charts[channel] != NULL) {
+                lv_obj_invalidate(context->measurement_charts[channel]);
+            }
+        }
     }
     const uint64_t chart_us =
         (uint64_t)(esp_timer_get_time() - (uint64_t)chart_started_us);
@@ -441,6 +487,14 @@ static void ui_measurements_refresh_charts_locked(
                 "CH%u INVALID %s",
                 (unsigned)(channel + 1U),
                 serial_pattern
+            );
+        }
+        else if (digital_interference) {
+            snprintf(
+                text,
+                sizeof(text),
+                "CH%u DATA? DIGITAL",
+                (unsigned)(channel + 1U)
             );
         }
         else if (serial_suspicious) {
@@ -497,6 +551,7 @@ static void ui_measurements_refresh_charts_locked(
 
     s_last_applied_scale_uv = scale_uv;
     s_last_transport_fault = transport_fault;
+    s_last_digital_interference = digital_interference;
 
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
     const uint64_t total_us =
@@ -603,10 +658,12 @@ void ui_render_measurements_locked(void)
     ui_context_t *context = ui_context();
     context->measurement_exit_after_stop = false;
     context->measurement_screen = NULL;
+    context->measurement_graphs = NULL;
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
     s_last_chart_generation = UINT64_MAX;
     s_last_applied_scale_uv = 0;
     s_last_transport_fault = false;
+    s_last_digital_interference = false;
     s_last_chart_refresh_us = 0U;
     ui_measurements_perf_reset((uint64_t)esp_timer_get_time());
 #endif
@@ -651,10 +708,47 @@ void ui_render_measurements_locked(void)
         UI_COLOR_MUTED
     );
 
-    (void)ui_measurements_create_chart_locked(screen, 0U, 10, 76);
-    (void)ui_measurements_create_chart_locked(screen, 1U, 162, 76);
-    (void)ui_measurements_create_chart_locked(screen, 2U, 10, 135);
-    (void)ui_measurements_create_chart_locked(screen, 3U, 162, 135);
+    lv_obj_t *graph_parent = screen;
+    int chart_x_left = 10;
+    int chart_x_right = 162;
+    int chart_y_top = 76;
+    int chart_y_bottom = 135;
+#if UI_MEASUREMENTS_GRAPHS_ENABLED
+    context->measurement_graphs =
+        ui_measurements_create_graph_container_locked(screen);
+    if (context->measurement_graphs != NULL) {
+        graph_parent = context->measurement_graphs;
+        chart_x_left = 0;
+        chart_x_right = 152;
+        chart_y_top = 0;
+        chart_y_bottom = 59;
+    }
+#endif
+
+    (void)ui_measurements_create_chart_locked(
+        graph_parent,
+        0U,
+        chart_x_left,
+        chart_y_top
+    );
+    (void)ui_measurements_create_chart_locked(
+        graph_parent,
+        1U,
+        chart_x_right,
+        chart_y_top
+    );
+    (void)ui_measurements_create_chart_locked(
+        graph_parent,
+        2U,
+        chart_x_left,
+        chart_y_bottom
+    );
+    (void)ui_measurements_create_chart_locked(
+        graph_parent,
+        3U,
+        chart_x_right,
+        chart_y_bottom
+    );
 
     context->measurement_health = ui_create_label_locked(
         screen,
@@ -925,6 +1019,20 @@ void ui_measurements_refresh_locked(void)
                 : "UNKNOWN"
         );
         action_color = UI_COLOR_ERROR;
+    }
+    else if (
+        acquisition_err == ESP_OK &&
+        ui_measurements_digital_interference(&acquisition)
+    ) {
+        snprintf(
+            text,
+            sizeof(text),
+            "ADC DATA? DIGITAL  %s",
+            acquisition.serial_pattern != NULL
+                ? acquisition.serial_pattern
+                : "UNKNOWN"
+        );
+        action_color = UI_COLOR_WARNING;
     }
     else if (
         acquisition_err == ESP_OK &&
