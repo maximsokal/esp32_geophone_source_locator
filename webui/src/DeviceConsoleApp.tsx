@@ -14,6 +14,10 @@ import {
   reconcileObjectSelection,
   type ObjectSelectionMode,
 } from './features/objects/objectSelection';
+import {
+  measurementTransitionErrorMessage,
+  waitForMeasurementTransition,
+} from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
 
 const XrScannerFeature = lazy(() => import('./App'));
@@ -227,7 +231,26 @@ export default function DeviceConsoleApp() {
         const sessionObjectId = action === 'measurement_start' && typeof payload.object_id === 'string'
           ? payload.object_id
           : selectedId;
-        await refreshSessions(sessionObjectId);
+        /*
+         * measurement_start/stop only enqueue work. Do not read the SD-backed
+         * session model on the HTTP 200 boundary: STARTING/STOPPING may still
+         * be draining, syncing, closing, and writing metadata. The status
+         * endpoint exposes the measurement service's terminal transition.
+         */
+        const transitionStatus = await waitForMeasurementTransition(
+          action as 'measurement_start' | 'measurement_stop',
+          () => fetchDeviceStatus(false),
+        );
+        setStatus(transitionStatus);
+        const confirmedObjectId = sessionObjectId
+          ?? transitionStatus.measurement?.object_id
+          ?? transitionStatus.recording?.object_id
+          ?? null;
+        await refreshSessions(confirmedObjectId);
+        const transitionError = measurementTransitionErrorMessage(transitionStatus);
+        if (transitionError !== null) {
+          throw new Error(`ESP ${action} failed: ${transitionError}`);
+        }
       }
       else if (!LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
         await refreshStatus();

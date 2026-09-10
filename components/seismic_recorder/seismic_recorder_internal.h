@@ -13,12 +13,16 @@
 
 #define SEISMIC_RECORDER_PATH_SIZE            256
 #define SEISMIC_RECORDER_BATCH_FRAMES         512U
+#define SEISMIC_RECORDER_WRITE_STAGING_FRAMES 256U
 /*
  * Accumulate roughly half a second of samples before opening an SD
  * arbitration window.  The recorder buffer lives in PSRAM (see
- * seismic_recorder_init), so the larger batch does not consume scarce
- * internal/DMA RAM.  STOP still bypasses this threshold to drain its exact
- * target without adding user-visible latency.
+ * seismic_recorder_init), so the larger backlog batch does not consume scarce
+ * internal/DMA RAM.  The filesystem writer copies bounded chunks through an
+ * internal DMA_ATTR staging buffer before fwrite; this keeps SDSPI on its
+ * multi-block path instead of its PSRAM bounce-buffer path. STOP still
+ * bypasses this threshold to drain its exact target without adding
+ * user-visible latency.
  */
 #define SEISMIC_RECORDER_FLUSH_INTERVAL_US    30000000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
