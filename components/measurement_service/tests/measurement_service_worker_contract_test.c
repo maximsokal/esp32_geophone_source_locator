@@ -35,6 +35,8 @@ static unsigned fake_recorder_stop_calls;
 static unsigned fake_recorder_delete_calls;
 static object_service_summary_t fake_object;
 static seismic_recorder_snapshot_t fake_recorder;
+static void (*fake_busy_read_hook)(void);
+static bool fake_busy_read_interleaved;
 
 QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 {
@@ -114,6 +116,9 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t handle)
 UBaseType_t uxSemaphoreGetCount(SemaphoreHandle_t handle)
 {
     const fake_semaphore_t *semaphore = handle;
+    if (fake_busy_read_hook != NULL) {
+        fake_busy_read_hook();
+    }
     return semaphore == NULL ? 0U : semaphore->count;
 }
 
@@ -268,6 +273,20 @@ esp_err_t seismic_recorder_delete_session(const char *object_id, const char *ses
 
 #include "../measurement_service.c"
 
+static void fake_try_worker_transition_during_busy_read(void)
+{
+    /* A real worker can only change s_snapshot while it owns s_mutex.  The
+     * non-blocking take models that concurrent attempt without deadlocking
+     * this single-threaded contract test. */
+    if (s_mutex == NULL || xSemaphoreTake(s_mutex, 0) != pdTRUE) {
+        return;
+    }
+
+    fake_busy_read_interleaved = true;
+    s_snapshot.state = MEASUREMENT_SERVICE_RECORDING;
+    xSemaphoreGive(s_mutex);
+}
+
 static void reset_fakes(void)
 {
     fake_object_error = ESP_OK;
@@ -284,6 +303,8 @@ static void reset_fakes(void)
     fake_recorder_start_calls = 0U;
     fake_recorder_stop_calls = 0U;
     fake_recorder_delete_calls = 0U;
+    fake_busy_read_hook = NULL;
+    fake_busy_read_interleaved = false;
 }
 
 static void start_service(void)
@@ -424,6 +445,30 @@ static void test_retry_start_after_error_keeps_gate_until_worker_runs(void)
     stop_service();
 }
 
+static void test_snapshot_state_and_busy_share_one_critical_section(void)
+{
+    start_service();
+    fake_recorder_start_error = ESP_FAIL;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+
+    measurement_service_snapshot_t current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(!current.busy);
+
+    /* If busy is read after unlocking, this hook can acquire the mutex and
+     * emulate the worker completing a transition between the two reads. */
+    fake_busy_read_interleaved = false;
+    fake_busy_read_hook = fake_try_worker_transition_during_busy_read;
+    assert(measurement_service_get_snapshot(&current) == ESP_OK);
+    fake_busy_read_hook = NULL;
+
+    assert(!fake_busy_read_interleaved);
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(!current.busy);
+    stop_service();
+}
+
 static void test_underlying_errors_and_queue_full(void)
 {
     start_service();
@@ -518,6 +563,7 @@ int main(void)
     test_initial_and_no_active_object();
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();
+    test_snapshot_state_and_busy_share_one_critical_section();
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();
     test_delayed_stop_error_blocks_restart_until_cleanup();
