@@ -17,6 +17,7 @@
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder_internal.h"
+#include "seismic_recorder_start_policy.h"
 #include "storage_manager.h"
 
 
@@ -765,7 +766,8 @@ esp_err_t seismic_recorder_start(
         ESP_LOGE(TAG, "START rejected: acquisition snapshot failed err=%s", esp_err_to_name(err));
         return ESP_ERR_INVALID_STATE;
     }
-    if (!acquisition.running) {
+    err = seismic_recorder_start_validate_acquisition(&acquisition);
+    if (err != ESP_OK && !acquisition.running) {
         ESP_LOGE(
             TAG,
             "START rejected: acquisition task is not running source=%s presence=%s serial=%s",
@@ -775,13 +777,17 @@ esp_err_t seismic_recorder_start(
         );
         return ESP_ERR_INVALID_STATE;
     }
-    if (acquisition.sample_rate_hz == 0U) {
+    if (err != ESP_OK && acquisition.sample_rate_hz == 0U) {
         ESP_LOGE(
             TAG,
             "START rejected: acquisition task has zero sample rate source=%s",
             acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN"
         );
         return ESP_ERR_INVALID_STATE;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: acquisition admission validation failed err=%s", esp_err_to_name(err));
+        return err;
     }
     if (!acquisition.source_healthy || acquisition.serial_suspicious) {
         ESP_LOGW(
