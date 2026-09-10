@@ -21,7 +21,7 @@ static const web_route_identity_t s_https_routes[] = {
 static const web_route_identity_t s_http_routes[] = {
     { "/", WEB_ROUTE_GET },
     { "/setup", WEB_ROUTE_GET },
-    { "/setup/save", WEB_ROUTE_POST },
+    { "/api/wifi/setup", WEB_ROUTE_POST },
     { "/setup/ca", WEB_ROUTE_GET },
     { "/setup/ca-guide", WEB_ROUTE_GET },
     { "/setup/ca-download", WEB_ROUTE_GET },

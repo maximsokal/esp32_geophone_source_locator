@@ -273,6 +273,17 @@
       ]
     },
     {
+      "name": "web_wifi_setup_route_integration",
+      "sources": [
+        "components/web_server/web_route_capacity.c",
+        "tests/host/web_wifi_setup_route_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_pipeline",
+        "components/web_server"
+      ]
+    },
+    {
       "name": "web_status_policy",
       "sources": [
         "components/web_server/web_status_policy.c",
