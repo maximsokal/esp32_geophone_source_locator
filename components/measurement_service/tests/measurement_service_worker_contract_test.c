@@ -37,6 +37,10 @@ static object_service_summary_t fake_object;
 static seismic_recorder_snapshot_t fake_recorder;
 static void (*fake_busy_read_hook)(void);
 static bool fake_busy_read_interleaved;
+static bool fake_start_guard_allowed;
+static unsigned fake_start_guard_calls;
+static unsigned fake_start_release_calls;
+static bool fake_start_release_saw_starting;
 
 QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 {
@@ -305,6 +309,27 @@ static void reset_fakes(void)
     fake_recorder_delete_calls = 0U;
     fake_busy_read_hook = NULL;
     fake_busy_read_interleaved = false;
+    fake_start_guard_allowed = true;
+    fake_start_guard_calls = 0U;
+    fake_start_release_calls = 0U;
+    fake_start_release_saw_starting = false;
+}
+
+
+static esp_err_t fake_start_guard(void *user_context)
+{
+    (void)user_context;
+    ++fake_start_guard_calls;
+    return fake_start_guard_allowed ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+
+static void fake_start_reservation_release(void *user_context)
+{
+    (void)user_context;
+    ++fake_start_release_calls;
+    fake_start_release_saw_starting =
+        s_snapshot.state == MEASUREMENT_SERVICE_STARTING;
 }
 
 static void start_service(void)
@@ -445,6 +470,46 @@ static void test_retry_start_after_error_keeps_gate_until_worker_runs(void)
     stop_service();
 }
 
+
+static void test_start_reservation_release_waits_for_starting_state(void)
+{
+    start_service();
+    assert(measurement_service_set_start_guard(fake_start_guard, NULL) == ESP_OK);
+    assert(measurement_service_set_start_reservation_release_callback(
+        fake_start_reservation_release,
+        NULL
+    ) == ESP_OK);
+
+    assert(measurement_service_start_async() == ESP_OK);
+    assert(fake_start_guard_calls == 1U);
+    assert(fake_start_release_calls == 0U);
+    assert(measurement_service_is_busy());
+
+    run_pending_command();
+    assert(fake_start_release_calls == 1U);
+    assert(fake_start_release_saw_starting);
+    assert(snapshot().state == MEASUREMENT_SERVICE_RECORDING);
+    stop_service();
+}
+
+
+static void test_start_guard_rejects_without_leaking_release(void)
+{
+    start_service();
+    fake_start_guard_allowed = false;
+    assert(measurement_service_set_start_guard(fake_start_guard, NULL) == ESP_OK);
+    assert(measurement_service_set_start_reservation_release_callback(
+        fake_start_reservation_release,
+        NULL
+    ) == ESP_OK);
+
+    assert(measurement_service_start_async() == ESP_ERR_INVALID_STATE);
+    assert(fake_start_guard_calls == 1U);
+    assert(fake_start_release_calls == 0U);
+    assert(!measurement_service_is_busy());
+    stop_service();
+}
+
 static void test_snapshot_state_and_busy_share_one_critical_section(void)
 {
     start_service();
@@ -563,6 +628,8 @@ int main(void)
     test_initial_and_no_active_object();
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();
+    test_start_reservation_release_waits_for_starting_state();
+    test_start_guard_rejects_without_leaking_release();
     test_snapshot_state_and_busy_share_one_critical_section();
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();

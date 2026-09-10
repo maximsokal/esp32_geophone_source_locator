@@ -113,6 +113,8 @@ lv_obj_t *ui_create_screen_base_locked(
     context->measurement_summary = NULL;
     context->measurement_transport = NULL;
     context->measurement_health = NULL;
+    context->measurement_screen = NULL;
+    context->measurement_graphs = NULL;
     context->system_heap = NULL;
     context->system_psram = NULL;
     context->system_uptime = NULL;

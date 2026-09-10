@@ -320,6 +320,17 @@
       ]
     },
     {
+      "name": "web_status_cache_arbitration",
+      "sources": [
+        "components/web_server/web_status_cache_arbitration.c",
+        "components/web_server/tests/web_status_cache_arbitration_test.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/tests/stubs",
+        "components/web_server"
+      ]
+    },
+    {
       "name": "web_status_policy",
       "sources": [
         "components/web_server/web_status_policy.c",

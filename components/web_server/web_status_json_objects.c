@@ -19,6 +19,7 @@
 #include "measurement_service.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "web_status_cache_arbitration.h"
 
 
 typedef struct
@@ -54,12 +55,10 @@ static const char *TAG = "WEB_STATUS_CACHE";
 static web_status_cache_payload_t *s_payload_a = NULL;
 static web_status_cache_payload_t *s_payload_b = NULL;
 static web_status_cache_payload_t *s_active_payload = NULL;
-static SemaphoreHandle_t s_cache_mutex = NULL;
+static web_status_cache_arbitration_t s_arbitration;
 static SemaphoreHandle_t s_refresh_mutex = NULL;
 static QueueHandle_t s_refresh_queue = NULL;
 static TaskHandle_t s_refresh_task = NULL;
-static bool s_cache_valid = false;
-static bool s_cache_refreshing = false;
 static char s_active_object_id[OBJECT_STORE_ID_SIZE];
 
 
@@ -131,8 +130,10 @@ static esp_err_t web_status_cache_payloads_ensure(void)
 }
 
 
-static bool web_status_cache_storage_is_idle(void)
+static bool web_status_cache_storage_is_idle(void *user_context)
 {
+    (void)user_context;
+
     measurement_service_snapshot_t measurement;
     if (measurement_service_get_snapshot(&measurement) == ESP_OK) {
         if (
@@ -168,11 +169,9 @@ static void web_status_cache_publish_result(
     esp_err_t error
 )
 {
-    if (s_cache_mutex == NULL) {
+    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
         return;
     }
-
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
 
     if (error == ESP_OK) {
         s_active_payload = payload;
@@ -188,29 +187,23 @@ static void web_status_cache_publish_result(
                 break;
             }
         }
-        s_cache_valid = true;
-    }
-    else {
-        s_cache_valid = false;
     }
 
-    s_cache_refreshing = false;
-    (void)xSemaphoreGive(s_cache_mutex);
+    web_status_cache_arbitration_unlock(&s_arbitration);
+    web_status_cache_arbitration_finish_refresh(
+        &s_arbitration,
+        error == ESP_OK
+    );
 }
 
 
 esp_err_t web_status_json_objects_refresh(void)
 {
-    if (s_cache_mutex == NULL || s_refresh_mutex == NULL) {
+    if (s_arbitration.mutex == NULL || s_refresh_mutex == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
     if (xSemaphoreTake(s_refresh_mutex, portMAX_DELAY) != pdTRUE) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (!web_status_cache_storage_is_idle()) {
-        (void)xSemaphoreGive(s_refresh_mutex);
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -220,12 +213,27 @@ esp_err_t web_status_json_objects_refresh(void)
         return err;
     }
 
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-    s_cache_refreshing = true;
-    s_cache_valid = false;
+    /* The arbitration state is reserved before any object/session filesystem
+     * call. START uses the same reservation, so its guard cannot pass in the
+     * gap between an idle check and the first SD read. */
+    if (!web_status_cache_arbitration_try_reserve_refresh(
+        &s_arbitration,
+        web_status_cache_storage_is_idle,
+        NULL
+    )) {
+        (void)xSemaphoreGive(s_refresh_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
+        web_status_cache_arbitration_finish_refresh(&s_arbitration, false);
+        (void)xSemaphoreGive(s_refresh_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
     web_status_cache_payload_t *staging =
         s_active_payload == s_payload_a ? s_payload_b : s_payload_a;
-    (void)xSemaphoreGive(s_cache_mutex);
+    web_status_cache_arbitration_unlock(&s_arbitration);
 
     memset(staging, 0, sizeof(*staging));
     const int64_t started_us = esp_timer_get_time();
@@ -325,24 +333,26 @@ static void web_status_cache_refresh_task(void *argument)
 
 esp_err_t web_status_json_objects_init(void)
 {
-    if (s_cache_mutex != NULL) {
+    if (s_arbitration.mutex != NULL) {
         return ESP_OK;
     }
 
-    s_cache_mutex = xSemaphoreCreateMutex();
+    esp_err_t err = web_status_cache_arbitration_init(&s_arbitration);
+    if (err != ESP_OK) {
+        return err;
+    }
+
     s_refresh_mutex = xSemaphoreCreateMutex();
     s_refresh_queue = xQueueCreate(1U, sizeof(web_status_cache_command_t));
     if (
-        s_cache_mutex == NULL ||
         s_refresh_mutex == NULL ||
         s_refresh_queue == NULL
     ) {
         if (s_refresh_queue != NULL) vQueueDelete(s_refresh_queue);
         if (s_refresh_mutex != NULL) vSemaphoreDelete(s_refresh_mutex);
-        if (s_cache_mutex != NULL) vSemaphoreDelete(s_cache_mutex);
         s_refresh_queue = NULL;
         s_refresh_mutex = NULL;
-        s_cache_mutex = NULL;
+        web_status_cache_arbitration_shutdown(&s_arbitration);
         return ESP_ERR_NO_MEM;
     }
 
@@ -359,10 +369,9 @@ esp_err_t web_status_json_objects_init(void)
     if (result != pdPASS) {
         vQueueDelete(s_refresh_queue);
         vSemaphoreDelete(s_refresh_mutex);
-        vSemaphoreDelete(s_cache_mutex);
         s_refresh_queue = NULL;
         s_refresh_mutex = NULL;
-        s_cache_mutex = NULL;
+        web_status_cache_arbitration_shutdown(&s_arbitration);
         return ESP_ERR_NO_MEM;
     }
 
@@ -397,16 +406,13 @@ void web_status_json_objects_shutdown(void)
     s_payload_a = NULL;
     s_payload_b = NULL;
     s_active_payload = NULL;
-    s_cache_valid = false;
-    s_cache_refreshing = false;
     s_active_object_id[0] = '\0';
 
     if (s_refresh_queue != NULL) vQueueDelete(s_refresh_queue);
     if (s_refresh_mutex != NULL) vSemaphoreDelete(s_refresh_mutex);
-    if (s_cache_mutex != NULL) vSemaphoreDelete(s_cache_mutex);
     s_refresh_queue = NULL;
     s_refresh_mutex = NULL;
-    s_cache_mutex = NULL;
+    web_status_cache_arbitration_shutdown(&s_arbitration);
 }
 
 
@@ -426,27 +432,13 @@ esp_err_t web_status_json_objects_request_refresh(void)
 
 void web_status_json_objects_invalidate(void)
 {
-    if (s_cache_mutex == NULL) {
-        s_cache_valid = false;
-        return;
-    }
-
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-    s_cache_valid = false;
-    (void)xSemaphoreGive(s_cache_mutex);
+    web_status_cache_arbitration_invalidate(&s_arbitration);
 }
 
 
 bool web_status_json_objects_cache_ready(void)
 {
-    if (s_cache_mutex == NULL) {
-        return false;
-    }
-
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-    const bool ready = s_cache_valid && !s_cache_refreshing;
-    (void)xSemaphoreGive(s_cache_mutex);
-    return ready;
+    return web_status_cache_arbitration_cache_ready(&s_arbitration);
 }
 
 
@@ -459,9 +451,16 @@ bool web_status_json_objects_cache_busy(void)
 esp_err_t web_status_json_objects_start_guard(void *user_context)
 {
     (void)user_context;
-    return web_status_json_objects_cache_ready()
+    return web_status_cache_arbitration_try_reserve_start(&s_arbitration)
         ? ESP_OK
         : ESP_ERR_INVALID_STATE;
+}
+
+
+void web_status_json_objects_release_start_reservation(void *user_context)
+{
+    (void)user_context;
+    web_status_cache_arbitration_release_start(&s_arbitration);
 }
 
 
@@ -521,18 +520,17 @@ void web_status_json_objects_object_event(
 
 void web_status_json_objects_set_active(const char *object_id)
 {
-    if (s_cache_mutex == NULL) {
+    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
         return;
     }
 
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
     snprintf(
         s_active_object_id,
         sizeof(s_active_object_id),
         "%s",
         object_id != NULL ? object_id : ""
     );
-    (void)xSemaphoreGive(s_cache_mutex);
+    web_status_cache_arbitration_unlock(&s_arbitration);
 }
 
 
@@ -602,16 +600,20 @@ static bool web_status_json_add_objects_from_payload(
 
 bool web_status_json_add_objects(cJSON *root)
 {
-    if (!web_status_json_objects_cache_ready()) {
+    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
         return false;
     }
 
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    if (!s_arbitration.cache_ready || s_arbitration.cache_refreshing) {
+        web_status_cache_arbitration_unlock(&s_arbitration);
+        return false;
+    }
+
     const web_status_cache_payload_t *payload = s_active_payload;
     const bool ok = payload != NULL
         ? web_status_json_add_objects_from_payload(root, payload)
         : false;
-    (void)xSemaphoreGive(s_cache_mutex);
+    web_status_cache_arbitration_unlock(&s_arbitration);
     return ok;
 }
 
@@ -635,11 +637,15 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
     if (object_id == NULL || object_id[0] == '\0') {
         return true;
     }
-    if (!web_status_json_objects_cache_ready()) {
+    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
         return false;
     }
 
-    (void)xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+    if (!s_arbitration.cache_ready || s_arbitration.cache_refreshing) {
+        web_status_cache_arbitration_unlock(&s_arbitration);
+        return false;
+    }
+
     const web_status_cache_payload_t *payload = s_active_payload;
     const web_status_session_cache_t *session_cache = payload != NULL
         ? web_status_find_session_cache(payload, object_id)
@@ -647,11 +653,11 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
 
     cJSON *collection = cJSON_AddObjectToObject(root, "recording_sessions");
     if (collection == NULL) {
-        (void)xSemaphoreGive(s_cache_mutex);
+        web_status_cache_arbitration_unlock(&s_arbitration);
         return false;
     }
     if (cJSON_AddStringToObject(collection, "object_id", object_id) == NULL) {
-        (void)xSemaphoreGive(s_cache_mutex);
+        web_status_cache_arbitration_unlock(&s_arbitration);
         return false;
     }
 
@@ -659,19 +665,19 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
         ? ESP_ERR_NOT_FOUND
         : session_cache->error;
     if (cJSON_AddBoolToObject(collection, "available", error == ESP_OK) == NULL) {
-        (void)xSemaphoreGive(s_cache_mutex);
+        web_status_cache_arbitration_unlock(&s_arbitration);
         return false;
     }
 
     cJSON *array = cJSON_AddArrayToObject(collection, "sessions");
     if (array == NULL) {
-        (void)xSemaphoreGive(s_cache_mutex);
+        web_status_cache_arbitration_unlock(&s_arbitration);
         return false;
     }
 
     if (error != ESP_OK) {
         cJSON_AddStringToObject(collection, "error", esp_err_to_name(error));
-        (void)xSemaphoreGive(s_cache_mutex);
+        web_status_cache_arbitration_unlock(&s_arbitration);
         return true;
     }
 
@@ -680,7 +686,7 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
             &session_cache->sessions[i];
         cJSON *session = cJSON_CreateObject();
         if (session == NULL) {
-            (void)xSemaphoreGive(s_cache_mutex);
+            web_status_cache_arbitration_unlock(&s_arbitration);
             return false;
         }
         cJSON_AddItemToArray(array, session);
@@ -695,11 +701,11 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
             cJSON_AddNumberToObject(session, "dropped_frames", (double)summary->dropped_frames) == NULL ||
             cJSON_AddNumberToObject(session, "recording_ms", (double)summary->recording_ms) == NULL
         ) {
-            (void)xSemaphoreGive(s_cache_mutex);
+            web_status_cache_arbitration_unlock(&s_arbitration);
             return false;
         }
     }
 
-    (void)xSemaphoreGive(s_cache_mutex);
+    web_status_cache_arbitration_unlock(&s_arbitration);
     return true;
 }

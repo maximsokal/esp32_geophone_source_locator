@@ -114,6 +114,7 @@ void web_status_json_objects_invalidate(void);
 bool web_status_json_objects_cache_ready(void);
 bool web_status_json_objects_cache_busy(void);
 esp_err_t web_status_json_objects_start_guard(void *user_context);
+void web_status_json_objects_release_start_reservation(void *user_context);
 void web_status_json_objects_storage_changed(void *user_context);
 void web_status_json_objects_set_active(const char *object_id);
 bool web_status_json_add_recording(cJSON *root);
