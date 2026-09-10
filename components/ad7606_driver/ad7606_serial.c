@@ -37,14 +37,15 @@ static uint8_t ad7606_serial_frame_metrics(
             ++clock_like_bytes;
         }
     }
-    for (size_t channel = 0U; channel < AD7606_SERIAL_WORD_COUNT; ++channel) {
+    /* Signal quality is scoped to application channels CH1-CH4. */
+    for (size_t channel = 0U; channel < AD7606_SIGNAL_CHANNEL_COUNT; ++channel) {
         if (words[channel] >= 30000) ++positive_rail_words;
         else if (words[channel] <= -30000) ++negative_rail_words;
     }
     const bool rail_hit =
         positive_rail_words > 0U || negative_rail_words > 0U;
     bool hard_clip = false;
-    for (size_t channel = 0U; channel < AD7606_SERIAL_WORD_COUNT; ++channel) {
+    for (size_t channel = 0U; channel < AD7606_SIGNAL_CHANNEL_COUNT; ++channel) {
         if (words[channel] == INT16_MIN || words[channel] == INT16_MAX) {
             hard_clip = true;
             break;
@@ -229,6 +230,26 @@ const char *ad7606_signal_quality_name(
 }
 
 
+const char *ad7606_serial_stream_state_name(
+    ad7606_serial_stream_state_t state
+)
+{
+    switch (state) {
+        case AD7606_SERIAL_STREAM_NORMAL:
+            return "NORMAL";
+        case AD7606_SERIAL_STREAM_QUIET:
+            return "QUIET";
+        case AD7606_SERIAL_STREAM_STUCK:
+            return "STUCK";
+        case AD7606_SERIAL_STREAM_SUSPICIOUS:
+            return "SUSPICIOUS";
+        case AD7606_SERIAL_STREAM_UNKNOWN:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+
 static ad7606_serial_quality_t ad7606_serial_quality_update(
     ad7606_serial_diag_state_t *state
 )
@@ -331,6 +352,115 @@ static ad7606_signal_quality_t ad7606_signal_quality_update(
 }
 
 
+static bool ad7606_serial_ratio_at_least(
+    uint32_t count,
+    uint32_t frames,
+    uint32_t percent
+)
+{
+    return frames > 0U && count * 100U >= frames * percent;
+}
+
+
+static ad7606_serial_stream_state_t ad7606_serial_stream_state_update(
+    ad7606_serial_diag_state_t *state
+)
+{
+    const ad7606_serial_stream_state_t old_state = state->stream_state;
+    if (state->quality_window_frames < AD7606_SERIAL_STREAM_STATE_MIN_FRAMES) {
+        return old_state;
+    }
+
+    const uint32_t frames = state->quality_window_frames;
+    const bool all_ff_enter = ad7606_serial_ratio_at_least(
+        state->quality_window_all_ff_frames,
+        frames,
+        AD7606_SERIAL_STREAM_STUCK_ENTER_PERCENT
+    );
+    const bool all_zero_enter = ad7606_serial_ratio_at_least(
+        state->quality_window_all_zero_frames,
+        frames,
+        AD7606_SERIAL_STREAM_QUIET_ENTER_PERCENT
+    );
+    const bool flat_enter =
+        ad7606_serial_ratio_at_least(
+            state->quality_window_all_identical_frames,
+            frames,
+            AD7606_SERIAL_STREAM_STUCK_ENTER_PERCENT
+        ) ||
+        ad7606_serial_ratio_at_least(
+            state->quality_window_repeated_frames,
+            frames,
+            AD7606_SERIAL_STREAM_STUCK_ENTER_PERCENT
+        );
+    const bool stuck_enter = all_ff_enter ||
+        (flat_enter && !all_zero_enter);
+    const bool all_ff_hold = ad7606_serial_ratio_at_least(
+        state->quality_window_all_ff_frames,
+        frames,
+        AD7606_SERIAL_STREAM_STUCK_LEAVE_PERCENT
+    );
+    const bool all_zero_hold = ad7606_serial_ratio_at_least(
+        state->quality_window_all_zero_frames,
+        frames,
+        AD7606_SERIAL_STREAM_QUIET_LEAVE_PERCENT
+    );
+    const bool flat_hold =
+        ad7606_serial_ratio_at_least(
+            state->quality_window_all_identical_frames,
+            frames,
+            AD7606_SERIAL_STREAM_STUCK_LEAVE_PERCENT
+        ) ||
+        ad7606_serial_ratio_at_least(
+            state->quality_window_repeated_frames,
+            frames,
+            AD7606_SERIAL_STREAM_STUCK_LEAVE_PERCENT
+        );
+    const bool stuck_hold = all_ff_hold ||
+        (flat_hold && !all_zero_hold);
+    const bool transport_issue =
+        state->serial_suspicious ||
+        (
+            state->quality != AD7606_SERIAL_QUALITY_HEALTHY &&
+            state->quality != AD7606_SERIAL_QUALITY_UNKNOWN
+        );
+
+    ad7606_serial_stream_state_t next_state;
+    switch (old_state) {
+        case AD7606_SERIAL_STREAM_QUIET:
+            if (transport_issue) next_state = AD7606_SERIAL_STREAM_SUSPICIOUS;
+            else if (stuck_enter) next_state = AD7606_SERIAL_STREAM_STUCK;
+            else if (!all_zero_hold) next_state = AD7606_SERIAL_STREAM_NORMAL;
+            else next_state = AD7606_SERIAL_STREAM_QUIET;
+            break;
+        case AD7606_SERIAL_STREAM_STUCK:
+            if (transport_issue) next_state = AD7606_SERIAL_STREAM_SUSPICIOUS;
+            else if (stuck_hold) next_state = AD7606_SERIAL_STREAM_STUCK;
+            else if (all_zero_enter) next_state = AD7606_SERIAL_STREAM_QUIET;
+            else next_state = AD7606_SERIAL_STREAM_NORMAL;
+            break;
+        case AD7606_SERIAL_STREAM_SUSPICIOUS:
+            if (transport_issue) next_state = AD7606_SERIAL_STREAM_SUSPICIOUS;
+            else if (stuck_enter) next_state = AD7606_SERIAL_STREAM_STUCK;
+            else if (all_zero_enter) next_state = AD7606_SERIAL_STREAM_QUIET;
+            else next_state = AD7606_SERIAL_STREAM_NORMAL;
+            break;
+        case AD7606_SERIAL_STREAM_NORMAL:
+        case AD7606_SERIAL_STREAM_UNKNOWN:
+        default:
+            if (transport_issue) next_state = AD7606_SERIAL_STREAM_SUSPICIOUS;
+            else if (stuck_enter) next_state = AD7606_SERIAL_STREAM_STUCK;
+            else if (all_zero_enter) next_state = AD7606_SERIAL_STREAM_QUIET;
+            else next_state = AD7606_SERIAL_STREAM_NORMAL;
+            break;
+    }
+
+    state->stream_state = next_state;
+    state->stream_stuck = next_state == AD7606_SERIAL_STREAM_STUCK;
+    return old_state;
+}
+
+
 static void ad7606_serial_quality_window_observe(
     ad7606_serial_diag_state_t *state,
     uint8_t flags
@@ -411,6 +541,7 @@ void ad7606_serial_diag_reset(
     state->pattern = AD7606_SERIAL_PATTERN_UNKNOWN;
     state->quality = AD7606_SERIAL_QUALITY_UNKNOWN;
     state->signal_quality = AD7606_SIGNAL_QUALITY_UNKNOWN;
+    state->stream_state = AD7606_SERIAL_STREAM_UNKNOWN;
 }
 
 
@@ -544,6 +675,11 @@ bool ad7606_serial_diag_observe(
             state->quality != AD7606_SERIAL_QUALITY_HEALTHY &&
             state->quality != AD7606_SERIAL_QUALITY_UNKNOWN
         );
+
+    const ad7606_serial_stream_state_t old_stream_state =
+        state->stream_state;
+    (void)ad7606_serial_stream_state_update(state);
+    event->stream_state_changed = old_stream_state != state->stream_state;
 
     event->abnormal_started =
         transport_anomaly &&

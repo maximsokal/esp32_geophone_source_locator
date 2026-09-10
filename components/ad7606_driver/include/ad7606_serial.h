@@ -10,12 +10,28 @@
 #define AD7606_SERIAL_RX_BYTES          \
     (AD7606_SERIAL_WORD_COUNT * AD7606_SERIAL_WORD_BYTES)
 
+/* The application waveform uses CH1-CH4; CH5-CH8 remain ADC diagnostics. */
+#define AD7606_SIGNAL_CHANNEL_COUNT     4U
+
+#if AD7606_SIGNAL_CHANNEL_COUNT == 0U || \
+    AD7606_SIGNAL_CHANNEL_COUNT > AD7606_SERIAL_WORD_COUNT
+#error "AD7606 signal channel scope must fit inside the serial frame"
+#endif
+
 #define AD7606_SERIAL_QUALITY_WINDOW_FRAMES  500U
 /* Keep the state UNKNOWN until a short initial sample is available. */
 #define AD7606_SERIAL_QUALITY_MIN_FRAMES     10U
 
 /* A single transport anomaly is not enough to declare the serial path broken. */
 #define AD7606_SERIAL_SUSPICIOUS_STREAK_THRESHOLD  10U
+
+/* Stream-state decisions require one complete rolling second at 500 Hz. */
+#define AD7606_SERIAL_STREAM_STATE_MIN_FRAMES      \
+    AD7606_SERIAL_QUALITY_WINDOW_FRAMES
+#define AD7606_SERIAL_STREAM_STUCK_ENTER_PERCENT   80U
+#define AD7606_SERIAL_STREAM_STUCK_LEAVE_PERCENT   60U
+#define AD7606_SERIAL_STREAM_QUIET_ENTER_PERCENT   80U
+#define AD7606_SERIAL_STREAM_QUIET_LEAVE_PERCENT   60U
 
 
 typedef enum
@@ -52,6 +68,18 @@ typedef enum
 } ad7606_signal_quality_t;
 
 
+typedef enum
+{
+    /* Data plausibility is separate from SPI transport quality. */
+    AD7606_SERIAL_STREAM_UNKNOWN = 0,
+    AD7606_SERIAL_STREAM_NORMAL,
+    AD7606_SERIAL_STREAM_QUIET,
+    AD7606_SERIAL_STREAM_STUCK,
+    AD7606_SERIAL_STREAM_SUSPICIOUS
+
+} ad7606_serial_stream_state_t;
+
+
 typedef struct
 {
     bool initialized;
@@ -62,6 +90,8 @@ typedef struct
     ad7606_serial_pattern_t pattern;
     ad7606_serial_quality_t quality;
     ad7606_signal_quality_t signal_quality;
+    ad7606_serial_stream_state_t stream_state;
+    bool stream_stuck;
 
     uint32_t suspicious_streak;
     uint32_t repeated_frame_streak;
@@ -98,6 +128,7 @@ typedef struct
     bool suspicious_started;
     bool quality_changed;
     bool signal_quality_changed;
+    bool stream_state_changed;
 
 } ad7606_serial_diag_event_t;
 
@@ -130,6 +161,11 @@ const char *ad7606_serial_quality_name(
 
 const char *ad7606_signal_quality_name(
     ad7606_signal_quality_t quality
+);
+
+
+const char *ad7606_serial_stream_state_name(
+    ad7606_serial_stream_state_t state
 );
 
 

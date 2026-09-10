@@ -137,6 +137,8 @@ static void test_quality_window_hysteresis(void)
     assert(state.signal_quality_window_rail_hit_frames == 50U);
     assert(state.signal_quality_window_clip_frames == 50U);
     assert(state.quality_window_frames == 500U);
+    assert(state.stream_state == AD7606_SERIAL_STREAM_SUSPICIOUS);
+    assert(!state.stream_stuck);
 
     for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
         put_word(varied, 7U, (uint16_t)(0x3000U + frame));
@@ -148,6 +150,8 @@ static void test_quality_window_hysteresis(void)
     assert(state.signal_quality == AD7606_SIGNAL_QUALITY_HEALTHY);
     assert(state.signal_quality_window_rail_hit_frames == 0U);
     assert(state.signal_quality_window_clip_frames == 0U);
+    assert(state.stream_state == AD7606_SERIAL_STREAM_NORMAL);
+    assert(!state.stream_stuck);
 
     ad7606_serial_diag_reset(&state);
     for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
@@ -175,6 +179,9 @@ static void test_quality_window_hysteresis(void)
     assert(state.signal_quality == AD7606_SIGNAL_QUALITY_HEALTHY);
     assert(state.quality_window_all_ff_frames == 10U);
     assert(state.quality_window_repeated_frames == 9U);
+    /* Stream plausibility waits for a complete window before deciding. */
+    assert(state.stream_state == AD7606_SERIAL_STREAM_UNKNOWN);
+    assert(!state.stream_stuck);
 }
 
 
@@ -198,6 +205,8 @@ static void test_quiet_frames_are_not_transport_faults(void)
     assert(state.quality_window_all_zero_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES);
     assert(state.quality_window_bad_frames == 0U);
     assert(state.quality_window_digital_interference_frames == 0U);
+    assert(state.stream_state == AD7606_SERIAL_STREAM_QUIET);
+    assert(!state.stream_stuck);
     assert(ad7606_serial_diag_observe(&state, varied, NULL));
     assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
     assert(!state.serial_suspicious);
@@ -213,6 +222,30 @@ static void test_quiet_frames_are_not_transport_faults(void)
     assert(!state.serial_suspicious);
     assert(state.quality_window_all_ff_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES);
     assert(state.quality_window_repeated_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES - 1U);
+    assert(state.stream_state == AD7606_SERIAL_STREAM_STUCK);
+    assert(state.stream_stuck);
+}
+
+
+static void test_persistent_identical_stream_is_stuck(void)
+{
+    uint8_t identical[AD7606_SERIAL_RX_BYTES] = {0};
+    for (size_t index = 0U; index < AD7606_SERIAL_WORD_COUNT; ++index) {
+        put_word(identical, index, 0x1234U);
+    }
+
+    ad7606_serial_diag_state_t state;
+    ad7606_serial_diag_reset(&state);
+    for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
+        assert(ad7606_serial_diag_observe(&state, identical, NULL));
+    }
+
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.quality_window_all_identical_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES);
+    assert(state.quality_window_repeated_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES - 1U);
+    assert(state.stream_state == AD7606_SERIAL_STREAM_STUCK);
+    assert(state.stream_stuck);
 }
 
 
@@ -246,6 +279,26 @@ static void test_signal_quality_is_separate_from_transport(void)
     assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
     assert(state.signal_quality_window_rail_hit_frames == 1U);
     assert(state.signal_quality_window_clip_frames == 1U);
+
+    /* A clipped diagnostic-only CH7 word must not contaminate CH1-CH4 signal quality. */
+    uint8_t diagnostic_only_clip[AD7606_SERIAL_RX_BYTES] = {0};
+    for (size_t index = 0U; index < AD7606_SERIAL_WORD_COUNT; ++index) {
+        put_word(diagnostic_only_clip, index, (uint16_t)(0x1600U + index));
+    }
+    put_word(diagnostic_only_clip, 6U, 0x7FFFU);
+    assert(ad7606_serial_classify(diagnostic_only_clip) == AD7606_SERIAL_PATTERN_VARIED);
+
+    ad7606_serial_diag_reset(&state);
+    for (uint32_t frame = 0U; frame < AD7606_SERIAL_QUALITY_WINDOW_FRAMES; ++frame) {
+        put_word(varied, 7U, (uint16_t)(0x1600U + frame));
+        assert(ad7606_serial_diag_observe(&state, varied, NULL));
+    }
+    assert(ad7606_serial_diag_observe(&state, diagnostic_only_clip, NULL));
+    assert(state.quality == AD7606_SERIAL_QUALITY_HEALTHY);
+    assert(!state.serial_suspicious);
+    assert(state.signal_quality == AD7606_SIGNAL_QUALITY_HEALTHY);
+    assert(state.signal_quality_window_rail_hit_frames == 0U);
+    assert(state.signal_quality_window_clip_frames == 0U);
 
     /* A saturated analog frame may contain two clock-like bytes by chance;
      * it remains a signal observation, not a transport fault. */
@@ -328,6 +381,8 @@ static void test_quality_window_degraded_band(void)
     assert(state.quality_window_bad_frames == 10U);
     assert(state.quality_window_digital_interference_frames == 10U);
     assert(state.serial_suspicious);
+    assert(state.stream_state == AD7606_SERIAL_STREAM_SUSPICIOUS);
+    assert(!state.stream_stuck);
     assert(state.signal_quality == AD7606_SIGNAL_QUALITY_CLIPPED);
     assert(state.signal_quality_window_clip_frames == 10U);
 }
@@ -340,6 +395,7 @@ int main(void)
     test_real_log_frames_are_not_plain_varied();
     test_quality_window_hysteresis();
     test_quiet_frames_are_not_transport_faults();
+    test_persistent_identical_stream_is_stuck();
     test_signal_quality_is_separate_from_transport();
     test_quality_window_degraded_band();
     puts("AD7606 serial diagnostics tests passed");
