@@ -29,6 +29,14 @@ int main(void)
     assert(!ui_frame_scheduler_take(&scheduler, 541666U, &rendered));
     assert(ui_frame_scheduler_take(&scheduler, 541667U, &rendered));
     assert(rendered == 251U);
+
+    ui_frame_scheduler_init(&scheduler, 0U);
+    ui_frame_scheduler_submit(&scheduler, 1U);
+    assert(ui_frame_scheduler_take(&scheduler, 0U, &rendered));
+    ui_frame_scheduler_submit(&scheduler, 21U);
+    assert(scheduler.frames_coalesced == 19U);
+    assert(ui_frame_scheduler_take(&scheduler, UI_FRAME_MIN_PERIOD_US, &rendered));
+    assert(rendered == 21U);
     puts("ui frame scheduler tests passed");
     return 0;
 }

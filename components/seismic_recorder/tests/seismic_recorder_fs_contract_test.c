@@ -37,6 +37,10 @@ static unsigned remove_tree_calls;
 static char removed_tree_path[256];
 static bool fake_metadata_present;
 static esp_err_t fake_summary_error = ESP_FAIL;
+static size_t injected_short_write_count = SIZE_MAX;
+static bool injected_fflush_error;
+static bool injected_fsync_error;
+static bool injected_fclose_error;
 
 static int make_directory(const char *path)
 {
@@ -155,7 +159,54 @@ bool seismic_recorder_json_metadata_exists(
     return fake_metadata_present;
 }
 
+static size_t recorder_test_fwrite(
+    const void *buffer,
+    size_t element_size,
+    size_t element_count,
+    FILE *stream
+)
+{
+    const size_t count = injected_short_write_count == SIZE_MAX
+        ? element_count
+        : (injected_short_write_count < element_count ? injected_short_write_count : element_count);
+    return fwrite(buffer, element_size, count, stream);
+}
+
+static int recorder_test_fflush(FILE *stream)
+{
+    if (injected_fflush_error) return EOF;
+    return fflush(stream);
+}
+
+static int recorder_test_fsync(int descriptor)
+{
+    (void)descriptor;
+    return injected_fsync_error ? -1 : 0;
+}
+
+static int recorder_test_fclose(FILE *stream)
+{
+    const int result = fclose(stream);
+    return injected_fclose_error && result == 0 ? EOF : result;
+}
+
+#define fwrite recorder_test_fwrite
+#define fflush recorder_test_fflush
+#ifdef _WIN32
+#define _commit recorder_test_fsync
+#else
+#define fsync recorder_test_fsync
+#endif
+#define fclose recorder_test_fclose
 #include "../seismic_recorder_fs.c"
+#undef fwrite
+#undef fflush
+#ifdef _WIN32
+#undef _commit
+#else
+#undef fsync
+#endif
+#undef fclose
 
 static void test_invalid_arguments(void)
 {
@@ -262,6 +313,41 @@ static void test_session_error_cleanup(void)
     remove_layout();
 }
 
+static void test_writer_errors_are_propagated(void)
+{
+    remove_layout();
+    make_layout();
+    storage_begin_error = ESP_OK;
+    injected_short_write_count = SIZE_MAX;
+    injected_fflush_error = false;
+    injected_fsync_error = false;
+    injected_fclose_error = false;
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    seismic_frame_t frames[3] = {0};
+    size_t frames_written = 99U;
+
+    injected_short_write_count = 1U;
+    assert(seismic_recorder_fs_write_frames(file, frames, 3U, &frames_written) == ESP_FAIL);
+    assert(frames_written == 1U);
+    injected_short_write_count = SIZE_MAX;
+
+    injected_fflush_error = true;
+    assert(seismic_recorder_fs_flush(file, false) == ESP_FAIL);
+    injected_fflush_error = false;
+
+    injected_fsync_error = true;
+    assert(seismic_recorder_fs_sync(file) == ESP_FAIL);
+    injected_fsync_error = false;
+
+    injected_fclose_error = true;
+    assert(seismic_recorder_fs_close(file) == ESP_FAIL);
+    injected_fclose_error = false;
+    remove_layout();
+}
+
 static void test_session_id_increments(void)
 {
     remove_layout();
@@ -332,6 +418,7 @@ int main(void)
     test_invalid_arguments();
     test_session_header_and_frames();
     test_session_error_cleanup();
+    test_writer_errors_are_propagated();
     test_session_id_increments();
     test_listing_missing_and_malformed_metadata_is_safe();
     return 0;

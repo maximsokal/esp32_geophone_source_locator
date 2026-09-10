@@ -11,7 +11,10 @@ void ui_frame_scheduler_init(ui_frame_scheduler_t *scheduler, uint64_t now_us)
 void ui_frame_scheduler_submit(ui_frame_scheduler_t *scheduler, uint64_t generation)
 {
     if (scheduler == NULL) return;
-    if (scheduler->pending && generation != scheduler->latest_generation) {
+    if (scheduler->latest_generation != 0U && generation > scheduler->latest_generation + 1U) {
+        scheduler->frames_coalesced += generation - scheduler->latest_generation - 1U;
+    }
+    else if (scheduler->pending && generation != scheduler->latest_generation) {
         ++scheduler->frames_coalesced;
     }
     scheduler->latest_generation = generation;

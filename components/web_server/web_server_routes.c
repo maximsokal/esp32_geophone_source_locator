@@ -7,8 +7,54 @@
 #include "app_config.h"
 #include "wifi_manager.h"
 #include "web_client_log.h"
+#include "web_route_capacity.h"
 
 static const char *TAG = "WEB_ROUTES";
+static web_route_tracker_t s_route_tracker;
+
+void web_server_route_tracking_begin(size_t capacity)
+{
+    if (!web_route_tracker_init(&s_route_tracker, capacity)) {
+        memset(&s_route_tracker, 0, sizeof(s_route_tracker));
+    }
+}
+
+esp_err_t web_server_route_tracking_register(const char *uri, int method)
+{
+    const web_route_identity_t identity = {
+        .uri = uri,
+        .method = method == HTTP_POST ? WEB_ROUTE_POST : WEB_ROUTE_GET,
+    };
+    if (web_route_tracker_register(&s_route_tracker, identity)) return ESP_OK;
+    ESP_LOGE(TAG, "Route accounting rejected method=%d uri=%s count=%u capacity=%u",
+             (int)identity.method, identity.uri, (unsigned)s_route_tracker.count,
+             (unsigned)s_route_tracker.capacity);
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t web_server_unregister_uri_handler(httpd_handle_t server, const char *uri, int method)
+{
+    const esp_err_t err = httpd_unregister_uri_handler(server, uri, method);
+    if (err != ESP_OK) return err;
+    const web_route_identity_t identity = {
+        .uri = uri,
+        .method = method == HTTP_POST ? WEB_ROUTE_POST : WEB_ROUTE_GET,
+    };
+    if (web_route_tracker_unregister(&s_route_tracker, identity)) return ESP_OK;
+    ESP_LOGE(TAG, "Route accounting could not unregister method=%d uri=%s", (int)method, uri);
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t web_server_route_tracking_finish(const web_route_identity_t *catalog, size_t count)
+{
+    if (web_route_tracker_matches_catalog(&s_route_tracker, catalog, count)) {
+        ESP_LOGI(TAG, "All URI handlers registered: active=%u", (unsigned)s_route_tracker.count);
+        return ESP_OK;
+    }
+    ESP_LOGE(TAG, "Registered URI set does not match catalog: active=%u expected=%u",
+             (unsigned)s_route_tracker.count, (unsigned)count);
+    return ESP_ERR_INVALID_STATE;
+}
 
 static esp_err_t web_server_bootstrap_index_handler(httpd_req_t *request)
 {
@@ -79,9 +125,9 @@ esp_err_t web_server_bootstrap_routes_register(httpd_handle_t server)
     if (err != ESP_OK) return err;
 
     /* Reuse the two bootstrap slots instead of increasing server RAM. */
-    err = httpd_unregister_uri_handler(server, "/setup/ca.crt", HTTP_GET);
+    err = web_server_unregister_uri_handler(server, "/setup/ca.crt", HTTP_GET);
     if (err != ESP_OK) return err;
-    err = httpd_unregister_uri_handler(server, "/health", HTTP_GET);
+    err = web_server_unregister_uri_handler(server, "/health", HTTP_GET);
     if (err != ESP_OK) return err;
     return web_https_onboarding_ui_bootstrap_register(server);
 }
@@ -94,7 +140,7 @@ esp_err_t web_server_routes_register(httpd_handle_t server)
     if (err != ESP_OK) return err;
 
     /* HTTPS remains inside the fixed handler budget; browser diagnostics win the health slot. */
-    err = httpd_unregister_uri_handler(server, "/health", HTTP_GET);
+    err = web_server_unregister_uri_handler(server, "/health", HTTP_GET);
     if (err != ESP_OK) return err;
 
     err = web_client_log_register(server);
