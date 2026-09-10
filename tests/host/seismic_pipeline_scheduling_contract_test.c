@@ -259,25 +259,56 @@ static void test_recorder_survives_expected_sd_stalls(void)
     assert(seismic_buffer_init() == ESP_OK);
     for (size_t stall = 0U; stall < sizeof(stall_ms) / sizeof(stall_ms[0]); ++stall) {
         assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, PIPELINE_SAMPLE_RATE_HZ) == ESP_OK);
-        const uint64_t produced = (uint64_t)stall_ms[stall] * PIPELINE_SAMPLE_RATE_HZ / 1000U;
-        for (uint64_t frame = 1U; frame <= produced; ++frame) {
-            pipeline_channels(frame, channels);
-            assert(seismic_buffer_push((int64_t)frame * 2000LL, channels) == ESP_OK);
-        }
+        const uint64_t duration_frames = 60U * PIPELINE_SAMPLE_RATE_HZ;
+        const uint64_t stall_frames = (uint64_t)stall_ms[stall] * PIPELINE_SAMPLE_RATE_HZ / 1000U;
+        const uint64_t stall_start = duration_frames - 2U * stall_frames - 200U;
+        const uint64_t stop_target = stall_start + stall_frames / 2U;
         uint64_t cursor = 0U;
         uint64_t consumed = 0U;
-        while (consumed < produced) {
-            seismic_frame_t batch[128];
+
+        for (uint64_t frame = 1U; frame <= duration_frames; ++frame) {
+            pipeline_channels(frame, channels);
+            assert(seismic_buffer_push((int64_t)frame * 2000LL, channels) == ESP_OK);
+
+            /* The producer continues at 500 Hz while an SD write is stalled. */
+            const bool writer_stalled =
+                frame >= stall_start && frame < stall_start + stall_frames;
+            if (writer_stalled || consumed >= stop_target) continue;
+
+            seismic_frame_t batch[64];
             size_t count = 0U;
             uint64_t dropped = 0U;
             seismic_buffer_info_t info = { 0 };
-            assert(seismic_buffer_copy_since(&cursor, batch, 128U, &count, &dropped, &info) == ESP_OK);
+            const size_t permitted = (size_t)(stop_target - consumed < 64U
+                ? stop_target - consumed
+                : 64U);
+            assert(seismic_buffer_copy_since(&cursor, batch, permitted, &count, &dropped, &info) == ESP_OK);
+            assert(dropped == 0U);
+            for (size_t i = 0U; i < count; ++i) {
+                assert(consumed + (uint64_t)i + 1U <= stop_target);
+                assert_pipeline_frame(&batch[i], consumed + (uint64_t)i + 1U);
+            }
+            consumed += (uint64_t)count;
+        }
+
+        /* STOP drains the precise target, despite a preceding live writer stall;
+         * samples published after STOP are deliberately not part of this session. */
+        while (consumed < stop_target) {
+            seismic_frame_t batch[64];
+            size_t count = 0U;
+            uint64_t dropped = 0U;
+            seismic_buffer_info_t info = { 0 };
+            assert(seismic_buffer_copy_since(&cursor, batch, 64U, &count, &dropped, &info) == ESP_OK);
             assert(dropped == 0U);
             assert(count > 0U);
-            for (size_t i = 0U; i < count; ++i) assert_pipeline_frame(&batch[i], consumed + i + 1U);
+            for (size_t i = 0U; i < count; ++i) {
+                assert(consumed + (uint64_t)i + 1U <= stop_target);
+                assert_pipeline_frame(&batch[i], consumed + (uint64_t)i + 1U);
+            }
             consumed += count;
         }
-        assert(consumed == produced);
+        assert(consumed == stop_target);
+        assert(cursor == stop_target);
     }
 }
 
