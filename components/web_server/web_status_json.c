@@ -412,7 +412,8 @@ esp_err_t web_status_json_build_extended(
             acquisition_snapshot_available
         ) &&
         web_status_json_add_runtime(root) &&
-        web_status_json_add_recording(root);
+        web_status_json_add_recording(root) &&
+        web_status_json_add_measurement(root);
 
     if (ok && include_objects) {
         ok = web_status_json_add_objects(root);

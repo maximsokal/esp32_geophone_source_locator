@@ -15,12 +15,23 @@
 #endif
 
 #include "object_format.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "storage_manager.h"
 
 
 static const char *TAG = "SEISMIC_RECORDER_FS";
+
+/*
+ * ESP-IDF 5.5.4's SDSPI path copies external-RAM sources into a temporary
+ * 512-byte DMA buffer and sends one block at a time. Keep the large recorder
+ * backlog in PSRAM, but make the actual fwrite source internal and DMA-safe.
+ * 256 frames are 6144 bytes (12 sectors) for the current 24-byte frame.
+ */
+DMA_ATTR static seismic_frame_t s_dma_staging[
+    SEISMIC_RECORDER_WRITE_STAGING_FRAMES
+];
 
 static bool seismic_recorder_fs_parse_session_number(
     const char *name,
@@ -330,12 +341,32 @@ esp_err_t seismic_recorder_fs_write_frames(
 
     const int64_t fwrite_started_us =
         esp_timer_get_time();
-    const size_t written = fwrite(
-        frames,
-        sizeof(seismic_frame_t),
-        frame_count,
-        samples_file
-    );
+    size_t written = 0U;
+    while (written < frame_count) {
+        const size_t remaining = frame_count - written;
+        const size_t chunk = remaining < SEISMIC_RECORDER_WRITE_STAGING_FRAMES
+            ? remaining
+            : SEISMIC_RECORDER_WRITE_STAGING_FRAMES;
+
+        memcpy(
+            s_dma_staging,
+            frames + written,
+            chunk * sizeof(seismic_frame_t)
+        );
+
+        const size_t chunk_written = fwrite(
+            s_dma_staging,
+            sizeof(seismic_frame_t),
+            chunk,
+            samples_file
+        );
+        written += chunk_written;
+
+        if (chunk_written != chunk || ferror(samples_file) != 0) {
+            err = ESP_FAIL;
+            break;
+        }
+    }
 
     *frames_written = written;
     if (written != frame_count || ferror(samples_file) != 0) {

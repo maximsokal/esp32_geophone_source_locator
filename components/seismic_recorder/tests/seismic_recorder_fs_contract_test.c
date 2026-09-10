@@ -278,6 +278,46 @@ static void test_session_header_and_frames(void)
     remove_layout();
 }
 
+
+static void test_large_frame_write_is_chunked_through_staging(void)
+{
+    remove_layout();
+    make_layout();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    storage_begin_error = ESP_OK;
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+
+    enum { frame_count = SEISMIC_RECORDER_WRITE_STAGING_FRAMES + 1U };
+    seismic_frame_t frames[frame_count] = {0};
+    for (size_t index = 0U; index < frame_count; ++index) {
+        frames[index].timestamp_us = (int64_t)index + 1LL;
+        frames[index].channel_uv[0] = (float)index;
+    }
+
+    size_t frames_written = 0U;
+    assert(seismic_recorder_fs_write_frames(file, frames, frame_count, &frames_written) == ESP_OK);
+    assert(frames_written == frame_count);
+    /* One storage operation covers both bounded fwrite chunks. */
+    assert(storage_begin_calls == 2U);
+    assert(storage_end_calls == 2U);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+
+    file = fopen(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/samples.bin", "rb");
+    assert(file != NULL);
+    assert(fseek(file, (long)sizeof(seismic_recorder_binary_header_t), SEEK_SET) == 0);
+    seismic_frame_t last = {0};
+    assert(fseek(file, (long)(sizeof(seismic_frame_t) * (frame_count - 1U)), SEEK_CUR) == 0);
+    assert(fread(&last, sizeof(last), 1U, file) == 1U);
+    assert(last.timestamp_us == (int64_t)frame_count);
+    assert(last.channel_uv[0] == (float)(frame_count - 1U));
+    assert(fclose(file) == 0);
+    remove_layout();
+}
+
 static void test_session_error_cleanup(void)
 {
     remove_layout();
@@ -417,6 +457,7 @@ int main(void)
 {
     test_invalid_arguments();
     test_session_header_and_frames();
+    test_large_frame_write_is_chunked_through_staging();
     test_session_error_cleanup();
     test_writer_errors_are_propagated();
     test_session_id_increments();

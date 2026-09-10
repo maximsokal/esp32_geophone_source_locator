@@ -30,11 +30,43 @@ export interface RecordingState {
   available: boolean;
   running?: boolean;
   state?: 'IDLE' | 'RECORDING' | 'STOPPING' | 'ERROR';
+  stop_stage?: string;
+  stop_error_stage?: string;
+  stop_stage_error?: number;
   object_id?: string;
   session_id?: string;
   source?: string;
   sample_rate_hz?: number;
   channel_count?: number;
+  samples_written?: number;
+  dropped_frames?: number;
+  recording_ms?: number;
+  last_error?: number;
+  last_error_name?: string;
+  error?: string;
+}
+
+export type MeasurementServiceState =
+  | 'LIVE'
+  | 'STARTING'
+  | 'RECORDING'
+  | 'STOPPING'
+  | 'REVIEW'
+  | 'DELETING'
+  | 'ERROR';
+
+export interface MeasurementServiceStatus {
+  available: boolean;
+  initialized?: boolean;
+  busy?: boolean;
+  active_object_present?: boolean;
+  state?: MeasurementServiceState | string;
+  object_id?: string;
+  object_name?: string;
+  session_id?: string;
+  stop_stage?: string;
+  stop_error_stage?: string;
+  stop_stage_error?: number;
   samples_written?: number;
   dropped_frames?: number;
   recording_ms?: number;
@@ -179,6 +211,7 @@ export interface DeviceStatus {
   pods: DevicePod[];
   acquisition: DeviceAcquisitionStatus;
   recording?: RecordingState;
+  measurement?: MeasurementServiceStatus;
   object_store?: ObjectStoreState;
   recording_sessions?: RecordingSessionCollection;
 }

@@ -7,9 +7,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RECORDER = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder.c"
 RECORDER_INTERNAL = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_internal.h"
+RECORDER_FS = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_fs.c"
 RECORDER_HEADER = REPO_ROOT / "components" / "seismic_recorder" / "include" / "seismic_recorder.h"
 MEASUREMENT_SERVICE = REPO_ROOT / "components" / "measurement_service" / "measurement_service.c"
 WEBUI_CONSOLE = REPO_ROOT / "webui" / "src" / "DeviceConsoleApp.tsx"
+WEB_STATUS_JSON = REPO_ROOT / "components" / "web_server" / "web_status_json.c"
+WEB_STATUS_RECORDING = REPO_ROOT / "components" / "web_server" / "web_status_json_recording.c"
 
 
 def _function_body(source: str, signature: str) -> str:
@@ -39,6 +42,7 @@ def _define_int(source: str, name: str, suffix: str) -> int:
 def test_recorder_batch_is_psram_backed_and_amortizes_sd_operations():
     source = RECORDER.read_text(encoding="utf-8")
     internal = RECORDER_INTERNAL.read_text(encoding="utf-8")
+    filesystem = RECORDER_FS.read_text(encoding="utf-8")
     init = _function_body(source, "esp_err_t seismic_recorder_init(void)")
 
     # A 500 Hz stream produces 250 frames in the normal write window. Keep a
@@ -46,11 +50,21 @@ def test_recorder_batch_is_psram_backed_and_amortizes_sd_operations():
     # non-DMA copy buffer in scarce internal/DMA RAM.
     assert _define_int(source, "SEISMIC_RECORDER_WRITE_PERIOD_MS", "U") == 500
     assert _define_int(internal, "SEISMIC_RECORDER_BATCH_FRAMES", "U") == 512
+    assert _define_int(internal, "SEISMIC_RECORDER_WRITE_STAGING_FRAMES", "U") == 256
     assert _define_int(internal, "SEISMIC_RECORDER_FLUSH_INTERVAL_US", "LL") == 30_000_000
     assert "static seismic_frame_t *s_batch = NULL;" in source
     assert "s_batch = heap_caps_malloc(" in init
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in init
     assert "heap_caps_free(s_batch);" in init
+
+    # ESP-IDF 5.5.4's SDSPI driver bounces external-RAM sources one sector at
+    # a time. The recorder therefore presents fwrite with a bounded internal
+    # DMA_ATTR buffer while retaining the larger PSRAM backlog copy.
+    assert "DMA_ATTR static seismic_frame_t s_dma_staging" in filesystem
+    assert "memcpy(" in filesystem and "s_dma_staging" in filesystem
+    assert "s_dma_staging," in filesystem
+    assert "fwrite(\n            s_dma_staging," in filesystem
+    assert "fwrite(\n        frames," not in filesystem
 
     # Periodic flush is deliberately sparse; durability remains explicit in
     # the STOP state machine rather than being paid on every small batch.
@@ -134,6 +148,18 @@ def test_measurement_service_polls_until_recorder_really_finishes():
     assert "s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;" in poll
 
 
+def test_status_api_exposes_measurement_service_terminal_states():
+    status_source = WEB_STATUS_JSON.read_text(encoding="utf-8")
+    recording_source = WEB_STATUS_RECORDING.read_text(encoding="utf-8")
+
+    assert "web_status_json_add_measurement(root)" in status_source
+    assert "measurement_service_get_snapshot" in recording_source
+    assert '"state",' in recording_source
+    assert 'return "RECORDING";' in recording_source
+    assert 'return "REVIEW";' in recording_source
+    assert 'return "ERROR";' in recording_source
+
+
 def test_console_record_button_uses_the_async_measurement_state_machine():
     source = WEBUI_CONSOLE.read_text(encoding="utf-8")
     start = source.index("onRecording={async")
@@ -144,3 +170,8 @@ def test_console_record_button_uses_the_async_measurement_state_machine():
     assert "recording_start" not in recording_control
     assert "recording_stop" not in recording_control
     assert "const SESSION_REFRESH_ACTIONS = new Set(['measurement_start', 'measurement_stop']);" in source
+
+    transition = source.index("waitForMeasurementTransition(")
+    refresh = source.index("await refreshSessions(confirmedObjectId)")
+    assert transition < refresh
+    assert "measurementTransitionErrorMessage(transitionStatus)" in source
