@@ -33,6 +33,13 @@ export function measurementTransitionTarget(
   return action === 'measurement_start' ? 'RECORDING' : 'REVIEW';
 }
 
+export function measurementTransitionNeedsSessionRefresh(
+  action: MeasurementTransitionAction,
+): boolean {
+  /* A session is durable only after STOP has completed metadata finalization. */
+  return action === 'measurement_stop';
+}
+
 export function isMeasurementTransitionComplete(
   action: MeasurementTransitionAction,
   status: DeviceStatus,
@@ -83,10 +90,17 @@ export async function waitForMeasurementTransition(
     const status = await readStatus();
     if (isMeasurementTransitionComplete(action, status)) return status;
 
-    /* ERROR is a terminal transition too; the caller still refreshes the
-     * session model before surfacing the asynchronous failure. */
+    /* A completed ERROR is terminal; STOP callers refresh the session model
+     * before surfacing the asynchronous failure. */
     const error = measurementTransitionErrorMessage(status);
-    if (error !== null) {
+    /*
+     * START is also accepted from the service's ERROR state. The submit gate
+     * is taken before the worker changes ERROR to STARTING, so an immediate
+     * status response may still contain the previous error. While busy is
+     * true the command is still in flight; only ERROR with the gate released
+     * belongs to this transition.
+     */
+    if (error !== null && status.measurement?.busy !== true) {
       return status;
     }
 

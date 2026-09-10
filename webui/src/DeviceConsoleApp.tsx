@@ -16,6 +16,7 @@ import {
 } from './features/objects/objectSelection';
 import {
   measurementTransitionErrorMessage,
+  measurementTransitionNeedsSessionRefresh,
   waitForMeasurementTransition,
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
@@ -35,7 +36,7 @@ const LOCAL_OBJECT_MUTATION_ACTIONS = new Set([
   'measurement_start',
 ]);
 
-const SESSION_REFRESH_ACTIONS = new Set(['measurement_start', 'measurement_stop']);
+const MEASUREMENT_TRANSITION_ACTIONS = new Set(['measurement_start', 'measurement_stop']);
 
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -227,10 +228,7 @@ export default function DeviceConsoleApp() {
       setWorkspaceError(null);
       setLinkError(null);
 
-      if (SESSION_REFRESH_ACTIONS.has(action)) {
-        const sessionObjectId = action === 'measurement_start' && typeof payload.object_id === 'string'
-          ? payload.object_id
-          : selectedId;
+      if (MEASUREMENT_TRANSITION_ACTIONS.has(action)) {
         /*
          * measurement_start/stop only enqueue work. Do not read the SD-backed
          * session model on the HTTP 200 boundary: STARTING/STOPPING may still
@@ -242,11 +240,15 @@ export default function DeviceConsoleApp() {
           () => fetchDeviceStatus(false),
         );
         setStatus(transitionStatus);
-        const confirmedObjectId = sessionObjectId
-          ?? transitionStatus.measurement?.object_id
-          ?? transitionStatus.recording?.object_id
-          ?? null;
-        await refreshSessions(confirmedObjectId);
+        if (measurementTransitionNeedsSessionRefresh(
+          action as 'measurement_start' | 'measurement_stop',
+        )) {
+          const confirmedObjectId = selectedId
+            ?? transitionStatus.measurement?.object_id
+            ?? transitionStatus.recording?.object_id
+            ?? null;
+          await refreshSessions(confirmedObjectId);
+        }
         const transitionError = measurementTransitionErrorMessage(transitionStatus);
         if (transitionError !== null) {
           throw new Error(`ESP ${action} failed: ${transitionError}`);
