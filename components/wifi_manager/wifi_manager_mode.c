@@ -25,6 +25,10 @@ static wifi_manager_radio_stop_complete_callback_t s_radio_stop_complete_callbac
 static void *s_radio_stop_prepare_context =
     NULL;
 static unsigned s_radio_stop_lifecycle_in_flight = 0U;
+static wifi_manager_mode_transition_complete_callback_t
+    s_mode_transition_complete_callback = NULL;
+static void *s_mode_transition_complete_context = NULL;
+static unsigned s_mode_transition_callback_in_flight = 0U;
 
 
 esp_err_t wifi_manager_set_radio_stop_lifecycle_callbacks(
@@ -71,6 +75,103 @@ esp_err_t wifi_manager_set_radio_stop_prepare_callback(
         NULL,
         context
     );
+}
+
+
+esp_err_t wifi_manager_set_mode_transition_complete_callback(
+    wifi_manager_mode_transition_complete_callback_t callback,
+    void *context
+)
+{
+    if (callback == NULL && context != NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_radio_stop_callback_lock);
+    s_mode_transition_complete_callback = callback;
+    s_mode_transition_complete_context = context;
+    portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+
+    if (callback == NULL) {
+        for (;;) {
+            unsigned in_flight;
+            portENTER_CRITICAL(&s_radio_stop_callback_lock);
+            in_flight = s_mode_transition_callback_in_flight;
+            portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+            if (in_flight == 0U) break;
+            vTaskDelay(1U);
+        }
+    }
+
+    return ESP_OK;
+}
+
+
+static void wifi_manager_notify_mode_transition_complete(
+    bool running,
+    bool setup_mode,
+    esp_err_t transition_result
+)
+{
+    wifi_manager_mode_transition_complete_callback_t callback = NULL;
+    void *context = NULL;
+
+    portENTER_CRITICAL(&s_radio_stop_callback_lock);
+    callback = s_mode_transition_complete_callback;
+    context = s_mode_transition_complete_context;
+    if (callback != NULL) {
+        ++s_mode_transition_callback_in_flight;
+    }
+    portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+
+    if (callback == NULL) {
+        return;
+    }
+
+    callback(
+        context,
+        running,
+        setup_mode,
+        transition_result
+    );
+
+    portENTER_CRITICAL(&s_radio_stop_callback_lock);
+    --s_mode_transition_callback_in_flight;
+    portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+}
+
+
+static esp_err_t wifi_manager_abort_mode_transition(
+    esp_err_t transition_error
+)
+{
+    /* Do not let a failed target start leave a partially started radio able
+     * to reconnect after the manager has declared the transition failed. */
+    wifi_manager_sta_reset_state();
+    wifi_manager_runtime_clear_setup_client();
+
+    const esp_err_t cleanup_err = esp_wifi_stop();
+    if (
+        cleanup_err != ESP_OK &&
+        cleanup_err != ESP_ERR_WIFI_NOT_STARTED
+    ) {
+        ESP_LOGW(
+            TAG,
+            "Failed to stop partially started Wi-Fi target: %s",
+            esp_err_to_name(cleanup_err)
+        );
+    }
+
+    /* The old mode is already gone. The only honest fallback is a fully
+     * stopped/disconnected manager state; the caller can retry explicitly. */
+    wifi_manager_internal_set_running(false);
+    wifi_manager_internal_set_setup_mode(false);
+    wifi_manager_notify_mode_transition_complete(
+        false,
+        false,
+        transition_error
+    );
+    return transition_error;
 }
 
 
@@ -189,6 +290,8 @@ esp_err_t wifi_manager_enter_setup_mode(void)
         return err;
     }
 
+    wifi_manager_internal_set_running(false);
+    wifi_manager_internal_set_setup_mode(false);
     wifi_manager_runtime_clear_setup_client();
 
     err =
@@ -198,6 +301,14 @@ esp_err_t wifi_manager_enter_setup_mode(void)
         wifi_manager_internal_set_running(
             true
         );
+        wifi_manager_notify_mode_transition_complete(
+            true,
+            true,
+            ESP_OK
+        );
+    }
+    else {
+        return wifi_manager_abort_mode_transition(err);
     }
 
     return err;
@@ -219,21 +330,24 @@ esp_err_t wifi_manager_connect_saved(void)
         return err;
     }
 
+    wifi_manager_internal_set_running(false);
+    wifi_manager_internal_set_setup_mode(false);
     wifi_manager_runtime_clear_setup_client();
-
-    wifi_manager_internal_set_setup_mode(
-        false
-    );
 
     err =
         wifi_manager_sta_start();
 
     if (err != ESP_OK) {
-        return err;
+        return wifi_manager_abort_mode_transition(err);
     }
 
     wifi_manager_internal_set_running(
         true
+    );
+    wifi_manager_notify_mode_transition_complete(
+        true,
+        false,
+        ESP_OK
     );
 
     ESP_LOGI(
@@ -273,6 +387,12 @@ esp_err_t wifi_manager_stop(void)
 
     wifi_manager_internal_set_setup_mode(
         false
+    );
+
+    wifi_manager_notify_mode_transition_complete(
+        false,
+        false,
+        ESP_OK
     );
 
     return ESP_OK;

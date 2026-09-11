@@ -198,6 +198,21 @@ static void apply_plan(
     }
 }
 
+
+static void apply_mode_transition_final_state(
+    fake_web_resources_t *resources,
+    bool running,
+    bool setup_mode
+)
+{
+    apply_plan(
+        running && setup_mode
+            ? WEB_LIFECYCLE_STATE_SETUP_AP
+            : WEB_LIFECYCLE_STATE_STA_DISCONNECTED,
+        resources
+    );
+}
+
 static void apply_plan_with_injected_state(
     web_lifecycle_state_t state,
     fake_web_resources_t *resources,
@@ -346,6 +361,49 @@ int main(void)
     apply_plan(queued_state, &resources);
     assert(!resources.mdns_ready);
     assert(resources.http_running);
+    assert(!resources.https_running);
+
+    /* STA -> AP target start failure reports the disconnected fallback to the
+     * web worker after the radio stop itself has already succeeded. */
+    resources = (fake_web_resources_t){ 0 };
+    apply_plan(WEB_LIFECYCLE_STATE_STA_CONNECTED, &resources);
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    transition = (fake_radio_transition_t){ 0 };
+    fake_radio_transition_begin(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_CONNECTED
+    );
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    apply_plan(queued_state, &resources);
+    fake_radio_transition_ack(&transition);
+    fake_radio_transition_complete(&transition, &mailbox, true);
+    assert(!mailbox.pending);
+    apply_mode_transition_final_state(&resources, false, false);
+    assert(!resources.mdns_ready);
+    assert(!resources.http_running);
+    assert(!resources.https_running);
+
+    /* AP -> STA target start failure must also stop the setup HTTP server; a
+     * quiesced AP plan intentionally left it alive for the transition caller. */
+    resources = (fake_web_resources_t){ 0 };
+    apply_plan(WEB_LIFECYCLE_STATE_SETUP_AP, &resources);
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    transition = (fake_radio_transition_t){ 0 };
+    fake_radio_transition_begin(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_SETUP_AP
+    );
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    apply_plan(queued_state, &resources);
+    assert(resources.http_running);
+    fake_radio_transition_ack(&transition);
+    fake_radio_transition_complete(&transition, &mailbox, true);
+    assert(!mailbox.pending);
+    apply_mode_transition_final_state(&resources, false, false);
+    assert(!resources.mdns_ready);
+    assert(!resources.http_running);
     assert(!resources.https_running);
 
     /* A failed radio stop must restore the pre-transition stable state when

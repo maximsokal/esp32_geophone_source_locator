@@ -23,6 +23,13 @@ typedef void (*wifi_manager_radio_stop_complete_callback_t)(
     esp_err_t radio_stop_result
 );
 
+typedef void (*wifi_manager_mode_transition_complete_callback_t)(
+    void *context,
+    bool running,
+    bool setup_mode,
+    esp_err_t transition_result
+);
+
 /*
  * Register the synchronous radio-stop lifecycle hooks. The prepare callback
  * must return only after network services have stopped resources that must
@@ -39,6 +46,17 @@ esp_err_t wifi_manager_set_radio_stop_lifecycle_callbacks(
 /* Compatibility wrapper for callers that only need the prepare phase. */
 esp_err_t wifi_manager_set_radio_stop_prepare_callback(
     wifi_manager_radio_stop_prepare_callback_t callback,
+    void *context
+);
+
+/*
+ * Register the final-state notification for a complete mode transition.
+ * The callback runs after the target mode has either committed or failed and
+ * receives the manager's final running/setup state. A failed target start is
+ * reported with a stopped/disconnected state.
+ */
+esp_err_t wifi_manager_set_mode_transition_complete_callback(
+    wifi_manager_mode_transition_complete_callback_t callback,
     void *context
 );
 

@@ -112,6 +112,12 @@ static void web_server_lifecycle_radio_stop_complete(
     void *context,
     esp_err_t radio_stop_result
 );
+static void web_server_mode_transition_complete(
+    void *context,
+    bool running,
+    bool setup_mode,
+    esp_err_t transition_result
+);
 
 
 static esp_err_t web_server_lifecycle_reconcile_deferred_locked(void)
@@ -217,6 +223,39 @@ static esp_err_t web_server_lifecycle_set_desired_state(
     (void)xSemaphoreGive(s_lifecycle_lock);
 
     return result == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+
+static void web_server_mode_transition_complete(
+    void *context,
+    bool running,
+    bool setup_mode,
+    esp_err_t transition_result
+)
+{
+    (void)context;
+
+    web_lifecycle_state_t desired_state =
+        WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
+    if (running && setup_mode) {
+        desired_state = WEB_LIFECYCLE_STATE_SETUP_AP;
+    }
+    else if (running) {
+        char sta_ip[16];
+        if (wifi_manager_sta_ip_string(sta_ip, sizeof(sta_ip)) == ESP_OK) {
+            desired_state = WEB_LIFECYCLE_STATE_STA_CONNECTED;
+        }
+    }
+    const esp_err_t err =
+        web_server_lifecycle_set_desired_state(desired_state);
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Failed to reconcile web lifecycle after Wi-Fi mode transition result=%s: %s",
+            esp_err_to_name(transition_result),
+            esp_err_to_name(err)
+        );
+    }
 }
 
 
@@ -389,6 +428,20 @@ static void web_server_lifecycle_unregister_wifi_hook(void)
         ESP_LOGW(
             TAG,
             "Failed to unregister Wi-Fi lifecycle hook: %s",
+            esp_err_to_name(err)
+        );
+    }
+}
+
+
+static void web_server_unregister_mode_transition_callback(void)
+{
+    const esp_err_t err =
+        wifi_manager_set_mode_transition_complete_callback(NULL, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Failed to unregister Wi-Fi mode transition callback: %s",
             esp_err_to_name(err)
         );
     }
@@ -1136,6 +1189,17 @@ esp_err_t web_server_start(void)
         return err;
     }
 
+    err = wifi_manager_set_mode_transition_complete_callback(
+        web_server_mode_transition_complete,
+        NULL
+    );
+    if (err != ESP_OK) {
+        web_server_lifecycle_unregister_wifi_hook();
+        web_server_lifecycle_stop();
+        web_server_status_cache_stop();
+        return err;
+    }
+
     /*
      * Bootstrap HTTP before registering the network callbacks. This keeps a
      * pending AP_START event from racing the initial main-task start; every
@@ -1144,6 +1208,7 @@ esp_err_t web_server_start(void)
     if (wifi_manager_is_setup_mode()) {
         err = web_server_http_start_internal();
         if (err != ESP_OK) {
+            web_server_unregister_mode_transition_callback();
             web_server_lifecycle_unregister_wifi_hook();
             web_server_lifecycle_stop();
             web_server_status_cache_stop();
@@ -1153,6 +1218,7 @@ esp_err_t web_server_start(void)
 
     err = web_server_event_handlers_register();
     if (err != ESP_OK) {
+        web_server_unregister_mode_transition_callback();
         web_server_lifecycle_unregister_wifi_hook();
         web_server_lifecycle_stop();
         web_server_status_cache_stop();
@@ -1166,6 +1232,7 @@ esp_err_t web_server_start(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Setup AP lifecycle request failed: %s", esp_err_to_name(err));
             web_server_event_handlers_unregister();
+            web_server_unregister_mode_transition_callback();
             web_server_lifecycle_unregister_wifi_hook();
             web_server_lifecycle_stop();
             web_server_status_cache_stop();
@@ -1182,6 +1249,7 @@ esp_err_t web_server_start(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "HTTPS startup request failed: %s", esp_err_to_name(err));
             web_server_event_handlers_unregister();
+            web_server_unregister_mode_transition_callback();
             web_server_lifecycle_unregister_wifi_hook();
             web_server_lifecycle_stop();
             web_server_status_cache_stop();
@@ -1198,6 +1266,7 @@ esp_err_t web_server_start(void)
 esp_err_t web_server_stop(void)
 {
     web_server_event_handlers_unregister();
+    web_server_unregister_mode_transition_callback();
     web_server_lifecycle_unregister_wifi_hook();
     web_server_lifecycle_stop();
     web_server_status_cache_stop();
