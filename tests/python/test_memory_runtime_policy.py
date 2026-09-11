@@ -376,7 +376,7 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
         web_server.index("static void web_server_https_event_handler(")
     ]
 
-    assert "web_server_lifecycle_request" in callback
+    assert "web_server_lifecycle_set_desired_state" in callback
     assert "web_server_https_start_internal(" not in callback
     assert "web_server_https_stop_internal(" not in callback
     assert "web_server_http_start_internal(" not in callback
@@ -386,6 +386,13 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "runtime_observability_log_snapshot(\"before-https\")" not in web_server
     assert "runtime_observability_log_snapshot(\"after-https\")" not in web_server
     assert "xQueueOverwrite(" in web_server
+    assert "xQueueCreate(1U, sizeof(web_lifecycle_state_t))" in web_server
+    assert "web_lifecycle_state_t" in web_server
+    assert "WEB_LIFECYCLE_STATE_SETUP_AP" in web_server
+    assert "WEB_LIFECYCLE_STATE_STOPPED" in web_server
+    assert "web_lifecycle_state_actions" in web_server
+    assert "WEB_LIFECYCLE_COMMAND_" not in web_server
+    assert "wifi_manager_mdns_stop();" in web_server
     assert "xTaskCreatePinnedToCoreWithCaps(" in web_server
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in web_server
     assert '"web_lifecycle"' in web_server
@@ -394,9 +401,15 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
 
     assert "wifi_manager_mdns_init(" not in wifi_sta_events
     assert "wifi_manager_mdns_is_ready(" not in wifi_sta_events
+    assert "wifi_manager_mdns_stop(" not in read("components/wifi_manager/wifi_manager_mode.c")
     assert "wifi_manager_mdns_init(void)" in wifi_header
+    assert "wifi_manager_mdns_stop(void)" in wifi_header
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header
     assert "APP_TASK_STACK_WEB_LIFECYCLE 8192" in task_config
+
+    lifecycle_policy = read("components/web_server/web_server_lifecycle_policy.c")
+    assert "WEB_LIFECYCLE_ACTION_MDNS_STOP" in lifecycle_policy
+    assert "WEB_LIFECYCLE_ACTION_EXIT" in lifecycle_policy
 
 
 def test_psram_dma_audit_records_installed_idf_decision():

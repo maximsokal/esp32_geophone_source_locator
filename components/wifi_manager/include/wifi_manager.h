@@ -52,4 +52,6 @@ esp_err_t wifi_manager_sta_ip_string(
 /* mDNS is initialized by the web lifecycle task after STA obtains an IP. */
 esp_err_t wifi_manager_mdns_init(void);
 
+void wifi_manager_mdns_stop(void);
+
 bool wifi_manager_mdns_is_ready(void);
