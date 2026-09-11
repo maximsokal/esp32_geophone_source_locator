@@ -41,6 +41,24 @@ export function measurementTransitionNeedsSessionRefresh(
   return action === 'measurement_stop';
 }
 
+export function measurementOwnsRecorder(status: DeviceStatus): boolean {
+  const state = status.measurement?.state;
+  if (
+    state === 'STARTING' ||
+    state === 'RECORDING' ||
+    state === 'STOPPING'
+  ) {
+    return true;
+  }
+
+  /* Keep the UI usable with firmware that predates measurement.state. */
+  return status.measurement === undefined && status.recording?.running === true;
+}
+
+export function measurementControlLocked(status: DeviceStatus): boolean {
+  return measurementOwnsRecorder(status) || status.measurement?.busy === true;
+}
+
 export function isStorageCacheIdle(status: DeviceStatus): boolean {
   /* Older firmware has no cache field; keep it usable while upgrading. */
   return status.storage_busy !== true;

@@ -6,6 +6,10 @@ import type {
   RecordingSessionCollection,
 } from '../../domain/device';
 import { formatCoordinate, normalizeCableLength } from '../../domain/device';
+import {
+  measurementControlLocked,
+  measurementOwnsRecorder,
+} from './measurementTransition';
 import '../seismic/SavedSeismicViewer.css';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
@@ -69,10 +73,18 @@ export default function ObjectsFeature(props: Props) {
   }, [status?.acquisition.running]);
 
   const recording = status?.recording;
+  const measurement = status?.measurement;
+  const measurementOwnsTheRecorder = status !== null && measurementOwnsRecorder(status);
+  const measurementLocked = status !== null && measurementControlLocked(status);
+  const measurementObjectId = measurement?.object_id || recording?.object_id;
   const selectedRecording = selected !== null
-    && recording?.running === true
-    && recording.object_id === selected.id;
-  const anotherRecording = recording?.running === true && !selectedRecording;
+    && measurementOwnsTheRecorder
+    && measurementObjectId === selected.id;
+  const anotherRecording = measurementOwnsTheRecorder && !selectedRecording;
+  const recordingToggleDisabled =
+    busy ||
+    anotherRecording ||
+    (measurementLocked && measurement?.state !== 'RECORDING');
   const selectedSessions = selected !== null && sessions?.object_id === selected.id
     ? sessions.sessions
     : [];
@@ -246,7 +258,10 @@ export default function ObjectsFeature(props: Props) {
 
               <div className="console-actions">
                 <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>Start acquisition</button>
-                <button disabled={busy || status?.acquisition.running !== true} onClick={() => void props.onAcquisition(false)}>Stop acquisition</button>
+                <button
+                  disabled={busy || status?.acquisition.running !== true || measurementLocked}
+                  onClick={() => void props.onAcquisition(false)}
+                >Stop acquisition</button>
                 <button
                   className="secondary"
                   disabled={!liveAvailable}
@@ -254,7 +269,7 @@ export default function ObjectsFeature(props: Props) {
                   onClick={() => setShowLive((value) => !value)}
                 >{showLive ? 'Hide' : 'Show'} live signal</button>
                 <button
-                  disabled={busy || anotherRecording}
+                  disabled={recordingToggleDisabled}
                   className={selectedRecording ? 'danger' : undefined}
                   onClick={() => void props.onRecording(selected.id, !selectedRecording)}
                 >

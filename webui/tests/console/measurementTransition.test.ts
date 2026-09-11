@@ -3,6 +3,8 @@ import type { DeviceStatus } from '../../src/domain/device';
 import {
   isMeasurementTransitionComplete,
   isStorageCacheIdle,
+  measurementControlLocked,
+  measurementOwnsRecorder,
   measurementTransitionErrorMessage,
   measurementTransitionNeedsSessionRefresh,
   waitForStorageCacheIdle,
@@ -101,6 +103,14 @@ describe('measurement transition polling', () => {
   it('refreshes sessions only after STOP, never at START completion', () => {
     expect(measurementTransitionNeedsSessionRefresh('measurement_start')).toBe(false);
     expect(measurementTransitionNeedsSessionRefresh('measurement_stop')).toBe(true);
+  });
+
+  it('uses measurement state as the recorder ownership source of truth', () => {
+    expect(measurementOwnsRecorder(status('STARTING'))).toBe(true);
+    expect(measurementOwnsRecorder(status('RECORDING'))).toBe(true);
+    expect(measurementOwnsRecorder(status('STOPPING'))).toBe(true);
+    expect(measurementOwnsRecorder(status('REVIEW'))).toBe(false);
+    expect(measurementControlLocked(status('LIVE', true))).toBe(true);
   });
 
   it('does not refresh the stop result until STOPPING becomes REVIEW', async () => {
