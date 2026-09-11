@@ -204,6 +204,80 @@ esp_err_t storage_manager_create_directory(
 }
 
 
+esp_err_t storage_manager_create_directory_exclusive(
+    const char *path
+)
+{
+    if (path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int64_t started_us =
+        esp_timer_get_time();
+
+    esp_err_t err =
+        storage_manager_operation_begin();
+
+    storage_directory_log_io(
+        "exclusive-lock-wait",
+        path,
+        (int)err,
+        started_us
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Storage is not ready"
+        );
+
+        return err;
+    }
+
+    errno =
+        0;
+
+    started_us =
+        esp_timer_get_time();
+
+    const int mkdir_result =
+        mkdir(
+            path,
+            0775
+        );
+
+    const int mkdir_errno =
+        mkdir_result == 0
+            ? 0
+            : errno;
+
+    storage_directory_log_io(
+        "mkdir-exclusive",
+        path,
+        mkdir_result,
+        started_us
+    );
+
+    if (mkdir_result != 0) {
+        err =
+            mkdir_errno == EEXIST
+                ? ESP_ERR_INVALID_STATE
+                : ESP_FAIL;
+
+        ESP_LOGE(
+            TAG,
+            "Exclusive mkdir failed for %s, errno=%d result=%d",
+            path,
+            mkdir_errno,
+            (int)err
+        );
+    }
+
+    storage_manager_operation_end();
+    return err;
+}
+
+
 bool storage_manager_path_exists(
     const char *path
 )

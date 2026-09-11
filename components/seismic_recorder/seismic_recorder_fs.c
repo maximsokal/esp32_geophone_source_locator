@@ -250,13 +250,23 @@ static esp_err_t seismic_recorder_fs_next_session_id(
 
     DIR *directory = opendir(sessions_path);
     if (directory == NULL) {
+        err = seismic_recorder_fs_errno_to_error(errno);
         free(sessions_path);
-        return ESP_FAIL;
+        return err;
     }
 
     unsigned highest = 0U;
     struct dirent *entry = NULL;
-    while ((entry = readdir(directory)) != NULL) {
+    while (true) {
+        errno = 0;
+        entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) {
+                err = seismic_recorder_fs_errno_to_error(errno);
+            }
+            break;
+        }
+
         unsigned number = 0U;
         if (
             seismic_recorder_fs_parse_session_number(
@@ -269,8 +279,16 @@ static esp_err_t seismic_recorder_fs_next_session_id(
         }
     }
 
-    closedir(directory);
+    const int close_result = closedir(directory);
+    if (err == ESP_OK && close_result != 0) {
+        err = seismic_recorder_fs_errno_to_error(errno);
+    }
+
     free(sessions_path);
+
+    if (err != ESP_OK) {
+        return err;
+    }
 
     if (highest >= 999999U) {
         return ESP_ERR_NO_MEM;
@@ -325,6 +343,8 @@ esp_err_t seismic_recorder_fs_create_session(
         return err;
     }
 
+    bool session_directory_created = false;
+
     err = seismic_recorder_fs_next_session_id(
         object_id,
         session_id
@@ -340,7 +360,8 @@ esp_err_t seismic_recorder_fs_create_session(
     }
 
     if (err == ESP_OK) {
-        err = storage_manager_create_directory(path);
+        err = storage_manager_create_directory_exclusive(path);
+        session_directory_created = err == ESP_OK;
     }
 
     if (err == ESP_OK) {
@@ -386,7 +407,7 @@ esp_err_t seismic_recorder_fs_create_session(
         if (file != NULL) {
             fclose(file);
         }
-        if (session_id[0] != '\0') {
+        if (session_directory_created) {
             if (
                 seismic_recorder_fs_build_session_path(
                     object_id,

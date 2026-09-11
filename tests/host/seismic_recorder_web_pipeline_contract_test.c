@@ -95,6 +95,15 @@ esp_err_t storage_manager_create_directory(const char *path)
     return make_directory(path) == 0 || errno == EEXIST ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t storage_manager_create_directory_exclusive(const char *path)
+{
+    errno = 0;
+    if (make_directory(path) == 0 && errno != EEXIST) {
+        return ESP_OK;
+    }
+    return errno == EEXIST ? ESP_ERR_INVALID_STATE : ESP_FAIL;
+}
+
 esp_err_t storage_manager_remove_tree(const char *path)
 {
     (void)path;
