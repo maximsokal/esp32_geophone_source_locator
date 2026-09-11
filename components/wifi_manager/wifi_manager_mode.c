@@ -20,30 +20,37 @@ static portMUX_TYPE s_radio_stop_callback_lock =
     portMUX_INITIALIZER_UNLOCKED;
 static wifi_manager_radio_stop_prepare_callback_t s_radio_stop_prepare_callback =
     NULL;
+static wifi_manager_radio_stop_complete_callback_t s_radio_stop_complete_callback =
+    NULL;
 static void *s_radio_stop_prepare_context =
     NULL;
-static unsigned s_radio_stop_prepare_in_flight = 0U;
+static unsigned s_radio_stop_lifecycle_in_flight = 0U;
 
 
-esp_err_t wifi_manager_set_radio_stop_prepare_callback(
-    wifi_manager_radio_stop_prepare_callback_t callback,
+esp_err_t wifi_manager_set_radio_stop_lifecycle_callbacks(
+    wifi_manager_radio_stop_prepare_callback_t prepare_callback,
+    wifi_manager_radio_stop_complete_callback_t complete_callback,
     void *context
 )
 {
-    if (callback == NULL && context != NULL) {
+    if (
+        prepare_callback == NULL &&
+        (complete_callback != NULL || context != NULL)
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
     portENTER_CRITICAL(&s_radio_stop_callback_lock);
-    s_radio_stop_prepare_callback = callback;
+    s_radio_stop_prepare_callback = prepare_callback;
+    s_radio_stop_complete_callback = complete_callback;
     s_radio_stop_prepare_context = context;
     portEXIT_CRITICAL(&s_radio_stop_callback_lock);
 
-    if (callback == NULL) {
+    if (prepare_callback == NULL) {
         for (;;) {
             unsigned in_flight;
             portENTER_CRITICAL(&s_radio_stop_callback_lock);
-            in_flight = s_radio_stop_prepare_in_flight;
+            in_flight = s_radio_stop_lifecycle_in_flight;
             portEXIT_CRITICAL(&s_radio_stop_callback_lock);
             if (in_flight == 0U) break;
             vTaskDelay(1U);
@@ -54,28 +61,47 @@ esp_err_t wifi_manager_set_radio_stop_prepare_callback(
 }
 
 
-static esp_err_t wifi_manager_prepare_radio_stop(void)
+esp_err_t wifi_manager_set_radio_stop_prepare_callback(
+    wifi_manager_radio_stop_prepare_callback_t callback,
+    void *context
+)
 {
-    wifi_manager_radio_stop_prepare_callback_t callback;
-    void *context;
+    return wifi_manager_set_radio_stop_lifecycle_callbacks(
+        callback,
+        NULL,
+        context
+    );
+}
+
+
+static esp_err_t wifi_manager_prepare_radio_stop(
+    wifi_manager_radio_stop_prepare_callback_t *prepare_callback,
+    wifi_manager_radio_stop_complete_callback_t *complete_callback,
+    void **context
+)
+{
+    if (
+        prepare_callback == NULL ||
+        complete_callback == NULL ||
+        context == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     portENTER_CRITICAL(&s_radio_stop_callback_lock);
-    callback = s_radio_stop_prepare_callback;
-    context = s_radio_stop_prepare_context;
-    if (callback != NULL) {
-        ++s_radio_stop_prepare_in_flight;
+    *prepare_callback = s_radio_stop_prepare_callback;
+    *complete_callback = s_radio_stop_complete_callback;
+    *context = s_radio_stop_prepare_context;
+    if (*prepare_callback != NULL) {
+        ++s_radio_stop_lifecycle_in_flight;
     }
     portEXIT_CRITICAL(&s_radio_stop_callback_lock);
 
-    if (callback == NULL) {
+    if (*prepare_callback == NULL) {
         return ESP_OK;
     }
 
-    const esp_err_t err = callback(context);
-
-    portENTER_CRITICAL(&s_radio_stop_callback_lock);
-    --s_radio_stop_prepare_in_flight;
-    portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+    const esp_err_t err = (*prepare_callback)(*context);
 
     return err;
 }
@@ -88,8 +114,15 @@ static esp_err_t wifi_manager_stop_radio(void)
      * synchronous barrier: it must return only after those services have
      * released resources that must not survive the Wi-Fi mode transition.
      */
+    wifi_manager_radio_stop_prepare_callback_t prepare_callback = NULL;
+    wifi_manager_radio_stop_complete_callback_t complete_callback = NULL;
+    void *context = NULL;
     esp_err_t err =
-        wifi_manager_prepare_radio_stop();
+        wifi_manager_prepare_radio_stop(
+            &prepare_callback,
+            &complete_callback,
+            &context
+        );
 
     if (err != ESP_OK) {
         ESP_LOGW(
@@ -97,6 +130,11 @@ static esp_err_t wifi_manager_stop_radio(void)
             "Network lifecycle did not quiesce before radio stop: %s",
             esp_err_to_name(err)
         );
+        if (prepare_callback != NULL) {
+            portENTER_CRITICAL(&s_radio_stop_callback_lock);
+            --s_radio_stop_lifecycle_in_flight;
+            portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+        }
         return err;
     }
 
@@ -104,6 +142,16 @@ static esp_err_t wifi_manager_stop_radio(void)
 
     err =
         esp_wifi_stop();
+
+    if (complete_callback != NULL) {
+        complete_callback(context, err);
+    }
+
+    if (prepare_callback != NULL) {
+        portENTER_CRITICAL(&s_radio_stop_callback_lock);
+        --s_radio_stop_lifecycle_in_flight;
+        portEXIT_CRITICAL(&s_radio_stop_callback_lock);
+    }
 
     if (
         err == ESP_OK ||

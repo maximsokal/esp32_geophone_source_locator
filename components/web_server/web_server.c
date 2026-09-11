@@ -47,6 +47,9 @@ static TaskHandle_t s_lifecycle_task = NULL;
 static SemaphoreHandle_t s_lifecycle_quiesce_ack = NULL;
 static bool s_lifecycle_stop_requested = false;
 static bool s_lifecycle_quiesce_pending = false;
+static bool s_lifecycle_transition_active = false;
+static bool s_lifecycle_deferred_state_valid = false;
+static web_lifecycle_state_t s_lifecycle_deferred_state;
 static unsigned s_lifecycle_quiesce_callers = 0U;
 static esp_err_t s_lifecycle_quiesce_result = ESP_FAIL;
 static bool s_event_handlers_registered = false;
@@ -101,6 +104,39 @@ static esp_err_t web_server_http_stop_internal(void);
 static esp_err_t web_server_http_start_internal(void);
 static esp_err_t web_server_lifecycle_quiesce(void *context);
 static void web_server_lifecycle_ack_quiesce(esp_err_t result);
+static void web_server_lifecycle_radio_stop_complete(
+    void *context,
+    esp_err_t radio_stop_result
+);
+
+
+static esp_err_t web_server_lifecycle_reconcile_deferred_locked(void)
+{
+    if (!s_lifecycle_deferred_state_valid) {
+        return ESP_OK;
+    }
+
+    if (
+        s_lifecycle_stop_requested ||
+        s_lifecycle_queue == NULL ||
+        s_lifecycle_task == NULL
+    ) {
+        s_lifecycle_deferred_state_valid = false;
+        return ESP_OK;
+    }
+
+    const BaseType_t queued =
+        xQueueOverwrite(
+            s_lifecycle_queue,
+            &s_lifecycle_deferred_state
+        );
+    if (queued != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    s_lifecycle_deferred_state_valid = false;
+    return ESP_OK;
+}
 
 
 static esp_err_t web_server_lifecycle_set_desired_state(
@@ -121,7 +157,19 @@ static esp_err_t web_server_lifecycle_set_desired_state(
         (void)xSemaphoreGive(s_lifecycle_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_lifecycle_stop_requested || s_lifecycle_quiesce_pending) {
+    if (s_lifecycle_stop_requested) {
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_lifecycle_transition_active) {
+        s_lifecycle_deferred_state = desired_state;
+        s_lifecycle_deferred_state_valid = true;
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        return ESP_OK;
+    }
+
+    if (s_lifecycle_quiesce_pending) {
         (void)xSemaphoreGive(s_lifecycle_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -156,6 +204,7 @@ static esp_err_t web_server_lifecycle_quiesce(void *context)
         s_lifecycle_queue != NULL &&
         s_lifecycle_task != NULL &&
         !s_lifecycle_stop_requested &&
+        !s_lifecycle_transition_active &&
         !s_lifecycle_quiesce_pending &&
         s_lifecycle_quiesce_ack == NULL;
     if (!ready) {
@@ -167,6 +216,8 @@ static esp_err_t web_server_lifecycle_quiesce(void *context)
     s_lifecycle_quiesce_ack = ack;
     s_lifecycle_quiesce_result = ESP_FAIL;
     s_lifecycle_quiesce_pending = true;
+    s_lifecycle_transition_active = true;
+    s_lifecycle_deferred_state_valid = false;
     ++s_lifecycle_quiesce_callers;
 
     /*
@@ -181,6 +232,7 @@ static esp_err_t web_server_lifecycle_quiesce(void *context)
         xQueueOverwrite(s_lifecycle_queue, &desired_state);
     if (queued != pdTRUE) {
         s_lifecycle_quiesce_pending = false;
+        s_lifecycle_transition_active = false;
         s_lifecycle_quiesce_ack = NULL;
         --s_lifecycle_quiesce_callers;
         (void)xSemaphoreGive(s_lifecycle_lock);
@@ -202,7 +254,19 @@ static esp_err_t web_server_lifecycle_quiesce(void *context)
     }
     if (s_lifecycle_quiesce_ack == ack) {
         s_lifecycle_quiesce_ack = NULL;
+    }
+    if (acknowledged != pdTRUE || result != ESP_OK) {
         s_lifecycle_quiesce_pending = false;
+        s_lifecycle_transition_active = false;
+        const esp_err_t reconcile_err =
+            web_server_lifecycle_reconcile_deferred_locked();
+        if (reconcile_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Deferred web lifecycle state was not queued after radio-stop prepare failure: %s",
+                esp_err_to_name(reconcile_err)
+            );
+        }
     }
     --s_lifecycle_quiesce_callers;
     (void)xSemaphoreGive(s_lifecycle_lock);
@@ -221,6 +285,7 @@ static void web_server_lifecycle_ack_quiesce(esp_err_t result)
     (void)xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY);
     if (s_lifecycle_quiesce_pending && s_lifecycle_quiesce_ack != NULL) {
         s_lifecycle_quiesce_result = result;
+        /* The worker is quiesced, but the radio transition is still active. */
         s_lifecycle_quiesce_pending = false;
         (void)xSemaphoreGive(s_lifecycle_quiesce_ack);
     }
@@ -228,10 +293,49 @@ static void web_server_lifecycle_ack_quiesce(esp_err_t result)
 }
 
 
+static void web_server_lifecycle_radio_stop_complete(
+    void *context,
+    esp_err_t radio_stop_result
+)
+{
+    (void)context;
+
+    if (s_lifecycle_lock == NULL) {
+        return;
+    }
+
+    (void)xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY);
+    if (!s_lifecycle_transition_active) {
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        return;
+    }
+
+    s_lifecycle_transition_active = false;
+    const esp_err_t reconcile_err =
+        web_server_lifecycle_reconcile_deferred_locked();
+    (void)xSemaphoreGive(s_lifecycle_lock);
+
+    if (radio_stop_result != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi radio stop completed with error: %s",
+            esp_err_to_name(radio_stop_result)
+        );
+    }
+    if (reconcile_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Deferred web lifecycle state was not queued after radio stop: %s",
+            esp_err_to_name(reconcile_err)
+        );
+    }
+}
+
+
 static void web_server_lifecycle_unregister_wifi_hook(void)
 {
     const esp_err_t err =
-        wifi_manager_set_radio_stop_prepare_callback(NULL, NULL);
+        wifi_manager_set_radio_stop_lifecycle_callbacks(NULL, NULL, NULL);
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
@@ -670,6 +774,8 @@ static esp_err_t web_server_lifecycle_start(void)
 
     s_lifecycle_stop_requested = false;
     s_lifecycle_quiesce_pending = false;
+    s_lifecycle_transition_active = false;
+    s_lifecycle_deferred_state_valid = false;
     s_lifecycle_quiesce_ack = NULL;
     s_lifecycle_quiesce_callers = 0U;
     s_lifecycle_quiesce_result = ESP_FAIL;
@@ -749,6 +855,8 @@ static void web_server_lifecycle_stop(void)
     s_lifecycle_queue = NULL;
     s_lifecycle_quiesce_ack = NULL;
     s_lifecycle_quiesce_pending = false;
+    s_lifecycle_transition_active = false;
+    s_lifecycle_deferred_state_valid = false;
     (void)xSemaphoreGive(lock);
 
     if (queue != NULL) vQueueDelete(queue);
@@ -961,8 +1069,9 @@ esp_err_t web_server_start(void)
         return err;
     }
 
-    err = wifi_manager_set_radio_stop_prepare_callback(
+    err = wifi_manager_set_radio_stop_lifecycle_callbacks(
         web_server_lifecycle_quiesce,
+        web_server_lifecycle_radio_stop_complete,
         NULL
     );
     if (err != ESP_OK) {

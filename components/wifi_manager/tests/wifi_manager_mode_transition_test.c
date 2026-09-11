@@ -13,6 +13,7 @@ enum {
     TRACE_HTTPS_STOP,
     TRACE_STA_RESET,
     TRACE_WIFI_STOP,
+    TRACE_COMPLETE,
 };
 
 static int trace[8];
@@ -22,6 +23,8 @@ static bool fake_setup_mode;
 static bool fake_mdns_ready;
 static bool fake_https_running;
 static esp_err_t prepare_result;
+static esp_err_t fake_wifi_stop_result;
+static esp_err_t complete_result;
 
 static void reset_trace(void)
 {
@@ -42,6 +45,16 @@ static esp_err_t prepare_radio_stop(void *context)
     fake_https_running = false;
     trace[trace_count++] = TRACE_HTTPS_STOP;
     return prepare_result;
+}
+
+static void complete_radio_stop(
+    void *context,
+    esp_err_t radio_stop_result
+)
+{
+    (void)context;
+    complete_result = radio_stop_result;
+    trace[trace_count++] = TRACE_COMPLETE;
 }
 
 bool wifi_manager_is_running(void)
@@ -97,7 +110,7 @@ void wifi_manager_sta_reset_state(void)
 esp_err_t esp_wifi_stop(void)
 {
     trace[trace_count++] = TRACE_WIFI_STOP;
-    return ESP_OK;
+    return fake_wifi_stop_result;
 }
 
 esp_err_t app_event_bus_publish(app_event_type_t type, int32_t value)
@@ -114,19 +127,24 @@ int main(void)
     fake_mdns_ready = true;
     fake_https_running = true;
     prepare_result = ESP_OK;
+    fake_wifi_stop_result = ESP_OK;
+    complete_result = ESP_FAIL;
     reset_trace();
 
-    assert(wifi_manager_set_radio_stop_prepare_callback(
+    assert(wifi_manager_set_radio_stop_lifecycle_callbacks(
         prepare_radio_stop,
+        complete_radio_stop,
         NULL
     ) == ESP_OK);
     assert(wifi_manager_stop() == ESP_OK);
-    assert(trace_count == 5U);
+    assert(trace_count == 6U);
     assert(trace[0] == TRACE_PREPARE);
     assert(trace[1] == TRACE_MDNS_STOP);
     assert(trace[2] == TRACE_HTTPS_STOP);
     assert(trace[3] == TRACE_STA_RESET);
     assert(trace[4] == TRACE_WIFI_STOP);
+    assert(trace[5] == TRACE_COMPLETE);
+    assert(complete_result == ESP_OK);
     assert(!fake_mdns_ready);
     assert(!fake_https_running);
     assert(!fake_running);
@@ -143,13 +161,34 @@ int main(void)
     assert(fake_https_running);
     assert(fake_running);
 
-    assert(wifi_manager_set_radio_stop_prepare_callback(
+    fake_running = true;
+    fake_mdns_ready = true;
+    fake_https_running = true;
+    prepare_result = ESP_OK;
+    fake_wifi_stop_result = ESP_FAIL;
+    complete_result = ESP_OK;
+    reset_trace();
+    assert(wifi_manager_stop() == ESP_FAIL);
+    assert(trace_count == 6U);
+    assert(trace[4] == TRACE_WIFI_STOP);
+    assert(trace[5] == TRACE_COMPLETE);
+    assert(complete_result == ESP_FAIL);
+    assert(fake_running);
+
+    assert(wifi_manager_set_radio_stop_lifecycle_callbacks(
+        NULL,
         NULL,
         (void *)1
     ) == ESP_ERR_INVALID_ARG);
-    assert(wifi_manager_set_radio_stop_prepare_callback(NULL, NULL) == ESP_OK);
+    assert(wifi_manager_set_radio_stop_lifecycle_callbacks(
+        NULL,
+        complete_radio_stop,
+        NULL
+    ) == ESP_ERR_INVALID_ARG);
+    assert(wifi_manager_set_radio_stop_lifecycle_callbacks(NULL, NULL, NULL) == ESP_OK);
 
     prepare_result = ESP_OK;
+    fake_wifi_stop_result = ESP_OK;
     fake_mdns_ready = false;
     fake_https_running = false;
     reset_trace();
