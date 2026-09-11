@@ -132,6 +132,20 @@ def test_https_and_tft_policies_preserve_payload_and_dma_safety():
     assert "single and internal" in tft
 
 
+def test_tft_flush_wait_blocks_on_dma_completion_instead_of_spinning():
+    tft = read("components/ui/ui_lvgl.c")
+
+    # LVGL 9 otherwise falls back to while (disp->flushing), which burns the
+    # LVGL core while the SPI DMA transaction is still in flight. The tracked
+    # app bridge must replace the port callback and wait on an ISR semaphore.
+    assert "xSemaphoreCreateBinaryStatic(" in tft
+    assert "xSemaphoreGiveFromISR(" in tft
+    assert "xSemaphoreTake(" in tft
+    assert "lv_display_set_flush_wait_cb(" in tft
+    assert "esp_lcd_panel_io_register_event_callbacks(" in tft
+    assert "UI_FLUSH_PERF:" in tft
+
+
 def test_runtime_census_reports_unfiltered_top_tasks():
     runtime = read("components/runtime_observability/runtime_observability.c")
 
@@ -146,6 +160,7 @@ def test_runtime_census_reports_unfiltered_top_tasks():
 
 def test_status_objects_and_sessions_are_lifecycle_cache_only():
     objects = read("components/web_server/web_status_json_objects.c")
+    recorder_fs = read("components/seismic_recorder/seismic_recorder_fs.c")
     recording = read("components/web_server/web_status_json_recording.c")
     status_json = read("components/web_server/web_status_json.c")
     status_api = read("components/web_server/web_api_status.c")
@@ -159,6 +174,10 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     assert "web_status_json_objects_object_event" in objects
     assert "WEB_OBJECT_CACHE_TTL_US" not in objects
     assert "web_status_json_objects_cache_ready" in internal
+    assert "opendir(sessions_path)" in recorder_fs
+    assert "readdir(directory)" in recorder_fs
+    assert "seismic_recorder_fs_session_metadata_present" in recorder_fs
+    assert "storage_manager_path_exists" not in recorder_fs
     assert "web_status_json_objects_refresh" not in recording
     assert "seismic_recorder_list_sessions(" not in recording
     assert "object_store_list_profiles_with_defaults(" not in status_api
@@ -180,7 +199,12 @@ def test_measurement_service_gates_start_and_refreshes_after_storage_completion(
     assert "s_storage_refresh_callback" in source
     assert "command_type == MEASUREMENT_COMMAND_START" in source
     assert "measurement_service_notify_storage_refresh();" in source
-    assert "web_status_json_objects_refresh();" in web_server
+    status_cache_start = web_server[
+        web_server.index("static void web_server_status_cache_start"):
+        web_server.index("static void web_server_status_cache_stop")
+    ]
+    assert "web_status_json_objects_request_refresh();" in status_cache_start
+    assert "web_status_json_objects_refresh();" not in status_cache_start
     assert "web_status_json_objects_start_guard" in web_server
     start_helper = web_control[
         web_control.index("static esp_err_t web_control_measurement_start"):

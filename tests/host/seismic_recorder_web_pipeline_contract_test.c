@@ -131,16 +131,6 @@ esp_err_t seismic_recorder_json_read_summary(
     return ESP_OK;
 }
 
-bool seismic_recorder_json_metadata_exists(
-    const char *object_id,
-    const char *session_id
-)
-{
-    (void)object_id;
-    (void)session_id;
-    return false;
-}
-
 /* Minimal HTTP server fake that captures the production chunked JSON body. */
 size_t httpd_req_get_url_query_len(httpd_req_t *request)
 {

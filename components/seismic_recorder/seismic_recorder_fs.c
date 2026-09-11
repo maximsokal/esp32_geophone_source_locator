@@ -38,6 +38,13 @@ static bool seismic_recorder_fs_parse_session_number(
     unsigned *number
 );
 
+static bool seismic_recorder_fs_session_metadata_present(
+    const char *sessions_path,
+    const char *session_id,
+    char *session_path,
+    size_t session_path_size
+);
+
 
 static esp_err_t seismic_recorder_fs_sessions_path(
     const char *object_id,
@@ -116,6 +123,55 @@ static bool seismic_recorder_fs_parse_session_number(
 
     *number = parsed;
     return true;
+}
+
+
+static bool seismic_recorder_fs_session_metadata_present(
+    const char *sessions_path,
+    const char *session_id,
+    char *session_path,
+    size_t session_path_size
+)
+{
+    if (
+        sessions_path == NULL ||
+        session_id == NULL ||
+        session_path == NULL ||
+        session_path_size == 0U
+    ) {
+        return false;
+    }
+
+    const int written = snprintf(
+        session_path,
+        session_path_size,
+        "%s/%s",
+        sessions_path,
+        session_id
+    );
+    if (written < 0 || written >= (int)session_path_size) {
+        return false;
+    }
+
+    DIR *directory = opendir(session_path);
+    if (directory == NULL) {
+        return false;
+    }
+
+    bool present = false;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(directory)) != NULL) {
+        if (
+            strcmp(entry->d_name, "session.json") == 0 ||
+            strcmp(entry->d_name, "session.json.bak") == 0
+        ) {
+            present = true;
+            break;
+        }
+    }
+
+    closedir(directory);
+    return present;
 }
 
 
@@ -628,8 +684,15 @@ esp_err_t seismic_recorder_fs_list_sessions(
         return ESP_ERR_NO_MEM;
     }
 
+    char *session_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (session_path == NULL) {
+        free(sessions_path);
+        return ESP_ERR_NO_MEM;
+    }
+
     err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        free(session_path);
         free(sessions_path);
         return err;
     }
@@ -662,12 +725,21 @@ esp_err_t seismic_recorder_fs_list_sessions(
             seismic_recorder_session_summary_t summary;
             memset(&summary, 0, sizeof(summary));
 
+            /*
+             * The directory census already proves that this session exists.
+             * Check the session directory for metadata by name before asking
+             * the JSON reader to recover it. Incomplete sessions are common
+             * after a power loss; avoiding negative stat/fopen probes for them
+             * removes a slow FAT lookup series while retaining .bak recovery
+             * whenever either metadata file is actually present.
+             */
             const bool metadata_present =
-                seismic_recorder_json_metadata_exists(
-                    object_id,
-                    entry->d_name
+                seismic_recorder_fs_session_metadata_present(
+                    sessions_path,
+                    entry->d_name,
+                    session_path,
+                    SEISMIC_RECORDER_PATH_SIZE
                 );
-
             if (
                 !metadata_present ||
                 seismic_recorder_json_read_summary(
@@ -701,6 +773,7 @@ esp_err_t seismic_recorder_fs_list_sessions(
     }
 
     storage_manager_operation_end();
+    free(session_path);
     free(sessions_path);
 
     if (err == ESP_OK) {

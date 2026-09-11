@@ -8,7 +8,10 @@
 
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_lvgl_port.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 
 static const char *TAG =
@@ -23,6 +26,260 @@ static const char *TAG =
  * remains single and internal so SDSPI/Wi-Fi DMA headroom is still explicit.
  */
 #define UI_LVGL_BUFFER_ROWS  8
+
+#define UI_FLUSH_PERF_PERIOD_US  10000000ULL
+
+
+typedef struct
+{
+    lv_display_t *display;
+    SemaphoreHandle_t flush_done;
+
+} ui_lvgl_flush_sync_t;
+
+
+static StaticSemaphore_t s_flush_done_storage;
+static ui_lvgl_flush_sync_t s_flush_sync;
+static uint64_t s_flush_perf_started_us;
+static uint64_t s_flush_wait_count;
+static uint64_t s_flush_wait_total_us;
+static uint64_t s_flush_wait_max_us;
+
+
+static bool ui_lvgl_flush_io_ready_callback(
+    esp_lcd_panel_io_handle_t panel_io,
+    esp_lcd_panel_io_event_data_t *event_data,
+    void *user_context
+);
+
+static void ui_lvgl_flush_wait_callback(
+    lv_display_t *display
+);
+
+static esp_err_t ui_lvgl_install_flush_wait_locked(
+    lv_display_t *display
+);
+
+static void ui_lvgl_prepare_flush_deinit_locked(
+    lv_display_t *display
+);
+
+
+static void ui_lvgl_flush_perf_reset(
+    uint64_t now_us
+)
+{
+    s_flush_perf_started_us = now_us;
+    s_flush_wait_count = 0U;
+    s_flush_wait_total_us = 0U;
+    s_flush_wait_max_us = 0U;
+}
+
+
+static bool ui_lvgl_flush_io_ready_callback(
+    esp_lcd_panel_io_handle_t panel_io,
+    esp_lcd_panel_io_event_data_t *event_data,
+    void *user_context
+)
+{
+    (void)panel_io;
+    (void)event_data;
+
+    ui_lvgl_flush_sync_t *sync =
+        (ui_lvgl_flush_sync_t *)user_context;
+
+    if (sync == NULL) {
+        return false;
+    }
+
+    BaseType_t higher_priority_task_woken = pdFALSE;
+
+    /*
+     * Do not clear LVGL's flushing flag from the ISR. If DMA completes before
+     * LVGL reaches wait_for_flushing(), leaving the flag set forces LVGL to
+     * consume this exact semaphore token instead of carrying it into the
+     * next flush.
+     */
+    if (sync->flush_done != NULL) {
+        (void)xSemaphoreGiveFromISR(
+            sync->flush_done,
+            &higher_priority_task_woken
+        );
+    }
+
+    return higher_priority_task_woken == pdTRUE;
+}
+
+
+static void ui_lvgl_flush_wait_callback(
+    lv_display_t *display
+)
+{
+    /* LVGL calls this only after the async flush callback was installed. */
+    configASSERT(s_flush_sync.flush_done != NULL);
+
+    const uint64_t started_us =
+        (uint64_t)esp_timer_get_time();
+
+    const BaseType_t taken =
+        xSemaphoreTake(
+            s_flush_sync.flush_done,
+            portMAX_DELAY
+        );
+
+    if (taken != pdTRUE) {
+        ESP_LOGE(
+            TAG,
+            "TFT flush completion semaphore failed"
+        );
+        return;
+    }
+
+    lvgl_port_flush_ready(display);
+
+    const uint64_t now_us =
+        (uint64_t)esp_timer_get_time();
+    const uint64_t wait_us =
+        now_us >= started_us
+            ? now_us - started_us
+            : 0U;
+
+    ++s_flush_wait_count;
+    s_flush_wait_total_us += wait_us;
+    if (wait_us > s_flush_wait_max_us) {
+        s_flush_wait_max_us = wait_us;
+    }
+
+    if (
+        s_flush_perf_started_us == 0U ||
+        now_us - s_flush_perf_started_us >= UI_FLUSH_PERF_PERIOD_US
+    ) {
+        ESP_LOGI(
+            TAG,
+            "UI_FLUSH_PERF: waits=%llu total_wait_us=%llu max_wait_us=%llu avg_wait_us=%llu",
+            (unsigned long long)s_flush_wait_count,
+            (unsigned long long)s_flush_wait_total_us,
+            (unsigned long long)s_flush_wait_max_us,
+            (unsigned long long)(
+                s_flush_wait_count > 0U
+                    ? s_flush_wait_total_us / s_flush_wait_count
+                    : 0U
+            )
+        );
+        ui_lvgl_flush_perf_reset(now_us);
+    }
+}
+
+
+static esp_err_t ui_lvgl_install_flush_wait_locked(
+    lv_display_t *display
+)
+{
+    if (display == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_flush_sync.flush_done == NULL) {
+        s_flush_sync.flush_done =
+            xSemaphoreCreateBinaryStatic(
+                &s_flush_done_storage
+            );
+    }
+
+    if (s_flush_sync.flush_done == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* A previous lifecycle may have drained a transfer after its waiter left. */
+    while (
+        xSemaphoreTake(
+            s_flush_sync.flush_done,
+            0
+        ) == pdTRUE
+    ) {
+    }
+
+    s_flush_sync.display = display;
+    ui_lvgl_flush_perf_reset(
+        (uint64_t)esp_timer_get_time()
+    );
+
+    lv_display_set_flush_wait_cb(
+        display,
+        ui_lvgl_flush_wait_callback
+    );
+
+    const esp_lcd_panel_io_callbacks_t callbacks = {
+        .on_color_trans_done =
+            ui_lvgl_flush_io_ready_callback,
+    };
+
+    esp_lcd_panel_io_handle_t io =
+        display_io_handle();
+    if (io == NULL) {
+        lv_display_set_flush_wait_cb(display, NULL);
+        s_flush_sync.display = NULL;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const esp_err_t err =
+        esp_lcd_panel_io_register_event_callbacks(
+            io,
+            &callbacks,
+            &s_flush_sync
+        );
+
+    if (err != ESP_OK) {
+        lv_display_set_flush_wait_cb(display, NULL);
+        s_flush_sync.display = NULL;
+        return err;
+    }
+
+    return ESP_OK;
+}
+
+
+static void ui_lvgl_prepare_flush_deinit_locked(
+    lv_display_t *display
+)
+{
+    if (display == NULL) {
+        return;
+    }
+
+    /* Drain all queued LCD DMA while the display pointer is still valid. */
+    esp_lcd_panel_io_handle_t io =
+        display_io_handle();
+    if (io != NULL) {
+        const esp_err_t err =
+            esp_lcd_panel_io_tx_param(
+                io,
+                -1,
+                NULL,
+                0
+            );
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Failed to drain TFT DMA before LVGL teardown: %s",
+                esp_err_to_name(err)
+            );
+        }
+    }
+
+    lv_display_set_flush_wait_cb(display, NULL);
+    s_flush_sync.display = NULL;
+
+    if (s_flush_sync.flush_done != NULL) {
+        while (
+            xSemaphoreTake(
+                s_flush_sync.flush_done,
+                0
+            ) == pdTRUE
+        ) {
+        }
+    }
+}
 
 
 static esp_err_t ui_lvgl_quiesce_shared_spi(void *context)
@@ -183,6 +440,28 @@ esp_err_t ui_lvgl_init(void)
     context->port_ready =
         true;
 
+    if (!lvgl_port_lock(1000)) {
+        ui_lvgl_deinit();
+        return ESP_ERR_TIMEOUT;
+    }
+
+    err =
+        ui_lvgl_install_flush_wait_locked(
+            context->display
+        );
+
+    lvgl_port_unlock();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to install blocking TFT flush wait: %s",
+            esp_err_to_name(err)
+        );
+        ui_lvgl_deinit();
+        return err;
+    }
+
     err =
         app_spi_bus_register_display_guard(
             ui_lvgl_quiesce_shared_spi,
@@ -229,6 +508,21 @@ void ui_lvgl_deinit(void)
      * to lock a deinitialized LVGL mutex.
      */
     app_spi_bus_unregister_display_guard();
+
+    if (context->display != NULL) {
+        if (!lvgl_port_lock(0)) {
+            ESP_LOGW(
+                TAG,
+                "Unable to lock LVGL while draining TFT DMA"
+            );
+        }
+        else {
+            ui_lvgl_prepare_flush_deinit_locked(
+                context->display
+            );
+            lvgl_port_unlock();
+        }
+    }
 
     if (context->display != NULL) {
         (void)lvgl_port_remove_disp(

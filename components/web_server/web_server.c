@@ -109,11 +109,16 @@ static void web_server_status_cache_start(void)
         ESP_LOGW(TAG, "Status object/session cache unavailable: %s", esp_err_to_name(err));
     }
     else {
-        err = web_status_json_objects_refresh();
+        /*
+         * Do not make network-server startup wait for an SD directory walk or
+         * metadata reads. The cache task owns the refresh and /api/status can
+         * report storage_busy while its first snapshot is being built.
+         */
+        err = web_status_json_objects_request_refresh();
         if (err != ESP_OK) {
             ESP_LOGW(
                 TAG,
-                "Initial status object/session cache refresh deferred: %s",
+                "Initial status object/session cache refresh request failed: %s",
                 esp_err_to_name(err)
             );
         }

@@ -35,8 +35,8 @@ static esp_err_t storage_begin_error;
 static bool fail_create_directory;
 static unsigned remove_tree_calls;
 static char removed_tree_path[256];
-static bool fake_metadata_present;
 static esp_err_t fake_summary_error = ESP_FAIL;
+static size_t fake_summary_read_calls;
 static size_t injected_short_write_count = SIZE_MAX;
 static bool injected_fflush_error;
 static bool injected_fsync_error;
@@ -78,11 +78,17 @@ static void remove_layout(void)
             char session_path[256];
             char samples_path[256];
             char marker_path[256];
+            char metadata_path[256];
+            char backup_path[256];
             (void)snprintf(session_path, sizeof(session_path), "%s/%s", sessions_path, entry->d_name);
             (void)snprintf(samples_path, sizeof(samples_path), "%s/samples.bin", session_path);
             (void)snprintf(marker_path, sizeof(marker_path), "%s/marker", session_path);
+            (void)snprintf(metadata_path, sizeof(metadata_path), "%s/session.json", session_path);
+            (void)snprintf(backup_path, sizeof(backup_path), "%s/session.json.bak", session_path);
             (void)remove(samples_path);
             (void)remove(marker_path);
+            (void)remove(metadata_path);
+            (void)remove(backup_path);
             (void)rmdir(session_path);
         }
         (void)closedir(sessions);
@@ -136,6 +142,7 @@ esp_err_t seismic_recorder_json_read_summary(
 )
 {
     (void)object_id;
+    ++fake_summary_read_calls;
     if (fake_summary_error != ESP_OK || summary == NULL) {
         return fake_summary_error;
     }
@@ -147,16 +154,6 @@ esp_err_t seismic_recorder_json_read_summary(
     summary->channel_count = SEISMIC_CHANNEL_COUNT;
     summary->samples_written = 5U;
     return ESP_OK;
-}
-
-bool seismic_recorder_json_metadata_exists(
-    const char *object_id,
-    const char *session_id
-)
-{
-    (void)object_id;
-    (void)session_id;
-    return fake_metadata_present;
 }
 
 static size_t recorder_test_fwrite(
@@ -413,42 +410,64 @@ static void test_listing_missing_and_malformed_metadata_is_safe(void)
     remove_layout();
     make_layout();
     assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001") == 0);
-    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002") == 0);
     assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003") == 0);
+    /* A gap must not cause presumed slot probes; only directory entries count. */
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000007") == 0);
 
     seismic_recorder_session_summary_t sessions[4] = {0};
     size_t count = 0U;
     storage_begin_calls = 0U;
     storage_end_calls = 0U;
     storage_begin_error = ESP_OK;
-    fake_metadata_present = false;
-    fake_summary_error = ESP_OK;
+    fake_summary_error = ESP_ERR_NOT_FOUND;
+    fake_summary_read_calls = 0U;
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
     assert(count == 3U);
+    assert(fake_summary_read_calls == 0U);
+    assert(strcmp(sessions[0].session_id, "S000007") == 0);
+    assert(strcmp(sessions[1].session_id, "S000003") == 0);
+    assert(strcmp(sessions[2].session_id, "S000001") == 0);
     for (size_t index = 0U; index < count; ++index) {
         assert(!sessions[index].complete);
         assert(sessions[index].source_name[0] == '\0');
     }
 
-    fake_metadata_present = true;
+    const char *session_ids[] = {"S000001", "S000003", "S000007"};
+    for (size_t index = 0U; index < sizeof(session_ids) / sizeof(session_ids[0]); ++index) {
+        char metadata_path[256];
+        (void)snprintf(
+            metadata_path,
+            sizeof(metadata_path),
+            "%s/OBJ_0001/sessions/%s/session.json",
+            STORAGE_MANAGER_OBJECTS_PATH,
+            session_ids[index]
+        );
+        FILE *metadata = fopen(metadata_path, "wb");
+        assert(metadata != NULL);
+        assert(fclose(metadata) == 0);
+    }
+
     fake_summary_error = ESP_ERR_INVALID_RESPONSE;
+    fake_summary_read_calls = 0U;
     count = 0U;
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
     assert(count == 3U);
+    assert(fake_summary_read_calls == 3U);
     for (size_t index = 0U; index < count; ++index) {
         assert(!sessions[index].complete);
     }
 
     fake_summary_error = ESP_OK;
+    fake_summary_read_calls = 0U;
     count = 0U;
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
     assert(count == 3U);
+    assert(fake_summary_read_calls == 3U);
     for (size_t index = 0U; index < count; ++index) {
         assert(sessions[index].complete);
         assert(strcmp(sessions[index].source_name, "AD7606") == 0);
     }
     assert(storage_begin_calls == storage_end_calls);
-    fake_metadata_present = false;
     fake_summary_error = ESP_FAIL;
     remove_layout();
 }

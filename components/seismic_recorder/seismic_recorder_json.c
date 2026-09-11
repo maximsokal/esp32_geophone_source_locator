@@ -237,7 +237,6 @@ static bool seismic_recorder_json_uint64(
     return true;
 }
 
-
 static bool seismic_recorder_json_uint32(
     const cJSON *root,
     const char *name,
@@ -419,45 +418,4 @@ esp_err_t seismic_recorder_json_read_summary(
     cJSON_Delete(root);
     free(path);
     return ESP_OK;
-}
-
-
-bool seismic_recorder_json_metadata_exists(
-    const char *object_id,
-    const char *session_id
-)
-{
-    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
-    if (path == NULL) {
-        return false;
-    }
-
-    const esp_err_t path_err = seismic_recorder_json_metadata_path(
-        object_id,
-        session_id,
-        path,
-        SEISMIC_RECORDER_PATH_SIZE
-    );
-    if (path_err != ESP_OK) {
-        free(path);
-        return false;
-    }
-
-    if (storage_manager_path_exists(path)) {
-        free(path);
-        return true;
-    }
-
-    const size_t path_length = strlen(path);
-    const bool backup_path_fits =
-        path_length + sizeof(".bak") - 1U < SEISMIC_RECORDER_PATH_SIZE;
-    if (backup_path_fits) {
-        memcpy(path + path_length, ".bak", sizeof(".bak"));
-    }
-
-    const bool exists =
-        backup_path_fits &&
-        storage_manager_path_exists(path);
-    free(path);
-    return exists;
 }

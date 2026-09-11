@@ -47,7 +47,6 @@ esp_err_t seismic_recorder_fs_flush(FILE *file, bool sync_to_media) { (void)file
 esp_err_t seismic_recorder_fs_sync(FILE *file) { (void)file; return ESP_OK; }
 esp_err_t seismic_recorder_fs_list_sessions(const char *object_id, seismic_recorder_session_summary_t *sessions, size_t max, size_t *count) { (void)object_id; (void)sessions; (void)max; *count = 0U; return ESP_OK; }
 esp_err_t seismic_recorder_json_read_summary(const char *object_id, const char *session_id, seismic_recorder_session_summary_t *summary) { (void)object_id; (void)session_id; (void)summary; return ESP_ERR_NOT_FOUND; }
-bool seismic_recorder_json_metadata_exists(const char *object_id, const char *session_id) { (void)object_id; (void)session_id; return false; }
 esp_err_t seismic_recorder_fs_build_session_path(const char *object_id, const char *session_id, char *path, size_t path_size) { (void)object_id; (void)session_id; (void)path; (void)path_size; return ESP_ERR_NOT_FOUND; }
 esp_err_t seismic_recorder_waveform_read_file(FILE *file, uint64_t size, const seismic_recorder_session_summary_t *summary, uint64_t start, uint64_t count, size_t max_points, seismic_recorder_waveform_point_t *points, size_t capacity, seismic_recorder_waveform_info_t *info) { (void)file; (void)size; (void)summary; (void)start; (void)count; (void)max_points; (void)points; (void)capacity; (void)info; return ESP_ERR_NOT_FOUND; }
 
