@@ -188,12 +188,16 @@ def test_console_record_button_uses_the_async_measurement_state_machine():
     assert "recording_stop" not in recording_control
     assert "const MEASUREMENT_TRANSITION_ACTIONS = new Set(['measurement_start', 'measurement_stop']);" in source
     assert "measurementTransitionNeedsSessionRefresh" in source
+    assert "waitForStorageCacheIdle" in source
 
     transition = source.index("waitForMeasurementTransition(")
     refresh = source.index("await refreshSessions(confirmedObjectId)")
     assert transition < refresh
     refresh_gate = source.index("if (measurementTransitionNeedsSessionRefresh(", transition)
     assert refresh_gate < refresh
+    cache_idle = source.index("await waitForStorageCacheIdle(", refresh_gate)
+    assert refresh_gate < cache_idle < refresh
     assert "const confirmedObjectId = selectedId" in source[refresh_gate:refresh]
     assert "measurementTransitionErrorMessage(transitionStatus)" in source
     assert "status.measurement?.busy !== true" in transition_source
+    assert "status.storage_busy !== true" in transition_source

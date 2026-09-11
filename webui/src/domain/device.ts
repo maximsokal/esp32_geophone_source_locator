@@ -204,6 +204,7 @@ export interface DeviceAcquisitionStatus {
 }
 
 export interface DeviceStatus {
+  storage_busy?: boolean;
   system: DeviceSystemStatus;
   power: ValidValue & { voltage_v: number; current_a: number; power_w: number };
   environment: ValidValue & { temperature_c: number; humidity_percent: number; pressure_pa: number };

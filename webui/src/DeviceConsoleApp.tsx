@@ -17,6 +17,7 @@ import {
 import {
   measurementTransitionErrorMessage,
   measurementTransitionNeedsSessionRefresh,
+  waitForStorageCacheIdle,
   waitForMeasurementTransition,
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
@@ -243,6 +244,15 @@ export default function DeviceConsoleApp() {
         if (measurementTransitionNeedsSessionRefresh(
           action as 'measurement_start' | 'measurement_stop',
         )) {
+          /* REVIEW means recorder finalization is complete, but the
+           * asynchronous SD-backed status-cache refresh may still be between
+           * invalidate and publish. Wait on fast RAM status before asking for
+           * the cached session list, otherwise the expected 503 becomes a UI
+           * error immediately after every STOP. */
+          const cacheIdleStatus = await waitForStorageCacheIdle(
+            () => fetchDeviceStatus(false),
+          );
+          setStatus(cacheIdleStatus);
           const confirmedObjectId = selectedId
             ?? transitionStatus.measurement?.object_id
             ?? transitionStatus.recording?.object_id

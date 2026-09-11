@@ -451,6 +451,12 @@ bool web_status_json_objects_cache_busy(void)
 esp_err_t web_status_json_objects_start_guard(void *user_context)
 {
     (void)user_context;
+    /* The status cache is auxiliary. If initialization failed completely,
+     * there is no refresh operation that can race local TFT recording, so the
+     * measurement service must remain usable without this guard. */
+    if (s_arbitration.mutex == NULL) {
+        return ESP_OK;
+    }
     return web_status_cache_arbitration_try_reserve_start(&s_arbitration)
         ? ESP_OK
         : ESP_ERR_INVALID_STATE;

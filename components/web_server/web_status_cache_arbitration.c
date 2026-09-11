@@ -145,8 +145,11 @@ bool web_status_cache_arbitration_try_reserve_start(
         return false;
     }
 
-    const bool allowed = arbitration->cache_ready &&
-        !arbitration->cache_refreshing &&
+    /* Cache failure is not a device-recording failure. A missing/unready
+     * cache may let START reserve the slot; an active refresh still wins the
+     * arbitration, and the refresh task will retry after STARTING/RECORDING
+     * has made storage non-idle. */
+    const bool allowed = !arbitration->cache_refreshing &&
         !arbitration->start_reserved;
     if (allowed) {
         arbitration->start_reserved = true;
