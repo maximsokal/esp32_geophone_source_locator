@@ -165,7 +165,7 @@ static bool web_control_pod_index(double value, size_t *pod_index)
     return true;
 }
 
-static esp_err_t web_control_recording_start(const char *object_id)
+static esp_err_t web_control_measurement_start(const char *object_id)
 {
     if (object_id == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -175,20 +175,12 @@ static esp_err_t web_control_recording_start(const char *object_id)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = object_store_set_active(object_id);
+    const esp_err_t err = object_store_set_active(object_id);
     if (err != ESP_OK) {
         return err;
     }
     web_status_json_objects_set_active(object_id);
-
-    if (!seismic_acquisition_is_running()) {
-        err = seismic_acquisition_start();
-        if (err != ESP_OK) {
-            return err;
-        }
-    }
-
-    return seismic_recorder_start(object_id);
+    return measurement_service_start_async();
 }
 
 static esp_err_t web_control_acquisition_stop(void)
@@ -337,25 +329,19 @@ static esp_err_t web_control_process(
         }
         return object_store_set_location(object_id, &location);
     }
-    if (strcmp(action, "recording_start") == 0) {
-        return web_control_recording_start(object_id);
+    /* Keep the legacy action names as compatibility aliases, but route them
+     * through the same queued measurement service as the current WebUI. */
+    if (
+        strcmp(action, "recording_start") == 0 ||
+        strcmp(action, "measurement_start") == 0
+    ) {
+        return web_control_measurement_start(object_id);
     }
-    if (strcmp(action, "measurement_start") == 0) {
-        if (object_id == NULL) return ESP_ERR_INVALID_ARG;
-        if (!web_status_json_objects_cache_ready()) {
-            return ESP_ERR_INVALID_STATE;
-        }
-        esp_err_t err = object_store_set_active(object_id);
-        if (err == ESP_OK) {
-            web_status_json_objects_set_active(object_id);
-        }
-        return err == ESP_OK ? measurement_service_start_async() : err;
-    }
-    if (strcmp(action, "measurement_stop") == 0) {
+    if (
+        strcmp(action, "recording_stop") == 0 ||
+        strcmp(action, "measurement_stop") == 0
+    ) {
         return measurement_service_stop_async();
-    }
-    if (strcmp(action, "recording_stop") == 0) {
-        return seismic_recorder_stop();
     }
     if (strcmp(action, "acquisition_start") == 0) {
         return seismic_acquisition_start();

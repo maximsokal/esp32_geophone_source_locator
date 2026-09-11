@@ -4,6 +4,7 @@ export type MeasurementTransitionAction = 'measurement_start' | 'measurement_sto
 
 export const MEASUREMENT_TRANSITION_POLL_MS = 250;
 export const MEASUREMENT_TRANSITION_TIMEOUT_MS = 30_000;
+export const STORAGE_CACHE_IDLE_TIMEOUT_MS = 30_000;
 
 type ReadStatus = () => Promise<DeviceStatus>;
 
@@ -38,6 +39,41 @@ export function measurementTransitionNeedsSessionRefresh(
 ): boolean {
   /* A session is durable only after STOP has completed metadata finalization. */
   return action === 'measurement_stop';
+}
+
+export function isStorageCacheIdle(status: DeviceStatus): boolean {
+  /* Older firmware has no cache field; keep it usable while upgrading. */
+  return status.storage_busy !== true;
+}
+
+export async function waitForStorageCacheIdle(
+  readStatus: ReadStatus,
+  options: MeasurementTransitionWaitOptions = {},
+): Promise<DeviceStatus> {
+  const intervalMs = Math.max(
+    1,
+    Math.round(options.intervalMs ?? MEASUREMENT_TRANSITION_POLL_MS),
+  );
+  const timeoutMs = Math.max(
+    intervalMs,
+    Math.round(options.timeoutMs ?? STORAGE_CACHE_IDLE_TIMEOUT_MS),
+  );
+  const now = options.now ?? (() => Date.now());
+  const sleep = options.sleep ?? defaultSleep;
+  const deadline = now() + timeoutMs;
+
+  while (true) {
+    const status = await readStatus();
+    if (isStorageCacheIdle(status)) return status;
+
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      throw new Error(
+        `ESP storage cache did not become idle within ${timeoutMs} ms.`,
+      );
+    }
+    await sleep(Math.min(intervalMs, remaining));
+  }
 }
 
 export function isMeasurementTransitionComplete(

@@ -200,6 +200,28 @@ def test_cache_refresh_and_measurement_start_share_reservation():
     assert "web_status_json_objects_release_start_reservation" in web_server
 
 
+def test_legacy_recording_aliases_use_measurement_service_and_cache_is_fail_safe():
+    control = read("components/web_server/web_api_control.c")
+    arbitration = read("components/web_server/web_status_cache_arbitration.c")
+    status_objects = read("components/web_server/web_status_json_objects.c")
+
+    assert "web_control_measurement_start" in control
+    assert 'strcmp(action, "recording_start") == 0 ||' in control
+    assert 'strcmp(action, "recording_stop") == 0 ||' in control
+    assert "return measurement_service_start_async();" in control
+    assert "return measurement_service_stop_async();" in control
+    assert "return seismic_recorder_start(object_id);" not in control
+    assert 'return seismic_recorder_stop();' not in control
+
+    start_reservation = arbitration[arbitration.index(
+        "bool web_status_cache_arbitration_try_reserve_start"
+    ):]
+    assert "const bool allowed = !arbitration->cache_refreshing &&" in start_reservation
+    assert "arbitration->cache_ready &&" not in start_reservation
+    assert "if (s_arbitration.mutex == NULL)" in status_objects
+    assert "there is no refresh operation that can race local TFT recording" in status_objects
+
+
 def test_ui_header_does_not_reinvalidate_unchanged_labels():
     shell = read("components/ui/ui_shell.c")
     system = read("components/ui/ui_system.c")

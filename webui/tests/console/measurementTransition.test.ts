@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { DeviceStatus } from '../../src/domain/device';
 import {
   isMeasurementTransitionComplete,
+  isStorageCacheIdle,
   measurementTransitionErrorMessage,
   measurementTransitionNeedsSessionRefresh,
+  waitForStorageCacheIdle,
   waitForMeasurementTransition,
 } from '../../src/features/objects/measurementTransition';
 
-function status(state: string, busy = false): DeviceStatus {
+function status(state: string, busy = false, storageBusy = false): DeviceStatus {
   return {
+    storage_busy: storageBusy,
     system: {
       state: 'READY',
       mode: 'NORMAL',
@@ -123,6 +126,25 @@ describe('measurement transition polling', () => {
     expect(sessionsRefreshes).toBe(1);
     expect(reads).toBe(2);
     expect(result.measurement?.state).toBe('REVIEW');
+  });
+
+  it('waits for the cache publish after REVIEW before session refresh', async () => {
+    const sequence = [
+      status('REVIEW', false, true),
+      status('REVIEW', false, false),
+    ];
+    let reads = 0;
+    const sleeps: number[] = [];
+
+    expect(isStorageCacheIdle(sequence[0])).toBe(false);
+    const result = await waitForStorageCacheIdle(
+      async () => sequence[reads++],
+      { intervalMs: 1, timeoutMs: 20, sleep: async (milliseconds) => { sleeps.push(milliseconds); } },
+    );
+
+    expect(result.storage_busy).toBe(false);
+    expect(reads).toBe(2);
+    expect(sleeps).toEqual([1]);
   });
 
   it('treats ERROR as terminal so the caller can refresh sessions before surfacing it', async () => {

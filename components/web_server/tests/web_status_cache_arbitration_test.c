@@ -72,6 +72,13 @@ static void test_cache_refresh_and_start_reservations_cannot_overlap(void)
 
     assert(web_status_cache_arbitration_init(&arbitration) == ESP_OK);
 
+    /* A failed/initially unavailable cache must not disable autonomous
+     * recording. START can reserve while no refresh is active; the first
+     * refresh then observes the reservation and waits. */
+    assert(!web_status_cache_arbitration_cache_ready(&arbitration));
+    assert(web_status_cache_arbitration_try_reserve_start(&arbitration));
+    web_status_cache_arbitration_release_start(&arbitration);
+
     /* Deterministic interleaving: refresh wins the reservation first, then
      * START attempts exactly in the old check-to-SD race window. */
     assert(web_status_cache_arbitration_try_reserve_refresh(
