@@ -1,8 +1,6 @@
 #include "wifi_manager_sta_events.h"
 
-#include "app_config.h"
 #include "app_event_bus.h"
-#include "wifi_manager_mdns.h"
 #include "wifi_manager_runtime.h"
 
 #include "esp_err.h"
@@ -123,30 +121,6 @@ static void wifi_manager_sta_on_ip_event(
         "Connected, IP=" IPSTR,
         IP2STR(&event->ip_info.ip)
     );
-
-    /*
-     * Start mDNS only after STA owns a LAN address. This keeps its task and
-     * heap allocations out of the WPA2 SoftAP provisioning path, where
-     * contiguous internal DMA memory is intentionally kept available.
-     */
-    esp_err_t mdns_err =
-        wifi_manager_mdns_init();
-
-    if (mdns_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "mDNS unavailable: %s",
-            esp_err_to_name(mdns_err)
-        );
-    }
-
-    if (wifi_manager_mdns_is_ready()) {
-        ESP_LOGI(
-            TAG,
-            "Web UI: %s",
-            APP_MDNS_WEB_URL
-        );
-    }
 
     (void)app_event_bus_publish(
         APP_EVENT_WIFI_STA_CONNECTED,
