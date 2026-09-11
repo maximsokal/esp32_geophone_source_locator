@@ -27,7 +27,8 @@ typedef void (*wifi_manager_radio_stop_complete_callback_t)(
  * Register the synchronous radio-stop lifecycle hooks. The prepare callback
  * must return only after network services have stopped resources that must
  * not outlive the Wi-Fi mode transition. The complete callback runs after
- * esp_wifi_stop() returns, including when it returns an error.
+ * esp_wifi_stop() returns, including when it returns an error, and receives
+ * the normalized lifecycle result (`ESP_ERR_WIFI_NOT_STARTED` is ESP_OK).
  */
 esp_err_t wifi_manager_set_radio_stop_lifecycle_callbacks(
     wifi_manager_radio_stop_prepare_callback_t prepare_callback,

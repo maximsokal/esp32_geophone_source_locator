@@ -143,8 +143,13 @@ static esp_err_t wifi_manager_stop_radio(void)
     err =
         esp_wifi_stop();
 
+    const esp_err_t radio_stop_result =
+        err == ESP_ERR_WIFI_NOT_STARTED
+            ? ESP_OK
+            : err;
+
     if (complete_callback != NULL) {
-        complete_callback(context, err);
+        complete_callback(context, radio_stop_result);
     }
 
     if (prepare_callback != NULL) {
@@ -154,13 +159,12 @@ static esp_err_t wifi_manager_stop_radio(void)
     }
 
     if (
-        err == ESP_OK ||
-        err == ESP_ERR_WIFI_NOT_STARTED
+        radio_stop_result == ESP_OK
     ) {
         return ESP_OK;
     }
 
-    return err;
+    return radio_stop_result;
 }
 
 

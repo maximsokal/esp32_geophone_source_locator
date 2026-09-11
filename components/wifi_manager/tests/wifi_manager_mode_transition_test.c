@@ -175,6 +175,20 @@ int main(void)
     assert(complete_result == ESP_FAIL);
     assert(fake_running);
 
+    fake_running = true;
+    fake_mdns_ready = true;
+    fake_https_running = true;
+    prepare_result = ESP_OK;
+    fake_wifi_stop_result = ESP_ERR_WIFI_NOT_STARTED;
+    complete_result = ESP_FAIL;
+    reset_trace();
+    assert(wifi_manager_stop() == ESP_OK);
+    assert(trace_count == 6U);
+    assert(trace[4] == TRACE_WIFI_STOP);
+    assert(trace[5] == TRACE_COMPLETE);
+    assert(complete_result == ESP_OK);
+    assert(!fake_running);
+
     assert(wifi_manager_set_radio_stop_lifecycle_callbacks(
         NULL,
         NULL,
@@ -189,6 +203,7 @@ int main(void)
 
     prepare_result = ESP_OK;
     fake_wifi_stop_result = ESP_OK;
+    fake_running = true;
     fake_mdns_ready = false;
     fake_https_running = false;
     reset_trace();

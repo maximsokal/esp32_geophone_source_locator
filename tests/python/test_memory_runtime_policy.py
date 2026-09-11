@@ -401,6 +401,10 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "s_lifecycle_quiesce_pending" in web_server
     assert "s_lifecycle_transition_active" in web_server
     assert "s_lifecycle_deferred_state_valid" in web_server
+    assert "s_lifecycle_stable_state" in web_server
+    assert "s_lifecycle_rollback_state" in web_server
+    assert "s_lifecycle_rollback_state = s_lifecycle_stable_state" in web_server
+    assert "web_server_lifecycle_reconcile_failed_transition_locked" in web_server
     ack = web_server[
         web_server.index("static void web_server_lifecycle_ack_quiesce(esp_err_t result)\n{"):
         web_server.index(
@@ -423,6 +427,8 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     ]
     assert "s_lifecycle_transition_active = false" in complete
     assert "web_server_lifecycle_reconcile_deferred_locked" in complete
+    assert "web_server_lifecycle_reconcile_failed_transition_locked" in complete
+    assert "radio_stop_result == ESP_OK" in complete
     assert "xTaskCreatePinnedToCoreWithCaps(" in web_server
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in web_server
     assert '"web_lifecycle"' in web_server
@@ -435,13 +441,17 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_set_radio_stop_lifecycle_callbacks" in wifi_mode
     assert "wifi_manager_radio_stop_complete_callback_t" in wifi_mode
     assert "s_radio_stop_lifecycle_in_flight" in wifi_mode
+    assert "const esp_err_t radio_stop_result" in wifi_mode
+    assert "complete_callback(context, radio_stop_result)" in wifi_mode
     radio_stop = wifi_mode[
         wifi_mode.index("static esp_err_t wifi_manager_stop_radio("):
         wifi_mode.index("esp_err_t wifi_manager_enter_setup_mode(")
     ]
     assert "wifi_manager_prepare_radio_stop(" in radio_stop
     assert radio_stop.index("wifi_manager_prepare_radio_stop(") < radio_stop.index("esp_wifi_stop()")
-    assert radio_stop.index("esp_wifi_stop()") < radio_stop.index("complete_callback(context, err)")
+    assert radio_stop.index("esp_wifi_stop()") < radio_stop.index("complete_callback(context, radio_stop_result)")
+    assert "err == ESP_ERR_WIFI_NOT_STARTED" in radio_stop
+    assert "? ESP_OK" in radio_stop
     assert "wifi_manager_mdns_init(void)" in wifi_header
     assert "wifi_manager_mdns_stop(void)" in wifi_header
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header
