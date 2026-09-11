@@ -124,3 +124,10 @@ esp_err_t seismic_recorder_json_read_summary(
     const char *session_id,
     seismic_recorder_session_summary_t *summary
 );
+
+
+esp_err_t seismic_recorder_json_read_summary_known_present(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+);

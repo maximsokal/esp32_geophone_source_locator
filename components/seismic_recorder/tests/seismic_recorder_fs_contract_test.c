@@ -37,6 +37,7 @@ static unsigned remove_tree_calls;
 static char removed_tree_path[256];
 static esp_err_t fake_summary_error = ESP_FAIL;
 static size_t fake_summary_read_calls;
+static size_t fake_known_present_summary_read_calls;
 static size_t injected_short_write_count = SIZE_MAX;
 static bool injected_fflush_error;
 static bool injected_fsync_error;
@@ -134,15 +135,20 @@ esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t
     return ESP_OK;
 }
 
-/* Not reached by these tests, but required when this TU includes fs.c. */
-esp_err_t seismic_recorder_json_read_summary(
+static esp_err_t fake_read_summary(
     const char *object_id,
     const char *session_id,
-    seismic_recorder_session_summary_t *summary
+    seismic_recorder_session_summary_t *summary,
+    bool known_present
 )
 {
     (void)object_id;
-    ++fake_summary_read_calls;
+    if (known_present) {
+        ++fake_known_present_summary_read_calls;
+    }
+    else {
+        ++fake_summary_read_calls;
+    }
     if (fake_summary_error != ESP_OK || summary == NULL) {
         return fake_summary_error;
     }
@@ -154,6 +160,35 @@ esp_err_t seismic_recorder_json_read_summary(
     summary->channel_count = SEISMIC_CHANNEL_COUNT;
     summary->samples_written = 5U;
     return ESP_OK;
+}
+
+/* Not reached by these tests, but required when this TU includes fs.c. */
+esp_err_t seismic_recorder_json_read_summary(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+)
+{
+    return fake_read_summary(
+        object_id,
+        session_id,
+        summary,
+        false
+    );
+}
+
+esp_err_t seismic_recorder_json_read_summary_known_present(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+)
+{
+    return fake_read_summary(
+        object_id,
+        session_id,
+        summary,
+        true
+    );
 }
 
 static size_t recorder_test_fwrite(
@@ -421,9 +456,11 @@ static void test_listing_missing_and_malformed_metadata_is_safe(void)
     storage_begin_error = ESP_OK;
     fake_summary_error = ESP_ERR_NOT_FOUND;
     fake_summary_read_calls = 0U;
+    fake_known_present_summary_read_calls = 0U;
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
     assert(count == 3U);
     assert(fake_summary_read_calls == 0U);
+    assert(fake_known_present_summary_read_calls == 0U);
     assert(strcmp(sessions[0].session_id, "S000007") == 0);
     assert(strcmp(sessions[1].session_id, "S000003") == 0);
     assert(strcmp(sessions[2].session_id, "S000001") == 0);
@@ -449,24 +486,49 @@ static void test_listing_missing_and_malformed_metadata_is_safe(void)
 
     fake_summary_error = ESP_ERR_INVALID_RESPONSE;
     fake_summary_read_calls = 0U;
+    fake_known_present_summary_read_calls = 0U;
     count = 0U;
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
     assert(count == 3U);
-    assert(fake_summary_read_calls == 3U);
+    assert(fake_summary_read_calls == 0U);
+    assert(fake_known_present_summary_read_calls == 3U);
     for (size_t index = 0U; index < count; ++index) {
         assert(!sessions[index].complete);
     }
 
     fake_summary_error = ESP_OK;
     fake_summary_read_calls = 0U;
+    fake_known_present_summary_read_calls = 0U;
     count = 0U;
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
     assert(count == 3U);
-    assert(fake_summary_read_calls == 3U);
+    assert(fake_summary_read_calls == 0U);
+    assert(fake_known_present_summary_read_calls == 3U);
     for (size_t index = 0U; index < count; ++index) {
         assert(sessions[index].complete);
         assert(strcmp(sessions[index].source_name, "AD7606") == 0);
     }
+
+    /* A backup-only session must retain the normal recovery path. */
+    assert(
+        remove(
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003/session.json"
+        ) == 0
+    );
+    FILE *backup = fopen(
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003/session.json.bak",
+        "wb"
+    );
+    assert(backup != NULL);
+    assert(fclose(backup) == 0);
+    fake_summary_read_calls = 0U;
+    fake_known_present_summary_read_calls = 0U;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_OK);
+    assert(count == 3U);
+    assert(fake_summary_read_calls == 1U);
+    assert(fake_known_present_summary_read_calls == 2U);
+
     assert(storage_begin_calls == storage_end_calls);
     fake_summary_error = ESP_FAIL;
     remove_layout();

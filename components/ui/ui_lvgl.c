@@ -32,7 +32,6 @@ static const char *TAG =
 
 typedef struct
 {
-    lv_display_t *display;
     SemaphoreHandle_t flush_done;
 
 } ui_lvgl_flush_sync_t;
@@ -116,6 +115,7 @@ static void ui_lvgl_flush_wait_callback(
 )
 {
     /* LVGL calls this only after the async flush callback was installed. */
+    (void)display;
     configASSERT(s_flush_sync.flush_done != NULL);
 
     const uint64_t started_us =
@@ -134,8 +134,6 @@ static void ui_lvgl_flush_wait_callback(
         );
         return;
     }
-
-    lvgl_port_flush_ready(display);
 
     const uint64_t now_us =
         (uint64_t)esp_timer_get_time();
@@ -199,7 +197,6 @@ static esp_err_t ui_lvgl_install_flush_wait_locked(
     ) {
     }
 
-    s_flush_sync.display = display;
     ui_lvgl_flush_perf_reset(
         (uint64_t)esp_timer_get_time()
     );
@@ -218,7 +215,6 @@ static esp_err_t ui_lvgl_install_flush_wait_locked(
         display_io_handle();
     if (io == NULL) {
         lv_display_set_flush_wait_cb(display, NULL);
-        s_flush_sync.display = NULL;
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -231,7 +227,6 @@ static esp_err_t ui_lvgl_install_flush_wait_locked(
 
     if (err != ESP_OK) {
         lv_display_set_flush_wait_cb(display, NULL);
-        s_flush_sync.display = NULL;
         return err;
     }
 
@@ -268,7 +263,6 @@ static void ui_lvgl_prepare_flush_deinit_locked(
     }
 
     lv_display_set_flush_wait_cb(display, NULL);
-    s_flush_sync.display = NULL;
 
     if (s_flush_sync.flush_done != NULL) {
         while (

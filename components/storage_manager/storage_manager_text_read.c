@@ -50,10 +50,11 @@ static esp_err_t storage_read_errno_to_error(
 }
 
 
-esp_err_t storage_manager_read_text(
+static esp_err_t storage_manager_read_text_impl(
     const char *path,
     char *buffer,
-    size_t buffer_size
+    size_t buffer_size,
+    bool recover_backup
 )
 {
     if (
@@ -86,25 +87,27 @@ esp_err_t storage_manager_read_text(
         return err;
     }
 
-    started_us =
-        esp_timer_get_time();
+    if (recover_backup) {
+        started_us =
+            esp_timer_get_time();
 
-    err =
-        storage_manager_recover_backup_locked(
-            path
+        err =
+            storage_manager_recover_backup_locked(
+                path
+            );
+
+        storage_read_log_io(
+            "recover-backup",
+            path,
+            (int)err,
+            started_us
         );
 
-    storage_read_log_io(
-        "recover-backup",
-        path,
-        (int)err,
-        started_us
-    );
+        if (err != ESP_OK) {
+            storage_manager_operation_end();
 
-    if (err != ESP_OK) {
-        storage_manager_operation_end();
-
-        return err;
+            return err;
+        }
     }
 
     started_us =
@@ -274,4 +277,34 @@ esp_err_t storage_manager_read_text(
      * diagnostic only for this bring-up investigation.
      */
     return ESP_OK;
+}
+
+
+esp_err_t storage_manager_read_text(
+    const char *path,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    return storage_manager_read_text_impl(
+        path,
+        buffer,
+        buffer_size,
+        true
+    );
+}
+
+
+esp_err_t storage_manager_read_text_known_present(
+    const char *path,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    return storage_manager_read_text_impl(
+        path,
+        buffer,
+        buffer_size,
+        false
+    );
 }

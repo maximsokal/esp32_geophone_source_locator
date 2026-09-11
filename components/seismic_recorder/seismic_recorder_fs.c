@@ -1,6 +1,7 @@
 #include "seismic_recorder_internal.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,15 @@
 
 static const char *TAG = "SEISMIC_RECORDER_FS";
 
+
+typedef enum
+{
+    SEISMIC_RECORDER_FS_METADATA_NONE = 0,
+    SEISMIC_RECORDER_FS_METADATA_PRIMARY,
+    SEISMIC_RECORDER_FS_METADATA_BACKUP,
+
+} seismic_recorder_fs_metadata_state_t;
+
 /*
  * ESP-IDF 5.5.4's SDSPI path copies external-RAM sources into a temporary
  * 512-byte DMA buffer and sends one block at a time. Keep the large recorder
@@ -38,11 +48,12 @@ static bool seismic_recorder_fs_parse_session_number(
     unsigned *number
 );
 
-static bool seismic_recorder_fs_session_metadata_present(
+static esp_err_t seismic_recorder_fs_session_metadata_state(
     const char *sessions_path,
     const char *session_id,
     char *session_path,
-    size_t session_path_size
+    size_t session_path_size,
+    seismic_recorder_fs_metadata_state_t *metadata_state
 );
 
 
@@ -126,21 +137,41 @@ static bool seismic_recorder_fs_parse_session_number(
 }
 
 
-static bool seismic_recorder_fs_session_metadata_present(
+static esp_err_t seismic_recorder_fs_errno_to_error(
+    int error_number
+)
+{
+    if (error_number == ENOENT) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (error_number == ENOMEM) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_FAIL;
+}
+
+
+static esp_err_t seismic_recorder_fs_session_metadata_state(
     const char *sessions_path,
     const char *session_id,
     char *session_path,
-    size_t session_path_size
+    size_t session_path_size,
+    seismic_recorder_fs_metadata_state_t *metadata_state
 )
 {
     if (
         sessions_path == NULL ||
         session_id == NULL ||
         session_path == NULL ||
-        session_path_size == 0U
+        session_path_size == 0U ||
+        metadata_state == NULL
     ) {
-        return false;
+        return ESP_ERR_INVALID_ARG;
     }
+
+    *metadata_state = SEISMIC_RECORDER_FS_METADATA_NONE;
 
     const int written = snprintf(
         session_path,
@@ -150,28 +181,50 @@ static bool seismic_recorder_fs_session_metadata_present(
         session_id
     );
     if (written < 0 || written >= (int)session_path_size) {
-        return false;
+        return ESP_ERR_INVALID_SIZE;
     }
 
     DIR *directory = opendir(session_path);
     if (directory == NULL) {
-        return false;
+        const int directory_errno = errno;
+
+        /* A directory entry can disappear between the parent census and
+         * this child open. Treat that as an incomplete session, but surface
+         * other filesystem failures instead of silently hiding them. */
+        if (
+            directory_errno == ENOENT ||
+            directory_errno == ENOTDIR
+        ) {
+            return ESP_OK;
+        }
+
+        return seismic_recorder_fs_errno_to_error(directory_errno);
     }
 
-    bool present = false;
+    errno = 0;
     struct dirent *entry = NULL;
     while ((entry = readdir(directory)) != NULL) {
-        if (
-            strcmp(entry->d_name, "session.json") == 0 ||
-            strcmp(entry->d_name, "session.json.bak") == 0
-        ) {
-            present = true;
+        if (strcmp(entry->d_name, "session.json") == 0) {
+            *metadata_state = SEISMIC_RECORDER_FS_METADATA_PRIMARY;
             break;
+        }
+
+        if (strcmp(entry->d_name, "session.json.bak") == 0) {
+            *metadata_state = SEISMIC_RECORDER_FS_METADATA_BACKUP;
         }
     }
 
-    closedir(directory);
-    return present;
+    const int read_errno = errno;
+    const int close_result = closedir(directory);
+    if (read_errno != 0) {
+        return seismic_recorder_fs_errno_to_error(read_errno);
+    }
+
+    if (close_result != 0) {
+        return seismic_recorder_fs_errno_to_error(errno);
+    }
+
+    return ESP_OK;
 }
 
 
@@ -707,16 +760,22 @@ esp_err_t seismic_recorder_fs_list_sessions(
     if (err == ESP_OK) {
         directory = opendir(sessions_path);
         if (directory == NULL) {
-            err = ESP_FAIL;
+            err = seismic_recorder_fs_errno_to_error(errno);
         }
     }
 
     if (err == ESP_OK) {
         struct dirent *entry = NULL;
-        while (
-            *session_count < max_sessions &&
-            (entry = readdir(directory)) != NULL
-        ) {
+        while (*session_count < max_sessions) {
+            errno = 0;
+            entry = readdir(directory);
+            if (entry == NULL) {
+                if (errno != 0) {
+                    err = seismic_recorder_fs_errno_to_error(errno);
+                }
+                break;
+            }
+
             unsigned number = 0U;
             if (!seismic_recorder_fs_parse_session_number(entry->d_name, &number)) {
                 continue;
@@ -733,19 +792,35 @@ esp_err_t seismic_recorder_fs_list_sessions(
              * removes a slow FAT lookup series while retaining .bak recovery
              * whenever either metadata file is actually present.
              */
-            const bool metadata_present =
-                seismic_recorder_fs_session_metadata_present(
+            seismic_recorder_fs_metadata_state_t metadata_state =
+                SEISMIC_RECORDER_FS_METADATA_NONE;
+            const esp_err_t metadata_err =
+                seismic_recorder_fs_session_metadata_state(
                     sessions_path,
                     entry->d_name,
                     session_path,
-                    SEISMIC_RECORDER_PATH_SIZE
+                    SEISMIC_RECORDER_PATH_SIZE,
+                    &metadata_state
                 );
+            if (metadata_err != ESP_OK) {
+                err = metadata_err;
+                break;
+            }
+
             if (
-                !metadata_present ||
-                seismic_recorder_json_read_summary(
-                    object_id,
-                    entry->d_name,
-                    &summary
+                metadata_state == SEISMIC_RECORDER_FS_METADATA_NONE ||
+                (
+                    metadata_state == SEISMIC_RECORDER_FS_METADATA_PRIMARY
+                        ? seismic_recorder_json_read_summary_known_present(
+                            object_id,
+                            entry->d_name,
+                            &summary
+                        )
+                        : seismic_recorder_json_read_summary(
+                            object_id,
+                            entry->d_name,
+                            &summary
+                        )
                 ) != ESP_OK
             ) {
                 const size_t session_id_length = strnlen(
