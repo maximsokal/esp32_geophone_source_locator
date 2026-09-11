@@ -23,6 +23,19 @@
       ]
     },
     {
+      "name": "wifi_manager_mode_transition",
+      "sources": [
+        "components/wifi_manager/wifi_manager_mode.c",
+        "components/wifi_manager/tests/wifi_manager_mode_transition_test.c"
+      ],
+      "include_dirs": [
+        "components/wifi_manager/tests/stubs",
+        "components/app_event_bus/include",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
       "name": "ad7606_driver",
       "sources": [
         "components/ad7606_driver/ad7606_driver.c",

@@ -22,6 +22,10 @@ size_t web_lifecycle_state_actions(
         WEB_LIFECYCLE_ACTION_HTTPS_STOP,
         WEB_LIFECYCLE_ACTION_HTTP_STOP,
     };
+    static const web_lifecycle_action_t quiesced[] = {
+        WEB_LIFECYCLE_ACTION_MDNS_STOP,
+        WEB_LIFECYCLE_ACTION_HTTPS_STOP,
+    };
     static const web_lifecycle_action_t stopped[] = {
         WEB_LIFECYCLE_ACTION_MDNS_STOP,
         WEB_LIFECYCLE_ACTION_HTTPS_STOP,
@@ -45,6 +49,11 @@ size_t web_lifecycle_state_actions(
     case WEB_LIFECYCLE_STATE_STA_DISCONNECTED:
         plan = sta_disconnected;
         plan_count = sizeof(sta_disconnected) / sizeof(sta_disconnected[0]);
+        break;
+
+    case WEB_LIFECYCLE_STATE_QUIESCED:
+        plan = quiesced;
+        plan_count = sizeof(quiesced) / sizeof(quiesced[0]);
         break;
 
     case WEB_LIFECYCLE_STATE_STOPPED:
