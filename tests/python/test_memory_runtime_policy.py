@@ -368,6 +368,7 @@ def test_measurement_snapshots_are_nonblocking_requests():
 def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     web_server = read("components/web_server/web_server.c")
     wifi_sta_events = read("components/wifi_manager/wifi_manager_sta_events.c")
+    wifi_mode = read("components/wifi_manager/wifi_manager_mode.c")
     wifi_header = read("components/wifi_manager/include/wifi_manager.h")
     task_config = read("components/app_config/include/app_task_config.h")
 
@@ -389,10 +390,14 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "xQueueCreate(1U, sizeof(web_lifecycle_state_t))" in web_server
     assert "web_lifecycle_state_t" in web_server
     assert "WEB_LIFECYCLE_STATE_SETUP_AP" in web_server
+    assert "WEB_LIFECYCLE_STATE_QUIESCED" in web_server
     assert "WEB_LIFECYCLE_STATE_STOPPED" in web_server
     assert "web_lifecycle_state_actions" in web_server
     assert "WEB_LIFECYCLE_COMMAND_" not in web_server
     assert "wifi_manager_mdns_stop();" in web_server
+    assert "web_server_lifecycle_quiesce" in web_server
+    assert "wifi_manager_set_radio_stop_prepare_callback" in web_server
+    assert "s_lifecycle_quiesce_pending" in web_server
     assert "xTaskCreatePinnedToCoreWithCaps(" in web_server
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in web_server
     assert '"web_lifecycle"' in web_server
@@ -401,7 +406,14 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
 
     assert "wifi_manager_mdns_init(" not in wifi_sta_events
     assert "wifi_manager_mdns_is_ready(" not in wifi_sta_events
-    assert "wifi_manager_mdns_stop(" not in read("components/wifi_manager/wifi_manager_mode.c")
+    assert "wifi_manager_mdns_stop(" not in wifi_mode
+    assert "wifi_manager_set_radio_stop_prepare_callback" in wifi_mode
+    radio_stop = wifi_mode[
+        wifi_mode.index("static esp_err_t wifi_manager_stop_radio("):
+        wifi_mode.index("esp_err_t wifi_manager_enter_setup_mode(")
+    ]
+    assert "wifi_manager_prepare_radio_stop()" in radio_stop
+    assert radio_stop.index("wifi_manager_prepare_radio_stop()") < radio_stop.index("esp_wifi_stop()")
     assert "wifi_manager_mdns_init(void)" in wifi_header
     assert "wifi_manager_mdns_stop(void)" in wifi_header
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header
@@ -409,6 +421,7 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
 
     lifecycle_policy = read("components/web_server/web_server_lifecycle_policy.c")
     assert "WEB_LIFECYCLE_ACTION_MDNS_STOP" in lifecycle_policy
+    assert "WEB_LIFECYCLE_STATE_QUIESCED" in lifecycle_policy
     assert "WEB_LIFECYCLE_ACTION_EXIT" in lifecycle_policy
 
 

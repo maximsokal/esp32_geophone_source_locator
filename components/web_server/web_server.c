@@ -35,6 +35,7 @@
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define WEB_HTTPS_TASK_STACK_BYTES   8192U
 #define WEB_HTTPS_MAX_CLIENTS           2U
+#define WEB_LIFECYCLE_QUIESCE_TIMEOUT_MS 10000U
 
 static const char *TAG = "WEB_SERVER";
 
@@ -43,6 +44,11 @@ static httpd_handle_t s_https_server = NULL;
 static QueueHandle_t s_lifecycle_queue = NULL;
 static SemaphoreHandle_t s_lifecycle_lock = NULL;
 static TaskHandle_t s_lifecycle_task = NULL;
+static SemaphoreHandle_t s_lifecycle_quiesce_ack = NULL;
+static bool s_lifecycle_stop_requested = false;
+static bool s_lifecycle_quiesce_pending = false;
+static unsigned s_lifecycle_quiesce_callers = 0U;
+static esp_err_t s_lifecycle_quiesce_result = ESP_FAIL;
 static bool s_event_handlers_registered = false;
 static bool s_measurement_hooks_registered = false;
 static bool s_object_observer_registered = false;
@@ -93,6 +99,8 @@ static bool web_server_tls_credentials_apply(httpd_ssl_config_t *config)
 static esp_err_t web_server_https_stop_internal(void);
 static esp_err_t web_server_http_stop_internal(void);
 static esp_err_t web_server_http_start_internal(void);
+static esp_err_t web_server_lifecycle_quiesce(void *context);
+static void web_server_lifecycle_ack_quiesce(esp_err_t result);
 
 
 static esp_err_t web_server_lifecycle_set_desired_state(
@@ -109,14 +117,128 @@ static esp_err_t web_server_lifecycle_set_desired_state(
     const bool ready =
         s_lifecycle_queue != NULL &&
         s_lifecycle_task != NULL;
-    const BaseType_t result = ready
-        ? xQueueOverwrite(s_lifecycle_queue, &desired_state)
-        : pdFALSE;
+    if (!ready) {
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_lifecycle_stop_requested || s_lifecycle_quiesce_pending) {
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const BaseType_t result =
+        xQueueOverwrite(s_lifecycle_queue, &desired_state);
 
     (void)xSemaphoreGive(s_lifecycle_lock);
 
-    if (!ready) return ESP_ERR_INVALID_STATE;
     return result == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+
+static esp_err_t web_server_lifecycle_quiesce(void *context)
+{
+    (void)context;
+
+    SemaphoreHandle_t ack = xSemaphoreCreateBinary();
+    if (ack == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (
+        s_lifecycle_lock == NULL ||
+        xSemaphoreTake(s_lifecycle_lock, 0) != pdTRUE
+    ) {
+        vSemaphoreDelete(ack);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    const bool ready =
+        s_lifecycle_queue != NULL &&
+        s_lifecycle_task != NULL &&
+        !s_lifecycle_stop_requested &&
+        !s_lifecycle_quiesce_pending &&
+        s_lifecycle_quiesce_ack == NULL;
+    if (!ready) {
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        vSemaphoreDelete(ack);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_lifecycle_quiesce_ack = ack;
+    s_lifecycle_quiesce_result = ESP_FAIL;
+    s_lifecycle_quiesce_pending = true;
+    ++s_lifecycle_quiesce_callers;
+
+    /*
+     * HTTP is intentionally not part of this barrier. The setup endpoint
+     * can request the AP -> STA transition from the HTTP server task itself;
+     * stopping that server here would wait on the caller being serviced.
+     * The subsequent connected-state plan stops HTTP after the transition.
+     */
+    const web_lifecycle_state_t desired_state =
+        WEB_LIFECYCLE_STATE_QUIESCED;
+    const BaseType_t queued =
+        xQueueOverwrite(s_lifecycle_queue, &desired_state);
+    if (queued != pdTRUE) {
+        s_lifecycle_quiesce_pending = false;
+        s_lifecycle_quiesce_ack = NULL;
+        --s_lifecycle_quiesce_callers;
+        (void)xSemaphoreGive(s_lifecycle_lock);
+        vSemaphoreDelete(ack);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    (void)xSemaphoreGive(s_lifecycle_lock);
+
+    const BaseType_t acknowledged = xSemaphoreTake(
+        ack,
+        pdMS_TO_TICKS(WEB_LIFECYCLE_QUIESCE_TIMEOUT_MS)
+    );
+
+    esp_err_t result = ESP_ERR_TIMEOUT;
+    (void)xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY);
+    if (acknowledged == pdTRUE) {
+        result = s_lifecycle_quiesce_result;
+    }
+    if (s_lifecycle_quiesce_ack == ack) {
+        s_lifecycle_quiesce_ack = NULL;
+        s_lifecycle_quiesce_pending = false;
+    }
+    --s_lifecycle_quiesce_callers;
+    (void)xSemaphoreGive(s_lifecycle_lock);
+
+    vSemaphoreDelete(ack);
+    return result;
+}
+
+
+static void web_server_lifecycle_ack_quiesce(esp_err_t result)
+{
+    if (s_lifecycle_lock == NULL) {
+        return;
+    }
+
+    (void)xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY);
+    if (s_lifecycle_quiesce_pending && s_lifecycle_quiesce_ack != NULL) {
+        s_lifecycle_quiesce_result = result;
+        s_lifecycle_quiesce_pending = false;
+        (void)xSemaphoreGive(s_lifecycle_quiesce_ack);
+    }
+    (void)xSemaphoreGive(s_lifecycle_lock);
+}
+
+
+static void web_server_lifecycle_unregister_wifi_hook(void)
+{
+    const esp_err_t err =
+        wifi_manager_set_radio_stop_prepare_callback(NULL, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Failed to unregister Wi-Fi lifecycle hook: %s",
+            esp_err_to_name(err)
+        );
+    }
 }
 
 
@@ -396,7 +518,7 @@ static esp_err_t web_server_http_stop_internal(void)
     return ESP_OK;
 }
 
-static void web_server_lifecycle_apply_state(
+static esp_err_t web_server_lifecycle_apply_state(
     web_lifecycle_state_t desired_state
 )
 {
@@ -416,9 +538,10 @@ static void web_server_lifecycle_apply_state(
             (int)desired_state,
             (unsigned)action_count
         );
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
 
+    esp_err_t first_error = ESP_OK;
     bool http_stop_failed = false;
     for (size_t i = 0U; i < action_count; ++i) {
         switch (actions[i]) {
@@ -426,6 +549,7 @@ static void web_server_lifecycle_apply_state(
             const esp_err_t mdns_err = wifi_manager_mdns_init();
             if (mdns_err != ESP_OK) {
                 ESP_LOGW(TAG, "mDNS unavailable: %s", esp_err_to_name(mdns_err));
+                if (first_error == ESP_OK) first_error = mdns_err;
             }
             if (wifi_manager_mdns_is_ready()) {
                 ESP_LOGI(TAG, "Web UI: %s", APP_MDNS_WEB_URL);
@@ -445,6 +569,7 @@ static void web_server_lifecycle_apply_state(
                     "HTTP bootstrap start for setup AP failed: %s",
                     esp_err_to_name(err)
                 );
+                if (first_error == ESP_OK) first_error = err;
             }
             break;
         }
@@ -460,6 +585,7 @@ static void web_server_lifecycle_apply_state(
                         esp_err_to_name(err)
                     );
                     http_stop_failed = true;
+                    if (first_error == ESP_OK) first_error = err;
                 }
                 if (!http_stop_failed) {
                     web_server_log_tls_heap("after_http_stop");
@@ -475,6 +601,7 @@ static void web_server_lifecycle_apply_state(
             const esp_err_t err = web_server_https_start_internal();
             if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
                 ESP_LOGE(TAG, "HTTPS start for STA failed: %s", esp_err_to_name(err));
+                if (first_error == ESP_OK) first_error = err;
             }
             break;
         }
@@ -487,6 +614,7 @@ static void web_server_lifecycle_apply_state(
                     "HTTPS stop for web lifecycle failed: %s",
                     esp_err_to_name(err)
                 );
+                if (first_error == ESP_OK) first_error = err;
             }
             break;
         }
@@ -494,13 +622,16 @@ static void web_server_lifecycle_apply_state(
         case WEB_LIFECYCLE_ACTION_EXIT:
             s_lifecycle_task = NULL;
             vTaskDeleteWithCaps(NULL);
-            return;
+            return first_error;
 
         default:
             ESP_LOGW(TAG, "Unknown web lifecycle action=%d", (int)actions[i]);
+            if (first_error == ESP_OK) first_error = ESP_ERR_INVALID_STATE;
             break;
         }
     }
+
+    return first_error;
 }
 
 
@@ -520,7 +651,11 @@ static void web_server_lifecycle_task(void *argument)
             continue;
         }
 
-        web_server_lifecycle_apply_state(desired_state);
+        const esp_err_t apply_err =
+            web_server_lifecycle_apply_state(desired_state);
+        if (desired_state == WEB_LIFECYCLE_STATE_QUIESCED) {
+            web_server_lifecycle_ack_quiesce(apply_err);
+        }
     }
 }
 
@@ -532,6 +667,12 @@ static esp_err_t web_server_lifecycle_start(void)
             ? ESP_OK
             : ESP_ERR_INVALID_STATE;
     }
+
+    s_lifecycle_stop_requested = false;
+    s_lifecycle_quiesce_pending = false;
+    s_lifecycle_quiesce_ack = NULL;
+    s_lifecycle_quiesce_callers = 0U;
+    s_lifecycle_quiesce_result = ESP_FAIL;
 
     s_lifecycle_queue = xQueueCreate(1U, sizeof(web_lifecycle_state_t));
     s_lifecycle_lock = xSemaphoreCreateMutex();
@@ -575,24 +716,43 @@ static void web_server_lifecycle_stop(void)
 {
     if (s_lifecycle_lock == NULL) return;
 
-    (void)xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY);
+    SemaphoreHandle_t lock = s_lifecycle_lock;
+    (void)xSemaphoreTake(lock, portMAX_DELAY);
     QueueHandle_t queue = s_lifecycle_queue;
     if (queue != NULL && s_lifecycle_task != NULL) {
+        s_lifecycle_stop_requested = true;
         const web_lifecycle_state_t desired_state =
             WEB_LIFECYCLE_STATE_STOPPED;
         if (xQueueOverwrite(queue, &desired_state) != pdTRUE) {
             ESP_LOGW(TAG, "Failed to queue web lifecycle stop");
         }
-        while (s_lifecycle_task != NULL) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
+    }
+    else {
+        s_lifecycle_stop_requested = true;
+    }
+    (void)xSemaphoreGive(lock);
+
+    while (s_lifecycle_task != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+    for (;;) {
+        (void)xSemaphoreTake(lock, portMAX_DELAY);
+        const bool quiesce_call_in_flight =
+            s_lifecycle_quiesce_callers != 0U;
+        (void)xSemaphoreGive(lock);
+        if (!quiesce_call_in_flight) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    (void)xSemaphoreTake(lock, portMAX_DELAY);
     s_lifecycle_queue = NULL;
-    (void)xSemaphoreGive(s_lifecycle_lock);
+    s_lifecycle_quiesce_ack = NULL;
+    s_lifecycle_quiesce_pending = false;
+    (void)xSemaphoreGive(lock);
 
     if (queue != NULL) vQueueDelete(queue);
-    vSemaphoreDelete(s_lifecycle_lock);
+    vSemaphoreDelete(lock);
     s_lifecycle_lock = NULL;
 }
 
@@ -801,6 +961,16 @@ esp_err_t web_server_start(void)
         return err;
     }
 
+    err = wifi_manager_set_radio_stop_prepare_callback(
+        web_server_lifecycle_quiesce,
+        NULL
+    );
+    if (err != ESP_OK) {
+        web_server_lifecycle_stop();
+        web_server_status_cache_stop();
+        return err;
+    }
+
     /*
      * Bootstrap HTTP before registering the network callbacks. This keeps a
      * pending AP_START event from racing the initial main-task start; every
@@ -809,6 +979,7 @@ esp_err_t web_server_start(void)
     if (wifi_manager_is_setup_mode()) {
         err = web_server_http_start_internal();
         if (err != ESP_OK) {
+            web_server_lifecycle_unregister_wifi_hook();
             web_server_lifecycle_stop();
             web_server_status_cache_stop();
             return err;
@@ -817,6 +988,7 @@ esp_err_t web_server_start(void)
 
     err = web_server_event_handlers_register();
     if (err != ESP_OK) {
+        web_server_lifecycle_unregister_wifi_hook();
         web_server_lifecycle_stop();
         web_server_status_cache_stop();
         return err;
@@ -829,6 +1001,7 @@ esp_err_t web_server_start(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Setup AP lifecycle request failed: %s", esp_err_to_name(err));
             web_server_event_handlers_unregister();
+            web_server_lifecycle_unregister_wifi_hook();
             web_server_lifecycle_stop();
             web_server_status_cache_stop();
             return err;
@@ -844,6 +1017,7 @@ esp_err_t web_server_start(void)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "HTTPS startup request failed: %s", esp_err_to_name(err));
             web_server_event_handlers_unregister();
+            web_server_lifecycle_unregister_wifi_hook();
             web_server_lifecycle_stop();
             web_server_status_cache_stop();
             return err;
@@ -859,6 +1033,7 @@ esp_err_t web_server_start(void)
 esp_err_t web_server_stop(void)
 {
     web_server_event_handlers_unregister();
+    web_server_lifecycle_unregister_wifi_hook();
     web_server_lifecycle_stop();
     web_server_status_cache_stop();
 

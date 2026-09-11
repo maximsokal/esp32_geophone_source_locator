@@ -1,0 +1,21 @@
+#pragma once
+
+typedef int esp_err_t;
+
+#define ESP_OK                     0
+#define ESP_FAIL                  -1
+#define ESP_ERR_INVALID_ARG     0x102
+#define ESP_ERR_INVALID_STATE    0x103
+#define ESP_ERR_WIFI_NOT_STARTED 0x300
+
+static inline const char *esp_err_to_name(esp_err_t error)
+{
+    switch (error) {
+    case ESP_OK: return "ESP_OK";
+    case ESP_FAIL: return "ESP_FAIL";
+    case ESP_ERR_INVALID_ARG: return "ESP_ERR_INVALID_ARG";
+    case ESP_ERR_INVALID_STATE: return "ESP_ERR_INVALID_STATE";
+    case ESP_ERR_WIFI_NOT_STARTED: return "ESP_ERR_WIFI_NOT_STARTED";
+    default: return "ESP_ERR";
+    }
+}
