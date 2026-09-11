@@ -300,6 +300,17 @@
       ]
     },
     {
+      "name": "storage_manager_text_read",
+      "sources": [
+        "components/storage_manager/tests/storage_manager_text_read_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/storage_manager/tests/stubs",
+        "components/storage_manager",
+        "components/storage_manager/include"
+      ]
+    },
+    {
       "name": "web_route_capacity",
       "sources": [
         "components/web_server/web_route_capacity.c",

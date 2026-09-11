@@ -43,6 +43,75 @@ static bool injected_fflush_error;
 static bool injected_fsync_error;
 static bool injected_fclose_error;
 
+typedef enum
+{
+    SEISMIC_RECORDER_DIRECTORY_FAULT_NONE = 0,
+    SEISMIC_RECORDER_DIRECTORY_FAULT_OPENDIR,
+    SEISMIC_RECORDER_DIRECTORY_FAULT_READDIR,
+    SEISMIC_RECORDER_DIRECTORY_FAULT_CLOSEDIR,
+
+} seismic_recorder_directory_fault_t;
+
+static seismic_recorder_directory_fault_t directory_fault;
+static unsigned directory_fault_call;
+static int directory_fault_errno;
+static unsigned directory_opendir_calls;
+static unsigned directory_readdir_calls;
+static unsigned directory_closedir_calls;
+
+static void reset_directory_fault(void)
+{
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_NONE;
+    directory_fault_call = 0U;
+    directory_fault_errno = 0;
+    directory_opendir_calls = 0U;
+    directory_readdir_calls = 0U;
+    directory_closedir_calls = 0U;
+}
+
+static DIR *seismic_recorder_test_opendir(const char *path)
+{
+    ++directory_opendir_calls;
+    if (
+        directory_fault == SEISMIC_RECORDER_DIRECTORY_FAULT_OPENDIR &&
+        directory_opendir_calls == directory_fault_call
+    ) {
+        errno = directory_fault_errno;
+        return NULL;
+    }
+
+    return opendir(path);
+}
+
+static struct dirent *seismic_recorder_test_readdir(DIR *directory)
+{
+    ++directory_readdir_calls;
+    if (
+        directory_fault == SEISMIC_RECORDER_DIRECTORY_FAULT_READDIR &&
+        directory_readdir_calls == directory_fault_call
+    ) {
+        errno = directory_fault_errno;
+        return NULL;
+    }
+
+    return readdir(directory);
+}
+
+static int seismic_recorder_test_closedir(DIR *directory)
+{
+    ++directory_closedir_calls;
+    if (
+        directory_fault == SEISMIC_RECORDER_DIRECTORY_FAULT_CLOSEDIR &&
+        directory_closedir_calls == directory_fault_call
+    ) {
+        const int result = closedir(directory);
+        errno = directory_fault_errno;
+        return result == 0 ? -1 : result;
+    }
+
+    return closedir(directory);
+}
+
 static int make_directory(const char *path)
 {
     if (mkdir(path, 0775) == 0 || errno == EEXIST) {
@@ -230,6 +299,9 @@ static int recorder_test_fclose(FILE *stream)
 #define fsync recorder_test_fsync
 #endif
 #define fclose recorder_test_fclose
+#define opendir seismic_recorder_test_opendir
+#define readdir seismic_recorder_test_readdir
+#define closedir seismic_recorder_test_closedir
 #include "../seismic_recorder_fs.c"
 #undef fwrite
 #undef fflush
@@ -239,6 +311,9 @@ static int recorder_test_fclose(FILE *stream)
 #undef fsync
 #endif
 #undef fclose
+#undef opendir
+#undef readdir
+#undef closedir
 
 static void test_invalid_arguments(void)
 {
@@ -534,6 +609,99 @@ static void test_listing_missing_and_malformed_metadata_is_safe(void)
     remove_layout();
 }
 
+
+static void test_listing_propagates_directory_errors(void)
+{
+    remove_layout();
+    make_layout();
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001") == 0);
+
+    seismic_recorder_session_summary_t sessions[2] = {0};
+    size_t count = 0U;
+    storage_begin_error = ESP_OK;
+    fake_summary_error = ESP_OK;
+
+    reset_directory_fault();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_OPENDIR;
+    directory_fault_call = 1U;
+    directory_fault_errno = EACCES;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
+    assert(count == 0U);
+    assert(directory_opendir_calls == 1U);
+    assert(directory_closedir_calls == 0U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    reset_directory_fault();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_OPENDIR;
+    directory_fault_call = 2U;
+    directory_fault_errno = EACCES;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
+    assert(count == 0U);
+    assert(directory_opendir_calls == 2U);
+    assert(directory_closedir_calls == 1U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    reset_directory_fault();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_READDIR;
+    directory_fault_call = 1U;
+    directory_fault_errno = EIO;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
+    assert(count == 0U);
+    assert(directory_readdir_calls == 1U);
+    assert(directory_closedir_calls == 1U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    reset_directory_fault();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_READDIR;
+    directory_fault_call = 2U;
+    directory_fault_errno = EIO;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
+    assert(count == 0U);
+    assert(directory_readdir_calls == 2U);
+    assert(directory_closedir_calls == 2U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    reset_directory_fault();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_CLOSEDIR;
+    directory_fault_call = 1U;
+    directory_fault_errno = EIO;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
+    assert(count == 0U);
+    assert(directory_closedir_calls == 2U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    reset_directory_fault();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    directory_fault = SEISMIC_RECORDER_DIRECTORY_FAULT_CLOSEDIR;
+    directory_fault_call = 2U;
+    directory_fault_errno = EIO;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
+    assert(count == 1U);
+    assert(!sessions[0].complete);
+    assert(directory_closedir_calls == 2U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    fake_summary_error = ESP_FAIL;
+    reset_directory_fault();
+    remove_layout();
+}
+
 int main(void)
 {
     test_invalid_arguments();
@@ -543,5 +711,6 @@ int main(void)
     test_writer_errors_are_propagated();
     test_session_id_increments();
     test_listing_missing_and_malformed_metadata_is_safe();
+    test_listing_propagates_directory_errors();
     return 0;
 }
