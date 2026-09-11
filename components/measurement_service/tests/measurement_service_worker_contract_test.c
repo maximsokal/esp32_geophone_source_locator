@@ -15,7 +15,7 @@ typedef struct {
     size_t length;
     size_t item_size;
     bool occupied;
-    unsigned char item[8];
+    unsigned char item[128];
 } fake_queue_t;
 
 typedef struct {
@@ -39,16 +39,23 @@ static void (*fake_busy_read_hook)(void);
 static bool fake_busy_read_interleaved;
 static bool fake_start_guard_allowed;
 static unsigned fake_start_guard_calls;
+static esp_err_t fake_start_object_error;
+static unsigned fake_start_object_calls;
+static char fake_start_object_last_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
 static unsigned fake_start_release_calls;
 static bool fake_start_release_saw_starting;
 
 QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 {
     fake_queue_t *queue = calloc(1, sizeof(*queue));
-    if (queue != NULL) {
+    if (queue != NULL && item_size <= sizeof(queue->item)) {
         queue->length = length;
         queue->item_size = item_size;
         last_queue = queue;
+    }
+    else if (queue != NULL) {
+        free(queue);
+        queue = NULL;
     }
     return queue;
 }
@@ -311,6 +318,9 @@ static void reset_fakes(void)
     fake_busy_read_interleaved = false;
     fake_start_guard_allowed = true;
     fake_start_guard_calls = 0U;
+    fake_start_object_error = ESP_OK;
+    fake_start_object_calls = 0U;
+    fake_start_object_last_id[0] = '\0';
     fake_start_release_calls = 0U;
     fake_start_release_saw_starting = false;
 }
@@ -321,6 +331,29 @@ static esp_err_t fake_start_guard(void *user_context)
     (void)user_context;
     ++fake_start_guard_calls;
     return fake_start_guard_allowed ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+
+static esp_err_t fake_start_object(
+    const char *object_id,
+    void *user_context
+)
+{
+    (void)user_context;
+    ++fake_start_object_calls;
+    snprintf(
+        fake_start_object_last_id,
+        sizeof(fake_start_object_last_id),
+        "%s",
+        object_id
+    );
+    if (fake_start_object_error != ESP_OK) {
+        return fake_start_object_error;
+    }
+
+    snprintf(fake_object.id, sizeof(fake_object.id), "%s", object_id);
+    fake_active_object = true;
+    return ESP_OK;
 }
 
 
@@ -351,8 +384,8 @@ static void run_pending_command(void)
     measurement_command_t command;
     assert(last_queue != NULL);
     assert(xQueueReceive(last_queue, &command, 0) == pdTRUE);
-    switch (command) {
-        case MEASUREMENT_COMMAND_START: measurement_service_process_start(); break;
+    switch (command.type) {
+        case MEASUREMENT_COMMAND_START: measurement_service_process_start(&command); break;
         case MEASUREMENT_COMMAND_STOP: measurement_service_process_stop(); break;
         case MEASUREMENT_COMMAND_KEEP: measurement_service_process_keep(); break;
         case MEASUREMENT_COMMAND_DELETE: measurement_service_process_delete(); break;
@@ -491,6 +524,60 @@ static void test_start_reservation_release_waits_for_starting_state(void)
     assert(snapshot().state == MEASUREMENT_SERVICE_RECORDING);
     stop_service();
 }
+
+static void test_object_specific_start_is_transactional(void)
+{
+    start_service();
+    assert(measurement_service_set_start_object_callback(
+        fake_start_object,
+        NULL
+    ) == ESP_OK);
+
+    /* A recording for object A rejects START(B) before the object callback can
+     * mutate the persistent active-object selection. */
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(strcmp(fake_object.id, "OBJ_0001") == 0);
+    assert(measurement_service_start_object_async("OBJ_0002") == ESP_ERR_INVALID_STATE);
+    assert(strcmp(fake_object.id, "OBJ_0001") == 0);
+    assert(fake_start_object_calls == 0U);
+    stop_service();
+
+    start_service();
+    assert(measurement_service_set_start_object_callback(
+        fake_start_object,
+        NULL
+    ) == ESP_OK);
+    fake_start_guard_allowed = false;
+    assert(measurement_service_set_start_guard(fake_start_guard, NULL) == ESP_OK);
+
+    /* A cache-refresh reservation rejects START(B) before the callback too. */
+    assert(measurement_service_start_object_async("OBJ_0002") == ESP_ERR_INVALID_STATE);
+    assert(fake_start_guard_calls == 1U);
+    assert(strcmp(fake_object.id, "OBJ_0001") == 0);
+    assert(fake_start_object_calls == 0U);
+    assert(!measurement_service_is_busy());
+    stop_service();
+
+    start_service();
+    assert(measurement_service_set_start_object_callback(
+        fake_start_object,
+        NULL
+    ) == ESP_OK);
+
+    /* An accepted object-specific START commits B only when the worker owns
+     * the command, then starts the recorder for that committed object. */
+    assert(measurement_service_start_object_async("OBJ_0002") == ESP_OK);
+    assert(strcmp(fake_object.id, "OBJ_0001") == 0);
+    run_pending_command();
+    assert(fake_start_object_calls == 1U);
+    assert(strcmp(fake_start_object_last_id, "OBJ_0002") == 0);
+    assert(strcmp(fake_object.id, "OBJ_0002") == 0);
+    assert(strcmp(fake_recorder.object_id, "OBJ_0002") == 0);
+    assert(snapshot().state == MEASUREMENT_SERVICE_RECORDING);
+    stop_service();
+}
+
 
 static void test_acquisition_stop_cannot_bypass_recording_state(void)
 {
@@ -668,6 +755,7 @@ int main(void)
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();
     test_start_reservation_release_waits_for_starting_state();
+    test_object_specific_start_is_transactional();
     test_acquisition_stop_cannot_bypass_recording_state();
     test_start_guard_rejects_without_leaking_release();
     test_snapshot_state_and_busy_share_one_critical_section();

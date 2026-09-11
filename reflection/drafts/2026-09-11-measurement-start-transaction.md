@@ -1,0 +1,9 @@
+# Candidate retrospective: transactional measurement START
+
+- Evidence: at main `9ddbd91`, `web_control_measurement_start()` called `object_store_set_active(object_id)` before `measurement_service_start_async()`. The service could then reject the request from `RECORDING` or when the status-cache refresh owned the start reservation, leaving active object B while recording object A.
+- Root cause: the Web/API compound action treated object selection as an independent synchronous mutation instead of making it part of the measurement-service admission/command.
+- Fix: added `measurement_service_start_object_async()`, carried the object ID and selection callback in the queued command, performed gate/state/start-guard admission first, and selected the object in the worker before recorder start. Added executable rejection and accepted-commit regressions.
+- Recurrence count: 1 confirmed episode in this repository. Do not generalize into a repository-wide rule yet; a second independent occurrence is required.
+- Proposed minimal rule/tool change: for state-machine commands that combine resource selection with work admission, require a contract test proving every rejected command leaves the selected resource unchanged; add a static contract that the HTTP handler does not call the resource mutation before the service submit.
+- Affected prior task: the preceding measurement lifecycle/cache arbitration correction at the same repository/main line; it fixed recorder-stop bypass and cache readiness coupling but did not cover rejected object-specific START side effects.
+- Verification: focused Python 26, Web Console 38/38, TypeScript PASS, Host C 29/29, full Python 54 plus one disabled HIL skip, Unity build PASS, production build PASS. No flash, serial, TARGET/HIL, or physical verification.

@@ -7,6 +7,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        object_format
         object_service
         seismic_recorder
         runtime_observability
