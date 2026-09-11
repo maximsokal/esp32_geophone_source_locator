@@ -52,12 +52,6 @@ esp_err_t seismic_recorder_fs_build_session_path(
 );
 
 
-bool seismic_recorder_json_metadata_exists(
-    const char *object_id,
-    const char *session_id
-);
-
-
 esp_err_t seismic_recorder_waveform_read_file(
     FILE *samples_file,
     uint64_t file_size,
