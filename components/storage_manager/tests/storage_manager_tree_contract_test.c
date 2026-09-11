@@ -40,6 +40,9 @@ static unsigned fault_call;
 static int fault_errno;
 static unsigned readdir_calls;
 static unsigned closedir_calls;
+static const char *stat_fault_path;
+static int stat_fault_errno;
+static bool stat_fault_triggered;
 static esp_err_t operation_begin_result;
 static unsigned operation_begin_calls;
 static unsigned operation_end_calls;
@@ -52,6 +55,9 @@ static void reset_fault(void)
     fault_errno = 0;
     readdir_calls = 0U;
     closedir_calls = 0U;
+    stat_fault_path = NULL;
+    stat_fault_errno = 0;
+    stat_fault_triggered = false;
 }
 
 
@@ -92,6 +98,21 @@ static int storage_tree_test_closedir(DIR *directory)
     }
 
     return result;
+}
+
+
+static int storage_tree_test_stat(const char *path, struct stat *info)
+{
+    if (
+        stat_fault_path != NULL &&
+        strcmp(path, stat_fault_path) == 0
+    ) {
+        stat_fault_triggered = true;
+        errno = stat_fault_errno;
+        return -1;
+    }
+
+    return stat(path, info);
 }
 
 
@@ -170,10 +191,12 @@ void vTaskDelay(unsigned long ticks)
 #define opendir storage_tree_test_opendir
 #define readdir storage_tree_test_readdir
 #define closedir storage_tree_test_closedir
+#define stat(path, info) storage_tree_test_stat(path, info)
 #include "../storage_manager_tree.c"
 #undef opendir
 #undef readdir
 #undef closedir
+#undef stat
 
 
 static void reset_operation_state(void)
@@ -214,6 +237,25 @@ static void test_readdir_enoent_is_traversal_failure(void)
 
     assert(storage_manager_remove_tree(STORAGE_TREE_TEST_ROOT) == ESP_FAIL);
     assert(test_path_is_directory(STORAGE_TREE_TEST_ROOT));
+    assert(operation_begin_calls == 1U);
+    assert(operation_end_calls == 1U);
+
+    cleanup_test_tree();
+}
+
+
+static void test_descendant_stat_enoent_is_traversal_failure(void)
+{
+    make_test_tree(true);
+    reset_operation_state();
+    reset_fault();
+    stat_fault_path = STORAGE_TREE_TEST_FILE;
+    stat_fault_errno = ENOENT;
+
+    assert(storage_manager_remove_tree(STORAGE_TREE_TEST_ROOT) == ESP_FAIL);
+    assert(stat_fault_triggered);
+    assert(test_path_is_directory(STORAGE_TREE_TEST_ROOT));
+    assert(test_path_exists(STORAGE_TREE_TEST_FILE));
     assert(operation_begin_calls == 1U);
     assert(operation_end_calls == 1U);
 
@@ -276,6 +318,7 @@ int main(void)
 {
     test_readdir_error_preserves_tree();
     test_readdir_enoent_is_traversal_failure();
+    test_descendant_stat_enoent_is_traversal_failure();
     test_closedir_error_preserves_tree();
     test_recursive_remove_happy_path();
     test_operation_guard_failure_leaves_tree();

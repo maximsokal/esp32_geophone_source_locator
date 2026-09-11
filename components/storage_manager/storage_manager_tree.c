@@ -70,7 +70,8 @@ static void storage_manager_tree_cooperate(
 
 static esp_err_t storage_manager_remove_tree_locked(
     const char *path,
-    unsigned *operation_count
+    unsigned *operation_count,
+    bool is_root
 )
 {
     struct stat info;
@@ -81,10 +82,13 @@ static esp_err_t storage_manager_remove_tree_locked(
             &info
         ) != 0
     ) {
-        return
-            errno == ENOENT
+        if (errno == ENOENT) {
+            return is_root
                 ? ESP_ERR_NOT_FOUND
                 : ESP_FAIL;
+        }
+
+        return ESP_FAIL;
     }
 
     if (
@@ -195,7 +199,8 @@ static esp_err_t storage_manager_remove_tree_locked(
         result =
             storage_manager_remove_tree_locked(
                 child_path,
-                operation_count
+                operation_count,
+                false
             );
 
         if (result != ESP_OK) {
@@ -266,7 +271,8 @@ esp_err_t storage_manager_remove_tree(
     err =
         storage_manager_remove_tree_locked(
             path,
-            &operation_count
+            &operation_count,
+            true
         );
 
     storage_manager_operation_end();

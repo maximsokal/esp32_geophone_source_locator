@@ -194,6 +194,8 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     assert "const int read_errno = errno" in storage_tree
     assert "const int close_result = closedir(directory)" in storage_tree
     assert "Failed to read directory" in storage_tree
+    assert "bool is_root" in storage_tree
+    assert "return is_root" in storage_tree
     assert "recover_backup" in storage_read
     assert "storage_manager_path_exists" not in recorder_fs
     assert "web_status_json_objects_refresh" not in recording
