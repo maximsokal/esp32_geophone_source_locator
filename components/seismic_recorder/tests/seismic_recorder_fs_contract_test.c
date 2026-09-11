@@ -36,6 +36,7 @@ static bool fail_create_directory;
 static unsigned exclusive_directory_calls;
 static unsigned remove_tree_calls;
 static char removed_tree_path[256];
+static esp_err_t fake_remove_tree_error;
 static esp_err_t fake_summary_error = ESP_FAIL;
 static size_t fake_summary_read_calls;
 static size_t fake_known_present_summary_read_calls;
@@ -208,7 +209,7 @@ esp_err_t storage_manager_remove_tree(const char *path)
 {
     ++remove_tree_calls;
     (void)snprintf(removed_tree_path, sizeof(removed_tree_path), "%s", path);
-    return ESP_OK;
+    return fake_remove_tree_error;
 }
 
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile)
@@ -527,6 +528,7 @@ static void test_session_cleanup_after_post_mkdir_failure(void)
     exclusive_directory_calls = 0U;
     remove_tree_calls = 0U;
     removed_tree_path[0] = '\0';
+    fake_remove_tree_error = ESP_ERR_INVALID_STATE;
     injected_short_write_count = SIZE_MAX;
     injected_fflush_error = true;
     injected_fclose_error = false;
@@ -555,6 +557,7 @@ static void test_session_cleanup_after_post_mkdir_failure(void)
     assert(storage_begin_calls == 1U);
     assert(storage_end_calls == 1U);
 
+    fake_remove_tree_error = ESP_OK;
     injected_fflush_error = false;
     remove_layout();
 }
