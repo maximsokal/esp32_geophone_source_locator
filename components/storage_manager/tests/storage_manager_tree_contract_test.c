@@ -263,6 +263,21 @@ static void test_descendant_stat_enoent_is_traversal_failure(void)
 }
 
 
+static void test_missing_root_is_not_found(void)
+{
+    cleanup_test_tree();
+    reset_operation_state();
+    reset_fault();
+
+    assert(
+        storage_manager_remove_tree(STORAGE_TREE_TEST_ROOT) ==
+        ESP_ERR_NOT_FOUND
+    );
+    assert(operation_begin_calls == 1U);
+    assert(operation_end_calls == 1U);
+}
+
+
 static void test_closedir_error_preserves_tree(void)
 {
     cleanup_test_tree();
@@ -319,6 +334,7 @@ int main(void)
     test_readdir_error_preserves_tree();
     test_readdir_enoent_is_traversal_failure();
     test_descendant_stat_enoent_is_traversal_failure();
+    test_missing_root_is_not_found();
     test_closedir_error_preserves_tree();
     test_recursive_remove_happy_path();
     test_operation_guard_failure_leaves_tree();
