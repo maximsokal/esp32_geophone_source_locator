@@ -170,12 +170,7 @@ static esp_err_t web_control_measurement_start(const char *object_id)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const esp_err_t err = object_store_set_active(object_id);
-    if (err != ESP_OK) {
-        return err;
-    }
-    web_status_json_objects_set_active(object_id);
-    return measurement_service_start_async();
+    return measurement_service_start_object_async(object_id);
 }
 
 static esp_err_t web_control_acquisition_stop(void)
@@ -407,10 +402,9 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     cJSON_Delete(root);
 
     /*
-     * Invalidate even after a failed compound mutation: recording_start can
-     * successfully activate an object before ADC start fails, and create can
-     * partially mutate storage before rollback. A cold refresh is safer than
-     * serving stale metadata after either path.
+     * Invalidate even after a failed compound mutation: create can partially
+     * mutate storage before rollback. A cold refresh is safer than serving
+     * stale metadata after that path.
      */
     if (
         object_storage_allowed &&

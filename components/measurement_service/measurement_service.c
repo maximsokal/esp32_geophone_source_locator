@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "object_format.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -28,6 +29,16 @@ typedef enum
     MEASUREMENT_COMMAND_DELETE,
     MEASUREMENT_COMMAND_SHUTDOWN
 
+} measurement_command_type_t;
+
+
+typedef struct
+{
+    measurement_command_type_t type;
+    char object_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
+    measurement_service_start_object_callback_t start_object_callback;
+    void *start_object_context;
+
 } measurement_command_t;
 
 
@@ -41,6 +52,8 @@ static measurement_service_snapshot_t s_snapshot;
 static bool s_initialized = false;
 static measurement_service_start_guard_callback_t s_start_guard = NULL;
 static void *s_start_guard_context = NULL;
+static measurement_service_start_object_callback_t s_start_object_callback = NULL;
+static void *s_start_object_context = NULL;
 static measurement_service_start_reservation_release_callback_t
     s_start_reservation_release_callback = NULL;
 static void *s_start_reservation_release_context = NULL;
@@ -148,7 +161,9 @@ static void measurement_service_copy_recorder_snapshot(
 }
 
 
-static void measurement_service_process_start(void)
+static void measurement_service_process_start(
+    const measurement_command_t *command
+)
 {
     measurement_service_lock();
     s_snapshot.state = MEASUREMENT_SERVICE_STARTING;
@@ -162,8 +177,35 @@ static void measurement_service_process_start(void)
     s_snapshot.recording_ms = 0U;
     measurement_service_unlock();
 
+    const bool has_requested_object =
+        command != NULL && command->object_id[0] != '\0';
+    if (has_requested_object) {
+        if (command->start_object_callback == NULL) {
+            measurement_service_set_error(ESP_ERR_INVALID_STATE);
+            measurement_service_release_start_reservation();
+            return;
+        }
+
+        const esp_err_t select_err = command->start_object_callback(
+            command->object_id,
+            command->start_object_context
+        );
+        if (select_err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "Active object selection failed object=%s err=%s",
+                command->object_id,
+                esp_err_to_name(select_err)
+            );
+            measurement_service_set_error(select_err);
+            measurement_service_release_start_reservation();
+            return;
+        }
+    }
+
     /* The state is now STARTING, so a cache refresh can no longer mistake
-     * this accepted START for an idle LIVE window. */
+     * this accepted START for an idle LIVE window. Keep the reservation until
+     * after an object-specific START has committed its active-object change. */
     measurement_service_release_start_reservation();
 
     object_service_summary_t object;
@@ -449,13 +491,13 @@ static void measurement_service_task(void *argument)
             continue;
         }
 
-        if (command == MEASUREMENT_COMMAND_SHUTDOWN) {
+        if (command.type == MEASUREMENT_COMMAND_SHUTDOWN) {
             break;
         }
 
-        switch (command) {
+        switch (command.type) {
             case MEASUREMENT_COMMAND_START:
-                measurement_service_process_start();
+                measurement_service_process_start(&command);
                 break;
 
             case MEASUREMENT_COMMAND_STOP:
@@ -487,7 +529,7 @@ static void measurement_service_task(void *argument)
 
 
 static bool measurement_service_command_allowed_locked(
-    measurement_command_t command
+    measurement_command_type_t command
 )
 {
     switch (command) {
@@ -511,9 +553,29 @@ static bool measurement_service_command_allowed_locked(
 
 
 static esp_err_t measurement_service_submit(
-    measurement_command_t command
+    measurement_command_type_t command_type,
+    const char *start_object_id
 )
 {
+    if (
+        start_object_id != NULL &&
+        !object_format_id_is_valid(start_object_id)
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    measurement_command_t command = {
+        .type = command_type,
+    };
+    if (start_object_id != NULL) {
+        snprintf(
+            command.object_id,
+            sizeof(command.object_id),
+            "%s",
+            start_object_id
+        );
+    }
+
     if (
         !s_initialized ||
         s_queue == NULL ||
@@ -529,10 +591,14 @@ static esp_err_t measurement_service_submit(
 
     measurement_service_lock();
     const bool allowed =
-        measurement_service_command_allowed_locked(command);
+        measurement_service_command_allowed_locked(command.type);
     measurement_service_start_guard_callback_t start_guard =
         s_start_guard;
     void *start_guard_context = s_start_guard_context;
+    if (command.object_id[0] != '\0') {
+        command.start_object_callback = s_start_object_callback;
+        command.start_object_context = s_start_object_context;
+    }
     measurement_service_unlock();
 
     if (!allowed) {
@@ -540,8 +606,16 @@ static esp_err_t measurement_service_submit(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (
+        command.object_id[0] != '\0' &&
+        command.start_object_callback == NULL
+    ) {
+        measurement_service_release_gate();
+        return ESP_ERR_INVALID_STATE;
+    }
+
     bool start_reservation_held = false;
-    if (command == MEASUREMENT_COMMAND_START && start_guard != NULL) {
+    if (command_type == MEASUREMENT_COMMAND_START && start_guard != NULL) {
         const esp_err_t guard_err = start_guard(start_guard_context);
         if (guard_err != ESP_OK) {
             measurement_service_release_gate();
@@ -599,6 +673,8 @@ esp_err_t measurement_service_init(void)
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     s_start_guard = NULL;
     s_start_guard_context = NULL;
+    s_start_object_callback = NULL;
+    s_start_object_context = NULL;
     s_start_reservation_release_callback = NULL;
     s_start_reservation_release_context = NULL;
     s_start_reservation_held = false;
@@ -649,7 +725,9 @@ void measurement_service_shutdown(void)
         return;
     }
 
-    measurement_command_t command = MEASUREMENT_COMMAND_SHUTDOWN;
+    const measurement_command_t command = {
+        .type = MEASUREMENT_COMMAND_SHUTDOWN,
+    };
 
     if (s_queue != NULL) {
         (void)xQueueSend(
@@ -683,6 +761,8 @@ void measurement_service_shutdown(void)
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     s_start_guard = NULL;
     s_start_guard_context = NULL;
+    s_start_object_callback = NULL;
+    s_start_object_context = NULL;
     s_start_reservation_release_callback = NULL;
     s_start_reservation_release_context = NULL;
     s_start_reservation_held = false;
@@ -706,6 +786,23 @@ esp_err_t measurement_service_set_start_guard(
     measurement_service_lock();
     s_start_guard = callback;
     s_start_guard_context = user_context;
+    measurement_service_unlock();
+    return ESP_OK;
+}
+
+
+esp_err_t measurement_service_set_start_object_callback(
+    measurement_service_start_object_callback_t callback,
+    void *user_context
+)
+{
+    if (!s_initialized || s_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    measurement_service_lock();
+    s_start_object_callback = callback;
+    s_start_object_context = user_context;
     measurement_service_unlock();
     return ESP_OK;
 }
@@ -745,25 +842,36 @@ esp_err_t measurement_service_set_storage_refresh_callback(
 
 esp_err_t measurement_service_start_async(void)
 {
-    return measurement_service_submit(MEASUREMENT_COMMAND_START);
+    return measurement_service_submit(MEASUREMENT_COMMAND_START, NULL);
+}
+
+
+esp_err_t measurement_service_start_object_async(
+    const char *object_id
+)
+{
+    return measurement_service_submit(
+        MEASUREMENT_COMMAND_START,
+        object_id
+    );
 }
 
 
 esp_err_t measurement_service_stop_async(void)
 {
-    return measurement_service_submit(MEASUREMENT_COMMAND_STOP);
+    return measurement_service_submit(MEASUREMENT_COMMAND_STOP, NULL);
 }
 
 
 esp_err_t measurement_service_keep_async(void)
 {
-    return measurement_service_submit(MEASUREMENT_COMMAND_KEEP);
+    return measurement_service_submit(MEASUREMENT_COMMAND_KEEP, NULL);
 }
 
 
 esp_err_t measurement_service_delete_async(void)
 {
-    return measurement_service_submit(MEASUREMENT_COMMAND_DELETE);
+    return measurement_service_submit(MEASUREMENT_COMMAND_DELETE, NULL);
 }
 
 

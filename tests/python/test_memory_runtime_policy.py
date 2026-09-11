@@ -178,7 +178,7 @@ def test_measurement_service_gates_start_and_refreshes_after_storage_completion(
     assert "measurement_service_set_storage_refresh_callback" in header
     assert "s_start_guard" in source
     assert "s_storage_refresh_callback" in source
-    assert "command == MEASUREMENT_COMMAND_START" in source
+    assert "command_type == MEASUREMENT_COMMAND_START" in source
     assert "measurement_service_notify_storage_refresh();" in source
     assert "web_status_json_objects_refresh();" in web_server
     assert "web_status_json_objects_start_guard" in web_server
@@ -187,7 +187,10 @@ def test_measurement_service_gates_start_and_refreshes_after_storage_completion(
         web_control.index("static esp_err_t web_control_acquisition_stop")
     ]
     assert "web_status_json_objects_cache_ready()" not in start_helper
-    assert "return measurement_service_start_async();" in start_helper
+    assert "return measurement_service_start_object_async(object_id);" in start_helper
+    assert "object_store_set_active(object_id)" not in start_helper
+    assert "measurement_service_set_start_object_callback" in header
+    assert "web_server_measurement_select_object" in web_server
 
 
 def test_cache_refresh_and_measurement_start_share_reservation():
@@ -213,7 +216,7 @@ def test_legacy_recording_aliases_use_measurement_service_and_cache_is_fail_safe
     assert "web_control_measurement_start" in control
     assert 'strcmp(action, "recording_start") == 0 ||' in control
     assert 'strcmp(action, "recording_stop") == 0 ||' in control
-    assert "return measurement_service_start_async();" in control
+    assert "return measurement_service_start_object_async(object_id);" in control
     assert "return measurement_service_stop_async();" in control
     assert "return seismic_recorder_start(object_id);" not in control
     assert 'return seismic_recorder_stop();' not in control

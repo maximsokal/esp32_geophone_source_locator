@@ -19,6 +19,7 @@
 #include "runtime_observability.h"
 #include "measurement_service.h"
 #include "object_service.h"
+#include "object_store.h"
 #include "web_server_internal.h"
 #include "web_route_capacity.h"
 
@@ -82,6 +83,25 @@ static esp_err_t web_server_https_stop_internal(void);
 static esp_err_t web_server_http_stop_internal(void);
 
 
+static esp_err_t web_server_measurement_select_object(
+    const char *object_id,
+    void *user_context
+)
+{
+    (void)user_context;
+
+    if (object_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const esp_err_t err = object_store_set_active(object_id);
+    if (err == ESP_OK) {
+        web_status_json_objects_set_active(object_id);
+    }
+    return err;
+}
+
+
 static void web_server_status_cache_start(void)
 {
     esp_err_t err = web_status_json_objects_init();
@@ -103,6 +123,11 @@ static void web_server_status_cache_start(void)
         web_status_json_objects_start_guard,
         NULL
     );
+    const esp_err_t object_start_err =
+        measurement_service_set_start_object_callback(
+            web_server_measurement_select_object,
+            NULL
+        );
     const esp_err_t release_err =
         measurement_service_set_start_reservation_release_callback(
             web_status_json_objects_release_start_reservation,
@@ -119,19 +144,22 @@ static void web_server_status_cache_start(void)
     );
     s_measurement_hooks_registered =
         guard_err == ESP_OK ||
+        object_start_err == ESP_OK ||
         release_err == ESP_OK ||
         refresh_err == ESP_OK;
     s_object_observer_registered = object_observer_err == ESP_OK;
     if (
         guard_err != ESP_OK ||
+        object_start_err != ESP_OK ||
         release_err != ESP_OK ||
         refresh_err != ESP_OK ||
         object_observer_err != ESP_OK
     ) {
         ESP_LOGW(
             TAG,
-            "Status-cache hooks unavailable guard=%s release=%s refresh=%s object_observer=%s",
+            "Status-cache hooks unavailable guard=%s object_start=%s release=%s refresh=%s object_observer=%s",
             esp_err_to_name(guard_err),
+            esp_err_to_name(object_start_err),
             esp_err_to_name(release_err),
             esp_err_to_name(refresh_err),
             esp_err_to_name(object_observer_err)
@@ -144,6 +172,7 @@ static void web_server_status_cache_stop(void)
 {
     if (s_measurement_hooks_registered) {
         (void)measurement_service_set_start_guard(NULL, NULL);
+        (void)measurement_service_set_start_object_callback(NULL, NULL);
         (void)measurement_service_set_start_reservation_release_callback(NULL, NULL);
         (void)measurement_service_set_storage_refresh_callback(NULL, NULL);
         s_measurement_hooks_registered = false;

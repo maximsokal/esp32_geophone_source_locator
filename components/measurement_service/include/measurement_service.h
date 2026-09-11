@@ -51,6 +51,12 @@ typedef esp_err_t (*measurement_service_start_guard_callback_t)(
 );
 
 
+typedef esp_err_t (*measurement_service_start_object_callback_t)(
+    const char *object_id,
+    void *user_context
+);
+
+
 typedef void (*measurement_service_start_reservation_release_callback_t)(
     void *user_context
 );
@@ -73,6 +79,12 @@ esp_err_t measurement_service_set_start_guard(
 );
 
 
+esp_err_t measurement_service_set_start_object_callback(
+    measurement_service_start_object_callback_t callback,
+    void *user_context
+);
+
+
 esp_err_t measurement_service_set_start_reservation_release_callback(
     measurement_service_start_reservation_release_callback_t callback,
     void *user_context
@@ -86,6 +98,11 @@ esp_err_t measurement_service_set_storage_refresh_callback(
 
 
 esp_err_t measurement_service_start_async(void);
+
+
+esp_err_t measurement_service_start_object_async(
+    const char *object_id
+);
 
 
 esp_err_t measurement_service_stop_async(void);

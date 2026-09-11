@@ -282,7 +282,8 @@ export default function DeviceConsoleApp() {
         scheduleObjectReconcile(selectionMode);
       }
       else if (action === 'measurement_start') {
-        /* measurement_start activates before the worker can reject the request. */
+        /* Reconcile the authoritative selection after a rejected or failed
+         * async START; admission itself is reject-safe before activation. */
         scheduleObjectReconcile('active');
       }
 
