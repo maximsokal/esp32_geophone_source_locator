@@ -131,6 +131,19 @@ esp_err_t seismic_recorder_json_read_summary(
     return ESP_OK;
 }
 
+esp_err_t seismic_recorder_json_read_summary_known_present(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+)
+{
+    return seismic_recorder_json_read_summary(
+        object_id,
+        session_id,
+        summary
+    );
+}
+
 /* Minimal HTTP server fake that captures the production chunked JSON body. */
 size_t httpd_req_get_url_query_len(httpd_req_t *request)
 {

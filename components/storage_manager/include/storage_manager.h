@@ -93,3 +93,15 @@ esp_err_t storage_manager_read_text(
     char *buffer,
     size_t buffer_size
 );
+
+
+/*
+ * Read a text file whose primary path was already established by the
+ * caller's directory census. This preserves the normal read semantics while
+ * avoiding a redundant primary/.bak recovery probe for an existing file.
+ */
+esp_err_t storage_manager_read_text_known_present(
+    const char *path,
+    char *buffer,
+    size_t buffer_size
+);

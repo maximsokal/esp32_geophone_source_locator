@@ -271,10 +271,11 @@ static bool seismic_recorder_json_string_equals(
 }
 
 
-esp_err_t seismic_recorder_json_read_summary(
+static esp_err_t seismic_recorder_json_read_summary_impl(
     const char *object_id,
     const char *session_id,
-    seismic_recorder_session_summary_t *summary
+    seismic_recorder_session_summary_t *summary,
+    bool primary_known_present
 )
 {
     if (
@@ -309,11 +310,17 @@ esp_err_t seismic_recorder_json_read_summary(
         return ESP_ERR_NO_MEM;
     }
 
-    err = storage_manager_read_text(
-        path,
-        buffer,
-        SEISMIC_RECORDER_METADATA_BUFFER_SIZE
-    );
+    err = primary_known_present
+        ? storage_manager_read_text_known_present(
+            path,
+            buffer,
+            SEISMIC_RECORDER_METADATA_BUFFER_SIZE
+        )
+        : storage_manager_read_text(
+            path,
+            buffer,
+            SEISMIC_RECORDER_METADATA_BUFFER_SIZE
+        );
     if (err != ESP_OK) {
         free(buffer);
         free(path);
@@ -418,4 +425,34 @@ esp_err_t seismic_recorder_json_read_summary(
     cJSON_Delete(root);
     free(path);
     return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_json_read_summary(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+)
+{
+    return seismic_recorder_json_read_summary_impl(
+        object_id,
+        session_id,
+        summary,
+        false
+    );
+}
+
+
+esp_err_t seismic_recorder_json_read_summary_known_present(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+)
+{
+    return seismic_recorder_json_read_summary_impl(
+        object_id,
+        session_id,
+        summary,
+        true
+    );
 }

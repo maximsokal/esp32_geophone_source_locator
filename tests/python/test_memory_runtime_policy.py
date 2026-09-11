@@ -161,6 +161,9 @@ def test_runtime_census_reports_unfiltered_top_tasks():
 def test_status_objects_and_sessions_are_lifecycle_cache_only():
     objects = read("components/web_server/web_status_json_objects.c")
     recorder_fs = read("components/seismic_recorder/seismic_recorder_fs.c")
+    recorder_json = read("components/seismic_recorder/seismic_recorder_json.c")
+    storage_header = read("components/storage_manager/include/storage_manager.h")
+    storage_read = read("components/storage_manager/storage_manager_text_read.c")
     recording = read("components/web_server/web_status_json_recording.c")
     status_json = read("components/web_server/web_status_json.c")
     status_api = read("components/web_server/web_api_status.c")
@@ -176,7 +179,11 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     assert "web_status_json_objects_cache_ready" in internal
     assert "opendir(sessions_path)" in recorder_fs
     assert "readdir(directory)" in recorder_fs
-    assert "seismic_recorder_fs_session_metadata_present" in recorder_fs
+    assert "seismic_recorder_fs_session_metadata_state" in recorder_fs
+    assert "seismic_recorder_json_read_summary_known_present" in recorder_fs
+    assert "storage_manager_read_text_known_present" in recorder_json
+    assert "storage_manager_read_text_known_present" in storage_header
+    assert "recover_backup" in storage_read
     assert "storage_manager_path_exists" not in recorder_fs
     assert "web_status_json_objects_refresh" not in recording
     assert "seismic_recorder_list_sessions(" not in recording
