@@ -20,6 +20,7 @@ typedef struct {
     bool transition_active;
     bool deferred_state_valid;
     web_lifecycle_state_t deferred_state;
+    web_lifecycle_state_t rollback_state;
 } fake_radio_transition_t;
 
 
@@ -48,12 +49,14 @@ static bool fake_desired_state_receive(
 
 static void fake_radio_transition_begin(
     fake_radio_transition_t *transition,
-    fake_desired_state_mailbox_t *mailbox
+    fake_desired_state_mailbox_t *mailbox,
+    web_lifecycle_state_t rollback_state
 )
 {
     assert(!transition->transition_active);
     transition->transition_active = true;
     transition->deferred_state_valid = false;
+    transition->rollback_state = rollback_state;
     fake_desired_state_overwrite(
         mailbox,
         WEB_LIFECYCLE_STATE_QUIESCED
@@ -86,20 +89,43 @@ static void fake_radio_transition_request_state(
 }
 
 
-static void fake_radio_transition_complete(
+static void fake_radio_transition_reconcile_failure(
     fake_radio_transition_t *transition,
     fake_desired_state_mailbox_t *mailbox
 )
 {
     assert(transition->transition_active);
     transition->transition_active = false;
-    if (transition->deferred_state_valid) {
-        fake_desired_state_overwrite(
-            mailbox,
-            transition->deferred_state
-        );
-        transition->deferred_state_valid = false;
+
+    const web_lifecycle_state_t state =
+        transition->deferred_state_valid
+            ? transition->deferred_state
+            : transition->rollback_state;
+    fake_desired_state_overwrite(mailbox, state);
+    transition->deferred_state_valid = false;
+}
+
+
+static void fake_radio_transition_complete(
+    fake_radio_transition_t *transition,
+    fake_desired_state_mailbox_t *mailbox,
+    bool radio_stop_succeeded
+)
+{
+    assert(transition->transition_active);
+
+    if (!radio_stop_succeeded) {
+        fake_radio_transition_reconcile_failure(transition, mailbox);
+        return;
     }
+
+    transition->transition_active = false;
+    if (!transition->deferred_state_valid) {
+        return;
+    }
+
+    fake_desired_state_overwrite(mailbox, transition->deferred_state);
+    transition->deferred_state_valid = false;
 }
 
 
@@ -287,7 +313,11 @@ int main(void)
      * only then does the worker reconcile the state. */
     fake_radio_transition_t transition = { 0 };
     mailbox = (fake_desired_state_mailbox_t){ 0 };
-    fake_radio_transition_begin(&transition, &mailbox);
+    fake_radio_transition_begin(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_CONNECTED
+    );
     assert(fake_desired_state_receive(&mailbox, &queued_state));
     assert(queued_state == WEB_LIFECYCLE_STATE_QUIESCED);
     apply_plan(queued_state, &resources);
@@ -309,8 +339,74 @@ int main(void)
     assert(!mailbox.pending);
     assert(transition.deferred_state_valid);
 
-    fake_radio_transition_complete(&transition, &mailbox);
+    fake_radio_transition_complete(&transition, &mailbox, true);
     assert(!transition.transition_active);
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    assert(queued_state == WEB_LIFECYCLE_STATE_SETUP_AP);
+    apply_plan(queued_state, &resources);
+    assert(!resources.mdns_ready);
+    assert(resources.http_running);
+    assert(!resources.https_running);
+
+    /* A failed radio stop must restore the pre-transition stable state when
+     * no newer network state arrived during the barrier. */
+    resources = (fake_web_resources_t){ 0 };
+    apply_plan(WEB_LIFECYCLE_STATE_STA_CONNECTED, &resources);
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    transition = (fake_radio_transition_t){ 0 };
+    fake_radio_transition_begin(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_CONNECTED
+    );
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    apply_plan(queued_state, &resources);
+    fake_radio_transition_ack(&transition);
+    fake_radio_transition_complete(&transition, &mailbox, false);
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    assert(queued_state == WEB_LIFECYCLE_STATE_STA_CONNECTED);
+    apply_plan(queued_state, &resources);
+    assert(resources.mdns_ready);
+    assert(!resources.http_running);
+    assert(resources.https_running);
+
+    /* A failed prepare after partial teardown follows the same rollback
+     * policy even though esp_wifi_stop() is never reached. */
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    transition = (fake_radio_transition_t){ 0 };
+    fake_radio_transition_begin(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_CONNECTED
+    );
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    apply_plan(queued_state, &resources);
+    fake_radio_transition_reconcile_failure(&transition, &mailbox);
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    assert(queued_state == WEB_LIFECYCLE_STATE_STA_CONNECTED);
+    apply_plan(queued_state, &resources);
+    assert(resources.mdns_ready);
+    assert(!resources.http_running);
+    assert(resources.https_running);
+
+    /* A newer deferred state remains authoritative even when the radio stop
+     * fails; rollback is only the fallback when no such state exists. */
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    transition = (fake_radio_transition_t){ 0 };
+    fake_radio_transition_begin(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_CONNECTED
+    );
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    apply_plan(queued_state, &resources);
+    fake_radio_transition_ack(&transition);
+    fake_radio_transition_request_state(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_SETUP_AP
+    );
+    fake_radio_transition_complete(&transition, &mailbox, false);
     assert(fake_desired_state_receive(&mailbox, &queued_state));
     assert(queued_state == WEB_LIFECYCLE_STATE_SETUP_AP);
     apply_plan(queued_state, &resources);
