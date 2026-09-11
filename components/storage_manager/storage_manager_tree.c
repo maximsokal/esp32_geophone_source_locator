@@ -26,14 +26,10 @@ static const char *TAG =
 #define STORAGE_TREE_COOPERATE_INTERVAL   4
 
 
-static esp_err_t storage_manager_tree_errno_to_error(
+static esp_err_t storage_manager_tree_traversal_errno_to_error(
     int error_number
 )
 {
-    if (error_number == ENOENT) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
     if (error_number == ENOMEM) {
         return ESP_ERR_NO_MEM;
     }
@@ -145,7 +141,10 @@ static esp_err_t storage_manager_remove_tree_locked(
         if (entry == NULL) {
             if (errno != 0) {
                 const int read_errno = errno;
-                result = storage_manager_tree_errno_to_error(read_errno);
+                result =
+                    storage_manager_tree_traversal_errno_to_error(
+                        read_errno
+                    );
                 ESP_LOGE(
                     TAG,
                     "Failed to read directory: %s, errno=%d",
@@ -215,7 +214,7 @@ static esp_err_t storage_manager_remove_tree_locked(
             close_errno
         );
         if (result == ESP_OK) {
-            result = storage_manager_tree_errno_to_error(close_errno);
+            result = ESP_FAIL;
         }
     }
 

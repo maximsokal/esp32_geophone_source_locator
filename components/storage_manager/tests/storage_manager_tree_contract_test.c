@@ -22,6 +22,8 @@
 
 #define STORAGE_TREE_TEST_ROOT "storage_manager_tree_contract_tmp"
 #define STORAGE_TREE_TEST_FILE STORAGE_TREE_TEST_ROOT "/payload.bin"
+#define STORAGE_TREE_TEST_SUBDIR STORAGE_TREE_TEST_ROOT "/sub"
+#define STORAGE_TREE_TEST_NESTED_FILE STORAGE_TREE_TEST_SUBDIR "/nested.bin"
 
 
 typedef enum
@@ -51,6 +53,9 @@ static void reset_fault(void)
     readdir_calls = 0U;
     closedir_calls = 0U;
 }
+
+
+static void cleanup_test_tree(void);
 
 
 static DIR *storage_tree_test_opendir(const char *path)
@@ -90,17 +95,32 @@ static int storage_tree_test_closedir(DIR *directory)
 }
 
 
+static void write_test_file(const char *path, const char *contents)
+{
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fputs(contents, file) >= 0);
+    assert(fclose(file) == 0);
+}
+
+
 static void make_test_tree(bool with_file)
 {
-    (void)remove(STORAGE_TREE_TEST_FILE);
-    (void)rmdir(STORAGE_TREE_TEST_ROOT);
+    cleanup_test_tree();
     assert(mkdir(STORAGE_TREE_TEST_ROOT, 0775) == 0);
     if (with_file) {
-        FILE *file = fopen(STORAGE_TREE_TEST_FILE, "wb");
-        assert(file != NULL);
-        assert(fputs("payload", file) >= 0);
-        assert(fclose(file) == 0);
+        write_test_file(STORAGE_TREE_TEST_FILE, "payload");
     }
+}
+
+
+static void make_nested_test_tree(void)
+{
+    cleanup_test_tree();
+    assert(mkdir(STORAGE_TREE_TEST_ROOT, 0775) == 0);
+    write_test_file(STORAGE_TREE_TEST_FILE, "payload");
+    assert(mkdir(STORAGE_TREE_TEST_SUBDIR, 0775) == 0);
+    write_test_file(STORAGE_TREE_TEST_NESTED_FILE, "nested");
 }
 
 
@@ -111,9 +131,18 @@ static bool test_path_is_directory(const char *path)
 }
 
 
+static bool test_path_exists(const char *path)
+{
+    struct stat info;
+    return stat(path, &info) == 0;
+}
+
+
 static void cleanup_test_tree(void)
 {
     reset_fault();
+    (void)remove(STORAGE_TREE_TEST_NESTED_FILE);
+    (void)rmdir(STORAGE_TREE_TEST_SUBDIR);
     (void)remove(STORAGE_TREE_TEST_FILE);
     (void)rmdir(STORAGE_TREE_TEST_ROOT);
 }
@@ -174,6 +203,24 @@ static void test_readdir_error_preserves_tree(void)
 }
 
 
+static void test_readdir_enoent_is_traversal_failure(void)
+{
+    make_test_tree(true);
+    reset_operation_state();
+    reset_fault();
+    fault_kind = STORAGE_TREE_FAULT_READDIR;
+    fault_call = 1U;
+    fault_errno = ENOENT;
+
+    assert(storage_manager_remove_tree(STORAGE_TREE_TEST_ROOT) == ESP_FAIL);
+    assert(test_path_is_directory(STORAGE_TREE_TEST_ROOT));
+    assert(operation_begin_calls == 1U);
+    assert(operation_end_calls == 1U);
+
+    cleanup_test_tree();
+}
+
+
 static void test_closedir_error_preserves_tree(void)
 {
     cleanup_test_tree();
@@ -190,6 +237,22 @@ static void test_closedir_error_preserves_tree(void)
     assert(operation_end_calls == 1U);
 
     cleanup_test_tree();
+}
+
+
+static void test_recursive_remove_happy_path(void)
+{
+    make_nested_test_tree();
+    reset_operation_state();
+    reset_fault();
+
+    assert(storage_manager_remove_tree(STORAGE_TREE_TEST_ROOT) == ESP_OK);
+    assert(!test_path_exists(STORAGE_TREE_TEST_ROOT));
+    assert(!test_path_exists(STORAGE_TREE_TEST_FILE));
+    assert(!test_path_exists(STORAGE_TREE_TEST_SUBDIR));
+    assert(!test_path_exists(STORAGE_TREE_TEST_NESTED_FILE));
+    assert(operation_begin_calls == 1U);
+    assert(operation_end_calls == 1U);
 }
 
 
@@ -212,7 +275,9 @@ static void test_operation_guard_failure_leaves_tree(void)
 int main(void)
 {
     test_readdir_error_preserves_tree();
+    test_readdir_enoent_is_traversal_failure();
     test_closedir_error_preserves_tree();
+    test_recursive_remove_happy_path();
     test_operation_guard_failure_leaves_tree();
     puts("storage manager tree contract tests passed");
     return 0;
