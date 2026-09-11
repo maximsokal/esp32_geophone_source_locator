@@ -163,6 +163,7 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     recorder_fs = read("components/seismic_recorder/seismic_recorder_fs.c")
     recorder_json = read("components/seismic_recorder/seismic_recorder_json.c")
     storage_header = read("components/storage_manager/include/storage_manager.h")
+    storage_directory = read("components/storage_manager/storage_manager_directory.c")
     storage_read = read("components/storage_manager/storage_manager_text_read.c")
     recording = read("components/web_server/web_status_json_recording.c")
     status_json = read("components/web_server/web_status_json.c")
@@ -183,6 +184,9 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     assert "seismic_recorder_json_read_summary_known_present" in recorder_fs
     assert "storage_manager_read_text_known_present" in recorder_json
     assert "storage_manager_read_text_known_present" in storage_header
+    assert "storage_manager_create_directory_exclusive" in storage_header
+    assert "storage_manager_create_directory_exclusive" in storage_directory
+    assert "session_directory_created" in recorder_fs
     assert "recover_backup" in storage_read
     assert "storage_manager_path_exists" not in recorder_fs
     assert "web_status_json_objects_refresh" not in recording

@@ -51,6 +51,17 @@ esp_err_t storage_manager_create_directory(
 );
 
 
+/*
+ * Create one directory and fail if the path already exists.
+ *
+ * ESP_ERR_INVALID_STATE denotes an EEXIST collision. This is intended for
+ * resources whose ownership must be established by the current operation.
+ */
+esp_err_t storage_manager_create_directory_exclusive(
+    const char *path
+);
+
+
 bool storage_manager_path_exists(
     const char *path
 );
