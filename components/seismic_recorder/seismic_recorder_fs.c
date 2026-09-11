@@ -122,10 +122,18 @@ static bool seismic_recorder_fs_parse_session_number(
         return false;
     }
 
-    unsigned parsed = 0;
-    char trailing = '\0';
-    if (sscanf(name, "S%06u%c", &parsed, &trailing) != 1) {
+    static const size_t canonical_length = sizeof("S000000") - 1U;
+    if (strlen(name) != canonical_length || name[0] != 'S') {
         return false;
+    }
+
+    unsigned parsed = 0U;
+    for (size_t index = 1U; index < canonical_length; ++index) {
+        const char digit = name[index];
+        if (digit < '0' || digit > '9') {
+            return false;
+        }
+        parsed = parsed * 10U + (unsigned)(digit - '0');
     }
 
     if (parsed == 0U || parsed > 999999U) {

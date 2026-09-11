@@ -344,6 +344,45 @@ static void test_invalid_arguments(void)
     assert(seismic_recorder_fs_delete_session("OBJ_0001", "S000001/..") == ESP_ERR_INVALID_ARG);
 }
 
+static void test_session_id_parser_is_canonical(void)
+{
+    char path[256];
+    assert(
+        seismic_recorder_fs_build_session_path(
+            "OBJ_0001",
+            "S000001",
+            path,
+            sizeof(path)
+        ) == ESP_OK
+    );
+    assert(
+        seismic_recorder_fs_build_session_path(
+            "OBJ_0001",
+            "S999999",
+            path,
+            sizeof(path)
+        ) == ESP_OK
+    );
+
+    const char *invalid_ids[] = {
+        "S1",
+        "S00000a",
+        "S000001x",
+        "S000000",
+        "S1000000",
+    };
+    for (size_t index = 0U; index < sizeof(invalid_ids) / sizeof(invalid_ids[0]); ++index) {
+        assert(
+            seismic_recorder_fs_build_session_path(
+                "OBJ_0001",
+                invalid_ids[index],
+                path,
+                sizeof(path)
+            ) == ESP_ERR_INVALID_ARG
+        );
+    }
+}
+
 static void test_session_header_and_frames(void)
 {
     remove_layout();
@@ -474,6 +513,49 @@ static void test_session_error_cleanup(void)
     assert(remove_tree_calls == 0U);
 
     fail_create_directory = false;
+    remove_layout();
+}
+
+static void test_session_cleanup_after_post_mkdir_failure(void)
+{
+    remove_layout();
+    make_layout();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    storage_begin_error = ESP_OK;
+    fail_create_directory = false;
+    exclusive_directory_calls = 0U;
+    remove_tree_calls = 0U;
+    removed_tree_path[0] = '\0';
+    injected_short_write_count = SIZE_MAX;
+    injected_fflush_error = true;
+    injected_fclose_error = false;
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(
+        seismic_recorder_fs_create_session(
+            "OBJ_0001",
+            500,
+            4,
+            session,
+            &file
+        ) == ESP_FAIL
+    );
+    assert(strcmp(session, "S000001") == 0);
+    assert(file == NULL);
+    assert(exclusive_directory_calls == 1U);
+    assert(remove_tree_calls == 1U);
+    assert(
+        strcmp(
+            removed_tree_path,
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001"
+        ) == 0
+    );
+    assert(storage_begin_calls == 1U);
+    assert(storage_end_calls == 1U);
+
+    injected_fflush_error = false;
     remove_layout();
 }
 
@@ -782,9 +864,11 @@ static void test_listing_propagates_directory_errors(void)
 int main(void)
 {
     test_invalid_arguments();
+    test_session_id_parser_is_canonical();
     test_session_header_and_frames();
     test_large_frame_write_is_chunked_through_staging();
     test_session_error_cleanup();
+    test_session_cleanup_after_post_mkdir_failure();
     test_writer_errors_are_propagated();
     test_session_id_increments();
     test_create_session_aborts_on_session_scan_error();
