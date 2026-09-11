@@ -89,3 +89,11 @@
  */
 #define APP_TASK_PRIORITY_WEB_STATUS_CACHE 1
 #define APP_TASK_STACK_WEB_STATUS_CACHE 8192
+
+/*
+ * mDNS and HTTPS lifecycle work must not execute in the ESP-IDF sys_evt task.
+ * TLS setup and route registration are stack-heavy, so give them a dedicated
+ * service-core task with a PSRAM-backed stack.
+ */
+#define APP_TASK_PRIORITY_WEB_LIFECYCLE 2
+#define APP_TASK_STACK_WEB_LIFECYCLE 8192

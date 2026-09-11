@@ -365,6 +365,40 @@ def test_measurement_snapshots_are_nonblocking_requests():
     assert "runtime_observability_log_snapshot(\"after-recorder-finalization\")" not in source
 
 
+def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
+    web_server = read("components/web_server/web_server.c")
+    wifi_sta_events = read("components/wifi_manager/wifi_manager_sta_events.c")
+    wifi_header = read("components/wifi_manager/include/wifi_manager.h")
+    task_config = read("components/app_config/include/app_task_config.h")
+
+    callback = web_server[
+        web_server.index("static void web_server_network_event_handler("):
+        web_server.index("static void web_server_https_event_handler(")
+    ]
+
+    assert "web_server_lifecycle_request" in callback
+    assert "web_server_https_start_internal(" not in callback
+    assert "web_server_https_stop_internal(" not in callback
+    assert "web_server_http_start_internal(" not in callback
+
+    assert "runtime_observability_request_snapshot(\"before-https\")" in web_server
+    assert "runtime_observability_request_snapshot(\"after-https\")" in web_server
+    assert "runtime_observability_log_snapshot(\"before-https\")" not in web_server
+    assert "runtime_observability_log_snapshot(\"after-https\")" not in web_server
+    assert "xQueueOverwrite(" in web_server
+    assert "xTaskCreatePinnedToCoreWithCaps(" in web_server
+    assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in web_server
+    assert '"web_lifecycle"' in web_server
+    assert "APP_TASK_STACK_WEB_LIFECYCLE" in web_server
+    assert "APP_TASK_PRIORITY_WEB_LIFECYCLE" in web_server
+
+    assert "wifi_manager_mdns_init(" not in wifi_sta_events
+    assert "wifi_manager_mdns_is_ready(" not in wifi_sta_events
+    assert "wifi_manager_mdns_init(void)" in wifi_header
+    assert "wifi_manager_mdns_is_ready(void)" in wifi_header
+    assert "APP_TASK_STACK_WEB_LIFECYCLE 8192" in task_config
+
+
 def test_psram_dma_audit_records_installed_idf_decision():
     audit = read("docs/psram-dma-audit.md")
 
