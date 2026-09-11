@@ -844,7 +844,10 @@ esp_err_t seismic_recorder_fs_list_sessions(
     }
 
     if (directory != NULL) {
-        closedir(directory);
+        const int close_result = closedir(directory);
+        if (err == ESP_OK && close_result != 0) {
+            err = seismic_recorder_fs_errno_to_error(errno);
+        }
     }
 
     storage_manager_operation_end();
