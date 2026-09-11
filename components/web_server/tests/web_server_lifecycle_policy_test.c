@@ -16,6 +16,12 @@ typedef struct {
     web_lifecycle_state_t desired_state;
 } fake_desired_state_mailbox_t;
 
+typedef struct {
+    bool transition_active;
+    bool deferred_state_valid;
+    web_lifecycle_state_t deferred_state;
+} fake_radio_transition_t;
+
 
 static void fake_desired_state_overwrite(
     fake_desired_state_mailbox_t *mailbox,
@@ -37,6 +43,63 @@ static bool fake_desired_state_receive(
     *desired_state = mailbox->desired_state;
     mailbox->pending = false;
     return true;
+}
+
+
+static void fake_radio_transition_begin(
+    fake_radio_transition_t *transition,
+    fake_desired_state_mailbox_t *mailbox
+)
+{
+    assert(!transition->transition_active);
+    transition->transition_active = true;
+    transition->deferred_state_valid = false;
+    fake_desired_state_overwrite(
+        mailbox,
+        WEB_LIFECYCLE_STATE_QUIESCED
+    );
+}
+
+
+static void fake_radio_transition_ack(
+    fake_radio_transition_t *transition
+)
+{
+    /* ACK means the worker is quiesced; it does not finish radio stop. */
+    assert(transition->transition_active);
+}
+
+
+static void fake_radio_transition_request_state(
+    fake_radio_transition_t *transition,
+    fake_desired_state_mailbox_t *mailbox,
+    web_lifecycle_state_t desired_state
+)
+{
+    if (transition->transition_active) {
+        transition->deferred_state = desired_state;
+        transition->deferred_state_valid = true;
+        return;
+    }
+
+    fake_desired_state_overwrite(mailbox, desired_state);
+}
+
+
+static void fake_radio_transition_complete(
+    fake_radio_transition_t *transition,
+    fake_desired_state_mailbox_t *mailbox
+)
+{
+    assert(transition->transition_active);
+    transition->transition_active = false;
+    if (transition->deferred_state_valid) {
+        fake_desired_state_overwrite(
+            mailbox,
+            transition->deferred_state
+        );
+        transition->deferred_state_valid = false;
+    }
 }
 
 
@@ -212,6 +275,42 @@ int main(void)
         WEB_LIFECYCLE_STATE_SETUP_AP
     );
     assert(mailbox.pending);
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    assert(queued_state == WEB_LIFECYCLE_STATE_SETUP_AP);
+    apply_plan(queued_state, &resources);
+    assert(!resources.mdns_ready);
+    assert(resources.http_running);
+    assert(!resources.https_running);
+
+    /* The prepare ACK must not open the lifecycle gate before the radio stop
+     * itself completes. Network events are deferred, latest-state wins, and
+     * only then does the worker reconcile the state. */
+    fake_radio_transition_t transition = { 0 };
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    fake_radio_transition_begin(&transition, &mailbox);
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    assert(queued_state == WEB_LIFECYCLE_STATE_QUIESCED);
+    apply_plan(queued_state, &resources);
+    fake_radio_transition_ack(&transition);
+    assert(transition.transition_active);
+    assert(!resources.mdns_ready);
+    assert(!resources.https_running);
+
+    fake_radio_transition_request_state(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_CONNECTED
+    );
+    fake_radio_transition_request_state(
+        &transition,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_SETUP_AP
+    );
+    assert(!mailbox.pending);
+    assert(transition.deferred_state_valid);
+
+    fake_radio_transition_complete(&transition, &mailbox);
+    assert(!transition.transition_active);
     assert(fake_desired_state_receive(&mailbox, &queued_state));
     assert(queued_state == WEB_LIFECYCLE_STATE_SETUP_AP);
     apply_plan(queued_state, &resources);

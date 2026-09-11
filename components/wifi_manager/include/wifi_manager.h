@@ -18,12 +18,24 @@ bool wifi_manager_is_setup_mode(void);
 
 
 typedef esp_err_t (*wifi_manager_radio_stop_prepare_callback_t)(void *context);
+typedef void (*wifi_manager_radio_stop_complete_callback_t)(
+    void *context,
+    esp_err_t radio_stop_result
+);
 
 /*
- * Register the synchronous quiesce hook used before any esp_wifi_stop().
- * The callback must return only after network services have stopped the
- * resources that must not outlive the Wi-Fi mode transition.
+ * Register the synchronous radio-stop lifecycle hooks. The prepare callback
+ * must return only after network services have stopped resources that must
+ * not outlive the Wi-Fi mode transition. The complete callback runs after
+ * esp_wifi_stop() returns, including when it returns an error.
  */
+esp_err_t wifi_manager_set_radio_stop_lifecycle_callbacks(
+    wifi_manager_radio_stop_prepare_callback_t prepare_callback,
+    wifi_manager_radio_stop_complete_callback_t complete_callback,
+    void *context
+);
+
+/* Compatibility wrapper for callers that only need the prepare phase. */
 esp_err_t wifi_manager_set_radio_stop_prepare_callback(
     wifi_manager_radio_stop_prepare_callback_t callback,
     void *context
