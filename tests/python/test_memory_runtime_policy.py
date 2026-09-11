@@ -164,6 +164,7 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     recorder_json = read("components/seismic_recorder/seismic_recorder_json.c")
     storage_header = read("components/storage_manager/include/storage_manager.h")
     storage_directory = read("components/storage_manager/storage_manager_directory.c")
+    storage_tree = read("components/storage_manager/storage_manager_tree.c")
     storage_read = read("components/storage_manager/storage_manager_text_read.c")
     recording = read("components/web_server/web_status_json_recording.c")
     status_json = read("components/web_server/web_status_json.c")
@@ -187,6 +188,12 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     assert "storage_manager_create_directory_exclusive" in storage_header
     assert "storage_manager_create_directory_exclusive" in storage_directory
     assert "session_directory_created" in recorder_fs
+    assert "const esp_err_t cleanup_err" in recorder_fs
+    assert "Failed to clean incomplete session" in recorder_fs
+    assert "cleanup_err != ESP_ERR_NOT_FOUND" in recorder_fs
+    assert "const int read_errno = errno" in storage_tree
+    assert "const int close_result = closedir(directory)" in storage_tree
+    assert "Failed to read directory" in storage_tree
     assert "recover_backup" in storage_read
     assert "storage_manager_path_exists" not in recorder_fs
     assert "web_status_json_objects_refresh" not in recording

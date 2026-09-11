@@ -13,12 +13,33 @@
 #include "freertos/task.h"
 
 
+#ifndef S_ISDIR
+#define S_ISDIR(mode) (((mode) & _S_IFMT) == _S_IFDIR)
+#endif
+
+
 static const char *TAG =
     "STORAGE_TREE";
 
 
 #define STORAGE_TREE_PATH_SIZE          256
 #define STORAGE_TREE_COOPERATE_INTERVAL   4
+
+
+static esp_err_t storage_manager_tree_errno_to_error(
+    int error_number
+)
+{
+    if (error_number == ENOENT) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (error_number == ENOMEM) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_FAIL;
+}
 
 
 static void storage_manager_tree_cooperate(
@@ -116,16 +137,25 @@ static esp_err_t storage_manager_remove_tree_locked(
     esp_err_t result =
         ESP_OK;
 
-    struct dirent *entry;
+    struct dirent *entry = NULL;
 
-    while (
-        (
-            entry =
-                readdir(
-                    directory
-                )
-        ) != NULL
-    ) {
+    while (true) {
+        errno = 0;
+        entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) {
+                const int read_errno = errno;
+                result = storage_manager_tree_errno_to_error(read_errno);
+                ESP_LOGE(
+                    TAG,
+                    "Failed to read directory: %s, errno=%d",
+                    path,
+                    read_errno
+                );
+            }
+            break;
+        }
+
         if (
             strcmp(
                 entry->d_name,
@@ -174,9 +204,20 @@ static esp_err_t storage_manager_remove_tree_locked(
         }
     }
 
-    closedir(
-        directory
-    );
+    errno = 0;
+    const int close_result = closedir(directory);
+    const int close_errno = errno;
+    if (close_result != 0) {
+        ESP_LOGE(
+            TAG,
+            "Failed to close directory: %s, errno=%d",
+            path,
+            close_errno
+        );
+        if (result == ESP_OK) {
+            result = storage_manager_tree_errno_to_error(close_errno);
+        }
+    }
 
     if (result != ESP_OK) {
         return result;

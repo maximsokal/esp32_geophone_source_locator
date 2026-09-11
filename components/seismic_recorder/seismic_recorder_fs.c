@@ -424,7 +424,19 @@ esp_err_t seismic_recorder_fs_create_session(
                     SEISMIC_RECORDER_PATH_SIZE
                 ) == ESP_OK
             ) {
-                (void)storage_manager_remove_tree(path);
+                const esp_err_t cleanup_err =
+                    storage_manager_remove_tree(path);
+                if (
+                    cleanup_err != ESP_OK &&
+                    cleanup_err != ESP_ERR_NOT_FOUND
+                ) {
+                    ESP_LOGW(
+                        TAG,
+                        "Failed to clean incomplete session %s: %s",
+                        session_id,
+                        esp_err_to_name(cleanup_err)
+                    );
+                }
             }
         }
     }
