@@ -27,6 +27,7 @@
 #include "measurement_service.h"
 #include "object_service.h"
 #include "object_store.h"
+#include "web_server_lifecycle_policy.h"
 #include "web_server_internal.h"
 #include "web_route_capacity.h"
 
@@ -34,13 +35,6 @@
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define WEB_HTTPS_TASK_STACK_BYTES   8192U
 #define WEB_HTTPS_MAX_CLIENTS           2U
-
-typedef enum {
-    WEB_LIFECYCLE_COMMAND_STOP = 0,
-    WEB_LIFECYCLE_COMMAND_STA_GOT_IP,
-    WEB_LIFECYCLE_COMMAND_AP_START,
-    WEB_LIFECYCLE_COMMAND_STA_LOST,
-} web_lifecycle_command_t;
 
 static const char *TAG = "WEB_SERVER";
 
@@ -101,8 +95,8 @@ static esp_err_t web_server_http_stop_internal(void);
 static esp_err_t web_server_http_start_internal(void);
 
 
-static esp_err_t web_server_lifecycle_request(
-    web_lifecycle_command_t command
+static esp_err_t web_server_lifecycle_set_desired_state(
+    web_lifecycle_state_t desired_state
 )
 {
     if (
@@ -116,7 +110,7 @@ static esp_err_t web_server_lifecycle_request(
         s_lifecycle_queue != NULL &&
         s_lifecycle_task != NULL;
     const BaseType_t result = ready
-        ? xQueueOverwrite(s_lifecycle_queue, &command)
+        ? xQueueOverwrite(s_lifecycle_queue, &desired_state)
         : pdFALSE;
 
     (void)xSemaphoreGive(s_lifecycle_lock);
@@ -402,69 +396,110 @@ static esp_err_t web_server_http_stop_internal(void)
     return ESP_OK;
 }
 
-static void web_server_lifecycle_handle_sta_got_ip(void)
+static void web_server_lifecycle_apply_state(
+    web_lifecycle_state_t desired_state
+)
 {
-    const esp_err_t mdns_err = wifi_manager_mdns_init();
-    if (mdns_err != ESP_OK) {
-        ESP_LOGW(TAG, "mDNS unavailable: %s", esp_err_to_name(mdns_err));
-    }
-
-    if (wifi_manager_mdns_is_ready()) {
-        ESP_LOGI(TAG, "Web UI: %s", APP_MDNS_WEB_URL);
-    }
-
-    if (s_http_server != NULL) {
-        web_server_log_tls_heap("before_http_stop");
-        const esp_err_t http_stop_err = web_server_http_stop_internal();
-        if (http_stop_err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "HTTP bootstrap stop after STA IP failed: %s",
-                esp_err_to_name(http_stop_err)
-            );
-            return;
-        }
-        web_server_log_tls_heap("after_http_stop");
-    }
-
-    const esp_err_t https_start_err = web_server_https_start_internal();
-    if (https_start_err != ESP_OK && https_start_err != ESP_ERR_NOT_FOUND) {
-        ESP_LOGE(
-            TAG,
-            "HTTPS start after STA IP failed: %s",
-            esp_err_to_name(https_start_err)
-        );
-    }
-}
-
-
-static void web_server_lifecycle_handle_ap_start(void)
-{
-    const esp_err_t https_stop_err = web_server_https_stop_internal();
-    if (https_stop_err != ESP_OK) {
+    web_lifecycle_action_t actions[WEB_LIFECYCLE_ACTIONS_MAX];
+    const size_t action_count = web_lifecycle_state_actions(
+        desired_state,
+        actions,
+        sizeof(actions) / sizeof(actions[0])
+    );
+    if (
+        action_count == 0U ||
+        action_count > sizeof(actions) / sizeof(actions[0])
+    ) {
         ESP_LOGW(
             TAG,
-            "HTTPS stop before setup AP failed: %s",
-            esp_err_to_name(https_stop_err)
+            "Invalid web lifecycle state=%d action_count=%u",
+            (int)desired_state,
+            (unsigned)action_count
         );
+        return;
     }
 
-    const esp_err_t http_start_err = web_server_http_start_internal();
-    if (http_start_err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "HTTP bootstrap start for setup AP failed: %s",
-            esp_err_to_name(http_start_err)
-        );
-    }
-}
+    bool http_stop_failed = false;
+    for (size_t i = 0U; i < action_count; ++i) {
+        switch (actions[i]) {
+        case WEB_LIFECYCLE_ACTION_MDNS_START: {
+            const esp_err_t mdns_err = wifi_manager_mdns_init();
+            if (mdns_err != ESP_OK) {
+                ESP_LOGW(TAG, "mDNS unavailable: %s", esp_err_to_name(mdns_err));
+            }
+            if (wifi_manager_mdns_is_ready()) {
+                ESP_LOGI(TAG, "Web UI: %s", APP_MDNS_WEB_URL);
+            }
+            break;
+        }
 
+        case WEB_LIFECYCLE_ACTION_MDNS_STOP:
+            wifi_manager_mdns_stop();
+            break;
 
-static void web_server_lifecycle_handle_sta_lost(void)
-{
-    const esp_err_t err = web_server_https_stop_internal();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HTTPS stop after STA loss failed: %s", esp_err_to_name(err));
+        case WEB_LIFECYCLE_ACTION_HTTP_START: {
+            const esp_err_t err = web_server_http_start_internal();
+            if (err != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "HTTP bootstrap start for setup AP failed: %s",
+                    esp_err_to_name(err)
+                );
+            }
+            break;
+        }
+
+        case WEB_LIFECYCLE_ACTION_HTTP_STOP:
+            if (s_http_server != NULL) {
+                web_server_log_tls_heap("before_http_stop");
+                const esp_err_t err = web_server_http_stop_internal();
+                if (err != ESP_OK) {
+                    ESP_LOGE(
+                        TAG,
+                        "HTTP bootstrap stop for web lifecycle failed: %s",
+                        esp_err_to_name(err)
+                    );
+                    http_stop_failed = true;
+                }
+                if (!http_stop_failed) {
+                    web_server_log_tls_heap("after_http_stop");
+                }
+            }
+            break;
+
+        case WEB_LIFECYCLE_ACTION_HTTPS_START: {
+            if (desired_state == WEB_LIFECYCLE_STATE_STA_CONNECTED && http_stop_failed) {
+                ESP_LOGW(TAG, "Skipping HTTPS start because HTTP bootstrap did not stop");
+                break;
+            }
+            const esp_err_t err = web_server_https_start_internal();
+            if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+                ESP_LOGE(TAG, "HTTPS start for STA failed: %s", esp_err_to_name(err));
+            }
+            break;
+        }
+
+        case WEB_LIFECYCLE_ACTION_HTTPS_STOP: {
+            const esp_err_t err = web_server_https_stop_internal();
+            if (err != ESP_OK) {
+                ESP_LOGW(
+                    TAG,
+                    "HTTPS stop for web lifecycle failed: %s",
+                    esp_err_to_name(err)
+                );
+            }
+            break;
+        }
+
+        case WEB_LIFECYCLE_ACTION_EXIT:
+            s_lifecycle_task = NULL;
+            vTaskDeleteWithCaps(NULL);
+            return;
+
+        default:
+            ESP_LOGW(TAG, "Unknown web lifecycle action=%d", (int)actions[i]);
+            break;
+        }
     }
 }
 
@@ -474,35 +509,18 @@ static void web_server_lifecycle_task(void *argument)
     (void)argument;
 
     for (;;) {
-        web_lifecycle_command_t command;
-        if (xQueueReceive(s_lifecycle_queue, &command, portMAX_DELAY) != pdTRUE) {
+        web_lifecycle_state_t desired_state;
+        if (
+            xQueueReceive(
+                s_lifecycle_queue,
+                &desired_state,
+                portMAX_DELAY
+            ) != pdTRUE
+        ) {
             continue;
         }
 
-        switch (command) {
-        case WEB_LIFECYCLE_COMMAND_STOP:
-            (void)web_server_https_stop_internal();
-            (void)web_server_http_stop_internal();
-            s_lifecycle_task = NULL;
-            vTaskDeleteWithCaps(NULL);
-            return;
-
-        case WEB_LIFECYCLE_COMMAND_STA_GOT_IP:
-            web_server_lifecycle_handle_sta_got_ip();
-            break;
-
-        case WEB_LIFECYCLE_COMMAND_AP_START:
-            web_server_lifecycle_handle_ap_start();
-            break;
-
-        case WEB_LIFECYCLE_COMMAND_STA_LOST:
-            web_server_lifecycle_handle_sta_lost();
-            break;
-
-        default:
-            ESP_LOGW(TAG, "Unknown web lifecycle command=%d", (int)command);
-            break;
-        }
+        web_server_lifecycle_apply_state(desired_state);
     }
 }
 
@@ -515,7 +533,7 @@ static esp_err_t web_server_lifecycle_start(void)
             : ESP_ERR_INVALID_STATE;
     }
 
-    s_lifecycle_queue = xQueueCreate(1U, sizeof(web_lifecycle_command_t));
+    s_lifecycle_queue = xQueueCreate(1U, sizeof(web_lifecycle_state_t));
     s_lifecycle_lock = xSemaphoreCreateMutex();
     if (s_lifecycle_queue == NULL || s_lifecycle_lock == NULL) {
         if (s_lifecycle_queue != NULL) vQueueDelete(s_lifecycle_queue);
@@ -560,8 +578,9 @@ static void web_server_lifecycle_stop(void)
     (void)xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY);
     QueueHandle_t queue = s_lifecycle_queue;
     if (queue != NULL && s_lifecycle_task != NULL) {
-        const web_lifecycle_command_t command = WEB_LIFECYCLE_COMMAND_STOP;
-        if (xQueueOverwrite(queue, &command) != pdTRUE) {
+        const web_lifecycle_state_t desired_state =
+            WEB_LIFECYCLE_STATE_STOPPED;
+        if (xQueueOverwrite(queue, &desired_state) != pdTRUE) {
             ESP_LOGW(TAG, "Failed to queue web lifecycle stop");
         }
         while (s_lifecycle_task != NULL) {
@@ -588,29 +607,29 @@ static void web_server_network_event_handler(
     (void)context;
     (void)event_data;
 
-    web_lifecycle_command_t command;
+    web_lifecycle_state_t desired_state;
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        command = WEB_LIFECYCLE_COMMAND_STA_GOT_IP;
+        desired_state = WEB_LIFECYCLE_STATE_STA_CONNECTED;
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
-        command = WEB_LIFECYCLE_COMMAND_AP_START;
+        desired_state = WEB_LIFECYCLE_STATE_SETUP_AP;
     }
     else if (
         event_base == WIFI_EVENT &&
         (event_id == WIFI_EVENT_STA_DISCONNECTED || event_id == WIFI_EVENT_STA_STOP)
     ) {
-        command = WEB_LIFECYCLE_COMMAND_STA_LOST;
+        desired_state = WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
     }
     else {
         return;
     }
 
-    const esp_err_t err = web_server_lifecycle_request(command);
+    const esp_err_t err = web_server_lifecycle_set_desired_state(desired_state);
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "WEB_LIFECYCLE event command=%d was not queued: %s",
-            (int)command,
+            "WEB_LIFECYCLE state=%d was not queued: %s",
+            (int)desired_state,
             esp_err_to_name(err)
         );
     }
@@ -804,12 +823,24 @@ esp_err_t web_server_start(void)
     }
 
     if (wifi_manager_is_setup_mode()) {
+        err = web_server_lifecycle_set_desired_state(
+            WEB_LIFECYCLE_STATE_SETUP_AP
+        );
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Setup AP lifecycle request failed: %s", esp_err_to_name(err));
+            web_server_event_handlers_unregister();
+            web_server_lifecycle_stop();
+            web_server_status_cache_stop();
+            return err;
+        }
         return ESP_OK;
     }
 
     char sta_ip[16];
     if (wifi_manager_sta_ip_string(sta_ip, sizeof(sta_ip)) == ESP_OK) {
-        err = web_server_lifecycle_request(WEB_LIFECYCLE_COMMAND_STA_GOT_IP);
+        err = web_server_lifecycle_set_desired_state(
+            WEB_LIFECYCLE_STATE_STA_CONNECTED
+        );
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "HTTPS startup request failed: %s", esp_err_to_name(err));
             web_server_event_handlers_unregister();
