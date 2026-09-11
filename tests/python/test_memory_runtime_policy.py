@@ -398,6 +398,10 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "web_server_lifecycle_quiesce" in web_server
     assert "web_server_lifecycle_radio_stop_complete" in web_server
     assert "wifi_manager_set_radio_stop_lifecycle_callbacks" in web_server
+    assert "web_server_mode_transition_complete" in web_server
+    assert "wifi_manager_set_mode_transition_complete_callback" in web_server
+    assert "running && setup_mode" in web_server
+    assert "wifi_manager_sta_ip_string" in web_server
     assert "s_lifecycle_quiesce_pending" in web_server
     assert "s_lifecycle_transition_active" in web_server
     assert "s_lifecycle_deferred_state_valid" in web_server
@@ -439,6 +443,9 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_mdns_is_ready(" not in wifi_sta_events
     assert "wifi_manager_mdns_stop(" not in wifi_mode
     assert "wifi_manager_set_radio_stop_lifecycle_callbacks" in wifi_mode
+    assert "wifi_manager_set_mode_transition_complete_callback" in wifi_mode
+    assert "wifi_manager_abort_mode_transition" in wifi_mode
+    assert "wifi_manager_notify_mode_transition_complete" in wifi_mode
     assert "wifi_manager_radio_stop_complete_callback_t" in wifi_mode
     assert "s_radio_stop_lifecycle_in_flight" in wifi_mode
     assert "const esp_err_t radio_stop_result" in wifi_mode
@@ -452,6 +459,15 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert radio_stop.index("esp_wifi_stop()") < radio_stop.index("complete_callback(context, radio_stop_result)")
     assert "err == ESP_ERR_WIFI_NOT_STARTED" in radio_stop
     assert "? ESP_OK" in radio_stop
+    for transition, next_transition in (
+        ("wifi_manager_enter_setup_mode", "wifi_manager_connect_saved"),
+        ("wifi_manager_connect_saved", "wifi_manager_stop"),
+    ):
+        start = wifi_mode.index(f"esp_err_t {transition}(")
+        end = wifi_mode.index(f"\nesp_err_t {next_transition}(", start)
+        body = wifi_mode[start:end]
+        assert "return wifi_manager_abort_mode_transition(err)" in body
+        assert "wifi_manager_internal_set_running(false)" in body
     assert "wifi_manager_mdns_init(void)" in wifi_header
     assert "wifi_manager_mdns_stop(void)" in wifi_header
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header

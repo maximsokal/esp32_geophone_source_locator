@@ -24,7 +24,13 @@ static bool fake_mdns_ready;
 static bool fake_https_running;
 static esp_err_t prepare_result;
 static esp_err_t fake_wifi_stop_result;
+static esp_err_t fake_setup_start_result;
+static esp_err_t fake_sta_start_result;
 static esp_err_t complete_result;
+static size_t mode_transition_complete_calls;
+static bool mode_transition_running;
+static bool mode_transition_setup_mode;
+static esp_err_t mode_transition_result;
 
 static void reset_trace(void)
 {
@@ -57,6 +63,20 @@ static void complete_radio_stop(
     trace[trace_count++] = TRACE_COMPLETE;
 }
 
+static void complete_mode_transition(
+    void *context,
+    bool running,
+    bool setup_mode,
+    esp_err_t transition_result
+)
+{
+    (void)context;
+    ++mode_transition_complete_calls;
+    mode_transition_running = running;
+    mode_transition_setup_mode = setup_mode;
+    mode_transition_result = transition_result;
+}
+
 bool wifi_manager_is_running(void)
 {
     return fake_running;
@@ -84,6 +104,10 @@ bool wifi_manager_internal_setup_mode(void)
 
 esp_err_t wifi_manager_internal_start_setup_mode(void)
 {
+    if (fake_setup_start_result != ESP_OK) {
+        return fake_setup_start_result;
+    }
+
     fake_setup_mode = true;
     return ESP_OK;
 }
@@ -99,6 +123,10 @@ void vTaskDelay(TickType_t ticks)
 
 esp_err_t wifi_manager_sta_start(void)
 {
+    if (fake_sta_start_result != ESP_OK) {
+        return fake_sta_start_result;
+    }
+
     return ESP_OK;
 }
 
@@ -128,12 +156,22 @@ int main(void)
     fake_https_running = true;
     prepare_result = ESP_OK;
     fake_wifi_stop_result = ESP_OK;
+    fake_setup_start_result = ESP_OK;
+    fake_sta_start_result = ESP_OK;
     complete_result = ESP_FAIL;
+    mode_transition_complete_calls = 0U;
+    mode_transition_running = false;
+    mode_transition_setup_mode = false;
+    mode_transition_result = ESP_FAIL;
     reset_trace();
 
     assert(wifi_manager_set_radio_stop_lifecycle_callbacks(
         prepare_radio_stop,
         complete_radio_stop,
+        NULL
+    ) == ESP_OK);
+    assert(wifi_manager_set_mode_transition_complete_callback(
+        complete_mode_transition,
         NULL
     ) == ESP_OK);
     assert(wifi_manager_stop() == ESP_OK);
@@ -148,6 +186,10 @@ int main(void)
     assert(!fake_mdns_ready);
     assert(!fake_https_running);
     assert(!fake_running);
+    assert(mode_transition_complete_calls == 1U);
+    assert(!mode_transition_running);
+    assert(!mode_transition_setup_mode);
+    assert(mode_transition_result == ESP_OK);
 
     fake_running = true;
     fake_mdns_ready = true;
@@ -189,6 +231,55 @@ int main(void)
     assert(complete_result == ESP_OK);
     assert(!fake_running);
 
+    /* STA -> AP target start failure must leave a stopped manager rather than
+     * claiming the old STA or a failed AP is still running. */
+    fake_running = true;
+    fake_setup_mode = false;
+    fake_mdns_ready = true;
+    fake_https_running = true;
+    prepare_result = ESP_OK;
+    fake_wifi_stop_result = ESP_OK;
+    fake_setup_start_result = ESP_FAIL;
+    fake_sta_start_result = ESP_OK;
+    mode_transition_complete_calls = 0U;
+    mode_transition_result = ESP_OK;
+    reset_trace();
+    assert(wifi_manager_enter_setup_mode() == ESP_FAIL);
+    assert(trace_count == 8U);
+    assert(trace[6] == TRACE_STA_RESET);
+    assert(trace[7] == TRACE_WIFI_STOP);
+    assert(!fake_running);
+    assert(!fake_setup_mode);
+    assert(!fake_mdns_ready);
+    assert(!fake_https_running);
+    assert(mode_transition_complete_calls == 1U);
+    assert(!mode_transition_running);
+    assert(!mode_transition_setup_mode);
+    assert(mode_transition_result == ESP_FAIL);
+
+    /* AP -> STA target start failure follows the same disconnected fallback. */
+    fake_running = true;
+    fake_setup_mode = true;
+    fake_mdns_ready = false;
+    fake_https_running = false;
+    prepare_result = ESP_OK;
+    fake_wifi_stop_result = ESP_OK;
+    fake_setup_start_result = ESP_OK;
+    fake_sta_start_result = ESP_FAIL;
+    mode_transition_complete_calls = 0U;
+    mode_transition_result = ESP_OK;
+    reset_trace();
+    assert(wifi_manager_connect_saved() == ESP_FAIL);
+    assert(trace_count == 8U);
+    assert(trace[6] == TRACE_STA_RESET);
+    assert(trace[7] == TRACE_WIFI_STOP);
+    assert(!fake_running);
+    assert(!fake_setup_mode);
+    assert(mode_transition_complete_calls == 1U);
+    assert(!mode_transition_running);
+    assert(!mode_transition_setup_mode);
+    assert(mode_transition_result == ESP_FAIL);
+
     assert(wifi_manager_set_radio_stop_lifecycle_callbacks(
         NULL,
         NULL,
@@ -200,9 +291,13 @@ int main(void)
         NULL
     ) == ESP_ERR_INVALID_ARG);
     assert(wifi_manager_set_radio_stop_lifecycle_callbacks(NULL, NULL, NULL) == ESP_OK);
+    assert(wifi_manager_set_mode_transition_complete_callback(NULL, (void *)1) == ESP_ERR_INVALID_ARG);
+    assert(wifi_manager_set_mode_transition_complete_callback(NULL, NULL) == ESP_OK);
 
     prepare_result = ESP_OK;
     fake_wifi_stop_result = ESP_OK;
+    fake_setup_start_result = ESP_OK;
+    fake_sta_start_result = ESP_OK;
     fake_running = true;
     fake_mdns_ready = false;
     fake_https_running = false;
