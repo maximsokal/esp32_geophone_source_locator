@@ -857,6 +857,20 @@ esp_err_t measurement_service_get_snapshot(
     return ESP_OK;
 }
 
+bool measurement_service_snapshot_blocks_acquisition_stop(
+    const measurement_service_snapshot_t *snapshot
+)
+{
+    if (snapshot == NULL) {
+        return true;
+    }
+
+    return snapshot->busy ||
+        snapshot->state == MEASUREMENT_SERVICE_STARTING ||
+        snapshot->state == MEASUREMENT_SERVICE_RECORDING ||
+        snapshot->state == MEASUREMENT_SERVICE_STOPPING;
+}
+
 
 bool measurement_service_is_busy(void)
 {

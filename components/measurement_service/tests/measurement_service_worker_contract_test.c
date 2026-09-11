@@ -492,6 +492,45 @@ static void test_start_reservation_release_waits_for_starting_state(void)
     stop_service();
 }
 
+static void test_acquisition_stop_cannot_bypass_recording_state(void)
+{
+    start_service();
+
+    measurement_service_snapshot_t current = snapshot();
+    assert(!measurement_service_snapshot_blocks_acquisition_stop(&current));
+
+    /* START is accepted first; the queued busy window is already owned by
+     * measurement_service even though the worker still reports LIVE. */
+    assert(measurement_service_start_async() == ESP_OK);
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_LIVE);
+    assert(current.busy);
+    assert(measurement_service_snapshot_blocks_acquisition_stop(&current));
+
+    run_pending_command();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_RECORDING);
+    assert(measurement_service_snapshot_blocks_acquisition_stop(&current));
+
+    /* The only legal way out of RECORDING is the measurement STOP command. */
+    assert(measurement_service_stop_async() == ESP_OK);
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_RECORDING);
+    assert(measurement_service_snapshot_blocks_acquisition_stop(&current));
+
+    run_pending_command();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_STOPPING);
+    assert(measurement_service_snapshot_blocks_acquisition_stop(&current));
+
+    assert(seismic_recorder_wait_for_stop() == ESP_OK);
+    measurement_service_process_stop_poll();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_REVIEW);
+    assert(!measurement_service_snapshot_blocks_acquisition_stop(&current));
+    stop_service();
+}
+
 
 static void test_start_guard_rejects_without_leaking_release(void)
 {
@@ -629,6 +668,7 @@ int main(void)
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();
     test_start_reservation_release_waits_for_starting_state();
+    test_acquisition_stop_cannot_bypass_recording_state();
     test_start_guard_rejects_without_leaking_release();
     test_snapshot_state_and_busy_share_one_critical_section();
     test_underlying_errors_and_queue_full();

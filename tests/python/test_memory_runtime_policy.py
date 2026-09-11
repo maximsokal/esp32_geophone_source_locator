@@ -182,7 +182,12 @@ def test_measurement_service_gates_start_and_refreshes_after_storage_completion(
     assert "measurement_service_notify_storage_refresh();" in source
     assert "web_status_json_objects_refresh();" in web_server
     assert "web_status_json_objects_start_guard" in web_server
-    assert "web_status_json_objects_cache_ready()" in web_control
+    start_helper = web_control[
+        web_control.index("static esp_err_t web_control_measurement_start"):
+        web_control.index("static esp_err_t web_control_acquisition_stop")
+    ]
+    assert "web_status_json_objects_cache_ready()" not in start_helper
+    assert "return measurement_service_start_async();" in start_helper
 
 
 def test_cache_refresh_and_measurement_start_share_reservation():
@@ -220,6 +225,38 @@ def test_legacy_recording_aliases_use_measurement_service_and_cache_is_fail_safe
     assert "arbitration->cache_ready &&" not in start_reservation
     assert "if (s_arbitration.mutex == NULL)" in status_objects
     assert "there is no refresh operation that can race local TFT recording" in status_objects
+
+
+def test_acquisition_stop_cannot_bypass_measurement_service():
+    control = read("components/web_server/web_api_control.c")
+    header = read("components/measurement_service/include/measurement_service.h")
+    acquisition_stop = control[
+        control.index("static esp_err_t web_control_acquisition_stop"):
+        control.index("static esp_err_t web_control_process")
+    ]
+
+    assert "measurement_service_snapshot_blocks_acquisition_stop" in header
+    assert "measurement_service_get_snapshot(&measurement)" in acquisition_stop
+    assert "measurement_service_snapshot_blocks_acquisition_stop(&measurement)" in acquisition_stop
+    assert "return ESP_ERR_INVALID_STATE;" in acquisition_stop
+    assert "seismic_recorder_stop" not in acquisition_stop
+    assert "seismic_recorder_wait_for_stop" not in acquisition_stop
+    assert "seismic_acquisition_stop();" in acquisition_stop
+
+
+def test_webui_uses_measurement_state_to_lock_acquisition_controls():
+    source = read("webui/src/features/objects/ObjectsFeature.tsx")
+    transition = read("webui/src/features/objects/measurementTransition.ts")
+
+    selected_recording = source[
+        source.index("const selectedRecording"):
+        source.index("const selectedSessions")
+    ]
+    assert "measurementOwnsRecorder(status)" in transition
+    assert "measurementOwnsRecorder" in source
+    assert "recording?.running === true" not in selected_recording
+    assert "measurementLocked" in source
+    assert "status?.acquisition.running !== true || measurementLocked" in source
 
 
 def test_ui_header_does_not_reinvalidate_unchanged_labels():

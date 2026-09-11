@@ -201,3 +201,7 @@ def test_console_record_button_uses_the_async_measurement_state_machine():
     assert "measurementTransitionErrorMessage(transitionStatus)" in source
     assert "status.measurement?.busy !== true" in transition_source
     assert "status.storage_busy !== true" in transition_source
+
+    objects_source = (REPO_ROOT / "webui" / "src" / "features" / "objects" / "ObjectsFeature.tsx").read_text(encoding="utf-8")
+    assert "measurementOwnsRecorder" in objects_source
+    assert "status?.acquisition.running !== true || measurementLocked" in objects_source

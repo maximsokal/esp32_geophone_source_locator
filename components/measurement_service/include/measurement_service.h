@@ -101,5 +101,14 @@ esp_err_t measurement_service_get_snapshot(
     measurement_service_snapshot_t *snapshot
 );
 
+/*
+ * Acquisition shutdown must not take ownership of a recorder that belongs to
+ * the measurement state machine. Include the submit-gate busy window because
+ * an accepted START can still report LIVE until the worker enters STARTING.
+ */
+bool measurement_service_snapshot_blocks_acquisition_stop(
+    const measurement_service_snapshot_t *snapshot
+);
+
 
 bool measurement_service_is_busy(void);

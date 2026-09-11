@@ -8,7 +8,6 @@
 #include "object_store.h"
 #include "measurement_service.h"
 #include "seismic_acquisition.h"
-#include "seismic_recorder.h"
 #include "esp_log.h"
 
 #define WEB_CONTROL_MAX_BODY 1024U
@@ -171,10 +170,6 @@ static esp_err_t web_control_measurement_start(const char *object_id)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!web_status_json_objects_cache_ready()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     const esp_err_t err = object_store_set_active(object_id);
     if (err != ESP_OK) {
         return err;
@@ -185,18 +180,20 @@ static esp_err_t web_control_measurement_start(const char *object_id)
 
 static esp_err_t web_control_acquisition_stop(void)
 {
-    seismic_recorder_snapshot_t recorder;
-    esp_err_t err = seismic_recorder_get_snapshot(&recorder);
-    if (err == ESP_OK && recorder.running) {
-        err = seismic_recorder_stop();
-        if (err != ESP_OK) {
-            return err;
-        }
+    measurement_service_snapshot_t measurement;
+    const esp_err_t err = measurement_service_get_snapshot(&measurement);
+    if (err != ESP_OK) {
+        return err;
+    }
 
-        err = seismic_recorder_wait_for_stop();
-        if (err != ESP_OK) {
-            return err;
-        }
+    if (measurement_service_snapshot_blocks_acquisition_stop(&measurement)) {
+        ESP_LOGW(
+            TAG,
+            "Rejecting acquisition_stop while measurement state=%d busy=%d",
+            (int)measurement.state,
+            measurement.busy ? 1 : 0
+        );
+        return ESP_ERR_INVALID_STATE;
     }
 
     seismic_acquisition_stop();
