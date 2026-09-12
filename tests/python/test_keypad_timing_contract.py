@@ -19,7 +19,10 @@ def test_timing_instrumentation_is_opt_in_and_stays_on_the_timer_task():
     assert "keypad_timing_probe" in adapter
     assert ".dispatch_method = ESP_TIMER_TASK" in adapter
     assert "KEYPAD_ADC_TIMING:" in adapter
-    assert "min_us=%u avg_us=%u p95_us=%u max_us=%u" in adapter
+    assert "min_us=%u avg_us=%u p95_us=%u" in adapter
+    assert "p95_us=%u p95_overflow=%u p95_censored_above_us=%u max_us=%u" in adapter
+    assert "p95_overflow=%u" in adapter
+    assert "p95_censored_above_us=%u" in adapter
     assert "KEYPAD_TIMER_TIMING:" in adapter
     assert "overrun_count=%u" in adapter
     assert "default n" in kconfig[kconfig.index("config APP_KEYPAD_TIMING_DIAGNOSTICS") :]
@@ -46,8 +49,13 @@ def test_timing_profiles_select_separate_sources_and_do_not_touch_production_def
     assert "GEOLOCATOR_ADC_BENCH_PROFILE" in runner
     assert 'Add-Check $checks "Timing-profile flash"' in runner
     assert 'Add-Check $checks "Production flash"' not in runner
+    assert "InvalidTelemetry" in runner
+    assert "KEYPAD_TIMING_TELEMETRY_RESULT" in runner
+    assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in runner
     assert "MinimumWindows" in runner
     assert "MinimumSnapshots" in runner
     assert "AD7606 with no deliberate keypad activity" in timing_doc
     assert "ESP ADC bench at 500 Hz while pressing" in timing_doc
     assert "bounded-histogram `p95`" in timing_doc
+    assert "p95_overflow" in timing_doc
+    assert "NOT_ESTABLISHED" in timing_doc

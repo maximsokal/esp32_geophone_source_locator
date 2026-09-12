@@ -14,9 +14,14 @@ The firmware reports one-second windows:
   dispatched by the same `ESP_TIMER_TASK`. `late_count` counts non-zero
   lateness; `overrun_count` counts samples at least one 10 ms period late.
 
-The histogram resolution is 4 microseconds. Therefore `p95` is an upper-bound
-bucket value, and the runner deliberately does not invent an accept/reject
-threshold before board measurements exist.
+The histogram resolution is 4 microseconds. When the percentile rank remains
+inside the representable buckets, `p95` is an upper-bound bucket value. The
+last bucket is right-censored at 2048 microseconds: if the p95 rank lands
+there, the firmware reports `p95_us=0`, `p95_overflow=1`, and
+`p95_censored_above_us=2048`. In that case the numeric p95 is not available;
+`max_us` remains the measured maximum and `overflow` reports how many samples
+were censored. The same fields apply to timer lateness. The runner deliberately
+does not invent an accept/reject threshold before board measurements exist.
 
 ## Live procedure
 
@@ -68,6 +73,14 @@ window ends without the confirmation switch, the report is `BLOCKED`. A
 malformed data handling, but it cannot attest to physical key presses or
 actual board timing.
 
+The runner reports `KEYPAD_TIMING_TELEMETRY_RESULT`, which means that the
+telemetry was present and internally valid; it is not a performance pass. It
+also prints `PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED` until real-board
+baselines define thresholds. Any non-zero ADC `errors` or malformed telemetry
+is an unconditional telemetry `FAIL`. `busy`, `max`, timer lateness,
+`overrun_count`, and histogram overflow remain recorded evidence without a
+guessed performance threshold.
+
 The default gate requires at least three one-second windows and 100 successful
 snapshots. Override these only for a deliberate diagnostic/replay reason with
 `-MinimumWindows` and `-MinimumSnapshots`.
@@ -92,7 +105,9 @@ Keep the three live logs with the test record. For each log record:
 
 - selected backend and configured 500 Hz rate;
 - ADC snapshot `min/avg/p95/max`, sample count, busy/error count and overflow;
-- timer dispatch-lateness `min/avg/p95/max`, late and overrun counts;
+  record `p95_overflow` and `p95_censored_above_us` when p95 is not available;
+- timer dispatch-lateness `min/avg/p95/max`, late and overrun counts, with the
+  same p95-censor fields;
 - whether the window was idle or had frequent keypad activity.
 
 Do not compare the diagnostic profile directly with production timing as if

@@ -234,6 +234,9 @@ try {
         if ($backend.Pass -and $telemetry.Pass) {
             break
         }
+        if ($telemetry.InvalidTelemetry) {
+            break
+        }
         if ($isReplay) {
             break
         }
@@ -253,18 +256,19 @@ try {
     }
 
     $missingStatus = if ($isReplay) { "FAIL" } else { "BLOCKED" }
+    $telemetryStatus = if ($telemetry.InvalidTelemetry) { "FAIL" } else { $missingStatus }
     Add-Check $checks "Selected acquisition backend" `
-        $(if ($backend.Pass -and $telemetry.SourcePass) { "PASS" } else { $missingStatus }) `
+        $(if ($backend.Pass -and $telemetry.SourcePass) { "PASS" } else { $telemetryStatus }) `
         $(if ($backend.Pass -and $telemetry.SourcePass) {
             $backend.Detail
         } else {
             "$($backend.Detail) $($telemetry.SourceDetail)"
         })
     Add-Check $checks "Keypad ADC snapshot timing" `
-        $(if ($telemetry.AdcPass) { "PASS" } else { $missingStatus }) `
+        $(if ($telemetry.AdcPass) { "PASS" } else { $telemetryStatus }) `
         $telemetry.AdcDetail
     Add-Check $checks "ESP_TIMER_TASK dispatch timing" `
-        $(if ($telemetry.TimerPass) { "PASS" } else { $missingStatus }) `
+        $(if ($telemetry.TimerPass) { "PASS" } else { $telemetryStatus }) `
         $telemetry.TimerDetail
 
     if ($isReplay -and $ConfirmFrequentKeypadActivity) {
@@ -308,8 +312,9 @@ foreach ($check in $checks) {
 if ($isReplay) {
     Write-Host ("LOG_REPLAY: {0}" -f $logFile)
 }
-Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load and reports a bounded-histogram upper-bound p95. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at 500Hz with frequent keypad presses; serial replay cannot prove physical activity or board timing."
-Write-Host ("KEYPAD_TIMING_HIL_RESULT: {0}" -f $result)
+Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; when its rank lands in the overflow bucket, p95 is censored and reported with p95_overflow=1 and p95_censored_above_us. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at 500Hz with frequent keypad presses; serial replay cannot prove physical activity or board timing."
+Write-Host ("KEYPAD_TIMING_TELEMETRY_RESULT: {0}" -f $result)
+Write-Host "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED"
 
 if ($result -eq "PASS") {
     exit 0

@@ -180,3 +180,46 @@ button timing acceptance contract.
 
 ESP32 geophone keypad ADC1 ownership/timer-safety follow-up; physical timing
 remains pending because COM4/COM6 are not live.
+
+## Additional timing telemetry validity correction
+
+### Evidence
+
+- The timing audit found that the bounded 512-bucket histogram collapsed all
+  durations at or above 2048 us into its last bucket, while the old formatter
+  still presented 2048 us as a p95 upper bound. The firmware now reports a
+  censored p95 as `p95_us=0`, `p95_overflow=1`, and
+  `p95_censored_above_us=2048`; actual `max_us` and histogram overflow counts
+  remain available. The same contract is applied to timer lateness.
+- The HIL runner now reports `KEYPAD_TIMING_TELEMETRY_RESULT` separately from
+  `PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED`. It has no invented performance
+  thresholds; malformed telemetry and non-zero ADC errors fail, while
+  unthresholded performance observations remain recorded.
+- Regression evidence passed: focused timing tests `8/8`, Host C `38/38`,
+  full Python `82 passed + 1 skipped`, and full `Suite All` exited 0. Enabled
+  target profiles compiled with the expected diagnostics/source selections:
+  AD7606 image `0x1fe7a0` and ESP ADC bench-at-500-Hz image `0x1fc990`.
+
+### Root cause
+
+- The metric implementation treated a censored terminal histogram bucket as a
+  normal bucket, and the runner used a performance-sounding PASS result before
+  real-board baseline thresholds existed.
+
+### Recurrence count
+
+- One confirmed occurrence in this task. This supports a repository-local
+  censored-metric and pre-baseline HIL naming rule, not a generalized skill
+  change.
+
+### Proposed minimal rule
+
+- Any bounded metric whose percentile can land in an overflow bucket must
+  publish validity plus the censoring bound separately from the numeric value.
+  Before physical baselines exist, HIL output should certify telemetry
+  integrity only; performance acceptance must remain explicitly unestablished.
+
+### Affected task
+
+ESP32 geophone keypad timing HIL follow-up; physical timing acceptance remains
+pending until live COM4/COM6 runs produce board measurements.
