@@ -57,6 +57,7 @@ def test_button_migration_has_no_input_tasks_or_polling_workers():
     assert "iot_button_create" in keypad
     assert "button_driver_t" in keypad
     assert "adc_service_read_average_raw" in keypad
+    assert "adc_service_try_read_average_raw" in keypad
     assert "button_adc.h" not in keypad
     assert "adc_oneshot_read" not in keypad
     assert "BUTTON_PRESS_DOWN" in keypad
@@ -71,9 +72,14 @@ def test_button_migration_has_no_input_tasks_or_polling_workers():
 def test_button_contracts_preserve_adc_and_power_safety_boundaries():
     keypad = (REPO_ROOT / "components/keypad/keypad_button_adapter.c").read_text(encoding="utf-8")
     power = (REPO_ROOT / "components/power_control/power_button_adapter.c").read_text(encoding="utf-8")
+    keypad_level = _function_body(keypad, "static uint8_t keypad_button_get_key_level")
 
     assert keypad.count("err = iot_button_create(") == 1
     assert keypad.count(".get_key_level = keypad_button_get_key_level") == 1
+    assert "adc_service_try_read_average_raw" in keypad_level
+    assert "adc_service_read_average_raw" not in keypad_level
+    assert "portMAX_DELAY" not in keypad_level
+    assert "s_adc_cache_time_us = esp_timer_get_time()" in keypad_level
     assert "adc_service_handle" not in keypad
     assert "ADC_ATTEN_DB_12" in keypad
     assert "KEYPAD_SW1_MAX_RAW" in keypad

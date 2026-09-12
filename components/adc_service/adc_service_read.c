@@ -5,10 +5,11 @@
 #include "adc_service_internal.h"
 
 
-esp_err_t adc_service_read_average_raw(
+static esp_err_t adc_service_read_average_raw_with_timeout(
     adc_channel_t channel,
     size_t sample_count,
-    int *raw_value
+    int *raw_value,
+    TickType_t mutex_timeout
 )
 {
     if (!g_adc_service_initialized) {
@@ -22,10 +23,12 @@ esp_err_t adc_service_read_average_raw(
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(
+    if (xSemaphoreTake(
         g_adc_service_mutex,
-        portMAX_DELAY
-    );
+        mutex_timeout
+    ) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
 
     /* ADC1 has one conversion owner. Always discard one conversion while
      * holding the service mutex so a channel switch cannot leak the previous
@@ -78,6 +81,36 @@ esp_err_t adc_service_read_average_raw(
         );
 
     return ESP_OK;
+}
+
+
+esp_err_t adc_service_read_average_raw(
+    adc_channel_t channel,
+    size_t sample_count,
+    int *raw_value
+)
+{
+    return adc_service_read_average_raw_with_timeout(
+        channel,
+        sample_count,
+        raw_value,
+        portMAX_DELAY
+    );
+}
+
+
+esp_err_t adc_service_try_read_average_raw(
+    adc_channel_t channel,
+    size_t sample_count,
+    int *raw_value
+)
+{
+    return adc_service_read_average_raw_with_timeout(
+        channel,
+        sample_count,
+        raw_value,
+        0
+    );
 }
 
 

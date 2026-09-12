@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "adc_service.h"
@@ -18,6 +19,8 @@ typedef struct {
 
 static read_record_t s_reads[8];
 static size_t s_read_count;
+static bool s_mutex_available = true;
+static TickType_t s_last_mutex_timeout;
 
 
 BaseType_t xSemaphoreTake(
@@ -26,8 +29,8 @@ BaseType_t xSemaphoreTake(
 )
 {
     assert(semaphore == g_adc_service_mutex);
-    assert(ticks_to_wait == portMAX_DELAY);
-    return pdTRUE;
+    s_last_mutex_timeout = ticks_to_wait;
+    return s_mutex_available ? pdTRUE : pdFALSE;
 }
 
 
@@ -87,8 +90,32 @@ static void test_each_service_read_settles_after_channel_switch(void)
 }
 
 
+static void test_try_read_returns_timeout_without_touching_adc(void)
+{
+    int value = 777;
+
+    s_read_count = 0;
+    s_mutex_available = false;
+
+    assert(
+        adc_service_try_read_average_raw(1, 4, &value) ==
+        ESP_ERR_TIMEOUT
+    );
+    assert(value == 777);
+    assert(s_read_count == 0U);
+    assert(s_last_mutex_timeout == 0);
+
+    s_mutex_available = true;
+    assert(adc_service_try_read_average_raw(1, 1, &value) == ESP_OK);
+    assert(value == 101);
+    assert(s_read_count == 2U);
+    assert(s_last_mutex_timeout == 0);
+}
+
+
 int main(void)
 {
+    test_try_read_returns_timeout_without_touching_adc();
     test_each_service_read_settles_after_channel_switch();
     puts("adc service settling tests passed");
     return 0;

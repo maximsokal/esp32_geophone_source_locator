@@ -99,3 +99,42 @@ button timing acceptance contract.
 ### Proposed minimal rule
 
 - Keep shared event handlers bounded: validate the event, set/notify state, and return. Run optional initialization, diagnostics setup, or network-facing work in a dedicated worker with an explicit task-policy entry and a source contract that excludes the heavy call from the handler.
+
+## Additional timer-safe ADC and atomic-state correction
+
+### Evidence
+
+- The ownership refactor removed the second ADC1 owner but left the Button
+  level callback able to wait forever on the broker mutex from the shared
+  `ESP_TIMER_TASK`. The keypad callback now calls
+  `adc_service_try_read_average_raw()` with zero wait ticks and immediately
+  retains its last decoded state on `ESP_ERR_TIMEOUT`.
+- The callback records a separate failed-attempt timestamp so the remaining
+  logical Button handles do not retry the broker during the same cache window.
+  A successful read records `s_adc_cache_time_us` after the broker call. Host
+  coverage models both contention and a 1.5 ms fake read and passed in the
+  complete 38/38 native suite.
+- `insights_bridge` now stores `s_initialized` and `s_retry_pending` as
+  `atomic_bool`, using acquire loads and release stores across the retry worker
+  and public/main contexts. The source contract requires these operations.
+
+### Root cause
+
+- The first ownership contract covered who may issue ADC1 conversions, but not
+  whether a system-timer callback may wait for that owner. The later Insights
+  worker correction introduced cross-context state without completing its
+  visibility contract.
+
+### Recurrence count
+
+- One confirmed occurrence of each issue in this task. This is repository-local
+  evidence for the timer-callback and atomic-state contracts, not enough for a
+  generalized workflow or skill change.
+
+### Proposed minimal rule
+
+- Callbacks running on shared timer/event infrastructure must use bounded or
+  zero-wait broker APIs and preserve the last valid state on contention. Any
+  state shared with a worker must use an explicit synchronization primitive;
+  source contracts should assert both the non-blocking call path and the
+  publication mechanism.

@@ -130,3 +130,23 @@ These are compile/size facts only. The keypad ownership proof is host/static
 and target-build coverage. The opt-in Insights retry worker is compile-time
 covered only; no runtime ADC settling, heap/HWM, UART, or physical button
 acceptance is claimed without the connected board.
+
+## Timer-safe ADC and cross-context state correction (2026-09-12)
+
+The keypad Button level callback now uses
+`adc_service_try_read_average_raw()` with a zero-wait ADC1 mutex acquisition.
+When the broker is busy, the callback returns immediately and retains the last
+valid decoded key state. A separate attempt marker prevents the remaining
+logical Button handles from retrying within the same short cache window, and
+the cache timestamp is recorded after the broker read completes. The optional
+Insights worker/public readers now exchange initialized/retry state through
+C11 atomic loads and stores. These are host/static and compile-time contract
+facts; timer-task latency and target ADC behavior still require HIL evidence.
+
+The final verification rebuild after this correction produced a production
+image of `0x1fddf0` with `0x202210` (50%) app space free and an unpadded
+`idf.py size` total of 2,088,317 bytes. The isolated Insights image produced
+`0x20d450` with `0x1f2bb0` (49%) free and an unpadded total of 2,151,389
+bytes. `idf.py size-components` exited 0 for both images. No runtime
+timer-latency, heap/HWM, UART, or physical ADC/button result is inferred from
+these builds.

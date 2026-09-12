@@ -214,8 +214,10 @@ default system event loop. Wi-Fi, HTTPS onboarding, Web setup and input
 publishers post the existing `int32_t` event payloads with zero wait ticks.
 
 The five KS0466 ladder buttons use the official Button core/state machine with
-keypad-owned `button_driver_t` adapters. Each adapter reads the raw ladder
-through `adc_service_read_average_raw()`; the ADC1 handle remains private to
+keypad-owned `button_driver_t` adapters. Each timer callback reads the raw
+ladder through the non-blocking `adc_service_try_read_average_raw()` broker
+API; a busy ADC1 broker retains the previous decoded key state, and the cache
+timestamp is taken after a completed read. The ADC1 handle remains private to
 `adc_service`, so the vendor ADC driver cannot interleave a direct conversion
 between discard and useful samples. Their measured raw boundaries remain in
 `keypad_button_adapter.c`. The GPIO21 power button is an official GPIO Button
@@ -237,7 +239,8 @@ WARNING and ERROR are sticky until power cycle. The current board has no
 connected LED GPIOs, so the official `led_indicator` backend remains disabled
 and no GPIO is invented. `insights_bridge` is optional and disabled in the
 baseline configuration; when enabled it exports selected runtime health
-metrics only.
+metrics only. Its cross-context initialized/retry state uses C11 atomic
+publication, while connection events only notify the dedicated retry worker.
 
 `seismic_dsp` is a synchronous, task-free foundation for measured
 DC-removal/detrend, windowing, FIR/IIR band-pass/notch, FFT,

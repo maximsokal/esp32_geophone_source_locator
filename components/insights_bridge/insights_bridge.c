@@ -1,5 +1,6 @@
 #include "insights_bridge.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -10,7 +11,7 @@
 
 
 static const char *TAG = "INSIGHTS_BRIDGE";
-static bool s_initialized = false;
+static atomic_bool s_initialized = ATOMIC_VAR_INIT(false);
 
 
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
@@ -42,7 +43,7 @@ static bool s_initialized = false;
 
 
 static bool s_network_handler_registered = false;
-static bool s_retry_pending = false;
+static atomic_bool s_retry_pending = ATOMIC_VAR_INIT(false);
 static TaskHandle_t s_retry_task = NULL;
 
 
@@ -146,7 +147,7 @@ static esp_err_t insights_bridge_register_network_ready_handler(void)
 
 static esp_err_t insights_bridge_attempt_init(void)
 {
-    if (s_initialized) {
+    if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
         return ESP_OK;
     }
 
@@ -155,7 +156,11 @@ static esp_err_t insights_bridge_attempt_init(void)
             TAG,
             "ESP Insights requested but no private auth-key provider is installed; bridge remains inactive"
         );
-        s_retry_pending = false;
+        atomic_store_explicit(
+            &s_retry_pending,
+            false,
+            memory_order_release
+        );
         return ESP_OK;
     }
 
@@ -179,7 +184,11 @@ static esp_err_t insights_bridge_attempt_init(void)
         /* The platform is ready at the normal call site, but a transient
          * resource failure may be retried after STA obtains an IP. The
          * APP_EVENT callback only notifies the dedicated retry worker. */
-        s_retry_pending = true;
+        atomic_store_explicit(
+            &s_retry_pending,
+            true,
+            memory_order_release
+        );
         return ESP_OK;
     }
 
@@ -187,8 +196,16 @@ static esp_err_t insights_bridge_attempt_init(void)
     insights_register_metrics();
 #endif
 
-    s_initialized = true;
-    s_retry_pending = false;
+    atomic_store_explicit(
+        &s_initialized,
+        true,
+        memory_order_release
+    );
+    atomic_store_explicit(
+        &s_retry_pending,
+        false,
+        memory_order_release
+    );
     ESP_LOGI(TAG, "ESP Insights bridge enabled with selected runtime metrics only");
     return ESP_OK;
 }
@@ -204,13 +221,20 @@ static void insights_bridge_retry_worker(void *context)
             portMAX_DELAY
         );
 
-        if (s_initialized || !s_retry_pending) {
+        if (
+            atomic_load_explicit(&s_initialized, memory_order_acquire) ||
+            !atomic_load_explicit(&s_retry_pending, memory_order_acquire)
+        ) {
             continue;
         }
 
         /* Consume the request before entering the attempt. A failed attempt
          * sets it again, and the next connected event will notify us again. */
-        s_retry_pending = false;
+        atomic_store_explicit(
+            &s_retry_pending,
+            false,
+            memory_order_release
+        );
         (void)insights_bridge_attempt_init();
     }
 }
@@ -269,7 +293,7 @@ static void insights_bridge_app_event_handler(
 
 esp_err_t insights_bridge_init(void)
 {
-    if (s_initialized) {
+    if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
         return ESP_OK;
     }
 
@@ -318,7 +342,7 @@ esp_err_t insights_bridge_publish_runtime(void)
 {
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS && \
     defined(CONFIG_DIAG_ENABLE_METRICS) && CONFIG_DIAG_ENABLE_METRICS
-    if (!s_initialized) {
+    if (!atomic_load_explicit(&s_initialized, memory_order_acquire)) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -363,5 +387,5 @@ esp_err_t insights_bridge_publish_runtime(void)
 
 bool insights_bridge_enabled(void)
 {
-    return s_initialized;
+    return atomic_load_explicit(&s_initialized, memory_order_acquire);
 }

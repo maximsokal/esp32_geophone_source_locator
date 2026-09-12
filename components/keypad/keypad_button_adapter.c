@@ -53,6 +53,8 @@ static adc_channel_t s_adc_channel;
 static bool s_initialized;
 static bool s_adc_cache_valid;
 static int64_t s_adc_cache_time_us;
+static bool s_adc_cache_attempt_valid;
+static int64_t s_adc_cache_attempt_time_us;
 static keypad_key_t s_adc_cache_key;
 
 
@@ -87,6 +89,16 @@ static keypad_button_driver_t *keypad_button_driver_from_base(
 }
 
 
+static uint8_t keypad_button_level_from_cache(
+    const keypad_button_driver_t *button
+)
+{
+    return s_adc_cache_valid && s_adc_cache_key == button->key
+        ? BUTTON_ACTIVE
+        : BUTTON_INACTIVE;
+}
+
+
 static uint8_t keypad_button_get_key_level(button_driver_t *driver)
 {
     keypad_button_driver_t *button =
@@ -101,25 +113,44 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
         !s_adc_cache_valid ||
         now_us - s_adc_cache_time_us > KEYPAD_BUTTON_CACHE_WINDOW_US
     ) {
+        /* A failed non-blocking attempt must not be retried by the next
+         * logical Button object in the same timer callback. Keep the last
+         * state for this cache window and let the next window try again. */
+        if (
+            s_adc_cache_attempt_valid &&
+            now_us - s_adc_cache_attempt_time_us <=
+                KEYPAD_BUTTON_CACHE_WINDOW_US
+        ) {
+            return keypad_button_level_from_cache(button);
+        }
+
+        s_adc_cache_attempt_valid = true;
+        s_adc_cache_attempt_time_us = now_us;
+
         int raw = 0;
-        esp_err_t err = adc_service_read_average_raw(
+        esp_err_t err = adc_service_try_read_average_raw(
             s_adc_channel,
             KEYPAD_BUTTON_SAMPLE_COUNT,
             &raw
         );
+        if (err == ESP_ERR_TIMEOUT) {
+            return keypad_button_level_from_cache(button);
+        }
         if (err != ESP_OK) {
             s_adc_cache_valid = false;
-            return BUTTON_INACTIVE;
+            return keypad_button_level_from_cache(button);
         }
 
         s_adc_cache_key = keypad_decode_raw(raw);
-        s_adc_cache_time_us = now_us;
+        /* Timestamp the completed broker read, not the potentially stale
+         * pre-read time. This keeps all five callbacks in this timer cycle on
+         * the same sample even when a conversion itself takes time. */
+        s_adc_cache_time_us = esp_timer_get_time();
         s_adc_cache_valid = true;
+        s_adc_cache_attempt_valid = false;
     }
 
-    return s_adc_cache_valid && s_adc_cache_key == button->key
-        ? BUTTON_ACTIVE
-        : BUTTON_INACTIVE;
+    return keypad_button_level_from_cache(button);
 }
 
 
@@ -269,5 +300,6 @@ void keypad_button_adapter_stop(void)
     }
 
     s_adc_cache_valid = false;
+    s_adc_cache_attempt_valid = false;
     s_initialized = false;
 }
