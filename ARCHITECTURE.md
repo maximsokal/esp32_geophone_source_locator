@@ -215,7 +215,9 @@ publishers post the existing `int32_t` event payloads with zero wait ticks.
 The five KS0466 ladder buttons are official ADC Button objects borrowing the
 ADC1 handle owned by `adc_service`; their measured ranges remain in
 `keypad_button_adapter.c`. The GPIO21 power button is an official GPIO Button
-object with internal pulls disabled and the existing 150 ms long-press policy.
+object with internal pulls disabled and a configured `long_press_time` of
+150 ms after the vendor debounce state. The configured value is not a raw
+GPIO21-to-latch timing claim; that interval is an explicit HIL measurement.
 The power callback latches the shutdown EventGroup bit before its best-effort
 APP_EVENT notification, so an event-queue-full condition cannot prevent safe
 shutdown. Neither input path creates an application-owned polling task.

@@ -5,46 +5,6 @@
 #include "adc_service_internal.h"
 
 
-static bool s_last_channel_valid =
-    false;
-
-static adc_channel_t s_last_channel;
-
-
-static esp_err_t adc_service_prepare_channel(
-    adc_channel_t channel
-)
-{
-    if (
-        s_last_channel_valid &&
-        s_last_channel ==
-        channel
-    ) {
-        return ESP_OK;
-    }
-
-    int discard =
-        0;
-
-    esp_err_t err =
-        adc_oneshot_read(
-            g_adc_service_handle,
-            channel,
-            &discard
-        );
-
-    if (err == ESP_OK) {
-        s_last_channel =
-            channel;
-
-        s_last_channel_valid =
-            true;
-    }
-
-    return err;
-}
-
-
 esp_err_t adc_service_read_average_raw(
     adc_channel_t channel,
     size_t sample_count,
@@ -67,9 +27,22 @@ esp_err_t adc_service_read_average_raw(
         portMAX_DELAY
     );
 
+    /*
+     * ADC1 is also borrowed by the official Espressif ADC Button objects.
+     * Those objects use the same unit handle directly, so a cached
+     * last-channel value cannot describe the conversion that actually
+     * preceded this read. Always discard one conversion while holding the
+     * service mutex; this keeps the settling guarantee valid across every
+     * external borrower interleaving.
+     */
+    int discard =
+        0;
+
     esp_err_t err =
-        adc_service_prepare_channel(
-            channel
+        adc_oneshot_read(
+            g_adc_service_handle,
+            channel,
+            &discard
         );
 
     int64_t sum =

@@ -421,7 +421,7 @@
                 "clear": true
             },
             "problemMatcher": [],
-            "detail": "Explicit production HIL: monitor COM6, flash production through COM4, require full serial/API pipeline checks, and report PIPELINE_HIL_RESULT; add the three -Confirm... switches in a direct PowerShell run after the manual TFT/keypad/power observations."
+            "detail": "Explicit production HIL: monitor COM6, flash production through COM4, require full serial/API pipeline checks, and report PIPELINE_HIL_RESULT; add the four -Confirm... switches in a direct PowerShell run after the manual TFT/keypad/power observations. -ConfirmPowerButtonTiming additionally requires measured GPIO21 HIGH -> shutdown latch plus explicit target/tolerance arguments."
         },
         {
             "label": "ESP: Monitor logs (COM6)",

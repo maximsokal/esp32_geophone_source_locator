@@ -97,3 +97,20 @@ classification under noise, electrical GPIO21 behavior, GPIO18 pulse timing,
 INA3221/TCA9548A wiring, TFT pixels, SD media, Wi-Fi transport, task HWM,
 500-Hz timing, or safe power removal. Those remain TARGET/HIL or
 PHYSICALLY VERIFIED results and are gated separately by the COM4/COM6 runner.
+
+## Follow-up profile accounting (2026-09-12)
+
+The historical before/after table above predates the ADC settling, Insights
+startup/profile, and power-button timing follow-up. The current production
+baseline rebuilt in `build-refactor-final` is `0x1ff750` (2,094,928 B) with
+`0x2008b0` (50%) free in the app partition. Its `idf.py size` total is
+2,094,809 B before binary padding. The opt-in Insights profile was built in
+the isolated `build-refactor-insights` directory with its own `sdkconfig`;
+it is `0x20ec50` (2,157,648 B) with `0x1f13b0` (49%) free, and its
+unpadded `idf.py size` total is 2,157,525 B. `idf.py size-components` exited
+0 for both builds.
+
+The profile build confirms the enabled Insights branch and test auth provider
+while heap/Wi-Fi metrics and diagnostic variables remain disabled. These are
+compile/size facts only; no cloud upload, runtime diagnostic overhead, target
+heap/HWM capture, or physical acceptance is claimed.

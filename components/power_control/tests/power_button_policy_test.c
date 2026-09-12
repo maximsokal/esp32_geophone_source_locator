@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include "button_gpio.h"
 #include "driver/gpio.h"
@@ -36,6 +37,7 @@ static unsigned hook_calls;
 static unsigned hook_bits_at_call;
 static unsigned app_event_posts;
 static esp_err_t fake_best_effort_result;
+static uint32_t fake_timestamp_ms;
 
 
 static void reset_fakes(void)
@@ -51,6 +53,13 @@ static void reset_fakes(void)
     hook_bits_at_call = 0U;
     app_event_posts = 0U;
     fake_best_effort_result = ESP_OK;
+    fake_timestamp_ms = 0U;
+}
+
+
+uint32_t esp_log_timestamp(void)
+{
+    return fake_timestamp_ms;
 }
 
 
@@ -208,6 +217,9 @@ static void test_startup_held_and_long_press_policy(void)
     fake_gpio_level = 0;
     invoke(BUTTON_PRESS_UP);
     fake_gpio_level = 1;
+    fake_timestamp_ms = 1000U;
+    invoke(BUTTON_PRESS_DOWN);
+    fake_timestamp_ms = 1150U;
     /* A full APP_LOOP queue must not prevent the authoritative latch or the
      * optional notification hook from completing the shutdown path. */
     fake_best_effort_result = ESP_ERR_TIMEOUT;

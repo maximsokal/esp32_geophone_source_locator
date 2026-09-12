@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "board_config.h"
 #include "button_gpio.h"
@@ -14,7 +15,6 @@
 static const char *TAG = "POWER_BUTTON";
 
 #define POWER_BUTTON_LONG_PRESS_MS 150U
-#define POWER_BUTTON_RELEASE_CONFIRM_MS 50U
 #define POWER_EVENT_SHUTDOWN_REQUESTED BIT0
 #define POWER_EVENT_BUTTON_RELEASED (BIT0 << 1)
 
@@ -28,6 +28,8 @@ typedef struct {
     power_button_shutdown_notification_hook_t notification_hook;
     void *notification_context;
     volatile bool armed;
+    uint32_t debounced_down_ms;
+    bool debounced_down_valid;
     bool initialized;
 } power_button_state_t;
 
@@ -45,9 +47,16 @@ static void power_button_callback(void *button_handle, void *user_data)
     }
 
     const button_event_t event = iot_button_get_event(button_handle);
+    if (event == BUTTON_PRESS_DOWN) {
+        state->debounced_down_ms = esp_log_timestamp();
+        state->debounced_down_valid = true;
+        return;
+    }
+
     if (event == BUTTON_PRESS_UP) {
         /* This also arms a button that was held during startup. */
         state->armed = true;
+        state->debounced_down_valid = false;
         xEventGroupSetBits(state->events, POWER_EVENT_BUTTON_RELEASED);
         return;
     }
@@ -60,6 +69,22 @@ static void power_button_callback(void *button_handle, void *user_data)
      * first so the shutdown waiter cannot skip the current release. */
     xEventGroupClearBits(state->events, POWER_EVENT_BUTTON_RELEASED);
     xEventGroupSetBits(state->events, POWER_EVENT_SHUTDOWN_REQUESTED);
+
+    const uint32_t latch_ms = esp_log_timestamp();
+    const uint32_t debounced_elapsed_ms = state->debounced_down_valid
+        ? latch_ms - state->debounced_down_ms
+        : 0U;
+    /* Keep the value live in host builds whose logging stub is intentionally
+     * silent; the target ESP_LOGI call below is the diagnostic sink. */
+    (void)debounced_elapsed_ms;
+    ESP_LOGI(
+        TAG,
+        "POWER_BUTTON_TIMING: debounced_down_ms=%u latch_ms=%u debounced_elapsed_ms=%u configured_long_press_ms=%u",
+        (unsigned)state->debounced_down_ms,
+        (unsigned)latch_ms,
+        (unsigned)debounced_elapsed_ms,
+        (unsigned)POWER_BUTTON_LONG_PRESS_MS
+    );
 
     /* The APP_LOOP notification is also zero-wait and intentionally has no
      * queue-full logging in this critical callback. */
@@ -118,17 +143,28 @@ esp_err_t power_button_adapter_init(
 
     s_state.notification_hook = hook;
     s_state.notification_context = user_context;
+    s_state.debounced_down_ms = 0U;
+    s_state.debounced_down_valid = false;
     /* Existing behavior waits for a startup-held button to be released before
      * arming. GPIO21 is already configured by Button with pulls disabled. */
     s_state.armed = gpio_get_level(BOARD_POWER_BUTTON_GPIO) == 0;
 
     err = iot_button_register_cb(
         s_state.button,
-        BUTTON_PRESS_UP,
+        BUTTON_PRESS_DOWN,
         NULL,
         power_button_callback,
         &s_state
     );
+    if (err == ESP_OK) {
+        err = iot_button_register_cb(
+            s_state.button,
+            BUTTON_PRESS_UP,
+            NULL,
+            power_button_callback,
+            &s_state
+        );
+    }
     if (err == ESP_OK) {
         err = iot_button_register_cb(
             s_state.button,
@@ -178,7 +214,8 @@ void power_button_adapter_wait_for_shutdown_request(void)
         portMAX_DELAY
     );
 
-    /* Preserve the old release-confirmation policy without a polling task. */
+    /* The official Button delivers a debounced release event. This is not a
+     * claim that the raw GPIO release-to-latch interval is exactly 50 ms. */
     xEventGroupWaitBits(
         s_state.events,
         POWER_EVENT_BUTTON_RELEASED,
@@ -187,8 +224,7 @@ void power_button_adapter_wait_for_shutdown_request(void)
         portMAX_DELAY
     );
 
-    ESP_LOGI(TAG, "Shutdown button latched and released (%u ms policy)",
-        POWER_BUTTON_RELEASE_CONFIRM_MS);
+    ESP_LOGI(TAG, "Shutdown button latched and released (official Button debounce)");
 }
 
 
@@ -221,5 +257,7 @@ void power_button_adapter_stop(void)
     s_state.notification_hook = NULL;
     s_state.notification_context = NULL;
     s_state.armed = false;
+    s_state.debounced_down_ms = 0U;
+    s_state.debounced_down_valid = false;
     s_state.initialized = false;
 }

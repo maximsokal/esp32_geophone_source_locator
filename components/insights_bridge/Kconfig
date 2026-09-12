@@ -1,0 +1,13 @@
+menu "GeoLocator ESP Insights bridge"
+
+config APP_ESP_INSIGHTS_TEST_AUTH_PROVIDER
+    bool "Use the deterministic test auth provider"
+    depends on APP_ESP_INSIGHTS
+    default n
+    help
+        Build a non-secret auth provider for the opt-in compile/link profile.
+        This value is only a test fixture and must never be used as a
+        production credential.
+
+endmenu
+

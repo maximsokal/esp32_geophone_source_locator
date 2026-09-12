@@ -237,6 +237,13 @@ static void app_startup_initialize_services(void)
         wifi_manager_init()
     );
 
+    const esp_err_t insights_err =
+        insights_bridge_init();
+    if (insights_err != ESP_OK) {
+        ESP_LOGW(TAG, "ESP Insights bridge unavailable: %s",
+            esp_err_to_name(insights_err));
+    }
+
     ESP_ERROR_CHECK(
         ui_init()
     );
@@ -298,12 +305,6 @@ void app_startup_run(void)
 
     if (!runtime_observability_start()) {
         ESP_LOGW(TAG, "Runtime observability unavailable");
-    }
-
-    const esp_err_t insights_err = insights_bridge_init();
-    if (insights_err != ESP_OK) {
-        ESP_LOGW(TAG, "ESP Insights bridge unavailable: %s",
-            esp_err_to_name(insights_err));
     }
 
     app_startup_initialize_core();
