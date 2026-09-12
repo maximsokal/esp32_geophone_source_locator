@@ -239,11 +239,15 @@ esp_err_t seismic_recorder_list_sessions_responsive(
                 continue;
             }
 
-            snprintf(
+            /* parse_session_id() proves this is exactly the canonical
+             * seven-character Sxxxxxx form. Copy the validated length instead
+             * of snprintf("%s") so -Wformat-truncation does not have to infer
+             * the parser's length contract from struct dirent::d_name. */
+            static const size_t canonical_length = sizeof("S000000") - 1U;
+            memcpy(
                 session_ids[id_count],
-                sizeof(session_ids[id_count]),
-                "%s",
-                entry->d_name
+                entry->d_name,
+                canonical_length + 1U
             );
             id_count++;
         }
