@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
     [ValidateSet("All", "Web")]
-    [string]$Suite = "All"
+    [string]$Suite = "All",
+
+    # Keep the historical default for existing local tasks, while allowing a
+    # clean alternate IDF build directory when another generator owns build/.
+    [string]$ProductionBuildDir = "build"
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,7 +93,7 @@ if ($Suite -eq "All") {
     )
     Invoke-SuiteStep -Name "ESP production build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
         "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runIdf,
-        "-Action", "build", "-ProjectPath", ".", "-BuildDir", "build", "-Jobs", "2"
+        "-Action", "build", "-ProjectPath", ".", "-BuildDir", $ProductionBuildDir, "-Jobs", "2"
     )
 
     $results.Add([pscustomobject]@{

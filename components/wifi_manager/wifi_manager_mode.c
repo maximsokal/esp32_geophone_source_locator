@@ -1,6 +1,6 @@
 #include "wifi_manager.h"
 
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "wifi_manager_internal.h"
 #include "wifi_manager_runtime.h"
 #include "wifi_manager_sta.h"
@@ -423,7 +423,7 @@ esp_err_t wifi_manager_connect_saved(void)
         "Switching to saved Wi-Fi STA credentials"
     );
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_WIFI_STA_CONNECTING,
         0
     );

@@ -365,7 +365,7 @@ function Test-RuntimeResponsiveness {
 
     $beforeNowMs = [uint64]$Before.runtime.now_ms
     $afterNowMs = [uint64]$After.runtime.now_ms
-    $taskNames = @("acquisition", "recorder", "ui", "keypad", "power_button")
+    $taskNames = @("acquisition", "recorder", "ui")
     $stalled = [System.Collections.Generic.List[string]]::new()
     $unobserved = [System.Collections.Generic.List[string]]::new()
     $progressStalled = [System.Collections.Generic.List[string]]::new()
@@ -782,7 +782,7 @@ try {
         ([bool]$isReplay) `
         ([bool]$RequireFullPipeline) `
         "Press the keypad while acquisition/recording is active and confirm navigation remains responsive." `
-        "Serial replay cannot prove keypad task responsiveness." `
+        "Serial replay cannot prove physical keypad responsiveness." `
         "ConfirmKeypadResponsive"
     Add-PhysicalObservationCheck $checks `
         "Physical power-button responsiveness" `
@@ -790,7 +790,7 @@ try {
         ([bool]$isReplay) `
         ([bool]$RequireFullPipeline) `
         "Press the power button during acquisition and confirm ordered shutdown completes." `
-        "Serial replay cannot prove power-button task responsiveness." `
+        "Serial replay cannot prove physical power-button responsiveness." `
         "ConfirmPowerButtonResponsive"
 
     if ([string]::IsNullOrWhiteSpace($BaseUrl)) {

@@ -1,7 +1,7 @@
 #include "web_server_internal.h"
 
 #include "app_config.h"
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "wifi_manager.h"
 
 #include "esp_log.h"
@@ -151,7 +151,7 @@ esp_err_t web_wifi_setup_page_open_handler(
         "Setup page opened from wizard URL"
     );
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_WIFI_SETUP_PAGE_OPENED,
         0
     );

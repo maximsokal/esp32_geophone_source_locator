@@ -1,0 +1,9 @@
+# Keep the official Button scan/debounce window aligned with the existing
+# 10 ms Button scans x 6 stable samples (about 60 ms), matching the old
+# 20 ms keypad poll x 3 stable samples.
+CONFIG_BUTTON_PERIOD_TIME_MS=10
+CONFIG_BUTTON_DEBOUNCE_TICKS=6
+
+# The official ADC Button component accepts 1..4 samples per scan. Use its
+# maximum while retaining adc_service as the ADC1 handle owner.
+CONFIG_ADC_BUTTON_SAMPLE_TIMES=4

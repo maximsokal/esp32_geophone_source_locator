@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "app_config.h"
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "wifi_manager.h"
 
 

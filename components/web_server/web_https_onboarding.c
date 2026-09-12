@@ -9,7 +9,7 @@
 #include <string.h>
 
 #include "app_config.h"
-#include "app_event_bus.h"
+#include "app_events.h"
 
 #include "esp_log.h"
 #include "esp_random.h"
@@ -192,7 +192,7 @@ static esp_err_t web_onboarding_ca_page_handler(
             "Root CA installation confirmed by user"
         );
 
-        (void)app_event_bus_publish(
+        (void)app_events_post(
             APP_EVENT_TLS_CA_INSTALL_CONFIRMED,
             0
         );
@@ -269,7 +269,7 @@ static esp_err_t web_onboarding_ca_file_handler(
         (unsigned)length
     );
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_TLS_CA_DOWNLOADED,
         0
     );
@@ -560,7 +560,7 @@ static esp_err_t web_onboarding_verify_report_handler(
         ready ? "yes" : "no"
     );
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_TLS_VERIFY_RESULT,
         (int32_t)mask
     );
@@ -709,7 +709,7 @@ esp_err_t web_https_onboarding_secure_register(
         s_verify_nonce
     );
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_TLS_VERIFY_READY,
         (int32_t)s_verify_nonce
     );

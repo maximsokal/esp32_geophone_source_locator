@@ -31,36 +31,63 @@ def _positions(source: str, needle: str) -> list[int]:
         offset = position + len(needle)
 
 
-def test_ui_heartbeat_follows_event_receive_and_lvgl_dispatch():
-    source = (REPO_ROOT / "components/ui/ui_event_task.c").read_text(encoding="utf-8")
-    task = _function_body(source, "static void ui_event_task_main")
+def test_ui_event_handler_is_nonblocking_and_lvgl_drains_events():
+    source = (REPO_ROOT / "components/ui/ui_event_dispatcher.c").read_text(encoding="utf-8")
+    handler = _function_body(source, "static void ui_event_handler")
 
-    assert "runtime_observability_beat(" not in task
-    observe_positions = _positions(task, "ui_event_observe(")
-    assert len(observe_positions) == 3
-    receive = task.index("app_event_bus_receive_timeout(")
-    unlock = task.rindex("lvgl_port_unlock();")
-    assert all(position > receive for position in observe_positions)
-    assert observe_positions[-1] > unlock
+    assert "runtime_observability_beat(" not in handler
+    assert "ui_event_pending_push(" in handler
+    assert "lvgl_port_task_wake(" in handler
+    assert "lvgl_port_lock(" not in handler
+    assert "vTaskDelay(" not in handler
 
-
-def test_keypad_heartbeat_follows_each_poll_delay():
-    source = (REPO_ROOT / "components/keypad/keypad_event_worker.c").read_text(encoding="utf-8")
-    task = _function_body(source, "void keypad_event_worker")
-
-    beats = _positions(task, "runtime_observability_beat(")
-    delays = _positions(task, "vTaskDelay(")
-    assert len(beats) == len(delays) == 2
-    assert all(beat > delay for beat, delay in zip(beats, delays))
+    dispatcher = _function_body(
+        source,
+        "void ui_event_dispatcher_dispatch_pending_locked"
+    )
+    dispatch = dispatcher.index("ui_dispatch_")
+    observe = dispatcher.index("ui_event_observe();")
+    assert observe > dispatch
 
 
-def test_power_button_heartbeat_follows_poll_delay():
-    source = (REPO_ROOT / "components/power_control/power_button_monitor_task.c").read_text(encoding="utf-8")
-    task = _function_body(source, "void power_button_monitor_worker")
+def test_button_migration_has_no_input_tasks_or_polling_workers():
+    keypad = (REPO_ROOT / "components/keypad/keypad_button_adapter.c").read_text(encoding="utf-8")
+    power = (REPO_ROOT / "components/power_control/power_button_adapter.c").read_text(encoding="utf-8")
 
-    beat = task.index("runtime_observability_beat(")
-    delay = task.index("vTaskDelay(")
-    assert beat > delay
+    assert "iot_button_new_adc_device" in keypad
+    assert "BUTTON_PRESS_DOWN" in keypad
+    assert "xTaskCreate" not in keypad
+    assert "vTaskDelay" not in keypad
+    assert "iot_button_new_gpio_device" in power
+    assert "BUTTON_LONG_PRESS_START" in power
+    assert "xTaskCreate" not in power
+    assert "vTaskDelay" not in power
+
+
+def test_button_contracts_preserve_adc_and_power_safety_boundaries():
+    keypad = (REPO_ROOT / "components/keypad/keypad_button_adapter.c").read_text(encoding="utf-8")
+    power = (REPO_ROOT / "components/power_control/power_button_adapter.c").read_text(encoding="utf-8")
+
+    assert keypad.count("iot_button_new_adc_device") == 1
+    assert keypad.count("button_index = (uint8_t)i") == 1
+    assert ".adc_handle = adc_service_handle()" in keypad
+    assert "ADC_ATTEN_DB_12" in keypad
+    assert all(token in keypad for token in (
+        "KEYPAD_LEFT_MAX_MV",
+        "KEYPAD_UP_MAX_MV",
+        "KEYPAD_DOWN_MAX_MV",
+        "KEYPAD_RIGHT_MAX_MV",
+        "KEYPAD_OK_MAX_MV",
+    ))
+
+    latch = power.index("xEventGroupSetBits(state->events, POWER_EVENT_SHUTDOWN_REQUESTED)")
+    hook = power.index("state->notification_hook(state->notification_context)")
+    notification = power.index("app_events_post_best_effort(")
+    assert latch < hook
+    assert latch < notification
+    assert ".active_level = 1U" in power
+    assert ".disable_pull = true" in power
+    assert "POWER_BUTTON_LONG_PRESS_MS 150U" in power
 
 
 def test_acquisition_heartbeat_follows_read_and_buffer_publication():

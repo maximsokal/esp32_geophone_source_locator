@@ -14,7 +14,9 @@ idf_component_register(
     REQUIRES
         app_config
         runtime_observability
-        app_event_bus
+        app_events
+        status_indicator
+        insights_bridge
         adc_service
         spi_bus
         display
@@ -28,6 +30,7 @@ idf_component_register(
         power_control
         keypad
         device_status
+        sensor_bus
         ina3221_monitor
         seismic_buffer
         seismic_acquisition

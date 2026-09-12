@@ -23,7 +23,7 @@ idf_component_register(
 
     REQUIRES
         app_config
-        app_event_bus
+        app_events
         esp_wifi
         esp_netif
         esp_event

@@ -66,6 +66,12 @@ esp_err_t adc_service_init(void)
 }
 
 
+adc_oneshot_unit_handle_t *adc_service_handle(void)
+{
+    return &g_adc_service_handle;
+}
+
+
 adc_unit_t adc_service_unit(void)
 {
     return ADC_UNIT_1;

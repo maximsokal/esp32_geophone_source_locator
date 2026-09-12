@@ -7,10 +7,11 @@
 #include <stdint.h>
 
 #include "adc_service.h"
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "device_status.h"
 #include "display.h"
 #include "ina3221_monitor.h"
+#include "insights_bridge.h"
 #include "keypad.h"
 #include "measurement_service.h"
 #include "object_recovery.h"
@@ -21,6 +22,7 @@
 #include "seismic_buffer.h"
 #include "seismic_recorder.h"
 #include "spi_bus.h"
+#include "status_indicator.h"
 #include "storage_manager.h"
 #include "storage_service.h"
 #include "ui.h"
@@ -57,7 +59,7 @@ static void app_startup_log_elapsed(
 static void app_startup_initialize_core(void)
 {
     ESP_ERROR_CHECK(
-        app_event_bus_init()
+        app_events_init()
     );
 
     ESP_ERROR_CHECK(
@@ -67,6 +69,16 @@ static void app_startup_initialize_core(void)
     ESP_ERROR_CHECK(
         device_status_init()
     );
+
+    const esp_err_t status_indicator_err =
+        status_indicator_init();
+    if (status_indicator_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Status indicator subscriber unavailable: %s",
+            esp_err_to_name(status_indicator_err)
+        );
+    }
 
     /*
      * INA3221 is useful telemetry, not a boot-critical dependency. The
@@ -226,18 +238,18 @@ static void app_startup_initialize_services(void)
     );
 
     ESP_ERROR_CHECK(
-        wifi_manager_start()
+        ui_init()
     );
-
-    runtime_observability_log_snapshot("after-wifi");
 
     ESP_ERROR_CHECK(
         web_server_start()
     );
 
     ESP_ERROR_CHECK(
-        ui_init()
+        wifi_manager_start()
     );
+
+    runtime_observability_log_snapshot("after-wifi");
 
     ESP_ERROR_CHECK(
         keypad_start_event_monitor(
@@ -288,6 +300,12 @@ void app_startup_run(void)
         ESP_LOGW(TAG, "Runtime observability unavailable");
     }
 
+    const esp_err_t insights_err = insights_bridge_init();
+    if (insights_err != ESP_OK) {
+        ESP_LOGW(TAG, "ESP Insights bridge unavailable: %s",
+            esp_err_to_name(insights_err));
+    }
+
     app_startup_initialize_core();
 
     const uint32_t sd_started_ms =
@@ -321,6 +339,8 @@ void app_startup_run(void)
     app_startup_initialize_services();
 
     app_startup_log_success();
+
+    (void)insights_bridge_publish_runtime();
 
     runtime_observability_log_snapshot("boot");
 

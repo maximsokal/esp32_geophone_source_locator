@@ -22,7 +22,8 @@ def test_sdkconfig_defaults_keep_hybrid_tls_and_enable_runtime_stats():
 
     # sdkconfig.tls.defaults is intentionally the last defaults fragment, so it
     # overrides older generated values still present in sdkconfig.defaults.
-    assert '"sdkconfig.defaults;sdkconfig.storage.defaults;sdkconfig.lvgl.defaults;sdkconfig.tls.defaults"' in cmake
+    assert '"sdkconfig.defaults;sdkconfig.storage.defaults;sdkconfig.lvgl.defaults;sdkconfig.tls.defaults;' in cmake
+    assert "sdkconfig.button.defaults\"" in cmake
 
     assert "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048" in tls_defaults
     assert "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536" in tls_defaults

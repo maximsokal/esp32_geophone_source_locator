@@ -28,8 +28,8 @@
 /*
  * Core 0 application-owned service/UI/storage tasks.
  */
-#define APP_TASK_PRIORITY_UI_EVENT        6
-#define APP_TASK_STACK_UI_EVENT        6144
+#define APP_TASK_PRIORITY_APP_EVENT_LOOP  6
+#define APP_TASK_STACK_APP_EVENT_LOOP  6144
 
 /*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so
@@ -38,12 +38,6 @@
  */
 #define APP_TASK_PRIORITY_LVGL            4
 #define APP_TASK_STACK_LVGL            7168
-
-#define APP_TASK_PRIORITY_POWER_BUTTON    5
-#define APP_TASK_STACK_POWER_BUTTON    3072
-
-#define APP_TASK_PRIORITY_KEYPAD          4
-#define APP_TASK_STACK_KEYPAD          8192
 
 #define APP_TASK_PRIORITY_STORAGE_SERVICE 3
 #define APP_TASK_STACK_STORAGE_SERVICE 8192

@@ -1,100 +1,69 @@
 #include "keypad.h"
 
-#include <stddef.h>
-
 #include <stdbool.h>
 
 #include "esp_log.h"
 
-#include "keypad_internal.h"
+
+static const char *TAG = "KEYPAD";
+static bool s_initialized = false;
 
 
-static const char *TAG =
-    "KEYPAD";
+esp_err_t adc_service_init(void);
 
 
-static bool s_initialized =
-    false;
+/* The adapter owns the vendor Button objects. Keep these declarations local
+ * so the public keypad header remains a small application-facing API. */
+esp_err_t keypad_button_adapter_init(void);
+esp_err_t keypad_button_adapter_start(
+    keypad_event_callback_t callback,
+    void *user_context
+);
+void keypad_button_adapter_stop(void);
+esp_err_t keypad_button_adapter_read_key(keypad_key_t *key);
 
 
 esp_err_t keypad_init(void)
 {
     if (s_initialized) {
-        ESP_LOGW(
-            TAG,
-            "Keypad already initialized"
-        );
-
+        ESP_LOGW(TAG, "Keypad already initialized");
         return ESP_OK;
     }
 
-    esp_err_t err =
-        keypad_adc_init();
-
+    esp_err_t err = adc_service_init();
     if (err != ESP_OK) {
         return err;
     }
 
-    s_initialized =
-        true;
+    err = keypad_button_adapter_init();
+    if (err != ESP_OK) {
+        return err;
+    }
 
+    s_initialized = true;
     return ESP_OK;
 }
 
 
-esp_err_t keypad_read_key(
-    keypad_key_t *key
-)
+esp_err_t keypad_read_key(keypad_key_t *key)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (key == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    int raw =
-        0;
-
-    esp_err_t err =
-        keypad_adc_read_averaged_raw(
-            &raw
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    *key =
-        keypad_decode_raw(
-            raw
-        );
-
-    return ESP_OK;
+    return keypad_button_adapter_read_key(key);
 }
 
 
-const char *keypad_key_name(
-    keypad_key_t key
-)
+const char *keypad_key_name(keypad_key_t key)
 {
     switch (key) {
         case KEYPAD_KEY_LEFT:
             return "LEFT";
-
         case KEYPAD_KEY_UP:
             return "UP";
-
         case KEYPAD_KEY_DOWN:
             return "DOWN";
-
         case KEYPAD_KEY_RIGHT:
             return "RIGHT";
-
         case KEYPAD_KEY_OK:
             return "OK";
-
         case KEYPAD_KEY_NONE:
         default:
             return "NONE";
@@ -111,15 +80,12 @@ esp_err_t keypad_start_event_monitor(
         return ESP_ERR_INVALID_STATE;
     }
 
-    return
-        keypad_event_monitor_start(
-            callback,
-            user_context
-        );
+    return keypad_button_adapter_start(callback, user_context);
 }
 
 
 void keypad_stop_event_monitor(void)
 {
-    keypad_event_monitor_stop();
+    keypad_button_adapter_stop();
+    s_initialized = false;
 }

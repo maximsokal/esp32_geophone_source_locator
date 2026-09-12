@@ -11,6 +11,7 @@
 #include "sd_card.h"
 #include "seismic_acquisition.h"
 #include "seismic_recorder.h"
+#include "sensor_bus.h"
 #include "storage_manager.h"
 #include "storage_service.h"
 #include "ui.h"
@@ -119,6 +120,16 @@ void app_shutdown_wait_and_run(void)
     keypad_stop_event_monitor();
 
     ina3221_monitor_stop();
+
+    const esp_err_t sensor_bus_err =
+        sensor_bus_deinit();
+    if (sensor_bus_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Sensor I2C shutdown failed: %s",
+            esp_err_to_name(sensor_bus_err)
+        );
+    }
 
     /*
      * Stop measurement commands first, then finalize the recorder while the

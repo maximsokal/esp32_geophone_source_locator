@@ -81,10 +81,6 @@ const char *runtime_observability_task_name(
             return "recorder";
         case RUNTIME_TASK_UI:
             return "ui";
-        case RUNTIME_TASK_KEYPAD:
-            return "keypad";
-        case RUNTIME_TASK_POWER_BUTTON:
-            return "power_button";
         case RUNTIME_TASK_COUNT:
         default:
             return "unknown";

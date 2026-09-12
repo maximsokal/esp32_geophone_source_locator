@@ -19,6 +19,10 @@ CONFIG_SOC_LCDCAM_RGB_LCD_SUPPORTED=y
 CONFIG_SOC_MCPWM_SUPPORTED=y
 CONFIG_SOC_DEDICATED_GPIO_SUPPORTED=y
 CONFIG_SOC_CACHE_SUPPORT_WRAP=y
+# The optional remote diagnostics bridge is deliberately disabled in the
+# baseline image; enable it only with a separately measured overhead budget.
+# CONFIG_APP_ESP_INSIGHTS is not set
+# CONFIG_APP_STATUS_INDICATOR_ENABLED is not set
 CONFIG_SOC_ULP_SUPPORTED=y
 CONFIG_SOC_ULP_FSM_SUPPORTED=y
 CONFIG_SOC_RISCV_COPROC_SUPPORTED=y

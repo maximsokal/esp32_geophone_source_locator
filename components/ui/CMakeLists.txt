@@ -2,7 +2,7 @@ idf_component_register(
     SRCS
         "ui.c"
         "ui_lvgl.c"
-        "ui_event_task.c"
+        "ui_event_dispatcher.c"
         "ui_shell.c"
         "ui_screen_registry.c"
         "ui_navigation.c"
@@ -26,7 +26,7 @@ idf_component_register(
         "."
 
     REQUIRES
-        app_event_bus
+        app_events
         app_config
         display
         keypad
@@ -41,6 +41,7 @@ idf_component_register(
         seismic_buffer
         spi_bus
         esp_lcd
+        esp_event
         esp_lvgl_port
         esp_system
         esp_timer

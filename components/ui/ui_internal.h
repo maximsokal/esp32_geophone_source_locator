@@ -270,9 +270,11 @@ void ui_dispatch_app_event_locked(
 );
 
 
-/* Application event worker. */
-esp_err_t ui_event_task_start(void);
-void ui_event_task_stop(void);
+/* Application event subscriber. */
+esp_err_t ui_event_dispatcher_start(void);
+void ui_event_dispatcher_stop(void);
+/* Caller is the LVGL timer task and already holds the LVGL port lock. */
+void ui_event_dispatcher_dispatch_pending_locked(void);
 
 
 /* Async service callbacks. */

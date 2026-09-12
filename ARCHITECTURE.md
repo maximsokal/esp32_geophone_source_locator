@@ -13,7 +13,7 @@ The design target is ESP32-S3 N16R8 on ESP-IDF v5.5.4. The firmware is split int
 ```text
 app_main
   -> app_startup_run
-       -> app_event_bus_init
+       -> app_events_init
        -> power_control_init
        -> device_status_init
        -> ina3221_monitor_start (non-fatal if hardware is absent)
@@ -29,10 +29,10 @@ app_main
        -> object store
        -> object service
        -> storage service
-       -> Wi-Fi manager
-       -> HTTP server
-       -> interactive LVGL UI
-       -> keypad event monitor
+        -> Wi-Fi manager init
+        -> interactive LVGL UI + APP_EVENT subscriber
+        -> HTTP server
+        -> Wi-Fi manager start
        -> selected seismic source start
   -> wait for shutdown request
   -> app_shutdown_run
@@ -47,9 +47,8 @@ The project deliberately separates service work from acquisition work.
 ### Core 0 - services
 
 - LVGL handler task (`esp_lvgl_port`)
-- UI event worker
-- analog keypad monitor
-- power-button monitor
+- ESP-IDF APP_EVENT user-loop task
+- official Button component service for keypad and power-button sampling
 - INA3221 low-rate power monitor
 - object service
 - storage service
@@ -76,10 +75,8 @@ Current policy:
 | AD7606 acquisition | 1 | 7 | 4096 |
 | ESP ADC bench | 1 | 6 | 4096 |
 | Synthetic seismic source | 1 | 4 | 3072 |
-| UI event worker | 0 | 6 | 6144 |
+| APP_EVENT user loop | 0 | 6 | 6144 |
 | LVGL handler | 0 | 4 | 7168 |
-| Power button | 0 | 5 | 3072 |
-| Keypad | 0 | 4 | 8192 |
 | Storage service | 0 | 3 | 8192 |
 | Object service | 0 | 3 | 8192 |
 | Measurement service | 0 | 3 | 4096 |
@@ -99,8 +96,8 @@ Do not introduce new application tasks with ad-hoc priorities. Add them to `app_
 | **GPIO1** | analog input | **Temporary geophone/ADC bench voltage-divider node** | **Still physically present. Reserved; do not reuse for AD7606 or homework wiring while the divider remains connected.** This is the ESP32-S3 ADC bench input (ADC1 channel 0). Exact divider resistor values/topology are not currently encoded anywhere in the repository, so they must be measured/recorded before this temporary divider is dismantled rather than guessed later. |
 | **GPIO2** | output | AD7606 `RESET` | Hardware reset line for the AD7606 module. |
 | **GPIO8** | analog input | Keyestudio KS0466 5-button keypad analog signal output | One ADC line represents all five buttons through the keypad's resistor ladder. |
-| **GPIO9** | bidirectional open-drain | INA3221 `SDA` | Sensor I2C data. INA3221 monitor currently owns/creates this bus. |
-| **GPIO10** | output/open-drain | INA3221 `SCL` | Sensor I2C clock, 100 kHz. |
+| **GPIO9** | bidirectional open-drain | INA3221 `SDA` | Sensor I2C data. `sensor_bus` owns shared I2C0. |
+| **GPIO10** | output/open-drain | INA3221 `SCL` | Sensor I2C clock, 100 kHz; shared-bus owner is `sensor_bus`. |
 | **GPIO11** | output | TFT `SDI/MOSI` **and** microSD module `MOSI` | Shared SPI2 MOSI. Both devices share the bus and use separate CS lines. |
 | **GPIO12** | output | TFT `SCK` **and** microSD module `SCK` | Shared SPI2 clock. |
 | **GPIO13** | input | TFT `SDO/MISO` **and** microSD module `MISO` | Shared SPI2 MISO. |
@@ -109,7 +106,7 @@ Do not introduce new application tasks with ad-hoc priorities. Add them to `app_
 | **GPIO16** | output | TFT `RESET` | ILI9341 hardware reset. |
 | **GPIO17** | output | microSD module `CS` | SD card SPI chip select. |
 | **GPIO18** | output | Power-control module `OFF` control input | Normal level is LOW. After safe shutdown the firmware drives a **200 ms HIGH pulse** to request physical power cut. Do not connect this line to an unrelated peripheral. |
-| **GPIO21** | input | External power-button sense line | Digital input used by the power-button monitor. ESP32 internal pull-up/pull-down is disabled, therefore the external power-control/button circuit must provide a defined logic level. |
+| **GPIO21** | input | External power-button sense line | Official GPIO Button adapter input, active-high. Internal pull-up/pull-down is disabled, therefore the external power-control/button circuit must provide a defined logic level. |
 | **GPIO39** | input | AD7606 `DOUTA/DB7` | Dedicated SPI3 MISO/data output from AD7606. |
 | **GPIO40** | output | AD7606 `RD/SCLK` | Dedicated SPI3 clock. |
 | **GPIO41** | output | AD7606 `CS` **plus external 10 kOhm pull-up to 3.3 V** | `CS` is active LOW. The 10 kOhm resistor keeps the ADC deselected while ESP32 is resetting/booting and GPIO41 is not yet actively driven. Firmware then drives CS HIGH before handing the pin to SPI3. **Do not remove this pull-up when rewiring.** |
@@ -206,7 +203,42 @@ GPIO10 SCL  -> INA3221 SCL
 address       0x40 (A0 tied to GND)
 ```
 
-`ina3221_monitor` owns the current sensor I2C master bus, configured at 100 kHz. INA3221 runs continuous shunt+bus conversion on all three channels with hardware averaging x16 and 1.1 ms conversion time. A low-priority Core 0 task publishes one status update per second. Missing/faulty INA3221 hardware invalidates power telemetry and is retried without rebooting the device.
+`sensor_bus` is the sole application owner of I2C0 and configures the shared bus at 100 kHz through `espressif/i2c_bus`. `ina3221_monitor` borrows the INA3221 device handle at address `0x40`; it never creates or deletes the bus. INA3221 runs continuous shunt+bus conversion on all three channels with hardware averaging x16 and 1.1 ms conversion time. A low-priority Core 0 task publishes one status update per second. Missing/faulty INA3221 hardware invalidates power telemetry and is retried without rebooting the device. The TCA9548A pod topology remains a documented watchlist until its address/channel/electrical contract is measured.
+
+### Application events and input ownership
+
+`components/app_events` owns one ESP-IDF `esp_event` user loop (`APP_EVENT`) with
+queue 24, Core 0 affinity, priority 6 and a 6144-byte stack. It is not the
+default system event loop. Wi-Fi, HTTPS onboarding, Web setup and input
+publishers post the existing `int32_t` event payloads with zero wait ticks.
+
+The five KS0466 ladder buttons are official ADC Button objects borrowing the
+ADC1 handle owned by `adc_service`; their measured ranges remain in
+`keypad_button_adapter.c`. The GPIO21 power button is an official GPIO Button
+object with internal pulls disabled and the existing 150 ms long-press policy.
+The power callback latches the shutdown EventGroup bit before its best-effort
+APP_EVENT notification, so an event-queue-full condition cannot prevent safe
+shutdown. Neither input path creates an application-owned polling task.
+
+UI APP_EVENT delivery is a subscriber plus a bounded pending queue. Its user-loop
+handler only copies event data and wakes the existing LVGL task; LVGL mutation
+and the UI heartbeat happen in the existing LVGL timer callback. It therefore
+does not wait for the LVGL, SD, TLS or Wi-Fi lifecycle locks.
+
+`status_indicator` subscribes to APP_EVENT status decisions only. Green NORMAL,
+yellow WARNING and red ERROR are represented by a priority state machine;
+WARNING and ERROR are sticky until power cycle. The current board has no
+connected LED GPIOs, so the official `led_indicator` backend remains disabled
+and no GPIO is invented. `insights_bridge` is optional and disabled in the
+baseline configuration; when enabled it exports selected runtime health
+metrics only.
+
+`seismic_dsp` is a synchronous, task-free foundation for measured
+DC-removal/detrend, windowing, FIR/IIR band-pass/notch, FFT,
+cross-correlation, normalization and RMS stages. It currently reports
+placeholders and passes input through. Filter frequencies, coefficients and
+localization matrix changes remain prohibited until AD7606 + ZF-24HP data is
+available.
 
 ### SPI2 - display and SD
 
@@ -344,11 +376,12 @@ Storage calls are serialized through `storage_manager` / `storage_service`. SD l
 Safe shutdown order:
 
 ```text
-keypad monitor
-  -> INA3221 monitor / I2C release
+Button adapters / shutdown latch
+  -> INA3221 monitor
+  -> sensor_bus / I2C0 release
   -> measurement service shutdown
   -> recorder stop / drain / finalize (LVGL display guard still alive)
-  -> UI event task / LVGL
+  -> APP_EVENT UI subscriber / LVGL
   -> storage service
   -> object service
   -> seismic acquisition

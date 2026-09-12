@@ -1,46 +1,105 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
+#include "button_gpio.h"
+#include "driver/gpio.h"
 #include "freertos/event_groups.h"
-#include "power_button_input.h"
-#include "power_button_monitor.h"
-#include "power_button_monitor_internal.h"
+#include "app_events.h"
+#include "iot_button.h"
 
-static const bool *fake_levels;
-static size_t fake_level_count;
-static size_t fake_level_index;
-static unsigned fake_delay_calls;
-static bool stop_after_delay;
+
+typedef void (*power_button_shutdown_notification_hook_t)(void *user_context);
+
+esp_err_t power_button_adapter_init(
+    power_button_shutdown_notification_hook_t hook,
+    void *user_context
+);
+esp_err_t power_button_adapter_set_notification_hook(
+    power_button_shutdown_notification_hook_t hook,
+    void *user_context
+);
+void power_button_adapter_wait_for_shutdown_request(void);
+bool power_button_adapter_is_shutdown_requested(void);
+void power_button_adapter_stop(void);
+
+
 static EventBits_t fake_event_bits;
+static int fake_gpio_level;
+static button_event_t fake_event;
+static button_cb_t callbacks[BUTTON_EVENT_MAX];
+static void *callback_contexts[BUTTON_EVENT_MAX];
+static button_gpio_config_t captured_gpio_config;
+static button_config_t captured_button_config;
+static unsigned hook_calls;
+static unsigned hook_bits_at_call;
+static unsigned app_event_posts;
+static esp_err_t fake_best_effort_result;
 
-bool power_button_input_is_high(void)
+
+static void reset_fakes(void)
 {
-    if (fake_levels == NULL || fake_level_count == 0U) {
-        return false;
+    fake_event_bits = 0U;
+    fake_gpio_level = 0;
+    fake_event = BUTTON_NONE_PRESS;
+    for (size_t i = 0; i < BUTTON_EVENT_MAX; ++i) {
+        callbacks[i] = NULL;
+        callback_contexts[i] = NULL;
     }
-
-    const size_t index =
-        fake_level_index < fake_level_count
-            ? fake_level_index
-            : fake_level_count - 1U;
-    fake_level_index++;
-    return fake_levels[index];
+    hook_calls = 0U;
+    hook_bits_at_call = 0U;
+    app_event_posts = 0U;
+    fake_best_effort_result = ESP_OK;
 }
 
-void vTaskDelay(TickType_t ticks)
+
+esp_err_t app_events_post(app_event_type_t type, int32_t value)
 {
-    (void)ticks;
-    fake_delay_calls++;
-    if (stop_after_delay) {
-        power_button_monitor_state()->running = false;
-    }
+    assert(type == APP_EVENT_POWER_SHUTDOWN_REQUESTED);
+    assert(value == 0);
+    app_event_posts++;
+    return ESP_OK;
 }
 
-void vTaskDelete(TaskHandle_t task)
+
+esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value)
 {
-    (void)task;
+    assert(type == APP_EVENT_POWER_SHUTDOWN_REQUESTED);
+    assert(value == 0);
+    app_event_posts++;
+    return fake_best_effort_result;
 }
+
+
+EventGroupHandle_t xEventGroupCreate(void)
+{
+    return &fake_event_bits;
+}
+
+
+void vEventGroupDelete(EventGroupHandle_t event_group)
+{
+    (void)event_group;
+}
+
+
+EventBits_t xEventGroupSetBits(EventGroupHandle_t event_group, EventBits_t bits)
+{
+    (void)event_group;
+    fake_event_bits |= bits;
+    return fake_event_bits;
+}
+
+
+EventBits_t xEventGroupClearBits(EventGroupHandle_t event_group, EventBits_t bits)
+{
+    (void)event_group;
+    const EventBits_t previous = fake_event_bits;
+    fake_event_bits &= ~bits;
+    return previous;
+}
+
 
 EventBits_t xEventGroupWaitBits(
     EventGroupHandle_t event_group,
@@ -57,76 +116,117 @@ EventBits_t xEventGroupWaitBits(
     return fake_event_bits & bits_to_wait_for;
 }
 
+
 EventBits_t xEventGroupGetBits(EventGroupHandle_t event_group)
 {
     (void)event_group;
     return fake_event_bits;
 }
 
-static void set_levels(const bool *levels, size_t count)
+
+int gpio_get_level(gpio_num_t gpio_num)
 {
-    fake_levels = levels;
-    fake_level_count = count;
-    fake_level_index = 0U;
-    fake_delay_calls = 0U;
-    stop_after_delay = false;
+    (void)gpio_num;
+    return fake_gpio_level;
 }
 
-static void test_required_sample_rounding(void)
+
+esp_err_t iot_button_new_gpio_device(
+    const button_config_t *button_config,
+    const void *gpio_config,
+    button_handle_t *ret_button
+)
 {
-    assert(power_button_required_samples(0U) == 1U);
-    assert(power_button_required_samples(1U) == 1U);
-    assert(power_button_required_samples(BUTTON_POLL_MS) == 1U);
-    assert(power_button_required_samples(BUTTON_POLL_MS + 1U) == 2U);
-    assert(power_button_required_samples(BUTTON_PRESS_CONFIRM_MS) == 15U);
+    captured_button_config = *button_config;
+    captured_gpio_config = *(const button_gpio_config_t *)gpio_config;
+    *ret_button = &captured_gpio_config;
+    return ESP_OK;
 }
 
-static void test_wait_requires_consecutive_matching_samples(void)
-{
-    const bool released[] = {false, false, false};
-    set_levels(released, sizeof(released) / sizeof(released[0]));
-    power_button_monitor_state()->running = true;
-    assert(power_button_wait_for_level(false, 30U, true));
-    assert(fake_delay_calls == 3U);
 
-    const bool noisy_release[] = {true, false, false, false};
-    set_levels(noisy_release, sizeof(noisy_release) / sizeof(noisy_release[0]));
-    power_button_monitor_state()->running = true;
-    assert(power_button_wait_for_level(false, 30U, true));
-    assert(fake_delay_calls == 4U);
+esp_err_t iot_button_register_cb(
+    button_handle_t button,
+    button_event_t event,
+    void *event_args,
+    button_cb_t callback,
+    void *user_data
+)
+{
+    (void)button;
+    (void)event_args;
+    callbacks[event] = callback;
+    callback_contexts[event] = user_data;
+    return ESP_OK;
 }
 
-static void test_wait_honours_stop_sensitive_exit(void)
+
+button_event_t iot_button_get_event(button_handle_t button)
 {
-    const bool held[] = {true, true, true, true};
-    set_levels(held, sizeof(held) / sizeof(held[0]));
-    power_button_monitor_state()->running = true;
-    stop_after_delay = true;
-    assert(!power_button_wait_for_level(false, 30U, true));
-    assert(fake_delay_calls == 1U);
+    (void)button;
+    return fake_event;
 }
 
-static void test_shutdown_latch_state(void)
-{
-    power_button_monitor_state_t *state = power_button_monitor_state();
-    state->initialized = false;
-    state->events = NULL;
-    fake_event_bits = POWER_EVENT_SHUTDOWN_REQUESTED;
-    assert(!power_button_monitor_is_shutdown_requested());
 
-    state->initialized = true;
-    state->events = (EventGroupHandle_t)&fake_event_bits;
-    fake_event_bits = 0U;
-    assert(!power_button_monitor_is_shutdown_requested());
-    fake_event_bits = POWER_EVENT_SHUTDOWN_REQUESTED;
-    assert(power_button_monitor_is_shutdown_requested());
+esp_err_t iot_button_delete(button_handle_t button)
+{
+    (void)button;
+    return ESP_OK;
 }
+
+
+static void invoke(button_event_t event)
+{
+    assert(callbacks[event] != NULL);
+    fake_event = event;
+    callbacks[event](&captured_gpio_config, callback_contexts[event]);
+}
+
+
+static void notification_hook(void *user_context)
+{
+    (void)user_context;
+    hook_calls++;
+    hook_bits_at_call = fake_event_bits;
+}
+
+
+static void test_startup_held_and_long_press_policy(void)
+{
+    reset_fakes();
+    fake_gpio_level = 1;
+    assert(power_button_adapter_init(notification_hook, NULL) == ESP_OK);
+    assert(captured_gpio_config.gpio_num == 21);
+    assert(captured_gpio_config.active_level == 1U);
+    assert(captured_gpio_config.disable_pull);
+    assert(captured_button_config.long_press_time == 150U);
+
+    /* Startup-held input is ignored until its release arms the object. */
+    invoke(BUTTON_LONG_PRESS_START);
+    assert(!power_button_adapter_is_shutdown_requested());
+    assert(hook_calls == 0U);
+
+    fake_gpio_level = 0;
+    invoke(BUTTON_PRESS_UP);
+    fake_gpio_level = 1;
+    /* A full APP_LOOP queue must not prevent the authoritative latch or the
+     * optional notification hook from completing the shutdown path. */
+    fake_best_effort_result = ESP_ERR_TIMEOUT;
+    invoke(BUTTON_LONG_PRESS_START);
+    assert(power_button_adapter_is_shutdown_requested());
+    assert(hook_calls == 1U);
+    assert((hook_bits_at_call & 1U) != 0U);
+    assert(app_event_posts == 1U);
+
+    /* The adapter waits on Button's debounced release event, not a task. */
+    invoke(BUTTON_PRESS_UP);
+    power_button_adapter_wait_for_shutdown_request();
+    power_button_adapter_stop();
+}
+
 
 int main(void)
 {
-    test_required_sample_rounding();
-    test_wait_requires_consecutive_matching_samples();
-    test_wait_honours_stop_sensitive_exit();
-    test_shutdown_latch_state();
+    test_startup_held_and_long_press_policy();
+    puts("power button tests passed");
     return 0;
 }

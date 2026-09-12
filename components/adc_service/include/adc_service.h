@@ -9,6 +9,11 @@
 
 esp_err_t adc_service_init(void);
 
+/* The shared ADC1 handle is owned by adc_service. Consumers such as the
+ * Espressif Button ADC driver may borrow it but must not create or delete it.
+ */
+adc_oneshot_unit_handle_t *adc_service_handle(void);
+
 adc_unit_t adc_service_unit(void);
 
 esp_err_t adc_service_configure_gpio(
