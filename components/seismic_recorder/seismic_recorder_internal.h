@@ -14,6 +14,7 @@
 #define SEISMIC_RECORDER_PATH_SIZE            256
 #define SEISMIC_RECORDER_BATCH_FRAMES         512U
 #define SEISMIC_RECORDER_WRITE_STAGING_FRAMES 256U
+#define SEISMIC_RECORDER_READ_STAGING_FRAMES  1024U
 /*
  * Accumulate roughly half a second of samples before opening an SD
  * arbitration window.  The recorder buffer lives in PSRAM (see
@@ -25,6 +26,13 @@
  * cannot block the TFT for the entire recorder batch. STOP still bypasses
  * this threshold to drain its exact target without adding user-visible
  * latency.
+ *
+ * Historical waveform reads use a separate PSRAM staging buffer.  The public
+ * reader re-opens/seeks/reads/closes samples.bin inside one bounded storage
+ * window per staging chunk, then performs min/max reduction after the SPI2
+ * lock is released.  This avoids holding TFT quiesce across an arbitrarily
+ * large requested history range while CONFIG_FATFS_FS_LOCK=0 remains safe:
+ * no FILE handle survives outside its storage arbitration window.
  */
 #define SEISMIC_RECORDER_FLUSH_INTERVAL_US    30000000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
@@ -44,11 +52,35 @@ typedef struct
 } seismic_recorder_binary_header_t;
 
 
+typedef esp_err_t (*seismic_recorder_waveform_read_at_fn)(
+    void *context,
+    uint64_t offset_bytes,
+    void *buffer,
+    size_t size_bytes
+);
+
+
 esp_err_t seismic_recorder_fs_build_session_path(
     const char *object_id,
     const char *session_id,
     char *path,
     size_t path_size
+);
+
+
+esp_err_t seismic_recorder_waveform_read_source(
+    seismic_recorder_waveform_read_at_fn read_at,
+    void *read_context,
+    uint64_t file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t max_points,
+    seismic_frame_t *staging,
+    size_t staging_capacity,
+    seismic_recorder_waveform_point_t *points,
+    size_t point_capacity,
+    seismic_recorder_waveform_info_t *info
 );
 
 
