@@ -36,35 +36,8 @@ jobs:
       - name: XR tests
         working-directory: webui
         run: npm run test:xr
-      - name: Host hardware/status and measurement tests
-        run: |
-          set -euo pipefail
-          cc -std=c11 -Wall -Wextra -Werror \
-            -Icomponents/ad7606_driver \
-            components/ad7606_driver/ad7606_presence_policy.c \
-            components/ad7606_driver/tests/ad7606_presence_policy_test.c \
-            -o /tmp/ad7606_presence_policy_test
-          /tmp/ad7606_presence_policy_test
-          cc -std=c11 -Wall -Wextra -Werror \
-            -Icomponents/ina3221_monitor \
-            components/ina3221_monitor/ina3221_policy.c \
-            components/ina3221_monitor/tests/ina3221_policy_test.c \
-            -o /tmp/ina3221_policy_test
-          /tmp/ina3221_policy_test
-          cc -std=c11 -Wall -Wextra -Werror \
-            -Icomponents/web_server \
-            components/web_server/web_status_policy.c \
-            components/web_server/tests/web_status_policy_test.c \
-            -o /tmp/web_status_policy_test
-          /tmp/web_status_policy_test
-          cc -std=c11 -Wall -Wextra -Werror \
-            -Icomponents/ui \
-            -Icomponents/ui/tests/stubs \
-            -Icomponents/seismic_buffer/include \
-            components/ui/ui_measurement_trace.c \
-            components/ui/tests/ui_measurement_trace_test.c \
-            -o /tmp/ui_measurement_trace_test
-          /tmp/ui_measurement_trace_test
+      - name: Native host contracts
+        run: python3 tools/run_host_tests.py --keep-going
       - name: Production build and ESP asset preparation
         working-directory: webui
         run: npm run build
