@@ -4,11 +4,13 @@
 #include <stdint.h>
 
 #include "app_events.h"
+#include "ui_event_policy.h"
 
 #include "runtime_observability.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 
@@ -30,10 +32,14 @@ static bool s_registered =
 static uint64_t s_handled_events =
     0U;
 
+static uint64_t s_dropped_stale_keypad =
+    0U;
+
 typedef struct
 {
     int32_t event_id;
     int32_t event_value;
+    int64_t queued_us;
 
 } ui_pending_event_t;
 
@@ -51,12 +57,15 @@ static bool ui_event_pending_push(
 )
 {
     bool accepted = false;
+    const int64_t queued_us =
+        esp_timer_get_time();
 
     portENTER_CRITICAL(&s_pending_lock);
     if (s_running && s_pending_count < UI_EVENT_PENDING_CAPACITY) {
         s_pending_events[s_pending_tail] = (ui_pending_event_t) {
             .event_id = event_id,
             .event_value = event_value,
+            .queued_us = queued_us,
         };
         s_pending_tail = (s_pending_tail + 1U) % UI_EVENT_PENDING_CAPACITY;
         s_pending_count++;
@@ -129,15 +138,45 @@ void ui_event_dispatcher_dispatch_pending_locked(void)
             break;
         }
 
+        bool dispatched = true;
         if (event.event_id == APP_EVENT_KEYPAD) {
-            ui_dispatch_key_locked((keypad_key_t)event.event_value);
-        } else {
+            const int64_t now_us =
+                esp_timer_get_time();
+
+            if (ui_event_keypad_is_stale(event.queued_us, now_us)) {
+                dispatched = false;
+                s_dropped_stale_keypad++;
+
+                if (
+                    s_dropped_stale_keypad == 1U ||
+                    (s_dropped_stale_keypad % 8U) == 0U
+                ) {
+                    const int64_t age_us =
+                        now_us >= event.queued_us
+                            ? now_us - event.queued_us
+                            : 0;
+                    ESP_LOGW(
+                        TAG,
+                        "Dropped stale keypad navigation age_ms=%lld total=%llu",
+                        (long long)(age_us / 1000LL),
+                        (unsigned long long)s_dropped_stale_keypad
+                    );
+                }
+            }
+            else {
+                ui_dispatch_key_locked((keypad_key_t)event.event_value);
+            }
+        }
+        else {
             ui_dispatch_app_event_locked(
                 event.event_id,
                 event.event_value
             );
         }
 
+        /* Consuming a stale input still proves that the UI dispatcher made
+         * progress; it simply must not mutate navigation after a long stall. */
+        (void)dispatched;
         s_handled_events++;
         ui_event_observe();
     }
@@ -160,6 +199,8 @@ esp_err_t ui_event_dispatcher_start(void)
     s_running =
         true;
     s_handled_events =
+        0U;
+    s_dropped_stale_keypad =
         0U;
 
     portENTER_CRITICAL(&s_pending_lock);
