@@ -2,8 +2,9 @@
 
 These checks are intentionally structural. The physical HIL test remains the
 source of latency numbers, but a future refactor must not accidentally put a
-socket wait back inside a storage/TFT quiesce window, starve the recorder, or
-steal esp_lvgl_port's LCD completion callback again.
+socket wait or an arbitrarily long waveform reduction back inside a storage/TFT
+quiesce window, starve the recorder, or steal esp_lvgl_port's LCD completion
+callback again.
 """
 
 from pathlib import Path
@@ -100,6 +101,38 @@ def test_web_status_uses_cooperative_storage_snapshots() -> None:
     recorder_cmake = _read("components/seismic_recorder/CMakeLists.txt")
     assert '"object_store_responsive.c"' in object_cmake
     assert '"seismic_recorder_list_responsive.c"' in recorder_cmake
+
+
+def test_saved_waveform_reduction_never_holds_spi2_for_the_whole_range() -> None:
+    reader_source = _read("components/seismic_recorder/seismic_recorder_reader.c")
+    internal = _read("components/seismic_recorder/seismic_recorder_internal.h")
+    waveform = _read("components/seismic_recorder/seismic_recorder_waveform.c")
+
+    public_read = _function_body(reader_source, "seismic_recorder_read_session")
+    assert "seismic_recorder_waveform_read_source" in public_read
+    assert "heap_caps_malloc" in public_read
+    assert "SEISMIC_RECORDER_READ_STAGING_FRAMES" in public_read
+    assert "storage_manager_operation_begin" not in public_read
+
+    bounded_read = _function_body(reader_source, "seismic_recorder_reader_read_at")
+    lock = bounded_read.index("storage_manager_operation_begin")
+    open_file = bounded_read.index("fopen")
+    seek = bounded_read.index("fseek")
+    read = bounded_read.index("fread")
+    close = bounded_read.index("fclose")
+    unlock = bounded_read.index("storage_manager_operation_end")
+    assert lock < open_file < seek < read < close < unlock
+
+    # No FILE handle is retained between windows while FATFS_FS_LOCK=0. The
+    # generic reducer receives one PSRAM chunk at a time after read_at returns.
+    assert "FILE *file" not in public_read
+    assert "SEISMIC_RECORDER_READ_STAGING_FRAMES  1024U" in internal
+
+    reducer = _function_body(waveform, "seismic_recorder_waveform_read_source")
+    assert "while (processed < frame_count)" in reducer
+    assert "read_at(" in reducer
+    assert "staging[chunk_index]" in reducer
+    assert "storage_manager_operation_begin" not in reducer
 
 
 def test_lvgl_port_keeps_lcd_completion_callback_ownership() -> None:
