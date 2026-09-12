@@ -12,6 +12,14 @@ if(GEOLOCATOR_INSIGHTS_PROFILE OR "$ENV{GEOLOCATOR_INSIGHTS_PROFILE}" STREQUAL "
     list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.insights.defaults")
 endif()
 
+if(GEOLOCATOR_KEYPAD_TIMING_PROFILE OR "$ENV{GEOLOCATOR_KEYPAD_TIMING_PROFILE}" STREQUAL "1")
+    list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.keypad-timing.defaults")
+endif()
+
+if(GEOLOCATOR_ADC_BENCH_PROFILE OR "$ENV{GEOLOCATOR_ADC_BENCH_PROFILE}" STREQUAL "1")
+    list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.adc-bench.defaults")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 project(esp32_geophone_source_locator)

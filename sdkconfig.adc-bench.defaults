@@ -1,0 +1,6 @@
+# Dedicated keypad timing HIL source profile. Use a separate build directory
+# from the AD7606 image so the selected Kconfig choice is never ambiguous.
+# CONFIG_SEISMIC_SOURCE_TEST is not set
+CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH=y
+# CONFIG_SEISMIC_SOURCE_AD7606 is not set
+CONFIG_SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ=500

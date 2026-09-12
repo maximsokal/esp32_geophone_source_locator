@@ -73,6 +73,19 @@ config UI_MEASUREMENTS_GRAPHS_ENABLED
 
 endmenu
 
+menu "HIL timing diagnostics"
+
+config APP_KEYPAD_TIMING_DIAGNOSTICS
+    bool "Measure keypad ADC and ESP_TIMER_TASK timing"
+    default n
+    help
+        Enable only for the dedicated keypad timing HIL profile. The profile
+        adds a bounded ADC duration histogram and a 10 ms ESP_TIMER_TASK
+        dispatch-lateness probe. It is not enabled in the production
+        defaults because the probe and its logging change the measured load.
+
+endmenu
+
 menu "WebUI delivery"
 
 config WEB_SERVER_WEBUI_PSRAM_CACHE

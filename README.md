@@ -303,6 +303,12 @@ For repeatable local verification, use the tasks in `.vscode/tasks.json`:
 * `ESP: Flash production (COM4)` and `ESP: Monitor logs (COM6)` remain separate
   tasks for production firmware, each with its matching live-port preflight.
 
+For the keypad ADC/timer-task watchlist, use the dedicated opt-in procedure in
+[docs/keypad-adc-timing-hil.md](docs/keypad-adc-timing-hil.md). It measures
+broker snapshot `min/avg/p95/max` and shared `ESP_TIMER_TASK` dispatch lateness
+for separate AD7606 and ESP ADC bench 500 Hz windows; it does not change the
+production defaults.
+
 The host contracts cover the AD7606 DMA configuration; the production HIL
 runner reports AD7606 startup, configured-rate frame cadence, recorder/session
 metadata, exact seismic channel IDs and bounded timestamp jitter,

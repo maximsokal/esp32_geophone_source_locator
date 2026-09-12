@@ -138,3 +138,45 @@ button timing acceptance contract.
   state shared with a worker must use an explicit synchronization primitive;
   source contracts should assert both the non-blocking call path and the
   publication mechanism.
+
+## Additional keypad timing watchlist instrumentation
+
+### Evidence
+
+- The remaining concern was load-sensitive rather than an ownership race:
+  `ESP_TIMER_TASK` performs the broker-owned discard plus useful keypad ADC
+  conversions, and no measured board duration or timer jitter was available.
+- Added an opt-in target profile with bounded one-second ADC and same-task
+  timer-lateness histograms. The runner validates source markers, minimum
+  windows/snapshots, malformed percentile data, and refuses to treat a log
+  replay as proof of physical key activity.
+- Both isolated target profiles compiled: AD7606 image `0x1fe6a0`, ESP ADC
+  bench-at-500-Hz image `0x1fc8a0`. The final local suite passed Host C 38/38,
+  Python 80 plus 1 skip, web 38/38 and 582/582, typecheck, Unity, and
+  production build; the focused timing contract passed 6/6 after a runner
+  parameter test correction.
+
+### Root cause
+
+- Static code review could establish bounded nonblocking ownership but could
+  not establish the real ESP32 polling-conversion duration or the shared
+  timer-task scheduling effect. A production-enabled probe would itself alter
+  that load, so the measurement must remain an isolated HIL profile.
+
+### Recurrence count
+
+- One confirmed watchlist item in this task. This supports a repository-local
+  measurement contract, not a generalized optimization rule.
+
+### Proposed minimal rule
+
+- For embedded timer/load watchlists, add only opt-in instrumentation with
+  bounded accounting, explicit parser/replay contracts, separate backend
+  profiles, and no guessed threshold. Keep `COMPILES`, `HIL TESTED`, and
+  `PHYSICALLY VERIFIED` separate; do not claim board numbers until live serial
+  evidence exists.
+
+### Affected task
+
+ESP32 geophone keypad ADC1 ownership/timer-safety follow-up; physical timing
+remains pending because COM4/COM6 are not live.
