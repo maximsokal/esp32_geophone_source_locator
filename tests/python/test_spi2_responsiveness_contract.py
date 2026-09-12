@@ -42,6 +42,8 @@ def test_scan_socket_waits_are_outside_storage_windows() -> None:
     assert "httpd_req_recv" in save
     assert "web_scan_write_chunk" in save
     assert "storage_manager_operation_begin" not in save
+    assert "web_scan_priority_enter" in save
+    assert "web_scan_priority_leave" in save
 
     write_chunk = _function_body(source, "web_scan_write_chunk")
     assert write_chunk.index("storage_manager_operation_begin") < write_chunk.index("fwrite")
@@ -52,10 +54,16 @@ def test_scan_socket_waits_are_outside_storage_windows() -> None:
     assert "httpd_resp_send_chunk" in load
     assert "storage_manager_operation_begin" not in load
     assert load.index("web_scan_read_chunk") < load.index("httpd_resp_send_chunk")
+    assert "web_scan_priority_enter" in load
+    assert "web_scan_priority_leave" in load
 
     read_chunk = _function_body(source, "web_scan_read_chunk")
     assert read_chunk.index("storage_manager_operation_begin") < read_chunk.index("fread")
     assert read_chunk.index("fread") < read_chunk.index("storage_manager_operation_end")
+
+    priority = _function_body(source, "web_scan_priority_enter")
+    assert "APP_TASK_PRIORITY_STORAGE_SERVICE" in priority
+    assert "vTaskPrioritySet" in priority
 
 
 def test_web_status_uses_cooperative_storage_snapshots() -> None:
