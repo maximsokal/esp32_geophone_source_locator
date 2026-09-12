@@ -116,7 +116,8 @@ static void web_server_mode_transition_complete(
     void *context,
     bool running,
     bool setup_mode,
-    esp_err_t transition_result
+    esp_err_t transition_result,
+    esp_err_t cleanup_result
 );
 
 
@@ -178,6 +179,41 @@ static esp_err_t web_server_lifecycle_reconcile_failed_transition_locked(void)
 }
 
 
+static esp_err_t web_server_lifecycle_set_desired_state_locked(
+    web_lifecycle_state_t desired_state
+)
+{
+    const bool ready =
+        s_lifecycle_queue != NULL &&
+        s_lifecycle_task != NULL;
+    if (!ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_lifecycle_stop_requested) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_lifecycle_transition_active) {
+        s_lifecycle_deferred_state = desired_state;
+        s_lifecycle_deferred_state_valid = true;
+        return ESP_OK;
+    }
+
+    if (s_lifecycle_quiesce_pending) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const BaseType_t result =
+        xQueueOverwrite(s_lifecycle_queue, &desired_state);
+
+    if (result == pdTRUE) {
+        s_lifecycle_stable_state = desired_state;
+    }
+
+    return result == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+
 static esp_err_t web_server_lifecycle_set_desired_state(
     web_lifecycle_state_t desired_state
 )
@@ -189,40 +225,31 @@ static esp_err_t web_server_lifecycle_set_desired_state(
         return ESP_ERR_TIMEOUT;
     }
 
-    const bool ready =
-        s_lifecycle_queue != NULL &&
-        s_lifecycle_task != NULL;
-    if (!ready) {
-        (void)xSemaphoreGive(s_lifecycle_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (s_lifecycle_stop_requested) {
-        (void)xSemaphoreGive(s_lifecycle_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (s_lifecycle_transition_active) {
-        s_lifecycle_deferred_state = desired_state;
-        s_lifecycle_deferred_state_valid = true;
-        (void)xSemaphoreGive(s_lifecycle_lock);
-        return ESP_OK;
-    }
-
-    if (s_lifecycle_quiesce_pending) {
-        (void)xSemaphoreGive(s_lifecycle_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const BaseType_t result =
-        xQueueOverwrite(s_lifecycle_queue, &desired_state);
-
-    if (result == pdTRUE) {
-        s_lifecycle_stable_state = desired_state;
-    }
-
+    const esp_err_t err =
+        web_server_lifecycle_set_desired_state_locked(desired_state);
     (void)xSemaphoreGive(s_lifecycle_lock);
+    return err;
+}
 
-    return result == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+
+static esp_err_t web_server_lifecycle_set_authoritative_state(
+    web_lifecycle_state_t desired_state
+)
+{
+    /* Mode completion runs in a normal task after the radio transaction. Do
+     * not drop this final state merely because the lifecycle worker briefly
+     * owns the mutex. */
+    if (
+        s_lifecycle_lock == NULL ||
+        xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) != pdTRUE
+    ) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    const esp_err_t err =
+        web_server_lifecycle_set_desired_state_locked(desired_state);
+    (void)xSemaphoreGive(s_lifecycle_lock);
+    return err;
 }
 
 
@@ -230,29 +257,41 @@ static void web_server_mode_transition_complete(
     void *context,
     bool running,
     bool setup_mode,
-    esp_err_t transition_result
+    esp_err_t transition_result,
+    esp_err_t cleanup_result
 )
 {
     (void)context;
 
     web_lifecycle_state_t desired_state =
         WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
-    if (running && setup_mode) {
+    if (cleanup_result == ESP_OK && running && setup_mode) {
         desired_state = WEB_LIFECYCLE_STATE_SETUP_AP;
     }
-    else if (running) {
+    else if (cleanup_result == ESP_OK && running) {
         char sta_ip[16];
         if (wifi_manager_sta_ip_string(sta_ip, sizeof(sta_ip)) == ESP_OK) {
             desired_state = WEB_LIFECYCLE_STATE_STA_CONNECTED;
         }
     }
+
+    if (cleanup_result != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi mode transition left radio state uncertain: target=%s cleanup=%s",
+            esp_err_to_name(transition_result),
+            esp_err_to_name(cleanup_result)
+        );
+    }
+
     const esp_err_t err =
-        web_server_lifecycle_set_desired_state(desired_state);
+        web_server_lifecycle_set_authoritative_state(desired_state);
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "Failed to reconcile web lifecycle after Wi-Fi mode transition result=%s: %s",
+            "Failed to reconcile web lifecycle after Wi-Fi mode transition target=%s cleanup=%s: %s",
             esp_err_to_name(transition_result),
+            esp_err_to_name(cleanup_result),
             esp_err_to_name(err)
         );
     }
@@ -985,7 +1024,10 @@ static void web_server_network_event_handler(
     (void)event_data;
 
     web_lifecycle_state_t desired_state;
-    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    if (wifi_manager_is_radio_state_uncertain()) {
+        desired_state = WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
+    }
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         desired_state = WEB_LIFECYCLE_STATE_STA_CONNECTED;
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {

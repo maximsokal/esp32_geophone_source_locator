@@ -400,6 +400,12 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_set_radio_stop_lifecycle_callbacks" in web_server
     assert "web_server_mode_transition_complete" in web_server
     assert "wifi_manager_set_mode_transition_complete_callback" in web_server
+    assert "web_server_lifecycle_set_authoritative_state" in web_server
+    assert "xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY)" in web_server
+    assert "wifi_manager_is_radio_state_uncertain()" in web_server
+    assert "cleanup_result != ESP_OK" in web_server
+    assert "radio state uncertain" in web_server
+    assert "web_server_lifecycle_set_authoritative_state(desired_state)" in web_server
     assert "running && setup_mode" in web_server
     assert "wifi_manager_sta_ip_string" in web_server
     assert "s_lifecycle_quiesce_pending" in web_server
@@ -445,7 +451,11 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_set_radio_stop_lifecycle_callbacks" in wifi_mode
     assert "wifi_manager_set_mode_transition_complete_callback" in wifi_mode
     assert "wifi_manager_abort_mode_transition" in wifi_mode
+    assert "wifi_manager_recover_uncertain_radio_state" in wifi_mode
+    assert "wifi_manager_internal_set_radio_state_uncertain" in wifi_mode
+    assert "wifi_manager_internal_radio_state_uncertain" in wifi_mode
     assert "wifi_manager_notify_mode_transition_complete" in wifi_mode
+    assert "cleanup_result" in wifi_mode
     assert "wifi_manager_radio_stop_complete_callback_t" in wifi_mode
     assert "s_radio_stop_lifecycle_in_flight" in wifi_mode
     assert "const esp_err_t radio_stop_result" in wifi_mode
@@ -471,6 +481,8 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_mdns_init(void)" in wifi_header
     assert "wifi_manager_mdns_stop(void)" in wifi_header
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header
+    assert "wifi_manager_is_radio_state_uncertain(void)" in wifi_header
+    assert "esp_err_t cleanup_result" in wifi_header
     assert "APP_TASK_STACK_WEB_LIFECYCLE 8192" in task_config
 
     lifecycle_policy = read("components/web_server/web_server_lifecycle_policy.c")

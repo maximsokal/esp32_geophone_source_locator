@@ -16,6 +16,8 @@ bool wifi_manager_is_running(void);
 
 bool wifi_manager_is_setup_mode(void);
 
+bool wifi_manager_is_radio_state_uncertain(void);
+
 
 typedef esp_err_t (*wifi_manager_radio_stop_prepare_callback_t)(void *context);
 typedef void (*wifi_manager_radio_stop_complete_callback_t)(
@@ -27,7 +29,8 @@ typedef void (*wifi_manager_mode_transition_complete_callback_t)(
     void *context,
     bool running,
     bool setup_mode,
-    esp_err_t transition_result
+    esp_err_t transition_result,
+    esp_err_t cleanup_result
 );
 
 /*
@@ -53,7 +56,10 @@ esp_err_t wifi_manager_set_radio_stop_prepare_callback(
  * Register the final-state notification for a complete mode transition.
  * The callback runs after the target mode has either committed or failed and
  * receives the manager's final running/setup state. A failed target start is
- * reported with a stopped/disconnected state.
+ * reported with a stopped/disconnected state. cleanup_result is ESP_OK when
+ * the target cleanup succeeded (including WIFI_NOT_STARTED); a non-OK value
+ * means that the radio state is uncertain and must not be treated as a clean
+ * stopped state.
  */
 esp_err_t wifi_manager_set_mode_transition_complete_callback(
     wifi_manager_mode_transition_complete_callback_t callback,
