@@ -61,10 +61,12 @@
 
 /*
  * Recorder drains the lock-free seismic ring in bounded batches and performs
- * SD writes on the service core. It deliberately runs below UI/object/storage
- * service priority and never executes on the real-time acquisition core.
+ * SD writes on the service core. Keep it below LVGL, but at the same priority
+ * as other storage services: a continuously-ready bulk HTTP/SD producer must
+ * not outrank the only consumer that protects the finite seismic ring from
+ * overflow. Shared SPI2 access is still serialized by storage_manager.
  */
-#define APP_TASK_PRIORITY_SEISMIC_RECORDER 2
+#define APP_TASK_PRIORITY_SEISMIC_RECORDER 3
 #define APP_TASK_STACK_SEISMIC_RECORDER  4096
 
 /*
