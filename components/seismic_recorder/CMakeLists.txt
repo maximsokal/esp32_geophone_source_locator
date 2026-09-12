@@ -7,6 +7,7 @@ idf_component_register(
         "seismic_recorder_json.c"
         "seismic_recorder_reader.c"
         "seismic_recorder_waveform.c"
+        "seismic_recorder_list_responsive.c"
 
     INCLUDE_DIRS
         "include"
