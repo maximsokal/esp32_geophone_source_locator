@@ -128,6 +128,7 @@ $stderrFile = $null
 $isReplay = -not [string]::IsNullOrWhiteSpace($LogPath)
 $telemetry = $null
 $backend = $null
+$physicalActivityConfirmed = $false
 
 try {
     $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -275,6 +276,7 @@ try {
         Add-Check $checks "Frequent physical keypad activity" "BLOCKED" `
             "-ConfirmFrequentKeypadActivity cannot be used with -LogPath: a captured log cannot prove physical key presses."
     } elseif ($ConfirmFrequentKeypadActivity) {
+        $physicalActivityConfirmed = $true
         Add-Check $checks "Frequent physical keypad activity" "PASS" `
             "Manual HIL attestation supplied: keypad was pressed frequently during the timing window."
     } elseif ($RequireFrequentKeypadActivity) {
@@ -293,11 +295,41 @@ try {
     }
 }
 
-$failed = @($checks | Where-Object { $_.Status -eq "FAIL" })
-$blocked = @($checks | Where-Object { $_.Status -eq "BLOCKED" })
-$result = if ($failed.Count -gt 0) {
+$telemetryCheckNames = @(
+    "Selected acquisition backend",
+    "Keypad ADC snapshot timing",
+    "ESP_TIMER_TASK dispatch timing"
+)
+$telemetryChecks = @($checks | Where-Object { $_.Name -in $telemetryCheckNames })
+$telemetryFailed = @($telemetryChecks | Where-Object { $_.Status -eq "FAIL" })
+$telemetryBlocked = @($telemetryChecks | Where-Object { $_.Status -eq "BLOCKED" })
+$telemetryResult = if ($telemetryChecks.Count -eq 0) {
+    "BLOCKED"
+} elseif ($telemetryFailed.Count -gt 0) {
     "FAIL"
-} elseif ($blocked.Count -gt 0) {
+} elseif ($telemetryBlocked.Count -gt 0) {
+    "BLOCKED"
+} else {
+    "PASS"
+}
+
+$physicalCheck = @($checks | Where-Object { $_.Name -eq "Frequent physical keypad activity" })
+$physicalFailed = @($physicalCheck | Where-Object { $_.Status -eq "FAIL" })
+$physicalBlocked = @($physicalCheck | Where-Object { $_.Status -eq "BLOCKED" })
+$physicalCondition = if ($physicalActivityConfirmed) {
+    "CONFIRMED"
+} elseif ($isReplay -or $RequireFrequentKeypadActivity) {
+    "NOT_CONFIRMED"
+} else {
+    "NOT_REQUIRED"
+}
+
+$otherChecks = @($checks | Where-Object { $_.Name -notin ($telemetryCheckNames + @("Frequent physical keypad activity")) })
+$otherFailed = @($otherChecks | Where-Object { $_.Status -eq "FAIL" })
+$otherBlocked = @($otherChecks | Where-Object { $_.Status -eq "BLOCKED" })
+$runResult = if ($telemetryResult -eq "FAIL" -or $physicalFailed.Count -gt 0 -or $otherFailed.Count -gt 0) {
+    "FAIL"
+} elseif ($telemetryResult -eq "BLOCKED" -or $physicalBlocked.Count -gt 0 -or $otherBlocked.Count -gt 0) {
     "BLOCKED"
 } else {
     "PASS"
@@ -312,11 +344,13 @@ foreach ($check in $checks) {
 if ($isReplay) {
     Write-Host ("LOG_REPLAY: {0}" -f $logFile)
 }
-Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; when its rank lands in the overflow bucket, p95 is censored and reported with p95_overflow=1 and p95_censored_above_us. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at 500Hz with frequent keypad presses; serial replay cannot prove physical activity or board timing."
-Write-Host ("KEYPAD_TIMING_TELEMETRY_RESULT: {0}" -f $result)
+Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; samples at or above 2048us are excluded from normal buckets, and p95 is censored only when its rank lands in that overflow tail. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at 500Hz with frequent keypad presses; serial replay cannot prove physical activity or board timing."
+Write-Host ("KEYPAD_TIMING_TELEMETRY_RESULT: {0}" -f $telemetryResult)
+Write-Host ("PHYSICAL_CONDITION: {0}" -f $physicalCondition)
 Write-Host "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED"
+Write-Host ("KEYPAD_TIMING_RUN_RESULT: {0}" -f $runResult)
 
-if ($result -eq "PASS") {
+if ($runResult -eq "PASS") {
     exit 0
 }
 exit 1

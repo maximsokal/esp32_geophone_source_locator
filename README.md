@@ -308,8 +308,10 @@ For the keypad ADC/timer-task watchlist, use the dedicated opt-in procedure in
 broker snapshot `min/avg/p95/max` and shared `ESP_TIMER_TASK` dispatch lateness
 for separate AD7606 and ESP ADC bench 500 Hz windows; it does not change the
 production defaults. Its `KEYPAD_TIMING_TELEMETRY_RESULT` confirms only
-telemetry validity; performance acceptance remains `NOT_ESTABLISHED` until
-real-board baselines define thresholds.
+telemetry validity and is independent of the physical keypad condition;
+`PHYSICAL_CONDITION` and `KEYPAD_TIMING_RUN_RESULT` report the separate HIL
+gate. Performance acceptance remains `NOT_ESTABLISHED` until real-board
+baselines define thresholds.
 
 The host contracts cover the AD7606 DMA configuration; the production HIL
 runner reports AD7606 startup, configured-rate frame cadence, recorder/session

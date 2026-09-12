@@ -2,6 +2,7 @@
 build/
 build-refactor/
 build-refactor-*/
+build-keypad-timing-*/
 tests/.venv-tests/
 build/host-tests/
 .tools/

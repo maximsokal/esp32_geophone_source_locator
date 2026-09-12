@@ -115,6 +115,47 @@ def test_overflowed_p95_is_reported_as_censored_data(tmp_path: Path):
     assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in result.stdout
 
 
+def test_last_normal_bucket_p95_is_valid_telemetry(tmp_path: Path):
+    path = tmp_path / "normal-boundary.log"
+    content = timing_log(
+        "AD7606",
+        "I AD7606_ACQ: Started: 500 Hz, 8 channels, SPI3 dedicated, core=1",
+    ).replace(
+        "p95_us=23 p95_overflow=0 p95_censored_above_us=0 max_us=31 resolution_us=4 overflow=0",
+        "p95_us=2047 p95_overflow=0 p95_censored_above_us=0 max_us=2047 resolution_us=4 overflow=0",
+        1,
+    )
+    path.write_text(content, encoding="utf-8")
+
+    result = run_replay(path, "-Source", "AD7606")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "p95_us=2047 p95_overflow=0 p95_censored_above_us=0" in result.stdout
+    assert "KEYPAD_TIMING_TELEMETRY_RESULT: PASS" in result.stdout
+    assert "PHYSICAL_CONDITION: NOT_CONFIRMED" in result.stdout
+    assert "KEYPAD_TIMING_RUN_RESULT: PASS" in result.stdout
+
+
+def test_small_overflow_tail_does_not_censor_valid_p95(tmp_path: Path):
+    path = tmp_path / "small-overflow-tail.log"
+    content = timing_log(
+        "AD7606",
+        "I AD7606_ACQ: Started: 500 Hz, 8 channels, SPI3 dedicated, core=1",
+    ).replace(
+        "p95_us=23 p95_overflow=0 p95_censored_above_us=0 max_us=31 resolution_us=4 overflow=0",
+        "p95_us=2047 p95_overflow=0 p95_censored_above_us=0 max_us=5100 resolution_us=4 overflow=1",
+        1,
+    )
+    path.write_text(content, encoding="utf-8")
+
+    result = run_replay(path, "-Source", "AD7606")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "p95_us=2047 p95_overflow=0 p95_censored_above_us=0" in result.stdout
+    assert "overflow=1" in result.stdout
+    assert "KEYPAD_TIMING_TELEMETRY_RESULT: PASS" in result.stdout
+
+
 def test_nonzero_adc_errors_fail_telemetry_result(tmp_path: Path):
     path = tmp_path / "errors.log"
     content = timing_log(
@@ -167,4 +208,31 @@ def test_replay_cannot_attest_frequent_physical_key_activity(tmp_path: Path):
 
     assert result.returncode == 1
     assert "cannot be used with -LogPath" in result.stdout
-    assert "KEYPAD_TIMING_TELEMETRY_RESULT: BLOCKED" in result.stdout
+    assert "KEYPAD_TIMING_TELEMETRY_RESULT: PASS" in result.stdout
+    assert "PHYSICAL_CONDITION: NOT_CONFIRMED" in result.stdout
+    assert "KEYPAD_TIMING_RUN_RESULT: BLOCKED" in result.stdout
+
+
+def test_required_physical_activity_blocks_run_without_changing_telemetry_result(
+    tmp_path: Path,
+):
+    path = tmp_path / "required-activity.log"
+    path.write_text(
+        timing_log(
+            "AD7606",
+            "I AD7606_ACQ: Started: 500 Hz, 8 channels, SPI3 dedicated, core=1",
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_replay(
+        path,
+        "-Source",
+        "AD7606",
+        "-RequireFrequentKeypadActivity",
+    )
+
+    assert result.returncode == 1
+    assert "KEYPAD_TIMING_TELEMETRY_RESULT: PASS" in result.stdout
+    assert "PHYSICAL_CONDITION: NOT_CONFIRMED" in result.stdout
+    assert "KEYPAD_TIMING_RUN_RESULT: BLOCKED" in result.stdout

@@ -223,3 +223,49 @@ remains pending because COM4/COM6 are not live.
 
 ESP32 geophone keypad timing HIL follow-up; physical timing acceptance remains
 pending until live COM4/COM6 runs produce board measurements.
+
+## Additional timing histogram boundary and HIL-result separation correction
+
+### Evidence
+
+- The follow-up audit found that the terminal 4-us histogram bucket mixed valid
+  `2044..2047`-us values with `>=2048`-us overflow values. The implementation
+  now excludes overflow values from all 512 normal buckets and computes
+  `normal_count=count-overflow`; p95 is censored only when its rank is greater
+  than `normal_count`. Native C regressions cover a valid `2047`-us p95, a
+  genuinely censored overflow tail, and a valid p95 with one overflow sample
+  out of 100.
+- The runner previously combined the physical keypad-attestation check into its
+  telemetry result. It now reports telemetry validity separately from
+  `PHYSICAL_CONDITION`, keeps `PERFORMANCE_ACCEPTANCE` explicitly
+  `NOT_ESTABLISHED`, and uses `KEYPAD_TIMING_RUN_RESULT` plus the exit code for
+  the complete gate.
+- Verification passed Host C `39/39`, Python `85 passed + 1 skipped`, the full
+  web/typecheck/Unity/production suite, and both enabled timing target profiles.
+  No COM4/COM6 ports were live, so no physical timing or keypad evidence was
+  claimed.
+
+### Root cause
+
+- The percentile representation treated a right-censored tail as if it were a
+  normal terminal bucket, and the runner's single aggregate status conflated
+  telemetry integrity with a separately required manual physical condition.
+
+### Recurrence count
+
+- One confirmed occurrence in this task. This supports a repository-local
+  censored-metric and HIL-status separation rule, not a generalized skill
+  change.
+
+### Proposed minimal rule
+
+- Keep normal histogram support disjoint from overflow/censored samples and
+  make percentile validity depend on the requested rank, not bucket index.
+  Name each HIL status after exactly what it proves; use a separate run gate for
+  physical attestation and keep performance acceptance unestablished until
+  measured baselines exist.
+
+### Affected task
+
+ESP32 geophone keypad timing HIL follow-up; physical timing acceptance remains
+pending until live COM4/COM6 runs produce board measurements.

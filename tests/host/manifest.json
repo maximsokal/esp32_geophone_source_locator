@@ -126,6 +126,15 @@
       ]
     },
     {
+      "name": "keypad_timing_stats",
+      "sources": [
+        "components/keypad/tests/keypad_timing_stats_test.c"
+      ],
+      "include_dirs": [
+        "components/keypad"
+      ]
+    },
+    {
       "name": "localization",
       "sources": [
         "components/localization/localization.c",

@@ -14,6 +14,7 @@
 #include "board_config.h"
 #include "button_interface.h"
 #include "iot_button.h"
+#include "keypad_timing_stats.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -35,18 +36,10 @@ static const char *TAG = "KEYPAD";
  * The diagnostic profile deliberately keeps all accounting bounded and
  * local to the ESP_TIMER_TASK callback. A four-microsecond histogram gives a
  * useful p95 without sorting or allocating from the timer task. Values above
- * the last bucket are reported through overflow. If the percentile rank lands
- * in that censored bucket, p95 is reported as invalid with its lower bound.
+ * the normal range are counted separately as right-censored overflow samples.
  */
 #define KEYPAD_TIMING_REPORT_PERIOD_US 1000000LL
 #define KEYPAD_TIMING_PROBE_PERIOD_US 10000LL
-#define KEYPAD_TIMING_HISTOGRAM_WIDTH_US 4U
-#define KEYPAD_TIMING_HISTOGRAM_BUCKETS 512U
-
-typedef struct {
-    uint32_t value_us;
-    bool overflow;
-} keypad_timing_percentile_t;
 
 #endif
 
@@ -150,83 +143,6 @@ static void keypad_timing_reset_window(void)
 }
 
 
-static void keypad_timing_record_duration(
-    uint32_t duration_us,
-    uint32_t *count,
-    uint32_t *min_us,
-    uint32_t *max_us,
-    uint64_t *sum_us,
-    uint32_t *overflow,
-    uint32_t *histogram
-)
-{
-    (*count)++;
-    if (duration_us < *min_us) {
-        *min_us = duration_us;
-    }
-    if (duration_us > *max_us) {
-        *max_us = duration_us;
-    }
-    *sum_us += duration_us;
-
-    uint32_t bucket = duration_us / KEYPAD_TIMING_HISTOGRAM_WIDTH_US;
-    if (bucket >= KEYPAD_TIMING_HISTOGRAM_BUCKETS) {
-        bucket = KEYPAD_TIMING_HISTOGRAM_BUCKETS - 1U;
-        (*overflow)++;
-    }
-    histogram[bucket]++;
-}
-
-
-static keypad_timing_percentile_t keypad_timing_percentile_us(
-    uint32_t count,
-    const uint32_t *histogram
-)
-{
-    keypad_timing_percentile_t result = {
-        .value_us = 0U,
-        .overflow = false,
-    };
-    if (count == 0U) {
-        return result;
-    }
-
-    /* ceil(count * 95 / 100), with the first sample as the minimum rank. */
-    const uint32_t rank = (count * 95U + 99U) / 100U;
-    uint32_t accumulated = 0U;
-    for (uint32_t bucket = 0U;
-         bucket < KEYPAD_TIMING_HISTOGRAM_BUCKETS;
-         ++bucket) {
-        accumulated += histogram[bucket];
-        if (accumulated >= rank) {
-            if (bucket == KEYPAD_TIMING_HISTOGRAM_BUCKETS - 1U) {
-                result.overflow = true;
-                return result;
-            }
-            result.value_us = (bucket + 1U) *
-                KEYPAD_TIMING_HISTOGRAM_WIDTH_US - 1U;
-            return result;
-        }
-    }
-
-    /* A counter/histogram mismatch is treated as censored rather than
-     * manufacturing a precise percentile. */
-    result.overflow = true;
-    return result;
-}
-
-
-static uint32_t keypad_timing_p95_censored_above_us(
-    keypad_timing_percentile_t percentile
-)
-{
-    return percentile.overflow
-        ? KEYPAD_TIMING_HISTOGRAM_BUCKETS *
-            KEYPAD_TIMING_HISTOGRAM_WIDTH_US
-        : 0U;
-}
-
-
 static void keypad_timing_log_window(int64_t now_us)
 {
     const uint32_t window_ms = s_timing_report_started_us > 0 &&
@@ -237,6 +153,7 @@ static void keypad_timing_log_window(int64_t now_us)
     if (s_adc_timing_snapshots > 0U) {
         const keypad_timing_percentile_t p95 = keypad_timing_percentile_us(
             s_adc_timing_snapshots,
+            s_adc_timing_overflow,
             s_adc_timing_histogram
         );
         ESP_LOGI(
@@ -272,6 +189,7 @@ static void keypad_timing_log_window(int64_t now_us)
     if (s_timer_timing_samples > 0U) {
         const keypad_timing_percentile_t p95 = keypad_timing_percentile_us(
             s_timer_timing_samples,
+            s_timer_timing_overflow,
             s_timer_timing_histogram
         );
         ESP_LOGI(

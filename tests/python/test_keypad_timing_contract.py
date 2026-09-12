@@ -12,6 +12,7 @@ def read(relative_path: str) -> str:
 
 def test_timing_instrumentation_is_opt_in_and_stays_on_the_timer_task():
     adapter = read("components/keypad/keypad_button_adapter.c")
+    stats = read("components/keypad/keypad_timing_stats.h")
     kconfig = read("main/Kconfig.projbuild")
     defaults = read("sdkconfig.keypad-timing.defaults")
 
@@ -25,6 +26,11 @@ def test_timing_instrumentation_is_opt_in_and_stays_on_the_timer_task():
     assert "p95_censored_above_us=%u" in adapter
     assert "KEYPAD_TIMER_TIMING:" in adapter
     assert "overrun_count=%u" in adapter
+    assert "samples at or above" in stats
+    assert "const uint32_t normal_count" in stats
+    assert "if (rank > normal_count)" in stats
+    assert "(*overflow)++;\n        return;" in stats
+    assert "histogram[bucket]++;" in stats
     assert "default n" in kconfig[kconfig.index("config APP_KEYPAD_TIMING_DIAGNOSTICS") :]
     assert "CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS=y" in defaults
 
@@ -51,6 +57,8 @@ def test_timing_profiles_select_separate_sources_and_do_not_touch_production_def
     assert 'Add-Check $checks "Production flash"' not in runner
     assert "InvalidTelemetry" in runner
     assert "KEYPAD_TIMING_TELEMETRY_RESULT" in runner
+    assert "PHYSICAL_CONDITION" in runner
+    assert "KEYPAD_TIMING_RUN_RESULT" in runner
     assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in runner
     assert "MinimumWindows" in runner
     assert "MinimumSnapshots" in runner
