@@ -6,6 +6,16 @@
 #include <string.h>
 
 
+#define SEISMIC_RECORDER_FILE_WRAPPER_STAGING_FRAMES 64U
+
+
+typedef struct
+{
+    FILE *file;
+
+} seismic_recorder_waveform_file_context_t;
+
+
 static bool seismic_recorder_waveform_add_overflows(
     uint64_t left,
     uint64_t right,
@@ -63,22 +73,58 @@ static void seismic_recorder_waveform_point_reset(
 }
 
 
-esp_err_t seismic_recorder_waveform_read_file(
-    FILE *samples_file,
+static esp_err_t seismic_recorder_waveform_file_read_at(
+    void *context,
+    uint64_t offset_bytes,
+    void *buffer,
+    size_t size_bytes
+)
+{
+    seismic_recorder_waveform_file_context_t *file_context =
+        (seismic_recorder_waveform_file_context_t *)context;
+
+    if (
+        file_context == NULL ||
+        file_context->file == NULL ||
+        buffer == NULL ||
+        size_bytes == 0U ||
+        offset_bytes > (uint64_t)LONG_MAX
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (fseek(file_context->file, (long)offset_bytes, SEEK_SET) != 0) {
+        return ESP_FAIL;
+    }
+
+    return fread(buffer, 1U, size_bytes, file_context->file) == size_bytes
+        ? ESP_OK
+        : ESP_ERR_INVALID_RESPONSE;
+}
+
+
+esp_err_t seismic_recorder_waveform_read_source(
+    seismic_recorder_waveform_read_at_fn read_at,
+    void *read_context,
     uint64_t file_size,
     const seismic_recorder_session_summary_t *summary,
     uint64_t start_frame,
     uint64_t frame_count,
     size_t max_points,
+    seismic_frame_t *staging,
+    size_t staging_capacity,
     seismic_recorder_waveform_point_t *points,
     size_t point_capacity,
     seismic_recorder_waveform_info_t *info
 )
 {
     if (
-        samples_file == NULL ||
+        read_at == NULL ||
         summary == NULL ||
         info == NULL ||
+        staging == NULL ||
+        staging_capacity == 0U ||
+        staging_capacity > SIZE_MAX / sizeof(seismic_frame_t) ||
         points == NULL ||
         max_points == 0U ||
         max_points > SEISMIC_RECORDER_MAX_WAVEFORM_POINTS ||
@@ -97,13 +143,15 @@ esp_err_t seismic_recorder_waveform_read_file(
         return ESP_ERR_INVALID_SIZE;
     }
 
-    if (fseek(samples_file, 0L, SEEK_SET) != 0) {
-        return ESP_FAIL;
-    }
-
     seismic_recorder_binary_header_t header;
-    if (fread(&header, sizeof(header), 1U, samples_file) != 1U) {
-        return ESP_ERR_INVALID_RESPONSE;
+    esp_err_t err = read_at(
+        read_context,
+        0U,
+        &header,
+        sizeof(header)
+    );
+    if (err != ESP_OK) {
+        return err;
     }
 
     if (!seismic_recorder_waveform_header_valid(&header)) {
@@ -161,16 +209,6 @@ esp_err_t seismic_recorder_waveform_read_file(
         return ESP_ERR_INVALID_SIZE;
     }
 
-    if (
-        fseek(
-            samples_file,
-            (long)range_offset_bytes,
-            SEEK_SET
-        ) != 0
-    ) {
-        return ESP_FAIL;
-    }
-
     for (size_t point = 0; point < point_count; ++point) {
         seismic_recorder_waveform_point_reset(&points[point]);
     }
@@ -178,44 +216,86 @@ esp_err_t seismic_recorder_waveform_read_file(
     int64_t first_timestamp_us = 0;
     int64_t last_timestamp_us = 0;
     bool have_timestamp = false;
+    uint64_t processed = 0U;
 
-    for (uint64_t frame_index = 0U; frame_index < frame_count; ++frame_index) {
-        seismic_frame_t frame;
-        if (fread(&frame, sizeof(frame), 1U, samples_file) != 1U) {
-            return ESP_ERR_INVALID_RESPONSE;
+    while (processed < frame_count) {
+        const uint64_t remaining = frame_count - processed;
+        const size_t chunk_count =
+            remaining < (uint64_t)staging_capacity
+                ? (size_t)remaining
+                : staging_capacity;
+
+        uint64_t chunk_frame_offset = 0U;
+        uint64_t chunk_offset_bytes = 0U;
+        const uint64_t absolute_frame = start_frame + processed;
+        if (
+            seismic_recorder_waveform_mul_overflows(
+                absolute_frame,
+                sizeof(seismic_frame_t),
+                &chunk_frame_offset
+            ) ||
+            seismic_recorder_waveform_add_overflows(
+                sizeof(seismic_recorder_binary_header_t),
+                chunk_frame_offset,
+                &chunk_offset_bytes
+            ) ||
+            chunk_offset_bytes > (uint64_t)LONG_MAX
+        ) {
+            return ESP_ERR_INVALID_SIZE;
         }
 
-        if (!have_timestamp) {
-            first_timestamp_us = frame.timestamp_us;
-            have_timestamp = true;
+        const size_t chunk_bytes = chunk_count * sizeof(seismic_frame_t);
+        err = read_at(
+            read_context,
+            chunk_offset_bytes,
+            staging,
+            chunk_bytes
+        );
+        if (err != ESP_OK) {
+            return err;
         }
-        last_timestamp_us = frame.timestamp_us;
 
-        for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-            if (!isfinite(frame.channel_uv[channel])) {
-                return ESP_ERR_INVALID_RESPONSE;
+        /* read_at() owns the physical storage window. Reduction happens only
+         * after that callback has returned, so CPU work never keeps SPI2/TFT
+         * quiesced. */
+        for (size_t chunk_index = 0U; chunk_index < chunk_count; ++chunk_index) {
+            const seismic_frame_t *frame = &staging[chunk_index];
+            const uint64_t frame_index = processed + (uint64_t)chunk_index;
+
+            if (!have_timestamp) {
+                first_timestamp_us = frame->timestamp_us;
+                have_timestamp = true;
+            }
+            last_timestamp_us = frame->timestamp_us;
+
+            for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+                if (!isfinite(frame->channel_uv[channel])) {
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+            }
+
+            /* The overflow bound above makes this multiplication safe. */
+            const size_t point_index =
+                point_count == 0U
+                    ? 0U
+                    : (size_t)((frame_index * (uint64_t)point_count) / frame_count);
+            seismic_recorder_waveform_point_t *point = &points[point_index];
+
+            if (point->min_uv[0] == FLT_MAX) {
+                point->timestamp_us = frame->timestamp_us;
+            }
+
+            for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+                if (frame->channel_uv[channel] < point->min_uv[channel]) {
+                    point->min_uv[channel] = frame->channel_uv[channel];
+                }
+                if (frame->channel_uv[channel] > point->max_uv[channel]) {
+                    point->max_uv[channel] = frame->channel_uv[channel];
+                }
             }
         }
 
-        /* Multiplication is safe because max_points is at most 1200. */
-        const size_t point_index =
-            point_count == 0U
-                ? 0U
-                : (size_t)((frame_index * (uint64_t)point_count) / frame_count);
-        seismic_recorder_waveform_point_t *point = &points[point_index];
-
-        if (point->min_uv[0] == FLT_MAX) {
-            point->timestamp_us = frame.timestamp_us;
-        }
-
-        for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-            if (frame.channel_uv[channel] < point->min_uv[channel]) {
-                point->min_uv[channel] = frame.channel_uv[channel];
-            }
-            if (frame.channel_uv[channel] > point->max_uv[channel]) {
-                point->max_uv[channel] = frame.channel_uv[channel];
-            }
-        }
+        processed += (uint64_t)chunk_count;
     }
 
     info->complete = summary->complete;
@@ -238,4 +318,42 @@ esp_err_t seismic_recorder_waveform_read_file(
     }
 
     return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_waveform_read_file(
+    FILE *samples_file,
+    uint64_t file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t max_points,
+    seismic_recorder_waveform_point_t *points,
+    size_t point_capacity,
+    seismic_recorder_waveform_info_t *info
+)
+{
+    if (samples_file == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    seismic_frame_t staging[SEISMIC_RECORDER_FILE_WRAPPER_STAGING_FRAMES];
+    seismic_recorder_waveform_file_context_t context = {
+        .file = samples_file,
+    };
+
+    return seismic_recorder_waveform_read_source(
+        seismic_recorder_waveform_file_read_at,
+        &context,
+        file_size,
+        summary,
+        start_frame,
+        frame_count,
+        max_points,
+        staging,
+        SEISMIC_RECORDER_FILE_WRAPPER_STAGING_FRAMES,
+        points,
+        point_capacity,
+        info
+    );
 }
