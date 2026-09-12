@@ -238,7 +238,14 @@ esp_err_t web_status_json_objects_refresh(void)
     memset(staging, 0, sizeof(*staging));
     const int64_t started_us = esp_timer_get_time();
     size_t profile_count = 0U;
-    err = object_store_list_profiles_with_defaults(
+
+    /*
+     * Status refresh is low-priority background work. The responsive object
+     * snapshot deliberately releases storage_manager (and therefore the TFT
+     * quiesce guard) between object.json files instead of keeping SPI2 owned
+     * for the whole directory walk.
+     */
+    err = object_store_list_profiles_responsive(
         staging->profiles,
         OBJECT_STORE_MAX_OBJECTS,
         &profile_count,
@@ -257,7 +264,14 @@ esp_err_t web_status_json_objects_refresh(void)
                 "%s",
                 staging->profiles[i].summary.id
             );
-            session_cache->error = seismic_recorder_list_sessions(
+
+            /*
+             * Session history uses the same cooperative rule: one parent
+             * census and then one bounded metadata window per session. This
+             * prevents the first Web cache refresh from pinning LVGL behind a
+             * multi-second storage operation.
+             */
+            session_cache->error = seismic_recorder_list_sessions_responsive(
                 session_cache->object_id,
                 session_cache->sessions,
                 SEISMIC_RECORDER_MAX_SESSIONS,
@@ -282,7 +296,7 @@ esp_err_t web_status_json_objects_refresh(void)
     if (err == ESP_OK) {
         ESP_LOGI(
             TAG,
-            "WEB_STATUS_CACHE refresh=done objects=%u session_errors=%u elapsed_ms=%lld",
+            "WEB_STATUS_CACHE refresh=done objects=%u session_errors=%u elapsed_ms=%lld mode=cooperative",
             (unsigned)profile_count,
             (unsigned)session_errors,
             elapsed_us / 1000LL
@@ -291,7 +305,7 @@ esp_err_t web_status_json_objects_refresh(void)
     else {
         ESP_LOGW(
             TAG,
-            "WEB_STATUS_CACHE refresh=failed err=%s elapsed_ms=%lld",
+            "WEB_STATUS_CACHE refresh=failed err=%s elapsed_ms=%lld mode=cooperative",
             esp_err_to_name(err),
             elapsed_us / 1000LL
         );
