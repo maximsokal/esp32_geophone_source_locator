@@ -73,7 +73,7 @@ jobs:
         run: npm run verify:bundle
       - name: Verify production optimization contracts
         run: |
-          set -e
+          set -ex
           test ! -e components/web_server/web_static_assets.c
           ! grep -q 'web_static_assets_register' components/web_server/web_server_internal.h
           grep -A4 'max_uri_handlers' components/web_server/web_server.c | head -n 5 | grep -q '10;'
