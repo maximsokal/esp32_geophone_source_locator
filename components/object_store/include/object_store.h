@@ -46,6 +46,19 @@ esp_err_t object_store_list_profiles_with_defaults(
     size_t *object_count,
     float default_cable_lengths_m[OBJECT_STORE_POD_COUNT]
 );
+
+/*
+ * Cooperative status/UI snapshot. Unlike the authoritative cold index build,
+ * this releases the shared TFT/SD storage guard between object metadata files
+ * so low-priority Web cache work cannot freeze the local LVGL UI for seconds.
+ */
+esp_err_t object_store_list_profiles_responsive(
+    object_store_profile_t *objects,
+    size_t max_objects,
+    size_t *object_count,
+    float default_cable_lengths_m[OBJECT_STORE_POD_COUNT]
+);
+
 esp_err_t object_store_get_active(object_store_summary_t *object);
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile);
 esp_err_t object_store_set_active(const char *object_id);
