@@ -9,6 +9,9 @@
 #include "esp_check.h"
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
+
 
 static const char *TAG =
     "WIFI_MANAGER";
@@ -25,6 +28,8 @@ static bool s_setup_mode =
 
 static bool s_radio_state_uncertain =
     false;
+static portMUX_TYPE s_radio_state_uncertain_lock =
+    portMUX_INITIALIZER_UNLOCKED;
 
 
 bool wifi_manager_internal_initialized(void)
@@ -61,13 +66,19 @@ void wifi_manager_internal_set_radio_state_uncertain(
     bool uncertain
 )
 {
+    portENTER_CRITICAL(&s_radio_state_uncertain_lock);
     s_radio_state_uncertain = uncertain;
+    portEXIT_CRITICAL(&s_radio_state_uncertain_lock);
 }
 
 
 bool wifi_manager_internal_radio_state_uncertain(void)
 {
-    return s_radio_state_uncertain;
+    bool uncertain;
+    portENTER_CRITICAL(&s_radio_state_uncertain_lock);
+    uncertain = s_radio_state_uncertain;
+    portEXIT_CRITICAL(&s_radio_state_uncertain_lock);
+    return uncertain;
 }
 
 
@@ -128,7 +139,7 @@ esp_err_t wifi_manager_start(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (s_radio_state_uncertain) {
+    if (wifi_manager_internal_radio_state_uncertain()) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -175,8 +186,7 @@ esp_err_t wifi_manager_start(void)
 
     s_running =
         true;
-    s_radio_state_uncertain =
-        false;
+    wifi_manager_internal_set_radio_state_uncertain(false);
 
     return ESP_OK;
 }
@@ -190,7 +200,7 @@ bool wifi_manager_is_running(void)
 
 bool wifi_manager_is_radio_state_uncertain(void)
 {
-    return s_radio_state_uncertain;
+    return wifi_manager_internal_radio_state_uncertain();
 }
 
 

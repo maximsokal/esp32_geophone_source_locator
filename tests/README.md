@@ -8,7 +8,7 @@ The repository has three intentionally separate test surfaces:
 * `tests/python` contains deterministic pytest checks. Run `python -m pytest`
   from the repository root. HIL tests are marked `hil` and are skipped by
   default.
-* `test_app` is a standalone ESP-IDF 5.5.4 Unity application. It links four
+* `tests/target/test_app` is a standalone ESP-IDF 5.5.4 Unity application. It links four
   deterministic production-policy cases without changing the production
   firmware app. The target app runs all four cases automatically and prints a
   `TEST_APP_RESULT` marker; the board still requires an explicit HIL session.
@@ -53,7 +53,7 @@ The Unity test app is built separately with the ESP-IDF environment selected by
 the caller:
 
 ```powershell
-Set-Location test_app
+Set-Location tests/target/test_app
 python "$env:IDF_PATH/tools/idf.py" -B build-s3 set-target esp32s3
 python "$env:IDF_PATH/tools/idf.py" -B build-s3 build
 ```

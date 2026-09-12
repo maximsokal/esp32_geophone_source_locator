@@ -2,7 +2,7 @@
 param(
     [string]$FlashPort = "COM4",
     [string]$LogPort = "COM6",
-    [string]$ProjectPath = "test_app",
+    [string]$ProjectPath = "tests/target/test_app",
     [string]$BuildDir = "build-s3",
 
     [ValidateRange(5, 300)]

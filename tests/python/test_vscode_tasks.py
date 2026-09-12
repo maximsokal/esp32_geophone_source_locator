@@ -40,6 +40,18 @@ def test_vscode_tasks_cover_local_web_and_esp_surfaces_without_hidden_flash():
     assert any(str(arg).endswith("tools/run_suite.ps1") for arg in web_tests["args"])
     assert web_tests["args"][web_tests["args"].index("-Suite") + 1] == "Web"
 
+    unity_tasks = {
+        "Build: ESP Unity",
+        "ESP: Flash Unity app (COM4)",
+        "ESP: Monitor Unity logs (COM6)",
+        "ESP: Unity tests (flash COM4 + logs COM6)",
+    }
+    for task in tasks:
+        if task["label"] in unity_tasks:
+            assert "tests/target/test_app" in task["args"] or any(
+                "tests/target/test_app" in str(arg) for arg in task["args"]
+            )
+
     production_flash = next(
         task for task in tasks if task["label"] == "ESP: Flash production (COM4)"
     )

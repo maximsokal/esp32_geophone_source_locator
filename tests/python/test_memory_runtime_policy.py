@@ -367,6 +367,7 @@ def test_measurement_snapshots_are_nonblocking_requests():
 
 def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     web_server = read("components/web_server/web_server.c")
+    wifi_manager = read("components/wifi_manager/wifi_manager.c")
     wifi_sta_events = read("components/wifi_manager/wifi_manager_sta_events.c")
     wifi_mode = read("components/wifi_manager/wifi_manager_mode.c")
     wifi_header = read("components/wifi_manager/include/wifi_manager.h")
@@ -377,7 +378,7 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
         web_server.index("static void web_server_https_event_handler(")
     ]
 
-    assert "web_server_lifecycle_set_desired_state" in callback
+    assert "web_server_lifecycle_set_network_event_state" in callback
     assert "web_server_https_start_internal(" not in callback
     assert "web_server_https_stop_internal(" not in callback
     assert "web_server_http_start_internal(" not in callback
@@ -406,6 +407,20 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "cleanup_result != ESP_OK" in web_server
     assert "radio state uncertain" in web_server
     assert "web_server_lifecycle_set_authoritative_state(desired_state)" in web_server
+    network_enqueue_start = web_server.index(
+        "static esp_err_t web_server_lifecycle_set_network_event_state("
+    )
+    network_enqueue = web_server[
+        network_enqueue_start:
+        web_server.index("static void web_server_mode_transition_complete(", network_enqueue_start)
+    ]
+    assert "xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY)" in network_enqueue
+    assert "wifi_manager_is_radio_state_uncertain()" in network_enqueue
+    assert "web_lifecycle_effective_network_state" in network_enqueue
+    assert "web_server_lifecycle_set_desired_state_locked(desired_state)" in network_enqueue
+    assert network_enqueue.index("wifi_manager_is_radio_state_uncertain()") < network_enqueue.index(
+        "web_server_lifecycle_set_desired_state_locked(desired_state)"
+    )
     assert "running && setup_mode" in web_server
     assert "wifi_manager_sta_ip_string" in web_server
     assert "s_lifecycle_quiesce_pending" in web_server
@@ -483,9 +498,16 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header
     assert "wifi_manager_is_radio_state_uncertain(void)" in wifi_header
     assert "esp_err_t cleanup_result" in wifi_header
+    assert "#include \"freertos/portmacro.h\"" in wifi_manager
+    assert "static portMUX_TYPE s_radio_state_uncertain_lock" in wifi_manager
+    assert "portENTER_CRITICAL(&s_radio_state_uncertain_lock)" in wifi_manager
+    assert "portEXIT_CRITICAL(&s_radio_state_uncertain_lock)" in wifi_manager
+    assert "if (s_radio_state_uncertain)" not in wifi_manager
+    assert "return s_radio_state_uncertain;" not in wifi_manager
     assert "APP_TASK_STACK_WEB_LIFECYCLE 8192" in task_config
 
     lifecycle_policy = read("components/web_server/web_server_lifecycle_policy.c")
+    assert "web_lifecycle_effective_network_state" in lifecycle_policy
     assert "WEB_LIFECYCLE_ACTION_MDNS_STOP" in lifecycle_policy
     assert "WEB_LIFECYCLE_STATE_QUIESCED" in lifecycle_policy
     assert "WEB_LIFECYCLE_ACTION_EXIT" in lifecycle_policy
