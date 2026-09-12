@@ -28,6 +28,9 @@ esp_err_t adc_service_read_raw(
     int *raw_value
 );
 
+/* Every service read discards the first conversion. ADC1 is shared with
+ * external borrowers such as espressif/button, whose direct reads cannot
+ * update this service's channel-settling state. */
 esp_err_t adc_service_read_average_raw(
     adc_channel_t channel,
     size_t sample_count,

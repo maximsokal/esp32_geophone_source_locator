@@ -15,8 +15,31 @@ static bool s_initialized = false;
 
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
 
+#include "app_events.h"
 #include "esp_diagnostics.h"
+#include "esp_diagnostics_metrics.h"
+#include "esp_event.h"
 #include "esp_insights.h"
+
+
+/*
+ * ESP Insights also enables the diagnostics component's built-in variables
+ * and optional heap/Wi-Fi metric producers. They include network identity
+ * such as SSID/BSSID, which is outside this application's selected health
+ * metric contract. The dedicated enabled profile turns those producers off;
+ * fail the opt-in build if a caller enables them accidentally.
+ */
+#if defined(CONFIG_DIAG_ENABLE_VARIABLES) && CONFIG_DIAG_ENABLE_VARIABLES
+#error "GeoLocator ESP Insights requires CONFIG_DIAG_ENABLE_VARIABLES=n"
+#endif
+#if (defined(CONFIG_DIAG_ENABLE_HEAP_METRICS) && CONFIG_DIAG_ENABLE_HEAP_METRICS) || \
+    (defined(CONFIG_DIAG_ENABLE_WIFI_METRICS) && CONFIG_DIAG_ENABLE_WIFI_METRICS)
+#error "GeoLocator ESP Insights requires built-in heap and Wi-Fi metrics to be disabled"
+#endif
+
+
+static bool s_network_handler_registered = false;
+static bool s_retry_pending = false;
 
 
 /*
@@ -78,18 +101,57 @@ static void insights_register_metrics(void)
 #endif /* optional ESP Insights declarations */
 
 
-esp_err_t insights_bridge_init(void)
+#if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
+
+static void insights_bridge_app_event_handler(
+    void *context,
+    esp_event_base_t event_base,
+    int32_t event_id,
+    void *event_data
+);
+
+
+static esp_err_t insights_bridge_register_network_ready_handler(void)
+{
+    if (s_network_handler_registered) {
+        return ESP_OK;
+    }
+
+    esp_event_loop_handle_t loop =
+        app_events_get_loop();
+    if (loop == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err =
+        esp_event_handler_register_with(
+            loop,
+            APP_EVENT,
+            APP_EVENT_WIFI_STA_CONNECTED,
+            insights_bridge_app_event_handler,
+            NULL
+        );
+
+    if (err == ESP_OK) {
+        s_network_handler_registered = true;
+    }
+
+    return err;
+}
+
+
+static esp_err_t insights_bridge_attempt_init(void)
 {
     if (s_initialized) {
         return ESP_OK;
     }
 
-#if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
     if (!insights_has_auth_key()) {
         ESP_LOGW(
             TAG,
             "ESP Insights requested but no private auth-key provider is installed; bridge remains inactive"
         );
+        s_retry_pending = false;
         return ESP_OK;
     }
 
@@ -110,6 +172,10 @@ esp_err_t insights_bridge_init(void)
             "ESP Insights initialization unavailable; continuing without it: %s",
             esp_err_to_name(init_err)
         );
+        /* The platform is ready at the normal call site, but a transient
+         * resource failure may be retried from the APP_EVENT loop after STA
+         * obtains an IP. Never retry from the default sys_evt callback. */
+        s_retry_pending = true;
         return ESP_OK;
     }
 
@@ -118,11 +184,74 @@ esp_err_t insights_bridge_init(void)
 #endif
 
     s_initialized = true;
+    s_retry_pending = false;
     ESP_LOGI(TAG, "ESP Insights bridge enabled with selected runtime metrics only");
     return ESP_OK;
+}
+
+
+static void insights_bridge_app_event_handler(
+    void *context,
+    esp_event_base_t event_base,
+    int32_t event_id,
+    void *event_data
+)
+{
+    (void)context;
+    (void)event_data;
+
+    if (
+        event_base == APP_EVENT &&
+        event_id == APP_EVENT_WIFI_STA_CONNECTED
+    ) {
+        /* This callback runs on the dedicated APP_EVENT user loop, not the
+         * system Wi-Fi event callback. The retry is therefore in service
+         * context and never extends the default sys_evt callback. */
+        insights_bridge_on_network_ready();
+    }
+}
+
+
+#endif /* CONFIG_APP_ESP_INSIGHTS helper implementations */
+
+
+esp_err_t insights_bridge_init(void)
+{
+    if (s_initialized) {
+        return ESP_OK;
+    }
+
+#if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
+    const esp_err_t handler_err =
+        insights_bridge_register_network_ready_handler();
+    if (handler_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "ESP Insights retry handler unavailable: %s",
+            esp_err_to_name(handler_err)
+        );
+    }
+
+    return insights_bridge_attempt_init();
 #else
     ESP_LOGI(TAG, "ESP Insights bridge disabled (CONFIG_APP_ESP_INSIGHTS=n)");
     return ESP_OK;
+#endif
+}
+
+
+void insights_bridge_on_network_ready(void)
+{
+#if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
+    if (!s_retry_pending || s_initialized) {
+        return;
+    }
+
+    /* Consume the request before entering the attempt. A failed attempt sets
+     * it again, so a later APP_EVENT_WIFI_STA_CONNECTED event can retry
+     * without re-entrancy. */
+    s_retry_pending = false;
+    (void)insights_bridge_attempt_init();
 #endif
 }
 

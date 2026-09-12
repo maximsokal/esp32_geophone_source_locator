@@ -6,6 +6,7 @@ param(
 
     [string]$ProjectPath = ".",
     [string]$BuildDir = "build",
+    [string]$Sdkconfig,
     [string]$Port,
     [string]$Target,
 
@@ -53,6 +54,14 @@ $build = if ([IO.Path]::IsPathRooted($BuildDir)) {
 if ([string]::IsNullOrWhiteSpace($build)) {
     $build = Join-Path $project $BuildDir
 }
+$sdkconfigPath = $null
+if (-not [string]::IsNullOrWhiteSpace($Sdkconfig)) {
+    $sdkconfigPath = if ([IO.Path]::IsPathRooted($Sdkconfig)) {
+        [IO.Path]::GetFullPath($Sdkconfig)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path $project $Sdkconfig))
+    }
+}
 
 $env:IDF_PATH = $idfPath
 $env:IDF_TOOLS_PATH = "C:\Espressif"
@@ -83,7 +92,12 @@ try {
             if (-not [string]::IsNullOrWhiteSpace($Target)) {
                 Invoke-Checked $pythonPath @($idfPyPath, "-B", $build, "set-target", $Target)
             }
-            Invoke-Checked $pythonPath @($idfPyPath, "-B", $build, "reconfigure")
+            $reconfigureArgs = @($idfPyPath, "-B", $build)
+            if ($sdkconfigPath) {
+                $reconfigureArgs += @("-D", "SDKCONFIG=$sdkconfigPath")
+            }
+            $reconfigureArgs += "reconfigure"
+            Invoke-Checked $pythonPath $reconfigureArgs
             Invoke-Checked $ninjaPath @("-C", $build, "-j", $Jobs)
         }
         "flash" {

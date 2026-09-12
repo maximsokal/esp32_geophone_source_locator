@@ -13,6 +13,12 @@ param(
     [switch]$ConfirmTftRendering,
     [switch]$ConfirmKeypadResponsive,
     [switch]$ConfirmPowerButtonResponsive,
+    [switch]$ConfirmPowerButtonTiming,
+    [ValidateRange(0, 60000)]
+    [int]$PowerButtonTimingMs = 0,
+    [ValidateRange(0, 60000)]
+    [int]$PowerButtonTimingTargetMs = 0,
+    [int]$PowerButtonTimingToleranceMs = -1,
 
     [ValidateRange(5, 900)]
     [int]$TimeoutSeconds = 120,
@@ -76,6 +82,44 @@ function Add-PhysicalObservationCheck {
 }
 
 
+function Add-PowerButtonTimingCheck {
+    param(
+        [System.Collections.Generic.List[object]]$Checks,
+        [bool]$Confirmed,
+        [bool]$Replay,
+        [bool]$RequireFull,
+        [int]$MeasuredMs,
+        [int]$TargetMs,
+        [int]$ToleranceMs
+    )
+
+    $name = "Power button raw timing"
+    $measurementInstruction = "Measure raw GPIO21 HIGH to the authoritative shutdown latch, then pass -ConfirmPowerButtonTiming -PowerButtonTimingMs <measured> -PowerButtonTimingTargetMs <target> -PowerButtonTimingToleranceMs <tolerance>."
+
+    if ($Replay -and $Confirmed) {
+        Add-Check $Checks $name "BLOCKED" "-ConfirmPowerButtonTiming cannot be used with -LogPath: a captured log cannot prove a raw GPIO21 timing measurement."
+    } elseif ($Confirmed -and -not $RequireFull) {
+        Add-Check $Checks $name "BLOCKED" "-ConfirmPowerButtonTiming requires -RequireFullPipeline so the timing attestation is attached to a complete live run."
+    } elseif ($Replay) {
+        $status = if ($RequireFull) { "BLOCKED" } else { "SKIPPED" }
+        Add-Check $Checks $name $status "Serial replay cannot prove raw GPIO21 HIGH to shutdown-latch timing."
+    } elseif (-not $Confirmed) {
+        $status = if ($RequireFull) { "BLOCKED" } else { "SKIPPED" }
+        Add-Check $Checks $name $status $measurementInstruction
+    } elseif ($MeasuredMs -le 0 -or $TargetMs -le 0 -or $ToleranceMs -lt 0) {
+        Add-Check $Checks $name "BLOCKED" "The timing attestation requires positive measured/target milliseconds and an explicit non-negative tolerance."
+    } else {
+        $difference = [math]::Abs($MeasuredMs - $TargetMs)
+        $detail = "Measured GPIO21 HIGH -> shutdown latch={0} ms; target={1} ms +/- {2} ms." -f $MeasuredMs, $TargetMs, $ToleranceMs
+        if ($difference -le $ToleranceMs) {
+            Add-Check $Checks $name "PASS" ($detail + " Within tolerance.")
+        } else {
+            Add-Check $Checks $name "FAIL" ($detail + " Outside tolerance.")
+        }
+    }
+}
+
+
 function Resolve-RepoPath {
     param([string]$InputPath)
 
@@ -104,6 +148,37 @@ function Read-PipelineLog {
 }
 
 
+function Add-PowerButtonTimingMarkerCheck {
+    param(
+        [System.Collections.Generic.List[object]]$Checks,
+        [string]$Content
+    )
+
+    $marker = [regex]::Match(
+        $Content,
+        "(?im)POWER_BUTTON_TIMING:\s*debounced_down_ms=(\d+)\s+latch_ms=(\d+)\s+debounced_elapsed_ms=(\d+)\s+configured_long_press_ms=(\d+)"
+    )
+    if ($marker.Success) {
+        [uint64]$debouncedDownMs = $marker.Groups[1].Value
+        [uint64]$latchMs = $marker.Groups[2].Value
+        [uint64]$reportedElapsedMs = $marker.Groups[3].Value
+        [uint64]$configuredLongPressMs = $marker.Groups[4].Value
+
+        if ($latchMs -lt $debouncedDownMs) {
+            Add-Check $Checks "Power button timing marker" "FAIL" "POWER_BUTTON_TIMING has latch_ms earlier than debounced_down_ms."
+        } elseif (($latchMs - $debouncedDownMs) -ne $reportedElapsedMs) {
+            Add-Check $Checks "Power button timing marker" "FAIL" "POWER_BUTTON_TIMING debounced_elapsed_ms does not match latch_ms - debounced_down_ms."
+        } else {
+            Add-Check $Checks "Power button timing marker" "PASS" ("debounced_elapsed_ms={0} ms; configured_long_press_ms={1} ms." -f $reportedElapsedMs, $configuredLongPressMs)
+        }
+    } elseif ($Content -match "(?im)POWER_BUTTON[_ ]?TIMING") {
+        Add-Check $Checks "Power button timing marker" "FAIL" "POWER_BUTTON_TIMING was present but malformed or incomplete."
+    } else {
+        Add-Check $Checks "Power button timing marker" "SKIPPED" "No debounced power-button timing marker was observed."
+    }
+}
+
+
 function Test-PipelineLog {
     param(
         [string]$Content,
@@ -113,6 +188,7 @@ function Test-PipelineLog {
     $checks = [System.Collections.Generic.List[object]]::new()
     if ([string]::IsNullOrWhiteSpace($Content)) {
         Add-Check $checks "Serial log" "FAIL" "The log is empty or could not be read."
+        Add-PowerButtonTimingMarkerCheck $checks $Content
         return $checks
     }
 
@@ -182,6 +258,8 @@ function Test-PipelineLog {
     } else {
         Add-Check $checks "Acquisition read failures" "FAIL" ("Failure marker observed: {0}." -f $readFailure.Value.Trim())
     }
+
+    Add-PowerButtonTimingMarkerCheck $checks $Content
 
     return $checks
 }
@@ -747,6 +825,9 @@ try {
             "AD7606 acquisition started",
             "AD7606 channel diagnostics"
         )
+        if ($ConfirmPowerButtonTiming) {
+            $required += "Power button timing marker"
+        }
         $missing = @($parsedChecks | Where-Object { $_.Name -in $required -and $_.Status -ne "PASS" })
         if ($missing.Count -eq 0) {
             break
@@ -792,6 +873,13 @@ try {
         "Press the power button during acquisition and confirm ordered shutdown completes." `
         "Serial replay cannot prove physical power-button responsiveness." `
         "ConfirmPowerButtonResponsive"
+    Add-PowerButtonTimingCheck $checks `
+        ([bool]$ConfirmPowerButtonTiming) `
+        ([bool]$isReplay) `
+        ([bool]$RequireFullPipeline) `
+        $PowerButtonTimingMs `
+        $PowerButtonTimingTargetMs `
+        $PowerButtonTimingToleranceMs
 
     if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
         if ($Record) {
@@ -829,7 +917,7 @@ foreach ($check in $checks) {
 if ($isReplay) {
     Write-Host ("LOG_REPLAY: {0}" -f $logFile)
 }
-Write-Host "LIMITATIONS: TFT pixels and physical keypad/power-button responsiveness require live operator observation; use the explicit -ConfirmTftRendering, -ConfirmKeypadResponsive and -ConfirmPowerButtonResponsive switches to record those attestations."
+Write-Host "LIMITATIONS: TFT pixels, physical keypad/power-button responsiveness, and raw GPIO21 HIGH -> shutdown-latch timing require live hardware observation; use the explicit -ConfirmTftRendering, -ConfirmKeypadResponsive, -ConfirmPowerButtonResponsive and -ConfirmPowerButtonTiming switches. The timing switch also requires measured -PowerButtonTimingMs, -PowerButtonTimingTargetMs and -PowerButtonTimingToleranceMs values."
 Write-Host ("PIPELINE_HIL_RESULT: {0}" -f $result)
 
 if ($result -eq "PASS") {

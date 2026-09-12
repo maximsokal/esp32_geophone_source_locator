@@ -1,0 +1,17 @@
+# Explicit opt-in compile/link profile for the ESP Insights bridge.
+# The auth provider is a non-secret test fixture; do not use it for a device
+# intended to report to a real Insights account.
+CONFIG_APP_ESP_INSIGHTS=y
+CONFIG_APP_ESP_INSIGHTS_TEST_AUTH_PROVIDER=y
+CONFIG_DIAG_ENABLE_METRICS=y
+
+# Keep the bridge limited to the selected runtime health metrics registered by
+# components/insights_bridge. The built-in variable and heap/Wi-Fi producers
+# include network identity and are deliberately disabled.
+# CONFIG_DIAG_ENABLE_HEAP_METRICS is not set
+# CONFIG_DIAG_ENABLE_WIFI_METRICS is not set
+# CONFIG_DIAG_ENABLE_VARIABLES is not set
+# CONFIG_DIAG_ENABLE_NETWORK_VARIABLES is not set
+
+CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS=y
+CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS_HOST="https://client.insights.espressif.com"

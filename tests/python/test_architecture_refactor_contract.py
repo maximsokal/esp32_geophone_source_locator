@@ -63,6 +63,7 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     status = read("components/status_indicator/status_indicator.c")
     status_header = read("components/status_indicator/include/status_indicator.h")
     insights = read("components/insights_bridge/insights_bridge.c")
+    startup = read("main/app_startup.c")
     dsp = read("components/seismic_dsp/seismic_dsp.c")
     dsp_header = read("components/seismic_dsp/include/seismic_dsp.h")
 
@@ -79,6 +80,13 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     assert '"internal_free"' in insights
     assert '"acquisition_heartbeat"' in insights
     assert ".log_type = 0U" in insights
+    assert startup.index("wifi_manager_init()") < startup.index("insights_bridge_init()")
+    assert startup.index("insights_bridge_init()") < startup.index("wifi_manager_start()")
+    assert "esp_event_handler_register_with" in insights
+    assert "app_events_get_loop()" in insights
+    assert "APP_EVENT_WIFI_STA_CONNECTED" in insights
+    assert "s_retry_pending" in insights
+    assert "CONFIG_DIAG_ENABLE_VARIABLES=n" in insights
 
     assert "seismic_dsp_init(" in dsp
     assert "seismic_dsp_process_block(" in dsp
@@ -88,6 +96,32 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     assert "SEISMIC_DSP_STAGE_CROSS_CORRELATION" in dsp_header
     assert "xTaskCreate" not in dsp
     assert "input_passthrough = true" in dsp
+
+
+def test_insights_profile_is_explicit_and_uses_non_secret_auth_fixture():
+    defaults = read("sdkconfig.insights.defaults")
+    root_cmake = read("CMakeLists.txt")
+    component_cmake = read("components/insights_bridge/CMakeLists.txt")
+    kconfig = read("components/insights_bridge/Kconfig")
+    provider = read("components/insights_bridge/insights_test_auth_provider.c")
+    idf_runner = read("tools/run_idf.ps1")
+    profile_runner = read("tools/run_insights_profile.ps1")
+
+    assert "CONFIG_APP_ESP_INSIGHTS=y" in defaults
+    assert "CONFIG_APP_ESP_INSIGHTS_TEST_AUTH_PROVIDER=y" in defaults
+    assert "CONFIG_DIAG_ENABLE_METRICS=y" in defaults
+    assert "# CONFIG_DIAG_ENABLE_HEAP_METRICS is not set" in defaults
+    assert "# CONFIG_DIAG_ENABLE_WIFI_METRICS is not set" in defaults
+    assert "# CONFIG_DIAG_ENABLE_VARIABLES is not set" in defaults
+    assert "CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS=y" in defaults
+    assert "GEOLOCATOR_INSIGHTS_PROFILE" in root_cmake
+    assert "[string]$Sdkconfig" in idf_runner
+    assert '"SDKCONFIG=$sdkconfigPath"' in idf_runner
+    assert "-Sdkconfig $profileSdkconfig" in profile_runner
+    assert "CONFIG_APP_ESP_INSIGHTS_TEST_AUTH_PROVIDER" in component_cmake
+    assert "APP_ESP_INSIGHTS_TEST_AUTH_PROVIDER" in kconfig
+    assert "geolocator-test-auth-key" in provider
+    assert "espressif/qrcode" not in defaults + root_cmake + component_cmake
 
 
 def test_shared_bus_and_ui_callback_have_nonblocking_ownership_boundaries():

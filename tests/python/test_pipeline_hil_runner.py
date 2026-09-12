@@ -353,13 +353,15 @@ def test_replay_never_accepts_physical_attestations(tmp_path: Path):
         "-ConfirmTftRendering",
         "-ConfirmKeypadResponsive",
         "-ConfirmPowerButtonResponsive",
+        "-ConfirmPowerButtonTiming",
     )
 
     assert result.returncode == 1
-    assert result.stdout.count("cannot be used with -LogPath") == 3
+    assert result.stdout.count("cannot be used with -LogPath") == 4
     assert "Physical TFT rendering                 BLOCKED" in result.stdout
     assert "Physical keypad responsiveness         BLOCKED" in result.stdout
     assert "Physical power-button responsiveness   BLOCKED" in result.stdout
+    assert "Power button raw timing" in result.stdout
     assert "PIPELINE_HIL_RESULT: BLOCKED" in result.stdout
 
 

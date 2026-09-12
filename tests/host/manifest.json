@@ -14,6 +14,18 @@
       ]
     },
     {
+      "name": "adc_service_settling",
+      "sources": [
+        "components/adc_service/adc_service_read.c",
+        "components/adc_service/tests/adc_service_settling_test.c"
+      ],
+      "include_dirs": [
+        "components/adc_service/tests/stubs",
+        "components/adc_service/include",
+        "components/adc_service"
+      ]
+    },
+    {
       "name": "runtime_observability",
       "sources": [
         "components/runtime_observability/runtime_observability.c",
