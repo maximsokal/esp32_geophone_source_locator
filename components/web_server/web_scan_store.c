@@ -148,6 +148,104 @@ static esp_err_t web_scan_recover_file(
     return rename(backup_path, final_path) == 0 ? ESP_OK : ESP_FAIL;
 }
 
+/*
+ * Keep network waits outside the storage/SPI2 arbitration window. Holding the
+ * storage operation while httpd_req_recv()/send waits for Wi-Fi also keeps
+ * LVGL quiesced because TFT and SD share SPI2. Every helper below therefore
+ * owns only the actual FATFS operation, never socket I/O.
+ */
+static esp_err_t web_scan_open_temp(
+    const char *temp_path,
+    FILE **file_out
+)
+{
+    if (temp_path == NULL || file_out == NULL) return ESP_ERR_INVALID_ARG;
+    *file_out = NULL;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+
+    (void)remove(temp_path);
+    FILE *file = fopen(temp_path, "wb");
+    if (file == NULL) err = ESP_FAIL;
+
+    storage_manager_operation_end();
+    if (err == ESP_OK) *file_out = file;
+    return err;
+}
+
+static esp_err_t web_scan_write_chunk(
+    FILE *file,
+    const unsigned char *buffer,
+    size_t size
+)
+{
+    if (file == NULL || buffer == NULL || size == 0U) return ESP_ERR_INVALID_ARG;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+
+    if (fwrite(buffer, 1U, size, file) != size) err = ESP_FAIL;
+
+    storage_manager_operation_end();
+    return err;
+}
+
+static esp_err_t web_scan_close_file(FILE **file)
+{
+    if (file == NULL || *file == NULL) return ESP_OK;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        /* Match recorder shutdown semantics: never leak a libc FILE handle if
+         * storage has already become unavailable. This path is exceptional;
+         * normal close/flush always runs under the SPI2 guard. */
+        const int forced_close = fclose(*file);
+        *file = NULL;
+        ESP_LOGW(TAG, "Forced scan FILE close without storage guard: lock=%s fclose=%d",
+                 esp_err_to_name(err), forced_close);
+        return err;
+    }
+
+    if (fflush(*file) != 0 || fclose(*file) != 0) err = ESP_FAIL;
+    *file = NULL;
+    storage_manager_operation_end();
+    return err;
+}
+
+static esp_err_t web_scan_commit_temp(
+    const char *final_path,
+    const char *temp_path,
+    const char *backup_path
+)
+{
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+
+    (void)remove(backup_path);
+    const bool had_final = web_scan_file_exists(final_path);
+    if (had_final && rename(final_path, backup_path) != 0) {
+        err = ESP_FAIL;
+    }
+    else if (rename(temp_path, final_path) != 0) {
+        if (had_final) (void)rename(backup_path, final_path);
+        err = ESP_FAIL;
+    }
+    else {
+        (void)remove(backup_path);
+    }
+
+    storage_manager_operation_end();
+    return err;
+}
+
+static void web_scan_remove_temp_best_effort(const char *temp_path)
+{
+    if (storage_manager_operation_begin() != ESP_OK) return;
+    (void)remove(temp_path);
+    storage_manager_operation_end();
+}
+
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
 {
     if (request->content_len <= 0 || (size_t)request->content_len > WEB_SCAN_MAX_BYTES) {
@@ -162,85 +260,155 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
-    err = storage_manager_operation_begin();
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, err, 0U);
+    unsigned char *buffer = heap_caps_malloc(
+        WEB_SCAN_IO_BUFFER_SIZE,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (buffer == NULL) {
+        return web_scan_send_json(request, "scan_save", object_id, ESP_ERR_NO_MEM, 0U);
+    }
 
     FILE *file = NULL;
-    unsigned char *buffer = NULL;
     size_t received_total = 0U;
     unsigned timeout_count = 0U;
-    bool had_final = false;
 
-    (void)remove(temp_path);
-    file = fopen(temp_path, "wb");
-    if (file == NULL) {
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-    buffer = heap_caps_malloc(WEB_SCAN_IO_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (buffer == NULL) {
-        err = ESP_ERR_NO_MEM;
-        goto cleanup;
-    }
+    err = web_scan_open_temp(temp_path, &file);
+    if (err == ESP_OK) {
+        while (received_total < (size_t)request->content_len) {
+            const size_t remaining = (size_t)request->content_len - received_total;
+            const size_t request_size = remaining < WEB_SCAN_IO_BUFFER_SIZE
+                ? remaining
+                : WEB_SCAN_IO_BUFFER_SIZE;
 
-    while (received_total < (size_t)request->content_len) {
-        const size_t remaining = (size_t)request->content_len - received_total;
-        const size_t request_size = remaining < WEB_SCAN_IO_BUFFER_SIZE ? remaining : WEB_SCAN_IO_BUFFER_SIZE;
-        const int received = httpd_req_recv(request, (char *)buffer, request_size);
-        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
-            if (++timeout_count >= WEB_SCAN_RECV_TIMEOUTS) {
-                err = ESP_ERR_TIMEOUT;
-                goto cleanup;
+            /* Network receive is deliberately outside storage_manager. */
+            const int received = httpd_req_recv(
+                request,
+                (char *)buffer,
+                request_size
+            );
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                if (++timeout_count >= WEB_SCAN_RECV_TIMEOUTS) {
+                    err = ESP_ERR_TIMEOUT;
+                    break;
+                }
+                continue;
             }
-            continue;
+            if (received <= 0) {
+                err = ESP_FAIL;
+                break;
+            }
+
+            timeout_count = 0U;
+            err = web_scan_write_chunk(file, buffer, (size_t)received);
+            if (err != ESP_OK) break;
+            received_total += (size_t)received;
         }
-        if (received <= 0) {
-            err = ESP_FAIL;
-            goto cleanup;
-        }
-        timeout_count = 0U;
-        if (fwrite(buffer, 1U, (size_t)received, file) != (size_t)received) {
-            err = ESP_FAIL;
-            goto cleanup;
-        }
-        received_total += (size_t)received;
     }
 
-    if (fflush(file) != 0 || fclose(file) != 0) {
-        file = NULL;
-        err = ESP_FAIL;
-        goto cleanup;
+    if (file != NULL) {
+        const esp_err_t close_err = web_scan_close_file(&file);
+        if (err == ESP_OK) err = close_err;
     }
-    file = NULL;
 
-    (void)remove(backup_path);
-    had_final = web_scan_file_exists(final_path);
-    if (had_final && rename(final_path, backup_path) != 0) {
-        err = ESP_FAIL;
-        goto cleanup;
+    if (err == ESP_OK) {
+        err = web_scan_commit_temp(final_path, temp_path, backup_path);
     }
-    if (rename(temp_path, final_path) != 0) {
-        if (had_final) (void)rename(backup_path, final_path);
-        err = ESP_FAIL;
-        goto cleanup;
+    else {
+        web_scan_remove_temp_best_effort(temp_path);
     }
-    (void)remove(backup_path);
-    err = ESP_OK;
 
-cleanup:
-    if (file != NULL) (void)fclose(file);
     free(buffer);
-    if (err != ESP_OK) (void)remove(temp_path);
-    storage_manager_operation_end();
 
     const uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Saved 3D scan: object=%s bytes=%u elapsed=%u ms", object_id, (unsigned)received_total, (unsigned)elapsed_ms);
+        ESP_LOGI(
+            TAG,
+            "Saved 3D scan: object=%s bytes=%u elapsed=%u ms chunked_storage_windows=1",
+            object_id,
+            (unsigned)received_total,
+            (unsigned)elapsed_ms
+        );
     }
     else {
-        ESP_LOGE(TAG, "3D scan save failed: object=%s received=%u/%u err=%s", object_id, (unsigned)received_total, (unsigned)request->content_len, esp_err_to_name(err));
+        ESP_LOGE(
+            TAG,
+            "3D scan save failed: object=%s received=%u/%u err=%s",
+            object_id,
+            (unsigned)received_total,
+            (unsigned)request->content_len,
+            esp_err_to_name(err)
+        );
     }
     return web_scan_send_json(request, "scan_save", object_id, err, received_total);
+}
+
+static esp_err_t web_scan_open_for_stream(
+    const char *final_path,
+    const char *temp_path,
+    const char *backup_path,
+    FILE **file_out,
+    size_t *size_out
+)
+{
+    if (file_out == NULL || size_out == NULL) return ESP_ERR_INVALID_ARG;
+    *file_out = NULL;
+    *size_out = 0U;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+
+    FILE *file = NULL;
+    err = web_scan_recover_file(final_path, temp_path, backup_path);
+    if (err == ESP_OK) {
+        file = fopen(final_path, "rb");
+        if (file == NULL) err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+
+    if (err == ESP_OK && fseek(file, 0L, SEEK_END) != 0) err = ESP_FAIL;
+    long file_size = 0L;
+    if (err == ESP_OK) {
+        file_size = ftell(file);
+        if (file_size <= 0 || (unsigned long)file_size > WEB_SCAN_MAX_BYTES) {
+            err = ESP_ERR_INVALID_SIZE;
+        }
+    }
+    if (err == ESP_OK && fseek(file, 0L, SEEK_SET) != 0) err = ESP_FAIL;
+
+    if (err != ESP_OK && file != NULL) {
+        (void)fclose(file);
+        file = NULL;
+    }
+
+    storage_manager_operation_end();
+
+    if (err == ESP_OK) {
+        *file_out = file;
+        *size_out = (size_t)file_size;
+    }
+    return err;
+}
+
+static esp_err_t web_scan_read_chunk(
+    FILE *file,
+    unsigned char *buffer,
+    size_t capacity,
+    size_t *read_out
+)
+{
+    if (file == NULL || buffer == NULL || capacity == 0U || read_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *read_out = 0U;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+
+    const size_t count = fread(buffer, 1U, capacity, file);
+    if (ferror(file) != 0) err = ESP_FAIL;
+    *read_out = count;
+
+    storage_manager_operation_end();
+    return err;
 }
 
 static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
@@ -253,58 +421,26 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
-    err = storage_manager_operation_begin();
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, err, 0U);
-
     FILE *file = NULL;
-    unsigned char *data = NULL;
     size_t size = 0U;
-
-    err = web_scan_recover_file(final_path, temp_path, backup_path);
-    if (err != ESP_OK) goto cleanup;
-    file = fopen(final_path, "rb");
-    if (file == NULL) {
-        err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
-        goto cleanup;
-    }
-    if (fseek(file, 0L, SEEK_END) != 0) {
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-    const long file_size = ftell(file);
-    if (file_size <= 0 || (unsigned long)file_size > WEB_SCAN_MAX_BYTES) {
-        err = ESP_ERR_INVALID_SIZE;
-        goto cleanup;
-    }
-    size = (size_t)file_size;
-    if (fseek(file, 0L, SEEK_SET) != 0) {
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-
-    data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (data == NULL) {
-        err = ESP_ERR_NO_MEM;
-        goto cleanup;
-    }
-    if (fread(data, 1U, size, file) != size) {
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-    if (fclose(file) != 0) {
-        file = NULL;
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-    file = NULL;
-    err = ESP_OK;
-
-cleanup:
-    if (file != NULL) (void)fclose(file);
-    storage_manager_operation_end();
+    err = web_scan_open_for_stream(
+        final_path,
+        temp_path,
+        backup_path,
+        &file,
+        &size
+    );
     if (err != ESP_OK) {
-        free(data);
         return web_scan_send_json(request, "scan_load", object_id, err, 0U);
+    }
+
+    unsigned char *buffer = heap_caps_malloc(
+        WEB_SCAN_IO_BUFFER_SIZE,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (buffer == NULL) {
+        (void)web_scan_close_file(&file);
+        return web_scan_send_json(request, "scan_load", object_id, ESP_ERR_NO_MEM, 0U);
     }
 
     char size_header[24];
@@ -312,17 +448,66 @@ cleanup:
     httpd_resp_set_type(request, "application/octet-stream");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     httpd_resp_set_hdr(request, "X-Geo-Scan-Bytes", size_header);
-    const esp_err_t send_err = httpd_resp_send(request, (const char *)data, (ssize_t)size);
-    free(data);
+
+    size_t sent_total = 0U;
+    while (sent_total < size) {
+        const size_t remaining = size - sent_total;
+        const size_t request_size = remaining < WEB_SCAN_IO_BUFFER_SIZE
+            ? remaining
+            : WEB_SCAN_IO_BUFFER_SIZE;
+        size_t read_count = 0U;
+
+        err = web_scan_read_chunk(
+            file,
+            buffer,
+            request_size,
+            &read_count
+        );
+        if (err != ESP_OK || read_count == 0U) {
+            if (err == ESP_OK) err = ESP_FAIL;
+            break;
+        }
+
+        /* Socket backpressure is deliberately outside storage_manager. */
+        err = httpd_resp_send_chunk(
+            request,
+            (const char *)buffer,
+            (ssize_t)read_count
+        );
+        if (err != ESP_OK) break;
+        sent_total += read_count;
+    }
+
+    const esp_err_t close_err = web_scan_close_file(&file);
+    if (err == ESP_OK) err = close_err;
+
+    if (err == ESP_OK) {
+        err = httpd_resp_send_chunk(request, NULL, 0);
+    }
+
+    free(buffer);
 
     const uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
-    if (send_err == ESP_OK) {
-        ESP_LOGI(TAG, "Loaded 3D scan: object=%s bytes=%u elapsed=%u ms", object_id, (unsigned)size, (unsigned)elapsed_ms);
+    if (err == ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "Loaded 3D scan: object=%s bytes=%u elapsed=%u ms chunked_storage_windows=1",
+            object_id,
+            (unsigned)sent_total,
+            (unsigned)elapsed_ms
+        );
     }
     else {
-        ESP_LOGE(TAG, "3D scan send failed: object=%s bytes=%u err=%s", object_id, (unsigned)size, esp_err_to_name(send_err));
+        ESP_LOGE(
+            TAG,
+            "3D scan stream failed: object=%s sent=%u/%u err=%s",
+            object_id,
+            (unsigned)sent_total,
+            (unsigned)size,
+            esp_err_to_name(err)
+        );
     }
-    return send_err;
+    return err;
 }
 
 static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id)
