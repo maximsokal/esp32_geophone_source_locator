@@ -1,6 +1,17 @@
 #include "web_server_lifecycle_policy.h"
 
 
+web_lifecycle_state_t web_lifecycle_effective_network_state(
+    web_lifecycle_state_t event_state,
+    bool radio_state_uncertain
+)
+{
+    return radio_state_uncertain
+        ? WEB_LIFECYCLE_STATE_STA_DISCONNECTED
+        : event_state;
+}
+
+
 size_t web_lifecycle_state_actions(
     web_lifecycle_state_t state,
     web_lifecycle_action_t *actions,

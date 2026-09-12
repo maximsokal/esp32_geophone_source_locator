@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 
@@ -35,4 +36,14 @@ size_t web_lifecycle_state_actions(
     web_lifecycle_state_t state,
     web_lifecycle_action_t *actions,
     size_t action_capacity
+);
+
+
+/*
+ * Apply the radio-safety override to a state derived from a network event.
+ * The caller must evaluate this at the lifecycle enqueue boundary.
+ */
+web_lifecycle_state_t web_lifecycle_effective_network_state(
+    web_lifecycle_state_t event_state,
+    bool radio_state_uncertain
 );

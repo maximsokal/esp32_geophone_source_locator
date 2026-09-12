@@ -253,6 +253,32 @@ static esp_err_t web_server_lifecycle_set_authoritative_state(
 }
 
 
+static esp_err_t web_server_lifecycle_set_network_event_state(
+    web_lifecycle_state_t event_state
+)
+{
+    /* The safety decision and queue commit must share this mutex. Otherwise
+     * a transition can publish authoritative DISCONNECTED after the check
+     * but before this event overwrites the one-slot queue. */
+    if (
+        s_lifecycle_lock == NULL ||
+        xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) != pdTRUE
+    ) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    const web_lifecycle_state_t desired_state =
+        web_lifecycle_effective_network_state(
+            event_state,
+            wifi_manager_is_radio_state_uncertain()
+        );
+    const esp_err_t err =
+        web_server_lifecycle_set_desired_state_locked(desired_state);
+    (void)xSemaphoreGive(s_lifecycle_lock);
+    return err;
+}
+
+
 static void web_server_mode_transition_complete(
     void *context,
     bool running,
@@ -1023,32 +1049,30 @@ static void web_server_network_event_handler(
     (void)context;
     (void)event_data;
 
-    web_lifecycle_state_t desired_state;
-    if (wifi_manager_is_radio_state_uncertain()) {
-        desired_state = WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
-    }
-    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        desired_state = WEB_LIFECYCLE_STATE_STA_CONNECTED;
+    web_lifecycle_state_t event_state;
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        event_state = WEB_LIFECYCLE_STATE_STA_CONNECTED;
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
-        desired_state = WEB_LIFECYCLE_STATE_SETUP_AP;
+        event_state = WEB_LIFECYCLE_STATE_SETUP_AP;
     }
     else if (
         event_base == WIFI_EVENT &&
         (event_id == WIFI_EVENT_STA_DISCONNECTED || event_id == WIFI_EVENT_STA_STOP)
     ) {
-        desired_state = WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
+        event_state = WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
     }
     else {
         return;
     }
 
-    const esp_err_t err = web_server_lifecycle_set_desired_state(desired_state);
+    const esp_err_t err =
+        web_server_lifecycle_set_network_event_state(event_state);
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
             "WEB_LIFECYCLE state=%d was not queued: %s",
-            (int)desired_state,
+            (int)event_state,
             esp_err_to_name(err)
         );
     }

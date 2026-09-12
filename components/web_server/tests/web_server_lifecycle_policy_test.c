@@ -17,6 +17,14 @@ typedef struct {
 } fake_desired_state_mailbox_t;
 
 typedef struct {
+    bool held;
+} fake_lifecycle_lock_t;
+
+typedef struct {
+    bool uncertain;
+} fake_radio_state_t;
+
+typedef struct {
     bool transition_active;
     bool deferred_state_valid;
     web_lifecycle_state_t deferred_state;
@@ -31,6 +39,55 @@ static void fake_desired_state_overwrite(
 {
     mailbox->desired_state = desired_state;
     mailbox->pending = true;
+}
+
+
+static void fake_lifecycle_lock_take(
+    fake_lifecycle_lock_t *lock
+)
+{
+    assert(!lock->held);
+    lock->held = true;
+}
+
+
+static void fake_lifecycle_lock_give(
+    fake_lifecycle_lock_t *lock
+)
+{
+    assert(lock->held);
+    lock->held = false;
+}
+
+
+static void fake_network_event_enqueue(
+    fake_lifecycle_lock_t *lock,
+    fake_desired_state_mailbox_t *mailbox,
+    web_lifecycle_state_t event_state,
+    const fake_radio_state_t *radio_state
+)
+{
+    assert(radio_state != NULL);
+    fake_lifecycle_lock_take(lock);
+    const web_lifecycle_state_t effective_state =
+        web_lifecycle_effective_network_state(
+            event_state,
+            radio_state->uncertain
+        );
+    fake_desired_state_overwrite(mailbox, effective_state);
+    fake_lifecycle_lock_give(lock);
+}
+
+
+static void fake_authoritative_state_enqueue(
+    fake_lifecycle_lock_t *lock,
+    fake_desired_state_mailbox_t *mailbox,
+    web_lifecycle_state_t desired_state
+)
+{
+    fake_lifecycle_lock_take(lock);
+    fake_desired_state_overwrite(mailbox, desired_state);
+    fake_lifecycle_lock_give(lock);
 }
 
 
@@ -291,6 +348,14 @@ int main(void)
     ) == 4U);
     assert(truncated[0] == WEB_LIFECYCLE_ACTION_MDNS_STOP);
     assert(truncated[1] == WEB_LIFECYCLE_ACTION_HTTPS_STOP);
+    assert(web_lifecycle_effective_network_state(
+        WEB_LIFECYCLE_STATE_SETUP_AP,
+        false
+    ) == WEB_LIFECYCLE_STATE_SETUP_AP);
+    assert(web_lifecycle_effective_network_state(
+        WEB_LIFECYCLE_STATE_SETUP_AP,
+        true
+    ) == WEB_LIFECYCLE_STATE_STA_DISCONNECTED);
 
     fake_web_resources_t resources = { 0 };
     apply_plan(WEB_LIFECYCLE_STATE_STA_CONNECTED, &resources);
@@ -322,6 +387,43 @@ int main(void)
     assert(!resources.mdns_ready);
     assert(resources.http_running);
     assert(!resources.https_running);
+
+    /* A late AP_START can begin before target cleanup fails, then reach the
+     * enqueue boundary afterward. The uncertainty decision must be made while
+     * holding the same lifecycle lock as the authoritative queue overwrite;
+     * otherwise this event can resurrect HTTP after DISCONNECTED wins. */
+    resources = (fake_web_resources_t){ 0 };
+    apply_plan(WEB_LIFECYCLE_STATE_STA_CONNECTED, &resources);
+    mailbox = (fake_desired_state_mailbox_t){ 0 };
+    fake_lifecycle_lock_t lifecycle_lock = { 0 };
+    const web_lifecycle_state_t late_event_state =
+        WEB_LIFECYCLE_STATE_SETUP_AP;
+    fake_radio_state_t radio_state = { false };
+    /* The event derived AP before the target cleanup failure became visible. */
+    assert(web_lifecycle_effective_network_state(
+        late_event_state,
+        radio_state.uncertain
+    ) == WEB_LIFECYCLE_STATE_SETUP_AP);
+    /* Cleanup failure publishes uncertainty before authoritative DISCONNECTED. */
+    radio_state.uncertain = true;
+    fake_authoritative_state_enqueue(
+        &lifecycle_lock,
+        &mailbox,
+        WEB_LIFECYCLE_STATE_STA_DISCONNECTED
+    );
+    fake_network_event_enqueue(
+        &lifecycle_lock,
+        &mailbox,
+        late_event_state,
+        &radio_state
+    );
+    assert(fake_desired_state_receive(&mailbox, &queued_state));
+    assert(queued_state == WEB_LIFECYCLE_STATE_STA_DISCONNECTED);
+    apply_plan(queued_state, &resources);
+    assert(!resources.mdns_ready);
+    assert(!resources.http_running);
+    assert(!resources.https_running);
+    assert(!lifecycle_lock.held);
 
     /* The prepare ACK must not open the lifecycle gate before the radio stop
      * itself completes. Network events are deferred, latest-state wins, and

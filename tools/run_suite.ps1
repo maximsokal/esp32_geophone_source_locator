@@ -84,7 +84,7 @@ if ($Suite -eq "Web" -or $Suite -eq "All") {
 if ($Suite -eq "All") {
     Invoke-SuiteStep -Name "ESP Unity build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
         "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runIdf,
-        "-Action", "build", "-ProjectPath", "test_app", "-BuildDir", "build-s3",
+        "-Action", "build", "-ProjectPath", "tests/target/test_app", "-BuildDir", "build-s3",
         "-Target", "esp32s3", "-Jobs", "2"
     )
     Invoke-SuiteStep -Name "ESP production build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
