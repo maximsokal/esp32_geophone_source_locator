@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "sdkconfig.h"
 #include "button_gpio.h"
 #include "driver/gpio.h"
 #include "freertos/event_groups.h"
@@ -38,6 +39,13 @@ static unsigned hook_bits_at_call;
 static unsigned app_event_posts;
 static esp_err_t fake_best_effort_result;
 static uint32_t fake_timestamp_ms;
+
+
+static uint32_t fake_button_time_to_ticks(uint32_t time_ms)
+{
+    const uint32_t ticks = time_ms / CONFIG_BUTTON_PERIOD_TIME_MS;
+    return ticks > 0U ? ticks : 1U;
+}
 
 
 static void reset_fakes(void)
@@ -163,6 +171,16 @@ esp_err_t iot_button_register_cb(
 {
     (void)button;
     (void)event_args;
+
+    /* Mirror the espressif/button 4.2.0 registration contract that caused the
+     * real boot loop: the effective long-press tick must be strictly greater
+     * than short_press_ticks for BUTTON_LONG_PRESS_START. */
+    if (event == BUTTON_LONG_PRESS_START &&
+        fake_button_time_to_ticks(captured_button_config.long_press_time) <=
+            fake_button_time_to_ticks(captured_button_config.short_press_time)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     callbacks[event] = callback;
     callback_contexts[event] = user_data;
     return ESP_OK;
@@ -199,6 +217,63 @@ static void notification_hook(void *user_context)
 }
 
 
+static void noop_button_callback(void *button_handle, void *user_data)
+{
+    (void)button_handle;
+    (void)user_data;
+}
+
+
+static void test_button_registration_rejects_equal_effective_ticks(void)
+{
+    reset_fakes();
+
+    const button_gpio_config_t gpio_config = {
+        .gpio_num = 21,
+        .active_level = 1U,
+        .enable_power_save = false,
+        .disable_pull = true,
+    };
+    button_handle_t button = NULL;
+
+    const button_config_t invalid_config = {
+        .short_press_time = 150U,
+        .long_press_time = 150U,
+    };
+    assert(iot_button_new_gpio_device(
+        &invalid_config,
+        &gpio_config,
+        &button
+    ) == ESP_OK);
+    assert(iot_button_register_cb(
+        button,
+        BUTTON_LONG_PRESS_START,
+        NULL,
+        noop_button_callback,
+        NULL
+    ) == ESP_ERR_INVALID_ARG);
+
+    const button_config_t valid_config = {
+        .short_press_time = 50U,
+        .long_press_time = 150U,
+    };
+    assert(iot_button_new_gpio_device(
+        &valid_config,
+        &gpio_config,
+        &button
+    ) == ESP_OK);
+    assert(fake_button_time_to_ticks(valid_config.long_press_time) >
+        fake_button_time_to_ticks(valid_config.short_press_time));
+    assert(iot_button_register_cb(
+        button,
+        BUTTON_LONG_PRESS_START,
+        NULL,
+        noop_button_callback,
+        NULL
+    ) == ESP_OK);
+}
+
+
 static void test_startup_held_and_long_press_policy(void)
 {
     reset_fakes();
@@ -207,7 +282,10 @@ static void test_startup_held_and_long_press_policy(void)
     assert(captured_gpio_config.gpio_num == 21);
     assert(captured_gpio_config.active_level == 1U);
     assert(captured_gpio_config.disable_pull);
+    assert(captured_button_config.short_press_time == 50U);
     assert(captured_button_config.long_press_time == 150U);
+    assert(fake_button_time_to_ticks(captured_button_config.long_press_time) >
+        fake_button_time_to_ticks(captured_button_config.short_press_time));
 
     /* Startup-held input is ignored until its release arms the object. */
     invoke(BUTTON_LONG_PRESS_START);
@@ -238,6 +316,7 @@ static void test_startup_held_and_long_press_policy(void)
 
 int main(void)
 {
+    test_button_registration_rejects_equal_effective_ticks();
     test_startup_held_and_long_press_policy();
     puts("power button tests passed");
     return 0;

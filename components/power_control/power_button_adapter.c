@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "sdkconfig.h"
 #include "board_config.h"
 #include "button_gpio.h"
 #include "app_events.h"
@@ -14,9 +15,25 @@
 
 static const char *TAG = "POWER_BUTTON";
 
+#define POWER_BUTTON_SHORT_PRESS_MS 50U
 #define POWER_BUTTON_LONG_PRESS_MS 150U
 #define POWER_EVENT_SHUTDOWN_REQUESTED BIT0
 #define POWER_EVENT_BUTTON_RELEASED (BIT0 << 1)
+
+/* espressif/button converts per-device press times to scan ticks before it
+ * validates BUTTON_LONG_PRESS_START registration. Keep the invariant in the
+ * same units so a future timing/config change fails at build time instead of
+ * causing a boot-time ESP_ERR_INVALID_ARG/reset loop. */
+#define POWER_BUTTON_CONFIGURED_TICKS(time_ms) \
+    ((((time_ms) / CONFIG_BUTTON_PERIOD_TIME_MS) > 0U) \
+        ? ((time_ms) / CONFIG_BUTTON_PERIOD_TIME_MS) \
+        : 1U)
+
+_Static_assert(
+    POWER_BUTTON_CONFIGURED_TICKS(POWER_BUTTON_LONG_PRESS_MS) >
+        POWER_BUTTON_CONFIGURED_TICKS(POWER_BUTTON_SHORT_PRESS_MS),
+    "Power-button long-press ticks must be greater than short-press ticks"
+);
 
 
 typedef void (*power_button_shutdown_notification_hook_t)(void *user_context);
@@ -120,7 +137,7 @@ esp_err_t power_button_adapter_init(
     );
 
     const button_config_t button_config = {
-        .short_press_time = POWER_BUTTON_LONG_PRESS_MS,
+        .short_press_time = POWER_BUTTON_SHORT_PRESS_MS,
         .long_press_time = POWER_BUTTON_LONG_PRESS_MS,
     };
     const button_gpio_config_t gpio_config = {
@@ -183,8 +200,14 @@ esp_err_t power_button_adapter_init(
     }
 
     s_state.initialized = true;
-    ESP_LOGI(TAG, "Button ready: GPIO%d active-high pull-up/down disabled",
-        BOARD_POWER_BUTTON_GPIO);
+    ESP_LOGI(
+        TAG,
+        "Button ready: GPIO%d active-high pull-up/down disabled short=%ums long=%ums period=%ums",
+        BOARD_POWER_BUTTON_GPIO,
+        (unsigned)POWER_BUTTON_SHORT_PRESS_MS,
+        (unsigned)POWER_BUTTON_LONG_PRESS_MS,
+        (unsigned)CONFIG_BUTTON_PERIOD_TIME_MS
+    );
     return ESP_OK;
 }
 
