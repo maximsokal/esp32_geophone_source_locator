@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -50,6 +51,13 @@ typedef enum
 esp_err_t app_events_init(void);
 
 esp_event_loop_handle_t app_events_get_loop(void);
+
+/*
+ * Keypad Button objects start polling before the interactive UI exists.
+ * Delivery stays disabled until startup explicitly arms the keypad after
+ * ui_init(), so boot-time presses can never be replayed into a later screen.
+ */
+void app_events_set_keypad_delivery_enabled(bool enabled);
 
 esp_err_t app_events_post(
     app_event_type_t type,
