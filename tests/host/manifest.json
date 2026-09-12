@@ -280,6 +280,7 @@
         "components/object_format/object_format.c",
         "components/seismic_recorder/seismic_recorder_waveform.c",
         "components/seismic_recorder/seismic_recorder_reader.c",
+        "tests/host/stubs/seismic_pipeline/seismic_recorder_cache_session_stub.c",
         "tests/host/stubs/seismic_pipeline/web_route_tracking.c",
         "tests/host/seismic_recorder_web_pipeline_contract_test.c"
       ],
@@ -330,6 +331,7 @@
       "name": "seismic_recorder_start_integration",
       "sources": [
         "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
