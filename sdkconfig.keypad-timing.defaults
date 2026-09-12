@@ -1,0 +1,4 @@
+# Dedicated HIL-only instrumentation. Keep this fragment out of the normal
+# production defaults because diagnostic logging and the probe add measured
+# load to the shared ESP_TIMER_TASK.
+CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS=y
