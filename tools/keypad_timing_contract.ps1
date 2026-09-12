@@ -46,6 +46,7 @@ function Test-KeypadTimingMetricShape {
         [uint64]$Metric.samples
     }
     if ($count -gt 0) {
+        $overflow = [uint64]$Metric.overflow
         $min = [uint64]$Metric.min_us
         $avg = [uint64]$Metric.avg_us
         $p95 = [uint64]$Metric.p95_us
@@ -54,6 +55,9 @@ function Test-KeypadTimingMetricShape {
         $max = [uint64]$Metric.max_us
         $resolution = [uint64]$Metric.resolution_us
 
+        if ($overflow -gt $count) {
+            $Issues.Add("$prefix has overflow=$overflow above its sample count=$count.")
+        }
         if ($resolution -eq 0) {
             $Issues.Add("$prefix has resolution_us=0.")
         }
@@ -77,6 +81,9 @@ function Test-KeypadTimingMetricShape {
         } else {
             if ($p95CensoredAbove -ne 0) {
                 $Issues.Add("$prefix has p95_censored_above_us without a censored percentile.")
+            }
+            if ($p95 -ge 2048) {
+                $Issues.Add("$prefix valid p95_us=$p95 must remain below the 2048-us normal histogram limit.")
             }
             if ($resolution -gt 0 -and ($p95 -lt $min -or $p95 -gt ($max + $resolution - 1))) {
                 $Issues.Add("$prefix p95_us is outside the measured range plus histogram resolution.")
@@ -148,7 +155,7 @@ function Format-KeypadTimingAggregate {
         } else {
             "p95_us=$worstP95 p95_overflow=0 p95_censored_above_us=0"
         }
-        return "source=$source windows=$($Metrics.Count) snapshots=$totalCount attempts=$totalAttempts busy=$totalBusy errors=$totalErrors min_us=$minimum avg_us=$average $p95Detail max_us=$maximum resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window when valid; censored when its rank lands above the histogram range)."
+        return "source=$source windows=$($Metrics.Count) snapshots=$totalCount attempts=$totalAttempts busy=$totalBusy errors=$totalErrors min_us=$minimum avg_us=$average $p95Detail max_us=$maximum resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window when valid; overflow samples are excluded from normal buckets and censor p95 only when its rank lands in that tail)."
     }
 
     $totalCount = [uint64]0
@@ -190,7 +197,7 @@ function Format-KeypadTimingAggregate {
     } else {
         "p95_lateness_us=$worstP95 p95_overflow=0 p95_censored_above_us=0"
     }
-    return "period_us=$period windows=$($Metrics.Count) samples=$totalCount min_lateness_us=$minimum avg_lateness_us=$average $p95Detail max_lateness_us=$maximum late_count=$late overrun_count=$overrun resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window when valid; censored when its rank lands above the histogram range)."
+    return "period_us=$period windows=$($Metrics.Count) samples=$totalCount min_lateness_us=$minimum avg_lateness_us=$average $p95Detail max_lateness_us=$maximum late_count=$late overrun_count=$overrun resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window when valid; overflow samples are excluded from normal buckets and censor p95 only when its rank lands in that tail)."
 }
 
 
