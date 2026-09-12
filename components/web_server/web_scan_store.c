@@ -6,9 +6,12 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "app_task_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "object_format.h"
 #include "object_store.h"
 #include "storage_manager.h"
@@ -21,6 +24,44 @@
 
 static const char *TAG = "WEB_SCAN_STORE";
 static const char *SCAN_FILE_NAME = "scan-v1.bin";
+
+
+typedef struct
+{
+    UBaseType_t original_priority;
+    bool changed;
+
+} web_scan_priority_guard_t;
+
+
+static web_scan_priority_guard_t web_scan_priority_enter(void)
+{
+    web_scan_priority_guard_t guard = {
+        .original_priority = uxTaskPriorityGet(NULL),
+        .changed = false,
+    };
+
+    /* HTTPD defaults to priority 5 while LVGL is priority 4. During a large
+     * scan transfer that can let immediately-ready socket chunks reacquire the
+     * storage/TFT guard before LVGL gets scheduled. Lower only this long-lived
+     * handler to the normal service priority; TLS handshakes and small HTTP
+     * requests keep their normal server priority. */
+    if (guard.original_priority > APP_TASK_PRIORITY_STORAGE_SERVICE) {
+        vTaskPrioritySet(NULL, APP_TASK_PRIORITY_STORAGE_SERVICE);
+        guard.changed = true;
+    }
+
+    return guard;
+}
+
+
+static void web_scan_priority_leave(web_scan_priority_guard_t guard)
+{
+    if (guard.changed) {
+        vTaskPrioritySet(NULL, guard.original_priority);
+    }
+}
+
 
 static esp_err_t web_scan_send_json(
     httpd_req_t *request,
@@ -71,6 +112,7 @@ static esp_err_t web_scan_send_json(
     return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
 }
 
+
 static esp_err_t web_scan_query_value(
     httpd_req_t *request,
     const char *key,
@@ -89,6 +131,7 @@ static esp_err_t web_scan_query_value(
         ? ESP_OK
         : ESP_ERR_NOT_FOUND;
 }
+
 
 static esp_err_t web_scan_paths(
     const char *object_id,
@@ -118,11 +161,13 @@ static esp_err_t web_scan_paths(
     return ESP_OK;
 }
 
+
 static bool web_scan_file_exists(const char *path)
 {
     struct stat info;
     return path != NULL && stat(path, &info) == 0 && S_ISREG(info.st_mode);
 }
+
 
 static esp_err_t web_scan_verify_object(const char *object_id)
 {
@@ -130,6 +175,7 @@ static esp_err_t web_scan_verify_object(const char *object_id)
     object_store_profile_t profile;
     return object_store_get_profile(object_id, &profile);
 }
+
 
 /* storage_manager_operation_begin() must be held by the caller. */
 static esp_err_t web_scan_recover_file(
@@ -147,6 +193,7 @@ static esp_err_t web_scan_recover_file(
     if (!web_scan_file_exists(backup_path)) return ESP_ERR_NOT_FOUND;
     return rename(backup_path, final_path) == 0 ? ESP_OK : ESP_FAIL;
 }
+
 
 /*
  * Keep network waits outside the storage/SPI2 arbitration window. Holding the
@@ -174,6 +221,7 @@ static esp_err_t web_scan_open_temp(
     return err;
 }
 
+
 static esp_err_t web_scan_write_chunk(
     FILE *file,
     const unsigned char *buffer,
@@ -191,7 +239,8 @@ static esp_err_t web_scan_write_chunk(
     return err;
 }
 
-static esp_err_t web_scan_close_file(FILE **file)
+
+static esp_err_t web_scan_close_writer(FILE **file)
 {
     if (file == NULL || *file == NULL) return ESP_OK;
 
@@ -202,16 +251,41 @@ static esp_err_t web_scan_close_file(FILE **file)
          * normal close/flush always runs under the SPI2 guard. */
         const int forced_close = fclose(*file);
         *file = NULL;
-        ESP_LOGW(TAG, "Forced scan FILE close without storage guard: lock=%s fclose=%d",
+        ESP_LOGW(TAG, "Forced scan writer close without storage guard: lock=%s fclose=%d",
                  esp_err_to_name(err), forced_close);
         return err;
     }
 
-    if (fflush(*file) != 0 || fclose(*file) != 0) err = ESP_FAIL;
+    const int flush_result = fflush(*file);
+    const int close_result = fclose(*file);
     *file = NULL;
     storage_manager_operation_end();
-    return err;
+
+    return flush_result == 0 && close_result == 0
+        ? ESP_OK
+        : ESP_FAIL;
 }
+
+
+static esp_err_t web_scan_close_reader(FILE **file)
+{
+    if (file == NULL || *file == NULL) return ESP_OK;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        const int forced_close = fclose(*file);
+        *file = NULL;
+        ESP_LOGW(TAG, "Forced scan reader close without storage guard: lock=%s fclose=%d",
+                 esp_err_to_name(err), forced_close);
+        return err;
+    }
+
+    const int close_result = fclose(*file);
+    *file = NULL;
+    storage_manager_operation_end();
+    return close_result == 0 ? ESP_OK : ESP_FAIL;
+}
+
 
 static esp_err_t web_scan_commit_temp(
     const char *final_path,
@@ -239,12 +313,14 @@ static esp_err_t web_scan_commit_temp(
     return err;
 }
 
+
 static void web_scan_remove_temp_best_effort(const char *temp_path)
 {
     if (storage_manager_operation_begin() != ESP_OK) return;
     (void)remove(temp_path);
     storage_manager_operation_end();
 }
+
 
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
 {
@@ -268,6 +344,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
         return web_scan_send_json(request, "scan_save", object_id, ESP_ERR_NO_MEM, 0U);
     }
 
+    const web_scan_priority_guard_t priority_guard = web_scan_priority_enter();
     FILE *file = NULL;
     size_t received_total = 0U;
     unsigned timeout_count = 0U;
@@ -306,7 +383,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
     }
 
     if (file != NULL) {
-        const esp_err_t close_err = web_scan_close_file(&file);
+        const esp_err_t close_err = web_scan_close_writer(&file);
         if (err == ESP_OK) err = close_err;
     }
 
@@ -317,6 +394,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
         web_scan_remove_temp_best_effort(temp_path);
     }
 
+    web_scan_priority_leave(priority_guard);
     free(buffer);
 
     const uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
@@ -341,6 +419,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
     }
     return web_scan_send_json(request, "scan_save", object_id, err, received_total);
 }
+
 
 static esp_err_t web_scan_open_for_stream(
     const char *final_path,
@@ -388,6 +467,7 @@ static esp_err_t web_scan_open_for_stream(
     return err;
 }
 
+
 static esp_err_t web_scan_read_chunk(
     FILE *file,
     unsigned char *buffer,
@@ -410,6 +490,7 @@ static esp_err_t web_scan_read_chunk(
     storage_manager_operation_end();
     return err;
 }
+
 
 static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
 {
@@ -439,9 +520,11 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
     if (buffer == NULL) {
-        (void)web_scan_close_file(&file);
+        (void)web_scan_close_reader(&file);
         return web_scan_send_json(request, "scan_load", object_id, ESP_ERR_NO_MEM, 0U);
     }
+
+    const web_scan_priority_guard_t priority_guard = web_scan_priority_enter();
 
     char size_header[24];
     (void)snprintf(size_header, sizeof(size_header), "%u", (unsigned)size);
@@ -478,13 +561,14 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
         sent_total += read_count;
     }
 
-    const esp_err_t close_err = web_scan_close_file(&file);
+    const esp_err_t close_err = web_scan_close_reader(&file);
     if (err == ESP_OK) err = close_err;
 
     if (err == ESP_OK) {
         err = httpd_resp_send_chunk(request, NULL, 0);
     }
 
+    web_scan_priority_leave(priority_guard);
     free(buffer);
 
     const uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
@@ -510,6 +594,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
     return err;
 }
 
+
 static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id)
 {
     esp_err_t err = web_scan_verify_object(object_id);
@@ -529,6 +614,7 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id)
     if (err == ESP_OK) ESP_LOGI(TAG, "Deleted saved 3D scan: object=%s", object_id);
     return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
 }
+
 
 esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
 {
