@@ -224,6 +224,43 @@ remains pending because COM4/COM6 are not live.
 ESP32 geophone keypad timing HIL follow-up; physical timing acceptance remains
 pending until live COM4/COM6 runs produce board measurements.
 
+## Additional percentile-rank boundary coverage correction
+
+### Evidence
+
+- Added an explicit native regression for the critical inclusive boundary:
+  `95` normal samples plus `5` overflow samples out of `100` must produce a
+  valid p95 because `rank == normal_count`; `94` plus `6` must produce a
+  censored p95 because `rank > normal_count`.
+- The focused timing parser/replay tests passed `11/11`, and the complete Host C
+  suite passed `39/39`. Replay without a required physical condition is still
+  allowed to return the overall run as PASS with
+  `PHYSICAL_CONDITION: NOT_CONFIRMED`, as documented; it is not physical HIL
+  evidence.
+
+### Root cause
+
+- The algorithm was already correct, but earlier regressions covered overflow
+  behavior without pinning the exact percentile-rank equality/strict-inequality
+  boundary.
+
+### Recurrence count
+
+- One confirmed coverage gap in this task. This supports a local rule to test
+  both sides of statistical validity boundaries, not a generalized skill
+  change.
+
+### Proposed minimal rule
+
+- When a comparison determines whether telemetry is censored, add tests for
+  equality and the adjacent strict-inequality case. Keep replay/parser exit
+  semantics distinct from physical HIL attestation semantics.
+
+### Affected task
+
+ESP32 geophone keypad timing HIL follow-up; physical timing acceptance remains
+pending until live COM4/COM6 runs produce board measurements.
+
 ## Additional timing histogram boundary and HIL-result separation correction
 
 ### Evidence
