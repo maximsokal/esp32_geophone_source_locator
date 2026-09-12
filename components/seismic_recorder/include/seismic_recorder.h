@@ -158,6 +158,19 @@ esp_err_t seismic_recorder_list_sessions(
 
 
 /*
+ * Cooperative status/Web listing. The parent directory census and every
+ * session metadata read use separate storage arbitration windows so the TFT
+ * can resume between records instead of being quiesced for a whole history.
+ */
+esp_err_t seismic_recorder_list_sessions_responsive(
+    const char *object_id,
+    seismic_recorder_session_summary_t *sessions,
+    size_t max_sessions,
+    size_t *session_count
+);
+
+
+/*
  * Delete one completed/stopped session directory from the active storage.
  * Deletion is intentionally rejected while any recording is running so a UI
  * review action cannot race the recorder's open FILE handles or metadata
