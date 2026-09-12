@@ -7,10 +7,11 @@
 #include "adc_service.h"
 #include "app_events.h"
 #include "board_config.h"
-#include "button_adc.h"
+#include "button_interface.h"
 #include "iot_button.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 
 static const char *TAG = "KEYPAD";
@@ -18,50 +19,41 @@ static const char *TAG = "KEYPAD";
 #define KEYPAD_BUTTON_COUNT 5U
 #define KEYPAD_DEBOUNCE_MS 60U
 #define KEYPAD_SAMPLE_COUNT 16U
+#define KEYPAD_BUTTON_SAMPLE_COUNT 4U
+#define KEYPAD_BUTTON_CACHE_WINDOW_US 1000LL
 
 /* Preserve the raw thresholds from the original KS0466 implementation for
- * the compatibility read API. Button objects use the same measured points in
- * calibrated millivolts below. */
+ * both the compatibility read API and the custom Button driver below. */
 #define KEYPAD_SW1_MAX_RAW 275
 #define KEYPAD_SW2_MAX_RAW 905
 #define KEYPAD_SW3_MAX_RAW 1605
 #define KEYPAD_SW4_MAX_RAW 2411
 #define KEYPAD_SW5_MAX_RAW 3484
 
-/* Existing KS0466 measurements, converted to the voltage ranges expected by
- * espressif/button. The boundaries are the midpoints of the measured adjacent
- * button voltages; no new electrical ranges are invented here. */
-#define KEYPAD_LEFT_MIN_MV 0U
-#define KEYPAD_LEFT_MAX_MV 238U
-#define KEYPAD_UP_MIN_MV 239U
-#define KEYPAD_UP_MAX_MV 767U
-#define KEYPAD_DOWN_MIN_MV 768U
-#define KEYPAD_DOWN_MAX_MV 1341U
-#define KEYPAD_RIGHT_MIN_MV 1342U
-#define KEYPAD_RIGHT_MAX_MV 1998U
-#define KEYPAD_OK_MIN_MV 1999U
-#define KEYPAD_OK_MAX_MV 2751U
-
-
-typedef struct {
-    keypad_key_t key;
-    uint16_t min_mv;
-    uint16_t max_mv;
-} keypad_button_range_t;
-
-
-static const keypad_button_range_t s_ranges[KEYPAD_BUTTON_COUNT] = {
-    { KEYPAD_KEY_LEFT, KEYPAD_LEFT_MIN_MV, KEYPAD_LEFT_MAX_MV },
-    { KEYPAD_KEY_UP, KEYPAD_UP_MIN_MV, KEYPAD_UP_MAX_MV },
-    { KEYPAD_KEY_DOWN, KEYPAD_DOWN_MIN_MV, KEYPAD_DOWN_MAX_MV },
-    { KEYPAD_KEY_RIGHT, KEYPAD_RIGHT_MIN_MV, KEYPAD_RIGHT_MAX_MV },
-    { KEYPAD_KEY_OK, KEYPAD_OK_MIN_MV, KEYPAD_OK_MAX_MV },
+/* The official ADC Button driver is intentionally not used: it reads a
+ * borrowed ADC1 handle directly from its esp_timer callback. */
+static const keypad_key_t s_keys[KEYPAD_BUTTON_COUNT] = {
+    KEYPAD_KEY_LEFT,
+    KEYPAD_KEY_UP,
+    KEYPAD_KEY_DOWN,
+    KEYPAD_KEY_RIGHT,
+    KEYPAD_KEY_OK,
 };
 
 
+typedef struct {
+    button_driver_t base;
+    keypad_key_t key;
+} keypad_button_driver_t;
+
+
 static button_handle_t s_buttons[KEYPAD_BUTTON_COUNT];
+static keypad_button_driver_t s_button_drivers[KEYPAD_BUTTON_COUNT];
 static adc_channel_t s_adc_channel;
 static bool s_initialized;
+static bool s_adc_cache_valid;
+static int64_t s_adc_cache_time_us;
+static keypad_key_t s_adc_cache_key;
 
 
 static keypad_key_t keypad_decode_raw(int raw)
@@ -82,6 +74,61 @@ static keypad_key_t keypad_decode_raw(int raw)
         return KEYPAD_KEY_OK;
     }
     return KEYPAD_KEY_NONE;
+}
+
+
+static keypad_button_driver_t *keypad_button_driver_from_base(
+    button_driver_t *driver
+)
+{
+    return (keypad_button_driver_t *)(
+        (uint8_t *)driver - offsetof(keypad_button_driver_t, base)
+    );
+}
+
+
+static uint8_t keypad_button_get_key_level(button_driver_t *driver)
+{
+    keypad_button_driver_t *button =
+        keypad_button_driver_from_base(driver);
+    const int64_t now_us = esp_timer_get_time();
+
+    /* Button core polls all five handles in one timer callback. Share one
+     * broker-owned sample across that callback so each handle sees the same
+     * conversion without multiplying ADC traffic. The short window is below
+     * the 10 ms button period and is never used to bypass adc_service. */
+    if (
+        !s_adc_cache_valid ||
+        now_us - s_adc_cache_time_us > KEYPAD_BUTTON_CACHE_WINDOW_US
+    ) {
+        int raw = 0;
+        esp_err_t err = adc_service_read_average_raw(
+            s_adc_channel,
+            KEYPAD_BUTTON_SAMPLE_COUNT,
+            &raw
+        );
+        if (err != ESP_OK) {
+            s_adc_cache_valid = false;
+            return BUTTON_INACTIVE;
+        }
+
+        s_adc_cache_key = keypad_decode_raw(raw);
+        s_adc_cache_time_us = now_us;
+        s_adc_cache_valid = true;
+    }
+
+    return s_adc_cache_valid && s_adc_cache_key == button->key
+        ? BUTTON_ACTIVE
+        : BUTTON_INACTIVE;
+}
+
+
+static esp_err_t keypad_button_driver_delete(button_driver_t *driver)
+{
+    /* Driver storage is static because iot_button_create() retains the
+     * caller-owned driver pointer until iot_button_delete(). */
+    (void)driver;
+    return ESP_OK;
 }
 
 
@@ -117,28 +164,33 @@ esp_err_t keypad_button_adapter_init(void)
         return err;
     }
 
+    s_adc_cache_valid = false;
+
     for (size_t i = 0; i < KEYPAD_BUTTON_COUNT; ++i) {
         const button_config_t button_config = {
             .short_press_time = KEYPAD_DEBOUNCE_MS,
             .long_press_time = 1500U,
         };
-        const button_adc_config_t adc_config = {
-            .adc_handle = adc_service_handle(),
-            .unit_id = adc_service_unit(),
-            .adc_channel = s_adc_channel,
-            .button_index = (uint8_t)i,
-            .min = s_ranges[i].min_mv,
-            .max = s_ranges[i].max_mv,
+        s_button_drivers[i] = (keypad_button_driver_t) {
+            .base = {
+                .enable_power_save = false,
+                .get_key_level = keypad_button_get_key_level,
+                .enter_power_save = NULL,
+                .exit_power_save = NULL,
+                .get_gpio_num = NULL,
+                .del = keypad_button_driver_delete,
+            },
+            .key = s_keys[i],
         };
 
-        err = iot_button_new_adc_device(
+        err = iot_button_create(
             &button_config,
-            &adc_config,
+            &s_button_drivers[i].base,
             &s_buttons[i]
         );
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to create %s button: %s",
-                keypad_key_name(s_ranges[i].key), esp_err_to_name(err));
+                keypad_key_name(s_keys[i]), esp_err_to_name(err));
             keypad_button_adapter_stop();
             return err;
         }
@@ -151,7 +203,7 @@ esp_err_t keypad_button_adapter_init(void)
             BUTTON_PRESS_DOWN,
             NULL,
             keypad_button_callback,
-            (void *)(uintptr_t)s_ranges[i].key
+            (void *)(uintptr_t)s_keys[i]
         );
         if (err != ESP_OK) {
             keypad_button_adapter_stop();
@@ -216,5 +268,6 @@ void keypad_button_adapter_stop(void)
         }
     }
 
+    s_adc_cache_valid = false;
     s_initialized = false;
 }

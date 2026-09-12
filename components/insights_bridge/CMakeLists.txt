@@ -18,6 +18,7 @@ idf_component_register(
         heap
         log
         runtime_observability
+        freertos
 
     PRIV_REQUIRES
         esp_diagnostics

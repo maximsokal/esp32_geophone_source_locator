@@ -12,10 +12,9 @@
 esp_err_t insights_bridge_init(void);
 
 
-/* Retry a failed opt-in initialization after the application event loop has
- * observed APP_EVENT_WIFI_STA_CONNECTED (the station got an IP). The callback
- * is intentionally separate from the system Wi-Fi event callback because
- * esp_insights_init() is not a short ISR- or sys_evt-safe operation. */
+/* Notify the opt-in retry worker after the application event loop has observed
+ * APP_EVENT_WIFI_STA_CONNECTED (the station got an IP). This function only
+ * signals the worker; esp_insights_init() never runs in an event callback. */
 void insights_bridge_on_network_ready(void);
 
 

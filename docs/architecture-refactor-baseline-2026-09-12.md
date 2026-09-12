@@ -53,7 +53,7 @@ symbol use until measured filters are authorized.
 | Area | Before | After |
 | --- | --- | --- |
 | Application event delivery | UI event task, priority 6, stack 6,144 B | ESP-IDF `APP_EVENT` user loop, Core 0, priority 6, stack 6,144 B, queue 24 |
-| Keypad input | App-owned keypad task, priority 4, stack 8,192 B | Five official ADC Button objects; no app-owned keypad task |
+| Keypad input | App-owned keypad task, priority 4, stack 8,192 B | Official Button core with five custom ADC broker drivers; no app-owned keypad task |
 | Power input | App-owned power-button task, priority 5, stack 3,072 B | Official GPIO Button object plus EventGroup shutdown latch; no app-owned power task |
 | App-owned input stack reservation | 11,264 B across two input tasks | Removed; vendor Button service overhead must be measured on hardware |
 | UI event callback | Could wait for the LVGL lock | Bounded pending queue and wake; LVGL task/timer applies mutations |
@@ -92,8 +92,8 @@ size change as proof of runtime safety.
 ## Verification boundary
 
 The post-refactor build proves target compilation/linking and image sizing.
-Host tests prove deterministic contracts. Neither proves ADC Button voltage
-classification under noise, electrical GPIO21 behavior, GPIO18 pulse timing,
+Host tests prove deterministic contracts. Neither proves ADC Button raw-ladder
+classification under electrical noise, electrical GPIO21 behavior, GPIO18 pulse timing,
 INA3221/TCA9548A wiring, TFT pixels, SD media, Wi-Fi transport, task HWM,
 500-Hz timing, or safe power removal. Those remain TARGET/HIL or
 PHYSICALLY VERIFIED results and are gated separately by the COM4/COM6 runner.
@@ -114,3 +114,19 @@ The profile build confirms the enabled Insights branch and test auth provider
 while heap/Wi-Fi metrics and diagnostic variables remain disabled. These are
 compile/size facts only; no cloud upload, runtime diagnostic overhead, target
 heap/HWM capture, or physical acceptance is claimed.
+
+## ADC1 ownership correction accounting (2026-09-12)
+
+The follow-up values above are retained as the earlier lifecycle/profile
+checkpoint. After replacing the vendor ADC Button backend with five
+keypad-owned `button_driver_t` adapters and removing the public borrowed ADC1
+handle, the current production build is `0x1fdd30` (2,088,240 B) with
+`0x2022d0` (50%) free in the app partition. Its unpadded `idf.py size` total is
+2,088,121 B. The isolated Insights profile is `0x20d360` (2,151,264 B) with
+`0x1f2ca0` (49%) free, and its unpadded `idf.py size` total is 2,151,153 B.
+`idf.py size-components` exited 0 for both builds.
+
+These are compile/size facts only. The keypad ownership proof is host/static
+and target-build coverage. The opt-in Insights retry worker is compile-time
+covered only; no runtime ADC settling, heap/HWM, UART, or physical button
+acceptance is claimed without the connected board.

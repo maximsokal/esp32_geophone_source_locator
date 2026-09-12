@@ -57,3 +57,45 @@ carrying values forward from an earlier pass.
 ESP32 geophone architecture-refactor follow-up: ADC1 external-borrower
 settling, optional ESP Insights startup/privacy profile, and raw GPIO21 power
 button timing acceptance contract.
+
+## Additional ADC ownership correction
+
+### Evidence
+
+- The audit's interleaving was real: the service's discard/useful pair could be interrupted by the vendor ADC Button backend because that backend retained and read the same ADC1 handle outside `adc_service`.
+- The keypad now creates the official Button state-machine objects with keypad-owned `button_driver_t` adapters. Every level callback obtains the ladder sample through `adc_service_read_average_raw()`; a short callback-local cache lets the five handles share one broker-owned sample without multiplying conversions.
+- The public `adc_service_handle()` accessor and all keypad use of the vendor `button_adc` backend were removed. Host coverage now exercises the custom callbacks and asserts zero direct ADC reads; the final native host suite passed 38/38.
+- The post-change production build passed with image `0x1fdd30` and `0x2022d0` app free; the isolated Insights profile passed with image `0x20d360` and `0x1f2ca0` app free. The full local suite before the retry-worker correction exited 0: Host C 38/38, Python 74 passed plus 1 skip, Web Console 38/38, Web XR 582/582, typecheck, Unity build, and production build.
+
+### Root cause
+
+- The previous settling mutex protected only service calls. It did not establish ownership because a third-party Button driver still held a borrowed ADC1 handle and could issue a conversion between the discard and useful conversion.
+
+### Recurrence count
+
+- One confirmed occurrence in this task. This is enough to require the repository-local ownership contract, but not enough evidence for a generalized workflow or skill change.
+
+### Proposed minimal rule
+
+- Treat the ADC1 handle as private to `adc_service`; all application and vendor-adapter reads must cross the service/broker API. Add a host regression that models every ADC consumer and rejects direct reads from each adapter. Keep physical ADC/button behavior explicitly pending until target UART/HIL evidence exists.
+
+## Additional Insights retry-worker correction
+
+### Evidence
+
+- The LOW/watchlist concern was also corrected: the APP_EVENT connection handler now only calls `xTaskNotifyGive()` and returns. A dedicated service-core worker consumes the notification and performs the potentially non-trivial `esp_insights_init()` retry.
+- The worker's priority and stack are centralized in `app_task_config.h`, the optional component explicitly requires `freertos`, and the source contract proves that the APP_EVENT handler does not call `insights_bridge_attempt_init()` directly.
+- After the correction, the production build still passed with image `0x1fdd30` and `0x2022d0` app free. The isolated Insights profile passed with image `0x20d360` and `0x1f2ca0` app free; `idf.py size` and `idf.py size-components` exited 0 for both profiles. Focused architecture/liveness contracts passed 10/10.
+- The final `tools/run_suite.ps1 -Suite All -ProductionBuildDir build-refactor-final` exited 0 after the correction: Host C 38/38, Python 74 passed plus 1 skip, Web Console 38/38, Web XR 582/582, typecheck, Unity build, and production build passed; HIL was skipped.
+
+### Root cause
+
+- The prior retry had been moved off the default `sys_evt` task but still ran synchronously on the shared APP_EVENT loop, which also services UI and application events.
+
+### Recurrence count
+
+- One confirmed occurrence in this task. This is repository-local evidence for keeping event callbacks notification-only, not enough evidence for a generalized skill change.
+
+### Proposed minimal rule
+
+- Keep shared event handlers bounded: validate the event, set/notify state, and return. Run optional initialization, diagnostics setup, or network-facing work in a dedicated worker with an explicit task-policy entry and a source contract that excludes the heavy call from the handler.

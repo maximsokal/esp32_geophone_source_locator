@@ -7,6 +7,20 @@ import re
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _function_body(source: str, signature: str) -> str:
+    start = source.index(signature)
+    opening = source.index("{", start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening:index + 1]
+    raise AssertionError(f"unterminated function: {signature}")
+
+
 def read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
@@ -55,6 +69,8 @@ def test_old_application_owned_input_and_event_files_are_removed():
     task_config = read("components/app_config/include/app_task_config.h")
     assert "APP_TASK_PRIORITY_APP_EVENT_LOOP" in task_config
     assert "APP_TASK_STACK_APP_EVENT_LOOP  6144" in task_config
+    assert "APP_TASK_PRIORITY_INSIGHTS" in task_config
+    assert "APP_TASK_STACK_INSIGHTS" in task_config
     assert "APP_TASK_STACK_KEYPAD" not in task_config
     assert "APP_TASK_STACK_POWER_BUTTON" not in task_config
 
@@ -63,6 +79,10 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     status = read("components/status_indicator/status_indicator.c")
     status_header = read("components/status_indicator/include/status_indicator.h")
     insights = read("components/insights_bridge/insights_bridge.c")
+    insights_handler = _function_body(
+        insights,
+        "static void insights_bridge_app_event_handler"
+    )
     startup = read("main/app_startup.c")
     dsp = read("components/seismic_dsp/seismic_dsp.c")
     dsp_header = read("components/seismic_dsp/include/seismic_dsp.h")
@@ -86,6 +106,10 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     assert "app_events_get_loop()" in insights
     assert "APP_EVENT_WIFI_STA_CONNECTED" in insights
     assert "s_retry_pending" in insights
+    assert "xTaskCreatePinnedToCore" in insights
+    assert "ulTaskNotifyTake" in insights
+    assert "xTaskNotifyGive" in insights
+    assert "insights_bridge_attempt_init();" not in insights_handler
     assert "CONFIG_DIAG_ENABLE_VARIABLES=n" in insights
 
     assert "seismic_dsp_init(" in dsp

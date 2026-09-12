@@ -14,5 +14,6 @@ idf_component_register(
         app_events
         board_config
         button
+        esp_timer
         log
 )
