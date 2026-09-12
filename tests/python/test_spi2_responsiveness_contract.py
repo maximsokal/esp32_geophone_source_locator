@@ -2,11 +2,12 @@
 
 These checks are intentionally structural. The physical HIL test remains the
 source of latency numbers, but a future refactor must not accidentally put a
-socket wait back inside a storage/TFT quiesce window or steal esp_lvgl_port's
-LCD completion callback again.
+socket wait back inside a storage/TFT quiesce window, starve the recorder, or
+steal esp_lvgl_port's LCD completion callback again.
 """
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +34,12 @@ def _function_body(source: str, name: str) -> str:
             if depth == 0:
                 return source[brace + 1 : index]
     raise AssertionError(f"unterminated function {name}")
+
+
+def _priority(source: str, name: str) -> int:
+    match = re.search(rf"^#define\s+{re.escape(name)}\s+(\d+)\s*$", source, re.MULTILINE)
+    assert match is not None, f"missing numeric priority {name}"
+    return int(match.group(1))
 
 
 def test_scan_socket_waits_are_outside_storage_windows() -> None:
@@ -64,6 +71,20 @@ def test_scan_socket_waits_are_outside_storage_windows() -> None:
     priority = _function_body(source, "web_scan_priority_enter")
     assert "APP_TASK_PRIORITY_STORAGE_SERVICE" in priority
     assert "vTaskPrioritySet" in priority
+
+
+def test_bulk_scan_never_outranks_recorder_or_lvgl() -> None:
+    task_config = _read("components/app_config/include/app_task_config.h")
+
+    scan_priority = _priority(task_config, "APP_TASK_PRIORITY_STORAGE_SERVICE")
+    recorder_priority = _priority(task_config, "APP_TASK_PRIORITY_SEISMIC_RECORDER")
+    lvgl_priority = _priority(task_config, "APP_TASK_PRIORITY_LVGL")
+
+    # The scan handler lowers itself to STORAGE_SERVICE while moving the large
+    # payload. Recorder must be able to time-slice at that level, while LVGL
+    # must still preempt both when a display flush is ready.
+    assert recorder_priority >= scan_priority
+    assert lvgl_priority > scan_priority
 
 
 def test_web_status_uses_cooperative_storage_snapshots() -> None:
