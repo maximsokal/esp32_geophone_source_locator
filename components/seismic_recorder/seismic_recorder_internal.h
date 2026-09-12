@@ -16,23 +16,20 @@
 #define SEISMIC_RECORDER_WRITE_STAGING_FRAMES 256U
 #define SEISMIC_RECORDER_READ_STAGING_FRAMES  1024U
 /*
- * Accumulate roughly half a second of samples before opening an SD
- * arbitration window.  The recorder buffer lives in PSRAM (see
- * seismic_recorder_init), so the larger backlog batch does not consume scarce
- * internal/DMA RAM.  The filesystem writer copies bounded chunks through an
- * internal DMA_ATTR staging buffer before fwrite; this keeps SDSPI on its
- * multi-block path instead of its PSRAM bounce-buffer path. Each bounded
- * fwrite chunk opens its own storage arbitration window so a slow SD write
- * cannot block the TFT for the entire recorder batch. STOP still bypasses
- * this threshold to drain its exact target without adding user-visible
- * latency.
+ * Acquisition is copied into a bounded PSRAM write-behind cache before SD.
+ * The recorder drains at most one 256-frame storage chunk per worker turn,
+ * returning immediately to acquisition ingestion. The filesystem writer then
+ * copies that PSRAM chunk through its internal DMA_ATTR staging buffer so
+ * SDSPI remains on a DMA-capable multi-block path.
  *
  * Historical waveform reads use a separate PSRAM staging buffer.  The public
  * reader re-opens/seeks/reads/closes samples.bin inside one bounded storage
  * window per staging chunk, then performs min/max reduction after the SPI2
  * lock is released.  This avoids holding TFT quiesce across an arbitrarily
  * large requested history range while CONFIG_FATFS_FS_LOCK=0 remains safe:
- * no FILE handle survives outside its storage arbitration window.
+ * no FILE handle survives outside its storage arbitration window. If a whole
+ * requested range is still resident in the recorder cache, the reader may use
+ * the retained PSRAM session copy and avoid SD/SPI2 completely.
  */
 #define SEISMIC_RECORDER_FLUSH_INTERVAL_US    30000000LL
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
@@ -57,6 +54,23 @@ typedef esp_err_t (*seismic_recorder_waveform_read_at_fn)(
     uint64_t offset_bytes,
     void *buffer,
     size_t size_bytes
+);
+
+
+bool seismic_recorder_cache_contains_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t first_session_frame,
+    uint64_t frame_count
+);
+
+
+esp_err_t seismic_recorder_cache_copy_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t first_session_frame,
+    seismic_frame_t *frames,
+    size_t frame_count
 );
 
 
