@@ -59,8 +59,24 @@ int main(void)
     assert(strcmp(s_args.task_name, "app_events") == 0);
     assert(app_events_get_loop() == s_loop);
 
-    assert(app_events_post(APP_EVENT_TLS_VERIFY_RESULT, -42) == ESP_OK);
+    /* Early Button polling is live during boot, but keypad delivery is closed
+     * until the interactive UI explicitly arms it. Dropped boot navigation is
+     * still a successful best-effort post from the producer's perspective. */
+    assert(app_events_post(APP_EVENT_KEYPAD, 5) == ESP_OK);
+    assert(s_post_calls == 0);
+
+    app_events_set_keypad_delivery_enabled(true);
+    assert(app_events_post(APP_EVENT_KEYPAD, 5) == ESP_OK);
     assert(s_post_calls == 1);
+    assert(s_post_id == APP_EVENT_KEYPAD);
+    assert(s_post_value == 5);
+
+    app_events_set_keypad_delivery_enabled(false);
+    assert(app_events_post(APP_EVENT_KEYPAD, 4) == ESP_OK);
+    assert(s_post_calls == 1);
+
+    assert(app_events_post(APP_EVENT_TLS_VERIFY_RESULT, -42) == ESP_OK);
+    assert(s_post_calls == 2);
     assert(s_post_loop == s_loop);
     assert(s_post_base == APP_EVENT);
     assert(s_post_id == APP_EVENT_TLS_VERIFY_RESULT);
@@ -68,13 +84,13 @@ int main(void)
     assert(s_post_timeout == 0U);
 
     assert(app_events_post(APP_EVENT_POWER_SHUTDOWN_REQUESTED, 0) == ESP_OK);
-    assert(s_post_calls == 2);
+    assert(s_post_calls == 3);
     assert(s_post_id == APP_EVENT_POWER_SHUTDOWN_REQUESTED);
     assert(s_post_value == 0);
     assert(s_post_timeout == 0U);
 
     assert(app_events_post_best_effort(APP_EVENT_POWER_SHUTDOWN_REQUESTED, 0) == ESP_OK);
-    assert(s_post_calls == 3);
+    assert(s_post_calls == 4);
 
     puts("app events host contract passed");
     return 0;
