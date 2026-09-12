@@ -1,0 +1,27 @@
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#include "ui_event_policy.h"
+
+int main(void)
+{
+    const int64_t queued = 1000000LL;
+
+    assert(!ui_event_keypad_is_stale(queued, queued));
+    assert(!ui_event_keypad_is_stale(
+        queued,
+        queued + UI_KEYPAD_EVENT_MAX_AGE_US
+    ));
+    assert(ui_event_keypad_is_stale(
+        queued,
+        queued + UI_KEYPAD_EVENT_MAX_AGE_US + 1LL
+    ));
+
+    /* A monotonic-clock discontinuity must never turn into a huge unsigned
+     * age and discard a fresh event. */
+    assert(!ui_event_keypad_is_stale(queued, queued - 1LL));
+
+    puts("ui event freshness policy tests passed");
+    return 0;
+}
