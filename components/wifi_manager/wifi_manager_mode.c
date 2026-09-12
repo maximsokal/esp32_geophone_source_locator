@@ -110,7 +110,8 @@ esp_err_t wifi_manager_set_mode_transition_complete_callback(
 static void wifi_manager_notify_mode_transition_complete(
     bool running,
     bool setup_mode,
-    esp_err_t transition_result
+    esp_err_t transition_result,
+    esp_err_t cleanup_result
 )
 {
     wifi_manager_mode_transition_complete_callback_t callback = NULL;
@@ -132,7 +133,8 @@ static void wifi_manager_notify_mode_transition_complete(
         context,
         running,
         setup_mode,
-        transition_result
+        transition_result,
+        cleanup_result
     );
 
     portENTER_CRITICAL(&s_radio_stop_callback_lock);
@@ -151,27 +153,81 @@ static esp_err_t wifi_manager_abort_mode_transition(
     wifi_manager_runtime_clear_setup_client();
 
     const esp_err_t cleanup_err = esp_wifi_stop();
-    if (
-        cleanup_err != ESP_OK &&
-        cleanup_err != ESP_ERR_WIFI_NOT_STARTED
-    ) {
+    const esp_err_t cleanup_result =
+        cleanup_err == ESP_ERR_WIFI_NOT_STARTED
+            ? ESP_OK
+            : cleanup_err;
+    if (cleanup_result != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "Failed to stop partially started Wi-Fi target: %s",
-            esp_err_to_name(cleanup_err)
+            "Wi-Fi target start failed: target=%s cleanup=%s; radio state is uncertain",
+            esp_err_to_name(transition_error),
+            esp_err_to_name(cleanup_result)
+        );
+    }
+    else {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi target start failed: %s; using stopped/disconnected fallback",
+            esp_err_to_name(transition_error)
         );
     }
 
-    /* The old mode is already gone. The only honest fallback is a fully
-     * stopped/disconnected manager state; the caller can retry explicitly. */
+    /* The old mode is already gone. A failed cleanup cannot be reported as a
+     * clean stop, even though the public running/setup flags stay false. */
+    wifi_manager_internal_set_radio_state_uncertain(
+        cleanup_result != ESP_OK
+    );
     wifi_manager_internal_set_running(false);
     wifi_manager_internal_set_setup_mode(false);
     wifi_manager_notify_mode_transition_complete(
         false,
         false,
-        transition_error
+        transition_error,
+        cleanup_result
     );
     return transition_error;
+}
+
+
+static esp_err_t wifi_manager_recover_uncertain_radio_state(void)
+{
+    wifi_manager_sta_reset_state();
+    wifi_manager_runtime_clear_setup_client();
+
+    const esp_err_t cleanup_err = esp_wifi_stop();
+    const esp_err_t cleanup_result =
+        cleanup_err == ESP_ERR_WIFI_NOT_STARTED
+            ? ESP_OK
+            : cleanup_err;
+    if (cleanup_result != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi uncertain-state cleanup retry failed: %s",
+            esp_err_to_name(cleanup_result)
+        );
+        wifi_manager_internal_set_radio_state_uncertain(true);
+        wifi_manager_internal_set_running(false);
+        wifi_manager_internal_set_setup_mode(false);
+        wifi_manager_notify_mode_transition_complete(
+            false,
+            false,
+            ESP_OK,
+            cleanup_result
+        );
+        return cleanup_result;
+    }
+
+    wifi_manager_internal_set_radio_state_uncertain(false);
+    wifi_manager_internal_set_running(false);
+    wifi_manager_internal_set_setup_mode(false);
+    wifi_manager_notify_mode_transition_complete(
+        false,
+        false,
+        ESP_OK,
+        ESP_OK
+    );
+    return ESP_OK;
 }
 
 
@@ -277,6 +333,10 @@ esp_err_t wifi_manager_enter_setup_mode(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (wifi_manager_internal_radio_state_uncertain()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (
         wifi_manager_internal_setup_mode()
     ) {
@@ -298,12 +358,14 @@ esp_err_t wifi_manager_enter_setup_mode(void)
         wifi_manager_internal_start_setup_mode();
 
     if (err == ESP_OK) {
+        wifi_manager_internal_set_radio_state_uncertain(false);
         wifi_manager_internal_set_running(
             true
         );
         wifi_manager_notify_mode_transition_complete(
             true,
             true,
+            ESP_OK,
             ESP_OK
         );
     }
@@ -320,6 +382,10 @@ esp_err_t wifi_manager_connect_saved(void)
     if (
         !wifi_manager_internal_initialized()
     ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (wifi_manager_internal_radio_state_uncertain()) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -344,9 +410,11 @@ esp_err_t wifi_manager_connect_saved(void)
     wifi_manager_internal_set_running(
         true
     );
+    wifi_manager_internal_set_radio_state_uncertain(false);
     wifi_manager_notify_mode_transition_complete(
         true,
         false,
+        ESP_OK,
         ESP_OK
     );
 
@@ -366,6 +434,10 @@ esp_err_t wifi_manager_connect_saved(void)
 
 esp_err_t wifi_manager_stop(void)
 {
+    if (wifi_manager_internal_radio_state_uncertain()) {
+        return wifi_manager_recover_uncertain_radio_state();
+    }
+
     if (
         !wifi_manager_is_running()
     ) {
@@ -388,10 +460,12 @@ esp_err_t wifi_manager_stop(void)
     wifi_manager_internal_set_setup_mode(
         false
     );
+    wifi_manager_internal_set_radio_state_uncertain(false);
 
     wifi_manager_notify_mode_transition_complete(
         false,
         false,
+        ESP_OK,
         ESP_OK
     );
 

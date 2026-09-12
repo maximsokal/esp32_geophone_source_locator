@@ -23,6 +23,9 @@ static bool s_running =
 static bool s_setup_mode =
     false;
 
+static bool s_radio_state_uncertain =
+    false;
+
 
 bool wifi_manager_internal_initialized(void)
 {
@@ -51,6 +54,20 @@ void wifi_manager_internal_set_setup_mode(
 bool wifi_manager_internal_setup_mode(void)
 {
     return s_setup_mode;
+}
+
+
+void wifi_manager_internal_set_radio_state_uncertain(
+    bool uncertain
+)
+{
+    s_radio_state_uncertain = uncertain;
+}
+
+
+bool wifi_manager_internal_radio_state_uncertain(void)
+{
+    return s_radio_state_uncertain;
 }
 
 
@@ -111,6 +128,10 @@ esp_err_t wifi_manager_start(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_radio_state_uncertain) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (s_running) {
         return ESP_OK;
     }
@@ -154,6 +175,8 @@ esp_err_t wifi_manager_start(void)
 
     s_running =
         true;
+    s_radio_state_uncertain =
+        false;
 
     return ESP_OK;
 }
@@ -162,6 +185,12 @@ esp_err_t wifi_manager_start(void)
 bool wifi_manager_is_running(void)
 {
     return s_running;
+}
+
+
+bool wifi_manager_is_radio_state_uncertain(void)
+{
+    return s_radio_state_uncertain;
 }
 
 

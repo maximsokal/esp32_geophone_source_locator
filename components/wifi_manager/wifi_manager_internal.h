@@ -17,4 +17,10 @@ void wifi_manager_internal_set_setup_mode(
 
 bool wifi_manager_internal_setup_mode(void);
 
+void wifi_manager_internal_set_radio_state_uncertain(
+    bool uncertain
+);
+
+bool wifi_manager_internal_radio_state_uncertain(void);
+
 esp_err_t wifi_manager_internal_start_setup_mode(void);
