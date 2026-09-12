@@ -12,9 +12,8 @@ idf_component_register(
 
     REQUIRES
         app_config
-        board_config
         device_status
-        esp_driver_i2c
         freertos
         log
+        sensor_bus
 )

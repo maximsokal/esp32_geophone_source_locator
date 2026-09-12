@@ -4,13 +4,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "board_config.h"
-
-
-#define INA3221_I2C_PORT              I2C_NUM_0
-#define INA3221_I2C_SPEED_HZ          100000u
-#define INA3221_I2C_TIMEOUT_MS        100
-
 #define INA3221_REG_CONFIG            0x00u
 #define INA3221_REG_SHUNT_CH1         0x01u
 #define INA3221_REG_BUS_CH1           0x02u
@@ -48,13 +41,11 @@ static esp_err_t ina3221_driver_read_register(
     uint8_t data[2] = { 0 };
 
     esp_err_t err =
-        i2c_master_transmit_receive(
+        i2c_bus_read_bytes(
             driver->device,
-            &register_address,
-            sizeof(register_address),
-            data,
+            register_address,
             sizeof(data),
-            INA3221_I2C_TIMEOUT_MS
+            data
         );
 
     if (err != ESP_OK) {
@@ -83,17 +74,16 @@ static esp_err_t ina3221_driver_write_register(
     }
 
     const uint8_t data[] = {
-        register_address,
         (uint8_t)(value >> 8),
         (uint8_t)(value & 0xFFu),
     };
 
     return
-        i2c_master_transmit(
+        i2c_bus_write_bytes(
             driver->device,
-            data,
+            register_address,
             sizeof(data),
-            INA3221_I2C_TIMEOUT_MS
+            data
         );
 }
 
@@ -108,19 +98,11 @@ esp_err_t ina3221_driver_open(
 
     ina3221_driver_close(driver);
 
-    const i2c_master_bus_config_t bus_config = {
-        .i2c_port = INA3221_I2C_PORT,
-        .sda_io_num = BOARD_SENSOR_I2C_SDA_GPIO,
-        .scl_io_num = BOARD_SENSOR_I2C_SCL_GPIO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
+    sensor_bus_handles_t handles = { 0 };
 
     esp_err_t err =
-        i2c_new_master_bus(
-            &bus_config,
-            &driver->bus
+        sensor_bus_get_handles(
+            &handles
         );
 
     if (err != ESP_OK) {
@@ -128,30 +110,22 @@ esp_err_t ina3221_driver_open(
         return err;
     }
 
-    const i2c_device_config_t device_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = BOARD_INA3221_I2C_ADDRESS,
-        .scl_speed_hz = INA3221_I2C_SPEED_HZ,
-    };
+    driver->bus =
+        handles.bus;
+    driver->device =
+        handles.ina3221;
+
+    uint16_t probe_value = 0;
 
     err =
-        i2c_master_bus_add_device(
-            driver->bus,
-            &device_config,
-            &driver->device
+        ina3221_driver_read_register(
+            driver,
+            INA3221_REG_CONFIG,
+            &probe_value
         );
 
-    if (err != ESP_OK) {
-        ina3221_driver_close(driver);
-        return err;
-    }
-
-    err =
-        i2c_master_probe(
-            driver->bus,
-            BOARD_INA3221_I2C_ADDRESS,
-            INA3221_I2C_TIMEOUT_MS
-        );
+    /* A successful register read is the shared-bus equivalent of probe. */
+    (void)probe_value;
 
     if (err != ESP_OK) {
         ina3221_driver_close(driver);
@@ -208,19 +182,11 @@ void ina3221_driver_close(
         false;
 
     if (driver->device != NULL) {
-        (void)i2c_master_bus_rm_device(
-            driver->device
-        );
-
         driver->device =
             NULL;
     }
 
     if (driver->bus != NULL) {
-        (void)i2c_del_master_bus(
-            driver->bus
-        );
-
         driver->bus =
             NULL;
     }

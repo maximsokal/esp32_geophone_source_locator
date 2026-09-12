@@ -35,6 +35,33 @@ menu "Seismic Acquisition"
 
 endmenu
 
+menu "Status indicator"
+
+config APP_STATUS_INDICATOR_ENABLED
+    bool "Enable physical status LED backend"
+    default n
+    help
+        Keep disabled for the current diploma board: its three status LED
+        outputs are not connected. Enable only after a board revision supplies
+        explicit green/yellow/red GPIO assignments and a separate HIL check.
+
+endmenu
+
+menu "ESP Insights"
+
+config APP_ESP_INSIGHTS
+    bool "Enable optional ESP Insights bridge"
+    default n
+    select ESP_INSIGHTS_ENABLED
+    help
+        Keep disabled in the baseline firmware. Enabling requires a private
+        auth-key provider or an explicitly configured non-HTTPS transport.
+        Only selected runtime health metrics are bridged; Wi-Fi credentials,
+        sessions, TLS key material, and personal data are never exported by
+        this application component.
+
+endmenu
+
 menu "TFT diagnostics"
 
 config UI_MEASUREMENTS_GRAPHS_ENABLED

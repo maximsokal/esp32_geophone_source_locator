@@ -11,9 +11,10 @@ Scope: existing C firmware on main, starting at `844437f93306e5d4182dc8129162900
 - `measurement_service` queues commands on Core 0; `seismic_recorder` drains frames and finalizes session files through an asynchronous `DRAIN -> FLUSH -> SYNC -> CLOSE -> METADATA -> COMPLETE/ERROR` worker state machine. UI storage commands remain outside LVGL callbacks.
 - `storage_manager` serializes operations and DMA reserve; `spi_bus` quiesces TFT on shared SPI2; `sd_card` owns mount lifecycle. `object_format`, `object_recovery`, `object_store` and `object_service` own persisted object contracts and recovery.
 - `localization` is a 4..8-sensor 3D TDOA solver, not an event detector or validated end-to-end physical locator.
-- `adc_service` owns ADC1 and channel settling; `keypad` interprets the analog ladder. `ina3221_monitor` publishes battery/system/AD7606 rail telemetry.
+- `adc_service` owns ADC1 and channel settling; `keypad` owns the five official ADC Button objects and preserves the KS0466 ladder ranges. `ina3221_monitor` publishes battery/system/AD7606 rail telemetry through the shared `sensor_bus` I2C0 owner.
 - `display` owns panel hardware; `ui` owns LVGL. `wifi_manager` and `web_server` serve local HTTPS and flash-authoritative assets. `device_status` aggregates snapshots.
-- `power_control` monitors button and requests power cut only after application shutdown.
+- `app_events` owns the dedicated ESP-IDF `esp_event` user loop; UI, Wi-Fi and Web subscribers/publishers use its preserved event IDs. `power_control` uses the official GPIO Button adapter and latches shutdown through the EventGroup before any best-effort notification.
+- `status_indicator` consumes explicit status decisions only; its `led_indicator` backend is disabled because this board has no connected status LED GPIO contract. `insights_bridge` is optional and exports selected health metrics only. `seismic_dsp` is a synchronous, task-free measured-signal foundation with no invented coefficients.
 
 ## Initial executable surface
 
@@ -25,10 +26,10 @@ Production build binding: ESP-IDF 5.5.4, Python 3.11.2 at `C:\Espressif\python_e
 
 ## Current executable surface
 
-- The manifest-driven native runner builds and executes 21 isolated C suites covering AD7606 policy, DMA and cadence boundaries, runtime task observability, INA3221 conversion, keypad, localization, measurement service, object format/store/recovery, seismic buffer/recorder, storage manager, SPI arbitration, power-button policy, web status/flash serving, UI trace reduction and the staged seismic recorder/web pipeline.
+- The manifest-driven native runner builds and executes 36 isolated C suites covering APP_EVENT delivery, AD7606 policy, DMA and cadence boundaries, runtime task observability, INA3221 conversion, keypad compatibility, seismic DSP, localization, measurement service, object format/store/recovery, seismic buffer/recorder, storage manager, SPI arbitration, power-button policy, web status/flash serving, UI trace reduction and the staged seismic recorder/web pipeline.
 - `tests/target/test_app` is an ESP-IDF 5.5.4 Unity target application with four deterministic policy cases. Its ESP32-S3 build passed; it runs all cases automatically when flashed and emits `TEST_APP_RESULT` for the COM6 monitor.
 - `tests/python` provides deterministic manifest, task and pipeline-log replay checks plus one explicitly gated HIL check. The default invocation runs the deterministic checks and skips HIL.
-- `tools/run_pipeline_hil.ps1` is the explicit production Measurements-pipeline gate. It combines COM4 flash, passive COM6 logs, optional HTTPS API checks, runtime heartbeat/progress checks for acquisition, recorder, UI, keypad and power-button loops, and a device-monotonic `runtime.now_ms` age gate (`-MaxTaskHeartbeatAgeMs`, default 1000 ms). It also performs explicit recorder start/stop and completed-session metadata validation; it reports unautomatable TFT/keypad/power-button checks as `BLOCKED` when `-RequireFullPipeline` is requested, or records them as `PASS` only when the live operator supplies all three explicit confirmation switches after observing the target. Those switches themselves require `-RequireFullPipeline`.
+- `tools/run_pipeline_hil.ps1` is the explicit production Measurements-pipeline gate. It combines COM4 flash, passive COM6 logs, optional HTTPS API checks, runtime heartbeat/progress checks for acquisition, recorder and UI, and a device-monotonic `runtime.now_ms` age gate (`-MaxTaskHeartbeatAgeMs`, default 1000 ms). The official Button component owns input sampling/debounce; physical button delivery, startup-held behavior, GPIO18 pulse and TFT response remain explicit HIL observations. It also performs explicit recorder start/stop and completed-session metadata validation; it reports unautomatable TFT/keypad/power-button checks as `BLOCKED` when `-RequireFullPipeline` is requested, or records them as `PASS` only when the live operator supplies all three explicit confirmation switches after observing the target. Those switches themselves require `-RequireFullPipeline`.
 - WebUI remains a separate baseline: the locale-dependent XR assertion now derives the expected thousands separator from `toLocaleString()`. The console seismic contract validates `/api/seismic` normalization and carries a signed impulse into the waveform polyline helper; live Wi-Fi, browser layout and physical pixel output remain HIL-only.
 - `.vscode/tasks.json` provides separate local test, build, flash, and monitor tasks. `Tests: All (no flash)` has no hardware dependency; the Unity HIL task checks live COM4/COM6 before flashing, while standalone flash/monitor tasks check only their matching port.
 
@@ -54,9 +55,14 @@ Existing coverage describes the initial checkout; additions and verified results
 | web flash send | TLS memory pressure/truncated assets | host HTTP send fakes | status policy | 0/1/2048/2049 and multiples, final chunk, headers/close/error propagation | P0 |
 | power_control / main shutdown | premature power cut | host ordered calls, no physical output | none | debounce/sample rounding/cancel, finalize-before-LVGL and acquire-stop order, errors | P0 |
 | INA3221 | wrong power classification | host conversions/policy | battery/source policy | register sign/zero/extrema, threshold validity | P0 |
-| keypad | unintended input | host decode/poll fake | none | all buttons and thresholds, settling/noise/debounce | P0 |
+| keypad / official Button adapter | unintended or repeated input | host ladder compatibility + target compile; later HIL | raw decode and API compatibility | all five physical buttons, ADC1 ownership, measured mV ranges, settling/noise/debounce, startup-held input | P0 |
+| app_events / UI dispatch | blocked service loop or lost UI action | host event contract + source contract + target build | event IDs and zero-wait post | queue pressure, bounded UI pending queue, LVGL-owner application, startup/shutdown subscriber ordering | P0 |
+| power Button / safe shutdown | power cut before persistence | host policy + target build; later HIL | policy and EventGroup latch | long-press/release, startup-held button, queue-full notification, GPIO18 200 ms pulse, ordered shutdown | P0 |
+| sensor_bus / INA3221 | I2C ownership conflict or bad telemetry | host/source contract + target build; later HIL | conversion/policy | one I2C0 owner, GPIO9/10, 100 kHz, INA probe/averaging and TCA9548A measured topology | P0 |
+| status_indicator / Insights | misleading state or data leakage | source contract + target build | explicit status semantics | physical LED wiring, sticky state over power cycle, optional cloud/auth path, measured overhead and privacy audit | P1 |
+| seismic_dsp foundation | unvalidated signal alteration | host API contract + target build | no-op API and stage names | measured AD7606/ZF-24HP model, coefficients, numerical regression before enabling stages | P1 |
 | acquisition orchestrator / ADC service | stale state or wrong backend | host fake backend/ADC | none | failed start cleanup, restart, settling/read errors | P1 |
-| Measurements pipeline (acquisition -> buffer -> recorder/UI/web) | wrong rate, lost frames, blocked service tasks | 21-suite host contracts plus explicit production HIL runner | staged host fan-out, recorder/web parity and runtime heartbeat/progress telemetry | physical SPI DMA timing, SD media, TFT pixels, Wi-Fi transport and live input responsiveness | P0 |
+| Measurements pipeline (acquisition -> buffer -> recorder/UI/web) | wrong rate, lost frames, blocked service tasks | 36-suite host contracts plus explicit production HIL runner | staged host fan-out, recorder/web parity and runtime heartbeat/progress telemetry | physical SPI DMA timing, SD media, TFT pixels, Wi-Fi transport and live input responsiveness | P0 |
 | display / Wi-Fi / device_status | runtime coupling and memory pressure | local production build, targeted unit seams; HIL | web status policy | lifecycle error paths, real heap and DMA fragmentation | P1 |
 
 ## Verification boundaries
@@ -72,6 +78,16 @@ HOST TESTED proves selected C behavior against deterministic boundary fakes. COM
 - WebUI: console tests passed; XR tests passed after making the number-format assertion locale-aware.
 - Production pipeline replay: a valid captured AD7606 log returned `PIPELINE_HIL_RESULT: PASS`; a log containing an AD7606 read timeout returned `PIPELINE_HIL_RESULT: FAIL`. These parser checks use no serial port and never flash. A live full-pipeline invocation remains `BLOCKED` until COM4, COM6, HTTPS base URL, an existing object ID and the three physical observations are available.
 - Serial preflight: the requested COM4/COM6 names currently appear only as phantom PnP entries (`CM_PROB_PHANTOM`/`Unknown`); `SerialPort.GetPortNames()` returns no live ports and both `mode COM4` and `mode COM6` report `Illegal device name`. The HIL task therefore stops before flash until the board and passive adapter are connected.
+
+### Current migration verification (2026-09-12)
+
+- HOST TESTED: `python tools/run_host_tests.py --keep-going` passed 36/36 native C suites.
+- HOST TESTED: `python -m pytest -q` passed 70 tests with 1 explicitly skipped hardware HIL gate.
+- HOST TESTED: Web Console passed 38/38, Web XR passed 582/582, and Web typecheck passed.
+- COMPILES: the Unity target build produced `geolocator_test_app.bin` at `0x29fd0` with 84% app-partition free.
+- COMPILES: the clean production build in `build-refactor-final` passed after a bounded `-j2` retry; the image is `0x1ff640`, app free space is `0x2009c0` (50%), and the bootloader has 36% free space.
+- HIL TESTED: SKIPPED. Serial preflight found no live COM4/COM6 ports, so no flash, UART observation, runtime heap/HWM capture, or physical input/sensor/display/storage verification was performed.
+- PHYSICALLY VERIFIED: not claimed. The physical acceptance matrix remains pending board connection and live observations.
 
 ## Optimization gate
 

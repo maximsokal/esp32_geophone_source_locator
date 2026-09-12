@@ -1,7 +1,7 @@
 #include "web_server_internal.h"
 
 #include "app_config.h"
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "wifi_manager.h"
 
 #include "esp_log.h"
@@ -156,7 +156,7 @@ static esp_err_t web_wifi_setup_post_handler(
 
     ESP_LOGI(TAG, "Wi-Fi setup saved");
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_WIFI_CREDENTIALS_SAVED,
         0
     );

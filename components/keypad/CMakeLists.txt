@@ -1,10 +1,7 @@
 idf_component_register(
     SRCS
         "keypad.c"
-        "keypad_adc.c"
-        "keypad_decode.c"
-        "keypad_event_monitor.c"
-        "keypad_event_worker.c"
+        "keypad_button_adapter.c"
 
     INCLUDE_DIRS
         "include"
@@ -14,9 +11,8 @@ idf_component_register(
 
     REQUIRES
         adc_service
-        app_config
+        app_events
         board_config
-        freertos
+        button
         log
-        runtime_observability
 )

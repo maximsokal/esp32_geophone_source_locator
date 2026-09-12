@@ -4,12 +4,29 @@
 
 #include "esp_log.h"
 
-#include "power_button_monitor.h"
 #include "power_output.h"
+
+
+typedef void (*power_button_shutdown_notification_hook_t)(void *user_context);
+
+esp_err_t power_button_adapter_init(
+    power_button_shutdown_notification_hook_t hook,
+    void *user_context
+);
+esp_err_t power_button_adapter_set_notification_hook(
+    power_button_shutdown_notification_hook_t hook,
+    void *user_context
+);
+void power_button_adapter_wait_for_shutdown_request(void);
+bool power_button_adapter_is_shutdown_requested(void);
+void power_button_adapter_stop(void);
 
 
 static const char *TAG =
     "POWER_CONTROL";
+
+static power_control_shutdown_notification_hook_t s_notification_hook;
+static void *s_notification_context;
 
 
 esp_err_t power_control_init(void)
@@ -21,13 +38,15 @@ esp_err_t power_control_init(void)
         return err;
     }
 
-    err =
-        power_button_monitor_init();
+    err = power_button_adapter_init(
+        s_notification_hook,
+        s_notification_context
+    );
 
     if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
-            "Failed to initialize power button monitor: %s",
+            "Failed to initialize power button: %s",
             esp_err_to_name(err)
         );
 
@@ -45,22 +64,33 @@ esp_err_t power_control_init(void)
 }
 
 
+esp_err_t power_control_set_shutdown_notification_hook(
+    power_control_shutdown_notification_hook_t hook,
+    void *user_context
+)
+{
+    s_notification_hook = hook;
+    s_notification_context = user_context;
+    return power_button_adapter_set_notification_hook(hook, user_context);
+}
+
+
 void power_control_wait_for_shutdown_request(void)
 {
-    power_button_monitor_wait_for_shutdown_request();
+    power_button_adapter_wait_for_shutdown_request();
 }
 
 
 bool power_control_is_shutdown_requested(void)
 {
     return
-        power_button_monitor_is_shutdown_requested();
+        power_button_adapter_is_shutdown_requested();
 }
 
 
 void power_control_shutdown(void)
 {
-    power_button_monitor_stop();
+    power_button_adapter_stop();
 
     ESP_LOGW(
         TAG,

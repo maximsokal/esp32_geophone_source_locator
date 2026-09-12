@@ -344,7 +344,7 @@ idf_component_register(
 
     REQUIRES
         app_config
-        app_event_bus
+        app_events
         device_status
         measurement_service
         object_store

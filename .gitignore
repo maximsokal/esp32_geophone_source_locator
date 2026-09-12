@@ -1,5 +1,7 @@
 ﻿# ESP-IDF build output
 build/
+build-refactor/
+build-refactor-*/
 tests/.venv-tests/
 build/host-tests/
 .tools/

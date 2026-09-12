@@ -30,7 +30,7 @@ esp_err_t httpd_resp_send_err(httpd_req_t *request, int status, const char *mess
 bool wifi_manager_is_setup_mode(void) { return true; }
 esp_err_t wifi_manager_save_sta_credentials(const char *ssid, const char *password) { (void)ssid; (void)password; return ESP_OK; }
 esp_err_t wifi_manager_connect_saved(void) { return ESP_OK; }
-esp_err_t app_event_bus_publish(int event, int value) { (void)event; (void)value; return ESP_OK; }
+esp_err_t app_events_post(int event, int value) { (void)event; (void)value; return ESP_OK; }
 void vTaskDelay(unsigned ticks) { (void)ticks; }
 bool web_https_onboarding_ca_install_confirmed(void) { return true; }
 esp_err_t web_wifi_setup_page_send_form(httpd_req_t *request) { (void)request; return ESP_OK; }

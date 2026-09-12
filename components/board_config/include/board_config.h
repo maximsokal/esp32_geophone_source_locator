@@ -19,7 +19,7 @@
 // microSD
 #define BOARD_SD_CS_GPIO        GPIO_NUM_17
 
-// Sensor I2C bus. INA3221 currently owns/creates this bus.
+// Sensor I2C bus. sensor_bus owns I2C0 and shares borrowed device handles.
 #define BOARD_SENSOR_I2C_SDA_GPIO     GPIO_NUM_9
 #define BOARD_SENSOR_I2C_SCL_GPIO     GPIO_NUM_10
 #define BOARD_INA3221_I2C_ADDRESS     0x40

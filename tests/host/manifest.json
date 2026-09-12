@@ -2,6 +2,18 @@
   "version": 1,
   "tests": [
     {
+      "name": "app_events",
+      "sources": [
+        "components/app_events/app_events.c",
+        "tests/host/app_events_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_events",
+        "components/app_events/include",
+        "components/app_config/include"
+      ]
+    },
+    {
       "name": "runtime_observability",
       "sources": [
         "components/runtime_observability/runtime_observability.c",
@@ -30,7 +42,7 @@
       ],
       "include_dirs": [
         "components/wifi_manager/tests/stubs",
-        "components/app_event_bus/include",
+        "components/app_events/include",
         "components/wifi_manager/include",
         "components/wifi_manager"
       ]
@@ -81,17 +93,12 @@
     {
       "name": "keypad",
       "sources": [
-        "components/keypad/keypad_decode.c",
-        "components/keypad/keypad_event_worker.c",
-        "tests/host/stubs/runtime_observability/noop.c",
+        "components/keypad/keypad.c",
         "components/keypad/tests/keypad_test.c"
       ],
       "include_dirs": [
         "components/keypad/tests/stubs",
-        "tests/host/stubs/runtime_observability",
-        "components/keypad/include",
-        "components/keypad",
-        "components/runtime_observability/include"
+        "components/keypad/include"
       ]
     },
     {
@@ -105,6 +112,17 @@
         "components/localization/include"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "seismic_dsp",
+      "sources": [
+        "components/seismic_dsp/seismic_dsp.c",
+        "components/seismic_dsp/tests/seismic_dsp_host_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_dsp/tests/stubs",
+        "components/seismic_dsp/include"
+      ]
     },
     {
       "name": "measurement_service",
@@ -177,13 +195,11 @@
     {
       "name": "power_button_policy",
       "sources": [
-        "components/power_control/power_button_monitor_state.c",
-        "components/power_control/power_button_monitor_wait.c",
+        "components/power_control/power_button_adapter.c",
         "components/power_control/tests/power_button_policy_test.c"
       ],
       "include_dirs": [
         "components/power_control/tests/stubs",
-        "components/power_control",
         "components/power_control/include"
       ]
     },

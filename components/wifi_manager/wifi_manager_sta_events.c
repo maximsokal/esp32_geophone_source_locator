@@ -1,6 +1,6 @@
 #include "wifi_manager_sta_events.h"
 
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "wifi_manager_runtime.h"
 
 #include "esp_err.h"
@@ -56,7 +56,7 @@ static void wifi_manager_sta_handle_disconnect(void)
     }
 
     if (was_connected) {
-        (void)app_event_bus_publish(
+        (void)app_events_post(
             APP_EVENT_WIFI_STA_DISCONNECTED,
             0
         );
@@ -122,7 +122,7 @@ static void wifi_manager_sta_on_ip_event(
         IP2STR(&event->ip_info.ip)
     );
 
-    (void)app_event_bus_publish(
+    (void)app_events_post(
         APP_EVENT_WIFI_STA_CONNECTED,
         0
     );

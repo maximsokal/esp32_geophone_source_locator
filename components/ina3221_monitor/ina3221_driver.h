@@ -2,16 +2,16 @@
 
 #include <stdbool.h>
 
-#include "driver/i2c_master.h"
 #include "esp_err.h"
 
 #include "ina3221_policy.h"
+#include "sensor_bus.h"
 
 
 typedef struct
 {
-    i2c_master_bus_handle_t bus;
-    i2c_master_dev_handle_t device;
+    i2c_bus_handle_t bus;
+    i2c_bus_device_handle_t device;
     bool ready;
 
 } ina3221_driver_t;

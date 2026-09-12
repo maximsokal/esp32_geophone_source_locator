@@ -2,7 +2,7 @@
 
 The repository has three intentionally separate test surfaces:
 
-* `tools/run_host_tests.py` builds and runs the 21 C contract suites in
+* `tools/run_host_tests.py` builds and runs the 36 C contract suites in
   `tests/host/manifest.json`. It applies strict C11 warnings consistently and
   writes a machine-readable report under `build/host-tests`.
 * `tests/python` contains deterministic pytest checks. Run `python -m pytest`
@@ -19,6 +19,15 @@ signed impulse through `fetchSeismic()` into the waveform polyline helper used
 by `LiveSeismicPanel`. This is deterministic data-path evidence; live Wi-Fi
 transport, browser layout and physical pixel output still require a connected
 board and browser HIL session.
+
+The architecture-migration contracts cover the dedicated ESP-IDF `APP_EVENT`
+user loop, official Button adapters for the five-button ADC ladder and GPIO21
+power input, the shared `sensor_bus` I2C0 owner, the disabled board-wiring-gated
+LED backend, the optional privacy-limited Insights bridge, and the synchronous
+no-op `seismic_dsp` foundation. Keypad and power input no longer create
+application-owned polling/debounce tasks; the target Button component owns
+that service. UI event callbacks only enqueue into a bounded pending queue and
+LVGL applies events from its own task/timer.
 
 ## Host tests
 
@@ -123,15 +132,15 @@ panic/reset/read-failure markers and, when `-BaseUrl` is provided, `/api/seismic
 metadata, exact channel IDs `[1,2,3,4]`, bounded per-frame timestamp cadence and
 `/api/status`.
 The production firmware exposes `/api/status.runtime.now_ms` and
-`/api/status.runtime.tasks` for acquisition, recorder, UI, keypad and
-power-button loops. The runner compares two status snapshots, requires every
+`/api/status.runtime.tasks` for acquisition, recorder and UI loops. The runner
+compares two status snapshots, requires every
 heartbeat to advance, and requires each `last_heartbeat_ms` to be no older than
 `-MaxTaskHeartbeatAgeMs` (default 1000 ms) at the device snapshot time; a
 recording run also requires acquisition and recorder progress to advance. The
 recorder heartbeat is emitted after its buffer copy, SD write and any flush
 return, so a blocked storage call cannot create a false liveness report. The UI
-beat follows event receive and LVGL dispatch, while keypad, power-button and
-acquisition beats follow their poll/read delays and buffer publication. This
+beat follows event receive and LVGL dispatch; Button input sampling is owned by
+the official Button service and physical response is checked by HIL. This
 catches a stalled FreeRTOS task automatically, while it still cannot prove TFT
 pixels or electrical button response.
 Recorder STOP is an asynchronous worker state machine, not a wall-clock

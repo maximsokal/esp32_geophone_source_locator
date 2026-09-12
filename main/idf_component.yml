@@ -14,3 +14,20 @@ dependencies:
   # Official Espressif mDNS responder. Pin a known-stable release rather than
   # automatically taking a newly published minor version during reconfigure.
   espressif/mdns: "1.11.3"
+
+  # Official input-device component. Keep 4.2.0 as the migration baseline;
+  # 4.2.1 is a separate post-HIL validation choice.
+  espressif/button: "4.2.0"
+
+  # Optional remote diagnostics; APP_ESP_INSIGHTS stays disabled by default.
+  espressif/esp_insights: "1.3.4"
+
+  # DSP primitives used by the seismic-processing foundation component.
+  espressif/esp-dsp: "1.8.2"
+
+  # Thin status-indicator adapter dependency. The current board has no
+  # connected LED GPIOs, so its backend remains disabled.
+  espressif/led_indicator: "2.1.2"
+
+  # Shared INA3221/TCA9548A sensor bus, pinned for the migration baseline.
+  espressif/i2c_bus: "1.5.2"

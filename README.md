@@ -75,11 +75,23 @@ Managed dependencies are pinned through the ESP-IDF Component Manager:
 
 - `espressif/esp_lcd_ili9341 ^2.0.2`;
 - `espressif/esp_lvgl_port ^2.9.0`;
-- `lvgl/lvgl ^9.5.0`.
+- `lvgl/lvgl ^9.5.0`;
+- `espressif/button 4.2.0` for the keypad and power-button adapters;
+- `espressif/i2c_bus 1.5.2` for the shared INA3221 sensor bus;
+- `espressif/led_indicator 2.1.2` as the disabled, board-wiring-gated status backend;
+- `espressif/esp-dsp 1.8.2` for the task-free measured-signal foundation;
+- optional `espressif/esp_insights 1.3.4`, disabled in the baseline image.
 
 The previous project-local 5x7 bitmap font and custom text-rendering stack are no longer part of the active display architecture.
 
-The LVGL handler task is pinned to **Core 0**. The five-button analog keypad remains the physical input device and application key events are dispatched through the event bus.
+The LVGL handler task is pinned to **Core 0**. The five-button analog keypad
+uses official ADC Button objects over the existing ADC1 owner, and the GPIO21
+power input uses the official GPIO Button object with external pull circuitry.
+Both adapters publish to the dedicated ESP-IDF `APP_EVENT` user loop; the UI
+subscriber only queues events and applies them from the existing LVGL timer.
+The event loop contract is documented in
+[`ARCHITECTURE.md`](ARCHITECTURE.md), and the before/after resource snapshot is
+in [`docs/architecture-refactor-baseline-2026-09-12.md`](docs/architecture-refactor-baseline-2026-09-12.md).
 
 Screen behavior is registered through one `ui_screen_driver_t` table. Open/render/key/refresh behavior and the Home menu label therefore have one source of truth instead of duplicated enum/switch routing.
 
@@ -111,11 +123,10 @@ Application-owned tasks are split by role.
 
 ### Core 0 - services
 
-- LVGL handler and UI event handling;
-- keypad polling;
+- LVGL handler and bounded UI event application;
+- ESP-IDF `APP_EVENT` user loop and official Button service;
 - object service;
 - storage service;
-- power-button monitor;
 - Wi-Fi/HTTP-facing application work.
 
 ### Core 1 - real-time side
@@ -222,10 +233,11 @@ Object and measurement state is stored under `/sdcard/geolocator`.
 The shutdown sequence stops producers/services before cutting power:
 
 ```text
-keypad monitor
+official Button adapters / shutdown latch
 -> INA3221 monitor
+-> shared sensor_bus / I2C0 release
 -> measurement service / recorder finalization (LVGL guard still alive)
--> UI event worker / LVGL port
+-> APP_EVENT UI subscriber / LVGL port
 -> storage service
 -> object service
 -> seismic acquisition
@@ -296,7 +308,9 @@ runner reports AD7606 startup, configured-rate frame cadence, recorder/session
 metadata, exact seismic channel IDs and bounded timestamp jitter,
 `/api/seismic`/`/api/status` checks (including zero AD7606 read errors and
 consecutive failures) and advancing FreeRTOS heartbeats for the
-acquisition, recorder, UI, keypad and power-button loops. During recording it
+acquisition, recorder and UI loops. The official Button component owns input
+sampling/debounce; its physical delivery and electrical behavior are checked
+separately during HIL. During recording it
 also requires acquisition and recorder progress to advance. It uses the device
 monotonic `runtime.now_ms` to reject task heartbeats older than the configured
 `-MaxTaskHeartbeatAgeMs` (default 1000 ms). TFT pixels and

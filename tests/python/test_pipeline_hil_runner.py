@@ -82,7 +82,7 @@ def run_api_fixture(
                     else now_ms
                 ),
             }
-            for name in ("acquisition", "recorder", "ui", "keypad", "power_button")
+            for name in ("acquisition", "recorder", "ui")
         }
         return {
             "acquisition": {
@@ -234,13 +234,13 @@ def test_api_status_rejects_stale_runtime_heartbeat(tmp_path: Path):
             "timestamps_ms": [1000, 1002, 1004],
             "channels": [{"id": channel_id, "samples_uv": [1, 2, 3]} for channel_id in range(1, 5)],
         },
-        stale_tasks=("keypad",),
+        stale_tasks=("ui",),
         max_age_ms=100,
     )
 
     assert result.returncode == 1
     assert "heartbeat too old" in result.stdout
-    assert "keypad" in result.stdout
+    assert "ui" in result.stdout
     assert "PIPELINE_HIL_RESULT: FAIL" in result.stdout
 
 
@@ -369,7 +369,7 @@ def test_api_status_confirms_all_runtime_tasks_advance(tmp_path: Path):
 
     def status_payload(index: int) -> dict:
         tasks = {}
-        for name in ("acquisition", "recorder", "ui", "keypad", "power_button"):
+        for name in ("acquisition", "recorder", "ui"):
             tasks[name] = {
                 "observed": True,
                 "heartbeat": 10 + index,

@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "wifi_manager_profile.h"
 #include "wifi_manager_runtime.h"
 
@@ -100,7 +100,7 @@ static void wifi_manager_setup_wifi_event(
             "Setup client disconnected"
         );
 
-        (void)app_event_bus_publish(
+        (void)app_events_post(
             APP_EVENT_WIFI_SETUP_CLIENT_DISCONNECTED,
             0
         );
@@ -145,7 +145,7 @@ static void wifi_manager_setup_ip_event(
     );
 
     (void)
-        app_event_bus_publish(
+        app_events_post(
             APP_EVENT_WIFI_SETUP_CLIENT_READY,
             0
         );

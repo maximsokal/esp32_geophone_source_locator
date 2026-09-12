@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "freertos/FreeRTOS.h"
 #include "wifi_manager.h"
 
@@ -162,7 +162,7 @@ esp_err_t esp_wifi_stop(void)
     return result;
 }
 
-esp_err_t app_event_bus_publish(app_event_type_t type, int32_t value)
+esp_err_t app_events_post(app_event_type_t type, int32_t value)
 {
     (void)type;
     (void)value;

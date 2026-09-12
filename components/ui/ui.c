@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#include "app_event_bus.h"
+#include "app_events.h"
 #include "object_service.h"
 #include "storage_service.h"
 #include "seismic_acquisition.h"
@@ -37,6 +37,9 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     if (!s_context.runtime_ready) {
         return;
     }
+
+    /* APP_LOOP only queues events; UI mutation stays on LVGL's own task. */
+    ui_event_dispatcher_dispatch_pending_locked();
 
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
     seismic_acquisition_snapshot_t acquisition;
@@ -222,7 +225,7 @@ esp_err_t ui_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    err = ui_event_task_start();
+    err = ui_event_dispatcher_start();
     if (err != ESP_OK) {
         ui_runtime_init_rollback();
         return err;
@@ -239,7 +242,7 @@ void ui_shutdown(void)
         return;
     }
 
-    ui_event_task_stop();
+    ui_event_dispatcher_stop();
 
     s_context.runtime_ready = false;
     ui_unregister_service_callbacks();
@@ -274,7 +277,7 @@ void ui_handle_keypad_event(
         return;
     }
 
-    esp_err_t err = app_event_bus_publish(
+    esp_err_t err = app_events_post(
         APP_EVENT_KEYPAD,
         (int32_t)key
     );

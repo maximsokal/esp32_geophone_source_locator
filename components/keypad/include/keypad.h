@@ -12,9 +12,7 @@ typedef enum
     KEYPAD_KEY_OK
 } keypad_key_t;
 
-/*
- * Called once for every debounced key press.
- */
+/* Called once for every debounced key press. */
 typedef void (*keypad_event_callback_t)(
     keypad_key_t key,
     void *user_context
@@ -22,6 +20,8 @@ typedef void (*keypad_event_callback_t)(
 
 esp_err_t keypad_init(void);
 
+/* Compatibility/readout API for diagnostics; event delivery uses Button and
+ * APP_LOOP below. */
 esp_err_t keypad_read_key(keypad_key_t *key);
 
 const char *keypad_key_name(keypad_key_t key);

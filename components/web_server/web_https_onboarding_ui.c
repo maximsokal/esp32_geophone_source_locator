@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-#include "app_event_bus.h"
+#include "app_events.h"
 
 
 #if WEB_SERVER_ROOT_CA_EMBEDDED
@@ -182,7 +182,7 @@ static esp_err_t web_onboarding_ca_download_handler(
     );
 
     if (err == ESP_OK) {
-        (void)app_event_bus_publish(
+        (void)app_events_post(
             APP_EVENT_TLS_CA_DOWNLOADED,
             0
         );

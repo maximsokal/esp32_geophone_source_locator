@@ -1,104 +1,84 @@
 #include <assert.h>
-#include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_err.h"
-#include "keypad_event_internal.h"
-#include "keypad_internal.h"
+#include "keypad.h"
 
-static keypad_event_state_t test_state;
-static const keypad_key_t *test_keys;
-static size_t test_key_count;
-static size_t test_key_index;
-static keypad_key_t delivered[8];
-static size_t delivered_count;
 
-keypad_event_state_t *keypad_event_state(void)
+static int adapter_init_calls;
+static int adapter_stop_calls;
+
+
+esp_err_t adc_service_init(void)
 {
-    return &test_state;
-}
-
-const char *keypad_key_name(keypad_key_t key)
-{
-    (void)key;
-    return "TEST";
-}
-
-esp_err_t keypad_read_key(keypad_key_t *key)
-{
-    assert(key != NULL);
-    if (test_key_index >= test_key_count) {
-        test_state.running = false;
-        return ESP_ERR_TIMEOUT;
-    }
-    *key = test_keys[test_key_index++];
     return ESP_OK;
 }
 
-static void callback(keypad_key_t key, void *context)
+
+esp_err_t keypad_button_adapter_init(void)
 {
-    (void)context;
-    assert(delivered_count < sizeof(delivered) / sizeof(delivered[0]));
-    delivered[delivered_count++] = key;
+    adapter_init_calls++;
+    return ESP_OK;
 }
 
-static void test_decode_boundaries(void)
+
+esp_err_t keypad_button_adapter_start(
+    keypad_event_callback_t callback,
+    void *user_context
+)
 {
-    assert(keypad_decode_raw(0) == KEYPAD_KEY_LEFT);
-    assert(keypad_decode_raw(275) == KEYPAD_KEY_LEFT);
-    assert(keypad_decode_raw(276) == KEYPAD_KEY_UP);
-    assert(keypad_decode_raw(905) == KEYPAD_KEY_UP);
-    assert(keypad_decode_raw(906) == KEYPAD_KEY_DOWN);
-    assert(keypad_decode_raw(1605) == KEYPAD_KEY_DOWN);
-    assert(keypad_decode_raw(1606) == KEYPAD_KEY_RIGHT);
-    assert(keypad_decode_raw(2411) == KEYPAD_KEY_RIGHT);
-    assert(keypad_decode_raw(2412) == KEYPAD_KEY_OK);
-    assert(keypad_decode_raw(3484) == KEYPAD_KEY_OK);
-    assert(keypad_decode_raw(3485) == KEYPAD_KEY_NONE);
-    assert(keypad_decode_raw(4095) == KEYPAD_KEY_NONE);
-    assert(keypad_decode_raw(-1) == KEYPAD_KEY_LEFT);
+    (void)callback;
+    (void)user_context;
+    return ESP_OK;
 }
 
-static void test_debounce_delivers_one_event_per_stable_transition(void)
+
+void keypad_button_adapter_stop(void)
 {
-    const keypad_key_t sequence[] = {
-        KEYPAD_KEY_LEFT,
-        KEYPAD_KEY_LEFT,
-        KEYPAD_KEY_UP,
-        KEYPAD_KEY_LEFT,
-        KEYPAD_KEY_LEFT,
-        KEYPAD_KEY_LEFT,
-        KEYPAD_KEY_NONE,
-        KEYPAD_KEY_NONE,
-        KEYPAD_KEY_NONE,
-        KEYPAD_KEY_RIGHT,
-        KEYPAD_KEY_RIGHT,
-        KEYPAD_KEY_RIGHT,
-    };
-
-    test_state = (keypad_event_state_t) {
-        .task = (TaskHandle_t)1,
-        .callback = callback,
-        .user_context = NULL,
-        .running = true,
-    };
-    test_keys = sequence;
-    test_key_count = sizeof(sequence) / sizeof(sequence[0]);
-    test_key_index = 0;
-    delivered_count = 0;
-
-    keypad_event_worker(NULL);
-
-    assert(delivered_count == 2);
-    assert(delivered[0] == KEYPAD_KEY_LEFT);
-    assert(delivered[1] == KEYPAD_KEY_RIGHT);
-    assert(test_state.task == NULL);
+    adapter_stop_calls++;
 }
+
+
+esp_err_t keypad_button_adapter_read_key(keypad_key_t *key)
+{
+    if (key == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *key = KEYPAD_KEY_OK;
+    return ESP_OK;
+}
+
+
+static void test_names(void)
+{
+    assert(strcmp(keypad_key_name(KEYPAD_KEY_LEFT), "LEFT") == 0);
+    assert(strcmp(keypad_key_name(KEYPAD_KEY_UP), "UP") == 0);
+    assert(strcmp(keypad_key_name(KEYPAD_KEY_DOWN), "DOWN") == 0);
+    assert(strcmp(keypad_key_name(KEYPAD_KEY_RIGHT), "RIGHT") == 0);
+    assert(strcmp(keypad_key_name(KEYPAD_KEY_OK), "OK") == 0);
+    assert(strcmp(keypad_key_name(KEYPAD_KEY_NONE), "NONE") == 0);
+}
+
+
+static void test_lifecycle_is_adapter_owned(void)
+{
+    assert(keypad_start_event_monitor(NULL, NULL) == ESP_ERR_INVALID_STATE);
+    assert(keypad_init() == ESP_OK);
+    assert(adapter_init_calls == 1);
+    assert(keypad_start_event_monitor(NULL, NULL) == ESP_OK);
+    keypad_key_t key = KEYPAD_KEY_NONE;
+    assert(keypad_read_key(&key) == ESP_OK);
+    assert(key == KEYPAD_KEY_OK);
+    keypad_stop_event_monitor();
+    assert(adapter_stop_calls == 1);
+}
+
 
 int main(void)
 {
-    test_decode_boundaries();
-    test_debounce_delivers_one_event_per_stable_transition();
+    test_names();
+    test_lifecycle_is_adapter_owned();
     puts("keypad tests passed");
     return 0;
 }
