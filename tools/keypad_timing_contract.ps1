@@ -36,6 +36,9 @@ function Test-KeypadTimingMetricShape {
     if ($Kind -eq "ADC" -and [uint64]$Metric.snapshots -eq 0) {
         $Issues.Add("$prefix has snapshots=0.")
     }
+    if ($Kind -eq "ADC" -and [uint64]$Metric.errors -ne 0) {
+        $Issues.Add("$prefix has errors=$($Metric.errors); non-zero ADC read errors are not acceptable.")
+    }
 
     $count = if ($Kind -eq "ADC") {
         [uint64]$Metric.snapshots
@@ -46,6 +49,8 @@ function Test-KeypadTimingMetricShape {
         $min = [uint64]$Metric.min_us
         $avg = [uint64]$Metric.avg_us
         $p95 = [uint64]$Metric.p95_us
+        $p95Overflow = [uint64]$Metric.p95_overflow
+        $p95CensoredAbove = [uint64]$Metric.p95_censored_above_us
         $max = [uint64]$Metric.max_us
         $resolution = [uint64]$Metric.resolution_us
 
@@ -55,8 +60,27 @@ function Test-KeypadTimingMetricShape {
         if ($min -gt $avg -or $avg -gt $max) {
             $Issues.Add("$prefix violates min_us <= avg_us <= max_us.")
         }
-        if ($resolution -gt 0 -and ($p95 -lt $min -or $p95 -gt ($max + $resolution - 1))) {
-            $Issues.Add("$prefix p95_us is outside the measured range plus histogram resolution.")
+        if ($p95Overflow -gt 1) {
+            $Issues.Add("$prefix has invalid p95_overflow=$p95Overflow.")
+        } elseif ($p95Overflow -eq 1) {
+            if ([uint64]$Metric.overflow -eq 0) {
+                $Issues.Add("$prefix marks p95 overflow without histogram overflow samples.")
+            }
+            if ($p95 -ne 0) {
+                $Issues.Add("$prefix must set p95_us=0 when the percentile rank is censored.")
+            }
+            if ($p95CensoredAbove -eq 0) {
+                $Issues.Add("$prefix is missing p95_censored_above_us for a censored percentile.")
+            } elseif ($max -lt $p95CensoredAbove) {
+                $Issues.Add("$prefix max_us is below p95_censored_above_us.")
+            }
+        } else {
+            if ($p95CensoredAbove -ne 0) {
+                $Issues.Add("$prefix has p95_censored_above_us without a censored percentile.")
+            }
+            if ($resolution -gt 0 -and ($p95 -lt $min -or $p95 -gt ($max + $resolution - 1))) {
+                $Issues.Add("$prefix p95_us is outside the measured range plus histogram resolution.")
+            }
         }
     }
 
@@ -92,6 +116,8 @@ function Format-KeypadTimingAggregate {
         $minimum = [uint64]::MaxValue
         $maximum = [uint64]0
         $worstP95 = [uint64]0
+        $p95Overflow = $false
+        $p95CensoredAbove = [uint64]0
         $overflow = [uint64]0
         foreach ($metric in $Metrics) {
             $totalCount += [uint64]$metric.snapshots
@@ -101,7 +127,15 @@ function Format-KeypadTimingAggregate {
             $weightedSum += [decimal]$metric.avg_us * [uint64]$metric.snapshots
             $minimum = [math]::Min($minimum, [uint64]$metric.min_us)
             $maximum = [math]::Max($maximum, [uint64]$metric.max_us)
-            $worstP95 = [math]::Max($worstP95, [uint64]$metric.p95_us)
+            if ([uint64]$metric.p95_overflow -ne 0) {
+                $p95Overflow = $true
+                $p95CensoredAbove = [math]::Max(
+                    $p95CensoredAbove,
+                    [uint64]$metric.p95_censored_above_us
+                )
+            } else {
+                $worstP95 = [math]::Max($worstP95, [uint64]$metric.p95_us)
+            }
             $overflow += [uint64]$metric.overflow
         }
         $average = if ($totalCount -gt 0) {
@@ -109,7 +143,12 @@ function Format-KeypadTimingAggregate {
         } else {
             0
         }
-        return "source=$source windows=$($Metrics.Count) snapshots=$totalCount attempts=$totalAttempts busy=$totalBusy errors=$totalErrors min_us=$minimum avg_us=$average p95_us=$worstP95 max_us=$maximum resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window; histogram resolution is upper-bound)."
+        $p95Detail = if ($p95Overflow) {
+            "p95_us=0 p95_overflow=1 p95_censored_above_us=$p95CensoredAbove"
+        } else {
+            "p95_us=$worstP95 p95_overflow=0 p95_censored_above_us=0"
+        }
+        return "source=$source windows=$($Metrics.Count) snapshots=$totalCount attempts=$totalAttempts busy=$totalBusy errors=$totalErrors min_us=$minimum avg_us=$average $p95Detail max_us=$maximum resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window when valid; censored when its rank lands above the histogram range)."
     }
 
     $totalCount = [uint64]0
@@ -117,6 +156,8 @@ function Format-KeypadTimingAggregate {
     $minimum = [uint64]::MaxValue
     $maximum = [uint64]0
     $worstP95 = [uint64]0
+    $p95Overflow = $false
+    $p95CensoredAbove = [uint64]0
     $late = [uint64]0
     $overrun = [uint64]0
     $overflow = [uint64]0
@@ -126,7 +167,15 @@ function Format-KeypadTimingAggregate {
         $weightedSum += [decimal]$metric.avg_us * [uint64]$metric.samples
         $minimum = [math]::Min($minimum, [uint64]$metric.min_us)
         $maximum = [math]::Max($maximum, [uint64]$metric.max_us)
-        $worstP95 = [math]::Max($worstP95, [uint64]$metric.p95_us)
+        if ([uint64]$metric.p95_overflow -ne 0) {
+            $p95Overflow = $true
+            $p95CensoredAbove = [math]::Max(
+                $p95CensoredAbove,
+                [uint64]$metric.p95_censored_above_us
+            )
+        } else {
+            $worstP95 = [math]::Max($worstP95, [uint64]$metric.p95_us)
+        }
         $late += [uint64]$metric.late_count
         $overrun += [uint64]$metric.overrun_count
         $overflow += [uint64]$metric.overflow
@@ -136,7 +185,12 @@ function Format-KeypadTimingAggregate {
     } else {
         0
     }
-    return "period_us=$period windows=$($Metrics.Count) samples=$totalCount min_lateness_us=$minimum avg_lateness_us=$average p95_lateness_us=$worstP95 max_lateness_us=$maximum late_count=$late overrun_count=$overrun resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window; histogram resolution is upper-bound)."
+    $p95Detail = if ($p95Overflow) {
+        "p95_lateness_us=0 p95_overflow=1 p95_censored_above_us=$p95CensoredAbove"
+    } else {
+        "p95_lateness_us=$worstP95 p95_overflow=0 p95_censored_above_us=0"
+    }
+    return "period_us=$period windows=$($Metrics.Count) samples=$totalCount min_lateness_us=$minimum avg_lateness_us=$average $p95Detail max_lateness_us=$maximum late_count=$late overrun_count=$overrun resolution_us=$($Metrics[-1].resolution_us) overflow=$overflow (p95 is the worst reported window when valid; censored when its rank lands above the histogram range)."
 }
 
 
@@ -153,10 +207,13 @@ function Test-KeypadTimingTelemetry {
     $sourceIssues = [System.Collections.Generic.List[string]]::new()
     $adcIssues = [System.Collections.Generic.List[string]]::new()
     $timerIssues = [System.Collections.Generic.List[string]]::new()
+    $adcShapeIssues = [System.Collections.Generic.List[string]]::new()
+    $timerShapeIssues = [System.Collections.Generic.List[string]]::new()
+    $invalidTelemetry = $false
 
     $readyPattern = "(?im)KEYPAD_TIMING_READY\s+source=(?<source>[A-Z0-9_]+)"
-    $adcPattern = "(?im)KEYPAD_ADC_TIMING:\s*source=(?<source>[A-Z0-9_]+)\s+window_ms=(?<window_ms>\d+)\s+attempts=(?<attempts>\d+)\s+snapshots=(?<snapshots>\d+)\s+busy=(?<busy>\d+)\s+errors=(?<errors>\d+)\s+min_us=(?<min_us>\d+)\s+avg_us=(?<avg_us>\d+)\s+p95_us=(?<p95_us>\d+)\s+max_us=(?<max_us>\d+)\s+resolution_us=(?<resolution_us>\d+)\s+overflow=(?<overflow>\d+)"
-    $timerPattern = "(?im)KEYPAD_TIMER_TIMING:\s*period_us=(?<period_us>\d+)\s+window_ms=(?<window_ms>\d+)\s+samples=(?<samples>\d+)\s+min_lateness_us=(?<min_us>\d+)\s+avg_lateness_us=(?<avg_us>\d+)\s+p95_lateness_us=(?<p95_us>\d+)\s+max_lateness_us=(?<max_us>\d+)\s+late_count=(?<late_count>\d+)\s+overrun_count=(?<overrun_count>\d+)\s+resolution_us=(?<resolution_us>\d+)\s+overflow=(?<overflow>\d+)"
+    $adcPattern = "(?im)KEYPAD_ADC_TIMING:\s*source=(?<source>[A-Z0-9_]+)\s+window_ms=(?<window_ms>\d+)\s+attempts=(?<attempts>\d+)\s+snapshots=(?<snapshots>\d+)\s+busy=(?<busy>\d+)\s+errors=(?<errors>\d+)\s+min_us=(?<min_us>\d+)\s+avg_us=(?<avg_us>\d+)\s+p95_us=(?<p95_us>\d+)\s+p95_overflow=(?<p95_overflow>\d+)\s+p95_censored_above_us=(?<p95_censored_above_us>\d+)\s+max_us=(?<max_us>\d+)\s+resolution_us=(?<resolution_us>\d+)\s+overflow=(?<overflow>\d+)"
+    $timerPattern = "(?im)KEYPAD_TIMER_TIMING:\s*period_us=(?<period_us>\d+)\s+window_ms=(?<window_ms>\d+)\s+samples=(?<samples>\d+)\s+min_lateness_us=(?<min_us>\d+)\s+avg_lateness_us=(?<avg_us>\d+)\s+p95_lateness_us=(?<p95_us>\d+)\s+p95_overflow=(?<p95_overflow>\d+)\s+p95_censored_above_us=(?<p95_censored_above_us>\d+)\s+max_lateness_us=(?<max_us>\d+)\s+late_count=(?<late_count>\d+)\s+overrun_count=(?<overrun_count>\d+)\s+resolution_us=(?<resolution_us>\d+)\s+overflow=(?<overflow>\d+)"
 
     $readyMarkers = @([regex]::Matches($Content, $readyPattern))
     $adcMarkers = @([regex]::Matches($Content, $adcPattern))
@@ -169,10 +226,11 @@ function Test-KeypadTimingTelemetry {
         $sourceIssues.Add("KEYPAD_TIMING_READY was not observed.")
     } elseif ($readyKeywordCount -ne $readyMarkers.Count) {
         $sourceIssues.Add("KEYPAD_TIMING_READY was present but malformed or incomplete.")
+        $invalidTelemetry = $true
     }
 
-    $adcFields = @("window_ms", "attempts", "snapshots", "busy", "errors", "min_us", "avg_us", "p95_us", "max_us", "resolution_us", "overflow")
-    $timerFields = @("period_us", "window_ms", "samples", "min_us", "avg_us", "p95_us", "max_us", "late_count", "overrun_count", "resolution_us", "overflow")
+    $adcFields = @("window_ms", "attempts", "snapshots", "busy", "errors", "min_us", "avg_us", "p95_us", "p95_overflow", "p95_censored_above_us", "max_us", "resolution_us", "overflow")
+    $timerFields = @("period_us", "window_ms", "samples", "min_us", "avg_us", "p95_us", "p95_overflow", "p95_censored_above_us", "max_us", "late_count", "overrun_count", "resolution_us", "overflow")
     $adc = @($adcMarkers | ForEach-Object {
         Convert-KeypadTimingMatch -Match $_ -Fields ($adcFields + @("source"))
     })
@@ -182,13 +240,21 @@ function Test-KeypadTimingTelemetry {
 
     if ($adcMarkers.Count -eq 0) {
         $adcIssues.Add("No valid KEYPAD_ADC_TIMING marker was observed.")
+        if ($adcKeywordCount -gt 0) {
+            $invalidTelemetry = $true
+        }
     } elseif ($adcKeywordCount -ne $adcMarkers.Count) {
         $adcIssues.Add("KEYPAD_ADC_TIMING was present but malformed or incomplete.")
+        $invalidTelemetry = $true
     }
     if ($timerMarkers.Count -eq 0) {
         $timerIssues.Add("No valid KEYPAD_TIMER_TIMING marker was observed.")
+        if ($timerKeywordCount -gt 0) {
+            $invalidTelemetry = $true
+        }
     } elseif ($timerKeywordCount -ne $timerMarkers.Count) {
         $timerIssues.Add("KEYPAD_TIMER_TIMING was present but malformed or incomplete.")
+        $invalidTelemetry = $true
     }
 
     $sources = @($readyMarkers | ForEach-Object { $_.Groups["source"].Value }) +
@@ -197,17 +263,31 @@ function Test-KeypadTimingTelemetry {
         $uniqueSources = @($sources | Sort-Object -Unique)
         if ($uniqueSources.Count -ne 1) {
             $sourceIssues.Add("Timing markers disagree on source: $($uniqueSources -join ', ').")
+            $invalidTelemetry = $true
         } elseif (-not [string]::IsNullOrWhiteSpace($ExpectedSource) -and
             $uniqueSources[0] -ne $ExpectedSource) {
             $sourceIssues.Add("Timing source=$($uniqueSources[0]), expected $ExpectedSource.")
+            $invalidTelemetry = $true
         }
     }
 
     foreach ($metric in $adc) {
-        Test-KeypadTimingMetricShape $metric "ADC" $adcIssues
+        Test-KeypadTimingMetricShape $metric "ADC" $adcShapeIssues
     }
     foreach ($metric in $timer) {
-        Test-KeypadTimingMetricShape $metric "ESP_TIMER_TASK" $timerIssues
+        Test-KeypadTimingMetricShape $metric "ESP_TIMER_TASK" $timerShapeIssues
+    }
+    if ($adcShapeIssues.Count -gt 0) {
+        $invalidTelemetry = $true
+    }
+    if ($timerShapeIssues.Count -gt 0) {
+        $invalidTelemetry = $true
+    }
+    foreach ($issue in $adcShapeIssues) {
+        $adcIssues.Add($issue)
+    }
+    foreach ($issue in $timerShapeIssues) {
+        $timerIssues.Add($issue)
     }
 
     if ($adc.Count -lt $MinimumWindows) {
@@ -230,6 +310,7 @@ function Test-KeypadTimingTelemetry {
 
     return [pscustomobject]@{
         Pass = $sourcePass -and $adcPass -and $timerPass
+        InvalidTelemetry = $invalidTelemetry
         SourcePass = $sourcePass
         AdcPass = $adcPass
         TimerPass = $timerPass

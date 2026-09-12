@@ -35,13 +35,18 @@ static const char *TAG = "KEYPAD";
  * The diagnostic profile deliberately keeps all accounting bounded and
  * local to the ESP_TIMER_TASK callback. A four-microsecond histogram gives a
  * useful p95 without sorting or allocating from the timer task. Values above
- * the last bucket are reported through overflow and the p95 is the bucket's
- * upper bound.
+ * the last bucket are reported through overflow. If the percentile rank lands
+ * in that censored bucket, p95 is reported as invalid with its lower bound.
  */
 #define KEYPAD_TIMING_REPORT_PERIOD_US 1000000LL
 #define KEYPAD_TIMING_PROBE_PERIOD_US 10000LL
 #define KEYPAD_TIMING_HISTOGRAM_WIDTH_US 4U
 #define KEYPAD_TIMING_HISTOGRAM_BUCKETS 512U
+
+typedef struct {
+    uint32_t value_us;
+    bool overflow;
+} keypad_timing_percentile_t;
 
 #endif
 
@@ -173,13 +178,17 @@ static void keypad_timing_record_duration(
 }
 
 
-static uint32_t keypad_timing_percentile_us(
+static keypad_timing_percentile_t keypad_timing_percentile_us(
     uint32_t count,
     const uint32_t *histogram
 )
 {
+    keypad_timing_percentile_t result = {
+        .value_us = 0U,
+        .overflow = false,
+    };
     if (count == 0U) {
-        return 0U;
+        return result;
     }
 
     /* ceil(count * 95 / 100), with the first sample as the minimum rank. */
@@ -191,15 +200,30 @@ static uint32_t keypad_timing_percentile_us(
         accumulated += histogram[bucket];
         if (accumulated >= rank) {
             if (bucket == KEYPAD_TIMING_HISTOGRAM_BUCKETS - 1U) {
-                return KEYPAD_TIMING_HISTOGRAM_BUCKETS *
-                    KEYPAD_TIMING_HISTOGRAM_WIDTH_US;
+                result.overflow = true;
+                return result;
             }
-            return (bucket + 1U) * KEYPAD_TIMING_HISTOGRAM_WIDTH_US - 1U;
+            result.value_us = (bucket + 1U) *
+                KEYPAD_TIMING_HISTOGRAM_WIDTH_US - 1U;
+            return result;
         }
     }
 
-    return KEYPAD_TIMING_HISTOGRAM_BUCKETS *
-        KEYPAD_TIMING_HISTOGRAM_WIDTH_US;
+    /* A counter/histogram mismatch is treated as censored rather than
+     * manufacturing a precise percentile. */
+    result.overflow = true;
+    return result;
+}
+
+
+static uint32_t keypad_timing_p95_censored_above_us(
+    keypad_timing_percentile_t percentile
+)
+{
+    return percentile.overflow
+        ? KEYPAD_TIMING_HISTOGRAM_BUCKETS *
+            KEYPAD_TIMING_HISTOGRAM_WIDTH_US
+        : 0U;
 }
 
 
@@ -211,9 +235,13 @@ static void keypad_timing_log_window(int64_t now_us)
         : 0U;
 
     if (s_adc_timing_snapshots > 0U) {
+        const keypad_timing_percentile_t p95 = keypad_timing_percentile_us(
+            s_adc_timing_snapshots,
+            s_adc_timing_histogram
+        );
         ESP_LOGI(
             TAG,
-            "KEYPAD_ADC_TIMING: source=%s window_ms=%u attempts=%u snapshots=%u busy=%u errors=%u min_us=%u avg_us=%u p95_us=%u max_us=%u resolution_us=%u overflow=%u",
+            "KEYPAD_ADC_TIMING: source=%s window_ms=%u attempts=%u snapshots=%u busy=%u errors=%u min_us=%u avg_us=%u p95_us=%u p95_overflow=%u p95_censored_above_us=%u max_us=%u resolution_us=%u overflow=%u",
             keypad_timing_source_name(),
             (unsigned)window_ms,
             (unsigned)s_adc_timing_attempts,
@@ -222,10 +250,9 @@ static void keypad_timing_log_window(int64_t now_us)
             (unsigned)s_adc_timing_errors,
             (unsigned)s_adc_timing_min_us,
             (unsigned)(s_adc_timing_sum_us / s_adc_timing_snapshots),
-            (unsigned)keypad_timing_percentile_us(
-                s_adc_timing_snapshots,
-                s_adc_timing_histogram
-            ),
+            (unsigned)p95.value_us,
+            (unsigned)(p95.overflow ? 1U : 0U),
+            (unsigned)keypad_timing_p95_censored_above_us(p95),
             (unsigned)s_adc_timing_max_us,
             (unsigned)KEYPAD_TIMING_HISTOGRAM_WIDTH_US,
             (unsigned)s_adc_timing_overflow
@@ -243,18 +270,21 @@ static void keypad_timing_log_window(int64_t now_us)
     }
 
     if (s_timer_timing_samples > 0U) {
+        const keypad_timing_percentile_t p95 = keypad_timing_percentile_us(
+            s_timer_timing_samples,
+            s_timer_timing_histogram
+        );
         ESP_LOGI(
             TAG,
-            "KEYPAD_TIMER_TIMING: period_us=%u window_ms=%u samples=%u min_lateness_us=%u avg_lateness_us=%u p95_lateness_us=%u max_lateness_us=%u late_count=%u overrun_count=%u resolution_us=%u overflow=%u",
+            "KEYPAD_TIMER_TIMING: period_us=%u window_ms=%u samples=%u min_lateness_us=%u avg_lateness_us=%u p95_lateness_us=%u p95_overflow=%u p95_censored_above_us=%u max_lateness_us=%u late_count=%u overrun_count=%u resolution_us=%u overflow=%u",
             (unsigned)KEYPAD_TIMING_PROBE_PERIOD_US,
             (unsigned)window_ms,
             (unsigned)s_timer_timing_samples,
             (unsigned)s_timer_timing_min_us,
             (unsigned)(s_timer_timing_sum_us / s_timer_timing_samples),
-            (unsigned)keypad_timing_percentile_us(
-                s_timer_timing_samples,
-                s_timer_timing_histogram
-            ),
+            (unsigned)p95.value_us,
+            (unsigned)(p95.overflow ? 1U : 0U),
+            (unsigned)keypad_timing_p95_censored_above_us(p95),
             (unsigned)s_timer_timing_max_us,
             (unsigned)s_timer_timing_late,
             (unsigned)s_timer_timing_overrun,
