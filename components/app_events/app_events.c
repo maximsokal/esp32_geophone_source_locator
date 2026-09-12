@@ -1,6 +1,7 @@
 #include "app_events.h"
 
 #include <stdbool.h>
+#include <stdatomic.h>
 
 #include "app_task_config.h"
 #include "esp_log.h"
@@ -18,6 +19,9 @@ static const char *TAG =
 
 static esp_event_loop_handle_t s_loop =
     NULL;
+
+static atomic_bool s_keypad_delivery_enabled =
+    ATOMIC_VAR_INIT(false);
 
 
 ESP_EVENT_DEFINE_BASE(APP_EVENT);
@@ -50,6 +54,12 @@ esp_err_t app_events_init(void)
         return err;
     }
 
+    atomic_store_explicit(
+        &s_keypad_delivery_enabled,
+        false,
+        memory_order_release
+    );
+
     s_loop =
         loop;
 
@@ -72,6 +82,16 @@ esp_event_loop_handle_t app_events_get_loop(void)
 }
 
 
+void app_events_set_keypad_delivery_enabled(bool enabled)
+{
+    atomic_store_explicit(
+        &s_keypad_delivery_enabled,
+        enabled,
+        memory_order_release
+    );
+}
+
+
 static esp_err_t app_events_post_internal(
     app_event_type_t type,
     int32_t value,
@@ -80,6 +100,22 @@ static esp_err_t app_events_post_internal(
 {
     if (s_loop == NULL) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (
+        type == APP_EVENT_KEYPAD &&
+        !atomic_load_explicit(
+            &s_keypad_delivery_enabled,
+            memory_order_acquire
+        )
+    ) {
+        /*
+         * Button polling intentionally starts early so ADC timing remains
+         * deterministic, but navigation is not a boot command. Discard it
+         * before it can occupy APP_EVENT/UI queues until the interactive UI
+         * has explicitly armed keypad delivery.
+         */
+        return ESP_OK;
     }
 
     const int32_t payload =
