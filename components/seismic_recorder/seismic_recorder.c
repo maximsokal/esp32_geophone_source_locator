@@ -17,10 +17,18 @@
 #include "object_store.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
+#include "seismic_recorder_cache.h"
 #include "seismic_recorder_internal.h"
 #include "seismic_recorder_start_policy.h"
 #include "storage_manager.h"
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
+#ifndef CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB
+#define CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB 1024
+#endif
 
 #define SEISMIC_RECORDER_EVENT_STOPPED          BIT0
 #define SEISMIC_RECORDER_WRITE_PERIOD_MS        500U
@@ -37,14 +45,27 @@ static TaskHandle_t s_task = NULL;
 static FILE *s_samples_file = NULL;
 static object_store_profile_t s_profile;
 static seismic_recorder_snapshot_t s_snapshot;
+
 /*
- * A 512-frame batch is intentionally non-DMA data.  Keep it in PSRAM so a
- * larger SD write cannot consume the internal heap needed by Wi-Fi, TLS and
- * the display DMA path.
+ * The worker copy buffer is PSRAM-backed and is reused for both acquisition
+ * ingestion and one bounded write-behind flush. The actual SDSPI writer still
+ * copies each <=256-frame flush through its internal DMA_ATTR staging buffer.
  */
 static seismic_frame_t *s_batch = NULL;
 
+/*
+ * Write-behind cache: acquisition is acknowledged into this PSRAM ring first.
+ * s_ingest_cursor is the source-frame frontier safely copied out of the small
+ * realtime seismic_buffer. s_cursor remains the source-frame frontier already
+ * handed to samples.bin. Keeping the two frontiers separate prevents a slow
+ * SD operation from forcing the 4-second realtime ring to be the only backlog.
+ */
+static seismic_recorder_cache_t s_cache;
+static seismic_recorder_cache_slot_t *s_cache_storage = NULL;
+static size_t s_cache_capacity = 0U;
+static uint64_t s_ingest_cursor = 0U;
 static uint64_t s_cursor = 0U;
+
 static uint64_t s_stop_target = 0U;
 static int64_t s_started_us = 0;
 static int64_t s_last_flush_us = 0;
@@ -127,6 +148,8 @@ static void seismic_recorder_record_stop_error(
     }
     s_snapshot.state = SEISMIC_RECORDER_STOPPING;
     s_stop_requested = true;
+    /* Error shutdown abandons any still-dirty PSRAM tail. Metadata keeps the
+     * exact persisted sample count, never pretending RAM-only frames survived. */
     s_stop_target = s_cursor;
     s_snapshot.stop_stage = next_stage;
     seismic_recorder_unlock();
@@ -141,12 +164,7 @@ static void seismic_recorder_record_stop_error(
 }
 
 
-/*
- * Publish recorder liveness only after the current service operation has
- * returned. In particular, this must follow buffer copies, SD writes and
- * flushes so a blocked storage path cannot look healthy merely because the
- * task entered its loop.
- */
+/* Publish liveness only after the current bounded operation has returned. */
 static void seismic_recorder_observe(void)
 {
     uint64_t samples_written;
@@ -456,25 +474,104 @@ static void seismic_recorder_flush_if_due(
 }
 
 
+static esp_err_t seismic_recorder_cache_info_locked(
+    seismic_recorder_cache_info_t *info
+)
+{
+    return seismic_recorder_cache_get_info(&s_cache, info);
+}
+
+
+static esp_err_t seismic_recorder_flush_one_dirty_chunk(
+    FILE *file,
+    bool *did_work
+)
+{
+    if (file == NULL || did_work == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *did_work = false;
+
+    size_t dirty_count = 0U;
+    uint64_t first_session_frame = 0U;
+
+    seismic_recorder_lock();
+    esp_err_t err = seismic_recorder_cache_copy_dirty(
+        &s_cache,
+        s_batch,
+        SEISMIC_RECORDER_WRITE_STAGING_FRAMES,
+        &dirty_count,
+        &first_session_frame
+    );
+    seismic_recorder_unlock();
+    if (err != ESP_OK || dirty_count == 0U) {
+        return err;
+    }
+
+    size_t frames_written = 0U;
+    const esp_err_t write_err = seismic_recorder_fs_write_frames(
+        file,
+        s_batch,
+        dirty_count,
+        &frames_written
+    );
+
+    uint64_t last_source_frame = 0U;
+    if (frames_written > 0U) {
+        seismic_recorder_lock();
+        err = seismic_recorder_cache_mark_persisted(
+            &s_cache,
+            first_session_frame,
+            frames_written,
+            &last_source_frame
+        );
+        if (err == ESP_OK && s_snapshot.running && file == s_samples_file) {
+            s_cursor = last_source_frame;
+            s_snapshot.samples_written += frames_written;
+        }
+        seismic_recorder_unlock();
+        if (err != ESP_OK) {
+            return err;
+        }
+        *did_work = true;
+    }
+
+    if (write_err != ESP_OK) {
+        return write_err;
+    }
+    if (frames_written != dirty_count) {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+
 static void seismic_recorder_task(void *argument)
 {
     (void)argument;
 
     for (;;) {
         FILE *file = NULL;
-        uint64_t cursor = 0U;
+        uint64_t persisted_cursor = 0U;
+        uint64_t ingest_cursor = 0U;
         uint64_t stop_target = 0U;
         bool running = false;
         bool stop_requested = false;
         seismic_recorder_stop_stage_t stop_stage;
+        seismic_recorder_cache_info_t cache_info = {0};
 
         seismic_recorder_lock();
         running = s_snapshot.running;
         file = s_samples_file;
-        cursor = s_cursor;
+        persisted_cursor = s_cursor;
+        ingest_cursor = s_ingest_cursor;
         stop_requested = s_stop_requested;
         stop_target = s_stop_target;
         stop_stage = s_snapshot.stop_stage;
+        const esp_err_t cache_info_err =
+            seismic_recorder_cache_info_locked(&cache_info);
         seismic_recorder_unlock();
 
         if (!running) {
@@ -483,12 +580,19 @@ static void seismic_recorder_task(void *argument)
             continue;
         }
 
-        /*
-         * STOP is a command to this worker, not a synchronous call-chain.
-         * Once drain is complete, execute exactly one I/O stage per worker
-         * turn. The service task can continue polling and every stage result
-         * is published through the recorder snapshot.
-         */
+        if (cache_info_err != ESP_OK) {
+            seismic_recorder_record_stop_error(
+                SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                cache_info_err,
+                SEISMIC_RECORDER_STOP_STAGE_FLUSH
+            );
+            seismic_recorder_observe();
+            continue;
+        }
+
+        /* After drain completion execute one explicit finalization stage per
+         * turn. Error shutdown may intentionally bypass dirty RAM data; normal
+         * STOP reaches here only after dirty_frames is zero. */
         if (stop_requested && stop_stage != SEISMIC_RECORDER_STOP_STAGE_DRAIN) {
             seismic_recorder_stop_step();
             seismic_recorder_observe();
@@ -496,7 +600,11 @@ static void seismic_recorder_task(void *argument)
             continue;
         }
 
-        if (stop_requested && cursor >= stop_target) {
+        if (
+            stop_requested &&
+            ingest_cursor >= stop_target &&
+            cache_info.dirty_frames == 0U
+        ) {
             seismic_recorder_set_stop_stage(
                 SEISMIC_RECORDER_STOP_STAGE_FLUSH
             );
@@ -515,171 +623,259 @@ static void seismic_recorder_task(void *argument)
             continue;
         }
 
-        uint64_t copy_cursor = cursor;
-        uint64_t dropped = 0U;
-        size_t frame_count = 0U;
-        seismic_buffer_info_t info;
+        bool did_ingest = false;
+        bool cache_full = false;
+        seismic_buffer_info_t info = {0};
+        uint64_t reported_dropped = 0U;
 
-        const esp_err_t read_err = seismic_buffer_copy_since(
-            &copy_cursor,
-            s_batch,
-            SEISMIC_RECORDER_BATCH_FRAMES,
-            &frame_count,
-            &dropped,
-            &info
-        );
+        /* First rescue new samples from the small realtime ring into PSRAM.
+         * No SD/SPI2 operation happens on this path. */
+        if (!stop_requested || ingest_cursor < stop_target) {
+            uint64_t copy_cursor = ingest_cursor;
+            size_t frame_count = 0U;
+            uint64_t dropped = 0U;
 
-        if (read_err == ESP_ERR_TIMEOUT) {
-            taskYIELD();
-            seismic_recorder_observe();
-            continue;
+            const esp_err_t read_err = seismic_buffer_copy_since(
+                &copy_cursor,
+                s_batch,
+                SEISMIC_RECORDER_BATCH_FRAMES,
+                &frame_count,
+                &dropped,
+                &info
+            );
+
+            if (read_err == ESP_ERR_TIMEOUT) {
+                taskYIELD();
+                seismic_recorder_observe();
+                continue;
+            }
+
+            if (read_err != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "Recorder lost acquisition generation: %s",
+                    esp_err_to_name(read_err)
+                );
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                    read_err,
+                    SEISMIC_RECORDER_STOP_STAGE_FLUSH
+                );
+                seismic_recorder_observe();
+                continue;
+            }
+
+            size_t allowed_count = frame_count;
+            uint64_t effective_dropped = dropped;
+            const uint64_t first_frame =
+                frame_count > 0U
+                    ? copy_cursor - (uint64_t)frame_count + 1U
+                    : ingest_cursor + dropped + 1U;
+
+            if (stop_requested) {
+                const uint64_t remaining_to_target =
+                    stop_target > ingest_cursor
+                        ? stop_target - ingest_cursor
+                        : 0U;
+
+                if (effective_dropped > remaining_to_target) {
+                    effective_dropped = remaining_to_target;
+                }
+
+                if (frame_count > 0U) {
+                    if (first_frame > stop_target) {
+                        allowed_count = 0U;
+                    }
+                    else {
+                        const uint64_t permitted =
+                            stop_target - first_frame + 1U;
+                        if ((uint64_t)allowed_count > permitted) {
+                            allowed_count = (size_t)permitted;
+                        }
+                    }
+                }
+            }
+
+            esp_err_t append_err = ESP_OK;
+            if (allowed_count > 0U) {
+                seismic_recorder_lock();
+                append_err = seismic_recorder_cache_append(
+                    &s_cache,
+                    first_frame,
+                    s_batch,
+                    allowed_count
+                );
+                if (append_err == ESP_OK && s_snapshot.running) {
+                    s_ingest_cursor =
+                        first_frame + (uint64_t)allowed_count - 1U;
+                    s_snapshot.dropped_frames += effective_dropped;
+                    did_ingest = true;
+                }
+                seismic_recorder_unlock();
+            }
+            else if (effective_dropped > 0U) {
+                seismic_recorder_lock();
+                if (s_snapshot.running) {
+                    s_ingest_cursor += effective_dropped;
+                    s_snapshot.dropped_frames += effective_dropped;
+                    did_ingest = true;
+                }
+                seismic_recorder_unlock();
+            }
+
+            if (append_err == ESP_ERR_NO_MEM) {
+                /* Never overwrite dirty data. Flush one old dirty chunk, then
+                 * retry the realtime-ring copy from the unchanged cursor. */
+                cache_full = true;
+            }
+            else if (append_err != ESP_OK) {
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                    append_err,
+                    SEISMIC_RECORDER_STOP_STAGE_FLUSH
+                );
+                seismic_recorder_observe();
+                continue;
+            }
+
+            reported_dropped = dropped;
+        }
+        else {
+            /* Still publish useful backlog diagnostics while flushing STOP. */
+            seismic_frame_t scratch;
+            size_t scratch_count = 0U;
+            (void)seismic_buffer_copy_latest(
+                &scratch,
+                1U,
+                &scratch_count,
+                &info
+            );
         }
 
-        if (read_err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "Recorder lost acquisition generation: %s",
-                esp_err_to_name(read_err)
-            );
+        seismic_recorder_lock();
+        persisted_cursor = s_cursor;
+        ingest_cursor = s_ingest_cursor;
+        esp_err_t current_cache_err =
+            seismic_recorder_cache_info_locked(&cache_info);
+        seismic_recorder_unlock();
+        if (current_cache_err != ESP_OK) {
             seismic_recorder_record_stop_error(
                 SEISMIC_RECORDER_STOP_STAGE_DRAIN,
-                read_err,
+                current_cache_err,
                 SEISMIC_RECORDER_STOP_STAGE_FLUSH
             );
             seismic_recorder_observe();
             continue;
         }
 
-        /*
-         * Do not open a TFT/SD arbitration window for every 500 Hz sample.
-         * Wait until roughly 500 ms of frames are ready, then write one
-         * bounded batch. STOP bypasses this threshold so the exact stop cursor
-         * can still be drained immediately.
-         */
-        if (!stop_requested && dropped == 0U && frame_count > 0U) {
-            const size_t target_batch =
-                seismic_recorder_target_batch_frames(info.sample_rate_hz);
+        const size_t target_batch =
+            seismic_recorder_target_batch_frames(
+                info.sample_rate_hz > 0U
+                    ? info.sample_rate_hz
+                    : s_snapshot.sample_rate_hz
+            );
 
-            if (frame_count < target_batch) {
-                vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_BATCH_WAIT_MS));
+        const bool near_capacity =
+            cache_info.capacity_frames > SEISMIC_RECORDER_BATCH_FRAMES &&
+            cache_info.dirty_frames >=
+                cache_info.capacity_frames - SEISMIC_RECORDER_BATCH_FRAMES;
+        const bool should_flush =
+            cache_info.dirty_frames > 0U &&
+            (
+                stop_requested ||
+                cache_full ||
+                near_capacity ||
+                cache_info.dirty_frames >= target_batch
+            );
+
+        bool did_write = false;
+        esp_err_t write_err = ESP_OK;
+        if (should_flush) {
+            write_err = seismic_recorder_flush_one_dirty_chunk(
+                file,
+                &did_write
+            );
+            if (write_err != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "SD write-behind flush failed: %s",
+                    esp_err_to_name(write_err)
+                );
+                seismic_recorder_record_stop_error(
+                    SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+                    write_err,
+                    SEISMIC_RECORDER_STOP_STAGE_FLUSH
+                );
                 seismic_recorder_observe();
                 continue;
             }
         }
 
-        size_t allowed_count = frame_count;
-        uint64_t effective_dropped = dropped;
-        uint64_t first_frame =
-            frame_count > 0U
-                ? copy_cursor - (uint64_t)frame_count + 1U
-                : cursor + dropped + 1U;
-
-        if (stop_requested) {
-            const uint64_t remaining_to_target =
-                stop_target > cursor
-                    ? stop_target - cursor
-                    : 0U;
-
-            if (effective_dropped > remaining_to_target) {
-                effective_dropped = remaining_to_target;
-            }
-
-            if (frame_count > 0U) {
-                if (first_frame > stop_target) {
-                    allowed_count = 0U;
-                }
-                else {
-                    const uint64_t permitted =
-                        stop_target - first_frame + 1U;
-                    if ((uint64_t)allowed_count > permitted) {
-                        allowed_count = (size_t)permitted;
-                    }
-                }
-            }
+        if (did_write) {
+            seismic_recorder_flush_if_due(file);
         }
 
-        size_t frames_written = 0U;
-        esp_err_t write_err = ESP_OK;
-        if (allowed_count > 0U) {
-            write_err = seismic_recorder_fs_write_frames(
-                file,
-                s_batch,
-                allowed_count,
-                &frames_written
-            );
-        }
-
-        uint64_t cursor_after = cursor;
-        uint64_t total_dropped = 0U;
         bool batch_log_due = false;
-
+        uint64_t total_dropped = 0U;
+        uint64_t samples_written = 0U;
         seismic_recorder_lock();
-        if (s_snapshot.running && file == s_samples_file) {
-            s_snapshot.dropped_frames += effective_dropped;
-            s_snapshot.samples_written += frames_written;
-
-            if (frames_written > 0U) {
-                s_cursor =
-                    first_frame +
-                    (uint64_t)frames_written -
-                    1U;
-            }
-            else if (effective_dropped > 0U) {
-                s_cursor += effective_dropped;
-            }
-
-            cursor_after = s_cursor;
-            total_dropped = s_snapshot.dropped_frames;
-
-            const int64_t now_us = esp_timer_get_time();
-            if (
-                (frames_written > 0U || effective_dropped > 0U) &&
-                (
-                    s_last_batch_log_us == 0 ||
-                    now_us - s_last_batch_log_us >= 1000000LL
-                )
-            ) {
-                s_last_batch_log_us = now_us;
-                batch_log_due = true;
-            }
+        persisted_cursor = s_cursor;
+        ingest_cursor = s_ingest_cursor;
+        total_dropped = s_snapshot.dropped_frames;
+        samples_written = s_snapshot.samples_written;
+        current_cache_err = seismic_recorder_cache_info_locked(&cache_info);
+        const int64_t now_us = esp_timer_get_time();
+        if (
+            current_cache_err == ESP_OK &&
+            (did_ingest || did_write || reported_dropped > 0U) &&
+            (
+                s_last_batch_log_us == 0 ||
+                now_us - s_last_batch_log_us >= 1000000LL
+            )
+        ) {
+            s_last_batch_log_us = now_us;
+            batch_log_due = true;
         }
         seismic_recorder_unlock();
 
-        if (write_err != ESP_OK) {
-            ESP_LOGE(TAG, "SD sample write failed: %s", esp_err_to_name(write_err));
+        if (current_cache_err != ESP_OK) {
             seismic_recorder_record_stop_error(
                 SEISMIC_RECORDER_STOP_STAGE_DRAIN,
-                write_err,
+                current_cache_err,
                 SEISMIC_RECORDER_STOP_STAGE_FLUSH
             );
+            seismic_recorder_observe();
+            continue;
         }
 
         if (batch_log_due) {
-            const uint64_t backlog =
-                info.total_frames > cursor_after
-                    ? info.total_frames - cursor_after
+            const uint64_t producer_backlog =
+                info.total_frames > ingest_cursor
+                    ? info.total_frames - ingest_cursor
                     : 0U;
             ESP_LOGI(
                 TAG,
-                "RECORDER_BATCH requested=%u written=%u cursor=%llu producer_total=%llu backlog=%llu dropped=%llu total_dropped=%llu stop=%u",
-                (unsigned)allowed_count,
-                (unsigned)frames_written,
-                (unsigned long long)cursor_after,
+                "RECORDER_CACHE persisted_cursor=%llu ingest_cursor=%llu producer_total=%llu producer_backlog=%llu resident=%u dirty=%u samples_written=%llu dropped_now=%llu total_dropped=%llu stop=%u",
+                (unsigned long long)persisted_cursor,
+                (unsigned long long)ingest_cursor,
                 (unsigned long long)info.total_frames,
-                (unsigned long long)backlog,
-                (unsigned long long)dropped,
+                (unsigned long long)producer_backlog,
+                (unsigned)cache_info.resident_frames,
+                (unsigned)cache_info.dirty_frames,
+                (unsigned long long)samples_written,
+                (unsigned long long)reported_dropped,
                 (unsigned long long)total_dropped,
                 stop_requested ? 1U : 0U
             );
         }
 
-        if (write_err == ESP_OK && frames_written > 0U) {
-            seismic_recorder_flush_if_due(file);
+        if (did_ingest || did_write) {
             seismic_recorder_observe();
+            taskYIELD();
             continue;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_IDLE_DELAY_MS));
+        vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_BATCH_WAIT_MS));
         seismic_recorder_observe();
     }
 }
@@ -704,16 +900,61 @@ esp_err_t seismic_recorder_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    if (!storage_manager_is_ready()) {
+    const size_t requested_cache_bytes =
+        (size_t)CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB * 1024U;
+    s_cache_capacity =
+        requested_cache_bytes / sizeof(seismic_recorder_cache_slot_t);
+    if (s_cache_capacity < SEISMIC_RECORDER_BATCH_FRAMES) {
         heap_caps_free(s_batch);
         s_batch = NULL;
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    s_cache_storage = heap_caps_malloc(
+        s_cache_capacity * sizeof(*s_cache_storage),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (s_cache_storage == NULL) {
+        ESP_LOGE(
+            TAG,
+            "Unable to allocate recorder write-behind cache: requested=%u KiB",
+            (unsigned)CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB
+        );
+        heap_caps_free(s_batch);
+        s_batch = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = seismic_recorder_cache_init(
+        &s_cache,
+        s_cache_storage,
+        s_cache_capacity
+    );
+    if (err != ESP_OK) {
+        heap_caps_free(s_cache_storage);
+        heap_caps_free(s_batch);
+        s_cache_storage = NULL;
+        s_batch = NULL;
+        s_cache_capacity = 0U;
+        return err;
+    }
+
+    if (!storage_manager_is_ready()) {
+        heap_caps_free(s_cache_storage);
+        heap_caps_free(s_batch);
+        s_cache_storage = NULL;
+        s_batch = NULL;
+        s_cache_capacity = 0U;
         return ESP_ERR_INVALID_STATE;
     }
 
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) {
+        heap_caps_free(s_cache_storage);
         heap_caps_free(s_batch);
+        s_cache_storage = NULL;
         s_batch = NULL;
+        s_cache_capacity = 0U;
         return ESP_ERR_NO_MEM;
     }
 
@@ -721,8 +962,11 @@ esp_err_t seismic_recorder_init(void)
     if (s_events == NULL) {
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
+        heap_caps_free(s_cache_storage);
         heap_caps_free(s_batch);
+        s_cache_storage = NULL;
         s_batch = NULL;
+        s_cache_capacity = 0U;
         return ESP_ERR_NO_MEM;
     }
 
@@ -752,16 +996,21 @@ esp_err_t seismic_recorder_init(void)
         s_events = NULL;
         s_mutex = NULL;
         s_task = NULL;
+        heap_caps_free(s_cache_storage);
         heap_caps_free(s_batch);
+        s_cache_storage = NULL;
         s_batch = NULL;
+        s_cache_capacity = 0U;
         return ESP_ERR_NO_MEM;
     }
 
     ESP_LOGI(
         TAG,
-        "Recorder ready on core %d; batch=%u frames, write window=%u ms",
+        "Recorder ready on core %d; batch=%u frames, write-behind=%u frames/%u KiB, write threshold=%u ms",
         APP_TASK_CORE_SERVICES,
         (unsigned)SEISMIC_RECORDER_BATCH_FRAMES,
+        (unsigned)s_cache_capacity,
+        (unsigned)CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB,
         (unsigned)SEISMIC_RECORDER_WRITE_PERIOD_MS
     );
 
@@ -811,10 +1060,7 @@ esp_err_t seismic_recorder_start(
                 acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN"
             );
         }
-        else if (
-            !acquisition.latest_valid ||
-            acquisition.samples == 0U
-        ) {
+        else if (!acquisition.latest_valid || acquisition.samples == 0U) {
             ESP_LOGE(
                 TAG,
                 "START rejected: no successful acquisition sample yet source=%s latest_valid=%s samples=%llu",
@@ -855,13 +1101,6 @@ esp_err_t seismic_recorder_start(
         return err;
     }
 
-    /*
-     * Reserve the START operation with the recorder mutex, then release it
-     * before any SD access. SD operations quiesce LVGL because TFT and SD share
-     * SPI2. Holding the recorder mutex while waiting for that LVGL lock caused
-     * the measurement screen to deadlock when its refresh path tried to read
-     * the recorder snapshot while already holding LVGL.
-     */
     seismic_recorder_lock();
     if (s_starting || s_snapshot.running || s_samples_file != NULL) {
         ESP_LOGE(
@@ -881,11 +1120,7 @@ esp_err_t seismic_recorder_start(
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = "";
     FILE *file = NULL;
 
-    ESP_LOGI(
-        TAG,
-        "Preparing session for object=%s",
-        object_id
-    );
+    ESP_LOGI(TAG, "Preparing session for object=%s", object_id);
 
     err = seismic_recorder_fs_create_session(
         object_id,
@@ -912,31 +1147,15 @@ esp_err_t seismic_recorder_start(
     initial_snapshot.last_error = ESP_OK;
     initial_snapshot.stop_stage_error = ESP_OK;
 
-    snprintf(
-        initial_snapshot.object_id,
-        sizeof(initial_snapshot.object_id),
-        "%s",
-        object_id
-    );
-    snprintf(
-        initial_snapshot.session_id,
-        sizeof(initial_snapshot.session_id),
-        "%s",
-        session_id
-    );
+    snprintf(initial_snapshot.object_id, sizeof(initial_snapshot.object_id), "%s", object_id);
+    snprintf(initial_snapshot.session_id, sizeof(initial_snapshot.session_id), "%s", session_id);
     snprintf(
         initial_snapshot.source_name,
         sizeof(initial_snapshot.source_name),
         "%s",
-        acquisition.source_name != NULL
-            ? acquisition.source_name
-            : "UNKNOWN"
+        acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN"
     );
 
-    /*
-     * Write the initial metadata before publishing the recorder as RUNNING.
-     * No recorder mutex is held across this SD transaction.
-     */
     err = seismic_recorder_json_write_metadata(
         profile,
         &initial_snapshot,
@@ -953,11 +1172,8 @@ esp_err_t seismic_recorder_start(
         return err;
     }
 
-    /*
-     * Session creation and metadata can take hundreds of milliseconds on FATFS.
-     * Start the data cursor at the newest frame only after that setup completes,
-     * so the recording does not include stale pre-START samples.
-     */
+    /* Session setup may itself use SD. Start both frontiers only after it so
+     * stale samples captured before the user pressed START are excluded. */
     seismic_frame_t scratch;
     size_t scratch_count = 0U;
     seismic_buffer_info_t buffer_info;
@@ -984,7 +1200,6 @@ esp_err_t seismic_recorder_start(
     if (s_snapshot.running || s_samples_file != NULL) {
         s_starting = false;
         seismic_recorder_unlock();
-
         free(profile);
         seismic_recorder_discard_uncommitted_session(
             object_id,
@@ -994,11 +1209,13 @@ esp_err_t seismic_recorder_start(
         return ESP_ERR_INVALID_STATE;
     }
 
+    seismic_recorder_cache_reset(&s_cache);
     s_snapshot = initial_snapshot;
     s_profile = *profile;
     s_samples_file = file;
+    s_ingest_cursor = buffer_info.total_frames;
     s_cursor = buffer_info.total_frames;
-    s_stop_target = s_cursor;
+    s_stop_target = s_ingest_cursor;
     s_stop_requested = false;
     s_last_batch_log_us = started_us;
     s_started_us = started_us;
@@ -1011,11 +1228,12 @@ esp_err_t seismic_recorder_start(
 
     ESP_LOGI(
         TAG,
-        "Recording %s/%s at %lu Hz from cursor %llu (target batch=%u)",
+        "Recording %s/%s at %lu Hz from source cursor %llu; PSRAM cache=%u frames, SD threshold=%u frames",
         object_id,
         session_id,
         (unsigned long)acquisition.sample_rate_hz,
         (unsigned long long)buffer_info.total_frames,
+        (unsigned)s_cache_capacity,
         (unsigned)seismic_recorder_target_batch_frames(acquisition.sample_rate_hz)
     );
 
@@ -1062,21 +1280,23 @@ esp_err_t seismic_recorder_stop(void)
     s_snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
     s_snapshot.stop_stage_error = ESP_OK;
     s_stop_target =
-        info_err == ESP_OK && info.total_frames >= s_cursor
+        info_err == ESP_OK && info.total_frames >= s_ingest_cursor
             ? info.total_frames
-            : s_cursor;
+            : s_ingest_cursor;
     const uint64_t target = s_stop_target;
-    const uint64_t cursor = s_cursor;
+    const uint64_t ingest_cursor = s_ingest_cursor;
+    const uint64_t persisted_cursor = s_cursor;
     seismic_recorder_unlock();
 
     const uint64_t backlog =
-        info.total_frames > cursor
-            ? info.total_frames - cursor
+        info.total_frames > ingest_cursor
+            ? info.total_frames - ingest_cursor
             : 0U;
     ESP_LOGI(
         TAG,
-        "STOP_REQUEST stage=drain cursor=%llu target=%llu producer_total=%llu buffered=%u backlog=%llu info_err=%s",
-        (unsigned long long)cursor,
+        "STOP_REQUEST stage=drain persisted=%llu ingest=%llu target=%llu producer_total=%llu buffered=%u producer_backlog=%llu info_err=%s",
+        (unsigned long long)persisted_cursor,
+        (unsigned long long)ingest_cursor,
         (unsigned long long)target,
         (unsigned long long)info.total_frames,
         (unsigned)info.buffered_frames,
@@ -1158,6 +1378,71 @@ bool seismic_recorder_is_recording_object(
         strcmp(s_snapshot.object_id, object_id) == 0;
     seismic_recorder_unlock();
     return matches;
+}
+
+
+bool seismic_recorder_cache_contains_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t first_session_frame,
+    uint64_t frame_count
+)
+{
+    if (
+        object_id == NULL ||
+        session_id == NULL ||
+        s_mutex == NULL
+    ) {
+        return false;
+    }
+
+    seismic_recorder_lock();
+    const bool matches =
+        strcmp(s_snapshot.object_id, object_id) == 0 &&
+        strcmp(s_snapshot.session_id, session_id) == 0 &&
+        seismic_recorder_cache_contains_range(
+            &s_cache,
+            first_session_frame,
+            frame_count
+        );
+    seismic_recorder_unlock();
+    return matches;
+}
+
+
+esp_err_t seismic_recorder_cache_copy_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t first_session_frame,
+    seismic_frame_t *frames,
+    size_t frame_count
+)
+{
+    if (
+        object_id == NULL ||
+        session_id == NULL ||
+        frames == NULL ||
+        frame_count == 0U ||
+        s_mutex == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    seismic_recorder_lock();
+    esp_err_t err = ESP_ERR_NOT_FOUND;
+    if (
+        strcmp(s_snapshot.object_id, object_id) == 0 &&
+        strcmp(s_snapshot.session_id, session_id) == 0
+    ) {
+        err = seismic_recorder_cache_copy_range(
+            &s_cache,
+            first_session_frame,
+            frames,
+            frame_count
+        );
+    }
+    seismic_recorder_unlock();
+    return err;
 }
 
 
