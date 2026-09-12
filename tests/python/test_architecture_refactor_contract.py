@@ -106,6 +106,9 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     assert "app_events_get_loop()" in insights
     assert "APP_EVENT_WIFI_STA_CONNECTED" in insights
     assert "s_retry_pending" in insights
+    assert "atomic_bool" in insights
+    assert "atomic_load_explicit" in insights
+    assert "atomic_store_explicit" in insights
     assert "xTaskCreatePinnedToCore" in insights
     assert "ulTaskNotifyTake" in insights
     assert "xTaskNotifyGive" in insights

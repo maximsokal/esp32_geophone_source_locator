@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -24,6 +25,9 @@ static int s_service_reads;
 static size_t s_last_sample_count;
 static int s_raw_value;
 static int64_t s_now_us;
+static int64_t s_read_duration_us;
+static bool s_service_busy;
+static int s_try_reads;
 static int s_direct_adc_reads;
 
 
@@ -54,7 +58,27 @@ esp_err_t adc_service_read_average_raw(
     s_service_reads++;
     s_last_sample_count = sample_count;
     *raw_value = s_raw_value;
+    s_now_us += s_read_duration_us;
     return ESP_OK;
+}
+
+
+esp_err_t adc_service_try_read_average_raw(
+    adc_channel_t channel,
+    size_t sample_count,
+    int *raw_value
+)
+{
+    s_try_reads++;
+    if (s_service_busy) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return adc_service_read_average_raw(
+        channel,
+        sample_count,
+        raw_value
+    );
 }
 
 
@@ -167,6 +191,9 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     s_created = 0;
     s_service_reads = 0;
     s_last_sample_count = 0;
+    s_read_duration_us = 0;
+    s_service_busy = false;
+    s_try_reads = 0;
     s_direct_adc_reads = 0;
     s_now_us = 10000;
     s_raw_value = 905;
@@ -180,6 +207,7 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
     assert(s_service_reads == 1);
     assert(s_last_sample_count == 4U);
+    assert(s_try_reads == 1);
 
     /* Every Button object in the same timer tick sees the same broker-owned
      * conversion; no second direct ADC read is allowed. */
@@ -188,11 +216,27 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     assert(s_service_reads == 1);
     assert(s_direct_adc_reads == 0);
 
-    /* After the cache window expires, a new raw value is acquired through the
-     * service and the corresponding Button object becomes active. */
+    /* If the timer task finds the broker busy, preserve the last valid key
+     * rather than synthesizing a release. A later logical Button callback in
+     * this same timer tick must not retry the ADC read. */
     s_now_us += 1001;
+    s_service_busy = true;
+    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
+    assert(s_drivers[2]->get_key_level((button_driver_t *)s_drivers[2]) == BUTTON_INACTIVE);
+    assert(s_service_reads == 1);
+    assert(s_try_reads == 2);
+
+    /* After the failed-attempt window expires, acquire the new raw value. The
+     * fake broker advances time during the read so the cache timestamp must
+     * be taken after completion; the next Button object still reuses it. */
+    s_now_us += 1001;
+    s_service_busy = false;
+    s_read_duration_us = 1500;
     s_raw_value = 1605;
     assert(s_drivers[2]->get_key_level((button_driver_t *)s_drivers[2]) == BUTTON_ACTIVE);
+    assert(s_service_reads == 2);
+    assert(s_try_reads == 3);
+    assert(s_drivers[3]->get_key_level((button_driver_t *)s_drivers[3]) == BUTTON_INACTIVE);
     assert(s_service_reads == 2);
     assert(s_direct_adc_reads == 0);
 

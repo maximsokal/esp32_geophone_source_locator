@@ -27,9 +27,18 @@ esp_err_t adc_service_read_raw(
 );
 
 /* Every service read discards the first conversion while holding the ADC1
- * service mutex. All application ADC consumers use this API; no borrowed
- * ADC1 handle is exposed. */
+ * service mutex. All blocking application ADC reads use this API; no
+ * borrowed ADC1 handle is exposed. */
 esp_err_t adc_service_read_average_raw(
+    adc_channel_t channel,
+    size_t sample_count,
+    int *raw_value
+);
+
+/* Timer-safe variant. It performs the same discard/useful-read sequence but
+ * never waits for the ADC1 mutex: ESP_ERR_TIMEOUT means the caller must retain
+ * its last valid state and return immediately. */
+esp_err_t adc_service_try_read_average_raw(
     adc_channel_t channel,
     size_t sample_count,
     int *raw_value
