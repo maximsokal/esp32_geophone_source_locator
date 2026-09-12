@@ -27,14 +27,9 @@ esp_err_t adc_service_read_average_raw(
         portMAX_DELAY
     );
 
-    /*
-     * ADC1 is also borrowed by the official Espressif ADC Button objects.
-     * Those objects use the same unit handle directly, so a cached
-     * last-channel value cannot describe the conversion that actually
-     * preceded this read. Always discard one conversion while holding the
-     * service mutex; this keeps the settling guarantee valid across every
-     * external borrower interleaving.
-     */
+    /* ADC1 has one conversion owner. Always discard one conversion while
+     * holding the service mutex so a channel switch cannot leak the previous
+     * channel into the returned sample. */
     int discard =
         0;
 

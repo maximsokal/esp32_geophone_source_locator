@@ -31,6 +31,11 @@
 #define APP_TASK_PRIORITY_APP_EVENT_LOOP  6
 #define APP_TASK_STACK_APP_EVENT_LOOP  6144
 
+/* Optional ESP Insights retry work must not run inside the shared APP_EVENT
+ * callback. It stays on the service core at the lowest application priority. */
+#define APP_TASK_PRIORITY_INSIGHTS        1
+#define APP_TASK_STACK_INSIGHTS        4096
+
 /*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so
  * rendering and the shared TFT/SD SPI2 side never migrate onto the

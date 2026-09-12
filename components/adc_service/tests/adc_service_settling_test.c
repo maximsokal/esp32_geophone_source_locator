@@ -10,12 +10,6 @@ SemaphoreHandle_t g_adc_service_mutex = (void *)0x2;
 bool g_adc_service_initialized = true;
 
 
-adc_oneshot_unit_handle_t *adc_service_handle(void)
-{
-    return &g_adc_service_handle;
-}
-
-
 typedef struct {
     adc_channel_t channel;
     int value;
@@ -52,7 +46,7 @@ esp_err_t adc_oneshot_read(
     int *raw_value
 )
 {
-    static const int values[] = { 100, 101, 200, 300, 301 };
+    static const int values[] = { 100, 101, 200, 201, 300, 301 };
 
     assert(handle == g_adc_service_handle);
     assert(raw_value != NULL);
@@ -66,10 +60,9 @@ esp_err_t adc_oneshot_read(
 }
 
 
-static void test_external_borrower_cannot_hide_channel_settling(void)
+static void test_each_service_read_settles_after_channel_switch(void)
 {
     int value = 0;
-    int external_value = 0;
 
     s_read_count = 0;
 
@@ -77,31 +70,26 @@ static void test_external_borrower_cannot_hide_channel_settling(void)
     assert(adc_service_read_raw(1, &value) == ESP_OK);
     assert(value == 101);
 
-    /* A direct ADC Button-style borrower reads B through the same handle. */
-    assert(adc_oneshot_read(
-        *adc_service_handle(),
-        2,
-        &external_value
-    ) == ESP_OK);
-    assert(external_value == 200);
-
-    /* Service read A must still discard 300 after the external B read and
-     * return 301. A cached last-channel optimization would return 300 here. */
+    /* Service read B has its own discard, then A has another one after the
+     * channel switch. No application code can borrow the ADC1 handle. */
+    assert(adc_service_read_raw(2, &value) == ESP_OK);
+    assert(value == 201);
     assert(adc_service_read_raw(1, &value) == ESP_OK);
     assert(value == 301);
 
-    assert(s_read_count == 5U);
+    assert(s_read_count == 6U);
     assert(s_reads[0].channel == 1);
     assert(s_reads[1].channel == 1);
     assert(s_reads[2].channel == 2);
-    assert(s_reads[3].channel == 1);
+    assert(s_reads[3].channel == 2);
     assert(s_reads[4].channel == 1);
+    assert(s_reads[5].channel == 1);
 }
 
 
 int main(void)
 {
-    test_external_borrower_cannot_hide_channel_settling();
+    test_each_service_read_settles_after_channel_switch();
     puts("adc service settling tests passed");
     return 0;
 }

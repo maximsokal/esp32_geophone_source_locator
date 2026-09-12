@@ -54,7 +54,11 @@ def test_button_migration_has_no_input_tasks_or_polling_workers():
     keypad = (REPO_ROOT / "components/keypad/keypad_button_adapter.c").read_text(encoding="utf-8")
     power = (REPO_ROOT / "components/power_control/power_button_adapter.c").read_text(encoding="utf-8")
 
-    assert "iot_button_new_adc_device" in keypad
+    assert "iot_button_create" in keypad
+    assert "button_driver_t" in keypad
+    assert "adc_service_read_average_raw" in keypad
+    assert "button_adc.h" not in keypad
+    assert "adc_oneshot_read" not in keypad
     assert "BUTTON_PRESS_DOWN" in keypad
     assert "xTaskCreate" not in keypad
     assert "vTaskDelay" not in keypad
@@ -68,17 +72,12 @@ def test_button_contracts_preserve_adc_and_power_safety_boundaries():
     keypad = (REPO_ROOT / "components/keypad/keypad_button_adapter.c").read_text(encoding="utf-8")
     power = (REPO_ROOT / "components/power_control/power_button_adapter.c").read_text(encoding="utf-8")
 
-    assert keypad.count("iot_button_new_adc_device") == 1
-    assert keypad.count("button_index = (uint8_t)i") == 1
-    assert ".adc_handle = adc_service_handle()" in keypad
+    assert keypad.count("err = iot_button_create(") == 1
+    assert keypad.count(".get_key_level = keypad_button_get_key_level") == 1
+    assert "adc_service_handle" not in keypad
     assert "ADC_ATTEN_DB_12" in keypad
-    assert all(token in keypad for token in (
-        "KEYPAD_LEFT_MAX_MV",
-        "KEYPAD_UP_MAX_MV",
-        "KEYPAD_DOWN_MAX_MV",
-        "KEYPAD_RIGHT_MAX_MV",
-        "KEYPAD_OK_MAX_MV",
-    ))
+    assert "KEYPAD_SW1_MAX_RAW" in keypad
+    assert "KEYPAD_SW5_MAX_RAW" in keypad
 
     latch = power.index("xEventGroupSetBits(state->events, POWER_EVENT_SHUTDOWN_REQUESTED)")
     hook = power.index("state->notification_hook(state->notification_context)")

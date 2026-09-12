@@ -16,10 +16,13 @@ static bool s_initialized = false;
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
 
 #include "app_events.h"
+#include "app_task_config.h"
 #include "esp_diagnostics.h"
 #include "esp_diagnostics_metrics.h"
 #include "esp_event.h"
 #include "esp_insights.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 
 /*
@@ -40,6 +43,7 @@ static bool s_initialized = false;
 
 static bool s_network_handler_registered = false;
 static bool s_retry_pending = false;
+static TaskHandle_t s_retry_task = NULL;
 
 
 /*
@@ -173,8 +177,8 @@ static esp_err_t insights_bridge_attempt_init(void)
             esp_err_to_name(init_err)
         );
         /* The platform is ready at the normal call site, but a transient
-         * resource failure may be retried from the APP_EVENT loop after STA
-         * obtains an IP. Never retry from the default sys_evt callback. */
+         * resource failure may be retried after STA obtains an IP. The
+         * APP_EVENT callback only notifies the dedicated retry worker. */
         s_retry_pending = true;
         return ESP_OK;
     }
@@ -186,6 +190,54 @@ static esp_err_t insights_bridge_attempt_init(void)
     s_initialized = true;
     s_retry_pending = false;
     ESP_LOGI(TAG, "ESP Insights bridge enabled with selected runtime metrics only");
+    return ESP_OK;
+}
+
+
+static void insights_bridge_retry_worker(void *context)
+{
+    (void)context;
+
+    for (;;) {
+        (void)ulTaskNotifyTake(
+            pdTRUE,
+            portMAX_DELAY
+        );
+
+        if (s_initialized || !s_retry_pending) {
+            continue;
+        }
+
+        /* Consume the request before entering the attempt. A failed attempt
+         * sets it again, and the next connected event will notify us again. */
+        s_retry_pending = false;
+        (void)insights_bridge_attempt_init();
+    }
+}
+
+
+static esp_err_t insights_bridge_start_retry_worker(void)
+{
+    if (s_retry_task != NULL) {
+        return ESP_OK;
+    }
+
+    const BaseType_t result =
+        xTaskCreatePinnedToCore(
+            insights_bridge_retry_worker,
+            "insights_retry",
+            APP_TASK_STACK_INSIGHTS,
+            NULL,
+            APP_TASK_PRIORITY_INSIGHTS,
+            &s_retry_task,
+            APP_TASK_CORE_SERVICES
+        );
+
+    if (result != pdPASS) {
+        s_retry_task = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     return ESP_OK;
 }
 
@@ -204,9 +256,9 @@ static void insights_bridge_app_event_handler(
         event_base == APP_EVENT &&
         event_id == APP_EVENT_WIFI_STA_CONNECTED
     ) {
-        /* This callback runs on the dedicated APP_EVENT user loop, not the
-         * system Wi-Fi event callback. The retry is therefore in service
-         * context and never extends the default sys_evt callback. */
+        /* The APP_EVENT loop is shared with UI/application subscribers. Only
+         * notify the dedicated worker and return; Insights initialization is
+         * intentionally outside every event callback. */
         insights_bridge_on_network_ready();
     }
 }
@@ -222,6 +274,16 @@ esp_err_t insights_bridge_init(void)
     }
 
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
+    const esp_err_t worker_err =
+        insights_bridge_start_retry_worker();
+    if (worker_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "ESP Insights retry worker unavailable: %s",
+            esp_err_to_name(worker_err)
+        );
+    }
+
     const esp_err_t handler_err =
         insights_bridge_register_network_ready_handler();
     if (handler_err != ESP_OK) {
@@ -243,15 +305,11 @@ esp_err_t insights_bridge_init(void)
 void insights_bridge_on_network_ready(void)
 {
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
-    if (!s_retry_pending || s_initialized) {
+    if (s_retry_task == NULL) {
         return;
     }
 
-    /* Consume the request before entering the attempt. A failed attempt sets
-     * it again, so a later APP_EVENT_WIFI_STA_CONNECTED event can retry
-     * without re-entrancy. */
-    s_retry_pending = false;
-    (void)insights_bridge_attempt_init();
+    (void)xTaskNotifyGive(s_retry_task);
 #endif
 }
 

@@ -114,6 +114,18 @@
       ]
     },
     {
+      "name": "keypad_adc_ownership",
+      "sources": [
+        "components/keypad/keypad_button_adapter.c",
+        "components/keypad/tests/keypad_adc_ownership_test.c"
+      ],
+      "include_dirs": [
+        "components/keypad/tests/stubs",
+        "components/adc_service/include",
+        "components/keypad/include"
+      ]
+    },
+    {
       "name": "localization",
       "sources": [
         "components/localization/localization.c",

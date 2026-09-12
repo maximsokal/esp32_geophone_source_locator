@@ -9,11 +9,9 @@
 
 esp_err_t adc_service_init(void);
 
-/* The shared ADC1 handle is owned by adc_service. Consumers such as the
- * Espressif Button ADC driver may borrow it but must not create or delete it.
- */
-adc_oneshot_unit_handle_t *adc_service_handle(void);
-
+/* ADC1 is the service-owned conversion unit. This metadata accessor is only
+ * for peripherals that need to create a matching calibration descriptor; all
+ * raw conversions must go through adc_service_read_*(). */
 adc_unit_t adc_service_unit(void);
 
 esp_err_t adc_service_configure_gpio(
@@ -28,9 +26,9 @@ esp_err_t adc_service_read_raw(
     int *raw_value
 );
 
-/* Every service read discards the first conversion. ADC1 is shared with
- * external borrowers such as espressif/button, whose direct reads cannot
- * update this service's channel-settling state. */
+/* Every service read discards the first conversion while holding the ADC1
+ * service mutex. All application ADC consumers use this API; no borrowed
+ * ADC1 handle is exposed. */
 esp_err_t adc_service_read_average_raw(
     adc_channel_t channel,
     size_t sample_count,

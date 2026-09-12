@@ -76,6 +76,7 @@ Current policy:
 | ESP ADC bench | 1 | 6 | 4096 |
 | Synthetic seismic source | 1 | 4 | 3072 |
 | APP_EVENT user loop | 0 | 6 | 6144 |
+| Optional Insights retry worker | 0 | 1 | 4096 |
 | LVGL handler | 0 | 4 | 7168 |
 | Storage service | 0 | 3 | 8192 |
 | Object service | 0 | 3 | 8192 |
@@ -83,7 +84,7 @@ Current policy:
 | Seismic recorder | 0 | 2 | 4096 |
 | INA3221 monitor | 0 | 1 | 4096 |
 
-Do not introduce new application tasks with ad-hoc priorities. Add them to `app_task_config.h` so the whole scheduling hierarchy stays reviewable in one place.
+Do not introduce new application tasks with ad-hoc priorities. Add them to `app_task_config.h` so the whole scheduling hierarchy stays reviewable in one place. When the opt-in ESP Insights profile is enabled, its APP_EVENT connection handler only notifies the optional retry worker above and returns; the worker performs a failed `esp_insights_init()` retry outside the shared application event loop. The baseline production profile does not create this task.
 
 ## Physical prototype wiring ledger
 
@@ -212,8 +213,11 @@ queue 24, Core 0 affinity, priority 6 and a 6144-byte stack. It is not the
 default system event loop. Wi-Fi, HTTPS onboarding, Web setup and input
 publishers post the existing `int32_t` event payloads with zero wait ticks.
 
-The five KS0466 ladder buttons are official ADC Button objects borrowing the
-ADC1 handle owned by `adc_service`; their measured ranges remain in
+The five KS0466 ladder buttons use the official Button core/state machine with
+keypad-owned `button_driver_t` adapters. Each adapter reads the raw ladder
+through `adc_service_read_average_raw()`; the ADC1 handle remains private to
+`adc_service`, so the vendor ADC driver cannot interleave a direct conversion
+between discard and useful samples. Their measured raw boundaries remain in
 `keypad_button_adapter.c`. The GPIO21 power button is an official GPIO Button
 object with internal pulls disabled and a configured `long_press_time` of
 150 ms after the vendor debounce state. The configured value is not a raw
