@@ -1,4 +1,4 @@
-"""Static contract for recorder liveness placement around blocking operations."""
+"""Static contract for recorder liveness and write-behind storage boundaries."""
 
 import re
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RECORDER = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder.c"
+RECORDER_CACHE = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_cache.c"
 RECORDER_INTERNAL = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_internal.h"
 RECORDER_FS = REPO_ROOT / "components" / "seismic_recorder" / "seismic_recorder_fs.c"
 RECORDER_HEADER = REPO_ROOT / "components" / "seismic_recorder" / "include" / "seismic_recorder.h"
@@ -42,36 +43,75 @@ def _define_int(source: str, name: str, suffix: str) -> int:
 
 def test_recorder_batch_is_psram_backed_and_amortizes_sd_operations():
     source = RECORDER.read_text(encoding="utf-8")
+    cache = RECORDER_CACHE.read_text(encoding="utf-8")
     internal = RECORDER_INTERNAL.read_text(encoding="utf-8")
     filesystem = RECORDER_FS.read_text(encoding="utf-8")
     init = _function_body(source, "esp_err_t seismic_recorder_init(void)")
 
-    # A 500 Hz stream produces 250 frames in the normal write window. Keep a
-    # bounded headroom batch for a delayed SD operation without putting the
-    # non-DMA copy buffer in scarce internal/DMA RAM.
+    # The small realtime acquisition ring is not the SD backlog. The recorder
+    # owns a bounded PSRAM write-behind ring plus a PSRAM worker copy buffer.
     assert _define_int(source, "SEISMIC_RECORDER_WRITE_PERIOD_MS", "U") == 500
     assert _define_int(internal, "SEISMIC_RECORDER_BATCH_FRAMES", "U") == 512
     assert _define_int(internal, "SEISMIC_RECORDER_WRITE_STAGING_FRAMES", "U") == 256
     assert _define_int(internal, "SEISMIC_RECORDER_FLUSH_INTERVAL_US", "LL") == 30_000_000
     assert "static seismic_frame_t *s_batch = NULL;" in source
+    assert "static seismic_recorder_cache_slot_t *s_cache_storage = NULL;" in source
     assert "s_batch = heap_caps_malloc(" in init
+    assert "s_cache_storage = heap_caps_malloc(" in init
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in init
-    assert "heap_caps_free(s_batch);" in init
+    assert "CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB" in source
 
-    # ESP-IDF 5.5.4's SDSPI driver bounces external-RAM sources one sector at
-    # a time. The recorder therefore presents fwrite with a bounded internal
-    # DMA_ATTR buffer while retaining the larger PSRAM backlog copy.
+    # Unpersisted data is a protected dirty region. Cache pressure must never
+    # evict it merely to make room for newer acquisition frames.
+    append = _function_body(cache, "esp_err_t seismic_recorder_cache_append")
+    assert "cache->persisted_session_frame" in append
+    assert "return ESP_ERR_NO_MEM;" in append
+    assert append.index("return ESP_ERR_NO_MEM;") < append.index("cache->first_session_frame +=")
+
+    # SDSPI receives only bounded internal DMA-capable staging buffers. The
+    # large PSRAM cache is never handed directly to fwrite.
     assert "DMA_ATTR static seismic_frame_t s_dma_staging" in filesystem
     assert "memcpy(" in filesystem and "s_dma_staging" in filesystem
     assert "s_dma_staging," in filesystem
     assert "fwrite(\n            s_dma_staging," in filesystem
     assert "fwrite(\n        frames," not in filesystem
 
-    # Periodic flush is deliberately sparse; durability remains explicit in
-    # the STOP state machine rather than being paid on every small batch.
+    # Normal STOP still performs explicit flush + media sync after the dirty
+    # cache frontier has been drained.
     stop_step = _function_body(source, "static void seismic_recorder_stop_step")
+    task = _function_body(source, "static void seismic_recorder_task")
     assert "seismic_recorder_fs_flush(file, false)" in stop_step
     assert "seismic_recorder_fs_sync(file)" in stop_step
+    assert "cache_info.dirty_frames == 0U" in task
+    assert "ingest_cursor >= stop_target" in task
+
+
+def test_write_behind_uses_separate_ingest_and_persisted_frontiers():
+    source = RECORDER.read_text(encoding="utf-8")
+    task = _function_body(source, "static void seismic_recorder_task")
+    flush = _function_body(source, "static esp_err_t seismic_recorder_flush_one_dirty_chunk")
+
+    assert "static uint64_t s_ingest_cursor" in source
+    assert "static uint64_t s_cursor" in source
+
+    # Acquisition is rescued from the realtime ring into PSRAM before the task
+    # considers an SD flush. A full cache leaves the ingest cursor unchanged so
+    # the same acquisition frames are retried after one bounded dirty drain.
+    copy = task.index("seismic_buffer_copy_since(")
+    append = task.index("seismic_recorder_cache_append(")
+    should_flush = task.index("const bool should_flush")
+    flush_call = task.index("seismic_recorder_flush_one_dirty_chunk(")
+    assert copy < append < should_flush < flush_call
+    assert "append_err == ESP_ERR_NO_MEM" in task
+    assert "cache_full = true;" in task
+
+    # One write-behind turn is capped by the existing 256-frame DMA staging
+    # contract and persistence is acknowledged only after fwrite returns.
+    assert "SEISMIC_RECORDER_WRITE_STAGING_FRAMES" in flush
+    write = flush.index("seismic_recorder_fs_write_frames(")
+    mark = flush.index("seismic_recorder_cache_mark_persisted(")
+    written = flush.index("s_snapshot.samples_written += frames_written;")
+    assert write < mark < written
 
 
 def test_recorder_heartbeat_is_post_operation_and_progress_is_snapshot_based():
@@ -79,28 +119,27 @@ def test_recorder_heartbeat_is_post_operation_and_progress_is_snapshot_based():
     task = _function_body(source, "static void seismic_recorder_task")
     observe = _function_body(source, "static void seismic_recorder_observe")
 
-    # The task loop must use the post-operation helper instead of publishing
-    # a heartbeat at loop entry, before copy/write/flush can block.
+    # Do not make exact heartbeat-call counts part of the architecture: adding
+    # a bounded cache stage legitimately changes the number of branches. What
+    # matters is that blocking/costly work is followed by an observation and
+    # that the heartbeat is never published at task-loop entry.
     assert "runtime_observability_beat(" in observe
     assert "runtime_observability_beat(" not in task
-    assert task.count("seismic_recorder_observe();") == 9
 
-    copy = task.index("seismic_buffer_copy_since(")
-    write = task.index("seismic_recorder_fs_write_frames(")
-    flush = task.index("seismic_recorder_flush_if_due(file)")
     observations = [
         index
         for index in range(len(task))
         if task.startswith("seismic_recorder_observe();", index)
     ]
+    assert observations
     next_observe = lambda operation: next(index for index in observations if index > operation)
-    assert next_observe(copy) > copy
-    assert next_observe(write) > write
-    assert next_observe(flush) > flush
 
-    # The helper reads the committed recorder counter after taking and
-    # releasing the recorder mutex, then publishes it. A stale local counter
-    # cannot make a blocked SD operation look like progress.
+    copy = task.index("seismic_buffer_copy_since(")
+    write_behind = task.index("seismic_recorder_flush_one_dirty_chunk(")
+    assert next_observe(copy) > copy
+    assert next_observe(write_behind) > write_behind
+
+    # The helper reads committed persisted progress under the recorder mutex.
     assert observe.index("seismic_recorder_lock();") < observe.index("samples_written = s_snapshot.samples_written;")
     assert observe.index("samples_written = s_snapshot.samples_written;") < observe.index("seismic_recorder_unlock();")
     assert observe.index("seismic_recorder_unlock();") < observe.index("runtime_observability_beat(")
