@@ -89,11 +89,18 @@ jobs:
           grep -q 'object_store_profile_index_reconcile_locked' components/object_store/object_store_profile.c
           ! grep -q 'object_store_fs_object_exists(entry->d_name)' components/object_store/object_store_fs_list.c
           grep -q 'object_store_internal_begin_state_operation' components/object_store/object_store_state.c
-          grep -q 'object_store_list_profiles_with_defaults' components/web_server/web_status_json_objects.c
+          grep -q 'object_store_list_profiles_responsive' components/web_server/web_status_json_objects.c
+          grep -q 'seismic_recorder_list_sessions_responsive' components/web_server/web_status_json_objects.c
           ! grep -q 'object_store_get_cable_defaults' components/web_server/web_status_json_objects.c
-          grep -q 'WEB_OBJECT_CACHE_TTL_US' components/web_server/web_status_json_objects.c
           grep -q 'web_status_json_objects_invalidate' components/web_server/web_api_control.c
           grep -q 'Server-Timing' components/web_server/web_api_status.c
+          grep -q 'web_scan_write_chunk' components/web_server/web_scan_store.c
+          grep -q 'web_scan_read_chunk' components/web_server/web_scan_store.c
+          grep -q 'web_scan_priority_enter' components/web_server/web_scan_store.c
+          grep -q 'APP_TASK_PRIORITY_SEISMIC_RECORDER 3' components/app_config/include/app_task_config.h
+          ! grep -q 'esp_lcd_panel_io_register_event_callbacks' components/ui/ui_lvgl.c
+          ! grep -q 'lv_display_set_flush_wait_cb' components/ui/ui_lvgl.c
+          grep -q 'esp_lcd_panel_io_tx_param' components/ui/ui_lvgl.c
           grep -q 'ad7606_driver_presence_monitor_start' components/seismic_acquisition/seismic_source_ad7606.c
           grep -q 'GPIO_PULLDOWN_ONLY' components/ad7606_driver/ad7606_presence.c
           grep -q 'BOARD_SENSOR_I2C_SDA_GPIO.*GPIO_NUM_9' components/board_config/include/board_config.h
