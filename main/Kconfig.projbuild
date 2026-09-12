@@ -33,6 +33,20 @@ menu "Seismic Acquisition"
         range 100 5000
         default 500
 
+    config SEISMIC_RECORDER_PSRAM_CACHE_KB
+        int "Recorder PSRAM write-behind cache (KiB)"
+        range 256 4096
+        default 1024
+        help
+            Reserve a bounded typed circular cache in external PSRAM between
+            the realtime acquisition ring and microSD persistence.  The
+            default 1024 KiB is intentionally conservative on the N16R8 board:
+            it leaves substantial PSRAM headroom for HTTPS/WebUI and other
+            runtime users instead of consuming all external RAM before Wi-Fi
+            starts.  At the current 500 Hz / 4-channel frame format this is
+            roughly one minute of resident recorder history.  Physical HIL
+            heap/high-water telemetry must justify any increase.
+
 endmenu
 
 menu "Status indicator"
