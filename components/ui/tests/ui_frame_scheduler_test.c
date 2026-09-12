@@ -1,4 +1,5 @@
 #include "ui_frame_scheduler.h"
+#include "ui_event_policy.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -37,6 +38,22 @@ int main(void)
     assert(scheduler.frames_coalesced == 19U);
     assert(ui_frame_scheduler_take(&scheduler, UI_FRAME_MIN_PERIOD_US, &rendered));
     assert(rendered == 21U);
-    puts("ui frame scheduler tests passed");
+
+    /* A navigation press delayed by exactly the budget is still current; one
+     * microsecond beyond it is stale and must never be replayed as a later
+     * menu step. */
+    const int64_t queued_us = 1000000LL;
+    assert(!ui_event_keypad_is_stale(queued_us, queued_us));
+    assert(!ui_event_keypad_is_stale(
+        queued_us,
+        queued_us + UI_KEYPAD_EVENT_MAX_AGE_US
+    ));
+    assert(ui_event_keypad_is_stale(
+        queued_us,
+        queued_us + UI_KEYPAD_EVENT_MAX_AGE_US + 1LL
+    ));
+    assert(!ui_event_keypad_is_stale(queued_us, queued_us - 1LL));
+
+    puts("ui frame scheduler and event freshness tests passed");
     return 0;
 }
