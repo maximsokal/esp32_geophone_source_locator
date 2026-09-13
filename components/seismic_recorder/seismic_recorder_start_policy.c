@@ -1,6 +1,7 @@
 #include "seismic_recorder_start_policy.h"
 
 #include <limits.h>
+#include <stddef.h>
 
 #include "esp_timer.h"
 
