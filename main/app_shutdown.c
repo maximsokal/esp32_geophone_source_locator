@@ -6,6 +6,7 @@
 #include "ina3221_monitor.h"
 #include "keypad.h"
 #include "measurement_service.h"
+#include "object_recovery.h"
 #include "object_service.h"
 #include "power_control.h"
 #include "sd_card.h"
@@ -159,7 +160,15 @@ void app_shutdown_wait_and_run(void)
 
     runtime_observability_log_snapshot("after-recorder-finalization");
 
-    /* No recorder SD traffic remains after this point, so LVGL can exit. */
+    /*
+     * Background object recovery uses the same SD/TFT arbitration as normal
+     * storage. Stop it while the display guard is still alive; because the
+     * worker releases storage between objects, shutdown waits for at most the
+     * current bounded object recovery window instead of the whole archive.
+     */
+    object_recovery_stop_background();
+
+    /* No recorder/recovery SD traffic remains after this point, so LVGL can exit. */
     ui_shutdown();
 
     storage_service_shutdown();
