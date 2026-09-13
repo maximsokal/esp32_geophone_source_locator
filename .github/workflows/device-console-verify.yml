@@ -45,11 +45,12 @@ jobs:
         run: python tools/run_host_tests.py --keep-going
       - name: Storage/SPI HIL parser contracts
         run: python -m pytest -q tests/python/test_storage_spi_hil_runner.py
-      - name: Startup and storage responsiveness source contracts
+      - name: Startup, storage, and runtime source contracts
         run: >-
           python -m pytest -q
           tests/python/test_startup_recovery_contract.py
           tests/python/test_object_store_responsive_contract.py
+          tests/python/test_runtime_priority_contract.py
       - name: Production build and ESP asset preparation
         working-directory: webui
         run: npm run build
