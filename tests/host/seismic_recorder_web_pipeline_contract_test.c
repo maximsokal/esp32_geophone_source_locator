@@ -34,6 +34,7 @@ size_t strnlen(const char *string, size_t max_length);
 #include "object_store.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder_internal.h"
+#include "seismic_recorder_lod.h"
 #include "storage_manager.h"
 #include "web_server_internal.h"
 
