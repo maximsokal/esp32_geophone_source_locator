@@ -93,7 +93,8 @@ jobs:
           ! grep -q "lazy(() => import('./features/objects/ObjectsFeature'))" webui/src/DeviceConsoleApp.tsx
           ! grep -q "lazy(() => import('./features/sensors/SensorsFeature'))" webui/src/DeviceConsoleApp.tsx
           grep -q 'generated_webui_chunks/' .gitignore
-          grep -q 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' sdkconfig.tls.defaults
+          grep -q 'CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y' sdkconfig.tls.defaults
+          ! grep -q '^CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' sdkconfig.tls.defaults
           grep -q 'CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y' sdkconfig.tls.defaults
           grep -q 'CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS=y' sdkconfig.tls.defaults
           grep -q 'CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y' sdkconfig.tls.defaults
