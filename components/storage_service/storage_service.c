@@ -32,18 +32,12 @@ static SemaphoreHandle_t s_command_gate =
 static TaskHandle_t s_task =
     NULL;
 
-static portMUX_TYPE s_callback_lock =
-    portMUX_INITIALIZER_UNLOCKED;
-
-static storage_service_event_callback_t
-    s_callback =
-        NULL;
-
-static void *s_callback_context =
-    NULL;
-
-static unsigned s_callback_in_flight =
-    0U;
+static storage_service_callback_slot_t s_callback_slot = {
+    .lock = portMUX_INITIALIZER_UNLOCKED,
+    .callback = NULL,
+    .context = NULL,
+    .in_flight = 0U,
+};
 
 static bool s_initialized =
     false;
@@ -51,16 +45,22 @@ static bool s_initialized =
 static storage_service_event_t s_event;
 
 
+storage_service_callback_slot_t *storage_service_internal_callback_slot(void)
+{
+    return &s_callback_slot;
+}
+
+
 static unsigned storage_service_callback_in_flight(void)
 {
     unsigned in_flight;
 
     taskENTER_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
-    in_flight = s_callback_in_flight;
+    in_flight = s_callback_slot.in_flight;
     taskEXIT_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 
     return in_flight;
@@ -86,17 +86,17 @@ static void storage_service_notify(void)
         NULL;
 
     taskENTER_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 
-    if (s_callback != NULL) {
-        callback = s_callback;
-        callback_context = s_callback_context;
-        ++s_callback_in_flight;
+    if (s_callback_slot.callback != NULL) {
+        callback = s_callback_slot.callback;
+        callback_context = s_callback_slot.context;
+        ++s_callback_slot.in_flight;
     }
 
     taskEXIT_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 
     if (callback == NULL) {
@@ -109,11 +109,11 @@ static void storage_service_notify(void)
     );
 
     taskENTER_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
-    --s_callback_in_flight;
+    --s_callback_slot.in_flight;
     taskEXIT_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 }
 
@@ -284,13 +284,13 @@ esp_err_t storage_service_init(void)
     );
 
     taskENTER_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
-    s_callback = NULL;
-    s_callback_context = NULL;
-    s_callback_in_flight = 0U;
+    s_callback_slot.callback = NULL;
+    s_callback_slot.context = NULL;
+    s_callback_slot.in_flight = 0U;
     taskEXIT_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 
     BaseType_t result =
@@ -397,13 +397,13 @@ void storage_service_shutdown(void)
     }
 
     taskENTER_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
-    s_callback = NULL;
-    s_callback_context = NULL;
-    s_callback_in_flight = 0U;
+    s_callback_slot.callback = NULL;
+    s_callback_slot.context = NULL;
+    s_callback_slot.in_flight = 0U;
     taskEXIT_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 
     s_initialized =
@@ -427,28 +427,28 @@ esp_err_t storage_service_set_event_callback(
 
     /*
      * Close the old slot first. A notify path that already snapped the old
-     * callback incremented s_callback_in_flight under this same lock, so the
-     * wait below is a lifetime barrier for the old callback/context.
+     * callback incremented in_flight under this same lock, so the wait below
+     * is a lifetime barrier for the old callback/context.
      */
     taskENTER_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
-    s_callback = NULL;
-    s_callback_context = NULL;
+    s_callback_slot.callback = NULL;
+    s_callback_slot.context = NULL;
     taskEXIT_CRITICAL(
-        &s_callback_lock
+        &s_callback_slot.lock
     );
 
     storage_service_wait_for_callback();
 
     if (callback != NULL) {
         taskENTER_CRITICAL(
-            &s_callback_lock
+            &s_callback_slot.lock
         );
-        s_callback_context = user_context;
-        s_callback = callback;
+        s_callback_slot.context = user_context;
+        s_callback_slot.callback = callback;
         taskEXIT_CRITICAL(
-            &s_callback_lock
+            &s_callback_slot.lock
         );
     }
 
