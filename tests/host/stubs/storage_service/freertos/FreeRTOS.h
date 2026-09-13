@@ -9,11 +9,12 @@ typedef unsigned UBaseType_t;
 typedef uint32_t TickType_t;
 typedef void (*TaskFunction_t)(void *);
 typedef int portMUX_TYPE;
+extern unsigned fake_critical_depth;
 #define pdTRUE 1
 #define pdFALSE 0
 #define pdPASS 1
 #define portMAX_DELAY UINT32_MAX
 #define pdMS_TO_TICKS(ms) ((TickType_t)(ms))
 #define portMUX_INITIALIZER_UNLOCKED 0
-#define taskENTER_CRITICAL(mux) ((void)(mux))
-#define taskEXIT_CRITICAL(mux) ((void)(mux))
+#define taskENTER_CRITICAL(mux) do { (void)(mux); ++fake_critical_depth; } while (0)
+#define taskEXIT_CRITICAL(mux) do { (void)(mux); --fake_critical_depth; } while (0)
