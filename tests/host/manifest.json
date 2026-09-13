@@ -313,6 +313,7 @@
       "name": "seismic_recorder",
       "sources": [
         "components/object_format/object_format.c",
+        "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
         "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
       ],
       "include_dirs": [
