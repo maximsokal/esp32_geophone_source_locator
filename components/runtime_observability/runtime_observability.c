@@ -476,11 +476,13 @@ void runtime_observability_log_snapshot(const char *stage)
         const TaskStatus_t *status = usage->status;
         ESP_LOGI(
             TAG,
-            "RUNTIME_TASK rank=%u name=%s core=%d priority=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
+            "RUNTIME_TASK rank=%u name=%s core=%d priority_current=%u priority_base=%u inherited=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
             (unsigned)(i + 1U),
             status->pcTaskName != NULL ? status->pcTaskName : "?",
             runtime_task_core(status),
             (unsigned)status->uxCurrentPriority,
+            (unsigned)status->uxBasePriority,
+            status->uxCurrentPriority > status->uxBasePriority ? 1U : 0U,
             (unsigned long long)usage->runtime_delta,
             usage->cpu_tenths / 10U,
             usage->cpu_tenths % 10U,
