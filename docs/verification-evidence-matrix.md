@@ -1,12 +1,12 @@
 # Verification evidence matrix
 
-This document is the authoritative boundary between automated software evidence and physical board proof. Historical counts and snapshots in `docs/firmware-test-plan.md` remain audit history; when they conflict with this file or current CI, use this file plus the current workflow as the source of truth.
+This document is the authoritative boundary between automated software evidence and physical board proof. Historical counts and snapshots in `docs/firmware-test-plan.md` remain audit history; when they conflict with this file or current local verification, use this file plus the current repository state as the source of truth.
 
 ## Evidence classes
 
 | Class | What runs | What it proves | What it does **not** prove |
 | --- | --- | --- | --- |
-| **HOST C** | Native C suites from `tests/host/manifest.json` and `tests/host/manifest.d/*.json`, compiled against deterministic ESP-IDF/FreeRTOS/component fakes | Pure/stateful C behavior, error paths, lifecycle policy, queue/lock ownership contracts that the suite actually exercises | ESP32 timing, DMA, dual-core scheduling, physical GPIO/I2C/SPI, SD electrical behavior, TFT pixels |
+| **HOST C** | Native C suites from `tests/host/manifest.json` and `tests/host/manifest.d/*.json`, compiled against deterministic ESP-IDF/FreeRTOS/component fakes | Pure/stateful C behavior, error paths, lifecycle policy, queue/lock ownership contracts and UI navigation policy that the suite actually exercises | ESP32 timing, DMA, dual-core scheduling, physical GPIO/I2C/SPI, SD electrical behavior, TFT pixels |
 | **PYTHON SOURCE/ARCHITECTURE CONTRACT** | `tests/python` checks that inspect source/configuration/layout or deterministic text artifacts | Required architecture/configuration remains present; forbidden regressions are absent | Runtime behavior, FreeRTOS timing, peripheral behavior, physical device state |
 | **HIL REPLAY/PARSER** | PowerShell HIL runner invoked with `-LogPath`; Python tests replay saved/synthetic UART text through the same parser | Parser correctness, threshold boundaries, malformed/missing telemetry classification, failure-marker classification | Current board behavior. Replay never proves DMA, SPI2 arbitration, scheduling, keypad debounce, TFT rendering, SD media/electrical behavior, real PSRAM timing or current wiring |
 | **LIVE BOARD HIL** | Runner opens the actual passive UART log port and observes telemetry produced by the connected target during the requested scenario | Only the machine-observable properties explicitly gated by that runner on that physical run | Uninstrumented physical behavior; visual/manual observations unless independently measured and encoded in telemetry |
@@ -16,7 +16,7 @@ A green parser/replay test must never be described as `PHYSICALLY VERIFIED` or a
 
 ## Current automated surfaces
 
-The main CI workflow runs the native host manifests, WebUI typecheck/tests, XR tests, HIL replay/parser contracts, startup/storage/runtime source contracts, production Web build checks and an ESP-IDF 5.5.4 production firmware build. Native suites are discovered from `tests/host/manifest.json` plus `tests/host/manifest.d/*.json`; do not hard-code an old suite count in acceptance decisions.
+Local verification is the default project workflow. GitHub Actions are manual-only and are not required for normal verification. The native host manifests, WebUI typecheck/tests, XR tests, HIL replay/parser contracts, startup/storage/runtime source contracts, production Web build checks and ESP-IDF production firmware build may all be run locally. The exact native-suite count is derived from the manifests; do not hard-code an old count in acceptance decisions.
 
 Relevant explicit HIL tools:
 
@@ -25,26 +25,11 @@ Relevant explicit HIL tools:
 - `tools/run_keypad_timing_hil.ps1`: opt-in ADC broker and ESP timer timing profile. Numerical performance acceptance remains dependent on a measured board baseline.
 - `tools/run_pipeline_hil.ps1`: broader production measurement pipeline gate, including recorder/API/runtime evidence and explicitly separated manual observations.
 
-## Coverage-backlog behavioral host suites
-
-The `manifest.d` suites close the audited low/zero-coverage lifecycle debt with executable C behavior rather than grep-only checks:
-
-| Suite | What it proves on host | Physical/runtime boundary |
-| --- | --- | --- |
-| `sensor_bus_lifecycle` | I2C bus/device creation failure handling, cleanup, idempotent init, handle validation and shutdown state | Does not prove electrical I2C signaling or real sensor presence |
-| `status_indicator_state` | Event subscription lifecycle and NORMAL/WARNING/ERROR/sticky state transitions | Does not prove LED electrical output or visible color on hardware |
-| `device_status_aggregation` | Input validation and deterministic aggregation/snapshot behavior, including invalid source/index cases | Does not prove real sensor readings or concurrent ESP32 producer timing |
-| `storage_service_lifecycle` | Queue/semaphore/task allocation rollback, atomic busy gate, queue-send failure recovery, callback ordering and shutdown/re-init cleanup | Does not prove FreeRTOS scheduler timing or physical SD latency |
-| `object_service_lifecycle` | Queue/task rollback, busy gate, command validation, worker processing, callback/observer lifecycle and shutdown cleanup | Does not prove FATFS media timing or archive-scale performance |
-| `insights_bridge_lifecycle` | Non-fatal initialization failure, retry worker/handler failure policy, event-to-worker notification, retry-to-success and idempotent success | Does not prove cloud/network reachability, credentials or live telemetry delivery |
-
-These suites use the same `tools/run_host_tests.py` compiler path and `-Wall -Wextra -Werror` policy as the original host manifest. Their PASS status is HOST C evidence only.
-
 ## Requirement -> proof mapping
 
 | Requirement | Automated software proof | Required live proof before physical acceptance |
 | --- | --- | --- |
-| **Keypad end-to-end** | Host keypad decode/ADC ownership tests; source contracts; boot HIL replay verifies `KEYPAD_RAW_TRANSITION`, Button/app-event/UI parser semantics where present | All five physical keys LEFT/UP/DOWN/RIGHT/OK must each produce a first-hop decode/press trace, `KEYPAD_EVENT_POST`, `KEYPAD_EVENT_DISPATCH`, and the intended visible UI change; no stale delayed navigation burst |
+| **Keypad end-to-end** | Host keypad decode/ADC ownership tests; host `ui_home_navigation` behavior suite verifies HOME menu mapping, UP/DOWN wrap, RIGHT/OK selection and LEFT-to-HOME behavior; runtime breadcrumbs include `KEYPAD_RAW_TRANSITION`, `KEYPAD_BUTTON_PRESS`, `KEYPAD_EVENT_POST`, `KEYPAD_EVENT_DISPATCH`, and post-handler `UI_KEY_RESULT` state evidence | All five physical keys LEFT/UP/DOWN/RIGHT/OK must each produce the expected runtime chain and the intended visible UI change; no stale delayed navigation burst. `UI_KEY_RESULT` proves software state after the handler, not TFT pixels |
 | **SD/SPI2 latency** | `storage_spi_contract.ps1` replay tests validate parsing, exact threshold boundaries, malformed/missing telemetry and error classification | Live `STORAGE_SPI_TIMING`/`RECORDER_IO_TIMING` samples on the real SD/TFT shared SPI2 path; thresholds must come from a recorded real-board baseline, not synthetic replay values |
 | **Recorder integrity / dropped frames** | Host recorder/cache/write-state suites validate deterministic write/finalization logic | Live recording must end with normal `STOP_COMPLETE`, `drops=0`, no acquisition read/buffer failure and a readable completed session |
 | **Memory floors / PSRAM fallback** | Runtime-observability host policy tests prove PSRAM-preferred allocation, internal fallback, dual-allocation failure handling and deterministic top-N/equality behavior | Real `MEM_RUNTIME` measurements under the intended workload are required for physical memory-floor acceptance and fragmentation/timing claims |
