@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "wifi_manager_state",
+      "sources": [
+        "components/wifi_manager/wifi_manager.c",
+        "tests/host/wifi_manager_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_state",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    }
+  ]
+}
