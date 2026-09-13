@@ -40,6 +40,26 @@ def test_ui_runtime_ready_is_atomic_and_published_after_ingress_is_installed():
     assert start < publish < publish_true
 
 
+def test_service_callbacks_use_explicit_acquire_readiness_loads():
+    object_source = read("components/ui/ui_objects.c")
+    storage_source = read("components/ui/ui_storage.c")
+
+    object_callback = function_body(
+        object_source,
+        "void ui_object_service_event("
+    )
+    storage_callback = function_body(
+        storage_source,
+        "void ui_storage_service_event("
+    )
+
+    for callback in (object_callback, storage_callback):
+        assert "atomic_load_explicit(" in callback
+        assert "&context->runtime_ready" in callback
+        assert "memory_order_acquire" in callback
+        assert "!context->runtime_ready" not in callback
+
+
 def test_ui_shutdown_drains_external_ingress_before_runtime_teardown():
     source = read("components/ui/ui.c")
     shutdown = function_body(source, "void ui_shutdown(void)")
