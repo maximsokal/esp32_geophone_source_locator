@@ -61,8 +61,18 @@ esp_err_t object_store_list(
         return ESP_ERR_NO_MEM;
     }
 
+    float defaults[OBJECT_STORE_POD_COUNT];
     size_t count = 0;
-    esp_err_t err = object_store_list_profiles(profiles, bounded, &count);
+
+    /* Object-service LIST runs asynchronously, but it still shares SPI2 with
+     * LVGL. Use the same cooperative profile walk as the Web-status cache so
+     * a cold list cannot monopolize storage_manager for the whole archive. */
+    esp_err_t err = object_store_list_profiles_responsive(
+        profiles,
+        bounded,
+        &count,
+        defaults
+    );
     if (err == ESP_OK) {
         for (size_t i = 0; i < count; ++i) {
             objects[i] = profiles[i].summary;
