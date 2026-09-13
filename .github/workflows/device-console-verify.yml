@@ -39,9 +39,10 @@ jobs:
       - name: Native host contracts
         run: python3 tools/run_host_tests.py --keep-going
       - name: Storage/SPI HIL parser contracts
-        run: |
-          python3 -m pip install --quiet pytest
-          python3 -m pytest -q tests/python/test_storage_spi_hil_runner.py
+        shell: pwsh
+        run: python -m pytest -q tests/python/test_storage_spi_hil_runner.py
+      - name: Startup recovery source contracts
+        run: python3 -m pytest -q tests/python/test_startup_recovery_contract.py
       - name: Production build and ESP asset preparation
         working-directory: webui
         run: npm run build
