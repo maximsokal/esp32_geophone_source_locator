@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include "esp_heap_caps.h"
@@ -10,6 +11,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include "spi_bus.h"
 #include "storage_manager_internal.h"
@@ -482,6 +484,59 @@ esp_err_t storage_manager_operation_begin(void)
 }
 
 
+static bool storage_manager_is_web_status_cache_task(const char *name)
+{
+    static const char web_status_prefix[] = "web_status_cach";
+
+    if (name == NULL) {
+        return false;
+    }
+
+    return strncmp(
+        name,
+        web_status_prefix,
+        sizeof(web_status_prefix) - 1U
+    ) == 0;
+}
+
+
+static void storage_manager_log_owner_priority_before_release(
+    int64_t elapsed_us
+)
+{
+#if configUSE_TRACE_FACILITY == 1
+    TaskStatus_t status = {0};
+    vTaskGetInfo(
+        NULL,
+        &status,
+        pdFALSE,
+        eInvalid
+    );
+
+    const bool inherited =
+        status.uxCurrentPriority > status.uxBasePriority;
+    const bool web_status_cache =
+        storage_manager_is_web_status_cache_task(status.pcTaskName);
+
+    if (!inherited && !web_status_cache) {
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "STORAGE_PRIORITY stage=pre-release owner=%s priority_current=%u priority_base=%u inherited=%u elapsed_us=%lld",
+        status.pcTaskName != NULL ? status.pcTaskName : "?",
+        (unsigned)status.uxCurrentPriority,
+        (unsigned)status.uxBasePriority,
+        inherited ? 1U : 0U,
+        (long long)elapsed_us
+    );
+#else
+    (void)elapsed_us;
+#endif
+}
+
+
 void storage_manager_operation_end(void)
 {
     if (s_operation_mutex == NULL) {
@@ -514,6 +569,10 @@ void storage_manager_operation_end(void)
             s_outer_mutex_wait_us;
         const unsigned logged_depth =
             s_operation_depth;
+
+        storage_manager_log_owner_priority_before_release(
+            elapsed_us
+        );
 
         s_outer_operation_started_us = 0;
         xSemaphoreGiveRecursive(
