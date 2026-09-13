@@ -7,7 +7,8 @@ typedef void *esp_event_loop_handle_t;
 typedef const char *esp_event_base_t;
 typedef void (*esp_event_handler_t)(void *, esp_event_base_t, int32_t, void *);
 
-#define APP_EVENT ((esp_event_base_t)"APP_EVENT")
+extern const char APP_EVENT_BASE[];
+#define APP_EVENT ((esp_event_base_t)APP_EVENT_BASE)
 #define APP_EVENT_KEYPAD 1
 #define ESP_EVENT_ANY_ID (-1)
 
