@@ -22,13 +22,20 @@ def test_all_suite_surfaces_only_current_host_failures_in_final_report():
     source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
 
     assert "function Add-HostFailureDetails" in source
+    assert "function Compress-DiagnosticText" in source
     assert '"host-test-report.json"' in source
     assert "Remove-Item -LiteralPath $baseReport -Force -ErrorAction SilentlyContinue" in source
     assert "Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue" in source
     assert "$report.results" in source
     assert '$testResult.status -ne "FAIL"' in source
+    assert "$report.compiler_description" in source
+    assert "$testResult.stderr" in source
+    assert "$testResult.stdout" in source
+    assert '$testResult.error' in source
     assert 'Write-Host "HOST_FAILURE_DETAILS:"' in source
     assert "test={1} phase={2} exit={3}" in source
+    assert 'compiler={0}' in source
+    assert 'diagnostic={0}' in source
 
 
 def test_all_suite_keeps_hardware_hil_out_of_automatic_run():
