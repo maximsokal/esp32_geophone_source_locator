@@ -49,12 +49,18 @@ void object_service_internal_worker(
             &command
         );
 
-        state->busy =
-            false;
+        atomic_store_explicit(
+            &state->busy,
+            false,
+            memory_order_release
+        );
     }
 
-    state->busy =
-        false;
+    atomic_store_explicit(
+        &state->busy,
+        false,
+        memory_order_release
+    );
 
     ESP_LOGI(
         TAG,
