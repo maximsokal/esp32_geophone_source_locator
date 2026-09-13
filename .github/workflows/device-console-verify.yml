@@ -49,7 +49,10 @@ jobs:
           set -ex
           test ! -e components/web_server/web_static_assets.c
           ! grep -q 'web_static_assets_register' components/web_server/web_server_internal.h
-          grep -A4 'max_uri_handlers' components/web_server/web_server.c | head -n 5 | grep -q '10;'
+          grep -q 'config.httpd.max_uri_handlers = WEB_HTTPS_URI_HANDLERS_CAPACITY;' components/web_server/web_server.c
+          grep -q 'config.max_uri_handlers = WEB_HTTP_URI_HANDLERS_CAPACITY;' components/web_server/web_server.c
+          grep -q 'WEB_HTTPS_URI_HANDLERS_REQUIRED  *11U' components/web_server/web_route_capacity.h
+          grep -q 'WEB_HTTP_URI_HANDLERS_REQUIRED  *6U' components/web_server/web_route_capacity.h
           grep -q 'assets/\*.css.gz' components/web_server/CMakeLists.txt
           grep -q 'web_api_control.c' components/web_server/CMakeLists.txt
           grep -q 'web_status_policy.c' components/web_server/CMakeLists.txt
