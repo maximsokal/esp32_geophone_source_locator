@@ -18,6 +18,17 @@ def test_all_suite_runs_base_and_every_host_manifest_fragment():
     assert 'Invoke-HostSuites' in source[source.index('if ($Suite -eq "All")'):]
 
 
+def test_all_suite_surfaces_host_failure_names_in_final_report():
+    source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
+
+    assert "function Add-HostFailureDetails" in source
+    assert '"host-test-report.json"' in source
+    assert "$report.results" in source
+    assert '$testResult.status -ne "FAIL"' in source
+    assert 'Write-Host "HOST_FAILURE_DETAILS:"' in source
+    assert "test={1} phase={2} exit={3}" in source
+
+
 def test_all_suite_keeps_hardware_hil_out_of_automatic_run():
     source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
 
