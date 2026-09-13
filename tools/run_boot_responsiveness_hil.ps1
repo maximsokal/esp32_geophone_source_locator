@@ -116,6 +116,9 @@ try {
         Add-Check $checks "Production build" "SKIPPED" "Replay mode from -LogPath."
         Add-Check $checks "Production flash" "SKIPPED" "Replay mode from -LogPath."
     } else {
+        if ($FlashPort -eq $LogPort) {
+            throw "FlashPort and LogPort must be different. Use COM4 for programming and the passive USB-TTL port (normally COM6) for UART logs."
+        }
         if (-not (Test-Path -LiteralPath $runIdf -PathType Leaf)) {
             throw "Missing ESP-IDF helper: $runIdf"
         }
@@ -307,8 +310,7 @@ $functionalChecks = @($checks | Where-Object {
     $_.Name -notin @(
         "Live serial preflight",
         "Production build",
-        "Production flash",
-        "Web cache priority inheritance diagnostic"
+        "Production flash"
     )
 })
 $failed = @($functionalChecks | Where-Object { $_.Status -eq "FAIL" })
