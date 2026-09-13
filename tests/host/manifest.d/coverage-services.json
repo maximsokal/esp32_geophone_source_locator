@@ -30,6 +30,20 @@
         "components/object_service",
         "components/object_format/include"
       ]
+    },
+    {
+      "name": "object_service_notify",
+      "sources": [
+        "components/object_service/object_service_state.c",
+        "components/object_service/object_service_operations.c",
+        "tests/host/object_service_notify_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_service",
+        "components/object_service/include",
+        "components/object_service",
+        "components/object_format/include"
+      ]
     }
   ]
 }
