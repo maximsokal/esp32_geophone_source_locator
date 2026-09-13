@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - agent/software-backlog-closure
   workflow_dispatch:
 
 permissions:
