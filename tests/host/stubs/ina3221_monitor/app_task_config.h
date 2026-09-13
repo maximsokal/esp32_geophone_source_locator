@@ -1,0 +1,5 @@
+#pragma once
+
+#define APP_TASK_CORE_SERVICES 0
+#define APP_TASK_PRIORITY_INA3221 1
+#define APP_TASK_STACK_INA3221 4096
