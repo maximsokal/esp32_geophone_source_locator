@@ -70,12 +70,41 @@ function Invoke-SuiteStep {
     })
 }
 
-$runHost = Join-Path $repo "tools\run_host_tests.py"
+function Invoke-HostSuites {
+    $runHost = Join-Path $repo "tools\run_host_tests.py"
+    Invoke-SuiteStep -Name "Host C base" -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
+        $runHost,
+        "--keep-going"
+    )
+
+    $manifestDirectory = Join-Path $repo "tests\host\manifest.d"
+    if (-not (Test-Path -LiteralPath $manifestDirectory -PathType Container)) {
+        return
+    }
+
+    $manifests = @(
+        Get-ChildItem -LiteralPath $manifestDirectory -Filter "*.json" -File |
+            Sort-Object Name
+    )
+    foreach ($manifest in $manifests) {
+        $suiteName = [System.IO.Path]::GetFileNameWithoutExtension($manifest.Name)
+        $buildDir = Join-Path $repo ("build\host-tests-{0}" -f $suiteName)
+        Invoke-SuiteStep -Name ("Host C {0}" -f $suiteName) -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
+            $runHost,
+            "--manifest",
+            $manifest.FullName,
+            "--build-dir",
+            $buildDir,
+            "--keep-going"
+        )
+    }
+}
+
 $runIdf = Join-Path $repo "tools\run_idf.ps1"
 $powershell = "powershell.exe"
 
 if ($Suite -eq "All") {
-    Invoke-SuiteStep -Name "Host C tests" -WorkingDirectory $repo -FilePath "python" -ArgumentList @($runHost, "--keep-going")
+    Invoke-HostSuites
     Invoke-SuiteStep -Name "Python tests" -WorkingDirectory $repo -FilePath "python" -ArgumentList @("-m", "pytest", "-q")
 }
 
@@ -110,8 +139,8 @@ $suiteStatus = if ($failed.Count -gt 0) { "FAIL" } elseif ($blocked.Count -gt 0)
 
 Write-Host ""
 Write-Host ("===== {0} suite report =====" -f $Suite) -ForegroundColor Cyan
-Write-Host ("{0,-24} {1,-9} {2,8} {3,10}" -f "STEP", "STATUS", "EXIT", "SECONDS")
-Write-Host ("{0,-24} {1,-9} {2,8} {3,10}" -f ("-" * 24), ("-" * 9), ("-" * 8), ("-" * 10))
+Write-Host ("{0,-32} {1,-9} {2,8} {3,10}" -f "STEP", "STATUS", "EXIT", "SECONDS")
+Write-Host ("{0,-32} {1,-9} {2,8} {3,10}" -f ("-" * 32), ("-" * 9), ("-" * 8), ("-" * 10))
 foreach ($result in $results) {
     $color = switch ($result.Status) {
         "PASS" { "Green" }
@@ -119,7 +148,7 @@ foreach ($result in $results) {
         "BLOCKED" { "Yellow" }
         default { "Red" }
     }
-    Write-Host ("{0,-24} {1,-9} {2,8} {3,10:N1}" -f $result.Name, $result.Status, $result.ExitCode, $result.Duration) -ForegroundColor $color
+    Write-Host ("{0,-32} {1,-9} {2,8} {3,10:N1}" -f $result.Name, $result.Status, $result.ExitCode, $result.Duration) -ForegroundColor $color
 }
 Write-Host ("SUITE_RESULT: {0}" -f $suiteStatus) -ForegroundColor $(if ($suiteStatus -eq "PASS") { "Green" } elseif ($suiteStatus -eq "BLOCKED") { "Yellow" } else { "Red" })
 if ($Suite -eq "All") {
