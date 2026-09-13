@@ -37,6 +37,20 @@
       ]
     },
     {
+      "name": "sd_card_mount",
+      "sources": [
+        "components/sd_card/sd_card_mount.c",
+        "components/sd_card/sd_card_state.c",
+        "components/sd_card/sd_card_spi.c",
+        "components/sd_card/tests/sd_card_mount_host_test.c"
+      ],
+      "include_dirs": [
+        "components/sd_card/tests/stubs",
+        "components/sd_card/include",
+        "components/sd_card"
+      ]
+    },
+    {
       "name": "ad7606_presence_policy",
       "sources": [
         "components/ad7606_driver/ad7606_presence_policy.c",
