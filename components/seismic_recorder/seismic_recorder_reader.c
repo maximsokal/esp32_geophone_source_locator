@@ -54,17 +54,28 @@ static void seismic_recorder_reader_log_path(
     const char *session_id,
     uint64_t start_frame,
     uint64_t frame_count,
-    size_t point_count
+    size_t point_count,
+    const seismic_recorder_lod_read_stats_t *lod_stats
 )
 {
+    const uint64_t raw_frames =
+        lod_stats != NULL ? lod_stats->raw_frames_read : 0U;
+    const uint64_t lod_records =
+        lod_stats != NULL ? lod_stats->lod_records_read : 0U;
+    const uint64_t lod_frames =
+        lod_stats != NULL ? lod_stats->lod_frames_read : 0U;
+
     ESP_LOGI(
         TAG,
-        "WAVEFORM_READ_PATH source=%s session=%s start=%llu frames=%llu points=%u",
+        "WAVEFORM_READ_PATH source=%s session=%s start=%llu frames=%llu points=%u raw_frames=%llu lod_records=%llu lod_frames=%llu",
         source,
         session_id,
         (unsigned long long)start_frame,
         (unsigned long long)frame_count,
-        (unsigned)point_count
+        (unsigned)point_count,
+        (unsigned long long)raw_frames,
+        (unsigned long long)lod_records,
+        (unsigned long long)lod_frames
     );
 }
 
@@ -544,7 +555,8 @@ esp_err_t seismic_recorder_read_session(
                 session_id,
                 start_frame,
                 resolved_frame_count,
-                info->point_count
+                info->point_count,
+                NULL
             );
 #endif
             return ESP_OK;
@@ -624,7 +636,7 @@ esp_err_t seismic_recorder_read_session(
         .path = samples_path,
     };
 
-    bool used_lod = false;
+    bool hybrid_completed = false;
     if (lod_path != NULL) {
         uint64_t lod_file_size = 0U;
         if (
@@ -642,44 +654,48 @@ esp_err_t seismic_recorder_read_session(
                 seismic_recorder_bounded_reader_t lod_reader = {
                     .path = lod_path,
                 };
+                seismic_recorder_lod_read_stats_t lod_stats = {0};
 #ifdef ESP_PLATFORM
                 const seismic_recorder_reader_priority_guard_t priority_guard =
                     seismic_recorder_reader_priority_enter();
 #endif
-                const esp_err_t lod_err = seismic_recorder_lod_read_source(
-                    seismic_recorder_reader_read_at,
-                    &raw_reader,
-                    raw_file_size,
-                    seismic_recorder_reader_read_at,
-                    &lod_reader,
-                    lod_file_size,
-                    &summary,
-                    start_frame,
-                    resolved_frame_count,
-                    max_points,
-                    staging,
-                    SEISMIC_RECORDER_READ_STAGING_FRAMES,
-                    lod_staging,
-                    SEISMIC_RECORDER_LOD_READ_STAGING_RECORDS,
-                    points,
-                    point_capacity,
-                    info
-                );
+                const esp_err_t lod_err =
+                    seismic_recorder_lod_read_source_with_stats(
+                        seismic_recorder_reader_read_at,
+                        &raw_reader,
+                        raw_file_size,
+                        seismic_recorder_reader_read_at,
+                        &lod_reader,
+                        lod_file_size,
+                        &summary,
+                        start_frame,
+                        resolved_frame_count,
+                        max_points,
+                        staging,
+                        SEISMIC_RECORDER_READ_STAGING_FRAMES,
+                        lod_staging,
+                        SEISMIC_RECORDER_LOD_READ_STAGING_RECORDS,
+                        points,
+                        point_capacity,
+                        info,
+                        &lod_stats
+                    );
 #ifdef ESP_PLATFORM
                 seismic_recorder_reader_priority_leave(priority_guard);
 #endif
                 heap_caps_free(lod_staging);
 
                 if (lod_err == ESP_OK) {
-                    used_lod = true;
+                    hybrid_completed = true;
                     err = ESP_OK;
 #ifdef ESP_PLATFORM
                     seismic_recorder_reader_log_path(
-                        "lod64",
+                        lod_stats.lod_records_read > 0U ? "lod64" : "raw",
                         session_id,
                         start_frame,
                         resolved_frame_count,
-                        info->point_count
+                        info->point_count,
+                        &lod_stats
                     );
 #endif
                 }
@@ -690,7 +706,7 @@ esp_err_t seismic_recorder_read_session(
         }
     }
 
-    if (!used_lod) {
+    if (!hybrid_completed) {
 #ifdef ESP_PLATFORM
         const seismic_recorder_reader_priority_guard_t priority_guard =
             seismic_recorder_reader_priority_enter();
@@ -717,7 +733,8 @@ esp_err_t seismic_recorder_read_session(
                 session_id,
                 start_frame,
                 resolved_frame_count,
-                info->point_count
+                info->point_count,
+                NULL
             );
         }
 #endif
