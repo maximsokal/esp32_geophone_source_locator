@@ -5,6 +5,7 @@ recorder timing.  They only prove that the PowerShell parser and numerical
 threshold gate classify already-captured telemetry correctly.
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -55,21 +56,30 @@ def make_log(
     return "\n".join(lines) + "\n"
 
 
+def powershell_command() -> str:
+    executable = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if executable is None:
+        raise RuntimeError("PowerShell is required for storage/SPI runner tests")
+    return executable
+
+
 def run_replay(path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    executable = powershell_command()
+    arguments = [executable, "-NoLogo", "-NoProfile"]
+    if executable.lower().endswith("powershell.exe"):
+        arguments.extend(["-ExecutionPolicy", "Bypass"])
+    arguments.extend(
         [
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
             "-File",
             str(RUNNER),
             "-LogPath",
             str(path),
             *THRESHOLD_ARGS,
             *extra,
-        ],
+        ]
+    )
+    return subprocess.run(
+        arguments,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
