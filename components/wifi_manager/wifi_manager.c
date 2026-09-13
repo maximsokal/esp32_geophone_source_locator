@@ -6,7 +6,6 @@
 #include "wifi_manager_setup_ap.h"
 #include "wifi_manager_sta.h"
 
-#include "esp_check.h"
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -17,48 +16,88 @@ static const char *TAG =
     "WIFI_MANAGER";
 
 
-static bool s_initialized =
-    false;
+static wifi_manager_internal_state_t s_state = { 0 };
 
-static bool s_running =
-    false;
-
-static bool s_setup_mode =
-    false;
-
-static bool s_radio_state_uncertain =
-    false;
-static portMUX_TYPE s_radio_state_uncertain_lock =
+static portMUX_TYPE s_state_lock =
     portMUX_INITIALIZER_UNLOCKED;
+
+
+void wifi_manager_internal_get_state(
+    wifi_manager_internal_state_t *state
+)
+{
+    if (state == NULL) {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    *state = s_state;
+    portEXIT_CRITICAL(&s_state_lock);
+}
 
 
 bool wifi_manager_internal_initialized(void)
 {
-    return s_initialized;
+    wifi_manager_internal_state_t state;
+    wifi_manager_internal_get_state(&state);
+    return state.initialized;
 }
 
 
-void wifi_manager_internal_set_running(
-    bool running
-)
+esp_err_t wifi_manager_internal_begin_transition(void)
 {
-    s_running =
-        running;
+    esp_err_t result = ESP_OK;
+
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_state.transition_active) {
+        result = ESP_ERR_INVALID_STATE;
+    }
+    else {
+        s_state.transition_active = true;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+
+    return result;
 }
 
 
-void wifi_manager_internal_set_setup_mode(
-    bool setup_mode
+void wifi_manager_internal_end_transition(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.transition_active = false;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+void wifi_manager_internal_set_initialized(
+    bool initialized
 )
 {
-    s_setup_mode =
-        setup_mode;
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.initialized = initialized;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+void wifi_manager_internal_commit_state(
+    bool running,
+    bool setup_mode,
+    bool radio_state_uncertain
+)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.running = running;
+    s_state.setup_mode = running && setup_mode;
+    s_state.radio_state_uncertain = radio_state_uncertain;
+    portEXIT_CRITICAL(&s_state_lock);
 }
 
 
 bool wifi_manager_internal_setup_mode(void)
 {
-    return s_setup_mode;
+    wifi_manager_internal_state_t state;
+    wifi_manager_internal_get_state(&state);
+    return state.running && state.setup_mode;
 }
 
 
@@ -66,33 +105,28 @@ void wifi_manager_internal_set_radio_state_uncertain(
     bool uncertain
 )
 {
-    portENTER_CRITICAL(&s_radio_state_uncertain_lock);
-    s_radio_state_uncertain = uncertain;
-    portEXIT_CRITICAL(&s_radio_state_uncertain_lock);
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.radio_state_uncertain = uncertain;
+    portEXIT_CRITICAL(&s_state_lock);
 }
 
 
 bool wifi_manager_internal_radio_state_uncertain(void)
 {
-    bool uncertain;
-    portENTER_CRITICAL(&s_radio_state_uncertain_lock);
-    uncertain = s_radio_state_uncertain;
-    portEXIT_CRITICAL(&s_radio_state_uncertain_lock);
-    return uncertain;
+    wifi_manager_internal_state_t state;
+    wifi_manager_internal_get_state(&state);
+    return state.radio_state_uncertain;
 }
 
 
 esp_err_t wifi_manager_internal_start_setup_mode(void)
 {
-    esp_err_t err =
+    const esp_err_t err =
         wifi_manager_setup_ap_start(
             wifi_manager_platform_ap_netif()
         );
 
     if (err == ESP_OK) {
-        s_setup_mode =
-            true;
-
         ESP_LOGI(
             TAG,
             "Setup mode: local captive portal"
@@ -105,24 +139,47 @@ esp_err_t wifi_manager_internal_start_setup_mode(void)
 
 esp_err_t wifi_manager_init(void)
 {
-    if (s_initialized) {
+    if (wifi_manager_internal_initialized()) {
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(
-        wifi_manager_platform_init(),
-        TAG,
-        "Wi-Fi platform initialization failed"
-    );
+    esp_err_t err =
+        wifi_manager_internal_begin_transition();
+    if (err != ESP_OK) {
+        return err;
+    }
 
-    ESP_RETURN_ON_ERROR(
-        wifi_manager_sta_init(),
-        TAG,
-        "Wi-Fi STA events initialization failed"
-    );
+    if (wifi_manager_internal_initialized()) {
+        wifi_manager_internal_end_transition();
+        return ESP_OK;
+    }
 
-    s_initialized =
-        true;
+    err =
+        wifi_manager_platform_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Wi-Fi platform initialization failed: %s",
+            esp_err_to_name(err)
+        );
+        wifi_manager_internal_end_transition();
+        return err;
+    }
+
+    err =
+        wifi_manager_sta_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Wi-Fi STA events initialization failed: %s",
+            esp_err_to_name(err)
+        );
+        wifi_manager_internal_end_transition();
+        return err;
+    }
+
+    wifi_manager_internal_set_initialized(true);
+    wifi_manager_internal_end_transition();
 
     ESP_LOGI(
         TAG,
@@ -135,39 +192,59 @@ esp_err_t wifi_manager_init(void)
 
 esp_err_t wifi_manager_start(void)
 {
-    if (!s_initialized) {
+    wifi_manager_internal_state_t state;
+    wifi_manager_internal_get_state(&state);
+
+    if (!state.initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (wifi_manager_internal_radio_state_uncertain()) {
+    if (state.radio_state_uncertain) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (s_running) {
+    if (state.running) {
         return ESP_OK;
     }
 
-    bool has_credentials =
-        false;
+    esp_err_t err =
+        wifi_manager_internal_begin_transition();
+    if (err != ESP_OK) {
+        return err;
+    }
 
-    ESP_RETURN_ON_ERROR(
+    wifi_manager_internal_get_state(&state);
+    if (!state.initialized || state.radio_state_uncertain) {
+        wifi_manager_internal_end_transition();
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (state.running) {
+        wifi_manager_internal_end_transition();
+        return ESP_OK;
+    }
+
+    bool has_credentials = false;
+
+    err =
         wifi_manager_credentials_has_saved(
             &has_credentials
-        ),
-        TAG,
-        "Failed to inspect saved Wi-Fi credentials"
-    );
-
-    esp_err_t err;
+        );
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to inspect saved Wi-Fi credentials: %s",
+            esp_err_to_name(err)
+        );
+        wifi_manager_internal_end_transition();
+        return err;
+    }
 
     if (has_credentials) {
-        s_setup_mode =
-            false;
-
         err =
             wifi_manager_sta_start();
 
         if (err != ESP_OK) {
+            wifi_manager_internal_end_transition();
             return err;
         }
 
@@ -175,18 +252,23 @@ esp_err_t wifi_manager_start(void)
             TAG,
             "Normal mode: Wi-Fi STA"
         );
-    } else {
+    }
+    else {
         err =
             wifi_manager_internal_start_setup_mode();
 
         if (err != ESP_OK) {
+            wifi_manager_internal_end_transition();
             return err;
         }
     }
 
-    s_running =
-        true;
-    wifi_manager_internal_set_radio_state_uncertain(false);
+    wifi_manager_internal_commit_state(
+        true,
+        !has_credentials,
+        false
+    );
+    wifi_manager_internal_end_transition();
 
     return ESP_OK;
 }
@@ -194,7 +276,9 @@ esp_err_t wifi_manager_start(void)
 
 bool wifi_manager_is_running(void)
 {
-    return s_running;
+    wifi_manager_internal_state_t state;
+    wifi_manager_internal_get_state(&state);
+    return state.running;
 }
 
 
@@ -206,7 +290,7 @@ bool wifi_manager_is_radio_state_uncertain(void)
 
 bool wifi_manager_is_setup_mode(void)
 {
-    return
-        s_running &&
-        s_setup_mode;
+    wifi_manager_internal_state_t state;
+    wifi_manager_internal_get_state(&state);
+    return state.running && state.setup_mode;
 }
