@@ -62,6 +62,39 @@ static bool fake_storage_is_idle(void *user_context)
 }
 
 
+static void test_startup_gate_blocks_refresh_before_storage_probe(void)
+{
+    web_status_cache_arbitration_t arbitration = {0};
+    fake_storage_state_t storage = {
+        .idle = true,
+        .idle_checks = 0U,
+    };
+
+    assert(web_status_cache_arbitration_init(&arbitration) == ESP_OK);
+
+    web_status_cache_arbitration_set_refresh_enabled(false);
+    assert(!web_status_cache_arbitration_refresh_enabled());
+    assert(!web_status_cache_arbitration_try_reserve_refresh(
+        &arbitration,
+        fake_storage_is_idle,
+        &storage
+    ));
+    assert(storage.idle_checks == 0U);
+
+    web_status_cache_arbitration_set_refresh_enabled(true);
+    assert(web_status_cache_arbitration_refresh_enabled());
+    assert(web_status_cache_arbitration_try_reserve_refresh(
+        &arbitration,
+        fake_storage_is_idle,
+        &storage
+    ));
+    assert(storage.idle_checks == 1U);
+    web_status_cache_arbitration_finish_refresh(&arbitration, true);
+
+    web_status_cache_arbitration_shutdown(&arbitration);
+}
+
+
 static void test_cache_refresh_and_start_reservations_cannot_overlap(void)
 {
     web_status_cache_arbitration_t arbitration = {0};
@@ -70,6 +103,9 @@ static void test_cache_refresh_and_start_reservations_cannot_overlap(void)
         .idle_checks = 0U,
     };
 
+    /* A previous test or production restart must not leak a closed gate into
+     * the ordinary arbitration contract. */
+    web_status_cache_arbitration_set_refresh_enabled(true);
     assert(web_status_cache_arbitration_init(&arbitration) == ESP_OK);
 
     /* A failed/initially unavailable cache must not disable autonomous
@@ -125,6 +161,7 @@ static void test_cache_refresh_and_start_reservations_cannot_overlap(void)
 
 int main(void)
 {
+    test_startup_gate_blocks_refresh_before_storage_probe();
     test_cache_refresh_and_start_reservations_cannot_overlap();
     return 0;
 }
