@@ -21,6 +21,8 @@ typedef struct {
     unsigned char item[FAKE_QUEUE_BYTES];
 } fake_queue_t;
 
+unsigned fake_critical_depth;
+
 static fake_queue_t s_queue;
 static int s_task_token;
 static bool s_fail_queue_create;
@@ -124,7 +126,7 @@ void vTaskDelay(TickType_t ticks)
             return;
         }
 
-        assert(!"unexpected one-tick callback barrier wait");
+        assert(false && "unexpected one-tick callback barrier wait");
     }
 
     assert(ticks == pdMS_TO_TICKS(10));
@@ -260,5 +262,6 @@ int main(void)
     assert(!state->initialized);
 
     object_service_shutdown();
+    assert(fake_critical_depth == 0U);
     return 0;
 }
