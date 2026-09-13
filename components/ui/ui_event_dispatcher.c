@@ -174,7 +174,22 @@ void ui_event_dispatcher_dispatch_pending_locked(void)
                     (long)event.event_value,
                     (long long)(age_us / 1000LL)
                 );
+
+                ui_context_t *context = ui_context();
+                const ui_screen_t screen_before = context->screen;
+                const size_t selected_before = context->selected;
+
                 ui_dispatch_key_locked((keypad_key_t)event.event_value);
+
+                ESP_LOGI(
+                    TAG,
+                    "UI_KEY_RESULT key=%ld screen_before=%d screen_after=%d selected_before=%u selected_after=%u",
+                    (long)event.event_value,
+                    (int)screen_before,
+                    (int)context->screen,
+                    (unsigned)selected_before,
+                    (unsigned)context->selected
+                );
             }
         }
         else {
@@ -269,7 +284,8 @@ void ui_event_dispatcher_stop(void)
             loop,
             APP_EVENT,
             ESP_EVENT_ANY_ID,
-            ui_event_handler
+            ui_event_handler,
+            NULL
         );
     }
 
