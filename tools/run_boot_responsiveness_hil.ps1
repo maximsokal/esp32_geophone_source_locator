@@ -105,10 +105,6 @@ try {
     $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
     $runIdf = Join-Path $PSScriptRoot "run_idf.ps1"
     $checkPorts = Join-Path $PSScriptRoot "check_serial_ports.ps1"
-    $powershell = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
-    if ([string]::IsNullOrWhiteSpace($powershell)) {
-        $powershell = (Get-Command pwsh -ErrorAction Stop).Source
-    }
 
     if ($isReplay) {
         $logFile = (Resolve-Path -LiteralPath $LogPath).Path
@@ -124,6 +120,13 @@ try {
         }
         if (-not (Test-Path -LiteralPath $checkPorts -PathType Leaf)) {
             throw "Missing serial-port helper: $checkPorts"
+        }
+
+        $powershellCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
+        if ($null -ne $powershellCommand) {
+            $powershell = $powershellCommand.Source
+        } else {
+            $powershell = (Get-Command pwsh -ErrorAction Stop).Source
         }
 
         if ($SkipBuild) {
