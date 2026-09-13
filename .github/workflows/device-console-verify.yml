@@ -44,6 +44,16 @@ jobs:
         run: npm run test:xr
       - name: Native host contracts
         run: python tools/run_host_tests.py --keep-going
+      - name: Coverage backlog host contracts
+        run: |
+          set -e
+          for manifest in tests/host/manifest.d/*.json; do
+            suite="$(basename "$manifest" .json)"
+            python tools/run_host_tests.py \
+              --manifest "$manifest" \
+              --build-dir "build/host-tests-$suite" \
+              --keep-going
+          done
       - name: Storage/SPI and boot HIL parser contracts
         run: >-
           python -m pytest -q
