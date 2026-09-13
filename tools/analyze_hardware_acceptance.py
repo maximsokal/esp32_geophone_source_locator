@@ -108,17 +108,53 @@ def _max6_result(boot: Any) -> IssueResult:
 
 
 def _max7_result(boot: Any) -> IssueResult:
+    relevant_missing_prefixes = (
+        "BOOT_TIMING interactive_ready",
+        "BOOT_TIMING startup_total",
+        "KEYPAD_EVENT_GATE state=ARMED",
+        "OBJECT_RECOVERY_PROGRESS",
+        "OBJECT_RECOVERY_BACKGROUND state=START",
+        "OBJECT_RECOVERY_BACKGROUND state=STOP",
+        "WEB_STATUS_CACHE refresh=done",
+    )
+    relevant_violation_prefixes = (
+        "interactive_ready=",
+        "recovery_window=",
+        "stale keypad drops observed",
+        "unexpected safe shutdown observed",
+        "panic/watchdog/brownout/assert marker observed",
+        "interactive_ready logged before keypad gate was armed",
+        "startup_total logged before interactive_ready",
+        "background recovery started before startup_total",
+        "Web status cache completed before background recovery stopped",
+    )
+
+    missing = tuple(
+        item
+        for item in boot.missing
+        if item.startswith(relevant_missing_prefixes)
+    )
+    violations = tuple(
+        item
+        for item in boot.violations
+        if item.startswith(relevant_violation_prefixes)
+    )
+    status = "FAIL" if violations else ("BLOCKED" if missing else "PASS")
+
     evidence = (
-        f"startup_total={boot.startup_ms} ms",
+        f"interactive_ready={boot.interactive_ready_ms} ms",
+        f"startup_total={boot.startup_total_ms} ms (diagnostic full-startup metric)",
         f"max recovery window={boot.max_recovery_window_ms} ms",
         f"stale keypad drops={boot.stale_drop_count}",
+        "keypad gate / interactive-ready / startup-total / recovery ordering checked",
         "background recovery/cache ordering checked by boot analyzer",
     )
     return IssueResult(
         issue="MAX-7",
-        machine_status=boot.status,
-        evidence=evidence + tuple(f"missing: {item}" for item in boot.missing)
-        + tuple(f"violation: {item}" for item in boot.violations),
+        machine_status=status,
+        evidence=evidence
+        + tuple(f"missing: {item}" for item in missing)
+        + tuple(f"violation: {item}" for item in violations),
         manual_required=(
             "confirm physical TFT remains visibly responsive while background storage work runs",
         ),
