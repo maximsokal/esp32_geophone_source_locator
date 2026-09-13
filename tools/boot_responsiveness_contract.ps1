@@ -25,12 +25,22 @@ function Get-MaxUInt64Value {
 function Get-BootResponsivenessTelemetry {
     param([string]$Content)
 
-    $startup = @()
+    $interactive = @()
+    foreach ($match in [regex]::Matches(
+        $Content,
+        '(?im)BOOT_TIMING:\s*interactive_ready=(?<ms>\d+)\s*ms'
+    )) {
+        $interactive += [pscustomobject]@{
+            ElapsedMs = [uint64]$match.Groups['ms'].Value
+        }
+    }
+
+    $startupTotal = @()
     foreach ($match in [regex]::Matches(
         $Content,
         '(?im)BOOT_TIMING:\s*startup_total=(?<ms>\d+)\s*ms'
     )) {
-        $startup += [pscustomobject]@{
+        $startupTotal += [pscustomobject]@{
             ElapsedMs = [uint64]$match.Groups['ms'].Value
         }
     }
@@ -84,6 +94,8 @@ function Get-BootResponsivenessTelemetry {
         }
     }
 
+    $gateArmedPosition = $Content.IndexOf('KEYPAD_EVENT_GATE state=ARMED', [StringComparison]::OrdinalIgnoreCase)
+    $interactivePosition = $Content.IndexOf('BOOT_TIMING: interactive_ready=', [StringComparison]::OrdinalIgnoreCase)
     $startupPosition = $Content.IndexOf('BOOT_TIMING: startup_total=', [StringComparison]::OrdinalIgnoreCase)
     $recoveryStartPosition = $Content.IndexOf('OBJECT_RECOVERY_BACKGROUND state=START', [StringComparison]::OrdinalIgnoreCase)
     $recoveryStopPosition = $Content.IndexOf('OBJECT_RECOVERY_BACKGROUND state=STOP', [StringComparison]::OrdinalIgnoreCase)
@@ -91,11 +103,17 @@ function Get-BootResponsivenessTelemetry {
     $failureLinePattern = '(?im)^[^\r\n]*(?:Guru Meditation Error|panic''ed|Task watchdog got triggered|Brownout detector was triggered|assert failed)[^\r\n]*$'
 
     return [pscustomobject]@{
-        Startup = $startup
+        # Startup remains the backward-compatible property consumed by the
+        # runner, but now means the actual local-interaction readiness metric.
+        Startup = $interactive
+        InteractiveReady = $interactive
+        StartupTotal = $startupTotal
         Recovery = $recovery
         Dispatch = $dispatch
         Stale = $stale
         Priorities = $priorities
+        GateArmedPosition = $gateArmedPosition
+        InteractivePosition = $interactivePosition
         StartupPosition = $startupPosition
         RecoveryStartPosition = $recoveryStartPosition
         RecoveryStopPosition = $recoveryStopPosition
@@ -109,6 +127,8 @@ function Get-BootResponsivenessTelemetry {
 function Test-BootResponsivenessTelemetry {
     param(
         [string]$Content,
+        # Backward-compatible parameter name. This limit now applies to
+        # BOOT_TIMING interactive_ready, not full startup_total.
         [uint64]$MaxStartupMs = 5000,
         [uint64]$MaxRecoveryWindowMs = 250,
         [int]$MinimumRecoverySamples = 1,
@@ -117,7 +137,8 @@ function Test-BootResponsivenessTelemetry {
     )
 
     $telemetry = Get-BootResponsivenessTelemetry $Content
-    $startup = @($telemetry.Startup)
+    $interactive = @($telemetry.InteractiveReady)
+    $startupTotal = @($telemetry.StartupTotal)
     $recovery = @($telemetry.Recovery)
     $dispatch = @($telemetry.Dispatch)
     $stale = @($telemetry.Stale)
@@ -126,8 +147,14 @@ function Test-BootResponsivenessTelemetry {
     $missing = @()
     $violations = @()
 
-    if ($startup.Count -lt 1) {
+    if ($interactive.Count -lt 1) {
+        $missing += 'BOOT_TIMING interactive_ready'
+    }
+    if ($startupTotal.Count -lt 1) {
         $missing += 'BOOT_TIMING startup_total'
+    }
+    if ($telemetry.GateArmedPosition -lt 0) {
+        $missing += 'KEYPAD_EVENT_GATE state=ARMED'
     }
     if ($recovery.Count -lt $MinimumRecoverySamples) {
         $missing += "OBJECT_RECOVERY_PROGRESS ($($recovery.Count)/$MinimumRecoverySamples)"
@@ -160,12 +187,20 @@ function Test-BootResponsivenessTelemetry {
         $violations += "keypad unexpected key codes=$($unexpectedKeyCodes -join ',')"
     }
 
-    $maxStartup = Get-MaxUInt64Value $startup 'ElapsedMs'
+    $maxInteractive = Get-MaxUInt64Value $interactive 'ElapsedMs'
+    $maxStartupTotal = Get-MaxUInt64Value $startupTotal 'ElapsedMs'
     $maxRecovery = Get-MaxUInt64Value $recovery 'ElapsedMs'
     $maxDispatchAge = Get-MaxUInt64Value $dispatch 'AgeMs'
 
-    if ($null -ne $maxStartup -and $maxStartup -gt $MaxStartupMs) {
-        $violations += "startup_total=$($maxStartup)ms exceeds limit=$($MaxStartupMs)ms"
+    if ($null -ne $maxInteractive -and $maxInteractive -gt $MaxStartupMs) {
+        $violations += "interactive_ready=$($maxInteractive)ms exceeds limit=$($MaxStartupMs)ms"
+    }
+    if (
+        $null -ne $maxInteractive -and
+        $null -ne $maxStartupTotal -and
+        $maxInteractive -gt $maxStartupTotal
+    ) {
+        $violations += "interactive_ready=$($maxInteractive)ms occurs after startup_total=$($maxStartupTotal)ms"
     }
     if ($null -ne $maxRecovery -and $maxRecovery -gt $MaxRecoveryWindowMs) {
         $violations += "recovery_window=$($maxRecovery)ms exceeds limit=$($MaxRecoveryWindowMs)ms"
@@ -180,6 +215,20 @@ function Test-BootResponsivenessTelemetry {
         $violations += "panic/watchdog/brownout/assert marker observed count=$($telemetry.PanicCount)"
     }
 
+    if (
+        $telemetry.GateArmedPosition -ge 0 -and
+        $telemetry.InteractivePosition -ge 0 -and
+        $telemetry.InteractivePosition -lt $telemetry.GateArmedPosition
+    ) {
+        $violations += 'interactive_ready logged before keypad gate was armed'
+    }
+    if (
+        $telemetry.InteractivePosition -ge 0 -and
+        $telemetry.StartupPosition -ge 0 -and
+        $telemetry.StartupPosition -lt $telemetry.InteractivePosition
+    ) {
+        $violations += 'startup_total logged before interactive_ready'
+    }
     if (
         $telemetry.StartupPosition -ge 0 -and
         $telemetry.RecoveryStartPosition -ge 0 -and
@@ -214,7 +263,13 @@ function Test-BootResponsivenessTelemetry {
     return [pscustomobject]@{
         Missing = $missing
         Violations = $violations
-        StartupCount = $startup.Count
+        # Backward-compatible aliases used by the existing runner.
+        StartupCount = $interactive.Count
+        MaxStartupMs = $maxInteractive
+        InteractiveReadyCount = $interactive.Count
+        StartupTotalCount = $startupTotal.Count
+        MaxInteractiveReadyMs = $maxInteractive
+        MaxStartupTotalMs = $maxStartupTotal
         RecoveryCount = $recovery.Count
         KeypadDispatchCount = $dispatch.Count
         KeypadDistinctKeyCount = $seenKeyCodes.Count
@@ -225,7 +280,6 @@ function Test-BootResponsivenessTelemetry {
         SafeShutdownCount = $telemetry.SafeShutdownCount
         PanicCount = $telemetry.PanicCount
         RemovedObjectCount = $removedCount
-        MaxStartupMs = $maxStartup
         MaxRecoveryWindowMs = $maxRecovery
         MaxKeypadDispatchAgeMs = $maxDispatchAge
         InheritedObserved = $inheritedObserved
