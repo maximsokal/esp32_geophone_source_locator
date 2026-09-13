@@ -25,12 +25,20 @@ esp_err_t object_service_internal_submit(
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (state->busy) {
+    bool expected =
+        false;
+
+    if (
+        !atomic_compare_exchange_strong_explicit(
+            &state->busy,
+            &expected,
+            true,
+            memory_order_acq_rel,
+            memory_order_acquire
+        )
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    state->busy =
-        true;
 
     if (
         xQueueSend(
@@ -39,8 +47,11 @@ esp_err_t object_service_internal_submit(
             0
         ) != pdTRUE
     ) {
-        state->busy =
-            false;
+        atomic_store_explicit(
+            &state->busy,
+            false,
+            memory_order_release
+        );
 
         return ESP_ERR_TIMEOUT;
     }
