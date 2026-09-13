@@ -1,7 +1,7 @@
 """Replay contracts for the boot/responsiveness HIL runner.
 
 Saved logs can prove parser/threshold behavior, but never physical keypad
-activity, current-board timing, or passive COM6 wiring.  Therefore a valid
+activity, current-board timing, or passive COM6 wiring. Therefore a valid
 replay must report telemetry PASS while the physical HIL result stays BLOCKED.
 """
 
@@ -25,7 +25,8 @@ def powershell_command() -> str:
 
 def make_log(
     *,
-    startup_ms: int = 3200,
+    interactive_ms: int = 2800,
+    startup_total_ms: int = 3200,
     recovery_ms: tuple[int, ...] = (140, 145),
     dispatch_ages: tuple[int, ...] = (15, 20, 25, 18, 22),
     dispatch_keys: tuple[int, ...] = (1, 2, 3, 4, 5),
@@ -36,15 +37,21 @@ def make_log(
     priority_base: int = 1,
     priority_inherited: int = 1,
     include_priority: bool = True,
+    include_interactive: bool = True,
     cache_before_recovery_stop: bool = False,
 ) -> str:
     if len(dispatch_keys) != len(dispatch_ages):
         raise ValueError("dispatch_keys and dispatch_ages must have the same length")
 
-    lines = [
-        f"I APP: BOOT_TIMING: startup_total={startup_ms} ms",
-        "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START core=0 priority=1",
-    ]
+    lines = ["I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED"]
+    if include_interactive:
+        lines.append(f"I APP: BOOT_TIMING: interactive_ready={interactive_ms} ms")
+    lines.extend(
+        [
+            f"I APP: BOOT_TIMING: startup_total={startup_total_ms} ms",
+            "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START core=0 priority=1",
+        ]
+    )
 
     total = len(recovery_ms)
     for index, elapsed in enumerate(recovery_ms, 1):
@@ -114,7 +121,9 @@ def test_valid_replay_passes_telemetry_but_never_claims_physical_hil(tmp_path: P
 
     assert result.returncode == 1
     assert "Interactive startup latency" in result.stdout
-    assert "startup_total=3200ms limit=5000ms" in result.stdout
+    # MaxStartupMs remains a backward-compatible runner property but now
+    # represents BOOT_TIMING interactive_ready.
+    assert "startup_total=2800ms limit=5000ms" in result.stdout
     assert "samples=2 max=145ms limit=250ms" in result.stdout
     assert "All five keypad keys reach LVGL" in result.stdout
     assert "dispatches=5/5 keys_seen=1,2,3,4,5 missing=none" in result.stdout
@@ -138,9 +147,12 @@ def test_replay_with_repeated_single_key_is_blocked_not_false_pass(tmp_path: Pat
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
 
 
-def test_replay_rejects_slow_startup_and_recovery_window(tmp_path: Path):
+def test_replay_rejects_slow_interactive_ready_and_recovery_window(tmp_path: Path):
     path = tmp_path / "boot-slow.log"
-    path.write_text(make_log(startup_ms=5001, recovery_ms=(200, 251)), encoding="utf-8")
+    path.write_text(
+        make_log(interactive_ms=5001, startup_total_ms=6500, recovery_ms=(200, 251)),
+        encoding="utf-8",
+    )
 
     result = run_replay(path)
 
@@ -149,6 +161,31 @@ def test_replay_rejects_slow_startup_and_recovery_window(tmp_path: Path):
     assert "max=251ms limit=250ms" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: FAIL" in result.stdout
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_replay_allows_slow_full_startup_after_fast_interactive_ready(tmp_path: Path):
+    path = tmp_path / "boot-slow-total.log"
+    path.write_text(
+        make_log(interactive_ms=2800, startup_total_ms=8000),
+        encoding="utf-8",
+    )
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "startup_total=2800ms limit=5000ms" in result.stdout
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: PASS" in result.stdout
+
+
+def test_replay_without_interactive_ready_is_blocked(tmp_path: Path):
+    path = tmp_path / "boot-old-log.log"
+    path.write_text(make_log(include_interactive=False), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: BLOCKED" in result.stdout
+    assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
 
 
 def test_replay_rejects_stale_keypad_and_spontaneous_shutdown(tmp_path: Path):
