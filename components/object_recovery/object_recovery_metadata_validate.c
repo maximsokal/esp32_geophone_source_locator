@@ -5,6 +5,10 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 #include "cJSON.h"
 
 #include "esp_log.h"
@@ -43,6 +47,30 @@ static void object_recovery_log_io(
 }
 
 
+static int object_recovery_open_file_stat(
+    FILE *file,
+    const char *path,
+    struct stat *info
+)
+{
+    if (file == NULL || path == NULL || info == NULL) {
+        return -1;
+    }
+
+#ifdef _WIN32
+    /* Keep the native MSVC host-contract build portable. Device firmware and
+     * Linux CI take the descriptor-based path below; Windows timing is not a
+     * physical-SD performance signal. */
+    return stat(path, info);
+#else
+    const int descriptor = fileno(file);
+    return descriptor >= 0
+        ? fstat(descriptor, info)
+        : -1;
+#endif
+}
+
+
 bool object_recovery_fs_metadata_valid(
     const char *path,
     const char *expected_id
@@ -55,37 +83,14 @@ bool object_recovery_fs_metadata_valid(
         return false;
     }
 
-    struct stat info;
-
+    /*
+     * Open first, then inspect metadata through the already-open descriptor.
+     * On SDSPI/FATFS a pathname lookup is expensive; the old stat(path) +
+     * fopen(path) pair paid for two directory walks before reading a tiny JSON
+     * file. fstat(fileno(file)) preserves type/size validation while avoiding
+     * that second path lookup on the ESP32.
+     */
     int64_t started_us =
-        esp_timer_get_time();
-
-    const int stat_result =
-        stat(
-            path,
-            &info
-        );
-
-    object_recovery_log_io(
-        "metadata-stat",
-        path,
-        stat_result,
-        started_us
-    );
-
-    if (
-        stat_result != 0 ||
-        !S_ISREG(
-            info.st_mode
-        ) ||
-        info.st_size <= 0 ||
-        info.st_size >
-            OBJECT_RECOVERY_METADATA_MAX_SIZE
-    ) {
-        return false;
-    }
-
-    started_us =
         esp_timer_get_time();
 
     FILE *file =
@@ -102,6 +107,51 @@ bool object_recovery_fs_metadata_valid(
     );
 
     if (file == NULL) {
+        return false;
+    }
+
+    struct stat info;
+    started_us =
+        esp_timer_get_time();
+
+    const int stat_result =
+        object_recovery_open_file_stat(
+            file,
+            path,
+            &info
+        );
+
+    object_recovery_log_io(
+        "metadata-fstat",
+        path,
+        stat_result,
+        started_us
+    );
+
+    if (
+        stat_result != 0 ||
+        !S_ISREG(
+            info.st_mode
+        ) ||
+        info.st_size <= 0 ||
+        info.st_size >
+            OBJECT_RECOVERY_METADATA_MAX_SIZE
+    ) {
+        started_us =
+            esp_timer_get_time();
+
+        const int close_result =
+            fclose(
+                file
+            );
+
+        object_recovery_log_io(
+            "metadata-fclose-after-stat-error",
+            path,
+            close_result,
+            started_us
+        );
+
         return false;
     }
 
