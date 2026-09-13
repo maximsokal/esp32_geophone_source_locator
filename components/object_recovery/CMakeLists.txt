@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "object_recovery.c"
+        "object_recovery_worker.c"
         "object_recovery_scan.c"
         "object_recovery_fs.c"
         "object_recovery_metadata_validate.c"
@@ -13,9 +14,12 @@ idf_component_register(
         "."
 
     REQUIRES
+        app_config
         object_format
         storage_manager
+        freertos
         json
         esp_timer
+        heap
         log
 )
