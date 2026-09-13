@@ -264,6 +264,15 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *u
 #include "../../components/web_server/web_json_writer.c"
 #include "../../components/seismic_recorder/seismic_recorder_fs.c"
 
+/* The hybrid reducer is part of the same recorder/Web boundary contract. Keep
+ * it in this translation unit so the host manifest stays a single integration
+ * target while production CMake still compiles these files independently. */
+#include "../../components/seismic_recorder/seismic_recorder_lod.c"
+#include "../../components/seismic_recorder/seismic_recorder_lod_reader.c"
+#define main seismic_recorder_lod_reader_contract_main
+#include "../../components/seismic_recorder/tests/seismic_recorder_lod_reader_test.c"
+#undef main
+
 static void push_pipeline_frames(size_t count)
 {
     for (size_t index = 0; index < count; ++index) {
@@ -373,8 +382,8 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
 
 int main(void)
 {
+    assert(seismic_recorder_lod_reader_contract_main() == 0);
     test_recorder_binary_and_web_json_share_the_same_frames();
     puts("seismic recorder/web pipeline contract tests passed");
     return 0;
 }
-
