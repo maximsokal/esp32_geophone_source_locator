@@ -45,6 +45,10 @@ typedef enum
     APP_EVENT_STATUS_CLEAR_NON_STICKY,
     APP_EVENT_POWER_SHUTDOWN_REQUESTED,
 
+    /* Background archive maintenance is UI-visible but non-blocking. */
+    APP_EVENT_STORAGE_RECOVERY_STARTED,
+    APP_EVENT_STORAGE_RECOVERY_FINISHED,
+
 } app_event_type_t;
 
 
