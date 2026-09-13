@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - agent/boot-responsiveness-hil
   workflow_dispatch:
 
 permissions:
@@ -43,8 +44,11 @@ jobs:
         run: npm run test:xr
       - name: Native host contracts
         run: python tools/run_host_tests.py --keep-going
-      - name: Storage/SPI HIL parser contracts
-        run: python -m pytest -q tests/python/test_storage_spi_hil_runner.py
+      - name: Storage/SPI and boot HIL parser contracts
+        run: >-
+          python -m pytest -q
+          tests/python/test_storage_spi_hil_runner.py
+          tests/python/test_boot_responsiveness_hil_runner.py
       - name: Startup, storage, and runtime source contracts
         run: >-
           python -m pytest -q
