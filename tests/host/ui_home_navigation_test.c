@@ -28,6 +28,11 @@ void ui_set_notice_locked(const char *text)
 }
 
 
+void ui_refresh_header_locked(void)
+{
+}
+
+
 void ui_render_home_locked(void)
 {
     ++s_home_renders;
@@ -193,6 +198,20 @@ static void test_left_from_system_returns_home(void)
 }
 
 
+static void test_dispatch_uses_current_screen_driver(void)
+{
+    reset_state();
+
+    ui_screen_open_locked(UI_SCREEN_HOME);
+    ui_dispatch_key_locked(KEYPAD_KEY_DOWN);
+    assert(s_context.selected == 1U);
+
+    ui_dispatch_key_locked(KEYPAD_KEY_OK);
+    assert(s_context.screen == UI_SCREEN_MEASUREMENTS);
+    assert(s_measurement_renders == 1U);
+}
+
+
 static void test_invalid_screen_is_noop(void)
 {
     reset_state();
@@ -210,6 +229,7 @@ int main(void)
     test_home_up_down_wrap_and_render();
     test_right_and_ok_open_selected_screen();
     test_left_from_system_returns_home();
+    test_dispatch_uses_current_screen_driver();
     test_invalid_screen_is_noop();
 
     puts("ui_home_navigation_test: PASS");
