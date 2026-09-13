@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "esp_err.h"
 #include "lvgl.h"
@@ -67,7 +68,7 @@ typedef struct
 typedef struct
 {
     bool port_ready;
-    bool runtime_ready;
+    atomic_bool runtime_ready;
 
     lv_display_t *display;
     lv_obj_t *root;
