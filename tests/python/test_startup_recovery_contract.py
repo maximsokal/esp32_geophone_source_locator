@@ -26,6 +26,15 @@ WEB_PREPARE = (
 WEB_ARBITRATION = (
     REPO_ROOT / "components" / "web_server" / "web_status_cache_arbitration.c"
 ).read_text(encoding="utf-8")
+APP_EVENTS = (
+    REPO_ROOT / "components" / "app_events" / "include" / "app_events.h"
+).read_text(encoding="utf-8")
+UI_NAVIGATION = (
+    REPO_ROOT / "components" / "ui" / "ui_navigation.c"
+).read_text(encoding="utf-8")
+UI_HOME = (
+    REPO_ROOT / "components" / "ui" / "ui_home.c"
+).read_text(encoding="utf-8")
 
 
 def position(source: str, needle: str) -> int:
@@ -79,6 +88,52 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
     ]
     run_positions = [pattern_position(run, pattern) for pattern in run_patterns]
     assert run_positions == sorted(run_positions)
+
+
+def test_background_recovery_status_is_visible_without_reentering_boot_ui():
+    assert "APP_EVENT_STORAGE_RECOVERY_STARTED" in APP_EVENTS
+    assert "APP_EVENT_STORAGE_RECOVERY_FINISHED" in APP_EVENTS
+
+    run = function_section(STARTUP, "void app_startup_run(void)")
+    startup_total = pattern_position(
+        run,
+        r'app_startup_log_elapsed\(\s*"startup_total"',
+    )
+    status_started = position(
+        run,
+        "APP_EVENT_STORAGE_RECOVERY_STARTED",
+    )
+    worker_start = position(
+        run,
+        "object_recovery_start_background_with_callback(",
+    )
+    assert startup_total < status_started < worker_start
+
+    callback = function_section(
+        STARTUP,
+        "static void app_startup_background_recovery_complete(",
+        "static void app_startup_initialize_core(void)",
+    )
+    status_finished = position(
+        callback,
+        "APP_EVENT_STORAGE_RECOVERY_FINISHED",
+    )
+    cache_enable = position(
+        callback,
+        "web_server_enable_status_cache_refresh()",
+    )
+    assert status_finished < cache_enable
+
+    assert "case APP_EVENT_STORAGE_RECOVERY_STARTED:" in UI_NAVIGATION
+    assert "context->storage_recovery_active = true;" in UI_NAVIGATION
+    assert "context->storage_recovery_failed = false;" in UI_NAVIGATION
+    assert "case APP_EVENT_STORAGE_RECOVERY_FINISHED:" in UI_NAVIGATION
+    assert "context->storage_recovery_active = false;" in UI_NAVIGATION
+    assert "context->storage_recovery_failed = event_value != ESP_OK;" in UI_NAVIGATION
+
+    assert '"CHECKING STORAGE..."' in UI_HOME
+    assert '"STORAGE CHECK INCOMPLETE"' in UI_HOME
+    assert '"UP/DOWN NAV   OK/RIGHT OPEN"' in UI_HOME
 
 
 def test_web_archive_cache_waits_for_background_recovery_completion():
