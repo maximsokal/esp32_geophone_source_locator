@@ -9,6 +9,8 @@
 #include <direct.h>
 #define mkdir(path, mode) _mkdir(path)
 #define rmdir _rmdir
+#else
+#include <unistd.h>
 #endif
 
 #include "object_store_internal.h"
