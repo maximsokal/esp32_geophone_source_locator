@@ -34,7 +34,12 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
 {
     (void)timer;
 
-    if (!s_context.runtime_ready) {
+    if (
+        !atomic_load_explicit(
+            &s_context.runtime_ready,
+            memory_order_acquire
+        )
+    ) {
         return;
     }
 
@@ -103,8 +108,13 @@ static void ui_delete_refresh_timer(void)
 
 static void ui_runtime_init_rollback(void)
 {
-    s_context.runtime_ready = false;
+    ui_event_dispatcher_stop();
     ui_unregister_service_callbacks();
+    atomic_store_explicit(
+        &s_context.runtime_ready,
+        false,
+        memory_order_release
+    );
     ui_delete_refresh_timer();
 }
 
@@ -112,6 +122,10 @@ static void ui_runtime_init_rollback(void)
 esp_err_t ui_boot_init(void)
 {
     memset(&s_context, 0, sizeof(s_context));
+    atomic_init(
+        &s_context.runtime_ready,
+        false
+    );
 
     esp_err_t err = ui_lvgl_init();
     if (err != ESP_OK) {
@@ -173,7 +187,12 @@ esp_err_t ui_init(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (s_context.runtime_ready) {
+    if (
+        atomic_load_explicit(
+            &s_context.runtime_ready,
+            memory_order_acquire
+        )
+    ) {
         return ESP_OK;
     }
 
@@ -194,7 +213,6 @@ esp_err_t ui_init(void)
         return err;
     }
 
-    s_context.runtime_ready = true;
     s_context.screen = UI_SCREEN_HOME;
     s_context.selected = 0;
     s_context.notice[0] = '\0';
@@ -231,6 +249,17 @@ esp_err_t ui_init(void)
         return err;
     }
 
+    /*
+     * This release store is the interactive-runtime publication boundary.
+     * Service callbacks, the LVGL timer and keypad ingress may only mutate UI
+     * after all callbacks, timer state and APP_EVENT ingress are installed.
+     */
+    atomic_store_explicit(
+        &s_context.runtime_ready,
+        true,
+        memory_order_release
+    );
+
     ESP_LOGI(TAG, "Interactive LVGL UI ready");
     return ESP_OK;
 }
@@ -242,10 +271,20 @@ void ui_shutdown(void)
         return;
     }
 
+    /*
+     * Stop new APP_EVENT ingress first. Then close service callback slots and
+     * wait for callbacks that already snapped them. Only after those barriers
+     * complete is it safe to publish runtime_ready=false and tear LVGL down.
+     */
     ui_event_dispatcher_stop();
-
-    s_context.runtime_ready = false;
     ui_unregister_service_callbacks();
+
+    atomic_store_explicit(
+        &s_context.runtime_ready,
+        false,
+        memory_order_release
+    );
+
     ui_delete_refresh_timer();
 
     if (lvgl_port_lock(500)) {
@@ -273,7 +312,12 @@ void ui_handle_keypad_event(
 {
     (void)user_context;
 
-    if (!s_context.runtime_ready) {
+    if (
+        !atomic_load_explicit(
+            &s_context.runtime_ready,
+            memory_order_acquire
+        )
+    ) {
         return;
     }
 
