@@ -92,6 +92,25 @@ def test_slow_interactive_ready_and_recovery_are_failures():
     assert any("recovery_window=251ms" in item for item in result.violations)
 
 
+def test_interactive_ready_threshold_boundary_is_inclusive():
+    below = healthy_log().replace("interactive_ready=2800", "interactive_ready=4999")
+    below = below.replace("startup_total=3200", "startup_total=5500")
+    exact = healthy_log().replace("interactive_ready=2800", "interactive_ready=5000")
+    exact = exact.replace("startup_total=3200", "startup_total=5500")
+    above = healthy_log().replace("interactive_ready=2800", "interactive_ready=5001")
+    above = above.replace("startup_total=3200", "startup_total=5500")
+
+    assert analyzer.analyze(below).status == "PASS"
+    assert analyzer.analyze(exact).status == "PASS"
+
+    above_result = analyzer.analyze(above)
+    assert above_result.status == "FAIL"
+    assert any(
+        "interactive_ready=5001ms exceeds limit=5000ms" in item
+        for item in above_result.violations
+    )
+
+
 def test_slow_full_startup_does_not_fail_interactive_budget():
     content = healthy_log().replace("startup_total=3200", "startup_total=8000")
 
