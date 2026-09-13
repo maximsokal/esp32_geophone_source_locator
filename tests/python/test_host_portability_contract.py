@@ -46,6 +46,7 @@ def test_insights_host_suite_compiles_production_atomics_with_portable_weak_hook
     )
 
     assert '"components/insights_bridge/insights_bridge.c"' in manifest
+    assert '"CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS=0"' in manifest
     assert "#include <stdatomic.h>" in source
     assert "atomic_bool s_initialized" in source
     assert "atomic_bool s_retry_pending" in source
