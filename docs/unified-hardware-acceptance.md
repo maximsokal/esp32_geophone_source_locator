@@ -47,13 +47,19 @@ Still manual/physical:
 
 ### MAX-7 — startup/storage responsiveness
 
-Uses the full boot analyzer, including:
-- `startup_total <= 5000 ms`;
+MAX-7 is intentionally evaluated independently of whether all five MAX-6 keys were exercised. Its machine evidence requires:
+
+- `KEYPAD_EVENT_GATE state=ARMED`;
+- `BOOT_TIMING: interactive_ready=...` present and `<= 5000 ms`;
+- `BOOT_TIMING: startup_total=...` present as the later full-service diagnostic metric;
+- ordering `gate ARMED -> interactive_ready -> startup_total -> background recovery START`;
 - per-object recovery window `<= 250 ms`;
-- recovery starts after interactive startup;
 - Web cache completes after recovery stops;
-- complete keypad chain/no stale navigation;
-- no panic/watchdog/brownout/assert.
+- no stale navigation, spontaneous shutdown, panic/watchdog/brownout/assert marker.
+
+`startup_total` itself is no longer the <=5 s UX threshold. A build may take longer to finish optional network/acquisition/service startup while the local TFT/keypad is already interactive. Old logs without `interactive_ready` are therefore `BLOCKED` for MAX-7 instead of being accepted from `startup_total` alone.
+
+A missing MAX-6 key or `UI_KEY_RESULT` does not automatically block MAX-7 if all startup/recovery evidence is complete; the unified report keeps the issue scopes separate.
 
 Still manual/physical:
 - visually confirm TFT remains responsive while background storage work runs.
@@ -83,7 +89,7 @@ If closing by “the historical boost no longer reproduces”, document the stre
 `HARDWARE_ACCEPTANCE_MACHINE_RESULT` is only the aggregate **machine-observable** result:
 
 - `PASS` — every included machine check passed;
-- `BLOCKED` — evidence is incomplete (for example no measured MAX-10 baseline, missing key, or insufficient priority samples);
+- `BLOCKED` — evidence is incomplete (for example no measured MAX-10 baseline, missing MAX-6 key, missing `interactive_ready`, or insufficient priority samples);
 - `FAIL` — captured evidence proves at least one violation.
 
 The report prints `MANUAL_REQUIRED:` lines explicitly. A machine PASS must not be used to erase those physical/manual acceptance requirements.
