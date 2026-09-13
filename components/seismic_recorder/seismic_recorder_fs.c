@@ -529,9 +529,16 @@ esp_err_t seismic_recorder_fs_write_frames(
         storage_manager_operation_end();
         ++storage_windows;
 
+        const int64_t storage_window_us =
+            esp_timer_get_time() - window_started_us;
+        if (storage_window_us > max_storage_window_us) {
+            max_storage_window_us = storage_window_us;
+        }
+
         /* Feed only frames that samples.bin actually accepted. The optional
          * LOD write owns a separate bounded storage window, so LVGL can run
-         * between the raw write and index maintenance. */
+         * between the raw write and index maintenance. Keep the raw-window
+         * timing above independent from this optional index work. */
         if (
             chunk_written > 0U &&
             seismic_recorder_lod_store_is_active()
@@ -547,12 +554,6 @@ esp_err_t seismic_recorder_fs_write_frames(
                     esp_err_to_name(lod_err)
                 );
             }
-        }
-
-        const int64_t storage_window_us =
-            esp_timer_get_time() - window_started_us;
-        if (storage_window_us > max_storage_window_us) {
-            max_storage_window_us = storage_window_us;
         }
 
         if (chunk_written != chunk || ferror(samples_file) != 0) {
