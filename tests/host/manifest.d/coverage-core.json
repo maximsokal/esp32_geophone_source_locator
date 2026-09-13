@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "sensor_bus_lifecycle",
+      "sources": [
+        "components/sensor_bus/sensor_bus.c",
+        "tests/host/sensor_bus_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/sensor_bus",
+        "components/sensor_bus/include"
+      ]
+    },
+    {
+      "name": "status_indicator_state",
+      "sources": [
+        "components/status_indicator/status_indicator.c",
+        "tests/host/status_indicator_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/status_indicator",
+        "components/status_indicator/include"
+      ]
+    },
+    {
+      "name": "device_status_aggregation",
+      "sources": [
+        "components/device_status/device_status.c",
+        "components/device_status/device_status_updates.c",
+        "components/device_status/device_status_pods.c",
+        "tests/host/device_status_aggregation_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/device_status",
+        "components/device_status/include",
+        "components/device_status"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}
