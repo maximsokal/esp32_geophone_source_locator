@@ -164,7 +164,9 @@ static void app_startup_initialize_core(void)
 }
 
 
-static void app_startup_initialize_services(void)
+static void app_startup_initialize_services(
+    uint32_t startup_started_ms
+)
 {
     uint32_t stage_started_ms =
         esp_log_timestamp();
@@ -294,6 +296,24 @@ static void app_startup_initialize_services(void)
         ui_init()
     );
 
+    /*
+     * Local TFT navigation is the interactive boot boundary. Arm keypad
+     * delivery immediately after ui_init() has installed the dispatcher;
+     * network/Web startup is independent of the physical controls and must
+     * not delay them.
+     */
+    ESP_ERROR_CHECK(
+        keypad_start_event_monitor(
+            ui_handle_keypad_event,
+            NULL
+        )
+    );
+
+    app_startup_log_elapsed(
+        "interactive_ready",
+        startup_started_ms
+    );
+
     ESP_ERROR_CHECK(
         web_server_start()
     );
@@ -303,13 +323,6 @@ static void app_startup_initialize_services(void)
     );
 
     runtime_observability_log_snapshot("after-wifi");
-
-    ESP_ERROR_CHECK(
-        keypad_start_event_monitor(
-            ui_handle_keypad_event,
-            NULL
-        )
-    );
 
     app_startup_log_elapsed(
         "runtime_services",
@@ -385,12 +398,14 @@ void app_startup_run(void)
 
     /* web_server_start() creates the asynchronous object/session status cache
      * and historically queued a 32-object FATFS walk here. Close its refresh
-     * gate before service startup so startup_total measures only the
-     * interactive path. Recovery completion will reopen and explicitly queue
-     * the first archive-wide cache refresh. */
+     * gate before service startup so neither interactive_ready nor
+     * startup_total includes an archive-wide cache scan. Recovery completion
+     * will reopen and explicitly queue the first archive-wide cache refresh. */
     web_server_defer_status_cache_refresh();
 
-    app_startup_initialize_services();
+    app_startup_initialize_services(
+        startup_started_ms
+    );
 
     /*
      * GPIO21 must not be able to latch shutdown while storage preparation and
@@ -423,10 +438,11 @@ void app_startup_run(void)
 
     /*
      * Start the expensive archive-wide recovery only after startup_total has
-     * been committed to the log and the UI/keypad are already interactive.
-     * The first Web object/session cache refresh remains gated until this
-     * worker completes, preventing two archive-wide SD scans from alternating
-     * TFT quiesce windows and making keypad events stale.
+     * been committed to the log and the UI/keypad have already been
+     * interactive since interactive_ready. The first Web object/session cache
+     * refresh remains gated until this worker completes, preventing two
+     * archive-wide SD scans from alternating TFT quiesce windows and making
+     * keypad events stale.
      */
     const esp_err_t recovery_status_err =
         app_events_post_best_effort(
