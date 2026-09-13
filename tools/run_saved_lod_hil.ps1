@@ -152,7 +152,7 @@ $checks = [System.Collections.Generic.List[object]]::new()
 $monitor = $null
 $logFile = $null
 $stderrFile = $null
-$evictionRecordingStarted = $false
+$recordingMayBeActive = $false
 $rootUrl = $BaseUrl.TrimEnd("/")
 
 try {
@@ -238,6 +238,7 @@ try {
     if ($start.ok -ne $true) {
         throw "recording_start for the LOD source session was rejected."
     }
+    $recordingMayBeActive = $true
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $status = Wait-RecordingState $rootUrl $true $deadline
@@ -251,7 +252,7 @@ try {
             throw "Serial monitor exited while recording the LOD source session."
         }
         $status = Invoke-JsonRequest ("{0}/api/status" -f $rootUrl)
-        if ([uint64]$status.recording.dropped_frames -ne 0U) {
+        if ([uint64]$status.recording.dropped_frames -ne 0) {
             throw "Recorder reported dropped_frames=$($status.recording.dropped_frames) before reaching the LOD target."
         }
         if ([uint64]$status.recording.samples_written -ge [uint64]$TargetFrames) {
@@ -273,13 +274,14 @@ try {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $status = Wait-RecordingState $rootUrl $false $deadline
+    $recordingMayBeActive = $false
     if ([string]$status.recording.session_id -ne $sourceSessionId) {
         throw "Source session_id changed after stop."
     }
     if ([uint64]$status.recording.samples_written -lt [uint64]$TargetFrames) {
         throw "Stopped source session contains fewer than $TargetFrames persisted frames."
     }
-    if ([uint64]$status.recording.dropped_frames -ne 0U) {
+    if ([uint64]$status.recording.dropped_frames -ne 0) {
         throw "Stopped source session has dropped_frames=$($status.recording.dropped_frames)."
     }
     Add-Check $checks "LOD source finalized" "PASS" ("Session {0} finalized with {1} persisted frames." -f $sourceSessionId, $status.recording.samples_written)
@@ -293,7 +295,7 @@ try {
     if ($evictStart.ok -ne $true) {
         throw "recording_start for the cache-eviction session was rejected."
     }
-    $evictionRecordingStarted = $true
+    $recordingMayBeActive = $true
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $status = Wait-RecordingState $rootUrl $true $deadline
@@ -327,7 +329,7 @@ try {
     if ([int]$saved.sample_rate_hz -ne $ExpectedSampleRateHz) {
         throw "Saved waveform sample_rate_hz=$($saved.sample_rate_hz), expected $ExpectedSampleRateHz."
     }
-    if ([uint64]$saved.start_frame -ne 0U -or [uint64]$saved.frame_count -ne [uint64]$TargetFrames) {
+    if ([uint64]$saved.start_frame -ne 0 -or [uint64]$saved.frame_count -ne [uint64]$TargetFrames) {
         throw "Saved waveform returned start_frame=$($saved.start_frame), frame_count=$($saved.frame_count); expected 0/$TargetFrames."
     }
     if ([int]$saved.count -ne $Points -or @($saved.points).Count -ne $Points) {
@@ -336,9 +338,9 @@ try {
     Add-Check $checks "Saved waveform HTTP" "PASS" ("Read {0} frames as {1} exact min/max buckets while a different recording was active." -f $TargetFrames, $Points)
 
     Stop-RecordingBestEffort $rootUrl
-    $evictionRecordingStarted = $false
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     [void](Wait-RecordingState $rootUrl $false $deadline)
+    $recordingMayBeActive = $false
 
     $deadline = (Get-Date).AddSeconds([math]::Min($TimeoutSeconds, 15))
     if (Wait-LodMarker $logFile $sourceSessionId $TargetFrames $Points $deadline) {
@@ -366,7 +368,7 @@ try {
 } catch {
     Add-Check $checks "Runner execution" "FAIL" $_.Exception.Message
 } finally {
-    if ($evictionRecordingStarted) {
+    if ($recordingMayBeActive) {
         Stop-RecordingBestEffort $rootUrl
     }
     if ($null -ne $monitor -and -not $monitor.HasExited) {
