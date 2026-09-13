@@ -72,6 +72,7 @@ void seismic_recorder_lod_header_init(
     header->sample_rate_hz = sample_rate_hz;
     header->frame_size_bytes = sizeof(seismic_frame_t);
     header->record_size_bytes = sizeof(seismic_recorder_lod_record_t);
+    header->flags = 0U;
 }
 
 
@@ -90,7 +91,27 @@ bool seismic_recorder_lod_header_valid(
         header->sample_rate_hz > 0U &&
         header->frame_size_bytes == sizeof(seismic_frame_t) &&
         header->record_size_bytes == sizeof(seismic_recorder_lod_record_t) &&
-        header->reserved == 0U;
+        (header->flags & ~SEISMIC_RECORDER_LOD_FLAG_COMPLETE) == 0U;
+}
+
+
+void seismic_recorder_lod_header_mark_complete(
+    seismic_recorder_lod_file_header_t *header
+)
+{
+    if (header != NULL) {
+        header->flags |= SEISMIC_RECORDER_LOD_FLAG_COMPLETE;
+    }
+}
+
+
+bool seismic_recorder_lod_header_is_complete(
+    const seismic_recorder_lod_file_header_t *header
+)
+{
+    return
+        header != NULL &&
+        (header->flags & SEISMIC_RECORDER_LOD_FLAG_COMPLETE) != 0U;
 }
 
 
