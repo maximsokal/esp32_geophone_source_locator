@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdatomic.h>
 
 #include "object_service.h"
 
@@ -40,15 +41,26 @@ typedef struct
 
     TaskHandle_t worker_task;
 
+    /*
+     * Event callback slots are shared between the service worker and lifecycle
+     * owners on another core. Keep this spinlock limited to slot snapshot and
+     * in-flight accounting only; callbacks and waits always run outside it.
+     */
+    portMUX_TYPE event_lock;
+
     object_service_event_callback_t event_callback;
 
     void *event_user_context;
+
+    unsigned event_callback_in_flight;
 
     object_service_event_observer_t event_observer;
 
     void *event_observer_context;
 
-    volatile bool busy;
+    unsigned event_observer_in_flight;
+
+    atomic_bool busy;
 
     bool initialized;
 
