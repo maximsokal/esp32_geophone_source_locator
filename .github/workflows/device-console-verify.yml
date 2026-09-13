@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - agent/boot-responsiveness-hil
   workflow_dispatch:
 
 permissions:
