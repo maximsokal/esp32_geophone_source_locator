@@ -37,6 +37,16 @@
       ]
     },
     {
+      "name": "runtime_observability_policy",
+      "sources": [
+        "tests/host/runtime_observability_policy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/runtime_observability",
+        "components/runtime_observability/include"
+      ]
+    },
+    {
       "name": "sd_card_mount",
       "sources": [
         "components/sd_card/sd_card_mount.c",
