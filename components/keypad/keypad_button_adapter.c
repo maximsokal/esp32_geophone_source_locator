@@ -77,6 +77,7 @@ static int64_t s_adc_cache_time_us;
 static bool s_adc_cache_attempt_valid;
 static int64_t s_adc_cache_attempt_time_us;
 static keypad_key_t s_adc_cache_key;
+static keypad_key_t s_trace_key = KEYPAD_KEY_NONE;
 
 
 #if defined(ESP_PLATFORM) && \
@@ -446,7 +447,19 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
         );
 #endif
 
-        s_adc_cache_key = keypad_decode_raw(raw);
+        const keypad_key_t decoded_key = keypad_decode_raw(raw);
+        if (decoded_key != s_trace_key) {
+            ESP_LOGI(
+                TAG,
+                "KEYPAD_RAW_TRANSITION raw=%d from=%s to=%s",
+                raw,
+                keypad_key_name(s_trace_key),
+                keypad_key_name(decoded_key)
+            );
+            s_trace_key = decoded_key;
+        }
+
+        s_adc_cache_key = decoded_key;
         /* Timestamp the completed broker read, not the potentially stale
          * pre-read time. This keeps all five callbacks in this timer cycle on
          * the same sample even when a conversion itself takes time. */
@@ -475,10 +488,20 @@ static void keypad_button_callback(void *button_handle, void *user_data)
 {
     (void)button_handle;
 
+    const keypad_key_t key =
+        (keypad_key_t)(uintptr_t)user_data;
+
+    ESP_LOGI(
+        TAG,
+        "KEYPAD_BUTTON_PRESS key=%s value=%d",
+        keypad_key_name(key),
+        (int)key
+    );
+
     /* No delay, storage, or application lock is allowed in this callback. */
     (void)app_events_post(
         APP_EVENT_KEYPAD,
-        (int32_t)(keypad_key_t)(uintptr_t)user_data
+        (int32_t)key
     );
 }
 
@@ -501,6 +524,8 @@ esp_err_t keypad_button_adapter_init(void)
     }
 
     s_adc_cache_valid = false;
+    s_adc_cache_attempt_valid = false;
+    s_trace_key = KEYPAD_KEY_NONE;
 
 #if defined(ESP_PLATFORM) && \
     defined(CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS) && \
@@ -623,5 +648,6 @@ void keypad_button_adapter_stop(void)
 
     s_adc_cache_valid = false;
     s_adc_cache_attempt_valid = false;
+    s_trace_key = KEYPAD_KEY_NONE;
     s_initialized = false;
 }
