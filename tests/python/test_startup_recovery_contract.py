@@ -97,12 +97,17 @@ def test_web_archive_cache_waits_for_background_recovery_completion():
     assert "web_status_cache_arbitration_set_refresh_enabled(true)" in WEB_PREPARE
     assert "web_status_json_objects_request_refresh()" in WEB_PREPARE
 
-    gate = position(
+    reserve = function_section(
         WEB_ARBITRATION,
+        "bool web_status_cache_arbitration_try_reserve_refresh(",
+        "void web_status_cache_arbitration_finish_refresh(",
+    )
+    gate = position(
+        reserve,
         "if (!web_status_cache_arbitration_refresh_enabled())",
     )
     lock = position(
-        WEB_ARBITRATION,
+        reserve,
         "if (!web_status_cache_arbitration_lock(arbitration))",
     )
     assert gate < lock
@@ -145,10 +150,15 @@ def test_background_worker_is_low_priority_psram_shutdown_aware_and_callback_saf
     assert "s_stop_requested" in WORKER
     assert "vTaskDeleteWithCaps(NULL)" in WORKER
 
-    callback = position(WORKER, "complete_fn(err, complete_context)")
-    task_clear = position(WORKER, "s_task = NULL;")
+    task = function_section(
+        WORKER,
+        "static void object_recovery_background_task(void *argument)",
+        "esp_err_t object_recovery_start_background_with_callback(",
+    )
+    callback = position(task, "complete_fn(err, complete_context)")
+    task_clear = position(task, "s_task = NULL;")
     assert callback < task_clear
-    assert "if (!stopped && complete_fn != NULL)" in WORKER
+    assert "if (!stopped && complete_fn != NULL)" in task
 
 
 def test_shutdown_stops_recovery_before_lvgl_and_storage_teardown():
