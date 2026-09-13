@@ -28,8 +28,46 @@ static const char *TAG =
 static TaskHandle_t s_task =
     NULL;
 
-static volatile bool s_running =
+static portMUX_TYPE s_state_lock =
+    portMUX_INITIALIZER_UNLOCKED;
+
+static bool s_starting =
     false;
+
+static bool s_stop_requested =
+    false;
+
+
+static bool ina3221_monitor_stop_requested(void)
+{
+    bool requested;
+
+    portENTER_CRITICAL(&s_state_lock);
+    requested = s_stop_requested;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    return requested;
+}
+
+
+static void ina3221_monitor_register_current_task(void)
+{
+    const TaskHandle_t task =
+        xTaskGetCurrentTaskHandle();
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_task = task;
+    s_starting = false;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+static void ina3221_monitor_clear_current_task(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_task = NULL;
+    portEXIT_CRITICAL(&s_state_lock);
+}
 
 
 static device_power_source_t ina3221_monitor_device_source(
@@ -192,6 +230,8 @@ static void ina3221_monitor_worker(
 {
     (void)context;
 
+    ina3221_monitor_register_current_task();
+
     ina3221_driver_t driver = { 0 };
     ina3221_power_classifier_t classifier = { 0 };
 
@@ -201,7 +241,7 @@ static void ina3221_monitor_worker(
     bool hardware_available =
         false;
 
-    while (s_running) {
+    while (!ina3221_monitor_stop_requested()) {
         if (!driver.ready) {
             const esp_err_t open_err =
                 ina3221_driver_open(
@@ -335,8 +375,7 @@ static void ina3221_monitor_worker(
         &driver
     );
 
-    s_task =
-        NULL;
+    ina3221_monitor_clear_current_task();
 
     vTaskDelete(
         NULL
@@ -346,12 +385,20 @@ static void ina3221_monitor_worker(
 
 esp_err_t ina3221_monitor_start(void)
 {
-    if (s_task != NULL) {
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_task != NULL || s_starting) {
+        portEXIT_CRITICAL(&s_state_lock);
         return ESP_OK;
     }
+    if (s_stop_requested) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_starting = true;
+    portEXIT_CRITICAL(&s_state_lock);
 
-    s_running =
-        true;
+    TaskHandle_t task =
+        NULL;
 
     const BaseType_t result =
         xTaskCreatePinnedToCore(
@@ -360,16 +407,14 @@ esp_err_t ina3221_monitor_start(void)
             APP_TASK_STACK_INA3221,
             NULL,
             APP_TASK_PRIORITY_INA3221,
-            &s_task,
+            &task,
             APP_TASK_CORE_SERVICES
         );
 
     if (result != pdPASS) {
-        s_task =
-            NULL;
-
-        s_running =
-            false;
+        portENTER_CRITICAL(&s_state_lock);
+        s_starting = false;
+        portEXIT_CRITICAL(&s_state_lock);
 
         return ESP_ERR_NO_MEM;
     }
@@ -386,23 +431,49 @@ esp_err_t ina3221_monitor_start(void)
 
 void ina3221_monitor_stop(void)
 {
-    if (s_task == NULL) {
-        s_running =
-            false;
+    portENTER_CRITICAL(&s_state_lock);
+    s_stop_requested = true;
+    TaskHandle_t task = s_task;
+    bool starting = s_starting;
+    portEXIT_CRITICAL(&s_state_lock);
 
+    if (task == NULL && !starting) {
+        portENTER_CRITICAL(&s_state_lock);
+        s_stop_requested = false;
+        portEXIT_CRITICAL(&s_state_lock);
         return;
     }
 
-    s_running =
-        false;
+    if (task != NULL) {
+        xTaskNotifyGive(
+            task
+        );
+    }
 
-    xTaskNotifyGive(
-        s_task
-    );
+    while (true) {
+        portENTER_CRITICAL(&s_state_lock);
+        task = s_task;
+        starting = s_starting;
+        const bool stopped =
+            task == NULL && !starting;
+        portEXIT_CRITICAL(&s_state_lock);
 
-    while (s_task != NULL) {
+        if (stopped) {
+            break;
+        }
+
+        if (task != NULL) {
+            xTaskNotifyGive(
+                task
+            );
+        }
+
         vTaskDelay(
             pdMS_TO_TICKS(10)
         );
     }
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_stop_requested = false;
+    portEXIT_CRITICAL(&s_state_lock);
 }
