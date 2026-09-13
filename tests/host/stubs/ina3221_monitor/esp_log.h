@@ -1,5 +1,18 @@
 #pragma once
 
-#define ESP_LOGI(tag, fmt, ...) do { (void)(tag); (void)sizeof(fmt); } while (0)
-#define ESP_LOGW(tag, fmt, ...) do { (void)(tag); (void)sizeof(fmt); } while (0)
-#define ESP_LOGE(tag, fmt, ...) do { (void)(tag); (void)sizeof(fmt); } while (0)
+#include <stdio.h>
+
+#define ESP_LOGI(tag, fmt, ...) do { \
+    (void)(tag); \
+    if (0) { (void)printf((fmt), ##__VA_ARGS__); } \
+} while (0)
+
+#define ESP_LOGW(tag, fmt, ...) do { \
+    (void)(tag); \
+    if (0) { (void)printf((fmt), ##__VA_ARGS__); } \
+} while (0)
+
+#define ESP_LOGE(tag, fmt, ...) do { \
+    (void)(tag); \
+    if (0) { (void)printf((fmt), ##__VA_ARGS__); } \
+} while (0)
