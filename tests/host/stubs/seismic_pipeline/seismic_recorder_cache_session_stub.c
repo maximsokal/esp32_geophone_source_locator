@@ -4,6 +4,7 @@
 
 #include "esp_err.h"
 #include "seismic_buffer.h"
+#include "seismic_recorder_lod_store.h"
 
 
 bool seismic_recorder_cache_contains_session_range(
@@ -35,4 +36,53 @@ esp_err_t seismic_recorder_cache_copy_session_range(
     (void)frames;
     (void)frame_count;
     return ESP_ERR_NOT_FOUND;
+}
+
+
+/* The web-pipeline contract exercises reader/routing behavior, not optional
+ * index persistence. Keep the disposable LOD store disabled in this host
+ * boundary so the production filesystem TU can still be linked unchanged. */
+esp_err_t seismic_recorder_lod_store_begin(
+    const char *session_path,
+    uint32_t sample_rate_hz
+)
+{
+    (void)session_path;
+    (void)sample_rate_hz;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+
+esp_err_t seismic_recorder_lod_store_append(
+    const seismic_frame_t *persisted_frames,
+    size_t frame_count
+)
+{
+    (void)persisted_frames;
+    (void)frame_count;
+    return ESP_ERR_INVALID_STATE;
+}
+
+
+esp_err_t seismic_recorder_lod_store_flush(bool sync_to_media)
+{
+    (void)sync_to_media;
+    return ESP_ERR_INVALID_STATE;
+}
+
+
+esp_err_t seismic_recorder_lod_store_close(void)
+{
+    return ESP_OK;
+}
+
+
+void seismic_recorder_lod_store_abort(void)
+{
+}
+
+
+bool seismic_recorder_lod_store_is_active(void)
+{
+    return false;
 }
