@@ -3,6 +3,28 @@
 #include <string.h>
 
 
+static portMUX_TYPE s_refresh_gate_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_refresh_enabled = true;
+
+
+void web_status_cache_arbitration_set_refresh_enabled(bool enabled)
+{
+    portENTER_CRITICAL(&s_refresh_gate_lock);
+    s_refresh_enabled = enabled;
+    portEXIT_CRITICAL(&s_refresh_gate_lock);
+}
+
+
+bool web_status_cache_arbitration_refresh_enabled(void)
+{
+    bool enabled = false;
+    portENTER_CRITICAL(&s_refresh_gate_lock);
+    enabled = s_refresh_enabled;
+    portEXIT_CRITICAL(&s_refresh_gate_lock);
+    return enabled;
+}
+
+
 esp_err_t web_status_cache_arbitration_init(
     web_status_cache_arbitration_t *arbitration
 )
@@ -99,6 +121,10 @@ bool web_status_cache_arbitration_try_reserve_refresh(
     void *user_context
 )
 {
+    if (!web_status_cache_arbitration_refresh_enabled()) {
+        return false;
+    }
+
     if (!web_status_cache_arbitration_lock(arbitration)) {
         return false;
     }
