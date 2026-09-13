@@ -12,6 +12,7 @@
 
 #ifdef ESP_PLATFORM
 #include "app_task_config.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
@@ -37,12 +38,35 @@ typedef struct
 
 
 #ifdef ESP_PLATFORM
+static const char *TAG = "SEISMIC_RECORDER_READER";
+
+
 typedef struct
 {
     UBaseType_t original_priority;
     bool changed;
 
 } seismic_recorder_reader_priority_guard_t;
+
+
+static void seismic_recorder_reader_log_path(
+    const char *source,
+    const char *session_id,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t point_count
+)
+{
+    ESP_LOGI(
+        TAG,
+        "WAVEFORM_READ_PATH source=%s session=%s start=%llu frames=%llu points=%u",
+        source,
+        session_id,
+        (unsigned long long)start_frame,
+        (unsigned long long)frame_count,
+        (unsigned)point_count
+    );
+}
 
 
 static seismic_recorder_reader_priority_guard_t
@@ -514,6 +538,15 @@ esp_err_t seismic_recorder_read_session(
         if (err == ESP_OK) {
             heap_caps_free(staging);
             snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
+#ifdef ESP_PLATFORM
+            seismic_recorder_reader_log_path(
+                "cache",
+                session_id,
+                start_frame,
+                resolved_frame_count,
+                info->point_count
+            );
+#endif
             return ESP_OK;
         }
         /* A new recording can reset the retained cache between the range probe
@@ -640,6 +673,15 @@ esp_err_t seismic_recorder_read_session(
                 if (lod_err == ESP_OK) {
                     used_lod = true;
                     err = ESP_OK;
+#ifdef ESP_PLATFORM
+                    seismic_recorder_reader_log_path(
+                        "lod64",
+                        session_id,
+                        start_frame,
+                        resolved_frame_count,
+                        info->point_count
+                    );
+#endif
                 }
                 else {
                     memset(info, 0, sizeof(*info));
@@ -669,6 +711,15 @@ esp_err_t seismic_recorder_read_session(
         );
 #ifdef ESP_PLATFORM
         seismic_recorder_reader_priority_leave(priority_guard);
+        if (err == ESP_OK) {
+            seismic_recorder_reader_log_path(
+                "raw",
+                session_id,
+                start_frame,
+                resolved_frame_count,
+                info->point_count
+            );
+        }
 #endif
     }
 
