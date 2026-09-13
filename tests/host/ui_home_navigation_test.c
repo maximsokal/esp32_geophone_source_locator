@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "app_events.h"
 #include "ui_internal.h"
 
 
@@ -212,6 +213,65 @@ static void test_dispatch_uses_current_screen_driver(void)
 }
 
 
+static void test_recovery_events_update_home_state(void)
+{
+    reset_state();
+    s_context.storage_recovery_failed = true;
+
+    ui_dispatch_app_event_locked(
+        APP_EVENT_STORAGE_RECOVERY_STARTED,
+        0
+    );
+    assert(s_context.storage_recovery_active);
+    assert(!s_context.storage_recovery_failed);
+    assert(s_home_renders == 1U);
+
+    ui_dispatch_app_event_locked(
+        APP_EVENT_STORAGE_RECOVERY_FINISHED,
+        ESP_OK
+    );
+    assert(!s_context.storage_recovery_active);
+    assert(!s_context.storage_recovery_failed);
+    assert(s_home_renders == 2U);
+}
+
+
+static void test_recovery_failure_is_sticky_until_next_start(void)
+{
+    reset_state();
+
+    ui_dispatch_app_event_locked(
+        APP_EVENT_STORAGE_RECOVERY_FINISHED,
+        -1
+    );
+    assert(!s_context.storage_recovery_active);
+    assert(s_context.storage_recovery_failed);
+    assert(s_home_renders == 1U);
+
+    ui_dispatch_app_event_locked(
+        APP_EVENT_STORAGE_RECOVERY_STARTED,
+        0
+    );
+    assert(s_context.storage_recovery_active);
+    assert(!s_context.storage_recovery_failed);
+    assert(s_home_renders == 2U);
+}
+
+
+static void test_recovery_event_does_not_force_other_screen_redraw(void)
+{
+    reset_state();
+    s_context.screen = UI_SCREEN_SYSTEM;
+
+    ui_dispatch_app_event_locked(
+        APP_EVENT_STORAGE_RECOVERY_STARTED,
+        0
+    );
+    assert(s_context.storage_recovery_active);
+    assert(s_home_renders == 0U);
+}
+
+
 static void test_invalid_screen_is_noop(void)
 {
     reset_state();
@@ -230,6 +290,9 @@ int main(void)
     test_right_and_ok_open_selected_screen();
     test_left_from_system_returns_home();
     test_dispatch_uses_current_screen_driver();
+    test_recovery_events_update_home_state();
+    test_recovery_failure_is_sticky_until_next_start();
+    test_recovery_event_does_not_force_other_screen_redraw();
     test_invalid_screen_is_noop();
 
     puts("ui_home_navigation_test: PASS");
