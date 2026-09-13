@@ -223,8 +223,6 @@ static void test_block_policy_rejects_query_and_bucket_boundaries(void)
     ));
     assert(point == 0U);
 
-    /* [448,511] and [512,575] sit on opposite sides of the first 512-frame
-     * bucket boundary, so each complete block is independently safe. */
     assert(seismic_recorder_lod_block_maps_to_one_point(
         0U,
         4096U,
@@ -242,8 +240,6 @@ static void test_block_policy_rejects_query_and_bucket_boundaries(void)
     ));
     assert(point == 1U);
 
-    /* With 37 output points the mathematical bucket boundary cuts through
-     * some 64-frame blocks; those must use raw data. */
     bool found_crossing = false;
     for (uint64_t block = 0U; block < 4096U; block += 64U) {
         if (!seismic_recorder_lod_block_maps_to_one_point(
@@ -280,6 +276,7 @@ static void test_hybrid_matches_raw_for_unaligned_long_range(void)
     seismic_recorder_waveform_point_t actual[37];
     seismic_recorder_waveform_info_t expected_info;
     seismic_recorder_waveform_info_t actual_info;
+    seismic_recorder_lod_read_stats_t stats;
     seismic_frame_t raw_reference_staging[128];
     seismic_frame_t hybrid_raw_staging[128];
     seismic_recorder_lod_record_t hybrid_lod_staging[8];
@@ -299,7 +296,7 @@ static void test_hybrid_matches_raw_for_unaligned_long_range(void)
         &expected_info
     ) == ESP_OK);
 
-    assert(seismic_recorder_lod_read_source(
+    assert(seismic_recorder_lod_read_source_with_stats(
         memory_read_at,
         &hybrid_raw_reader,
         fixture.raw_size,
@@ -316,7 +313,8 @@ static void test_hybrid_matches_raw_for_unaligned_long_range(void)
         8U,
         actual,
         37U,
-        &actual_info
+        &actual_info,
+        &stats
     ) == ESP_OK);
 
     assert_waveform_equal(
@@ -329,11 +327,6 @@ static void test_hybrid_matches_raw_for_unaligned_long_range(void)
 
     assert(hybrid_lod_reader.calls > 1U);
 
-    /* LOD64 can replace only complete blocks that map wholly into one output
-     * bucket. For this deliberately unaligned 4000-frame/37-point request,
-     * count that eligibility directly and require the raw-byte saving to equal
-     * exactly those substituted frames. This is a correctness/performance
-     * contract, not an unrealistic fixed compression ratio. */
     size_t eligible_blocks = 0U;
     const uint64_t request_start = 13U;
     const uint64_t request_count = 4000U;
@@ -364,6 +357,12 @@ static void test_hybrid_matches_raw_for_unaligned_long_range(void)
         raw_reference_reader.bytes_read - hybrid_raw_reader.bytes_read ==
         expected_raw_bytes_saved
     );
+    assert(stats.lod_records_read == eligible_blocks);
+    assert(
+        stats.lod_frames_read ==
+        (uint64_t)eligible_blocks * SEISMIC_RECORDER_LOD_BLOCK_FRAMES
+    );
+    assert(stats.raw_frames_read + stats.lod_frames_read == request_count);
 
     fixture_destroy(&fixture);
 }
@@ -388,6 +387,7 @@ static void test_short_range_falls_back_to_raw_blocks_but_stays_exact(void)
     seismic_recorder_waveform_point_t actual[50];
     seismic_recorder_waveform_info_t expected_info;
     seismic_recorder_waveform_info_t actual_info;
+    seismic_recorder_lod_read_stats_t stats;
     seismic_frame_t staging_a[64];
     seismic_frame_t staging_b[64];
     seismic_recorder_lod_record_t lod_staging[4];
@@ -407,7 +407,7 @@ static void test_short_range_falls_back_to_raw_blocks_but_stays_exact(void)
         &expected_info
     ) == ESP_OK);
 
-    assert(seismic_recorder_lod_read_source(
+    assert(seismic_recorder_lod_read_source_with_stats(
         memory_read_at,
         &hybrid_raw_reader,
         fixture.raw_size,
@@ -424,7 +424,8 @@ static void test_short_range_falls_back_to_raw_blocks_but_stays_exact(void)
         4U,
         actual,
         50U,
-        &actual_info
+        &actual_info,
+        &stats
     ) == ESP_OK);
 
     assert_waveform_equal(
@@ -435,9 +436,62 @@ static void test_short_range_falls_back_to_raw_blocks_but_stays_exact(void)
         &actual_info
     );
 
-    /* Header validation still reads the sidecar, but no LOD data record can
-     * represent a one-frame output bucket exactly. */
     assert(lod_reader.calls == 1U);
+    assert(stats.raw_frames_read == 50U);
+    assert(stats.lod_records_read == 0U);
+    assert(stats.lod_frames_read == 0U);
+
+    fixture_destroy(&fixture);
+}
+
+
+static void test_aligned_hil_geometry_uses_only_lod_payload(void)
+{
+    fixture_t fixture;
+    fixture_init(&fixture, 1024U);
+
+    memory_reader_t raw_reader = {
+        .data = fixture.raw_file,
+        .size = fixture.raw_size,
+    };
+    memory_reader_t lod_reader = {
+        .data = fixture.lod_file,
+        .size = fixture.lod_size,
+    };
+    seismic_frame_t raw_staging[128];
+    seismic_recorder_lod_record_t lod_staging[8];
+    seismic_recorder_waveform_point_t points[16];
+    seismic_recorder_waveform_info_t info;
+    seismic_recorder_lod_read_stats_t stats;
+
+    assert(seismic_recorder_lod_read_source_with_stats(
+        memory_read_at,
+        &raw_reader,
+        fixture.raw_size,
+        memory_read_at,
+        &lod_reader,
+        fixture.lod_size,
+        &fixture.summary,
+        0U,
+        1024U,
+        16U,
+        raw_staging,
+        128U,
+        lod_staging,
+        8U,
+        points,
+        16U,
+        &info,
+        &stats
+    ) == ESP_OK);
+
+    assert(info.frame_count == 1024U);
+    assert(info.point_count == 16U);
+    assert(stats.raw_frames_read == 0U);
+    assert(stats.lod_records_read == 16U);
+    assert(stats.lod_frames_read == 1024U);
+    assert(raw_reader.bytes_read == sizeof(seismic_recorder_binary_header_t));
+    assert(lod_reader.calls == 3U); /* header + two 8-record payload windows */
 
     fixture_destroy(&fixture);
 }
@@ -525,6 +579,7 @@ int main(void)
     test_block_policy_rejects_query_and_bucket_boundaries();
     test_hybrid_matches_raw_for_unaligned_long_range();
     test_short_range_falls_back_to_raw_blocks_but_stays_exact();
+    test_aligned_hil_geometry_uses_only_lod_payload();
     test_incomplete_or_corrupt_sidecar_is_rejected();
     puts("seismic recorder LOD reader tests passed");
     return 0;
