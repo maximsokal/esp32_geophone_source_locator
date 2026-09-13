@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "insights_bridge_lifecycle",
+      "sources": [
+        "components/insights_bridge/insights_bridge.c",
+        "tests/host/insights_bridge_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/insights_bridge",
+        "components/insights_bridge/include"
+      ],
+      "defines": [
+        "CONFIG_APP_ESP_INSIGHTS=1",
+        "CONFIG_DIAG_ENABLE_METRICS=0",
+        "CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS=0",
+        "CONFIG_DIAG_ENABLE_VARIABLES=0",
+        "CONFIG_DIAG_ENABLE_HEAP_METRICS=0",
+        "CONFIG_DIAG_ENABLE_WIFI_METRICS=0"
+      ]
+    }
+  ]
+}
