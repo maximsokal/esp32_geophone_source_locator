@@ -43,10 +43,41 @@ function Get-StorageSpiTelemetry {
         }
     }
 
+    $recorderStops = @()
+    foreach ($match in [regex]::Matches(
+        $Content,
+        '(?im)STOP_COMPLETE\s+stage=(?<stage>[a-z_]+).*?drops=(?<drops>\d+)\s+err=(?<err>[A-Z0-9_]+)'
+    )) {
+        $recorderStops += [pscustomobject]@{
+            Stage = $match.Groups['stage'].Value.ToLowerInvariant()
+            DroppedFrames = [uint64]$match.Groups['drops'].Value
+            ErrorName = $match.Groups['err'].Value.ToUpperInvariant()
+        }
+    }
+
+    $acquisitionDiagnostics = @()
+    foreach ($match in [regex]::Matches(
+        $Content,
+        '(?im)AD7606_DIAG:\s*CH(?<channel>[1-8])\s+n=(?<samples>[1-9]\d*)'
+    )) {
+        $acquisitionDiagnostics += [pscustomobject]@{
+            Channel = [int]$match.Groups['channel'].Value
+            Samples = [uint64]$match.Groups['samples'].Value
+        }
+    }
+
+    $acquisitionFailureCount = [regex]::Matches(
+        $Content,
+        '(?im)(AD7606[_ ]?ACQ:.*Read failed|Seismic buffer push failed|Core 1 acquisition initialization failed)'
+    ).Count
+
     return [pscustomobject]@{
         StorageBegin = $begin
         StorageEnd = $end
         RecorderFwrite = $recorder
+        RecorderStop = $recorderStops
+        AcquisitionDiagnostics = $acquisitionDiagnostics
+        AcquisitionFailureCount = $acquisitionFailureCount
     }
 }
 
@@ -83,13 +114,22 @@ function Test-StorageSpiTelemetry {
         [uint64]$MaxRecorderFwriteUs,
         [uint64]$MaxRecorderOperationUs,
         [int]$MinimumStorageSamples = 1,
-        [int]$MinimumRecorderSamples = 1
+        [int]$MinimumRecorderSamples = 1,
+        [int]$MinimumRecorderStopSamples = 1,
+        [int]$MinimumAcquisitionDiagnosticChannels = 1
     )
 
     $telemetry = Get-StorageSpiTelemetry $Content
     $begin = @($telemetry.StorageBegin)
     $end = @($telemetry.StorageEnd)
     $recorder = @($telemetry.RecorderFwrite)
+    $recorderStops = @($telemetry.RecorderStop)
+    $acquisitionDiagnostics = @($telemetry.AcquisitionDiagnostics)
+    $diagnosticChannels = @(
+        $acquisitionDiagnostics |
+            ForEach-Object { $_.Channel } |
+            Sort-Object -Unique
+    )
 
     $missing = @()
     if ($begin.Count -lt $MinimumStorageSamples) {
@@ -100,6 +140,12 @@ function Test-StorageSpiTelemetry {
     }
     if ($recorder.Count -lt $MinimumRecorderSamples) {
         $missing += "RECORDER_IO_TIMING op=fwrite ($($recorder.Count)/$MinimumRecorderSamples)"
+    }
+    if ($recorderStops.Count -lt $MinimumRecorderStopSamples) {
+        $missing += "SEISMIC_RECORDER STOP_COMPLETE ($($recorderStops.Count)/$MinimumRecorderStopSamples)"
+    }
+    if ($diagnosticChannels.Count -lt $MinimumAcquisitionDiagnosticChannels) {
+        $missing += "AD7606_DIAG positive-sample channels ($($diagnosticChannels.Count)/$MinimumAcquisitionDiagnosticChannels)"
     }
 
     $violations = @()
@@ -122,6 +168,22 @@ function Test-StorageSpiTelemetry {
         }
     }
 
+    foreach ($stop in $recorderStops) {
+        if ($stop.Stage -ne 'complete') {
+            $violations += "recorder stop stage=$($stop.Stage) expected=complete"
+        }
+        if ($stop.DroppedFrames -ne 0U) {
+            $violations += "recorder dropped_frames=$($stop.DroppedFrames) expected=0"
+        }
+        if ($stop.ErrorName -ne 'ESP_OK') {
+            $violations += "recorder stop err=$($stop.ErrorName) expected=ESP_OK"
+        }
+    }
+
+    if ($telemetry.AcquisitionFailureCount -gt 0) {
+        $violations += "acquisition failure markers=$($telemetry.AcquisitionFailureCount) expected=0"
+    }
+
     $maxMutex = Get-MaxTelemetryValue $begin 'MutexWaitUs'
     $maxQuiesce = Get-MaxTelemetryValue $begin 'TftQuiesceUs'
     $maxResume = Get-MaxTelemetryValue $end 'TftResumeUs'
@@ -129,6 +191,7 @@ function Test-StorageSpiTelemetry {
     $maxWindow = Get-MaxTelemetryValue $recorder 'MaxWindowUs'
     $maxFwrite = Get-MaxTelemetryValue $recorder 'FwriteUs'
     $maxOperation = Get-MaxTelemetryValue $recorder 'OperationUs'
+    $maxDroppedFrames = Get-MaxTelemetryValue $recorderStops 'DroppedFrames'
 
     $checks = @(
         @{ Name = 'mutex_wait_us'; Value = $maxMutex; Limit = $MaxMutexWaitUs },
@@ -152,6 +215,12 @@ function Test-StorageSpiTelemetry {
         StorageBeginCount = $begin.Count
         StorageEndCount = $end.Count
         RecorderCount = $recorder.Count
+        RecorderStopCount = $recorderStops.Count
+        AcquisitionDiagnosticCount = $acquisitionDiagnostics.Count
+        AcquisitionDiagnosticChannelCount = $diagnosticChannels.Count
+        AcquisitionDiagnosticChannels = $diagnosticChannels
+        AcquisitionFailureCount = $telemetry.AcquisitionFailureCount
+        MaxDroppedFrames = $maxDroppedFrames
         MaxMutexWaitUs = $maxMutex
         MaxTftQuiesceUs = $maxQuiesce
         MaxTftResumeUs = $maxResume
