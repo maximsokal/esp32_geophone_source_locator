@@ -19,6 +19,7 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "seismic_recorder_lod_store.h"
 #include "storage_manager.h"
 
 
@@ -372,6 +373,22 @@ esp_err_t seismic_recorder_fs_create_session(
         session_directory_created = err == ESP_OK;
     }
 
+    /* LOD is an acceleration index, never part of the authoritative session
+     * commit. Failure to create it must not prevent samples.bin recording. */
+    if (err == ESP_OK && channel_count == SEISMIC_CHANNEL_COUNT) {
+        const esp_err_t lod_err = seismic_recorder_lod_store_begin(
+            path,
+            sample_rate_hz
+        );
+        if (lod_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "LOD64 sidecar unavailable; raw recording continues: %s",
+                esp_err_to_name(lod_err)
+            );
+        }
+    }
+
     if (err == ESP_OK) {
         static const char samples_suffix[] = "/samples.bin";
         const size_t path_length = strlen(path);
@@ -412,6 +429,7 @@ esp_err_t seismic_recorder_fs_create_session(
     }
 
     if (err != ESP_OK) {
+        seismic_recorder_lod_store_abort();
         if (file != NULL) {
             fclose(file);
         }
@@ -511,6 +529,26 @@ esp_err_t seismic_recorder_fs_write_frames(
         storage_manager_operation_end();
         ++storage_windows;
 
+        /* Feed only frames that samples.bin actually accepted. The optional
+         * LOD write owns a separate bounded storage window, so LVGL can run
+         * between the raw write and index maintenance. */
+        if (
+            chunk_written > 0U &&
+            seismic_recorder_lod_store_is_active()
+        ) {
+            const esp_err_t lod_err = seismic_recorder_lod_store_append(
+                s_dma_staging,
+                chunk_written
+            );
+            if (lod_err != ESP_OK) {
+                ESP_LOGW(
+                    TAG,
+                    "LOD64 sidecar disabled; raw samples remain authoritative: %s",
+                    esp_err_to_name(lod_err)
+                );
+            }
+        }
+
         const int64_t storage_window_us =
             esp_timer_get_time() - window_started_us;
         if (storage_window_us > max_storage_window_us) {
@@ -603,6 +641,19 @@ esp_err_t seismic_recorder_fs_flush(
     }
 
     storage_manager_operation_end();
+
+    if (seismic_recorder_lod_store_is_active()) {
+        const esp_err_t lod_err =
+            seismic_recorder_lod_store_flush(sync_to_media);
+        if (lod_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "LOD64 flush failed; raw session continues: %s",
+                esp_err_to_name(lod_err)
+            );
+        }
+    }
+
     ESP_LOGI(
         TAG,
         "RECORDER_IO_TIMING op=flush sync=%u operation_us=%lld result=%d",
@@ -653,6 +704,18 @@ esp_err_t seismic_recorder_fs_sync(
     }
 
     storage_manager_operation_end();
+
+    if (seismic_recorder_lod_store_is_active()) {
+        const esp_err_t lod_err = seismic_recorder_lod_store_flush(true);
+        if (lod_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "LOD64 sync failed; raw session remains authoritative: %s",
+                esp_err_to_name(lod_err)
+            );
+        }
+    }
+
     ESP_LOGI(
         TAG,
         "RECORDER_IO_TIMING op=fsync operation_us=%lld result=%d",
@@ -683,6 +746,7 @@ esp_err_t seismic_recorder_fs_close(
          * path; the caller must never lose ownership of an open stream.
          */
         const int forced_fclose_result = fclose(samples_file);
+        seismic_recorder_lod_store_abort();
         ESP_LOGI(
             TAG,
             "RECORDER_IO_TIMING op=close operation_us=%lld result=%d forced_fclose=%d",
@@ -708,6 +772,18 @@ esp_err_t seismic_recorder_fs_close(
     }
 
     storage_manager_operation_end();
+
+    if (seismic_recorder_lod_store_is_active()) {
+        const esp_err_t lod_err = seismic_recorder_lod_store_close();
+        if (lod_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "LOD64 close failed; raw session close result is unchanged: %s",
+                esp_err_to_name(lod_err)
+            );
+        }
+    }
+
     ESP_LOGI(
         TAG,
         "RECORDER_IO_TIMING op=close operation_us=%lld result=%d",
