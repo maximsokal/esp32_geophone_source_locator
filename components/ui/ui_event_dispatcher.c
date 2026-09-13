@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 
 static const char *TAG =
@@ -44,36 +45,82 @@ typedef struct
 } ui_pending_event_t;
 
 
+typedef enum
+{
+    UI_EVENT_INGRESS_STOPPED = 0,
+    UI_EVENT_INGRESS_QUEUED,
+    UI_EVENT_INGRESS_FULL,
+
+} ui_event_ingress_result_t;
+
+
 static ui_pending_event_t s_pending_events[UI_EVENT_PENDING_CAPACITY];
 static size_t s_pending_head = 0U;
 static size_t s_pending_tail = 0U;
 static size_t s_pending_count = 0U;
+static unsigned s_handler_in_flight = 0U;
 static portMUX_TYPE s_pending_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
-static bool ui_event_pending_push(
+static ui_event_ingress_result_t ui_event_ingress_begin(
     int32_t event_id,
     int32_t event_value
 )
 {
-    bool accepted = false;
     const int64_t queued_us =
         esp_timer_get_time();
+    ui_event_ingress_result_t result =
+        UI_EVENT_INGRESS_STOPPED;
 
     portENTER_CRITICAL(&s_pending_lock);
-    if (s_running && s_pending_count < UI_EVENT_PENDING_CAPACITY) {
-        s_pending_events[s_pending_tail] = (ui_pending_event_t) {
-            .event_id = event_id,
-            .event_value = event_value,
-            .queued_us = queued_us,
-        };
-        s_pending_tail = (s_pending_tail + 1U) % UI_EVENT_PENDING_CAPACITY;
-        s_pending_count++;
-        accepted = true;
+    if (s_running) {
+        ++s_handler_in_flight;
+
+        if (s_pending_count < UI_EVENT_PENDING_CAPACITY) {
+            s_pending_events[s_pending_tail] = (ui_pending_event_t) {
+                .event_id = event_id,
+                .event_value = event_value,
+                .queued_us = queued_us,
+            };
+            s_pending_tail = (s_pending_tail + 1U) % UI_EVENT_PENDING_CAPACITY;
+            s_pending_count++;
+            result = UI_EVENT_INGRESS_QUEUED;
+        }
+        else {
+            result = UI_EVENT_INGRESS_FULL;
+        }
     }
     portEXIT_CRITICAL(&s_pending_lock);
 
-    return accepted;
+    return result;
+}
+
+
+static void ui_event_ingress_end(void)
+{
+    portENTER_CRITICAL(&s_pending_lock);
+    if (s_handler_in_flight > 0U) {
+        --s_handler_in_flight;
+    }
+    portEXIT_CRITICAL(&s_pending_lock);
+}
+
+
+static void ui_event_wait_for_ingress_idle(void)
+{
+    for (;;) {
+        unsigned in_flight;
+
+        portENTER_CRITICAL(&s_pending_lock);
+        in_flight = s_handler_in_flight;
+        portEXIT_CRITICAL(&s_pending_lock);
+
+        if (in_flight == 0U) {
+            return;
+        }
+
+        vTaskDelay(1U);
+    }
 }
 
 
@@ -96,26 +143,33 @@ static void ui_event_handler(
     (void)context;
     (void)event_base;
 
-    if (!s_running) {
-        return;
-    }
-
     const int32_t event_value =
         event_data != NULL
             ? *(const int32_t *)event_data
             : 0;
 
     /*
-     * This callback runs on the dedicated APP_LOOP task. It only copies the
-     * value into a bounded queue and wakes the existing LVGL task. In
-     * particular it never waits for LVGL, SD, TLS, or a service operation.
+     * This callback runs on the dedicated APP_LOOP task. Entering the ingress
+     * section both snapshots the running gate and accounts this callback for
+     * teardown. Stop can therefore close the gate, flush the queue, unregister
+     * the handler, and wait until every callback that entered before the close
+     * has returned before LVGL is deinitialized.
      */
-    if (!ui_event_pending_push(event_id, event_value)) {
+    const ui_event_ingress_result_t ingress =
+        ui_event_ingress_begin(event_id, event_value);
+
+    if (ingress == UI_EVENT_INGRESS_STOPPED) {
+        return;
+    }
+
+    if (ingress == UI_EVENT_INGRESS_FULL) {
         ESP_LOGW(TAG, "UI event queue full, type=%ld", (long)event_id);
+        ui_event_ingress_end();
         return;
     }
 
     (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+    ui_event_ingress_end();
 }
 
 
@@ -221,17 +275,17 @@ esp_err_t ui_event_dispatcher_start(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    s_running =
-        true;
     s_handled_events =
         0U;
     s_dropped_stale_keypad =
         0U;
 
     portENTER_CRITICAL(&s_pending_lock);
+    s_running = true;
     s_pending_head = 0U;
     s_pending_tail = 0U;
     s_pending_count = 0U;
+    s_handler_in_flight = 0U;
     portEXIT_CRITICAL(&s_pending_lock);
 
     esp_err_t err =
@@ -244,8 +298,12 @@ esp_err_t ui_event_dispatcher_start(void)
         );
 
     if (err != ESP_OK) {
-        s_running =
-            false;
+        portENTER_CRITICAL(&s_pending_lock);
+        s_running = false;
+        s_pending_head = 0U;
+        s_pending_tail = 0U;
+        s_pending_count = 0U;
+        portEXIT_CRITICAL(&s_pending_lock);
         return err;
     }
 
@@ -267,10 +325,8 @@ void ui_event_dispatcher_stop(void)
         return;
     }
 
-    s_running =
-        false;
-
     portENTER_CRITICAL(&s_pending_lock);
+    s_running = false;
     s_pending_head = 0U;
     s_pending_tail = 0U;
     s_pending_count = 0U;
@@ -287,6 +343,8 @@ void ui_event_dispatcher_stop(void)
             ui_event_handler
         );
     }
+
+    ui_event_wait_for_ingress_idle();
 
     s_registered =
         false;
