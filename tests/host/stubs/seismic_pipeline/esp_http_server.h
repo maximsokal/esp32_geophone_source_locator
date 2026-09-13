@@ -1,6 +1,9 @@
 ﻿#pragma once
 
 #include <stddef.h>
+#ifndef _MSC_VER
+#include <sys/types.h>
+#endif
 #include "esp_err.h"
 
 /* The native Windows C runtime already declares ssize_t for Clang/MinGW.
