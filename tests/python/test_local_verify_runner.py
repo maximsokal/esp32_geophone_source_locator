@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -12,6 +13,7 @@ RUNNER_PATH = REPO_ROOT / "tools" / "run_local_verify.py"
 _spec = importlib.util.spec_from_file_location("run_local_verify", RUNNER_PATH)
 assert _spec is not None and _spec.loader is not None
 runner = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = runner
 _spec.loader.exec_module(runner)
 
 
@@ -46,9 +48,10 @@ def test_host_plan_runs_base_then_sorted_manifest_fragments(tmp_path: Path):
     ]
     assert steps[0].command[-1] == "--keep-going"
     assert steps[1].command[-3:] == (
+        "--build-dir",
         str(root / "build" / "host-tests-a-first"),
         "--keep-going",
-    )[-3:]
+    )
 
 
 def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: Path):
