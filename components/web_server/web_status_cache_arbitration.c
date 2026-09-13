@@ -1,27 +1,28 @@
 #include "web_status_cache_arbitration.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 
-static portMUX_TYPE s_refresh_gate_lock = portMUX_INITIALIZER_UNLOCKED;
-static bool s_refresh_enabled = true;
+static atomic_bool s_refresh_enabled = ATOMIC_VAR_INIT(true);
 
 
 void web_status_cache_arbitration_set_refresh_enabled(bool enabled)
 {
-    portENTER_CRITICAL(&s_refresh_gate_lock);
-    s_refresh_enabled = enabled;
-    portEXIT_CRITICAL(&s_refresh_gate_lock);
+    atomic_store_explicit(
+        &s_refresh_enabled,
+        enabled,
+        memory_order_release
+    );
 }
 
 
 bool web_status_cache_arbitration_refresh_enabled(void)
 {
-    bool enabled = false;
-    portENTER_CRITICAL(&s_refresh_gate_lock);
-    enabled = s_refresh_enabled;
-    portEXIT_CRITICAL(&s_refresh_gate_lock);
-    return enabled;
+    return atomic_load_explicit(
+        &s_refresh_enabled,
+        memory_order_acquire
+    );
 }
 
 
