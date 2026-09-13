@@ -41,6 +41,7 @@ static unsigned storage_begin_calls;
 static unsigned storage_end_calls;
 static httpd_uri_t registered_uri;
 static bool fake_complete_metadata;
+static uint64_t fake_samples_written = 20U;
 
 static int make_directory(const char *path)
 {
@@ -63,6 +64,14 @@ static void make_layout(void)
 static void remove_layout(void)
 {
     char path[256];
+    (void)snprintf(
+        path,
+        sizeof(path),
+        "%s/OBJ_0001/sessions/S000001/%s",
+        STORAGE_MANAGER_OBJECTS_PATH,
+        SEISMIC_RECORDER_LOD_FILE_NAME
+    );
+    (void)remove(path);
     (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/samples.bin",
                    STORAGE_MANAGER_OBJECTS_PATH);
     (void)remove(path);
@@ -141,8 +150,8 @@ esp_err_t seismic_recorder_json_read_summary(
     summary->complete = true;
     summary->sample_rate_hz = 500U;
     summary->channel_count = SEISMIC_CHANNEL_COUNT;
-    summary->samples_written = 20U;
-    summary->recording_ms = 40U;
+    summary->samples_written = fake_samples_written;
+    summary->recording_ms = fake_samples_written * 2U;
     (void)object_id;
     return ESP_OK;
 }
@@ -297,6 +306,7 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     storage_begin_calls = 0U;
     storage_end_calls = 0U;
     fake_complete_metadata = false;
+    fake_samples_written = 20U;
     assert(seismic_buffer_init() == ESP_OK);
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
     push_pipeline_frames(20U);
@@ -380,10 +390,146 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     remove_layout();
 }
 
+
+static void fill_saved_frames(seismic_frame_t *frames, size_t count)
+{
+    for (size_t index = 0U; index < count; ++index) {
+        frames[index].timestamp_us = (int64_t)(index + 1U) * 2000LL;
+        frames[index].channel_uv[0] = (float)index;
+        frames[index].channel_uv[1] = -(float)index;
+        frames[index].channel_uv[2] = 1000.0f + (float)index;
+        frames[index].channel_uv[3] = 500.0f - (float)index;
+    }
+}
+
+
+static void write_full_size_invalid_lod(bool complete_header)
+{
+    const char *path =
+        STORAGE_MANAGER_OBJECTS_PATH
+        "/OBJ_0001/sessions/S000001/"
+        SEISMIC_RECORDER_LOD_FILE_NAME;
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+
+    seismic_recorder_lod_file_header_t header;
+    seismic_recorder_lod_header_init(&header, 500U);
+    if (complete_header) {
+        seismic_recorder_lod_header_mark_complete(&header);
+    }
+    assert(fwrite(&header, sizeof(header), 1U, file) == 1U);
+
+    /* Preserve the exact expected file size for 128 raw frames. Zeroed
+     * records are intentionally invalid (frame_count=0), so the complete
+     * header case exercises record-validation failure rather than size/header
+     * rejection. */
+    seismic_recorder_lod_record_t invalid_records[2] = {0};
+    assert(fwrite(
+        invalid_records,
+        sizeof(invalid_records[0]),
+        2U,
+        file
+    ) == 2U);
+    assert(fclose(file) == 0);
+}
+
+
+static void assert_public_reader_raw_result(void)
+{
+    seismic_recorder_waveform_point_t points[2] = {0};
+    seismic_recorder_waveform_info_t info;
+    memset(&info, 0, sizeof(info));
+
+    assert(seismic_recorder_read_session(
+        "OBJ_0001",
+        "S000001",
+        0U,
+        128U,
+        2U,
+        points,
+        2U,
+        &info
+    ) == ESP_OK);
+
+    assert(strcmp(info.object_id, "OBJ_0001") == 0);
+    assert(strcmp(info.session_id, "S000001") == 0);
+    assert(strcmp(info.source_name, "AD7606") == 0);
+    assert(info.sample_rate_hz == 500U);
+    assert(info.frame_count == 128U);
+    assert(info.point_count == 2U);
+    assert(info.start_timestamp_us == 2000LL);
+    assert(info.end_timestamp_us == 256000LL);
+
+    assert(points[0].timestamp_us == 2000LL);
+    assert(points[0].min_uv[0] == 0.0f);
+    assert(points[0].max_uv[0] == 63.0f);
+    assert(points[0].min_uv[1] == -63.0f);
+    assert(points[0].max_uv[1] == 0.0f);
+
+    assert(points[1].timestamp_us == 130000LL);
+    assert(points[1].min_uv[0] == 64.0f);
+    assert(points[1].max_uv[0] == 127.0f);
+    assert(points[1].min_uv[1] == -127.0f);
+    assert(points[1].max_uv[1] == -64.0f);
+}
+
+
+static void test_public_reader_invalid_lod_never_breaks_raw(void)
+{
+    remove_layout();
+    make_layout();
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    fake_complete_metadata = false;
+    fake_samples_written = 128U;
+
+    seismic_frame_t frames[128];
+    fill_saved_frames(frames, 128U);
+
+    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples_file = NULL;
+    assert(seismic_recorder_fs_create_session(
+        "OBJ_0001",
+        500U,
+        SEISMIC_CHANNEL_COUNT,
+        session_id,
+        &samples_file
+    ) == ESP_OK);
+    assert(strcmp(session_id, "S000001") == 0);
+
+    size_t written = 0U;
+    assert(seismic_recorder_fs_write_frames(
+        samples_file,
+        frames,
+        128U,
+        &written
+    ) == ESP_OK);
+    assert(written == 128U);
+    assert(seismic_recorder_fs_close(samples_file) == ESP_OK);
+
+    fake_complete_metadata = true;
+
+    /* Power-loss form: exact-size sidecar exists but COMPLETE was never set. */
+    write_full_size_invalid_lod(false);
+    assert_public_reader_raw_result();
+
+    /* Corruption form: COMPLETE is set, but a record violates the disk
+     * contract. The public API must still return the authoritative raw data. */
+    write_full_size_invalid_lod(true);
+    assert_public_reader_raw_result();
+
+    assert(storage_begin_calls == storage_end_calls);
+    remove_layout();
+    fake_samples_written = 20U;
+}
+
+
 int main(void)
 {
     assert(seismic_recorder_lod_reader_contract_main() == 0);
     test_recorder_binary_and_web_json_share_the_same_frames();
+    test_public_reader_invalid_lod_never_breaks_raw();
     puts("seismic recorder/web pipeline contract tests passed");
     return 0;
 }
