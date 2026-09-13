@@ -96,11 +96,18 @@ static esp_err_t object_recovery_collect_ids(
             capacity = next_capacity;
         }
 
-        snprintf(
+        const size_t id_length = strlen(entry->d_name);
+        if (id_length + 1U > sizeof(ids[count])) {
+            /* object_format_id_is_valid() should make this unreachable, but
+             * keep the copy bound explicit so both runtime and -Werror builds
+             * can prove that a dirent name cannot truncate the canonical ID. */
+            err = ESP_ERR_INVALID_SIZE;
+            break;
+        }
+        memcpy(
             ids[count],
-            sizeof(ids[count]),
-            "%s",
-            entry->d_name
+            entry->d_name,
+            id_length + 1U
         );
         ++count;
     }
