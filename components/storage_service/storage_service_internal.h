@@ -4,6 +4,8 @@
 
 #include "storage_service.h"
 
+#include "freertos/FreeRTOS.h"
+
 
 typedef enum
 {
@@ -12,6 +14,20 @@ typedef enum
     STORAGE_COMMAND_STOP
 
 } storage_command_t;
+
+
+typedef struct
+{
+    portMUX_TYPE lock;
+    storage_service_event_callback_t callback;
+    void *context;
+    unsigned in_flight;
+
+} storage_service_callback_slot_t;
+
+
+/* Component-private state exposure for lifecycle/host verification. */
+storage_service_callback_slot_t *storage_service_internal_callback_slot(void);
 
 
 /*
