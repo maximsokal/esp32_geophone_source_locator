@@ -11,26 +11,107 @@ static const char *TAG =
     "OBJECT_SERVICE";
 
 
+static void object_service_notify_callback(
+    object_service_state_t *state
+)
+{
+    object_service_event_callback_t callback =
+        NULL;
+    void *user_context =
+        NULL;
+
+    taskENTER_CRITICAL(
+        &state->event_lock
+    );
+
+    if (state->event_callback != NULL) {
+        callback = state->event_callback;
+        user_context = state->event_user_context;
+        ++state->event_callback_in_flight;
+    }
+
+    taskEXIT_CRITICAL(
+        &state->event_lock
+    );
+
+    if (callback == NULL) {
+        return;
+    }
+
+    callback(
+        &state->event,
+        user_context
+    );
+
+    taskENTER_CRITICAL(
+        &state->event_lock
+    );
+    --state->event_callback_in_flight;
+    taskEXIT_CRITICAL(
+        &state->event_lock
+    );
+}
+
+
+static void object_service_notify_observer(
+    object_service_state_t *state
+)
+{
+    object_service_event_observer_t observer =
+        NULL;
+    void *user_context =
+        NULL;
+
+    taskENTER_CRITICAL(
+        &state->event_lock
+    );
+
+    if (state->event_observer != NULL) {
+        observer = state->event_observer;
+        user_context = state->event_observer_context;
+        ++state->event_observer_in_flight;
+    }
+
+    taskEXIT_CRITICAL(
+        &state->event_lock
+    );
+
+    if (observer == NULL) {
+        return;
+    }
+
+    observer(
+        &state->event,
+        user_context
+    );
+
+    taskENTER_CRITICAL(
+        &state->event_lock
+    );
+    --state->event_observer_in_flight;
+    taskEXIT_CRITICAL(
+        &state->event_lock
+    );
+}
+
+
 void object_service_internal_notify(
     object_service_state_t *state
 )
 {
-    if (
-        state->event_callback !=
-        NULL
-    ) {
-        state->event_callback(
-            &state->event,
-            state->event_user_context
-        );
-    }
+    /* Preserve the established callback-before-observer delivery order. */
+    object_service_notify_callback(
+        state
+    );
 
-    if (state->event_observer != NULL) {
-        state->event_observer(
-            &state->event,
-            state->event_observer_context
-        );
-    }
+    /*
+     * Snapshot the observer only after the callback has completed. This keeps
+     * observer lifetime accounting independent: unregistering an observer does
+     * not wait for an unrelated UI callback that has not yet reached it.
+     */
+    object_service_notify_observer(
+        state
+    );
 }
 
 
