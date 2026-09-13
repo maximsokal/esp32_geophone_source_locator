@@ -50,15 +50,20 @@ static bool ina3221_monitor_stop_requested(void)
 }
 
 
-static void ina3221_monitor_register_current_task(void)
+static bool ina3221_monitor_register_current_task(void)
 {
     const TaskHandle_t task =
         xTaskGetCurrentTaskHandle();
 
+    bool stop_before_start;
+
     portENTER_CRITICAL(&s_state_lock);
+    stop_before_start = s_stop_requested;
     s_task = task;
     s_starting = false;
     portEXIT_CRITICAL(&s_state_lock);
+
+    return stop_before_start;
 }
 
 
@@ -213,14 +218,19 @@ static void ina3221_monitor_log_sample(
 }
 
 
-static void ina3221_monitor_wait(void)
+static bool ina3221_monitor_wait_for_period_or_stop(void)
 {
-    (void)ulTaskNotifyTake(
-        pdTRUE,
-        pdMS_TO_TICKS(
-            INA3221_MONITOR_PERIOD_MS
-        )
-    );
+    const uint32_t notifications =
+        ulTaskNotifyTake(
+            pdTRUE,
+            pdMS_TO_TICKS(
+                INA3221_MONITOR_PERIOD_MS
+            )
+        );
+
+    return
+        notifications > 0U &&
+        ina3221_monitor_stop_requested();
 }
 
 
@@ -230,7 +240,8 @@ static void ina3221_monitor_worker(
 {
     (void)context;
 
-    ina3221_monitor_register_current_task();
+    const bool stop_before_start =
+        ina3221_monitor_register_current_task();
 
     ina3221_driver_t driver = { 0 };
     ina3221_power_classifier_t classifier = { 0 };
@@ -241,134 +252,142 @@ static void ina3221_monitor_worker(
     bool hardware_available =
         false;
 
-    while (!ina3221_monitor_stop_requested()) {
-        if (!driver.ready) {
-            const esp_err_t open_err =
-                ina3221_driver_open(
-                    &driver
+    if (!stop_before_start) {
+        while (true) {
+            if (!driver.ready) {
+                const esp_err_t open_err =
+                    ina3221_driver_open(
+                        &driver
+                    );
+
+                if (open_err != ESP_OK) {
+                    ina3221_monitor_publish_invalid();
+
+                    retry_count++;
+
+                    if (
+                        retry_count == 1 ||
+                        retry_count %
+                            INA3221_RETRY_LOG_INTERVAL == 0
+                    ) {
+                        ESP_LOGW(
+                            TAG,
+                            "INA3221 unavailable at 0x40; retrying: %s",
+                            esp_err_to_name(
+                                open_err
+                            )
+                        );
+                    }
+
+                    hardware_available =
+                        false;
+
+                    if (ina3221_monitor_wait_for_period_or_stop()) {
+                        break;
+                    }
+                    continue;
+                }
+
+                retry_count =
+                    0;
+
+                memset(
+                    &classifier,
+                    0,
+                    sizeof(classifier)
                 );
 
-            if (open_err != ESP_OK) {
-                ina3221_monitor_publish_invalid();
-
-                retry_count++;
-
-                if (
-                    retry_count == 1 ||
-                    retry_count %
-                        INA3221_RETRY_LOG_INTERVAL == 0
-                ) {
-                    ESP_LOGW(
+                if (!hardware_available) {
+                    ESP_LOGI(
                         TAG,
-                        "INA3221 unavailable at 0x40; retrying: %s",
-                        esp_err_to_name(
-                            open_err
-                        )
+                        "INA3221 online: I2C 0x40, 100 kHz, avg=16, conversion=1.1 ms, period=1 s"
                     );
                 }
 
                 hardware_available =
+                    true;
+            }
+
+            ina3221_channel_sample_t
+                channels[INA3221_POLICY_CHANNEL_COUNT] = { 0 };
+
+            const esp_err_t read_err =
+                ina3221_driver_read_channels(
+                    &driver,
+                    channels
+                );
+
+            if (read_err != ESP_OK) {
+                ESP_LOGW(
+                    TAG,
+                    "INA3221 read failed; measurements invalidated: %s",
+                    esp_err_to_name(
+                        read_err
+                    )
+                );
+
+                ina3221_monitor_publish_invalid();
+
+                ina3221_driver_close(
+                    &driver
+                );
+
+                memset(
+                    &classifier,
+                    0,
+                    sizeof(classifier)
+                );
+
+                hardware_available =
                     false;
 
-                ina3221_monitor_wait();
+                if (ina3221_monitor_wait_for_period_or_stop()) {
+                    break;
+                }
                 continue;
             }
 
-            retry_count =
-                0;
-
-            memset(
-                &classifier,
-                0,
-                sizeof(classifier)
-            );
-
-            if (!hardware_available) {
-                ESP_LOGI(
-                    TAG,
-                    "INA3221 online: I2C 0x40, 100 kHz, avg=16, conversion=1.1 ms, period=1 s"
+            const ina3221_power_state_t instantaneous_state =
+                ina3221_policy_classify_instant(
+                    channels
                 );
-            }
 
-            hardware_available =
-                true;
-        }
+            const ina3221_power_state_t stable_state =
+                ina3221_policy_classifier_update(
+                    &classifier,
+                    instantaneous_state
+                );
 
-        ina3221_channel_sample_t
-            channels[INA3221_POLICY_CHANNEL_COUNT] = { 0 };
+            ina3221_power_decision_t decision;
 
-        const esp_err_t read_err =
-            ina3221_driver_read_channels(
-                &driver,
-                channels
+            ina3221_policy_make_decision(
+                channels,
+                stable_state,
+                &decision
             );
 
-        if (read_err != ESP_OK) {
-            ESP_LOGW(
-                TAG,
-                "INA3221 read failed; measurements invalidated: %s",
-                esp_err_to_name(
-                    read_err
-                )
-            );
-
-            ina3221_monitor_publish_invalid();
-
-            ina3221_driver_close(
-                &driver
-            );
-
-            memset(
-                &classifier,
-                0,
-                sizeof(classifier)
-            );
-
-            hardware_available =
-                false;
-
-            ina3221_monitor_wait();
-            continue;
-        }
-
-        const ina3221_power_state_t instantaneous_state =
-            ina3221_policy_classify_instant(
-                channels
-            );
-
-        const ina3221_power_state_t stable_state =
-            ina3221_policy_classifier_update(
-                &classifier,
-                instantaneous_state
-            );
-
-        ina3221_power_decision_t decision;
-
-        ina3221_policy_make_decision(
-            channels,
-            stable_state,
-            &decision
-        );
-
-        ina3221_monitor_publish(
-            channels,
-            &decision
-        );
-
-        sample_count++;
-
-        if (
-            sample_count == 1 ||
-            sample_count %
-                INA3221_MONITOR_LOG_INTERVAL == 0
-        ) {
-            ina3221_monitor_log_sample(
+            ina3221_monitor_publish(
                 channels,
                 &decision
             );
-        }
 
-        ina3221_monitor_wait();
+            sample_count++;
+
+            if (
+                sample_count == 1 ||
+                sample_count %
+                    INA3221_MONITOR_LOG_INTERVAL == 0
+            ) {
+                ina3221_monitor_log_sample(
+                    channels,
+                    &decision
+                );
+            }
+
+            if (ina3221_monitor_wait_for_period_or_stop()) {
+                break;
+            }
+        }
     }
 
     ina3221_driver_close(
@@ -386,13 +405,13 @@ static void ina3221_monitor_worker(
 esp_err_t ina3221_monitor_start(void)
 {
     portENTER_CRITICAL(&s_state_lock);
-    if (s_task != NULL || s_starting) {
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_OK;
-    }
     if (s_stop_requested) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
+    }
+    if (s_task != NULL || s_starting) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_OK;
     }
     s_starting = true;
     portEXIT_CRITICAL(&s_state_lock);
@@ -433,8 +452,8 @@ void ina3221_monitor_stop(void)
 {
     portENTER_CRITICAL(&s_state_lock);
     s_stop_requested = true;
-    TaskHandle_t task = s_task;
-    bool starting = s_starting;
+    const TaskHandle_t task = s_task;
+    const bool starting = s_starting;
     portEXIT_CRITICAL(&s_state_lock);
 
     if (task == NULL && !starting) {
@@ -444,28 +463,28 @@ void ina3221_monitor_stop(void)
         return;
     }
 
+    /*
+     * A running worker only honors s_stop_requested after consuming this
+     * notification, so the captured handle cannot disappear before this send.
+     * If stop races task creation, there is no handle to notify: the worker
+     * observes stop_before_start atomically when it registers itself and exits
+     * without doing I2C work.
+     */
     if (task != NULL) {
-        xTaskNotifyGive(
+        (void)xTaskNotifyGive(
             task
         );
     }
 
     while (true) {
         portENTER_CRITICAL(&s_state_lock);
-        task = s_task;
-        starting = s_starting;
         const bool stopped =
-            task == NULL && !starting;
+            s_task == NULL &&
+            !s_starting;
         portEXIT_CRITICAL(&s_state_lock);
 
         if (stopped) {
             break;
-        }
-
-        if (task != NULL) {
-            xTaskNotifyGive(
-                task
-            );
         }
 
         vTaskDelay(
