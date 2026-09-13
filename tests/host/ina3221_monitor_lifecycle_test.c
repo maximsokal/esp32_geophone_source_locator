@@ -28,6 +28,7 @@ static unsigned s_critical_exits;
 typedef enum {
     DELAY_ACTION_NONE = 0,
     DELAY_ACTION_REGISTER_THEN_CLEAR,
+    DELAY_ACTION_CLEAR_ON_FIRST,
 } delay_action_t;
 
 static delay_action_t s_delay_action;
@@ -122,9 +123,10 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
         portENTER_CRITICAL(&s_state_lock);
         s_stop_requested = true;
         portEXIT_CRITICAL(&s_state_lock);
+        return 1U;
     }
 
-    return 1U;
+    return 0U;
 }
 
 void vTaskDelay(TickType_t ticks)
@@ -134,11 +136,17 @@ void vTaskDelay(TickType_t ticks)
 
     if (s_delay_action == DELAY_ACTION_REGISTER_THEN_CLEAR) {
         if (s_delay_calls == 1U) {
-            ina3221_monitor_register_current_task();
+            assert(ina3221_monitor_register_current_task());
         }
         else if (s_delay_calls == 2U) {
             ina3221_monitor_clear_current_task();
         }
+    }
+    else if (
+        s_delay_action == DELAY_ACTION_CLEAR_ON_FIRST &&
+        s_delay_calls == 1U
+    ) {
+        ina3221_monitor_clear_current_task();
     }
 }
 
@@ -377,6 +385,17 @@ static void test_start_is_idempotent_during_creation_handoff(void)
     assert_lock_balanced();
 }
 
+static void test_start_is_rejected_while_stop_is_active(void)
+{
+    reset_fakes();
+    s_task = &s_task_token;
+    s_stop_requested = true;
+
+    assert(ina3221_monitor_start() == ESP_ERR_INVALID_STATE);
+    assert(s_task_create_calls == 0U);
+    assert_lock_balanced();
+}
+
 static void test_stop_handles_delayed_worker_registration(void)
 {
     reset_fakes();
@@ -387,9 +406,30 @@ static void test_stop_handles_delayed_worker_registration(void)
     ina3221_monitor_stop();
 
     assert(s_delay_calls == 2U);
-    assert(s_notify_give_calls == 1U);
+    assert(s_notify_give_calls == 0U);
     assert(s_task == NULL);
     assert(!s_starting);
+    assert(!s_stop_requested);
+
+    assert(ina3221_monitor_start() == ESP_OK);
+    assert(s_task_create_calls == 2U);
+    assert_lock_balanced();
+}
+
+static void test_stop_notifies_running_worker_once(void)
+{
+    reset_fakes();
+    assert(ina3221_monitor_start() == ESP_OK);
+    assert(!ina3221_monitor_register_current_task());
+    assert(s_task == &s_task_token);
+    assert(!s_starting);
+
+    s_delay_action = DELAY_ACTION_CLEAR_ON_FIRST;
+    ina3221_monitor_stop();
+
+    assert(s_notify_give_calls == 1U);
+    assert(s_delay_calls == 1U);
+    assert(s_task == NULL);
     assert(!s_stop_requested);
 
     assert(ina3221_monitor_start() == ESP_OK);
@@ -429,7 +469,7 @@ static void test_worker_publishes_normal_sample_and_cleans_up(void)
     assert_lock_balanced();
 }
 
-static void test_open_failure_publishes_invalid_and_retries(void)
+static void test_open_failure_publishes_invalid_and_stops_on_notification(void)
 {
     reset_fakes();
     s_open_result = ESP_FAIL;
@@ -483,9 +523,11 @@ int main(void)
 {
     test_create_failure_rolls_back_and_retries();
     test_start_is_idempotent_during_creation_handoff();
+    test_start_is_rejected_while_stop_is_active();
     test_stop_handles_delayed_worker_registration();
+    test_stop_notifies_running_worker_once();
     test_worker_publishes_normal_sample_and_cleans_up();
-    test_open_failure_publishes_invalid_and_retries();
+    test_open_failure_publishes_invalid_and_stops_on_notification();
     test_read_failure_invalidates_and_closes_driver();
     return 0;
 }
