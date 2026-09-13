@@ -61,6 +61,29 @@
       ]
     },
     {
+      "name": "sd_card_diagnostics",
+      "sources": [
+        "components/sd_card/tests/sd_card_diagnostics_host_test.c"
+      ],
+      "include_dirs": [
+        "components/sd_card/tests/stubs",
+        "components/sd_card/include",
+        "components/sd_card"
+      ]
+    },
+    {
+      "name": "sd_card_diagnostics_io",
+      "sources": [
+        "components/sd_card/sd_card_diagnostics_io.c",
+        "components/sd_card/tests/sd_card_diagnostics_io_host_test.c"
+      ],
+      "include_dirs": [
+        "components/sd_card/tests/stubs",
+        "components/sd_card/include",
+        "components/sd_card"
+      ]
+    },
+    {
       "name": "ad7606_presence_policy",
       "sources": [
         "components/ad7606_driver/ad7606_presence_policy.c",
