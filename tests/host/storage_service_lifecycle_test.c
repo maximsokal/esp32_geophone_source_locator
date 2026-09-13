@@ -31,12 +31,15 @@ static bool s_fail_sem_create;
 static bool s_fail_task_create;
 static bool s_fail_queue_send;
 static bool s_inject_stop_when_empty;
+static bool s_release_callback_inflight_on_delay;
+static unsigned s_barrier_delay_calls;
 static unsigned s_queue_delete_calls;
 static unsigned s_sem_delete_calls;
 static unsigned s_process_info_calls;
 static unsigned s_process_erase_calls;
 static unsigned s_callback_calls;
 static bool s_callback_saw_gate_held;
+static bool s_callback_saw_inflight_accounted;
 static TaskFunction_t s_task_entry;
 static UBaseType_t s_task_priority;
 static uint32_t s_task_stack;
@@ -142,6 +145,17 @@ void vTaskDeleteWithCaps(TaskHandle_t task) { assert(task == NULL); }
 
 void vTaskDelay(TickType_t ticks)
 {
+    if (ticks == 1U) {
+        storage_service_callback_slot_t *slot =
+            storage_service_internal_callback_slot();
+        assert(s_release_callback_inflight_on_delay);
+        assert(slot->in_flight == 1U);
+        slot->in_flight = 0U;
+        s_release_callback_inflight_on_delay = false;
+        ++s_barrier_delay_calls;
+        return;
+    }
+
     assert(ticks == pdMS_TO_TICKS(10));
     if (s_task_entry != NULL) {
         TaskFunction_t task = s_task_entry;
@@ -169,12 +183,16 @@ bool storage_service_process_erase(storage_service_event_t *event)
 
 static void on_event(const storage_service_event_t *event, void *context)
 {
+    storage_service_callback_slot_t *slot =
+        storage_service_internal_callback_slot();
+
     assert(context == &s_callback_calls);
     assert(event->type == STORAGE_SERVICE_EVENT_INFO_DONE);
     assert(event->result == ESP_OK);
     assert(event->info.capacity_bytes == 1234U);
     ++s_callback_calls;
     s_callback_saw_gate_held = (s_sem.count == 0U);
+    s_callback_saw_inflight_accounted = (slot->in_flight == 1U);
 }
 
 static void reset_failures(void)
@@ -184,11 +202,15 @@ static void reset_failures(void)
     s_fail_task_create = false;
     s_fail_queue_send = false;
     s_inject_stop_when_empty = false;
+    s_release_callback_inflight_on_delay = false;
     s_task_entry = NULL;
 }
 
 int main(void)
 {
+    storage_service_callback_slot_t *slot =
+        storage_service_internal_callback_slot();
+
     assert(storage_service_set_event_callback(on_event, NULL) == ESP_ERR_INVALID_STATE);
     assert(storage_service_info_async() == ESP_ERR_INVALID_STATE);
     assert(storage_service_erase_data_async() == ESP_ERR_INVALID_STATE);
@@ -219,6 +241,16 @@ int main(void)
     assert(s_task_caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     assert(storage_service_set_event_callback(on_event, &s_callback_calls) == ESP_OK);
 
+    /* Model a callback already snapped by the worker before unregister. */
+    slot->in_flight = 1U;
+    s_release_callback_inflight_on_delay = true;
+    assert(storage_service_set_event_callback(NULL, NULL) == ESP_OK);
+    assert(s_barrier_delay_calls == 1U);
+    assert(slot->callback == NULL);
+    assert(slot->context == NULL);
+    assert(slot->in_flight == 0U);
+    assert(storage_service_set_event_callback(on_event, &s_callback_calls) == ESP_OK);
+
     s_fail_queue_send = true;
     assert(storage_service_info_async() == ESP_ERR_TIMEOUT);
     assert(!storage_service_is_busy());
@@ -234,10 +266,15 @@ int main(void)
     assert(s_process_info_calls == 1U);
     assert(s_callback_calls == 1U);
     assert(s_callback_saw_gate_held);
+    assert(s_callback_saw_inflight_accounted);
+    assert(slot->in_flight == 0U);
     assert(!storage_service_is_busy());
     assert(s_sem.count == 1U);
 
     storage_service_shutdown();
+    assert(slot->callback == NULL);
+    assert(slot->context == NULL);
+    assert(slot->in_flight == 0U);
     assert(!storage_service_is_busy());
     assert(s_queue_delete_calls == 3U);
     assert(s_sem_delete_calls == 2U);
