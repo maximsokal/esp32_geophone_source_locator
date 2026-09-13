@@ -145,6 +145,21 @@ function Test-BootResponsivenessTelemetry {
         $missing += 'WEB_STATUS_CACHE refresh=done'
     }
 
+    $expectedKeyCodes = @(1, 2, 3, 4, 5)
+    $seenKeyCodes = @(
+        $dispatch |
+            ForEach-Object { [int]$_.Key } |
+            Sort-Object -Unique
+    )
+    $missingKeyCodes = @($expectedKeyCodes | Where-Object { $_ -notin $seenKeyCodes })
+    $unexpectedKeyCodes = @($seenKeyCodes | Where-Object { $_ -notin $expectedKeyCodes })
+    if ($missingKeyCodes.Count -gt 0) {
+        $missing += "KEYPAD_EXPECTED_KEYS missing=$($missingKeyCodes -join ',')"
+    }
+    if ($unexpectedKeyCodes.Count -gt 0) {
+        $violations += "keypad unexpected key codes=$($unexpectedKeyCodes -join ',')"
+    }
+
     $maxStartup = Get-MaxUInt64Value $startup 'ElapsedMs'
     $maxRecovery = Get-MaxUInt64Value $recovery 'ElapsedMs'
     $maxDispatchAge = Get-MaxUInt64Value $dispatch 'AgeMs'
@@ -202,6 +217,9 @@ function Test-BootResponsivenessTelemetry {
         StartupCount = $startup.Count
         RecoveryCount = $recovery.Count
         KeypadDispatchCount = $dispatch.Count
+        KeypadDistinctKeyCount = $seenKeyCodes.Count
+        SeenKeyCodes = $seenKeyCodes
+        MissingKeyCodes = $missingKeyCodes
         StaleDropCount = $stale.Count
         PrioritySampleCount = $priorities.Count
         SafeShutdownCount = $telemetry.SafeShutdownCount
