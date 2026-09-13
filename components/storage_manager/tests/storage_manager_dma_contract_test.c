@@ -8,6 +8,7 @@
 
 #include "esp_heap_caps.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "storage_manager_internal.h"
 
 static size_t fake_largest_dma;
@@ -19,6 +20,12 @@ static unsigned fake_mutex_take_calls;
 static unsigned fake_mutex_give_calls;
 static unsigned fake_frees;
 static bool fake_malloc_fail;
+static unsigned fake_task_info_calls;
+static unsigned fake_mutex_give_calls_at_task_info;
+static TaskHandle_t fake_task_info_requested_handle;
+static BaseType_t fake_task_info_get_stack;
+static eTaskState fake_task_info_state;
+static TaskStatus_t fake_task_status;
 
 size_t heap_caps_get_free_size(unsigned capabilities)
 {
@@ -88,6 +95,22 @@ void vSemaphoreDelete(SemaphoreHandle_t semaphore)
     (void)semaphore;
 }
 
+void vTaskGetInfo(
+    TaskHandle_t task,
+    TaskStatus_t *status,
+    BaseType_t get_free_stack_space,
+    eTaskState state
+)
+{
+    assert(status != NULL);
+    ++fake_task_info_calls;
+    fake_task_info_requested_handle = task;
+    fake_task_info_get_stack = get_free_stack_space;
+    fake_task_info_state = state;
+    fake_mutex_give_calls_at_task_info = fake_mutex_give_calls;
+    *status = fake_task_status;
+}
+
 esp_err_t storage_manager_ensure_directory_locked(const char *path)
 {
     (void)path;
@@ -114,6 +137,15 @@ static void reset_fake_state(void)
     fake_mutex_give_calls = 0U;
     fake_frees = 0U;
     fake_malloc_fail = false;
+    fake_task_info_calls = 0U;
+    fake_mutex_give_calls_at_task_info = ~0U;
+    fake_task_info_requested_handle = (TaskHandle_t)1;
+    fake_task_info_get_stack = pdTRUE;
+    fake_task_info_state = eRunning;
+    fake_task_status.xHandle = NULL;
+    fake_task_status.pcTaskName = "storage_test";
+    fake_task_status.uxCurrentPriority = 1U;
+    fake_task_status.uxBasePriority = 1U;
     s_outer_operation_started_us = 0;
     s_outer_mutex_wait_us = 0;
     s_outer_tft_quiesce_us = 0;
@@ -132,6 +164,7 @@ static void test_unready_and_spi_failure(void)
     assert(fake_spi_begin_calls == 1U);
     assert(fake_spi_end_calls == 0U);
     assert(s_operation_depth == 0U);
+    assert(fake_task_info_calls == 0U);
 }
 
 static void test_begin_end_reserves_dma_and_pairs_spi(void)
@@ -149,6 +182,8 @@ static void test_begin_end_reserves_dma_and_pairs_spi(void)
     assert(fake_spi_end_calls == 1U);
     assert(fake_mutex_take_calls == 1U);
     assert(fake_mutex_give_calls == 1U);
+    assert(fake_task_info_calls == 1U);
+    assert(fake_mutex_give_calls_at_task_info == 0U);
 }
 
 static void test_nested_operations_share_one_spi_boundary(void)
@@ -163,11 +198,14 @@ static void test_nested_operations_share_one_spi_boundary(void)
     assert(s_operation_depth == 1U);
     assert(s_dma_reserve == NULL);
     assert(fake_spi_end_calls == 0U);
+    assert(fake_task_info_calls == 0U);
 
     storage_manager_operation_end();
     assert(s_operation_depth == 0U);
     assert(s_dma_reserve != NULL);
     assert(fake_spi_end_calls == 1U);
+    assert(fake_task_info_calls == 1U);
+    assert(fake_mutex_give_calls_at_task_info == 1U);
 }
 
 static void test_dma_failure_restores_reserve_and_spi_pairing(void)
@@ -216,6 +254,27 @@ static void test_unmatched_end_is_noop(void)
     assert(s_operation_depth == 0U);
     assert(fake_spi_end_calls == 0U);
     assert(fake_mutex_give_calls == 0U);
+    assert(fake_task_info_calls == 0U);
+}
+
+static void test_priority_snapshot_reads_current_owner_before_release(void)
+{
+    reset_fake_state();
+    fake_task_status.pcTaskName = "web_status_cache";
+    fake_task_status.uxCurrentPriority = 23U;
+    fake_task_status.uxBasePriority = 1U;
+
+    assert(storage_manager_operation_begin() == ESP_OK);
+    storage_manager_operation_end();
+
+    assert(fake_task_info_calls == 1U);
+    assert(fake_task_info_requested_handle == NULL);
+    assert(fake_task_info_get_stack == pdFALSE);
+    assert(fake_task_info_state == eInvalid);
+    assert(fake_mutex_give_calls_at_task_info == 0U);
+    assert(fake_mutex_give_calls == 1U);
+    assert(fake_task_status.uxCurrentPriority == 23U);
+    assert(fake_task_status.uxBasePriority == 1U);
 }
 
 int main(void)
@@ -226,6 +285,7 @@ int main(void)
     test_dma_failure_restores_reserve_and_spi_pairing();
     test_reserve_allocation_failure_is_recoverable();
     test_unmatched_end_is_noop();
+    test_priority_snapshot_reads_current_owner_before_release();
     reset_fake_state();
     return 0;
 }
