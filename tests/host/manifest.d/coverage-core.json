@@ -53,6 +53,7 @@
       "name": "ui_event_dispatcher_lifecycle",
       "sources": [
         "components/ui/ui_event_dispatcher.c",
+        "tests/host/stubs/ui_event_dispatcher/app_events_base.c",
         "tests/host/ui_event_dispatcher_lifecycle_test.c"
       ],
       "include_dirs": [
