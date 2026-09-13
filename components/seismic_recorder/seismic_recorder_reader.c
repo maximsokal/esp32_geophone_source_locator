@@ -345,6 +345,56 @@ static bool seismic_recorder_reader_lod_worthwhile(
 }
 
 
+/*
+ * Build an optional LOD path without ever contaminating the authoritative
+ * samples.bin error state. A custom mount point or future identifier format
+ * can make the longer sidecar suffix exceed SEISMIC_RECORDER_PATH_SIZE even
+ * while /samples.bin still fits. That condition must mean "no acceleration",
+ * not "saved waveform unavailable".
+ */
+static char *seismic_recorder_reader_try_lod_path(
+    const char *session_path,
+    uint64_t frame_count,
+    size_t max_points
+)
+{
+    if (
+        session_path == NULL ||
+        !seismic_recorder_reader_lod_worthwhile(frame_count, max_points)
+    ) {
+        return NULL;
+    }
+
+    char *lod_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (lod_path == NULL) {
+        return NULL;
+    }
+
+    const int written = snprintf(
+        lod_path,
+        SEISMIC_RECORDER_PATH_SIZE,
+        "%s",
+        session_path
+    );
+    if (written < 0 || written >= SEISMIC_RECORDER_PATH_SIZE) {
+        free(lod_path);
+        return NULL;
+    }
+
+    const esp_err_t path_err = seismic_recorder_reader_append_suffix(
+        lod_path,
+        SEISMIC_RECORDER_PATH_SIZE,
+        "/" SEISMIC_RECORDER_LOD_FILE_NAME
+    );
+    if (path_err != ESP_OK) {
+        free(lod_path);
+        return NULL;
+    }
+
+    return lod_path;
+}
+
+
 esp_err_t seismic_recorder_read_session(
     const char *object_id,
     const char *session_id,
@@ -486,31 +536,12 @@ esp_err_t seismic_recorder_read_session(
     );
 
     char *lod_path = NULL;
-    const bool try_lod =
-        err == ESP_OK &&
-        seismic_recorder_reader_lod_worthwhile(
+    if (err == ESP_OK) {
+        lod_path = seismic_recorder_reader_try_lod_path(
+            samples_path,
             resolved_frame_count,
             max_points
         );
-    if (try_lod) {
-        lod_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
-        if (lod_path != NULL) {
-            snprintf(
-                lod_path,
-                SEISMIC_RECORDER_PATH_SIZE,
-                "%s",
-                samples_path
-            );
-            err = seismic_recorder_reader_append_suffix(
-                lod_path,
-                SEISMIC_RECORDER_PATH_SIZE,
-                "/" SEISMIC_RECORDER_LOD_FILE_NAME
-            );
-            if (err != ESP_OK) {
-                free(lod_path);
-                lod_path = NULL;
-            }
-        }
     }
 
     if (err == ESP_OK) {
