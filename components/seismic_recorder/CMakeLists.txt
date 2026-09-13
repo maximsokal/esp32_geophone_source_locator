@@ -8,6 +8,7 @@ idf_component_register(
         "seismic_recorder_reader.c"
         "seismic_recorder_waveform.c"
         "seismic_recorder_lod.c"
+        "seismic_recorder_lod_reader.c"
         "seismic_recorder_lod_store.c"
         "seismic_recorder_cache.c"
         "seismic_recorder_list_responsive.c"
