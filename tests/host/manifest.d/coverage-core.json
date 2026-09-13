@@ -37,6 +37,17 @@
         "components/device_status"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "ui_home_navigation",
+      "sources": [
+        "components/ui/ui_screen_registry.c",
+        "components/ui/ui_navigation.c",
+        "tests/host/ui_home_navigation_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ui_navigation"
+      ]
     }
   ]
 }
