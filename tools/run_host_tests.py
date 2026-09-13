@@ -186,6 +186,12 @@ def is_msvc(compiler: list[str]) -> bool:
     return Path(compiler[0]).name.lower() in {"cl.exe", "clang-cl.exe"}
 
 
+def is_msvc_cl(compiler: list[str]) -> bool:
+    """True only for Microsoft's cl.exe, not the clang-cl compatible driver."""
+
+    return Path(compiler[0]).name.lower() == "cl.exe"
+
+
 def load_msvc_environment(compiler: list[str]) -> dict[str, str]:
     """Load the Visual C++ x64 environment without mutating the parent shell."""
 
@@ -287,6 +293,11 @@ def main() -> int:
         raise RunnerError("UBSan is not supported by the MSVC host runner; select native clang/gcc")
     if msvc:
         common_flags = ["/nologo", "/std:c11", "/W4", "/WX", "/UNDEBUG", "/D_CRT_SECURE_NO_WARNINGS"]
+        if is_msvc_cl(compiler):
+            # MSVC's C11 <stdatomic.h> implementation remains opt-in. Keep
+            # the production atomic API in host tests instead of replacing it
+            # with a fake header.
+            common_flags.append("/experimental:c11atomics")
         if args.sanitizers == "address":
             common_flags.append("/fsanitize=address")
     else:
