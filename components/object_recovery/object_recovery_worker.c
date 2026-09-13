@@ -18,6 +18,8 @@ static const char *TAG = "OBJECT_RECOVERY";
 static TaskHandle_t s_task = NULL;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_stop_requested = false;
+static object_recovery_background_complete_fn s_complete_fn = NULL;
+static void *s_complete_context = NULL;
 
 
 static bool object_recovery_background_stop_requested(
@@ -68,6 +70,26 @@ static void object_recovery_background_task(void *argument)
         (int)err
     );
 
+    object_recovery_background_complete_fn complete_fn = NULL;
+    void *complete_context = NULL;
+    bool stopped = false;
+
+    portENTER_CRITICAL(&s_state_lock);
+    stopped = s_stop_requested;
+    complete_fn = s_complete_fn;
+    complete_context = s_complete_context;
+    s_complete_fn = NULL;
+    s_complete_context = NULL;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    /* Keep s_task non-NULL while the completion callback executes. A
+     * concurrent shutdown therefore waits in object_recovery_stop_background()
+     * until the callback has returned and cannot tear web/storage services
+     * down underneath it. */
+    if (!stopped && complete_fn != NULL) {
+        complete_fn(err, complete_context);
+    }
+
     portENTER_CRITICAL(&s_state_lock);
     s_task = NULL;
     portEXIT_CRITICAL(&s_state_lock);
@@ -76,7 +98,10 @@ static void object_recovery_background_task(void *argument)
 }
 
 
-esp_err_t object_recovery_start_background(void)
+esp_err_t object_recovery_start_background_with_callback(
+    object_recovery_background_complete_fn complete_fn,
+    void *user_context
+)
 {
     portENTER_CRITICAL(&s_state_lock);
     if (s_task != NULL) {
@@ -84,6 +109,8 @@ esp_err_t object_recovery_start_background(void)
         return ESP_OK;
     }
     s_stop_requested = false;
+    s_complete_fn = complete_fn;
+    s_complete_context = user_context;
     portEXIT_CRITICAL(&s_state_lock);
 
     const BaseType_t result =
@@ -102,6 +129,8 @@ esp_err_t object_recovery_start_background(void)
         portENTER_CRITICAL(&s_state_lock);
         s_task = NULL;
         s_stop_requested = false;
+        s_complete_fn = NULL;
+        s_complete_context = NULL;
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_NO_MEM;
     }
@@ -112,6 +141,15 @@ esp_err_t object_recovery_start_background(void)
         (unsigned)APP_TASK_STACK_OBJECT_RECOVERY
     );
     return ESP_OK;
+}
+
+
+esp_err_t object_recovery_start_background(void)
+{
+    return object_recovery_start_background_with_callback(
+        NULL,
+        NULL
+    );
 }
 
 
