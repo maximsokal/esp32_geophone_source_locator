@@ -20,6 +20,8 @@ _spec.loader.exec_module(runner)
 
 def healthy_log(*, inherited: bool = False) -> str:
     lines = [
+        "I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED",
+        "I APP: BOOT_TIMING: interactive_ready=2800 ms",
         "I APP: BOOT_TIMING: startup_total=3200 ms",
         "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START",
         "I OBJECT_RECOVERY: OBJECT_RECOVERY_PROGRESS object=OBJ_0001 index=1 total=2 removed=0 elapsed_ms=120",
@@ -117,6 +119,8 @@ def test_valid_baseline_makes_all_machine_checks_pass(tmp_path: Path):
     assert report.storage_baseline_loaded is True
     assert report.max6.manual_required
     assert report.max7.manual_required
+    assert "interactive_ready=2800 ms" in report.max7.evidence
+    assert any("startup_total=3200 ms" in item for item in report.max7.evidence)
 
 
 def test_require_inherited_blocks_base_only_capture(tmp_path: Path):
@@ -143,8 +147,9 @@ def test_targeted_inherited_sample_satisfies_reproduction_mode(tmp_path: Path):
     assert any("inherited samples=1" == item for item in report.max11.evidence)
 
 
-def test_slow_startup_fails_max7_but_not_key_chain(tmp_path: Path):
-    content = healthy_log().replace("startup_total=3200", "startup_total=6001")
+def test_slow_interactive_ready_fails_max7_but_not_key_chain(tmp_path: Path):
+    content = healthy_log().replace("interactive_ready=2800", "interactive_ready=6001")
+    content = content.replace("startup_total=3200", "startup_total=6500")
     report = runner.analyze_report(
         content,
         storage_baseline_path=write_baseline(tmp_path),
@@ -155,7 +160,35 @@ def test_slow_startup_fails_max7_but_not_key_chain(tmp_path: Path):
     assert report.max7.machine_status == "FAIL"
 
 
-def test_missing_one_ui_result_blocks_max6(tmp_path: Path):
+def test_slow_full_startup_does_not_fail_max7_interactive_budget(tmp_path: Path):
+    content = healthy_log().replace("startup_total=3200", "startup_total=8000")
+    report = runner.analyze_report(
+        content,
+        storage_baseline_path=write_baseline(tmp_path),
+    )
+
+    assert report.machine_status == "PASS"
+    assert report.max7.machine_status == "PASS"
+    assert any("startup_total=8000 ms" in item for item in report.max7.evidence)
+
+
+def test_missing_interactive_ready_blocks_max7_only(tmp_path: Path):
+    content = healthy_log().replace(
+        "I APP: BOOT_TIMING: interactive_ready=2800 ms\n",
+        "",
+    )
+    report = runner.analyze_report(
+        content,
+        storage_baseline_path=write_baseline(tmp_path),
+    )
+
+    assert report.machine_status == "BLOCKED"
+    assert report.max6.machine_status == "PASS"
+    assert report.max7.machine_status == "BLOCKED"
+    assert any("BOOT_TIMING interactive_ready" in item for item in report.max7.evidence)
+
+
+def test_missing_one_ui_result_blocks_max6_but_not_max7(tmp_path: Path):
     content = healthy_log().replace(
         "I UI_EVENT: UI_KEY_RESULT key=5 screen_before=0 screen_after=0 selected_before=0 selected_after=0\n",
         "",
@@ -167,6 +200,7 @@ def test_missing_one_ui_result_blocks_max6(tmp_path: Path):
 
     assert report.machine_status == "BLOCKED"
     assert report.max6.machine_status == "BLOCKED"
+    assert report.max7.machine_status == "PASS"
     assert any("ui-result missing=5" in item for item in report.max6.evidence)
 
 
