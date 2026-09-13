@@ -122,7 +122,6 @@ static esp_err_t app_events_post_internal(
          * before it can occupy APP_EVENT/UI queues until the interactive UI
          * has explicitly armed keypad delivery.
          */
-        ESP_LOGD(TAG, "KEYPAD_EVENT_DROP reason=gate key=%ld", (long)value);
         return ESP_OK;
     }
 
