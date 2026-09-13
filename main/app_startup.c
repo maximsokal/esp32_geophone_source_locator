@@ -63,6 +63,19 @@ static void app_startup_background_recovery_complete(
 {
     (void)user_context;
 
+    const esp_err_t status_event_err =
+        app_events_post_best_effort(
+            APP_EVENT_STORAGE_RECOVERY_FINISHED,
+            (int32_t)recovery_result
+        );
+    if (status_event_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Background recovery UI completion event dropped: %s",
+            esp_err_to_name(status_event_err)
+        );
+    }
+
     if (recovery_result != ESP_OK) {
         ESP_LOGW(
             TAG,
@@ -415,6 +428,19 @@ void app_startup_run(void)
      * worker completes, preventing two archive-wide SD scans from alternating
      * TFT quiesce windows and making keypad events stale.
      */
+    const esp_err_t recovery_status_err =
+        app_events_post_best_effort(
+            APP_EVENT_STORAGE_RECOVERY_STARTED,
+            0
+        );
+    if (recovery_status_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Background recovery UI start event dropped: %s",
+            esp_err_to_name(recovery_status_err)
+        );
+    }
+
     const esp_err_t recovery_err =
         object_recovery_start_background_with_callback(
             app_startup_background_recovery_complete,
