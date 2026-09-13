@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "measured_at": null,
+  "board": "ESP32-S3 N16R8",
+  "sd_card": "64 GB A1 WICDXU1",
+  "sdspi_hz": 20000000,
+  "sample_rate_hz": 500,
+  "channels": 4,
+  "firmware_commit": null,
+  "limits_us": {
+    "mutex_wait_us": null,
+    "tft_quiesce_us": null,
+    "tft_resume_us": null,
+    "spi_end_elapsed_us": null,
+    "recorder_window_us": null,
+    "recorder_fwrite_us": null,
+    "recorder_operation_us": null
+  },
+  "notes": "Template only. Copy this file after measuring the real board and replace every null with measured metadata/limits. The analyzer intentionally rejects this template as incomplete."
+}
