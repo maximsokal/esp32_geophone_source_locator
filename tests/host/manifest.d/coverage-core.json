@@ -48,6 +48,18 @@
       "include_dirs": [
         "tests/host/stubs/ui_navigation"
       ]
+    },
+    {
+      "name": "ui_event_dispatcher_lifecycle",
+      "sources": [
+        "components/ui/ui_event_dispatcher.c",
+        "tests/host/ui_event_dispatcher_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ui_event_dispatcher",
+        "components/ui"
+      ],
+      "libraries": ["pthread"]
     }
   ]
 }
