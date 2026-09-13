@@ -1,5 +1,7 @@
 #include "wifi_manager.h"
 
+#include <stddef.h>
+
 #include "wifi_manager_credentials.h"
 #include "wifi_manager_internal.h"
 #include "wifi_manager_platform.h"
