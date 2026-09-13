@@ -4,6 +4,7 @@ These are source/ordering contracts, not physical startup-time proof.  The
 <=5 s acceptance target still requires a live board log with the real SD card.
 """
 
+import re
 from pathlib import Path
 
 
@@ -27,21 +28,49 @@ def position(source: str, needle: str) -> int:
     return value
 
 
+def pattern_position(source: str, pattern: str) -> int:
+    match = re.search(pattern, source, flags=re.MULTILINE | re.DOTALL)
+    assert match is not None, f"missing source contract pattern: {pattern}"
+    return match.start()
+
+
+def function_section(source: str, signature: str, next_signature: str | None = None) -> str:
+    start = position(source, signature)
+    if next_signature is None:
+        return source[start:]
+    end = source.find(next_signature, start + len(signature))
+    assert end >= 0, f"missing next function marker: {next_signature}"
+    return source[start:end]
+
+
 def test_full_recovery_is_not_on_interactive_startup_critical_path():
     assert "object_recovery_run();" not in STARTUP
 
-    ordered = [
-        "object_recovery_run_active()",
-        "object_store_init()",
-        "ui_init()",
-        "keypad_start_event_monitor(",
-        "seismic_acquisition_start()",
-        "power_control_arm_shutdown_button()",
-        '"startup_total"',
-        "object_recovery_start_background()",
+    services = function_section(
+        STARTUP,
+        "static void app_startup_initialize_services(void)",
+        "void app_startup_run(void)",
+    )
+    run = function_section(STARTUP, "void app_startup_run(void)")
+
+    service_patterns = [
+        r"ESP_ERROR_CHECK\(\s*object_recovery_run_active\(\)\s*\)",
+        r"ESP_ERROR_CHECK\(\s*object_store_init\(\)\s*\)",
+        r"ESP_ERROR_CHECK\(\s*ui_init\(\)\s*\)",
+        r"keypad_start_event_monitor\(",
+        r"seismic_acquisition_start\(\)",
     ]
-    positions = [position(STARTUP, marker) for marker in ordered]
-    assert positions == sorted(positions)
+    service_positions = [pattern_position(services, pattern) for pattern in service_patterns]
+    assert service_positions == sorted(service_positions)
+
+    run_patterns = [
+        r"app_startup_initialize_services\(\)",
+        r"power_control_arm_shutdown_button\(\)",
+        r'app_startup_log_elapsed\(\s*"startup_total"',
+        r"object_recovery_start_background\(\)",
+    ]
+    run_positions = [pattern_position(run, pattern) for pattern in run_patterns]
+    assert run_positions == sorted(run_positions)
 
 
 def test_archive_recovery_releases_storage_between_objects():
@@ -83,8 +112,17 @@ def test_background_worker_is_low_priority_psram_and_shutdown_aware():
 
 
 def test_shutdown_stops_recovery_before_lvgl_and_storage_teardown():
-    stop = position(SHUTDOWN, "object_recovery_stop_background()")
-    ui = position(SHUTDOWN, "ui_shutdown()")
-    storage = position(SHUTDOWN, "storage_manager_shutdown()")
-    unmount = position(SHUTDOWN, "sd_card_unmount()")
-    assert stop < ui < storage < unmount
+    wait_and_run = function_section(SHUTDOWN, "void app_shutdown_wait_and_run(void)")
+    stop = position(wait_and_run, "object_recovery_stop_background()")
+    ui = position(wait_and_run, "ui_shutdown()")
+    storage_phase = position(wait_and_run, "app_shutdown_stop_storage()")
+    assert stop < ui < storage_phase
+
+    storage_helper = function_section(
+        SHUTDOWN,
+        "static void app_shutdown_stop_storage(void)",
+        "static void app_shutdown_stop_display(void)",
+    )
+    storage = position(storage_helper, "storage_manager_shutdown()")
+    unmount = position(storage_helper, "sd_card_unmount()")
+    assert storage < unmount
