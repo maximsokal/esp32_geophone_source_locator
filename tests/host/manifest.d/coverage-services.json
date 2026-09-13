@@ -44,6 +44,23 @@
         "components/object_service",
         "components/object_format/include"
       ]
+    },
+    {
+      "name": "measurement_service_hook_lifecycle",
+      "sources": [
+        "tests/host/measurement_service_hook_lifecycle_test.c",
+        "components/object_format/object_format.c",
+        "tests/host/stubs/runtime_observability/noop.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/tests/stubs",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "tests/host/stubs/runtime_observability",
+        "components/runtime_observability/include"
+      ]
     }
   ]
 }

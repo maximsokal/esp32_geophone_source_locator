@@ -32,12 +32,24 @@ typedef enum
 } measurement_command_type_t;
 
 
+typedef enum
+{
+    MEASUREMENT_HOOK_START_GUARD = 0,
+    MEASUREMENT_HOOK_START_OBJECT,
+    MEASUREMENT_HOOK_START_RESERVATION_RELEASE,
+    MEASUREMENT_HOOK_STORAGE_REFRESH,
+    MEASUREMENT_HOOK_COUNT
+
+} measurement_hook_type_t;
+
+
 typedef struct
 {
     measurement_command_type_t type;
     char object_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
     measurement_service_start_object_callback_t start_object_callback;
     void *start_object_context;
+    bool start_object_hook_owned;
 
 } measurement_command_t;
 
@@ -50,6 +62,15 @@ static SemaphoreHandle_t s_mutex = NULL;
 static TaskHandle_t s_task = NULL;
 static measurement_service_snapshot_t s_snapshot;
 static bool s_initialized = false;
+
+/*
+ * Hook pointers are shared by lifecycle/Web tasks and the measurement worker.
+ * The spinlock protects pointer/context snapshots and lifetime counters only.
+ * User callbacks, waits and FreeRTOS blocking APIs always run outside it.
+ */
+static portMUX_TYPE s_hook_lock = portMUX_INITIALIZER_UNLOCKED;
+static unsigned s_hook_in_flight[MEASUREMENT_HOOK_COUNT];
+
 static measurement_service_start_guard_callback_t s_start_guard = NULL;
 static void *s_start_guard_context = NULL;
 static measurement_service_start_object_callback_t s_start_object_callback = NULL;
@@ -57,9 +78,19 @@ static void *s_start_object_context = NULL;
 static measurement_service_start_reservation_release_callback_t
     s_start_reservation_release_callback = NULL;
 static void *s_start_reservation_release_context = NULL;
-static bool s_start_reservation_held = false;
 static measurement_service_storage_refresh_callback_t s_storage_refresh_callback = NULL;
 static void *s_storage_refresh_context = NULL;
+
+/*
+ * A successful START guard owns one exact release callback until the
+ * reservation is released. These fields are protected by s_mutex; the
+ * callback's lifetime itself is accounted by s_hook_in_flight.
+ */
+static bool s_start_reservation_held = false;
+static measurement_service_start_reservation_release_callback_t
+    s_start_reservation_callback = NULL;
+static void *s_start_reservation_context = NULL;
+static bool s_start_reservation_hook_owned = false;
 
 
 static void measurement_service_log_stack_hwm(
@@ -88,6 +119,43 @@ static void measurement_service_unlock(void)
 }
 
 
+static unsigned measurement_service_hook_in_flight(
+    measurement_hook_type_t hook
+)
+{
+    unsigned in_flight;
+
+    taskENTER_CRITICAL(&s_hook_lock);
+    in_flight = s_hook_in_flight[hook];
+    taskEXIT_CRITICAL(&s_hook_lock);
+
+    return in_flight;
+}
+
+
+static void measurement_service_hook_release(
+    measurement_hook_type_t hook
+)
+{
+    taskENTER_CRITICAL(&s_hook_lock);
+    if (s_hook_in_flight[hook] > 0U) {
+        --s_hook_in_flight[hook];
+    }
+    taskEXIT_CRITICAL(&s_hook_lock);
+}
+
+
+static void measurement_service_wait_for_hook(
+    measurement_hook_type_t hook
+)
+{
+    while (measurement_service_hook_in_flight(hook) != 0U) {
+        /* Never block or yield while holding the SMP spinlock. */
+        vTaskDelay(1);
+    }
+}
+
+
 static void measurement_service_release_gate(void)
 {
     if (s_gate != NULL) {
@@ -96,21 +164,45 @@ static void measurement_service_release_gate(void)
 }
 
 
+static void measurement_service_release_start_object_command(
+    measurement_command_t *command
+)
+{
+    if (command == NULL || !command->start_object_hook_owned) {
+        return;
+    }
+
+    command->start_object_hook_owned = false;
+    measurement_service_hook_release(MEASUREMENT_HOOK_START_OBJECT);
+}
+
+
 static void measurement_service_release_start_reservation(void)
 {
     measurement_service_start_reservation_release_callback_t callback = NULL;
     void *user_context = NULL;
+    bool hook_owned = false;
 
     measurement_service_lock();
     if (s_start_reservation_held) {
         s_start_reservation_held = false;
-        callback = s_start_reservation_release_callback;
-        user_context = s_start_reservation_release_context;
+        callback = s_start_reservation_callback;
+        user_context = s_start_reservation_context;
+        hook_owned = s_start_reservation_hook_owned;
+        s_start_reservation_callback = NULL;
+        s_start_reservation_context = NULL;
+        s_start_reservation_hook_owned = false;
     }
     measurement_service_unlock();
 
     if (callback != NULL) {
         callback(user_context);
+    }
+
+    if (hook_owned) {
+        measurement_service_hook_release(
+            MEASUREMENT_HOOK_START_RESERVATION_RELEASE
+        );
     }
 }
 
@@ -162,7 +254,7 @@ static void measurement_service_copy_recorder_snapshot(
 
 
 static void measurement_service_process_start(
-    const measurement_command_t *command
+    measurement_command_t *command
 )
 {
     measurement_service_lock();
@@ -181,6 +273,7 @@ static void measurement_service_process_start(
         command != NULL && command->object_id[0] != '\0';
     if (has_requested_object) {
         if (command->start_object_callback == NULL) {
+            measurement_service_release_start_object_command(command);
             measurement_service_set_error(ESP_ERR_INVALID_STATE);
             measurement_service_release_start_reservation();
             return;
@@ -190,6 +283,8 @@ static void measurement_service_process_start(
             command->object_id,
             command->start_object_context
         );
+        measurement_service_release_start_object_command(command);
+
         if (select_err != ESP_OK) {
             ESP_LOGE(
                 TAG,
@@ -291,11 +386,23 @@ static void measurement_service_process_start(
 
 static void measurement_service_notify_storage_refresh(void)
 {
-    if (s_storage_refresh_callback == NULL) {
+    measurement_service_storage_refresh_callback_t callback = NULL;
+    void *user_context = NULL;
+
+    taskENTER_CRITICAL(&s_hook_lock);
+    if (s_storage_refresh_callback != NULL) {
+        callback = s_storage_refresh_callback;
+        user_context = s_storage_refresh_context;
+        ++s_hook_in_flight[MEASUREMENT_HOOK_STORAGE_REFRESH];
+    }
+    taskEXIT_CRITICAL(&s_hook_lock);
+
+    if (callback == NULL) {
         return;
     }
 
-    s_storage_refresh_callback(s_storage_refresh_context);
+    callback(user_context);
+    measurement_service_hook_release(MEASUREMENT_HOOK_STORAGE_REFRESH);
 }
 
 
@@ -592,13 +699,6 @@ static esp_err_t measurement_service_submit(
     measurement_service_lock();
     const bool allowed =
         measurement_service_command_allowed_locked(command.type);
-    measurement_service_start_guard_callback_t start_guard =
-        s_start_guard;
-    void *start_guard_context = s_start_guard_context;
-    if (command.object_id[0] != '\0') {
-        command.start_object_callback = s_start_object_callback;
-        command.start_object_context = s_start_object_context;
-    }
     measurement_service_unlock();
 
     if (!allowed) {
@@ -606,30 +706,108 @@ static esp_err_t measurement_service_submit(
         return ESP_ERR_INVALID_STATE;
     }
 
+    measurement_service_start_guard_callback_t start_guard = NULL;
+    void *start_guard_context = NULL;
+    bool start_guard_hook_owned = false;
+
+    measurement_service_start_reservation_release_callback_t
+        reservation_release = NULL;
+    void *reservation_release_context = NULL;
+    bool reservation_release_hook_owned = false;
+
+    if (command_type == MEASUREMENT_COMMAND_START) {
+        taskENTER_CRITICAL(&s_hook_lock);
+
+        if (s_start_guard != NULL) {
+            start_guard = s_start_guard;
+            start_guard_context = s_start_guard_context;
+            ++s_hook_in_flight[MEASUREMENT_HOOK_START_GUARD];
+            start_guard_hook_owned = true;
+
+            /*
+             * Capture the exact release hook together with the guard. If the
+             * guard succeeds, this ownership transfers to the reservation.
+             */
+            reservation_release = s_start_reservation_release_callback;
+            reservation_release_context = s_start_reservation_release_context;
+            if (reservation_release != NULL) {
+                ++s_hook_in_flight[
+                    MEASUREMENT_HOOK_START_RESERVATION_RELEASE
+                ];
+                reservation_release_hook_owned = true;
+            }
+        }
+
+        if (
+            command.object_id[0] != '\0' &&
+            s_start_object_callback != NULL
+        ) {
+            command.start_object_callback = s_start_object_callback;
+            command.start_object_context = s_start_object_context;
+            command.start_object_hook_owned = true;
+            ++s_hook_in_flight[MEASUREMENT_HOOK_START_OBJECT];
+        }
+
+        taskEXIT_CRITICAL(&s_hook_lock);
+    }
+
     if (
         command.object_id[0] != '\0' &&
         command.start_object_callback == NULL
     ) {
+        if (start_guard_hook_owned) {
+            measurement_service_hook_release(MEASUREMENT_HOOK_START_GUARD);
+        }
+        if (reservation_release_hook_owned) {
+            measurement_service_hook_release(
+                MEASUREMENT_HOOK_START_RESERVATION_RELEASE
+            );
+        }
+        measurement_service_release_start_object_command(&command);
         measurement_service_release_gate();
         return ESP_ERR_INVALID_STATE;
     }
 
-    bool start_reservation_held = false;
-    if (command_type == MEASUREMENT_COMMAND_START && start_guard != NULL) {
+    if (start_guard != NULL) {
         const esp_err_t guard_err = start_guard(start_guard_context);
+
+        if (start_guard_hook_owned) {
+            measurement_service_hook_release(MEASUREMENT_HOOK_START_GUARD);
+            start_guard_hook_owned = false;
+        }
+
         if (guard_err != ESP_OK) {
+            measurement_service_release_start_object_command(&command);
+            if (reservation_release_hook_owned) {
+                measurement_service_hook_release(
+                    MEASUREMENT_HOOK_START_RESERVATION_RELEASE
+                );
+            }
             measurement_service_release_gate();
             return guard_err;
         }
 
         measurement_service_lock();
         s_start_reservation_held = true;
+        s_start_reservation_callback = reservation_release;
+        s_start_reservation_context = reservation_release_context;
+        s_start_reservation_hook_owned = reservation_release_hook_owned;
         measurement_service_unlock();
-        start_reservation_held = true;
+
+        reservation_release_hook_owned = false;
     }
 
     if (xQueueSend(s_queue, &command, 0) != pdTRUE) {
-        if (start_reservation_held) {
+        measurement_service_release_start_object_command(&command);
+        if (start_guard_hook_owned) {
+            measurement_service_hook_release(MEASUREMENT_HOOK_START_GUARD);
+        }
+        if (reservation_release_hook_owned) {
+            measurement_service_hook_release(
+                MEASUREMENT_HOOK_START_RESERVATION_RELEASE
+            );
+        }
+        if (start_guard != NULL) {
             measurement_service_release_start_reservation();
         }
         measurement_service_release_gate();
@@ -637,6 +815,24 @@ static esp_err_t measurement_service_submit(
     }
 
     return ESP_OK;
+}
+
+
+static void measurement_service_reset_hooks(void)
+{
+    taskENTER_CRITICAL(&s_hook_lock);
+    s_start_guard = NULL;
+    s_start_guard_context = NULL;
+    s_start_object_callback = NULL;
+    s_start_object_context = NULL;
+    s_start_reservation_release_callback = NULL;
+    s_start_reservation_release_context = NULL;
+    s_storage_refresh_callback = NULL;
+    s_storage_refresh_context = NULL;
+    for (size_t i = 0U; i < MEASUREMENT_HOOK_COUNT; ++i) {
+        s_hook_in_flight[i] = 0U;
+    }
+    taskEXIT_CRITICAL(&s_hook_lock);
 }
 
 
@@ -671,15 +867,11 @@ esp_err_t measurement_service_init(void)
     }
 
     memset(&s_snapshot, 0, sizeof(s_snapshot));
-    s_start_guard = NULL;
-    s_start_guard_context = NULL;
-    s_start_object_callback = NULL;
-    s_start_object_context = NULL;
-    s_start_reservation_release_callback = NULL;
-    s_start_reservation_release_context = NULL;
+    measurement_service_reset_hooks();
     s_start_reservation_held = false;
-    s_storage_refresh_callback = NULL;
-    s_storage_refresh_context = NULL;
+    s_start_reservation_callback = NULL;
+    s_start_reservation_context = NULL;
+    s_start_reservation_hook_owned = false;
     s_snapshot.initialized = true;
     s_snapshot.state = MEASUREMENT_SERVICE_LIVE;
     s_snapshot.last_error = ESP_OK;
@@ -725,6 +917,16 @@ void measurement_service_shutdown(void)
         return;
     }
 
+    /*
+     * Close every externally owned hook while the worker is still alive.
+     * Setters are lifetime barriers, so queued/snapshotted callbacks finish
+     * before their owner can tear down Web/cache state.
+     */
+    (void)measurement_service_set_start_guard(NULL, NULL);
+    (void)measurement_service_set_start_object_callback(NULL, NULL);
+    (void)measurement_service_set_storage_refresh_callback(NULL, NULL);
+    (void)measurement_service_set_start_reservation_release_callback(NULL, NULL);
+
     const measurement_command_t command = {
         .type = MEASUREMENT_COMMAND_SHUTDOWN,
     };
@@ -759,15 +961,11 @@ void measurement_service_shutdown(void)
     }
 
     memset(&s_snapshot, 0, sizeof(s_snapshot));
-    s_start_guard = NULL;
-    s_start_guard_context = NULL;
-    s_start_object_callback = NULL;
-    s_start_object_context = NULL;
-    s_start_reservation_release_callback = NULL;
-    s_start_reservation_release_context = NULL;
+    measurement_service_reset_hooks();
     s_start_reservation_held = false;
-    s_storage_refresh_callback = NULL;
-    s_storage_refresh_context = NULL;
+    s_start_reservation_callback = NULL;
+    s_start_reservation_context = NULL;
+    s_start_reservation_hook_owned = false;
     s_initialized = false;
 
     ESP_LOGI(TAG, "Shutdown complete");
@@ -779,14 +977,24 @@ esp_err_t measurement_service_set_start_guard(
     void *user_context
 )
 {
-    if (!s_initialized || s_mutex == NULL) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    measurement_service_lock();
-    s_start_guard = callback;
-    s_start_guard_context = user_context;
-    measurement_service_unlock();
+    taskENTER_CRITICAL(&s_hook_lock);
+    s_start_guard = NULL;
+    s_start_guard_context = NULL;
+    taskEXIT_CRITICAL(&s_hook_lock);
+
+    measurement_service_wait_for_hook(MEASUREMENT_HOOK_START_GUARD);
+
+    if (callback != NULL) {
+        taskENTER_CRITICAL(&s_hook_lock);
+        s_start_guard_context = user_context;
+        s_start_guard = callback;
+        taskEXIT_CRITICAL(&s_hook_lock);
+    }
+
     return ESP_OK;
 }
 
@@ -796,14 +1004,24 @@ esp_err_t measurement_service_set_start_object_callback(
     void *user_context
 )
 {
-    if (!s_initialized || s_mutex == NULL) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    measurement_service_lock();
-    s_start_object_callback = callback;
-    s_start_object_context = user_context;
-    measurement_service_unlock();
+    taskENTER_CRITICAL(&s_hook_lock);
+    s_start_object_callback = NULL;
+    s_start_object_context = NULL;
+    taskEXIT_CRITICAL(&s_hook_lock);
+
+    measurement_service_wait_for_hook(MEASUREMENT_HOOK_START_OBJECT);
+
+    if (callback != NULL) {
+        taskENTER_CRITICAL(&s_hook_lock);
+        s_start_object_context = user_context;
+        s_start_object_callback = callback;
+        taskEXIT_CRITICAL(&s_hook_lock);
+    }
+
     return ESP_OK;
 }
 
@@ -813,14 +1031,26 @@ esp_err_t measurement_service_set_start_reservation_release_callback(
     void *user_context
 )
 {
-    if (!s_initialized || s_mutex == NULL) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    measurement_service_lock();
-    s_start_reservation_release_callback = callback;
-    s_start_reservation_release_context = user_context;
-    measurement_service_unlock();
+    taskENTER_CRITICAL(&s_hook_lock);
+    s_start_reservation_release_callback = NULL;
+    s_start_reservation_release_context = NULL;
+    taskEXIT_CRITICAL(&s_hook_lock);
+
+    measurement_service_wait_for_hook(
+        MEASUREMENT_HOOK_START_RESERVATION_RELEASE
+    );
+
+    if (callback != NULL) {
+        taskENTER_CRITICAL(&s_hook_lock);
+        s_start_reservation_release_context = user_context;
+        s_start_reservation_release_callback = callback;
+        taskEXIT_CRITICAL(&s_hook_lock);
+    }
+
     return ESP_OK;
 }
 
@@ -830,12 +1060,24 @@ esp_err_t measurement_service_set_storage_refresh_callback(
     void *user_context
 )
 {
-    if (!s_initialized || s_mutex == NULL) {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    s_storage_refresh_callback = callback;
-    s_storage_refresh_context = user_context;
+    taskENTER_CRITICAL(&s_hook_lock);
+    s_storage_refresh_callback = NULL;
+    s_storage_refresh_context = NULL;
+    taskEXIT_CRITICAL(&s_hook_lock);
+
+    measurement_service_wait_for_hook(MEASUREMENT_HOOK_STORAGE_REFRESH);
+
+    if (callback != NULL) {
+        taskENTER_CRITICAL(&s_hook_lock);
+        s_storage_refresh_context = user_context;
+        s_storage_refresh_callback = callback;
+        taskEXIT_CRITICAL(&s_hook_lock);
+    }
+
     return ESP_OK;
 }
 
@@ -889,7 +1131,7 @@ esp_err_t measurement_service_get_snapshot(
     }
 
     /*
-     * Keep the service state and submit gate in one critical section.  A
+     * Keep the service state and submit gate in one critical section. A
      * retry START is accepted while the previous state is ERROR, so reading
      * busy after releasing the mutex could combine that stale ERROR with a
      * later worker transition and expose an impossible snapshot.
@@ -964,6 +1206,7 @@ esp_err_t measurement_service_get_snapshot(
 
     return ESP_OK;
 }
+
 
 bool measurement_service_snapshot_blocks_acquisition_stop(
     const measurement_service_snapshot_t *snapshot
