@@ -1,6 +1,6 @@
 """Architecture contracts for fast interactive startup and cooperative recovery.
 
-These are source/ordering contracts, not physical startup-time proof.  The
+These are source/ordering contracts, not physical startup-time proof. The
 <=5 s acceptance target still requires a live board log with the real SD card.
 """
 
@@ -63,7 +63,7 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
 
     services = function_section(
         STARTUP,
-        "static void app_startup_initialize_services(void)",
+        "static void app_startup_initialize_services(",
         "void app_startup_run(void)",
     )
     run = function_section(STARTUP, "void app_startup_run(void)")
@@ -72,8 +72,10 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
         r"ESP_ERROR_CHECK\(\s*object_recovery_run_active\(\)\s*\)",
         r"ESP_ERROR_CHECK\(\s*object_store_init\(\)\s*\)",
         r"ESP_ERROR_CHECK\(\s*ui_init\(\)\s*\)",
-        r"web_server_start\(\)",
         r"keypad_start_event_monitor\(",
+        r'app_startup_log_elapsed\(\s*"interactive_ready"',
+        r"web_server_start\(\)",
+        r"wifi_manager_start\(\)",
         r"seismic_acquisition_start\(\)",
     ]
     service_positions = [pattern_position(services, pattern) for pattern in service_patterns]
@@ -81,13 +83,33 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
 
     run_patterns = [
         r"web_server_defer_status_cache_refresh\(\)",
-        r"app_startup_initialize_services\(\)",
+        r"app_startup_initialize_services\(\s*startup_started_ms\s*\)",
         r"power_control_arm_shutdown_button\(\)",
         r'app_startup_log_elapsed\(\s*"startup_total"',
         r"object_recovery_start_background_with_callback\(",
     ]
     run_positions = [pattern_position(run, pattern) for pattern in run_patterns]
     assert run_positions == sorted(run_positions)
+
+
+def test_interactive_boundary_is_local_ui_plus_keypad_not_network():
+    services = function_section(
+        STARTUP,
+        "static void app_startup_initialize_services(",
+        "void app_startup_run(void)",
+    )
+
+    ui = pattern_position(services, r"ESP_ERROR_CHECK\(\s*ui_init\(\)\s*\)")
+    keypad = position(services, "keypad_start_event_monitor(")
+    interactive = pattern_position(
+        services,
+        r'app_startup_log_elapsed\(\s*"interactive_ready"\s*,\s*startup_started_ms',
+    )
+    web = position(services, "web_server_start()")
+    wifi = position(services, "wifi_manager_start()")
+
+    assert ui < keypad < interactive < web < wifi
+    assert "uint32_t startup_started_ms" in services
 
 
 def test_background_recovery_status_is_visible_without_reentering_boot_ui():
