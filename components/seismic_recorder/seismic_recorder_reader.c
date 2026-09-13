@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "seismic_recorder_lod_reader.h"
 #include "storage_manager.h"
 
 #ifdef ESP_PLATFORM
@@ -14,6 +15,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
+
+
+#define SEISMIC_RECORDER_LOD_READ_STAGING_RECORDS 32U
 
 
 typedef struct
@@ -303,6 +307,44 @@ static bool seismic_recorder_reader_virtual_file_size(
 }
 
 
+static esp_err_t seismic_recorder_reader_append_suffix(
+    char *path,
+    size_t path_size,
+    const char *suffix
+)
+{
+    if (path == NULL || path_size == 0U || suffix == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const size_t path_length = strlen(path);
+    const size_t suffix_length = strlen(suffix);
+    if (path_length + suffix_length >= path_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    memcpy(path + path_length, suffix, suffix_length + 1U);
+    return ESP_OK;
+}
+
+
+static bool seismic_recorder_reader_lod_worthwhile(
+    uint64_t frame_count,
+    size_t max_points
+)
+{
+    const size_t point_count =
+        frame_count < (uint64_t)max_points
+            ? (size_t)frame_count
+            : max_points;
+
+    return
+        point_count > 0U &&
+        frame_count >=
+            (uint64_t)point_count * SEISMIC_RECORDER_LOD_BLOCK_FRAMES;
+}
+
+
 esp_err_t seismic_recorder_read_session(
     const char *object_id,
     const char *session_id,
@@ -430,8 +472,8 @@ esp_err_t seismic_recorder_read_session(
         memset(info, 0, sizeof(*info));
     }
 
-    char *session_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
-    if (session_path == NULL) {
+    char *samples_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (samples_path == NULL) {
         heap_caps_free(staging);
         return ESP_ERR_NO_MEM;
     }
@@ -439,40 +481,62 @@ esp_err_t seismic_recorder_read_session(
     err = seismic_recorder_fs_build_session_path(
         object_id,
         session_id,
-        session_path,
+        samples_path,
         SEISMIC_RECORDER_PATH_SIZE
     );
 
-    if (err == ESP_OK) {
-        const size_t path_length = strlen(session_path);
-        static const char samples_suffix[] = "/samples.bin";
-        const size_t suffix_length = sizeof(samples_suffix) - 1U;
-        if (path_length + suffix_length >= SEISMIC_RECORDER_PATH_SIZE) {
-            err = ESP_ERR_INVALID_SIZE;
-        }
-        else {
-            memcpy(
-                session_path + path_length,
-                samples_suffix,
-                suffix_length + 1U
+    char *lod_path = NULL;
+    const bool try_lod =
+        err == ESP_OK &&
+        seismic_recorder_reader_lod_worthwhile(
+            resolved_frame_count,
+            max_points
+        );
+    if (try_lod) {
+        lod_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+        if (lod_path != NULL) {
+            snprintf(
+                lod_path,
+                SEISMIC_RECORDER_PATH_SIZE,
+                "%s",
+                samples_path
             );
+            err = seismic_recorder_reader_append_suffix(
+                lod_path,
+                SEISMIC_RECORDER_PATH_SIZE,
+                "/" SEISMIC_RECORDER_LOD_FILE_NAME
+            );
+            if (err != ESP_OK) {
+                free(lod_path);
+                lod_path = NULL;
+            }
         }
+    }
+
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_append_suffix(
+            samples_path,
+            SEISMIC_RECORDER_PATH_SIZE,
+            "/samples.bin"
+        );
     }
 
     if (err != ESP_OK) {
         heap_caps_free(staging);
-        free(session_path);
+        free(lod_path);
+        free(samples_path);
         return err;
     }
 
-    uint64_t file_size = 0U;
+    uint64_t raw_file_size = 0U;
     err = seismic_recorder_reader_file_size(
-        session_path,
-        &file_size
+        samples_path,
+        &raw_file_size
     );
     if (err != ESP_OK) {
         heap_caps_free(staging);
-        free(session_path);
+        free(lod_path);
+        free(samples_path);
         return err;
     }
 
@@ -481,38 +545,105 @@ esp_err_t seismic_recorder_read_session(
      * made safe against concurrent object/session mutation by libc itself.
      * Keep no handle across arbitration windows: every read_at callback opens,
      * seeks, reads one bounded chunk, closes, and only then releases SPI2.
-     * The CPU min/max reduction runs outside storage_manager entirely. The
-     * reduction phase is temporarily lowered to the normal storage-service
-     * priority so a many-chunk history request cannot outrank the recorder or
-     * LVGL between those bounded windows.
+     *
+     * For long ranges, a completed LOD64 sidecar can replace interior raw
+     * blocks only when all represented frames map to exactly one output bin.
+     * Query edges and bin-crossing blocks remain raw, so the result is exactly
+     * the same partition/min/max waveform as the raw reducer. Any missing,
+     * incomplete, malformed or stale sidecar is disposable and falls through
+     * to samples.bin without changing the public API result.
+     *
+     * The reduction phase is temporarily lowered to the normal storage-service
+     * priority so a many-window history request cannot outrank recorder/LVGL.
      */
-    seismic_recorder_bounded_reader_t reader = {
-        .path = session_path,
+    seismic_recorder_bounded_reader_t raw_reader = {
+        .path = samples_path,
     };
+
+    bool used_lod = false;
+    if (lod_path != NULL) {
+        uint64_t lod_file_size = 0U;
+        if (
+            seismic_recorder_reader_file_size(
+                lod_path,
+                &lod_file_size
+            ) == ESP_OK
+        ) {
+            seismic_recorder_lod_record_t *lod_staging = heap_caps_malloc(
+                sizeof(*lod_staging) *
+                    SEISMIC_RECORDER_LOD_READ_STAGING_RECORDS,
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+            );
+            if (lod_staging != NULL) {
+                seismic_recorder_bounded_reader_t lod_reader = {
+                    .path = lod_path,
+                };
 #ifdef ESP_PLATFORM
-    const seismic_recorder_reader_priority_guard_t priority_guard =
-        seismic_recorder_reader_priority_enter();
+                const seismic_recorder_reader_priority_guard_t priority_guard =
+                    seismic_recorder_reader_priority_enter();
 #endif
-    err = seismic_recorder_waveform_read_source(
-        seismic_recorder_reader_read_at,
-        &reader,
-        file_size,
-        &summary,
-        start_frame,
-        frame_count,
-        max_points,
-        staging,
-        SEISMIC_RECORDER_READ_STAGING_FRAMES,
-        points,
-        point_capacity,
-        info
-    );
+                const esp_err_t lod_err = seismic_recorder_lod_read_source(
+                    seismic_recorder_reader_read_at,
+                    &raw_reader,
+                    raw_file_size,
+                    seismic_recorder_reader_read_at,
+                    &lod_reader,
+                    lod_file_size,
+                    &summary,
+                    start_frame,
+                    resolved_frame_count,
+                    max_points,
+                    staging,
+                    SEISMIC_RECORDER_READ_STAGING_FRAMES,
+                    lod_staging,
+                    SEISMIC_RECORDER_LOD_READ_STAGING_RECORDS,
+                    points,
+                    point_capacity,
+                    info
+                );
 #ifdef ESP_PLATFORM
-    seismic_recorder_reader_priority_leave(priority_guard);
+                seismic_recorder_reader_priority_leave(priority_guard);
 #endif
+                heap_caps_free(lod_staging);
+
+                if (lod_err == ESP_OK) {
+                    used_lod = true;
+                    err = ESP_OK;
+                }
+                else {
+                    memset(info, 0, sizeof(*info));
+                }
+            }
+        }
+    }
+
+    if (!used_lod) {
+#ifdef ESP_PLATFORM
+        const seismic_recorder_reader_priority_guard_t priority_guard =
+            seismic_recorder_reader_priority_enter();
+#endif
+        err = seismic_recorder_waveform_read_source(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            raw_file_size,
+            &summary,
+            start_frame,
+            frame_count,
+            max_points,
+            staging,
+            SEISMIC_RECORDER_READ_STAGING_FRAMES,
+            points,
+            point_capacity,
+            info
+        );
+#ifdef ESP_PLATFORM
+        seismic_recorder_reader_priority_leave(priority_guard);
+#endif
+    }
 
     heap_caps_free(staging);
-    free(session_path);
+    free(lod_path);
+    free(samples_path);
 
     if (err == ESP_OK) {
         snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
