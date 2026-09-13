@@ -41,9 +41,14 @@ static void test_disk_contract_is_stable(void)
     seismic_recorder_lod_file_header_t header;
     seismic_recorder_lod_header_init(&header, 500U);
     assert(seismic_recorder_lod_header_valid(&header, 500U));
+    assert(!seismic_recorder_lod_header_is_complete(&header));
     assert(!seismic_recorder_lod_header_valid(&header, 1000U));
 
-    header.reserved = 1U;
+    seismic_recorder_lod_header_mark_complete(&header);
+    assert(seismic_recorder_lod_header_valid(&header, 500U));
+    assert(seismic_recorder_lod_header_is_complete(&header));
+
+    header.flags |= 0x80000000U;
     assert(!seismic_recorder_lod_header_valid(&header, 500U));
 
     uint64_t file_size = 0U;
