@@ -28,6 +28,7 @@ def make_log(
     startup_ms: int = 3200,
     recovery_ms: tuple[int, ...] = (140, 145),
     dispatch_ages: tuple[int, ...] = (15, 20, 25, 18, 22),
+    dispatch_keys: tuple[int, ...] = (1, 2, 3, 4, 5),
     stale_age: int | None = None,
     safe_shutdown: bool = False,
     panic: bool = False,
@@ -37,6 +38,9 @@ def make_log(
     include_priority: bool = True,
     cache_before_recovery_stop: bool = False,
 ) -> str:
+    if len(dispatch_keys) != len(dispatch_ages):
+        raise ValueError("dispatch_keys and dispatch_ages must have the same length")
+
     lines = [
         f"I APP: BOOT_TIMING: startup_total={startup_ms} ms",
         "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START core=0 priority=1",
@@ -49,7 +53,7 @@ def make_log(
             f"object=OBJ_{index:04d} index={index} total={total} removed=0 elapsed_ms={elapsed}"
         )
 
-    for key, age in enumerate(dispatch_ages, 1):
+    for key, age in zip(dispatch_keys, dispatch_ages, strict=True):
         lines.append(f"I UI_EVENT: KEYPAD_EVENT_DISPATCH key={key} age_ms={age}")
 
     if stale_age is not None:
@@ -112,13 +116,26 @@ def test_valid_replay_passes_telemetry_but_never_claims_physical_hil(tmp_path: P
     assert "Interactive startup latency" in result.stdout
     assert "startup_total=3200ms limit=5000ms" in result.stdout
     assert "samples=2 max=145ms limit=250ms" in result.stdout
-    assert "dispatches=5/5" in result.stdout
+    assert "All five keypad keys reach LVGL" in result.stdout
+    assert "dispatches=5/5 keys_seen=1,2,3,4,5 missing=none" in result.stdout
     assert "stale_drops=0" in result.stdout
     assert "safe_shutdown_markers=0" in result.stdout
     assert "base_priority=1 inherited_observed=True" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: PASS" in result.stdout
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
     assert "REPLAY_LIMITATION:" in result.stdout
+
+
+def test_replay_with_repeated_single_key_is_blocked_not_false_pass(tmp_path: Path):
+    path = tmp_path / "boot-one-key.log"
+    path.write_text(make_log(dispatch_keys=(1, 1, 1, 1, 1)), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "dispatches=5/5 keys_seen=1 missing=2,3,4,5" in result.stdout
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: BLOCKED" in result.stdout
+    assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
 
 
 def test_replay_rejects_slow_startup_and_recovery_window(tmp_path: Path):
@@ -215,5 +232,7 @@ def test_live_runner_keeps_programming_and_passive_log_ports_separate_by_contrac
     assert '-Action flash' in source
     assert 'if ($FlashPort -eq $LogPort)' in source
     assert "FlashPort and LogPort must be different" in source
+    assert "press LEFT, UP, DOWN, RIGHT and OK" in source
+    assert "background recovery and the following Web status-cache refresh" in source
     assert "KEYPAD_EVENT_DISPATCH" not in source  # parsing lives in the sourced contract
     assert "BOOT_RESPONSIVENESS_HIL_RESULT" in source
