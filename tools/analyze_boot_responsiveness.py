@@ -62,7 +62,10 @@ class Analysis:
     status: str
     missing: tuple[str, ...]
     violations: tuple[str, ...]
+    # Kept for compatibility with older callers; this remains startup_total.
     startup_ms: int | None
+    interactive_ready_ms: int | None
+    startup_total_ms: int | None
     max_recovery_window_ms: int | None
     max_dispatch_age_ms: int | None
     raw_keys: tuple[int, ...]
@@ -78,7 +81,12 @@ class Analysis:
     inherited_priority_observed: bool
 
 
-STARTUP_RE = re.compile(r"BOOT_TIMING:\s*startup_total=(?P<ms>\d+)\s*ms", re.I)
+INTERACTIVE_READY_RE = re.compile(
+    r"BOOT_TIMING:\s*interactive_ready=(?P<ms>\d+)\s*ms", re.I
+)
+STARTUP_TOTAL_RE = re.compile(
+    r"BOOT_TIMING:\s*startup_total=(?P<ms>\d+)\s*ms", re.I
+)
 RECOVERY_RE = re.compile(
     r"OBJECT_RECOVERY_PROGRESS\s+object=(?P<object>OBJ_\d{4})\s+"
     r"index=\d+\s+total=\d+\s+removed=(?P<removed>[01])\s+"
@@ -132,20 +140,39 @@ def _missing_keys(label: str, seen: set[int]) -> list[str]:
 def analyze(
     content: str,
     *,
-    max_startup_ms: int = 5000,
+    max_interactive_ready_ms: int = 5000,
     max_recovery_window_ms: int = 250,
     expected_web_cache_base_priority: int = 1,
 ) -> Analysis:
     missing: list[str] = []
     violations: list[str] = []
 
-    startup_values = [int(m.group("ms")) for m in STARTUP_RE.finditer(content)]
-    startup_ms = max(startup_values) if startup_values else None
-    if startup_ms is None:
-        missing.append("BOOT_TIMING startup_total")
-    elif startup_ms > max_startup_ms:
+    interactive_values = [
+        int(m.group("ms")) for m in INTERACTIVE_READY_RE.finditer(content)
+    ]
+    interactive_ready_ms = max(interactive_values) if interactive_values else None
+    if interactive_ready_ms is None:
+        missing.append("BOOT_TIMING interactive_ready")
+    elif interactive_ready_ms > max_interactive_ready_ms:
         violations.append(
-            f"startup_total={startup_ms}ms exceeds limit={max_startup_ms}ms"
+            f"interactive_ready={interactive_ready_ms}ms exceeds "
+            f"limit={max_interactive_ready_ms}ms"
+        )
+
+    startup_values = [
+        int(m.group("ms")) for m in STARTUP_TOTAL_RE.finditer(content)
+    ]
+    startup_total_ms = max(startup_values) if startup_values else None
+    if startup_total_ms is None:
+        missing.append("BOOT_TIMING startup_total")
+    if (
+        interactive_ready_ms is not None
+        and startup_total_ms is not None
+        and interactive_ready_ms > startup_total_ms
+    ):
+        violations.append(
+            f"interactive_ready={interactive_ready_ms}ms occurs after "
+            f"startup_total={startup_total_ms}ms"
         )
 
     recovery = [
@@ -226,16 +253,27 @@ def analyze(
             f"panic/watchdog/brownout/assert marker observed count={failure_marker_count}"
         )
 
-    startup_pos = content.lower().find("boot_timing: startup_total=")
-    recovery_start_pos = content.lower().find("object_recovery_background state=start")
-    recovery_stop_pos = content.lower().find("object_recovery_background state=stop")
-    cache_done_pos = content.lower().find("web_status_cache refresh=done")
+    lower = content.lower()
+    gate_armed_pos = lower.find("keypad_event_gate state=armed")
+    interactive_pos = lower.find("boot_timing: interactive_ready=")
+    startup_pos = lower.find("boot_timing: startup_total=")
+    recovery_start_pos = lower.find("object_recovery_background state=start")
+    recovery_stop_pos = lower.find("object_recovery_background state=stop")
+    cache_done_pos = lower.find("web_status_cache refresh=done")
+
+    if gate_armed_pos < 0:
+        missing.append("KEYPAD_EVENT_GATE state=ARMED")
     if recovery_start_pos < 0:
         missing.append("OBJECT_RECOVERY_BACKGROUND state=START")
     if recovery_stop_pos < 0:
         missing.append("OBJECT_RECOVERY_BACKGROUND state=STOP")
     if cache_done_pos < 0:
         missing.append("WEB_STATUS_CACHE refresh=done")
+
+    if gate_armed_pos >= 0 and interactive_pos >= 0 and interactive_pos < gate_armed_pos:
+        violations.append("interactive_ready logged before keypad gate was armed")
+    if interactive_pos >= 0 and startup_pos >= 0 and startup_pos < interactive_pos:
+        violations.append("startup_total logged before interactive_ready")
     if startup_pos >= 0 and recovery_start_pos >= 0 and recovery_start_pos < startup_pos:
         violations.append("background recovery started before startup_total")
     if recovery_stop_pos >= 0 and cache_done_pos >= 0 and cache_done_pos < recovery_stop_pos:
@@ -269,7 +307,9 @@ def analyze(
         status=status,
         missing=tuple(missing),
         violations=tuple(violations),
-        startup_ms=startup_ms,
+        startup_ms=startup_total_ms,
+        interactive_ready_ms=interactive_ready_ms,
+        startup_total_ms=startup_total_ms,
         max_recovery_window_ms=max_recovery,
         max_dispatch_age_ms=max_dispatch_age,
         raw_keys=_unique_valid_keys(raw_keys),
@@ -294,7 +334,8 @@ def _format_keys(values: tuple[int, ...]) -> str:
 
 def print_report(result: Analysis) -> None:
     print(f"BOOT_RESPONSIVENESS_ANALYSIS: {result.status}")
-    print(f"startup_ms={result.startup_ms}")
+    print(f"interactive_ready_ms={result.interactive_ready_ms}")
+    print(f"startup_total_ms={result.startup_total_ms}")
     print(f"max_recovery_window_ms={result.max_recovery_window_ms}")
     print(f"max_dispatch_age_ms={result.max_dispatch_age_ms}")
     print(f"raw_keys={_format_keys(result.raw_keys)}")
@@ -322,7 +363,14 @@ def print_report(result: Analysis) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path, help="saved UART log file")
-    parser.add_argument("--max-startup-ms", type=int, default=5000)
+    parser.add_argument(
+        "--max-interactive-ready-ms",
+        "--max-startup-ms",
+        dest="max_interactive_ready_ms",
+        type=int,
+        default=5000,
+        help="maximum time until local TFT/keypad interaction is armed",
+    )
     parser.add_argument("--max-recovery-window-ms", type=int, default=250)
     parser.add_argument("--expected-web-cache-base-priority", type=int, default=1)
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -339,7 +387,7 @@ def main() -> int:
 
     result = analyze(
         content,
-        max_startup_ms=args.max_startup_ms,
+        max_interactive_ready_ms=args.max_interactive_ready_ms,
         max_recovery_window_ms=args.max_recovery_window_ms,
         expected_web_cache_base_priority=args.expected_web_cache_base_priority,
     )
