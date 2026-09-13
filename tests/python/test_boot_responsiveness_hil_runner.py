@@ -213,5 +213,7 @@ def test_live_runner_keeps_programming_and_passive_log_ports_separate_by_contrac
     assert '[string]$LogPort = "COM6"' in source
     assert '"-Action", "monitor"' in source
     assert '-Action flash' in source
+    assert 'if ($FlashPort -eq $LogPort)' in source
+    assert "FlashPort and LogPort must be different" in source
     assert "KEYPAD_EVENT_DISPATCH" not in source  # parsing lives in the sourced contract
     assert "BOOT_RESPONSIVENESS_HIL_RESULT" in source
