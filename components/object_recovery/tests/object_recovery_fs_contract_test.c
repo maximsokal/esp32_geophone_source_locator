@@ -96,7 +96,10 @@ static void test_metadata_recovery_priority(void)
     assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered) == ESP_OK);
     assert(valid);
     assert(!recovered);
-    assert(!metadata_exists("object.json.tmp"));
+    /* A valid primary is authoritative. The stale sidecar is deliberately
+     * left untouched on the fast path; atomic writes remove it before the
+     * next transaction, while fallback recovery still cleans it below. */
+    assert(metadata_exists("object.json.tmp"));
     assert(metadata_exists("object.json"));
 
     remove_metadata("object.json");
@@ -108,6 +111,7 @@ static void test_metadata_recovery_priority(void)
     assert(recovered);
     assert(metadata_exists("object.json"));
     assert(!metadata_exists("object.json.bak"));
+    assert(!metadata_exists("object.json.tmp"));
 
     remove_metadata("object.json");
     write_metadata("object.json.tmp", "{\"schema_version\":1,\"id\":\"OBJ_0001\"}");
