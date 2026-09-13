@@ -107,6 +107,7 @@ def test_saved_waveform_reduction_never_holds_spi2_for_the_whole_range() -> None
     reader_source = _read("components/seismic_recorder/seismic_recorder_reader.c")
     internal = _read("components/seismic_recorder/seismic_recorder_internal.h")
     waveform = _read("components/seismic_recorder/seismic_recorder_waveform.c")
+    task_config = _read("components/app_config/include/app_task_config.h")
 
     public_read = _function_body(reader_source, "seismic_recorder_read_session")
     assert "seismic_recorder_waveform_read_source" in public_read
@@ -133,6 +134,24 @@ def test_saved_waveform_reduction_never_holds_spi2_for_the_whole_range() -> None
     assert "read_at(" in reducer
     assert "staging[chunk_index]" in reducer
     assert "storage_manager_operation_begin" not in reducer
+
+    # A many-chunk saved-history request runs in HTTPD's task. It must not keep
+    # priority 5 while repeatedly releasing/reacquiring storage, otherwise the
+    # priority-3 recorder can be starved between individually bounded windows.
+    priority_enter = _function_body(reader_source, "seismic_recorder_reader_priority_enter")
+    priority_leave = _function_body(reader_source, "seismic_recorder_reader_priority_leave")
+    assert "APP_TASK_PRIORITY_STORAGE_SERVICE" in priority_enter
+    assert "uxTaskPriorityGet(NULL)" in priority_enter
+    assert "vTaskPrioritySet(NULL, APP_TASK_PRIORITY_STORAGE_SERVICE)" in priority_enter
+    assert "vTaskPrioritySet(NULL, guard.original_priority)" in priority_leave
+    assert public_read.count("seismic_recorder_reader_priority_enter()") == 2
+    assert public_read.count("seismic_recorder_reader_priority_leave(priority_guard)") == 2
+
+    storage_priority = _priority(task_config, "APP_TASK_PRIORITY_STORAGE_SERVICE")
+    recorder_priority = _priority(task_config, "APP_TASK_PRIORITY_SEISMIC_RECORDER")
+    lvgl_priority = _priority(task_config, "APP_TASK_PRIORITY_LVGL")
+    assert recorder_priority >= storage_priority
+    assert lvgl_priority > storage_priority
 
 
 def test_lvgl_port_keeps_lcd_completion_callback_ownership() -> None:
