@@ -32,6 +32,9 @@ static SemaphoreHandle_t s_command_gate =
 static TaskHandle_t s_task =
     NULL;
 
+static portMUX_TYPE s_callback_lock =
+    portMUX_INITIALIZER_UNLOCKED;
+
 static storage_service_event_callback_t
     s_callback =
         NULL;
@@ -39,21 +42,78 @@ static storage_service_event_callback_t
 static void *s_callback_context =
     NULL;
 
+static unsigned s_callback_in_flight =
+    0U;
+
 static bool s_initialized =
     false;
 
 static storage_service_event_t s_event;
 
 
+static unsigned storage_service_callback_in_flight(void)
+{
+    unsigned in_flight;
+
+    taskENTER_CRITICAL(
+        &s_callback_lock
+    );
+    in_flight = s_callback_in_flight;
+    taskEXIT_CRITICAL(
+        &s_callback_lock
+    );
+
+    return in_flight;
+}
+
+
+static void storage_service_wait_for_callback(void)
+{
+    while (
+        storage_service_callback_in_flight() != 0U
+    ) {
+        /* Never block or yield while holding the SMP spinlock. */
+        vTaskDelay(1);
+    }
+}
+
+
 static void storage_service_notify(void)
 {
-    if (s_callback == NULL) {
+    storage_service_event_callback_t callback =
+        NULL;
+    void *callback_context =
+        NULL;
+
+    taskENTER_CRITICAL(
+        &s_callback_lock
+    );
+
+    if (s_callback != NULL) {
+        callback = s_callback;
+        callback_context = s_callback_context;
+        ++s_callback_in_flight;
+    }
+
+    taskEXIT_CRITICAL(
+        &s_callback_lock
+    );
+
+    if (callback == NULL) {
         return;
     }
 
-    s_callback(
+    callback(
         &s_event,
-        s_callback_context
+        callback_context
+    );
+
+    taskENTER_CRITICAL(
+        &s_callback_lock
+    );
+    --s_callback_in_flight;
+    taskEXIT_CRITICAL(
+        &s_callback_lock
     );
 }
 
@@ -223,6 +283,16 @@ esp_err_t storage_service_init(void)
         s_command_gate
     );
 
+    taskENTER_CRITICAL(
+        &s_callback_lock
+    );
+    s_callback = NULL;
+    s_callback_context = NULL;
+    s_callback_in_flight = 0U;
+    taskEXIT_CRITICAL(
+        &s_callback_lock
+    );
+
     BaseType_t result =
         xTaskCreatePinnedToCoreWithCaps(
             storage_service_task,
@@ -278,6 +348,12 @@ void storage_service_shutdown(void)
         "Shutdown requested"
     );
 
+    /* Close the callback slot and drain any invocation already in flight. */
+    (void)storage_service_set_event_callback(
+        NULL,
+        NULL
+    );
+
     if (storage_service_is_busy()) {
         ESP_LOGI(
             TAG,
@@ -320,11 +396,15 @@ void storage_service_shutdown(void)
             NULL;
     }
 
-    s_callback =
-        NULL;
-
-    s_callback_context =
-        NULL;
+    taskENTER_CRITICAL(
+        &s_callback_lock
+    );
+    s_callback = NULL;
+    s_callback_context = NULL;
+    s_callback_in_flight = 0U;
+    taskEXIT_CRITICAL(
+        &s_callback_lock
+    );
 
     s_initialized =
         false;
@@ -345,11 +425,32 @@ esp_err_t storage_service_set_event_callback(
         return ESP_ERR_INVALID_STATE;
     }
 
-    s_callback =
-        callback;
+    /*
+     * Close the old slot first. A notify path that already snapped the old
+     * callback incremented s_callback_in_flight under this same lock, so the
+     * wait below is a lifetime barrier for the old callback/context.
+     */
+    taskENTER_CRITICAL(
+        &s_callback_lock
+    );
+    s_callback = NULL;
+    s_callback_context = NULL;
+    taskEXIT_CRITICAL(
+        &s_callback_lock
+    );
 
-    s_callback_context =
-        user_context;
+    storage_service_wait_for_callback();
+
+    if (callback != NULL) {
+        taskENTER_CRITICAL(
+            &s_callback_lock
+        );
+        s_callback_context = user_context;
+        s_callback = callback;
+        taskEXIT_CRITICAL(
+            &s_callback_lock
+        );
+    }
 
     return ESP_OK;
 }
