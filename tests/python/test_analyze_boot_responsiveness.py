@@ -17,6 +17,8 @@ _spec.loader.exec_module(analyzer)
 
 def healthy_log() -> str:
     lines = [
+        "I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED",
+        "I APP: BOOT_TIMING: interactive_ready=2800 ms",
         "I APP: BOOT_TIMING: startup_total=3200 ms",
         "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START",
         "I OBJECT_RECOVERY: OBJECT_RECOVERY_PROGRESS object=OBJ_0001 index=1 total=2 removed=0 elapsed_ms=120",
@@ -53,6 +55,8 @@ def test_healthy_log_passes_full_key_chain():
     assert result.status == "PASS"
     assert result.missing == ()
     assert result.violations == ()
+    assert result.interactive_ready_ms == 2800
+    assert result.startup_total_ms == 3200
     assert result.startup_ms == 3200
     assert result.max_recovery_window_ms == 135
     assert result.raw_keys == (1, 2, 3, 4, 5)
@@ -75,15 +79,75 @@ def test_dispatch_without_ui_result_is_blocked_not_pass():
     assert result.violations == ()
 
 
-def test_slow_startup_and_recovery_are_failures():
-    content = healthy_log().replace("startup_total=3200", "startup_total=6001")
+def test_slow_interactive_ready_and_recovery_are_failures():
+    content = healthy_log().replace("interactive_ready=2800", "interactive_ready=6001")
+    content = content.replace("startup_total=3200", "startup_total=6500")
     content = content.replace("elapsed_ms=135", "elapsed_ms=251")
 
     result = analyzer.analyze(content)
 
     assert result.status == "FAIL"
-    assert any("startup_total=6001ms" in item for item in result.violations)
+    assert any("interactive_ready=6001ms" in item for item in result.violations)
+    assert not any("startup_total=6500ms exceeds" in item for item in result.violations)
     assert any("recovery_window=251ms" in item for item in result.violations)
+
+
+def test_slow_full_startup_does_not_fail_interactive_budget():
+    content = healthy_log().replace("startup_total=3200", "startup_total=8000")
+
+    result = analyzer.analyze(content)
+
+    assert result.status == "PASS"
+    assert result.interactive_ready_ms == 2800
+    assert result.startup_total_ms == 8000
+
+
+def test_old_log_without_interactive_ready_is_blocked():
+    content = healthy_log().replace(
+        "I APP: BOOT_TIMING: interactive_ready=2800 ms\n",
+        "",
+    )
+
+    result = analyzer.analyze(content)
+
+    assert result.status == "BLOCKED"
+    assert "BOOT_TIMING interactive_ready" in result.missing
+
+
+def test_missing_gate_armed_is_blocked():
+    content = healthy_log().replace(
+        "I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED\n",
+        "",
+    )
+
+    result = analyzer.analyze(content)
+
+    assert result.status == "BLOCKED"
+    assert "KEYPAD_EVENT_GATE state=ARMED" in result.missing
+
+
+def test_interactive_marker_before_gate_fails():
+    content = healthy_log().replace(
+        "I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED\nI APP: BOOT_TIMING: interactive_ready=2800 ms",
+        "I APP: BOOT_TIMING: interactive_ready=2800 ms\nI APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED",
+    )
+
+    result = analyzer.analyze(content)
+
+    assert result.status == "FAIL"
+    assert "interactive_ready logged before keypad gate was armed" in result.violations
+
+
+def test_interactive_after_startup_total_fails():
+    content = healthy_log().replace(
+        "I APP: BOOT_TIMING: interactive_ready=2800 ms\nI APP: BOOT_TIMING: startup_total=3200 ms",
+        "I APP: BOOT_TIMING: startup_total=3200 ms\nI APP: BOOT_TIMING: interactive_ready=2800 ms",
+    )
+
+    result = analyzer.analyze(content)
+
+    assert result.status == "FAIL"
+    assert "startup_total logged before interactive_ready" in result.violations
 
 
 def test_stale_shutdown_and_panic_markers_fail():
