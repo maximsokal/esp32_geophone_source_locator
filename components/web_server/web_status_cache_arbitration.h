@@ -21,6 +21,16 @@ typedef struct
 } web_status_cache_arbitration_t;
 
 
+/*
+ * Process-wide startup gate for archive-wide status refreshes. It defaults to
+ * enabled so unit tests and runtime restarts preserve the historic behavior;
+ * production startup explicitly closes it before web_server_start() and opens
+ * it only after background object recovery completes.
+ */
+void web_status_cache_arbitration_set_refresh_enabled(bool enabled);
+bool web_status_cache_arbitration_refresh_enabled(void);
+
+
 esp_err_t web_status_cache_arbitration_init(
     web_status_cache_arbitration_t *arbitration
 );
