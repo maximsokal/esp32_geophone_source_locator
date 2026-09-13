@@ -39,11 +39,18 @@ param(
     [ValidateRange(1, 1000)]
     [int]$MinimumRecorderSamples = 1,
 
+    [ValidateRange(1, 1000)]
+    [int]$MinimumRecorderStopSamples = 1,
+
+    [ValidateRange(1, 8)]
+    [int]$MinimumAcquisitionDiagnosticChannels = 8,
+
     [ValidateRange(5, 600)]
     [int]$CaptureSeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "storage_spi_contract.ps1")
 
@@ -115,6 +122,13 @@ try {
             throw "Passive UART log port $LogPort is unavailable."
         }
 
+        $powershellCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
+        if ($null -ne $powershellCommand) {
+            $powershell = $powershellCommand.Source
+        } else {
+            $powershell = (Get-Command pwsh -ErrorAction Stop).Source
+        }
+
         $hilDir = Join-Path $repo "build\hil"
         New-Item -ItemType Directory -Path $hilDir -Force | Out-Null
         $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -131,9 +145,9 @@ try {
         )
 
         Write-Host "Passive storage/SPI HIL capture on $LogPort. This runner never flashes firmware."
-        Write-Host "Generate normal storage + recording activity during the capture window."
+        Write-Host "During the capture, keep AD7606 acquisition healthy, start a recording, generate normal storage activity, then stop the recording normally so STOP_COMPLETE is captured."
         $monitor = Start-Process `
-            -FilePath "powershell.exe" `
+            -FilePath $powershell `
             -ArgumentList $arguments `
             -WorkingDirectory $repo `
             -RedirectStandardOutput $logFile `
@@ -170,11 +184,14 @@ $result = Test-StorageSpiTelemetry `
     -MaxRecorderFwriteUs $MaxRecorderFwriteUs `
     -MaxRecorderOperationUs $MaxRecorderOperationUs `
     -MinimumStorageSamples $MinimumStorageSamples `
-    -MinimumRecorderSamples $MinimumRecorderSamples
+    -MinimumRecorderSamples $MinimumRecorderSamples `
+    -MinimumRecorderStopSamples $MinimumRecorderStopSamples `
+    -MinimumAcquisitionDiagnosticChannels $MinimumAcquisitionDiagnosticChannels
 
 Write-Host "===== Storage/SPI latency telemetry ====="
-Write-Host ("samples storage_begin={0} storage_end={1} recorder_fwrite={2}" -f `
-    $result.StorageBeginCount, $result.StorageEndCount, $result.RecorderCount)
+Write-Host ("samples storage_begin={0} storage_end={1} recorder_fwrite={2} recorder_stop={3} acquisition_diag_channels={4}" -f `
+    $result.StorageBeginCount, $result.StorageEndCount, $result.RecorderCount, `
+    $result.RecorderStopCount, $result.AcquisitionDiagnosticChannelCount)
 Write-Host (Format-Maximum "mutex_wait_us" $result.MaxMutexWaitUs $MaxMutexWaitUs)
 Write-Host (Format-Maximum "tft_quiesce_us" $result.MaxTftQuiesceUs $MaxTftQuiesceUs)
 Write-Host (Format-Maximum "tft_resume_us" $result.MaxTftResumeUs $MaxTftResumeUs)
@@ -182,6 +199,11 @@ Write-Host (Format-Maximum "spi_end_elapsed_us" $result.MaxSpiEndElapsedUs $MaxS
 Write-Host (Format-Maximum "max_window_us" $result.MaxRecorderWindowUs $MaxRecorderWindowUs)
 Write-Host (Format-Maximum "fwrite_us" $result.MaxRecorderFwriteUs $MaxRecorderFwriteUs)
 Write-Host (Format-Maximum "recorder_operation_us" $result.MaxRecorderOperationUs $MaxRecorderOperationUs)
+Write-Host ("recorder_dropped_frames={0} expected=0" -f $(if ($null -eq $result.MaxDroppedFrames) { "missing" } else { $result.MaxDroppedFrames }))
+Write-Host ("acquisition_failure_markers={0} expected=0" -f $result.AcquisitionFailureCount)
+Write-Host ("acquisition_diag_channels={0} required={1}" -f `
+    $(if ($result.AcquisitionDiagnosticChannels.Count -eq 0) { "none" } else { $result.AcquisitionDiagnosticChannels -join ',' }), `
+    $MinimumAcquisitionDiagnosticChannels)
 
 if ($result.Missing.Count -gt 0) {
     Write-Host "MISSING_TELEMETRY: $($result.Missing -join '; ')"
@@ -212,7 +234,7 @@ $telemetryStatus = if (
 Write-Host "STORAGE_SPI_TELEMETRY_RESULT: $telemetryStatus"
 
 if ($isReplay) {
-    Write-Host "REPLAY_LIMITATION: parser/replay validation never proves physical SPI2, SD, TFT DMA, FreeRTOS scheduling, or recorder timing."
+    Write-Host "REPLAY_LIMITATION: parser/replay validation never proves physical SPI2, SD, TFT DMA, FreeRTOS scheduling, acquisition health, recorder timing, or dropped-frame behavior on the current board."
     $hilStatus = if ($telemetryStatus -eq "FAIL") { "FAIL" } else { "BLOCKED" }
 } else {
     $hilStatus = $telemetryStatus
