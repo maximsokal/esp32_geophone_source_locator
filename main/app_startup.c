@@ -56,6 +56,33 @@ static void app_startup_log_elapsed(
 }
 
 
+static void app_startup_background_recovery_complete(
+    esp_err_t recovery_result,
+    void *user_context
+)
+{
+    (void)user_context;
+
+    if (recovery_result != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Background object recovery completed with error before Web cache refresh: %s",
+            esp_err_to_name(recovery_result)
+        );
+    }
+
+    const esp_err_t refresh_err =
+        web_server_enable_status_cache_refresh();
+    if (refresh_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Deferred Web status cache refresh request failed: %s",
+            esp_err_to_name(refresh_err)
+        );
+    }
+}
+
+
 static void app_startup_initialize_core(void)
 {
     ESP_ERROR_CHECK(
@@ -343,6 +370,13 @@ void app_startup_run(void)
         webui_started_ms
     );
 
+    /* web_server_start() creates the asynchronous object/session status cache
+     * and historically queued a 32-object FATFS walk here. Close its refresh
+     * gate before service startup so startup_total measures only the
+     * interactive path. Recovery completion will reopen and explicitly queue
+     * the first archive-wide cache refresh. */
+    web_server_defer_status_cache_refresh();
+
     app_startup_initialize_services();
 
     /*
@@ -377,16 +411,27 @@ void app_startup_run(void)
     /*
      * Start the expensive archive-wide recovery only after startup_total has
      * been committed to the log and the UI/keypad are already interactive.
-     * The worker waits briefly before touching SD and releases SPI2 between
-     * objects, so the local display is no longer gated by archive size.
+     * The first Web object/session cache refresh remains gated until this
+     * worker completes, preventing two archive-wide SD scans from alternating
+     * TFT quiesce windows and making keypad events stale.
      */
     const esp_err_t recovery_err =
-        object_recovery_start_background();
+        object_recovery_start_background_with_callback(
+            app_startup_background_recovery_complete,
+            NULL
+        );
     if (recovery_err != ESP_OK) {
         ESP_LOGW(
             TAG,
             "Background object recovery unavailable: %s",
             esp_err_to_name(recovery_err)
+        );
+
+        /* Do not leave the Web object/session cache permanently disabled when
+         * the optional recovery worker cannot be created. */
+        app_startup_background_recovery_complete(
+            recovery_err,
+            NULL
         );
     }
 }
