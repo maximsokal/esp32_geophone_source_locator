@@ -468,8 +468,8 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "wifi_manager_set_mode_transition_complete_callback" in wifi_mode
     assert "wifi_manager_abort_mode_transition" in wifi_mode
     assert "wifi_manager_recover_uncertain_radio_state" in wifi_mode
-    assert "wifi_manager_internal_set_radio_state_uncertain" in wifi_mode
-    assert "wifi_manager_internal_radio_state_uncertain" in wifi_mode
+    assert "wifi_manager_internal_commit_state" in wifi_mode
+    assert "state.radio_state_uncertain" in wifi_mode
     assert "wifi_manager_notify_mode_transition_complete" in wifi_mode
     assert "cleanup_result" in wifi_mode
     assert "wifi_manager_radio_stop_complete_callback_t" in wifi_mode
@@ -492,17 +492,27 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
         start = wifi_mode.index(f"esp_err_t {transition}(")
         end = wifi_mode.index(f"\nesp_err_t {next_transition}(", start)
         body = wifi_mode[start:end]
-        assert "return wifi_manager_abort_mode_transition(err)" in body
-        assert "wifi_manager_internal_set_running(false)" in body
+        assert "wifi_manager_internal_commit_state(" in body
+        assert "err = wifi_manager_abort_mode_transition(err);" in body
+        assert body.index("wifi_manager_internal_commit_state(") < body.index(
+            "wifi_manager_abort_mode_transition(err)"
+        )
+        assert body.index("wifi_manager_abort_mode_transition(err)") < body.rindex(
+            "wifi_manager_internal_end_transition()"
+        )
     assert "wifi_manager_mdns_init(void)" in wifi_header
     assert "wifi_manager_mdns_stop(void)" in wifi_header
     assert "wifi_manager_mdns_is_ready(void)" in wifi_header
     assert "wifi_manager_is_radio_state_uncertain(void)" in wifi_header
     assert "esp_err_t cleanup_result" in wifi_header
     assert "#include \"freertos/portmacro.h\"" in wifi_manager
-    assert "static portMUX_TYPE s_radio_state_uncertain_lock" in wifi_manager
-    assert "portENTER_CRITICAL(&s_radio_state_uncertain_lock)" in wifi_manager
-    assert "portEXIT_CRITICAL(&s_radio_state_uncertain_lock)" in wifi_manager
+    assert "static wifi_manager_internal_state_t s_state = { 0 };" in wifi_manager
+    assert "static portMUX_TYPE s_state_lock" in wifi_manager
+    assert "portENTER_CRITICAL(&s_state_lock)" in wifi_manager
+    assert "portEXIT_CRITICAL(&s_state_lock)" in wifi_manager
+    assert "s_state.running = running;" in wifi_manager
+    assert "s_state.setup_mode = running && setup_mode;" in wifi_manager
+    assert "s_state.radio_state_uncertain = radio_state_uncertain;" in wifi_manager
     assert "if (s_radio_state_uncertain)" not in wifi_manager
     assert "return s_radio_state_uncertain;" not in wifi_manager
     assert "APP_TASK_STACK_WEB_LIFECYCLE 8192" in task_config
