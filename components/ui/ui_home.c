@@ -5,9 +5,16 @@ void ui_render_home_locked(void)
 {
     ui_context_t *context = ui_context();
 
+    const char *footer =
+        context->storage_recovery_active
+            ? "CHECKING STORAGE..."
+            : context->storage_recovery_failed
+                ? "STORAGE CHECK INCOMPLETE"
+                : "UP/DOWN NAV   OK/RIGHT OPEN";
+
     lv_obj_t *screen = ui_create_screen_base_locked(
         "MAIN",
-        "UP/DOWN NAV   OK/RIGHT OPEN"
+        footer
     );
 
     if (screen == NULL) {
