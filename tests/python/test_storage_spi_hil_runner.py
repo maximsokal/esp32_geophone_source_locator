@@ -1,8 +1,8 @@
 """Replay/parser contracts for the storage/SPI latency HIL runner.
 
-These tests never exercise physical SPI2, SD, TFT DMA, FreeRTOS scheduling, or
-recorder timing.  They only prove that the PowerShell parser and numerical
-threshold gate classify already-captured telemetry correctly.
+These tests never exercise physical SPI2, SD, TFT DMA, FreeRTOS scheduling,
+acquisition health, or recorder timing. They only prove that the PowerShell
+parser and numerical gate classify already-captured telemetry correctly.
 """
 
 import shutil
@@ -39,6 +39,12 @@ def make_log(
     operation: int = 10000,
     storage_result: int = 0,
     recorder_result: int = 0,
+    stop_stage: str = "complete",
+    stop_error: str = "ESP_OK",
+    dropped_frames: int = 0,
+    include_stop: bool = True,
+    diagnostic_channels: tuple[int, ...] = tuple(range(1, 9)),
+    acquisition_failure: bool = False,
     extra: str = "",
 ) -> str:
     lines = [
@@ -51,6 +57,22 @@ def make_log(
             f"operation_us={operation} result={recorder_result}"
         ),
     ]
+
+    for channel in diagnostic_channels:
+        lines.append(
+            f"I AD7606_DIAG: CH{channel} n=500 mean=+0.000mV rms=0.100mV p2p=0.500mV peak=0.250mV min=-0.250mV max=+0.250mV sat=0 VAR"
+        )
+
+    if acquisition_failure:
+        lines.append("W AD7606_ACQ: Read failed: ESP_ERR_TIMEOUT (check BUSY/CONVST/SPI3 wiring)")
+
+    if include_stop:
+        lines.append(
+            "I SEISMIC_RECORDER: STOP_COMPLETE "
+            f"stage={stop_stage} error_stage=none stage_error=ESP_OK "
+            f"session=SESSION_0001 samples=1000 drops={dropped_frames} err={stop_error}"
+        )
+
     if extra:
         lines.append(extra)
     return "\n".join(lines) + "\n"
@@ -97,9 +119,12 @@ def test_replay_parses_valid_telemetry_without_claiming_physical_hil(tmp_path: P
     result = run_replay(path)
 
     assert result.returncode == 1
-    assert "samples storage_begin=1 storage_end=1 recorder_fwrite=1" in result.stdout
+    assert "samples storage_begin=1 storage_end=1 recorder_fwrite=1 recorder_stop=1 acquisition_diag_channels=8" in result.stdout
     assert "mutex_wait_us=50us limit=100us" in result.stdout
     assert "max_window_us=4000us limit=5000us" in result.stdout
+    assert "recorder_dropped_frames=0 expected=0" in result.stdout
+    assert "acquisition_failure_markers=0 expected=0" in result.stdout
+    assert "acquisition_diag_channels=1,2,3,4,5,6,7,8 required=8" in result.stdout
     assert "STORAGE_SPI_TELEMETRY_RESULT: PASS" in result.stdout
     assert "STORAGE_SPI_HIL_RESULT: BLOCKED" in result.stdout
     assert "never proves physical SPI2" in result.stdout
@@ -174,6 +199,36 @@ def test_replay_rejects_storage_error_short_write_and_zero_windows(tmp_path: Pat
     assert "STORAGE_SPI_TELEMETRY_RESULT: FAIL" in result.stdout
 
 
+def test_replay_rejects_dropped_frames_or_abnormal_recorder_stop(tmp_path: Path):
+    cases = [
+        (make_log(dropped_frames=3), "recorder dropped_frames=3 expected=0"),
+        (make_log(stop_stage="error", stop_error="ESP_FAIL"), "recorder stop stage=error expected=complete"),
+        (make_log(stop_stage="complete", stop_error="ESP_FAIL"), "recorder stop err=ESP_FAIL expected=ESP_OK"),
+    ]
+
+    for index, (content, needle) in enumerate(cases):
+        path = tmp_path / f"storage-spi-recorder-health-{index}.log"
+        path.write_text(content, encoding="utf-8")
+        result = run_replay(path)
+
+        assert result.returncode == 1
+        assert needle in result.stdout
+        assert "STORAGE_SPI_TELEMETRY_RESULT: FAIL" in result.stdout
+        assert "STORAGE_SPI_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_replay_rejects_acquisition_failure_marker(tmp_path: Path):
+    path = tmp_path / "storage-spi-acquisition-fail.log"
+    path.write_text(make_log(acquisition_failure=True), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "acquisition failure markers=1 expected=0" in result.stdout
+    assert "STORAGE_SPI_TELEMETRY_RESULT: FAIL" in result.stdout
+    assert "STORAGE_SPI_HIL_RESULT: FAIL" in result.stdout
+
+
 def test_replay_missing_or_malformed_telemetry_is_blocked_not_pass(tmp_path: Path):
     logs = {
         "missing": "I APP: unrelated log line\n",
@@ -181,6 +236,8 @@ def test_replay_missing_or_malformed_telemetry_is_blocked_not_pass(tmp_path: Pat
             "I SPI_BUS: STORAGE_SPI_TIMING stage=begin mutex_wait_us=? tft_quiesce_us=500 result=0\n"
             "I SEISMIC_RECORDER_FS: RECORDER_IO_TIMING op=fwrite requested=256 written=256 windows=1 max_window_us=oops fwrite_us=10 operation_us=10 result=0\n"
         ),
+        "no-stop": make_log(include_stop=False),
+        "not-all-diagnostic-channels": make_log(diagnostic_channels=(1, 2, 3, 4)),
     }
 
     for name, content in logs.items():
@@ -215,7 +272,10 @@ def test_runner_is_passive_and_never_flashes_by_contract():
     assert '"-Action", "flash"' not in source
     assert "STORAGE_SPI_HIL_RESULT" in source
     assert "REPLAY_LIMITATION" in source
-    assert "STORAGE_SPI_TIMING" in contract
-    assert "RECORDER_IO_TIMING" in contract
+    assert "MinimumAcquisitionDiagnosticChannels = 8" in source
+    assert "STOP_COMPLETE" in contract
+    assert "AD7606_DIAG" in contract
+    assert "DroppedFrames" in contract
+    assert "AcquisitionFailureCount" in contract
     assert "MaxRecorderWindowUs" in contract
     assert "MaxRecorderFwriteUs" in contract
