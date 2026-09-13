@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "storage_service_lifecycle",
+      "sources": [
+        "components/storage_service/storage_service.c",
+        "tests/host/storage_service_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/storage_service",
+        "components/storage_service/include",
+        "components/storage_service",
+        "components/sd_card/include"
+      ]
+    },
+    {
+      "name": "object_service_lifecycle",
+      "sources": [
+        "components/object_service/object_service.c",
+        "components/object_service/object_service_state.c",
+        "components/object_service/object_service_submit.c",
+        "components/object_service/object_service_worker.c",
+        "components/object_service/object_service_shutdown.c",
+        "tests/host/object_service_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_service",
+        "components/object_service/include",
+        "components/object_service",
+        "components/object_format/include"
+      ]
+    }
+  ]
+}
