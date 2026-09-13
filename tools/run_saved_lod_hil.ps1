@@ -127,11 +127,13 @@ function Wait-LodMarker {
     )
 
     $escapedSession = [regex]::Escape($SessionId)
+    $expectedRecords = [int]($Frames / 64)
     $pattern = (
-        "WAVEFORM_READ_PATH\s+source=lod64\s+session={0}\s+start=0\s+frames={1}\s+points={2}" -f
+        "WAVEFORM_READ_PATH\s+source=lod64\s+session={0}\s+start=0\s+frames={1}\s+points={2}\s+raw_frames=0\s+lod_records={3}\s+lod_frames={1}" -f
         $escapedSession,
         $Frames,
-        $PointCount
+        $PointCount,
+        $expectedRecords
     )
 
     do {
@@ -290,7 +292,7 @@ try {
     # The following saved-session request therefore cannot pass through the
     # just-stopped session's cache fast path. With the exact aligned range below,
     # every 64-frame LOD block maps to one output bucket, so source=lod64 proves
-    # actual sidecar use rather than merely sidecar availability.
+    # actual sidecar payload use rather than merely sidecar availability.
     $evictStart = Invoke-JsonRequest ("{0}/api/control" -f $rootUrl) "POST" $startBody
     if ($evictStart.ok -ne $true) {
         throw "recording_start for the cache-eviction session was rejected."
@@ -343,18 +345,19 @@ try {
     $recordingMayBeActive = $false
 
     $deadline = (Get-Date).AddSeconds([math]::Min($TimeoutSeconds, 15))
+    $expectedLodRecords = [int]($TargetFrames / 64)
     if (Wait-LodMarker $logFile $sourceSessionId $TargetFrames $Points $deadline) {
-        Add-Check $checks "LOD64 read-path marker" "PASS" ("Observed source=lod64 for session={0}, start=0, frames={1}, points={2}." -f $sourceSessionId, $TargetFrames, $Points)
+        Add-Check $checks "LOD64 read-path marker" "PASS" ("Observed source=lod64 with raw_frames=0, lod_records={0}, lod_frames={1} for session={2}." -f $expectedLodRecords, $TargetFrames, $sourceSessionId)
     } else {
         $content = (Read-TextFile $logFile) + "`n" + (Read-TextFile $stderrFile)
         $fallback = [regex]::Match(
             $content,
-            ("WAVEFORM_READ_PATH\s+source=(cache|raw)\s+session={0}\s+start=0\s+frames={1}\s+points={2}" -f [regex]::Escape($sourceSessionId), $TargetFrames, $Points)
+            ("WAVEFORM_READ_PATH\s+source=(cache|raw|lod64)\s+session={0}\s+start=0\s+frames={1}\s+points={2}[^\r\n]*" -f [regex]::Escape($sourceSessionId), $TargetFrames, $Points)
         )
         if ($fallback.Success) {
-            throw "Saved waveform succeeded but used '$($fallback.Groups[1].Value)' instead of LOD64."
+            throw "Saved waveform marker did not prove the exact LOD64 payload contract: $($fallback.Value.Trim())"
         }
-        throw "No matching WAVEFORM_READ_PATH source=lod64 marker was observed. The firmware may be older than the read-path instrumentation or the sidecar was unavailable/invalid."
+        throw "No matching WAVEFORM_READ_PATH marker was observed. The firmware may be older than the read-path instrumentation or the sidecar was unavailable/invalid."
     }
 
     $combinedLog = (Read-TextFile $logFile) + "`n" + (Read-TextFile $stderrFile)
@@ -389,7 +392,7 @@ foreach ($check in $checks) {
 if (-not [string]::IsNullOrWhiteSpace($logFile)) {
     Write-Host ("LOG_FILE: {0}" -f $logFile)
 }
-Write-Host "CONTRACT: a distinct second recording invalidates the first session's PSRAM-cache path; the saved request uses an aligned TargetFrames/Points geometry in which every output bucket is an integer multiple of 64 frames. A matching source=lod64 marker therefore proves the completed waveform-lod64.bin read path was exercised."
+Write-Host "CONTRACT: a distinct second recording invalidates the first session's PSRAM-cache path; aligned TargetFrames/Points geometry makes every 64-frame block eligible for LOD64. PASS additionally requires raw_frames=0, lod_records=TargetFrames/64 and lod_frames=TargetFrames, so sidecar payload consumption is proven rather than inferred from sidecar presence."
 Write-Host ("SAVED_LOD_HIL_RESULT: {0}" -f $result)
 
 if ($result -eq "PASS") {
