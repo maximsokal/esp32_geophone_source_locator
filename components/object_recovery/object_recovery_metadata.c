@@ -77,10 +77,14 @@ esp_err_t object_recovery_fs_prepare_metadata(
             object_id
         )
     ) {
-        object_recovery_fs_unlink_if_exists(
-            temporary
-        );
-
+        /*
+         * A valid primary is authoritative. Do not spend another FAT pathname
+         * operation deleting an uncommitted/stale .tmp while the display is
+         * quiesced for this recovery window. storage_manager_atomic_write_text()
+         * always removes the same .tmp before creating the next transaction,
+         * so leaving it here cannot block or contaminate a future committed
+         * write. Recovery only consults sidecars when the primary is invalid.
+         */
         *valid =
             true;
 
