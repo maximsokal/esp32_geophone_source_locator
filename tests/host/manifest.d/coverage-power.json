@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "ina3221_monitor_lifecycle",
+      "sources": [
+        "tests/host/ina3221_monitor_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ina3221_monitor",
+        "components/ina3221_monitor/include"
+      ]
+    }
+  ]
+}
