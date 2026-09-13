@@ -6,6 +6,8 @@
 
 #include "storage_service.h"
 #include "storage_service_internal.h"
+#include "app_task_config.h"
+#include "esp_heap_caps.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
