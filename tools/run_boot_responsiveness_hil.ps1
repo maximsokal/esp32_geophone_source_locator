@@ -195,10 +195,12 @@ try {
                 -MinimumKeypadDispatches $MinimumKeypadDispatches
 
             $coreMarkersReady =
-                $analysis.StartupCount -gt 0 -and
+                $analysis.InteractiveReadyCount -gt 0 -and
+                $analysis.StartupTotalCount -gt 0 -and
                 $analysis.RecoveryCount -ge $MinimumRecoverySamples -and
                 $analysis.KeypadDispatchCount -ge $MinimumKeypadDispatches -and
                 $analysis.MissingKeyCodes.Count -eq 0 -and
+                $content -match 'KEYPAD_EVENT_GATE state=ARMED' -and
                 $content -match 'OBJECT_RECOVERY_BACKGROUND state=STOP' -and
                 $content -match 'WEB_STATUS_CACHE refresh=done'
 
@@ -231,10 +233,12 @@ try {
         -MinimumKeypadDispatches $MinimumKeypadDispatches
 
     $missingStatus = "BLOCKED"
-    $startupOk = $analysis.StartupCount -gt 0 -and $null -ne $analysis.MaxStartupMs -and $analysis.MaxStartupMs -le $MaxStartupMs
+    $startupOk = $analysis.InteractiveReadyCount -gt 0 -and $null -ne $analysis.MaxInteractiveReadyMs -and $analysis.MaxInteractiveReadyMs -le $MaxStartupMs
     Add-Check $checks "Interactive startup latency" `
-        $(if ($startupOk) { "PASS" } elseif ($analysis.StartupCount -gt 0) { "FAIL" } else { $missingStatus }) `
-        ("startup_total={0} limit={1}ms" -f (Format-Metric $analysis.MaxStartupMs "ms"), $MaxStartupMs)
+        $(if ($startupOk) { "PASS" } elseif ($analysis.InteractiveReadyCount -gt 0) { "FAIL" } else { $missingStatus }) `
+        ("interactive_ready={0} limit={1}ms startup_total={2}" -f `
+            (Format-Metric $analysis.MaxInteractiveReadyMs "ms"), $MaxStartupMs, `
+            (Format-Metric $analysis.MaxStartupTotalMs "ms"))
 
     $recoveryOk =
         $analysis.RecoveryCount -ge $MinimumRecoverySamples -and
@@ -270,16 +274,22 @@ try {
         ("failure_markers={0}" -f $analysis.PanicCount)
 
     $orderingViolations = @($analysis.Violations | Where-Object {
+        $_ -eq 'interactive_ready logged before keypad gate was armed' -or
+        $_ -eq 'startup_total logged before interactive_ready' -or
+        $_ -like 'interactive_ready=*occurs after startup_total=*' -or
         $_ -like '*background recovery started before*' -or
         $_ -like '*Web status cache completed before*'
     })
     $orderingMissing = @($analysis.Missing | Where-Object {
+        $_ -eq 'KEYPAD_EVENT_GATE state=ARMED' -or
+        $_ -eq 'BOOT_TIMING interactive_ready' -or
+        $_ -eq 'BOOT_TIMING startup_total' -or
         $_ -like 'OBJECT_RECOVERY_BACKGROUND*' -or
         $_ -eq 'WEB_STATUS_CACHE refresh=done'
     })
-    Add-Check $checks "Startup -> recovery -> Web cache ordering" `
+    Add-Check $checks "Gate -> interactive -> startup -> recovery -> Web cache ordering" `
         $(if ($orderingViolations.Count -gt 0) { "FAIL" } elseif ($orderingMissing.Count -gt 0) { $missingStatus } else { "PASS" }) `
-        $(if ($orderingViolations.Count -gt 0) { $orderingViolations -join '; ' } elseif ($orderingMissing.Count -gt 0) { "missing: " + ($orderingMissing -join ', ') } else { "background recovery begins after startup_total; Web cache completes after recovery stop" })
+        $(if ($orderingViolations.Count -gt 0) { $orderingViolations -join '; ' } elseif ($orderingMissing.Count -gt 0) { "missing: " + ($orderingMissing -join ', ') } else { "keypad gate armed before interactive_ready; startup_total follows; background recovery follows startup_total; Web cache completes after recovery stop" })
 
     $priorityViolations = @($analysis.Violations | Where-Object { $_ -like 'web_status_cache*' })
     if ($analysis.PrioritySampleCount -eq 0) {
@@ -296,7 +306,7 @@ try {
         if (
             $violation -notin $orderingViolations -and
             $violation -notin $priorityViolations -and
-            $violation -notlike 'startup_total=*' -and
+            $violation -notlike 'interactive_ready=*exceeds*' -and
             $violation -notlike 'recovery_window=*' -and
             $violation -notlike 'stale keypad drops*' -and
             $violation -notlike 'unexpected safe shutdown*' -and
