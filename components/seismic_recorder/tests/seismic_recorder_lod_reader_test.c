@@ -328,7 +328,42 @@ static void test_hybrid_matches_raw_for_unaligned_long_range(void)
     );
 
     assert(hybrid_lod_reader.calls > 1U);
-    assert(hybrid_raw_reader.bytes_read * 4U < raw_reference_reader.bytes_read);
+
+    /* LOD64 can replace only complete blocks that map wholly into one output
+     * bucket. For this deliberately unaligned 4000-frame/37-point request,
+     * count that eligibility directly and require the raw-byte saving to equal
+     * exactly those substituted frames. This is a correctness/performance
+     * contract, not an unrealistic fixed compression ratio. */
+    size_t eligible_blocks = 0U;
+    const uint64_t request_start = 13U;
+    const uint64_t request_count = 4000U;
+    const uint64_t request_end = request_start + request_count;
+    for (
+        uint64_t block = 0U;
+        block + SEISMIC_RECORDER_LOD_BLOCK_FRAMES <= request_end;
+        block += SEISMIC_RECORDER_LOD_BLOCK_FRAMES
+    ) {
+        size_t point = 0U;
+        if (seismic_recorder_lod_block_maps_to_one_point(
+                request_start,
+                request_count,
+                37U,
+                block,
+                &point
+            )) {
+            ++eligible_blocks;
+        }
+    }
+    assert(eligible_blocks > 0U);
+    const size_t expected_raw_bytes_saved =
+        eligible_blocks *
+        SEISMIC_RECORDER_LOD_BLOCK_FRAMES *
+        sizeof(seismic_frame_t);
+    assert(raw_reference_reader.bytes_read > hybrid_raw_reader.bytes_read);
+    assert(
+        raw_reference_reader.bytes_read - hybrid_raw_reader.bytes_read ==
+        expected_raw_bytes_saved
+    );
 
     fixture_destroy(&fixture);
 }
