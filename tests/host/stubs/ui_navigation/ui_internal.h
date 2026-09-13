@@ -80,12 +80,21 @@ typedef struct
     size_t measurement_action;
     size_t storage_action;
     size_t wifi_action;
+    bool wifi_setup_page_opened;
+    bool wifi_credentials_saved;
+    bool wifi_ca_downloaded;
+    bool wifi_ca_install_confirmed;
+    bool wifi_verify_ready;
+    bool wifi_verify_result_received;
+    uint32_t wifi_verify_nonce;
+    uint32_t wifi_verify_result_mask;
 
 } ui_context_t;
 
 
 ui_context_t *ui_context(void);
 void ui_set_notice_locked(const char *text);
+void ui_refresh_header_locked(void);
 void ui_render_home_locked(void);
 void ui_render_objects_locked(void);
 void ui_render_measurements_locked(void);
@@ -110,3 +119,5 @@ void ui_screen_render_locked(ui_screen_t screen);
 void ui_screen_handle_key_locked(ui_screen_t screen, keypad_key_t key);
 void ui_screen_refresh_locked(ui_screen_t screen);
 void ui_move_index(size_t *value, size_t count, bool down);
+void ui_dispatch_key_locked(keypad_key_t key);
+void ui_dispatch_app_event_locked(int event_type, int32_t event_value);
