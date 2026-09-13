@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,6 +17,7 @@
 #include "app_events.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
+#include "freertos/task.h"
 #include "runtime_observability.h"
 #include "ui_internal.h"
 
