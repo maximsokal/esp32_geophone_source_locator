@@ -168,19 +168,25 @@ static void app_startup_initialize_services(void)
         stage_started_ms
     );
 
+    /*
+     * Only the active object is recovery-critical for interactive startup.
+     * Repair it before object_store_init() restores active state, but do not
+     * walk every historical object here: a large archive used to keep the
+     * boot screen and keypad gate blocked for tens of seconds.
+     */
     ui_boot_set_stage(
-        "RECOVERY..."
+        "ACTIVE OBJECT..."
     );
 
     stage_started_ms =
         esp_log_timestamp();
 
     ESP_ERROR_CHECK(
-        object_recovery_run()
+        object_recovery_run_active()
     );
 
     app_startup_log_elapsed(
-        "object_recovery_run",
+        "object_recovery_active",
         stage_started_ms
     );
 
@@ -340,9 +346,10 @@ void app_startup_run(void)
     app_startup_initialize_services();
 
     /*
-     * GPIO21 must not be able to latch shutdown while storage recovery and
-     * service startup are still running. Arm only after the interactive UI,
-     * keypad delivery and acquisition startup have all completed.
+     * GPIO21 must not be able to latch shutdown while storage preparation and
+     * service startup are still running. Arm after the interactive UI, keypad
+     * delivery and acquisition startup have all completed. Full historical
+     * object recovery is background work and is safe to cancel during shutdown.
      */
     const uint32_t power_arm_started_ms =
         esp_log_timestamp();
@@ -366,4 +373,20 @@ void app_startup_run(void)
         "startup_total",
         startup_started_ms
     );
+
+    /*
+     * Start the expensive archive-wide recovery only after startup_total has
+     * been committed to the log and the UI/keypad are already interactive.
+     * The worker waits briefly before touching SD and releases SPI2 between
+     * objects, so the local display is no longer gated by archive size.
+     */
+    const esp_err_t recovery_err =
+        object_recovery_start_background();
+    if (recovery_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Background object recovery unavailable: %s",
+            esp_err_to_name(recovery_err)
+        );
+    }
 }
