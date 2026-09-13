@@ -20,6 +20,12 @@ WORKER = (
 TASK_CONFIG = (
     REPO_ROOT / "components" / "app_config" / "include" / "app_task_config.h"
 ).read_text(encoding="utf-8")
+WEB_PREPARE = (
+    REPO_ROOT / "components" / "web_server" / "web_server_prepare.c"
+).read_text(encoding="utf-8")
+WEB_ARBITRATION = (
+    REPO_ROOT / "components" / "web_server" / "web_status_cache_arbitration.c"
+).read_text(encoding="utf-8")
 
 
 def position(source: str, needle: str) -> int:
@@ -57,6 +63,7 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
         r"ESP_ERROR_CHECK\(\s*object_recovery_run_active\(\)\s*\)",
         r"ESP_ERROR_CHECK\(\s*object_store_init\(\)\s*\)",
         r"ESP_ERROR_CHECK\(\s*ui_init\(\)\s*\)",
+        r"web_server_start\(\)",
         r"keypad_start_event_monitor\(",
         r"seismic_acquisition_start\(\)",
     ]
@@ -64,13 +71,41 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
     assert service_positions == sorted(service_positions)
 
     run_patterns = [
+        r"web_server_defer_status_cache_refresh\(\)",
         r"app_startup_initialize_services\(\)",
         r"power_control_arm_shutdown_button\(\)",
         r'app_startup_log_elapsed\(\s*"startup_total"',
-        r"object_recovery_start_background\(\)",
+        r"object_recovery_start_background_with_callback\(",
     ]
     run_positions = [pattern_position(run, pattern) for pattern in run_patterns]
     assert run_positions == sorted(run_positions)
+
+
+def test_web_archive_cache_waits_for_background_recovery_completion():
+    callback = function_section(
+        STARTUP,
+        "static void app_startup_background_recovery_complete(",
+        "static void app_startup_initialize_core(void)",
+    )
+    run = function_section(STARTUP, "void app_startup_run(void)")
+
+    assert "web_server_enable_status_cache_refresh()" in callback
+    assert "app_startup_background_recovery_complete" in run
+    assert "object_recovery_start_background_with_callback(" in run
+
+    assert "web_status_cache_arbitration_set_refresh_enabled(false)" in WEB_PREPARE
+    assert "web_status_cache_arbitration_set_refresh_enabled(true)" in WEB_PREPARE
+    assert "web_status_json_objects_request_refresh()" in WEB_PREPARE
+
+    gate = position(
+        WEB_ARBITRATION,
+        "if (!web_status_cache_arbitration_refresh_enabled())",
+    )
+    lock = position(
+        WEB_ARBITRATION,
+        "if (!web_status_cache_arbitration_lock(arbitration))",
+    )
+    assert gate < lock
 
 
 def test_archive_recovery_releases_storage_between_objects():
@@ -100,7 +135,7 @@ def test_directory_census_does_not_hold_guard_during_metadata_loop():
     assert "object_recovery_check_one(" not in collect
 
 
-def test_background_worker_is_low_priority_psram_and_shutdown_aware():
+def test_background_worker_is_low_priority_psram_shutdown_aware_and_callback_safe():
     assert "APP_TASK_PRIORITY_OBJECT_RECOVERY 1" in TASK_CONFIG
     assert "APP_TASK_STACK_OBJECT_RECOVERY" in TASK_CONFIG
     assert "xTaskCreatePinnedToCoreWithCaps(" in WORKER
@@ -109,6 +144,11 @@ def test_background_worker_is_low_priority_psram_and_shutdown_aware():
     assert "OBJECT_RECOVERY_BACKGROUND_START_DELAY_MS" in WORKER
     assert "s_stop_requested" in WORKER
     assert "vTaskDeleteWithCaps(NULL)" in WORKER
+
+    callback = position(WORKER, "complete_fn(err, complete_context)")
+    task_clear = position(WORKER, "s_task = NULL;")
+    assert callback < task_clear
+    assert "if (!stopped && complete_fn != NULL)" in WORKER
 
 
 def test_shutdown_stops_recovery_before_lvgl_and_storage_teardown():
