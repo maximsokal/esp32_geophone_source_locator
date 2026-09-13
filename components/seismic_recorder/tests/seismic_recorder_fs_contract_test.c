@@ -831,7 +831,10 @@ static void test_listing_propagates_directory_errors(void)
     assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 2U, &count) == ESP_FAIL);
     assert(count == 0U);
     assert(directory_readdir_calls == 2U);
-    assert(directory_closedir_calls == 2U);
+    /* The injected second read can hit the parent census before a child
+     * directory is opened (for example when '.'/'..' are returned first).
+     * The invariant is leak freedom, not a platform-specific close count. */
+    assert(directory_closedir_calls == directory_opendir_calls);
     assert(storage_begin_calls == storage_end_calls);
 
     reset_directory_fault();
