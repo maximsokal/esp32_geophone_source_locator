@@ -20,6 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef _WIN32
+/* Keep strict -std=c11 host builds independent of libc feature-test defaults.
+ * ESP-IDF exposes these POSIX compatibility functions on target. */
+int fileno(FILE *stream);
+size_t strnlen(const char *string, size_t max_length);
+#endif
+
 #define STORAGE_MANAGER_MOUNT_POINT "seismic_pipeline_contract_tmp"
 
 #include "esp_err.h"
