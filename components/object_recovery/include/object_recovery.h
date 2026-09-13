@@ -5,6 +5,12 @@
 #include "esp_err.h"
 
 
+typedef void (*object_recovery_background_complete_fn)(
+    esp_err_t result,
+    void *user_context
+);
+
+
 /*
  * Inspect persisted object directories and recover interrupted metadata writes
  * where possible. Directories that match OBJ_XXXX but contain no valid object
@@ -31,5 +37,18 @@ esp_err_t object_recovery_run_active(void);
  * storage_manager operation so TFT/LVGL can resume between objects.
  */
 esp_err_t object_recovery_start_background(void);
+
+/*
+ * Variant used by startup orchestration. The callback runs in the recovery
+ * worker after the archive pass finishes (successfully or with an error), but
+ * is skipped when shutdown explicitly requests the worker to stop. The task
+ * remains alive until the callback returns, so shutdown cannot tear services
+ * down underneath the callback.
+ */
+esp_err_t object_recovery_start_background_with_callback(
+    object_recovery_background_complete_fn complete_fn,
+    void *user_context
+);
+
 void object_recovery_stop_background(void);
 bool object_recovery_is_running(void);
