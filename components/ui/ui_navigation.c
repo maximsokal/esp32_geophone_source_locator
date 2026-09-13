@@ -172,6 +172,22 @@ void ui_dispatch_app_event_locked(
             }
             break;
 
+        case APP_EVENT_STORAGE_RECOVERY_STARTED:
+            context->storage_recovery_active = true;
+            context->storage_recovery_failed = false;
+            if (context->screen == UI_SCREEN_HOME) {
+                ui_render_home_locked();
+            }
+            return;
+
+        case APP_EVENT_STORAGE_RECOVERY_FINISHED:
+            context->storage_recovery_active = false;
+            context->storage_recovery_failed = event_value != ESP_OK;
+            if (context->screen == UI_SCREEN_HOME) {
+                ui_render_home_locked();
+            }
+            return;
+
         case APP_EVENT_KEYPAD:
         default:
             return;
