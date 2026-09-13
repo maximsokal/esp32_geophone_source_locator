@@ -23,6 +23,8 @@ typedef struct {
 
 typedef struct { UBaseType_t count; } fake_sem_t;
 
+unsigned fake_critical_depth;
+
 static fake_queue_t s_queue;
 static fake_sem_t s_sem;
 static int s_task_token;
@@ -145,6 +147,8 @@ void vTaskDeleteWithCaps(TaskHandle_t task) { assert(task == NULL); }
 
 void vTaskDelay(TickType_t ticks)
 {
+    assert(fake_critical_depth == 0U);
+
     if (ticks == 1U) {
         storage_service_callback_slot_t *slot =
             storage_service_internal_callback_slot();
@@ -186,6 +190,7 @@ static void on_event(const storage_service_event_t *event, void *context)
     storage_service_callback_slot_t *slot =
         storage_service_internal_callback_slot();
 
+    assert(fake_critical_depth == 0U);
     assert(context == &s_callback_calls);
     assert(event->type == STORAGE_SERVICE_EVENT_INFO_DONE);
     assert(event->result == ESP_OK);
@@ -291,6 +296,7 @@ int main(void)
     assert(storage_service_init() == ESP_OK);
     storage_service_shutdown();
     assert(!storage_service_is_busy());
+    assert(fake_critical_depth == 0U);
 
     return 0;
 }
