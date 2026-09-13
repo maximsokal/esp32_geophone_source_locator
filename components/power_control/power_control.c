@@ -13,6 +13,7 @@ esp_err_t power_button_adapter_init(
     power_button_shutdown_notification_hook_t hook,
     void *user_context
 );
+esp_err_t power_button_adapter_arm_after_startup(void);
 esp_err_t power_button_adapter_set_notification_hook(
     power_button_shutdown_notification_hook_t hook,
     void *user_context
@@ -55,12 +56,29 @@ esp_err_t power_control_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized: OFF=GPIO%d BUTTON=GPIO%d",
+        "Initialized: OFF=GPIO%d BUTTON=GPIO%d shutdown=DISARMED_UNTIL_STARTUP",
         BOARD_POWER_OFF_GPIO,
         BOARD_POWER_BUTTON_GPIO
     );
 
     return ESP_OK;
+}
+
+
+esp_err_t power_control_arm_shutdown_button(void)
+{
+    const esp_err_t err =
+        power_button_adapter_arm_after_startup();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to arm shutdown button after startup: %s",
+            esp_err_to_name(err)
+        );
+    }
+
+    return err;
 }
 
 

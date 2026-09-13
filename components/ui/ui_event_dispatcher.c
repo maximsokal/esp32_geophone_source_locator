@@ -164,6 +164,16 @@ void ui_event_dispatcher_dispatch_pending_locked(void)
                 }
             }
             else {
+                const int64_t age_us =
+                    now_us >= event.queued_us
+                        ? now_us - event.queued_us
+                        : 0;
+                ESP_LOGI(
+                    TAG,
+                    "KEYPAD_EVENT_DISPATCH key=%ld age_ms=%lld",
+                    (long)event.event_value,
+                    (long long)(age_us / 1000LL)
+                );
                 ui_dispatch_key_locked((keypad_key_t)event.event_value);
             }
         }

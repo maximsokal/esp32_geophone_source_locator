@@ -8,6 +8,7 @@
 #include "button_gpio.h"
 #include "driver/gpio.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 #include "app_events.h"
 #include "iot_button.h"
 
@@ -18,6 +19,7 @@ esp_err_t power_button_adapter_init(
     power_button_shutdown_notification_hook_t hook,
     void *user_context
 );
+esp_err_t power_button_adapter_arm_after_startup(void);
 esp_err_t power_button_adapter_set_notification_hook(
     power_button_shutdown_notification_hook_t hook,
     void *user_context
@@ -39,6 +41,8 @@ static unsigned hook_bits_at_call;
 static unsigned app_event_posts;
 static esp_err_t fake_best_effort_result;
 static uint32_t fake_timestamp_ms;
+static unsigned delay_calls;
+static TickType_t delayed_ticks;
 
 
 static uint32_t fake_button_time_to_ticks(uint32_t time_ms)
@@ -62,12 +66,21 @@ static void reset_fakes(void)
     app_event_posts = 0U;
     fake_best_effort_result = ESP_OK;
     fake_timestamp_ms = 0U;
+    delay_calls = 0U;
+    delayed_ticks = 0U;
 }
 
 
 uint32_t esp_log_timestamp(void)
 {
     return fake_timestamp_ms;
+}
+
+
+void vTaskDelay(TickType_t ticks)
+{
+    delay_calls++;
+    delayed_ticks = ticks;
 }
 
 
@@ -194,6 +207,13 @@ button_event_t iot_button_get_event(button_handle_t button)
 }
 
 
+uint8_t iot_button_get_key_level(button_handle_t button)
+{
+    (void)button;
+    return fake_gpio_level != 0 ? 1U : 0U;
+}
+
+
 esp_err_t iot_button_delete(button_handle_t button)
 {
     (void)button;
@@ -274,7 +294,7 @@ static void test_button_registration_rejects_equal_effective_ticks(void)
 }
 
 
-static void test_startup_held_and_long_press_policy(void)
+static void test_boot_long_press_cannot_latch_before_explicit_arm(void)
 {
     reset_fakes();
     fake_gpio_level = 1;
@@ -284,22 +304,46 @@ static void test_startup_held_and_long_press_policy(void)
     assert(captured_gpio_config.disable_pull);
     assert(captured_button_config.short_press_time == 50U);
     assert(captured_button_config.long_press_time == 150U);
-    assert(fake_button_time_to_ticks(captured_button_config.long_press_time) >
-        fake_button_time_to_ticks(captured_button_config.short_press_time));
 
-    /* Startup-held input is ignored until its release arms the object. */
-    invoke(BUTTON_LONG_PRESS_START);
-    assert(!power_button_adapter_is_shutdown_requested());
-    assert(hook_calls == 0U);
-
-    fake_gpio_level = 0;
-    invoke(BUTTON_PRESS_UP);
-    fake_gpio_level = 1;
     fake_timestamp_ms = 1000U;
     invoke(BUTTON_PRESS_DOWN);
     fake_timestamp_ms = 1150U;
-    /* A full APP_LOOP queue must not prevent the authoritative latch or the
-     * optional notification hook from completing the shutdown path. */
+    invoke(BUTTON_LONG_PRESS_START);
+    assert(!power_button_adapter_is_shutdown_requested());
+    assert(hook_calls == 0U);
+    assert(app_event_posts == 0U);
+
+    /* Even a debounced release during the long boot does not arm shutdown. */
+    fake_gpio_level = 0;
+    invoke(BUTTON_PRESS_UP);
+    fake_gpio_level = 1;
+    fake_timestamp_ms = 2000U;
+    invoke(BUTTON_PRESS_DOWN);
+    fake_timestamp_ms = 2150U;
+    invoke(BUTTON_LONG_PRESS_START);
+    assert(!power_button_adapter_is_shutdown_requested());
+    assert(hook_calls == 0U);
+    assert(app_event_posts == 0U);
+
+    power_button_adapter_stop();
+}
+
+
+static void test_arm_after_stable_release_then_shutdown(void)
+{
+    reset_fakes();
+    fake_gpio_level = 0;
+    assert(power_button_adapter_init(notification_hook, NULL) == ESP_OK);
+
+    assert(power_button_adapter_arm_after_startup() == ESP_OK);
+    assert(delay_calls == 1U);
+    assert(delayed_ticks == pdMS_TO_TICKS(50U));
+    assert(!power_button_adapter_is_shutdown_requested());
+
+    fake_gpio_level = 1;
+    fake_timestamp_ms = 3000U;
+    invoke(BUTTON_PRESS_DOWN);
+    fake_timestamp_ms = 3150U;
     fake_best_effort_result = ESP_ERR_TIMEOUT;
     invoke(BUTTON_LONG_PRESS_START);
     assert(power_button_adapter_is_shutdown_requested());
@@ -307,9 +351,40 @@ static void test_startup_held_and_long_press_policy(void)
     assert((hook_bits_at_call & 1U) != 0U);
     assert(app_event_posts == 1U);
 
-    /* The adapter waits on Button's debounced release event, not a task. */
+    fake_gpio_level = 0;
     invoke(BUTTON_PRESS_UP);
     power_button_adapter_wait_for_shutdown_request();
+    power_button_adapter_stop();
+}
+
+
+static void test_arm_while_held_waits_for_debounced_release(void)
+{
+    reset_fakes();
+    fake_gpio_level = 1;
+    assert(power_button_adapter_init(notification_hook, NULL) == ESP_OK);
+
+    assert(power_button_adapter_arm_after_startup() == ESP_OK);
+    assert(delay_calls == 0U);
+
+    fake_timestamp_ms = 4000U;
+    invoke(BUTTON_PRESS_DOWN);
+    fake_timestamp_ms = 4150U;
+    invoke(BUTTON_LONG_PRESS_START);
+    assert(!power_button_adapter_is_shutdown_requested());
+
+    fake_gpio_level = 0;
+    invoke(BUTTON_PRESS_UP);
+
+    fake_gpio_level = 1;
+    fake_timestamp_ms = 5000U;
+    invoke(BUTTON_PRESS_DOWN);
+    fake_timestamp_ms = 5150U;
+    invoke(BUTTON_LONG_PRESS_START);
+    assert(power_button_adapter_is_shutdown_requested());
+
+    fake_gpio_level = 0;
+    invoke(BUTTON_PRESS_UP);
     power_button_adapter_stop();
 }
 
@@ -317,7 +392,9 @@ static void test_startup_held_and_long_press_policy(void)
 int main(void)
 {
     test_button_registration_rejects_equal_effective_ticks();
-    test_startup_held_and_long_press_policy();
+    test_boot_long_press_cannot_latch_before_explicit_arm();
+    test_arm_after_stable_release_then_shutdown();
+    test_arm_while_held_waits_for_debounced_release();
     puts("power button tests passed");
     return 0;
 }

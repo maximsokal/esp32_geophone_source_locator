@@ -13,6 +13,15 @@ typedef void (*power_control_shutdown_notification_hook_t)(
 esp_err_t power_control_init(void);
 
 
+/*
+ * GPIO21 is initialized during early bring-up, but shutdown remains disarmed
+ * until startup has completed and the interactive UI is ready.  This arm step
+ * confirms a released button; if the button is still held, the official
+ * Button PRESS_UP callback completes arming after release.
+ */
+esp_err_t power_control_arm_shutdown_button(void);
+
+
 /* Optional non-queue notification for UI/diagnostics. The shutdown latch is
  * set before this hook is called, so the hook can never be authoritative. */
 esp_err_t power_control_set_shutdown_notification_hook(

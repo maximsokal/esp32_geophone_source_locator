@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 
 #include "app_task_config.h"
+#include "esp_err.h"
 #include "esp_log.h"
 
 
@@ -89,6 +90,12 @@ void app_events_set_keypad_delivery_enabled(bool enabled)
         enabled,
         memory_order_release
     );
+
+    ESP_LOGI(
+        TAG,
+        "KEYPAD_EVENT_GATE state=%s",
+        enabled ? "ARMED" : "DISARMED"
+    );
 }
 
 
@@ -115,6 +122,7 @@ static esp_err_t app_events_post_internal(
          * before it can occupy APP_EVENT/UI queues until the interactive UI
          * has explicitly armed keypad delivery.
          */
+        ESP_LOGD(TAG, "KEYPAD_EVENT_DROP reason=gate key=%ld", (long)value);
         return ESP_OK;
     }
 
@@ -130,6 +138,20 @@ static esp_err_t app_events_post_internal(
             sizeof(payload),
             0
         );
+
+    if (type == APP_EVENT_KEYPAD) {
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "KEYPAD_EVENT_POST key=%ld", (long)value);
+        }
+        else {
+            ESP_LOGW(
+                TAG,
+                "KEYPAD_EVENT_POST_FAILED key=%ld err=%s",
+                (long)value,
+                esp_err_to_name(err)
+            );
+        }
+    }
 
     if (log_queue_full && err == ESP_ERR_TIMEOUT) {
         ESP_LOGW(
