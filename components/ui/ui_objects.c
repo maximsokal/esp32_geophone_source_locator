@@ -362,7 +362,13 @@ void ui_object_service_event(
 
     ui_context_t *context = ui_context();
 
-    if (event == NULL || !context->runtime_ready) {
+    if (
+        event == NULL ||
+        !atomic_load_explicit(
+            &context->runtime_ready,
+            memory_order_acquire
+        )
+    ) {
         return;
     }
 
