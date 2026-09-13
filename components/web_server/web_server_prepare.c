@@ -4,10 +4,31 @@
 #include "esp_log.h"
 
 #include "web_server_internal.h"
+#include "web_status_cache_arbitration.h"
 
 
 static const char *TAG =
     "WEB_PREPARE";
+
+
+void web_server_defer_status_cache_refresh(void)
+{
+    web_status_cache_arbitration_set_refresh_enabled(false);
+    ESP_LOGI(TAG, "Status object/session cache refresh deferred until recovery completes");
+}
+
+
+esp_err_t web_server_enable_status_cache_refresh(void)
+{
+    web_status_cache_arbitration_set_refresh_enabled(true);
+
+    const esp_err_t err =
+        web_status_json_objects_request_refresh();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Status object/session cache refresh enabled and queued");
+    }
+    return err;
+}
 
 
 esp_err_t web_server_prepare_webui(void)
