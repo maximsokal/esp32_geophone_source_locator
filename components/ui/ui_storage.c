@@ -206,7 +206,10 @@ void ui_storage_service_event(
 
     if (
         event == NULL ||
-        !context->runtime_ready
+        !atomic_load_explicit(
+            &context->runtime_ready,
+            memory_order_acquire
+        )
     ) {
         return;
     }
