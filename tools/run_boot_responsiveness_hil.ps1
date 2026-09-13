@@ -178,7 +178,7 @@ try {
             Add-Check $checks "Production flash" "PASS" ("Flashed through {0}; logs remain passive on {1}." -f $FlashPort, $LogPort)
         }
 
-        Write-Host "After the HOME screen appears, press the keypad repeatedly (preferably all five keys) while background recovery is still running."
+        Write-Host "After the HOME screen appears, press LEFT, UP, DOWN, RIGHT and OK repeatedly. Keep pressing through background recovery and the following Web status-cache refresh until the report finishes."
         Write-Host ("Collecting up to {0}s of COM6 telemetry..." -f $TimeoutSeconds)
 
         $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -198,6 +198,7 @@ try {
                 $analysis.StartupCount -gt 0 -and
                 $analysis.RecoveryCount -ge $MinimumRecoverySamples -and
                 $analysis.KeypadDispatchCount -ge $MinimumKeypadDispatches -and
+                $analysis.MissingKeyCodes.Count -eq 0 -and
                 $content -match 'OBJECT_RECOVERY_BACKGROUND state=STOP' -and
                 $content -match 'WEB_STATUS_CACHE refresh=done'
 
@@ -245,11 +246,15 @@ try {
             $analysis.RecoveryCount, (Format-Metric $analysis.MaxRecoveryWindowMs "ms"), `
             $MaxRecoveryWindowMs, $analysis.RemovedObjectCount)
 
-    $keypadOk = $analysis.KeypadDispatchCount -ge $MinimumKeypadDispatches
-    Add-Check $checks "Keypad reaches LVGL dispatcher" `
+    $keypadOk =
+        $analysis.KeypadDispatchCount -ge $MinimumKeypadDispatches -and
+        $analysis.MissingKeyCodes.Count -eq 0
+    $seenKeys = if ($analysis.SeenKeyCodes.Count -gt 0) { $analysis.SeenKeyCodes -join ',' } else { 'none' }
+    $missingKeys = if ($analysis.MissingKeyCodes.Count -gt 0) { $analysis.MissingKeyCodes -join ',' } else { 'none' }
+    Add-Check $checks "All five keypad keys reach LVGL" `
         $(if ($keypadOk) { "PASS" } else { $missingStatus }) `
-        ("dispatches={0}/{1} max_dispatch_age={2}" -f `
-            $analysis.KeypadDispatchCount, $MinimumKeypadDispatches, `
+        ("dispatches={0}/{1} keys_seen={2} missing={3} max_dispatch_age={4}" -f `
+            $analysis.KeypadDispatchCount, $MinimumKeypadDispatches, $seenKeys, $missingKeys, `
             (Format-Metric $analysis.MaxKeypadDispatchAgeMs "ms"))
 
     Add-Check $checks "No stale keypad navigation" `
