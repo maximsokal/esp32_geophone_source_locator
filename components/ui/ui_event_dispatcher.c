@@ -284,8 +284,7 @@ void ui_event_dispatcher_stop(void)
             loop,
             APP_EVENT,
             ESP_EVENT_ANY_ID,
-            ui_event_handler,
-            NULL
+            ui_event_handler
         );
     }
 
