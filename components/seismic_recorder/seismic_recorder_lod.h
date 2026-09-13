@@ -23,6 +23,7 @@
 #define SEISMIC_RECORDER_LOD_FILE_VERSION       1U
 #define SEISMIC_RECORDER_LOD_FILE_HEADER_BYTES 32U
 #define SEISMIC_RECORDER_LOD_RECORD_BYTES      64U
+#define SEISMIC_RECORDER_LOD_FLAG_COMPLETE      0x00000001U
 
 
 typedef struct
@@ -34,7 +35,7 @@ typedef struct
     uint32_t sample_rate_hz;
     uint32_t frame_size_bytes;
     uint32_t record_size_bytes;
-    uint32_t reserved;
+    uint32_t flags;
 
 } seismic_recorder_lod_file_header_t;
 
@@ -74,6 +75,16 @@ void seismic_recorder_lod_header_init(
 bool seismic_recorder_lod_header_valid(
     const seismic_recorder_lod_file_header_t *header,
     uint32_t expected_sample_rate_hz
+);
+
+
+void seismic_recorder_lod_header_mark_complete(
+    seismic_recorder_lod_file_header_t *header
+);
+
+
+bool seismic_recorder_lod_header_is_complete(
+    const seismic_recorder_lod_file_header_t *header
 );
 
 
