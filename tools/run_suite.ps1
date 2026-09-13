@@ -111,13 +111,15 @@ function Add-HostFailureDetails {
 function Invoke-HostSuites {
     $runHost = Join-Path $repo "tools\run_host_tests.py"
     $baseBuildDir = Join-Path $repo "build\host-tests"
+    $baseReport = Join-Path $baseBuildDir "host-test-report.json"
+    Remove-Item -LiteralPath $baseReport -Force -ErrorAction SilentlyContinue
     Invoke-SuiteStep -Name "Host C base" -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
         $runHost,
         "--build-dir",
         $baseBuildDir,
         "--keep-going"
     )
-    Add-HostFailureDetails -SuiteName "Host C base" -ReportPath (Join-Path $baseBuildDir "host-test-report.json")
+    Add-HostFailureDetails -SuiteName "Host C base" -ReportPath $baseReport
 
     $manifestDirectory = Join-Path $repo "tests\host\manifest.d"
     if (-not (Test-Path -LiteralPath $manifestDirectory -PathType Container)) {
@@ -131,6 +133,8 @@ function Invoke-HostSuites {
     foreach ($manifest in $manifests) {
         $suiteName = [System.IO.Path]::GetFileNameWithoutExtension($manifest.Name)
         $buildDir = Join-Path $repo ("build\host-tests-{0}" -f $suiteName)
+        $reportPath = Join-Path $buildDir "host-test-report.json"
+        Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
         $stepName = "Host C {0}" -f $suiteName
         Invoke-SuiteStep -Name $stepName -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
             $runHost,
@@ -140,7 +144,7 @@ function Invoke-HostSuites {
             $buildDir,
             "--keep-going"
         )
-        Add-HostFailureDetails -SuiteName $stepName -ReportPath (Join-Path $buildDir "host-test-report.json")
+        Add-HostFailureDetails -SuiteName $stepName -ReportPath $reportPath
     }
 }
 
