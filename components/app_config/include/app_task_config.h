@@ -51,6 +51,14 @@
 #define APP_TASK_STACK_OBJECT_SERVICE  8192
 
 /*
+ * Full object metadata recovery is intentionally background work. Startup
+ * repairs only the active object synchronously, then this low-priority worker
+ * scans the remaining directories one bounded storage window at a time.
+ */
+#define APP_TASK_PRIORITY_OBJECT_RECOVERY 1
+#define APP_TASK_STACK_OBJECT_RECOVERY  6144
+
+/*
  * Measurement commands can stop/finalize the recorder and delete a reviewed
  * session. Keep that work off the LVGL event task while retaining normal
  * service-core scheduling priority.
