@@ -30,10 +30,14 @@ def test_responsive_listing_does_not_delegate_to_monolithic_index_build():
 
 
 def test_census_guard_is_closed_before_per_object_profile_reads():
-    begin = position(RESPONSIVE, "object_store_internal_begin_file_operation()")
-    census = position(RESPONSIVE, "object_store_fs_list(")
-    end = position(RESPONSIVE, "object_store_internal_end_file_operation()")
-    per_object = position(RESPONSIVE, "object_store_get_profile(")
+    """Compare executable call markers, not function names mentioned in comments."""
+    begin = position(
+        RESPONSIVE,
+        "esp_err_t err = object_store_internal_begin_file_operation();",
+    )
+    census = position(RESPONSIVE, "err = object_store_fs_list(")
+    end = position(RESPONSIVE, "object_store_internal_end_file_operation();")
+    per_object = position(RESPONSIVE, "err = object_store_get_profile(")
     assert begin < census < end < per_object
 
 
