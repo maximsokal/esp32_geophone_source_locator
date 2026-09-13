@@ -50,8 +50,17 @@ static TaskHandle_t s_retry_task = NULL;
 /*
  * HTTPS auth material is intentionally supplied by a separate, private
  * integration. No key is stored in this repository or sdkconfig.defaults.
+ * ESP-IDF uses GCC/Clang, where the weak hook lets a private integration
+ * override the symbol. The native MSVC host contract does not use HTTPS and
+ * only needs the declaration to remain parseable.
  */
-const char *app_esp_insights_auth_key(void) __attribute__((weak));
+#if defined(__GNUC__) || defined(__clang__)
+#define INSIGHTS_BRIDGE_WEAK __attribute__((weak))
+#else
+#define INSIGHTS_BRIDGE_WEAK
+#endif
+const char *app_esp_insights_auth_key(void) INSIGHTS_BRIDGE_WEAK;
+#undef INSIGHTS_BRIDGE_WEAK
 
 
 static bool insights_has_auth_key(void)
