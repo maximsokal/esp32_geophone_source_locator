@@ -8,6 +8,15 @@
 #include "seismic_recorder_lod.h"
 
 
+typedef struct
+{
+    uint64_t raw_frames_read;
+    uint64_t lod_records_read;
+    uint64_t lod_frames_read;
+
+} seismic_recorder_lod_read_stats_t;
+
+
 /*
  * Exact hybrid reduction over samples.bin + waveform-lod64.bin.
  *
@@ -35,6 +44,33 @@ esp_err_t seismic_recorder_lod_read_source(
     seismic_recorder_waveform_point_t *points,
     size_t point_capacity,
     seismic_recorder_waveform_info_t *info
+);
+
+
+/* Same exact reducer with optional execution statistics. The counters describe
+ * only waveform payload consumed after all validation succeeds far enough to
+ * read it: LOD header validation does not count as LOD-record use. This makes
+ * lod_records_read > 0 a precise proof that waveform-lod64.bin replaced raw
+ * frames for this request rather than merely being present and valid. */
+esp_err_t seismic_recorder_lod_read_source_with_stats(
+    seismic_recorder_waveform_read_at_fn raw_read_at,
+    void *raw_context,
+    uint64_t raw_file_size,
+    seismic_recorder_waveform_read_at_fn lod_read_at,
+    void *lod_context,
+    uint64_t lod_file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t max_points,
+    seismic_frame_t *raw_staging,
+    size_t raw_staging_capacity,
+    seismic_recorder_lod_record_t *lod_staging,
+    size_t lod_staging_capacity,
+    seismic_recorder_waveform_point_t *points,
+    size_t point_capacity,
+    seismic_recorder_waveform_info_t *info,
+    seismic_recorder_lod_read_stats_t *stats
 );
 
 
