@@ -37,13 +37,16 @@ def make_log(
     priority_base: int = 1,
     priority_inherited: int = 1,
     include_priority: bool = True,
+    include_gate: bool = True,
     include_interactive: bool = True,
     cache_before_recovery_stop: bool = False,
 ) -> str:
     if len(dispatch_keys) != len(dispatch_ages):
         raise ValueError("dispatch_keys and dispatch_ages must have the same length")
 
-    lines = ["I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED"]
+    lines: list[str] = []
+    if include_gate:
+        lines.append("I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED")
     if include_interactive:
         lines.append(f"I APP: BOOT_TIMING: interactive_ready={interactive_ms} ms")
     lines.extend(
@@ -121,15 +124,14 @@ def test_valid_replay_passes_telemetry_but_never_claims_physical_hil(tmp_path: P
 
     assert result.returncode == 1
     assert "Interactive startup latency" in result.stdout
-    # MaxStartupMs remains a backward-compatible runner property but now
-    # represents BOOT_TIMING interactive_ready.
-    assert "startup_total=2800ms limit=5000ms" in result.stdout
+    assert "interactive_ready=2800ms limit=5000ms startup_total=3200ms" in result.stdout
     assert "samples=2 max=145ms limit=250ms" in result.stdout
     assert "All five keypad keys reach LVGL" in result.stdout
     assert "dispatches=5/5 keys_seen=1,2,3,4,5 missing=none" in result.stdout
     assert "stale_drops=0" in result.stdout
     assert "safe_shutdown_markers=0" in result.stdout
     assert "base_priority=1 inherited_observed=True" in result.stdout
+    assert "Gate -> interactive -> startup -> recovery -> Web cache ordering" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: PASS" in result.stdout
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
     assert "REPLAY_LIMITATION:" in result.stdout
@@ -157,7 +159,7 @@ def test_replay_rejects_slow_interactive_ready_and_recovery_window(tmp_path: Pat
     result = run_replay(path)
 
     assert result.returncode == 1
-    assert "startup_total=5001ms limit=5000ms" in result.stdout
+    assert "interactive_ready=5001ms limit=5000ms startup_total=6500ms" in result.stdout
     assert "max=251ms limit=250ms" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: FAIL" in result.stdout
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: FAIL" in result.stdout
@@ -173,7 +175,7 @@ def test_replay_allows_slow_full_startup_after_fast_interactive_ready(tmp_path: 
     result = run_replay(path)
 
     assert result.returncode == 1
-    assert "startup_total=2800ms limit=5000ms" in result.stdout
+    assert "interactive_ready=2800ms limit=5000ms startup_total=8000ms" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: PASS" in result.stdout
 
 
@@ -184,8 +186,20 @@ def test_replay_without_interactive_ready_is_blocked(tmp_path: Path):
     result = run_replay(path)
 
     assert result.returncode == 1
+    assert "BOOT_TIMING interactive_ready" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: BLOCKED" in result.stdout
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
+
+
+def test_replay_without_gate_armed_is_blocked(tmp_path: Path):
+    path = tmp_path / "boot-no-gate.log"
+    path.write_text(make_log(include_gate=False), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "KEYPAD_EVENT_GATE state=ARMED" in result.stdout
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: BLOCKED" in result.stdout
 
 
 def test_replay_rejects_stale_keypad_and_spontaneous_shutdown(tmp_path: Path):
