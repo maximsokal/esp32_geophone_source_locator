@@ -416,7 +416,7 @@ static esp_err_t seismic_recorder_lod_read_lod_run(
 }
 
 
-esp_err_t seismic_recorder_lod_read_source(
+esp_err_t seismic_recorder_lod_read_source_with_stats(
     seismic_recorder_waveform_read_at_fn raw_read_at,
     void *raw_context,
     uint64_t raw_file_size,
@@ -433,9 +433,14 @@ esp_err_t seismic_recorder_lod_read_source(
     size_t lod_staging_capacity,
     seismic_recorder_waveform_point_t *points,
     size_t point_capacity,
-    seismic_recorder_waveform_info_t *info
+    seismic_recorder_waveform_info_t *info,
+    seismic_recorder_lod_read_stats_t *stats
 )
 {
+    if (stats != NULL) {
+        memset(stats, 0, sizeof(*stats));
+    }
+
     if (
         raw_read_at == NULL ||
         lod_read_at == NULL ||
@@ -592,6 +597,13 @@ esp_err_t seismic_recorder_lod_read_source(
                 return err;
             }
 
+            if (stats != NULL) {
+                stats->lod_records_read += (uint64_t)record_count;
+                stats->lod_frames_read +=
+                    (uint64_t)record_count *
+                    SEISMIC_RECORDER_LOD_BLOCK_FRAMES;
+            }
+
             cursor +=
                 (uint64_t)record_count *
                 SEISMIC_RECORDER_LOD_BLOCK_FRAMES;
@@ -662,7 +674,23 @@ esp_err_t seismic_recorder_lod_read_source(
         if (err != ESP_OK) {
             return err;
         }
+        if (stats != NULL) {
+            stats->raw_frames_read += (uint64_t)raw_count;
+        }
         cursor += raw_count;
+    }
+
+    if (
+        stats != NULL &&
+        (
+            stats->lod_records_read > UINT64_MAX / SEISMIC_RECORDER_LOD_BLOCK_FRAMES ||
+            stats->lod_frames_read !=
+                stats->lod_records_read * SEISMIC_RECORDER_LOD_BLOCK_FRAMES ||
+            stats->raw_frames_read > frame_count ||
+            stats->lod_frames_read > frame_count - stats->raw_frames_read
+        )
+    ) {
+        return ESP_ERR_INVALID_SIZE;
     }
 
     info->complete = summary->complete;
@@ -685,4 +713,47 @@ esp_err_t seismic_recorder_lod_read_source(
     }
 
     return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_lod_read_source(
+    seismic_recorder_waveform_read_at_fn raw_read_at,
+    void *raw_context,
+    uint64_t raw_file_size,
+    seismic_recorder_waveform_read_at_fn lod_read_at,
+    void *lod_context,
+    uint64_t lod_file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    size_t max_points,
+    seismic_frame_t *raw_staging,
+    size_t raw_staging_capacity,
+    seismic_recorder_lod_record_t *lod_staging,
+    size_t lod_staging_capacity,
+    seismic_recorder_waveform_point_t *points,
+    size_t point_capacity,
+    seismic_recorder_waveform_info_t *info
+)
+{
+    return seismic_recorder_lod_read_source_with_stats(
+        raw_read_at,
+        raw_context,
+        raw_file_size,
+        lod_read_at,
+        lod_context,
+        lod_file_size,
+        summary,
+        start_frame,
+        frame_count,
+        max_points,
+        raw_staging,
+        raw_staging_capacity,
+        lod_staging,
+        lod_staging_capacity,
+        points,
+        point_capacity,
+        info,
+        NULL
+    );
 }
