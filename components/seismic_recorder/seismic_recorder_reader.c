@@ -9,6 +9,12 @@
 #include "esp_heap_caps.h"
 #include "storage_manager.h"
 
+#ifdef ESP_PLATFORM
+#include "app_task_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
+
 
 typedef struct
 {
@@ -24,6 +30,52 @@ typedef struct
     uint32_t sample_rate_hz;
 
 } seismic_recorder_cache_reader_t;
+
+
+#ifdef ESP_PLATFORM
+typedef struct
+{
+    UBaseType_t original_priority;
+    bool changed;
+
+} seismic_recorder_reader_priority_guard_t;
+
+
+static seismic_recorder_reader_priority_guard_t
+seismic_recorder_reader_priority_enter(void)
+{
+    seismic_recorder_reader_priority_guard_t guard = {
+        .original_priority = uxTaskPriorityGet(NULL),
+        .changed = false,
+    };
+
+    /*
+     * ESP-IDF HTTPD normally runs above the recorder and LVGL. A long saved
+     * waveform request can therefore release one bounded SD window and then
+     * immediately reacquire it for the next chunk before the recorder gets
+     * CPU time. Lower only the range-reduction phase to the normal storage
+     * service priority. This keeps each SD window bounded *and* lets the
+     * recorder time-slice between chunks while LVGL can still preempt both.
+     * Small metadata checks and normal HTTPS handling retain HTTPD priority.
+     */
+    if (guard.original_priority > APP_TASK_PRIORITY_STORAGE_SERVICE) {
+        vTaskPrioritySet(NULL, APP_TASK_PRIORITY_STORAGE_SERVICE);
+        guard.changed = true;
+    }
+
+    return guard;
+}
+
+
+static void seismic_recorder_reader_priority_leave(
+    seismic_recorder_reader_priority_guard_t guard
+)
+{
+    if (guard.changed) {
+        vTaskPrioritySet(NULL, guard.original_priority);
+    }
+}
+#endif
 
 
 static esp_err_t seismic_recorder_reader_errno_to_error(
@@ -346,6 +398,10 @@ esp_err_t seismic_recorder_read_session(
             .session_id = session_id,
             .sample_rate_hz = summary.sample_rate_hz,
         };
+#ifdef ESP_PLATFORM
+        const seismic_recorder_reader_priority_guard_t priority_guard =
+            seismic_recorder_reader_priority_enter();
+#endif
         err = seismic_recorder_waveform_read_source(
             seismic_recorder_cache_reader_read_at,
             &cache_reader,
@@ -360,6 +416,9 @@ esp_err_t seismic_recorder_read_session(
             point_capacity,
             info
         );
+#ifdef ESP_PLATFORM
+        seismic_recorder_reader_priority_leave(priority_guard);
+#endif
         if (err == ESP_OK) {
             heap_caps_free(staging);
             snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
@@ -422,11 +481,18 @@ esp_err_t seismic_recorder_read_session(
      * made safe against concurrent object/session mutation by libc itself.
      * Keep no handle across arbitration windows: every read_at callback opens,
      * seeks, reads one bounded chunk, closes, and only then releases SPI2.
-     * The CPU min/max reduction runs outside storage_manager entirely.
+     * The CPU min/max reduction runs outside storage_manager entirely. The
+     * reduction phase is temporarily lowered to the normal storage-service
+     * priority so a many-chunk history request cannot outrank the recorder or
+     * LVGL between those bounded windows.
      */
     seismic_recorder_bounded_reader_t reader = {
         .path = session_path,
     };
+#ifdef ESP_PLATFORM
+    const seismic_recorder_reader_priority_guard_t priority_guard =
+        seismic_recorder_reader_priority_enter();
+#endif
     err = seismic_recorder_waveform_read_source(
         seismic_recorder_reader_read_at,
         &reader,
@@ -441,6 +507,9 @@ esp_err_t seismic_recorder_read_session(
         point_capacity,
         info
     );
+#ifdef ESP_PLATFORM
+    seismic_recorder_reader_priority_leave(priority_guard);
+#endif
 
     heap_caps_free(staging);
     free(session_path);
