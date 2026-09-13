@@ -41,4 +41,5 @@ esp_err_t iot_button_register_cb(
     void *user_data
 );
 button_event_t iot_button_get_event(button_handle_t button);
+uint8_t iot_button_get_key_level(button_handle_t button);
 esp_err_t iot_button_delete(button_handle_t button);
