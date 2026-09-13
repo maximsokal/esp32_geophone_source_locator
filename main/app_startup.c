@@ -339,6 +339,23 @@ void app_startup_run(void)
 
     app_startup_initialize_services();
 
+    /*
+     * GPIO21 must not be able to latch shutdown while storage recovery and
+     * service startup are still running. Arm only after the interactive UI,
+     * keypad delivery and acquisition startup have all completed.
+     */
+    const uint32_t power_arm_started_ms =
+        esp_log_timestamp();
+
+    ESP_ERROR_CHECK(
+        power_control_arm_shutdown_button()
+    );
+
+    app_startup_log_elapsed(
+        "power_button_arm",
+        power_arm_started_ms
+    );
+
     app_startup_log_success();
 
     (void)insights_bridge_publish_runtime();

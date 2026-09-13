@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "sdkconfig.h"
 #include "board_config.h"
@@ -12,12 +13,14 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 
 
 static const char *TAG = "POWER_BUTTON";
 
 #define POWER_BUTTON_SHORT_PRESS_MS 50U
 #define POWER_BUTTON_LONG_PRESS_MS 150U
+#define POWER_BUTTON_RELEASE_CONFIRM_MS 50U
 #define POWER_EVENT_SHUTDOWN_REQUESTED BIT0
 #define POWER_EVENT_BUTTON_RELEASED (BIT0 << 1)
 
@@ -45,7 +48,8 @@ typedef struct {
     button_handle_t button;
     power_button_shutdown_notification_hook_t notification_hook;
     void *notification_context;
-    volatile bool armed;
+    atomic_bool arm_requested;
+    atomic_bool armed;
     uint32_t debounced_down_ms;
     bool debounced_down_valid;
     bool initialized;
@@ -57,10 +61,8 @@ static power_button_state_t s_state;
 
 static void power_button_callback(void *button_handle, void *user_data)
 {
-    (void)button_handle;
-
     power_button_state_t *state = (power_button_state_t *)user_data;
-    if (state == NULL || state->events == NULL) {
+    if (button_handle == NULL || state == NULL || state->events == NULL) {
         return;
     }
 
@@ -72,14 +74,30 @@ static void power_button_callback(void *button_handle, void *user_data)
     }
 
     if (event == BUTTON_PRESS_UP) {
-        /* This also arms a button that was held during startup. */
-        state->armed = true;
         state->debounced_down_valid = false;
         xEventGroupSetBits(state->events, POWER_EVENT_BUTTON_RELEASED);
+
+        /* A release observed during boot is deliberately not enough to arm
+         * shutdown. Only the explicit post-startup arm request opens this
+         * gate. If startup finishes while the button is held, this debounced
+         * PRESS_UP is the event that completes arming. */
+        if (atomic_load_explicit(&state->arm_requested, memory_order_acquire)) {
+            const bool was_armed = atomic_exchange_explicit(
+                &state->armed,
+                true,
+                memory_order_acq_rel
+            );
+            if (!was_armed) {
+                ESP_LOGI(TAG, "Shutdown button armed after debounced release");
+            }
+        }
         return;
     }
 
-    if (event != BUTTON_LONG_PRESS_START || !state->armed) {
+    if (
+        event != BUTTON_LONG_PRESS_START ||
+        !atomic_load_explicit(&state->armed, memory_order_acquire)
+    ) {
         return;
     }
 
@@ -92,8 +110,6 @@ static void power_button_callback(void *button_handle, void *user_data)
     const uint32_t debounced_elapsed_ms = state->debounced_down_valid
         ? latch_ms - state->debounced_down_ms
         : 0U;
-    /* Keep the value live in host builds whose logging stub is intentionally
-     * silent; the target ESP_LOGI call below is the diagnostic sink. */
     (void)debounced_elapsed_ms;
     ESP_LOGI(
         TAG,
@@ -161,11 +177,10 @@ esp_err_t power_button_adapter_init(
 
     s_state.notification_hook = hook;
     s_state.notification_context = user_context;
+    atomic_init(&s_state.arm_requested, false);
+    atomic_init(&s_state.armed, false);
     s_state.debounced_down_ms = 0U;
     s_state.debounced_down_valid = false;
-    /* Existing behavior waits for a startup-held button to be released before
-     * arming. GPIO21 is already configured by Button with pulls disabled. */
-    s_state.armed = gpio_get_level(BOARD_POWER_BUTTON_GPIO) == 0;
 
     err = iot_button_register_cb(
         s_state.button,
@@ -203,12 +218,57 @@ esp_err_t power_button_adapter_init(
     s_state.initialized = true;
     ESP_LOGI(
         TAG,
-        "Button ready: GPIO%d active-high pull-up/down disabled short=%ums long=%ums period=%ums",
+        "Button ready: GPIO%d active-high pull-up/down disabled short=%ums long=%ums period=%ums shutdown=DISARMED",
         BOARD_POWER_BUTTON_GPIO,
         (unsigned)POWER_BUTTON_SHORT_PRESS_MS,
         (unsigned)POWER_BUTTON_LONG_PRESS_MS,
         (unsigned)CONFIG_BUTTON_PERIOD_TIME_MS
     );
+    return ESP_OK;
+}
+
+
+esp_err_t power_button_adapter_arm_after_startup(void)
+{
+    if (!s_state.initialized || s_state.button == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    atomic_store_explicit(
+        &s_state.arm_requested,
+        true,
+        memory_order_release
+    );
+
+    /* Do not arm from a transient raw LOW at the instant startup completes.
+     * Verify that the official Button driver reports released on both sides
+     * of one short-press/debounce interval. This is a one-time startup delay,
+     * not an application polling task. */
+    if (iot_button_get_key_level(s_state.button) != 0U) {
+        ESP_LOGW(TAG, "Shutdown arm deferred: button is held at startup completion");
+        return ESP_OK;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(POWER_BUTTON_RELEASE_CONFIRM_MS));
+
+    if (iot_button_get_key_level(s_state.button) == 0U) {
+        const bool was_armed = atomic_exchange_explicit(
+            &s_state.armed,
+            true,
+            memory_order_acq_rel
+        );
+        if (!was_armed) {
+            ESP_LOGI(
+                TAG,
+                "Shutdown button armed after startup release confirmation (%ums)",
+                (unsigned)POWER_BUTTON_RELEASE_CONFIRM_MS
+            );
+        }
+    }
+    else {
+        ESP_LOGW(TAG, "Shutdown arm deferred: button changed to pressed during release confirmation");
+    }
+
     return ESP_OK;
 }
 
@@ -269,6 +329,9 @@ void power_button_adapter_stop(void)
         return;
     }
 
+    atomic_store_explicit(&s_state.arm_requested, false, memory_order_release);
+    atomic_store_explicit(&s_state.armed, false, memory_order_release);
+
     if (s_state.button != NULL) {
         (void)iot_button_delete(s_state.button);
         s_state.button = NULL;
@@ -280,7 +343,6 @@ void power_button_adapter_stop(void)
 
     s_state.notification_hook = NULL;
     s_state.notification_context = NULL;
-    s_state.armed = false;
     s_state.debounced_down_ms = 0U;
     s_state.debounced_down_valid = false;
     s_state.initialized = false;
