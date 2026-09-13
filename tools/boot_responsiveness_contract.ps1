@@ -88,6 +88,7 @@ function Get-BootResponsivenessTelemetry {
     $recoveryStartPosition = $Content.IndexOf('OBJECT_RECOVERY_BACKGROUND state=START', [StringComparison]::OrdinalIgnoreCase)
     $recoveryStopPosition = $Content.IndexOf('OBJECT_RECOVERY_BACKGROUND state=STOP', [StringComparison]::OrdinalIgnoreCase)
     $cacheDonePosition = $Content.IndexOf('WEB_STATUS_CACHE refresh=done', [StringComparison]::OrdinalIgnoreCase)
+    $failureLinePattern = '(?im)^[^\r\n]*(?:Guru Meditation Error|panic''ed|Task watchdog got triggered|Brownout detector was triggered|assert failed)[^\r\n]*$'
 
     return [pscustomobject]@{
         Startup = $startup
@@ -100,10 +101,7 @@ function Get-BootResponsivenessTelemetry {
         RecoveryStopPosition = $recoveryStopPosition
         CacheDonePosition = $cacheDonePosition
         SafeShutdownCount = [regex]::Matches($Content, '(?im)Safe shutdown started').Count
-        PanicCount = [regex]::Matches(
-            $Content,
-            '(?im)(Guru Meditation Error|panic''ed|Task watchdog got triggered|Brownout detector was triggered|assert failed)'
-        ).Count
+        PanicCount = [regex]::Matches($Content, $failureLinePattern).Count
     }
 }
 
