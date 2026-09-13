@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "object_service.h"
@@ -26,6 +27,9 @@ static bool s_fail_queue_create;
 static bool s_fail_task_create;
 static bool s_fail_queue_send;
 static bool s_inject_stop_when_empty;
+static bool s_release_callback_inflight_on_delay;
+static bool s_release_observer_inflight_on_delay;
+static unsigned s_barrier_delay_calls;
 static unsigned s_queue_delete_calls;
 static unsigned s_process_calls;
 static bool s_process_saw_busy;
@@ -101,6 +105,28 @@ void vTaskDeleteWithCaps(TaskHandle_t task) { assert(task == NULL); }
 
 void vTaskDelay(TickType_t ticks)
 {
+    object_service_state_t *state = object_service_internal_state();
+
+    if (ticks == 1U) {
+        if (s_release_callback_inflight_on_delay) {
+            assert(state->event_callback_in_flight == 1U);
+            state->event_callback_in_flight = 0U;
+            s_release_callback_inflight_on_delay = false;
+            ++s_barrier_delay_calls;
+            return;
+        }
+
+        if (s_release_observer_inflight_on_delay) {
+            assert(state->event_observer_in_flight == 1U);
+            state->event_observer_in_flight = 0U;
+            s_release_observer_inflight_on_delay = false;
+            ++s_barrier_delay_calls;
+            return;
+        }
+
+        assert(!"unexpected one-tick callback barrier wait");
+    }
+
     assert(ticks == pdMS_TO_TICKS(10));
     if (s_task_entry != NULL) {
         TaskFunction_t task = s_task_entry;
@@ -123,7 +149,7 @@ void object_service_internal_process(const object_service_command_t *command)
 {
     object_service_state_t *state = object_service_internal_state();
     ++s_process_calls;
-    s_process_saw_busy = state->busy;
+    s_process_saw_busy = atomic_load_explicit(&state->busy, memory_order_acquire);
     s_last_processed_type = command->type;
     memcpy(s_last_processed_id, command->object_id, sizeof(s_last_processed_id));
 }
@@ -163,6 +189,29 @@ int main(void)
     assert(object_service_set_event_callback(dummy_callback, &active) == ESP_OK);
     assert(object_service_set_event_observer(dummy_observer, state) == ESP_OK);
 
+    /*
+     * Deterministically model a worker that already snapped each slot. The
+     * setter must close the slot and wait until the simulated in-flight call
+     * releases it before returning.
+     */
+    state->event_callback_in_flight = 1U;
+    s_release_callback_inflight_on_delay = true;
+    assert(object_service_set_event_callback(NULL, NULL) == ESP_OK);
+    assert(s_barrier_delay_calls == 1U);
+    assert(state->event_callback == NULL);
+    assert(state->event_user_context == NULL);
+    assert(state->event_callback_in_flight == 0U);
+    assert(object_service_set_event_callback(dummy_callback, &active) == ESP_OK);
+
+    state->event_observer_in_flight = 1U;
+    s_release_observer_inflight_on_delay = true;
+    assert(object_service_set_event_observer(NULL, NULL) == ESP_OK);
+    assert(s_barrier_delay_calls == 2U);
+    assert(state->event_observer == NULL);
+    assert(state->event_observer_context == NULL);
+    assert(state->event_observer_in_flight == 0U);
+    assert(object_service_set_event_observer(dummy_observer, state) == ESP_OK);
+
     assert(object_service_get_active(&active) == ESP_OK);
     assert(strcmp(active.id, "OBJ_0001") == 0 && active.active);
     s_get_active_result = ESP_FAIL;
@@ -193,7 +242,9 @@ int main(void)
     assert(!state->initialized);
     assert(state->command_queue == NULL);
     assert(state->event_callback == NULL && state->event_observer == NULL);
-    assert(!state->busy);
+    assert(state->event_callback_in_flight == 0U);
+    assert(state->event_observer_in_flight == 0U);
+    assert(!atomic_load_explicit(&state->busy, memory_order_acquire));
 
     assert(object_service_init() == ESP_OK);
     assert(object_service_delete_async("OBJ_0002") == ESP_OK);
