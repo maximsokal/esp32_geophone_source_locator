@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $results = New-Object System.Collections.Generic.List[object]
+$hostFailureDetails = New-Object System.Collections.Generic.List[object]
 
 function Invoke-SuiteStep {
     param(
@@ -70,12 +71,53 @@ function Invoke-SuiteStep {
     })
 }
 
+function Add-HostFailureDetails {
+    param(
+        [Parameter(Mandatory = $true)] [string]$SuiteName,
+        [Parameter(Mandatory = $true)] [string]$ReportPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+        return
+    }
+
+    try {
+        $report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
+    } catch {
+        $hostFailureDetails.Add([pscustomobject]@{
+            Suite = $SuiteName
+            Test = "<report>"
+            Phase = "parse"
+            ExitCode = 1
+            Error = $_.Exception.Message
+        })
+        return
+    }
+
+    foreach ($testResult in @($report.results)) {
+        if ($testResult.status -ne "FAIL") {
+            continue
+        }
+        $hostFailureDetails.Add([pscustomobject]@{
+            Suite = $SuiteName
+            Test = [string]$testResult.name
+            Phase = [string]$testResult.phase
+            ExitCode = if ($null -eq $testResult.exit_code) { "-" } else { [string]$testResult.exit_code }
+            Error = if ($null -eq $testResult.error) { "" } else { [string]$testResult.error }
+        })
+    }
+}
+
 function Invoke-HostSuites {
     $runHost = Join-Path $repo "tools\run_host_tests.py"
+    $baseBuildDir = Join-Path $repo "build\host-tests"
     Invoke-SuiteStep -Name "Host C base" -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
         $runHost,
+        "--build-dir",
+        $baseBuildDir,
         "--keep-going"
     )
+    Add-HostFailureDetails -SuiteName "Host C base" -ReportPath (Join-Path $baseBuildDir "host-test-report.json")
 
     $manifestDirectory = Join-Path $repo "tests\host\manifest.d"
     if (-not (Test-Path -LiteralPath $manifestDirectory -PathType Container)) {
@@ -89,7 +131,8 @@ function Invoke-HostSuites {
     foreach ($manifest in $manifests) {
         $suiteName = [System.IO.Path]::GetFileNameWithoutExtension($manifest.Name)
         $buildDir = Join-Path $repo ("build\host-tests-{0}" -f $suiteName)
-        Invoke-SuiteStep -Name ("Host C {0}" -f $suiteName) -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
+        $stepName = "Host C {0}" -f $suiteName
+        Invoke-SuiteStep -Name $stepName -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
             $runHost,
             "--manifest",
             $manifest.FullName,
@@ -97,6 +140,7 @@ function Invoke-HostSuites {
             $buildDir,
             "--keep-going"
         )
+        Add-HostFailureDetails -SuiteName $stepName -ReportPath (Join-Path $buildDir "host-test-report.json")
     }
 }
 
@@ -150,6 +194,19 @@ foreach ($result in $results) {
     }
     Write-Host ("{0,-32} {1,-9} {2,8} {3,10:N1}" -f $result.Name, $result.Status, $result.ExitCode, $result.Duration) -ForegroundColor $color
 }
+
+if ($hostFailureDetails.Count -gt 0) {
+    Write-Host ""
+    Write-Host "HOST_FAILURE_DETAILS:" -ForegroundColor Red
+    foreach ($failure in $hostFailureDetails) {
+        $detail = "- {0}: test={1} phase={2} exit={3}" -f $failure.Suite, $failure.Test, $failure.Phase, $failure.ExitCode
+        if (-not [string]::IsNullOrWhiteSpace($failure.Error)) {
+            $detail += " error=" + $failure.Error
+        }
+        Write-Host $detail -ForegroundColor Red
+    }
+}
+
 Write-Host ("SUITE_RESULT: {0}" -f $suiteStatus) -ForegroundColor $(if ($suiteStatus -eq "PASS") { "Green" } elseif ($suiteStatus -eq "BLOCKED") { "Yellow" } else { "Red" })
 if ($Suite -eq "All") {
     Write-Host "HIL_RESULT: SKIPPED (Tests: All is hardware-free; use ESP: Unity tests (flash COM4 + logs COM6) for board evidence.)" -ForegroundColor DarkYellow
