@@ -172,11 +172,64 @@ static void test_persisted_marking_must_be_in_order(void)
 }
 
 
+static void test_dense_session_frames_preserve_source_gaps(void)
+{
+    seismic_recorder_cache_slot_t storage[6];
+    seismic_recorder_cache_t cache;
+    assert(seismic_recorder_cache_init(&cache, storage, 6U) == ESP_OK);
+
+    seismic_frame_t before_gap[2];
+    seismic_frame_t after_gap[2];
+    fill_frames(before_gap, 100U, 2U);
+    fill_frames(after_gap, 120U, 2U);
+
+    assert(seismic_recorder_cache_append(&cache, 100U, before_gap, 2U) == ESP_OK);
+    assert(seismic_recorder_cache_append(&cache, 120U, after_gap, 2U) == ESP_OK);
+
+    seismic_frame_t dirty[4] = {0};
+    size_t dirty_count = 0U;
+    uint64_t dirty_first = UINT64_MAX;
+    assert(seismic_recorder_cache_copy_dirty(
+        &cache,
+        dirty,
+        4U,
+        &dirty_count,
+        &dirty_first
+    ) == ESP_OK);
+    assert(dirty_first == 0U);
+    assert(dirty_count == 4U);
+    assert(dirty[0].timestamp_us == 200000LL);
+    assert(dirty[1].timestamp_us == 202000LL);
+    assert(dirty[2].timestamp_us == 240000LL);
+    assert(dirty[3].timestamp_us == 242000LL);
+
+    /* samples.bin is dense: four written records occupy session frames 0..3.
+     * The returned producer cursor must still jump across the acquisition gap
+     * so the recorder never treats dropped source frames 102..119 as pending. */
+    uint64_t last_source = 0U;
+    assert(seismic_recorder_cache_mark_persisted(
+        &cache,
+        0U,
+        4U,
+        &last_source
+    ) == ESP_OK);
+    assert(last_source == 121U);
+
+    seismic_recorder_cache_info_t info;
+    assert(seismic_recorder_cache_get_info(&cache, &info) == ESP_OK);
+    assert(info.next_session_frame == 4U);
+    assert(info.persisted_session_frame == 4U);
+    assert(info.dirty_frames == 0U);
+    assert(info.persisted_resident_frames == 4U);
+}
+
+
 int main(void)
 {
     test_dirty_frames_are_never_evicted();
     test_persisted_history_evicts_before_dirty_tail();
     test_persisted_marking_must_be_in_order();
+    test_dense_session_frames_preserve_source_gaps();
     puts("seismic recorder cache tests passed");
     return 0;
 }
