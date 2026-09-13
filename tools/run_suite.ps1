@@ -71,6 +71,23 @@ function Invoke-SuiteStep {
     })
 }
 
+function Compress-DiagnosticText {
+    param(
+        [AllowNull()] [string]$Text,
+        [int]$Limit = 1000
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ""
+    }
+
+    $compressed = (($Text -replace "`r?`n", " | ") -replace "\s+", " ").Trim()
+    if ($compressed.Length -le $Limit) {
+        return $compressed
+    }
+    return $compressed.Substring(0, $Limit) + "..."
+}
+
 function Add-HostFailureDetails {
     param(
         [Parameter(Mandatory = $true)] [string]$SuiteName,
@@ -86,24 +103,42 @@ function Add-HostFailureDetails {
     } catch {
         $hostFailureDetails.Add([pscustomobject]@{
             Suite = $SuiteName
+            Compiler = "<unknown>"
             Test = "<report>"
             Phase = "parse"
             ExitCode = 1
-            Error = $_.Exception.Message
+            Diagnostic = $_.Exception.Message
         })
         return
+    }
+
+    $compilerDescription = if ([string]::IsNullOrWhiteSpace([string]$report.compiler_description)) {
+        "<unknown>"
+    } else {
+        [string]$report.compiler_description
     }
 
     foreach ($testResult in @($report.results)) {
         if ($testResult.status -ne "FAIL") {
             continue
         }
+
+        $diagnostic = ""
+        if (-not [string]::IsNullOrWhiteSpace([string]$testResult.stderr)) {
+            $diagnostic = Compress-DiagnosticText -Text ([string]$testResult.stderr)
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$testResult.stdout)) {
+            $diagnostic = Compress-DiagnosticText -Text ([string]$testResult.stdout)
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$testResult.error)) {
+            $diagnostic = Compress-DiagnosticText -Text ([string]$testResult.error)
+        }
+
         $hostFailureDetails.Add([pscustomobject]@{
             Suite = $SuiteName
+            Compiler = $compilerDescription
             Test = [string]$testResult.name
             Phase = [string]$testResult.phase
             ExitCode = if ($null -eq $testResult.exit_code) { "-" } else { [string]$testResult.exit_code }
-            Error = if ($null -eq $testResult.error) { "" } else { [string]$testResult.error }
+            Diagnostic = $diagnostic
         })
     }
 }
@@ -203,11 +238,11 @@ if ($hostFailureDetails.Count -gt 0) {
     Write-Host ""
     Write-Host "HOST_FAILURE_DETAILS:" -ForegroundColor Red
     foreach ($failure in $hostFailureDetails) {
-        $detail = "- {0}: test={1} phase={2} exit={3}" -f $failure.Suite, $failure.Test, $failure.Phase, $failure.ExitCode
-        if (-not [string]::IsNullOrWhiteSpace($failure.Error)) {
-            $detail += " error=" + $failure.Error
+        Write-Host ("- {0}: test={1} phase={2} exit={3}" -f $failure.Suite, $failure.Test, $failure.Phase, $failure.ExitCode) -ForegroundColor Red
+        Write-Host ("  compiler={0}" -f $failure.Compiler) -ForegroundColor DarkRed
+        if (-not [string]::IsNullOrWhiteSpace($failure.Diagnostic)) {
+            Write-Host ("  diagnostic={0}" -f $failure.Diagnostic) -ForegroundColor DarkRed
         }
-        Write-Host $detail -ForegroundColor Red
     }
 }
 
