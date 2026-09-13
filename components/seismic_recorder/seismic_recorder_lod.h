@@ -19,6 +19,7 @@
  *
  * The sidecar is explicitly disposable. samples.bin remains authoritative.
  */
+#define SEISMIC_RECORDER_LOD_FILE_NAME          "waveform-lod64.bin"
 #define SEISMIC_RECORDER_LOD_BLOCK_FRAMES      64U
 #define SEISMIC_RECORDER_LOD_FILE_VERSION       1U
 #define SEISMIC_RECORDER_LOD_FILE_HEADER_BYTES 32U
