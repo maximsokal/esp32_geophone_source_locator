@@ -20,6 +20,8 @@ struct test_button {
 
 static const button_driver_t *s_drivers[5];
 static struct test_button s_buttons[5];
+static button_cb_t s_callbacks[5];
+static void *s_callback_user_data[5];
 static size_t s_created;
 static int s_service_reads;
 static size_t s_last_sample_count;
@@ -29,6 +31,8 @@ static int64_t s_read_duration_us;
 static bool s_service_busy;
 static int s_try_reads;
 static int s_direct_adc_reads;
+static int s_keypad_events_posted;
+static int32_t s_last_keypad_event_value;
 
 
 esp_err_t adc_service_configure_gpio(
@@ -124,6 +128,11 @@ esp_err_t iot_button_register_cb(
     assert(event_args == NULL);
     assert(cb != NULL);
     assert(usr_data != NULL);
+
+    const size_t index = (size_t)(btn_handle - s_buttons);
+    assert(index < 5U);
+    s_callbacks[index] = cb;
+    s_callback_user_data[index] = usr_data;
     return ESP_OK;
 }
 
@@ -141,8 +150,9 @@ esp_err_t app_events_post(
     int32_t value
 )
 {
-    (void)type;
-    (void)value;
+    assert(type == APP_EVENT_KEYPAD);
+    s_keypad_events_posted++;
+    s_last_keypad_event_value = value;
     return ESP_OK;
 }
 
@@ -186,7 +196,7 @@ esp_err_t keypad_button_adapter_init(void);
 void keypad_button_adapter_stop(void);
 
 
-static void test_keypad_buttons_use_one_broker_sample(void)
+static void reset_test_state(void)
 {
     s_created = 0;
     s_service_reads = 0;
@@ -197,6 +207,19 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     s_direct_adc_reads = 0;
     s_now_us = 10000;
     s_raw_value = 905;
+    s_keypad_events_posted = 0;
+    s_last_keypad_event_value = 0;
+
+    for (size_t i = 0U; i < 5U; ++i) {
+        s_callbacks[i] = NULL;
+        s_callback_user_data[i] = NULL;
+    }
+}
+
+
+static void test_keypad_buttons_use_one_broker_sample(void)
+{
+    reset_test_state();
 
     assert(keypad_button_adapter_init() == ESP_OK);
     assert(s_created == 5U);
@@ -244,9 +267,30 @@ static void test_keypad_buttons_use_one_broker_sample(void)
 }
 
 
+static void test_debounced_button_callback_posts_keypad_event(void)
+{
+    reset_test_state();
+
+    assert(keypad_button_adapter_init() == ESP_OK);
+    assert(s_created == 5U);
+
+    for (size_t i = 0U; i < 5U; ++i) {
+        assert(s_callbacks[i] != NULL);
+        assert(s_callback_user_data[i] != NULL);
+
+        s_callbacks[i](&s_buttons[i], s_callback_user_data[i]);
+        assert(s_keypad_events_posted == (int)(i + 1U));
+        assert(s_last_keypad_event_value == (int32_t)(i + 1U));
+    }
+
+    keypad_button_adapter_stop();
+}
+
+
 int main(void)
 {
     test_keypad_buttons_use_one_broker_sample();
+    test_debounced_button_callback_posts_keypad_event();
     puts("keypad ADC ownership tests passed");
     return 0;
 }
