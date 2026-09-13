@@ -88,6 +88,8 @@ typedef struct
     bool wifi_verify_result_received;
     uint32_t wifi_verify_nonce;
     uint32_t wifi_verify_result_mask;
+    bool storage_recovery_active;
+    bool storage_recovery_failed;
 
 } ui_context_t;
 
