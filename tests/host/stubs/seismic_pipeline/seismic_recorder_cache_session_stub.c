@@ -49,7 +49,7 @@ esp_err_t seismic_recorder_lod_store_begin(
 {
     (void)session_path;
     (void)sample_rate_hz;
-    return ESP_ERR_NOT_SUPPORTED;
+    return ESP_FAIL;
 }
 
 
