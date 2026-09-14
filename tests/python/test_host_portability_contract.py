@@ -117,3 +117,13 @@ def test_object_store_host_path_does_not_require_posix_mode_t_on_msvc():
     assert "_S_IFMT" in source
     assert "_S_IFDIR" in source
     assert "S_ISDIR(info.st_mode)" in source
+
+
+def test_ui_navigation_host_fixture_reuses_production_internal_abi():
+    stub = (
+        REPO_ROOT / "tests" / "host" / "stubs" / "ui_navigation" / "ui_internal.h"
+    ).read_text(encoding="utf-8")
+
+    assert '#include "../../../../components/ui/ui_internal.h"' in stub
+    assert "typedef struct" not in stub
+    assert "ui_context_t" in stub  # only in the ABI-drift explanation comment
