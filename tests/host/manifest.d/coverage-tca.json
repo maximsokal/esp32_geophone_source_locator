@@ -23,6 +23,18 @@
         "tests/host/stubs/tca9548a",
         "components/sensor_bus/include"
       ]
+    },
+    {
+      "name": "nrf_topology_reconcile",
+      "sources": [
+        "components/nrf_topology_service/nrf_topology.c",
+        "tests/host/nrf_topology_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "nRF54L15/include",
+        "components/nrf_topology_service/include"
+      ]
     }
   ]
 }

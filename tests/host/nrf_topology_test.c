@@ -1,0 +1,580 @@
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "nrf_topology.h"
+
+typedef enum {
+    FAKE_ABSENT = 0,
+    FAKE_UNASSIGNED,
+    FAKE_MAIN,
+    FAKE_REMOTE,
+} fake_node_mode_t;
+
+typedef struct {
+    fake_node_mode_t mode;
+    uint8_t hw_len;
+    uint8_t hw[NRF_UPSTREAM_PROTOCOL_HW_ID_MAX];
+    uint8_t node_id;
+    uint8_t channel;
+    uint32_t request_id;
+    uint8_t result;
+    bool first_readdress_fail;
+    bool stay_pending;
+    unsigned assign_writes;
+    uint32_t first_assign_request;
+    uint32_t second_assign_request;
+} fake_node_t;
+
+typedef struct {
+    bool tca_available;
+    bool fail_initial_close;
+    bool fail_close_after_select;
+    int selected_channel;
+    unsigned close_calls;
+    unsigned select_calls;
+    unsigned status_reads;
+    unsigned discovery_reads_while_selected;
+    unsigned collision_reads;
+    unsigned sleeps;
+    unsigned main_assign_order;
+    unsigned first_select_order;
+    unsigned order_counter;
+    fake_node_t main;
+    fake_node_t remote[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool extra_discovery[NRF_TOPOLOGY_REMOTE_COUNT];
+    fake_node_t extra_discovery_node[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool main_reboots_on_channel;
+    uint8_t reboot_channel;
+} fake_bus_t;
+
+static void fake_set_hw(fake_node_t *node, uint8_t value)
+{
+    node->hw_len = 4U;
+    node->hw[0] = value;
+    node->hw[1] = (uint8_t)(value + 1U);
+    node->hw[2] = (uint8_t)(value + 2U);
+    node->hw[3] = (uint8_t)(value + 3U);
+}
+
+static void fake_make_status(const fake_node_t *node, nrf_upstream_status_t *status)
+{
+    memset(status, 0, sizeof(*status));
+    status->hardware_id_length = node->hw_len;
+    memcpy(status->hardware_id, node->hw, sizeof(status->hardware_id));
+    status->request_id = node->request_id;
+    status->lifecycle = NRF_UPSTREAM_LIFECYCLE_READY;
+    status->result = node->result;
+    status->flags = NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED;
+    switch (node->mode) {
+    case FAKE_UNASSIGNED:
+        status->role = NRF_UPSTREAM_ROLE_UNASSIGNED;
+        status->node_id = NRF_UPSTREAM_NODE_ID_UNASSIGNED;
+        status->mux_channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
+        status->target_address = NRF_UPSTREAM_ADDRESS_DISCOVERY;
+        break;
+    case FAKE_MAIN:
+        status->role = NRF_UPSTREAM_ROLE_MAIN;
+        status->node_id = 0U;
+        status->mux_channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
+        status->target_address = NRF_UPSTREAM_ADDRESS_MAIN;
+        status->flags |= NRF_UPSTREAM_STATUS_FLAG_ASSIGNED;
+        break;
+    case FAKE_REMOTE:
+        status->role = NRF_UPSTREAM_ROLE_REMOTE;
+        status->node_id = node->node_id;
+        status->mux_channel = node->channel;
+        status->target_address = NRF_UPSTREAM_ADDRESS_REMOTE;
+        status->flags |= NRF_UPSTREAM_STATUS_FLAG_ASSIGNED;
+        break;
+    case FAKE_ABSENT:
+    default:
+        break;
+    }
+}
+
+static esp_err_t fake_close(void *context)
+{
+    fake_bus_t *bus = context;
+    bus->close_calls++;
+    if (bus->fail_initial_close && bus->close_calls == 1U) {
+        return ESP_FAIL;
+    }
+    if (bus->fail_close_after_select && bus->selected_channel >= 0) {
+        return ESP_FAIL;
+    }
+    bus->selected_channel = -1;
+    return ESP_OK;
+}
+
+static esp_err_t fake_select(void *context, uint8_t channel)
+{
+    fake_bus_t *bus = context;
+    assert(channel < NRF_TOPOLOGY_REMOTE_COUNT);
+    bus->select_calls++;
+    bus->order_counter++;
+    if (bus->first_select_order == 0U) {
+        bus->first_select_order = bus->order_counter;
+    }
+    bus->selected_channel = (int)channel;
+    if (bus->main_reboots_on_channel && channel == bus->reboot_channel) {
+        bus->main.mode = FAKE_UNASSIGNED;
+        bus->main.node_id = NRF_UPSTREAM_NODE_ID_UNASSIGNED;
+        bus->main.channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
+        bus->main.request_id = 0U;
+        bus->main.result = NRF_UPSTREAM_RESULT_OK;
+        bus->main_reboots_on_channel = false;
+    }
+    return ESP_OK;
+}
+
+static fake_node_t *fake_visible_discovery(fake_bus_t *bus, unsigned *count)
+{
+    fake_node_t *visible = NULL;
+    *count = 0U;
+    if (bus->main.mode == FAKE_UNASSIGNED) {
+        visible = &bus->main;
+        (*count)++;
+    }
+    if (bus->selected_channel >= 0) {
+        fake_node_t *remote = &bus->remote[bus->selected_channel];
+        if (remote->mode == FAKE_UNASSIGNED) {
+            visible = remote;
+            (*count)++;
+        }
+        if (bus->extra_discovery[bus->selected_channel]) {
+            visible = &bus->extra_discovery_node[bus->selected_channel];
+            (*count)++;
+        }
+    }
+    return visible;
+}
+
+static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_status_t *status)
+{
+    fake_bus_t *bus = context;
+    bus->status_reads++;
+    if (address == NRF_UPSTREAM_ADDRESS_DISCOVERY) {
+        unsigned count = 0U;
+        fake_node_t *node = fake_visible_discovery(bus, &count);
+        if (bus->selected_channel >= 0) {
+            bus->discovery_reads_while_selected++;
+        }
+        if (count > 1U) {
+            bus->collision_reads++;
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (count == 0U || node == NULL) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        fake_make_status(node, status);
+        return ESP_OK;
+    }
+    if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
+        if (bus->main.mode != FAKE_MAIN) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        fake_make_status(&bus->main, status);
+        return ESP_OK;
+    }
+    if (address == NRF_UPSTREAM_ADDRESS_REMOTE) {
+        if (bus->selected_channel < 0) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        fake_node_t *remote = &bus->remote[bus->selected_channel];
+        if (remote->mode != FAKE_REMOTE) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        fake_make_status(remote, status);
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t fake_write_assign(void *context, uint8_t address, const nrf_upstream_assign_t *assign)
+{
+    fake_bus_t *bus = context;
+    unsigned count = 0U;
+    fake_node_t *node;
+    assert(address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
+    node = fake_visible_discovery(bus, &count);
+    if (count != 1U || node == NULL) {
+        return ESP_FAIL;
+    }
+    if (assign->hardware_id_length != node->hw_len ||
+        memcmp(assign->hardware_id, node->hw, node->hw_len) != 0) {
+        return ESP_FAIL;
+    }
+    node->assign_writes++;
+    if (node->assign_writes == 1U) {
+        node->first_assign_request = assign->request_id;
+    }
+    else if (node->assign_writes == 2U) {
+        node->second_assign_request = assign->request_id;
+    }
+    node->request_id = assign->request_id;
+
+    bus->order_counter++;
+    if (node == &bus->main && bus->main_assign_order == 0U) {
+        bus->main_assign_order = bus->order_counter;
+    }
+
+    if (node->first_readdress_fail && node->assign_writes == 1U) {
+        node->result = NRF_UPSTREAM_RESULT_READDRESS_FAILED;
+        return ESP_OK;
+    }
+    if (node->stay_pending) {
+        node->result = NRF_UPSTREAM_RESULT_PENDING;
+        return ESP_OK;
+    }
+
+    node->result = NRF_UPSTREAM_RESULT_OK;
+    if (assign->role == NRF_UPSTREAM_ROLE_MAIN) {
+        node->mode = FAKE_MAIN;
+        node->node_id = 0U;
+        node->channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
+    }
+    else {
+        node->mode = FAKE_REMOTE;
+        node->node_id = assign->node_id;
+        node->channel = assign->mux_channel;
+    }
+    return ESP_OK;
+}
+
+static void fake_sleep(void *context, uint32_t delay_ms)
+{
+    fake_bus_t *bus = context;
+    assert(delay_ms == 10U);
+    bus->sleeps++;
+}
+
+static nrf_topology_controller_t make_controller(void)
+{
+    nrf_topology_controller_t controller;
+    const nrf_topology_config_t config = {
+        .confirm_timeout_ms = 500U,
+        .poll_interval_ms = 10U,
+        .request_seed = 100U,
+    };
+    assert(nrf_topology_controller_init(&controller, &config) == ESP_OK);
+    return controller;
+}
+
+static nrf_topology_io_t make_io(fake_bus_t *bus)
+{
+    const nrf_topology_io_t io = {
+        .context = bus,
+        .tca_available = bus->tca_available,
+        .tca_fault = false,
+        .mux_close = fake_close,
+        .mux_select = fake_select,
+        .read_status = fake_read_status,
+        .write_assign = fake_write_assign,
+        .sleep_ms = fake_sleep,
+    };
+    return io;
+}
+
+static void init_bus(fake_bus_t *bus, bool tca_available)
+{
+    memset(bus, 0, sizeof(*bus));
+    bus->tca_available = tca_available;
+    bus->selected_channel = -1;
+}
+
+static void test_main_only_without_tca_assigns_safely(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, false);
+    bus.main.mode = FAKE_UNASSIGNED;
+    fake_set_hw(&bus.main, 0x10U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.main.node_id == 0U);
+    assert(bus.select_calls == 0U);
+    assert(bus.main.assign_writes == 1U);
+    for (size_t i = 0; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_ABSENT);
+    }
+}
+
+static void test_main_is_assigned_before_any_channel_opens(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_UNASSIGNED;
+    fake_set_hw(&bus.main, 0x20U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(bus.main_assign_order != 0U);
+    assert(bus.first_select_order != 0U);
+    assert(bus.main_assign_order < bus.first_select_order);
+    assert(bus.collision_reads == 0U);
+    assert(bus.selected_channel == -1);
+    assert(bus.select_calls == 8U);
+}
+
+static void test_warm_reset_accepts_existing_main_and_all_remotes(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x30U);
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        bus.remote[i].mode = FAKE_REMOTE;
+        bus.remote[i].node_id = (uint8_t)(i + 1U);
+        bus.remote[i].channel = i;
+        bus.remote[i].result = NRF_UPSTREAM_RESULT_OK;
+        fake_set_hw(&bus.remote[i], (uint8_t)(0x40U + i * 4U));
+    }
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+        assert(snapshot.remotes[i].node_id == (uint8_t)(i + 1U));
+        assert(snapshot.remotes[i].mux_channel == i);
+        assert(bus.remote[i].assign_writes == 0U);
+    }
+}
+
+static void test_unassigned_remotes_get_stable_slot_ids(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x70U);
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        bus.remote[i].mode = FAKE_UNASSIGNED;
+        bus.remote[i].result = NRF_UPSTREAM_RESULT_OK;
+        fake_set_hw(&bus.remote[i], (uint8_t)(0x80U + i));
+    }
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+        assert(bus.remote[i].mode == FAKE_REMOTE);
+        assert(bus.remote[i].node_id == (uint8_t)(i + 1U));
+        assert(bus.remote[i].channel == i);
+    }
+    assert(bus.selected_channel == -1);
+}
+
+static void test_duplicate_hardware_ids_mark_both_conflict(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x90U);
+    for (uint8_t i = 0U; i < 2U; ++i) {
+        bus.remote[i].mode = FAKE_REMOTE;
+        bus.remote[i].node_id = (uint8_t)(i + 1U);
+        bus.remote[i].channel = i;
+        bus.remote[i].result = NRF_UPSTREAM_RESULT_OK;
+        fake_set_hw(&bus.remote[i], 0xA0U);
+    }
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[1].state == NRF_TOPOLOGY_NODE_CONFLICT);
+}
+
+static void test_stale_remote_assignment_is_conflict(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0xB0U);
+    bus.remote[3].mode = FAKE_REMOTE;
+    bus.remote[3].node_id = 2U;
+    bus.remote[3].channel = 1U;
+    bus.remote[3].result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.remote[3], 0xC0U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.remotes[3].state == NRF_TOPOLOGY_NODE_CONFLICT);
+}
+
+static void test_readdress_failed_retries_same_request_id_once(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, false);
+    bus.main.mode = FAKE_UNASSIGNED;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    bus.main.first_readdress_fail = true;
+    fake_set_hw(&bus.main, 0xD0U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(bus.main.assign_writes == 2U);
+    assert(bus.main.first_assign_request != 0U);
+    assert(bus.main.first_assign_request == bus.main.second_assign_request);
+}
+
+static void test_initial_mux_close_failure_blocks_all_nrf_reads(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.fail_initial_close = true;
+    bus.main.mode = FAKE_UNASSIGNED;
+    fake_set_hw(&bus.main, 0xE0U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(bus.status_reads == 0U);
+    assert(bus.select_calls == 0U);
+}
+
+static void test_main_reboot_during_remote_scan_closes_before_discovery_reconcile(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x11U);
+    bus.main_reboots_on_channel = true;
+    bus.reboot_channel = 2U;
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(bus.main.mode == FAKE_MAIN);
+    assert(bus.selected_channel == -1);
+    assert(bus.main.assign_writes == 1U);
+    assert(bus.collision_reads == 0U);
+    assert(bus.select_calls == 3U);
+}
+
+static void test_remote_discovery_and_runtime_same_channel_is_conflict(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x22U);
+    bus.remote[4].mode = FAKE_REMOTE;
+    bus.remote[4].node_id = 5U;
+    bus.remote[4].channel = 4U;
+    bus.remote[4].result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.remote[4], 0x33U);
+    bus.extra_discovery[4] = true;
+    bus.extra_discovery_node[4].mode = FAKE_UNASSIGNED;
+    bus.extra_discovery_node[4].result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.extra_discovery_node[4], 0x44U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.remotes[4].state == NRF_TOPOLOGY_NODE_CONFLICT);
+}
+
+static void test_pending_assignment_times_out_with_bounded_polls(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller;
+    const nrf_topology_config_t config = {
+        .confirm_timeout_ms = 30U,
+        .poll_interval_ms = 10U,
+        .request_seed = 9U,
+    };
+    assert(nrf_topology_controller_init(&controller, &config) == ESP_OK);
+    init_bus(&bus, false);
+    bus.main.mode = FAKE_UNASSIGNED;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    bus.main.stay_pending = true;
+    fake_set_hw(&bus.main, 0x55U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(bus.sleeps == 3U);
+}
+
+static void test_close_failure_after_remote_operation_sets_mux_fault(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x66U);
+    bus.fail_close_after_select = true;
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(bus.select_calls == 1U);
+}
+
+static void test_absent_main_allows_diagnostic_remote_assignment(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.remote[0].mode = FAKE_UNASSIGNED;
+    bus.remote[0].result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.remote[0], 0x77U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ABSENT);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.remotes[0].node_id == 1U);
+}
+
+int main(void)
+{
+    test_main_only_without_tca_assigns_safely();
+    test_main_is_assigned_before_any_channel_opens();
+    test_warm_reset_accepts_existing_main_and_all_remotes();
+    test_unassigned_remotes_get_stable_slot_ids();
+    test_duplicate_hardware_ids_mark_both_conflict();
+    test_stale_remote_assignment_is_conflict();
+    test_readdress_failed_retries_same_request_id_once();
+    test_initial_mux_close_failure_blocks_all_nrf_reads();
+    test_main_reboot_during_remote_scan_closes_before_discovery_reconcile();
+    test_remote_discovery_and_runtime_same_channel_is_conflict();
+    test_pending_assignment_times_out_with_bounded_polls();
+    test_close_failure_after_remote_operation_sets_mux_fault();
+    test_absent_main_allows_diagnostic_remote_assignment();
+    return 0;
+}

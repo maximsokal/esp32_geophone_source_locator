@@ -37,6 +37,14 @@
 #define APP_TASK_STACK_INSIGHTS        4096
 
 /*
+ * nRF topology discovery is low-rate control-plane work. Keep TCA selection,
+ * assignment polling and hot-plug reconciliation on the service core and at
+ * the lowest application priority so it cannot migrate onto acquisition.
+ */
+#define APP_TASK_PRIORITY_NRF_TOPOLOGY    1
+#define APP_TASK_STACK_NRF_TOPOLOGY    4096
+
+/*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so
  * rendering and the shared TFT/SD SPI2 side never migrate onto the
  * real-time acquisition core.
