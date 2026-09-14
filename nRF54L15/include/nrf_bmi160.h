@@ -22,7 +22,8 @@ typedef enum {
     NRF_BMI160_ERR_BUS = -2,
     NRF_BMI160_ERR_CHIP_ID = -3,
     NRF_BMI160_ERR_PMU = -4,
-    NRF_BMI160_ERR_NOT_INITIALIZED = -5,
+    NRF_BMI160_ERR_CONFIG = -5,
+    NRF_BMI160_ERR_NOT_INITIALIZED = -6,
 } nrf_bmi160_result_t;
 
 typedef void (*nrf_bmi160_delay_ms_fn)(
