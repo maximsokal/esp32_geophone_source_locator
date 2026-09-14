@@ -67,6 +67,16 @@
       ]
     },
     {
+      "name": "nrf_orientation",
+      "sources": [
+        "nRF54L15/src/nrf_orientation.c",
+        "tests/host/nrf_orientation_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "nrf_upstream_target_zephyr",
       "sources": [
         "nRF54L15/src/nrf_upstream_target_zephyr.c",
@@ -103,6 +113,7 @@
       "sources": [
         "nRF54L15/src/nrf_upstream_protocol.c",
         "nRF54L15/src/nrf_sensor_session.c",
+        "nRF54L15/src/nrf_orientation.c",
         "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
         "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"
       ],

@@ -109,9 +109,14 @@ are not geophone TDOA timestamps. Physical 28-byte early-STOP followed by a
 clean next TWIS transaction still requires HIL validation.
 
 For a stationary geophone, the accelerometer gravity vector is the primary
-verticality reference. Gyroscope data is useful for motion detection and
-optional sensor fusion but is not, by itself, an absolute static tilt
-reference.
+verticality reference. The current REMOTE sensor worker includes a pure integer
+orientation estimator and uses gyro only as a motion/stability gate. Periodic
+orientation work is serialized inside that same worker and performs an IMU-only
+BMI160 read; it never starts a BME280 forced conversion. Aggregate SENSOR_REFRESH
+samples are reused by the estimator instead of immediately issuing a redundant
+BMI160 read. The signed reference axis defaults to `UNCONFIGURED` until the
+installed BMI160-to-geophone axis is physically recorded/HIL-verified, so the
+firmware does not guess X/Y/Z orientation.
 
 See the authoritative topology, Channel Sounding, external GY-BMI160 and LED
 contract in [`../ARCHITECTURE.md`](../ARCHITECTURE.md). The dedicated future
@@ -132,13 +137,15 @@ Remote external LED wiring is:
 The main-enclosure board has none of these four external LEDs. The production
 firmware starts the upstream bootstrap path and REMOTE sensor worker
 infrastructure, while the onboard `led0` alias remains only a simple
-board/toolchain heartbeat; it is not the future external logger/orientation
-LED implementation.
+board/toolchain heartbeat. The orientation estimator now exposes semantic
+`UNAVAILABLE`, `MOVING`, `ACCEPTED`, and graded `OUTSIDE` states, but this slice
+does **not** bind them to D0 because the installed BMI160 reference axis and
+external LED active polarity/series-resistor wiring are not yet documented.
 
-BLUE is the remote geophone orientation indicator: steady while the filtered
-orientation is accepted as vertical and blinking progressively faster as tilt
-error increases outside the accepted state. GREEN/YELLOW/RED implement the
-remote logger-status semantics documented in `ARCHITECTURE.md`.
+BLUE is intended to be steady for `ACCEPTED` and to blink progressively faster
+for graded stable `OUTSIDE` states once the physical backend is HIL-validated.
+GREEN/YELLOW/RED logger-status latch semantics remain the separate contract in
+`ARCHITECTURE.md`; this estimator does not invent those fault-to-LED policies.
 
 ## Supported Windows build interface
 

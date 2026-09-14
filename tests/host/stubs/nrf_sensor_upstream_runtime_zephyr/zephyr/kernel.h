@@ -4,8 +4,9 @@
 #include <stdint.h>
 #define K_NO_WAIT 0
 #define K_FOREVER (-1)
+#define K_MSEC(x) ((k_timeout_t)(x))
 #define K_PRIO_PREEMPT(x) (x)
-typedef int k_timeout_t;
+typedef int64_t k_timeout_t;
 struct k_msgq {
     size_t msg_size;
     unsigned max_msgs;
