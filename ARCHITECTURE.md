@@ -273,12 +273,18 @@ architecture gate. Address assignment, identity provisioning and collision
 resolution must be selected and validated before I2C/TWIS implementation; no
 address or workaround is invented here.
 
-ESP32-S3 remains the main controller and the owner of the shared wired-I2C
-topology. A remote BME280 has separate 3.3 V power. It is not powered by the
-nRF54L15, and the nRF54L15 is not assumed to be its I2C master. The exact
-BME280 address and final protocol are separate integration TBDs. This planned
-topology does not change the current `sensor_bus` ownership or the existing
-INA3221 decision above.
+ESP32-S3 remains the main controller and the owner of the shared upstream
+wired-I2C topology. The nRF54L15 is a target/peripheral on that upstream bus.
+Each remote nRF54L15 is additionally the controller/master of a private local
+sensor bus. The remote GY-BMI160 and BME280 are local devices behind their
+remote nRF54L15; they are not devices directly visible on the ESP32/TCA9548A
+bus. ESP32 reads their future nRF node snapshot instead. This planned split
+does not change the current `sensor_bus` ownership or the existing INA3221
+decision above.
+
+The upstream nRF target address, identity provisioning and the possible
+collision between simultaneously visible nRF targets remain unresolved
+architecture gates. No address-allocation mechanism is invented here.
 
 ### Bluetooth geometry role
 
@@ -297,7 +303,7 @@ missing/timeout/outlier handling and a distance matrix for the currently
 available nodes. The geometry algorithm and solver contract remain TBD; do
 not infer a mathematical algorithm from this architecture statement.
 
-### External GY-BMI160 IMU and remote LED contract
+### External sensors, local bus, power and remote LED contract
 
 The project uses the **plain Seeed Studio XIAO nRF54L15, not the XIAO nRF54L15
 Sense**. Seeed documents the plain board as having no built-in sensor. Remote
@@ -310,20 +316,67 @@ verticality must be measured and does not require this external IMU.
 
 The XIAO exposes two I2C pin pairs. The project reserves them as follows:
 
-| XIAO pin | nRF54L15 pin | Project use |
-| --- | --- | --- |
-| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA to ESP32 |
-| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL to ESP32 |
-| `D11 / SCL-1` | `P0.03` | local remote-node GY-BMI160 I2C SCL |
-| `D12 / SDA-1` | `P0.04` | local remote-node GY-BMI160 I2C SDA |
+| XIAO pin | nRF54L15 pin | Project use | Connected hardware |
+| --- | --- | --- | --- |
+| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA; nRF target/peripheral role is a future configuration gate | ESP32-S3/TCA9548A harness |
+| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL; nRF target/peripheral role is a future configuration gate | ESP32-S3/TCA9548A harness |
+| `D11 / SCL-1` | `P0.03` | private local sensor-bus SCL; nRF controller/TWIM role candidate | GY-BMI160 + BME280 on remote nodes |
+| `D12 / SDA-1` | `P0.04` | private local sensor-bus SDA; nRF controller/TWIM role candidate | GY-BMI160 + BME280 on remote nodes |
 
-The GY-BMI160 is powered from the remote 3.3 V and GND rails. Bosch documents
-BMI160's primary interface as supporting either I2C or SPI; this project
-chooses the local D11/D12 I2C pair so the remote IMU does not consume
-D8/D9/D10 plus a chip-select pin and does not share the ESP32/TCA upstream I2C
-pair. Zephyr provides a `bosch,bmi160` binding for both I2C and SPI; the exact
-GY-BMI160 module address, pull-up population and interrupt wiring must be
-verified on the physical module before those values are frozen in firmware.
+The accepted remote harness power contract is:
+
+```text
+RJ45 +5V       -> XIAO 5V/VBUS
+RJ45 GND       -> XIAO GND
+RJ45 pin 2 +3V3 -> RESERVED/NC at the remote sensor assembly
+
+XIAO 3V3_OUT   -> GY-BMI160 3V3/VDD/VDDIO as applicable
+XIAO 3V3_OUT   -> BME280 3.3V/VCC/VDD/VDDIO as applicable
+XIAO GND       -> GY-BMI160 GND and BME280 GND
+```
+
+`3V3_OUT` is the XIAO board's regulated power output, not a firmware GPIO.
+The external sensor load, startup/transient margin and measured rail behavior
+must still be validated; the regulator's component rating is not an approved
+board-level external-load budget. The external RJ45 3.3 V conductor and
+`3V3_OUT` must not be connected together because they are separate potential
+power sources.
+
+The selected GY-BMI160 breakout assembly is planned as follows: its module
+`SCL`/`SDA` connect to local D11/D12, `3V3` connects to XIAO `3V3_OUT`, and
+`VIN` remains unconnected. `CS/CSB` is strapped to 3.3 V for I2C and
+`SA0/SDO` to GND for the BMI160 default address `0x68`. `INT1`, `INT2` and the
+module's auxiliary `SCX`/`SDX`/`OCS` connections remain NC for the initial
+assembly. These connector names and NC decisions are specific to the selected
+breakout and must be checked against its silkscreen/datasheet before soldering.
+Bosch documents the BMI160 primary interface as I2C or SPI and the `CSB`/`SDO`
+straps; Zephyr provides `bosch,bmi160` bindings for both I2C and SPI.
+
+The BME280 is on the same private D11/D12 bus and is read by the remote
+nRF54L15 as part of the sensor-node aggregator. It is not connected directly
+to the ESP32/TCA9548A bus and is not powered by an nRF GPIO. The BME280 I2C
+address remains a module-level TBD: Bosch specifies `0x76` when SDO is low
+and `0x77` when SDO is high, while the selected breakout's strap and pull-ups
+must be verified. At the chip level, `CSB` must select I2C and `SDO` must not be
+left floating; the selected breakout determines how those pins are exposed.
+If a measurement history/window is required, the nRF must store it in RAM; the
+BME280 itself exposes current/last conversion data rather than a project
+history buffer. The future upstream snapshot may aggregate
+`node_id`, timestamp, tilt, acceleration, gyro data, pressure, temperature,
+humidity, Channel Sounding status and warning/error flags; its schema and
+retention policy remain future protocol work.
+
+The future dual-interface implementation must use different peripheral
+instances: local D11/D12 as the nRF controller/TWIM side and upstream D4/D5 as
+the nRF target/TWIS side. Zephyr documents that TWIS and TWIM share resources
+and cannot occupy the same peripheral instance simultaneously. The installed
+Seeed board description currently exposes its relevant `i2c22`/`i2c30` nodes as
+TWIM by default, so the exact upstream TWIS overlay, instance mapping and
+driver contract are implementation gates rather than current firmware facts.
+The official Zephyr TWIS binding also notes that the standard Zephyr I2C slave
+API is not available for these devices and points to a HAL-based workaround;
+the upstream target protocol therefore requires an explicit API/maintenance
+decision before implementation.
 
 For static verticality, the accelerometer gravity vector is the primary
 measurement: it gives the direction of gravity while the geophone is still.

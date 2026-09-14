@@ -73,19 +73,22 @@ GPIO1 is reserved by the existing divider/bench wiring and must not be reused fo
 nRF54L15 nodes. It has one production source tree, one production environment
 and one firmware binary; runtime topology and Bluetooth initiator/reflector
 roles do not create central/remote builds. The main node is on the ESP32-S3
-upstream I2C bus; remote nodes are behind TCA9548A channels. A remote BME280
-has separate 3.3 V power and is not powered or assumed to be mastered by
-nRF54L15.
+upstream I2C bus; remote nodes are behind TCA9548A channels. Each remote nRF
+locally aggregates its GY-BMI160 and BME280 on the second XIAO I2C pair
+(`D11/P0.03` SCL, `D12/P0.04` SDA), powered from XIAO `3V3_OUT`. These local
+sensors are not direct ESP32/TCA devices. RJ45 pin 2 (+3.3 V) is reserved/NC
+and must not be tied to `3V3_OUT`.
 
 The installed boards are the **plain XIAO nRF54L15, not the Sense variant**,
 so they have no built-in IMU. Each remote geophone uses an external
-**GY-BMI160** on the XIAO's local second I2C bus: `D11/P0.03` is SCL and
-`D12/P0.04` is SDA. The upstream ESP32/TCA bus remains on `D4/P1.10` SDA and
-`D5/P1.11` SCL. The main-enclosure nRF54L15 does not require the remote-only
-GY-BMI160.
+**GY-BMI160** and BME280 on the XIAO's private second I2C bus: `D11/P0.03` is
+SCL and `D12/P0.04` is SDA. The upstream ESP32/TCA bus remains on
+`D4/P1.10` SDA and `D5/P1.11` SCL. The main-enclosure nRF54L15 does not
+require the remote-only sensor assembly.
 
-The authoritative topology, external GY-BMI160/verticality contract, Channel
-Sounding role rotation and remote LED pinout are in
+The authoritative topology, local sensor/power contract, external
+GY-BMI160/verticality contract, Channel Sounding role rotation and remote LED
+pinout are in
 [`ARCHITECTURE.md`](ARCHITECTURE.md). The future nRF implementation and
 testing task is [`docs/nrf54l15-test-task.md`](docs/nrf54l15-test-task.md).
 
@@ -436,8 +439,8 @@ Still required for an end-to-end source-location system:
 
 - final low-noise geophone analog front ends;
 - plain nRF54L15 remote-node external GY-BMI160 verticality integration,
-  Bluetooth 6 Channel Sounding geometry integration, and separately powered
-  remote BME280 integration;
+  local BME280 aggregation on the remote nRF, and Bluetooth 6 Channel Sounding
+  geometry integration;
 - signal filtering / preprocessing;
 - event detection and per-channel arrival-time picking;
 - measured/modelled propagation-speed strategy for rubble;
