@@ -53,6 +53,26 @@ def test_msvc_host_runner_keeps_strict_c11_warning_gate_and_real_atomics():
     assert '"/Zc:preprocessor-"' not in source
 
 
+def test_base_web_status_cache_suite_keeps_msvc_c11_atomics_enabled():
+    manifest = (REPO_ROOT / "tests" / "host" / "manifest.json").read_text(encoding="utf-8")
+    source = (
+        REPO_ROOT / "components" / "web_server" / "web_status_cache_arbitration.c"
+    ).read_text(encoding="utf-8")
+    runner = (REPO_ROOT / "tools" / "run_host_tests.py").read_text(encoding="utf-8")
+
+    # This production file is part of the base host suite, not only a coverage
+    # shard. MSVC's C11 <stdatomic.h> support is opt-in, so losing the compiler
+    # flag would make the ordinary Host C gate fail before any shard runs.
+    assert '"name": "web_status_cache_arbitration"' in manifest
+    assert '"components/web_server/web_status_cache_arbitration.c"' in manifest
+    assert "#include <stdatomic.h>" in source
+    assert "atomic_bool s_refresh_enabled" in source
+    assert "atomic_store_explicit" in source
+    assert "atomic_load_explicit" in source
+    assert '"/experimental:c11atomics"' in runner
+    assert "is_msvc_cl(compiler)" in runner
+
+
 def test_insights_host_suite_compiles_production_atomics_with_portable_weak_hook():
     manifest = (REPO_ROOT / "tests" / "host" / "manifest.d" / "coverage-insights.json").read_text(
         encoding="utf-8"
