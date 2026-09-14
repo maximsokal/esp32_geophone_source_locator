@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "seismic_recorder_lod_store.h"
+#include "seismic_recorder_storage_preflight.h"
 #include "storage_manager.h"
 
 
@@ -354,10 +355,22 @@ esp_err_t seismic_recorder_fs_create_session(
 
     bool session_directory_created = false;
 
-    err = seismic_recorder_fs_next_session_id(
-        object_id,
-        session_id
+    /*
+     * The free-space query runs inside the same outer recursive storage
+     * operation as the following session creation. Other storage workers
+     * therefore cannot consume the admitted runway between the check and the
+     * Sxxxxxx/samples.bin commit path.
+     */
+    err = seismic_recorder_storage_preflight(
+        sample_rate_hz
     );
+
+    if (err == ESP_OK) {
+        err = seismic_recorder_fs_next_session_id(
+            object_id,
+            session_id
+        );
+    }
 
     if (err == ESP_OK) {
         err = seismic_recorder_fs_build_session_path(
