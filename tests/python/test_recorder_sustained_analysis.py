@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -9,6 +10,7 @@ MODULE_PATH = REPO_ROOT / "tools" / "analyze_recorder_sustained.py"
 SPEC = importlib.util.spec_from_file_location("analyze_recorder_sustained", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
