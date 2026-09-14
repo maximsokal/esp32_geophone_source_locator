@@ -176,7 +176,7 @@ static void ui_event_handler(
 void ui_event_dispatcher_dispatch_pending_locked(void)
 {
     for (size_t i = 0U; i < UI_EVENT_PENDING_DISPATCH_BATCH; ++i) {
-        ui_pending_event_t event;
+        ui_pending_event_t event = {0};
         bool have_event = false;
 
         portENTER_CRITICAL(&s_pending_lock);
