@@ -16,10 +16,13 @@ The repository has four intentionally separate test surfaces:
   future native/unit and single-/multi-board HIL work is specified in
   [`docs/nrf54l15-test-task.md`](../docs/nrf54l15-test-task.md). The current
   executable baseline is the path-safe wrapper from the repository root:
-  `.\nRF54L15\pio.ps1 build` and
-  `.\nRF54L15\pio.ps1 test` on PowerShell. It has one firmware
-  environment, no central/remote variants, and the test action never uploads
-  an image. With no `test/test_*` suites it reports `SKIPPED`.
+  `.\nRF54L15\pio.ps1 build` and `.\nRF54L15\pio.ps1 test` on PowerShell. It
+  has one production firmware environment and no central/remote production
+  variants. The automatic `test` action is restricted to explicitly qualified
+  hardware-free suites named `test_sw_*`; physical target/HIL suites are
+  excluded from this path. With no `test_sw_*` suites it reports `SKIPPED`.
+  The installed hardware is plain XIAO nRF54L15; remote orientation uses an
+  external GY-BMI160 on local D11/D12 I2C, not a built-in Sense IMU.
 
 The WebUI console contract in `webui/tests/console/deviceApiSerialization.test.ts`
 validates the four-channel `/api/seismic` shape before rendering and carries a
@@ -79,15 +82,17 @@ python "$env:IDF_PATH/tools/idf.py" -B build-s3 build
 
 The local `.vscode/tasks.json` file keeps the verification surfaces separate:
 
-* `Tests: nRF54L15` runs the isolated PlatformIO/Zephyr test action through
-  `nRF54L15/pio.ps1` without uploading a test image.
+* `Tests: nRF54L15` runs the isolated PlatformIO/Zephyr automatic software-test
+  action through `nRF54L15/pio.ps1`. Only qualified `test_sw_*` suites belong
+  to this path; physical nRF target/HIL tests are separate explicit actions.
 * `nRF54L15: Flash firmware` is the explicit VS Code physical-board action; it
   invokes `nRF54L15/pio.ps1 upload` and is not part of `Tests: All (no flash)`.
 * `Tests: All (no flash)` runs the current host C, pytest, nRF54L15 wrapper
-  build/test stage, WebUI tests/typecheck, Unity target build and production
-  build without writing hardware. The nRF stage is explicit `SKIPPED` while
-  its `test/test_*` suites are still absent. Its current status and future
-  native/HIL boundaries are in [`docs/local-verification.md`](../docs/local-verification.md).
+  build/qualified-software-test stage, WebUI tests/typecheck, Unity target build
+  and production build without writing hardware. The nRF stage is explicit
+  `SKIPPED` while its `test_sw_*` suites are absent. Its current status and
+  future native/HIL boundaries are in
+  [`docs/local-verification.md`](../docs/local-verification.md).
 * `Tests: Web` runs the console, WebXR, and typecheck tasks independently of
   firmware.
 * `ESP: Unity tests (flash COM4 + logs COM6)` starts the passive COM6 monitor,
@@ -119,9 +124,9 @@ The target build proves compilation and linking only. No flash, serial monitor,
 or physical-board result is implied by this command.
 
 The nRF wrapper build likewise proves compilation/linking only. Native/unit
-passes, one-board HIL, multi-node ranging and the full ESP32 + TCA9548A
-topology are separate evidence tiers; absence of five physical nRF boards
-must not block software-only CI.
+passes, physical GY-BMI160/LED checks, one-board HIL, multi-node ranging and the
+full ESP32 + TCA9548A topology are separate evidence tiers; absence of five
+physical nRF boards must not block software-only CI.
 
 ## Production pipeline HIL runner
 
