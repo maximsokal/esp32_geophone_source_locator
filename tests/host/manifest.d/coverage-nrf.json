@@ -33,6 +33,17 @@
       ]
     },
     {
+      "name": "nrf_bme280",
+      "sources": [
+        "nRF54L15/src/nrf_sensor_bus.c",
+        "nRF54L15/src/nrf_bme280.c",
+        "tests/host/nrf_bme280_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "nrf_sensor_snapshot",
       "sources": [
         "nRF54L15/src/nrf_node_state.c",
