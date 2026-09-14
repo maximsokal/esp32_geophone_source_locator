@@ -12,6 +12,8 @@ target_sources(app PRIVATE
     ../src/nrf_node_state.c
     ../src/nrf_sensor_bus.c
     ../src/nrf_sensor_bus_zephyr.c
+    ../src/nrf_bmi160.c
+    ../src/nrf_bmi160_zephyr.c
     ../src/nrf_sensor_snapshot.c
 )
 
