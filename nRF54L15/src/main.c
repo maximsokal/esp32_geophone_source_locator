@@ -1,15 +1,17 @@
 /*
  * XIAO nRF54L15 initial PlatformIO / Zephyr bring-up.
  *
- * This firmware is temporary.
- * Its only purpose is to prove that the board definition,
- * Zephyr toolchain and PlatformIO subproject build correctly.
+ * The current firmware still uses the onboard LED as a simple board/toolchain
+ * heartbeat, but the node lifecycle state is now production code shared by
+ * future main/remote runtime roles.
  */
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <nrfx_power.h>
+
+#include "nrf_node_state.h"
 
 #define SLEEP_TIME_MS 1000
 #define LED0_NODE DT_ALIAS(led0)
@@ -21,10 +23,13 @@ int main(void)
 {
     int ret;
     bool led_is_on = true;
+    nrf_node_state_t node_state;
 
 #if defined(CONFIG_NRFX_POWER)
     nrfx_power_constlat_mode_request();
 #endif
+
+    nrf_node_state_init(&node_state);
 
     if (!gpio_is_ready_dt(&led)) {
         return -1;
@@ -33,6 +38,10 @@ int main(void)
     ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
     if (ret < 0) {
         return ret;
+    }
+
+    if (nrf_node_state_mark_ready(&node_state) != NRF_NODE_STATE_OK) {
+        return -1;
     }
 
     while (1) {
