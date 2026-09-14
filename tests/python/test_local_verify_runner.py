@@ -34,6 +34,9 @@ def make_repo(tmp_path: Path) -> Path:
     )
     (root / "tests" / "host" / "manifest.d" / "z-last.json").write_text("{}\n")
     (root / "tests" / "host" / "manifest.d" / "a-first.json").write_text("{}\n")
+    (root / "tests" / "host" / "manifest.d" / "coverage-nrf.json").write_text(
+        '{"version": 1, "tests": []}\n'
+    )
     (root / "webui" / "package.json").write_text('{"name": "fake"}\n')
     return root
 
@@ -46,6 +49,7 @@ def test_host_plan_runs_base_then_sorted_manifest_fragments(tmp_path: Path):
     assert [step.name for step in steps] == [
         "host/base",
         "host/a-first",
+        "host/coverage-nrf",
         "host/z-last",
     ]
     assert steps[0].command[-1] == "--keep-going"
@@ -73,7 +77,12 @@ def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: 
     )
 
     names = [step.name for step in steps]
-    assert names[:3] == ["host/base", "host/a-first", "host/z-last"]
+    assert names[:4] == [
+        "host/base",
+        "host/a-first",
+        "host/coverage-nrf",
+        "host/z-last",
+    ]
     assert "python/deterministic" in names
     assert "web/npm-ci" in names
     assert "web/typecheck" in names
@@ -129,7 +138,7 @@ def test_windows_firmware_plan_uses_existing_local_idf_helper(tmp_path: Path):
     assert command[-2:] == ("-Jobs", "4")
 
 
-def test_nrf_plan_uses_the_path_safe_wrapper_for_build_and_tests(tmp_path: Path):
+def test_nrf_plan_uses_host_policy_then_path_safe_wrapper(tmp_path: Path):
     root = make_repo(tmp_path)
 
     steps = runner.build_plan(
@@ -145,12 +154,41 @@ def test_nrf_plan_uses_the_path_safe_wrapper_for_build_and_tests(tmp_path: Path)
         idf_executable=None,
     )
 
-    assert [step.name for step in steps] == ["nrf/build", "nrf/tests"]
-    assert all(step.command[0] == "powershell-test" for step in steps)
-    assert all(any("pio.ps1" in argument for argument in step.command) for step in steps)
-    assert steps[0].command[-2:] == ("-Action", "build")
-    assert steps[1].command[-2:] == ("-Action", "test")
+    assert [step.name for step in steps] == [
+        "nrf/host-policy",
+        "nrf/build",
+        "nrf/tests",
+    ]
+    assert steps[0].command[0] == "python-test"
+    assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
+    assert steps[1].command[0] == "powershell-test"
+    assert steps[2].command[0] == "powershell-test"
+    assert any("pio.ps1" in argument for argument in steps[1].command)
+    assert any("pio.ps1" in argument for argument in steps[2].command)
+    assert steps[1].command[-2:] == ("-Action", "build")
+    assert steps[2].command[-2:] == ("-Action", "test")
     assert all("pio run -d" not in " ".join(step.command) for step in steps)
+
+
+def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path):
+    root = make_repo(tmp_path)
+
+    steps = runner.build_plan(
+        root,
+        scope="all",
+        build_dir="build",
+        jobs=2,
+        skip_npm_ci=True,
+        python_executable="python-test",
+        npm_executable="npm-test",
+        system_name="Windows",
+        powershell_executable="powershell-test",
+        idf_executable=None,
+    )
+
+    names = [step.name for step in steps]
+    assert names.count("host/coverage-nrf") == 1
+    assert "nrf/host-policy" not in names
 
 
 def test_non_windows_firmware_does_not_fall_back_to_cloud(tmp_path: Path):
