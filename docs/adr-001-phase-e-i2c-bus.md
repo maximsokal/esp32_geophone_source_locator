@@ -15,10 +15,10 @@ application-level bus owner.
 
 ## Watchlist: sensor_hub
 
-There is no `sensor_hub` component in this phase. Revisit it only when real
-BMI160/BMP580 drivers and four pod devices exist, and the TCA9548A address,
-channel mapping, and electrical contract are documented. This checkout has no
-TCA9548A address, so no mux device handle is registered here.
+There is no `sensor_hub` component in this phase. Revisit it only when the
+actual ESP-side pod devices exist and the TCA9548A address, channel mapping,
+and electrical contract are documented. This checkout has no TCA9548A address,
+so no mux device handle is registered here.
 
 This ADR describes the current ESP32-S3 I2C0 ownership boundary. The planned
 nRF54L15 topology in [`ARCHITECTURE.md`](../ARCHITECTURE.md) does not transfer
@@ -28,9 +28,13 @@ channel devices. A remote BME280 is separately powered from 3.3 V and is not
 an nRF54L15 power output or an assumed nRF I2C-master workload. The possible
 identical nRF target-address collision remains unresolved and must be settled
 before an I2C/TWIS protocol or a corresponding test fixture is implemented.
-The BMI160/BMP580 names in this phase's existing ESP-side sensor-hub watchlist
-do not identify the XIAO nRF54L15 Sense IMU; that board fact is the separate
-Seeed-documented `LSM6DS3TR-C` contract in `ARCHITECTURE.md`.
+
+The remote geophone orientation IMU is now explicitly an external **GY-BMI160**
+connected locally to each plain XIAO nRF54L15 on the XIAO's second I2C pair
+(`D11/P0.03` SCL and `D12/P0.04` SDA). It is not a device on ESP32-S3 I2C0 and
+must not be added to `sensor_bus` merely because it is an I2C peripheral. The
+installed XIAO boards are the plain nRF54L15 variant and have no built-in Sense
+IMU.
 
 ## Risks
 
