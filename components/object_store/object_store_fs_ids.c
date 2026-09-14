@@ -8,6 +8,16 @@
 #include "storage_manager.h"
 
 
+static bool object_store_fs_mode_is_directory(mode_t mode)
+{
+#ifdef _WIN32
+    return (mode & _S_IFMT) == _S_IFDIR;
+#else
+    return S_ISDIR(mode);
+#endif
+}
+
+
 static bool object_store_fs_entry_is_directory(
     const struct dirent *entry
 )
@@ -48,7 +58,8 @@ static bool object_store_fs_entry_is_directory(
     }
 
     struct stat info;
-    return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+    return stat(path, &info) == 0 &&
+        object_store_fs_mode_is_directory(info.st_mode);
 }
 
 
