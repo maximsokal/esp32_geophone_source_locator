@@ -1,6 +1,18 @@
 # nRF54L15 PlatformIO test surface
 
-This directory is reserved for future nRF54L15 test suites.
+The nRF subsystem already has executable hardware-free C coverage in the
+repository root host-test harness:
+
+```text
+tests/host/manifest.d/coverage-nrf.json
+```
+
+That manifest currently exercises runtime node state, the private sensor-bus
+contract, and role-aware aggregated sensor snapshots with the normal host C
+compiler. `python tools/run_local_verify.py --scope nrf` runs this host policy
+lane before the Zephyr production build.
+
+This directory is reserved for future PlatformIO nRF54L15 test suites.
 
 The automatic project-wide no-flash path is deliberately restricted to suites
 named:
@@ -19,8 +31,9 @@ need a serial test port. For that reason board-dependent tests must use a
 separate explicit future HIL runner/naming convention and must never be added
 to `test_sw_*` merely to make them run from the master suite.
 
-There is currently no executable `test_sw_*` suite, so the automatic nRF test
-stage reports explicit `SKIPPED`.
+There is currently no executable PlatformIO `test_sw_*` suite, so that automatic
+nRF test stage reports explicit `SKIPPED`. This does not mean there are no nRF
+software tests: the host C lane above is executable and must remain green.
 
 Future software/native suites must cover the remote sensor aggregator contract:
 the external GY-BMI160 and BME280 share the private XIAO D11/D12 bus, are
