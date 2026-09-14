@@ -104,10 +104,15 @@ function Get-BootResponsivenessTelemetry {
     # Count failure *lines*, not individual marker substrings. A normal ESP-IDF
     # panic line may contain both "Guru Meditation Error" and "panic'ed"; that
     # is one target failure event and must be reported as failure_markers=1.
-    # The literal stays single-quoted and only needs the word "panic", which is
-    # deliberately conservative and avoids quote/interpolation edge cases in
-    # Windows PowerShell 5.1.
-    $failureLinePattern = '(?im)^[^\r\n]*(?:Guru Meditation Error|panic|Task watchdog got triggered|Brownout detector was triggered|assert failed)[^\r\n]*$'
+    # Split first instead of relying on multiline anchors, which behaved
+    # differently in Windows PowerShell 5.1 during saved-log replay.
+    $failureLinePattern = '(?i)(Guru Meditation Error|panic|Task watchdog got triggered|Brownout detector was triggered|assert failed)'
+    $failureLineCount = 0
+    foreach ($line in [regex]::Split($Content, '\r?\n')) {
+        if ($line -match $failureLinePattern) {
+            $failureLineCount++
+        }
+    }
 
     return [pscustomobject]@{
         # Startup remains the backward-compatible property consumed by the
@@ -126,7 +131,7 @@ function Get-BootResponsivenessTelemetry {
         RecoveryStopPosition = $recoveryStopPosition
         CacheDonePosition = $cacheDonePosition
         SafeShutdownCount = [regex]::Matches($Content, '(?im)Safe shutdown started').Count
-        PanicCount = [regex]::Matches($Content, $failureLinePattern).Count
+        PanicCount = $failureLineCount
     }
 }
 
