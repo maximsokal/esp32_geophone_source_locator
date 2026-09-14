@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,3 +91,29 @@ def test_insights_host_suite_compiles_production_atomics_with_portable_weak_hook
     assert "#define INSIGHTS_BRIDGE_WEAK\n" in source
     assert "app_esp_insights_auth_key(void) INSIGHTS_BRIDGE_WEAK;" in source
     assert "#undef INSIGHTS_BRIDGE_WEAK" in source
+
+
+def test_powershell_scripts_avoid_c_integer_suffixes_on_windows_powershell_51():
+    offenders: list[str] = []
+    c_unsigned_literal = re.compile(r"(?<![A-Za-z0-9_])\d+[uU]\b")
+
+    for path in sorted((REPO_ROOT / "tools").glob("*.ps1")):
+        source = path.read_text(encoding="utf-8")
+        if c_unsigned_literal.search(source):
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
+
+    assert not offenders, (
+        "Windows PowerShell 5.1 does not accept C-style unsigned integer "
+        "suffixes such as 0U: " + ", ".join(offenders)
+    )
+
+
+def test_object_store_host_path_does_not_require_posix_mode_t_on_msvc():
+    source = (
+        REPO_ROOT / "components" / "object_store" / "object_store_fs_ids.c"
+    ).read_text(encoding="utf-8")
+
+    assert "mode_t" not in source
+    assert "_S_IFMT" in source
+    assert "_S_IFDIR" in source
+    assert "S_ISDIR(info.st_mode)" in source
