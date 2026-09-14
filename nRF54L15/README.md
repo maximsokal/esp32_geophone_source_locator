@@ -51,10 +51,14 @@ module-specific labels, pull-ups and straps against the physical breakout
 before assembly.
 
 The BME280 shares this local bus and is part of the remote nRF sensor snapshot;
-it is not an upstream TCA device. Its breakout address remains TBD (`0x76` or
-`0x77` according to the BME280 SDO strap), as do the exact module pull-ups and
-measurement/history policy. Any history required by the project belongs in
-nRF RAM, not in an assumption that the BME280 stores a project history.
+it is not an upstream TCA device. Runtime probing accepts either Bosch I2C
+address (`0x76` first, then `0x77`) so the firmware does not depend on the
+breakout SDO strap. Each requested environment snapshot uses forced mode with
+temperature x2, pressure x16, humidity x1 and IIR filter x16. The calculated
+measurement time is 46.1 ms, so the driver waits 47 ms and then uses a bounded
+status poll rather than an unbounded wait. Exact breakout pull-ups still need
+physical verification. Any history required by the project belongs in nRF RAM,
+not in an assumption that the BME280 stores a project history.
 
 The external sensors are powered from the XIAO board `3V3_OUT` output and GND,
 not from a firmware GPIO. Validate total load and transient margin in HIL.
