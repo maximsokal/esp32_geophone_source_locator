@@ -28,6 +28,7 @@ typedef struct {
     uint8_t mux_channel;
     uint8_t current_address;
     uint8_t protocol_result;
+    uint32_t assignment_request_id;
 } nrf_topology_node_snapshot_t;
 
 typedef struct {
