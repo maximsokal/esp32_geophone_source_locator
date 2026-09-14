@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "seismic_recorder_storage_preflight",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_storage_preflight.c",
+        "tests/host/seismic_recorder_storage_preflight_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder",
+        "components/sd_card/include",
+        "components/seismic_buffer/include",
+        "components/storage_manager/include"
+      ]
+    }
+  ]
+}
