@@ -120,23 +120,25 @@ try {
 
             "test" {
                 $testDirectory = Join-Path $mappedProject "test"
-                $testSuites = @()
+                $softwareSuites = @()
                 if (Test-Path -LiteralPath $testDirectory -PathType Container) {
-                    $testSuites = @(
-                        Get-ChildItem -LiteralPath $testDirectory -Directory -Filter "test_*" |
+                    $softwareSuites = @(
+                        Get-ChildItem -LiteralPath $testDirectory -Directory -Filter "test_sw_*" |
                             Sort-Object Name
                     )
                 }
 
-                if ($testSuites.Count -eq 0) {
+                if ($softwareSuites.Count -eq 0) {
                     $actionStatus = "SKIPPED"
-                    Write-Host "nRF54L15 TEST_RESULT: SKIPPED (no PlatformIO test/test_* suite exists yet; see docs/nrf54l15-test-task.md)." -ForegroundColor Yellow
+                    Write-Host "nRF54L15 TEST_RESULT: SKIPPED (no qualified software/native test/test_sw_* suite exists yet; physical/HIL suites are intentionally excluded from this action)." -ForegroundColor Yellow
                 } else {
-                    # Keep the normal test entry point non-destructive. PlatformIO
-                    # may still need a configured test port for embedded suites,
-                    # but it must never upload a test image implicitly.
+                    # This automatic entry point is reserved for suites explicitly
+                    # qualified as software/native. --without-uploading alone does
+                    # not make an embedded PlatformIO suite hardware-free, so
+                    # physical/HIL suites must use a separate explicit runner.
                     & $pio test `
                         --environment seeed-xiao-nrf54l15 `
+                        --filter "test_sw_*" `
                         --without-uploading
                 }
             }
