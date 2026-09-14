@@ -8,16 +8,6 @@
 #include "storage_manager.h"
 
 
-static bool object_store_fs_mode_is_directory(mode_t mode)
-{
-#ifdef _WIN32
-    return (mode & _S_IFMT) == _S_IFDIR;
-#else
-    return S_ISDIR(mode);
-#endif
-}
-
-
 static bool object_store_fs_entry_is_directory(
     const struct dirent *entry
 )
@@ -58,8 +48,15 @@ static bool object_store_fs_entry_is_directory(
     }
 
     struct stat info;
-    return stat(path, &info) == 0 &&
-        object_store_fs_mode_is_directory(info.st_mode);
+    if (stat(path, &info) != 0) {
+        return false;
+    }
+
+#ifdef _WIN32
+    return (info.st_mode & _S_IFMT) == _S_IFDIR;
+#else
+    return S_ISDIR(info.st_mode);
+#endif
 }
 
 
@@ -143,10 +140,13 @@ esp_err_t object_store_fs_next_id(
             max_number + 1
         );
 
-    return
+    if (
         written < 0 ||
         written >=
             (int)object_id_size
-        ? ESP_ERR_INVALID_SIZE
-        : ESP_OK;
+    ) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    return ESP_OK;
 }
