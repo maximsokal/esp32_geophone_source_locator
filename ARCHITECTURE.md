@@ -34,11 +34,12 @@ app_main
         -> HTTP server
         -> Wi-Fi manager start
        -> selected seismic source start
+  -> nrf_topology_service_start (after successful app_startup_run)
   -> wait for shutdown request
   -> app_shutdown_run
 ```
 
-Each major boot stage is timed and logged so slow storage or hardware bring-up is visible in the serial log.
+Each major `app_startup_run()` stage is timed and logged so slow storage or hardware bring-up is visible in the serial log. `nrf_topology_service_start()` intentionally runs only after that interactive startup path has succeeded, so low-rate nRF discovery/reconciliation does not extend the timed boot sequence.
 
 ## Core ownership
 
@@ -50,6 +51,7 @@ The project deliberately separates service work from acquisition work.
 - ESP-IDF APP_EVENT user-loop task
 - official Button component service for keypad and power-button sampling
 - INA3221 low-rate power monitor
+- low-priority `nrf_topology` discovery/sensor transport service
 - object service
 - storage service
 - Wi-Fi / HTTP-facing application work
@@ -83,6 +85,7 @@ Current policy:
 | Measurement service | 0 | 3 | 4096 |
 | Seismic recorder | 0 | 2 | 4096 |
 | INA3221 monitor | 0 | 1 | 4096 |
+| nRF topology / sensor transport | 0 | 1 | 4096 |
 
 Do not introduce new application tasks with ad-hoc priorities. Add them to `app_task_config.h` so the whole scheduling hierarchy stays reviewable in one place. When the opt-in ESP Insights profile is enabled, its APP_EVENT connection handler only notifies the optional retry worker above and returns; the worker performs a failed `esp_insights_init()` retry outside the shared application event loop. The baseline production profile does not create this task.
 
@@ -267,28 +270,58 @@ channel makes the corresponding remote target visible; deselecting it removes
 that remote from the visible ESP32 topology. The main target remains visible
 while channels are switched.
 
-This is a future discovery protocol, while the lower-level TWIS platform
-foundation is implemented. The possible collision caused by identical nRF
-target addresses remains an explicit architecture gate. Numeric address
-assignment, identity provisioning, one-hot TCA enforcement and collision
-recovery must be selected and validated before production role-assignment and
-upstream command framing are wired into runtime behavior. The platform adapter
-therefore takes a caller-supplied 7-bit address and invents none.
+The wired bootstrap/discovery protocol is implemented. Every nRF reset starts
+UNASSIGNED at discovery address `0x30`; a validated ASSIGN moves the
+main-enclosure node to `0x31` or a selected REMOTE to `0x32`. The ESP32
+`nrf_topology_service` performs MAIN-first reconciliation, keeps downstream TCA
+channels closed while reconciling the direct bus, and scans REMOTE channels
+one-hot. Warm-reset reconciliation accepts correctly assigned nodes without
+reassigning them, REMOTE node IDs remain stable as `channel + 1`, and
+collisions, malformed identities and moved/stale assignments are surfaced as
+conflict/error state rather than silently accepted. The byte-level bootstrap
+contract is documented in
+[`docs/nrf-upstream-bootstrap-protocol.md`](docs/nrf-upstream-bootstrap-protocol.md),
+and the ESP32 orchestrator contract is in
+[`docs/nrf-topology-service.md`](docs/nrf-topology-service.md).
 
-ESP32-S3 remains the main controller and the owner of the shared upstream
-wired-I2C topology. The nRF54L15 is a target/peripheral on that upstream bus.
-Each remote nRF54L15 is additionally the controller/master of a private local
-sensor bus. The remote GY-BMI160 and BME280 are local devices behind their
-remote nRF54L15; they are not devices directly visible on the ESP32/TCA9548A
-bus. ESP32 reads their future nRF node snapshot instead. This planned split
-does not change the current `sensor_bus` ownership or the existing INA3221
-decision above.
+ESP32-S3 remains the wired-I2C controller. `sensor_bus` is still the sole
+application owner of I2C0; `nrf_topology_service` borrows that bus and the
+TCA9548A handle and is the sole application-level owner of TCA channel
+selection. The nRF54L15 is a target/peripheral on the upstream bus, while each
+REMOTE is also the controller/master of its private `i2c30` sensor bus. The
+GY-BMI160 and BME280 are therefore never directly visible on the ESP32/TCA
+bus. A successful REMOTE assignment activates the dedicated low-priority nRF
+sensor worker using copied assignment metadata; MAIN and UNASSIGNED nodes do
+not perform private sensor I/O. REMOTE activation prepares the optional IMU and
+environment sources independently and produces an initial aggregate sample
+when at least one source is available.
 
-The upstream nRF target address, production identity/role provisioning and the
-possible collision between simultaneously visible nRF targets remain
-unresolved architecture gates. `nrf_upstream_target_zephyr` only supplies the
-platform lifecycle, re-addressing primitive and raw hardware-ID access; it does
-not define address allocation or wire semantics.
+`nrf_upstream_target_zephyr` remains the platform lifecycle/re-addressing
+adapter, while `nrf_upstream_protocol` and the bootstrap runtime define the
+project addresses and wire semantics. The upstream TWIS DMA buffer is
+explicitly configured to 128 bytes. REMOTE target reads expose a fixed
+102-byte sensor frame whose bytes `0..27` are the exact legacy STATUS frame;
+the extension carries sensor request ID, sequence, validity/fault masks, nRF
+sample-complete uptime, IMU/environment payload and a full-frame CRC. Explicit
+sensor refresh uses the fixed 12-byte SENSOR_REFRESH request. Physical proof
+that a controller can STOP after only the 28-byte prefix of a prepared
+102-byte TWIS response and then start the next transaction cleanly remains a
+HIL gate; software tests do not claim that electrical/driver behavior.
+
+The same ESP32 `nrf_topology` Core-0 task also consumes those REMOTE snapshots;
+there is no second TCA/sensor task. Sensor-cache identity includes hardware ID,
+node ID, mux channel, runtime address and bootstrap `STATUS.request_id` as an
+assignment epoch, so a reboot/reassignment invalidates old samples even on the
+same physical slot. A bounded transaction performs verified one-hot select,
+optional MAIN identity validation, REMOTE identity validation, SENSOR_REFRESH,
+102-byte polling and verified close with a 500 ms total deadline and 10 ms
+poll interval. Public callers can only request refreshes and read race-safe
+cached results; raw I2C/TCA handles remain private. A new/reassigned REMOTE
+queues one initial ESP-side refresh, but there is no continuous automatic
+sensor polling. nRF completion uptime and the separate ESP32 receipt uptime are
+freshness/debug metadata in different clock domains and are not geophone TDOA
+timestamps. The consumer contract is documented in
+[`docs/nrf-topology-sensor-consumer.md`](docs/nrf-topology-sensor-consumer.md).
 
 ### Bluetooth geometry role
 
@@ -365,10 +398,13 @@ must be verified. At the chip level, `CSB` must select I2C and `SDO` must not be
 left floating; the selected breakout determines how those pins are exposed.
 If a measurement history/window is required, the nRF must store it in RAM; the
 BME280 itself exposes current/last conversion data rather than a project
-history buffer. The future upstream snapshot may aggregate
-`node_id`, timestamp, tilt, acceleration, gyro data, pressure, temperature,
-humidity, Channel Sounding status and warning/error flags; its schema and
-retention policy remain future protocol work.
+history buffer. The implemented upstream REMOTE snapshot transports the
+bootstrap identity/status prefix plus sensor request ID, sample sequence,
+validity/fault masks, nRF completion uptime, acceleration, gyro, IMU
+temperature, environment temperature, pressure and humidity. It does not
+provide persistent history, synchronized cross-node time, Channel Sounding
+geometry, computed verticality policy or external LED/logger state; those
+remain separate future layers.
 
 The dual-interface foundation uses distinct peripheral instances: local D11/D12
 remains `i2c30` in controller/TWIM mode and upstream D4/D5 uses `i2c22` as the
@@ -379,9 +415,13 @@ source, `drivers/i2c/i2c_nrfx_twis.c` implements the standard buffer-mode
 Zephyr target API through `i2c_target_register()` and
 `i2c_target_unregister()`. No project HAL bypass is required. The
 `nrf_upstream_target_zephyr` adapter exposes that platform lifecycle,
-re-address rollback and raw `hwinfo_get_device_id()` access. Numeric project
-addresses, role-assignment framing and the upstream snapshot protocol remain
-separate implementation gates.
+re-address rollback and raw `hwinfo_get_device_id()` access. Project addresses
+`0x30`/`0x31`/`0x32`, ASSIGN/STATUS framing, deferred role assignment and the
+backward-compatible REMOTE sensor snapshot protocol are implemented above that
+adapter. Bluetooth Channel Sounding, synchronized clocks, persistent sensor
+history and the remote orientation/logger control loop remain separate future
+work, while 28-byte early-STOP versus full 102-byte TWIS behavior remains a
+physical HIL validation item.
 
 For static verticality, the accelerometer gravity vector is the primary
 measurement: it gives the direction of gravity while the geophone is still.
@@ -434,7 +474,7 @@ GPIO10 SCL  -> INA3221 SCL
 address       0x40 (A0 tied to GND)
 ```
 
-`sensor_bus` is the sole application owner of I2C0 and configures the shared bus at 100 kHz through `espressif/i2c_bus`. `ina3221_monitor` borrows the INA3221 device handle at address `0x40`; it never creates or deletes the bus. INA3221 runs continuous shunt+bus conversion on all three channels with hardware averaging x16 and 1.1 ms conversion time. A low-priority Core 0 task publishes one status update per second. Missing/faulty INA3221 hardware invalidates power telemetry and is retried without rebooting the device. The TCA9548A pod topology remains a documented watchlist until its address/channel/electrical contract is measured.
+`sensor_bus` is the sole application owner of I2C0 and configures the shared bus at 100 kHz through `espressif/i2c_bus`. `ina3221_monitor` borrows the INA3221 device handle at address `0x40`; it never creates or deletes the bus. INA3221 runs continuous shunt+bus conversion on all three channels with hardware averaging x16 and 1.1 ms conversion time. A low-priority Core 0 task publishes one status update per second. Missing/faulty INA3221 hardware invalidates power telemetry and is retried without rebooting the device. The same bus may also expose a single discovered TCA9548A at `0x70..0x77`; `sensor_bus` owns its device handle, while `nrf_topology_service` borrows it and exclusively performs verified one-hot channel selection/close for MAIN/REMOTE topology and sensor transactions. The nRF runtime addresses are discovery `0x30`, MAIN `0x31` and selected REMOTE `0x32`.
 
 ### Application events and input ownership
 
@@ -616,6 +656,7 @@ Safe shutdown order:
 
 ```text
 Button adapters / shutdown latch
+  -> nRF topology / sensor transport service
   -> INA3221 monitor
   -> sensor_bus / I2C0 release
   -> measurement service shutdown

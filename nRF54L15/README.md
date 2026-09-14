@@ -14,18 +14,20 @@ firmware copies. A future host/native-only test environment is allowed if it is
 required to execute software tests without hardware; it must never become a
 second production firmware variant.
 
-The planned topology has one main-enclosure node on the ESP32-S3 upstream I2C
+The wired topology has one main-enclosure node on the ESP32-S3 upstream I2C
 bus and one remote node per connected geophone behind the TCA9548A. With all
-downstream channels disabled, the main node remains visible; selecting a mux
-channel exposes that remote node. ESP32-S3 remains the wired-I2C controller.
-The nRF-side bootstrap protocol is implemented: every reset starts UNASSIGNED
-at discovery address `0x30`, and a validated ASSIGN moves a node to MAIN
-`0x31` or REMOTE `0x32`. The ESP32 TCA/discovery orchestrator that performs
-those assignments is still a separate implementation slice. The byte-level
-contract is in
-[`../docs/nrf-upstream-bootstrap-protocol.md`](../docs/nrf-upstream-bootstrap-protocol.md).
-On each remote node, the private second I2C bus is controlled by that nRF54L15
-and carries the local GY-BMI160 and BME280. Both are powered from the XIAO
+downstream channels disabled, the main node remains visible; selecting one mux
+channel exposes that REMOTE while MAIN stays visible. ESP32-S3 remains the
+wired-I2C controller. Every nRF reset starts UNASSIGNED at discovery address
+`0x30`; a validated ASSIGN moves the main node to `0x31` or a REMOTE to
+`0x32`. The implemented ESP32 `nrf_topology_service` performs MAIN-first
+reconciliation, one-hot TCA scanning/assignment, warm-reset acceptance and
+conflict detection. The byte-level bootstrap contract is in
+[`../docs/nrf-upstream-bootstrap-protocol.md`](../docs/nrf-upstream-bootstrap-protocol.md),
+and the ESP32 topology behavior is in
+[`../docs/nrf-topology-service.md`](../docs/nrf-topology-service.md).
+On each REMOTE, the private second I2C bus is controlled by that nRF54L15 and
+carries the local GY-BMI160 and BME280. Both are powered from the XIAO
 `3V3_OUT` rail; RJ45 pin 2 (+3.3 V) is `RESERVED/NC`, and must not be tied to
 `3V3_OUT`.
 
@@ -73,11 +75,14 @@ and therefore does not require either remote sensor assembly.
 Because MAIN and REMOTE use the same production firmware while their external
 sensor hardware differs, GY-BMI160 and BME280 are treated as **optional runtime
 peripherals**, not as always-present Zephyr DeviceTree sensor devices. The
-private `i2c30` controller is available in every image. The existing sensor
-runtime is not yet started automatically by the bootstrap role assignment;
-that REMOTE-role integration remains a separate slice. A missing remote sensor
-will therefore be a role/runtime health failure once that integration is
-connected, not a MAIN boot failure.
+private `i2c30` controller is available in every image. A successful REMOTE
+assignment now activates a dedicated low-priority sensor worker using a copied
+assignment snapshot; MAIN and UNASSIGNED nodes do not touch the private sensor
+bus. IMU and environment sources are prepared independently, an initial sample
+is produced when at least one source is available, and a failed source can be
+retried on a later explicit refresh. Missing or faulty sensor hardware is
+therefore represented as partial/no-data sensor state rather than a MAIN boot
+failure.
 
 The upstream target and local sensor controller use distinct peripheral
 instances. In the pinned Seeed/Zephyr baseline the project overlay switches
@@ -88,8 +93,20 @@ TWIS driver through the standard `i2c_target_register()` /
 `nrf_upstream_target_zephyr` adapter binds to that API and exposes lifecycle,
 re-addressing with rollback, and raw hardware-ID access. The adapter itself
 remains address/protocol-neutral; `nrf_upstream_protocol` defines bootstrap
-addresses and frames, while `nrf_bootstrap_runtime_zephyr` owns the bounded
-callback-to-worker handoff and deferred re-addressing.
+addresses/frames plus SENSOR_REFRESH and the REMOTE sensor extension, while
+`nrf_bootstrap_runtime_zephyr` owns the bounded callback-to-worker handoff and
+deferred re-addressing. The TWIS buffer is explicitly 128 bytes. REMOTE reads
+prepare a fixed 102-byte frame whose first 28 bytes are exactly the legacy
+STATUS frame, so existing topology reads remain backward-compatible; the full
+extension carries request/sequence/validity/fault state, nRF completion uptime
+and BMI160/BME280 values with its own full-frame CRC. The ESP32
+`nrf_topology_service` consumes this frame through a bounded
+select/identity-check/refresh/poll/close transaction and exposes only cached
+results/non-blocking refresh requests to callers. See
+[`../docs/nrf-topology-sensor-consumer.md`](../docs/nrf-topology-sensor-consumer.md).
+The nRF uptime and ESP32 receipt uptime are separate local clock domains and
+are not geophone TDOA timestamps. Physical 28-byte early-STOP followed by a
+clean next TWIS transaction still requires HIL validation.
 
 For a stationary geophone, the accelerometer gravity vector is the primary
 verticality reference. Gyroscope data is useful for motion detection and
@@ -112,10 +129,11 @@ Remote external LED wiring is:
 | `P1.06 / D2` | YELLOW |
 | `P1.07 / D3` | RED |
 
-The main-enclosure board has none of these four external LEDs. The current
-`src/main.c` starts the upstream bootstrap runtime and still uses the onboard
-`led0` alias as a simple board/toolchain heartbeat; it is not the future
-external logger/orientation LED implementation.
+The main-enclosure board has none of these four external LEDs. The production
+firmware starts the upstream bootstrap path and REMOTE sensor worker
+infrastructure, while the onboard `led0` alias remains only a simple
+board/toolchain heartbeat; it is not the future external logger/orientation
+LED implementation.
 
 BLUE is the remote geophone orientation indicator: steady while the filtered
 orientation is accepted as vertical and blinking progressively faster as tilt
