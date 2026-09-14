@@ -401,10 +401,12 @@ BME280 itself exposes current/last conversion data rather than a project
 history buffer. The implemented upstream REMOTE snapshot transports the
 bootstrap identity/status prefix plus sensor request ID, sample sequence,
 validity/fault masks, nRF completion uptime, acceleration, gyro, IMU
-temperature, environment temperature, pressure and humidity. It does not
-provide persistent history, synchronized cross-node time, Channel Sounding
-geometry, computed verticality policy or external LED/logger state; those
-remain separate future layers.
+temperature, environment temperature, pressure and humidity. The REMOTE sensor
+worker also contains a software-only orientation estimator that can consume
+BMI160 samples without triggering a BME280 conversion. It does not change the
+102-byte upstream frame and does not provide persistent history, synchronized
+cross-node time, Channel Sounding geometry or physical external LED/logger
+state.
 
 The dual-interface foundation uses distinct peripheral instances: local D11/D12
 remains `i2c30` in controller/TWIM mode and upstream D4/D5 uses `i2c22` as the
@@ -419,17 +421,21 @@ re-address rollback and raw `hwinfo_get_device_id()` access. Project addresses
 `0x30`/`0x31`/`0x32`, ASSIGN/STATUS framing, deferred role assignment and the
 backward-compatible REMOTE sensor snapshot protocol are implemented above that
 adapter. Bluetooth Channel Sounding, synchronized clocks, persistent sensor
-history and the remote orientation/logger control loop remain separate future
-work, while 28-byte early-STOP versus full 102-byte TWIS behavior remains a
-physical HIL validation item.
+history and the physical remote LED/logger backend remain separate future work,
+while 28-byte early-STOP versus full 102-byte TWIS behavior remains a physical
+HIL validation item.
 
 For static verticality, the accelerometer gravity vector is the primary
 measurement: it gives the direction of gravity while the geophone is still.
-The gyroscope measures angular velocity and is useful for motion detection or
-future sensor fusion, but it is not by itself a stable static tilt reference.
-The approximately 10-degree mechanical norm is a project reference, not an
-approved firmware threshold. Threshold, warning zone, filtering, hysteresis,
-debounce and calibration remain implementation parameters/TBD.
+The gyroscope measures angular velocity and is used only as a motion/stability
+gate, not as an accumulated absolute angle. The implemented pure orientation
+estimator uses integer fixed-point gravity geometry, a 1/4 EMA, explicit
+10-degree exit / 8-degree re-entry hysteresis defaults, a configurable gravity
+window and graded OUTSIDE severity. Its signed reference axis is intentionally
+`UNCONFIGURED` in production until the installed BMI160-to-geophone mechanical
+axis is recorded and HIL-verified, so this software slice does not silently
+assume that X/Y/Z is vertical. Physical LED polarity, resistor wiring, blink
+rates and logger warning/error latch policy also remain HIL/configuration work.
 
 Each remote nRF54L15 has four external LEDs; the main-enclosure nRF54L15 has
 none:
@@ -446,10 +452,12 @@ external remote assembly. Common firmware must tolerate absent external LEDs
 and absent GY-BMI160 hardware on the main node and must not require either for
 main-node boot or communication.
 
-BLUE is intended to be steady within the accepted vertical state and to blink
-more rapidly as filtered tilt error grows outside it, with a future-defined
-saturated maximum rate and IMU-error behavior. No blink frequency or angle
-transition is approved here.
+The software estimator now exposes semantic BLUE states without driving the
+external GPIO: `UNAVAILABLE`, `MOVING`, `ACCEPTED`, and `OUTSIDE` with
+slow/medium/fast blink classes. `ACCEPTED` maps to steady BLUE later; graded
+`OUTSIDE` classes map to progressively faster blinking. No physical D0 GPIO
+polarity or blink frequency is approved here, and `MOVING` must not be rendered
+as a false vertical indication.
 
 The ESP32 `status_indicator` state machine consumes explicit application
 status decisions. WARNING and ERROR are sticky until power cycle, and a later

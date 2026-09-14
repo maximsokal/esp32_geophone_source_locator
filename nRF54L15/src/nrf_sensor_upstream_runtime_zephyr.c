@@ -35,11 +35,22 @@ K_THREAD_STACK_DEFINE(s_sensor_stack, NRF_SENSOR_WORKER_STACK_SIZE);
 
 static struct k_thread s_sensor_thread;
 static struct k_spinlock s_session_lock;
+static struct k_spinlock s_orientation_lock;
 static nrf_sensor_session_t s_session;
 static nrf_remote_sensor_runtime_zephyr_t s_runtime;
 static nrf_node_state_t s_worker_node_state;
+static nrf_orientation_config_t s_orientation_config;
+static nrf_orientation_estimator_t s_orientation_estimator;
+static uint64_t s_next_orientation_due_ms;
+static bool s_orientation_config_set;
 static bool s_started;
 static bool s_activation_queued;
+
+static uint64_t runtime_uptime_ms(void)
+{
+    const int64_t uptime = k_uptime_get();
+    return uptime > 0 ? (uint64_t)uptime : 0U;
+}
 
 static uint8_t runtime_flags(void)
 {
@@ -121,6 +132,121 @@ static void copy_runtime_payload(
     }
 }
 
+static void orientation_advance_deadline(uint64_t sample_uptime_ms)
+{
+    const uint64_t period = s_orientation_config.sample_period_ms;
+    const uint64_t target = sample_uptime_ms + period;
+
+    if (period == 0U) {
+        s_next_orientation_due_ms = 0U;
+        return;
+    }
+    if (s_next_orientation_due_ms == 0U) {
+        s_next_orientation_due_ms = target;
+        return;
+    }
+    if (s_next_orientation_due_ms < target) {
+        const uint64_t delta = target - s_next_orientation_due_ms;
+        const uint64_t steps = (delta + period - 1U) / period;
+        s_next_orientation_due_ms += steps * period;
+    }
+}
+
+static void orientation_reset(void)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_orientation_lock);
+    (void)nrf_orientation_estimator_init(
+        &s_orientation_estimator,
+        &s_orientation_config);
+    k_spin_unlock(&s_orientation_lock, key);
+    s_next_orientation_due_ms = 0U;
+}
+
+static void orientation_feed_sample(
+    const nrf_imu_sample_t *sample,
+    bool sample_valid,
+    uint64_t sample_uptime_ms)
+{
+    nrf_imu_sample_t empty = {0};
+    k_spinlock_key_t key;
+
+    if (sample == NULL) {
+        sample = &empty;
+    }
+    key = k_spin_lock(&s_orientation_lock);
+    (void)nrf_orientation_estimator_update(
+        &s_orientation_estimator,
+        sample,
+        sample_valid);
+    k_spin_unlock(&s_orientation_lock, key);
+    orientation_advance_deadline(sample_uptime_ms);
+}
+
+static bool orientation_periodic_enabled(void)
+{
+    return s_orientation_config.reference_axis != NRF_ORIENTATION_AXIS_UNCONFIGURED &&
+           s_worker_node_state.lifecycle == NRF_NODE_LIFECYCLE_READY &&
+           s_worker_node_state.role == NRF_NODE_ROLE_REMOTE &&
+           s_runtime.core.imu_ready &&
+           s_runtime.core.sources.read_imu != NULL;
+}
+
+static k_timeout_t orientation_wait_timeout(void)
+{
+    uint64_t now;
+    uint64_t remaining;
+
+    if (!orientation_periodic_enabled()) {
+        return K_FOREVER;
+    }
+
+    now = runtime_uptime_ms();
+    if (s_next_orientation_due_ms == 0U) {
+        s_next_orientation_due_ms = now + s_orientation_config.sample_period_ms;
+    }
+    if (now >= s_next_orientation_due_ms) {
+        return K_NO_WAIT;
+    }
+    remaining = s_next_orientation_due_ms - now;
+    return K_MSEC(remaining);
+}
+
+static bool orientation_due(uint64_t now)
+{
+    return orientation_periodic_enabled() &&
+           s_next_orientation_due_ms != 0U &&
+           now >= s_next_orientation_due_ms;
+}
+
+static void orientation_periodic_read(void)
+{
+    nrf_imu_sample_t sample;
+    int result;
+    uint64_t completion_uptime_ms;
+
+    memset(&sample, 0, sizeof(sample));
+    result = s_runtime.core.sources.read_imu(
+        s_runtime.core.sources.imu_context,
+        &sample);
+    completion_uptime_ms = runtime_uptime_ms();
+    orientation_feed_sample(
+        &sample,
+        result == 0,
+        completion_uptime_ms);
+}
+
+static void orientation_consume_aggregate_refresh(bool did_refresh)
+{
+    const bool imu_valid = did_refresh &&
+        (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U;
+    const uint64_t completion_uptime_ms = runtime_uptime_ms();
+
+    orientation_feed_sample(
+        &s_runtime.core.snapshot.imu,
+        imu_valid,
+        completion_uptime_ms);
+}
+
 static void publish_refresh(uint32_t request_id)
 {
     nrf_upstream_sensor_snapshot_t wire;
@@ -143,15 +269,11 @@ static void publish_refresh(uint32_t request_id)
             : NRF_UPSTREAM_SENSOR_RESULT_INTERNAL_ERROR;
         wire.flags = runtime_flags();
     } else if (s_runtime.core.imu_ready || s_runtime.core.env_ready) {
-        int64_t uptime;
         did_refresh = true;
         refresh_result = nrf_remote_sensor_runtime_zephyr_refresh(
             &s_worker_node_state,
             &s_runtime);
-        uptime = k_uptime_get();
-        if (uptime > 0) {
-            completion_uptime_ms = (uint64_t)uptime;
-        }
+        completion_uptime_ms = runtime_uptime_ms();
         copy_runtime_payload(
             request_id,
             did_refresh,
@@ -166,6 +288,8 @@ static void publish_refresh(uint32_t request_id)
             0U,
             &wire);
     }
+
+    orientation_consume_aggregate_refresh(did_refresh);
 
     k_spinlock_key_t key = k_spin_lock(&s_session_lock);
     (void)nrf_sensor_session_complete(&s_session, request_id, &wire);
@@ -198,6 +322,7 @@ static void handle_activation(const nrf_upstream_assign_t *assign)
         return;
     }
 
+    orientation_reset();
     publish_refresh(0U);
 }
 
@@ -209,15 +334,44 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
     (void)arg3;
 
     while (true) {
-        if (k_msgq_get(&s_sensor_queue, &event, K_FOREVER) != 0) {
+        const int queue_result = k_msgq_get(
+            &s_sensor_queue,
+            &event,
+            orientation_wait_timeout());
+
+        if (queue_result == 0) {
+            if (event.type == NRF_SENSOR_EVENT_ACTIVATE) {
+                handle_activation(&event.assign);
+            } else if (event.type == NRF_SENSOR_EVENT_REFRESH) {
+                publish_refresh(event.request_id);
+            }
             continue;
         }
-        if (event.type == NRF_SENSOR_EVENT_ACTIVATE) {
-            handle_activation(&event.assign);
-        } else if (event.type == NRF_SENSOR_EVENT_REFRESH) {
-            publish_refresh(event.request_id);
+
+        if (orientation_due(runtime_uptime_ms())) {
+            orientation_periodic_read();
         }
     }
+}
+
+int nrf_sensor_upstream_runtime_zephyr_configure_orientation(
+    const nrf_orientation_config_t *config)
+{
+    k_spinlock_key_t key;
+
+    if (!nrf_orientation_config_valid(config)) {
+        return -EINVAL;
+    }
+
+    key = k_spin_lock(&s_orientation_lock);
+    if (s_started) {
+        k_spin_unlock(&s_orientation_lock, key);
+        return -EBUSY;
+    }
+    s_orientation_config = *config;
+    s_orientation_config_set = true;
+    k_spin_unlock(&s_orientation_lock, key);
+    return 0;
 }
 
 int nrf_sensor_upstream_runtime_zephyr_start(void)
@@ -226,10 +380,20 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
         return -EALREADY;
     }
 
+    if (!s_orientation_config_set) {
+        nrf_orientation_default_config(&s_orientation_config);
+    }
+    if (!nrf_orientation_estimator_init(
+            &s_orientation_estimator,
+            &s_orientation_config)) {
+        return -EINVAL;
+    }
+
     nrf_sensor_session_init(&s_session);
     nrf_remote_sensor_runtime_zephyr_init(&s_runtime);
     nrf_node_state_init(&s_worker_node_state);
     k_msgq_purge(&s_sensor_queue);
+    s_next_orientation_due_ms = 0U;
     s_activation_queued = false;
 
     if (k_thread_create(
@@ -349,5 +513,18 @@ bool nrf_sensor_upstream_runtime_zephyr_get_snapshot(
     key = k_spin_lock(&s_session_lock);
     nrf_sensor_session_get_published(&s_session, snapshot);
     k_spin_unlock(&s_session_lock, key);
+    return true;
+}
+
+bool nrf_sensor_upstream_runtime_zephyr_get_orientation(
+    nrf_orientation_output_t *orientation)
+{
+    k_spinlock_key_t key;
+    if (orientation == NULL || !s_started) {
+        return false;
+    }
+    key = k_spin_lock(&s_orientation_lock);
+    nrf_orientation_estimator_get(&s_orientation_estimator, orientation);
+    k_spin_unlock(&s_orientation_lock, key);
     return true;
 }

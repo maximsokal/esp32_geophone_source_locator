@@ -8,12 +8,14 @@
 #include <zephyr/kernel.h>
 
 #include "nrf_remote_sensor_runtime_zephyr.h"
+#include "nrf_sensor_session.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 
 static unsigned s_thread_create_calls;
 static unsigned s_queue_put_calls;
 static unsigned s_prepare_calls;
 static unsigned s_refresh_calls;
+static unsigned s_imu_read_calls;
 static unsigned s_runtime_init_calls;
 static void (*s_worker_entry)(void *, void *, void *);
 
@@ -112,6 +114,15 @@ nrf_node_state_result_t nrf_node_state_mark_available(nrf_node_state_t *state)
     return NRF_NODE_STATE_OK;
 }
 
+static int fake_read_imu(void *context, nrf_imu_sample_t *sample)
+{
+    (void)context;
+    ++s_imu_read_calls;
+    memset(sample, 0, sizeof(*sample));
+    sample->accel_mg[2] = 1000;
+    return 0;
+}
+
 void nrf_remote_sensor_runtime_zephyr_init(nrf_remote_sensor_runtime_zephyr_t *runtime)
 {
     memset(runtime, 0, sizeof(*runtime));
@@ -123,9 +134,11 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
     nrf_remote_sensor_runtime_zephyr_t *runtime)
 {
     (void)node_state;
-    (void)runtime;
     ++s_prepare_calls;
-    return NRF_REMOTE_SENSOR_PREPARE_ERR_NO_DATA;
+    runtime->core.imu_ready = true;
+    runtime->core.sources.read_imu = fake_read_imu;
+    runtime->core.sources.imu_context = NULL;
+    return NRF_REMOTE_SENSOR_PREPARE_PARTIAL;
 }
 
 nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
@@ -133,9 +146,11 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
     nrf_remote_sensor_runtime_zephyr_t *runtime)
 {
     (void)node_state;
-    (void)runtime;
     ++s_refresh_calls;
-    return NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
+    runtime->core.snapshot.valid_mask = NRF_SENSOR_VALID_IMU;
+    return fake_read_imu(NULL, &runtime->core.snapshot.imu) == 0
+        ? NRF_SENSOR_SNAPSHOT_PARTIAL
+        : NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
 }
 
 static nrf_upstream_assign_t make_assign(void)
@@ -156,29 +171,42 @@ static nrf_upstream_assign_t make_assign(void)
 
 int main(void)
 {
+    nrf_orientation_config_t orientation_config;
+    nrf_orientation_output_t orientation;
     nrf_upstream_assign_t assign = make_assign();
     nrf_upstream_sensor_refresh_t request = {.request_id = 20U};
     nrf_upstream_sensor_snapshot_t snapshot;
+
+    nrf_orientation_default_config(&orientation_config);
+    orientation_config.reference_axis = NRF_ORIENTATION_AXIS_POS_Z;
+    assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
+               &orientation_config) == 0);
 
     assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
     assert(s_thread_create_calls == 1U);
     assert(s_worker_entry != NULL);
     assert(s_runtime_init_calls == 1U);
-    assert(s_prepare_calls == 0U && s_refresh_calls == 0U);
+    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
+    assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
+               &orientation_config) == -EBUSY);
+
+    assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
+    assert(orientation.state == NRF_ORIENTATION_STATE_UNAVAILABLE);
+    assert(orientation.reason == NRF_ORIENTATION_REASON_SAMPLE_INVALID);
 
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_NOT_READY);
 
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == -EAGAIN);
     assert(s_queue_put_calls == 0U);
-    assert(s_prepare_calls == 0U && s_refresh_calls == 0U);
+    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
 
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
     assert(s_queue_put_calls == 1U);
-    assert(s_prepare_calls == 0U && s_refresh_calls == 0U);
+    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
 
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
     assert(s_queue_put_calls == 1U);
-    assert(s_prepare_calls == 0U && s_refresh_calls == 0U);
+    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
     return 0;
 }
