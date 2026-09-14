@@ -4,6 +4,22 @@
 static bool s_active = false;
 
 
+/*
+ * seismic_recorder_fs_contract_test.c textually includes production
+ * seismic_recorder_fs.c, whose quoted preflight header resolves beside that
+ * production source. Supply the external boundary in this already-linked host
+ * stub so the filesystem contract remains independent from FATFS/SD hardware.
+ */
+esp_err_t seismic_recorder_storage_preflight(
+    uint32_t sample_rate_hz
+)
+{
+    return sample_rate_hz == 0U
+        ? ESP_ERR_INVALID_ARG
+        : ESP_OK;
+}
+
+
 esp_err_t seismic_recorder_lod_store_begin(
     const char *session_path,
     uint32_t sample_rate_hz
