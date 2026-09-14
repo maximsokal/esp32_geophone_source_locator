@@ -46,7 +46,8 @@
         "tests/host/ui_home_navigation_test.c"
       ],
       "include_dirs": [
-        "tests/host/stubs/ui_navigation"
+        "tests/host/stubs/ui_navigation",
+        "tests/host/stubs/ui_event_dispatcher"
       ]
     },
     {
