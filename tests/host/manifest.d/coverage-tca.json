@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "tca9548a_mux",
+      "sources": [
+        "components/tca9548a_mux/tca9548a_mux.c",
+        "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",
+        "tests/host/tca9548a_mux_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "components/tca9548a_mux/include"
+      ]
+    },
+    {
+      "name": "sensor_bus_tca_lifecycle",
+      "sources": [
+        "components/sensor_bus/sensor_bus.c",
+        "tests/host/sensor_bus_tca_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "components/sensor_bus/include"
+      ]
+    }
+  ]
+}

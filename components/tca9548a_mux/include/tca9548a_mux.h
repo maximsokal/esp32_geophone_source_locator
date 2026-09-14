@@ -1,0 +1,31 @@
+#pragma once
+
+#include <stdint.h>
+#include "esp_err.h"
+
+typedef enum {
+    TCA9548A_MUX_STATE_CLOSED = 0,
+    TCA9548A_MUX_STATE_SELECTED,
+    TCA9548A_MUX_STATE_FAULT,
+} tca9548a_mux_state_t;
+
+typedef esp_err_t (*tca9548a_mux_write_fn)(void *context, uint8_t value);
+typedef esp_err_t (*tca9548a_mux_read_fn)(void *context, uint8_t *value);
+
+typedef struct {
+    tca9548a_mux_write_fn write_control;
+    tca9548a_mux_read_fn read_control;
+    void *context;
+} tca9548a_mux_io_t;
+
+typedef struct {
+    tca9548a_mux_io_t io;
+    tca9548a_mux_state_t state;
+    int8_t selected_channel;
+} tca9548a_mux_t;
+
+esp_err_t tca9548a_mux_init(tca9548a_mux_t *mux, const tca9548a_mux_io_t *io);
+esp_err_t tca9548a_mux_close(tca9548a_mux_t *mux);
+esp_err_t tca9548a_mux_select(tca9548a_mux_t *mux, uint8_t channel);
+tca9548a_mux_state_t tca9548a_mux_get_state(const tca9548a_mux_t *mux);
+int tca9548a_mux_get_selected_channel(const tca9548a_mux_t *mux);
