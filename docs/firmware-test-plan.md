@@ -12,8 +12,12 @@ The authoritative distinction between host tests, source contracts, replay/parse
 - Web Console, XR and typecheck run independently from firmware host tests.
 - COM4 is the programming port. The passive UART adapter is a separate port, normally COM6; its TX/VCC pins are not connected to the target.
 - `nRF54L15/` is an independent PlatformIO + Zephyr project. It has one
-  `seeed-xiao-nrf54l15` environment for every node and is built through
-  `nRF54L15/pio.ps1`, not through the ESP-IDF root build.
+  production `seeed-xiao-nrf54l15` environment for every installed node and is
+  built through `nRF54L15/pio.ps1`, not through the ESP-IDF root build.
+- Installed nRF hardware is the plain XIAO nRF54L15, not the Sense variant.
+  Remote geophone nodes use an external GY-BMI160 on local I2C
+  (`D11/P0.03` SCL, `D12/P0.04` SDA); the main-enclosure nRF does not require
+  that remote-only IMU.
 
 ## Automated test layers
 
@@ -56,7 +60,7 @@ Relevant tools:
 ### 5. nRF54L15 test surface
 
 The detailed future task is [`nrf54l15-test-task.md`](nrf54l15-test-task.md).
-It is a separate test surface with its own build, native/unit and physical
+It is a separate test surface with its own build, software/native and physical
 tiers. The current executable baseline command is:
 
 ```powershell
@@ -65,23 +69,38 @@ tiers. The current executable baseline command is:
 
 The wrapper is required because this checkout's Windows path contains spaces;
 generated PlatformIO/Zephyr output stays in
-`%USERPROFILE%\.platformio-workspaces\nrf54l15`. The supported test launch is
-also `.\nRF54L15\pio.ps1 test`; it uses the same mapping and
-`--without-uploading`. The current empty `test/test_*` surface is reported as
-`SKIPPED`, not as nRF unit/native evidence. Do not report an ESP32/WebUI-only
-result as nRF evidence.
+`%USERPROFILE%\.platformio-workspaces\nrf54l15`.
+
+The automatic no-flash test launch is:
+
+```powershell
+.\nRF54L15\pio.ps1 test
+```
+
+That action is restricted to suites named `test_sw_*`, which are reserved for
+tests explicitly qualified as software/native and hardware-free. PlatformIO's
+`--without-uploading` prevents upload but does not by itself guarantee that an
+embedded suite will not need a physical serial/test port, so board-dependent
+nRF tests are excluded from the automatic `Tests: All (no flash)` path.
+
+The current empty `test_sw_*` surface is reported as `SKIPPED`, not as nRF
+unit/native evidence. Do not report an ESP32/WebUI-only result as nRF evidence.
 
 The planned nRF layers are:
 
 - build/configuration isolation and clean/incremental wrapper builds;
 - host/native policy tests for identity, topology, logger latches, tilt,
-  ranging data and rotating Channel Sounding sessions;
-- one-board HIL for boot/USB, optional remote LEDs, Sense IMU and I2C;
+  GY-BMI160 state handling, ranging data and rotating Channel Sounding sessions;
+- one-board HIL for boot/USB, optional remote LEDs, external GY-BMI160 on
+  D11/D12 local I2C, and upstream I2C visibility;
 - multi-node HIL for pairwise ranging, distance matrices, role rotation and
   missing/reconnected nodes;
 - full ESP32 + TCA9548A + remote-node topology HIL.
 
 No layer assumes that five physical boards are available in software-only CI.
+A future host/native-only PlatformIO environment is allowed if required for
+software testing, but it must never become a second production central/remote
+firmware variant.
 
 ## Requirement gates
 
@@ -138,17 +157,16 @@ Before merging firmware/test changes, the normal `main` verification must pass:
 4. startup/storage/runtime source contracts;
 5. production Web asset build/optimization checks;
 6. ESP-IDF 5.5.4 production firmware build;
-7. isolated nRF54L15 wrapper build and the no-upload nRF test launch; an empty
-   current nRF test surface is explicitly `SKIPPED` until native/unit suites
-   are implemented.
+7. isolated nRF54L15 wrapper build and the qualified automatic nRF
+   software/native test launch; no current `test_sw_*` suite means explicit
+   `SKIPPED`, not false evidence.
 
 A fully green run means the checked software contracts for the executed stages
-pass. The executable master runner now includes the nRF build and no-upload
-test launch; an empty nRF test surface is shown as `SKIPPED`, not as native
-evidence. A current ESP32/WebUI-only result does **not** close the nRF task,
-and no green software run closes a task whose definition explicitly requires
-live-board evidence.
+pass. A current ESP32/WebUI-only result does **not** close the nRF task, and no
+green software run closes a task whose definition explicitly requires
+live-board evidence. Physical GY-BMI160 wiring, remote LEDs and Bluetooth
+Channel Sounding always require target/HIL evidence.
 
 ## Evidence retention
 
-For each physical HIL run keep the complete UART log and record firmware SHA, board, date, SD card, SDSPI frequency, sample rate/channel configuration, object/session population, runner thresholds, maximum measured values, acquisition-health markers, recorder `dropped_frames`, and any relevant manual observation. If hardware/configuration materially changes, re-establish the baseline instead of reusing old thresholds silently.
+For each physical HIL run keep the complete UART log and record firmware SHA, board, date, SD card, SDSPI frequency, sample rate/channel configuration, object/session population, runner thresholds, maximum measured values, acquisition-health markers, recorder `dropped_frames`, and any relevant manual observation. For nRF HIL also record plain-XIAO board identity, GY-BMI160 module/wiring when present, node role/topology, Channel Sounding role/session details and relevant platform/framework revisions. If hardware/configuration materially changes, re-establish the baseline instead of reusing old thresholds silently.
