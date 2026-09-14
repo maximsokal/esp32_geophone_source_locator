@@ -9,6 +9,8 @@ project(geophone_nrf54l15_node)
 target_sources(app PRIVATE
     ../src/main.c
     ../src/nrf_node_state.c
+    ../src/nrf_sensor_bus.c
+    ../src/nrf_sensor_snapshot.c
 )
 
 target_include_directories(app PRIVATE ../include)
