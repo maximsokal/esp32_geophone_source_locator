@@ -4,22 +4,28 @@
         {
             "label": "Tests: Host C",
             "type": "shell",
-            "command": "python",
+            "command": "powershell",
             "args": [
-                "${workspaceFolder}/tools/run_host_tests.py",
-                "--keep-going"
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/tools/run_suite.ps1",
+                "-Suite",
+                "Host"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
             },
             "presentation": {
                 "reveal": "always",
-                "panel": "shared",
+                "panel": "dedicated",
                 "clear": true
             },
             "problemMatcher": [],
             "group": "test",
-            "detail": "Build and run all manifest-driven native C contract suites with the local compiler."
+            "detail": "Build and run all manifest-driven native C contract suites with the local compiler and print a final SUITE_RESULT report."
         },
         {
             "label": "Tests: Host C (Clang ASan+UBSan)",
