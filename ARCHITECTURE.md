@@ -176,7 +176,6 @@ The three measurement branches are fixed in firmware as:
 | CH2 | Channel 3 | AD7606 5 V rail | source `VI3+` -> onboard `R100` 0.1 Ohm -> AD7606/load `VI3-`; may remain unpowered until AD7606 supply wiring is added |
 
 With this orientation, positive CH0 current means battery discharge (battery -> load) and negative CH0 current means charging current (load/charger -> battery). INA3221 bus voltage is measured on `VIx-`; firmware adds the signed shunt drop for CH0 to estimate the actual battery-side voltage at `VI1+`.
-
 Battery percentage is intentionally an **estimated 1S Li-ion voltage state-of-charge**, not coulomb counting. It is only marked valid when CH0 source voltage is in the plausible 1S range. The current bench condition with no 18650 installed can put CH0 near 5 V while USB powers the unit; firmware treats that as **battery absent**, not as a 100% battery.
 
 ### Debug / flashing wiring
@@ -201,13 +200,15 @@ The repository root remains an ESP-IDF project for the ESP32-S3; the WebUI and
 the nRF54L15 project remain independent. Do not add a root-level
 `platformio.ini`, and do not make the ESP-IDF build depend on the nRF build.
 
-The nRF project currently has one PlatformIO environment,
+The nRF project currently has one production PlatformIO environment,
 `seeed-xiao-nrf54l15`, using the Seeed board ID `seeed-xiao-nrf54l15` and the
 Zephyr application target `xiao_nrf54l15/nrf54l15/cpuapp`. All nRF54L15 boards
-must use one source tree, one environment, one implementation and one
-firmware binary. There are no compile-time `central` and `remote` firmware
-variants; node identity, topology and the current wireless role are runtime
-state.
+must use one source tree, one production environment, one implementation and
+one production firmware binary. There are no compile-time `central` and
+`remote` firmware variants; node identity, topology and the current wireless
+role are runtime state. A future native/host-only test environment is allowed
+only when needed to execute software tests without hardware; it must not
+become a second production firmware variant.
 
 ### Windows build boundary
 
@@ -226,9 +227,10 @@ supported interface is therefore:
 puts PlatformIO workspace/build/libdeps under
 `%USERPROFILE%\.platformio-workspaces\nrf54l15`. Build, maintenance and test
 actions must use this wrapper; a direct `pio run -d ".\nRF54L15"` command is
-not the normal workflow. Its `test` action runs PlatformIO through the same
-path-safe mapping with `--without-uploading`; an empty `test/test_*` surface is
-reported as `SKIPPED` until the planned nRF suites are implemented.
+not the normal workflow. The automatic `test` action is a software-only
+boundary. PlatformIO's `--without-uploading` flag prevents upload but does not
+by itself prove a suite is hardware-free, so future physical target/HIL suites
+must be kept outside the automatic `Tests: All (no flash)` selection.
 
 The local baseline was verified on 2026-09-14 with PlatformIO Core 6.1.19,
 SeeedStudio platform 1.0.0 at `1ec1287f8e4bc4067a6fd593991e36875aef989f`,
@@ -295,15 +297,33 @@ missing/timeout/outlier handling and a distance matrix for the currently
 available nodes. The geometry algorithm and solver contract remain TBD; do
 not infer a mathematical algorithm from this architecture statement.
 
-### Sense IMU and remote LED contract
+### External GY-BMI160 IMU and remote LED contract
 
-Seeed's official [XIAO nRF54L15(Sense) specification](https://wiki.seeedstudio.com/xiao_nrf54l15_sense_getting_started/)
-states that the plain XIAO nRF54L15 has no built-in sensor and the Sense
-variant has a 6-axis `LSM6DS3TR-C` IMU. Remote nodes requiring verticality
-therefore require physical confirmation of the Sense variant. The installed
-Seeed Zephyr board files currently expose this device as `DT_ALIAS(imu0)`;
-the future implementation should use Zephyr's generic sensor API after the
-board/package combination is revalidated.
+The project uses the **plain Seeed Studio XIAO nRF54L15, not the XIAO nRF54L15
+Sense**. Seeed documents the plain board as having no built-in sensor. Remote
+geophone verticality therefore must not depend on the Sense-only
+`LSM6DS3TR-C` or `DT_ALIAS(imu0)` device.
+
+Each remote geophone node uses an external **GY-BMI160** 6-axis IMU controlled
+locally by its nRF54L15. The main-enclosure nRF54L15 has no geophone whose
+verticality must be measured and does not require this external IMU.
+
+The XIAO exposes two I2C pin pairs. The project reserves them as follows:
+
+| XIAO pin | nRF54L15 pin | Project use |
+| --- | --- | --- |
+| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA to ESP32 |
+| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL to ESP32 |
+| `D11 / SCL-1` | `P0.03` | local remote-node GY-BMI160 I2C SCL |
+| `D12 / SDA-1` | `P0.04` | local remote-node GY-BMI160 I2C SDA |
+
+The GY-BMI160 is powered from the remote 3.3 V and GND rails. Bosch documents
+BMI160's primary interface as supporting either I2C or SPI; this project
+chooses the local D11/D12 I2C pair so the remote IMU does not consume
+D8/D9/D10 plus a chip-select pin and does not share the ESP32/TCA upstream I2C
+pair. Zephyr provides a `bosch,bmi160` binding for both I2C and SPI; the exact
+GY-BMI160 module address, pull-up population and interrupt wiring must be
+verified on the physical module before those values are frozen in firmware.
 
 For static verticality, the accelerometer gravity vector is the primary
 measurement: it gives the direction of gravity while the geophone is still.
@@ -316,17 +336,17 @@ debounce and calibration remain implementation parameters/TBD.
 Each remote nRF54L15 has four external LEDs; the main-enclosure nRF54L15 has
 none:
 
-| nRF54L15 pin | LED | Meaning |
-| --- | --- | --- |
-| `P1.04` | BLUE | verticality indication |
-| `P1.05` | GREEN | normal logger state |
-| `P1.06` | YELLOW | latched warning |
-| `P1.07` | RED | latched error |
+| nRF54L15 pin | XIAO pin | LED | Meaning |
+| --- | --- | --- | --- |
+| `P1.04` | `D0` | BLUE | verticality indication |
+| `P1.05` | `D1` | GREEN | normal logger state |
+| `P1.06` | `D2` | YELLOW | latched warning |
+| `P1.07` | `D3` | RED | latched error |
 
-Seeed's pin map identifies these connector pins as D0-D3 respectively. The
-current nRF bring-up's `led0` alias is the onboard user LED and is not this
+The current nRF bring-up's `led0` alias is the onboard user LED and is not this
 external remote assembly. Common firmware must tolerate absent external LEDs
-on the main node and must not require them for boot or communication.
+and absent GY-BMI160 hardware on the main node and must not require either for
+main-node boot or communication.
 
 BLUE is intended to be steady within the accepted vertical state and to blink
 more rapidly as filtered tilt error grows outside it, with a future-defined
