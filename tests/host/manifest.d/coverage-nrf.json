@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_node_state",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "tests/host/nrf_node_state_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    }
+  ]
+}
