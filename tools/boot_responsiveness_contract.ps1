@@ -100,7 +100,11 @@ function Get-BootResponsivenessTelemetry {
     $recoveryStartPosition = $Content.IndexOf('OBJECT_RECOVERY_BACKGROUND state=START', [StringComparison]::OrdinalIgnoreCase)
     $recoveryStopPosition = $Content.IndexOf('OBJECT_RECOVERY_BACKGROUND state=STOP', [StringComparison]::OrdinalIgnoreCase)
     $cacheDonePosition = $Content.IndexOf('WEB_STATUS_CACHE refresh=done', [StringComparison]::OrdinalIgnoreCase)
-    $failureLinePattern = '(?im)^[^\r\n]*(?:Guru Meditation Error|panic''ed|Task watchdog got triggered|Brownout detector was triggered|assert failed)[^\r\n]*$'
+
+    # Keep failure detection deliberately broad and quote-safe on Windows
+    # PowerShell 5.1. Saved-log replay must never turn a real target crash into
+    # telemetry PASS just because the panic spelling contains an apostrophe.
+    $failurePattern = "(?im)(Guru Meditation Error|panic(?:'ed|ed)?|Task watchdog got triggered|Brownout detector was triggered|assert failed)"
 
     return [pscustomobject]@{
         # Startup remains the backward-compatible property consumed by the
@@ -119,7 +123,7 @@ function Get-BootResponsivenessTelemetry {
         RecoveryStopPosition = $recoveryStopPosition
         CacheDonePosition = $cacheDonePosition
         SafeShutdownCount = [regex]::Matches($Content, '(?im)Safe shutdown started').Count
-        PanicCount = [regex]::Matches($Content, $failureLinePattern).Count
+        PanicCount = [regex]::Matches($Content, $failurePattern).Count
     }
 }
 
