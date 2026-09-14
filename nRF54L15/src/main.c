@@ -1,9 +1,9 @@
 /*
- * XIAO nRF54L15 initial PlatformIO / Zephyr bring-up.
+ * XIAO nRF54L15 production bring-up.
  *
- * The current firmware still uses the onboard LED as a simple board/toolchain
- * heartbeat, but the node lifecycle state is now production code shared by
- * future main/remote runtime roles.
+ * All boards boot with an UNASSIGNED node role and expose the same upstream
+ * bootstrap protocol at the DISCOVERY I2C address. Runtime assignment decides
+ * MAIN versus REMOTE; there are no separate production firmware variants.
  */
 
 #include <zephyr/kernel.h>
@@ -11,6 +11,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <nrfx_power.h>
 
+#include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_node_state.h"
 
 #define SLEEP_TIME_MS 1000
@@ -42,6 +43,11 @@ int main(void)
 
     if (nrf_node_state_mark_ready(&node_state) != NRF_NODE_STATE_OK) {
         return -1;
+    }
+
+    ret = nrf_bootstrap_runtime_zephyr_start(&node_state);
+    if (ret < 0) {
+        return ret;
     }
 
     while (1) {

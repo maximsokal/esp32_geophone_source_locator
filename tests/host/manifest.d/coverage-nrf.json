@@ -76,6 +76,43 @@
         "tests/host/stubs/nrf_upstream_target_zephyr",
         "nRF54L15/include"
       ]
+    },
+    {
+      "name": "nrf_upstream_protocol",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "tests/host/nrf_upstream_protocol_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "nrf_bootstrap",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_bootstrap.c",
+        "tests/host/nrf_bootstrap_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "nrf_bootstrap_runtime_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_bootstrap.c",
+        "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
+        "tests/host/nrf_bootstrap_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr",
+        "tests/host/stubs/nrf_upstream_target_zephyr",
+        "nRF54L15/include"
+      ]
     }
   ]
 }
