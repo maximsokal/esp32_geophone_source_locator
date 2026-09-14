@@ -15,9 +15,10 @@ The authoritative distinction between host tests, source contracts, replay/parse
   production `seeed-xiao-nrf54l15` environment for every installed node and is
   built through `nRF54L15/pio.ps1`, not through the ESP-IDF root build.
 - Installed nRF hardware is the plain XIAO nRF54L15, not the Sense variant.
-  Remote geophone nodes use an external GY-BMI160 on local I2C
-  (`D11/P0.03` SCL, `D12/P0.04` SDA); the main-enclosure nRF does not require
-  that remote-only IMU.
+  Remote geophone nodes use an external GY-BMI160 and BME280 on a private local
+  I2C bus (`D11/P0.03` SCL, `D12/P0.04` SDA), powered from XIAO `3V3_OUT` and
+  aggregated by the remote nRF; the main-enclosure nRF does not require that
+  remote-only sensor assembly.
 
 ## Automated test layers
 
@@ -90,9 +91,11 @@ The planned nRF layers are:
 
 - build/configuration isolation and clean/incremental wrapper builds;
 - host/native policy tests for identity, topology, logger latches, tilt,
-  GY-BMI160 state handling, ranging data and rotating Channel Sounding sessions;
+  GY-BMI160/BME280 local sensor state and snapshot handling, ranging data and
+  rotating Channel Sounding sessions;
 - one-board HIL for boot/USB, optional remote LEDs, external GY-BMI160 on
-  D11/D12 local I2C, and upstream I2C visibility;
+  D11/D12 local I2C, local BME280 reads/snapshot freshness, and upstream I2C
+  visibility;
 - multi-node HIL for pairwise ranging, distance matrices, role rotation and
   missing/reconnected nodes;
 - full ESP32 + TCA9548A + remote-node topology HIL.
@@ -164,9 +167,9 @@ Before merging firmware/test changes, the normal `main` verification must pass:
 A fully green run means the checked software contracts for the executed stages
 pass. A current ESP32/WebUI-only result does **not** close the nRF task, and no
 green software run closes a task whose definition explicitly requires
-live-board evidence. Physical GY-BMI160 wiring, remote LEDs and Bluetooth
-Channel Sounding always require target/HIL evidence.
+live-board evidence. Physical GY-BMI160/BME280 wiring and power, remote LEDs
+and Bluetooth Channel Sounding always require target/HIL evidence.
 
 ## Evidence retention
 
-For each physical HIL run keep the complete UART log and record firmware SHA, board, date, SD card, SDSPI frequency, sample rate/channel configuration, object/session population, runner thresholds, maximum measured values, acquisition-health markers, recorder `dropped_frames`, and any relevant manual observation. For nRF HIL also record plain-XIAO board identity, GY-BMI160 module/wiring when present, node role/topology, Channel Sounding role/session details and relevant platform/framework revisions. If hardware/configuration materially changes, re-establish the baseline instead of reusing old thresholds silently.
+For each physical HIL run keep the complete UART log and record firmware SHA, board, date, SD card, SDSPI frequency, sample rate/channel configuration, object/session population, runner thresholds, maximum measured values, acquisition-health markers, recorder `dropped_frames`, and any relevant manual observation. For nRF HIL also record plain-XIAO board identity, GY-BMI160/BME280 modules and wiring when present, local `D11/P0.03`/`D12/P0.04` bus, `3V3_OUT` power and RJ45 pin-2 NC check, node role/topology, Channel Sounding role/session details and relevant platform/framework revisions. If hardware/configuration materially changes, re-establish the baseline instead of reusing old thresholds silently.

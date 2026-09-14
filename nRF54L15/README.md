@@ -19,10 +19,12 @@ bus and one remote node per connected geophone behind the TCA9548A. With all
 downstream channels disabled, the main node remains visible; selecting a mux
 channel exposes that remote node. ESP32-S3 remains the wired-I2C controller.
 The possible identical-I2C-address problem must be resolved before an I2C/TWIS
-protocol is implemented. A remote BME280 has independent 3.3 V power and is
-not powered or assumed to be mastered by this nRF node.
+protocol is implemented. On each remote node, the private second I2C bus is
+controlled by that nRF54L15 and carries the local GY-BMI160 and BME280. Both
+are powered from the XIAO `3V3_OUT` rail; RJ45 pin 2 (+3.3 V) is
+`RESERVED/NC`, and must not be tied to `3V3_OUT`.
 
-## Actual board and external IMU
+## Actual board and external remote sensors
 
 The project hardware uses the **plain Seeed Studio XIAO nRF54L15, not the
 XIAO nRF54L15 Sense**. The plain board has no built-in IMU. Do not use the
@@ -30,23 +32,40 @@ Sense-only `LSM6DS3TR-C`/`imu0` device as the source of remote geophone
 verticality.
 
 Each remote geophone node instead uses an external **GY-BMI160** 6-axis IMU
-connected locally to that remote XIAO. The preferred wiring is the XIAO's
-second I2C controller so the local IMU does not consume the SPI pins and does
-not share the ESP32/TCA upstream I2C pair:
+and BME280 connected locally to that remote XIAO. The preferred wiring is the
+XIAO's second I2C controller so the local sensors do not consume the SPI pins
+and do not share the ESP32/TCA upstream I2C pair:
 
 | XIAO pin | nRF54L15 pin | Remote use |
 | --- | --- | --- |
 | `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA to ESP32 |
 | `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL to ESP32 |
-| `D11 / SCL-1` | `P0.03` | local GY-BMI160 I2C SCL |
-| `D12 / SDA-1` | `P0.04` | local GY-BMI160 I2C SDA |
+| `D11 / SCL-1` | `P0.03` | local GY-BMI160 + BME280 I2C SCL |
+| `D12 / SDA-1` | `P0.04` | local GY-BMI160 + BME280 I2C SDA |
 
-The GY-BMI160 is powered from the remote 3.3 V/GND rails. Its primary BMI160
-interface supports I2C or SPI, but this project chooses local I2C on D11/D12
-to reduce pin and wiring pressure inside the remote enclosure. The external
-IMU is required only on remote geophone nodes; the main-enclosure nRF54L15 has
-no geophone whose verticality must be measured and therefore does not require
-the GY-BMI160.
+The selected GY-BMI160 breakout is planned to use its `SCL`/`SDA` pins on
+D11/D12, `3V3` from XIAO `3V3_OUT`, `VIN` NC, `CS/CSB` at 3.3 V for I2C and
+`SA0/SDO` at GND for address `0x68`. `INT1`, `INT2` and auxiliary
+`SCX`/`SDX`/`OCS` connections are NC for the initial assembly. Verify these
+module-specific labels, pull-ups and straps against the physical breakout
+before assembly.
+
+The BME280 shares this local bus and is part of the remote nRF sensor snapshot;
+it is not an upstream TCA device. Its breakout address remains TBD (`0x76` or
+`0x77` according to the BME280 SDO strap), as do the exact module pull-ups and
+measurement/history policy. Any history required by the project belongs in
+nRF RAM, not in an assumption that the BME280 stores a project history.
+
+The external sensors are powered from the XIAO board `3V3_OUT` output and GND,
+not from a firmware GPIO. Validate total load and transient margin in HIL.
+The main-enclosure nRF54L15 has no geophone whose verticality must be measured
+and therefore does not require either remote sensor assembly.
+
+The future upstream nRF target and local sensor controller must use distinct
+peripheral instances. The exact upstream TWIS device-tree/API path is not yet
+settled: the official Zephyr TWIS binding notes that the standard Zephyr I2C
+slave API is unavailable for these devices and points to a HAL workaround.
+Treat this as an implementation gate, not as an already-available API.
 
 For a stationary geophone, the accelerometer gravity vector is the primary
 verticality reference. Gyroscope data is useful for motion detection and

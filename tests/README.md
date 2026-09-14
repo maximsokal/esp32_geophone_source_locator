@@ -21,8 +21,10 @@ The repository has four intentionally separate test surfaces:
   variants. The automatic `test` action is restricted to explicitly qualified
   hardware-free suites named `test_sw_*`; physical target/HIL suites are
   excluded from this path. With no `test_sw_*` suites it reports `SKIPPED`.
-  The installed hardware is plain XIAO nRF54L15; remote orientation uses an
-  external GY-BMI160 on local D11/D12 I2C, not a built-in Sense IMU.
+  The installed hardware is plain XIAO nRF54L15; remote nodes use an external
+  GY-BMI160 and BME280 on local D11/D12 I2C, powered from XIAO `3V3_OUT`, not a
+  built-in Sense IMU. Their data is aggregated by the remote nRF rather than
+  exposed as direct ESP32/TCA devices.
 
 The WebUI console contract in `webui/tests/console/deviceApiSerialization.test.ts`
 validates the four-channel `/api/seismic` shape before rendering and carries a
@@ -124,9 +126,9 @@ The target build proves compilation and linking only. No flash, serial monitor,
 or physical-board result is implied by this command.
 
 The nRF wrapper build likewise proves compilation/linking only. Native/unit
-passes, physical GY-BMI160/LED checks, one-board HIL, multi-node ranging and the
-full ESP32 + TCA9548A topology are separate evidence tiers; absence of five
-physical nRF boards must not block software-only CI.
+passes, physical GY-BMI160/BME280/LED checks, one-board HIL, multi-node ranging
+and the full ESP32 + TCA9548A topology are separate evidence tiers; absence of
+five physical nRF boards must not block software-only CI.
 
 ## Production pipeline HIL runner
 

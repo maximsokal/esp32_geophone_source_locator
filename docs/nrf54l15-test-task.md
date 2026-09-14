@@ -113,8 +113,10 @@ ESP32-S3
 |     |
 |     +-- TCA9548A
 |           |
-|           +-- selected channel -> remote nRF54L15 + remote BME280
-|           +-- another channel  -> remote nRF54L15 + remote BME280
+|           +-- selected channel -> remote nRF54L15
+|           |                         +-- local I2C -> GY-BMI160 + BME280
+|           +-- another channel  -> remote nRF54L15
+|                                     +-- local I2C -> GY-BMI160 + BME280
 |           +-- ...
 |
 +-- existing diploma hardware
@@ -135,9 +137,13 @@ nodes may otherwise share the same target address. Address assignment,
 identity provisioning and collision resolution are explicit architecture
 gates and must be resolved before I2C/TWIS implementation.
 
-ESP32-S3 remains the wired-I2C controller. A remote BME280 has independent
-3.3 V power. It is not powered by the nRF54L15 and the nRF54L15 is not assumed
-to be the BME280 I2C master.
+ESP32-S3 remains the upstream wired-I2C controller. Each remote nRF54L15 is
+also the controller of its private second I2C bus, where its local GY-BMI160
+and BME280 are connected. Neither sensor is directly visible through the
+ESP32/TCA9548A bus; the future upstream node snapshot carries aggregated
+sensor data. Both local sensors are powered from the XIAO `3V3_OUT` rail, not
+from an nRF GPIO. RJ45 pin 2 (+3.3 V) is `RESERVED/NC` and must not be tied to
+`3V3_OUT`.
 
 ### Bluetooth 6 Channel Sounding
 
@@ -161,7 +167,7 @@ initiator turn. Future implementation/tests must cover:
 The exact geometry solver and acceptance thresholds remain separate design
 work.
 
-## 4. Actual remote orientation hardware: plain XIAO + external GY-BMI160
+## 4. Actual remote sensor hardware: plain XIAO + local GY-BMI160/BME280
 
 The installed target is the **plain Seeed Studio XIAO nRF54L15, not the XIAO
 nRF54L15 Sense**. The plain board has no built-in IMU. Therefore tests and
@@ -174,24 +180,53 @@ by its local nRF54L15. The main-enclosure nRF54L15 does not have a geophone
 whose verticality must be measured and therefore does not require this
 external IMU.
 
-### Local IMU bus allocation
+### Local sensor bus allocation and wiring
 
 The XIAO exposes two I2C pin pairs. The project reserves them as follows:
 
-| XIAO pin | nRF54L15 pin | Project use |
-| --- | --- | --- |
-| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA to ESP32 |
-| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL to ESP32 |
-| `D11 / SCL-1` | `P0.03` | local GY-BMI160 I2C SCL |
-| `D12 / SDA-1` | `P0.04` | local GY-BMI160 I2C SDA |
+| XIAO pin | nRF54L15 pin | Project use | Connected hardware |
+| --- | --- | --- | --- |
+| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA; future nRF target/TWIS side | ESP32-S3/TCA9548A |
+| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL; future nRF target/TWIS side | ESP32-S3/TCA9548A |
+| `D11 / SCL-1` | `P0.03` | private local I2C SCL; nRF controller/TWIM candidate | GY-BMI160 + BME280 |
+| `D12 / SDA-1` | `P0.04` | private local I2C SDA; nRF controller/TWIM candidate | GY-BMI160 + BME280 |
 
-The GY-BMI160 is powered from the remote 3.3 V/GND rails. BMI160 supports I2C
-or SPI on its primary interface, but this project chooses the XIAO's second
-I2C pair so the IMU does not consume D8/D9/D10 plus a chip-select pin and does
-not share the ESP32/TCA upstream I2C pair.
+The accepted remote power/wiring plan is:
 
-Zephyr provides `bosch,bmi160` bindings for both I2C and SPI. Before production
-implementation, verify against the actual GY-BMI160 module:
+```text
+RJ45 +5V        -> XIAO 5V/VBUS
+RJ45 GND        -> XIAO GND
+RJ45 pin 2 +3V3 -> RESERVED/NC
+
+XIAO 3V3_OUT    -> GY-BMI160 3V3
+XIAO 3V3_OUT    -> BME280 3.3V/VCC
+XIAO GND        -> both sensor grounds
+
+D12/P0.04 SDA-1 -> GY-BMI160 SDA + BME280 SDA
+D11/P0.03 SCL-1 -> GY-BMI160 SCL + BME280 SCL
+```
+
+For the selected GY-BMI160 breakout, the assembly proposal is `VIN` NC,
+`CS/CSB` to 3.3 V for I2C, `SA0/SDO` to GND for BMI160 address `0x68`, and
+`INT1`, `INT2`, `SCX`, `SDX` and `OCS` NC for now. These labels and the
+breakout's pull-ups must be verified on the physical module. The BME280 uses
+the same local bus; at chip level its CSB must select I2C and SDO must be
+defined. Its address is still TBD (`0x76`/`0x77` from its SDO strap), as are
+module pull-ups and conversion/history policy. If history is required, future
+firmware must retain it in nRF RAM.
+
+The local bus is intentionally private to the remote node. The future
+implementation must use distinct peripheral instances for local TWIM and
+upstream TWIS; the installed Seeed board description currently exposes the
+relevant I2C nodes as TWIM by default, so the exact overlay/instance mapping
+is an implementation gate. The official Zephyr TWIS binding also states that
+the standard Zephyr I2C slave API is not available for these devices and points
+to a HAL-based workaround. The future upstream target protocol must explicitly
+select and validate that API boundary.
+
+Zephyr provides `bosch,bmi160` bindings for both I2C and SPI and a BME280 I2C
+binding/Sensor API path. Before production implementation, verify against the
+actual GY-BMI160 module:
 
 - module I2C address/selection strap;
 - whether SDA/SCL pull-ups are already populated on the module;
@@ -276,12 +311,14 @@ possible. Cover:
 | Tilt/BLUE policy | vertical, threshold boundaries, monotonic blink-rate mapping, maximum rate, invalid IMU, no chatter near boundary |
 | Filtering/hysteresis | startup fill, noisy samples, stationary gravity, motion entry/exit, timeout/reset |
 | BMI160 policy | sample-valid/invalid/timeout state handling without pretending host tests prove physical I2C |
+| BME280/aggregator policy | local-device discovery, valid/invalid conversion, independent sensor failure, snapshot freshness, optional nRF RAM history and no direct upstream BME target assumption |
+| Local sensor bus | separate TWIM/TWIS instance policy, address/strap validation, pull-up conflict policy and malformed/missing sensor responses |
 | Ranging validation | valid range, impossible/negative value, stale sample, low confidence, timeout, outlier |
 | Pairwise matrix | normalized node keys, update/stale/missing edge, partial matrix |
 | CS scheduler | every available node gets initiator turn; reflector pairing; timeout/retry; join/leave; deterministic schedule independent of four-remotes assumption |
 | Error handling | malformed transport payload, reset during session, partial recovery without clearing sticky status |
 
-Native tests do not prove GPIO, the physical GY-BMI160, I2C electrical
+Native tests do not prove GPIO, the physical GY-BMI160/BME280, I2C electrical
 behavior or radio ranging.
 
 ### C. Automatic `Tests: All (no flash)` boundary
@@ -315,16 +352,20 @@ Remote hardware checks additionally require:
 
 - P1.04-P1.07 external LEDs;
 - external GY-BMI160 presence on local D11/D12 I2C;
+- local BME280 presence on the same D11/D12 I2C bus;
 - valid accelerometer and gyroscope samples;
+- pressure/temperature/humidity reads and sensor-snapshot freshness;
 - static vertical, controlled tilt and return-to-vertical behavior;
 - BMI160 missing/timeout/bad-data behavior;
+- BME280 missing/timeout/bad-data behavior independently of BMI160;
+- `3V3_OUT` sensor power and absence of a second RJ45 3.3 V source;
 - warning/error latch persistence.
 
 Main-enclosure checks must prove:
 
 - boot/communication with no external four-LED assembly;
-- boot/communication with no external GY-BMI160;
-- absence of those remote-only devices is not logged as a fatal main-node
+- boot/communication with no external GY-BMI160 or BME280;
+- absence of those remote-only sensors/LEDs is not logged as a fatal main-node
   hardware error.
 
 ### E. Multi-node HIL
@@ -348,8 +389,12 @@ Cover:
 - main nRF always visible;
 - TCA9548A channel selection/deselection;
 - one remote nRF per selected channel;
-- remote BME280 on independent 3.3 V power;
-- local remote GY-BMI160 on that node's D11/D12 bus, not the ESP32/TCA bus;
+- each remote BME280 and GY-BMI160 on that node's private D11/D12 bus, not the
+  ESP32/TCA bus;
+- both local sensors powered from that XIAO's `3V3_OUT`; RJ45 pin 2 +3.3 V is
+  RESERVED/NC and must not be paralleled with it;
+- upstream reads the remote nRF snapshot rather than enumerating raw BME280 or
+  BMI160 targets through TCA9548A;
 - approved solution for possible identical nRF target addresses;
 - ESP32/nRF contracts carrying identity, topology, orientation and ranging
   results without breaking seismic acquisition.
@@ -396,27 +441,36 @@ Keep evidence types separate:
 - `HIL TESTED`: a named physical scenario passed;
 - `PHYSICALLY VERIFIED`: a named physical observation was confirmed.
 
-A successful build or native simulation never proves GY-BMI160 wiring, GPIO
-LED behavior, physical Channel Sounding or real TCA topology.
+A successful build or native simulation never proves GY-BMI160/BME280 wiring,
+sensor power, GPIO LED behavior, physical Channel Sounding or real TCA
+topology.
 
 ## 10. Open questions / implementation gates
 
 1. **I2C identity/addressing:** choose and validate how simultaneously visible
    nRF targets avoid/address collisions before I2C/TWIS implementation.
-2. **GY-BMI160 module details:** verify the exact module's I2C address strap,
-   onboard pull-ups, power behavior and whether interrupt lines are necessary.
-3. **BMI160 Zephyr integration:** verify `bosch,bmi160` driver/Kconfig and the
-   XIAO second-I2C controller/device-tree setup in the exact installed Seeed
-   platform/framework version.
-4. **Channel Sounding maturity:** qualify initiator/reflector support,
+2. **Local sensor electrical contract:** verify the selected GY-BMI160
+   breakout's `3V3`/`VIN`, `CS`/`SA0`, exposed primary SCL/SDA labels, pull-ups
+   and unused auxiliary/interrupt pins; verify BME280 `SDO` address strap,
+   pull-ups and module supply labels. Measure the combined `3V3_OUT` load,
+   startup/transient margin and confirm RJ45 pin 2 is not tied to that rail.
+3. **BMI160/BME280 and upstream target Zephyr integration:** verify the
+   `bosch,bmi160` and `bosch,bme280` driver/Kconfig behavior, Sensor API, the
+   XIAO local TWIM plus upstream TWIS device-tree setup, and the required HAL
+   workaround/API because the standard Zephyr I2C slave API is unavailable in
+   the official TWIS binding. Do this in the exact installed
+   Seeed/platform/framework version.
+4. **Snapshot/history contract:** define the upstream node-snapshot schema,
+   sampling/freshness rules and any RAM history size before implementation.
+5. **Channel Sounding maturity:** qualify initiator/reflector support,
    measurement format and scheduling limits on the selected package.
-5. **Geometry contract:** define distance-matrix schema, confidence and
+6. **Geometry contract:** define distance-matrix schema, confidence and
    missing/outlier policy before feeding localization/WebXR.
-6. **Tilt UX:** approve filter, calibration, threshold/warning band,
+7. **Tilt UX:** approve filter, calibration, threshold/warning band,
    hysteresis/debounce, blink mapping, saturation and IMU-failure output.
-7. **Combined logger LEDs:** confirm red-only priority versus simultaneous
+8. **Combined logger LEDs:** confirm red-only priority versus simultaneous
    yellow+red.
-8. **Automatic test selection:** qualify a truly hardware-free native/host
+9. **Automatic test selection:** qualify a truly hardware-free native/host
    execution route before adding executable nRF software suites to `Tests: All`.
 
 ## 11. Official references checked
@@ -425,7 +479,13 @@ LED behavior, physical Channel Sounding or real TCA topology.
 - [Seeed XIAO nRF54L15 PlatformIO configuration](https://wiki.seeedstudio.com/xiao_nrf54l15_with_platform_io/)
 - [Seeed platform-seeedboards](https://github.com/Seeed-Studio/platform-seeedboards)
 - [Bosch BMI160 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi160-ds000.pdf)
+- [Bosch BME280 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf)
 - [Zephyr `bosch,bmi160` binding](https://docs.zephyrproject.org/latest/build/dts/api/compatibles/bosch%2Cbmi160.html)
+- [Zephyr `bosch,bme280` I2C binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/sensor/bosch%2Cbme280-i2c.html)
+- [Zephyr BME280 Sensor API sample](https://docs.zephyrproject.org/latest/samples/sensor/bme280/README.html)
+- [Zephyr Nordic TWIM binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/i2c/nordic%2Cnrf-twim.html)
+- [Zephyr Nordic TWIS binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/i2c/nordic%2Cnrf-twis.html)
+- [Seeed XIAO nRF54L15 schematic](https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/nRF54L15_Schematic.pdf)
 - [Zephyr Channel Sounding sample](https://docs.zephyrproject.org/latest/samples/bluetooth/channel_sounding/README.html)
 - [Nordic Bluetooth Channel Sounding overview](https://www.nordicsemi.com/Products/Wireless/Bluetooth-Low-Energy/Channel-Sounding)
 - [PlatformIO `pio test`](https://docs.platformio.org/en/latest/core/userguide/cmd_test.html)

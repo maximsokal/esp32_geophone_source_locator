@@ -51,10 +51,13 @@ belongs under `%USERPROFILE%\.platformio-workspaces\nrf54l15`, outside the
 repository.
 
 The installed production hardware is the plain XIAO nRF54L15, not the Sense
-variant. Remote geophone nodes use an external GY-BMI160 on the XIAO's local
-second-I2C pair (`D11/P0.03` SCL, `D12/P0.04` SDA); the main-enclosure node does
-not require that remote-only IMU. This hardware distinction belongs to
-physical HIL and must never be inferred from a successful software build.
+variant. Remote geophone nodes use an external GY-BMI160 and BME280 on the
+XIAO's private second-I2C pair (`D11/P0.03` SCL, `D12/P0.04` SDA); both are
+powered from that XIAO's `3V3_OUT`. They are aggregated by the remote nRF and
+are not direct ESP32/TCA9548A devices. RJ45 pin 2 (+3.3 V) is RESERVED/NC. The
+main-enclosure node does not require the remote-only sensor assembly. This
+hardware distinction belongs to physical HIL and must never be inferred from a
+successful software build.
 
 The wrapper build and the automatic no-flash test launch are executable
 boundaries. PlatformIO's `--without-uploading` option prevents upload but does
@@ -120,9 +123,9 @@ single-board or multi-node HIL result.
 | --- | --- | --- |
 | Software-only | ESP32 host/Python/WebUI checks, ESP32 builds, nRF wrapper build and explicitly qualified nRF software/native tests | None; no physical nRF board |
 | ESP32 target | ESP32 Unity/production live runners and serial/API evidence | One physical ESP32-S3 and its required ports/wiring |
-| One nRF54L15 | boot, USB log, single-board target checks; remote profile adds external LEDs + GY-BMI160/local I2C | One physical plain XIAO nRF54L15; GY-BMI160 only for remote-profile orientation checks |
+| One nRF54L15 | boot, USB log, single-board target checks; remote profile adds external LEDs + local GY-BMI160/BME280 bus and snapshot checks | One physical plain XIAO nRF54L15; remote sensor assembly only for remote-profile checks |
 | Multiple nRF54L15 | pairwise ranging, matrix, role rotation, reconnect/missing-node tests | Two or more physical nRF54L15 boards |
-| Full topology | ESP32 upstream I2C + TCA9548A channels + main nRF + remote nodes + BME280 + remote GY-BMI160 devices | Complete wired diploma topology |
+| Full topology | ESP32 upstream I2C + TCA9548A channels + main nRF + remote nodes, with each remote GY-BMI160/BME280 on its private local bus and XIAO `3V3_OUT` power | Complete wired diploma topology |
 
 Absence of five physical nRF54L15 boards must never block ordinary
 software-only CI. Missing hardware or telemetry in a physical tier is
@@ -143,4 +146,4 @@ python tools/run_local_verify.py --scope web
 
 ## Evidence boundary
 
-A local software pass proves only the host/source/parser/WebUI behavior those tests exercise. It does not prove physical keypad behavior, TFT pixels, SPI2/SD electrical timing, DMA behavior, real FreeRTOS scheduling, physical XIAO GPIOs, GY-BMI160 wiring, Bluetooth Channel Sounding, or ESP32 runtime performance. Those remain LIVE BOARD HIL/manual evidence as defined in `docs/verification-evidence-matrix.md`.
+A local software pass proves only the host/source/parser/WebUI behavior those tests exercise. It does not prove physical keypad behavior, TFT pixels, SPI2/SD electrical timing, DMA behavior, real FreeRTOS scheduling, physical XIAO GPIOs, GY-BMI160/BME280 wiring or power, Bluetooth Channel Sounding, or ESP32 runtime performance. Those remain LIVE BOARD HIL/manual evidence as defined in `docs/verification-evidence-matrix.md`.
