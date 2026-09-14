@@ -13,6 +13,7 @@
 
 #include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_node_state.h"
+#include "nrf_sensor_upstream_runtime_zephyr.h"
 
 #define SLEEP_TIME_MS 1000
 #define LED0_NODE DT_ALIAS(led0)
@@ -43,6 +44,11 @@ int main(void)
 
     if (nrf_node_state_mark_ready(&node_state) != NRF_NODE_STATE_OK) {
         return -1;
+    }
+
+    ret = nrf_sensor_upstream_runtime_zephyr_start();
+    if (ret < 0) {
+        return ret;
     }
 
     ret = nrf_bootstrap_runtime_zephyr_start(&node_state);

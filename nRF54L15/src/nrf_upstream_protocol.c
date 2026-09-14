@@ -1,10 +1,16 @@
 #include "nrf_upstream_protocol.h"
 
+#include <limits.h>
+#include <stdbool.h>
 #include <string.h>
 
 #define NRF_UPSTREAM_MAGIC_0 0x47U
 #define NRF_UPSTREAM_MAGIC_1 0x53U
 #define NRF_UPSTREAM_HEADER_LENGTH 10U
+#define NRF_UPSTREAM_SENSOR_MAGIC_0 0x53U
+#define NRF_UPSTREAM_SENSOR_MAGIC_1 0x4EU
+#define NRF_UPSTREAM_SENSOR_EXTENSION_VERSION 1U
+#define NRF_UPSTREAM_SENSOR_EXTENSION_TYPE_SNAPSHOT 1U
 
 static uint16_t read_le16(const uint8_t *data)
 {
@@ -19,6 +25,21 @@ static uint32_t read_le32(const uint8_t *data)
            ((uint32_t)data[3] << 24U);
 }
 
+static uint64_t read_le64(const uint8_t *data)
+{
+    return (uint64_t)read_le32(data) |
+           ((uint64_t)read_le32(&data[4]) << 32U);
+}
+
+static int32_t read_le_i32(const uint8_t *data)
+{
+    const uint32_t raw = read_le32(data);
+    if (raw <= (uint32_t)INT32_MAX) {
+        return (int32_t)raw;
+    }
+    return -1 - (int32_t)(UINT32_MAX - raw);
+}
+
 static void write_le16(uint8_t *data, uint16_t value)
 {
     data[0] = (uint8_t)(value & 0xFFU);
@@ -31,6 +52,23 @@ static void write_le32(uint8_t *data, uint32_t value)
     data[1] = (uint8_t)((value >> 8U) & 0xFFU);
     data[2] = (uint8_t)((value >> 16U) & 0xFFU);
     data[3] = (uint8_t)((value >> 24U) & 0xFFU);
+}
+
+static void write_le64(uint8_t *data, uint64_t value)
+{
+    write_le32(data, (uint32_t)(value & UINT64_C(0xFFFFFFFF)));
+    write_le32(&data[4], (uint32_t)(value >> 32U));
+}
+
+static void write_le_i32(uint8_t *data, int32_t value)
+{
+    uint32_t raw;
+    if (value >= 0) {
+        raw = (uint32_t)value;
+    } else {
+        raw = UINT32_MAX - (uint32_t)(-(int64_t)value - 1);
+    }
+    write_le32(data, raw);
 }
 
 static void write_header(uint8_t *frame, uint8_t type, uint16_t length, uint32_t request_id)
@@ -54,6 +92,25 @@ static nrf_upstream_result_t validate_hardware_id(uint8_t length, const uint8_t 
         if (hardware_id[index] != 0U) {
             return NRF_UPSTREAM_RESULT_INVALID_FRAME;
         }
+    }
+    return NRF_UPSTREAM_RESULT_OK;
+}
+
+static nrf_upstream_result_t validate_sensor_snapshot(
+    const nrf_upstream_sensor_snapshot_t *sensor)
+{
+    const uint32_t invalid_mask =
+        (sensor->valid_mask | sensor->fault_mask) & ~NRF_UPSTREAM_SENSOR_VALID_MASK;
+    const bool has_sample = sensor->valid_mask != 0U;
+    const bool sample_flag =
+        (sensor->flags & NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE) != 0U;
+
+    if (sensor->result > NRF_UPSTREAM_SENSOR_RESULT_INTERNAL_ERROR ||
+        (sensor->flags & ~NRF_UPSTREAM_SENSOR_FLAG_MASK) != 0U ||
+        invalid_mask != 0U ||
+        (sensor->valid_mask & sensor->fault_mask) != 0U ||
+        has_sample != sample_flag) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
     }
     return NRF_UPSTREAM_RESULT_OK;
 }
@@ -336,4 +393,181 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_status(
         return NRF_UPSTREAM_RESULT_INVALID_FRAME;
     }
     return NRF_UPSTREAM_RESULT_OK;
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_refresh(
+    const nrf_upstream_sensor_refresh_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH])
+{
+    uint16_t crc;
+
+    if (request == NULL || frame == NULL) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+    if (request->request_id == 0U) {
+        return NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID;
+    }
+
+    memset(frame, 0, NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH);
+    write_header(
+        frame,
+        NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH,
+        NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH,
+        request->request_id);
+    crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
+    write_le16(&frame[10], crc);
+    return NRF_UPSTREAM_RESULT_OK;
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_sensor_refresh_t *request)
+{
+    uint16_t expected_crc;
+    uint16_t actual_crc;
+
+    if (frame == NULL || request == NULL ||
+        length != NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+    if (frame[0] != NRF_UPSTREAM_MAGIC_0 || frame[1] != NRF_UPSTREAM_MAGIC_1 ||
+        read_le16(&frame[4]) != NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+
+    expected_crc = read_le16(&frame[10]);
+    actual_crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
+    if (actual_crc != expected_crc) {
+        return NRF_UPSTREAM_RESULT_BAD_CRC;
+    }
+    if (frame[2] != NRF_UPSTREAM_PROTOCOL_VERSION) {
+        return NRF_UPSTREAM_RESULT_UNSUPPORTED_VERSION;
+    }
+    if (frame[3] != NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH) {
+        return NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE;
+    }
+
+    request->request_id = read_le32(&frame[6]);
+    if (request->request_id == 0U) {
+        request->request_id = 0U;
+        return NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID;
+    }
+    return NRF_UPSTREAM_RESULT_OK;
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
+    const nrf_upstream_status_t *status,
+    const nrf_upstream_sensor_snapshot_t *sensor,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH])
+{
+    nrf_upstream_result_t result;
+    uint16_t crc;
+    size_t index;
+
+    if (status == NULL || sensor == NULL || frame == NULL) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+    if (status->role != NRF_UPSTREAM_ROLE_REMOTE ||
+        status->target_address != NRF_UPSTREAM_ADDRESS_REMOTE) {
+        return NRF_UPSTREAM_RESULT_ROLE_INVALID;
+    }
+    result = validate_sensor_snapshot(sensor);
+    if (result != NRF_UPSTREAM_RESULT_OK) {
+        return result;
+    }
+
+    memset(frame, 0, NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
+    result = nrf_upstream_protocol_encode_status(status, frame);
+    if (result != NRF_UPSTREAM_RESULT_OK) {
+        return result;
+    }
+
+    frame[28] = NRF_UPSTREAM_SENSOR_MAGIC_0;
+    frame[29] = NRF_UPSTREAM_SENSOR_MAGIC_1;
+    frame[30] = NRF_UPSTREAM_SENSOR_EXTENSION_VERSION;
+    frame[31] = NRF_UPSTREAM_SENSOR_EXTENSION_TYPE_SNAPSHOT;
+    write_le16(&frame[32], NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
+    write_le32(&frame[34], sensor->request_id);
+    write_le32(&frame[38], sensor->sequence);
+    write_le32(&frame[42], sensor->valid_mask);
+    write_le32(&frame[46], sensor->fault_mask);
+    write_le64(&frame[50], sensor->sample_complete_uptime_ms);
+    frame[58] = sensor->result;
+    frame[59] = sensor->flags;
+    for (index = 0U; index < 3U; ++index) {
+        write_le_i32(&frame[60U + (index * 4U)], sensor->accel_mg[index]);
+        write_le_i32(&frame[72U + (index * 4U)], sensor->gyro_mdps[index]);
+    }
+    write_le_i32(&frame[84], sensor->imu_temperature_milli_c);
+    write_le_i32(&frame[88], sensor->env_temperature_milli_c);
+    write_le32(&frame[92], sensor->pressure_pa);
+    write_le32(&frame[96], sensor->humidity_milli_percent);
+    crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 100U);
+    write_le16(&frame[100], crc);
+    return NRF_UPSTREAM_RESULT_OK;
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_remote_snapshot(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_status_t *status,
+    nrf_upstream_sensor_snapshot_t *sensor)
+{
+    nrf_upstream_result_t result;
+    uint16_t expected_crc;
+    uint16_t actual_crc;
+    size_t index;
+
+    if (frame == NULL || status == NULL || sensor == NULL ||
+        length != NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+    result = nrf_upstream_protocol_decode_status(
+        frame,
+        NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH,
+        status);
+    if (result != NRF_UPSTREAM_RESULT_OK) {
+        return result;
+    }
+    if (status->role != NRF_UPSTREAM_ROLE_REMOTE ||
+        status->target_address != NRF_UPSTREAM_ADDRESS_REMOTE ||
+        frame[28] != NRF_UPSTREAM_SENSOR_MAGIC_0 ||
+        frame[29] != NRF_UPSTREAM_SENSOR_MAGIC_1 ||
+        frame[30] != NRF_UPSTREAM_SENSOR_EXTENSION_VERSION ||
+        frame[31] != NRF_UPSTREAM_SENSOR_EXTENSION_TYPE_SNAPSHOT ||
+        read_le16(&frame[32]) != NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
+        memset(sensor, 0, sizeof(*sensor));
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+
+    expected_crc = read_le16(&frame[100]);
+    actual_crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 100U);
+    if (actual_crc != expected_crc) {
+        memset(sensor, 0, sizeof(*sensor));
+        return NRF_UPSTREAM_RESULT_BAD_CRC;
+    }
+
+    memset(sensor, 0, sizeof(*sensor));
+    sensor->request_id = read_le32(&frame[34]);
+    sensor->sequence = read_le32(&frame[38]);
+    sensor->valid_mask = read_le32(&frame[42]);
+    sensor->fault_mask = read_le32(&frame[46]);
+    sensor->sample_complete_uptime_ms = read_le64(&frame[50]);
+    sensor->result = frame[58];
+    sensor->flags = frame[59];
+    for (index = 0U; index < 3U; ++index) {
+        sensor->accel_mg[index] = read_le_i32(&frame[60U + (index * 4U)]);
+        sensor->gyro_mdps[index] = read_le_i32(&frame[72U + (index * 4U)]);
+    }
+    sensor->imu_temperature_milli_c = read_le_i32(&frame[84]);
+    sensor->env_temperature_milli_c = read_le_i32(&frame[88]);
+    sensor->pressure_pa = read_le32(&frame[92]);
+    sensor->humidity_milli_percent = read_le32(&frame[96]);
+
+    result = validate_sensor_snapshot(sensor);
+    if (result != NRF_UPSTREAM_RESULT_OK) {
+        memset(sensor, 0, sizeof(*sensor));
+    }
+    return result;
 }

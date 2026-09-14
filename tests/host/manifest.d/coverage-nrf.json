@@ -88,6 +88,30 @@
       ]
     },
     {
+      "name": "nrf_sensor_session",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "tests/host/nrf_sensor_session_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "nrf_sensor_upstream_runtime_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+        "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_sensor_upstream_runtime_zephyr",
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "nrf_bootstrap",
       "sources": [
         "nRF54L15/src/nrf_node_state.c",

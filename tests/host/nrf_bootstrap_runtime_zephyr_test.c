@@ -8,6 +8,7 @@
 #include <zephyr/kernel.h>
 
 #include "nrf_bootstrap_runtime_zephyr.h"
+#include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
 
@@ -16,10 +17,14 @@ static struct k_work *s_submitted_work;
 static unsigned s_submit_calls;
 static unsigned s_readdress_calls;
 static unsigned s_reboot_calls;
+static unsigned s_sensor_assignment_calls;
+static unsigned s_sensor_refresh_calls;
 static bool s_registered;
 static uint16_t s_address;
 static int s_readdress_result;
 static bool s_readdress_rollback_discovery;
+static nrf_upstream_sensor_snapshot_t s_sensor_snapshot;
+static nrf_upstream_sensor_refresh_t s_last_sensor_refresh;
 
 int k_work_submit(struct k_work *work)
 {
@@ -32,6 +37,32 @@ void sys_reboot(int type)
 {
     assert(type == 0);
     ++s_reboot_calls;
+}
+
+int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
+    const nrf_upstream_assign_t *assign)
+{
+    assert(assign != NULL);
+    assert(assign->role == NRF_UPSTREAM_ROLE_REMOTE);
+    ++s_sensor_assignment_calls;
+    return 0;
+}
+
+int nrf_sensor_upstream_runtime_zephyr_request_refresh(
+    const nrf_upstream_sensor_refresh_t *request)
+{
+    assert(request != NULL);
+    s_last_sensor_refresh = *request;
+    ++s_sensor_refresh_calls;
+    return 0;
+}
+
+bool nrf_sensor_upstream_runtime_zephyr_get_snapshot(
+    nrf_upstream_sensor_snapshot_t *snapshot)
+{
+    assert(snapshot != NULL);
+    *snapshot = s_sensor_snapshot;
+    return true;
 }
 
 int nrf_upstream_target_zephyr_read_device_id(uint8_t *buffer, size_t capacity, size_t *out_length)
@@ -108,15 +139,22 @@ static nrf_upstream_assign_t make_assign(uint32_t request_id)
     return assign;
 }
 
-static nrf_upstream_status_t read_status(void)
+static nrf_upstream_status_t read_status(uint32_t *read_length)
 {
     uint8_t *frame = NULL;
     uint32_t length = 0U;
     nrf_upstream_status_t status;
     assert(s_callbacks != NULL);
     assert(s_callbacks->buf_read_requested(NULL, &frame, &length) == 0);
-    assert(length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH);
-    assert(nrf_upstream_protocol_decode_status(frame, length, &status) == NRF_UPSTREAM_RESULT_OK);
+    assert(length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH ||
+           length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
+    assert(nrf_upstream_protocol_decode_status(
+               frame,
+               NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH,
+               &status) == NRF_UPSTREAM_RESULT_OK);
+    if (read_length != NULL) {
+        *read_length = length;
+    }
     return status;
 }
 
@@ -124,6 +162,14 @@ static void send_assign(const nrf_upstream_assign_t *assign)
 {
     uint8_t frame[NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH];
     assert(nrf_upstream_protocol_encode_assign(assign, frame) == NRF_UPSTREAM_RESULT_OK);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
+static void send_sensor_refresh(uint32_t request_id)
+{
+    nrf_upstream_sensor_refresh_t request = {.request_id = request_id};
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH];
+    assert(nrf_upstream_protocol_encode_sensor_refresh(&request, frame) == NRF_UPSTREAM_RESULT_OK);
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
 }
 
@@ -141,6 +187,10 @@ int main(void)
     nrf_upstream_status_t status;
     nrf_upstream_assign_t assign;
     unsigned i;
+    uint32_t read_length;
+
+    memset(&s_sensor_snapshot, 0, sizeof(s_sensor_snapshot));
+    s_sensor_snapshot.result = NRF_UPSTREAM_SENSOR_RESULT_NOT_READY;
 
     nrf_node_state_init(&node_state);
     assert(nrf_node_state_mark_ready(&node_state) == NRF_NODE_STATE_OK);
@@ -149,7 +199,8 @@ int main(void)
     assert(nrf_bootstrap_runtime_zephyr_start(&node_state) == 0);
     assert(s_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
 
-    status = read_status();
+    status = read_status(&read_length);
+    assert(read_length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH);
     assert(status.request_id == 0U && status.role == NRF_UPSTREAM_ROLE_UNASSIGNED);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
     assert(status.flags == NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED);
@@ -157,13 +208,14 @@ int main(void)
     assign = make_assign(10U);
     s_readdress_result = -5;
     send_assign(&assign);
-    assert(s_readdress_calls == 0U); /* callback must not re-address */
+    assert(s_readdress_calls == 0U);
     assert(s_submit_calls == 1U);
-    status = read_status();
-    assert(status.request_id == 0U); /* worker owns PENDING/final publication */
+    status = read_status(NULL);
+    assert(status.request_id == 0U);
     run_submitted_work();
     assert(s_readdress_calls == 1U);
-    status = read_status();
+    assert(s_sensor_assignment_calls == 0U);
+    status = read_status(NULL);
     assert(status.request_id == 10U && status.result == NRF_UPSTREAM_RESULT_READDRESS_FAILED);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
 
@@ -172,26 +224,38 @@ int main(void)
     assert(s_readdress_calls == 1U);
     run_submitted_work();
     assert(s_readdress_calls == 2U);
-    status = read_status();
+    assert(s_sensor_assignment_calls == 1U);
+    status = read_status(&read_length);
+    assert(read_length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
     assert(status.request_id == 10U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(status.role == NRF_UPSTREAM_ROLE_REMOTE && status.node_id == 2U && status.mux_channel == 1U);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_REMOTE);
 
-    /* Queue four idempotent confirmations without running work; the fifth is BUSY. */
+    {
+        unsigned before_submit = s_submit_calls;
+        nrf_upstream_status_t before = status;
+        send_sensor_refresh(0x12345678U);
+        assert(s_sensor_refresh_calls == 1U);
+        assert(s_last_sensor_refresh.request_id == 0x12345678U);
+        assert(s_submit_calls == before_submit);
+        status = read_status(NULL);
+        assert(memcmp(&status, &before, sizeof(status)) == 0);
+    }
+
     for (i = 0U; i < 4U; ++i) {
         assign.request_id = 20U + i;
         send_assign(&assign);
     }
     assign.request_id = 24U;
     send_assign(&assign);
-    status = read_status();
+    status = read_status(NULL);
     assert(status.request_id == 24U && status.result == NRF_UPSTREAM_RESULT_BUSY);
     run_submitted_work();
-    status = read_status();
+    status = read_status(NULL);
     assert(status.request_id == 23U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(s_readdress_calls == 2U);
+    assert(s_sensor_assignment_calls == 5U);
 
-    /* Malformed CRC is rejected in callback without scheduling transport work. */
     {
         uint8_t frame[NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH];
         unsigned before = s_submit_calls;
@@ -200,8 +264,23 @@ int main(void)
         frame[20] ^= 1U;
         s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
         assert(s_submit_calls == before);
-        status = read_status();
+        status = read_status(NULL);
         assert(status.request_id == 30U && status.result == NRF_UPSTREAM_RESULT_BAD_CRC);
+    }
+
+    {
+        nrf_upstream_sensor_refresh_t request = {.request_id = 99U};
+        uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH];
+        unsigned before = s_sensor_refresh_calls;
+        status = read_status(NULL);
+        assert(nrf_upstream_protocol_encode_sensor_refresh(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+        frame[6] ^= 1U;
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        assert(s_sensor_refresh_calls == before);
+        {
+            nrf_upstream_status_t after = read_status(NULL);
+            assert(memcmp(&status, &after, sizeof(status)) == 0);
+        }
     }
 
     assert(s_reboot_calls == 0U);
