@@ -1,7 +1,12 @@
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNNER = REPO_ROOT / "tools" / "run_recorder_sustained_hil.ps1"
 
 
 def read(relative: str) -> str:
@@ -56,3 +61,27 @@ def test_sustained_analyzer_requires_throughput_margin_eviction_and_raw_reader_e
     assert "integrity mismatch" in analyzer
     assert "minimum_overlap_frames" in analyzer
     assert "RECORDER_SUSTAINED_ANALYSIS" in analyzer
+
+
+def test_sustained_hil_runner_parses_as_powershell_when_available():
+    executable = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if executable is None:
+        pytest.skip("PowerShell is unavailable on this host")
+
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        f"$text = Get-Content -LiteralPath '{RUNNER}' -Raw; "
+        "[void][scriptblock]::Create($text)"
+    )
+    result = subprocess.run(
+        [executable, "-NoLogo", "-NoProfile", "-Command", command],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
