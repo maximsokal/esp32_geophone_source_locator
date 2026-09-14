@@ -11,7 +11,7 @@ static object_service_state_t s_state = {
     .event_observer = NULL,
     .event_observer_context = NULL,
     .event_observer_in_flight = 0U,
-    .busy = ATOMIC_VAR_INIT(false),
+    .busy = false,
     .initialized = false,
 };
 
