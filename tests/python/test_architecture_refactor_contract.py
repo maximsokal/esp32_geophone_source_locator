@@ -162,12 +162,18 @@ def test_shared_bus_and_ui_callback_have_nonblocking_ownership_boundaries():
     assert "i2c_new_master_bus(" not in ina
     assert "i2c_del_master_bus(" not in ina
 
-    handler = ui_handler[ui_handler.index("static void ui_event_handler") :]
-    handler = handler[: handler.index("void ui_event_dispatcher_dispatch_pending_locked")]
-    assert "ui_event_pending_push(" in handler
+    handler = _function_body(ui_handler, "static void ui_event_handler")
+    ingress = _function_body(
+        ui_handler,
+        "static ui_event_ingress_result_t ui_event_ingress_begin"
+    )
+    assert "ui_event_ingress_begin(" in handler
     assert "lvgl_port_task_wake(" in handler
     assert "lvgl_port_lock(" not in handler
     assert "vTaskDelay(" not in handler
+    assert "portENTER_CRITICAL(&s_pending_lock)" in ingress
+    assert "s_pending_events[s_pending_tail]" in ingress
+    assert "vTaskDelay(" not in ingress
 
 
 def test_refactor_baseline_and_architecture_decisions_are_documented():
