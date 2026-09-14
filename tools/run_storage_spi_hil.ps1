@@ -188,6 +188,16 @@ $result = Test-StorageSpiTelemetry `
     -MinimumRecorderStopSamples $MinimumRecorderStopSamples `
     -MinimumAcquisitionDiagnosticChannels $MinimumAcquisitionDiagnosticChannels
 
+$droppedFramesText = "missing"
+if ($null -ne $result.MaxDroppedFrames) {
+    $droppedFramesText = [string]$result.MaxDroppedFrames
+}
+
+$diagnosticChannelsText = "none"
+if ($result.AcquisitionDiagnosticChannels.Count -gt 0) {
+    $diagnosticChannelsText = $result.AcquisitionDiagnosticChannels -join ','
+}
+
 Write-Host "===== Storage/SPI latency telemetry ====="
 Write-Host ("samples storage_begin={0} storage_end={1} recorder_fwrite={2} recorder_stop={3} acquisition_diag_channels={4}" -f `
     $result.StorageBeginCount, $result.StorageEndCount, $result.RecorderCount, `
@@ -199,11 +209,10 @@ Write-Host (Format-Maximum "spi_end_elapsed_us" $result.MaxSpiEndElapsedUs $MaxS
 Write-Host (Format-Maximum "max_window_us" $result.MaxRecorderWindowUs $MaxRecorderWindowUs)
 Write-Host (Format-Maximum "fwrite_us" $result.MaxRecorderFwriteUs $MaxRecorderFwriteUs)
 Write-Host (Format-Maximum "recorder_operation_us" $result.MaxRecorderOperationUs $MaxRecorderOperationUs)
-Write-Host ("recorder_dropped_frames={0} expected=0" -f $(if ($null -eq $result.MaxDroppedFrames) { "missing" } else { $result.MaxDroppedFrames }))
+Write-Host ("recorder_dropped_frames={0} expected=0" -f $droppedFramesText)
 Write-Host ("acquisition_failure_markers={0} expected=0" -f $result.AcquisitionFailureCount)
 Write-Host ("acquisition_diag_channels={0} required={1}" -f `
-    $(if ($result.AcquisitionDiagnosticChannels.Count -eq 0) { "none" } else { $result.AcquisitionDiagnosticChannels -join ',' }), `
-    $MinimumAcquisitionDiagnosticChannels)
+    $diagnosticChannelsText, $MinimumAcquisitionDiagnosticChannels)
 
 if ($result.Missing.Count -gt 0) {
     Write-Host "MISSING_TELEMETRY: $($result.Missing -join '; ')"
