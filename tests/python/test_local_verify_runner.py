@@ -23,10 +23,12 @@ def make_repo(tmp_path: Path) -> Path:
     (root / "tests" / "host" / "manifest.d").mkdir(parents=True)
     (root / "tests" / "python").mkdir(parents=True)
     (root / "webui").mkdir(parents=True)
+    (root / "nRF54L15").mkdir(parents=True)
 
     (root / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.16)\n")
     (root / "tools" / "run_host_tests.py").write_text("# host runner\n")
     (root / "tools" / "run_idf.ps1").write_text("# idf runner\n")
+    (root / "nRF54L15" / "pio.ps1").write_text("# nRF runner\n")
     (root / "tests" / "host" / "manifest.json").write_text(
         '{"version": 1, "tests": [{"name": "base"}]}\n'
     )
@@ -125,6 +127,30 @@ def test_windows_firmware_plan_uses_existing_local_idf_helper(tmp_path: Path):
     assert "build" in command
     assert "build-local" in command
     assert command[-2:] == ("-Jobs", "4")
+
+
+def test_nrf_plan_uses_the_path_safe_wrapper_for_build_and_tests(tmp_path: Path):
+    root = make_repo(tmp_path)
+
+    steps = runner.build_plan(
+        root,
+        scope="nrf",
+        build_dir="build",
+        jobs=2,
+        skip_npm_ci=True,
+        python_executable="python-test",
+        npm_executable=None,
+        system_name="Windows",
+        powershell_executable="powershell-test",
+        idf_executable=None,
+    )
+
+    assert [step.name for step in steps] == ["nrf/build", "nrf/tests"]
+    assert all(step.command[0] == "powershell-test" for step in steps)
+    assert all(any("pio.ps1" in argument for argument in step.command) for step in steps)
+    assert steps[0].command[-2:] == ("-Action", "build")
+    assert steps[1].command[-2:] == ("-Action", "test")
+    assert all("pio run -d" not in " ".join(step.command) for step in steps)
 
 
 def test_non_windows_firmware_does_not_fall_back_to_cloud(tmp_path: Path):

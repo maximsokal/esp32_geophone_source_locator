@@ -15,7 +15,7 @@ import sys
 from typing import Iterable, Sequence
 
 
-SCOPES = ("software", "host", "python", "web", "firmware", "all")
+SCOPES = ("software", "host", "python", "web", "nrf", "firmware", "all")
 
 
 class VerificationError(RuntimeError):
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="software",
-        help="verification surface; software = host + python + web",
+        help="verification surface; software = host + python + web; nrf = isolated nRF54L15 build/tests",
     )
     parser.add_argument(
         "--project-path",
@@ -240,6 +240,50 @@ def firmware_steps(
     ]
 
 
+def nrf_steps(
+    root: Path,
+    *,
+    system_name: str,
+    powershell_executable: str | None,
+) -> list[Step]:
+    if system_name != "Windows":
+        raise VerificationError(
+            "nRF54L15 verification currently requires the Windows path-safe "
+            "nRF54L15/pio.ps1 wrapper"
+        )
+    if powershell_executable is None:
+        raise VerificationError(
+            "nRF54L15 verification on Windows requires powershell.exe or pwsh"
+        )
+
+    runner = root / "nRF54L15" / "pio.ps1"
+    if not runner.is_file():
+        raise VerificationError(f"missing nRF54L15 helper: {runner}")
+
+    command_prefix: tuple[str, ...] = (
+        powershell_executable,
+        "-NoLogo",
+        "-NoProfile",
+    )
+    if Path(powershell_executable).name.lower() == "powershell.exe":
+        command_prefix += ("-ExecutionPolicy", "Bypass")
+
+    return [
+        Step(
+            "nrf/build",
+            root,
+            command_prefix
+            + ("-File", str(runner), "-Action", "build"),
+        ),
+        Step(
+            "nrf/tests",
+            root,
+            command_prefix
+            + ("-File", str(runner), "-Action", "test"),
+        ),
+    ]
+
+
 def scope_includes(scope: str, surface: str) -> bool:
     if scope == "all":
         return True
@@ -287,6 +331,14 @@ def build_plan(
                 skip_npm_ci=skip_npm_ci,
             )
         )
+    if scope_includes(scope, "nrf"):
+        steps.extend(
+            nrf_steps(
+                root,
+                system_name=system_name,
+                powershell_executable=powershell_executable,
+            )
+        )
     if scope_includes(scope, "firmware"):
         steps.extend(
             firmware_steps(
@@ -327,11 +379,11 @@ def main() -> int:
 
         powershell_executable = None
         idf_executable = None
-        if scope_includes(args.scope, "firmware"):
+        if scope_includes(args.scope, "firmware") or scope_includes(args.scope, "nrf"):
             if system_name == "Windows":
                 powershell_executable = find_required_executable(
                     ("powershell.exe", "pwsh"),
-                    "local ESP-IDF build",
+                    "local ESP-IDF/nRF54L15 verification",
                 )
             else:
                 idf_executable = shutil.which("idf.py")

@@ -67,6 +67,20 @@ The first four AD7606 channels currently feed the application seismic ring buffe
 
 GPIO1 is reserved by the existing divider/bench wiring and must not be reused for AD7606.
 
+### nRF54L15 subproject
+
+`nRF54L15/` is an independent PlatformIO + Zephyr project for all XIAO
+nRF54L15 nodes. It has one source tree, one environment and one firmware
+binary; runtime topology and Bluetooth initiator/reflector roles do not create
+central/remote builds. The main node is on the ESP32-S3 upstream I2C bus;
+remote nodes are behind TCA9548A channels. A remote BME280 has separate 3.3 V
+power and is not powered or assumed to be mastered by nRF54L15.
+
+The authoritative topology, Sense IMU/verticality contract, Channel Sounding
+role rotation and remote LED pinout are in
+[`ARCHITECTURE.md`](ARCHITECTURE.md). The future nRF implementation and
+testing task is [`docs/nrf54l15-test-task.md`](docs/nrf54l15-test-task.md).
+
 ## UI architecture
 
 The TFT UI uses **LVGL 9** through Espressif's official **esp_lvgl_port** integration. The display component is limited to the physical `esp_lcd` / ILI9341 layer; widgets, text, QR rendering, navigation, refresh timing and buffering belong to LVGL.
@@ -265,7 +279,7 @@ The web component exposes only `include/web_server.h` publicly. Internal routes,
 
 ## Build
 
-For local firmware tests, the risk-based coverage plan and host/target verification boundaries, see [docs/firmware-test-plan.md](docs/firmware-test-plan.md).
+For local firmware tests, the risk-based coverage plan and host/target verification boundaries, see [docs/firmware-test-plan.md](docs/firmware-test-plan.md). The project-wide validation contract, including the staged nRF54L15 software/HIL gates, is [docs/local-verification.md](docs/local-verification.md).
 
 Install ESP-IDF v5.5.4 and open an ESP-IDF terminal in the repository directory.
 
@@ -293,7 +307,16 @@ Then open **Seismic Acquisition** and select the required source.
 
 For repeatable local verification, use the tasks in `.vscode/tasks.json`:
 
-* `Tests: All (no flash)` runs all host/Python/WebUI checks and both ESP builds.
+* `Tests: nRF54L15` launches the isolated path-safe PlatformIO/Zephyr test
+  action through `nRF54L15/pio.ps1` without uploading a test image.
+* `nRF54L15: Flash firmware` builds and uploads the nRF54L15 image through
+  `nRF54L15/pio.ps1`; it is a physical-board action and is not part of
+  `Tests: All (no flash)`.
+* `Tests: All (no flash)` is the no-flash project-wide entry point. It now
+  includes the nRF54L15 wrapper build and test stage; an empty current nRF
+  `test/test_*` surface is reported as `SKIPPED`. The complete software/HIL
+  separation is documented in [docs/local-verification.md](docs/local-verification.md);
+  no physical nRF board is required for the software-only stages.
 * `ESP: Unity tests (flash COM4 + logs COM6)` runs the target Unity cases with
   a live COM4 preflight, an explicit test-app flash, and a bounded COM6 log
   capture.
@@ -403,7 +426,8 @@ Implemented foundations include:
 Still required for an end-to-end source-location system:
 
 - final low-noise geophone analog front ends;
-- sensor-pod barometer/IMU integration and validated sensor geometry;
+- nRF54L15 Sense (`LSM6DS3TR-C`) verticality and Bluetooth 6 Channel Sounding
+  geometry integration, plus separately powered remote BME280 integration;
 - signal filtering / preprocessing;
 - event detection and per-channel arrival-time picking;
 - measured/modelled propagation-speed strategy for rubble;

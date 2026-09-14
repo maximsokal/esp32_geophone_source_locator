@@ -194,6 +194,158 @@ Battery percentage is intentionally an **estimated 1S Li-ion voltage state-of-ch
 - The CH340 VCC pin stays disconnected in passive battery-monitor mode; only RXD and GND are connected.
 - Exact present VCC rail routing for every external module is not represented by firmware GPIO definitions. Before a complete prototype teardown, add the measured/verified module power wiring here rather than reconstructing it from memory.
 
+## nRF54L15 subproject and distributed sensor topology
+
+`nRF54L15/` is a separate PlatformIO + Zephyr project inside this repository.
+The repository root remains an ESP-IDF project for the ESP32-S3; the WebUI and
+the nRF54L15 project remain independent. Do not add a root-level
+`platformio.ini`, and do not make the ESP-IDF build depend on the nRF build.
+
+The nRF project currently has one PlatformIO environment,
+`seeed-xiao-nrf54l15`, using the Seeed board ID `seeed-xiao-nrf54l15` and the
+Zephyr application target `xiao_nrf54l15/nrf54l15/cpuapp`. All nRF54L15 boards
+must use one source tree, one environment, one implementation and one
+firmware binary. There are no compile-time `central` and `remote` firmware
+variants; node identity, topology and the current wireless role are runtime
+state.
+
+### Windows build boundary
+
+The checkout path contains spaces and the current Seeed PlatformIO + Zephyr
+generation path is not reliable when it receives that path directly. The
+supported interface is therefore:
+
+```powershell
+.\nRF54L15\pio.ps1 build
+.\nRF54L15\pio.ps1 clean
+.\nRF54L15\pio.ps1 upload
+.\nRF54L15\pio.ps1 monitor
+```
+
+`pio.ps1` exposes the project through a temporary no-space `SUBST` drive and
+puts PlatformIO workspace/build/libdeps under
+`%USERPROFILE%\.platformio-workspaces\nrf54l15`. Build, maintenance and test
+actions must use this wrapper; a direct `pio run -d ".\nRF54L15"` command is
+not the normal workflow. Its `test` action runs PlatformIO through the same
+path-safe mapping with `--without-uploading`; an empty `test/test_*` surface is
+reported as `SKIPPED` until the planned nRF suites are implemented.
+
+The local baseline was verified on 2026-09-14 with PlatformIO Core 6.1.19,
+SeeedStudio platform 1.0.0 at `1ec1287f8e4bc4067a6fd593991e36875aef989f`,
+`framework-zephyr-nrf54l15` package `3.40201.251021` and Zephyr 4.2.1. The
+platform URL in `nRF54L15/platformio.ini` is not commit-pinned, so board,
+framework, Channel Sounding and driver support must be rechecked after a
+package refresh.
+
+### Planned physical topology
+
+The target system contains one nRF54L15 in the main enclosure and one nRF54L15
+for each connected remote geophone. Four remote geophones therefore mean five
+nRF54L15 boards:
+
+```text
+ESP32-S3
+|
++-- shared upstream I2C
+|     |
+|     +-- main-enclosure nRF54L15 (always visible)
+|     |
+|     +-- TCA9548A
+|           |
+|           +-- selected channel -> remote nRF54L15 + remote sensors
+|           +-- another channel  -> remote nRF54L15 + remote sensors
+|           +-- ...
+|
++-- existing diploma hardware
+```
+
+With all TCA9548A downstream channels disabled, the nRF target still visible
+on the upstream bus is conceptually the main-enclosure node. Selecting a
+channel makes the corresponding remote target visible; deselecting it removes
+that remote from the visible ESP32 topology. The main target remains visible
+while channels are switched.
+
+This is a future discovery concept, not an implemented I2C protocol. The
+possible collision caused by identical nRF target addresses is an explicit
+architecture gate. Address assignment, identity provisioning and collision
+resolution must be selected and validated before I2C/TWIS implementation; no
+address or workaround is invented here.
+
+ESP32-S3 remains the main controller and the owner of the shared wired-I2C
+topology. A remote BME280 has separate 3.3 V power. It is not powered by the
+nRF54L15, and the nRF54L15 is not assumed to be its I2C master. The exact
+BME280 address and final protocol are separate integration TBDs. This planned
+topology does not change the current `sensor_bus` ownership or the existing
+INA3221 decision above.
+
+### Bluetooth geometry role
+
+The nRF54L15 wireless purpose is spatial arrangement of remote geophones using
+Bluetooth 6 Channel Sounding, not an RSSI-only substitute when Channel
+Sounding is available. The nodes are expected to provide pairwise range data
+for relative geometry reconstruction and later localization/3D-WebXR sensor
+binding.
+
+The main-enclosure node is not a permanently privileged Bluetooth master.
+During a complete measurement cycle every connected nRF54L15 must receive an
+initiator turn, with initiator/reflector roles switched at runtime as required
+by the session. The future design must define scheduling, pairwise
+measurements, quality/confidence, repeated-measurement aggregation,
+missing/timeout/outlier handling and a distance matrix for the currently
+available nodes. The geometry algorithm and solver contract remain TBD; do
+not infer a mathematical algorithm from this architecture statement.
+
+### Sense IMU and remote LED contract
+
+Seeed's official [XIAO nRF54L15(Sense) specification](https://wiki.seeedstudio.com/xiao_nrf54l15_sense_getting_started/)
+states that the plain XIAO nRF54L15 has no built-in sensor and the Sense
+variant has a 6-axis `LSM6DS3TR-C` IMU. Remote nodes requiring verticality
+therefore require physical confirmation of the Sense variant. The installed
+Seeed Zephyr board files currently expose this device as `DT_ALIAS(imu0)`;
+the future implementation should use Zephyr's generic sensor API after the
+board/package combination is revalidated.
+
+For static verticality, the accelerometer gravity vector is the primary
+measurement: it gives the direction of gravity while the geophone is still.
+The gyroscope measures angular velocity and is useful for motion detection or
+future sensor fusion, but it is not by itself a stable static tilt reference.
+The approximately 10-degree mechanical norm is a project reference, not an
+approved firmware threshold. Threshold, warning zone, filtering, hysteresis,
+debounce and calibration remain implementation parameters/TBD.
+
+Each remote nRF54L15 has four external LEDs; the main-enclosure nRF54L15 has
+none:
+
+| nRF54L15 pin | LED | Meaning |
+| --- | --- | --- |
+| `P1.04` | BLUE | verticality indication |
+| `P1.05` | GREEN | normal logger state |
+| `P1.06` | YELLOW | latched warning |
+| `P1.07` | RED | latched error |
+
+Seeed's pin map identifies these connector pins as D0-D3 respectively. The
+current nRF bring-up's `led0` alias is the onboard user LED and is not this
+external remote assembly. Common firmware must tolerate absent external LEDs
+on the main node and must not require them for boot or communication.
+
+BLUE is intended to be steady within the accepted vertical state and to blink
+more rapidly as filtered tilt error grows outside it, with a future-defined
+saturated maximum rate and IMU-error behavior. No blink frequency or angle
+transition is approved here.
+
+The ESP32 `status_indicator` state machine consumes explicit application
+status decisions. WARNING and ERROR are sticky until power cycle, and a later
+NORMAL/CLEAR_NON_STICKY event does not clear them. Its effective state has
+priority `ERROR > WARNING > NORMAL`; the present ESP32 board has no connected
+status LED GPIOs, so this is a semantic contract rather than physical LED
+proof. The future remote logger must preserve that user-facing persistence.
+When WARNING and ERROR coexist, whether the remote shows red-only priority or
+yellow+red simultaneously requires explicit confirmation before implementation.
+
+The complete nRF test package, including the one-board/multi-node matrix and
+the separation between native evidence and physical HIL, is in
+[`docs/nrf54l15-test-task.md`](docs/nrf54l15-test-task.md).
+
 ## Hardware bus ownership
 
 ### I2C0 - INA3221 power telemetry

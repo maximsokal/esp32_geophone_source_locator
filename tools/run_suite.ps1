@@ -186,12 +186,47 @@ function Invoke-HostSuites {
 $runIdf = Join-Path $repo "tools\run_idf.ps1"
 $powershell = "powershell.exe"
 
+function Invoke-NrfTests {
+    $nrfProject = Join-Path $repo "nRF54L15"
+    $nrfTestDirectory = Join-Path $nrfProject "test"
+    $nrfWrapper = Join-Path $nrfProject "pio.ps1"
+    $nrfSuites = @()
+
+    if (Test-Path -LiteralPath $nrfTestDirectory -PathType Container) {
+        $nrfSuites = @(
+            Get-ChildItem -LiteralPath $nrfTestDirectory -Directory -Filter "test_*" |
+                Sort-Object Name
+        )
+    }
+
+    if ($nrfSuites.Count -eq 0) {
+        Write-Host "nRF54L15 tests: SKIPPED (no PlatformIO test/test_* suite exists yet; see docs/nrf54l15-test-task.md)." -ForegroundColor Yellow
+        $results.Add([pscustomobject]@{
+            Name = "nRF54L15 tests"
+            Status = "SKIPPED"
+            ExitCode = 0
+            Duration = 0
+        })
+        return
+    }
+
+    Invoke-SuiteStep -Name "nRF54L15 tests" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nrfWrapper,
+        "-Action", "test"
+    )
+}
+
 if ($Suite -eq "Host" -or $Suite -eq "All") {
     Invoke-HostSuites
 }
 
 if ($Suite -eq "All") {
     Invoke-SuiteStep -Name "Python tests" -WorkingDirectory $repo -FilePath "python" -ArgumentList @("-m", "pytest", "-q")
+    Invoke-SuiteStep -Name "nRF54L15 build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $repo "nRF54L15\pio.ps1"),
+        "-Action", "build"
+    )
+    Invoke-NrfTests
 }
 
 if ($Suite -eq "Web" -or $Suite -eq "All") {
