@@ -9,6 +9,9 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#ifdef ESP_PLATFORM
+#include "esp_task_wdt.h"
+#endif
 
 #include "object_format.h"
 #include "object_recovery_internal.h"
@@ -27,6 +30,29 @@ static const char *TAG =
     STORAGE_MANAGER_ROOT_PATH "/active_object.txt"
 
 typedef char object_recovery_id_t[OBJECT_FORMAT_ID_SIZE];
+
+
+static void object_recovery_watchdog_checkpoint(void)
+{
+#ifdef ESP_PLATFORM
+    /*
+     * This helper is also used by synchronous recovery paths. Reset only when
+     * the current task was explicitly subscribed by its owning worker.
+     */
+    if (esp_task_wdt_status(NULL) == ESP_OK) {
+        const esp_err_t err =
+            esp_task_wdt_reset();
+
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "TWDT reset failed: %s",
+                esp_err_to_name(err)
+            );
+        }
+    }
+#endif
+}
 
 
 static int object_recovery_compare_ids(
@@ -77,6 +103,11 @@ static esp_err_t object_recovery_collect_ids(
 
     struct dirent *entry = NULL;
     while ((entry = readdir(directory)) != NULL) {
+        /* A completed directory read is real progress. If readdir itself
+         * blocks indefinitely, this checkpoint is never reached and TWDT can
+         * report the stuck background recovery task. */
+        object_recovery_watchdog_checkpoint();
+
         if (!object_format_id_is_valid(entry->d_name)) {
             continue;
         }
@@ -128,6 +159,8 @@ static esp_err_t object_recovery_collect_ids(
         return err;
     }
 
+    object_recovery_watchdog_checkpoint();
+
     if (count > 1U) {
         qsort(
             ids,
@@ -136,6 +169,8 @@ static esp_err_t object_recovery_collect_ids(
             object_recovery_compare_ids
         );
     }
+
+    object_recovery_watchdog_checkpoint();
 
     *ids_out = ids;
     *count_out = count;
@@ -252,6 +287,10 @@ esp_err_t object_recovery_run_cooperative(
             removed ? 1 : 0,
             (long long)((esp_timer_get_time() - object_started_us) / 1000LL)
         );
+
+        /* Feed only after one object completed. A deadlock inside
+         * object_recovery_check_one() cannot manufacture progress. */
+        object_recovery_watchdog_checkpoint();
 
 #ifdef ESP_PLATFORM
         if (yield_between_objects && index + 1U < count) {
