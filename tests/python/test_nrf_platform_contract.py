@@ -30,7 +30,7 @@ def test_nrf_docs_record_the_same_verified_platform_revision():
     assert VERIFIED_SEEED_PLATFORM in task
     assert "commit-pinned" in task
     assert "plain Seeed Studio XIAO nRF54L15" in readme
-    assert "not the XIAO nRF54L15 Sense" in readme
+    assert re.search(r"not\s+the\s+XIAO\s+nRF54L15\s+Sense", readme)
 
 
 def test_nrf_automatic_test_contract_does_not_equate_no_upload_with_native_execution():
