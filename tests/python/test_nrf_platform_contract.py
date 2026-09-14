@@ -11,6 +11,9 @@ PRJ_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.conf"
 APP_OVERLAY = REPO_ROOT / "nRF54L15" / "zephyr" / "app.overlay"
 MAIN = REPO_ROOT / "nRF54L15" / "src" / "main.c"
 SENSOR_BUS_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_bus_zephyr.c"
+BMI160_HEADER = REPO_ROOT / "nRF54L15" / "include" / "nrf_bmi160.h"
+BMI160_CORE = REPO_ROOT / "nRF54L15" / "src" / "nrf_bmi160.c"
+BMI160_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_bmi160_zephyr.c"
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
@@ -36,6 +39,8 @@ def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources()
     assert "../src/nrf_node_state.c" in source
     assert "../src/nrf_sensor_bus.c" in source
     assert "../src/nrf_sensor_bus_zephyr.c" in source
+    assert "../src/nrf_bmi160.c" in source
+    assert "../src/nrf_bmi160_zephyr.c" in source
     assert "../src/nrf_sensor_snapshot.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
 
@@ -61,6 +66,26 @@ def test_private_sensor_bus_uses_i2c30_only_and_i2c_is_explicitly_enabled():
     assert "CONFIG_I2C=y" in config
 
 
+def test_bmi160_is_runtime_optional_instead_of_an_always_present_dt_device():
+    overlay = APP_OVERLAY.read_text(encoding="utf-8")
+    config = PRJ_CONF.read_text(encoding="utf-8")
+    header = BMI160_HEADER.read_text(encoding="utf-8")
+    core = BMI160_CORE.read_text(encoding="utf-8")
+    bridge = BMI160_ZEPHYR.read_text(encoding="utf-8")
+
+    assert "bosch,bmi160" not in overlay
+    assert "CONFIG_BMI160" not in config
+    assert "NRF_BMI160_DEFAULT_ADDRESS = 0x68U" in header
+    assert "NRF_BMI160_CHIP_ID = 0xD1U" in header
+    assert "BMI160_CMD_SOFT_RESET = 0xB6U" in core
+    assert "BMI160_ACCEL_CONFIG_100HZ_NORMAL = 0x28U" in core
+    assert "BMI160_ACCEL_RANGE_2G = 0x03U" in core
+    assert "BMI160_GYRO_CONFIG_100HZ_NORMAL = 0x28U" in core
+    assert "BMI160_GYRO_RANGE_250DPS = 0x03U" in core
+    assert "nrf_sensor_bus_zephyr_init_private(&bus)" in bridge
+    assert "nrf_bmi160_init(" in bridge
+
+
 def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role():
     source = MAIN.read_text(encoding="utf-8")
 
@@ -68,6 +93,7 @@ def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role(
     assert "nrf_node_state_init(&node_state);" in source
     assert "nrf_node_state_mark_ready(&node_state)" in source
     assert "nrf_node_state_assign_role(" not in source
+    assert "nrf_bmi160_zephyr_init_remote(" not in source
 
 
 def test_nrf_docs_record_the_same_verified_platform_revision():
