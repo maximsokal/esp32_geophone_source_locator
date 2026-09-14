@@ -11,7 +11,7 @@
 
 
 static const char *TAG = "INSIGHTS_BRIDGE";
-static atomic_bool s_initialized = ATOMIC_VAR_INIT(false);
+static atomic_bool s_initialized = false;
 
 
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
@@ -43,7 +43,7 @@ static atomic_bool s_initialized = ATOMIC_VAR_INIT(false);
 
 
 static bool s_network_handler_registered = false;
-static atomic_bool s_retry_pending = ATOMIC_VAR_INIT(false);
+static atomic_bool s_retry_pending = false;
 static TaskHandle_t s_retry_task = NULL;
 
 
