@@ -34,12 +34,17 @@ def _positions(source: str, needle: str) -> list[int]:
 def test_ui_event_handler_is_nonblocking_and_lvgl_drains_events():
     source = (REPO_ROOT / "components/ui/ui_event_dispatcher.c").read_text(encoding="utf-8")
     handler = _function_body(source, "static void ui_event_handler")
+    ingress = _function_body(source, "static ui_event_ingress_result_t ui_event_ingress_begin")
 
     assert "runtime_observability_beat(" not in handler
-    assert "ui_event_pending_push(" in handler
+    assert "ui_event_ingress_begin(" in handler
     assert "lvgl_port_task_wake(" in handler
     assert "lvgl_port_lock(" not in handler
     assert "vTaskDelay(" not in handler
+    assert "portENTER_CRITICAL(&s_pending_lock)" in ingress
+    assert "s_pending_events[s_pending_tail]" in ingress
+    assert "s_pending_count++" in ingress
+    assert "vTaskDelay(" not in ingress
 
     dispatcher = _function_body(
         source,
@@ -53,6 +58,7 @@ def test_ui_event_handler_is_nonblocking_and_lvgl_drains_events():
 def test_button_migration_has_no_input_tasks_or_polling_workers():
     keypad = (REPO_ROOT / "components/keypad/keypad_button_adapter.c").read_text(encoding="utf-8")
     power = (REPO_ROOT / "components/power_control/power_button_adapter.c").read_text(encoding="utf-8")
+    arm = _function_body(power, "esp_err_t power_button_adapter_arm_after_startup")
 
     assert "iot_button_create" in keypad
     assert "button_driver_t" in keypad
@@ -66,7 +72,14 @@ def test_button_migration_has_no_input_tasks_or_polling_workers():
     assert "iot_button_new_gpio_device" in power
     assert "BUTTON_LONG_PRESS_START" in power
     assert "xTaskCreate" not in power
-    assert "vTaskDelay" not in power
+
+    # A single bounded startup release-confirm delay is allowed. It is not a
+    # polling worker and no application-owned input task is created.
+    assert power.count("vTaskDelay(") == 1
+    assert "vTaskDelay(pdMS_TO_TICKS(POWER_BUTTON_RELEASE_CONFIRM_MS));" in arm
+    assert "one-time startup delay" in power
+    assert "while (" not in arm
+    assert "for (" not in arm
 
 
 def test_button_contracts_preserve_adc_and_power_safety_boundaries():
