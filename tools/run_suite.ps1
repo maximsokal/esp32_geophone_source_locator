@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("All", "Web")]
+    [ValidateSet("All", "Web", "Host")]
     [string]$Suite = "All",
 
     # Keep the historical default for existing local tasks, while allowing a
@@ -186,8 +186,11 @@ function Invoke-HostSuites {
 $runIdf = Join-Path $repo "tools\run_idf.ps1"
 $powershell = "powershell.exe"
 
-if ($Suite -eq "All") {
+if ($Suite -eq "Host" -or $Suite -eq "All") {
     Invoke-HostSuites
+}
+
+if ($Suite -eq "All") {
     Invoke-SuiteStep -Name "Python tests" -WorkingDirectory $repo -FilePath "python" -ArgumentList @("-m", "pytest", "-q")
 }
 
