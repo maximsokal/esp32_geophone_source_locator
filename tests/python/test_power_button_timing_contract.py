@@ -36,13 +36,11 @@ def test_shutdown_cannot_arm_until_startup_explicitly_requests_it():
     assert "Shutdown button armed after debounced release" in adapter
 
     # The physical input object exists early, but the shutdown latch is opened
-    # only after all runtime services/UI/acquisition startup has returned.
-    assert startup.index("app_startup_initialize_services();") < startup.index(
-        "power_control_arm_shutdown_button()"
-    )
-    assert startup.index("power_control_arm_shutdown_button()") < startup.index(
-        "app_startup_log_success();"
-    )
+    # only after runtime services/UI/acquisition startup has returned.
+    services_call = startup.index("app_startup_initialize_services(", startup.index("void app_startup_run"))
+    arm_call = startup.index("power_control_arm_shutdown_button()", services_call)
+    success = startup.index("app_startup_log_success();", arm_call)
+    assert services_call < arm_call < success
 
 
 def test_boot_release_event_does_not_implicitly_arm_shutdown():
@@ -77,9 +75,8 @@ def test_docs_keep_raw_and_debounced_power_timing_separate():
     plan = read("docs/firmware-test-plan.md")
     architecture = read("ARCHITECTURE.md")
 
-    assert "GPIO21 HIGH" in plan
-    assert "shutdown latch" in plan
-    assert "debounced_elapsed_ms" in plan
-    assert "Do not infer" in plan
-    assert "configured 150 ms Button long-press value" in plan
-    assert "not a raw" in architecture
+    assert "real raw GPIO21-edge to latch measurement" in plan
+    assert "software debounce marker is not that physical measurement" in plan
+    assert "configured `long_press_time` of\n150 ms" in architecture
+    assert "not a raw\nGPIO21-to-latch timing claim" in architecture
+    assert "explicit HIL measurement" in architecture
