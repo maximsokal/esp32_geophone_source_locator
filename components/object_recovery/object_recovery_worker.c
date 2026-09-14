@@ -5,6 +5,9 @@
 #include "app_task_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#ifdef ESP_PLATFORM
+#include "esp_task_wdt.h"
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -36,6 +39,52 @@ static bool object_recovery_background_stop_requested(
 }
 
 
+static bool object_recovery_watchdog_begin(void)
+{
+#ifdef ESP_PLATFORM
+    const esp_err_t err =
+        esp_task_wdt_add(NULL);
+
+    if (err == ESP_OK) {
+        return true;
+    }
+
+    ESP_LOGW(
+        TAG,
+        "TWDT subscribe failed: %s",
+        esp_err_to_name(err)
+    );
+#endif
+
+    return false;
+}
+
+
+static void object_recovery_watchdog_end(
+    bool subscribed
+)
+{
+#ifdef ESP_PLATFORM
+    if (!subscribed) {
+        return;
+    }
+
+    const esp_err_t err =
+        esp_task_wdt_delete(NULL);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "TWDT unsubscribe failed: %s",
+            esp_err_to_name(err)
+        );
+    }
+#else
+    (void)subscribed;
+#endif
+}
+
+
 static void object_recovery_background_task(void *argument)
 {
     (void)argument;
@@ -55,6 +104,15 @@ static void object_recovery_background_task(void *argument)
         (unsigned)APP_TASK_PRIORITY_OBJECT_RECOVERY
     );
 
+    /*
+     * The background worker is short-lived, so watch it only while recovery
+     * is actually active. object_recovery_run_cooperative() resets the TWDT at
+     * completed directory/object progress boundaries; a blocked filesystem
+     * call or one-object recovery hang therefore cannot feed the watchdog.
+     */
+    const bool watchdog_subscribed =
+        object_recovery_watchdog_begin();
+
     esp_err_t err = ESP_OK;
     if (!object_recovery_background_stop_requested(NULL)) {
         err = object_recovery_run_cooperative(
@@ -63,6 +121,10 @@ static void object_recovery_background_task(void *argument)
             true
         );
     }
+
+    object_recovery_watchdog_end(
+        watchdog_subscribed
+    );
 
     ESP_LOGI(
         TAG,
