@@ -172,7 +172,7 @@ function Test-StorageSpiTelemetry {
         if ($stop.Stage -ne 'complete') {
             $violations += "recorder stop stage=$($stop.Stage) expected=complete"
         }
-        if ($stop.DroppedFrames -ne 0U) {
+        if ($stop.DroppedFrames -ne 0) {
             $violations += "recorder dropped_frames=$($stop.DroppedFrames) expected=0"
         }
         if ($stop.ErrorName -ne 'ESP_OK') {
