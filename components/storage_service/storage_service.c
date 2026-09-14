@@ -6,6 +6,9 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#ifdef ESP_PLATFORM
+#include "esp_task_wdt.h"
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -128,6 +131,52 @@ static void storage_service_release_command_gate(void)
 }
 
 
+static bool storage_service_watchdog_begin(void)
+{
+#ifdef ESP_PLATFORM
+    const esp_err_t err =
+        esp_task_wdt_add(NULL);
+
+    if (err == ESP_OK) {
+        return true;
+    }
+
+    ESP_LOGW(
+        TAG,
+        "TWDT subscribe failed: %s",
+        esp_err_to_name(err)
+    );
+#endif
+
+    return false;
+}
+
+
+static void storage_service_watchdog_end(
+    bool subscribed
+)
+{
+#ifdef ESP_PLATFORM
+    if (!subscribed) {
+        return;
+    }
+
+    const esp_err_t err =
+        esp_task_wdt_delete(NULL);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "TWDT unsubscribe failed: %s",
+            esp_err_to_name(err)
+        );
+    }
+#else
+    (void)subscribed;
+#endif
+}
+
+
 static void storage_service_task(
     void *argument
 )
@@ -160,6 +209,16 @@ static void storage_service_task(
             break;
         }
 
+        /*
+         * Subscribe only while real storage work is active. Subscribing the
+         * worker for its entire lifetime would turn the healthy blocking
+         * xQueueReceive(portMAX_DELAY) idle state into a false TWDT timeout.
+         * Progress checkpoints live inside the long filesystem traversal, so
+         * a call that actually hangs cannot keep feeding the watchdog.
+         */
+        const bool watchdog_subscribed =
+            storage_service_watchdog_begin();
+
         bool notify =
             false;
 
@@ -182,6 +241,10 @@ static void storage_service_task(
             default:
                 break;
         }
+
+        storage_service_watchdog_end(
+            watchdog_subscribed
+        );
 
         if (notify) {
             storage_service_notify();
