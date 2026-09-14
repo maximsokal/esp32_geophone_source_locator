@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="software",
-        help="verification surface; software = host + python + web; nrf = isolated nRF54L15 build/tests",
+        help="verification surface; software = host + python + web; nrf = isolated nRF54L15 host policy + build/tests",
     )
     parser.add_argument(
         "--project-path",
@@ -248,11 +248,36 @@ def nrf_software_suites(root: Path) -> list[Path]:
     return sorted(path for path in test_dir.glob("test_sw_*") if path.is_dir())
 
 
+def nrf_host_policy_step(root: Path, python_executable: str) -> Step:
+    runner = root / "tools" / "run_host_tests.py"
+    manifest = root / "tests" / "host" / "manifest.d" / "coverage-nrf.json"
+    if not runner.is_file():
+        raise VerificationError(f"missing host test helper: {runner}")
+    if not manifest.is_file():
+        raise VerificationError(f"missing nRF host coverage manifest: {manifest}")
+
+    return Step(
+        "nrf/host-policy",
+        root,
+        (
+            python_executable,
+            str(runner),
+            "--manifest",
+            str(manifest),
+            "--build-dir",
+            str(root / "build" / "host-tests-coverage-nrf"),
+            "--keep-going",
+        ),
+    )
+
+
 def nrf_steps(
     root: Path,
     *,
+    python_executable: str,
     system_name: str,
     powershell_executable: str | None,
+    include_host_policy: bool = True,
 ) -> list[Step]:
     if system_name != "Windows":
         raise VerificationError(
@@ -283,21 +308,27 @@ def nrf_steps(
             "tests are intentionally excluded from hardware-free verification"
         )
 
-    return [
-        Step(
-            "nrf/build",
-            root,
-            command_prefix
-            + ("-File", str(runner), "-Action", "build"),
-        ),
-        Step(
-            "nrf/tests",
-            root,
-            command_prefix
-            + ("-File", str(runner), "-Action", "test"),
-            skip_reason=test_skip_reason,
-        ),
-    ]
+    steps: list[Step] = []
+    if include_host_policy:
+        steps.append(nrf_host_policy_step(root, python_executable))
+    steps.extend(
+        [
+            Step(
+                "nrf/build",
+                root,
+                command_prefix
+                + ("-File", str(runner), "-Action", "build"),
+            ),
+            Step(
+                "nrf/tests",
+                root,
+                command_prefix
+                + ("-File", str(runner), "-Action", "test"),
+                skip_reason=test_skip_reason,
+            ),
+        ]
+    )
+    return steps
 
 
 def scope_includes(scope: str, surface: str) -> bool:
@@ -351,8 +382,10 @@ def build_plan(
         steps.extend(
             nrf_steps(
                 root,
+                python_executable=python_executable,
                 system_name=system_name,
                 powershell_executable=powershell_executable,
+                include_host_policy=scope == "nrf",
             )
         )
     if scope_includes(scope, "firmware"):
