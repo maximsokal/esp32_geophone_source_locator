@@ -7,6 +7,7 @@ PLATFORMIO = REPO_ROOT / "nRF54L15" / "platformio.ini"
 README = REPO_ROOT / "nRF54L15" / "README.md"
 TEST_TASK = REPO_ROOT / "docs" / "nrf54l15-test-task.md"
 CMAKE = REPO_ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
+MAIN = REPO_ROOT / "nRF54L15" / "src" / "main.c"
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
@@ -30,6 +31,15 @@ def test_nrf_zephyr_target_compiles_runtime_policy_source():
     assert "../src/main.c" in source
     assert "../src/nrf_node_state.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
+
+
+def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role():
+    source = MAIN.read_text(encoding="utf-8")
+
+    assert '#include "nrf_node_state.h"' in source
+    assert "nrf_node_state_init(&node_state);" in source
+    assert "nrf_node_state_mark_ready(&node_state)" in source
+    assert "nrf_node_state_assign_role(" not in source
 
 
 def test_nrf_docs_record_the_same_verified_platform_revision():
