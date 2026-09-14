@@ -136,15 +136,16 @@ def test_https_and_tft_policies_preserve_payload_and_dma_safety():
 def test_tft_flush_wait_blocks_on_dma_completion_instead_of_spinning():
     tft = read("components/ui/ui_lvgl.c")
 
-    # LVGL 9 otherwise falls back to while (disp->flushing), which burns the
-    # LVGL core while the SPI DMA transaction is still in flight. The tracked
-    # app bridge must replace the port callback and wait on an ISR semaphore.
-    assert "xSemaphoreCreateBinaryStatic(" in tft
-    assert "xSemaphoreGiveFromISR(" in tft
-    assert "xSemaphoreTake(" in tft
-    assert "lv_display_set_flush_wait_cb(" in tft
-    assert "esp_lcd_panel_io_register_event_callbacks(" in tft
-    assert "UI_FLUSH_PERF:" in tft
+    # esp_lvgl_port owns the panel completion callback. Shared-SPI quiesce must
+    # wait for all queued tx_color DMA work through a synchronous panel-IO
+    # command instead of replacing that callback or spinning on LVGL internals.
+    assert "ui_lvgl_drain_panel_io_locked" in tft
+    assert "esp_lcd_panel_io_tx_param(" in tft
+    assert "lvgl_port_lock(0)" in tft
+    assert "lvgl_port_unlock()" in tft
+    assert "esp_lcd_panel_io_register_event_callbacks(" not in tft
+    assert "lv_display_set_flush_wait_cb(" not in tft
+    assert "while (disp->flushing)" not in tft
 
 
 def test_runtime_census_reports_unfiltered_top_tasks():
@@ -172,7 +173,7 @@ def test_status_objects_and_sessions_are_lifecycle_cache_only():
     status_api = read("components/web_server/web_api_status.c")
     internal = read("components/web_server/web_server_internal.h")
 
-    assert "seismic_recorder_list_sessions(" in objects
+    assert "seismic_recorder_list_sessions_responsive(" in objects
     assert "web_status_json_objects_refresh(void)" in objects
     assert "xTaskCreatePinnedToCoreWithCaps(" in objects
     assert "xQueueOverwrite(" in objects
