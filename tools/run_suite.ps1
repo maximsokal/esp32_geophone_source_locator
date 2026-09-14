@@ -190,17 +190,17 @@ function Invoke-NrfTests {
     $nrfProject = Join-Path $repo "nRF54L15"
     $nrfTestDirectory = Join-Path $nrfProject "test"
     $nrfWrapper = Join-Path $nrfProject "pio.ps1"
-    $nrfSuites = @()
+    $nrfSoftwareSuites = @()
 
     if (Test-Path -LiteralPath $nrfTestDirectory -PathType Container) {
-        $nrfSuites = @(
-            Get-ChildItem -LiteralPath $nrfTestDirectory -Directory -Filter "test_*" |
+        $nrfSoftwareSuites = @(
+            Get-ChildItem -LiteralPath $nrfTestDirectory -Directory -Filter "test_sw_*" |
                 Sort-Object Name
         )
     }
 
-    if ($nrfSuites.Count -eq 0) {
-        Write-Host "nRF54L15 tests: SKIPPED (no PlatformIO test/test_* suite exists yet; see docs/nrf54l15-test-task.md)." -ForegroundColor Yellow
+    if ($nrfSoftwareSuites.Count -eq 0) {
+        Write-Host "nRF54L15 tests: SKIPPED (no qualified software/native test/test_sw_* suite exists; physical/HIL suites are excluded from Run All)." -ForegroundColor Yellow
         $results.Add([pscustomobject]@{
             Name = "nRF54L15 tests"
             Status = "SKIPPED"
@@ -286,7 +286,7 @@ if ($hostFailureDetails.Count -gt 0) {
 
 Write-Host ("SUITE_RESULT: {0}" -f $suiteStatus) -ForegroundColor $(if ($suiteStatus -eq "PASS") { "Green" } elseif ($suiteStatus -eq "BLOCKED") { "Yellow" } else { "Red" })
 if ($Suite -eq "All") {
-    Write-Host "HIL_RESULT: SKIPPED (Tests: All is hardware-free; use ESP: Unity tests (flash COM4 + logs COM6) for board evidence.)" -ForegroundColor DarkYellow
+    Write-Host "HIL_RESULT: SKIPPED (Tests: All is hardware-free; use explicit ESP/nRF HIL tasks for physical-board evidence.)" -ForegroundColor DarkYellow
 }
 
 if ($suiteStatus -eq "PASS") {
