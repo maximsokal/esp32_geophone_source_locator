@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("build", "clean", "upload", "monitor")]
+    [ValidateSet("build", "clean", "upload", "monitor", "test")]
     [string]$Action = "build"
 )
 
@@ -72,6 +72,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $mappedProject = "$drive\"
 $exitCode = 1
+$actionStatus = "SUCCESS"
 
 try {
     Push-Location $mappedProject
@@ -116,6 +117,29 @@ try {
                 & $pio device monitor `
                     --environment seeed-xiao-nrf54l15
             }
+
+            "test" {
+                $testDirectory = Join-Path $mappedProject "test"
+                $testSuites = @()
+                if (Test-Path -LiteralPath $testDirectory -PathType Container) {
+                    $testSuites = @(
+                        Get-ChildItem -LiteralPath $testDirectory -Directory -Filter "test_*" |
+                            Sort-Object Name
+                    )
+                }
+
+                if ($testSuites.Count -eq 0) {
+                    $actionStatus = "SKIPPED"
+                    Write-Host "nRF54L15 TEST_RESULT: SKIPPED (no PlatformIO test/test_* suite exists yet; see docs/nrf54l15-test-task.md)." -ForegroundColor Yellow
+                } else {
+                    # Keep the normal test entry point non-destructive. PlatformIO
+                    # may still need a configured test port for embedded suites,
+                    # but it must never upload a test image implicitly.
+                    & $pio test `
+                        --environment seeed-xiao-nrf54l15 `
+                        --without-uploading
+                }
+            }
         }
 
         $exitCode = $LASTEXITCODE
@@ -139,7 +163,7 @@ if ($exitCode -ne 0) {
 }
 
 Write-Host "========================================"
-Write-Host " nRF54L15 SUCCESS"
+Write-Host (" nRF54L15 {0}" -f $actionStatus)
 Write-Host "========================================"
 
 exit 0

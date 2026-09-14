@@ -20,6 +20,18 @@ BMI160/BMP580 drivers and four pod devices exist, and the TCA9548A address,
 channel mapping, and electrical contract are documented. This checkout has no
 TCA9548A address, so no mux device handle is registered here.
 
+This ADR describes the current ESP32-S3 I2C0 ownership boundary. The planned
+nRF54L15 topology in [`ARCHITECTURE.md`](../ARCHITECTURE.md) does not transfer
+that ownership to an nRF node: ESP32-S3 remains the wired-I2C controller, the
+main nRF target is upstream of the TCA9548A, and remote targets are downstream
+channel devices. A remote BME280 is separately powered from 3.3 V and is not
+an nRF54L15 power output or an assumed nRF I2C-master workload. The possible
+identical nRF target-address collision remains unresolved and must be settled
+before an I2C/TWIS protocol or a corresponding test fixture is implemented.
+The BMI160/BMP580 names in this phase's existing ESP-side sensor-hub watchlist
+do not identify the XIAO nRF54L15 Sense IMU; that board fact is the separate
+Seeed-documented `LSM6DS3TR-C` contract in `ARCHITECTURE.md`.
+
 ## Risks
 
 The implementation uses the `i2c_bus` 1.x C handle API rather than calling the

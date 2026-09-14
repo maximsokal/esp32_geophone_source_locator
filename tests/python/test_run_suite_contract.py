@@ -50,3 +50,24 @@ def test_all_suite_keeps_hardware_hil_out_of_automatic_run():
     assert 'Status = "SKIPPED"' in source
     assert 'HIL_RESULT: SKIPPED' in source
     assert 'run_unity_hil' not in source.lower()
+
+
+def test_all_suite_includes_the_path_safe_nrf_build_and_test_boundary():
+    source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
+
+    assert 'Invoke-SuiteStep -Name "nRF54L15 build"' in source
+    assert 'Join-Path $repo "nRF54L15\\pio.ps1"' in source
+    assert 'Invoke-SuiteStep -Name "nRF54L15 tests"' in source
+    assert '"-Action", "test"' in source
+    assert '-Filter "test_*"' in source
+    assert 'Status = "SKIPPED"' in source
+
+
+def test_nrf_wrapper_exposes_a_no_upload_test_action_and_explicit_empty_suite_status():
+    source = (REPO_ROOT / "nRF54L15" / "pio.ps1").read_text(encoding="utf-8")
+
+    assert 'ValidateSet("build", "clean", "upload", "monitor", "test")' in source
+    assert '"test" {' in source
+    assert "--without-uploading" in source
+    assert "nRF54L15 TEST_RESULT: SKIPPED" in source
+    assert "nRF54L15 SUCCESS" not in source

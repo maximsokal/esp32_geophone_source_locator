@@ -15,6 +15,8 @@ def test_vscode_tasks_cover_local_web_and_esp_surfaces_without_hidden_flash():
         "Tests: Host C",
         "Tests: Python",
         "Tests: Web",
+        "Tests: nRF54L15",
+        "nRF54L15: Flash firmware",
         "Tests: All (no flash)",
         "Build: ESP Unity",
         "Build: ESP production",
@@ -34,6 +36,26 @@ def test_vscode_tasks_cover_local_web_and_esp_surfaces_without_hidden_flash():
     assert any(str(arg).endswith("tools/run_suite.ps1") for arg in all_tests["args"])
     assert all_tests["args"][all_tests["args"].index("-Suite") + 1] == "All"
     assert "flash" not in json.dumps(all_tests["args"]).lower()
+    assert "nRF54L15" in all_tests["detail"]
+
+    nrf_tests = next(task for task in tasks if task["label"] == "Tests: nRF54L15")
+    assert nrf_tests["command"] == "powershell"
+    assert any(
+        str(arg).endswith("nRF54L15/pio.ps1")
+        or str(arg).endswith("nRF54L15\\pio.ps1")
+        for arg in nrf_tests["args"]
+    )
+    assert nrf_tests["args"][nrf_tests["args"].index("-Action") + 1] == "test"
+    assert "upload" not in json.dumps(nrf_tests["args"]).lower()
+
+    nrf_flash = next(task for task in tasks if task["label"] == "nRF54L15: Flash firmware")
+    assert nrf_flash["command"] == "powershell"
+    assert any(
+        str(arg).endswith("nRF54L15/pio.ps1")
+        or str(arg).endswith("nRF54L15\\pio.ps1")
+        for arg in nrf_flash["args"]
+    )
+    assert nrf_flash["args"][nrf_flash["args"].index("-Action") + 1] == "upload"
 
     web_tests = next(task for task in tasks if task["label"] == "Tests: Web")
     assert web_tests["command"] == "powershell"

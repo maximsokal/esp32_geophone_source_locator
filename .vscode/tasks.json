@@ -228,6 +228,57 @@
             "detail": "Build the standalone Unity target application; this task does not flash hardware."
         },
         {
+            "label": "Tests: nRF54L15",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/pio.ps1",
+                "-Action",
+                "test"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run nRF54L15 PlatformIO/Zephyr tests through the path-safe wrapper without uploading a test image."
+        },
+        {
+            "label": "nRF54L15: Flash firmware",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/nRF54L15/pio.ps1",
+                "-Action",
+                "upload"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": [],
+            "detail": "Build and flash the nRF54L15 firmware through the path-safe wrapper; requires a connected XIAO board."
+        },
+        {
             "label": "Tests: All (no flash)",
             "type": "shell",
             "command": "powershell",
@@ -254,7 +305,7 @@
                 "kind": "test",
                 "isDefault": true
             },
-            "detail": "Run host C, Python, WebUI, Unity-target, and production-build steps with a final SUITE_RESULT report; no flash."
+            "detail": "Run host C, Python, nRF54L15, WebUI, Unity-target, and production-build steps with a final SUITE_RESULT report; no flash."
         },
         {
             "label": "ESP: Check COM4",

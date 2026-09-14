@@ -1,6 +1,6 @@
 # Firmware test plan
 
-Status: current as of 2026-09-13. Older test counts, local-machine snapshots and migration notes are preserved in Git history; they are not current acceptance evidence.
+Status: current as of 2026-09-14. Older test counts, local-machine snapshots and migration notes are preserved in Git history; they are not current acceptance evidence.
 
 The authoritative distinction between host tests, source contracts, replay/parser tests, live-board HIL and manual physical observations is in [`verification-evidence-matrix.md`](verification-evidence-matrix.md). No green replay or source-contract check may be reported as physical hardware proof.
 
@@ -11,6 +11,9 @@ The authoritative distinction between host tests, source contracts, replay/parse
 - Native host tests are manifest-driven from `tests/host/manifest.json`; the manifest is the source of truth for suite count.
 - Web Console, XR and typecheck run independently from firmware host tests.
 - COM4 is the programming port. The passive UART adapter is a separate port, normally COM6; its TX/VCC pins are not connected to the target.
+- `nRF54L15/` is an independent PlatformIO + Zephyr project. It has one
+  `seeed-xiao-nrf54l15` environment for every node and is built through
+  `nRF54L15/pio.ps1`, not through the ESP-IDF root build.
 
 ## Automated test layers
 
@@ -49,6 +52,36 @@ Relevant tools:
 - `tools/run_storage_spi_hil.ps1` — passive COM6 storage/SPI/recorder latency capture; it never flashes firmware.
 - `tools/run_keypad_timing_hil.ps1` — opt-in ADC broker and timer-task timing profile.
 - `tools/run_pipeline_hil.ps1` — broader measurement-pipeline verification and explicitly separated physical observations.
+
+### 5. nRF54L15 test surface
+
+The detailed future task is [`nrf54l15-test-task.md`](nrf54l15-test-task.md).
+It is a separate test surface with its own build, native/unit and physical
+tiers. The current executable baseline command is:
+
+```powershell
+.\nRF54L15\pio.ps1 build
+```
+
+The wrapper is required because this checkout's Windows path contains spaces;
+generated PlatformIO/Zephyr output stays in
+`%USERPROFILE%\.platformio-workspaces\nrf54l15`. The supported test launch is
+also `.\nRF54L15\pio.ps1 test`; it uses the same mapping and
+`--without-uploading`. The current empty `test/test_*` surface is reported as
+`SKIPPED`, not as nRF unit/native evidence. Do not report an ESP32/WebUI-only
+result as nRF evidence.
+
+The planned nRF layers are:
+
+- build/configuration isolation and clean/incremental wrapper builds;
+- host/native policy tests for identity, topology, logger latches, tilt,
+  ranging data and rotating Channel Sounding sessions;
+- one-board HIL for boot/USB, optional remote LEDs, Sense IMU and I2C;
+- multi-node HIL for pairwise ranging, distance matrices, role rotation and
+  missing/reconnected nodes;
+- full ESP32 + TCA9548A + remote-node topology HIL.
+
+No layer assumes that five physical boards are available in software-only CI.
 
 ## Requirement gates
 
@@ -104,9 +137,17 @@ Before merging firmware/test changes, the normal `main` verification must pass:
 3. storage/SPI and boot HIL replay/parser contracts;
 4. startup/storage/runtime source contracts;
 5. production Web asset build/optimization checks;
-6. ESP-IDF 5.5.4 production firmware build.
+6. ESP-IDF 5.5.4 production firmware build;
+7. isolated nRF54L15 wrapper build and the no-upload nRF test launch; an empty
+   current nRF test surface is explicitly `SKIPPED` until native/unit suites
+   are implemented.
 
-A fully green CI run means the checked software contracts pass. It does **not** close a Linear task whose definition explicitly requires live-board evidence.
+A fully green run means the checked software contracts for the executed stages
+pass. The executable master runner now includes the nRF build and no-upload
+test launch; an empty nRF test surface is shown as `SKIPPED`, not as native
+evidence. A current ESP32/WebUI-only result does **not** close the nRF task,
+and no green software run closes a task whose definition explicitly requires
+live-board evidence.
 
 ## Evidence retention
 
