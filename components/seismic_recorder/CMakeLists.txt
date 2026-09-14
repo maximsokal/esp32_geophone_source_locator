@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "seismic_recorder.c"
         "seismic_recorder_start_policy.c"
+        "seismic_recorder_storage_preflight.c"
         "seismic_recorder_delete.c"
         "seismic_recorder_fs.c"
         "seismic_recorder_json.c"
@@ -23,6 +24,7 @@ idf_component_register(
         app_config
         object_store
         runtime_observability
+        sd_card
         seismic_acquisition
         seismic_buffer
         storage_manager
