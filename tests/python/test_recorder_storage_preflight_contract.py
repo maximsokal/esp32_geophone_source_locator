@@ -61,12 +61,23 @@ def test_recorder_component_builds_real_preflight_and_declares_sd_card_dependenc
     assert "sd_card" in cmake
 
 
-def test_filesystem_host_contract_stubs_only_external_preflight_boundary():
-    stub = read(
-        "components/seismic_recorder/tests/stubs/seismic_recorder_storage_preflight.h"
-    )
+def test_dedicated_preflight_host_shard_builds_real_policy():
     manifest = read("tests/host/manifest.d/coverage-recorder.json")
 
-    assert "static inline esp_err_t seismic_recorder_storage_preflight" in stub
     assert '"components/seismic_recorder/seismic_recorder_storage_preflight.c"' in manifest
     assert '"tests/host/seismic_recorder_storage_preflight_test.c"' in manifest
+
+
+def test_host_contracts_that_textually_include_fs_supply_external_preflight_boundary():
+    filesystem_stub = read(
+        "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c"
+    )
+    web_pipeline_stub = read(
+        "tests/host/stubs/seismic_pipeline/seismic_recorder_cache_session_stub.c"
+    )
+
+    signature = "esp_err_t seismic_recorder_storage_preflight("
+    assert signature in filesystem_stub
+    assert signature in web_pipeline_stub
+    assert "sample_rate_hz == 0U" in filesystem_stub
+    assert "sample_rate_hz == 0U" in web_pipeline_stub
