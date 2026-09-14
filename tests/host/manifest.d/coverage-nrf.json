@@ -53,6 +53,18 @@
       "include_dirs": [
         "nRF54L15/include"
       ]
+    },
+    {
+      "name": "nrf_remote_sensor_runtime",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_sensor_snapshot.c",
+        "nRF54L15/src/nrf_remote_sensor_runtime.c",
+        "tests/host/nrf_remote_sensor_runtime_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
     }
   ]
 }
