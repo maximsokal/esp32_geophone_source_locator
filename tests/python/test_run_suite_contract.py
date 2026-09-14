@@ -15,7 +15,12 @@ def test_all_suite_runs_base_and_every_host_manifest_fragment():
     assert '"--manifest"' in source
     assert '"--build-dir"' in source
     assert '"--keep-going"' in source
-    assert 'Invoke-HostSuites' in source[source.index('if ($Suite -eq "All")'):]
+
+    shared_host_branch = 'if ($Suite -eq "Host" -or $Suite -eq "All") {'
+    assert shared_host_branch in source
+    branch_start = source.index(shared_host_branch)
+    python_start = source.index('if ($Suite -eq "All") {', branch_start)
+    assert "Invoke-HostSuites" in source[branch_start:python_start]
 
 
 def test_all_suite_surfaces_only_current_host_failures_in_final_report():
