@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "nrf_topology.c"
+        "nrf_sensor_transport.c"
         "nrf_topology_service.c"
 
     INCLUDE_DIRS
@@ -9,6 +10,7 @@ idf_component_register(
     REQUIRES
         app_config
         esp_hw_support
+        esp_timer
         freertos
         i2c_bus
         log

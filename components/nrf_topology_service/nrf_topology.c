@@ -59,6 +59,7 @@ static void node_from_status(
     node->mux_channel = status->mux_channel;
     node->current_address = status->target_address;
     node->protocol_result = status->result;
+    node->assignment_request_id = status->request_id;
 }
 
 static bool status_is_registered_ready(const nrf_upstream_status_t *status, uint8_t address)
