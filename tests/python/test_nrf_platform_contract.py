@@ -31,7 +31,7 @@ def test_nrf_production_platform_is_commit_pinned_and_single_environment():
 def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources():
     source = CMAKE.read_text(encoding="utf-8")
 
-    assert 'set(DTC_OVERLAY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/app.overlay")' in source
+    assert 'set(EXTRA_DTC_OVERLAY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/app.overlay")' in source
     assert "../src/main.c" in source
     assert "../src/nrf_node_state.c" in source
     assert "../src/nrf_sensor_bus.c" in source
