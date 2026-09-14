@@ -1,0 +1,18 @@
+/*
+ * Project-level correction for the plain Seeed Studio XIAO nRF54L15.
+ *
+ * The pinned Seeed board definition currently describes a Sense-style
+ * LSM6DS3TR-C on i2c30 and exposes it as imu0. The diploma hardware uses the
+ * plain XIAO and an external GY-BMI160 on the private D11/D12 bus instead.
+ * Keep i2c30 itself enabled; only disable the nonexistent onboard IMU node.
+ */
+
+/ {
+    aliases {
+        /delete-property/ imu0;
+    };
+};
+
+&lsm6ds3tr_c {
+    status = "disabled";
+};
