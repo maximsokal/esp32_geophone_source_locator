@@ -24,6 +24,22 @@ def test_host_log_stubs_avoid_gnu_variadic_comma_elision():
     )
 
 
+def test_manifest_host_log_stubs_preserve_all_log_arguments():
+    paths = [
+        "tests/host/stubs/status_indicator/esp_log.h",
+        "tests/host/stubs/insights_bridge/esp_log.h",
+        "tests/host/stubs/object_service/esp_log.h",
+        "tests/host/stubs/storage_service/esp_log.h",
+    ]
+
+    for relative in paths:
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "host_esp_log_sink(__VA_ARGS__)" in source, relative
+        assert "#define ESP_LOGI(tag, fmt, ...)" not in source, relative
+        assert "#define ESP_LOGW(tag, fmt, ...)" not in source, relative
+        assert "#define ESP_LOGE(tag, fmt, ...)" not in source, relative
+
+
 def test_msvc_host_runner_keeps_strict_c11_warning_gate_and_real_atomics():
     source = (REPO_ROOT / "tools" / "run_host_tests.py").read_text(encoding="utf-8")
 
