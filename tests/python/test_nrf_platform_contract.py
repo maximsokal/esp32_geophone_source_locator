@@ -25,11 +25,13 @@ def test_nrf_production_platform_is_commit_pinned_and_single_environment():
     assert "sense" not in source.lower()
 
 
-def test_nrf_zephyr_target_compiles_runtime_policy_source():
+def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources():
     source = CMAKE.read_text(encoding="utf-8")
 
     assert "../src/main.c" in source
     assert "../src/nrf_node_state.c" in source
+    assert "../src/nrf_sensor_bus.c" in source
+    assert "../src/nrf_sensor_snapshot.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
 
 
