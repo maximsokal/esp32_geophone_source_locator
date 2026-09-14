@@ -47,7 +47,7 @@ The current production environment is:
 
 ```ini
 [env:seeed-xiao-nrf54l15]
-platform = https://github.com/Seeed-Studio/platform-seeedboards.git
+platform = https://github.com/Seeed-Studio/platform-seeedboards.git#1ec1287f8e4bc4067a6fd593991e36875aef989f
 framework = zephyr
 board = seeed-xiao-nrf54l15
 ```
@@ -79,9 +79,11 @@ A direct `pio run -d ".\nRF54L15"` command is not the normal workflow.
 The baseline wrapper build was verified on 2026-09-14 with PlatformIO Core
 6.1.19, SeeedStudio platform 1.0.0 at
 `1ec1287f8e4bc4067a6fd593991e36875aef989f`, framework package
-`3.40201.251021`, and Zephyr 4.2.1. The platform URL is not commit-pinned, so
-board/framework/Channel-Sounding/BMI160 support must be rechecked after a
-package refresh.
+`3.40201.251021`, and Zephyr 4.2.1. The production PlatformIO environment is
+commit-pinned to that verified Seeed platform revision. A future platform or
+framework refresh must be an explicit dependency update followed by the same
+build/software/HIL qualification gates rather than an implicit moving-branch
+change.
 
 ## 3. Production architecture contract
 
