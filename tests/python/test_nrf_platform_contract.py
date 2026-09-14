@@ -7,7 +7,10 @@ PLATFORMIO = REPO_ROOT / "nRF54L15" / "platformio.ini"
 README = REPO_ROOT / "nRF54L15" / "README.md"
 TEST_TASK = REPO_ROOT / "docs" / "nrf54l15-test-task.md"
 CMAKE = REPO_ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
+PRJ_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.conf"
+APP_OVERLAY = REPO_ROOT / "nRF54L15" / "zephyr" / "app.overlay"
 MAIN = REPO_ROOT / "nRF54L15" / "src" / "main.c"
+SENSOR_BUS_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_bus_zephyr.c"
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
@@ -28,11 +31,34 @@ def test_nrf_production_platform_is_commit_pinned_and_single_environment():
 def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources():
     source = CMAKE.read_text(encoding="utf-8")
 
+    assert 'set(DTC_OVERLAY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/app.overlay")' in source
     assert "../src/main.c" in source
     assert "../src/nrf_node_state.c" in source
     assert "../src/nrf_sensor_bus.c" in source
+    assert "../src/nrf_sensor_bus_zephyr.c" in source
     assert "../src/nrf_sensor_snapshot.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
+
+
+def test_plain_xiao_overlay_disables_phantom_sense_imu_but_keeps_private_bus():
+    source = APP_OVERLAY.read_text(encoding="utf-8")
+
+    assert "/delete-property/ imu0;" in source
+    assert "&lsm6ds3tr_c" in source
+    assert 'status = "disabled";' in source
+    assert "&i2c30" not in source
+    assert "&i2c22" not in source
+
+
+def test_private_sensor_bus_uses_i2c30_only_and_i2c_is_explicitly_enabled():
+    source = SENSOR_BUS_ZEPHYR.read_text(encoding="utf-8")
+    config = PRJ_CONF.read_text(encoding="utf-8")
+
+    assert "DT_NODELABEL(i2c30)" in source
+    assert "DT_NODELABEL(i2c22)" not in source
+    assert "i2c_write_read(" in source
+    assert "i2c_write(" in source
+    assert "CONFIG_I2C=y" in config
 
 
 def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role():
