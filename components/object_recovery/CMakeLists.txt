@@ -20,6 +20,7 @@ idf_component_register(
         freertos
         json
         esp_timer
+        esp_system
         heap
         log
 )
