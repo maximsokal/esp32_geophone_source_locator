@@ -22,7 +22,7 @@ static esp_event_loop_handle_t s_loop =
     NULL;
 
 static atomic_bool s_keypad_delivery_enabled =
-    ATOMIC_VAR_INIT(false);
+    false;
 
 
 ESP_EVENT_DEFINE_BASE(APP_EVENT);
