@@ -14,6 +14,9 @@ SENSOR_BUS_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_bus_zephyr.c"
 BMI160_HEADER = REPO_ROOT / "nRF54L15" / "include" / "nrf_bmi160.h"
 BMI160_CORE = REPO_ROOT / "nRF54L15" / "src" / "nrf_bmi160.c"
 BMI160_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_bmi160_zephyr.c"
+BME280_HEADER = REPO_ROOT / "nRF54L15" / "include" / "nrf_bme280.h"
+BME280_CORE = REPO_ROOT / "nRF54L15" / "src" / "nrf_bme280.c"
+BME280_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_bme280_zephyr.c"
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
@@ -41,6 +44,8 @@ def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources()
     assert "../src/nrf_sensor_bus_zephyr.c" in source
     assert "../src/nrf_bmi160.c" in source
     assert "../src/nrf_bmi160_zephyr.c" in source
+    assert "../src/nrf_bme280.c" in source
+    assert "../src/nrf_bme280_zephyr.c" in source
     assert "../src/nrf_sensor_snapshot.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
 
@@ -86,6 +91,29 @@ def test_bmi160_is_runtime_optional_instead_of_an_always_present_dt_device():
     assert "nrf_bmi160_init(" in bridge
 
 
+def test_bme280_is_runtime_optional_and_uses_bounded_forced_measurements():
+    overlay = APP_OVERLAY.read_text(encoding="utf-8")
+    config = PRJ_CONF.read_text(encoding="utf-8")
+    header = BME280_HEADER.read_text(encoding="utf-8")
+    core = BME280_CORE.read_text(encoding="utf-8")
+    bridge = BME280_ZEPHYR.read_text(encoding="utf-8")
+
+    assert "bosch,bme280" not in overlay
+    assert "CONFIG_BME280" not in config
+    assert "NRF_BME280_ADDRESS_PRIMARY = 0x76U" in header
+    assert "NRF_BME280_ADDRESS_SECONDARY = 0x77U" in header
+    assert "NRF_BME280_CHIP_ID = 0x60U" in header
+    assert "BME280_SOFT_RESET = 0xB6U" in core
+    assert "BME280_CTRL_HUM_X1 = 0x01U" in core
+    assert "BME280_CTRL_MEAS_SLEEP = 0x54U" in core
+    assert "BME280_CTRL_MEAS_FORCED = 0x55U" in core
+    assert "BME280_CONFIG_FILTER_X16 = 0x10U" in core
+    assert "BME280_NVM_POLL_ATTEMPTS = 10U" in core
+    assert "BME280_MEASUREMENT_POLL_ATTEMPTS = 5U" in core
+    assert "nrf_sensor_bus_zephyr_init_private(&bus)" in bridge
+    assert "nrf_bme280_init(" in bridge
+
+
 def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role():
     source = MAIN.read_text(encoding="utf-8")
 
@@ -94,6 +122,7 @@ def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role(
     assert "nrf_node_state_mark_ready(&node_state)" in source
     assert "nrf_node_state_assign_role(" not in source
     assert "nrf_bmi160_zephyr_init_remote(" not in source
+    assert "nrf_bme280_zephyr_init_remote(" not in source
 
 
 def test_nrf_docs_record_the_same_verified_platform_revision():
