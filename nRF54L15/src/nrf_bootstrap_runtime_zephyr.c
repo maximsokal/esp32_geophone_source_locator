@@ -70,13 +70,10 @@ static void publish_core_status(void)
 
 static void publish_result_context(uint32_t request_id, nrf_upstream_result_t result)
 {
-    nrf_upstream_status_t status;
-    if (nrf_bootstrap_make_status(&s_bootstrap, &status) != NRF_UPSTREAM_RESULT_OK) {
-        return;
-    }
-    status.request_id = request_id;
-    status.result = (uint8_t)result;
-    publish_status(&status);
+    k_spinlock_key_t key = k_spin_lock(&s_status_lock);
+    s_published_status.request_id = request_id;
+    s_published_status.result = (uint8_t)result;
+    k_spin_unlock(&s_status_lock, key);
 }
 
 static void assign_work_handler(struct k_work *work)
