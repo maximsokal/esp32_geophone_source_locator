@@ -18,6 +18,7 @@ idf_component_register(
     REQUIRES
         freertos
         esp_timer
+        esp_system
         log
         spi_bus
 )
