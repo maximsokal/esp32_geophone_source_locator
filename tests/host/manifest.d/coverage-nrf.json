@@ -65,6 +65,17 @@
       "include_dirs": [
         "nRF54L15/include"
       ]
+    },
+    {
+      "name": "nrf_upstream_target_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_target_zephyr.c",
+        "tests/host/nrf_upstream_target_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_upstream_target_zephyr",
+        "nRF54L15/include"
+      ]
     }
   ]
 }

@@ -18,11 +18,13 @@ The planned topology has one main-enclosure node on the ESP32-S3 upstream I2C
 bus and one remote node per connected geophone behind the TCA9548A. With all
 downstream channels disabled, the main node remains visible; selecting a mux
 channel exposes that remote node. ESP32-S3 remains the wired-I2C controller.
-The possible identical-I2C-address problem must be resolved before an I2C/TWIS
-protocol is implemented. On each remote node, the private second I2C bus is
-controlled by that nRF54L15 and carries the local GY-BMI160 and BME280. Both
-are powered from the XIAO `3V3_OUT` rail; RJ45 pin 2 (+3.3 V) is
-`RESERVED/NC`, and must not be tied to `3V3_OUT`.
+The upstream TWIS platform foundation is now available, but the possible
+identical-I2C-address problem must still be resolved before role assignment and
+the production upstream wire protocol are wired into runtime behavior. On each
+remote node, the private second I2C bus is controlled by that nRF54L15 and
+carries the local GY-BMI160 and BME280. Both are powered from the XIAO
+`3V3_OUT` rail; RJ45 pin 2 (+3.3 V) is `RESERVED/NC`, and must not be tied to
+`3V3_OUT`.
 
 ## Actual board and external remote sensors
 
@@ -38,10 +40,10 @@ and do not share the ESP32/TCA upstream I2C pair:
 
 | XIAO pin | nRF54L15 pin | Remote use |
 | --- | --- | --- |
-| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA to ESP32 |
-| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL to ESP32 |
-| `D11 / SCL-1` | `P0.03` | local GY-BMI160 + BME280 I2C SCL |
-| `D12 / SDA-1` | `P0.04` | local GY-BMI160 + BME280 I2C SDA |
+| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA to ESP32; `i2c22` TWIS target |
+| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL to ESP32; `i2c22` TWIS target |
+| `D11 / SCL-1` | `P0.03` | local GY-BMI160 + BME280 I2C SCL; `i2c30` TWIM controller |
+| `D12 / SDA-1` | `P0.04` | local GY-BMI160 + BME280 I2C SDA; `i2c30` TWIM controller |
 
 The selected GY-BMI160 breakout is planned to use its `SCL`/`SDA` pins on
 D11/D12, `3V3` from XIAO `3V3_OUT`, `VIN` NC, `CS/CSB` at 3.3 V for I2C and
@@ -73,11 +75,15 @@ probed and initialized only after runtime role assignment selects REMOTE. A
 missing remote sensor is therefore a role/runtime health failure, not a MAIN
 boot failure.
 
-The future upstream nRF target and local sensor controller must use distinct
-peripheral instances. The exact upstream TWIS device-tree/API path is not yet
-settled: the official Zephyr TWIS binding notes that the standard Zephyr I2C
-slave API is unavailable for these devices and points to a HAL workaround.
-Treat this as an implementation gate, not as an already-available API.
+The upstream target and local sensor controller use distinct peripheral
+instances. In the pinned Seeed/Zephyr baseline the project overlay switches
+`i2c22` on D4/D5 (`P1.10/P1.11`) to `nordic,nrf-twis`, while `i2c30` remains
+the private TWIM/controller for D11/D12. Zephyr 4.2.1 provides the Nordic nrfx
+TWIS driver through the standard `i2c_target_register()` /
+`i2c_target_unregister()` target API in buffer mode. The
+`nrf_upstream_target_zephyr` adapter binds to that API and exposes lifecycle,
+re-addressing with rollback, and raw hardware-ID access. It intentionally does
+not choose project I2C addresses or define role-assignment/wire framing.
 
 For a stationary geophone, the accelerometer gravity vector is the primary
 verticality reference. Gyroscope data is useful for motion detection and

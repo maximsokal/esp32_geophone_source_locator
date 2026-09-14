@@ -235,9 +235,9 @@ must be kept outside the automatic `Tests: All (no flash)` selection.
 The local baseline was verified on 2026-09-14 with PlatformIO Core 6.1.19,
 SeeedStudio platform 1.0.0 at `1ec1287f8e4bc4067a6fd593991e36875aef989f`,
 `framework-zephyr-nrf54l15` package `3.40201.251021` and Zephyr 4.2.1. The
-platform URL in `nRF54L15/platformio.ini` is not commit-pinned, so board,
-framework, Channel Sounding and driver support must be rechecked after a
-package refresh.
+platform URL in `nRF54L15/platformio.ini` is commit-pinned to that Seeed
+revision. Board, framework, Channel Sounding and driver support must be
+rechecked after any explicit dependency refresh.
 
 ### Planned physical topology
 
@@ -267,11 +267,13 @@ channel makes the corresponding remote target visible; deselecting it removes
 that remote from the visible ESP32 topology. The main target remains visible
 while channels are switched.
 
-This is a future discovery concept, not an implemented I2C protocol. The
-possible collision caused by identical nRF target addresses is an explicit
-architecture gate. Address assignment, identity provisioning and collision
-resolution must be selected and validated before I2C/TWIS implementation; no
-address or workaround is invented here.
+This is a future discovery protocol, while the lower-level TWIS platform
+foundation is implemented. The possible collision caused by identical nRF
+target addresses remains an explicit architecture gate. Numeric address
+assignment, identity provisioning, one-hot TCA enforcement and collision
+recovery must be selected and validated before production role-assignment and
+upstream command framing are wired into runtime behavior. The platform adapter
+therefore takes a caller-supplied 7-bit address and invents none.
 
 ESP32-S3 remains the main controller and the owner of the shared upstream
 wired-I2C topology. The nRF54L15 is a target/peripheral on that upstream bus.
@@ -282,9 +284,11 @@ bus. ESP32 reads their future nRF node snapshot instead. This planned split
 does not change the current `sensor_bus` ownership or the existing INA3221
 decision above.
 
-The upstream nRF target address, identity provisioning and the possible
-collision between simultaneously visible nRF targets remain unresolved
-architecture gates. No address-allocation mechanism is invented here.
+The upstream nRF target address, production identity/role provisioning and the
+possible collision between simultaneously visible nRF targets remain
+unresolved architecture gates. `nrf_upstream_target_zephyr` only supplies the
+platform lifecycle, re-addressing primitive and raw hardware-ID access; it does
+not define address allocation or wire semantics.
 
 ### Bluetooth geometry role
 
@@ -318,10 +322,10 @@ The XIAO exposes two I2C pin pairs. The project reserves them as follows:
 
 | XIAO pin | nRF54L15 pin | Project use | Connected hardware |
 | --- | --- | --- | --- |
-| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA; nRF target/peripheral role is a future configuration gate | ESP32-S3/TCA9548A harness |
-| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL; nRF target/peripheral role is a future configuration gate | ESP32-S3/TCA9548A harness |
-| `D11 / SCL-1` | `P0.03` | private local sensor-bus SCL; nRF controller/TWIM role candidate | GY-BMI160 + BME280 on remote nodes |
-| `D12 / SDA-1` | `P0.04` | private local sensor-bus SDA; nRF controller/TWIM role candidate | GY-BMI160 + BME280 on remote nodes |
+| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA; `i2c22` nRF target/TWIS foundation | ESP32-S3/TCA9548A harness |
+| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL; `i2c22` nRF target/TWIS foundation | ESP32-S3/TCA9548A harness |
+| `D11 / SCL-1` | `P0.03` | private local sensor-bus SCL; `i2c30` nRF controller/TWIM | GY-BMI160 + BME280 on remote nodes |
+| `D12 / SDA-1` | `P0.04` | private local sensor-bus SDA; `i2c30` nRF controller/TWIM | GY-BMI160 + BME280 on remote nodes |
 
 The accepted remote harness power contract is:
 
@@ -366,17 +370,18 @@ history buffer. The future upstream snapshot may aggregate
 humidity, Channel Sounding status and warning/error flags; its schema and
 retention policy remain future protocol work.
 
-The future dual-interface implementation must use different peripheral
-instances: local D11/D12 as the nRF controller/TWIM side and upstream D4/D5 as
-the nRF target/TWIS side. Zephyr documents that TWIS and TWIM share resources
-and cannot occupy the same peripheral instance simultaneously. The installed
-Seeed board description currently exposes its relevant `i2c22`/`i2c30` nodes as
-TWIM by default, so the exact upstream TWIS overlay, instance mapping and
-driver contract are implementation gates rather than current firmware facts.
-The official Zephyr TWIS binding also notes that the standard Zephyr I2C slave
-API is not available for these devices and points to a HAL-based workaround;
-the upstream target protocol therefore requires an explicit API/maintenance
-decision before implementation.
+The dual-interface foundation uses distinct peripheral instances: local D11/D12
+remains `i2c30` in controller/TWIM mode and upstream D4/D5 uses `i2c22` as the
+nRF target/TWIS side. The project overlay overrides the pinned Seeed `i2c22`
+pinctrl to TWIS functions on P1.10/P1.11 and changes its compatible to
+`nordic,nrf-twis`; it does not convert `i2c30`. In the pinned Zephyr 4.2.1
+source, `drivers/i2c/i2c_nrfx_twis.c` implements the standard buffer-mode
+Zephyr target API through `i2c_target_register()` and
+`i2c_target_unregister()`. No project HAL bypass is required. The
+`nrf_upstream_target_zephyr` adapter exposes that platform lifecycle,
+re-address rollback and raw `hwinfo_get_device_id()` access. Numeric project
+addresses, role-assignment framing and the upstream snapshot protocol remain
+separate implementation gates.
 
 For static verticality, the accelerometer gravity vector is the primary
 measurement: it gives the direction of gravity while the geophone is still.

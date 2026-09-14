@@ -1,8 +1,10 @@
 # Task: develop and run nRF54L15 tests
 
-Status: **planning only**. This task prepares the future nRF54L15 firmware and
-its verification work. It does not itself implement BLE, Bluetooth Channel
-Sounding, I2C/TWIS, BMI160, GPIO or LED production drivers.
+Status: **foundation implemented; protocol/radio work still planned**. The
+upstream Zephyr TWIS platform adapter and its host/configuration contracts now
+exist, while BLE, Bluetooth Channel Sounding, production role-assignment/wire
+framing, remote LED policy and the remaining physical HIL work stay future
+slices.
 
 Related sources of truth:
 
@@ -37,9 +39,10 @@ The repository contains the independent nRF bring-up project:
 nRF54L15/
   platformio.ini
   pio.ps1
-  src/main.c
+  include/
+  src/
   test/
-  zephyr/CMakeLists.txt
+  zephyr/app.overlay
   zephyr/prj.conf
 ```
 
@@ -54,7 +57,9 @@ board = seeed-xiao-nrf54l15
 
 The current `src/main.c` is only a temporary board/toolchain blink through the
 onboard `led0` alias. It is not the future external remote LED implementation
-and proves no Channel Sounding, topology or IMU functionality.
+and proves no Channel Sounding, topology or IMU functionality. The new
+`nrf_upstream_target_zephyr` module is deliberately not wired into `main.c` in
+its foundation slice.
 
 The supported Windows entry point is `nRF54L15/pio.ps1`. The checkout path
 contains spaces, so the wrapper exposes the project through a temporary
@@ -132,10 +137,13 @@ The intended discovery concept is:
 3. select TCA channels one at a time;
 4. associate the newly visible remote target with that channel.
 
-This is a topology concept, not an implemented protocol. Multiple visible nRF
-nodes may otherwise share the same target address. Address assignment,
-identity provisioning and collision resolution are explicit architecture
-gates and must be resolved before I2C/TWIS implementation.
+This remains a topology concept, not an implemented production protocol.
+Multiple visible nRF nodes may otherwise share the same target address. The
+TWIS platform foundation intentionally accepts an address from its caller and
+does not invent `DISCOVERY`, MAIN or REMOTE numeric addresses. Address
+assignment, identity provisioning, one-hot mux enforcement and collision
+recovery must be frozen before production role-assignment/wire framing is
+wired into runtime behavior.
 
 ESP32-S3 remains the upstream wired-I2C controller. Each remote nRF54L15 is
 also the controller of its private second I2C bus, where its local GY-BMI160
@@ -186,10 +194,10 @@ The XIAO exposes two I2C pin pairs. The project reserves them as follows:
 
 | XIAO pin | nRF54L15 pin | Project use | Connected hardware |
 | --- | --- | --- | --- |
-| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA; future nRF target/TWIS side | ESP32-S3/TCA9548A |
-| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL; future nRF target/TWIS side | ESP32-S3/TCA9548A |
-| `D11 / SCL-1` | `P0.03` | private local I2C SCL; nRF controller/TWIM candidate | GY-BMI160 + BME280 |
-| `D12 / SDA-1` | `P0.04` | private local I2C SDA; nRF controller/TWIM candidate | GY-BMI160 + BME280 |
+| `D4 / SDA-0` | `P1.10` | shared upstream/TCA I2C SDA; `i2c22` target/TWIS foundation | ESP32-S3/TCA9548A |
+| `D5 / SCL-0` | `P1.11` | shared upstream/TCA I2C SCL; `i2c22` target/TWIS foundation | ESP32-S3/TCA9548A |
+| `D11 / SCL-1` | `P0.03` | private local I2C SCL; `i2c30` controller/TWIM | GY-BMI160 + BME280 |
+| `D12 / SDA-1` | `P0.04` | private local I2C SDA; `i2c30` controller/TWIM | GY-BMI160 + BME280 |
 
 The accepted remote power/wiring plan is:
 
@@ -215,14 +223,16 @@ defined. Its address is still TBD (`0x76`/`0x77` from its SDO strap), as are
 module pull-ups and conversion/history policy. If history is required, future
 firmware must retain it in nRF RAM.
 
-The local bus is intentionally private to the remote node. The future
-implementation must use distinct peripheral instances for local TWIM and
-upstream TWIS; the installed Seeed board description currently exposes the
-relevant I2C nodes as TWIM by default, so the exact overlay/instance mapping
-is an implementation gate. The official Zephyr TWIS binding also states that
-the standard Zephyr I2C slave API is not available for these devices and points
-to a HAL-based workaround. The future upstream target protocol must explicitly
-select and validate that API boundary.
+The local bus is intentionally private to the remote node. The implementation
+uses distinct instances: local D11/D12 remains `i2c30` in controller/TWIM mode,
+while the project overlay changes upstream D4/D5 `i2c22` to
+`nordic,nrf-twis` with TWIS pin selections on P1.10/P1.11. In the pinned
+Zephyr 4.2.1 baseline, `drivers/i2c/i2c_nrfx_twis.c` exposes the standard
+Zephyr `i2c_target_register()` / `i2c_target_unregister()` API in buffer mode;
+there is no project-specific HAL bypass in this foundation. The
+`nrf_upstream_target_zephyr` adapter supplies lifecycle, re-address rollback
+and raw `hwinfo_get_device_id()` access. Numeric project addresses and
+production command framing remain separate design gates.
 
 Zephyr provides `bosch,bmi160` bindings for both I2C and SPI and a BME280 I2C
 binding/Sensor API path. Before production implementation, verify against the
@@ -296,7 +306,9 @@ Prove at minimum:
 5. an unchanged second build succeeds incrementally;
 6. generated PlatformIO/Zephyr data stays outside the repository;
 7. nRF build is independent from ESP-IDF and WebUI build;
-8. toolchain/platform/framework versions are visible so drift can be detected.
+8. toolchain/platform/framework versions are visible so drift can be detected;
+9. the pinned XIAO overlay keeps `i2c22` as TWIS on P1.10/P1.11 and leaves
+   private `i2c30` in controller/TWIM mode.
 
 ### B. Software unit/native tests
 
@@ -307,6 +319,7 @@ possible. Cover:
 | --- | --- |
 | Node identity/state | boot, unassigned, main, remote, unavailable, reconnect, reset, invalid transition |
 | Runtime topology | main visible with mux closed; selected remote appears; disappearing/reappearing channel; 0..N remotes; duplicate/ambiguous identity rejected |
+| Upstream TWIS foundation | callback/device validation; 7-bit caller-supplied address; idempotent register/unregister; successful re-address; unregister failure; failed new-address rollback; failed rollback -> explicit unregistered state; hardware-ID success/error |
 | Logger latches | normal, warning latch, error latch, later success does not clear, approved simultaneous warning/error UX |
 | Tilt/BLUE policy | vertical, threshold boundaries, monotonic blink-rate mapping, maximum rate, invalid IMU, no chatter near boundary |
 | Filtering/hysteresis | startup fill, noisy samples, stationary gravity, motion entry/exit, timeout/reset |
@@ -447,19 +460,22 @@ topology.
 
 ## 10. Open questions / implementation gates
 
-1. **I2C identity/addressing:** choose and validate how simultaneously visible
-   nRF targets avoid/address collisions before I2C/TWIS implementation.
+1. **I2C identity/addressing:** choose and validate numeric discovery/main/remote
+   address states, identity provisioning and collision recovery before wiring
+   the production role-assignment/upstream command protocol. The platform
+   adapter deliberately accepts caller-supplied 7-bit addresses and does not
+   freeze this decision.
 2. **Local sensor electrical contract:** verify the selected GY-BMI160
    breakout's `3V3`/`VIN`, `CS`/`SA0`, exposed primary SCL/SDA labels, pull-ups
    and unused auxiliary/interrupt pins; verify BME280 `SDO` address strap,
    pull-ups and module supply labels. Measure the combined `3V3_OUT` load,
    startup/transient margin and confirm RJ45 pin 2 is not tied to that rail.
-3. **BMI160/BME280 and upstream target Zephyr integration:** verify the
-   `bosch,bmi160` and `bosch,bme280` driver/Kconfig behavior, Sensor API, the
-   XIAO local TWIM plus upstream TWIS device-tree setup, and the required HAL
-   workaround/API because the standard Zephyr I2C slave API is unavailable in
-   the official TWIS binding. Do this in the exact installed
-   Seeed/platform/framework version.
+3. **Production upstream protocol:** define command framing, snapshot framing,
+   role-assignment/re-address transitions, one-hot TCA invariant, recovery and
+   caller-owned numeric addresses. The Zephyr API boundary itself is no longer
+   open: pinned Zephyr 4.2.1 uses standard buffer-mode `i2c_target_*` through
+   the Nordic nrfx TWIS driver, and the project foundation wraps it without a
+   custom HAL workaround.
 4. **Snapshot/history contract:** define the upstream node-snapshot schema,
    sampling/freshness rules and any RAM history size before implementation.
 5. **Channel Sounding maturity:** qualify initiator/reflector support,
@@ -485,6 +501,8 @@ topology.
 - [Zephyr BME280 Sensor API sample](https://docs.zephyrproject.org/latest/samples/sensor/bme280/README.html)
 - [Zephyr Nordic TWIM binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/i2c/nordic%2Cnrf-twim.html)
 - [Zephyr Nordic TWIS binding](https://docs.zephyrproject.org/latest/build/dts/api/bindings/i2c/nordic%2Cnrf-twis.html)
+- [Zephyr 4.2.1 Nordic nrfx TWIS driver](https://github.com/zephyrproject-rtos/zephyr/blob/v4.2.1/drivers/i2c/i2c_nrfx_twis.c)
+- [Zephyr 4.2.1 nRF54L15 I2C/TWIS loopback overlay](https://github.com/zephyrproject-rtos/zephyr/blob/v4.2.1/samples/drivers/i2c/rtio_loopback/boards/nrf54l15dk_nrf54l15_cpuapp.overlay)
 - [Seeed XIAO nRF54L15 schematic](https://files.seeedstudio.com/wiki/XIAO_nRF54L15/Getting_Start/nRF54L15_Schematic.pdf)
 - [Zephyr Channel Sounding sample](https://docs.zephyrproject.org/latest/samples/bluetooth/channel_sounding/README.html)
 - [Nordic Bluetooth Channel Sounding overview](https://www.nordicsemi.com/Products/Wireless/Bluetooth-Low-Energy/Channel-Sounding)
