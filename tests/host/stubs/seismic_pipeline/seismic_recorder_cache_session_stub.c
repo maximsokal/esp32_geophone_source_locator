@@ -7,6 +7,23 @@
 #include "seismic_recorder_lod_store.h"
 
 
+/*
+ * The web-pipeline host contract textually includes the production recorder
+ * filesystem translation unit. Its quoted preflight header therefore resolves
+ * to the production declaration before host include paths are considered.
+ * Provide the external boundary here so the contract keeps exercising the
+ * real filesystem path without pulling FATFS/SD-card policy into this test.
+ */
+esp_err_t seismic_recorder_storage_preflight(
+    uint32_t sample_rate_hz
+)
+{
+    return sample_rate_hz == 0U
+        ? ESP_ERR_INVALID_ARG
+        : ESP_OK;
+}
+
+
 bool seismic_recorder_cache_contains_session_range(
     const char *object_id,
     const char *session_id,
