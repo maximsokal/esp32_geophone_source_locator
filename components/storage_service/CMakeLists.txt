@@ -16,6 +16,7 @@ idf_component_register(
         object_store
         power_control
         freertos
+        esp_system
         heap
         log
 )
