@@ -265,7 +265,43 @@ static void test_percent_tenths_edges(void)
     assert(runtime_percent_tenths(1U, 2U) == 500U);
     assert(runtime_percent_tenths(1U, 3U) == 333U);
     assert(runtime_percent_tenths(2U, 1U) == 1000U);
-    assert(runtime_percent_tenths(UINT64_MAX, UINT64_MAX) == 1U);
+    assert(runtime_percent_tenths(UINT64_MAX, UINT64_MAX) == 1000U);
+    assert(runtime_percent_tenths(UINT64_MAX - 1U, UINT64_MAX) == 999U);
+
+    const uint64_t even_denominator = UINT64_MAX - 1U;
+    assert(
+        runtime_percent_tenths(
+            even_denominator / 2U,
+            even_denominator
+        ) == 500U
+    );
+    assert(
+        runtime_percent_tenths(
+            UINT64_MAX / 2U,
+            UINT64_MAX
+        ) == 499U
+    );
+}
+
+
+static void test_percent_tenths_matches_direct_math_for_safe_small_ratios(void)
+{
+    for (uint64_t denominator = 1U; denominator <= 100U; ++denominator) {
+        for (uint64_t numerator = 0U; numerator <= denominator + 1U; ++numerator) {
+            const uint64_t scaled = numerator * 1000U;
+            uint64_t expected = scaled / denominator;
+            if (expected > 1000U) {
+                expected = 1000U;
+            }
+
+            assert(
+                runtime_percent_tenths(
+                    numerator,
+                    denominator
+                ) == (unsigned)expected
+            );
+        }
+    }
 }
 
 
@@ -362,6 +398,7 @@ static void test_memory_snapshot_queries_each_heap_semantic_once(void)
 int main(void)
 {
     test_percent_tenths_edges();
+    test_percent_tenths_matches_direct_math_for_safe_small_ratios();
     test_top_n_keeps_equal_runtime_entries_distinct_and_stable();
     test_status_arrays_prefer_psram();
     test_status_arrays_fall_back_to_internal_ram();
