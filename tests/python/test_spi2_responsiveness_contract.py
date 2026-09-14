@@ -135,17 +135,16 @@ def test_saved_waveform_reduction_never_holds_spi2_for_the_whole_range() -> None
     assert "staging[chunk_index]" in reducer
     assert "storage_manager_operation_begin" not in reducer
 
-    # A many-chunk saved-history request runs in HTTPD's task. It must not keep
-    # priority 5 while repeatedly releasing/reacquiring storage, otherwise the
-    # priority-3 recorder can be starved between individually bounded windows.
+    # Every potentially many-window reduction path (retained cache, LOD hybrid,
+    # and raw fallback) lowers HTTPD to storage-service priority while reducing.
     priority_enter = _function_body(reader_source, "seismic_recorder_reader_priority_enter")
     priority_leave = _function_body(reader_source, "seismic_recorder_reader_priority_leave")
     assert "APP_TASK_PRIORITY_STORAGE_SERVICE" in priority_enter
     assert "uxTaskPriorityGet(NULL)" in priority_enter
     assert "vTaskPrioritySet(NULL, APP_TASK_PRIORITY_STORAGE_SERVICE)" in priority_enter
     assert "vTaskPrioritySet(NULL, guard.original_priority)" in priority_leave
-    assert public_read.count("seismic_recorder_reader_priority_enter()") == 2
-    assert public_read.count("seismic_recorder_reader_priority_leave(priority_guard)") == 2
+    assert public_read.count("seismic_recorder_reader_priority_enter()") == 3
+    assert public_read.count("seismic_recorder_reader_priority_leave(priority_guard)") == 3
 
     storage_priority = _priority(task_config, "APP_TASK_PRIORITY_STORAGE_SERVICE")
     recorder_priority = _priority(task_config, "APP_TASK_PRIORITY_SEISMIC_RECORDER")
