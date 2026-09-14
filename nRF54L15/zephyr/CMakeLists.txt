@@ -19,6 +19,10 @@ target_sources(app PRIVATE
     ../src/nrf_sensor_snapshot.c
     ../src/nrf_remote_sensor_runtime.c
     ../src/nrf_remote_sensor_runtime_zephyr.c
+    ../src/nrf_upstream_protocol.c
+    ../src/nrf_bootstrap.c
+    ../src/nrf_upstream_target_zephyr.c
+    ../src/nrf_bootstrap_runtime_zephyr.c
 )
 
 target_include_directories(app PRIVATE ../include)

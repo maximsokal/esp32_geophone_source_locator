@@ -18,11 +18,14 @@ The planned topology has one main-enclosure node on the ESP32-S3 upstream I2C
 bus and one remote node per connected geophone behind the TCA9548A. With all
 downstream channels disabled, the main node remains visible; selecting a mux
 channel exposes that remote node. ESP32-S3 remains the wired-I2C controller.
-The upstream TWIS platform foundation is now available, but the possible
-identical-I2C-address problem must still be resolved before role assignment and
-the production upstream wire protocol are wired into runtime behavior. On each
-remote node, the private second I2C bus is controlled by that nRF54L15 and
-carries the local GY-BMI160 and BME280. Both are powered from the XIAO
+The nRF-side bootstrap protocol is implemented: every reset starts UNASSIGNED
+at discovery address `0x30`, and a validated ASSIGN moves a node to MAIN
+`0x31` or REMOTE `0x32`. The ESP32 TCA/discovery orchestrator that performs
+those assignments is still a separate implementation slice. The byte-level
+contract is in
+[`../docs/nrf-upstream-bootstrap-protocol.md`](../docs/nrf-upstream-bootstrap-protocol.md).
+On each remote node, the private second I2C bus is controlled by that nRF54L15
+and carries the local GY-BMI160 and BME280. Both are powered from the XIAO
 `3V3_OUT` rail; RJ45 pin 2 (+3.3 V) is `RESERVED/NC`, and must not be tied to
 `3V3_OUT`.
 
@@ -70,10 +73,11 @@ and therefore does not require either remote sensor assembly.
 Because MAIN and REMOTE use the same production firmware while their external
 sensor hardware differs, GY-BMI160 and BME280 are treated as **optional runtime
 peripherals**, not as always-present Zephyr DeviceTree sensor devices. The
-private `i2c30` controller is available in every image, but external sensors are
-probed and initialized only after runtime role assignment selects REMOTE. A
-missing remote sensor is therefore a role/runtime health failure, not a MAIN
-boot failure.
+private `i2c30` controller is available in every image. The existing sensor
+runtime is not yet started automatically by the bootstrap role assignment;
+that REMOTE-role integration remains a separate slice. A missing remote sensor
+will therefore be a role/runtime health failure once that integration is
+connected, not a MAIN boot failure.
 
 The upstream target and local sensor controller use distinct peripheral
 instances. In the pinned Seeed/Zephyr baseline the project overlay switches
@@ -82,8 +86,10 @@ the private TWIM/controller for D11/D12. Zephyr 4.2.1 provides the Nordic nrfx
 TWIS driver through the standard `i2c_target_register()` /
 `i2c_target_unregister()` target API in buffer mode. The
 `nrf_upstream_target_zephyr` adapter binds to that API and exposes lifecycle,
-re-addressing with rollback, and raw hardware-ID access. It intentionally does
-not choose project I2C addresses or define role-assignment/wire framing.
+re-addressing with rollback, and raw hardware-ID access. The adapter itself
+remains address/protocol-neutral; `nrf_upstream_protocol` defines bootstrap
+addresses and frames, while `nrf_bootstrap_runtime_zephyr` owns the bounded
+callback-to-worker handoff and deferred re-addressing.
 
 For a stationary geophone, the accelerometer gravity vector is the primary
 verticality reference. Gyroscope data is useful for motion detection and
@@ -107,8 +113,9 @@ Remote external LED wiring is:
 | `P1.07 / D3` | RED |
 
 The main-enclosure board has none of these four external LEDs. The current
-`src/main.c` is only a temporary board/toolchain blink through the onboard
-`led0` alias; it is not the future logger/orientation implementation.
+`src/main.c` starts the upstream bootstrap runtime and still uses the onboard
+`led0` alias as a simple board/toolchain heartbeat; it is not the future
+external logger/orientation LED implementation.
 
 BLUE is the remote geophone orientation indicator: steady while the filtered
 orientation is accepted as vertical and blinking progressively faster as tilt
