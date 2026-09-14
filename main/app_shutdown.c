@@ -6,6 +6,7 @@
 #include "ina3221_monitor.h"
 #include "keypad.h"
 #include "measurement_service.h"
+#include "nrf_topology_service.h"
 #include "object_recovery.h"
 #include "object_service.h"
 #include "power_control.h"
@@ -119,6 +120,13 @@ void app_shutdown_wait_and_run(void)
     );
 
     keypad_stop_event_monitor();
+
+    /*
+     * The topology worker owns the multi-step TCA select/use/close sequence
+     * and its 0x30/0x31/0x32 device handles. Stop it before the shared I2C0
+     * owner is torn down so shutdown cannot delete a bus below a live worker.
+     */
+    nrf_topology_service_stop();
 
     ina3221_monitor_stop();
 
