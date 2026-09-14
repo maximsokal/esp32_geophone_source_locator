@@ -4,7 +4,7 @@
 #include <string.h>
 
 
-static atomic_bool s_refresh_enabled = ATOMIC_VAR_INIT(true);
+static atomic_bool s_refresh_enabled = true;
 
 
 void web_status_cache_arbitration_set_refresh_enabled(bool enabled)
