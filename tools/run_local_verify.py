@@ -27,6 +27,7 @@ class Step:
     name: str
     cwd: Path
     command: tuple[str, ...]
+    skip_reason: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -240,6 +241,13 @@ def firmware_steps(
     ]
 
 
+def nrf_software_suites(root: Path) -> list[Path]:
+    test_dir = root / "nRF54L15" / "test"
+    if not test_dir.is_dir():
+        return []
+    return sorted(path for path in test_dir.glob("test_sw_*") if path.is_dir())
+
+
 def nrf_steps(
     root: Path,
     *,
@@ -268,6 +276,13 @@ def nrf_steps(
     if Path(powershell_executable).name.lower() == "powershell.exe":
         command_prefix += ("-ExecutionPolicy", "Bypass")
 
+    test_skip_reason = None
+    if not nrf_software_suites(root):
+        test_skip_reason = (
+            "no qualified test/test_sw_* software suite exists; embedded/HIL "
+            "tests are intentionally excluded from hardware-free verification"
+        )
+
     return [
         Step(
             "nrf/build",
@@ -280,6 +295,7 @@ def nrf_steps(
             root,
             command_prefix
             + ("-File", str(runner), "-Action", "test"),
+            skip_reason=test_skip_reason,
         ),
     ]
 
@@ -353,8 +369,12 @@ def build_plan(
     return steps
 
 
-def run_step(step: Step) -> None:
+def run_step(step: Step) -> str:
     print(f"\n=== {step.name} ===", flush=True)
+    if step.skip_reason is not None:
+        print(f"SKIPPED: {step.skip_reason}", flush=True)
+        return "SKIPPED"
+
     print(f"cwd: {step.cwd}", flush=True)
     print(f"> {quote_command(step.command)}", flush=True)
     result = subprocess.run(step.command, cwd=step.cwd, check=False)
@@ -362,6 +382,8 @@ def run_step(step: Step) -> None:
         raise VerificationError(
             f"step failed with exit code {result.returncode}: {step.name}"
         )
+    print(f"{step.name}: PASS", flush=True)
+    return "PASS"
 
 
 def main() -> int:
@@ -410,13 +432,21 @@ def main() -> int:
 
         if args.dry_run:
             for step in plan:
-                print(f"[{step.name}] ({step.cwd}) {quote_command(step.command)}")
+                if step.skip_reason is not None:
+                    print(f"[{step.name}] SKIPPED: {step.skip_reason}")
+                else:
+                    print(f"[{step.name}] ({step.cwd}) {quote_command(step.command)}")
             return 0
 
-        for step in plan:
-            run_step(step)
-
-        print("\nLOCAL_VERIFY_RESULT: PASS", flush=True)
+        statuses = [run_step(step) for step in plan]
+        skipped = sum(status == "SKIPPED" for status in statuses)
+        if skipped:
+            print(
+                f"\nLOCAL_VERIFY_RESULT: PASS_WITH_SKIPS ({skipped} skipped step(s))",
+                flush=True,
+            )
+        else:
+            print("\nLOCAL_VERIFY_RESULT: PASS", flush=True)
         return 0
     except (OSError, VerificationError) as exc:
         print(f"LOCAL_VERIFY_RESULT: FAIL: {exc}", file=sys.stderr, flush=True)
