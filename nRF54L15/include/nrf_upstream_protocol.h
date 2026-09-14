@@ -12,6 +12,8 @@ extern "C" {
 #define NRF_UPSTREAM_PROTOCOL_HW_ID_MAX 8U
 #define NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH 24U
 #define NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH 28U
+#define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 102U
 
 #define NRF_UPSTREAM_ADDRESS_DISCOVERY 0x30U
 #define NRF_UPSTREAM_ADDRESS_MAIN      0x31U
@@ -23,8 +25,19 @@ extern "C" {
 #define NRF_UPSTREAM_STATUS_FLAG_ASSIGNED          0x01U
 #define NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED 0x02U
 
+#define NRF_UPSTREAM_SENSOR_FLAG_PREPARE_ATTEMPTED 0x01U
+#define NRF_UPSTREAM_SENSOR_FLAG_IMU_READY         0x02U
+#define NRF_UPSTREAM_SENSOR_FLAG_ENV_READY         0x04U
+#define NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE  0x08U
+#define NRF_UPSTREAM_SENSOR_FLAG_MASK              0x0FU
+
+#define NRF_UPSTREAM_SENSOR_VALID_IMU 0x01U
+#define NRF_UPSTREAM_SENSOR_VALID_ENV 0x02U
+#define NRF_UPSTREAM_SENSOR_VALID_MASK 0x03U
+
 typedef enum {
     NRF_UPSTREAM_MESSAGE_ASSIGN = 0x01,
+    NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH = 0x02,
     NRF_UPSTREAM_MESSAGE_STATUS = 0x80,
 } nrf_upstream_message_type_t;
 
@@ -59,6 +72,17 @@ typedef enum {
     NRF_UPSTREAM_RESULT_INTERNAL_ERROR = 15,
 } nrf_upstream_result_t;
 
+typedef enum {
+    NRF_UPSTREAM_SENSOR_RESULT_OK = 0,
+    NRF_UPSTREAM_SENSOR_RESULT_PENDING = 1,
+    NRF_UPSTREAM_SENSOR_RESULT_PARTIAL = 2,
+    NRF_UPSTREAM_SENSOR_RESULT_NOT_READY = 3,
+    NRF_UPSTREAM_SENSOR_RESULT_NOT_REMOTE = 4,
+    NRF_UPSTREAM_SENSOR_RESULT_NO_DATA = 5,
+    NRF_UPSTREAM_SENSOR_RESULT_BUSY = 6,
+    NRF_UPSTREAM_SENSOR_RESULT_INTERNAL_ERROR = 7,
+} nrf_upstream_sensor_result_t;
+
 typedef struct {
     uint32_t request_id;
     uint8_t hardware_id_length;
@@ -80,6 +104,26 @@ typedef struct {
     uint8_t result;
     uint8_t flags;
 } nrf_upstream_status_t;
+
+typedef struct {
+    uint32_t request_id;
+} nrf_upstream_sensor_refresh_t;
+
+typedef struct {
+    uint32_t request_id;
+    uint32_t sequence;
+    uint32_t valid_mask;
+    uint32_t fault_mask;
+    uint64_t sample_complete_uptime_ms;
+    uint8_t result;
+    uint8_t flags;
+    int32_t accel_mg[3];
+    int32_t gyro_mdps[3];
+    int32_t imu_temperature_milli_c;
+    int32_t env_temperature_milli_c;
+    uint32_t pressure_pa;
+    uint32_t humidity_milli_percent;
+} nrf_upstream_sensor_snapshot_t;
 
 uint16_t nrf_upstream_protocol_crc16_ccitt_false(const uint8_t *data, size_t length);
 uint32_t nrf_upstream_protocol_request_id_hint(const uint8_t *frame, size_t length);
@@ -103,6 +147,26 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_status(
     const uint8_t *frame,
     size_t length,
     nrf_upstream_status_t *status);
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_refresh(
+    const nrf_upstream_sensor_refresh_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH]);
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_sensor_refresh_t *request);
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
+    const nrf_upstream_status_t *status,
+    const nrf_upstream_sensor_snapshot_t *sensor,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH]);
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_remote_snapshot(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_status_t *status,
+    nrf_upstream_sensor_snapshot_t *sensor);
 
 #ifdef __cplusplus
 }

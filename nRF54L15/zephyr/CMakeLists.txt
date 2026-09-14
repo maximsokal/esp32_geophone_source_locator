@@ -20,6 +20,8 @@ target_sources(app PRIVATE
     ../src/nrf_remote_sensor_runtime.c
     ../src/nrf_remote_sensor_runtime_zephyr.c
     ../src/nrf_upstream_protocol.c
+    ../src/nrf_sensor_session.c
+    ../src/nrf_sensor_upstream_runtime_zephyr.c
     ../src/nrf_bootstrap.c
     ../src/nrf_upstream_target_zephyr.c
     ../src/nrf_bootstrap_runtime_zephyr.c

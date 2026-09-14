@@ -11,6 +11,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include "nrf_bootstrap.h"
+#include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
 
@@ -26,7 +27,7 @@ static struct k_work s_assign_work;
 static struct k_spinlock s_status_lock;
 static nrf_bootstrap_t s_bootstrap;
 static nrf_upstream_status_t s_published_status;
-static uint8_t s_status_frame[NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH];
+static uint8_t s_read_frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH];
 static bool s_started;
 
 static int runtime_readdress(void *context, uint8_t address)
@@ -82,9 +83,15 @@ static void assign_work_handler(struct k_work *work)
     (void)work;
 
     while (k_msgq_get(&s_assign_queue, &assign, K_NO_WAIT) == 0) {
+        nrf_upstream_result_t result;
         publish_result_context(assign.request_id, NRF_UPSTREAM_RESULT_PENDING);
-        (void)nrf_bootstrap_process_assign(&s_bootstrap, &assign);
+        result = nrf_bootstrap_process_assign(&s_bootstrap, &assign);
         publish_core_status();
+        if (result == NRF_UPSTREAM_RESULT_OK &&
+            assign.role == NRF_UPSTREAM_ROLE_REMOTE) {
+            (void)nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
+                &assign);
+        }
     }
 }
 
@@ -94,11 +101,25 @@ static void target_write_received(
     uint32_t len)
 {
     nrf_upstream_assign_t assign;
+    nrf_upstream_sensor_refresh_t sensor_request;
     nrf_upstream_result_t result;
     uint32_t request_id;
     int submit_result;
 
     (void)config;
+
+    if ((size_t)len == NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH) {
+        result = nrf_upstream_protocol_decode_sensor_refresh(
+            ptr,
+            (size_t)len,
+            &sensor_request);
+        if (result == NRF_UPSTREAM_RESULT_OK) {
+            (void)nrf_sensor_upstream_runtime_zephyr_request_refresh(
+                &sensor_request);
+        }
+        return;
+    }
+
     request_id = nrf_upstream_protocol_request_id_hint(ptr, (size_t)len);
     result = nrf_upstream_protocol_decode_assign(ptr, (size_t)len, &assign);
     if (result != NRF_UPSTREAM_RESULT_OK) {
@@ -123,6 +144,7 @@ static int target_read_requested(
     uint32_t *len)
 {
     nrf_upstream_status_t status;
+    nrf_upstream_sensor_snapshot_t sensor;
     nrf_upstream_result_t result;
     k_spinlock_key_t key;
 
@@ -133,13 +155,27 @@ static int target_read_requested(
 
     key = k_spin_lock(&s_status_lock);
     status = s_published_status;
-    result = nrf_upstream_protocol_encode_status(&status, s_status_frame);
     k_spin_unlock(&s_status_lock, key);
+
+    if (status.role == NRF_UPSTREAM_ROLE_REMOTE &&
+        nrf_sensor_upstream_runtime_zephyr_get_snapshot(&sensor)) {
+        result = nrf_upstream_protocol_encode_remote_snapshot(
+            &status,
+            &sensor,
+            s_read_frame);
+        if (result != NRF_UPSTREAM_RESULT_OK) {
+            return -EIO;
+        }
+        *ptr = s_read_frame;
+        *len = NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH;
+        return 0;
+    }
+
+    result = nrf_upstream_protocol_encode_status(&status, s_read_frame);
     if (result != NRF_UPSTREAM_RESULT_OK) {
         return -EIO;
     }
-
-    *ptr = s_status_frame;
+    *ptr = s_read_frame;
     *len = NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH;
     return 0;
 }
