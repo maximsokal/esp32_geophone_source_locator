@@ -8,6 +8,9 @@
 #include <unistd.h>
 
 #include "esp_log.h"
+#ifdef ESP_PLATFORM
+#include "esp_task_wdt.h"
+#endif
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,6 +41,29 @@ static esp_err_t storage_manager_tree_traversal_errno_to_error(
 }
 
 
+static void storage_manager_tree_watchdog_checkpoint(void)
+{
+#ifdef ESP_PLATFORM
+    /*
+     * Only an explicitly subscribed owner task may feed TWDT. The ordinary
+     * synchronous storage_manager callers remain completely unchanged.
+     */
+    if (esp_task_wdt_status(NULL) == ESP_OK) {
+        const esp_err_t err =
+            esp_task_wdt_reset();
+
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "TWDT reset failed: %s",
+                esp_err_to_name(err)
+            );
+        }
+    }
+#endif
+}
+
+
 static void storage_manager_tree_cooperate(
     unsigned *operation_count
 )
@@ -54,6 +80,13 @@ static void storage_manager_tree_cooperate(
             STORAGE_TREE_COOPERATE_INTERVAL
         ) == 0
     ) {
+        /*
+         * Feed only after four completed filesystem mutations. A blocked
+         * stat/readdir/remove/rmdir call cannot reach this checkpoint and is
+         * therefore still visible to a subscribed Task Watchdog.
+         */
+        storage_manager_tree_watchdog_checkpoint();
+
         /*
          * Allow higher-priority monitoring and shutdown tasks
          * to run during a long recursive delete.
