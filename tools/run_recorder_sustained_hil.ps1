@@ -279,7 +279,7 @@ try {
         if ($status.recording.running -ne $true) {
             throw "Recording stopped unexpectedly before the eviction/throughput gate completed."
         }
-        if ([uint64]$status.recording.dropped_frames -ne 0U) {
+        if ([uint64]$status.recording.dropped_frames -ne 0) {
             throw "Recorder reported dropped_frames=$($status.recording.dropped_frames) during sustained run."
         }
         if ([uint64]$status.recording.samples_written -gt $requiredPersistedFrames) {
@@ -316,7 +316,7 @@ try {
     if ([string]$status.recording.session_id -ne $sessionId) {
         throw "Session changed from $sessionId to $($status.recording.session_id) after STOP."
     }
-    if ([uint64]$status.recording.dropped_frames -ne 0U) {
+    if ([uint64]$status.recording.dropped_frames -ne 0) {
         throw "Completed session has dropped_frames=$($status.recording.dropped_frames)."
     }
 
