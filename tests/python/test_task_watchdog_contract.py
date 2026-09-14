@@ -35,9 +35,9 @@ def test_storage_worker_is_watched_only_while_a_command_is_active():
     receive = task.index("xQueueReceive(")
     stop_check = task.index("STORAGE_COMMAND_STOP")
     begin = task.index("storage_service_watchdog_begin()")
-    process = task.index("storage_service_process_info(")
-    end = task.index("storage_service_watchdog_end(")
-    notify = task.index("storage_service_notify()")
+    process = task.index("storage_service_process_info(", begin)
+    end = task.index("storage_service_watchdog_end(", process)
+    notify = task.index("storage_service_notify()", end)
 
     assert receive < stop_check < begin < process < end < notify
     assert "esp_task_wdt_add(NULL)" in source
@@ -55,8 +55,8 @@ def test_recursive_erase_feeds_only_after_completed_filesystem_mutations():
     )
 
     increment = cooperate.index("(*operation_count)++")
-    checkpoint = cooperate.index("storage_manager_tree_watchdog_checkpoint()")
-    delay = cooperate.index("vTaskDelay(")
+    checkpoint = cooperate.index("storage_manager_tree_watchdog_checkpoint()", increment)
+    delay = cooperate.index("vTaskDelay(", checkpoint)
 
     assert increment < checkpoint < delay
     assert "STORAGE_TREE_COOPERATE_INTERVAL" in cooperate
@@ -73,9 +73,9 @@ def test_background_recovery_watches_only_the_recovery_run_not_callback_teardown
     )
 
     begin = task.index("object_recovery_watchdog_begin()")
-    run = task.index("object_recovery_run_cooperative(")
-    end = task.index("object_recovery_watchdog_end(")
-    callback = task.index("complete_fn(err, complete_context)")
+    run = task.index("object_recovery_run_cooperative(", begin)
+    end = task.index("object_recovery_watchdog_end(", run)
+    callback = task.index("complete_fn(err, complete_context)", end)
 
     assert begin < run < end < callback
     assert "esp_task_wdt_add(NULL)" in worker
@@ -95,9 +95,12 @@ def test_recovery_feeds_after_directory_and_object_progress_from_the_owner_task(
         "static esp_err_t object_recovery_collect_ids(",
         "static bool object_recovery_should_stop(",
     )
-    assert collect.index("readdir(directory)") < collect.index(
-        "object_recovery_watchdog_checkpoint()"
+    read_dir = collect.index("readdir(directory)")
+    collect_checkpoint = collect.index(
+        "object_recovery_watchdog_checkpoint()",
+        read_dir,
     )
+    assert read_dir < collect_checkpoint
 
     run = function_body(
         source,
@@ -105,7 +108,7 @@ def test_recovery_feeds_after_directory_and_object_progress_from_the_owner_task(
         "esp_err_t object_recovery_run(void)",
     )
     completed = run.index("++processed")
-    checkpoint = run.index("object_recovery_watchdog_checkpoint()")
+    checkpoint = run.index("object_recovery_watchdog_checkpoint()", completed)
     assert completed < checkpoint
 
 
