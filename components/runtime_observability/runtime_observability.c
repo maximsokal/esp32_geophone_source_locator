@@ -150,6 +150,31 @@ static bool runtime_take_requested_stage(
 }
 
 
+static uint64_t runtime_percent_threshold(
+    uint64_t denominator,
+    unsigned tenths
+)
+{
+    /*
+     * runtime_percent_tenths() only asks for thresholds 1..999. Splitting the
+     * denominator first keeps both products below UINT64_MAX while computing
+     * ceil(tenths * denominator / 1000) exactly.
+     */
+    const uint64_t whole =
+        denominator / 1000U;
+    const uint64_t remainder =
+        denominator % 1000U;
+    const uint64_t remainder_scaled =
+        (uint64_t)tenths * remainder;
+    const uint64_t remainder_ceil =
+        (remainder_scaled + 999U) / 1000U;
+
+    return
+        (uint64_t)tenths * whole +
+        remainder_ceil;
+}
+
+
 static unsigned runtime_percent_tenths(
     uint64_t numerator,
     uint64_t denominator
@@ -159,13 +184,43 @@ static unsigned runtime_percent_tenths(
         return 0U;
     }
 
-    const uint64_t scaled =
-        numerator > UINT64_MAX / 1000U
-            ? UINT64_MAX
-            : numerator * 1000U;
+    if (numerator >= denominator) {
+        return 1000U;
+    }
 
-    const uint64_t result = scaled / denominator;
-    return result > 1000U ? 1000U : (unsigned)result;
+    /*
+     * We need floor(numerator * 1000 / denominator), but numerator * 1000 can
+     * overflow uint64_t for long-running counters. Binary-search the bounded
+     * result instead. For a candidate k, the exact relation is:
+     *
+     *   floor(n * 1000 / d) >= k
+     *     iff n >= ceil(k * d / 1000)
+     *
+     * runtime_percent_threshold() evaluates the right-hand side without any
+     * overflowing multiplication. Ten iterations cover the full 0..999 range.
+     */
+    unsigned low = 0U;
+    unsigned high = 999U;
+
+    while (low < high) {
+        const unsigned middle =
+            low + (high - low + 1U) / 2U;
+
+        if (
+            numerator >=
+            runtime_percent_threshold(
+                denominator,
+                middle
+            )
+        ) {
+            low = middle;
+        }
+        else {
+            high = middle - 1U;
+        }
+    }
+
+    return low;
 }
 
 
