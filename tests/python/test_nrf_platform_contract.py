@@ -6,6 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PLATFORMIO = REPO_ROOT / "nRF54L15" / "platformio.ini"
 README = REPO_ROOT / "nRF54L15" / "README.md"
 TEST_TASK = REPO_ROOT / "docs" / "nrf54l15-test-task.md"
+CMAKE = REPO_ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
@@ -21,6 +22,14 @@ def test_nrf_production_platform_is_commit_pinned_and_single_environment():
     assert "framework = zephyr" in source
     assert "board = seeed-xiao-nrf54l15" in source
     assert "sense" not in source.lower()
+
+
+def test_nrf_zephyr_target_compiles_runtime_policy_source():
+    source = CMAKE.read_text(encoding="utf-8")
+
+    assert "../src/main.c" in source
+    assert "../src/nrf_node_state.c" in source
+    assert "target_include_directories(app PRIVATE ../include)" in source
 
 
 def test_nrf_docs_record_the_same_verified_platform_revision():
