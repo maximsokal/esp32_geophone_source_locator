@@ -61,6 +61,14 @@ not from a firmware GPIO. Validate total load and transient margin in HIL.
 The main-enclosure nRF54L15 has no geophone whose verticality must be measured
 and therefore does not require either remote sensor assembly.
 
+Because MAIN and REMOTE use the same production firmware while their external
+sensor hardware differs, GY-BMI160 and BME280 are treated as **optional runtime
+peripherals**, not as always-present Zephyr DeviceTree sensor devices. The
+private `i2c30` controller is available in every image, but external sensors are
+probed and initialized only after runtime role assignment selects REMOTE. A
+missing remote sensor is therefore a role/runtime health failure, not a MAIN
+boot failure.
+
 The future upstream nRF target and local sensor controller must use distinct
 peripheral instances. The exact upstream TWIS device-tree/API path is not yet
 settled: the official Zephyr TWIS binding notes that the standard Zephyr I2C
