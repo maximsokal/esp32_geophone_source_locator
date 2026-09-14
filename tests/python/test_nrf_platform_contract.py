@@ -17,6 +17,10 @@ BMI160_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_bmi160_zephyr.c"
 BME280_HEADER = REPO_ROOT / "nRF54L15" / "include" / "nrf_bme280.h"
 BME280_CORE = REPO_ROOT / "nRF54L15" / "src" / "nrf_bme280.c"
 BME280_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_bme280_zephyr.c"
+REMOTE_RUNTIME = REPO_ROOT / "nRF54L15" / "src" / "nrf_remote_sensor_runtime.c"
+REMOTE_RUNTIME_ZEPHYR = (
+    REPO_ROOT / "nRF54L15" / "src" / "nrf_remote_sensor_runtime_zephyr.c"
+)
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
@@ -47,6 +51,8 @@ def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources()
     assert "../src/nrf_bme280.c" in source
     assert "../src/nrf_bme280_zephyr.c" in source
     assert "../src/nrf_sensor_snapshot.c" in source
+    assert "../src/nrf_remote_sensor_runtime.c" in source
+    assert "../src/nrf_remote_sensor_runtime_zephyr.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
 
 
@@ -112,6 +118,27 @@ def test_bme280_is_runtime_optional_and_uses_bounded_forced_measurements():
     assert "BME280_MEASUREMENT_POLL_ATTEMPTS = 5U" in core
     assert "nrf_sensor_bus_zephyr_init_private(&bus)" in bridge
     assert "nrf_bme280_init(" in bridge
+    assert "nrf_bme280_result_t nrf_bme280_zephyr_init_remote" in bridge
+
+
+def test_remote_sensor_runtime_wires_real_drivers_only_after_remote_role():
+    core = REMOTE_RUNTIME.read_text(encoding="utf-8")
+    bridge = REMOTE_RUNTIME_ZEPHYR.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
+
+    assert "node_state->lifecycle != NRF_NODE_LIFECYCLE_READY" in core
+    assert "node_state->role != NRF_NODE_ROLE_REMOTE" in core
+    assert "runtime->imu_ready" in core
+    assert "runtime->env_ready" in core
+    assert "nrf_sensor_snapshot_refresh(" in core
+
+    assert "nrf_bmi160_zephyr_init_remote(device)" in bridge
+    assert "nrf_bme280_zephyr_init_remote(device)" in bridge
+    assert ".read_imu = nrf_bmi160_read_imu" in bridge
+    assert ".read_env = nrf_bme280_read_env" in bridge
+
+    assert "nrf_remote_sensor_runtime_zephyr_prepare(" not in main
+    assert "nrf_remote_sensor_runtime_zephyr_refresh(" not in main
 
 
 def test_nrf_bringup_enters_ready_unassigned_runtime_state_without_forcing_role():
