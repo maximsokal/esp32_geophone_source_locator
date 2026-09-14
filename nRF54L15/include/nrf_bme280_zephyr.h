@@ -1,8 +1,6 @@
 #ifndef NRF_BME280_ZEPHYR_H
 #define NRF_BME280_ZEPHYR_H
 
-#include <stdbool.h>
-
 #include "nrf_bme280.h"
 
 #ifdef __cplusplus
@@ -14,7 +12,7 @@ extern "C" {
  * This function is intentionally not called during generic MAIN/REMOTE boot;
  * invoke it only after runtime role assignment selects REMOTE.
  */
-bool nrf_bme280_zephyr_init_remote(nrf_bme280_t *device);
+nrf_bme280_result_t nrf_bme280_zephyr_init_remote(nrf_bme280_t *device);
 
 #ifdef __cplusplus
 }
