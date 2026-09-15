@@ -44,6 +44,16 @@ const char *seismic_recorder_stop_stage_name(
 
 typedef struct
 {
+    bool available;
+    uint64_t timer_ticks;
+    uint64_t conversion_attempts;
+    uint64_t collapsed_periods;
+
+} seismic_recorder_cadence_t;
+
+
+typedef struct
+{
     bool initialized;
     bool running;
 
@@ -61,6 +71,7 @@ typedef struct
     uint64_t samples_written;
     uint64_t dropped_frames;
     uint64_t recording_ms;
+    seismic_recorder_cadence_t cadence;
 
     esp_err_t last_error;
     esp_err_t stop_stage_error;
@@ -80,6 +91,7 @@ typedef struct
     uint64_t samples_written;
     uint64_t dropped_frames;
     uint64_t recording_ms;
+    seismic_recorder_cadence_t cadence;
 
     char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
 
@@ -93,6 +105,7 @@ typedef struct
 typedef struct
 {
     int64_t timestamp_us;
+    int64_t end_timestamp_us;
     float min_uv[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT];
     float max_uv[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT];
 
@@ -112,6 +125,7 @@ typedef struct
     uint64_t samples_written;
     uint64_t dropped_frames;
     uint64_t recording_ms;
+    seismic_recorder_cadence_t cadence;
 
     uint64_t source_frame_count;
     uint64_t start_frame;

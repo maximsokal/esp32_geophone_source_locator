@@ -112,6 +112,7 @@ static void seismic_recorder_waveform_point_reset(
 )
 {
     point->timestamp_us = 0;
+    point->end_timestamp_us = 0;
     for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
         point->min_uv[channel] = FLT_MAX;
         point->max_uv[channel] = -FLT_MAX;
@@ -306,6 +307,9 @@ esp_err_t seismic_recorder_waveform_read_source(
             const seismic_frame_t *frame = &staging[chunk_index];
             const uint64_t frame_index = processed + (uint64_t)chunk_index;
 
+            if (have_timestamp && frame->timestamp_us < last_timestamp_us) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
             if (!have_timestamp) {
                 first_timestamp_us = frame->timestamp_us;
                 have_timestamp = true;
@@ -328,6 +332,7 @@ esp_err_t seismic_recorder_waveform_read_source(
             if (point->min_uv[0] == FLT_MAX) {
                 point->timestamp_us = frame->timestamp_us;
             }
+            point->end_timestamp_us = frame->timestamp_us;
 
             for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
                 if (frame->channel_uv[channel] < point->min_uv[channel]) {
@@ -351,6 +356,7 @@ esp_err_t seismic_recorder_waveform_read_source(
     info->samples_written = summary->samples_written;
     info->dropped_frames = summary->dropped_frames;
     info->recording_ms = summary->recording_ms;
+    info->cadence = summary->cadence;
     info->source_frame_count = source_frame_count;
     info->start_frame = start_frame;
     info->frame_count = frame_count;

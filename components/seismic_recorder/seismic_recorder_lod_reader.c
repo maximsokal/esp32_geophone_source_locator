@@ -160,6 +160,7 @@ static void seismic_recorder_lod_points_reset(
 {
     for (size_t point = 0U; point < point_count; ++point) {
         points[point].timestamp_us = 0;
+        points[point].end_timestamp_us = 0;
         for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
             points[point].min_uv[channel] = FLT_MAX;
             points[point].max_uv[channel] = -FLT_MAX;
@@ -200,12 +201,17 @@ static bool seismic_recorder_lod_record_valid(
 static void seismic_recorder_lod_merge_bounds(
     seismic_recorder_waveform_point_t *point,
     int64_t first_timestamp_us,
+    int64_t last_timestamp_us,
     const float min_uv[SEISMIC_CHANNEL_COUNT],
     const float max_uv[SEISMIC_CHANNEL_COUNT]
 )
 {
     if (point->min_uv[0] == FLT_MAX) {
         point->timestamp_us = first_timestamp_us;
+        point->end_timestamp_us = last_timestamp_us;
+    }
+    else if (last_timestamp_us > point->end_timestamp_us) {
+        point->end_timestamp_us = last_timestamp_us;
     }
 
     for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
@@ -321,6 +327,7 @@ static esp_err_t seismic_recorder_lod_read_raw_run(
         seismic_recorder_lod_merge_bounds(
             &points[point_index],
             frame->timestamp_us,
+            frame->timestamp_us,
             min_uv,
             max_uv
         );
@@ -407,6 +414,7 @@ static esp_err_t seismic_recorder_lod_read_lod_run(
         seismic_recorder_lod_merge_bounds(
             &points[point_index],
             record->start_timestamp_us,
+            record->end_timestamp_us,
             record->min_uv,
             record->max_uv
         );
@@ -702,6 +710,7 @@ esp_err_t seismic_recorder_lod_read_source_with_stats(
     info->samples_written = summary->samples_written;
     info->dropped_frames = summary->dropped_frames;
     info->recording_ms = summary->recording_ms;
+    info->cadence = summary->cadence;
     info->source_frame_count = summary->samples_written;
     info->start_frame = start_frame;
     info->frame_count = frame_count;
