@@ -264,6 +264,42 @@ static void ad7606_status_set_running(
 }
 
 
+static void ad7606_status_record_timer_wake(
+    uint32_t notification_count
+)
+{
+    if (notification_count == 0U) {
+        return;
+    }
+
+    portENTER_CRITICAL(
+        &s_status_lock
+    );
+
+    s_status.timer_ticks =
+        ad7606_acquisition_saturating_add_u64(
+            s_status.timer_ticks,
+            (uint64_t)notification_count
+        );
+
+    s_status.conversion_attempts =
+        ad7606_acquisition_saturating_add_u64(
+            s_status.conversion_attempts,
+            1U
+        );
+
+    s_status.collapsed_periods =
+        ad7606_acquisition_saturating_add_u64(
+            s_status.collapsed_periods,
+            ad7606_acquisition_collapsed_periods(notification_count)
+        );
+
+    portEXIT_CRITICAL(
+        &s_status_lock
+    );
+}
+
+
 static uint32_t ad7606_status_record_failure(void)
 {
     uint32_t consecutive_failures;
@@ -296,6 +332,30 @@ static void ad7606_status_record_sample(
     portENTER_CRITICAL(
         &s_status_lock
     );
+
+    if (
+        s_status.latest_valid &&
+        sample->timestamp_us > s_status.last_sample_timestamp_us
+    ) {
+        const uint64_t interval_us =
+            (uint64_t)(
+                sample->timestamp_us -
+                s_status.last_sample_timestamp_us
+            );
+
+        s_status.last_successful_sample_interval_us =
+            interval_us;
+
+        if (interval_us > s_status.max_successful_sample_interval_us) {
+            s_status.max_successful_sample_interval_us =
+                interval_us;
+        }
+    }
+    else if (s_status.latest_valid) {
+        /* Keep invalid/non-monotonic timestamps deterministic and visible. */
+        s_status.last_successful_sample_interval_us =
+            0U;
+    }
 
     s_status.samples++;
 
@@ -691,14 +751,20 @@ static void ad7606_worker(
     s_serial_diag_log_pending = false;
 
     while (s_running) {
-        (void)ulTaskNotifyTake(
-            pdTRUE,
-            portMAX_DELAY
-        );
+        const uint32_t notification_count =
+            ulTaskNotifyTake(
+                pdTRUE,
+                portMAX_DELAY
+            );
 
         if (!s_running) {
+            /* STOP uses the same task notification but is not a timer period. */
             break;
         }
+
+        ad7606_status_record_timer_wake(
+            notification_count
+        );
 
         ad7606_sample_t sample = {0};
 

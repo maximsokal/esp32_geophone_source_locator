@@ -60,6 +60,14 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->samples = status.samples;
     snapshot->read_errors = status.read_errors;
     snapshot->consecutive_failures = status.consecutive_failures;
+    snapshot->cadence_available = true;
+    snapshot->timer_ticks = status.timer_ticks;
+    snapshot->conversion_attempts = status.conversion_attempts;
+    snapshot->collapsed_periods = status.collapsed_periods;
+    snapshot->last_successful_sample_interval_us =
+        status.last_successful_sample_interval_us;
+    snapshot->max_successful_sample_interval_us =
+        status.max_successful_sample_interval_us;
     snapshot->serial_suspicious = status.serial_suspicious;
     snapshot->serial_pattern = ad7606_serial_pattern_name(status.serial_pattern);
     snapshot->serial_quality = ad7606_serial_quality_name(status.serial_quality);

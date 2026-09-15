@@ -35,6 +35,18 @@ typedef struct
     uint64_t read_errors;
     uint32_t consecutive_failures;
 
+    /*
+     * Cadence evidence is independent from transport/read health. Sources that
+     * cannot prove scheduler cadence leave cadence_available=false rather than
+     * fabricating zero misses.
+     */
+    bool cadence_available;
+    uint64_t timer_ticks;
+    uint64_t conversion_attempts;
+    uint64_t collapsed_periods;
+    uint64_t last_successful_sample_interval_us;
+    uint64_t max_successful_sample_interval_us;
+
     /* AD7606 serial observability. Other sources leave these at defaults. */
     bool serial_suspicious;
     const char *serial_pattern;

@@ -17,6 +17,13 @@ typedef struct
     uint64_t read_errors;
     uint32_t consecutive_failures;
 
+    /* Acquisition-cadence observability for the current run. */
+    uint64_t timer_ticks;
+    uint64_t conversion_attempts;
+    uint64_t collapsed_periods;
+    uint64_t last_successful_sample_interval_us;
+    uint64_t max_successful_sample_interval_us;
+
     bool serial_suspicious;
     ad7606_serial_pattern_t serial_pattern;
     ad7606_serial_quality_t serial_quality;
