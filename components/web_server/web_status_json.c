@@ -173,6 +173,45 @@ static bool web_status_json_add_acquisition(
 
     if (!base_ok) return false;
 
+    cJSON *cadence = cJSON_AddObjectToObject(object, "cadence");
+    if (cadence == NULL) return false;
+    const bool cadence_available =
+        source_snapshot_available && source_snapshot->cadence_available;
+    if (
+        cJSON_AddBoolToObject(cadence, "available", cadence_available) == NULL ||
+        cJSON_AddNumberToObject(
+            cadence,
+            "timer_ticks",
+            cadence_available ? (double)source_snapshot->timer_ticks : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            cadence,
+            "conversion_attempts",
+            cadence_available ? (double)source_snapshot->conversion_attempts : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            cadence,
+            "collapsed_periods",
+            cadence_available ? (double)source_snapshot->collapsed_periods : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            cadence,
+            "last_successful_sample_interval_us",
+            cadence_available
+                ? (double)source_snapshot->last_successful_sample_interval_us
+                : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            cadence,
+            "max_successful_sample_interval_us",
+            cadence_available
+                ? (double)source_snapshot->max_successful_sample_interval_us
+                : 0.0
+        ) == NULL
+    ) {
+        return false;
+    }
+
     cJSON *serial = cJSON_AddObjectToObject(object, "serial");
     if (serial == NULL) return false;
 

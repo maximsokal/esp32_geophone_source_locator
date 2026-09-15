@@ -60,6 +60,11 @@ int main(void)
     fake_acquisition.latest_valid = true;
     fake_acquisition.samples = 1U;
     fake_acquisition.last_sample_timestamp_us = 999000;
+    fake_acquisition.cadence_available = true;
+    fake_acquisition.timer_ticks = 100U;
+    fake_acquisition.conversion_attempts = 100U;
+    fake_acquisition.collapsed_periods = 0U;
+
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
 
@@ -68,5 +73,19 @@ int main(void)
     assert(snapshot.running);
     assert(snapshot.state == SEISMIC_RECORDER_RECORDING);
     assert(strcmp(snapshot.object_id, "OBJ_0005") == 0);
+    assert(!snapshot.cadence.available);
+
+    fake_acquisition.timer_ticks = 106U;
+    fake_acquisition.conversion_attempts = 104U;
+    fake_acquisition.collapsed_periods = 2U;
+
+    assert(seismic_recorder_stop() == ESP_OK);
+    assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
+    assert(snapshot.running);
+    assert(snapshot.state == SEISMIC_RECORDER_STOPPING);
+    assert(snapshot.cadence.available);
+    assert(snapshot.cadence.timer_ticks == 6U);
+    assert(snapshot.cadence.conversion_attempts == 4U);
+    assert(snapshot.cadence.collapsed_periods == 2U);
     return 0;
 }

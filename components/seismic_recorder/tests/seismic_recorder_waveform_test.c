@@ -28,6 +28,10 @@ static seismic_recorder_session_summary_t valid_summary(void)
     summary.channel_count = SEISMIC_CHANNEL_COUNT;
     summary.samples_written = 10U;
     summary.recording_ms = 20U;
+    summary.cadence.available = true;
+    summary.cadence.timer_ticks = 10U;
+    summary.cadence.conversion_attempts = 10U;
+    summary.cadence.collapsed_periods = 0U;
     return summary;
 }
 
@@ -90,6 +94,19 @@ static void test_valid_range_envelope_and_spike(void)
     assert(info.channel_count == summary.channel_count);
     assert(info.start_timestamp_us == 2000LL);
     assert(info.end_timestamp_us == 20000LL);
+    assert(info.cadence.available);
+    assert(info.cadence.timer_ticks == 10U);
+    assert(info.cadence.conversion_attempts == 10U);
+    assert(info.cadence.collapsed_periods == 0U);
+
+    assert(points[0].timestamp_us == 2000LL);
+    assert(points[0].end_timestamp_us == 6000LL);
+    assert(points[1].timestamp_us == 8000LL);
+    assert(points[1].end_timestamp_us == 10000LL);
+    assert(points[2].timestamp_us == 12000LL);
+    assert(points[2].end_timestamp_us == 16000LL);
+    assert(points[3].timestamp_us == 18000LL);
+    assert(points[3].end_timestamp_us == 20000LL);
 
     bool saw_positive_spike = false;
     bool saw_negative_spike = false;
@@ -115,7 +132,37 @@ static void test_valid_range_envelope_and_spike(void)
     assert(info.point_count == 4U);
     assert(info.start_timestamp_us == 6000LL);
     assert(info.end_timestamp_us == 12000LL);
+    for (size_t point = 0U; point < info.point_count; ++point) {
+        assert(points[point].timestamp_us == points[point].end_timestamp_us);
+    }
 
+    assert(fclose(file) == 0);
+}
+
+
+static void test_non_monotonic_timestamps_are_rejected(void)
+{
+    FILE *file = tmpfile();
+    assert(file != NULL);
+    const seismic_recorder_binary_header_t header = valid_header();
+    const size_t file_size = write_frames(file, &header, 3U);
+    const long second_frame_offset =
+        (long)sizeof(header) + (long)sizeof(seismic_frame_t);
+    assert(fseek(file, second_frame_offset, SEEK_SET) == 0);
+    seismic_frame_t frame;
+    assert(fread(&frame, sizeof(frame), 1U, file) == 1U);
+    frame.timestamp_us = 1000LL;
+    assert(fseek(file, second_frame_offset, SEEK_SET) == 0);
+    assert(fwrite(&frame, sizeof(frame), 1U, file) == 1U);
+    assert(fflush(file) == 0);
+
+    seismic_recorder_session_summary_t summary = valid_summary();
+    summary.samples_written = 3U;
+    seismic_recorder_waveform_point_t points[3] = {0};
+    seismic_recorder_waveform_info_t info;
+    assert(seismic_recorder_waveform_read_file(
+        file, file_size, &summary, 0U, 0U, 3U, points, 3U, &info
+    ) == ESP_ERR_INVALID_RESPONSE);
     assert(fclose(file) == 0);
 }
 
@@ -290,6 +337,7 @@ static void test_range_and_capacity_bounds(void)
 int main(void)
 {
     test_valid_range_envelope_and_spike();
+    test_non_monotonic_timestamps_are_rejected();
     test_metadata_raw_frame_count_mismatch();
     test_header_metadata_configuration_mismatch();
     test_bad_headers_and_truncation();

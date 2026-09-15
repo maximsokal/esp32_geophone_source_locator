@@ -18,6 +18,7 @@
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder_cache.h"
+#include "seismic_recorder_cadence.h"
 #include "seismic_recorder_internal.h"
 #include "seismic_recorder_start_policy.h"
 #include "storage_manager.h"
@@ -45,6 +46,7 @@ static TaskHandle_t s_task = NULL;
 static FILE *s_samples_file = NULL;
 static object_store_profile_t s_profile;
 static seismic_recorder_snapshot_t s_snapshot;
+static seismic_recorder_cadence_t s_cadence_start;
 
 /*
  * The worker copy buffer is PSRAM-backed and is reused for both acquisition
@@ -83,6 +85,23 @@ static void seismic_recorder_lock(void)
 static void seismic_recorder_unlock(void)
 {
     xSemaphoreGive(s_mutex);
+}
+
+
+static seismic_recorder_cadence_t seismic_recorder_cadence_snapshot(
+    const seismic_acquisition_snapshot_t *acquisition
+)
+{
+    seismic_recorder_cadence_t cadence = {0};
+    if (acquisition == NULL || !acquisition->cadence_available) {
+        return cadence;
+    }
+
+    cadence.available = true;
+    cadence.timer_ticks = acquisition->timer_ticks;
+    cadence.conversion_attempts = acquisition->conversion_attempts;
+    cadence.collapsed_periods = acquisition->collapsed_periods;
+    return cadence;
 }
 
 
@@ -410,14 +429,18 @@ static void seismic_recorder_stop_step(void)
 
             ESP_LOGI(
                 TAG,
-                "STOP_COMPLETE stage=%s error_stage=%s stage_error=%s session=%s samples=%llu drops=%llu err=%s",
+                "STOP_COMPLETE stage=%s error_stage=%s stage_error=%s session=%s samples=%llu drops=%llu err=%s cadence_available=%u timer_ticks=%llu conversion_attempts=%llu collapsed_periods=%llu",
                 seismic_recorder_stop_stage_name(final_snapshot.stop_stage),
                 seismic_recorder_stop_stage_name(final_snapshot.stop_error_stage),
                 esp_err_to_name(final_snapshot.stop_stage_error),
                 final_snapshot.session_id,
                 (unsigned long long)final_snapshot.samples_written,
                 (unsigned long long)final_snapshot.dropped_frames,
-                esp_err_to_name(final_snapshot.last_error)
+                esp_err_to_name(final_snapshot.last_error),
+                final_snapshot.cadence.available ? 1U : 0U,
+                (unsigned long long)final_snapshot.cadence.timer_ticks,
+                (unsigned long long)final_snapshot.cadence.conversion_attempts,
+                (unsigned long long)final_snapshot.cadence.collapsed_periods
             );
 
             xEventGroupSetBits(
@@ -972,6 +995,7 @@ esp_err_t seismic_recorder_init(void)
 
     memset(&s_profile, 0, sizeof(s_profile));
     memset(&s_snapshot, 0, sizeof(s_snapshot));
+    memset(&s_cadence_start, 0, sizeof(s_cadence_start));
     s_snapshot.initialized = true;
     s_snapshot.state = SEISMIC_RECORDER_IDLE;
     s_snapshot.last_error = ESP_OK;
@@ -1172,8 +1196,15 @@ esp_err_t seismic_recorder_start(
         return err;
     }
 
-    /* Session setup may itself use SD. Start both frontiers only after it so
-     * stale samples captured before the user pressed START are excluded. */
+    /* Session setup may itself use SD. Capture the scheduler baseline directly
+     * before the source cursor census so the cadence evidence is scoped to the
+     * same recording boundary. Missing evidence never becomes a synthetic 0. */
+    seismic_acquisition_snapshot_t boundary_acquisition = {0};
+    seismic_recorder_cadence_t cadence_start = {0};
+    if (seismic_acquisition_get_snapshot(&boundary_acquisition) == ESP_OK) {
+        cadence_start = seismic_recorder_cadence_snapshot(&boundary_acquisition);
+    }
+
     seismic_frame_t scratch;
     size_t scratch_count = 0U;
     seismic_buffer_info_t buffer_info;
@@ -1211,6 +1242,7 @@ esp_err_t seismic_recorder_start(
 
     seismic_recorder_cache_reset(&s_cache);
     s_snapshot = initial_snapshot;
+    s_cadence_start = cadence_start;
     s_profile = *profile;
     s_samples_file = file;
     s_ingest_cursor = buffer_info.total_frames;
@@ -1268,8 +1300,22 @@ esp_err_t seismic_recorder_stop(void)
         &info
     );
 
+    /* Read the cumulative cadence immediately after the stop census. The
+     * recorder worker has not been told to finalize yet, so the delta is stored
+     * before metadata can be committed. A few extra scheduler ticks can only
+     * widen the evidence window; they cannot hide a collapsed period. */
+    seismic_acquisition_snapshot_t boundary_acquisition = {0};
+    seismic_recorder_cadence_t cadence_end = {0};
+    if (seismic_acquisition_get_snapshot(&boundary_acquisition) == ESP_OK) {
+        cadence_end = seismic_recorder_cadence_snapshot(&boundary_acquisition);
+    }
+
     seismic_recorder_lock();
     if (!s_snapshot.running) {
+        seismic_recorder_unlock();
+        return ESP_OK;
+    }
+    if (s_stop_requested) {
         seismic_recorder_unlock();
         return ESP_OK;
     }
@@ -1283,9 +1329,15 @@ esp_err_t seismic_recorder_stop(void)
         info_err == ESP_OK && info.total_frames >= s_ingest_cursor
             ? info.total_frames
             : s_ingest_cursor;
+    seismic_recorder_cadence_delta(
+        &s_cadence_start,
+        &cadence_end,
+        &s_snapshot.cadence
+    );
     const uint64_t target = s_stop_target;
     const uint64_t ingest_cursor = s_ingest_cursor;
     const uint64_t persisted_cursor = s_cursor;
+    const seismic_recorder_cadence_t cadence = s_snapshot.cadence;
     seismic_recorder_unlock();
 
     const uint64_t backlog =
@@ -1294,14 +1346,16 @@ esp_err_t seismic_recorder_stop(void)
             : 0U;
     ESP_LOGI(
         TAG,
-        "STOP_REQUEST stage=drain persisted=%llu ingest=%llu target=%llu producer_total=%llu buffered=%u producer_backlog=%llu info_err=%s",
+        "STOP_REQUEST stage=drain persisted=%llu ingest=%llu target=%llu producer_total=%llu buffered=%u producer_backlog=%llu info_err=%s cadence_available=%u collapsed_periods=%llu",
         (unsigned long long)persisted_cursor,
         (unsigned long long)ingest_cursor,
         (unsigned long long)target,
         (unsigned long long)info.total_frames,
         (unsigned)info.buffered_frames,
         (unsigned long long)backlog,
-        esp_err_to_name(info_err)
+        esp_err_to_name(info_err),
+        cadence.available ? 1U : 0U,
+        (unsigned long long)cadence.collapsed_periods
     );
 
     return ESP_OK;

@@ -93,6 +93,24 @@ static bool seismic_recorder_json_add_cables(
 }
 
 
+static bool seismic_recorder_json_add_cadence(
+    cJSON *root,
+    const seismic_recorder_cadence_t *cadence
+)
+{
+    cJSON *object = cJSON_AddObjectToObject(root, "cadence");
+    if (object == NULL) {
+        return false;
+    }
+
+    return
+        cJSON_AddBoolToObject(object, "available", cadence->available) != NULL &&
+        cJSON_AddNumberToObject(object, "timer_ticks", (double)cadence->timer_ticks) != NULL &&
+        cJSON_AddNumberToObject(object, "conversion_attempts", (double)cadence->conversion_attempts) != NULL &&
+        cJSON_AddNumberToObject(object, "collapsed_periods", (double)cadence->collapsed_periods) != NULL;
+}
+
+
 esp_err_t seismic_recorder_json_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
@@ -146,6 +164,10 @@ esp_err_t seismic_recorder_json_write_metadata(
         cJSON_AddNumberToObject(root, "dropped_frames", (double)snapshot->dropped_frames) != NULL &&
         cJSON_AddNumberToObject(root, "recording_ms", (double)snapshot->recording_ms) != NULL &&
         cJSON_AddNumberToObject(root, "last_error", snapshot->last_error) != NULL;
+
+    if (ok) {
+        ok = seismic_recorder_json_add_cadence(root, &snapshot->cadence);
+    }
 
     cJSON *format = NULL;
     if (ok) {
@@ -237,6 +259,7 @@ static bool seismic_recorder_json_uint64(
     return true;
 }
 
+
 static bool seismic_recorder_json_uint32(
     const cJSON *root,
     const char *name,
@@ -268,6 +291,55 @@ static bool seismic_recorder_json_string_equals(
         cJSON_IsString(item) &&
         item->valuestring != NULL &&
         strcmp(item->valuestring, expected) == 0;
+}
+
+
+static bool seismic_recorder_json_read_cadence(
+    const cJSON *root,
+    seismic_recorder_cadence_t *cadence
+)
+{
+    if (root == NULL || cadence == NULL) {
+        return false;
+    }
+
+    memset(cadence, 0, sizeof(*cadence));
+    const cJSON *object = cJSON_GetObjectItemCaseSensitive(root, "cadence");
+    if (object == NULL) {
+        /* Schema v1 predates cadence evidence. Absence is unknown, not zero. */
+        return true;
+    }
+    if (!cJSON_IsObject(object)) {
+        return false;
+    }
+
+    const cJSON *available =
+        cJSON_GetObjectItemCaseSensitive(object, "available");
+    if (!cJSON_IsBool(available)) {
+        return false;
+    }
+    if (!cJSON_IsTrue(available)) {
+        return true;
+    }
+
+    uint64_t timer_ticks = 0U;
+    uint64_t conversion_attempts = 0U;
+    uint64_t collapsed_periods = 0U;
+    if (
+        !seismic_recorder_json_uint64(object, "timer_ticks", &timer_ticks) ||
+        !seismic_recorder_json_uint64(object, "conversion_attempts", &conversion_attempts) ||
+        !seismic_recorder_json_uint64(object, "collapsed_periods", &collapsed_periods) ||
+        conversion_attempts > timer_ticks ||
+        collapsed_periods != timer_ticks - conversion_attempts
+    ) {
+        return false;
+    }
+
+    cadence->available = true;
+    cadence->timer_ticks = timer_ticks;
+    cadence->conversion_attempts = conversion_attempts;
+    cadence->collapsed_periods = collapsed_periods;
+    return true;
 }
 
 
@@ -392,10 +464,12 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
     uint64_t samples_written = 0U;
     uint64_t dropped_frames = 0U;
     uint64_t recording_ms = 0U;
+    seismic_recorder_cadence_t cadence = {0};
     valid = valid &&
         seismic_recorder_json_uint64(root, "samples_written", &samples_written) &&
         seismic_recorder_json_uint64(root, "dropped_frames", &dropped_frames) &&
-        seismic_recorder_json_uint64(root, "recording_ms", &recording_ms);
+        seismic_recorder_json_uint64(root, "recording_ms", &recording_ms) &&
+        seismic_recorder_json_read_cadence(root, &cadence);
 
     if (!valid) {
         cJSON_Delete(root);
@@ -421,6 +495,7 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
     summary->samples_written = samples_written;
     summary->dropped_frames = dropped_frames;
     summary->recording_ms = recording_ms;
+    summary->cadence = cadence;
 
     cJSON_Delete(root);
     free(path);

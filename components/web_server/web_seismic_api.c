@@ -448,8 +448,17 @@ static esp_err_t web_seismic_saved_handler(
     web_json_writer_printf(
         &writer,
         "\"end_timestamp_us\":%" PRId64 ","
-        "\"points\":[",
-        info.end_timestamp_us
+        "\"cadence\":{"
+        "\"available\":%s,"
+        "\"timer_ticks\":%" PRIu64 ","
+        "\"conversion_attempts\":%" PRIu64 ","
+        "\"collapsed_periods\":%" PRIu64
+        "},\"points\":[",
+        info.end_timestamp_us,
+        info.cadence.available ? "true" : "false",
+        info.cadence.timer_ticks,
+        info.cadence.conversion_attempts,
+        info.cadence.collapsed_periods
     );
 
     for (size_t point_index = 0U; point_index < info.point_count; ++point_index) {
@@ -459,8 +468,9 @@ static esp_err_t web_seismic_saved_handler(
 
         web_json_writer_printf(
             &writer,
-            "{\"timestamp_us\":%" PRId64 ",\"channels\":[",
-            points[point_index].timestamp_us
+            "{\"timestamp_us\":%" PRId64 ",\"end_timestamp_us\":%" PRId64 ",\"channels\":[",
+            points[point_index].timestamp_us,
+            points[point_index].end_timestamp_us
         );
 
         for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
