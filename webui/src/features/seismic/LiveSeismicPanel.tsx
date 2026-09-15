@@ -6,22 +6,22 @@ const LIVE_REFRESH_MS = 500;
 const LIVE_ERROR_BACKOFF_MIN_MS = 1500;
 const LIVE_ERROR_BACKOFF_MAX_MS = 10000;
 
-export function polylinePoints(
+function normalizedWaveformPoints(
   samples: number[],
   timestampsMs: number[],
   width: number,
   height: number,
-): string {
-  if (samples.length === 0 || samples.length !== timestampsMs.length) return '';
+): string[] | null {
+  if (samples.length === 0 || samples.length !== timestampsMs.length) return [];
   if (
     !Number.isFinite(width) || width < 0 ||
     !Number.isFinite(height) || height < 0 ||
     !samples.every(Number.isFinite) ||
     !timestampsMs.every(Number.isFinite)
-  ) return '';
+  ) return null;
 
   for (let index = 1; index < timestampsMs.length; index += 1) {
-    if (timestampsMs[index] < timestampsMs[index - 1]) return '';
+    if (timestampsMs[index] < timestampsMs[index - 1]) return null;
   }
 
   let maxAbs = 1;
@@ -37,7 +37,59 @@ export function polylinePoints(
     const x = toX(timestampsMs[index]);
     const y = height / 2 - (sample / maxAbs) * height * 0.44;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
+  });
+}
+
+/**
+ * Timestamp-aware point geometry kept as a small pure helper for tests and
+ * callers that need the complete coordinate list. The live renderer below
+ * uses polylineSegments() so it never draws through a proven missed period.
+ */
+export function polylinePoints(
+  samples: number[],
+  timestampsMs: number[],
+  width: number,
+  height: number,
+): string {
+  const points = normalizedWaveformPoints(samples, timestampsMs, width, height);
+  return points === null ? '' : points.join(' ');
+}
+
+/**
+ * Split a live trace only when the timestamp distance spans at least two
+ * configured sample periods. This is not an arbitrary jitter threshold: two
+ * periods means at least one configured sample instant has no returned frame.
+ * Smaller timing variation remains connected and is still positioned by its
+ * real timestamp.
+ */
+export function polylineSegments(
+  samples: number[],
+  timestampsMs: number[],
+  width: number,
+  height: number,
+  sampleRateHz: number,
+): string[] {
+  if (!Number.isFinite(sampleRateHz) || sampleRateHz <= 0) return [];
+
+  const points = normalizedWaveformPoints(samples, timestampsMs, width, height);
+  if (points === null || points.length === 0) return [];
+
+  const missedPeriodBoundaryMs = (2 * 1000) / sampleRateHz;
+  const segments: string[][] = [[]];
+
+  for (let index = 0; index < points.length; index += 1) {
+    if (
+      index > 0 &&
+      timestampsMs[index] - timestampsMs[index - 1] >= missedPeriodBoundaryMs
+    ) {
+      segments.push([]);
+    }
+    segments[segments.length - 1].push(points[index]);
+  }
+
+  return segments
+    .filter((segment) => segment.length > 0)
+    .map((segment) => segment.join(' '));
 }
 
 export default function LiveSeismicPanel() {
@@ -89,11 +141,12 @@ export default function LiveSeismicPanel() {
   }, []);
 
   const lines = useMemo(
-    () => snapshot?.channels.map((channel) => polylinePoints(
+    () => snapshot?.channels.map((channel) => polylineSegments(
       channel.samples_uv,
       snapshot.timestamps_ms,
       720,
       120,
+      snapshot.sample_rate_hz,
     )) ?? [],
     [snapshot],
   );
@@ -111,7 +164,13 @@ export default function LiveSeismicPanel() {
             <span>G{index + 1}</span>
             <svg viewBox="0 0 720 120" role="img" aria-label={`Geophone ${index + 1} live waveform`} preserveAspectRatio="none">
               <line x1="0" y1="60" x2="720" y2="60" className="seismic-zero" />
-              <polyline points={lines[index] ?? ''} className={`seismic-line channel-${index + 1}`} />
+              {(lines[index] ?? []).map((points, segmentIndex) => (
+                <polyline
+                  key={segmentIndex}
+                  points={points}
+                  className={`seismic-line channel-${index + 1}`}
+                />
+              ))}
             </svg>
           </div>
         ))}
