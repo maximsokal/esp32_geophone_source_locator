@@ -148,7 +148,7 @@ function Get-Ad7606TransportHealth {
     }
 
     $window = 0
-    if ($null -eq $windowValue -or -not [int]::TryParse([string]$windowValue, [ref]$window)) {
+    if ($null -eq $windowValue -or -not [int]::TryParse([string]$windowValue, ([ref]$window))) {
         return [pscustomobject]@{
             Status = "BLOCKED"; Reason = "serial quality_window_frames is missing"; SignalQuality = $signalQuality; Window = $null
         }
@@ -170,7 +170,7 @@ function Get-Ad7606TransportHealth {
     if ($streamStuck -eq $true) { $reasons.Add("serial stream_stuck=true") }
 
     $consecutive = 0
-    if ($null -ne $consecutiveFailures -and [int]::TryParse([string]$consecutiveFailures, [ref]$consecutive)) {
+    if ($null -ne $consecutiveFailures -and [int]::TryParse([string]$consecutiveFailures, ([ref]$consecutive))) {
         if ($consecutive -ne 0) { $reasons.Add("consecutive_failures=$consecutive expected=0") }
     } else {
         return [pscustomobject]@{
@@ -283,6 +283,7 @@ $healthEvidence = $null
 $healthStatus = "BLOCKED"
 $healthReason = "health evidence not evaluated"
 $healthSamples = New-Object System.Collections.Generic.List[object]
+$repo = $null
 
 try {
     if ($isReplay) {
@@ -384,8 +385,18 @@ try {
         Stop-Process -Id $monitor.Id -Force -ErrorAction SilentlyContinue
         $monitor.WaitForExit()
     }
-    if (-not $isReplay -and $healthSamples.Count -gt 0 -and $null -ne $healthFile) {
-        try { Save-HealthEvidence @($healthSamples) $healthFile } catch { }
+    if (-not $isReplay -and $healthSamples.Count -gt 0) {
+        try {
+            if ($null -eq $healthFile -and $null -ne $repo) {
+                $hilDir = Join-Path $repo "build\hil"
+                New-Item -ItemType Directory -Path $hilDir -Force | Out-Null
+                $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+                $healthFile = Join-Path $hilDir "storage-spi-$stamp.health.json"
+            }
+            if ($null -ne $healthFile) {
+                Save-HealthEvidence @($healthSamples) $healthFile
+            }
+        } catch { }
     }
 }
 
