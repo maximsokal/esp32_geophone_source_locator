@@ -296,15 +296,27 @@ static void publish_refresh(uint32_t request_id)
     k_spin_unlock(&s_session_lock, key);
 }
 
+static bool session_matches_assignment(
+    const nrf_sensor_session_t *session,
+    const nrf_upstream_assign_t *assign)
+{
+    return session->remote_active &&
+           session->node_id == assign->node_id &&
+           session->mux_channel == assign->mux_channel;
+}
+
 static void handle_activation(const nrf_upstream_assign_t *assign)
 {
-    nrf_sensor_session_activate_result_t activation;
+    bool initial_request_pending;
     k_spinlock_key_t key = k_spin_lock(&s_session_lock);
+    initial_request_pending =
+        session_matches_assignment(&s_session, assign) &&
+        s_session.request_pending &&
+        s_session.active_request_id == 0U;
     s_activation_queued = false;
-    activation = nrf_sensor_session_activate_remote(&s_session, assign);
     k_spin_unlock(&s_session_lock, key);
 
-    if (activation != NRF_SENSOR_SESSION_ACTIVATE_NEW) {
+    if (!initial_request_pending) {
         return;
     }
 
@@ -418,6 +430,8 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
     const nrf_upstream_assign_t *assign)
 {
     nrf_sensor_event_t event;
+    nrf_sensor_session_t previous_session;
+    nrf_sensor_session_activate_result_t activation;
     k_spinlock_key_t key;
 
     if (!s_started) {
@@ -435,11 +449,18 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
         return 0;
     }
     if (s_session.remote_active) {
-        const bool same =
-            s_session.node_id == assign->node_id &&
-            s_session.mux_channel == assign->mux_channel;
+        const bool same = session_matches_assignment(&s_session, assign);
         k_spin_unlock(&s_session_lock, key);
         return same ? 0 : -EALREADY;
+    }
+
+    previous_session = s_session;
+    activation = nrf_sensor_session_activate_remote(&s_session, assign);
+    if (activation != NRF_SENSOR_SESSION_ACTIVATE_NEW) {
+        k_spin_unlock(&s_session_lock, key);
+        return activation == NRF_SENSOR_SESSION_ACTIVATE_CONFLICT
+            ? -EALREADY
+            : -EINVAL;
     }
     s_activation_queued = true;
     k_spin_unlock(&s_session_lock, key);
@@ -449,6 +470,12 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
     event.assign = *assign;
     if (k_msgq_put(&s_sensor_queue, &event, K_NO_WAIT) != 0) {
         key = k_spin_lock(&s_session_lock);
+        if (s_activation_queued &&
+            session_matches_assignment(&s_session, assign) &&
+            s_session.request_pending &&
+            s_session.active_request_id == 0U) {
+            s_session = previous_session;
+        }
         s_activation_queued = false;
         k_spin_unlock(&s_session_lock, key);
         return -ENOSPC;

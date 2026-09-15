@@ -69,6 +69,15 @@ static void publish_core_status(void)
     }
 }
 
+static void publish_core_status_with_result(nrf_upstream_result_t result)
+{
+    nrf_upstream_status_t status;
+    if (nrf_bootstrap_make_status(&s_bootstrap, &status) == NRF_UPSTREAM_RESULT_OK) {
+        status.result = (uint8_t)result;
+        publish_status(&status);
+    }
+}
+
 static void publish_result_context(uint32_t request_id, nrf_upstream_result_t result)
 {
     k_spinlock_key_t key = k_spin_lock(&s_status_lock);
@@ -86,12 +95,15 @@ static void assign_work_handler(struct k_work *work)
         nrf_upstream_result_t result;
         publish_result_context(assign.request_id, NRF_UPSTREAM_RESULT_PENDING);
         result = nrf_bootstrap_process_assign(&s_bootstrap, &assign);
-        publish_core_status();
         if (result == NRF_UPSTREAM_RESULT_OK &&
             assign.role == NRF_UPSTREAM_ROLE_REMOTE) {
-            (void)nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
-                &assign);
+            if (nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) != 0) {
+                publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+                runtime_cold_reboot(NULL);
+                continue;
+            }
         }
+        publish_core_status();
     }
 }
 

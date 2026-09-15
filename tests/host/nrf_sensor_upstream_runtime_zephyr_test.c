@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,6 +18,9 @@ static unsigned s_prepare_calls;
 static unsigned s_refresh_calls;
 static unsigned s_imu_read_calls;
 static unsigned s_runtime_init_calls;
+static bool s_fail_next_queue_put;
+static bool s_exit_worker_when_empty;
+static jmp_buf s_worker_exit;
 static void (*s_worker_entry)(void *, void *, void *);
 
 void k_msgq_purge(struct k_msgq *q)
@@ -28,6 +32,10 @@ int k_msgq_put(struct k_msgq *q, const void *data, k_timeout_t timeout)
 {
     (void)timeout;
     ++s_queue_put_calls;
+    if (s_fail_next_queue_put) {
+        s_fail_next_queue_put = false;
+        return -ENOMSG;
+    }
     if (q->count >= q->max_msgs) {
         return -ENOMSG;
     }
@@ -41,6 +49,9 @@ int k_msgq_get(struct k_msgq *q, void *data, k_timeout_t timeout)
 {
     (void)timeout;
     if (q->count == 0U) {
+        if (s_exit_worker_when_empty) {
+            longjmp(s_worker_exit, 1);
+        }
         return -ENOMSG;
     }
     memcpy(data, q->storage[q->head], q->msg_size);
@@ -174,6 +185,7 @@ int main(void)
     nrf_orientation_config_t orientation_config;
     nrf_orientation_output_t orientation;
     nrf_upstream_assign_t assign = make_assign();
+    nrf_upstream_assign_t conflicting = assign;
     nrf_upstream_sensor_refresh_t request = {.request_id = 20U};
     nrf_upstream_sensor_snapshot_t snapshot;
 
@@ -201,12 +213,54 @@ int main(void)
     assert(s_queue_put_calls == 0U);
     assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
 
-    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    /* Failed ACTIVATE enqueue rolls the lightweight session activation back. */
+    s_fail_next_queue_put = true;
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == -ENOSPC);
     assert(s_queue_put_calls == 1U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_NOT_READY);
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == -EAGAIN);
+    assert(s_queue_put_calls == 1U);
+
+    /*
+     * Successful notification commits logical REMOTE activation synchronously,
+     * before the worker performs any private-sensor I/O. An immediate external
+     * refresh therefore observes request_id=0 PENDING/BUSY, never NOT_REMOTE.
+     */
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    assert(s_queue_put_calls == 2U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 0U);
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == -EBUSY);
+    assert(s_queue_put_calls == 2U);
     assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
 
+    /* Execute exactly the queued ACTIVATE event, then escape the worker loop. */
+    s_exit_worker_when_empty = true;
+    if (setjmp(s_worker_exit) == 0) {
+        s_worker_entry(NULL, NULL, NULL);
+        assert(false);
+    }
+    s_exit_worker_when_empty = false;
+
+    assert(s_prepare_calls == 1U);
+    assert(s_refresh_calls == 1U);
+    assert(s_imu_read_calls == 1U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 0U);
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+
+    /* The explicit request is accepted after the activation sample completes. */
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
+    assert(s_queue_put_calls == 3U);
+
+    /* Same assignment is idempotent; a conflicting active identity is rejected. */
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
-    assert(s_queue_put_calls == 1U);
-    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
+    assert(s_queue_put_calls == 3U);
+    conflicting.node_id = 3U;
+    conflicting.mux_channel = 2U;
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&conflicting) == -EALREADY);
+    assert(s_queue_put_calls == 3U);
     return 0;
 }

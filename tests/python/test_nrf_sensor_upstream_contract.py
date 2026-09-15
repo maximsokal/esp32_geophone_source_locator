@@ -61,17 +61,36 @@ def test_sensor_worker_is_dedicated_and_callback_path_is_nonblocking():
     assert "k_msleep" not in callback
 
 
-def test_remote_activation_is_after_committed_bootstrap_assignment():
+def test_remote_logical_activation_precedes_published_assignment_ok():
+    sensor = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
     bootstrap = read("nRF54L15/src/nrf_bootstrap_runtime_zephyr.c")
+
     handler_start = bootstrap.index("static void assign_work_handler")
     handler_end = bootstrap.index("static void target_write_received")
     handler = bootstrap[handler_start:handler_end]
     process = handler.index("nrf_bootstrap_process_assign")
-    publish = handler.index("publish_core_status")
     notify = handler.index("nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment")
-    assert process < publish < notify
+    publish_ok = handler.rindex("publish_core_status();")
+    assert process < notify < publish_ok
     assert "result == NRF_UPSTREAM_RESULT_OK" in handler
     assert "assign.role == NRF_UPSTREAM_ROLE_REMOTE" in handler
+    assert "publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR)" in handler
+    assert "runtime_cold_reboot(NULL)" in handler
+
+    notify_start = sensor.index("int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment")
+    notify_end = sensor.index("int nrf_sensor_upstream_runtime_zephyr_request_refresh")
+    notify_body = sensor[notify_start:notify_end]
+    activate = notify_body.index("nrf_sensor_session_activate_remote")
+    enqueue = notify_body.index("k_msgq_put")
+    assert activate < enqueue
+    assert "previous_session = s_session;" in notify_body
+    assert "s_session = previous_session;" in notify_body
+
+    activation_start = sensor.index("static void handle_activation")
+    activation_end = sensor.index("static void sensor_worker")
+    activation_body = sensor[activation_start:activation_end]
+    assert "nrf_sensor_session_activate_remote" not in activation_body
+    assert "active_request_id == 0U" in activation_body
 
 
 def test_sensor_runtime_owns_private_node_state_not_bootstrap_state_pointer():
