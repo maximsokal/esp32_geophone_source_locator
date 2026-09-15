@@ -30,6 +30,23 @@ def test_sustained_hil_runner_is_passive_and_waits_for_real_cache_eviction():
     assert "RECORDER_SUSTAINED_HIL_RESULT" in runner
 
 
+def test_sustained_hil_runner_gates_every_recording_phase_on_transport_health():
+    runner = read("tools/run_recorder_sustained_hil.ps1")
+
+    assert "HealthSettleSeconds = 15" in runner
+    assert '"{0}/api/status" -f $base' in runner
+    assert "quality_window_frames" in runner
+    assert 'streamState -ne "NORMAL" -and $streamState -ne "QUIET"' in runner
+    assert 'Add-HealthSample $healthSamples "preflight"' in runner
+    assert 'Add-HealthSample $healthSamples "during-start"' in runner
+    assert 'Add-HealthSample $healthSamples "during-recording"' in runner
+    assert '"during-stop"' in runner
+    assert '"post"' in runner
+    assert "$transportFaultObserved = $true" in runner
+    assert '"--health-evidence", $healthJson' in runner
+    assert "HEALTH_EVIDENCE" in runner
+
+
 def test_integrity_contract_exercises_psram_to_internal_dma_to_sd_production_path():
     recorder = read("components/seismic_recorder/seismic_recorder.c")
     filesystem = read("components/seismic_recorder/seismic_recorder_fs.c")
@@ -50,8 +67,9 @@ def test_integrity_contract_exercises_psram_to_internal_dma_to_sd_production_pat
     assert "WAVEFORM_READ_PATH source=%s" in reader
 
 
-def test_sustained_analyzer_requires_throughput_margin_eviction_and_raw_reader_evidence():
+def test_sustained_analyzer_requires_throughput_integrity_and_shared_transport_health():
     analyzer = read("tools/analyze_recorder_sustained.py")
+    health = read("tools/ad7606_health.py")
 
     assert "required_stream_bps" in analyzer
     assert "required_margin_bps" in analyzer
@@ -60,7 +78,15 @@ def test_sustained_analyzer_requires_throughput_margin_eviction_and_raw_reader_e
     assert 'match.group("source").lower() == "raw"' in analyzer
     assert "integrity mismatch" in analyzer
     assert "minimum_overlap_frames" in analyzer
+    assert "classify_evidence" in analyzer
+    assert "uart_transport_violations" in analyzer
+    assert "--health-evidence" in analyzer
     assert "RECORDER_SUSTAINED_ANALYSIS" in analyzer
+
+    assert "MINIMUM_QUALITY_WINDOW_FRAMES = 500" in health
+    assert 'GOOD_STREAM_STATES = frozenset({"NORMAL", "QUIET"})' in health
+    assert 'BAD_TRANSPORT_QUALITIES = frozenset({"DEGRADED", "FAULT"})' in health
+    assert "signal_quality_states" in health
 
 
 def test_sustained_hil_runner_parses_as_powershell_when_available():
