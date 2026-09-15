@@ -75,15 +75,26 @@ export interface MeasurementServiceStatus {
   error?: string;
 }
 
+export type RecordingSessionStatus =
+  | 'complete'
+  | 'error'
+  | 'recovered_error'
+  | 'unknown';
+
 export interface RecordingSessionSummary {
   session_id: string;
+  status?: RecordingSessionStatus;
   complete: boolean;
+  readable?: boolean;
+  recovered?: boolean;
   source?: string;
   sample_rate_hz: number;
   channel_count: number;
   samples_written: number;
   dropped_frames: number;
+  dropped_frames_available?: boolean;
   recording_ms: number;
+  recording_ms_available?: boolean;
 }
 
 export interface RecordingSessionCollection {
@@ -259,12 +270,17 @@ export interface SavedSeismicSnapshot {
   object_id: string;
   session_id: string;
   source: string;
+  status: RecordingSessionStatus;
   complete: boolean;
+  readable: boolean;
+  recovered: boolean;
   sample_rate_hz: number;
   channel_count: number;
   samples_written: number;
   dropped_frames: number;
+  dropped_frames_available: boolean;
   recording_ms: number;
+  recording_ms_available: boolean;
   cadence: SeismicCadenceEvidence;
   source_frame_count: number;
   start_frame: number;
@@ -317,6 +333,59 @@ function normalizeCadenceEvidence(value: unknown): SeismicCadenceEvidence {
     timer_ticks: timerTicks,
     conversion_attempts: attempts,
     collapsed_periods: collapsed,
+  };
+}
+
+function normalizeSavedSessionStatus(payload: Record<string, unknown>): {
+  status: RecordingSessionStatus;
+  complete: boolean;
+  readable: boolean;
+  recovered: boolean;
+} {
+  if (typeof payload.complete !== 'boolean') {
+    throw new Error('ESP saved seismic completion state is invalid.');
+  }
+
+  const rawStatus = payload.status;
+  const status: RecordingSessionStatus = rawStatus === undefined
+    ? (payload.complete ? 'complete' : 'unknown')
+    : rawStatus === 'complete' || rawStatus === 'error' || rawStatus === 'recovered_error'
+      ? rawStatus
+      : 'unknown';
+
+  if (rawStatus !== undefined && status === 'unknown') {
+    throw new Error('ESP saved seismic terminal status is invalid.');
+  }
+
+  const expectedComplete = status === 'complete';
+  if (status !== 'unknown' && payload.complete !== expectedComplete) {
+    throw new Error('ESP saved seismic completion/status state is inconsistent.');
+  }
+
+  const readable = payload.readable === undefined
+    ? payload.complete === true
+    : payload.readable;
+  if (typeof readable !== 'boolean') {
+    throw new Error('ESP saved seismic readability state is invalid.');
+  }
+
+  const expectedRecovered = status === 'recovered_error';
+  const recovered = payload.recovered === undefined
+    ? expectedRecovered
+    : payload.recovered;
+  if (typeof recovered !== 'boolean' || (status !== 'unknown' && recovered !== expectedRecovered)) {
+    throw new Error('ESP saved seismic recovery state is invalid.');
+  }
+
+  if (!readable || status === 'unknown') {
+    throw new Error('ESP saved seismic session is not terminal/readable.');
+  }
+
+  return {
+    status,
+    complete: payload.complete,
+    readable,
+    recovered,
   };
 }
 
@@ -380,7 +449,7 @@ export function normalizeSeismicSnapshot(value: unknown): SeismicSnapshot {
   };
 }
 
-/** Validate the bounded min/max envelope returned for one completed session. */
+/** Validate the bounded min/max envelope returned for one terminal readable session. */
 export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnapshot {
   if (typeof value !== 'object' || value === null) {
     throw new Error('ESP saved seismic API returned a non-object payload.');
@@ -404,7 +473,6 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
 
   if (
     !requiredStrings.every((candidate) => typeof candidate === 'string' && candidate.length > 0) ||
-    payload.complete !== true ||
     !requiredCounts.every(isNonNegativeInteger) ||
     (payload.sample_rate_hz as number) === 0 ||
     payload.channel_count !== 4 ||
@@ -414,6 +482,17 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
     (payload.count as number) > 1200
   ) {
     throw new Error('ESP saved seismic API returned an invalid session shape.');
+  }
+
+  const terminal = normalizeSavedSessionStatus(payload);
+  const droppedFramesAvailable = payload.dropped_frames_available === undefined
+    ? true
+    : payload.dropped_frames_available;
+  const recordingMsAvailable = payload.recording_ms_available === undefined
+    ? true
+    : payload.recording_ms_available;
+  if (typeof droppedFramesAvailable !== 'boolean' || typeof recordingMsAvailable !== 'boolean') {
+    throw new Error('ESP saved seismic metric availability is invalid.');
   }
 
   const cadence = normalizeCadenceEvidence(payload.cadence);
@@ -481,12 +560,17 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
     object_id: payload.object_id as string,
     session_id: payload.session_id as string,
     source: payload.source as string,
-    complete: true,
+    status: terminal.status,
+    complete: terminal.complete,
+    readable: terminal.readable,
+    recovered: terminal.recovered,
     sample_rate_hz: payload.sample_rate_hz as number,
     channel_count: 4,
     samples_written: payload.samples_written as number,
     dropped_frames: payload.dropped_frames as number,
+    dropped_frames_available: droppedFramesAvailable,
     recording_ms: payload.recording_ms as number,
+    recording_ms_available: recordingMsAvailable,
     cadence,
     source_frame_count: payload.source_frame_count as number,
     start_frame: payload.start_frame as number,

@@ -37,9 +37,49 @@ typedef enum
 } seismic_recorder_stop_stage_t;
 
 
+typedef enum
+{
+    SEISMIC_RECORDER_SESSION_UNKNOWN = 0,
+    SEISMIC_RECORDER_SESSION_COMPLETE,
+    SEISMIC_RECORDER_SESSION_ERROR,
+    SEISMIC_RECORDER_SESSION_RECOVERED_ERROR
+
+} seismic_recorder_session_status_t;
+
+
+typedef bool (*seismic_recorder_recovery_stop_requested_fn)(
+    void *user_context
+);
+
+
+typedef void (*seismic_recorder_recovery_request_callback_t)(
+    const char *object_id,
+    const char *session_id,
+    void *user_context
+);
+
+
 const char *seismic_recorder_stop_stage_name(
     seismic_recorder_stop_stage_t stage
 );
+
+
+static inline const char *seismic_recorder_session_status_name(
+    seismic_recorder_session_status_t status
+)
+{
+    switch (status) {
+        case SEISMIC_RECORDER_SESSION_COMPLETE:
+            return "complete";
+        case SEISMIC_RECORDER_SESSION_ERROR:
+            return "error";
+        case SEISMIC_RECORDER_SESSION_RECOVERED_ERROR:
+            return "recovered_error";
+        case SEISMIC_RECORDER_SESSION_UNKNOWN:
+        default:
+            return "unknown";
+    }
+}
 
 
 typedef struct
@@ -83,7 +123,12 @@ typedef struct
 {
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 
+    seismic_recorder_session_status_t status;
     bool complete;
+    bool readable;
+    bool recovered;
+    bool dropped_frames_available;
+    bool recording_ms_available;
 
     uint32_t sample_rate_hz;
     uint8_t channel_count;
@@ -114,7 +159,12 @@ typedef struct
 
 typedef struct
 {
+    seismic_recorder_session_status_t status;
     bool complete;
+    bool readable;
+    bool recovered;
+    bool dropped_frames_available;
+    bool recording_ms_available;
     char object_id[SEISMIC_RECORDER_OBJECT_ID_SIZE];
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
     char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
@@ -163,6 +213,25 @@ bool seismic_recorder_is_recording_object(
 );
 
 
+esp_err_t seismic_recorder_set_recovery_request_callback(
+    seismic_recorder_recovery_request_callback_t callback,
+    void *user_context
+);
+
+
+/*
+ * Cooperatively salvage stale recording sessions for one object. Only a
+ * validated GEOSEIS1 whole-frame prefix is published, and the currently open
+ * recorder session is never touched. recovered_count may be NULL.
+ */
+esp_err_t seismic_recorder_recover_object_sessions(
+    const char *object_id,
+    seismic_recorder_recovery_stop_requested_fn stop_requested,
+    void *user_context,
+    size_t *recovered_count
+);
+
+
 esp_err_t seismic_recorder_list_sessions(
     const char *object_id,
     seismic_recorder_session_summary_t *sessions,
@@ -196,7 +265,7 @@ esp_err_t seismic_recorder_delete_session(
 );
 
 
-/* Read one bounded session range as min/max envelopes for WebUI rendering. */
+/* Read one bounded terminal session range as min/max envelopes for WebUI rendering. */
 esp_err_t seismic_recorder_read_session(
     const char *object_id,
     const char *session_id,

@@ -111,6 +111,7 @@ cJSON *cJSON_Parse(const char *text)
             }
             item->type = cJSON_Number;
             item->valueint = (int)value;
+            item->valuedouble = (double)value;
             cursor = end;
         }
 

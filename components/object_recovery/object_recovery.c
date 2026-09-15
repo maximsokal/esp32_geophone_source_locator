@@ -15,6 +15,7 @@
 
 #include "object_format.h"
 #include "object_recovery_internal.h"
+#include "seismic_recorder.h"
 #include "storage_manager.h"
 
 #ifdef ESP_PLATFORM
@@ -30,6 +31,13 @@ static const char *TAG =
     STORAGE_MANAGER_ROOT_PATH "/active_object.txt"
 
 typedef char object_recovery_id_t[OBJECT_FORMAT_ID_SIZE];
+
+typedef struct
+{
+    object_recovery_stop_requested_fn stop_requested;
+    void *user_context;
+
+} object_recovery_session_context_t;
 
 
 static void object_recovery_watchdog_checkpoint(void)
@@ -189,6 +197,23 @@ static bool object_recovery_should_stop(
 }
 
 
+static bool object_recovery_session_checkpoint(
+    void *context
+)
+{
+    object_recovery_session_context_t *session_context =
+        (object_recovery_session_context_t *)context;
+
+    object_recovery_watchdog_checkpoint();
+    return
+        session_context != NULL &&
+        object_recovery_should_stop(
+            session_context->stop_requested,
+            session_context->user_context
+        );
+}
+
+
 static esp_err_t object_recovery_check_guarded(
     const char *object_id,
     bool *removed
@@ -242,6 +267,7 @@ esp_err_t object_recovery_run_cooperative(
     size_t processed = 0U;
     size_t removed_count = 0U;
     size_t recovered_or_valid = 0U;
+    size_t recovered_sessions_total = 0U;
 
     for (size_t index = 0U; index < count; ++index) {
         if (object_recovery_should_stop(stop_requested, user_context)) {
@@ -270,6 +296,30 @@ esp_err_t object_recovery_run_cooperative(
             break;
         }
 
+        size_t recovered_sessions = 0U;
+        if (!removed) {
+            object_recovery_session_context_t session_context = {
+                .stop_requested = stop_requested,
+                .user_context = user_context,
+            };
+            err = seismic_recorder_recover_object_sessions(
+                ids[index],
+                object_recovery_session_checkpoint,
+                &session_context,
+                &recovered_sessions
+            );
+            if (err != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "Session recovery failed object=%s err=%s",
+                    ids[index],
+                    esp_err_to_name(err)
+                );
+                break;
+            }
+            recovered_sessions_total += recovered_sessions;
+        }
+
         ++processed;
         if (removed) {
             ++removed_count;
@@ -280,16 +330,18 @@ esp_err_t object_recovery_run_cooperative(
 
         ESP_LOGI(
             TAG,
-            "OBJECT_RECOVERY_PROGRESS object=%s index=%u total=%u removed=%d elapsed_ms=%lld",
+            "OBJECT_RECOVERY_PROGRESS object=%s index=%u total=%u removed=%d recovered_sessions=%u elapsed_ms=%lld",
             ids[index],
             (unsigned)processed,
             (unsigned)count,
             removed ? 1 : 0,
+            (unsigned)recovered_sessions,
             (long long)((esp_timer_get_time() - object_started_us) / 1000LL)
         );
 
         /* Feed only after one object completed. A deadlock inside
-         * object_recovery_check_one() cannot manufacture progress. */
+         * object/session recovery cannot manufacture progress. Session-level
+         * checkpoints above cover long histories without hiding a blocked I/O. */
         object_recovery_watchdog_checkpoint();
 
 #ifdef ESP_PLATFORM
@@ -306,10 +358,11 @@ esp_err_t object_recovery_run_cooperative(
     if (err == ESP_OK) {
         ESP_LOGI(
             TAG,
-            "Object storage check complete processed=%u valid=%u removed=%u elapsed_ms=%lld",
+            "Object storage check complete processed=%u valid=%u removed=%u recovered_sessions=%u elapsed_ms=%lld",
             (unsigned)processed,
             (unsigned)recovered_or_valid,
             (unsigned)removed_count,
+            (unsigned)recovered_sessions_total,
             (long long)((esp_timer_get_time() - started_us) / 1000LL)
         );
     }

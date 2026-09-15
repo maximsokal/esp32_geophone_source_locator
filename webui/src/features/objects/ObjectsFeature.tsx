@@ -88,7 +88,8 @@ export default function ObjectsFeature(props: Props) {
   const selectedSessions = selected !== null && sessions?.object_id === selected.id
     ? sessions.sessions
     : [];
-  const openSession = selectedSessions.find((session) => session.session_id === openSessionId && session.complete) ?? null;
+  const openSession = selectedSessions.find((session) =>
+    session.session_id === openSessionId && (session.readable ?? session.complete)) ?? null;
   const liveAvailable = status?.acquisition.running === true;
 
   return (
@@ -289,25 +290,35 @@ export default function ObjectsFeature(props: Props) {
                 <p>No saved geophone sessions for this object yet.</p>
               ) : (
                 <div className="session-list">
-                  {selectedSessions.map((session) => (
-                    <button
-                      type="button"
-                      className="session-row"
-                      key={session.session_id}
-                      disabled={!session.complete || busy}
-                      title={session.complete ? 'Open saved waveform viewer' : 'Only completed sessions can be viewed'}
-                      onClick={() => setOpenSessionId(session.session_id)}
-                    >
-                      <span>
-                        <strong>{session.session_id}</strong>
-                        <small>{session.sample_rate_hz.toLocaleString()} Hz · {session.channel_count} ch · {formatDuration(session.recording_ms)}</small>
-                      </span>
-                      <span>
-                        <strong>{session.samples_written.toLocaleString()}</strong>
-                        <small>{session.dropped_frames > 0 ? `${session.dropped_frames.toLocaleString()} dropped` : session.complete ? 'complete' : 'incomplete'}</small>
-                      </span>
-                    </button>
-                  ))}
+                  {selectedSessions.map((session) => {
+                    const readable = session.readable ?? session.complete;
+                    const statusLabel = session.status ?? (session.complete ? 'complete' : 'incomplete');
+                    return (
+                      <button
+                        type="button"
+                        className="session-row"
+                        key={session.session_id}
+                        disabled={!readable || busy}
+                        title={readable ? 'Open saved waveform viewer' : 'Only terminal readable sessions can be viewed'}
+                        onClick={() => setOpenSessionId(session.session_id)}
+                      >
+                        <span>
+                          <strong>{session.session_id}</strong>
+                          <small>{session.sample_rate_hz.toLocaleString()} Hz · {session.channel_count} ch · {session.recording_ms_available === false ? 'duration unknown' : formatDuration(session.recording_ms)}</small>
+                        </span>
+                        <span>
+                          <strong>{session.samples_written.toLocaleString()}</strong>
+                          <small>
+                            {session.dropped_frames_available === false
+                              ? `${statusLabel} · drops unknown`
+                              : session.dropped_frames > 0
+                                ? `${statusLabel} · ${session.dropped_frames.toLocaleString()} dropped`
+                                : statusLabel}
+                          </small>
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </article>
