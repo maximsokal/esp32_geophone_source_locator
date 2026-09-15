@@ -20,6 +20,17 @@ function Require-Command([string]$Name, [string]$Hint) {
     }
 }
 
+function Test-NcsWorkspace([string]$Candidate) {
+    if (-not $Candidate) {
+        return $false
+    }
+
+    return (
+        (Test-Path -LiteralPath (Join-Path $Candidate ".west") -PathType Container) -and
+        (Test-Path -LiteralPath (Join-Path $Candidate "nrf\VERSION") -PathType Leaf)
+    )
+}
+
 function Get-NcsVersionFromWorkspace([string]$TopDir) {
     $versionFile = Join-Path $TopDir "nrf\VERSION"
     if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
@@ -40,31 +51,100 @@ function Get-NcsVersionFromWorkspace([string]$TopDir) {
     return "v$($parts.VERSION_MAJOR).$($parts.VERSION_MINOR).$($parts.PATCHLEVEL)"
 }
 
+function Get-SdkManagerDefaultInstallRoot {
+    if ($env:OS -eq "Windows_NT") {
+        $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { "C:" }
+        return Join-Path $systemDrive "ncs"
+    }
+
+    if ($IsMacOS) {
+        return "/opt/nordic/ncs"
+    }
+
+    return Join-Path $HOME "ncs"
+}
+
+function Get-SdkManagerInstallRoot {
+    Require-Command "nrfutil" "Install the sdk-manager command first: nrfutil install sdk-manager"
+
+    $configOutput = @(& nrfutil sdk-manager config show 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "nrfutil sdk-manager config show failed with exit code $LASTEXITCODE."
+    }
+
+    foreach ($line in $configOutput) {
+        if ($line -match '^\s*install-dir:\s*(.+?)\s*$') {
+            $configured = $matches[1].Trim().Trim('"').Trim("'")
+            if ($configured -and $configured -ne "unset") {
+                return $configured
+            }
+            break
+        }
+    }
+
+    return Get-SdkManagerDefaultInstallRoot
+}
+
+function Get-SdkManagerSdkDirectory {
+    $listOutput = @(& nrfutil sdk-manager list --all-fields 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "nrfutil sdk-manager list --all-fields failed with exit code $LASTEXITCODE."
+    }
+
+    $versionPattern = [regex]::Escape($NcsVersion)
+    foreach ($line in $listOutput) {
+        if ($line -match "^\s*$versionPattern\s+Installed\s+(\S+)\s+") {
+            return $matches[1]
+        }
+    }
+
+    throw "NCS $NcsVersion SDK is not installed according to 'nrfutil sdk-manager list --all-fields'."
+}
+
+function Get-NcsTopDirFromSdkManager {
+    $installRoot = Get-SdkManagerInstallRoot
+    $sdkDirectory = Get-SdkManagerSdkDirectory
+    $candidate = if ([System.IO.Path]::IsPathRooted($sdkDirectory)) {
+        $sdkDirectory
+    }
+    else {
+        Join-Path $installRoot $sdkDirectory
+    }
+
+    if (-not (Test-NcsWorkspace $candidate)) {
+        throw "nrfutil reports NCS $NcsVersion at '$candidate', but that directory is not a west workspace with nrf\VERSION."
+    }
+    return $candidate
+}
+
 function Get-NcsTopDir {
     Require-Command "west" "Open the Nordic toolchain terminal first: nrfutil sdk-manager toolchain launch --ncs-version $NcsVersion --terminal"
 
-    # The diploma repository is outside the NCS west workspace, so `west topdir`
-    # from the repository root is not a reliable primary discovery mechanism.
-    # Nordic's activated toolchain environment normally exposes NRF_BASE and
-    # ZEPHYR_BASE. Their parent directory is the NCS west workspace root.
+    # Fast path for environments that explicitly expose the SDK module roots.
+    # Nordic's sdk-manager toolchain environment does not guarantee these
+    # variables, so discovery must not depend on them being present.
     foreach ($base in @($env:NRF_BASE, $env:ZEPHYR_BASE)) {
         if ($base) {
             $candidate = Split-Path -Parent $base
-            if (Test-Path -LiteralPath (Join-Path $candidate ".west") -PathType Container) {
+            if (Test-NcsWorkspace $candidate) {
                 return $candidate
             }
         }
     }
 
-    # Fallback for terminals whose current directory already is inside NCS.
+    # Works when the current directory already belongs to an NCS west workspace.
     $topDir = (& west topdir 2>$null | Select-Object -First 1)
     if ($topDir) {
         $topDir = $topDir.Trim()
+        if (Test-NcsWorkspace $topDir) {
+            return $topDir
+        }
     }
-    if (-not $topDir -or -not (Test-Path -LiteralPath (Join-Path $topDir ".west") -PathType Container)) {
-        throw "NCS west workspace not detected. Launch the pinned NCS $NcsVersion toolchain terminal so NRF_BASE/ZEPHYR_BASE are set, then run this script again."
-    }
-    return $topDir
+
+    # The diploma checkout normally lives outside the NCS workspace. Nordic's
+    # supported sdk-manager metadata supplies both the configured install root
+    # and the SDK Directory column for the exact installed version.
+    return Get-NcsTopDirFromSdkManager
 }
 
 function Assert-NcsBaseline([string]$TopDir) {

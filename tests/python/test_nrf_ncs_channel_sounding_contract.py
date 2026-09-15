@@ -7,6 +7,7 @@ NCS_PS1 = ROOT / "nRF54L15" / "ncs.ps1"
 BASE_CONF = ROOT / "nRF54L15" / "zephyr" / "prj.conf"
 OVERLAY = ROOT / "nRF54L15" / "zephyr" / "app.overlay"
 PROTOCOL = ROOT / "nRF54L15" / "include" / "nrf_upstream_protocol.h"
+DOC = ROOT / "docs" / "nrf54l15-ncs-channel-sounding-proof.md"
 
 
 def text(path: Path) -> str:
@@ -73,6 +74,41 @@ def test_wrapper_is_pinned_to_ncs_340_and_upstream_xiao_target():
     assert "BOARD_ROOT" not in script
 
 
+def test_wrapper_has_sdk_manager_fallback_for_repo_outside_west_workspace():
+    script = text(NCS_PS1)
+    assert 'nrfutil sdk-manager config show' in script
+    assert 'nrfutil sdk-manager list --all-fields' in script
+    assert 'function Get-SdkManagerInstallRoot' in script
+    assert 'function Get-SdkManagerSdkDirectory' in script
+    assert 'function Get-NcsTopDirFromSdkManager' in script
+    assert 'return Get-NcsTopDirFromSdkManager' in script
+
+    env_pos = script.index('foreach ($base in @($env:NRF_BASE, $env:ZEPHYR_BASE))')
+    west_pos = script.index('$topDir = (& west topdir')
+    sdk_manager_pos = script.index('return Get-NcsTopDirFromSdkManager')
+    assert env_pos < west_pos < sdk_manager_pos
+
+
+def test_wrapper_honors_custom_sdk_manager_install_dir_and_platform_default():
+    script = text(NCS_PS1)
+    assert "'^\\s*install-dir:\\s*(.+?)\\s*$'" in script
+    assert '$configured -ne "unset"' in script
+    assert 'return $configured' in script
+    assert '$env:OS -eq "Windows_NT"' in script
+    assert 'Join-Path $systemDrive "ncs"' in script
+    assert 'return "/opt/nordic/ncs"' in script
+    assert 'Join-Path $HOME "ncs"' in script
+
+
+def test_wrapper_reports_missing_sdk_and_rejects_wrong_workspace_version():
+    script = text(NCS_PS1)
+    assert "NCS $NcsVersion SDK is not installed according to 'nrfutil sdk-manager list --all-fields'." in script
+    assert "nrfutil reports NCS $NcsVersion at '$candidate', but that directory is not a west workspace" in script
+    assert 'if ($actual -ne $NcsVersion)' in script
+    assert 'MAX-45 is pinned to $NcsVersion, but active west workspace is $actual' in script
+    assert 'Assert-NcsBaseline $topDir' in script
+
+
 def test_wrapper_builds_same_canonical_zephyr_app_and_checks_resolved_kconfig():
     script = text(NCS_PS1)
     assert '$app = Join-Path $project "zephyr"' in script
@@ -102,6 +138,17 @@ def test_upstream_wire_sizes_are_not_changed_by_ncs_proof():
     protocol = text(PROTOCOL)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+102U", protocol)
+
+
+def test_proof_doc_matches_sdk_manager_discovery_contract():
+    doc = text(DOC)
+    assert "nrfutil sdk-manager config show" in doc
+    assert "nrfutil sdk-manager list --all-fields" in doc
+    assert "SDK Directory" in doc
+    assert "NRF_BASE" in doc
+    assert "ZEPHYR_BASE" in doc
+    assert "west topdir" in doc
+    assert "v3.4.0" in doc
 
 
 def test_wrapper_is_build_only_and_never_flashes():
