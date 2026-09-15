@@ -61,6 +61,52 @@ static bool seismic_recorder_waveform_header_valid(
 }
 
 
+static esp_err_t seismic_recorder_waveform_validate_contract(
+    uint64_t file_size,
+    const seismic_recorder_binary_header_t *header,
+    const seismic_recorder_session_summary_t *summary
+)
+{
+    if (header == NULL || summary == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!seismic_recorder_waveform_header_valid(header)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (
+        summary->sample_rate_hz == 0U ||
+        summary->channel_count != SEISMIC_CHANNEL_COUNT ||
+        header->sample_rate_hz != summary->sample_rate_hz ||
+        header->channel_count != summary->channel_count
+    ) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    uint64_t payload_size = 0U;
+    uint64_t expected_file_size = 0U;
+    if (
+        seismic_recorder_waveform_mul_overflows(
+            summary->samples_written,
+            sizeof(seismic_frame_t),
+            &payload_size
+        ) ||
+        seismic_recorder_waveform_add_overflows(
+            sizeof(seismic_recorder_binary_header_t),
+            payload_size,
+            &expected_file_size
+        )
+    ) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    return file_size == expected_file_size
+        ? ESP_OK
+        : ESP_ERR_INVALID_RESPONSE;
+}
+
+
 static void seismic_recorder_waveform_point_reset(
     seismic_recorder_waveform_point_t *point
 )
@@ -154,18 +200,16 @@ esp_err_t seismic_recorder_waveform_read_source(
         return err;
     }
 
-    if (!seismic_recorder_waveform_header_valid(&header)) {
-        return ESP_ERR_INVALID_RESPONSE;
+    err = seismic_recorder_waveform_validate_contract(
+        file_size,
+        &header,
+        summary
+    );
+    if (err != ESP_OK) {
+        return err;
     }
 
-    const uint64_t payload_size =
-        file_size - sizeof(seismic_recorder_binary_header_t);
-    if (payload_size % sizeof(seismic_frame_t) != 0U) {
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-
-    const uint64_t source_frame_count =
-        payload_size / sizeof(seismic_frame_t);
+    const uint64_t source_frame_count = summary->samples_written;
 
     if (start_frame > source_frame_count) {
         return ESP_ERR_INVALID_ARG;
@@ -302,8 +346,8 @@ esp_err_t seismic_recorder_waveform_read_source(
     snprintf(info->object_id, sizeof(info->object_id), "%s", "");
     snprintf(info->session_id, sizeof(info->session_id), "%s", summary->session_id);
     snprintf(info->source_name, sizeof(info->source_name), "%s", summary->source_name);
-    info->sample_rate_hz = header.sample_rate_hz;
-    info->channel_count = (uint8_t)header.channel_count;
+    info->sample_rate_hz = summary->sample_rate_hz;
+    info->channel_count = summary->channel_count;
     info->samples_written = summary->samples_written;
     info->dropped_frames = summary->dropped_frames;
     info->recording_ms = summary->recording_ms;
