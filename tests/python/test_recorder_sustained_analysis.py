@@ -24,11 +24,21 @@ def health_status(
     consecutive_failures: int = 0,
     error_counters_available: bool = True,
     signal_quality: str = "HEALTHY",
+    cadence_available: bool = True,
+    cadence_timer_ticks: int = 10_000,
+    cadence_conversion_attempts: int = 10_000,
+    cadence_collapsed_periods: int = 0,
 ) -> dict:
     return {
         "acquisition": {
             "error_counters_available": error_counters_available,
             "consecutive_failures": consecutive_failures,
+            "cadence": {
+                "available": cadence_available,
+                "timer_ticks": cadence_timer_ticks,
+                "conversion_attempts": cadence_conversion_attempts,
+                "collapsed_periods": cadence_collapsed_periods,
+            },
             "serial": {
                 "quality": quality,
                 "stream_state": stream_state,
@@ -42,10 +52,28 @@ def health_status(
 
 
 def health_evidence(*samples: dict) -> dict:
+    if len(samples) == 1:
+        phase_samples = [
+            ("preflight", samples[0]),
+            ("during-recording", samples[0]),
+            ("post", samples[0]),
+        ]
+    elif len(samples) >= 3:
+        phase_samples = [("preflight", samples[0])]
+        phase_samples.extend(
+            (f"during-{index}", sample)
+            for index, sample in enumerate(samples[1:-1], start=1)
+        )
+        phase_samples.append(("post", samples[-1]))
+    else:
+        phase_samples = [
+            ("preflight" if index == 0 else "post", sample)
+            for index, sample in enumerate(samples)
+        ]
     return {
         "samples": [
-            {"phase": "preflight" if index == 0 else f"during-{index}", "status": sample}
-            for index, sample in enumerate(samples)
+            {"phase": phase, "status": sample}
+            for phase, sample in phase_samples
         ]
     }
 
@@ -57,6 +85,8 @@ def make_evidence(
     read_source: str = "raw",
     mismatch: bool = False,
     write_samples: int = 30,
+    cadence_available: bool = True,
+    cadence_collapsed_periods: int = 0,
 ):
     session = "S000001"
     lines = [
@@ -68,10 +98,13 @@ def make_evidence(
             "requested=256 written=256 windows=1 max_window_us=9000 "
             f"fwrite_us={operation_us} operation_us={operation_us} result=0"
         )
+    cadence_ticks = 300 + cadence_collapsed_periods
     lines.extend(
         [
             "I SEISMIC_RECORDER: STOP_COMPLETE stage=complete error_stage=none "
-            "stage_error=ESP_OK session=S000001 samples=300 drops=0 err=ESP_OK",
+            "stage_error=ESP_OK session=S000001 samples=300 drops=0 err=ESP_OK "
+            f"cadence_available={1 if cadence_available else 0} timer_ticks={cadence_ticks} "
+            f"conversion_attempts=300 collapsed_periods={cadence_collapsed_periods}",
             "I SEISMIC_RECORDER_READER: WAVEFORM_READ_PATH "
             f"source={read_source} session=S000001 start=0 frames=120 points=120 "
             "raw_frames=0 lod_records=0 lod_frames=0",
@@ -87,7 +120,13 @@ def make_evidence(
             channels.append(
                 {"id": channel_id, "min_uv": value, "max_uv": value}
             )
-        points.append({"timestamp_us": timestamp_us, "channels": channels})
+        points.append(
+            {
+                "timestamp_us": timestamp_us,
+                "end_timestamp_us": timestamp_us,
+                "channels": channels,
+            }
+        )
 
     live_indices = range(20, 100)
     live = {
@@ -119,6 +158,12 @@ def make_evidence(
         "samples_written": 300,
         "dropped_frames": 0,
         "recording_ms": 70_000,
+        "cadence": {
+            "available": cadence_available,
+            "timer_ticks": cadence_ticks if cadence_available else 0,
+            "conversion_attempts": 300 if cadence_available else 0,
+            "collapsed_periods": cadence_collapsed_periods if cadence_available else 0,
+        },
         "source_frame_count": source_frame_count,
         "start_frame": 0,
         "frame_count": 120,
@@ -142,7 +187,7 @@ def analyze(log, live, saved, **overrides):
     return MODULE.analyze(log, live, saved, **options)
 
 
-def test_sustained_evidence_passes_with_margin_eviction_and_exact_sd_roundtrip():
+def test_sustained_evidence_passes_with_margin_eviction_exact_sd_and_cadence():
     log, live, saved = make_evidence()
 
     result = analyze(log, live, saved)
@@ -155,6 +200,58 @@ def test_sustained_evidence_passes_with_margin_eviction_and_exact_sd_roundtrip()
     assert result.integrity_overlap_frames == 80
     assert result.raw_sd_read_confirmed is True
     assert result.transport_health_status == "PASS"
+    assert result.cadence_status == "PASS"
+    assert result.cadence_collapsed_periods == 0
+    assert result.live_cadence_status == "PASS"
+    assert set(result.live_cadence_phases) == {"preflight", "during-recording", "post"}
+
+
+def test_collapsed_acquisition_period_fails_even_when_recorder_and_transport_are_clean():
+    log, live, saved = make_evidence(cadence_collapsed_periods=1)
+
+    result = analyze(log, live, saved)
+
+    assert result.status == "FAIL"
+    assert result.cadence_status == "FAIL"
+    assert result.cadence_collapsed_periods == 1
+    assert any("collapsed configured periods=1" in item for item in result.violations)
+
+
+def test_missing_session_cadence_evidence_blocks_zero_miss_claim():
+    log, live, saved = make_evidence(cadence_available=False)
+
+    result = analyze(log, live, saved)
+
+    assert result.status == "BLOCKED"
+    assert result.cadence_status == "BLOCKED"
+    assert any("cadence evidence is unavailable" in item for item in result.missing)
+
+
+def test_pre_in_post_live_cadence_evidence_is_required():
+    log, live, saved = make_evidence()
+    evidence = {"samples": [{"phase": "preflight", "status": health_status()}]}
+
+    result = analyze(log, live, saved, health_evidence=evidence)
+
+    assert result.status == "BLOCKED"
+    assert result.live_cadence_status == "BLOCKED"
+    assert any("in-run cadence evidence" in item for item in result.missing)
+    assert any("post-run cadence evidence" in item for item in result.missing)
+
+
+def test_live_cadence_counter_regression_fails_evidence_chain():
+    log, live, saved = make_evidence()
+    evidence = health_evidence(
+        health_status(cadence_timer_ticks=10_000, cadence_conversion_attempts=10_000),
+        health_status(cadence_timer_ticks=10_100, cadence_conversion_attempts=10_100),
+        health_status(cadence_timer_ticks=10_050, cadence_conversion_attempts=10_050),
+    )
+
+    result = analyze(log, live, saved, health_evidence=evidence)
+
+    assert result.status == "FAIL"
+    assert result.live_cadence_status == "FAIL"
+    assert any("counters regressed" in item for item in result.violations)
 
 
 def test_quiet_transport_with_clipped_signal_does_not_fail_storage_integrity():

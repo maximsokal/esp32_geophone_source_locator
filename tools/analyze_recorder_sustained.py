@@ -69,6 +69,25 @@ class RecorderWrite:
 
 
 @dataclass(frozen=True)
+class CadenceAssessment:
+    status: str
+    missing: tuple[str, ...]
+    violations: tuple[str, ...]
+    timer_ticks: int | None
+    conversion_attempts: int | None
+    collapsed_periods: int | None
+
+
+@dataclass(frozen=True)
+class LiveCadenceAssessment:
+    status: str
+    missing: tuple[str, ...]
+    violations: tuple[str, ...]
+    sample_count: int
+    phases: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Analysis:
     status: str
     missing: tuple[str, ...]
@@ -88,6 +107,13 @@ class Analysis:
     transport_health_sample_count: int
     signal_quality_states: tuple[str, ...]
     uart_transport_fault_count: int
+    cadence_status: str
+    cadence_timer_ticks: int | None
+    cadence_conversion_attempts: int | None
+    cadence_collapsed_periods: int | None
+    live_cadence_status: str
+    live_cadence_sample_count: int
+    live_cadence_phases: tuple[str, ...]
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -96,6 +122,138 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain one JSON object")
     return value
+
+
+def _exact_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _assess_session_cadence(
+    payload: dict[str, Any],
+    *,
+    has_recorded_frames: bool,
+) -> CadenceAssessment:
+    missing: list[str] = []
+    violations: list[str] = []
+    cadence = payload.get("cadence")
+    if not isinstance(cadence, dict):
+        missing.append("saved session cadence evidence")
+        return CadenceAssessment("BLOCKED", tuple(missing), (), None, None, None)
+
+    if cadence.get("available") is not True:
+        missing.append("saved session cadence evidence is unavailable")
+        return CadenceAssessment("BLOCKED", tuple(missing), (), None, None, None)
+
+    ticks = _exact_nonnegative_int(cadence.get("timer_ticks"))
+    attempts = _exact_nonnegative_int(cadence.get("conversion_attempts"))
+    collapsed = _exact_nonnegative_int(cadence.get("collapsed_periods"))
+    if ticks is None or attempts is None or collapsed is None:
+        violations.append("saved session cadence counters are malformed")
+        return CadenceAssessment("FAIL", (), tuple(violations), ticks, attempts, collapsed)
+
+    if attempts > ticks or collapsed != ticks - attempts:
+        violations.append(
+            "saved session cadence counters are inconsistent: "
+            f"ticks={ticks} attempts={attempts} collapsed={collapsed}"
+        )
+    if has_recorded_frames and ticks == 0:
+        violations.append("saved session cadence has zero timer ticks for a non-empty recording")
+    if collapsed > 0:
+        violations.append(
+            f"acquisition collapsed configured periods={collapsed} expected=0"
+        )
+
+    status = "FAIL" if violations else "PASS"
+    return CadenceAssessment(
+        status,
+        (),
+        tuple(violations),
+        ticks,
+        attempts,
+        collapsed,
+    )
+
+
+def _extract_status_cadence(status: Any) -> tuple[int, int, int] | None:
+    if not isinstance(status, dict):
+        return None
+    acquisition = status.get("acquisition")
+    if not isinstance(acquisition, dict):
+        return None
+    cadence = acquisition.get("cadence")
+    if not isinstance(cadence, dict) or cadence.get("available") is not True:
+        return None
+    ticks = _exact_nonnegative_int(cadence.get("timer_ticks"))
+    attempts = _exact_nonnegative_int(cadence.get("conversion_attempts"))
+    collapsed = _exact_nonnegative_int(cadence.get("collapsed_periods"))
+    if ticks is None or attempts is None or collapsed is None:
+        return None
+    if attempts > ticks or collapsed != ticks - attempts:
+        return None
+    return ticks, attempts, collapsed
+
+
+def _assess_live_cadence(evidence: dict[str, Any] | None) -> LiveCadenceAssessment:
+    missing: list[str] = []
+    violations: list[str] = []
+    if not isinstance(evidence, dict) or not isinstance(evidence.get("samples"), list):
+        return LiveCadenceAssessment(
+            "BLOCKED",
+            ("pre/in-run/post cadence evidence samples",),
+            (),
+            0,
+            (),
+        )
+
+    parsed: list[tuple[str, tuple[int, int, int]]] = []
+    phases: list[str] = []
+    for index, sample in enumerate(evidence["samples"]):
+        if not isinstance(sample, dict):
+            missing.append(f"cadence sample {index} is not an object")
+            continue
+        phase = str(sample.get("phase", "")).strip()
+        phases.append(phase or f"sample-{index}")
+        cadence = _extract_status_cadence(sample.get("status"))
+        if cadence is None:
+            missing.append(
+                f"cadence evidence unavailable for phase={phase or f'sample-{index}'}"
+            )
+            continue
+        parsed.append((phase, cadence))
+
+    have_pre = any(phase == "preflight" or phase.startswith("pre") for phase, _ in parsed)
+    have_during = any(phase.startswith("during") for phase, _ in parsed)
+    have_post = any(phase == "post" or phase.startswith("post") for phase, _ in parsed)
+    if not have_pre:
+        missing.append("pre-run cadence evidence")
+    if not have_during:
+        missing.append("in-run cadence evidence")
+    if not have_post:
+        missing.append("post-run cadence evidence")
+
+    previous: tuple[int, int, int] | None = None
+    previous_phase = ""
+    for phase, cadence in parsed:
+        if previous is not None and any(
+            current < prior for current, prior in zip(cadence, previous)
+        ):
+            violations.append(
+                "cumulative cadence counters regressed between "
+                f"{previous_phase or 'previous'} and {phase or 'next'}"
+            )
+        previous = cadence
+        previous_phase = phase
+
+    status = "FAIL" if violations else ("BLOCKED" if missing else "PASS")
+    return LiveCadenceAssessment(
+        status,
+        tuple(missing),
+        tuple(violations),
+        len(parsed),
+        tuple(phases),
+    )
 
 
 def _channel_map(channels: Any, value_key: str) -> dict[int, float]:
@@ -294,6 +452,10 @@ def analyze(
     uart_faults = uart_transport_violations(log_content)
     violations.extend(uart_faults)
 
+    live_cadence = _assess_live_cadence(health_evidence)
+    missing.extend(f"live cadence: {item}" for item in live_cadence.missing)
+    violations.extend(f"live cadence: {item}" for item in live_cadence.violations)
+
     recording_ms: int | None = None
     samples_written: int | None = None
     try:
@@ -301,6 +463,13 @@ def analyze(
         samples_written = int(saved_payload["samples_written"])
     except (KeyError, TypeError, ValueError):
         missing.append("saved recording_ms/samples_written")
+
+    cadence = _assess_session_cadence(
+        saved_payload,
+        has_recorded_frames=(samples_written or 0) > 0,
+    )
+    missing.extend(f"cadence: {item}" for item in cadence.missing)
+    violations.extend(f"cadence: {item}" for item in cadence.violations)
 
     saved_session = str(saved_payload.get("session_id", ""))
     if session_id is not None and saved_session != session_id:
@@ -420,6 +589,13 @@ def analyze(
         transport_health_sample_count=len(health.samples),
         signal_quality_states=health.signal_quality_states,
         uart_transport_fault_count=len(uart_faults),
+        cadence_status=cadence.status,
+        cadence_timer_ticks=cadence.timer_ticks,
+        cadence_conversion_attempts=cadence.conversion_attempts,
+        cadence_collapsed_periods=cadence.collapsed_periods,
+        live_cadence_status=live_cadence.status,
+        live_cadence_sample_count=live_cadence.sample_count,
+        live_cadence_phases=live_cadence.phases,
     )
 
 
@@ -486,6 +662,17 @@ def print_report(result: Analysis) -> None:
     print(
         "signal_quality_states="
         + (",".join(result.signal_quality_states) or "unknown")
+    )
+    print(
+        f"cadence={result.cadence_status} "
+        f"timer_ticks={result.cadence_timer_ticks} "
+        f"conversion_attempts={result.cadence_conversion_attempts} "
+        f"collapsed_periods={result.cadence_collapsed_periods}"
+    )
+    print(
+        f"live_cadence={result.live_cadence_status} "
+        f"samples={result.live_cadence_sample_count} "
+        f"phases={','.join(result.live_cadence_phases) or 'missing'}"
     )
     for item in result.missing:
         print(f"MISSING: {item}")
