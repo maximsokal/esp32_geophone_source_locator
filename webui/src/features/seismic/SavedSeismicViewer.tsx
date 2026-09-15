@@ -61,7 +61,14 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
 
   const lines = useMemo(() => snapshot === null
     ? []
-    : [0, 1, 2, 3].map((channel) => envelopePolylinePoints(snapshot.points, channel, 720, 120)), [snapshot]);
+    : [0, 1, 2, 3].map((channel) => envelopePolylinePoints(
+      snapshot.points,
+      channel,
+      720,
+      120,
+      snapshot.start_timestamp_us,
+      snapshot.end_timestamp_us,
+    )), [snapshot]);
 
   const reloadOverview = (): void => load(0, 0);
   const zoomIn = (): void => {
@@ -118,6 +125,7 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
             <div><dt>Displayed buckets</dt><dd>{snapshot.count.toLocaleString()}</dd></div>
             <div><dt>Duration</dt><dd>{formatDuration(snapshot.recording_ms)}</dd></div>
             <div><dt>Dropped frames</dt><dd>{snapshot.dropped_frames.toLocaleString()}</dd></div>
+            <div><dt>Cadence</dt><dd>{snapshot.cadence.available ? `${snapshot.cadence.collapsed_periods.toLocaleString()} collapsed` : 'unknown'}</dd></div>
           </dl>
           <div className="saved-seismic-stack">
             {[0, 1, 2, 3].map((channel) => {
@@ -137,8 +145,8 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
                   </div>
                   <svg viewBox="0 0 720 120" role="img" aria-label={`Saved geophone ${channel + 1} waveform`} preserveAspectRatio="none">
                     <line x1="0" y1="60" x2="720" y2="60" className="seismic-zero" />
-                    <polyline points={line?.min ?? ''} className={`saved-seismic-line saved-min channel-${channel + 1}`} />
-                    <polyline points={line?.max ?? ''} className={`saved-seismic-line saved-max channel-${channel + 1}`} />
+                    <path d={line?.min ?? ''} className={`saved-seismic-line saved-min channel-${channel + 1}`} />
+                    <path d={line?.max ?? ''} className={`saved-seismic-line saved-max channel-${channel + 1}`} />
                   </svg>
                 </div>
               );

@@ -164,6 +164,13 @@ export interface DeviceSystemStatus {
   required_pods: number;
 }
 
+export interface SeismicCadenceEvidence {
+  available: boolean;
+  timer_ticks: number;
+  conversion_attempts: number;
+  collapsed_periods: number;
+}
+
 export interface DeviceAcquisitionStatus {
   running: boolean;
   requested_running: boolean;
@@ -174,6 +181,10 @@ export interface DeviceAcquisitionStatus {
   sample_rate_hz: number;
   samples_recorded: number;
   recording_ms: number;
+  cadence?: SeismicCadenceEvidence & {
+    last_successful_sample_interval_us: number;
+    max_successful_sample_interval_us: number;
+  };
   serial?: {
     suspicious: boolean;
     pattern: string;
@@ -240,6 +251,7 @@ export interface SavedSeismicEnvelopeChannel {
 
 export interface SavedSeismicEnvelopePoint {
   timestamp_us: number;
+  end_timestamp_us: number;
   channels: SavedSeismicEnvelopeChannel[];
 }
 
@@ -253,6 +265,7 @@ export interface SavedSeismicSnapshot {
   samples_written: number;
   dropped_frames: number;
   recording_ms: number;
+  cadence: SeismicCadenceEvidence;
   source_frame_count: number;
   start_frame: number;
   frame_count: number;
@@ -268,6 +281,43 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
+function normalizeCadenceEvidence(value: unknown): SeismicCadenceEvidence {
+  if (value === undefined) {
+    return { available: false, timer_ticks: 0, conversion_attempts: 0, collapsed_periods: 0 };
+  }
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('ESP seismic cadence evidence is invalid.');
+  }
+
+  const cadence = value as Record<string, unknown>;
+  if (typeof cadence.available !== 'boolean') {
+    throw new Error('ESP seismic cadence availability is invalid.');
+  }
+  if (!cadence.available) {
+    return { available: false, timer_ticks: 0, conversion_attempts: 0, collapsed_periods: 0 };
+  }
+
+  const timerTicks = cadence.timer_ticks;
+  const attempts = cadence.conversion_attempts;
+  const collapsed = cadence.collapsed_periods;
+  if (
+    !isNonNegativeInteger(timerTicks) ||
+    !isNonNegativeInteger(attempts) ||
+    !isNonNegativeInteger(collapsed) ||
+    attempts > timerTicks ||
+    collapsed !== timerTicks - attempts
+  ) {
+    throw new Error('ESP seismic cadence counters are inconsistent.');
+  }
+
+  return {
+    available: true,
+    timer_ticks: timerTicks,
+    conversion_attempts: attempts,
+    collapsed_periods: collapsed,
+  };
 }
 
 /** Validate the four-channel /api/seismic boundary before rendering it. */
@@ -366,6 +416,9 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
     throw new Error('ESP saved seismic API returned an invalid session shape.');
   }
 
+  const cadence = normalizeCadenceEvidence(payload.cadence);
+  let previousStart = -Infinity;
+  let previousEnd = -Infinity;
   const points = payload.points.map((point) => {
     if (typeof point !== 'object' || point === null) {
       throw new Error('ESP saved seismic API returned an invalid envelope point.');
@@ -375,6 +428,21 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
     if (!isFiniteNumber(candidate.timestamp_us) || !Number.isInteger(candidate.timestamp_us)) {
       throw new Error('ESP saved seismic API returned an invalid envelope timestamp.');
     }
+
+    const endTimestamp = candidate.end_timestamp_us === undefined
+      ? candidate.timestamp_us
+      : candidate.end_timestamp_us;
+    if (
+      !isFiniteNumber(endTimestamp) ||
+      !Number.isInteger(endTimestamp) ||
+      endTimestamp < candidate.timestamp_us ||
+      candidate.timestamp_us < previousStart ||
+      endTimestamp < previousEnd
+    ) {
+      throw new Error('ESP saved seismic API returned invalid envelope timing geometry.');
+    }
+    previousStart = candidate.timestamp_us;
+    previousEnd = endTimestamp;
 
     if (!Array.isArray(candidate.channels) || candidate.channels.length !== 4) {
       throw new Error('ESP saved seismic API returned an invalid envelope channel count.');
@@ -404,6 +472,7 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
 
     return {
       timestamp_us: candidate.timestamp_us,
+      end_timestamp_us: endTimestamp,
       channels,
     };
   });
@@ -418,6 +487,7 @@ export function normalizeSavedSeismicSnapshot(value: unknown): SavedSeismicSnaps
     samples_written: payload.samples_written as number,
     dropped_frames: payload.dropped_frames as number,
     recording_ms: payload.recording_ms as number,
+    cadence,
     source_frame_count: payload.source_frame_count as number,
     start_frame: payload.start_frame as number,
     frame_count: payload.frame_count as number,

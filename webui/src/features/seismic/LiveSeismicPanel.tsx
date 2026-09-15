@@ -6,12 +6,35 @@ const LIVE_REFRESH_MS = 500;
 const LIVE_ERROR_BACKOFF_MIN_MS = 1500;
 const LIVE_ERROR_BACKOFF_MAX_MS = 10000;
 
-export function polylinePoints(samples: number[], width: number, height: number): string {
-  if (samples.length < 2) return '';
+export function polylinePoints(
+  samples: number[],
+  timestampsMs: number[],
+  width: number,
+  height: number,
+): string {
+  if (samples.length === 0 || samples.length !== timestampsMs.length) return '';
+  if (
+    !Number.isFinite(width) || width < 0 ||
+    !Number.isFinite(height) || height < 0 ||
+    !samples.every(Number.isFinite) ||
+    !timestampsMs.every(Number.isFinite)
+  ) return '';
+
+  for (let index = 1; index < timestampsMs.length; index += 1) {
+    if (timestampsMs[index] < timestampsMs[index - 1]) return '';
+  }
+
   let maxAbs = 1;
   for (const sample of samples) maxAbs = Math.max(maxAbs, Math.abs(sample));
+  const firstTimestamp = timestampsMs[0];
+  const lastTimestamp = timestampsMs[timestampsMs.length - 1];
+  const span = lastTimestamp - firstTimestamp;
+  const toX = (timestamp: number): number => span > 0
+    ? ((timestamp - firstTimestamp) / span) * width
+    : width / 2;
+
   return samples.map((sample, index) => {
-    const x = (index / (samples.length - 1)) * width;
+    const x = toX(timestampsMs[index]);
     const y = height / 2 - (sample / maxAbs) * height * 0.44;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
@@ -66,7 +89,12 @@ export default function LiveSeismicPanel() {
   }, []);
 
   const lines = useMemo(
-    () => snapshot?.channels.map((channel) => polylinePoints(channel.samples_uv, 720, 120)) ?? [],
+    () => snapshot?.channels.map((channel) => polylinePoints(
+      channel.samples_uv,
+      snapshot.timestamps_ms,
+      720,
+      120,
+    )) ?? [],
     [snapshot],
   );
 
