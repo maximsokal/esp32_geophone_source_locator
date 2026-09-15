@@ -25,6 +25,7 @@ idf_component_register(
         ad7606_driver
         app_config
         device_status
+        freertos
         geophone_adc_test
         seismic_buffer
         seismic_test_generator

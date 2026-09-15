@@ -83,6 +83,9 @@ typedef struct
 } seismic_acquisition_snapshot_t;
 
 
+/* Create process-lifetime synchronization before runtime control is exposed. */
+esp_err_t seismic_acquisition_init(void);
+
 esp_err_t seismic_acquisition_start(void);
 
 void seismic_acquisition_stop(void);

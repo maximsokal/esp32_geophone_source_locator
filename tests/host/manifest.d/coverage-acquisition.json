@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "seismic_acquisition_lifecycle",
+      "sources": [
+        "components/seismic_acquisition/seismic_acquisition.c",
+        "tests/host/seismic_acquisition_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_acquisition_lifecycle",
+        "components/seismic_acquisition/include",
+        "components/seismic_acquisition"
+      ],
+      "libraries": ["pthread"]
+    }
+  ]
+}
