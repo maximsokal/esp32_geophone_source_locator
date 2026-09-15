@@ -44,6 +44,27 @@ enum
 )
 
 
+/*
+ * CADENCE CONTRACT FOR FUTURE FIXED-RATE DSP
+ *
+ * sample_rate_hz is nominal/configured metadata only. It is never proof that
+ * every adjacent acquired frame is exactly 1/sample_rate_hz seconds apart.
+ * Acquisition timestamps and cadence evidence remain authoritative.
+ *
+ * Before any FIR/IIR/bandpass/notch/FFT/cross-correlation implementation is
+ * enabled, its input boundary must do one of the following by reviewed policy:
+ *   1. accept only a cadence-valid contiguous window with no known collapsed
+ *      acquisition periods and timestamps consistent with that window;
+ *   2. reset/split DSP state at each known cadence gap; or
+ *   3. resample irregular data with an explicitly reviewed algorithm.
+ *
+ * A future fixed-Fs stage MUST NOT silently process irregular timestamped
+ * frames as uniformly sampled data merely because sample_rate_hz is nonzero.
+ * The current placeholder implementation performs no such fixed-rate DSP.
+ */
+#define SEISMIC_DSP_FIXED_RATE_REQUIRES_CADENCE_VALID_INPUT 1u
+
+
 typedef struct
 {
     /* Metadata for the future measured signal model; zero means unknown. */
