@@ -89,11 +89,32 @@ From that activated terminal, at the repository root:
 .\nRF54L15\ncs.ps1 build
 ```
 
-The wrapper discovers the installed west workspace from the activated Nordic
-toolchain environment (`NRF_BASE` / `ZEPHYR_BASE`, with `west topdir` only as a
-fallback), requires that workspace to report NCS exactly v3.4.0, and builds the
-existing canonical `nRF54L15/zephyr` application for
-`xiao_nrf54l15/nrf54l15/cpuapp`, and adds only the MAX-45 CS fragment. After a
+The wrapper resolves the NCS west workspace in this order:
+
+1. use `NRF_BASE` or `ZEPHYR_BASE` if the current environment explicitly exposes
+   one of them and its parent is a valid west workspace;
+2. try `west topdir` when the current directory already belongs to an NCS west
+   workspace;
+3. otherwise query Nordic's supported sdk-manager metadata:
+   - `nrfutil sdk-manager config show` supplies the configured installation root;
+   - `nrfutil sdk-manager list --all-fields` supplies the `SDK Directory` entry
+     for exactly `v3.4.0`.
+
+The third path is required because the Nordic toolchain environment documents the
+toolchain variables it exports but does not guarantee `NRF_BASE` or
+`ZEPHYR_BASE`, and this diploma repository normally lives outside the NCS west
+workspace. If `install-dir` is `unset`, the wrapper uses Nordic's platform
+default (`C:\ncs` on Windows, `$HOME/ncs` on Linux, `/opt/nordic/ncs` on macOS).
+A custom configured install directory is therefore supported without hardcoding
+`C:\ncs`.
+
+After discovery, the wrapper still requires the selected workspace to report NCS
+**exactly v3.4.0** through `nrf/VERSION` and requires the upstream XIAO board
+directory to exist. A toolchain-only install is not enough: if sdk-manager does
+not report the v3.4.0 SDK as installed, the proof fails before configuration.
+
+The wrapper then builds the existing canonical `nRF54L15/zephyr` application for
+`xiao_nrf54l15/nrf54l15/cpuapp` and adds only the MAX-45 CS fragment. After a
 successful link it checks the resolved `.config` for the SoftDevice, dual BLE
 roles, both CS roles, single CS context/antenna, and the existing 128-byte TWIS
 buffer.
