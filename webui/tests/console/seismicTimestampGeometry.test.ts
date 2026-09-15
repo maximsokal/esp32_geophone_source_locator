@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSavedSeismicSnapshot } from '../../src/domain/device';
-import { polylinePoints } from '../../src/features/seismic/LiveSeismicPanel';
+import { polylinePoints, polylineSegments } from '../../src/features/seismic/LiveSeismicPanel';
 import { envelopePolylinePoints } from '../../src/features/seismic/savedWaveform';
 
 function channels(value: number) {
@@ -38,11 +38,31 @@ describe('seismic timestamp geometry', () => {
     ]);
   });
 
+  it('leaves a proven missed live sample period blank without inventing interpolation', () => {
+    const segments = polylineSegments(
+      [0, 1, 2, 3, 4],
+      [0, 2, 4, 10, 12],
+      120,
+      100,
+      500,
+    );
+
+    expect(segments).toHaveLength(2);
+    expect(segments[0].split(' ').map((point) => point.split(',')[0]))
+      .toEqual(['0.0', '20.0', '40.0']);
+    expect(segments[1].split(' ').map((point) => point.split(',')[0]))
+      .toEqual(['100.0', '120.0']);
+
+    expect(polylineSegments([0, 1, 2, 3], [0, 2, 4, 6], 120, 100, 500))
+      .toHaveLength(1);
+  });
+
   it('handles equal live timestamps deterministically and rejects non-monotonic input', () => {
     expect(polylinePoints([1, 2], [5, 5], 120, 100).split(' ').map((point) => point.split(',')[0]))
       .toEqual(['60.0', '60.0']);
     expect(polylinePoints([1, 2, 3], [0, 4, 2], 120, 100)).toBe('');
     expect(polylinePoints([1, 2], [0], 120, 100)).toBe('');
+    expect(polylineSegments([1, 2], [0, 2], 120, 100, 0)).toEqual([]);
   });
 
   it('renders saved buckets across their real horizontal extent and leaves timestamp gaps blank', () => {
