@@ -6,6 +6,12 @@
 #include "seismic_dsp.h"
 
 
+_Static_assert(
+    SEISMIC_DSP_FIXED_RATE_REQUIRES_CADENCE_VALID_INPUT == 1u,
+    "fixed-rate DSP must require cadence-valid input"
+);
+
+
 static void test_requires_initialization(void)
 {
     seismic_dsp_result_t result;
