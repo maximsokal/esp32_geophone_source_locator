@@ -16,6 +16,12 @@ import re
 import sys
 from typing import Any
 
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from ad7606_health import classify_evidence, uart_transport_violations
+
 
 RECORDER_WRITE_RE = re.compile(
     r"RECORDER_IO_TIMING\s+op=fwrite\s+"
@@ -78,6 +84,10 @@ class Analysis:
     samples_written: int | None
     integrity_overlap_frames: int
     raw_sd_read_confirmed: bool
+    transport_health_status: str
+    transport_health_sample_count: int
+    signal_quality_states: tuple[str, ...]
+    uart_transport_fault_count: int
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -145,7 +155,10 @@ def _live_frames(payload: dict[str, Any]) -> dict[int, dict[int, float]]:
     return frames
 
 
-def _saved_frames(payload: dict[str, Any], tolerance_uv: float) -> tuple[dict[int, dict[int, float]], list[str]]:
+def _saved_frames(
+    payload: dict[str, Any],
+    tolerance_uv: float,
+) -> tuple[dict[int, dict[int, float]], list[str]]:
     points = payload.get("points")
     if not isinstance(points, list):
         return {}, ["saved payload has no points array"]
@@ -193,6 +206,7 @@ def analyze(
     minimum_write_samples: int,
     minimum_overlap_frames: int,
     integrity_tolerance_uv: float,
+    health_evidence: dict[str, Any] | None = None,
 ) -> Analysis:
     missing: list[str] = []
     violations: list[str] = []
@@ -273,6 +287,12 @@ def analyze(
     failure_count = len(FAILURE_RE.findall(log_content))
     if failure_count:
         violations.append(f"target failure markers={failure_count} expected=0")
+
+    health = classify_evidence(health_evidence)
+    missing.extend(f"transport health: {item}" for item in health.missing)
+    violations.extend(f"transport health: {item}" for item in health.violations)
+    uart_faults = uart_transport_violations(log_content)
+    violations.extend(uart_faults)
 
     recording_ms: int | None = None
     samples_written: int | None = None
@@ -396,6 +416,10 @@ def analyze(
         samples_written=samples_written,
         integrity_overlap_frames=len(overlap),
         raw_sd_read_confirmed=raw_sd_read_confirmed,
+        transport_health_status=health.status,
+        transport_health_sample_count=len(health.samples),
+        signal_quality_states=health.signal_quality_states,
+        uart_transport_fault_count=len(uart_faults),
     )
 
 
@@ -418,6 +442,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("log", type=Path)
     parser.add_argument("live_json", type=Path)
     parser.add_argument("saved_json", type=Path)
+    parser.add_argument("--health-evidence", type=Path)
     parser.add_argument("--sample-rate-hz", type=_positive_int, default=500)
     parser.add_argument("--frame-size-bytes", type=_positive_int, default=24)
     parser.add_argument("--safety-factor", type=_positive_float, default=4.0)
@@ -453,6 +478,15 @@ def print_report(result: Analysis) -> None:
         f"integrity_overlap_frames={result.integrity_overlap_frames} "
         f"raw_sd_read_confirmed={str(result.raw_sd_read_confirmed).lower()}"
     )
+    print(
+        f"transport_health={result.transport_health_status} "
+        f"health_samples={result.transport_health_sample_count} "
+        f"uart_faults={result.uart_transport_fault_count}"
+    )
+    print(
+        "signal_quality_states="
+        + (",".join(result.signal_quality_states) or "unknown")
+    )
     for item in result.missing:
         print(f"MISSING: {item}")
     for item in result.violations:
@@ -465,6 +499,11 @@ def main() -> int:
         log_content = args.log.read_text(encoding="utf-8", errors="replace")
         live_payload = _load_json(args.live_json)
         saved_payload = _load_json(args.saved_json)
+        health_evidence = (
+            _load_json(args.health_evidence)
+            if args.health_evidence is not None
+            else None
+        )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"RECORDER_SUSTAINED_ANALYSIS: FAIL: {exc}", file=sys.stderr)
         return 1
@@ -479,6 +518,7 @@ def main() -> int:
         minimum_write_samples=args.minimum_write_samples,
         minimum_overlap_frames=args.minimum_overlap_frames,
         integrity_tolerance_uv=args.integrity_tolerance_uv,
+        health_evidence=health_evidence,
     )
 
     if args.json:
