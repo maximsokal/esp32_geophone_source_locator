@@ -112,8 +112,8 @@ try {
         Add-Check $checks "Production build" "SKIPPED" "Replay mode from -LogPath."
         Add-Check $checks "Production flash" "SKIPPED" "Replay mode from -LogPath."
     } else {
-        if ($FlashPort -eq $LogPort) {
-            throw "FlashPort and LogPort must be different. Use COM4 for programming and the passive USB-TTL port (normally COM6) for UART logs."
+        if (-not $SkipFlash -and $FlashPort -eq $LogPort) {
+            throw "FlashPort and LogPort must be different when flashing. Use COM4 for programming and the passive USB-TTL port (normally COM6) for UART logs."
         }
         if (-not (Test-Path -LiteralPath $runIdf -PathType Leaf)) {
             throw "Missing ESP-IDF helper: $runIdf"
@@ -140,11 +140,19 @@ try {
             Add-Check $checks "Production build" "PASS" ("Built production firmware in {0}." -f $BuildDir)
         }
 
-        & $checkPorts -Ports ("{0},{1}" -f $FlashPort, $LogPort)
-        if ($LASTEXITCODE -ne 0) {
-            throw "Live $FlashPort/$LogPort preflight failed."
+        if ($SkipFlash) {
+            & $checkPorts -Ports $LogPort
+            if ($LASTEXITCODE -ne 0) {
+                throw "Live passive log-port preflight failed for $LogPort."
+            }
+            Add-Check $checks "Live serial preflight" "PASS" ("Passive log port available: {0}; FlashPort is unused because -SkipFlash was supplied." -f $LogPort)
+        } else {
+            & $checkPorts -Ports ("{0},{1}" -f $FlashPort, $LogPort)
+            if ($LASTEXITCODE -ne 0) {
+                throw "Live $FlashPort/$LogPort preflight failed."
+            }
+            Add-Check $checks "Live serial preflight" "PASS" ("Live ports available: {0}, {1}." -f $FlashPort, $LogPort)
         }
-        Add-Check $checks "Live serial preflight" "PASS" ("Live ports available: {0}, {1}." -f $FlashPort, $LogPort)
 
         $hilDir = Join-Path $repo "build\hil"
         New-Item -ItemType Directory -Path $hilDir -Force | Out-Null

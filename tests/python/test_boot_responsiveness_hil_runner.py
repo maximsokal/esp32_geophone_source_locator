@@ -281,9 +281,28 @@ def test_live_runner_keeps_programming_and_passive_log_ports_separate_by_contrac
     assert '[string]$LogPort = "COM6"' in source
     assert '"-Action", "monitor"' in source
     assert '-Action flash' in source
-    assert 'if ($FlashPort -eq $LogPort)' in source
-    assert "FlashPort and LogPort must be different" in source
+    assert 'if (-not $SkipFlash -and $FlashPort -eq $LogPort)' in source
+    assert "FlashPort and LogPort must be different when flashing" in source
+    assert '& $checkPorts -Ports ("{0},{1}" -f $FlashPort, $LogPort)' in source
     assert "press LEFT, UP, DOWN, RIGHT and OK" in source
     assert "background recovery and the following Web status-cache refresh" in source
     assert "KEYPAD_EVENT_DISPATCH" not in source  # parsing lives in the sourced contract
     assert "BOOT_RESPONSIVENESS_HIL_RESULT" in source
+
+
+def test_skip_flash_path_preflights_only_passive_log_port():
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "if ($SkipFlash) {" in source
+    assert "& $checkPorts -Ports $LogPort" in source
+    assert "FlashPort is unused because -SkipFlash was supplied" in source
+    assert '"-Action", "monitor", "-ProjectPath", $ProjectPath' in source
+    assert '"-BuildDir", $BuildDir, "-Port", $LogPort' in source
+
+
+def test_normal_flash_path_still_requires_both_distinct_ports():
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert 'if (-not $SkipFlash -and $FlashPort -eq $LogPort)' in source
+    assert '& $checkPorts -Ports ("{0},{1}" -f $FlashPort, $LogPort)' in source
+    assert "-Action flash -ProjectPath $ProjectPath -BuildDir $BuildDir -Port $FlashPort" in source
