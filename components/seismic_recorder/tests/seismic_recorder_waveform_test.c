@@ -86,6 +86,8 @@ static void test_valid_range_envelope_and_spike(void)
     assert(info.source_frame_count == 10U);
     assert(info.start_frame == 0U && info.frame_count == 10U);
     assert(info.point_count == 4U);
+    assert(info.sample_rate_hz == summary.sample_rate_hz);
+    assert(info.channel_count == summary.channel_count);
     assert(info.start_timestamp_us == 2000LL);
     assert(info.end_timestamp_us == 20000LL);
 
@@ -118,6 +120,97 @@ static void test_valid_range_envelope_and_spike(void)
 }
 
 
+static void test_metadata_raw_frame_count_mismatch(void)
+{
+    const seismic_recorder_binary_header_t header = valid_header();
+    const seismic_recorder_session_summary_t summary = valid_summary();
+    seismic_recorder_waveform_point_t points[4] = {0};
+    seismic_recorder_waveform_info_t info;
+
+    const size_t physical_counts[] = {9U, 11U};
+    for (size_t index = 0U; index < 2U; ++index) {
+        FILE *file = tmpfile();
+        assert(file != NULL);
+        const size_t file_size = write_frames(
+            file,
+            &header,
+            physical_counts[index]
+        );
+
+        assert(seismic_recorder_waveform_read_file(
+            file,
+            file_size,
+            &summary,
+            0U,
+            0U,
+            4U,
+            points,
+            4U,
+            &info
+        ) == ESP_ERR_INVALID_RESPONSE);
+
+        assert(seismic_recorder_waveform_read_file(
+            file,
+            file_size,
+            &summary,
+            0U,
+            4U,
+            4U,
+            points,
+            4U,
+            &info
+        ) == ESP_ERR_INVALID_RESPONSE);
+
+        assert(fclose(file) == 0);
+    }
+}
+
+
+static void test_header_metadata_configuration_mismatch(void)
+{
+    seismic_recorder_waveform_point_t points[4] = {0};
+    seismic_recorder_waveform_info_t info;
+
+    FILE *rate_file = tmpfile();
+    assert(rate_file != NULL);
+    seismic_recorder_binary_header_t header = valid_header();
+    header.sample_rate_hz = 1000U;
+    const size_t rate_file_size = write_frames(rate_file, &header, 10U);
+    const seismic_recorder_session_summary_t summary = valid_summary();
+    assert(seismic_recorder_waveform_read_file(
+        rate_file,
+        rate_file_size,
+        &summary,
+        0U,
+        0U,
+        4U,
+        points,
+        4U,
+        &info
+    ) == ESP_ERR_INVALID_RESPONSE);
+    assert(fclose(rate_file) == 0);
+
+    FILE *channel_file = tmpfile();
+    assert(channel_file != NULL);
+    header = valid_header();
+    const size_t channel_file_size = write_frames(channel_file, &header, 10U);
+    seismic_recorder_session_summary_t channel_summary = valid_summary();
+    channel_summary.channel_count = SEISMIC_CHANNEL_COUNT - 1U;
+    assert(seismic_recorder_waveform_read_file(
+        channel_file,
+        channel_file_size,
+        &channel_summary,
+        0U,
+        0U,
+        4U,
+        points,
+        4U,
+        &info
+    ) == ESP_ERR_INVALID_RESPONSE);
+    assert(fclose(channel_file) == 0);
+}
+
+
 static void test_bad_headers_and_truncation(void)
 {
     const seismic_recorder_session_summary_t summary = valid_summary();
@@ -132,7 +225,7 @@ static void test_bad_headers_and_truncation(void)
         if (failure == 1U) header.version++;
         if (failure == 2U) header.channel_count = 8U;
         if (failure == 3U) header.frame_size_bytes++;
-        const size_t file_size = write_frames(file, &header, 1U);
+        const size_t file_size = write_frames(file, &header, 10U);
         assert(seismic_recorder_waveform_read_file(
             file, file_size, &summary, 0U, 0U, 4U, points, 4U, &info
         ) == ESP_ERR_INVALID_RESPONSE);
@@ -142,10 +235,10 @@ static void test_bad_headers_and_truncation(void)
     FILE *truncated = tmpfile();
     assert(truncated != NULL);
     const seismic_recorder_binary_header_t header = valid_header();
-    assert(write_frames(truncated, &header, 1U) == sizeof(header) + sizeof(seismic_frame_t));
+    const size_t exact_size = write_frames(truncated, &header, 10U);
     assert(seismic_recorder_waveform_read_file(
         truncated,
-        sizeof(header) + sizeof(seismic_frame_t) - 1U,
+        exact_size - 1U,
         &summary,
         0U,
         0U,
@@ -164,7 +257,8 @@ static void test_range_and_capacity_bounds(void)
     assert(file != NULL);
     const seismic_recorder_binary_header_t header = valid_header();
     const size_t file_size = write_frames(file, &header, 3U);
-    const seismic_recorder_session_summary_t summary = valid_summary();
+    seismic_recorder_session_summary_t summary = valid_summary();
+    summary.samples_written = 3U;
     seismic_recorder_waveform_point_t points[2] = {0};
     seismic_recorder_waveform_info_t info;
 
@@ -181,6 +275,14 @@ static void test_range_and_capacity_bounds(void)
         file, file_size, &summary, 0U, 1U, 0U, points, 2U, &info
     ) == ESP_ERR_INVALID_ARG);
 
+    assert(seismic_recorder_waveform_read_file(
+        file, file_size, &summary, 3U, 0U, 2U, points, 2U, &info
+    ) == ESP_OK);
+    assert(info.source_frame_count == 3U);
+    assert(info.start_frame == 3U);
+    assert(info.frame_count == 0U);
+    assert(info.point_count == 0U);
+
     assert(fclose(file) == 0);
 }
 
@@ -188,6 +290,8 @@ static void test_range_and_capacity_bounds(void)
 int main(void)
 {
     test_valid_range_envelope_and_spike();
+    test_metadata_raw_frame_count_mismatch();
+    test_header_metadata_configuration_mismatch();
     test_bad_headers_and_truncation();
     test_range_and_capacity_bounds();
     puts("seismic recorder waveform tests passed");
