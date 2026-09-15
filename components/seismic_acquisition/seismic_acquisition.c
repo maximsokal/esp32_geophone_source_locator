@@ -1,5 +1,6 @@
 #include "seismic_acquisition.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "device_status.h"
@@ -8,11 +9,15 @@
 
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 
 static const char *TAG = "SEISMIC_ACQ";
 
-static bool s_running = false;
-static esp_err_t s_last_error = ESP_OK;
+static SemaphoreHandle_t s_lifecycle_mutex = NULL;
+static atomic_bool s_running = ATOMIC_VAR_INIT(false);
+static atomic_int s_last_error = ATOMIC_VAR_INIT(ESP_OK);
 
 
 static const seismic_source_driver_t *seismic_driver(void)
@@ -25,7 +30,7 @@ static bool seismic_driver_healthy(void)
 {
     const seismic_source_driver_t *driver = seismic_driver();
 
-    if (!s_running) {
+    if (!atomic_load_explicit(&s_running, memory_order_acquire)) {
         return false;
     }
 
@@ -48,9 +53,40 @@ static esp_err_t seismic_acquisition_publish_status(
 }
 
 
-static void seismic_acquisition_reset_failed_start(void)
+static esp_err_t seismic_acquisition_lifecycle_lock(void)
+{
+    if (s_lifecycle_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return xSemaphoreTake(
+        s_lifecycle_mutex,
+        portMAX_DELAY
+    ) == pdTRUE
+        ? ESP_OK
+        : ESP_ERR_TIMEOUT;
+}
+
+
+static void seismic_acquisition_lifecycle_unlock(void)
+{
+    if (s_lifecycle_mutex != NULL) {
+        (void)xSemaphoreGive(
+            s_lifecycle_mutex
+        );
+    }
+}
+
+
+static void seismic_acquisition_reset_failed_start_locked(void)
 {
     const seismic_source_driver_t *driver = seismic_driver();
+
+    atomic_store_explicit(
+        &s_running,
+        false,
+        memory_order_release
+    );
 
     /* Backends own partial cleanup; stop() must remain idempotent. */
     driver->stop();
@@ -60,15 +96,54 @@ static void seismic_acquisition_reset_failed_start(void)
         0
     );
 
-    s_running = false;
     (void)seismic_acquisition_publish_status(false);
+}
+
+
+esp_err_t seismic_acquisition_init(void)
+{
+    if (s_lifecycle_mutex != NULL) {
+        return ESP_OK;
+    }
+
+    SemaphoreHandle_t mutex =
+        xSemaphoreCreateMutex();
+
+    if (mutex == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_lifecycle_mutex =
+        mutex;
+
+    atomic_store_explicit(
+        &s_running,
+        false,
+        memory_order_release
+    );
+
+    atomic_store_explicit(
+        &s_last_error,
+        ESP_OK,
+        memory_order_release
+    );
+
+    return ESP_OK;
 }
 
 
 esp_err_t seismic_acquisition_start(void)
 {
-    if (s_running) {
+    esp_err_t err =
+        seismic_acquisition_lifecycle_lock();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (atomic_load_explicit(&s_running, memory_order_acquire)) {
         /* A stale physical-health observation must not restart this task. */
+        seismic_acquisition_lifecycle_unlock();
         return ESP_OK;
     }
 
@@ -76,43 +151,84 @@ esp_err_t seismic_acquisition_start(void)
 
     ESP_LOGI(TAG, "Source: %s", driver->name);
 
-    esp_err_t err = driver->start();
+    err = driver->start();
     if (err != ESP_OK) {
-        s_last_error = err;
-        seismic_acquisition_reset_failed_start();
+        atomic_store_explicit(
+            &s_last_error,
+            err,
+            memory_order_release
+        );
+
+        seismic_acquisition_reset_failed_start_locked();
+
         ESP_LOGE(
             TAG,
             "Source %s unavailable: %s",
             driver->name,
             esp_err_to_name(err)
         );
+
+        seismic_acquisition_lifecycle_unlock();
         return err;
     }
 
     err = seismic_acquisition_publish_status(true);
     if (err != ESP_OK) {
-        s_last_error = err;
+        atomic_store_explicit(
+            &s_last_error,
+            err,
+            memory_order_release
+        );
+
         ESP_LOGE(
             TAG,
             "Unable to publish running acquisition status: %s",
             esp_err_to_name(err)
         );
 
-        seismic_acquisition_reset_failed_start();
+        seismic_acquisition_reset_failed_start_locked();
+        seismic_acquisition_lifecycle_unlock();
         return err;
     }
 
-    s_running = true;
-    s_last_error = ESP_OK;
+    atomic_store_explicit(
+        &s_last_error,
+        ESP_OK,
+        memory_order_release
+    );
+
+    atomic_store_explicit(
+        &s_running,
+        true,
+        memory_order_release
+    );
+
+    seismic_acquisition_lifecycle_unlock();
     return ESP_OK;
 }
 
 
 void seismic_acquisition_stop(void)
 {
+    if (seismic_acquisition_lifecycle_lock() != ESP_OK) {
+        atomic_store_explicit(
+            &s_running,
+            false,
+            memory_order_release
+        );
+        return;
+    }
+
     const seismic_source_driver_t *driver = seismic_driver();
 
-    if (s_running) {
+    const bool was_running =
+        atomic_exchange_explicit(
+            &s_running,
+            false,
+            memory_order_acq_rel
+        );
+
+    if (was_running) {
         driver->stop();
     }
 
@@ -120,8 +236,6 @@ void seismic_acquisition_stop(void)
         SEISMIC_SOURCE_NONE,
         0
     );
-
-    s_running = false;
 
     esp_err_t err = seismic_acquisition_publish_status(false);
     if (err != ESP_OK) {
@@ -131,12 +245,17 @@ void seismic_acquisition_stop(void)
             esp_err_to_name(err)
         );
     }
+
+    seismic_acquisition_lifecycle_unlock();
 }
 
 
 bool seismic_acquisition_is_running(void)
 {
-    return s_running;
+    return atomic_load_explicit(
+        &s_running,
+        memory_order_acquire
+    );
 }
 
 
@@ -148,7 +267,10 @@ bool seismic_acquisition_source_healthy(void)
 
 esp_err_t seismic_acquisition_last_error(void)
 {
-    return s_last_error;
+    return (esp_err_t)atomic_load_explicit(
+        &s_last_error,
+        memory_order_acquire
+    );
 }
 
 
@@ -170,7 +292,12 @@ esp_err_t seismic_acquisition_get_snapshot(
 
     memset(snapshot, 0, sizeof(*snapshot));
 
-    snapshot->running = s_running;
+    snapshot->running =
+        atomic_load_explicit(
+            &s_running,
+            memory_order_acquire
+        );
+
     snapshot->source_name = driver->name;
     snapshot->transport_name = driver->transport_name;
     snapshot->sample_rate_hz = driver->sample_rate_hz;
@@ -185,7 +312,13 @@ esp_err_t seismic_acquisition_get_snapshot(
     }
 
     /* Keep task state, physical presence, and serial quality independent. */
-    snapshot->running = snapshot->running && s_running;
+    snapshot->running =
+        snapshot->running &&
+        atomic_load_explicit(
+            &s_running,
+            memory_order_acquire
+        );
+
     snapshot->source_healthy = seismic_driver_healthy();
 
     return ESP_OK;

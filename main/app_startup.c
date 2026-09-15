@@ -195,6 +195,10 @@ static void app_startup_initialize_core(void)
     );
 
     ESP_ERROR_CHECK(
+        seismic_acquisition_init()
+    );
+
+    ESP_ERROR_CHECK(
         adc_service_init()
     );
 
@@ -357,8 +361,8 @@ static void app_startup_initialize_services(
     /*
      * Local TFT navigation is the interactive boot boundary. Arm keypad
      * delivery immediately after ui_init() has installed the dispatcher;
-     * network/Web startup is independent of the physical controls and must
-     * not delay them.
+     * acquisition startup may run after this point without delaying local
+     * controls, but Web/Wi-Fi is not exposed until that first transition ends.
      */
     ESP_ERROR_CHECK(
         keypad_start_event_monitor(
@@ -371,6 +375,33 @@ static void app_startup_initialize_services(
         "interactive_ready",
         startup_started_ms
     );
+
+    /*
+     * Acquisition hardware is allowed to be absent/faulty during bring-up.
+     * Complete the first nonfatal transition before Web/Wi-Fi becomes
+     * externally reachable so a remote STOP cannot be overwritten by a later
+     * scheduled boot auto-start.
+     */
+    const uint32_t acquisition_started_ms =
+        esp_log_timestamp();
+
+    const esp_err_t acquisition_err =
+        seismic_acquisition_start();
+
+    app_startup_log_elapsed(
+        "seismic_acquisition_start",
+        acquisition_started_ms
+    );
+
+    if (acquisition_err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Seismic acquisition unavailable: %s",
+            esp_err_to_name(
+                acquisition_err
+            )
+        );
+    }
 
     ESP_ERROR_CHECK(
         web_server_start()
@@ -386,32 +417,6 @@ static void app_startup_initialize_services(
         "runtime_services",
         stage_started_ms
     );
-
-    /*
-     * Acquisition hardware is allowed to be absent/faulty during
-     * bring-up. The LVGL UI remains usable and reports STOPPED/error
-     * state instead of rebooting the whole controller.
-     */
-    stage_started_ms =
-        esp_log_timestamp();
-
-    const esp_err_t acquisition_err =
-        seismic_acquisition_start();
-
-    app_startup_log_elapsed(
-        "seismic_acquisition_start",
-        stage_started_ms
-    );
-
-    if (acquisition_err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Seismic acquisition unavailable: %s",
-            esp_err_to_name(
-                acquisition_err
-            )
-        );
-    }
 }
 
 
