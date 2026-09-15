@@ -1,0 +1,136 @@
+# nRF54L15 NCS Channel Sounding build proof
+
+This document defines the MAX-45 **build-only** proof path. It does not implement
+pair scheduling, distance estimation, BLE discovery, GATT transport, or an ESP32
+Channel Sounding protocol.
+
+## Baseline
+
+The proof is pinned to **nRF Connect SDK v3.4.0 LTS**. The v3.4.0 manifest uses
+Nordic's Zephyr fork and already contains the upstream board target
+`xiao_nrf54l15/nrf54l15/cpuapp`, so this proof does not need the separate Seeed
+`platform-seeedboards` board root.
+
+The NCS v3.4.0 XIAO board DTS also owns the board RF switch:
+
+- `rfsw_ctl`: P2.05, `GPIO_ACTIVE_LOW`, `regulator-boot-on`;
+- `rfsw_pwr`: P2.03, `GPIO_ACTIVE_HIGH`, `regulator-boot-on`.
+
+That board definition selects/powers the default ceramic RF path before the
+application enables Bluetooth. MAX-45 does not add application-owned RF-switch
+GPIO toggling and does not add multi-antenna Channel Sounding.
+
+The existing project `nRF54L15/zephyr/app.overlay` remains authoritative for the
+project-specific dual-I2C topology:
+
+- upstream D4/P1.10 SDA + D5/P1.11 SCL: `i2c22` switched from TWIM to TWIS;
+- private D12/P0.04 SDA + D11/P0.03 SCL: `i2c30` remains TWIM/controller;
+- the board-declared LSM6DS3TR-C is disabled because the diploma uses the plain
+  XIAO plus an external BMI160.
+
+## Why NCS is required
+
+The project PlatformIO baseline packages ordinary Zephyr 4.2.1. The Zephyr host
+has Channel Sounding APIs, but the nRF54L15 controller capability required by
+`CONFIG_BT_CHANNEL_SOUNDING` is supplied by Nordic's SoftDevice Controller in
+NCS. The NCS controller selects `BT_CTLR_CHANNEL_SOUNDING_SUPPORT` on hardware
+with `HAS_HW_NRF_RADIO_CS` and supports initiator, reflector, or both roles.
+
+MAX-45 therefore keeps the existing PlatformIO path unchanged while adding a
+separate proof configuration. If this proof passes on the pinned Windows NCS
+toolchain, the production nRF build should migrate to NCS/west in a later,
+explicitly approved slice rather than maintaining divergent firmware sources.
+
+## Proof configuration
+
+`nRF54L15/ncs/channel_sounding.conf` is additive to the existing
+`nRF54L15/zephyr/prj.conf`.
+
+The common image is configured for both Bluetooth connection roles and both CS
+roles:
+
+- `CONFIG_BT_CENTRAL=y`
+- `CONFIG_BT_PERIPHERAL=y`
+- `CONFIG_BT_MAX_CONN=2`
+- `CONFIG_BT_CTLR_SDC_PERIPHERAL_COUNT=1`
+- `CONFIG_BT_CTLR_SDC_CS_ROLE_BOTH=y`
+- `CONFIG_BT_CTLR_SDC_CS_COUNT=1`
+
+`BT_MAX_CONN=2` is intentional even though the first ranging architecture uses
+only one active CS pair at a time. The SoftDevice Controller reserves peripheral
+roles separately; with `BT_MAX_CONN=1` plus one peripheral slot there would be
+no central slot. Two connection slots preserve runtime capability for either
+role, while `CS_COUNT=1` bounds Channel Sounding concurrency to one procedure.
+
+The proof is also single-antenna and mode-3-disabled:
+
+- one controller antenna path;
+- one controller antenna;
+- Channel Sounding test commands disabled;
+- step mode 3 disabled;
+- one result reassembly buffer.
+
+No RAS profile or distance-estimation library is enabled by MAX-45.
+
+## Windows execution
+
+Install the official NCS v3.4.0 SDK + matching toolchain with Nordic's current
+`sdk-manager` workflow, then open the toolchain terminal:
+
+```powershell
+nrfutil install sdk-manager
+nrfutil sdk-manager install v3.4.0
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 --terminal
+```
+
+From that activated terminal, at the repository root:
+
+```powershell
+.\nRF54L15\ncs.ps1 build
+```
+
+The wrapper discovers the installed west workspace from the activated Nordic
+toolchain environment (`NRF_BASE` / `ZEPHYR_BASE`, with `west topdir` only as a
+fallback), requires that workspace to report NCS exactly v3.4.0, and builds the
+existing canonical `nRF54L15/zephyr` application for
+`xiao_nrf54l15/nrf54l15/cpuapp`, and adds only the MAX-45 CS fragment. After a
+successful link it checks the resolved `.config` for the SoftDevice, dual BLE
+roles, both CS roles, single CS context/antenna, and the existing 128-byte TWIS
+buffer.
+
+To build the unchanged baseline and the CS proof back-to-back and print ELF size
+information for both:
+
+```powershell
+.\nRF54L15\ncs.ps1 compare
+```
+
+Other supported actions:
+
+```powershell
+.\nRF54L15\ncs.ps1 probe
+.\nRF54L15\ncs.ps1 clean
+```
+
+`probe` never flashes hardware. MAX-45 is not complete until `build` (and, for
+resource accounting, `compare`) is executed successfully in the pinned NCS
+v3.4.0 Windows toolchain.
+
+## Invariants
+
+MAX-45 does **not** change:
+
+- the one-image runtime MAIN/REMOTE bootstrap model;
+- the 12-byte `SENSOR_REFRESH` request;
+- the 102-byte REMOTE sensor snapshot;
+- the ESP32 topology/sensor consumer;
+- BMI160/BME280/orientation application logic;
+- geophone acquisition or TDOA;
+- physical LED wiring;
+- cross-node clock synchronization.
+
+The next Channel Sounding implementation slice, after this proof passes, should
+first add a task-free five-node pair scheduler/data model. With five nodes there
+are ten undirected pairs. Initial radio execution should serialize them with one
+CS context per node and rotate initiator responsibility instead of making the
+wired MAIN node a permanent Bluetooth master.
