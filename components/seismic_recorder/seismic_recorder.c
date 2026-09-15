@@ -485,9 +485,11 @@ static void seismic_recorder_flush_if_due(
         return;
     }
 
-    const esp_err_t err = seismic_recorder_fs_flush(file, false);
+    /* This is the bounded ~30 s durability checkpoint. Normal batch writes
+     * remain asynchronous; only the periodic checkpoint forces media sync. */
+    const esp_err_t err = seismic_recorder_fs_flush(file, true);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Periodic SD flush failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Periodic SD checkpoint failed: %s", esp_err_to_name(err));
         seismic_recorder_record_stop_error(
             SEISMIC_RECORDER_STOP_STAGE_FLUSH,
             err,

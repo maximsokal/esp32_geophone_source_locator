@@ -713,12 +713,29 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
 
         if (
             cJSON_AddStringToObject(session, "session_id", summary->session_id) == NULL ||
+            cJSON_AddStringToObject(
+                session,
+                "status",
+                seismic_recorder_session_status_name(summary->status)
+            ) == NULL ||
             cJSON_AddBoolToObject(session, "complete", summary->complete) == NULL ||
+            cJSON_AddBoolToObject(session, "readable", summary->readable) == NULL ||
+            cJSON_AddBoolToObject(session, "recovered", summary->recovered) == NULL ||
             cJSON_AddStringToObject(session, "source", summary->source_name) == NULL ||
             cJSON_AddNumberToObject(session, "sample_rate_hz", summary->sample_rate_hz) == NULL ||
             cJSON_AddNumberToObject(session, "channel_count", summary->channel_count) == NULL ||
             cJSON_AddNumberToObject(session, "samples_written", (double)summary->samples_written) == NULL ||
+            cJSON_AddBoolToObject(
+                session,
+                "dropped_frames_available",
+                summary->dropped_frames_available
+            ) == NULL ||
             cJSON_AddNumberToObject(session, "dropped_frames", (double)summary->dropped_frames) == NULL ||
+            cJSON_AddBoolToObject(
+                session,
+                "recording_ms_available",
+                summary->recording_ms_available
+            ) == NULL ||
             cJSON_AddNumberToObject(session, "recording_ms", (double)summary->recording_ms) == NULL
         ) {
             web_status_cache_arbitration_unlock(&s_arbitration);

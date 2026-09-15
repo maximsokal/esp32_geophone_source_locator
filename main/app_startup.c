@@ -79,7 +79,7 @@ static void app_startup_background_recovery_complete(
     if (recovery_result != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "Background object recovery completed with error before Web cache refresh: %s",
+            "Background object/session recovery completed with error before Web cache refresh: %s",
             esp_err_to_name(recovery_result)
         );
     }
@@ -93,6 +93,58 @@ static void app_startup_background_recovery_complete(
             esp_err_to_name(refresh_err)
         );
     }
+}
+
+
+static void app_startup_recorder_recovery_requested(
+    const char *object_id,
+    const char *session_id,
+    void *user_context
+)
+{
+    (void)user_context;
+
+    ESP_LOGW(
+        TAG,
+        "Recorder terminal metadata commit failed; queueing session recovery object=%s session=%s",
+        object_id != NULL ? object_id : "?",
+        session_id != NULL ? session_id : "?"
+    );
+
+    /* Keep a cache refresh from publishing the stale `recording` placeholder
+     * while recovery is pending. The completion callback is the single point
+     * that reopens the refresh gate and queues a fresh archive snapshot. */
+    web_server_defer_status_cache_refresh();
+
+    (void)app_events_post_best_effort(
+        APP_EVENT_STORAGE_RECOVERY_STARTED,
+        0
+    );
+
+    const esp_err_t recovery_err =
+        object_recovery_start_background_with_callback(
+            app_startup_background_recovery_complete,
+            NULL
+        );
+    if (recovery_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Recorder recovery request could not start background worker: %s",
+            esp_err_to_name(recovery_err)
+        );
+        app_startup_background_recovery_complete(
+            recovery_err,
+            NULL
+        );
+        return;
+    }
+
+    /* If the request arrived while a previous worker was already executing
+     * its completion callback, start_background waits for that bounded teardown
+     * and creates a successor. The old callback may have reopened the cache in
+     * the meantime, so close the gate once more after successful handoff. For
+     * normal coalesced rescans this is simply an idempotent second defer. */
+    web_server_defer_status_cache_refresh();
 }
 
 
@@ -253,6 +305,12 @@ static void app_startup_initialize_services(
 
     ESP_ERROR_CHECK(
         seismic_recorder_init()
+    );
+    ESP_ERROR_CHECK(
+        seismic_recorder_set_recovery_request_callback(
+            app_startup_recorder_recovery_requested,
+            NULL
+        )
     );
 
     app_startup_log_elapsed(

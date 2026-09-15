@@ -15,6 +15,31 @@
 
 static const char *TAG = "SEISMIC_RECORDER_JSON";
 
+static seismic_recorder_recovery_request_callback_t s_recovery_request_callback = NULL;
+static void *s_recovery_request_context = NULL;
+
+
+esp_err_t seismic_recorder_set_recovery_request_callback(
+    seismic_recorder_recovery_request_callback_t callback,
+    void *user_context
+)
+{
+    if (callback == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (
+        s_recovery_request_callback != NULL &&
+        s_recovery_request_callback != callback
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_recovery_request_callback = callback;
+    s_recovery_request_context = user_context;
+    return ESP_OK;
+}
+
 
 static esp_err_t seismic_recorder_json_metadata_path(
     const char *object_id,
@@ -111,6 +136,21 @@ static bool seismic_recorder_json_add_cadence(
 }
 
 
+static bool seismic_recorder_json_status_is_known(
+    const char *status
+)
+{
+    return
+        status != NULL &&
+        (
+            strcmp(status, "recording") == 0 ||
+            strcmp(status, "complete") == 0 ||
+            strcmp(status, "error") == 0 ||
+            strcmp(status, "recovered_error") == 0
+        );
+}
+
+
 esp_err_t seismic_recorder_json_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
@@ -120,12 +160,15 @@ esp_err_t seismic_recorder_json_write_metadata(
     if (
         profile == NULL ||
         snapshot == NULL ||
-        status == NULL ||
+        !seismic_recorder_json_status_is_known(status) ||
         snapshot->object_id[0] == '\0' ||
         snapshot->session_id[0] == '\0'
     ) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    const bool recovered = strcmp(status, "recovered_error") == 0;
+    const bool recovered_metrics_available = !recovered;
 
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
@@ -161,7 +204,17 @@ esp_err_t seismic_recorder_json_write_metadata(
         cJSON_AddNumberToObject(root, "sample_rate_hz", snapshot->sample_rate_hz) != NULL &&
         cJSON_AddNumberToObject(root, "channel_count", snapshot->channel_count) != NULL &&
         cJSON_AddNumberToObject(root, "samples_written", (double)snapshot->samples_written) != NULL &&
+        cJSON_AddBoolToObject(
+            root,
+            "dropped_frames_available",
+            recovered_metrics_available
+        ) != NULL &&
         cJSON_AddNumberToObject(root, "dropped_frames", (double)snapshot->dropped_frames) != NULL &&
+        cJSON_AddBoolToObject(
+            root,
+            "recording_ms_available",
+            recovered_metrics_available
+        ) != NULL &&
         cJSON_AddNumberToObject(root, "recording_ms", (double)snapshot->recording_ms) != NULL &&
         cJSON_AddNumberToObject(root, "last_error", snapshot->last_error) != NULL;
 
@@ -228,6 +281,21 @@ esp_err_t seismic_recorder_json_write_metadata(
         (long long)(esp_timer_get_time() - write_started_us)
     );
 
+    if (
+        err != ESP_OK &&
+        s_recovery_request_callback != NULL &&
+        (
+            strcmp(status, "complete") == 0 ||
+            strcmp(status, "error") == 0
+        )
+    ) {
+        s_recovery_request_callback(
+            snapshot->object_id,
+            snapshot->session_id,
+            s_recovery_request_context
+        );
+    }
+
     free(path);
     cJSON_free(json);
     return err;
@@ -291,6 +359,31 @@ static bool seismic_recorder_json_string_equals(
         cJSON_IsString(item) &&
         item->valuestring != NULL &&
         strcmp(item->valuestring, expected) == 0;
+}
+
+
+static bool seismic_recorder_json_optional_bool(
+    const cJSON *root,
+    const char *name,
+    bool default_value,
+    bool *value
+)
+{
+    if (root == NULL || name == NULL || value == NULL) {
+        return false;
+    }
+
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
+    if (item == NULL) {
+        *value = default_value;
+        return true;
+    }
+    if (!cJSON_IsBool(item)) {
+        return false;
+    }
+
+    *value = cJSON_IsTrue(item);
+    return true;
 }
 
 
@@ -433,7 +526,11 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
         cJSON_IsString(status) &&
         status->valuestring != NULL &&
         strcmp(status->valuestring, "error") == 0;
-    valid = valid && (complete || errored);
+    const bool recovered =
+        cJSON_IsString(status) &&
+        status->valuestring != NULL &&
+        strcmp(status->valuestring, "recovered_error") == 0;
+    valid = valid && (complete || errored || recovered);
 
     const cJSON *source = cJSON_GetObjectItemCaseSensitive(root, "source");
     valid = valid &&
@@ -464,12 +561,33 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
     uint64_t samples_written = 0U;
     uint64_t dropped_frames = 0U;
     uint64_t recording_ms = 0U;
+    bool dropped_frames_available = true;
+    bool recording_ms_available = true;
     seismic_recorder_cadence_t cadence = {0};
     valid = valid &&
         seismic_recorder_json_uint64(root, "samples_written", &samples_written) &&
         seismic_recorder_json_uint64(root, "dropped_frames", &dropped_frames) &&
         seismic_recorder_json_uint64(root, "recording_ms", &recording_ms) &&
+        seismic_recorder_json_optional_bool(
+            root,
+            "dropped_frames_available",
+            true,
+            &dropped_frames_available
+        ) &&
+        seismic_recorder_json_optional_bool(
+            root,
+            "recording_ms_available",
+            true,
+            &recording_ms_available
+        ) &&
         seismic_recorder_json_read_cadence(root, &cadence);
+
+    if (
+        recovered &&
+        (dropped_frames_available || recording_ms_available || cadence.available)
+    ) {
+        valid = false;
+    }
 
     if (!valid) {
         cJSON_Delete(root);
@@ -489,7 +607,16 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
         "%s",
         source->valuestring
     );
+    summary->status = complete
+        ? SEISMIC_RECORDER_SESSION_COMPLETE
+        : recovered
+            ? SEISMIC_RECORDER_SESSION_RECOVERED_ERROR
+            : SEISMIC_RECORDER_SESSION_ERROR;
     summary->complete = complete;
+    summary->readable = true;
+    summary->recovered = recovered;
+    summary->dropped_frames_available = dropped_frames_available;
+    summary->recording_ms_available = recording_ms_available;
     summary->sample_rate_hz = sample_rate_hz;
     summary->channel_count = (uint8_t)channel_count;
     summary->samples_written = samples_written;

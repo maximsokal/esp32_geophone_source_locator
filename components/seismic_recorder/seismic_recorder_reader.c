@@ -382,6 +382,27 @@ static bool seismic_recorder_reader_header_matches_summary(
 }
 
 
+static void seismic_recorder_reader_apply_terminal_info(
+    const seismic_recorder_session_summary_t *summary,
+    seismic_recorder_waveform_info_t *info
+)
+{
+    info->status = summary->status;
+    info->complete = summary->complete;
+    /* Legacy in-memory fixtures and pre-MAX-69 callers may only populate the
+     * historic complete bit. Persisted metadata parsing sets readable
+     * explicitly, but complete has always implied a readable terminal file. */
+    info->readable = summary->readable || summary->complete;
+    info->recovered = summary->recovered;
+    info->dropped_frames_available = summary->dropped_frames_available;
+    info->recording_ms_available = summary->recording_ms_available;
+    info->samples_written = summary->samples_written;
+    info->dropped_frames = summary->dropped_frames;
+    info->recording_ms = summary->recording_ms;
+    info->cadence = summary->cadence;
+}
+
+
 static void seismic_recorder_reader_fill_empty_info(
     const char *object_id,
     const seismic_recorder_session_summary_t *summary,
@@ -389,15 +410,12 @@ static void seismic_recorder_reader_fill_empty_info(
     seismic_recorder_waveform_info_t *info
 )
 {
-    info->complete = summary->complete;
+    seismic_recorder_reader_apply_terminal_info(summary, info);
     snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
     snprintf(info->session_id, sizeof(info->session_id), "%s", summary->session_id);
     snprintf(info->source_name, sizeof(info->source_name), "%s", summary->source_name);
     info->sample_rate_hz = summary->sample_rate_hz;
     info->channel_count = summary->channel_count;
-    info->samples_written = summary->samples_written;
-    info->dropped_frames = summary->dropped_frames;
-    info->recording_ms = summary->recording_ms;
     info->source_frame_count = summary->samples_written;
     info->start_frame = start_frame;
     info->frame_count = 0U;
@@ -518,7 +536,7 @@ esp_err_t seismic_recorder_read_session(
         return err;
     }
 
-    if (!summary.complete) {
+    if (!summary.readable && !summary.complete) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -586,11 +604,24 @@ esp_err_t seismic_recorder_read_session(
         free(samples_path);
         return ESP_ERR_INVALID_SIZE;
     }
-    if (raw_file_size != expected_raw_file_size) {
+
+    /* Final ERROR metadata is the authoritative committed prefix. A failed
+     * fwrite can leave bytes after its last fully-accounted frame; expose only
+     * the exact metadata prefix rather than turning the whole failed run into
+     * an unreadable session. COMPLETE and RECOVERED_ERROR remain exact-size
+     * contracts, and every status fails closed if the raw file is too short. */
+    const bool terminal_error_prefix =
+        summary.status == SEISMIC_RECORDER_SESSION_ERROR &&
+        !summary.recovered;
+    if (
+        raw_file_size < expected_raw_file_size ||
+        (!terminal_error_prefix && raw_file_size != expected_raw_file_size)
+    ) {
         free(lod_path);
         free(samples_path);
         return ESP_ERR_INVALID_RESPONSE;
     }
+    const uint64_t contract_raw_file_size = expected_raw_file_size;
 
     seismic_recorder_bounded_reader_t raw_reader = {
         .path = samples_path,
@@ -616,7 +647,8 @@ esp_err_t seismic_recorder_read_session(
     /*
      * Terminal metadata is the frame-count authority. Validate samples.bin
      * before cache/LOD selection so a retained PSRAM range cannot hide a
-     * truncated, extended or configuration-mismatched persisted session.
+     * truncated or configuration-mismatched persisted session. ERROR may have
+     * a discarded physical tail, but it is never part of this logical file.
      */
     if (resolved_frame_count == 0U) {
         seismic_recorder_reader_fill_empty_info(
@@ -641,10 +673,10 @@ esp_err_t seismic_recorder_read_session(
     }
 
     /*
-     * Fast path: after STOP the completed session's newest retained range is
-     * still in the recorder PSRAM cache. Reading it avoids bulk TFT/SD
-     * arbitration. The persisted file/header contract was already checked
-     * above, and partial cache coverage never yields a mixed waveform.
+     * Fast path: after STOP the newest retained range can still be in the
+     * recorder PSRAM cache. Reading it avoids bulk TFT/SD arbitration. The
+     * persisted file/header contract was already checked above, and partial
+     * cache coverage never yields a mixed waveform.
      */
     uint64_t virtual_file_size = 0U;
     const bool virtual_size_valid =
@@ -688,6 +720,7 @@ esp_err_t seismic_recorder_read_session(
         seismic_recorder_reader_priority_leave(priority_guard);
 #endif
         if (err == ESP_OK) {
+            seismic_recorder_reader_apply_terminal_info(&summary, info);
             heap_caps_free(staging);
             free(lod_path);
             free(samples_path);
@@ -718,10 +751,8 @@ esp_err_t seismic_recorder_read_session(
      *
      * For long ranges, a completed LOD64 sidecar can replace interior raw
      * blocks only when all represented frames map to exactly one output bin.
-     * Query edges and bin-crossing blocks remain raw, so the result is exactly
-     * the same partition/min/max waveform as the raw reducer. Any missing,
-     * incomplete, malformed or stale sidecar is disposable and falls through
-     * to samples.bin without changing the public API result.
+     * Error/recovered sessions deliberately fail the LOD complete-session gate
+     * and fall through to authoritative raw samples.bin.
      *
      * The reduction phase is temporarily lowered to the normal storage-service
      * priority so a many-window history request cannot outrank recorder/LVGL.
@@ -753,7 +784,7 @@ esp_err_t seismic_recorder_read_session(
                     seismic_recorder_lod_read_source_with_stats(
                         seismic_recorder_reader_read_at,
                         &raw_reader,
-                        raw_file_size,
+                        contract_raw_file_size,
                         seismic_recorder_reader_read_at,
                         &lod_reader,
                         lod_file_size,
@@ -804,7 +835,7 @@ esp_err_t seismic_recorder_read_session(
         err = seismic_recorder_waveform_read_source(
             seismic_recorder_reader_read_at,
             &raw_reader,
-            raw_file_size,
+            contract_raw_file_size,
             &summary,
             start_frame,
             resolved_frame_count,
@@ -835,6 +866,7 @@ esp_err_t seismic_recorder_read_session(
     free(samples_path);
 
     if (err == ESP_OK) {
+        seismic_recorder_reader_apply_terminal_info(&summary, info);
         snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
     }
     return err;

@@ -385,7 +385,7 @@ static esp_err_t web_seismic_saved_handler(
             request,
             web_seismic_saved_http_status(err),
             err == ESP_ERR_INVALID_STATE
-                ? "Session is not complete"
+                ? "Session is not readable"
                 : "Saved seismic session is unavailable or invalid"
         );
     }
@@ -412,26 +412,36 @@ static esp_err_t web_seismic_saved_handler(
     web_json_writer_printf(
         &writer,
         "\"source\":\"%s\","
+        "\"status\":\"%s\","
         "\"complete\":%s,"
+        "\"readable\":%s,"
+        "\"recovered\":%s,"
         "\"sample_rate_hz\":%" PRIu32 ",",
         info.source_name,
+        seismic_recorder_session_status_name(info.status),
         info.complete ? "true" : "false",
+        info.readable ? "true" : "false",
+        info.recovered ? "true" : "false",
         info.sample_rate_hz
     );
     web_json_writer_printf(
         &writer,
         "\"channel_count\":%u,"
         "\"samples_written\":%" PRIu64 ","
+        "\"dropped_frames_available\":%s,"
         "\"dropped_frames\":%" PRIu64 ",",
         (unsigned)info.channel_count,
         info.samples_written,
+        info.dropped_frames_available ? "true" : "false",
         info.dropped_frames
     );
     web_json_writer_printf(
         &writer,
+        "\"recording_ms_available\":%s,"
         "\"recording_ms\":%" PRIu64 ","
         "\"source_frame_count\":%" PRIu64 ","
         "\"start_frame\":%" PRIu64 ",",
+        info.recording_ms_available ? "true" : "false",
         info.recording_ms,
         info.source_frame_count,
         info.start_frame

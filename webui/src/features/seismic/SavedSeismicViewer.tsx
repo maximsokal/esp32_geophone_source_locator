@@ -25,6 +25,15 @@ function formatUv(value: number): string {
   return `${value.toFixed(1)} uV`;
 }
 
+function terminalLabel(snapshot: SavedSeismicSnapshot): string {
+  switch (snapshot.status) {
+    case 'complete': return 'COMPLETE';
+    case 'recovered_error': return 'RECOVERED ERROR';
+    case 'error': return 'ERROR';
+    default: return 'UNKNOWN';
+  }
+}
+
 export default function SavedSeismicViewer({ objectId, sessionId, summary, onClose }: Props) {
   const [snapshot, setSnapshot] = useState<SavedSeismicSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +104,13 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
         <div>
           <span className="eyebrow">SAVED SESSION</span>
           <h2>{sessionId}</h2>
-          <small>{objectId} · {summary.sample_rate_hz.toLocaleString()} Hz · {formatDuration(summary.recording_ms)}</small>
+          <small>
+            {objectId} · {summary.sample_rate_hz.toLocaleString()} Hz · {
+              summary.recording_ms_available === false
+                ? 'duration unknown'
+                : formatDuration(summary.recording_ms)
+            }
+          </small>
         </div>
         <button type="button" className="secondary" onClick={onClose}>Back to sessions</button>
       </div>
@@ -118,13 +133,22 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
 
       {snapshot !== null && error === null && (
         <>
+          {!snapshot.complete && (
+            <div className="console-alert" role="status">
+              {snapshot.recovered
+                ? 'Recovered persisted frames after an interrupted/failed recording. Data is readable, but this session was not completed successfully.'
+                : 'This recording ended with an error. Only the persisted frame prefix reported by terminal metadata is shown.'}
+            </div>
+          )}
           <dl className="console-dl saved-seismic-meta">
             <div><dt>Source</dt><dd>{snapshot.source}</dd></div>
+            <div><dt>Status</dt><dd>{terminalLabel(snapshot)}</dd></div>
+            <div><dt>Readable</dt><dd>{snapshot.readable ? 'yes' : 'no'}</dd></div>
             <div><dt>Complete</dt><dd>{snapshot.complete ? 'yes' : 'no'}</dd></div>
             <div><dt>Frames</dt><dd>{snapshot.start_frame.toLocaleString()}–{(snapshot.start_frame + snapshot.frame_count).toLocaleString()} / {snapshot.source_frame_count.toLocaleString()}</dd></div>
             <div><dt>Displayed buckets</dt><dd>{snapshot.count.toLocaleString()}</dd></div>
-            <div><dt>Duration</dt><dd>{formatDuration(snapshot.recording_ms)}</dd></div>
-            <div><dt>Dropped frames</dt><dd>{snapshot.dropped_frames.toLocaleString()}</dd></div>
+            <div><dt>Duration</dt><dd>{snapshot.recording_ms_available ? formatDuration(snapshot.recording_ms) : 'unknown after recovery'}</dd></div>
+            <div><dt>Dropped frames</dt><dd>{snapshot.dropped_frames_available ? snapshot.dropped_frames.toLocaleString() : 'unknown after recovery'}</dd></div>
             <div><dt>Cadence</dt><dd>{snapshot.cadence.available ? `${snapshot.cadence.collapsed_periods.toLocaleString()} collapsed` : 'unknown'}</dd></div>
           </dl>
           <div className="saved-seismic-stack">

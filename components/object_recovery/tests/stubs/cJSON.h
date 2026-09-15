@@ -8,6 +8,7 @@ typedef struct cJSON
     char *string;
     int type;
     int valueint;
+    double valuedouble;
     char *valuestring;
 } cJSON;
 

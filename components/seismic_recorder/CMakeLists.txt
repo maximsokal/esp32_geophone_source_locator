@@ -13,6 +13,7 @@ idf_component_register(
         "seismic_recorder_lod_store.c"
         "seismic_recorder_cache.c"
         "seismic_recorder_list_responsive.c"
+        "seismic_recorder_recovery.c"
 
     INCLUDE_DIRS
         "include"

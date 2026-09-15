@@ -17,6 +17,7 @@ idf_component_register(
         app_config
         object_format
         storage_manager
+        seismic_recorder
         freertos
         json
         esp_timer

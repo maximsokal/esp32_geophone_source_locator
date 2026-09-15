@@ -374,6 +374,25 @@
       ]
     },
     {
+      "name": "seismic_recorder_recovery",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/object_recovery/tests/stubs/cJSON.c",
+        "components/seismic_recorder/tests/seismic_recorder_recovery_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/object_recovery/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/seismic_buffer/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "seismic_recorder_start_policy",
       "sources": [
         "components/seismic_recorder/seismic_recorder_start_policy.c",
