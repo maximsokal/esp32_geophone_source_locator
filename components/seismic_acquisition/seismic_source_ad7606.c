@@ -60,7 +60,13 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->samples = status.samples;
     snapshot->read_errors = status.read_errors;
     snapshot->consecutive_failures = status.consecutive_failures;
-    snapshot->cadence_available = true;
+    /* A selected AD7606 backend supports cadence evidence, but a failed start
+     * has observed no sampling period and must not be reported as zero-miss
+     * proof. Preserve evidence after a completed/stopped run once at least one
+     * real timer period was observed. */
+    snapshot->cadence_available =
+        status.running ||
+        status.timer_ticks > 0U;
     snapshot->timer_ticks = status.timer_ticks;
     snapshot->conversion_attempts = status.conversion_attempts;
     snapshot->collapsed_periods = status.collapsed_periods;

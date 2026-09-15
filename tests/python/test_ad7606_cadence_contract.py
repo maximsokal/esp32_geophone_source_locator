@@ -76,10 +76,23 @@ def test_generic_snapshot_and_status_expose_cadence_without_private_web_dependen
         "max_successful_sample_interval_us",
     ):
         assert f"snapshot->{field}" in source
-        assert f'"{field}"' in status or field == "cadence_available"
+        assert f'\\"{field}\\"' in status or field == "cadence_available"
 
     assert 'cJSON_AddObjectToObject(object, "cadence")' in status
     assert "source_snapshot->cadence_available" in status
+
+
+def test_failed_ad7606_start_does_not_publish_zero_miss_proof():
+    source = SOURCE_AD7606.read_text(encoding="utf-8")
+    assert "snapshot->cadence_available = true;" not in source
+
+    availability = _between(
+        source,
+        "snapshot->cadence_available =",
+        "snapshot->timer_ticks =",
+    )
+    assert "status.running" in availability
+    assert "status.timer_ticks > 0U" in availability
 
 
 def test_session_boundary_uses_delta_and_legacy_metadata_remains_unknown():
