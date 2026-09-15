@@ -2,86 +2,664 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+
 #include "nrf_sensor_transport.h"
 
-typedef enum { M_OK, M_FOREIGN, M_PENDING, M_NACK, M_PROTOCOL } mode_t;
+typedef enum {
+    M_OK,
+    M_FOREIGN,
+    M_FOREIGN_TWICE,
+    M_PENDING,
+    M_NACK,
+    M_PROTOCOL,
+    M_PARTIAL,
+    M_NO_DATA,
+    M_BUSY,
+    M_ABORT_AFTER_PENDING,
+    M_SNAPSHOT_IDENTITY_MISMATCH,
+} mode_t;
+
+typedef enum {
+    E_SELECT,
+    E_MAIN_READ,
+    E_REMOTE_READ,
+    E_WRITE,
+    E_SNAPSHOT,
+    E_CLOSE,
+} event_t;
+
 typedef struct {
-    int sel; uint8_t ch; uint64_t now; uint32_t req; mode_t mode;
-    unsigned select, close, main_reads, remote_reads, snaps, writes, discovery;
-    bool main_absent, main_bad_epoch, fail_select, fail_close, mux_fault, abort;
+    int sel;
+    uint8_t ch;
+    uint64_t now;
+    uint32_t req;
+    uint32_t remote_epoch;
+    uint8_t remote_hw;
+    uint32_t snapshot_sequence;
+    uint64_t source_uptime_ms;
+    mode_t mode;
+    event_t events[128];
+    unsigned event_count;
+    unsigned select;
+    unsigned close;
+    unsigned main_reads;
+    unsigned remote_reads;
+    unsigned snaps;
+    unsigned writes;
+    unsigned discovery;
+    bool main_absent;
+    bool main_bad_epoch;
+    bool fail_select;
+    bool fail_close;
+    bool mux_fault;
+    bool abort;
 } bus_t;
 
-static void node(nrf_topology_node_snapshot_t *n, uint8_t role, uint8_t ch, uint8_t hw, uint32_t epoch) {
-    memset(n,0,sizeof(*n)); n->state=NRF_TOPOLOGY_NODE_ASSIGNED; n->hardware_id_length=4;
-    for(unsigned i=0;i<4;i++) n->hardware_id[i]=(uint8_t)(hw+i);
-    n->node_id=role==NRF_UPSTREAM_ROLE_MAIN?0U:(uint8_t)(ch+1U);
-    n->mux_channel=role==NRF_UPSTREAM_ROLE_MAIN?NRF_UPSTREAM_MUX_CHANNEL_NONE:ch;
-    n->current_address=role==NRF_UPSTREAM_ROLE_MAIN?NRF_UPSTREAM_ADDRESS_MAIN:NRF_UPSTREAM_ADDRESS_REMOTE;
-    n->protocol_result=NRF_UPSTREAM_RESULT_OK; n->assignment_request_id=epoch;
+static void record_event(bus_t *bus, event_t event)
+{
+    assert(bus->event_count < sizeof(bus->events) / sizeof(bus->events[0]));
+    bus->events[bus->event_count++] = event;
 }
-static void status(nrf_upstream_status_t *s,const nrf_topology_node_snapshot_t*n,uint8_t role){
-    memset(s,0,sizeof(*s)); s->request_id=n->assignment_request_id; s->hardware_id_length=n->hardware_id_length;
-    memcpy(s->hardware_id,n->hardware_id,sizeof(s->hardware_id)); s->role=role; s->node_id=n->node_id;
-    s->mux_channel=n->mux_channel; s->target_address=n->current_address; s->lifecycle=NRF_UPSTREAM_LIFECYCLE_READY;
-    s->result=NRF_UPSTREAM_RESULT_OK; s->flags=NRF_UPSTREAM_STATUS_FLAG_ASSIGNED|NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED;
+
+static void node(
+    nrf_topology_node_snapshot_t *node_snapshot,
+    uint8_t role,
+    uint8_t channel,
+    uint8_t hardware_seed,
+    uint32_t epoch)
+{
+    memset(node_snapshot, 0, sizeof(*node_snapshot));
+    node_snapshot->state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    node_snapshot->hardware_id_length = 4U;
+    for (unsigned index = 0U; index < 4U; ++index) {
+        node_snapshot->hardware_id[index] = (uint8_t)(hardware_seed + index);
+    }
+    node_snapshot->node_id = role == NRF_UPSTREAM_ROLE_MAIN ? 0U : (uint8_t)(channel + 1U);
+    node_snapshot->mux_channel = role == NRF_UPSTREAM_ROLE_MAIN
+        ? NRF_UPSTREAM_MUX_CHANNEL_NONE
+        : channel;
+    node_snapshot->current_address = role == NRF_UPSTREAM_ROLE_MAIN
+        ? NRF_UPSTREAM_ADDRESS_MAIN
+        : NRF_UPSTREAM_ADDRESS_REMOTE;
+    node_snapshot->protocol_result = NRF_UPSTREAM_RESULT_OK;
+    node_snapshot->assignment_request_id = epoch;
 }
-static void topo(bus_t*b,nrf_topology_snapshot_t*t,uint8_t ch){
-    memset(b,0,sizeof(*b)); memset(t,0,sizeof(*t)); b->sel=-1; b->ch=ch; t->generation=1; t->tca_available=true;
-    node(&t->main,NRF_UPSTREAM_ROLE_MAIN,0,0x10,0x1111);
-    for(unsigned i=0;i<NRF_TOPOLOGY_REMOTE_COUNT;i++) t->remotes[i].state=NRF_TOPOLOGY_NODE_ABSENT;
-    node(&t->remotes[ch],NRF_UPSTREAM_ROLE_REMOTE,ch,(uint8_t)(0x30+ch),(uint32_t)(0x2200+ch));
+
+static void status(
+    nrf_upstream_status_t *status_frame,
+    const nrf_topology_node_snapshot_t *node_snapshot,
+    uint8_t role)
+{
+    memset(status_frame, 0, sizeof(*status_frame));
+    status_frame->request_id = node_snapshot->assignment_request_id;
+    status_frame->hardware_id_length = node_snapshot->hardware_id_length;
+    memcpy(status_frame->hardware_id, node_snapshot->hardware_id, sizeof(status_frame->hardware_id));
+    status_frame->role = role;
+    status_frame->node_id = node_snapshot->node_id;
+    status_frame->mux_channel = node_snapshot->mux_channel;
+    status_frame->target_address = node_snapshot->current_address;
+    status_frame->lifecycle = NRF_UPSTREAM_LIFECYCLE_READY;
+    status_frame->result = NRF_UPSTREAM_RESULT_OK;
+    status_frame->flags =
+        NRF_UPSTREAM_STATUS_FLAG_ASSIGNED | NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED;
 }
-static esp_err_t sel(void*c,uint8_t ch){bus_t*b=c;b->select++;assert(ch==b->ch);if(b->fail_select)return ESP_FAIL;b->sel=ch;return ESP_OK;}
-static esp_err_t close_mux(void*c){bus_t*b=c;b->close++;b->sel=-1;return b->fail_close?ESP_FAIL:ESP_OK;}
-static bool fault(void*c){return ((bus_t*)c)->mux_fault;}
-static esp_err_t rd(void*c,uint8_t a,nrf_upstream_status_t*s){
-    bus_t*b=c; nrf_topology_node_snapshot_t n;
-    if(a==NRF_UPSTREAM_ADDRESS_DISCOVERY){b->discovery++;return ESP_FAIL;}
-    if(a==NRF_UPSTREAM_ADDRESS_MAIN){b->main_reads++; if(b->main_absent)return ESP_ERR_NOT_FOUND;
-        node(&n,NRF_UPSTREAM_ROLE_MAIN,0,0x10,b->main_bad_epoch?0x9999:0x1111); status(s,&n,NRF_UPSTREAM_ROLE_MAIN);return ESP_OK;}
-    if(a==NRF_UPSTREAM_ADDRESS_REMOTE){b->remote_reads++; if(b->mode==M_NACK)return ESP_ERR_NOT_FOUND;
-        node(&n,NRF_UPSTREAM_ROLE_REMOTE,b->ch,(uint8_t)(0x30+b->ch),(uint32_t)(0x2200+b->ch));status(s,&n,NRF_UPSTREAM_ROLE_REMOTE);return ESP_OK;}
-    return ESP_ERR_INVALID_ARG;
+
+static void topo(bus_t *bus, nrf_topology_snapshot_t *topology, uint8_t channel)
+{
+    memset(bus, 0, sizeof(*bus));
+    memset(topology, 0, sizeof(*topology));
+    bus->sel = -1;
+    bus->ch = channel;
+    bus->remote_epoch = (uint32_t)(0x2200U + channel);
+    bus->remote_hw = (uint8_t)(0x30U + channel);
+    bus->snapshot_sequence = 42U;
+    bus->source_uptime_ms = 1234U;
+    topology->generation = 1U;
+    topology->tca_available = true;
+    node(&topology->main, NRF_UPSTREAM_ROLE_MAIN, 0U, 0x10U, 0x1111U);
+    for (unsigned index = 0U; index < NRF_TOPOLOGY_REMOTE_COUNT; ++index) {
+        topology->remotes[index].state = NRF_TOPOLOGY_NODE_ABSENT;
+    }
+    node(
+        &topology->remotes[channel],
+        NRF_UPSTREAM_ROLE_REMOTE,
+        channel,
+        bus->remote_hw,
+        bus->remote_epoch);
 }
-static esp_err_t wr(void*c,const nrf_upstream_sensor_refresh_t*r){bus_t*b=c;b->writes++;b->req=r->request_id;return ESP_OK;}
-static esp_err_t snap(void*c,nrf_upstream_status_t*s,nrf_upstream_sensor_snapshot_t*x){
-    bus_t*b=c; nrf_topology_node_snapshot_t n; b->snaps++; if(b->mode==M_PROTOCOL)return ESP_ERR_INVALID_RESPONSE;
-    node(&n,NRF_UPSTREAM_ROLE_REMOTE,b->ch,(uint8_t)(0x30+b->ch),(uint32_t)(0x2200+b->ch));status(s,&n,NRF_UPSTREAM_ROLE_REMOTE);
-    memset(x,0,sizeof(*x));x->sequence=42;x->sample_complete_uptime_ms=1234;
-    if(b->mode==M_FOREIGN && b->writes==1){x->request_id=0;x->result=b->snaps==1?NRF_UPSTREAM_SENSOR_RESULT_PENDING:NRF_UPSTREAM_SENSOR_RESULT_OK;}
-    else {x->request_id=b->req;x->result=b->mode==M_PENDING?NRF_UPSTREAM_SENSOR_RESULT_PENDING:NRF_UPSTREAM_SENSOR_RESULT_OK;x->valid_mask=NRF_UPSTREAM_SENSOR_VALID_MASK;x->pressure_pa=101325;}
+
+static esp_err_t select_mux(void *context, uint8_t channel)
+{
+    bus_t *bus = context;
+    ++bus->select;
+    record_event(bus, E_SELECT);
+    assert(channel == bus->ch);
+    if (bus->fail_select) {
+        return ESP_FAIL;
+    }
+    bus->sel = channel;
     return ESP_OK;
 }
-static void sleep10(void*c,uint32_t ms){bus_t*b=c;assert(ms==10);b->now+=ms;}
-static uint64_t now(void*c){return ((bus_t*)c)->now;}
-static bool aborted(void*c){return ((bus_t*)c)->abort;}
-static nrf_sensor_transport_io_t io(bus_t*b){return (nrf_sensor_transport_io_t){b,sel,close_mux,fault,rd,wr,snap,sleep10,now,aborted};}
-static nrf_sensor_transport_controller_t ctl(void){nrf_sensor_transport_controller_t c; nrf_sensor_transport_config_t cfg={500,10,77};assert(nrf_sensor_transport_controller_init(&c,&cfg)==ESP_OK);return c;}
-static void cache(const nrf_topology_snapshot_t*t,nrf_remote_sensor_cache_t*c,uint8_t ch){memset(c,0,sizeof(*c)*NRF_TOPOLOGY_REMOTE_COUNT);assert(nrf_sensor_cache_reconcile_topology(t,c)==(1U<<ch));}
 
-static void test_cache_epoch(void){
-    bus_t b; nrf_topology_snapshot_t t; nrf_remote_sensor_cache_t c[NRF_TOPOLOGY_REMOTE_COUNT]={0}; topo(&b,&t,3);assert(nrf_sensor_cache_reconcile_topology(&t,c)==8);
-    c[3].response_valid=true;c[3].state=NRF_SENSOR_CACHE_OK;c[3].last_attempt_state=NRF_SENSOR_CACHE_OK;c[3].sensor.sequence=9;t.generation++;
-    assert(nrf_sensor_cache_reconcile_topology(&t,c)==0&&c[3].response_valid&&c[3].sensor.sequence==9);
-    t.remotes[3].state=NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;assert(nrf_sensor_cache_reconcile_topology(&t,c)==0&&!c[3].topology_current&&c[3].response_valid);
-    t.remotes[3].state=NRF_TOPOLOGY_NODE_ASSIGNED;assert(nrf_sensor_cache_reconcile_topology(&t,c)==0&&c[3].state==NRF_SENSOR_CACHE_OK);
-    t.remotes[3].assignment_request_id++;assert(nrf_sensor_cache_reconcile_topology(&t,c)==8&&!c[3].response_valid&&c[3].state==NRF_SENSOR_CACHE_EMPTY);
+static esp_err_t close_mux(void *context)
+{
+    bus_t *bus = context;
+    ++bus->close;
+    record_event(bus, E_CLOSE);
+    bus->sel = -1;
+    return bus->fail_close ? ESP_FAIL : ESP_OK;
 }
-static void test_success_and_no_discovery(void){
-    for(uint8_t ch=0;ch<8;ch++){bus_t b;nrf_topology_snapshot_t t;nrf_remote_sensor_cache_t c[8];topo(&b,&t,ch);cache(&t,c,ch);nrf_sensor_transport_controller_t k=ctl();nrf_sensor_transport_io_t i=io(&b);bool r=false;
-        assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,ch,&c[ch],&r)==ESP_OK);assert(c[ch].state==NRF_SENSOR_CACHE_OK&&c[ch].sensor.pressure_pa==101325&&c[ch].esp_receipt_uptime_ms==b.now);
-        assert(!r&&b.discovery==0&&b.select==1&&b.close==1&&b.main_reads==1&&b.remote_reads==1&&b.writes==1);}
-    bus_t b;nrf_topology_snapshot_t t;nrf_remote_sensor_cache_t c[8];topo(&b,&t,2);t.main.state=NRF_TOPOLOGY_NODE_ABSENT;cache(&t,c,2);nrf_sensor_transport_controller_t k=ctl();nrf_sensor_transport_io_t i=io(&b);bool r=false;
-    assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,2,&c[2],&r)==ESP_OK&&b.main_reads==0&&b.discovery==0);
+
+static bool mux_faulted(void *context)
+{
+    return ((bus_t *)context)->mux_fault;
 }
-static void test_retry_timeout_and_faults(void){
-    bus_t b;nrf_topology_snapshot_t t;nrf_remote_sensor_cache_t c[8];bool r;nrf_sensor_transport_controller_t k;nrf_sensor_transport_io_t i;
-    topo(&b,&t,1);cache(&t,c,1);b.mode=M_FOREIGN;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,1,&c[1],&r)==ESP_OK&&b.writes==2&&b.snaps>=3);
-    topo(&b,&t,4);cache(&t,c,4);b.mode=M_PENDING;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,4,&c[4],&r)==ESP_ERR_TIMEOUT&&c[4].state==NRF_SENSOR_CACHE_TIMEOUT&&b.now==500&&b.close==1);
-    topo(&b,&t,4);cache(&t,c,4);b.mode=M_PROTOCOL;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,4,&c[4],&r)==ESP_ERR_INVALID_RESPONSE&&c[4].state==NRF_SENSOR_CACHE_PROTOCOL_ERROR&&r&&b.close==1);
-    topo(&b,&t,4);cache(&t,c,4);b.mode=M_NACK;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,4,&c[4],&r)==ESP_ERR_NOT_FOUND&&c[4].state==NRF_SENSOR_CACHE_IDENTITY_STALE&&r&&b.close==1);
-    topo(&b,&t,4);cache(&t,c,4);b.main_bad_epoch=true;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,4,&c[4],&r)==ESP_ERR_INVALID_RESPONSE&&b.remote_reads==0&&r&&b.close==1);
-    topo(&b,&t,4);cache(&t,c,4);b.fail_close=true;b.mux_fault=true;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,4,&c[4],&r)==ESP_FAIL&&c[4].state==NRF_SENSOR_CACHE_MUX_FAULT&&r);
-    topo(&b,&t,7);cache(&t,c,7);b.fail_select=true;k=ctl();i=io(&b);r=false;assert(nrf_sensor_transport_refresh_channel(&k,&i,&t,7,&c[7],&r)==ESP_FAIL&&b.close==1&&b.main_reads==0&&b.discovery==0);
+
+static esp_err_t read_status(void *context, uint8_t address, nrf_upstream_status_t *status_frame)
+{
+    bus_t *bus = context;
+    nrf_topology_node_snapshot_t node_snapshot;
+
+    if (address == NRF_UPSTREAM_ADDRESS_DISCOVERY) {
+        ++bus->discovery;
+        return ESP_FAIL;
+    }
+    if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
+        ++bus->main_reads;
+        record_event(bus, E_MAIN_READ);
+        if (bus->main_absent) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        node(
+            &node_snapshot,
+            NRF_UPSTREAM_ROLE_MAIN,
+            0U,
+            0x10U,
+            bus->main_bad_epoch ? 0x9999U : 0x1111U);
+        status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_MAIN);
+        return ESP_OK;
+    }
+    if (address == NRF_UPSTREAM_ADDRESS_REMOTE) {
+        ++bus->remote_reads;
+        record_event(bus, E_REMOTE_READ);
+        if (bus->mode == M_NACK) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        node(
+            &node_snapshot,
+            NRF_UPSTREAM_ROLE_REMOTE,
+            bus->ch,
+            bus->remote_hw,
+            bus->remote_epoch);
+        status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_REMOTE);
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
 }
-int main(void){test_cache_epoch();test_success_and_no_discovery();test_retry_timeout_and_faults();return 0;}
+
+static esp_err_t write_refresh(void *context, const nrf_upstream_sensor_refresh_t *request)
+{
+    bus_t *bus = context;
+    ++bus->writes;
+    record_event(bus, E_WRITE);
+    bus->req = request->request_id;
+    return ESP_OK;
+}
+
+static esp_err_t read_snapshot(
+    void *context,
+    nrf_upstream_status_t *status_frame,
+    nrf_upstream_sensor_snapshot_t *snapshot)
+{
+    bus_t *bus = context;
+    nrf_topology_node_snapshot_t node_snapshot;
+    ++bus->snaps;
+    record_event(bus, E_SNAPSHOT);
+
+    if (bus->mode == M_PROTOCOL) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    node(
+        &node_snapshot,
+        NRF_UPSTREAM_ROLE_REMOTE,
+        bus->ch,
+        bus->remote_hw,
+        bus->remote_epoch);
+    status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_REMOTE);
+    if (bus->mode == M_SNAPSHOT_IDENTITY_MISMATCH) {
+        status_frame->hardware_id[0] ^= 0x5AU;
+    }
+
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->sequence = bus->snapshot_sequence;
+    snapshot->sample_complete_uptime_ms = bus->source_uptime_ms;
+
+    if (bus->mode == M_FOREIGN || bus->mode == M_FOREIGN_TWICE) {
+        if (bus->writes == 1U) {
+            snapshot->request_id = 0U;
+            snapshot->result = bus->snaps == 1U
+                ? NRF_UPSTREAM_SENSOR_RESULT_PENDING
+                : NRF_UPSTREAM_SENSOR_RESULT_OK;
+            return ESP_OK;
+        }
+        if (bus->mode == M_FOREIGN_TWICE) {
+            snapshot->request_id = 0U;
+            snapshot->result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+            return ESP_OK;
+        }
+    }
+
+    snapshot->request_id = bus->req;
+    switch (bus->mode) {
+    case M_PENDING:
+    case M_ABORT_AFTER_PENDING:
+        snapshot->result = NRF_UPSTREAM_SENSOR_RESULT_PENDING;
+        break;
+    case M_PARTIAL:
+        snapshot->result = NRF_UPSTREAM_SENSOR_RESULT_PARTIAL;
+        snapshot->valid_mask = NRF_UPSTREAM_SENSOR_VALID_IMU;
+        break;
+    case M_NO_DATA:
+        snapshot->result = NRF_UPSTREAM_SENSOR_RESULT_NO_DATA;
+        break;
+    case M_BUSY:
+        snapshot->result = NRF_UPSTREAM_SENSOR_RESULT_BUSY;
+        break;
+    default:
+        snapshot->result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+        snapshot->valid_mask = NRF_UPSTREAM_SENSOR_VALID_MASK;
+        snapshot->pressure_pa = 101325U;
+        break;
+    }
+    return ESP_OK;
+}
+
+static void sleep10(void *context, uint32_t delay_ms)
+{
+    bus_t *bus = context;
+    assert(delay_ms == 10U);
+    bus->now += delay_ms;
+}
+
+static uint64_t now_ms(void *context)
+{
+    return ((bus_t *)context)->now;
+}
+
+static bool aborted(void *context)
+{
+    const bus_t *bus = context;
+    return bus->abort || (bus->mode == M_ABORT_AFTER_PENDING && bus->snaps >= 1U);
+}
+
+static nrf_sensor_transport_io_t make_io(bus_t *bus)
+{
+    return (nrf_sensor_transport_io_t){
+        .context = bus,
+        .mux_select = select_mux,
+        .mux_close = close_mux,
+        .mux_faulted = mux_faulted,
+        .read_status = read_status,
+        .write_sensor_refresh = write_refresh,
+        .read_remote_snapshot = read_snapshot,
+        .sleep_ms = sleep10,
+        .now_ms = now_ms,
+        .abort_requested = aborted,
+    };
+}
+
+static nrf_sensor_transport_controller_t make_controller(void)
+{
+    nrf_sensor_transport_controller_t controller;
+    const nrf_sensor_transport_config_t config = {
+        .timeout_ms = 500U,
+        .poll_interval_ms = 10U,
+        .request_seed = 77U,
+    };
+    assert(nrf_sensor_transport_controller_init(&controller, &config) == ESP_OK);
+    return controller;
+}
+
+static void init_cache(
+    const nrf_topology_snapshot_t *topology,
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT],
+    uint8_t channel)
+{
+    memset(cache, 0, sizeof(*cache) * NRF_TOPOLOGY_REMOTE_COUNT);
+    assert(nrf_sensor_cache_reconcile_topology(topology, cache) == (uint8_t)(1U << channel));
+}
+
+static void assert_events(const bus_t *bus, const event_t *expected, unsigned count)
+{
+    assert(bus->event_count == count);
+    for (unsigned index = 0U; index < count; ++index) {
+        assert(bus->events[index] == expected[index]);
+    }
+}
+
+static void test_cache_identity_lifecycle(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT] = {0};
+
+    topo(&bus, &topology, 3U);
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 8U);
+    cache[3].response_valid = true;
+    cache[3].state = NRF_SENSOR_CACHE_OK;
+    cache[3].last_attempt_state = NRF_SENSOR_CACHE_OK;
+    cache[3].sensor.sequence = 100U;
+
+    ++topology.generation;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(cache[3].response_valid && cache[3].sensor.sequence == 100U);
+
+    topology.remotes[3].state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(!cache[3].topology_current && cache[3].response_valid);
+
+    topology.remotes[3].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(cache[3].topology_current && cache[3].state == NRF_SENSOR_CACHE_OK);
+
+    topology.remotes[3].hardware_id[0] ^= 0x55U;
+    ++topology.generation;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 8U);
+    assert(cache[3].identity_valid && !cache[3].response_valid);
+    assert(cache[3].state == NRF_SENSOR_CACHE_EMPTY);
+
+    topo(&bus, &topology, 3U);
+    memset(cache, 0, sizeof(cache));
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 8U);
+    cache[3].response_valid = true;
+    cache[3].sensor.sequence = 50U;
+    topology.remotes[3].mux_channel = 4U;
+    ++topology.generation;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 8U);
+    assert(!cache[3].response_valid && cache[3].identity.mux_channel == 4U);
+
+    cache[3].response_valid = true;
+    topology.remotes[3].state = NRF_TOPOLOGY_NODE_ABSENT;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(!cache[3].identity_valid && !cache[3].response_valid);
+    assert(cache[3].state == NRF_SENSOR_CACHE_EMPTY);
+}
+
+static void test_success_order_and_no_discovery(void)
+{
+    const event_t expected[] = {
+        E_SELECT, E_MAIN_READ, E_REMOTE_READ, E_WRITE, E_SNAPSHOT, E_CLOSE,
+    };
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        bus_t bus;
+        nrf_topology_snapshot_t topology;
+        nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+        topo(&bus, &topology, channel);
+        init_cache(&topology, cache, channel);
+        nrf_sensor_transport_controller_t controller = make_controller();
+        nrf_sensor_transport_io_t io = make_io(&bus);
+        bool reconcile = false;
+
+        assert(nrf_sensor_transport_refresh_channel(
+                   &controller, &io, &topology, channel, &cache[channel], &reconcile) == ESP_OK);
+        assert(cache[channel].state == NRF_SENSOR_CACHE_OK);
+        assert(cache[channel].sensor.pressure_pa == 101325U);
+        assert(cache[channel].esp_receipt_uptime_ms == bus.now);
+        assert(!reconcile && bus.discovery == 0U);
+        assert(bus.select == 1U && bus.close == 1U);
+        assert(bus.main_reads == 1U && bus.remote_reads == 1U && bus.writes == 1U);
+        assert_events(&bus, expected, sizeof(expected) / sizeof(expected[0]));
+    }
+
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 2U);
+    topology.main.state = NRF_TOPOLOGY_NODE_ABSENT;
+    init_cache(&topology, cache, 2U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+    const event_t absent_main_expected[] = {
+        E_SELECT, E_REMOTE_READ, E_WRITE, E_SNAPSHOT, E_CLOSE,
+    };
+
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+    assert(bus.main_reads == 0U && bus.discovery == 0U);
+    assert_events(
+        &bus,
+        absent_main_expected,
+        sizeof(absent_main_expected) / sizeof(absent_main_expected[0]));
+}
+
+static void test_final_result_mapping_and_timestamps(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool reconcile;
+    nrf_sensor_transport_controller_t controller;
+    nrf_sensor_transport_io_t io;
+
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.mode = M_PARTIAL;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_OK);
+    assert(cache[1].response_valid && cache[1].state == NRF_SENSOR_CACHE_PARTIAL);
+    assert(cache[1].sensor.valid_mask == NRF_UPSTREAM_SENSOR_VALID_IMU);
+    assert(bus.writes == 1U && bus.snaps == 1U && !reconcile);
+
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.mode = M_NO_DATA;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_OK);
+    assert(cache[1].response_valid && cache[1].state == NRF_SENSOR_CACHE_NO_DATA);
+    assert(bus.writes == 1U && bus.snaps == 1U && !reconcile);
+
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.mode = M_BUSY;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_OK);
+    assert(cache[1].response_valid && cache[1].state == NRF_SENSOR_CACHE_SENSOR_BUSY);
+    assert(bus.writes == 1U && bus.snaps == 1U && !reconcile);
+
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.now = 777U;
+    bus.source_uptime_ms = 999999U;
+    bus.snapshot_sequence = 7U;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_OK);
+    assert(cache[1].sensor.sample_complete_uptime_ms == 999999U);
+    assert(cache[1].esp_receipt_uptime_ms == 777U);
+    assert(cache[1].esp_receipt_uptime_ms != cache[1].sensor.sample_complete_uptime_ms);
+}
+
+static void test_foreign_retry_and_second_conflict(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool reconcile;
+    nrf_sensor_transport_controller_t controller;
+    nrf_sensor_transport_io_t io;
+
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.mode = M_FOREIGN;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_OK);
+    assert(cache[1].state == NRF_SENSOR_CACHE_OK);
+    assert(bus.writes == 2U && bus.snaps == 3U && !reconcile);
+
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.mode = M_FOREIGN_TWICE;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_ERR_INVALID_STATE);
+    assert(cache[1].state == NRF_SENSOR_CACHE_SENSOR_BUSY);
+    assert(bus.writes == 2U && bus.snaps == 3U && bus.close == 1U);
+    assert(!reconcile);
+}
+
+static void test_timeout_abort_and_faults(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool reconcile;
+    nrf_sensor_transport_controller_t controller;
+    nrf_sensor_transport_io_t io;
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_PENDING;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_TIMEOUT);
+    assert(cache[4].state == NRF_SENSOR_CACHE_TIMEOUT && bus.now == 500U && bus.close == 1U);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_ABORT_AFTER_PENDING;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_INVALID_STATE);
+    assert(cache[4].state == NRF_SENSOR_CACHE_ABORTED);
+    assert(bus.snaps == 1U && bus.close == 1U && !reconcile);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_PROTOCOL;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(cache[4].state == NRF_SENSOR_CACHE_PROTOCOL_ERROR && reconcile && bus.close == 1U);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_NACK;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_NOT_FOUND);
+    assert(cache[4].state == NRF_SENSOR_CACHE_IDENTITY_STALE);
+    assert(!cache[4].topology_current && reconcile && bus.close == 1U);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.main_bad_epoch = true;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(cache[4].state == NRF_SENSOR_CACHE_IDENTITY_STALE);
+    assert(bus.remote_reads == 0U && reconcile && bus.close == 1U);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_SNAPSHOT_IDENTITY_MISMATCH;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(cache[4].state == NRF_SENSOR_CACHE_IDENTITY_STALE);
+    assert(!cache[4].topology_current && reconcile && bus.close == 1U);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.fail_close = true;
+    bus.mux_fault = true;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_FAIL);
+    assert(cache[4].state == NRF_SENSOR_CACHE_MUX_FAULT && reconcile);
+
+    topo(&bus, &topology, 7U);
+    init_cache(&topology, cache, 7U);
+    bus.fail_select = true;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 7U, &cache[7], &reconcile) == ESP_FAIL);
+    assert(bus.close == 1U && bus.main_reads == 0U && bus.discovery == 0U);
+}
+
+static void test_sequence_can_reset_after_new_assignment_epoch(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    nrf_sensor_transport_controller_t controller;
+    nrf_sensor_transport_io_t io;
+    bool reconcile = false;
+
+    topo(&bus, &topology, 5U);
+    init_cache(&topology, cache, 5U);
+    bus.snapshot_sequence = 100U;
+    controller = make_controller();
+    io = make_io(&bus);
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 5U, &cache[5], &reconcile) == ESP_OK);
+    assert(cache[5].sensor.sequence == 100U);
+
+    ++topology.generation;
+    ++topology.remotes[5].assignment_request_id;
+    bus.remote_epoch = topology.remotes[5].assignment_request_id;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == (uint8_t)(1U << 5U));
+    assert(!cache[5].response_valid && cache[5].state == NRF_SENSOR_CACHE_EMPTY);
+
+    bus.snapshot_sequence = 3U;
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 5U, &cache[5], &reconcile) == ESP_OK);
+    assert(cache[5].response_valid && cache[5].sensor.sequence == 3U);
+    assert(cache[5].state == NRF_SENSOR_CACHE_OK);
+}
+
+int main(void)
+{
+    test_cache_identity_lifecycle();
+    test_success_order_and_no_discovery();
+    test_final_result_mapping_and_timestamps();
+    test_foreign_retry_and_second_conflict();
+    test_timeout_abort_and_faults();
+    test_sequence_can_reset_after_new_assignment_epoch();
+    return 0;
+}
