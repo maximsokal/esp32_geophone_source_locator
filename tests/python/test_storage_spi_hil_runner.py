@@ -5,6 +5,7 @@ acquisition health, or recorder timing. They only prove that the PowerShell
 parser and numerical gate classify already-captured telemetry correctly.
 """
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,6 +24,43 @@ THRESHOLD_ARGS = [
     "-MaxRecorderFwriteUs", "12000",
     "-MaxRecorderOperationUs", "15000",
 ]
+
+
+def status_sample(
+    *,
+    quality: str = "HEALTHY",
+    stream_state: str = "NORMAL",
+    suspicious: bool = False,
+    stream_stuck: bool = False,
+    quality_window_frames: int = 500,
+    consecutive_failures: int = 0,
+    signal_quality: str = "HEALTHY",
+) -> dict:
+    return {
+        "acquisition": {
+            "error_counters_available": True,
+            "consecutive_failures": consecutive_failures,
+            "serial": {
+                "quality": quality,
+                "stream_state": stream_state,
+                "suspicious": suspicious,
+                "stream_stuck": stream_stuck,
+                "quality_window_frames": quality_window_frames,
+            },
+            "signal": {"quality": signal_quality},
+        }
+    }
+
+
+def write_health(path: Path, *samples: dict) -> Path:
+    evidence = {
+        "samples": [
+            {"phase": "preflight" if index == 0 else f"sample-{index}", "status": sample}
+            for index, sample in enumerate(samples)
+        ]
+    }
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    return path
 
 
 def make_log(
@@ -126,8 +164,80 @@ def test_replay_parses_valid_telemetry_without_claiming_physical_hil(tmp_path: P
     assert "acquisition_failure_markers=0 expected=0" in result.stdout
     assert "acquisition_diag_channels=1,2,3,4,5,6,7,8 required=8" in result.stdout
     assert "STORAGE_SPI_TELEMETRY_RESULT: PASS" in result.stdout
+    assert "AD7606_TRANSPORT_HEALTH: BLOCKED" in result.stdout
     assert "STORAGE_SPI_HIL_RESULT: BLOCKED" in result.stdout
     assert "never proves physical SPI2" in result.stdout
+
+
+def test_replay_consumes_healthy_saved_health_without_network_and_accepts_quiet(tmp_path: Path):
+    path = tmp_path / "storage-spi-health-pass.log"
+    path.write_text(make_log(), encoding="utf-8")
+    health = write_health(
+        tmp_path / "health.json",
+        status_sample(stream_state="QUIET", signal_quality="CLIPPED"),
+        status_sample(),
+    )
+
+    result = run_replay(path, "-HealthEvidencePath", str(health))
+
+    assert result.returncode == 1
+    assert "AD7606_TRANSPORT_HEALTH: PASS" in result.stdout
+    assert "STORAGE_SPI_TELEMETRY_RESULT: PASS" in result.stdout
+    assert "STORAGE_SPI_HIL_RESULT: BLOCKED" in result.stdout
+    assert "REPLAY_LIMITATION" in result.stdout
+
+
+def test_replay_health_fault_is_fail_even_if_final_sample_recovers(tmp_path: Path):
+    path = tmp_path / "storage-spi-health-fail.log"
+    path.write_text(make_log(), encoding="utf-8")
+    health = write_health(
+        tmp_path / "health-fail.json",
+        status_sample(),
+        status_sample(quality="FAULT", stream_state="SUSPICIOUS", suspicious=True),
+        status_sample(),
+    )
+
+    result = run_replay(path, "-HealthEvidencePath", str(health))
+
+    assert result.returncode == 1
+    assert "AD7606_TRANSPORT_HEALTH: FAIL" in result.stdout
+    assert "STORAGE_SPI_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_replay_immature_health_remains_blocked(tmp_path: Path):
+    path = tmp_path / "storage-spi-health-immature.log"
+    path.write_text(make_log(), encoding="utf-8")
+    health = write_health(
+        tmp_path / "health-immature.json",
+        status_sample(quality="UNKNOWN", quality_window_frames=100),
+    )
+
+    result = run_replay(path, "-HealthEvidencePath", str(health))
+
+    assert result.returncode == 1
+    assert "AD7606_TRANSPORT_HEALTH: BLOCKED" in result.stdout
+    assert "STORAGE_SPI_HIL_RESULT: BLOCKED" in result.stdout
+
+
+def test_replay_mature_uart_fault_is_sticky_with_healthy_pre_post_status(tmp_path: Path):
+    serial_fault = (
+        "I AD7606_DIAG: AD7606_SERIAL_DIAG: rx=00 00 class=ALL_00 "
+        "transport_quality=FAULT signal_quality=HEALTHY stream_state=SUSPICIOUS "
+        "stream_stuck=yes busy=0 samples=500 streak=3 repeated_streak=0 all_zero=500 "
+        "all_ff=0 identical=0 varied=0 digital_interference=0 signal_rail_hits=0 "
+        "signal_clips=0 window=500 transport_bad=500 all_zero=500 all_ff=0 identical=0 "
+        "repeated=0 digital=0 signal_rail=0 signal_clip=0 serial_suspicious=yes"
+    )
+    path = tmp_path / "storage-spi-uart-fault.log"
+    path.write_text(make_log(extra=serial_fault), encoding="utf-8")
+    health = write_health(tmp_path / "health-ok.json", status_sample(), status_sample())
+
+    result = run_replay(path, "-HealthEvidencePath", str(health))
+
+    assert result.returncode == 1
+    assert "AD7606_TRANSPORT_FAULT:" in result.stdout
+    assert "AD7606_TRANSPORT_HEALTH: FAIL" in result.stdout
+    assert "STORAGE_SPI_HIL_RESULT: FAIL" in result.stdout
 
 
 def test_replay_accepts_exact_threshold_boundary(tmp_path: Path):
@@ -262,14 +372,21 @@ def test_replay_rejects_target_failure_marker(tmp_path: Path):
     assert "STORAGE_SPI_HIL_RESULT: FAIL" in result.stdout
 
 
-def test_runner_is_passive_and_never_flashes_by_contract():
+def test_runner_is_passive_and_health_gated_by_contract():
     source = RUNNER.read_text(encoding="utf-8")
     contract = (REPO_ROOT / "tools" / "storage_spi_contract.ps1").read_text(encoding="utf-8")
 
     assert '[string]$LogPort = "COM6"' in source
+    assert '[string]$BaseUrl = ""' in source
+    assert '[string]$HealthEvidencePath = ""' in source
     assert '"-Action", "monitor"' in source
     assert "This runner never flashes firmware" in source
     assert '"-Action", "flash"' not in source
+    assert '"{0}/api/status" -f $base' in source
+    assert "quality_window_frames" in source
+    assert "stream_state" in source
+    assert "serial_suspicious" in source
+    assert "HEALTH_EVIDENCE" in source
     assert "STORAGE_SPI_HIL_RESULT" in source
     assert "REPLAY_LIMITATION" in source
     assert "MinimumAcquisitionDiagnosticChannels = 8" in source
