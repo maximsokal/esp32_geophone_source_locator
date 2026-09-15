@@ -363,6 +363,48 @@ static esp_err_t seismic_recorder_reader_append_suffix(
 }
 
 
+static bool seismic_recorder_reader_header_matches_summary(
+    const seismic_recorder_binary_header_t *header,
+    const seismic_recorder_session_summary_t *summary
+)
+{
+    return
+        header != NULL &&
+        summary != NULL &&
+        memcmp(header->magic, "GEOSEIS1", sizeof(header->magic)) == 0 &&
+        header->version == SEISMIC_RECORDER_BINARY_VERSION &&
+        header->channel_count == SEISMIC_CHANNEL_COUNT &&
+        header->channel_count == summary->channel_count &&
+        header->sample_rate_hz > 0U &&
+        header->sample_rate_hz == summary->sample_rate_hz &&
+        header->frame_size_bytes == sizeof(seismic_frame_t) &&
+        header->reserved == 0U;
+}
+
+
+static void seismic_recorder_reader_fill_empty_info(
+    const char *object_id,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    seismic_recorder_waveform_info_t *info
+)
+{
+    info->complete = summary->complete;
+    snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
+    snprintf(info->session_id, sizeof(info->session_id), "%s", summary->session_id);
+    snprintf(info->source_name, sizeof(info->source_name), "%s", summary->source_name);
+    info->sample_rate_hz = summary->sample_rate_hz;
+    info->channel_count = summary->channel_count;
+    info->samples_written = summary->samples_written;
+    info->dropped_frames = summary->dropped_frames;
+    info->recording_ms = summary->recording_ms;
+    info->source_frame_count = summary->samples_written;
+    info->start_frame = start_frame;
+    info->frame_count = 0U;
+    info->point_count = 0U;
+}
+
+
 static bool seismic_recorder_reader_lod_worthwhile(
     uint64_t frame_count,
     size_t max_points
@@ -490,86 +532,8 @@ esp_err_t seismic_recorder_read_session(
         return ESP_ERR_INVALID_ARG;
     }
 
-    seismic_frame_t *staging = heap_caps_malloc(
-        sizeof(*staging) * SEISMIC_RECORDER_READ_STAGING_FRAMES,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
-    );
-    if (staging == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    /*
-     * Fast path: after STOP the completed session's newest retained range is
-     * still in the recorder PSRAM cache. Reading it avoids TFT/SD arbitration
-     * entirely. The range check is exact: partial cache coverage never yields
-     * a mixed or silently truncated waveform.
-     */
-    uint64_t virtual_file_size = 0U;
-    const bool virtual_size_valid =
-        seismic_recorder_reader_virtual_file_size(
-            summary.samples_written,
-            &virtual_file_size
-        );
-    if (
-        virtual_size_valid &&
-        resolved_frame_count > 0U &&
-        seismic_recorder_cache_contains_session_range(
-            object_id,
-            session_id,
-            start_frame,
-            resolved_frame_count
-        )
-    ) {
-        seismic_recorder_cache_reader_t cache_reader = {
-            .object_id = object_id,
-            .session_id = session_id,
-            .sample_rate_hz = summary.sample_rate_hz,
-        };
-#ifdef ESP_PLATFORM
-        const seismic_recorder_reader_priority_guard_t priority_guard =
-            seismic_recorder_reader_priority_enter();
-#endif
-        err = seismic_recorder_waveform_read_source(
-            seismic_recorder_cache_reader_read_at,
-            &cache_reader,
-            virtual_file_size,
-            &summary,
-            start_frame,
-            frame_count,
-            max_points,
-            staging,
-            SEISMIC_RECORDER_READ_STAGING_FRAMES,
-            points,
-            point_capacity,
-            info
-        );
-#ifdef ESP_PLATFORM
-        seismic_recorder_reader_priority_leave(priority_guard);
-#endif
-        if (err == ESP_OK) {
-            heap_caps_free(staging);
-            snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
-#ifdef ESP_PLATFORM
-            seismic_recorder_reader_log_path(
-                "cache",
-                session_id,
-                start_frame,
-                resolved_frame_count,
-                info->point_count,
-                NULL
-            );
-#endif
-            return ESP_OK;
-        }
-        /* A new recording can reset the retained cache between the range probe
-         * and a chunk copy. Fall back to authoritative SD rather than exposing
-         * a transient cache miss as session corruption. */
-        memset(info, 0, sizeof(*info));
-    }
-
     char *samples_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
     if (samples_path == NULL) {
-        heap_caps_free(staging);
         return ESP_ERR_NO_MEM;
     }
 
@@ -596,9 +560,7 @@ esp_err_t seismic_recorder_read_session(
             "/samples.bin"
         );
     }
-
     if (err != ESP_OK) {
-        heap_caps_free(staging);
         free(lod_path);
         free(samples_path);
         return err;
@@ -610,10 +572,142 @@ esp_err_t seismic_recorder_read_session(
         &raw_file_size
     );
     if (err != ESP_OK) {
-        heap_caps_free(staging);
         free(lod_path);
         free(samples_path);
         return err;
+    }
+
+    uint64_t expected_raw_file_size = 0U;
+    if (!seismic_recorder_reader_virtual_file_size(
+            summary.samples_written,
+            &expected_raw_file_size
+        )) {
+        free(lod_path);
+        free(samples_path);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (raw_file_size != expected_raw_file_size) {
+        free(lod_path);
+        free(samples_path);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    seismic_recorder_bounded_reader_t raw_reader = {
+        .path = samples_path,
+    };
+    seismic_recorder_binary_header_t raw_header;
+    err = seismic_recorder_reader_read_at(
+        &raw_reader,
+        0U,
+        &raw_header,
+        sizeof(raw_header)
+    );
+    if (err != ESP_OK) {
+        free(lod_path);
+        free(samples_path);
+        return err;
+    }
+    if (!seismic_recorder_reader_header_matches_summary(&raw_header, &summary)) {
+        free(lod_path);
+        free(samples_path);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /*
+     * Terminal metadata is the frame-count authority. Validate samples.bin
+     * before cache/LOD selection so a retained PSRAM range cannot hide a
+     * truncated, extended or configuration-mismatched persisted session.
+     */
+    if (resolved_frame_count == 0U) {
+        seismic_recorder_reader_fill_empty_info(
+            object_id,
+            &summary,
+            start_frame,
+            info
+        );
+        free(lod_path);
+        free(samples_path);
+        return ESP_OK;
+    }
+
+    seismic_frame_t *staging = heap_caps_malloc(
+        sizeof(*staging) * SEISMIC_RECORDER_READ_STAGING_FRAMES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (staging == NULL) {
+        free(lod_path);
+        free(samples_path);
+        return ESP_ERR_NO_MEM;
+    }
+
+    /*
+     * Fast path: after STOP the completed session's newest retained range is
+     * still in the recorder PSRAM cache. Reading it avoids bulk TFT/SD
+     * arbitration. The persisted file/header contract was already checked
+     * above, and partial cache coverage never yields a mixed waveform.
+     */
+    uint64_t virtual_file_size = 0U;
+    const bool virtual_size_valid =
+        seismic_recorder_reader_virtual_file_size(
+            summary.samples_written,
+            &virtual_file_size
+        );
+    if (
+        virtual_size_valid &&
+        seismic_recorder_cache_contains_session_range(
+            object_id,
+            session_id,
+            start_frame,
+            resolved_frame_count
+        )
+    ) {
+        seismic_recorder_cache_reader_t cache_reader = {
+            .object_id = object_id,
+            .session_id = session_id,
+            .sample_rate_hz = summary.sample_rate_hz,
+        };
+#ifdef ESP_PLATFORM
+        const seismic_recorder_reader_priority_guard_t priority_guard =
+            seismic_recorder_reader_priority_enter();
+#endif
+        err = seismic_recorder_waveform_read_source(
+            seismic_recorder_cache_reader_read_at,
+            &cache_reader,
+            virtual_file_size,
+            &summary,
+            start_frame,
+            resolved_frame_count,
+            max_points,
+            staging,
+            SEISMIC_RECORDER_READ_STAGING_FRAMES,
+            points,
+            point_capacity,
+            info
+        );
+#ifdef ESP_PLATFORM
+        seismic_recorder_reader_priority_leave(priority_guard);
+#endif
+        if (err == ESP_OK) {
+            heap_caps_free(staging);
+            free(lod_path);
+            free(samples_path);
+            snprintf(info->object_id, sizeof(info->object_id), "%s", object_id);
+#ifdef ESP_PLATFORM
+            seismic_recorder_reader_log_path(
+                "cache",
+                session_id,
+                start_frame,
+                resolved_frame_count,
+                info->point_count,
+                NULL
+            );
+#endif
+            return ESP_OK;
+        }
+        /* A new recording can reset the retained cache between the range probe
+         * and a chunk copy. Fall back to authoritative SD rather than exposing
+         * a transient cache miss as session corruption. */
+        memset(info, 0, sizeof(*info));
     }
 
     /*
@@ -632,10 +726,6 @@ esp_err_t seismic_recorder_read_session(
      * The reduction phase is temporarily lowered to the normal storage-service
      * priority so a many-window history request cannot outrank recorder/LVGL.
      */
-    seismic_recorder_bounded_reader_t raw_reader = {
-        .path = samples_path,
-    };
-
     bool hybrid_completed = false;
     if (lod_path != NULL) {
         uint64_t lod_file_size = 0U;
@@ -717,7 +807,7 @@ esp_err_t seismic_recorder_read_session(
             raw_file_size,
             &summary,
             start_frame,
-            frame_count,
+            resolved_frame_count,
             max_points,
             staging,
             SEISMIC_RECORDER_READ_STAGING_FRAMES,
