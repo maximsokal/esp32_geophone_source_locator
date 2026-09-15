@@ -94,5 +94,5 @@ def test_session_boundary_uses_delta_and_legacy_metadata_remains_unknown():
 
 def test_saved_api_exposes_bucket_end_timestamp():
     text = WEB_SEISMIC.read_text(encoding="utf-8")
-    assert '"end_timestamp_us"' in text
+    assert '\\"end_timestamp_us\\"' in text
     assert "points[point_index].end_timestamp_us" in text
