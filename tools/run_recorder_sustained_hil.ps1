@@ -41,7 +41,10 @@ param(
     [int]$MaxRecordingSeconds = 180,
 
     [ValidateRange(100, 5000)]
-    [int]$PollIntervalMs = 1000
+    [int]$PollIntervalMs = 1000,
+
+    [ValidateRange(1, 60)]
+    [int]$HealthSettleSeconds = 15
 )
 
 $ErrorActionPreference = "Stop"
@@ -107,6 +110,94 @@ function Save-JsonEvidence {
 }
 
 
+function Get-OptionalProperty {
+    param(
+        [AllowNull()][object]$Object,
+        [string]$Name
+    )
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+
+function Get-Ad7606TransportHealth {
+    param([AllowNull()][object]$Status)
+
+    $acquisition = Get-OptionalProperty $Status "acquisition"
+    if ($null -eq $acquisition) {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "missing acquisition health object"; SignalQuality = "UNKNOWN"; Window = $null }
+    }
+    $serial = Get-OptionalProperty $acquisition "serial"
+    $signal = Get-OptionalProperty $acquisition "signal"
+    $countersAvailable = Get-OptionalProperty $acquisition "error_counters_available"
+    $consecutiveFailures = Get-OptionalProperty $acquisition "consecutive_failures"
+    $quality = [string](Get-OptionalProperty $serial "quality")
+    $streamState = [string](Get-OptionalProperty $serial "stream_state")
+    $suspicious = Get-OptionalProperty $serial "suspicious"
+    $streamStuck = Get-OptionalProperty $serial "stream_stuck"
+    $windowValue = Get-OptionalProperty $serial "quality_window_frames"
+    $signalQuality = [string](Get-OptionalProperty $signal "quality")
+
+    if ([string]::IsNullOrWhiteSpace($quality)) { $quality = "UNKNOWN" }
+    if ([string]::IsNullOrWhiteSpace($streamState)) { $streamState = "UNKNOWN" }
+    if ([string]::IsNullOrWhiteSpace($signalQuality)) { $signalQuality = "UNKNOWN" }
+    $quality = $quality.ToUpperInvariant()
+    $streamState = $streamState.ToUpperInvariant()
+    $signalQuality = $signalQuality.ToUpperInvariant()
+
+    if ($countersAvailable -ne $true) {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "error_counters_available is not true"; SignalQuality = $signalQuality; Window = $windowValue }
+    }
+    $window = 0
+    if ($null -eq $windowValue -or -not [int]::TryParse([string]$windowValue, [ref]$window)) {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial quality_window_frames is missing"; SignalQuality = $signalQuality; Window = $null }
+    }
+    if ($window -lt 500) {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial quality window immature ($window/500)"; SignalQuality = $signalQuality; Window = $window }
+    }
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    if ($quality -eq "DEGRADED" -or $quality -eq "FAULT") { $reasons.Add("transport quality=$quality") }
+    if ($streamState -eq "SUSPICIOUS" -or $streamState -eq "STUCK") { $reasons.Add("stream state=$streamState") }
+    if ($suspicious -eq $true) { $reasons.Add("serial suspicious=true") }
+    if ($streamStuck -eq $true) { $reasons.Add("serial stream_stuck=true") }
+
+    $consecutive = 0
+    if ($null -ne $consecutiveFailures -and [int]::TryParse([string]$consecutiveFailures, [ref]$consecutive)) {
+        if ($consecutive -ne 0) { $reasons.Add("consecutive_failures=$consecutive expected=0") }
+    } else {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "consecutive_failures is unavailable"; SignalQuality = $signalQuality; Window = $window }
+    }
+
+    if ($reasons.Count -gt 0) {
+        return [pscustomobject]@{ Status = "FAIL"; Reason = ($reasons -join ", "); SignalQuality = $signalQuality; Window = $window }
+    }
+    if ($quality -ne "HEALTHY") {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "transport quality=$quality"; SignalQuality = $signalQuality; Window = $window }
+    }
+    if ($streamState -ne "NORMAL" -and $streamState -ne "QUIET") {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "stream state=$streamState"; SignalQuality = $signalQuality; Window = $window }
+    }
+    if ($suspicious -ne $false -or $streamStuck -ne $false) {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial suspicious/stuck flags are unavailable"; SignalQuality = $signalQuality; Window = $window }
+    }
+    return [pscustomobject]@{ Status = "PASS"; Reason = "healthy transport"; SignalQuality = $signalQuality; Window = $window }
+}
+
+
+function Add-HealthSample {
+    param(
+        [System.Collections.Generic.List[object]]$Samples,
+        [string]$Phase,
+        [object]$Status
+    )
+    $Samples.Add([pscustomobject]@{ phase = $Phase; status = $Status }) | Out-Null
+    return Get-Ad7606TransportHealth $Status
+}
+
+
 function Stop-RecordingBestEffort {
     param([string]$RootUrl)
 
@@ -126,10 +217,13 @@ $logFile = $null
 $errorFile = $null
 $liveJson = $null
 $savedJson = $null
+$healthJson = $null
 $recordingStarted = $false
 $sessionId = $null
 $runnerError = $null
 $analysisExit = $null
+$transportFaultObserved = $false
+$healthSamples = New-Object System.Collections.Generic.List[object]
 
 try {
     $checkPorts = Join-Path $PSScriptRoot "check_serial_ports.ps1"
@@ -147,7 +241,24 @@ try {
         throw "Passive UART log port $LogPort is unavailable."
     }
 
-    $initialStatus = Invoke-JsonRequest ("{0}/api/status" -f $base)
+    $preflightDeadline = (Get-Date).AddSeconds($HealthSettleSeconds)
+    $initialStatus = $null
+    $preflightHealth = $null
+    do {
+        $initialStatus = Invoke-JsonRequest ("{0}/api/status" -f $base)
+        $preflightHealth = Get-Ad7606TransportHealth $initialStatus
+        if ($preflightHealth.Status -eq "PASS" -or $preflightHealth.Status -eq "FAIL") { break }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $preflightDeadline)
+    $preflightHealth = Add-HealthSample $healthSamples "preflight" $initialStatus
+
+    if ($preflightHealth.Status -eq "FAIL") {
+        $transportFaultObserved = $true
+        throw "AD7606 transport preflight failed: $($preflightHealth.Reason)"
+    }
+    if ($preflightHealth.Status -ne "PASS") {
+        throw "AD7606 transport health did not become mature within ${HealthSettleSeconds}s: $($preflightHealth.Reason)"
+    }
     if ($null -eq $initialStatus.acquisition -or $initialStatus.acquisition.running -ne $true) {
         throw "Acquisition is not running; sustained recorder HIL requires the live AD7606 pipeline."
     }
@@ -173,6 +284,9 @@ try {
     $errorFile = Join-Path $hilDir "recorder-sustained-$stamp.err.log"
     $liveJson = Join-Path $hilDir "recorder-sustained-$stamp.live.json"
     $savedJson = Join-Path $hilDir "recorder-sustained-$stamp.saved.json"
+    $healthJson = Join-Path $hilDir "recorder-sustained-$stamp.health.json"
+
+    Write-Host "AD7606 transport preflight: PASS window=$($preflightHealth.Window) signal_quality=$($preflightHealth.SignalQuality)."
 
     $monitorArgs = @(
         "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -213,6 +327,14 @@ try {
     do {
         Start-Sleep -Milliseconds $PollIntervalMs
         $status = Invoke-JsonRequest ("{0}/api/status" -f $base)
+        $health = Add-HealthSample $healthSamples "during-start" $status
+        if ($health.Status -eq "FAIL") {
+            $transportFaultObserved = $true
+            throw "AD7606 transport fault while waiting for recorder start: $($health.Reason)"
+        }
+        if ($health.Status -ne "PASS") {
+            throw "AD7606 transport health became unavailable while waiting for recorder start: $($health.Reason)"
+        }
         if ($status.recording.running -eq $true) {
             $sessionId = [string]$status.recording.session_id
             break
@@ -276,6 +398,14 @@ try {
     do {
         Start-Sleep -Milliseconds $PollIntervalMs
         $status = Invoke-JsonRequest ("{0}/api/status" -f $base)
+        $health = Add-HealthSample $healthSamples "during-recording" $status
+        if ($health.Status -eq "FAIL") {
+            $transportFaultObserved = $true
+            throw "AD7606 transport fault during recording: $($health.Reason)"
+        }
+        if ($health.Status -ne "PASS") {
+            throw "AD7606 transport health became unavailable during recording: $($health.Reason)"
+        }
         if ($status.recording.running -ne $true) {
             throw "Recording stopped unexpectedly before the eviction/throughput gate completed."
         }
@@ -304,6 +434,15 @@ try {
     do {
         Start-Sleep -Milliseconds $PollIntervalMs
         $status = Invoke-JsonRequest ("{0}/api/status" -f $base)
+        $phase = if ($status.recording.running -eq $true) { "during-stop" } else { "post" }
+        $health = Add-HealthSample $healthSamples $phase $status
+        if ($health.Status -eq "FAIL") {
+            $transportFaultObserved = $true
+            throw "AD7606 transport fault while stopping recording: $($health.Reason)"
+        }
+        if ($health.Status -ne "PASS") {
+            throw "AD7606 transport health became unavailable while stopping recording: $($health.Reason)"
+        }
         if ($status.recording.running -ne $true) {
             break
         }
@@ -319,6 +458,8 @@ try {
     if ([uint64]$status.recording.dropped_frames -ne 0) {
         throw "Completed session has dropped_frames=$($status.recording.dropped_frames)."
     }
+
+    Save-JsonEvidence ([pscustomobject]@{ samples = @($healthSamples) }) $healthJson
 
     $encodedObject = [uri]::EscapeDataString($ObjectId)
     $encodedSession = [uri]::EscapeDataString($sessionId)
@@ -344,6 +485,7 @@ try {
         $logFile,
         $liveJson,
         $savedJson,
+        "--health-evidence", $healthJson,
         "--sample-rate-hz", [string]$ExpectedSampleRateHz,
         "--frame-size-bytes", [string]$FrameSizeBytes,
         "--safety-factor", [string]$SafetyFactor,
@@ -362,12 +504,21 @@ try {
         Stop-Process -Id $monitor.Id -Force -ErrorAction SilentlyContinue
         $monitor.WaitForExit()
     }
+    if ($healthSamples.Count -gt 0 -and $null -ne $healthJson) {
+        try {
+            Save-JsonEvidence ([pscustomobject]@{ samples = @($healthSamples) }) $healthJson
+        } catch {
+            # Preserve the primary runner failure.
+        }
+    }
 }
 
 if ($null -ne $runnerError) {
     Write-Host "RUNNER_ERROR: $runnerError"
-    Write-Host "RECORDER_SUSTAINED_HIL_RESULT: BLOCKED"
+    $failureStatus = if ($transportFaultObserved) { "FAIL" } else { "BLOCKED" }
+    Write-Host "RECORDER_SUSTAINED_HIL_RESULT: $failureStatus"
     if ($null -ne $logFile) { Write-Host "LOG: $logFile" }
+    if ($null -ne $healthJson) { Write-Host "HEALTH_EVIDENCE: $healthJson" }
     exit 1
 }
 
@@ -381,6 +532,7 @@ if ($analysisExit -eq 0) {
 Write-Host "LOG: $logFile"
 Write-Host "LIVE_REFERENCE: $liveJson"
 Write-Host "SAVED_REFERENCE: $savedJson"
+Write-Host "HEALTH_EVIDENCE: $healthJson"
 
 if ($analysisExit -eq 0) {
     exit 0
