@@ -25,7 +25,7 @@ param(
     [ValidateRange(16, 1200)]
     [int]$SavedReferenceFrames = 1200,
 
-    [ValidateRange(1, 1200)]
+    [ValidateRange(16, 1200)]
     [int]$MinimumOverlapFrames = 64,
 
     [ValidateRange(0, 100000)]
@@ -151,7 +151,7 @@ function Get-Ad7606TransportHealth {
         return [pscustomobject]@{ Status = "BLOCKED"; Reason = "error_counters_available is not true"; SignalQuality = $signalQuality; Window = $windowValue }
     }
     $window = 0
-    if ($null -eq $windowValue -or -not [int]::TryParse([string]$windowValue, [ref]$window)) {
+    if ($null -eq $windowValue -or -not [int]::TryParse([string]$windowValue, ([ref]$window))) {
         return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial quality_window_frames is missing"; SignalQuality = $signalQuality; Window = $null }
     }
     if ($window -lt 500) {
@@ -165,7 +165,7 @@ function Get-Ad7606TransportHealth {
     if ($streamStuck -eq $true) { $reasons.Add("serial stream_stuck=true") }
 
     $consecutive = 0
-    if ($null -ne $consecutiveFailures -and [int]::TryParse([string]$consecutiveFailures, [ref]$consecutive)) {
+    if ($null -ne $consecutiveFailures -and [int]::TryParse([string]$consecutiveFailures, ([ref]$consecutive))) {
         if ($consecutive -ne 0) { $reasons.Add("consecutive_failures=$consecutive expected=0") }
     } else {
         return [pscustomobject]@{ Status = "BLOCKED"; Reason = "consecutive_failures is unavailable"; SignalQuality = $signalQuality; Window = $window }
@@ -504,8 +504,14 @@ try {
         Stop-Process -Id $monitor.Id -Force -ErrorAction SilentlyContinue
         $monitor.WaitForExit()
     }
-    if ($healthSamples.Count -gt 0 -and $null -ne $healthJson) {
+    if ($healthSamples.Count -gt 0) {
         try {
+            if ($null -eq $healthJson) {
+                $hilDir = Join-Path $repo "build\hil"
+                New-Item -ItemType Directory -Path $hilDir -Force | Out-Null
+                $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+                $healthJson = Join-Path $hilDir "recorder-sustained-$stamp.health.json"
+            }
             Save-JsonEvidence ([pscustomobject]@{ samples = @($healthSamples) }) $healthJson
         } catch {
             # Preserve the primary runner failure.
