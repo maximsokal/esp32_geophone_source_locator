@@ -14,6 +14,13 @@ import json
 from pathlib import Path
 import re
 import sys
+from typing import Any
+
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from ad7606_health import classify_evidence, uart_transport_violations
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,10 @@ class Analysis:
     max_recorder_window_us: int | None
     max_recorder_fwrite_us: int | None
     max_recorder_operation_us: int | None
+    transport_health_status: str
+    transport_health_sample_count: int
+    signal_quality_states: tuple[str, ...]
+    uart_transport_fault_count: int
 
 
 BEGIN_RE = re.compile(
@@ -132,6 +143,7 @@ def analyze(
     minimum_recorder_samples: int = 1,
     minimum_recorder_stop_samples: int = 1,
     minimum_acquisition_diagnostic_channels: int = 8,
+    health_evidence: dict[str, Any] | None = None,
 ) -> Analysis:
     begins = [
         StorageBegin(
@@ -235,6 +247,12 @@ def analyze(
             f"count={failure_marker_count}"
         )
 
+    health = classify_evidence(health_evidence)
+    missing.extend(f"transport health: {item}" for item in health.missing)
+    violations.extend(f"transport health: {item}" for item in health.violations)
+    uart_faults = uart_transport_violations(content)
+    violations.extend(uart_faults)
+
     max_mutex = _maximum([sample.mutex_wait_us for sample in begins])
     max_quiesce = _maximum([sample.tft_quiesce_us for sample in begins])
     max_resume = _maximum([sample.tft_resume_us for sample in ends])
@@ -277,6 +295,10 @@ def analyze(
         max_recorder_window_us=max_window,
         max_recorder_fwrite_us=max_fwrite,
         max_recorder_operation_us=max_operation,
+        transport_health_status=health.status,
+        transport_health_sample_count=len(health.samples),
+        signal_quality_states=health.signal_quality_states,
+        uart_transport_fault_count=len(uart_faults),
     )
 
 
@@ -303,6 +325,15 @@ def print_report(result: Analysis) -> None:
     print(f"max_dropped_frames={result.max_dropped_frames}")
     print(f"acquisition_failure_markers={result.acquisition_failure_count}")
     print(f"failure_markers={result.failure_marker_count}")
+    print(
+        f"transport_health={result.transport_health_status} "
+        f"samples={result.transport_health_sample_count} "
+        f"uart_faults={result.uart_transport_fault_count}"
+    )
+    print(
+        "signal_quality_states="
+        + (",".join(result.signal_quality_states) or "unknown")
+    )
     for item in result.missing:
         print(f"MISSING: {item}")
     for item in result.violations:
@@ -326,6 +357,7 @@ def _positive(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path, help="saved UART log file")
+    parser.add_argument("--health-evidence", type=Path)
     parser.add_argument("--max-mutex-wait-us", type=_bounded_nonnegative, required=True)
     parser.add_argument("--max-tft-quiesce-us", type=_bounded_nonnegative, required=True)
     parser.add_argument("--max-tft-resume-us", type=_bounded_nonnegative, required=True)
@@ -345,12 +377,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_health_evidence(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    with path.open("r", encoding="utf-8-sig") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain one JSON object")
+    return value
+
+
 def main() -> int:
     args = parse_args()
     try:
         content = args.log.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        print(f"STORAGE_SPI_ANALYSIS: FAIL: cannot read {args.log}: {exc}", file=sys.stderr)
+        health_evidence = _load_health_evidence(args.health_evidence)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"STORAGE_SPI_ANALYSIS: FAIL: {exc}", file=sys.stderr)
         return 1
 
     result = analyze(
@@ -366,6 +409,7 @@ def main() -> int:
         minimum_recorder_samples=args.minimum_recorder_samples,
         minimum_recorder_stop_samples=args.minimum_recorder_stop_samples,
         minimum_acquisition_diagnostic_channels=args.minimum_acquisition_diagnostic_channels,
+        health_evidence=health_evidence,
     )
 
     if args.json:
