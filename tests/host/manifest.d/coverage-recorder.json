@@ -14,6 +14,24 @@
         "components/seismic_buffer/include",
         "components/storage_manager/include"
       ]
+    },
+    {
+      "name": "seismic_recorder_lod_interval",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/seismic_recorder_lod.c",
+        "components/seismic_recorder/seismic_recorder_lod_reader.c",
+        "components/seismic_recorder/tests/seismic_recorder_lod_interval_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_buffer/include"
+      ],
+      "libraries": ["m"]
     }
   ]
 }
