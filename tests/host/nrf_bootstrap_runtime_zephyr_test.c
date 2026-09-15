@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@ static unsigned s_sensor_refresh_calls;
 static bool s_registered;
 static uint16_t s_address;
 static int s_readdress_result;
+static int s_sensor_assignment_result;
 static bool s_readdress_rollback_discovery;
 static nrf_upstream_sensor_snapshot_t s_sensor_snapshot;
 static nrf_upstream_sensor_refresh_t s_last_sensor_refresh;
@@ -42,10 +44,24 @@ void sys_reboot(int type)
 int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
     const nrf_upstream_assign_t *assign)
 {
+    uint8_t *frame = NULL;
+    uint32_t length = 0U;
+    nrf_upstream_status_t status;
+
     assert(assign != NULL);
     assert(assign->role == NRF_UPSTREAM_ROLE_REMOTE);
+    assert(s_callbacks != NULL);
+    assert(s_callbacks->buf_read_requested(NULL, &frame, &length) == 0);
+    assert(length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH ||
+           length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH);
+    assert(nrf_upstream_protocol_decode_status(
+               frame,
+               NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH,
+               &status) == NRF_UPSTREAM_RESULT_OK);
+    assert(status.request_id == assign->request_id);
+    assert(status.result == NRF_UPSTREAM_RESULT_PENDING);
     ++s_sensor_assignment_calls;
-    return 0;
+    return s_sensor_assignment_result;
 }
 
 int nrf_sensor_upstream_runtime_zephyr_request_refresh(
@@ -195,6 +211,7 @@ int main(void)
     nrf_node_state_init(&node_state);
     assert(nrf_node_state_mark_ready(&node_state) == NRF_NODE_STATE_OK);
     s_readdress_result = 0;
+    s_sensor_assignment_result = 0;
     s_readdress_rollback_discovery = true;
     assert(nrf_bootstrap_runtime_zephyr_start(&node_state) == 0);
     assert(s_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
@@ -242,19 +259,48 @@ int main(void)
         assert(memcmp(&status, &before, sizeof(status)) == 0);
     }
 
-    for (i = 0U; i < 4U; ++i) {
-        assign.request_id = 20U + i;
-        send_assign(&assign);
-    }
-    assign.request_id = 24U;
+    /*
+     * REMOTE assignment confirmation must not publish OK before sensor logical
+     * activation/ACTIVATE enqueue succeeds. A post-commit enqueue failure is
+     * not safely rollbackable at the bootstrap layer, so fail closed by
+     * publishing INTERNAL_ERROR and requesting a cold reboot.
+     */
+    s_sensor_assignment_result = -ENOSPC;
+    assign.request_id = 11U;
     send_assign(&assign);
-    status = read_status(NULL);
-    assert(status.request_id == 24U && status.result == NRF_UPSTREAM_RESULT_BUSY);
     run_submitted_work();
+    assert(s_sensor_assignment_calls == 2U);
+    assert(s_reboot_calls == 1U);
     status = read_status(NULL);
-    assert(status.request_id == 23U && status.result == NRF_UPSTREAM_RESULT_OK);
-    assert(s_readdress_calls == 2U);
-    assert(s_sensor_assignment_calls == 5U);
+    assert(status.request_id == 11U);
+    assert(status.result == NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+    assert(status.role == NRF_UPSTREAM_ROLE_REMOTE);
+
+    /* The host reboot stub returns; prove a later retry can publish OK again. */
+    s_sensor_assignment_result = 0;
+    assign.request_id = 12U;
+    send_assign(&assign);
+    run_submitted_work();
+    assert(s_sensor_assignment_calls == 3U);
+    status = read_status(NULL);
+    assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
+
+    {
+        const unsigned before_sensor_assignment_calls = s_sensor_assignment_calls;
+        for (i = 0U; i < 4U; ++i) {
+            assign.request_id = 20U + i;
+            send_assign(&assign);
+        }
+        assign.request_id = 24U;
+        send_assign(&assign);
+        status = read_status(NULL);
+        assert(status.request_id == 24U && status.result == NRF_UPSTREAM_RESULT_BUSY);
+        run_submitted_work();
+        status = read_status(NULL);
+        assert(status.request_id == 23U && status.result == NRF_UPSTREAM_RESULT_OK);
+        assert(s_readdress_calls == 2U);
+        assert(s_sensor_assignment_calls == before_sensor_assignment_calls + 4U);
+    }
 
     {
         uint8_t frame[NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH];
@@ -283,6 +329,6 @@ int main(void)
         }
     }
 
-    assert(s_reboot_calls == 0U);
+    assert(s_reboot_calls == 1U);
     return 0;
 }
