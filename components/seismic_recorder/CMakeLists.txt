@@ -1,6 +1,18 @@
+# Recorder lifetime ownership is interposed only at the public START boundary
+# and terminal metadata call inside seismic_recorder.c. The original recorder
+# state machine stays unchanged and remains available to the wrapper through
+# the source-local renamed symbol.
+set_source_files_properties(
+    "seismic_recorder.c"
+    PROPERTIES
+        COMPILE_DEFINITIONS
+            "seismic_recorder_start=seismic_recorder_start_unleased;seismic_recorder_json_write_metadata=seismic_recorder_lifetime_write_metadata"
+)
+
 idf_component_register(
     SRCS
         "seismic_recorder.c"
+        "seismic_recorder_object_lifetime.c"
         "seismic_recorder_start_policy.c"
         "seismic_recorder_storage_preflight.c"
         "seismic_recorder_delete.c"

@@ -36,6 +36,7 @@ esp_err_t object_store_init(void)
 
     xSemaphoreTake(mutex, portMAX_DELAY);
     object_store_profile_cache_reset();
+    object_store_lease_reset_locked();
     object_store_internal_clear_active_id();
     object_store_internal_restore_active();
     xSemaphoreGive(mutex);
@@ -103,6 +104,9 @@ esp_err_t object_store_reset(void)
         (SemaphoreHandle_t)object_store_internal_mutex_handle();
     xSemaphoreTake(mutex, portMAX_DELAY);
 
+    /* A reset only clears runtime ACTIVE/cache authority. Process-lifetime
+     * anti-delete leases belong to active recorder/scan owners and must never
+     * be silently discarded here. */
     object_store_internal_clear_active_id();
     object_store_profile_cache_note_active_locked("");
 

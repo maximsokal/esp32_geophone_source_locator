@@ -49,3 +49,7 @@ void object_store_profile_cache_note_rename_locked(const char *object_id, const 
 void object_store_profile_cache_note_location_locked(const char *object_id, const object_store_location_t *location);
 void object_store_profile_cache_note_cable_locked(const char *object_id, size_t pod_index, float length_m);
 void object_store_profile_cache_note_default_locked(size_t pod_index, float length_m);
+
+/* Process-lifetime lease table. *_locked functions require object-store mutex. */
+void object_store_lease_reset_locked(void);
+bool object_store_lease_is_object_held_locked(const char *object_id);
