@@ -51,16 +51,21 @@ roles:
 
 - `CONFIG_BT_CENTRAL=y`
 - `CONFIG_BT_PERIPHERAL=y`
-- `CONFIG_BT_MAX_CONN=2`
+- `CONFIG_BT_MAX_CONN=1`
 - `CONFIG_BT_CTLR_SDC_PERIPHERAL_COUNT=1`
 - `CONFIG_BT_CTLR_SDC_CS_ROLE_BOTH=y`
 - `CONFIG_BT_CTLR_SDC_CS_COUNT=1`
 
-`BT_MAX_CONN=2` is intentional even though the first ranging architecture uses
-only one active CS pair at a time. The SoftDevice Controller reserves peripheral
-roles separately; with `BT_MAX_CONN=1` plus one peripheral slot there would be
-no central slot. Two connection slots preserve runtime capability for either
-role, while `CS_COUNT=1` bounds Channel Sounding concurrency to one procedure.
+`BT_MAX_CONN` is the host's maximum simultaneous connections. The reviewed first
+ranging architecture uses only one active BLE/CS pair at a time, while a node
+may act as central or peripheral on different sequential pair turns. NCS v3.4.0
+contains an intentional SoftDevice Controller special case for
+`BT_MAX_CONN <= 1`: when both central and peripheral roles are enabled it still
+allocates one central role even with `CONFIG_BT_CTLR_SDC_PERIPHERAL_COUNT=1`.
+Therefore `CONFIG_BT_MAX_CONN=1` preserves the required sequential dual-role
+capability and avoids paying RAM for a second simultaneous host connection on
+the 188 KiB XIAO target. `CS_COUNT=1` independently bounds Channel Sounding to
+one procedure/context at a time.
 
 The proof is also single-antenna and mode-3-disabled:
 
@@ -116,8 +121,8 @@ not report the v3.4.0 SDK as installed, the proof fails before configuration.
 The wrapper then builds the existing canonical `nRF54L15/zephyr` application for
 `xiao_nrf54l15/nrf54l15/cpuapp` and adds only the MAX-45 CS fragment. After a
 successful link it checks the resolved `.config` for the SoftDevice, dual BLE
-roles, both CS roles, single CS context/antenna, and the existing 128-byte TWIS
-buffer.
+roles, one maximum simultaneous connection, both CS roles, single CS
+context/antenna, and the existing 128-byte TWIS buffer.
 
 To build the unchanged baseline and the CS proof back-to-back and print ELF size
 information for both:
