@@ -79,7 +79,7 @@ esp_err_t object_store_list_profiles_responsive(
     }
 
     size_t published = 0U;
-    size_t disappeared = 0U;
+    size_t omitted = 0U;
     for (size_t i = 0U; i < census_count; ++i) {
         object_store_profile_t profile;
         err = object_store_get_profile(
@@ -87,10 +87,12 @@ esp_err_t object_store_list_profiles_responsive(
             &profile
         );
 
-        /* Deletion can race the census. A disappearing object is not a cache
-         * refresh failure; simply omit it from this snapshot. */
-        if (err == ESP_ERR_NOT_FOUND) {
-            ++disappeared;
+        /* Deletion can race the census, and background recovery may still be
+         * processing a parseable-but-semantic-invalid object. Both are local
+         * archive entries to omit, not reasons to fail the whole snapshot. */
+        if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_RESPONSE) {
+            ++omitted;
+            err = ESP_OK;
             continue;
         }
         if (err != ESP_OK) {
@@ -113,10 +115,10 @@ esp_err_t object_store_list_profiles_responsive(
         *object_count = published;
         ESP_LOGI(
             TAG,
-            "PROFILE_SCAN mode=cooperative census=%u published=%u disappeared=%u elapsed_ms=%lld",
+            "PROFILE_SCAN mode=cooperative census=%u published=%u omitted=%u elapsed_ms=%lld",
             (unsigned)census_count,
             (unsigned)published,
-            (unsigned)disappeared,
+            (unsigned)omitted,
             (long long)((esp_timer_get_time() - started_us) / 1000LL)
         );
     }

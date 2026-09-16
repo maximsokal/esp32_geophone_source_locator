@@ -14,6 +14,21 @@ esp_err_t object_recovery_check_one(
 );
 
 
+/* Runtime/background variant: fail closed rather than deleting the object that
+ * currently owns persisted ACTIVE authority. The caller must hold the shared
+ * storage operation for the whole check/delete window. */
+esp_err_t object_recovery_check_one_background(
+    const char *object_id,
+    bool *removed
+);
+
+
+/* Exposed for deterministic host coverage of the destructive runtime guard. */
+esp_err_t object_recovery_background_delete_guard(
+    const char *object_id
+);
+
+
 esp_err_t object_recovery_run_cooperative(
     object_recovery_stop_requested_fn stop_requested,
     void *user_context,

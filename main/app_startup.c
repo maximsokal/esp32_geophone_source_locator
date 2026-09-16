@@ -63,6 +63,20 @@ static void app_startup_background_recovery_complete(
 {
     (void)user_context;
 
+    /* Recovery can remove or repair historical objects outside object_store's
+     * mutation API. Drop its RAM projection before reopening the already
+     * deferred Web refresh so that refresh becomes the one authoritative
+     * rebuild instead of publishing stale profile entries for up to 60 s. */
+    const esp_err_t cache_err =
+        object_store_invalidate_profile_cache();
+    if (cache_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Object profile cache invalidation after recovery failed: %s",
+            esp_err_to_name(cache_err)
+        );
+    }
+
     const esp_err_t status_event_err =
         app_events_post_best_effort(
             APP_EVENT_STORAGE_RECOVERY_FINISHED,

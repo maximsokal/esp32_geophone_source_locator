@@ -183,7 +183,25 @@ void ui_dispatch_app_event_locked(
         case APP_EVENT_STORAGE_RECOVERY_FINISHED:
             context->storage_recovery_active = false;
             context->storage_recovery_failed = event_value != ESP_OK;
-            if (context->screen == UI_SCREEN_HOME) {
+
+            /* Recovery can delete/repair objects outside object_service. Never
+             * leave its copied TFT list selectable after completion. Reopening
+             * Objects later uses the normal async list path; do not start a
+             * second archive scan here while Web refresh is also being reopened. */
+            context->objects_loaded = false;
+            context->object_count = 0U;
+            context->object_index = 0U;
+            context->objects_mode = UI_OBJECTS_MENU;
+
+            if (context->screen == UI_SCREEN_OBJECTS) {
+                ui_set_notice_locked(
+                    context->storage_recovery_failed
+                        ? "RECOVERY FAILED - REOPEN OBJECTS"
+                        : "RECOVERY COMPLETE - REOPEN OBJECTS"
+                );
+                ui_render_objects_locked();
+            }
+            else if (context->screen == UI_SCREEN_HOME) {
                 ui_render_home_locked();
             }
             return;

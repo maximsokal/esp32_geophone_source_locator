@@ -266,24 +266,15 @@ bool object_recovery_fs_metadata_valid(
             "id"
         );
 
-    bool valid =
-        cJSON_IsNumber(
-            schema_version
-        ) &&
-        object_format_schema_is_supported(
-            schema_version->valueint
-        ) &&
-        cJSON_IsString(
-            id
-        ) &&
+    const bool valid =
+        cJSON_IsNumber(schema_version) &&
+        cJSON_IsString(id) &&
         id->valuestring != NULL &&
-        object_format_id_is_valid(
-            id->valuestring
-        ) &&
-        strcmp(
+        object_format_metadata_identity_is_valid(
+            schema_version->valueint,
             id->valuestring,
             expected_id
-        ) == 0;
+        );
 
     cJSON_Delete(
         root

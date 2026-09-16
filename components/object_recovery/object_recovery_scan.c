@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include "esp_log.h"
@@ -18,6 +19,9 @@
 
 static const char *TAG =
     "OBJECT_RECOVERY";
+
+#define ACTIVE_OBJECT_PATH \
+    STORAGE_MANAGER_ROOT_PATH "/active_object.txt"
 
 
 static void object_recovery_log_boot_timing(
@@ -39,9 +43,60 @@ static void object_recovery_log_boot_timing(
 }
 
 
-esp_err_t object_recovery_check_one(
+esp_err_t object_recovery_background_delete_guard(
+    const char *object_id
+)
+{
+    if (!object_format_id_is_valid(object_id)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char active_id[OBJECT_FORMAT_ID_SIZE] = {0};
+    esp_err_t err = storage_manager_read_text(
+        ACTIVE_OBJECT_PATH,
+        active_id,
+        sizeof(active_id)
+    );
+
+    if (err == ESP_ERR_NOT_FOUND) {
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Cannot determine ACTIVE authority before recovery delete object=%s err=%s",
+            object_id,
+            esp_err_to_name(err)
+        );
+        return err;
+    }
+
+    active_id[strcspn(active_id, "\r\n\t ")] = '\0';
+    if (!object_format_id_is_valid(active_id)) {
+        ESP_LOGW(
+            TAG,
+            "Ignoring invalid persisted ACTIVE marker while guarding recovery delete"
+        );
+        return ESP_OK;
+    }
+
+    if (strcmp(active_id, object_id) == 0) {
+        ESP_LOGE(
+            TAG,
+            "Deferred corrupt-object removal because object is ACTIVE: %s",
+            object_id
+        );
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return ESP_OK;
+}
+
+
+static esp_err_t object_recovery_check_one_with_policy(
     const char *object_id,
-    bool *removed
+    bool *removed,
+    bool protect_persisted_active
 )
 {
     if (
@@ -156,6 +211,20 @@ esp_err_t object_recovery_check_one(
         object_id
     );
 
+    /*
+     * Runtime background recovery must re-check persisted ACTIVE authority at
+     * the final destructive boundary. The caller holds the same storage
+     * operation used by object_store_set_active(), so ACTIVE cannot be
+     * committed between this check and remove_tree(). Boot-time recovery uses
+     * the destructive policy before object_store publishes runtime authority.
+     */
+    if (protect_persisted_active) {
+        err = object_recovery_background_delete_guard(object_id);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
     stage_started_ms =
         esp_log_timestamp();
 
@@ -184,4 +253,30 @@ esp_err_t object_recovery_check_one(
         true;
 
     return ESP_OK;
+}
+
+
+esp_err_t object_recovery_check_one(
+    const char *object_id,
+    bool *removed
+)
+{
+    return object_recovery_check_one_with_policy(
+        object_id,
+        removed,
+        false
+    );
+}
+
+
+esp_err_t object_recovery_check_one_background(
+    const char *object_id,
+    bool *removed
+)
+{
+    return object_recovery_check_one_with_policy(
+        object_id,
+        removed,
+        true
+    );
 }

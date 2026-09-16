@@ -19,6 +19,9 @@
 
 static const char *TEST_ROOT = "object_recovery_contract_tmp";
 
+static esp_err_t s_active_read_result = ESP_ERR_NOT_FOUND;
+static const char *s_active_marker = NULL;
+
 unsigned esp_log_timestamp(void)
 {
     return 0U;
@@ -30,6 +33,27 @@ esp_err_t storage_manager_remove_tree(const char *path)
     return ESP_OK;
 }
 
+esp_err_t storage_manager_read_text(
+    const char *path,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    (void)path;
+    if (s_active_read_result != ESP_OK) {
+        return s_active_read_result;
+    }
+    if (s_active_marker == NULL || buffer == NULL || buffer_size == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const int written = snprintf(buffer, buffer_size, "%s", s_active_marker);
+    if (written < 0 || (size_t)written >= buffer_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
 
 static void test_scan_rejects_invalid_object_ids(void)
 {
@@ -38,6 +62,30 @@ static void test_scan_rejects_invalid_object_ids(void)
     assert(object_recovery_check_one("OBJ_0001/..", &removed) == ESP_ERR_INVALID_ARG);
     assert(object_recovery_check_one("OBJ_001", &removed) == ESP_ERR_INVALID_ARG);
     assert(object_recovery_check_one("OBJ_0001", NULL) == ESP_ERR_INVALID_ARG);
+}
+
+static void test_background_delete_guard(void)
+{
+    s_active_read_result = ESP_ERR_NOT_FOUND;
+    s_active_marker = NULL;
+    assert(object_recovery_background_delete_guard("OBJ_0001") == ESP_OK);
+
+    s_active_read_result = ESP_OK;
+    s_active_marker = "OBJ_0001\n";
+    assert(object_recovery_background_delete_guard("OBJ_0001") == ESP_ERR_INVALID_STATE);
+    assert(object_recovery_background_delete_guard("OBJ_0002") == ESP_OK);
+
+    s_active_marker = "not-an-object";
+    assert(object_recovery_background_delete_guard("OBJ_0001") == ESP_OK);
+
+    s_active_read_result = ESP_FAIL;
+    s_active_marker = NULL;
+    assert(object_recovery_background_delete_guard("OBJ_0001") == ESP_FAIL);
+
+    assert(object_recovery_background_delete_guard("OBJ_bad") == ESP_ERR_INVALID_ARG);
+
+    s_active_read_result = ESP_ERR_NOT_FOUND;
+    s_active_marker = NULL;
 }
 
 static void metadata_path(char *path, size_t path_size, const char *name)
@@ -207,6 +255,12 @@ static void test_metadata_json_contract(void)
 
     file = fopen(metadata, "wb");
     assert(file != NULL);
+    assert(fputs("{\"schema_version\":1,\"id\":\"OBJ_0002\"}", file) >= 0);
+    assert(fclose(file) == 0);
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001"));
+
+    file = fopen(metadata, "wb");
+    assert(file != NULL);
     assert(fputs("not-json", file) >= 0);
     assert(fclose(file) == 0);
     assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001"));
@@ -217,6 +271,7 @@ static void test_metadata_json_contract(void)
 int main(void)
 {
     test_scan_rejects_invalid_object_ids();
+    test_background_delete_guard();
     test_path_builder();
     test_unlink_and_restore();
     test_metadata_json_contract();
