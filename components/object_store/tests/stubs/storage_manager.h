@@ -18,4 +18,5 @@
 
 bool storage_manager_path_exists(const char *path);
 esp_err_t storage_manager_create_directory(const char *path);
+esp_err_t storage_manager_create_directory_exclusive(const char *path);
 esp_err_t storage_manager_remove_tree(const char *path);
