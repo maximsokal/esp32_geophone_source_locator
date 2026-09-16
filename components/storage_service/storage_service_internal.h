@@ -26,8 +26,24 @@ typedef struct
 } storage_service_callback_slot_t;
 
 
+typedef struct
+{
+    portMUX_TYPE lock;
+    storage_service_content_changed_callback_t callback;
+    void *context;
+    unsigned in_flight;
+
+} storage_service_content_observer_slot_t;
+
+
 /* Component-private state exposure for lifecycle/host verification. */
 storage_service_callback_slot_t *storage_service_internal_callback_slot(void);
+
+storage_service_content_observer_slot_t *
+storage_service_internal_content_observer_slot(void);
+
+void storage_service_internal_notify_content_changed(void);
+void storage_service_internal_clear_content_observer(void);
 
 
 /*

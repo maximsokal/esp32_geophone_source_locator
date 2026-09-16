@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "storage_service.c"
+        "storage_service_content_observer.c"
         "storage_service_operations.c"
 
     INCLUDE_DIRS

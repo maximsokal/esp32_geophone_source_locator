@@ -1,0 +1,4 @@
+dependencies:
+  storage_service:
+    path: ../storage_service
+    require: private

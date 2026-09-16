@@ -34,14 +34,19 @@ static bool s_fail_task_create;
 static bool s_fail_queue_send;
 static bool s_inject_stop_when_empty;
 static bool s_release_callback_inflight_on_delay;
+static bool s_release_content_inflight_on_delay;
+static bool s_erase_succeeds = true;
 static unsigned s_barrier_delay_calls;
 static unsigned s_queue_delete_calls;
 static unsigned s_sem_delete_calls;
 static unsigned s_process_info_calls;
 static unsigned s_process_erase_calls;
 static unsigned s_callback_calls;
+static unsigned s_content_changed_calls;
 static bool s_callback_saw_gate_held;
 static bool s_callback_saw_inflight_accounted;
+static bool s_content_saw_gate_held;
+static bool s_content_saw_inflight_accounted;
 static TaskFunction_t s_task_entry;
 static UBaseType_t s_task_priority;
 static uint32_t s_task_stack;
@@ -150,14 +155,25 @@ void vTaskDelay(TickType_t ticks)
     assert(fake_critical_depth == 0U);
 
     if (ticks == 1U) {
-        storage_service_callback_slot_t *slot =
-            storage_service_internal_callback_slot();
-        assert(s_release_callback_inflight_on_delay);
-        assert(slot->in_flight == 1U);
-        slot->in_flight = 0U;
-        s_release_callback_inflight_on_delay = false;
-        ++s_barrier_delay_calls;
-        return;
+        if (s_release_callback_inflight_on_delay) {
+            storage_service_callback_slot_t *slot =
+                storage_service_internal_callback_slot();
+            assert(slot->in_flight == 1U);
+            slot->in_flight = 0U;
+            s_release_callback_inflight_on_delay = false;
+            ++s_barrier_delay_calls;
+            return;
+        }
+        if (s_release_content_inflight_on_delay) {
+            storage_service_content_observer_slot_t *slot =
+                storage_service_internal_content_observer_slot();
+            assert(slot->in_flight == 1U);
+            slot->in_flight = 0U;
+            s_release_content_inflight_on_delay = false;
+            ++s_barrier_delay_calls;
+            return;
+        }
+        assert(false);
     }
 
     assert(ticks == pdMS_TO_TICKS(10));
@@ -180,9 +196,12 @@ bool storage_service_process_info(storage_service_event_t *event)
 bool storage_service_process_erase(storage_service_event_t *event)
 {
     ++s_process_erase_calls;
-    event->type = STORAGE_SERVICE_EVENT_ERASE_DONE;
-    event->result = ESP_OK;
-    return false;
+    event->type = s_erase_succeeds
+        ? STORAGE_SERVICE_EVENT_ERASE_DONE
+        : STORAGE_SERVICE_EVENT_ERASE_FAILED;
+    event->result = s_erase_succeeds ? ESP_OK : ESP_FAIL;
+    /* Model shutdown-pending success: TFT redraw is suppressed. */
+    return !s_erase_succeeds;
 }
 
 static void on_event(const storage_service_event_t *event, void *context)
@@ -200,6 +219,18 @@ static void on_event(const storage_service_event_t *event, void *context)
     s_callback_saw_inflight_accounted = (slot->in_flight == 1U);
 }
 
+static void on_content_changed(void *context)
+{
+    storage_service_content_observer_slot_t *slot =
+        storage_service_internal_content_observer_slot();
+
+    assert(fake_critical_depth == 0U);
+    assert(context == &s_content_changed_calls);
+    ++s_content_changed_calls;
+    s_content_saw_gate_held = (s_sem.count == 0U);
+    s_content_saw_inflight_accounted = (slot->in_flight == 1U);
+}
+
 static void reset_failures(void)
 {
     s_fail_queue_create = false;
@@ -208,6 +239,7 @@ static void reset_failures(void)
     s_fail_queue_send = false;
     s_inject_stop_when_empty = false;
     s_release_callback_inflight_on_delay = false;
+    s_release_content_inflight_on_delay = false;
     s_task_entry = NULL;
 }
 
@@ -215,12 +247,22 @@ int main(void)
 {
     storage_service_callback_slot_t *slot =
         storage_service_internal_callback_slot();
+    storage_service_content_observer_slot_t *content_slot =
+        storage_service_internal_content_observer_slot();
 
     assert(storage_service_set_event_callback(on_event, NULL) == ESP_ERR_INVALID_STATE);
+    assert(storage_service_set_content_changed_observer(
+        on_content_changed,
+        &s_content_changed_calls
+    ) == ESP_OK);
+    assert(content_slot->callback == on_content_changed);
     assert(storage_service_info_async() == ESP_ERR_INVALID_STATE);
     assert(storage_service_erase_data_async() == ESP_ERR_INVALID_STATE);
     assert(!storage_service_is_busy());
     storage_service_shutdown();
+    assert(content_slot->callback == NULL);
+    assert(content_slot->context == NULL);
+    assert(content_slot->in_flight == 0U);
 
     s_fail_queue_create = true;
     assert(storage_service_init() == ESP_ERR_NO_MEM);
@@ -245,8 +287,13 @@ int main(void)
     assert(s_task_core == APP_TASK_CORE_SERVICES);
     assert(s_task_caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     assert(storage_service_set_event_callback(on_event, &s_callback_calls) == ESP_OK);
+    assert(storage_service_set_content_changed_observer(
+        on_content_changed,
+        &s_content_changed_calls
+    ) == ESP_OK);
 
-    /* Model a callback already snapped by the worker before unregister. */
+    /* Model callbacks already snapped before unregister. Both slots must drain
+     * independently without holding their SMP spinlocks across vTaskDelay. */
     slot->in_flight = 1U;
     s_release_callback_inflight_on_delay = true;
     assert(storage_service_set_event_callback(NULL, NULL) == ESP_OK);
@@ -255,6 +302,18 @@ int main(void)
     assert(slot->context == NULL);
     assert(slot->in_flight == 0U);
     assert(storage_service_set_event_callback(on_event, &s_callback_calls) == ESP_OK);
+
+    content_slot->in_flight = 1U;
+    s_release_content_inflight_on_delay = true;
+    assert(storage_service_set_content_changed_observer(NULL, NULL) == ESP_OK);
+    assert(s_barrier_delay_calls == 2U);
+    assert(content_slot->callback == NULL);
+    assert(content_slot->context == NULL);
+    assert(content_slot->in_flight == 0U);
+    assert(storage_service_set_content_changed_observer(
+        on_content_changed,
+        &s_content_changed_calls
+    ) == ESP_OK);
 
     s_fail_queue_send = true;
     assert(storage_service_info_async() == ESP_ERR_TIMEOUT);
@@ -270,6 +329,7 @@ int main(void)
     s_task_entry = NULL;
     assert(s_process_info_calls == 1U);
     assert(s_callback_calls == 1U);
+    assert(s_content_changed_calls == 0U);
     assert(s_callback_saw_gate_held);
     assert(s_callback_saw_inflight_accounted);
     assert(slot->in_flight == 0U);
@@ -280,17 +340,46 @@ int main(void)
     assert(slot->callback == NULL);
     assert(slot->context == NULL);
     assert(slot->in_flight == 0U);
+    assert(content_slot->callback == NULL);
+    assert(content_slot->context == NULL);
+    assert(content_slot->in_flight == 0U);
     assert(!storage_service_is_busy());
     assert(s_queue_delete_calls == 3U);
     assert(s_sem_delete_calls == 2U);
 
+    /* Successful ERASE publishes content change even when process_erase()
+     * suppresses the TFT redraw (notify=false), e.g. shutdown pending. */
+    s_erase_succeeds = true;
     assert(storage_service_init() == ESP_OK);
+    assert(storage_service_set_content_changed_observer(
+        on_content_changed,
+        &s_content_changed_calls
+    ) == ESP_OK);
     assert(storage_service_erase_data_async() == ESP_OK);
     s_inject_stop_when_empty = true;
     s_task_entry(NULL);
     s_task_entry = NULL;
     assert(s_process_erase_calls == 1U);
     assert(s_callback_calls == 1U);
+    assert(s_content_changed_calls == 1U);
+    assert(s_content_saw_gate_held);
+    assert(s_content_saw_inflight_accounted);
+    assert(content_slot->in_flight == 0U);
+    storage_service_shutdown();
+
+    /* Failed ERASE must not advertise an empty authoritative store. */
+    s_erase_succeeds = false;
+    assert(storage_service_init() == ESP_OK);
+    assert(storage_service_set_content_changed_observer(
+        on_content_changed,
+        &s_content_changed_calls
+    ) == ESP_OK);
+    assert(storage_service_erase_data_async() == ESP_OK);
+    s_inject_stop_when_empty = true;
+    s_task_entry(NULL);
+    s_task_entry = NULL;
+    assert(s_process_erase_calls == 2U);
+    assert(s_content_changed_calls == 1U);
     storage_service_shutdown();
 
     assert(storage_service_init() == ESP_OK);

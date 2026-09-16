@@ -5,6 +5,7 @@
       "name": "storage_service_lifecycle",
       "sources": [
         "components/storage_service/storage_service.c",
+        "components/storage_service/storage_service_content_observer.c",
         "tests/host/storage_service_lifecycle_test.c"
       ],
       "include_dirs": [
