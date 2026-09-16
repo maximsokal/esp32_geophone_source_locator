@@ -618,23 +618,30 @@ static bool web_status_json_add_objects_from_payload(
 }
 
 
-bool web_status_json_add_objects(cJSON *root)
+esp_err_t web_status_json_add_objects(cJSON *root)
 {
+    if (root == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (!web_status_cache_arbitration_lock(&s_arbitration)) {
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    if (!s_arbitration.cache_ready || s_arbitration.cache_refreshing) {
+    if (
+        !s_arbitration.cache_ready ||
+        s_arbitration.cache_refreshing ||
+        s_active_payload == NULL
+    ) {
         web_status_cache_arbitration_unlock(&s_arbitration);
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const web_status_cache_payload_t *payload = s_active_payload;
-    const bool ok = payload != NULL
-        ? web_status_json_add_objects_from_payload(root, payload)
-        : false;
+    const bool ok = web_status_json_add_objects_from_payload(
+        root,
+        s_active_payload
+    );
     web_status_cache_arbitration_unlock(&s_arbitration);
-    return ok;
+    return ok ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 
@@ -652,53 +659,56 @@ static const web_status_session_cache_t *web_status_find_session_cache(
 }
 
 
-bool web_status_json_add_sessions(cJSON *root, const char *object_id)
+esp_err_t web_status_json_add_sessions(cJSON *root, const char *object_id)
 {
+    if (root == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (object_id == NULL || object_id[0] == '\0') {
-        return true;
+        return ESP_OK;
     }
     if (!web_status_cache_arbitration_lock(&s_arbitration)) {
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    if (!s_arbitration.cache_ready || s_arbitration.cache_refreshing) {
+    if (
+        !s_arbitration.cache_ready ||
+        s_arbitration.cache_refreshing ||
+        s_active_payload == NULL
+    ) {
         web_status_cache_arbitration_unlock(&s_arbitration);
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    const web_status_cache_payload_t *payload = s_active_payload;
-    const web_status_session_cache_t *session_cache = payload != NULL
-        ? web_status_find_session_cache(payload, object_id)
-        : NULL;
+    const web_status_session_cache_t *session_cache =
+        web_status_find_session_cache(s_active_payload, object_id);
 
     cJSON *collection = cJSON_AddObjectToObject(root, "recording_sessions");
     if (collection == NULL) {
-        web_status_cache_arbitration_unlock(&s_arbitration);
-        return false;
+        goto no_mem;
     }
     if (cJSON_AddStringToObject(collection, "object_id", object_id) == NULL) {
-        web_status_cache_arbitration_unlock(&s_arbitration);
-        return false;
+        goto no_mem;
     }
 
     const esp_err_t error = session_cache == NULL
         ? ESP_ERR_NOT_FOUND
         : session_cache->error;
     if (cJSON_AddBoolToObject(collection, "available", error == ESP_OK) == NULL) {
-        web_status_cache_arbitration_unlock(&s_arbitration);
-        return false;
+        goto no_mem;
     }
 
     cJSON *array = cJSON_AddArrayToObject(collection, "sessions");
     if (array == NULL) {
-        web_status_cache_arbitration_unlock(&s_arbitration);
-        return false;
+        goto no_mem;
     }
 
     if (error != ESP_OK) {
-        cJSON_AddStringToObject(collection, "error", esp_err_to_name(error));
+        if (cJSON_AddStringToObject(collection, "error", esp_err_to_name(error)) == NULL) {
+            goto no_mem;
+        }
         web_status_cache_arbitration_unlock(&s_arbitration);
-        return true;
+        return ESP_OK;
     }
 
     for (size_t i = 0U; i < session_cache->count; ++i) {
@@ -706,8 +716,7 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
             &session_cache->sessions[i];
         cJSON *session = cJSON_CreateObject();
         if (session == NULL) {
-            web_status_cache_arbitration_unlock(&s_arbitration);
-            return false;
+            goto no_mem;
         }
         cJSON_AddItemToArray(array, session);
 
@@ -738,11 +747,14 @@ bool web_status_json_add_sessions(cJSON *root, const char *object_id)
             ) == NULL ||
             cJSON_AddNumberToObject(session, "recording_ms", (double)summary->recording_ms) == NULL
         ) {
-            web_status_cache_arbitration_unlock(&s_arbitration);
-            return false;
+            goto no_mem;
         }
     }
 
     web_status_cache_arbitration_unlock(&s_arbitration);
-    return true;
+    return ESP_OK;
+
+no_mem:
+    web_status_cache_arbitration_unlock(&s_arbitration);
+    return ESP_ERR_NO_MEM;
 }
