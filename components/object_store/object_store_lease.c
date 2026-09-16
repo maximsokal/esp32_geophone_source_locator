@@ -20,13 +20,28 @@ typedef struct
 static const char *LEASE_TAG = "OBJECT_STORE_LEASE";
 
 static object_store_lease_slot_t s_leases[OBJECT_STORE_MAX_LEASES];
+static uint64_t s_destructive_token_id = 0U;
 static uint64_t s_next_token_id = 1U;
+
+
+static bool object_store_any_lease_held_locked(void)
+{
+    for (size_t index = 0U; index < OBJECT_STORE_MAX_LEASES; ++index) {
+        if (s_leases[index].token_id != 0U) {
+            return true;
+        }
+    }
+    return false;
+}
 
 
 static bool object_store_lease_token_in_use_locked(uint64_t token_id)
 {
     if (token_id == 0U) {
         return false;
+    }
+    if (s_destructive_token_id == token_id) {
+        return true;
     }
 
     for (size_t index = 0U; index < OBJECT_STORE_MAX_LEASES; ++index) {
@@ -58,6 +73,7 @@ static uint64_t object_store_lease_next_token_locked(void)
 void object_store_lease_reset_locked(void)
 {
     memset(s_leases, 0, sizeof(s_leases));
+    s_destructive_token_id = 0U;
     s_next_token_id = 1U;
 }
 
@@ -95,6 +111,11 @@ esp_err_t object_store_lease_acquire(
     esp_err_t err = object_store_internal_begin_file_operation();
     if (err != ESP_OK) {
         return err;
+    }
+
+    if (s_destructive_token_id != 0U) {
+        object_store_internal_end_file_operation();
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (!object_store_fs_object_exists(object_id)) {
@@ -220,14 +241,80 @@ esp_err_t object_store_any_leases_active(bool *active)
         return err;
     }
 
-    *active = false;
-    for (size_t index = 0U; index < OBJECT_STORE_MAX_LEASES; ++index) {
-        if (s_leases[index].token_id != 0U) {
-            *active = true;
-            break;
-        }
-    }
+    *active = object_store_any_lease_held_locked();
 
     object_store_internal_end_state_operation();
+    return ESP_OK;
+}
+
+
+esp_err_t object_store_destructive_reservation_acquire(
+    object_store_destructive_reservation_t *reservation
+)
+{
+    if (reservation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (reservation->token_id != 0U) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = object_store_internal_begin_state_operation();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (s_destructive_token_id != 0U || object_store_any_lease_held_locked()) {
+        object_store_internal_end_state_operation();
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint64_t token_id = object_store_lease_next_token_locked();
+    s_destructive_token_id = token_id;
+    reservation->token_id = token_id;
+
+    object_store_internal_end_state_operation();
+
+    ESP_LOGI(
+        LEASE_TAG,
+        "Destructive reservation acquired token=%llu",
+        (unsigned long long)token_id
+    );
+    return ESP_OK;
+}
+
+
+esp_err_t object_store_destructive_reservation_release(
+    object_store_destructive_reservation_t *reservation
+)
+{
+    if (reservation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (reservation->token_id == 0U) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = object_store_internal_begin_state_operation();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint64_t token_id = reservation->token_id;
+    if (s_destructive_token_id != token_id) {
+        object_store_internal_end_state_operation();
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_destructive_token_id = 0U;
+    reservation->token_id = 0U;
+
+    object_store_internal_end_state_operation();
+
+    ESP_LOGI(
+        LEASE_TAG,
+        "Destructive reservation released token=%llu",
+        (unsigned long long)token_id
+    );
     return ESP_OK;
 }

@@ -104,14 +104,15 @@ esp_err_t object_store_reset(void)
         (SemaphoreHandle_t)object_store_internal_mutex_handle();
     xSemaphoreTake(mutex, portMAX_DELAY);
 
-    /* A reset only clears runtime ACTIVE/cache authority. Process-lifetime
-     * anti-delete leases belong to active recorder/scan owners and must never
-     * be silently discarded here. */
+    /* Successful application-data ERASE invalidates every RAM value derived
+     * from the previous filesystem generation. Process-lifetime leases and the
+     * destructive reservation are ownership state, not storage-derived cache,
+     * and are deliberately left intact until their owners release them. */
     object_store_internal_clear_active_id();
-    object_store_profile_cache_note_active_locked("");
+    object_store_profile_cache_reset();
 
     xSemaphoreGive(mutex);
 
-    ESP_LOGI(TAG, "Runtime object state reset");
+    ESP_LOGI(TAG, "Runtime object state reset after application-data erase");
     return ESP_OK;
 }

@@ -87,27 +87,49 @@ bool storage_service_process_erase(
         event
     );
 
-    /*
-     * Hold one high-level storage transaction across both the
-     * filesystem erase and the in-memory object-store reset.
-     *
-     * Object operations acquire the same recursive guard before
-     * touching their own mutex, so ERASE DATA now waits instead
-     * of racing with CREATE / LIST / SET ACTIVE / DELETE.
-     */
-    event->result =
-        storage_manager_operation_begin();
+    object_store_destructive_reservation_t reservation = {0};
+    event->result = object_store_destructive_reservation_acquire(
+        &reservation
+    );
 
     if (event->result == ESP_OK) {
+        /*
+         * The logical reservation was committed before storage arbitration.
+         * Existing recorder/scan leases therefore make ERASE fail immediately,
+         * while new lifetime leases are rejected until this transaction exits.
+         */
         event->result =
-            storage_manager_erase_application_data();
+            storage_manager_operation_begin();
 
         if (event->result == ESP_OK) {
             event->result =
-                object_store_reset();
+                storage_manager_erase_application_data();
+
+            if (event->result == ESP_OK) {
+                event->result =
+                    object_store_reset();
+            }
+
+            storage_manager_operation_end();
         }
 
-        storage_manager_operation_end();
+        const esp_err_t release_err =
+            object_store_destructive_reservation_release(
+                &reservation
+            );
+
+        if (release_err != ESP_OK) {
+            if (event->result == ESP_OK) {
+                event->result = release_err;
+            }
+            else {
+                ESP_LOGE(
+                    TAG,
+                    "Destructive reservation cleanup failed after primary erase error: %s",
+                    esp_err_to_name(release_err)
+                );
+            }
+        }
     }
 
     if (event->result == ESP_OK) {
@@ -133,9 +155,9 @@ bool storage_service_process_erase(
     }
 
     /*
-     * If POWER was pressed during erase, the operation has
-     * already reached a safe boundary. Skip the UI redraw and
-     * let the main task continue the shutdown sequence.
+     * If POWER was pressed during erase, the operation has already reached a
+     * safe boundary and released both storage arbitration and the destructive
+     * reservation. Skip the UI redraw and let shutdown continue.
      */
     if (
         power_control_is_shutdown_requested()

@@ -15,6 +15,27 @@
       ]
     },
     {
+      "name": "storage_service_operations",
+      "sources": [
+        "components/storage_service/storage_service_operations.c",
+        "tests/host/storage_service_operations_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/storage_service_operations"
+      ]
+    },
+    {
+      "name": "object_store_lifetime_barrier",
+      "sources": [
+        "components/object_store/object_store_lease.c",
+        "tests/host/object_store_lifetime_barrier_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_lifetime",
+        "components/object_store/tests/stubs"
+      ]
+    },
+    {
       "name": "object_service_lifecycle",
       "sources": [
         "components/object_service/object_service.c",

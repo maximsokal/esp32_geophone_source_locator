@@ -48,6 +48,17 @@ typedef struct
     uint64_t token_id;
 } object_store_lease_t;
 
+/*
+ * Global application-data destructive reservation. While owned, no new object
+ * lifetime lease can be acquired. Acquisition succeeds only when no lease is
+ * active, closing the ERASE-vs-recorder/scan race in both directions without
+ * holding storage/TFT arbitration for the erase lifetime.
+ */
+typedef struct
+{
+    uint64_t token_id;
+} object_store_destructive_reservation_t;
+
 esp_err_t object_store_init(void);
 esp_err_t object_store_create(object_store_summary_t *created_object);
 esp_err_t object_store_create_named(const char *initial_name, object_store_summary_t *created_object);
@@ -100,6 +111,13 @@ esp_err_t object_store_object_is_leased(
 );
 esp_err_t object_store_any_leases_active(
     bool *active
+);
+
+esp_err_t object_store_destructive_reservation_acquire(
+    object_store_destructive_reservation_t *reservation
+);
+esp_err_t object_store_destructive_reservation_release(
+    object_store_destructive_reservation_t *reservation
 );
 
 /* RAM-only invalidation after out-of-band recovery changes. This does not
