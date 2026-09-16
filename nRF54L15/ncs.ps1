@@ -308,4 +308,4 @@ finally {
     Pop-Location
 }
 
-Write-Host "MAX-45 $Action: PASS" -ForegroundColor Green
+Write-Host "MAX-45 ${Action}: PASS" -ForegroundColor Green
