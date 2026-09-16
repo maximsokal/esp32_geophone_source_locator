@@ -64,13 +64,44 @@ function Get-SdkManagerDefaultInstallRoot {
     return Join-Path $HOME "ncs"
 }
 
-function Get-SdkManagerInstallRoot {
-    Require-Command "nrfutil" "Install the sdk-manager command first: nrfutil install sdk-manager"
+function Invoke-SdkManager([string[]]$SdkManagerArgs) {
+    Require-Command "nrfutil" "Install nRF Util and its sdk-manager command first."
 
-    $configOutput = @(& nrfutil sdk-manager config show 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw "nrfutil sdk-manager config show failed with exit code $LASTEXITCODE."
+    $originalHome = $env:NRFUTIL_HOME
+    $redirectHome = $false
+
+    # Nordic's launched toolchain intentionally points NRFUTIL_HOME at a locked
+    # toolchain-local command set. sdk-manager is a user command, so use the
+    # normal user-scoped nrfutil home for metadata queries without modifying or
+    # deleting the toolchain's lock file.
+    if ($originalHome) {
+        $lockPath = Join-Path $originalHome "locked"
+        if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
+            $userHome = Join-Path $env:USERPROFILE ".nrfutil"
+            New-Item -ItemType Directory -Force -Path $userHome | Out-Null
+            $env:NRFUTIL_HOME = $userHome
+            $redirectHome = $true
+        }
     }
+
+    try {
+        $output = @(& nrfutil sdk-manager @SdkManagerArgs 2>&1)
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $details = ($output | Out-String).Trim()
+            throw "nrfutil sdk-manager $($SdkManagerArgs -join ' ') failed with exit code $exitCode. $details"
+        }
+        return $output
+    }
+    finally {
+        if ($redirectHome) {
+            $env:NRFUTIL_HOME = $originalHome
+        }
+    }
+}
+
+function Get-SdkManagerInstallRoot {
+    $configOutput = @(Invoke-SdkManager @("config", "show"))
 
     foreach ($line in $configOutput) {
         if ($line -match '^\s*install-dir:\s*(.+?)\s*$') {
@@ -86,15 +117,17 @@ function Get-SdkManagerInstallRoot {
 }
 
 function Get-SdkManagerSdkDirectory {
-    $listOutput = @(& nrfutil sdk-manager list --all-fields 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw "nrfutil sdk-manager list --all-fields failed with exit code $LASTEXITCODE."
-    }
-
+    $listOutput = @(Invoke-SdkManager @("list", "--all-fields"))
     $versionPattern = [regex]::Escape($NcsVersion)
+
     foreach ($line in $listOutput) {
-        if ($line -match "^\s*$versionPattern\s+Installed\s+(\S+)\s+") {
-            return $matches[1]
+        # sdk-manager 1.16.x columns are:
+        # SDK Type | SDK Version | SDK Status | SDK Directory | Toolchain Status
+        if (
+            $line -match
+                "^\s*nrf\s+$versionPattern\s+Installed\s+(.+?)\s+(Installed|Not\s+Installed)\s*$"
+        ) {
+            return $matches[1].Trim()
         }
     }
 

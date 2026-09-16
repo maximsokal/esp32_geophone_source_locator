@@ -76,8 +76,9 @@ def test_wrapper_is_pinned_to_ncs_340_and_upstream_xiao_target():
 
 def test_wrapper_has_sdk_manager_fallback_for_repo_outside_west_workspace():
     script = text(NCS_PS1)
-    assert 'nrfutil sdk-manager config show' in script
-    assert 'nrfutil sdk-manager list --all-fields' in script
+    assert 'function Invoke-SdkManager' in script
+    assert 'Invoke-SdkManager @("config", "show")' in script
+    assert 'Invoke-SdkManager @("list", "--all-fields")' in script
     assert 'function Get-SdkManagerInstallRoot' in script
     assert 'function Get-SdkManagerSdkDirectory' in script
     assert 'function Get-NcsTopDirFromSdkManager' in script
@@ -87,6 +88,18 @@ def test_wrapper_has_sdk_manager_fallback_for_repo_outside_west_workspace():
     west_pos = script.index('$topDir = (& west topdir')
     sdk_manager_pos = script.index('return Get-NcsTopDirFromSdkManager')
     assert env_pos < west_pos < sdk_manager_pos
+
+
+def test_wrapper_handles_locked_toolchain_nrfutil_home_and_current_all_fields_columns():
+    script = text(NCS_PS1)
+    assert '$originalHome = $env:NRFUTIL_HOME' in script
+    assert 'Join-Path $originalHome "locked"' in script
+    assert 'Join-Path $env:USERPROFILE ".nrfutil"' in script
+    assert '$env:NRFUTIL_HOME = $userHome' in script
+    assert '$env:NRFUTIL_HOME = $originalHome' in script
+    assert 'SDK Type | SDK Version | SDK Status | SDK Directory | Toolchain Status' in script
+    assert '"^\\s*nrf\\s+$versionPattern\\s+Installed' in script
+    assert 'return $matches[1].Trim()' in script
 
 
 def test_wrapper_honors_custom_sdk_manager_install_dir_and_platform_default():
