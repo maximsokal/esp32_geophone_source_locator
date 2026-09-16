@@ -18,7 +18,9 @@
 #include "freertos/task.h"
 
 
-#define MEASUREMENT_SERVICE_QUEUE_LENGTH  1
+#define MEASUREMENT_SERVICE_QUEUE_LENGTH       1
+#define MEASUREMENT_SERVICE_RECORDING_POLL_MS  250U
+#define MEASUREMENT_SERVICE_STOPPING_POLL_MS   100U
 
 
 typedef enum
@@ -414,14 +416,38 @@ static void measurement_service_notify_storage_refresh(void)
 }
 
 
+static void measurement_service_notify_terminal_error(
+    const seismic_recorder_snapshot_t *recorder,
+    esp_err_t error
+)
+{
+    measurement_service_notify_storage_refresh();
+    measurement_service_log_stack_hwm("after-recorder-error");
+    runtime_observability_request_snapshot("after-recorder-error-finalization");
+    ESP_LOGE(
+        TAG,
+        "Recording failed state=ERROR session=%s samples=%llu drops=%llu err=%s stage=%s",
+        recorder != NULL ? recorder->session_id : "",
+        recorder != NULL ? (unsigned long long)recorder->samples_written : 0ULL,
+        recorder != NULL ? (unsigned long long)recorder->dropped_frames : 0ULL,
+        esp_err_to_name(error),
+        recorder != NULL
+            ? seismic_recorder_stop_stage_name(recorder->stop_stage)
+            : "unknown"
+    );
+}
+
+
 static void measurement_service_process_stop_poll(void)
 {
     measurement_service_lock();
-    const bool stopping =
-        s_snapshot.state == MEASUREMENT_SERVICE_STOPPING;
+    const measurement_service_state_t measurement_state = s_snapshot.state;
     measurement_service_unlock();
 
-    if (!stopping) {
+    if (
+        measurement_state != MEASUREMENT_SERVICE_RECORDING &&
+        measurement_state != MEASUREMENT_SERVICE_STOPPING
+    ) {
         return;
     }
 
@@ -430,57 +456,141 @@ static void measurement_service_process_stop_poll(void)
         seismic_recorder_get_snapshot(&recorder);
 
     if (snapshot_err != ESP_OK) {
-        measurement_service_set_error(snapshot_err);
-        return;
-    }
-
-    measurement_service_copy_recorder_snapshot(&recorder);
-
-    if (
-        recorder.last_error != ESP_OK ||
-        recorder.state == SEISMIC_RECORDER_ERROR
-    ) {
-        const esp_err_t recorder_error =
-            recorder.last_error != ESP_OK
-                ? recorder.last_error
-                : ESP_FAIL;
-        const bool recorder_still_finishing =
-            recorder.running ||
-            recorder.state == SEISMIC_RECORDER_STOPPING;
+        /* Fail closed while recorder ownership is unknown. A transient snapshot
+         * error must never make START/object mutation legal over a potentially
+         * still-open recorder lifetime. Keep polling from STOPPING instead. */
         measurement_service_lock();
-        s_snapshot.last_error = recorder_error;
-        if (!recorder_still_finishing) {
-            s_snapshot.state = MEASUREMENT_SERVICE_ERROR;
+        if (
+            s_snapshot.state == MEASUREMENT_SERVICE_RECORDING ||
+            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING
+        ) {
+            s_snapshot.state = MEASUREMENT_SERVICE_STOPPING;
+            s_snapshot.last_error = snapshot_err;
         }
         measurement_service_unlock();
         return;
     }
 
-    if (
+    measurement_service_copy_recorder_snapshot(&recorder);
+
+    const bool recorder_has_error =
+        recorder.last_error != ESP_OK ||
+        recorder.state == SEISMIC_RECORDER_ERROR;
+    const bool recorder_still_finishing =
         recorder.running ||
-        recorder.state == SEISMIC_RECORDER_STOPPING
-    ) {
+        recorder.state == SEISMIC_RECORDER_STOPPING;
+
+    if (recorder_has_error) {
+        const esp_err_t recorder_error =
+            recorder.last_error != ESP_OK
+                ? recorder.last_error
+                : ESP_FAIL;
+        bool became_terminal_error = false;
+
+        measurement_service_lock();
+        if (
+            s_snapshot.state == MEASUREMENT_SERVICE_RECORDING ||
+            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING
+        ) {
+            s_snapshot.last_error = recorder_error;
+            if (recorder_still_finishing) {
+                s_snapshot.state = MEASUREMENT_SERVICE_STOPPING;
+            }
+            else {
+                s_snapshot.state = MEASUREMENT_SERVICE_ERROR;
+                became_terminal_error = true;
+            }
+        }
+        measurement_service_unlock();
+
+        if (became_terminal_error) {
+            measurement_service_notify_terminal_error(
+                &recorder,
+                recorder_error
+            );
+        }
+        return;
+    }
+
+    if (recorder_still_finishing) {
+        /* A recorder that has independently started finalization owns the
+         * lifetime even before a measurement STOP command exists. Reflect that
+         * truth immediately so UI/control cannot keep advertising RECORDING. */
+        measurement_service_lock();
+        if (
+            s_snapshot.state == MEASUREMENT_SERVICE_RECORDING ||
+            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING
+        ) {
+            if (recorder.state == SEISMIC_RECORDER_STOPPING) {
+                s_snapshot.state = MEASUREMENT_SERVICE_STOPPING;
+            }
+            s_snapshot.last_error = ESP_OK;
+        }
+        measurement_service_unlock();
         return;
     }
 
     if (recorder.state != SEISMIC_RECORDER_IDLE) {
-        measurement_service_set_error(ESP_ERR_INVALID_STATE);
+        bool became_terminal_error = false;
+        measurement_service_lock();
+        if (
+            s_snapshot.state == MEASUREMENT_SERVICE_RECORDING ||
+            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING
+        ) {
+            s_snapshot.state = MEASUREMENT_SERVICE_ERROR;
+            s_snapshot.last_error = ESP_ERR_INVALID_STATE;
+            became_terminal_error = true;
+        }
+        measurement_service_unlock();
+        if (became_terminal_error) {
+            measurement_service_notify_terminal_error(
+                &recorder,
+                ESP_ERR_INVALID_STATE
+            );
+        }
         return;
     }
 
     if (recorder.stop_stage != SEISMIC_RECORDER_STOP_STAGE_COMPLETE) {
-        measurement_service_set_error(
+        const esp_err_t terminal_error =
             recorder.stop_stage_error != ESP_OK
                 ? recorder.stop_stage_error
-                : ESP_ERR_INVALID_STATE
-        );
+                : ESP_ERR_INVALID_STATE;
+        bool became_terminal_error = false;
+        measurement_service_lock();
+        if (
+            s_snapshot.state == MEASUREMENT_SERVICE_RECORDING ||
+            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING
+        ) {
+            s_snapshot.state = MEASUREMENT_SERVICE_ERROR;
+            s_snapshot.last_error = terminal_error;
+            became_terminal_error = true;
+        }
+        measurement_service_unlock();
+        if (became_terminal_error) {
+            measurement_service_notify_terminal_error(
+                &recorder,
+                terminal_error
+            );
+        }
         return;
     }
 
+    bool became_review = false;
     measurement_service_lock();
-    s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;
-    s_snapshot.last_error = ESP_OK;
+    if (
+        s_snapshot.state == MEASUREMENT_SERVICE_RECORDING ||
+        s_snapshot.state == MEASUREMENT_SERVICE_STOPPING
+    ) {
+        s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;
+        s_snapshot.last_error = ESP_OK;
+        became_review = true;
+    }
     measurement_service_unlock();
+
+    if (!became_review) {
+        return;
+    }
 
     measurement_service_notify_storage_refresh();
 
@@ -510,7 +620,9 @@ static void measurement_service_process_stop(void)
         return;
     }
 
-    /* STOP is an asynchronous request; completion is observed by the worker. */
+    /* STOP is an asynchronous request; completion is observed by the worker.
+     * If the recorder had already failed terminally, its idempotent STOP is a
+     * no-op and this reconciliation preserves the real recorder error. */
     measurement_service_process_stop_poll();
 }
 
@@ -573,6 +685,26 @@ static void measurement_service_process_delete(void)
 }
 
 
+static TickType_t measurement_service_worker_wait_ticks(
+    measurement_service_state_t state
+)
+{
+    switch (state) {
+        case MEASUREMENT_SERVICE_RECORDING:
+            return pdMS_TO_TICKS(MEASUREMENT_SERVICE_RECORDING_POLL_MS);
+        case MEASUREMENT_SERVICE_STOPPING:
+            return pdMS_TO_TICKS(MEASUREMENT_SERVICE_STOPPING_POLL_MS);
+        case MEASUREMENT_SERVICE_LIVE:
+        case MEASUREMENT_SERVICE_STARTING:
+        case MEASUREMENT_SERVICE_REVIEW:
+        case MEASUREMENT_SERVICE_DELETING:
+        case MEASUREMENT_SERVICE_ERROR:
+        default:
+            return portMAX_DELAY;
+    }
+}
+
+
 static void measurement_service_task(void *argument)
 {
     (void)argument;
@@ -587,20 +719,22 @@ static void measurement_service_task(void *argument)
     for (;;) {
         measurement_command_t command;
         measurement_service_lock();
-        const bool stopping =
-            s_snapshot.state == MEASUREMENT_SERVICE_STOPPING;
+        const measurement_service_state_t state = s_snapshot.state;
         measurement_service_unlock();
 
         if (
             xQueueReceive(
                 s_queue,
                 &command,
-                stopping
-                    ? pdMS_TO_TICKS(100)
-                    : portMAX_DELAY
+                measurement_service_worker_wait_ticks(state)
             ) != pdTRUE
         ) {
-            if (stopping) {
+            if (
+                state == MEASUREMENT_SERVICE_RECORDING ||
+                state == MEASUREMENT_SERVICE_STOPPING
+            ) {
+                /* RAM-only recorder snapshot reconciliation. No FATFS/storage
+                 * scan is added to the periodic RECORDING wakeup. */
                 measurement_service_process_stop_poll();
             }
             continue;

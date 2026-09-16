@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "measurement_service_autonomous_error",
+      "sources": [
+        "components/measurement_service/tests/measurement_service_autonomous_error_contract_test.c",
+        "components/object_format/object_format.c",
+        "tests/host/stubs/runtime_observability/noop.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/tests/stubs",
+        "components/measurement_service/tests",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "tests/host/stubs/runtime_observability",
+        "components/runtime_observability/include"
+      ]
+    }
+  ]
+}
