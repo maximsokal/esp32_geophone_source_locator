@@ -9,7 +9,7 @@
 #include "storage_manager.h"
 
 
-static bool object_store_fs_entry_is_directory(
+static bool object_store_fs_list_entry_is_directory(
     const struct dirent *entry
 )
 {
@@ -44,7 +44,14 @@ static bool object_store_fs_entry_is_directory(
     }
 
     struct stat info;
-    return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+    if (stat(path, &info) != 0) {
+        return false;
+    }
+#ifdef _WIN32
+    return (info.st_mode & _S_IFMT) == _S_IFDIR;
+#else
+    return S_ISDIR(info.st_mode);
+#endif
 }
 
 
@@ -82,7 +89,7 @@ esp_err_t object_store_fs_list(
         if (!object_format_id_is_valid(entry->d_name)) {
             continue;
         }
-        if (!object_store_fs_entry_is_directory(entry)) {
+        if (!object_store_fs_list_entry_is_directory(entry)) {
             continue;
         }
 

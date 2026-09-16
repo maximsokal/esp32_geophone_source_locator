@@ -8,6 +8,7 @@
     STORAGE_MANAGER_ROOT_PATH "/active_object.txt"
 
 
+#ifndef OBJECT_STORE_FS_CLEAR_ACTIVE_EXTERNAL_STUB
 esp_err_t object_store_fs_clear_active(void)
 {
     if (
@@ -23,6 +24,7 @@ esp_err_t object_store_fs_clear_active(void)
             ACTIVE_OBJECT_PATH
         );
 }
+#endif
 
 
 esp_err_t object_store_fs_delete_object(

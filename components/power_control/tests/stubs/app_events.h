@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -10,3 +11,5 @@ typedef enum {
 
 esp_err_t app_events_post(app_event_type_t type, int32_t value);
 esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value);
+void app_events_set_keypad_delivery_enabled(bool enabled);
+bool app_events_keypad_delivery_enabled(void);
