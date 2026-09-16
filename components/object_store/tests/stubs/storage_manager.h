@@ -4,6 +4,11 @@
 
 #include "esp_err.h"
 
+/* The object-store FS contract supplies an injectable clear-active stub in the
+ * same host translation unit. Suppress the production definition there while
+ * leaving firmware and ordinary component builds unchanged. */
+#define OBJECT_STORE_FS_CLEAR_ACTIVE_EXTERNAL_STUB 1
+
 #ifndef STORAGE_MANAGER_MOUNT_POINT
 #define STORAGE_MANAGER_MOUNT_POINT "object_store_contract_tmp"
 #endif

@@ -2,8 +2,10 @@
 
 
 #if defined(__GNUC__)
+#define WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY 1
 #define WEB_LIFECYCLE_WEAK __attribute__((weak))
 #else
+#define WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY 0
 #define WEB_LIFECYCLE_WEAK
 #endif
 
@@ -11,24 +13,32 @@
  * Keep this policy host-testable without linking the Wi-Fi component. In the
  * firmware these symbols are present and raw ESP-IDF network events become
  * wakeups only: the desired Web state is derived from current manager/runtime
- * authority. Legacy isolated policy tests intentionally fall back to the
- * event-state argument when the weak authority symbols are absent.
+ * authority. GCC/Clang builds use weak references so isolated tests can omit
+ * Wi-Fi. MSVC has no compatible weak-function reference, so isolated Windows
+ * host tests compile the legacy event-state fallback without emitting linker
+ * references to the Wi-Fi component.
  */
+#if WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY
 extern bool wifi_manager_is_running(void) WEB_LIFECYCLE_WEAK;
 extern bool wifi_manager_is_setup_mode(void) WEB_LIFECYCLE_WEAK;
 extern bool wifi_manager_is_radio_state_uncertain(void) WEB_LIFECYCLE_WEAK;
 extern bool wifi_manager_network_events_suppressed(void) WEB_LIFECYCLE_WEAK;
 extern bool wifi_manager_sta_has_ip(void) WEB_LIFECYCLE_WEAK;
+#endif
 
 
 static bool web_lifecycle_wifi_authority_available(void)
 {
+#if WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY
     return
         wifi_manager_is_running != NULL &&
         wifi_manager_is_setup_mode != NULL &&
         wifi_manager_is_radio_state_uncertain != NULL &&
         wifi_manager_network_events_suppressed != NULL &&
         wifi_manager_sta_has_ip != NULL;
+#else
+    return false;
+#endif
 }
 
 
@@ -38,6 +48,7 @@ web_lifecycle_state_t web_lifecycle_effective_network_state(
 )
 {
     if (web_lifecycle_wifi_authority_available()) {
+#if WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY
         const bool uncertain =
             radio_state_uncertain ||
             wifi_manager_is_radio_state_uncertain();
@@ -65,6 +76,7 @@ web_lifecycle_state_t web_lifecycle_effective_network_state(
             wifi_manager_sta_has_ip()
                 ? WEB_LIFECYCLE_STATE_STA_CONNECTED
                 : WEB_LIFECYCLE_STATE_STA_DISCONNECTED;
+#endif
     }
 
     return radio_state_uncertain
