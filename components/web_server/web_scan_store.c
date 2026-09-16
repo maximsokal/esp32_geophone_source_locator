@@ -399,13 +399,10 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
         if (err == ESP_OK) err = close_err;
     }
 
-    /* A full body may have completed immediately before the latch. Commit is
-     * itself authoritative storage mutation, so make the boundary explicit. */
-    if (err == ESP_OK && web_server_shutdown_requested()) {
-        err = ESP_ERR_INVALID_STATE;
-    }
-
     if (err == ESP_OK) {
+        /* A scan whose final chunk was accepted before the latch is already
+         * in-flight work. Finish its existing temp-file commit; do not turn the
+         * shutdown admission boundary into a transactional rollback boundary. */
         err = web_scan_commit_temp(final_path, temp_path, backup_path);
     }
     else {

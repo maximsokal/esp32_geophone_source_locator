@@ -89,7 +89,7 @@ def test_control_admission_precedes_scan_and_body_is_bounded_and_shutdown_aware(
     assert final_gate < process
 
 
-def test_scan_upload_keeps_bulk_timeout_policy_and_cannot_commit_after_latch():
+def test_scan_upload_keeps_bulk_timeout_policy_and_finishes_fully_accepted_work():
     source = _read("components/web_server/web_scan_store.c")
     assert "#define WEB_SCAN_RECV_TIMEOUTS    5U" in source
 
@@ -105,9 +105,9 @@ def test_scan_upload_keeps_bulk_timeout_policy_and_cannot_commit_after_latch():
     assert post_recv_gate < write_index
 
     close_index = save.index("web_scan_close_writer")
-    commit_gate = save.index("web_server_shutdown_requested()", close_index)
-    commit_index = save.index("web_scan_commit_temp", commit_gate)
-    assert commit_gate < commit_index
+    commit_index = save.index("web_scan_commit_temp", close_index)
+    assert "web_server_shutdown_requested()" not in save[close_index:commit_index]
+    assert "shutdown admission boundary" in save[close_index:commit_index]
     assert "web_scan_remove_temp_best_effort(temp_path)" in save
 
 
