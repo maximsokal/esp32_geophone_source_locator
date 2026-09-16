@@ -119,6 +119,16 @@ esp_err_t measurement_service_get_snapshot(
 );
 
 /*
+ * Object-storage mutations that may alter the globally ACTIVE object are
+ * allowed only while the measurement service is idle. REVIEW intentionally
+ * remains mutable because object_id/object_name keep the reviewed session's
+ * immutable owner rather than tracking later ACTIVE changes.
+ */
+bool measurement_service_snapshot_allows_object_mutation(
+    const measurement_service_snapshot_t *snapshot
+);
+
+/*
  * Acquisition shutdown must not take ownership of a recorder that belongs to
  * the measurement state machine. Include the submit-gate busy window because
  * an accepted START can still report LIVE until the worker enters STARTING.

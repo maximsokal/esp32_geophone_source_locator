@@ -1,6 +1,25 @@
 #include "ui_internal.h"
 
 
+static bool ui_objects_measurement_mutation_allowed_locked(void)
+{
+    measurement_service_snapshot_t measurement;
+    if (measurement_service_get_snapshot(&measurement) != ESP_OK) {
+        ui_set_notice_locked("MEASUREMENT SERVICE UNAVAILABLE");
+        ui_render_objects_locked();
+        return false;
+    }
+
+    if (!measurement_service_snapshot_allows_object_mutation(&measurement)) {
+        ui_set_notice_locked("MEASUREMENT OPERATION IN PROGRESS");
+        ui_render_objects_locked();
+        return false;
+    }
+
+    return true;
+}
+
+
 void ui_handle_objects_key_locked(
     keypad_key_t key
 )
@@ -34,6 +53,10 @@ void ui_handle_objects_key_locked(
             key == KEYPAD_KEY_RIGHT
         ) {
             if (context->object_action == 0) {
+                if (!ui_objects_measurement_mutation_allowed_locked()) {
+                    return;
+                }
+
                 ui_set_notice_locked(
                     "CREATING OBJECT..."
                 );
@@ -88,6 +111,10 @@ void ui_handle_objects_key_locked(
                 context->object_index <
                     context->object_count
             ) {
+                if (!ui_objects_measurement_mutation_allowed_locked()) {
+                    return;
+                }
+
                 esp_err_t err =
                     object_service_delete_async(
                         context->objects[
@@ -159,6 +186,10 @@ void ui_handle_objects_key_locked(
             context->objects_mode ==
             UI_OBJECTS_SELECT_ACTIVE
         ) {
+            if (!ui_objects_measurement_mutation_allowed_locked()) {
+                return;
+            }
+
             esp_err_t err =
                 object_service_set_active_async(
                     context->objects[
