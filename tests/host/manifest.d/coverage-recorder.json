@@ -2,6 +2,33 @@
   "version": 1,
   "tests": [
     {
+      "name": "seismic_recorder_session_selection",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_session_selection.c",
+        "components/seismic_recorder/tests/seismic_recorder_session_selection_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_session_listing",
+      "sources": [
+        "components/seismic_recorder/tests/seismic_recorder_session_listing_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
       "name": "seismic_recorder_storage_preflight",
       "sources": [
         "components/seismic_recorder/seismic_recorder_storage_preflight.c",

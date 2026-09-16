@@ -9,6 +9,17 @@ set_source_files_properties(
             "seismic_recorder_start=seismic_recorder_start_unleased;seismic_recorder_json_write_metadata=seismic_recorder_lifetime_write_metadata"
 )
 
+# MAX-70 keeps the mature recorder I/O translation unit untouched while the
+# deterministic archive-list implementation lives in its own focused source.
+# Rename only the legacy list symbol in seismic_recorder_fs.c; all other FS
+# create/write/flush/delete behavior remains byte-for-byte on the old path.
+set_source_files_properties(
+    "seismic_recorder_fs.c"
+    PROPERTIES
+        COMPILE_DEFINITIONS
+            "seismic_recorder_fs_list_sessions=seismic_recorder_fs_list_sessions_legacy"
+)
+
 idf_component_register(
     SRCS
         "seismic_recorder.c"
@@ -17,6 +28,8 @@ idf_component_register(
         "seismic_recorder_storage_preflight.c"
         "seismic_recorder_delete.c"
         "seismic_recorder_fs.c"
+        "seismic_recorder_fs_list.c"
+        "seismic_recorder_session_selection.c"
         "seismic_recorder_json.c"
         "seismic_recorder_reader.c"
         "seismic_recorder_waveform.c"
