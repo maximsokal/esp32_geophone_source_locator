@@ -59,7 +59,18 @@ static void app_storage_boot_failure(
         );
     }
 
-    power_control_wait_for_shutdown_request();
+    const esp_err_t arm_err =
+        power_control_arm_shutdown_button();
+
+    if (arm_err == ESP_OK) {
+        power_control_wait_for_shutdown_request();
+    } else {
+        ESP_LOGE(
+            TAG,
+            "Boot-error shutdown button arm failed: %s; skipping unreachable wait and powering off safely",
+            esp_err_to_name(arm_err)
+        );
+    }
 
     (void)sd_card_unmount();
 

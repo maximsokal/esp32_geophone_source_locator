@@ -56,7 +56,7 @@ esp_err_t power_control_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized: OFF=GPIO%d BUTTON=GPIO%d shutdown=DISARMED_UNTIL_STARTUP",
+        "Initialized: OFF=GPIO%d BUTTON=GPIO%d shutdown=DISARMED_UNTIL_SAFE_BOUNDARY",
         BOARD_POWER_OFF_GPIO,
         BOARD_POWER_BUTTON_GPIO
     );
@@ -73,7 +73,7 @@ esp_err_t power_control_arm_shutdown_button(void)
     if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
-            "Failed to arm shutdown button after startup: %s",
+            "Failed to arm shutdown button at safe boundary: %s",
             esp_err_to_name(err)
         );
     }
