@@ -35,12 +35,12 @@ def test_ncs_proof_is_additive_and_softdevice_backed():
     assert "CONFIG_BT_LL_SOFTDEVICE" not in base
 
 
-def test_common_image_has_both_ble_and_cs_roles_but_one_cs_context():
+def test_common_image_has_both_ble_and_cs_roles_but_one_simultaneous_connection():
     cfg = config_lines(CS_CONF)
     for line in (
         "CONFIG_BT_CENTRAL=y",
         "CONFIG_BT_PERIPHERAL=y",
-        "CONFIG_BT_MAX_CONN=2",
+        "CONFIG_BT_MAX_CONN=1",
         "CONFIG_BT_CTLR_SDC_PERIPHERAL_COUNT=1",
         "CONFIG_BT_CTLR_SDC_CS_ROLE_BOTH=y",
         "CONFIG_BT_CTLR_SDC_CS_COUNT=1",
@@ -114,6 +114,7 @@ def test_wrapper_builds_same_canonical_zephyr_app_and_checks_resolved_kconfig():
     assert '$app = Join-Path $project "zephyr"' in script
     assert "-DEXTRA_CONF_FILE=$csConf" in script
     for required in (
+        "CONFIG_BT_MAX_CONN=1",
         "CONFIG_BT_LL_SOFTDEVICE=y",
         "CONFIG_BT_LL_SOFTDEVICE_MULTIROLE=y",
         "CONFIG_BT_CTLR_SDC_CS_ROLE_BOTH=y",
@@ -140,7 +141,7 @@ def test_upstream_wire_sizes_are_not_changed_by_ncs_proof():
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+102U", protocol)
 
 
-def test_proof_doc_matches_sdk_manager_discovery_contract():
+def test_proof_doc_matches_sdk_manager_discovery_and_one_connection_contract():
     doc = text(DOC)
     assert "nrfutil sdk-manager config show" in doc
     assert "nrfutil sdk-manager list --all-fields" in doc
@@ -149,6 +150,8 @@ def test_proof_doc_matches_sdk_manager_discovery_contract():
     assert "ZEPHYR_BASE" in doc
     assert "west topdir" in doc
     assert "v3.4.0" in doc
+    assert "CONFIG_BT_MAX_CONN=1" in doc
+    assert "maximum simultaneous connections" in doc
 
 
 def test_wrapper_is_build_only_and_never_flashes():
