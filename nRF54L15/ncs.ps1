@@ -196,7 +196,7 @@ function Probe-CsBuild {
         "CONFIG_BT=y",
         "CONFIG_BT_CENTRAL=y",
         "CONFIG_BT_PERIPHERAL=y",
-        "CONFIG_BT_MAX_CONN=2",
+        "CONFIG_BT_MAX_CONN=1",
         "CONFIG_BT_LL_SOFTDEVICE=y",
         "CONFIG_BT_LL_SOFTDEVICE_MULTIROLE=y",
         "CONFIG_BT_CHANNEL_SOUNDING=y",
