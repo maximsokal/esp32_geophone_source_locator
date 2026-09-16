@@ -1,22 +1,41 @@
 #include "object_store_internal.h"
 
 
-void object_store_profile_cache_invalidate_membership_locked(void)
+bool object_store_profile_cache_create_requires_membership_refresh(
+    bool cache_valid,
+    size_t cache_count,
+    bool object_present
+)
 {
-    float defaults[OBJECT_STORE_POD_COUNT];
-    const esp_err_t settings_err =
-        object_store_settings_load_locked(defaults);
+    return
+        cache_valid &&
+        !object_present &&
+        cache_count >= OBJECT_STORE_MAX_OBJECTS;
+}
 
-    /* Profile membership is derived from the bounded archive census. Reset it
-     * after topology/ACTIVE changes, but restore the independent settings
-     * cache so those mutations do not force an unrelated settings.json read. */
-    object_store_profile_cache_reset();
 
-    if (settings_err != ESP_OK) {
-        return;
-    }
+bool object_store_profile_cache_active_requires_membership_refresh(
+    bool cache_valid,
+    bool target_present,
+    const char *object_id
+)
+{
+    return
+        cache_valid &&
+        object_id != NULL &&
+        object_id[0] != '\0' &&
+        !target_present;
+}
 
-    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
-        object_store_profile_cache_note_default_locked(i, defaults[i]);
-    }
+
+bool object_store_profile_cache_delete_requires_membership_refresh(
+    bool cache_valid,
+    size_t cache_count,
+    bool object_present
+)
+{
+    return
+        cache_valid &&
+        object_present &&
+        cache_count >= OBJECT_STORE_MAX_OBJECTS;
 }
