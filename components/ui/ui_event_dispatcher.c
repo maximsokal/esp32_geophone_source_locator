@@ -36,6 +36,9 @@ static uint64_t s_handled_events =
 static uint64_t s_dropped_stale_keypad =
     0U;
 
+static uint64_t s_dropped_closed_keypad =
+    0U;
+
 typedef struct
 {
     int32_t event_id;
@@ -194,56 +197,73 @@ void ui_event_dispatcher_dispatch_pending_locked(void)
 
         bool dispatched = true;
         if (event.event_id == APP_EVENT_KEYPAD) {
-            const int64_t now_us =
-                esp_timer_get_time();
-
-            if (ui_event_keypad_is_stale(event.queued_us, now_us)) {
+            if (!app_events_keypad_delivery_enabled()) {
                 dispatched = false;
-                s_dropped_stale_keypad++;
+                s_dropped_closed_keypad++;
 
                 if (
-                    s_dropped_stale_keypad == 1U ||
-                    (s_dropped_stale_keypad % 8U) == 0U
+                    s_dropped_closed_keypad == 1U ||
+                    (s_dropped_closed_keypad % 8U) == 0U
                 ) {
-                    const int64_t age_us =
-                        now_us >= event.queued_us
-                            ? now_us - event.queued_us
-                            : 0;
-                    ESP_LOGW(
+                    ESP_LOGI(
                         TAG,
-                        "Dropped stale keypad navigation age_ms=%lld total=%llu",
-                        (long long)(age_us / 1000LL),
-                        (unsigned long long)s_dropped_stale_keypad
+                        "Dropped keypad navigation after gate close total=%llu",
+                        (unsigned long long)s_dropped_closed_keypad
                     );
                 }
             }
             else {
-                const int64_t age_us =
-                    now_us >= event.queued_us
-                        ? now_us - event.queued_us
-                        : 0;
-                ESP_LOGI(
-                    TAG,
-                    "KEYPAD_EVENT_DISPATCH key=%ld age_ms=%lld",
-                    (long)event.event_value,
-                    (long long)(age_us / 1000LL)
-                );
+                const int64_t now_us =
+                    esp_timer_get_time();
 
-                ui_context_t *context = ui_context();
-                const ui_screen_t screen_before = context->screen;
-                const size_t selected_before = context->selected;
+                if (ui_event_keypad_is_stale(event.queued_us, now_us)) {
+                    dispatched = false;
+                    s_dropped_stale_keypad++;
 
-                ui_dispatch_key_locked((keypad_key_t)event.event_value);
+                    if (
+                        s_dropped_stale_keypad == 1U ||
+                        (s_dropped_stale_keypad % 8U) == 0U
+                    ) {
+                        const int64_t age_us =
+                            now_us >= event.queued_us
+                                ? now_us - event.queued_us
+                                : 0;
+                        ESP_LOGW(
+                            TAG,
+                            "Dropped stale keypad navigation age_ms=%lld total=%llu",
+                            (long long)(age_us / 1000LL),
+                            (unsigned long long)s_dropped_stale_keypad
+                        );
+                    }
+                }
+                else {
+                    const int64_t age_us =
+                        now_us >= event.queued_us
+                            ? now_us - event.queued_us
+                            : 0;
+                    ESP_LOGI(
+                        TAG,
+                        "KEYPAD_EVENT_DISPATCH key=%ld age_ms=%lld",
+                        (long)event.event_value,
+                        (long long)(age_us / 1000LL)
+                    );
 
-                ESP_LOGI(
-                    TAG,
-                    "UI_KEY_RESULT key=%ld screen_before=%d screen_after=%d selected_before=%u selected_after=%u",
-                    (long)event.event_value,
-                    (int)screen_before,
-                    (int)context->screen,
-                    (unsigned)selected_before,
-                    (unsigned)context->selected
-                );
+                    ui_context_t *context = ui_context();
+                    const ui_screen_t screen_before = context->screen;
+                    const size_t selected_before = context->selected;
+
+                    ui_dispatch_key_locked((keypad_key_t)event.event_value);
+
+                    ESP_LOGI(
+                        TAG,
+                        "UI_KEY_RESULT key=%ld screen_before=%d screen_after=%d selected_before=%u selected_after=%u",
+                        (long)event.event_value,
+                        (int)screen_before,
+                        (int)context->screen,
+                        (unsigned)selected_before,
+                        (unsigned)context->selected
+                    );
+                }
             }
         }
         else {
@@ -253,8 +273,8 @@ void ui_event_dispatcher_dispatch_pending_locked(void)
             );
         }
 
-        /* Consuming a stale input still proves that the UI dispatcher made
-         * progress; it simply must not mutate navigation after a long stall. */
+        /* Consuming a stale or shutdown-gated input still proves that the UI
+         * dispatcher made progress; it simply must not mutate navigation. */
         (void)dispatched;
         s_handled_events++;
         ui_event_observe();
@@ -278,6 +298,8 @@ esp_err_t ui_event_dispatcher_start(void)
     s_handled_events =
         0U;
     s_dropped_stale_keypad =
+        0U;
+    s_dropped_closed_keypad =
         0U;
 
     portENTER_CRITICAL(&s_pending_lock);

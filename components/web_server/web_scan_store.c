@@ -352,6 +352,11 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
     err = web_scan_open_temp(temp_path, &file);
     if (err == ESP_OK) {
         while (received_total < (size_t)request->content_len) {
+            if (web_server_shutdown_requested()) {
+                err = ESP_ERR_INVALID_STATE;
+                break;
+            }
+
             const size_t remaining = (size_t)request->content_len - received_total;
             const size_t request_size = remaining < WEB_SCAN_IO_BUFFER_SIZE
                 ? remaining
@@ -375,6 +380,13 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
                 break;
             }
 
+            /* The latch may become true while recv() is blocked. Never write
+             * even the final received chunk after the shutdown boundary. */
+            if (web_server_shutdown_requested()) {
+                err = ESP_ERR_INVALID_STATE;
+                break;
+            }
+
             timeout_count = 0U;
             err = web_scan_write_chunk(file, buffer, (size_t)received);
             if (err != ESP_OK) break;
@@ -385,6 +397,12 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
     if (file != NULL) {
         const esp_err_t close_err = web_scan_close_writer(&file);
         if (err == ESP_OK) err = close_err;
+    }
+
+    /* A full body may have completed immediately before the latch. Commit is
+     * itself authoritative storage mutation, so make the boundary explicit. */
+    if (err == ESP_OK && web_server_shutdown_requested()) {
+        err = ESP_ERR_INVALID_STATE;
     }
 
     if (err == ESP_OK) {

@@ -9,10 +9,28 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "web_route_capacity.h"
+#include "web_server_lifecycle_policy.h"
+
+/* Public power_control API used at the Web admission boundary. The component
+ * dependency is explicit in CMake; keeping this narrow declaration here avoids
+ * forcing unrelated host-only Web policy tests to mirror ESP-IDF include paths. */
+bool power_control_is_shutdown_requested(void);
 
 void web_server_route_tracking_begin(size_t capacity);
 esp_err_t web_server_route_tracking_finish(const web_route_identity_t *catalog, size_t count);
 esp_err_t web_server_route_tracking_register(const char *uri, int method);
+
+static inline bool web_server_shutdown_requested(void)
+{
+    return !web_lifecycle_command_ingress_allowed(
+        power_control_is_shutdown_requested()
+    );
+}
+
+static inline bool web_server_small_body_timeout_retry_allowed(void)
+{
+    return web_lifecycle_small_body_timeout_retry_allowed();
+}
 
 static inline esp_err_t web_server_register_uri_handler(
     httpd_handle_t server,

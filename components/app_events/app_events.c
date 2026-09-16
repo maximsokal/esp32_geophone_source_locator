@@ -99,6 +99,15 @@ void app_events_set_keypad_delivery_enabled(bool enabled)
 }
 
 
+bool app_events_keypad_delivery_enabled(void)
+{
+    return atomic_load_explicit(
+        &s_keypad_delivery_enabled,
+        memory_order_acquire
+    );
+}
+
+
 static esp_err_t app_events_post_internal(
     app_event_type_t type,
     int32_t value,
@@ -111,10 +120,7 @@ static esp_err_t app_events_post_internal(
 
     if (
         type == APP_EVENT_KEYPAD &&
-        !atomic_load_explicit(
-            &s_keypad_delivery_enabled,
-            memory_order_acquire
-        )
+        !app_events_keypad_delivery_enabled()
     ) {
         /*
          * Button polling intentionally starts early so ADC timing remains

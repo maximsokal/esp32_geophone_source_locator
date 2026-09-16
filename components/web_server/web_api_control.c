@@ -68,14 +68,30 @@ static esp_err_t web_control_read_body(
 
     size_t offset = 0;
     while (offset < (size_t)request->content_len) {
-        int received = httpd_req_recv(
+        if (web_server_shutdown_requested()) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        const int received = httpd_req_recv(
             request,
             buffer + offset,
             (size_t)request->content_len - offset
         );
-        if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (web_server_small_body_timeout_retry_allowed()) {
+                continue;
+            }
+            return ESP_ERR_TIMEOUT;
+        }
         if (received <= 0) return ESP_FAIL;
+
         offset += (size_t)received;
+
+        /* A latch may become authoritative while recv() is blocked. Check
+         * after every successful chunk too, including the final body chunk. */
+        if (web_server_shutdown_requested()) {
+            return ESP_ERR_INVALID_STATE;
+        }
     }
 
     buffer[offset] = '\0';
@@ -116,7 +132,7 @@ static esp_err_t web_control_send_result(
         httpd_resp_set_status(request, "500 Internal Server Error");
     }
 
-    esp_err_t send_result = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
+    const esp_err_t send_result = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
     cJSON_free(json);
     return send_result;
 }
@@ -347,6 +363,17 @@ static esp_err_t web_control_process(
 
 static esp_err_t web_api_control_handler(httpd_req_t *request)
 {
+    /* This admission check deliberately precedes scan dispatch and body reads:
+     * once the physical latch is visible, no new mutating request starts. */
+    if (web_server_shutdown_requested()) {
+        return web_control_send_result(
+            request,
+            "SHUTDOWN",
+            ESP_ERR_INVALID_STATE,
+            NULL
+        );
+    }
+
     /*
      * Large opaque 3D artifacts share this already-budgeted URI so the HTTPS
      * server does not spend another handler slot/RAM. Query-marked scan traffic
@@ -386,6 +413,19 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
         return web_control_send_result(request, "INVALID", ESP_ERR_INVALID_SIZE, NULL);
     }
     memcpy(action_copy, action, action_length + 1U);
+
+    /* Parsing is non-authoritative. Re-check immediately before service/storage
+     * dispatch so a request that entered before the latch cannot start a new
+     * mutation after the shutdown decision became visible. */
+    if (web_server_shutdown_requested()) {
+        cJSON_Delete(root);
+        return web_control_send_result(
+            request,
+            action_copy,
+            ESP_ERR_INVALID_STATE,
+            NULL
+        );
+    }
 
     char object_id[OBJECT_STORE_ID_SIZE];
     const bool object_storage_mutation =
