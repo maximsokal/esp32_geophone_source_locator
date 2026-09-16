@@ -47,7 +47,8 @@
       ],
       "include_dirs": [
         "tests/host/stubs/ui_navigation",
-        "tests/host/stubs/ui_event_dispatcher"
+        "tests/host/stubs/ui_event_dispatcher",
+        "components/ui"
       ]
     },
     {

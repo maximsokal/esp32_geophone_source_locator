@@ -48,6 +48,9 @@ esp_err_t wifi_manager_setup_ap_start(
         return err;
     }
 
+    /* Setup starts with both event lifetimes retired. APSTA keeps a physical
+     * STA interface, but application STA connect handling remains disabled. */
+    wifi_manager_setup_events_reset();
     wifi_manager_sta_events_set_connect_enabled(
         false
     );
@@ -109,10 +112,16 @@ esp_err_t wifi_manager_setup_ap_start(
         return err;
     }
 
+    /* AP client events may arrive as soon as the target radio starts. */
+    wifi_manager_setup_events_set_enabled(
+        true
+    );
+
     err =
         esp_wifi_start();
 
     if (err != ESP_OK) {
+        wifi_manager_setup_events_reset();
         return err;
     }
 

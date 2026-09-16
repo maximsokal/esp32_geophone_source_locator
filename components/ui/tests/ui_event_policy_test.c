@@ -22,6 +22,68 @@ int main(void)
      * age and discard a fresh event. */
     assert(!ui_event_keypad_is_stale(queued, queued - 1LL));
 
+    assert(ui_event_setup_client_notice_allowed(
+        true,
+        true,
+        false,
+        false
+    ));
+    assert(!ui_event_setup_client_notice_allowed(
+        false,
+        true,
+        false,
+        false
+    ));
+    assert(!ui_event_setup_client_notice_allowed(
+        true,
+        false,
+        false,
+        false
+    ));
+    assert(!ui_event_setup_client_notice_allowed(
+        true,
+        true,
+        true,
+        false
+    ));
+    assert(!ui_event_setup_client_notice_allowed(
+        true,
+        true,
+        false,
+        true
+    ));
+
+    assert(ui_event_sta_notice_allowed(
+        true,
+        false,
+        false,
+        false
+    ));
+    assert(!ui_event_sta_notice_allowed(
+        false,
+        false,
+        false,
+        false
+    ));
+    assert(!ui_event_sta_notice_allowed(
+        true,
+        true,
+        false,
+        false
+    ));
+    assert(!ui_event_sta_notice_allowed(
+        true,
+        false,
+        true,
+        false
+    ));
+    assert(!ui_event_sta_notice_allowed(
+        true,
+        false,
+        false,
+        true
+    ));
+
     puts("ui event freshness policy tests passed");
     return 0;
 }

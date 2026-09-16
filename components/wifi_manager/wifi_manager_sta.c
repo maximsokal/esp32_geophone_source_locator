@@ -1,5 +1,6 @@
 #include "wifi_manager_sta.h"
 
+#include "wifi_manager_setup_events.h"
 #include "wifi_manager_sta_events.h"
 
 #include "esp_log.h"
@@ -19,9 +20,8 @@ esp_err_t wifi_manager_sta_init(void)
 
 esp_err_t wifi_manager_sta_start(void)
 {
-    wifi_manager_sta_events_set_connect_enabled(
-        true
-    );
+    /* Start every STA target from a retired/no-IP event baseline. */
+    wifi_manager_sta_events_reset();
 
     esp_err_t err =
         esp_wifi_set_mode(
@@ -32,10 +32,17 @@ esp_err_t wifi_manager_sta_start(void)
         return err;
     }
 
+    /* WIFI_EVENT_STA_START may be dispatched immediately after start. Open
+     * admission only after the target mode is configured successfully. */
+    wifi_manager_sta_events_set_connect_enabled(
+        true
+    );
+
     err =
         esp_wifi_start();
 
     if (err != ESP_OK) {
+        wifi_manager_sta_events_reset();
         return err;
     }
 
@@ -73,5 +80,8 @@ esp_err_t wifi_manager_sta_start(void)
 
 void wifi_manager_sta_reset_state(void)
 {
+    /* This is the single event-lifetime retire boundary used before every
+     * normal/abort/uncertain esp_wifi_stop() path in wifi_manager_mode.c. */
     wifi_manager_sta_events_reset();
+    wifi_manager_setup_events_reset();
 }

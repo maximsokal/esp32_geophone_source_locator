@@ -20,6 +20,9 @@ static const char *TAG =
 #define WIFI_MANAGER_STATIC_RX_BUFFERS  4
 
 
+static esp_netif_t *s_sta_netif =
+    NULL;
+
 static esp_netif_t *s_ap_netif =
     NULL;
 
@@ -71,10 +74,10 @@ esp_err_t wifi_manager_platform_init(void)
         return err;
     }
 
-    if (
-        esp_netif_create_default_wifi_sta() ==
-        NULL
-    ) {
+    s_sta_netif =
+        esp_netif_create_default_wifi_sta();
+
+    if (s_sta_netif == NULL) {
         return ESP_FAIL;
     }
 
@@ -110,6 +113,12 @@ esp_err_t wifi_manager_platform_init(void)
         esp_wifi_set_storage(
             WIFI_STORAGE_FLASH
         );
+}
+
+
+esp_netif_t *wifi_manager_platform_sta_netif(void)
+{
+    return s_sta_netif;
 }
 
 

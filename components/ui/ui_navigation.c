@@ -1,6 +1,30 @@
 #include "ui_internal.h"
 
 #include "app_events.h"
+#include "ui_event_policy.h"
+#include "wifi_manager.h"
+
+
+static bool ui_setup_client_event_is_authoritative(void)
+{
+    return ui_event_setup_client_notice_allowed(
+        wifi_manager_is_running(),
+        wifi_manager_is_setup_mode(),
+        wifi_manager_is_radio_state_uncertain(),
+        wifi_manager_network_events_suppressed()
+    );
+}
+
+
+static bool ui_sta_event_is_authoritative(void)
+{
+    return ui_event_sta_notice_allowed(
+        wifi_manager_is_running(),
+        wifi_manager_is_setup_mode(),
+        wifi_manager_is_radio_state_uncertain(),
+        wifi_manager_network_events_suppressed()
+    );
+}
 
 
 void ui_move_index(
@@ -52,6 +76,9 @@ void ui_dispatch_app_event_locked(
 
     switch ((app_event_type_t)event_type) {
         case APP_EVENT_WIFI_SETUP_CLIENT_READY:
+            if (!ui_setup_client_event_is_authoritative()) {
+                return;
+            }
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
@@ -60,6 +87,9 @@ void ui_dispatch_app_event_locked(
             break;
 
         case APP_EVENT_WIFI_SETUP_CLIENT_DISCONNECTED:
+            if (!ui_setup_client_event_is_authoritative()) {
+                return;
+            }
             context->wifi_setup_page_opened = false;
 
             if (context->wifi_credentials_saved) {
@@ -96,6 +126,12 @@ void ui_dispatch_app_event_locked(
             break;
 
         case APP_EVENT_WIFI_STA_CONNECTING:
+            if (
+                !ui_sta_event_is_authoritative() ||
+                wifi_manager_sta_has_ip()
+            ) {
+                return;
+            }
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             context->wifi_verify_ready = false;
@@ -108,6 +144,12 @@ void ui_dispatch_app_event_locked(
             break;
 
         case APP_EVENT_WIFI_STA_CONNECTED:
+            if (
+                !ui_sta_event_is_authoritative() ||
+                !wifi_manager_sta_has_ip()
+            ) {
+                return;
+            }
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
@@ -116,6 +158,12 @@ void ui_dispatch_app_event_locked(
             break;
 
         case APP_EVENT_WIFI_STA_DISCONNECTED:
+            if (
+                !ui_sta_event_is_authoritative() ||
+                wifi_manager_sta_has_ip()
+            ) {
+                return;
+            }
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             context->wifi_verify_ready = false;

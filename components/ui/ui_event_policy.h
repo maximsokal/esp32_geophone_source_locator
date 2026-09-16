@@ -24,3 +24,35 @@ static inline bool ui_event_keypad_is_stale(
         now_us - queued_us >
         UI_KEYPAD_EVENT_MAX_AGE_US;
 }
+
+
+/* Queued Wi-Fi APP_EVENTs are observations too. Accept their notices only in
+ * the currently authoritative mode, after final network state publication. */
+static inline bool ui_event_setup_client_notice_allowed(
+    bool wifi_running,
+    bool setup_mode,
+    bool radio_state_uncertain,
+    bool network_events_suppressed
+)
+{
+    return
+        wifi_running &&
+        setup_mode &&
+        !radio_state_uncertain &&
+        !network_events_suppressed;
+}
+
+
+static inline bool ui_event_sta_notice_allowed(
+    bool wifi_running,
+    bool setup_mode,
+    bool radio_state_uncertain,
+    bool network_events_suppressed
+)
+{
+    return
+        wifi_running &&
+        !setup_mode &&
+        !radio_state_uncertain &&
+        !network_events_suppressed;
+}

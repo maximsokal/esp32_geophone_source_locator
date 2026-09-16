@@ -24,6 +24,7 @@ static bool fake_running;
 static bool fake_setup_mode;
 static bool fake_radio_state_uncertain;
 static bool fake_transition_active;
+static bool fake_network_events_suppressed;
 static bool fake_mdns_ready;
 static bool fake_https_running;
 static esp_err_t prepare_result;
@@ -80,6 +81,10 @@ static void complete_mode_transition(
 )
 {
     (void)context;
+    /* The serialized transaction is still held while completion reconciles
+     * consumers, but raw-event suppression must already reflect final state. */
+    assert(fake_transition_active);
+    assert(!fake_network_events_suppressed);
     ++mode_transition_complete_calls;
     mode_transition_running = running;
     mode_transition_setup_mode = setup_mode;
@@ -98,6 +103,7 @@ void wifi_manager_internal_get_state(
         .setup_mode = fake_setup_mode,
         .radio_state_uncertain = fake_radio_state_uncertain,
         .transition_active = fake_transition_active,
+        .network_events_suppressed = fake_network_events_suppressed,
     };
 }
 
@@ -113,6 +119,7 @@ esp_err_t wifi_manager_internal_begin_transition(void)
     }
 
     fake_transition_active = true;
+    fake_network_events_suppressed = true;
     return ESP_OK;
 }
 
@@ -120,6 +127,7 @@ void wifi_manager_internal_end_transition(void)
 {
     assert(fake_transition_active);
     fake_transition_active = false;
+    fake_network_events_suppressed = false;
 }
 
 void wifi_manager_internal_set_initialized(bool initialized)
@@ -136,6 +144,20 @@ void wifi_manager_internal_commit_state(
     fake_running = running;
     fake_setup_mode = running && setup_mode;
     fake_radio_state_uncertain = radio_state_uncertain;
+}
+
+void wifi_manager_internal_commit_final_state(
+    bool running,
+    bool setup_mode,
+    bool radio_state_uncertain
+)
+{
+    wifi_manager_internal_commit_state(
+        running,
+        setup_mode,
+        radio_state_uncertain
+    );
+    fake_network_events_suppressed = false;
 }
 
 bool wifi_manager_is_running(void)
@@ -206,6 +228,7 @@ int main(void)
     fake_setup_mode = false;
     fake_radio_state_uncertain = false;
     fake_transition_active = false;
+    fake_network_events_suppressed = false;
     fake_mdns_ready = true;
     fake_https_running = true;
     prepare_result = ESP_OK;
@@ -241,6 +264,7 @@ int main(void)
     ) == ESP_OK);
     assert(wifi_manager_stop() == ESP_OK);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 6U);
     assert(trace[0] == TRACE_PREPARE);
     assert(trace[1] == TRACE_MDNS_STOP);
@@ -268,6 +292,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_stop() == ESP_FAIL);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 1U);
     assert(trace[0] == TRACE_PREPARE);
     assert(fake_mdns_ready);
@@ -284,6 +309,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_stop() == ESP_FAIL);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 6U);
     assert(trace[4] == TRACE_WIFI_STOP);
     assert(trace[5] == TRACE_COMPLETE);
@@ -300,6 +326,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_stop() == ESP_OK);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 6U);
     assert(trace[4] == TRACE_WIFI_STOP);
     assert(trace[5] == TRACE_COMPLETE);
@@ -322,6 +349,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_enter_setup_mode() == ESP_FAIL);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 8U);
     assert(trace[6] == TRACE_STA_RESET);
     assert(trace[7] == TRACE_WIFI_STOP);
@@ -348,6 +376,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_enter_setup_mode() == ESP_OK);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(fake_running);
     assert(fake_setup_mode);
     assert(!fake_radio_state_uncertain);
@@ -369,6 +398,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_connect_saved() == ESP_FAIL);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 8U);
     assert(trace[6] == TRACE_STA_RESET);
     assert(trace[7] == TRACE_WIFI_STOP);
@@ -399,6 +429,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_enter_setup_mode() == ESP_FAIL);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 8U);
     assert(trace[4] == TRACE_WIFI_STOP);
     assert(trace[7] == TRACE_WIFI_STOP);
@@ -418,6 +449,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_stop() == ESP_OK);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 2U);
     assert(trace[0] == TRACE_STA_RESET);
     assert(trace[1] == TRACE_WIFI_STOP);
@@ -450,6 +482,7 @@ int main(void)
     reset_trace();
     assert(wifi_manager_stop() == ESP_OK);
     assert(!fake_transition_active);
+    assert(!fake_network_events_suppressed);
     assert(trace_count == 2U);
     assert(trace[0] == TRACE_STA_RESET);
     assert(trace[1] == TRACE_WIFI_STOP);

@@ -56,6 +56,7 @@ esp_err_t wifi_manager_internal_begin_transition(void)
     }
     else {
         s_state.transition_active = true;
+        s_state.network_events_suppressed = true;
     }
     portEXIT_CRITICAL(&s_state_lock);
 
@@ -67,6 +68,9 @@ void wifi_manager_internal_end_transition(void)
 {
     portENTER_CRITICAL(&s_state_lock);
     s_state.transition_active = false;
+    /* Early-return/no-target paths do not call commit_final_state(). Never
+     * leave raw event suppression latched after the transaction is released. */
+    s_state.network_events_suppressed = false;
     portEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -91,6 +95,21 @@ void wifi_manager_internal_commit_state(
     s_state.running = running;
     s_state.setup_mode = running && setup_mode;
     s_state.radio_state_uncertain = radio_state_uncertain;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+void wifi_manager_internal_commit_final_state(
+    bool running,
+    bool setup_mode,
+    bool radio_state_uncertain
+)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.running = running;
+    s_state.setup_mode = running && setup_mode;
+    s_state.radio_state_uncertain = radio_state_uncertain;
+    s_state.network_events_suppressed = false;
     portEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -265,7 +284,7 @@ esp_err_t wifi_manager_start(void)
         }
     }
 
-    wifi_manager_internal_commit_state(
+    wifi_manager_internal_commit_final_state(
         true,
         !has_credentials,
         false
