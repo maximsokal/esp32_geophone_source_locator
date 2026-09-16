@@ -42,6 +42,7 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
 
 /* RAM index over SD metadata. All *_locked hooks require the object-store mutex. */
 void object_store_profile_cache_reset(void);
+void object_store_profile_cache_invalidate_membership_locked(void);
 void object_store_profile_cache_note_create_locked(const char *object_id, const char *name);
 void object_store_profile_cache_note_delete_locked(const char *object_id);
 void object_store_profile_cache_note_active_locked(const char *object_id);

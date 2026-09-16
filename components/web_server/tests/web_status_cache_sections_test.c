@@ -109,6 +109,42 @@ static void test_success_and_optional_sections(void)
 }
 
 
+static void test_active_membership_refresh_policy(void)
+{
+    assert(!web_status_active_membership_requires_refresh(
+        true,
+        false,
+        true,
+        true
+    ));
+
+    assert(web_status_active_membership_requires_refresh(
+        true,
+        false,
+        true,
+        false
+    ));
+    assert(web_status_active_membership_requires_refresh(
+        false,
+        false,
+        true,
+        true
+    ));
+    assert(web_status_active_membership_requires_refresh(
+        true,
+        true,
+        true,
+        true
+    ));
+    assert(web_status_active_membership_requires_refresh(
+        true,
+        false,
+        false,
+        true
+    ));
+}
+
+
 int main(void)
 {
     test_invalid_arguments();
@@ -116,5 +152,6 @@ int main(void)
     test_session_cache_unavailable_propagates();
     test_true_json_allocation_failure_stays_no_mem();
     test_success_and_optional_sections();
+    test_active_membership_refresh_policy();
     return 0;
 }

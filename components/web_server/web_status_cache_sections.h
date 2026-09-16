@@ -12,6 +12,27 @@ esp_err_t web_status_json_add_sessions(cJSON *root, const char *object_id);
 
 
 /*
+ * Changing ACTIVE is membership-neutral only when the currently publishable
+ * payload already contains the target object. Otherwise the bounded snapshot
+ * cannot prove that it represents the canonical "newest N + pinned ACTIVE"
+ * membership and must be rebuilt before it is served again.
+ */
+static inline bool web_status_active_membership_requires_refresh(
+    bool cache_ready,
+    bool cache_refreshing,
+    bool payload_available,
+    bool object_present
+)
+{
+    return
+        !cache_ready ||
+        cache_refreshing ||
+        !payload_available ||
+        !object_present;
+}
+
+
+/*
  * Append optional cache-backed sections while preserving the exact reason a
  * locked cache read failed. Cache invalidation/refresh is a normal transient
  * state (ESP_ERR_INVALID_STATE); JSON allocation failure remains NO_MEM.

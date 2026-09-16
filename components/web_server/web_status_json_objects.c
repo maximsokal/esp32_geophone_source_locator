@@ -165,36 +165,53 @@ static bool web_status_cache_storage_is_idle(void *user_context)
 }
 
 
-static void web_status_cache_publish_result(
+static esp_err_t web_status_cache_publish_result(
     web_status_cache_payload_t *payload,
     esp_err_t error
 )
 {
-    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
-        return;
+    esp_err_t publish_error = error;
+    object_store_summary_t active_object;
+    bool active_available = false;
+
+    /* ACTIVE is independent object-store authority. Never infer it solely
+     * from which profile cards happened to survive a bounded/cache refresh. */
+    if (publish_error == ESP_OK) {
+        const esp_err_t active_err =
+            object_store_get_active(&active_object);
+        if (active_err == ESP_OK) {
+            active_available = true;
+        }
+        else if (active_err != ESP_ERR_NOT_FOUND) {
+            publish_error = active_err;
+        }
     }
 
-    if (error == ESP_OK) {
+    if (!web_status_cache_arbitration_lock(&s_arbitration)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (publish_error == ESP_OK) {
         s_active_payload = payload;
-        s_active_object_id[0] = '\0';
-        for (size_t i = 0U; i < payload->profile_count; ++i) {
-            if (payload->profiles[i].summary.active) {
-                snprintf(
-                    s_active_object_id,
-                    sizeof(s_active_object_id),
-                    "%s",
-                    payload->profiles[i].summary.id
-                );
-                break;
-            }
+        if (active_available) {
+            snprintf(
+                s_active_object_id,
+                sizeof(s_active_object_id),
+                "%s",
+                active_object.id
+            );
+        }
+        else {
+            s_active_object_id[0] = '\0';
         }
     }
 
     web_status_cache_arbitration_unlock(&s_arbitration);
     web_status_cache_arbitration_finish_refresh(
         &s_arbitration,
-        error == ESP_OK
+        publish_error == ESP_OK
     );
+    return publish_error;
 }
 
 
@@ -291,7 +308,7 @@ esp_err_t web_status_json_objects_refresh(void)
         }
     }
 
-    web_status_cache_publish_result(staging, err);
+    err = web_status_cache_publish_result(staging, err);
 
     const int64_t elapsed_us = esp_timer_get_time() - started_us;
     if (err == ESP_OK) {
@@ -565,19 +582,81 @@ void web_status_json_objects_object_event(
 }
 
 
+static bool web_status_cache_payload_contains_object_id(
+    const web_status_cache_payload_t *payload,
+    const char *object_id
+)
+{
+    if (payload == NULL || object_id == NULL || object_id[0] == '\0') {
+        return false;
+    }
+
+    for (size_t i = 0U; i < payload->profile_count; ++i) {
+        if (strcmp(payload->profiles[i].summary.id, object_id) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
 void web_status_json_objects_set_active(const char *object_id)
 {
     if (!web_status_cache_arbitration_lock(&s_arbitration)) {
         return;
     }
 
-    snprintf(
-        s_active_object_id,
-        sizeof(s_active_object_id),
-        "%s",
-        object_id != NULL ? object_id : ""
-    );
+    const bool object_present =
+        web_status_cache_payload_contains_object_id(
+            s_active_payload,
+            object_id
+        );
+    const bool refresh_required =
+        web_status_active_membership_requires_refresh(
+            s_arbitration.cache_ready,
+            s_arbitration.cache_refreshing,
+            s_active_payload != NULL,
+            object_present
+        );
+
+    /* If the target is already a member of a stable bounded snapshot, only
+     * ACTIVE changed; JSON derives each card's active flag from this authority
+     * and the cached object/session membership remains valid. */
+    if (!refresh_required) {
+        snprintf(
+            s_active_object_id,
+            sizeof(s_active_object_id),
+            "%s",
+            object_id != NULL ? object_id : ""
+        );
+        web_status_cache_arbitration_unlock(&s_arbitration);
+        return;
+    }
+
+    /* Keep the old id while the cache is still publishable. The next step
+     * invalidates first, so no reader can observe a new ACTIVE id paired with
+     * the old bounded objects[] membership. */
     web_status_cache_arbitration_unlock(&s_arbitration);
+    web_status_json_objects_invalidate();
+
+    if (web_status_cache_arbitration_lock(&s_arbitration)) {
+        snprintf(
+            s_active_object_id,
+            sizeof(s_active_object_id),
+            "%s",
+            object_id != NULL ? object_id : ""
+        );
+        web_status_cache_arbitration_unlock(&s_arbitration);
+    }
+
+    const esp_err_t err = web_status_json_objects_request_refresh();
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "WEB_STATUS_CACHE active membership refresh request failed: %s",
+            esp_err_to_name(err)
+        );
+    }
 }
 
 
