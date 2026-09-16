@@ -35,6 +35,14 @@ static int64_t s_profile_index_reconcile_us = 0;
 static float s_settings_cache[OBJECT_STORE_POD_COUNT];
 static bool s_settings_cache_valid = false;
 
+static void object_store_profile_index_invalidate_membership_locked(void)
+{
+    s_profile_index_count = 0;
+    s_profile_index_valid = false;
+    s_profile_index_reconcile_us = 0;
+    memset(s_profile_index, 0, sizeof(s_profile_index));
+}
+
 static void object_store_default_cables(float lengths[OBJECT_STORE_POD_COUNT])
 {
     for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
@@ -102,11 +110,8 @@ static void object_store_profile_index_apply_active_locked(void)
 
 void object_store_profile_cache_reset(void)
 {
-    s_profile_index_count = 0;
-    s_profile_index_valid = false;
-    s_profile_index_reconcile_us = 0;
+    object_store_profile_index_invalidate_membership_locked();
     s_settings_cache_valid = false;
-    memset(s_profile_index, 0, sizeof(s_profile_index));
     memset(s_settings_cache, 0, sizeof(s_settings_cache));
 }
 
@@ -784,7 +789,18 @@ void object_store_profile_cache_note_create_locked(
 )
 {
     if (!s_profile_index_valid || !object_format_id_is_valid(object_id)) return;
-    if (object_store_profile_index_find_locked(object_id) >= 0) {
+
+    const int found = object_store_profile_index_find_locked(object_id);
+    if (object_store_profile_cache_create_requires_membership_refresh(
+        s_profile_index_valid,
+        s_profile_index_count,
+        found >= 0
+    )) {
+        object_store_profile_index_invalidate_membership_locked();
+        return;
+    }
+
+    if (found >= 0) {
         object_store_profile_cache_note_rename_locked(
             object_id,
             name != NULL ? name : object_id
@@ -792,7 +808,6 @@ void object_store_profile_cache_note_create_locked(
         object_store_profile_cache_note_active_locked(object_id);
         return;
     }
-    if (s_profile_index_count >= OBJECT_STORE_MAX_OBJECTS) return;
 
     object_store_profile_t *profile = &s_profile_index[s_profile_index_count++];
     memset(profile, 0, sizeof(*profile));
@@ -816,9 +831,19 @@ void object_store_profile_cache_note_create_locked(
 void object_store_profile_cache_note_delete_locked(const char *object_id)
 {
     if (!s_profile_index_valid) return;
-    int found = object_store_profile_index_find_locked(object_id);
+
+    const int found = object_store_profile_index_find_locked(object_id);
+    if (object_store_profile_cache_delete_requires_membership_refresh(
+        s_profile_index_valid,
+        s_profile_index_count,
+        found >= 0
+    )) {
+        object_store_profile_index_invalidate_membership_locked();
+        return;
+    }
     if (found < 0) return;
-    size_t index = (size_t)found;
+
+    const size_t index = (size_t)found;
     if (index + 1 < s_profile_index_count) {
         memmove(
             &s_profile_index[index],
@@ -832,6 +857,19 @@ void object_store_profile_cache_note_delete_locked(const char *object_id)
 void object_store_profile_cache_note_active_locked(const char *object_id)
 {
     if (!s_profile_index_valid) return;
+
+    const int found = object_id != NULL && object_id[0] != '\0'
+        ? object_store_profile_index_find_locked(object_id)
+        : -1;
+    if (object_store_profile_cache_active_requires_membership_refresh(
+        s_profile_index_valid,
+        found >= 0,
+        object_id
+    )) {
+        object_store_profile_index_invalidate_membership_locked();
+        return;
+    }
+
     for (size_t i = 0; i < s_profile_index_count; ++i) {
         s_profile_index[i].summary.active =
             object_id != NULL && object_id[0] != '\0' &&

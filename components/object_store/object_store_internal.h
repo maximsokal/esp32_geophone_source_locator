@@ -42,7 +42,6 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
 
 /* RAM index over SD metadata. All *_locked hooks require the object-store mutex. */
 void object_store_profile_cache_reset(void);
-void object_store_profile_cache_invalidate_membership_locked(void);
 void object_store_profile_cache_note_create_locked(const char *object_id, const char *name);
 void object_store_profile_cache_note_delete_locked(const char *object_id);
 void object_store_profile_cache_note_active_locked(const char *object_id);
@@ -50,6 +49,23 @@ void object_store_profile_cache_note_rename_locked(const char *object_id, const 
 void object_store_profile_cache_note_location_locked(const char *object_id, const object_store_location_t *location);
 void object_store_profile_cache_note_cable_locked(const char *object_id, size_t pod_index, float length_m);
 void object_store_profile_cache_note_default_locked(size_t pod_index, float length_m);
+
+/* Pure bounded-membership policy used by the RAM profile index. */
+bool object_store_profile_cache_create_requires_membership_refresh(
+    bool cache_valid,
+    size_t cache_count,
+    bool object_present
+);
+bool object_store_profile_cache_active_requires_membership_refresh(
+    bool cache_valid,
+    bool target_present,
+    const char *object_id
+);
+bool object_store_profile_cache_delete_requires_membership_refresh(
+    bool cache_valid,
+    size_t cache_count,
+    bool object_present
+);
 
 /* Process-lifetime lease table. *_locked functions require object-store mutex. */
 void object_store_lease_reset_locked(void);

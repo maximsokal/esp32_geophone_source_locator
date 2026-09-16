@@ -48,9 +48,9 @@ esp_err_t object_store_set_active(
 
     if (err == ESP_OK) {
         object_store_internal_set_active_id(object_id);
-        /* An older object can become pinned into a full bounded snapshot.
-         * Rebuild membership from the shared archive selector on next read. */
-        object_store_profile_cache_invalidate_membership_locked();
+        /* The cache hook keeps membership in-place when the target is already
+         * visible, and invalidates only when ACTIVE must pin an archived ID. */
+        object_store_profile_cache_note_active_locked(object_id);
         ESP_LOGI(TAG, "Active object: %s", object_id);
     }
 
@@ -102,10 +102,10 @@ esp_err_t object_store_delete(
     }
 
     if (err == ESP_OK) {
-        /* A deleted visible member can expose the next archived ID, while
-         * deleting ACTIVE also changes the pinned-member rule. Do not leave a
-         * 31-entry or otherwise noncanonical hot index. */
-        object_store_profile_cache_invalidate_membership_locked();
+        /* A full visible snapshot needs an archived backfill after deleting a
+         * selected member; smaller or out-of-window deletes stay O(1) in RAM. */
+        object_store_profile_cache_note_delete_locked(object_id);
+        object_store_profile_cache_note_active_locked(object_store_internal_active_id());
         ESP_LOGI(TAG, "Deleted object: %s", object_id);
     }
 
