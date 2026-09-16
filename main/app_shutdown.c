@@ -122,6 +122,24 @@ void app_shutdown_wait_and_run(void)
     keypad_stop_event_monitor();
 
     /*
+     * Recovery completion can invalidate/refresh the Web object cache. Drain
+     * that worker before Web lifecycle/cache teardown so no callback can land
+     * after web_server_stop() has deleted its state. The worker releases the
+     * storage guard between objects, so this waits only for the current bounded
+     * recovery window.
+     */
+    object_recovery_stop_background();
+
+    /*
+     * Stop command ingress while measurement, recorder, object and storage
+     * dependencies are still alive. web_server_stop() is the synchronous HTTP
+     * drain barrier; Wi-Fi is stopped only after those handlers have exited.
+     * Errors remain fail-safe: app_shutdown_stop_network() logs them and the
+     * physical power-off sequence continues.
+     */
+    app_shutdown_stop_network();
+
+    /*
      * The topology worker owns the multi-step TCA select/use/close sequence
      * and its 0x30/0x31/0x32 device handles. Stop it before the shared I2C0
      * owner is torn down so shutdown cannot delete a bus below a live worker.
@@ -168,14 +186,6 @@ void app_shutdown_wait_and_run(void)
 
     runtime_observability_log_snapshot("after-recorder-finalization");
 
-    /*
-     * Background object recovery uses the same SD/TFT arbitration as normal
-     * storage. Stop it while the display guard is still alive; because the
-     * worker releases storage between objects, shutdown waits for at most the
-     * current bounded object recovery window instead of the whole archive.
-     */
-    object_recovery_stop_background();
-
     /* No recorder/recovery SD traffic remains after this point, so LVGL can exit. */
     ui_shutdown();
 
@@ -188,8 +198,6 @@ void app_shutdown_wait_and_run(void)
      * drained above. Only now is it safe to reset the seismic buffer.
      */
     seismic_acquisition_stop();
-
-    app_shutdown_stop_network();
 
     app_shutdown_stop_storage();
 

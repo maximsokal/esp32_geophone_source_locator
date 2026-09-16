@@ -28,6 +28,26 @@ typedef enum {
 
 
 /*
+ * Authoritative shutdown closes new mutating Web command admission. Keep this
+ * as a pure policy so host tests can prove the boundary without an HTTP stack.
+ */
+static inline bool web_lifecycle_command_ingress_allowed(bool shutdown_requested)
+{
+    return !shutdown_requested;
+}
+
+
+/*
+ * Small JSON/form bodies are bounded requests, not bulk transfers. A socket
+ * timeout therefore terminates the current request instead of retrying it.
+ */
+static inline bool web_lifecycle_small_body_timeout_retry_allowed(void)
+{
+    return false;
+}
+
+
+/*
  * Return the ordered, idempotent actions for the desired network state.
  * Returning the full plan makes a one-slot queue safe: only the final desired
  * state matters, and the worker always applies all required side effects.

@@ -102,8 +102,11 @@ static void power_button_callback(void *button_handle, void *user_data)
     }
 
     /* The bit is the authoritative safety signal. Clear a stale release bit
-     * first so the shutdown waiter cannot skip the current release. */
+     * first so the shutdown waiter cannot skip the current release. Close
+     * keypad admission before publishing the latch so no observer can see an
+     * authoritative shutdown while new local navigation is still admitted. */
     xEventGroupClearBits(state->events, POWER_EVENT_BUTTON_RELEASED);
+    app_events_set_keypad_delivery_enabled(false);
     xEventGroupSetBits(state->events, POWER_EVENT_SHUTDOWN_REQUESTED);
 
     const uint32_t latch_ms = esp_log_timestamp();

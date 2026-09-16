@@ -43,6 +43,9 @@ static esp_err_t fake_best_effort_result;
 static uint32_t fake_timestamp_ms;
 static unsigned delay_calls;
 static TickType_t delayed_ticks;
+static bool keypad_delivery_enabled;
+static unsigned keypad_gate_close_calls;
+static EventBits_t keypad_gate_close_bits;
 
 
 static uint32_t fake_button_time_to_ticks(uint32_t time_ms)
@@ -68,6 +71,9 @@ static void reset_fakes(void)
     fake_timestamp_ms = 0U;
     delay_calls = 0U;
     delayed_ticks = 0U;
+    keypad_delivery_enabled = true;
+    keypad_gate_close_calls = 0U;
+    keypad_gate_close_bits = 0U;
 }
 
 
@@ -81,6 +87,22 @@ void vTaskDelay(TickType_t ticks)
 {
     delay_calls++;
     delayed_ticks = ticks;
+}
+
+
+void app_events_set_keypad_delivery_enabled(bool enabled)
+{
+    keypad_delivery_enabled = enabled;
+    if (!enabled) {
+        keypad_gate_close_calls++;
+        keypad_gate_close_bits = fake_event_bits;
+    }
+}
+
+
+bool app_events_keypad_delivery_enabled(void)
+{
+    return keypad_delivery_enabled;
 }
 
 
@@ -310,6 +332,8 @@ static void test_boot_long_press_cannot_latch_before_explicit_arm(void)
     fake_timestamp_ms = 1150U;
     invoke(BUTTON_LONG_PRESS_START);
     assert(!power_button_adapter_is_shutdown_requested());
+    assert(keypad_delivery_enabled);
+    assert(keypad_gate_close_calls == 0U);
     assert(hook_calls == 0U);
     assert(app_event_posts == 0U);
 
@@ -322,6 +346,8 @@ static void test_boot_long_press_cannot_latch_before_explicit_arm(void)
     fake_timestamp_ms = 2150U;
     invoke(BUTTON_LONG_PRESS_START);
     assert(!power_button_adapter_is_shutdown_requested());
+    assert(keypad_delivery_enabled);
+    assert(keypad_gate_close_calls == 0U);
     assert(hook_calls == 0U);
     assert(app_event_posts == 0U);
 
@@ -347,6 +373,9 @@ static void test_arm_after_stable_release_then_shutdown(void)
     fake_best_effort_result = ESP_ERR_TIMEOUT;
     invoke(BUTTON_LONG_PRESS_START);
     assert(power_button_adapter_is_shutdown_requested());
+    assert(!keypad_delivery_enabled);
+    assert(keypad_gate_close_calls == 1U);
+    assert((keypad_gate_close_bits & 1U) == 0U);
     assert(hook_calls == 1U);
     assert((hook_bits_at_call & 1U) != 0U);
     assert(app_event_posts == 1U);
@@ -372,6 +401,8 @@ static void test_arm_while_held_waits_for_debounced_release(void)
     fake_timestamp_ms = 4150U;
     invoke(BUTTON_LONG_PRESS_START);
     assert(!power_button_adapter_is_shutdown_requested());
+    assert(keypad_delivery_enabled);
+    assert(keypad_gate_close_calls == 0U);
 
     fake_gpio_level = 0;
     invoke(BUTTON_PRESS_UP);
@@ -382,6 +413,9 @@ static void test_arm_while_held_waits_for_debounced_release(void)
     fake_timestamp_ms = 5150U;
     invoke(BUTTON_LONG_PRESS_START);
     assert(power_button_adapter_is_shutdown_requested());
+    assert(!keypad_delivery_enabled);
+    assert(keypad_gate_close_calls == 1U);
+    assert((keypad_gate_close_bits & 1U) == 0U);
 
     fake_gpio_level = 0;
     invoke(BUTTON_PRESS_UP);

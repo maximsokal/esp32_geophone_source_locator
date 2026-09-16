@@ -20,6 +20,34 @@ static const char *TAG =
 #define WIFI_SETUP_STA_SWITCH_MS    750
 
 
+static esp_err_t web_wifi_setup_send_shutdown_conflict(
+    httpd_req_t *request
+)
+{
+    static const char response[] =
+        "Shutdown is in progress; Wi-Fi settings are not being changed.";
+
+    httpd_resp_set_status(
+        request,
+        "409 Conflict"
+    );
+    httpd_resp_set_type(
+        request,
+        "text/plain; charset=utf-8"
+    );
+    httpd_resp_set_hdr(
+        request,
+        "Cache-Control",
+        "no-store"
+    );
+    return httpd_resp_send(
+        request,
+        response,
+        HTTPD_RESP_USE_STRLEN
+    );
+}
+
+
 esp_err_t web_wifi_setup_send_page(
     httpd_req_t *request
 )
@@ -61,6 +89,10 @@ static esp_err_t web_wifi_setup_post_handler(
     httpd_req_t *request
 )
 {
+    if (web_server_shutdown_requested()) {
+        return web_wifi_setup_send_shutdown_conflict(request);
+    }
+
     if (
         !wifi_manager_is_setup_mode()
     ) {
@@ -126,6 +158,13 @@ static esp_err_t web_wifi_setup_post_handler(
         return err;
     }
 
+    /* The request may have entered before shutdown and blocked while receiving
+     * its body. Credential persistence is authoritative, so re-check the latch
+     * immediately before the mutation rather than relying only on entry. */
+    if (web_server_shutdown_requested()) {
+        return web_wifi_setup_send_shutdown_conflict(request);
+    }
+
     err =
         wifi_manager_save_sta_credentials(
             ssid,
@@ -164,12 +203,23 @@ static esp_err_t web_wifi_setup_post_handler(
     /*
      * httpd_resp_send() has already sent the confirmation page. Keep the
      * SoftAP alive briefly so the phone can render it, then perform the
-     * promised APSTA -> STA transition. Doing this here also avoids making
-     * the UI layer responsible for Wi-Fi control.
+     * promised APSTA -> STA transition. Credential persistence above belongs
+     * to the request admitted before shutdown, but starting a new radio-mode
+     * mutation does not. Observe the latch on both sides of the bounded delay.
      */
+    if (web_server_shutdown_requested()) {
+        ESP_LOGI(TAG, "Skipping saved Wi-Fi transition: shutdown requested");
+        return ESP_OK;
+    }
+
     vTaskDelay(
         pdMS_TO_TICKS(WIFI_SETUP_STA_SWITCH_MS)
     );
+
+    if (web_server_shutdown_requested()) {
+        ESP_LOGI(TAG, "Skipping saved Wi-Fi transition after delay: shutdown requested");
+        return ESP_OK;
+    }
 
     err =
         wifi_manager_connect_saved();

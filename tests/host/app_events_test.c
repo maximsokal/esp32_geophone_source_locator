@@ -48,6 +48,7 @@ esp_err_t esp_event_post_to(
 int main(void)
 {
     assert(app_events_get_loop() == NULL);
+    assert(!app_events_keypad_delivery_enabled());
     assert(app_events_post(APP_EVENT_KEYPAD, 7) == ESP_ERR_INVALID_STATE);
     assert(app_events_init() == ESP_OK);
     assert(app_events_init() == ESP_OK);
@@ -58,6 +59,7 @@ int main(void)
     assert(s_args.task_stack_size == 6144);
     assert(strcmp(s_args.task_name, "app_events") == 0);
     assert(app_events_get_loop() == s_loop);
+    assert(!app_events_keypad_delivery_enabled());
 
     /* Early Button polling is live during boot, but keypad delivery is closed
      * until the interactive UI explicitly arms it. Dropped boot navigation is
@@ -66,12 +68,14 @@ int main(void)
     assert(s_post_calls == 0);
 
     app_events_set_keypad_delivery_enabled(true);
+    assert(app_events_keypad_delivery_enabled());
     assert(app_events_post(APP_EVENT_KEYPAD, 5) == ESP_OK);
     assert(s_post_calls == 1);
     assert(s_post_id == APP_EVENT_KEYPAD);
     assert(s_post_value == 5);
 
     app_events_set_keypad_delivery_enabled(false);
+    assert(!app_events_keypad_delivery_enabled());
     assert(app_events_post(APP_EVENT_KEYPAD, 4) == ESP_OK);
     assert(s_post_calls == 1);
 

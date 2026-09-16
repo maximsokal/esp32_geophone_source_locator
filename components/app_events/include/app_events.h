@@ -63,6 +63,13 @@ esp_event_loop_handle_t app_events_get_loop(void);
  */
 void app_events_set_keypad_delivery_enabled(bool enabled);
 
+/*
+ * Acquire the current keypad-admission gate. Consumers use this when work may
+ * already be queued locally: closing delivery must also prevent that queued
+ * navigation from executing after an authoritative shutdown request.
+ */
+bool app_events_keypad_delivery_enabled(void);
+
 esp_err_t app_events_post(
     app_event_type_t type,
     int32_t value

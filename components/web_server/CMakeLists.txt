@@ -348,6 +348,7 @@ idf_component_register(
         device_status
         measurement_service
         object_store
+        power_control
         runtime_observability
         sd_card
         seismic_acquisition

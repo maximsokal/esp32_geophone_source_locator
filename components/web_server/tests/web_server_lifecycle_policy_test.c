@@ -298,6 +298,10 @@ static void apply_plan_with_injected_state(
 
 int main(void)
 {
+    assert(web_lifecycle_command_ingress_allowed(false));
+    assert(!web_lifecycle_command_ingress_allowed(true));
+    assert(!web_lifecycle_small_body_timeout_retry_allowed());
+
     const web_lifecycle_action_t connected[] = {
         WEB_LIFECYCLE_ACTION_MDNS_START,
         WEB_LIFECYCLE_ACTION_HTTP_STOP,
