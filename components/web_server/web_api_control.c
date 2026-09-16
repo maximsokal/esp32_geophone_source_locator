@@ -12,6 +12,8 @@
 
 #define WEB_CONTROL_MAX_BODY 1024U
 #define WEB_CONTROL_ACTION_SIZE 48U
+#define WEB_CONTROL_SCAN_QUERY_SIZE 160U
+#define WEB_CONTROL_SCAN_ACTION_SIZE 16U
 
 static const char *TAG = "WEB_API_CONTROL";
 
@@ -132,6 +134,66 @@ static esp_err_t web_control_send_result(
     cJSON_free(json);
     return send_result;
 }
+
+
+static bool web_control_scan_lease_options(
+    httpd_req_t *request,
+    char action[WEB_CONTROL_SCAN_ACTION_SIZE],
+    char object_id[OBJECT_STORE_ID_SIZE]
+)
+{
+    if (request == NULL || action == NULL || object_id == NULL) return false;
+
+    const size_t query_length = httpd_req_get_url_query_len(request);
+    if (query_length == 0U || query_length >= WEB_CONTROL_SCAN_QUERY_SIZE) return false;
+
+    char query[WEB_CONTROL_SCAN_QUERY_SIZE];
+    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) return false;
+    if (httpd_query_key_value(query, "scan", action, WEB_CONTROL_SCAN_ACTION_SIZE) != ESP_OK) return false;
+
+    if (strcmp(action, "save") != 0 && strcmp(action, "load") != 0) return false;
+    if (httpd_query_key_value(query, "object_id", object_id, OBJECT_STORE_ID_SIZE) != ESP_OK) return false;
+    return object_format_id_is_valid(object_id);
+}
+
+
+static esp_err_t web_control_scan_try_handle(
+    httpd_req_t *request,
+    bool *handled
+)
+{
+    char scan_action[WEB_CONTROL_SCAN_ACTION_SIZE] = {0};
+    char object_id[OBJECT_STORE_ID_SIZE] = {0};
+    if (!web_control_scan_lease_options(request, scan_action, object_id)) {
+        return web_scan_store_try_handle(request, handled);
+    }
+
+    object_store_lease_t lease = {0};
+    esp_err_t err = object_store_lease_acquire(object_id, &lease);
+    if (err != ESP_OK) {
+        *handled = true;
+        char action_name[32];
+        (void)snprintf(action_name, sizeof(action_name), "scan_%s", scan_action);
+        return web_control_send_result(request, action_name, err, object_id);
+    }
+
+    /* The underlying scan handler re-validates the object/profile after this
+     * reservation, opens/closes every long-lived FILE while the lease remains
+     * held, and keeps all socket waits outside storage_manager as before. */
+    const esp_err_t scan_err = web_scan_store_try_handle(request, handled);
+    const esp_err_t release_err = object_store_lease_release(&lease);
+    if (release_err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Scan object lease release failed object=%s err=%s",
+            object_id,
+            esp_err_to_name(release_err)
+        );
+        return scan_err != ESP_OK ? scan_err : release_err;
+    }
+    return scan_err;
+}
+
 
 static const char *web_control_string(cJSON *root, const char *key)
 {
@@ -339,7 +401,7 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
      * is streamed/binary; ordinary controls keep the small JSON path below.
      */
     bool scan_handled = false;
-    esp_err_t err = web_scan_store_try_handle(request, &scan_handled);
+    esp_err_t err = web_control_scan_try_handle(request, &scan_handled);
     if (scan_handled || err != ESP_OK) return err;
 
     char *body = malloc(WEB_CONTROL_MAX_BODY);

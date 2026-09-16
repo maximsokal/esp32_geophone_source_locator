@@ -22,7 +22,7 @@ static char removed_path[OBJECT_STORE_FS_PATH_SIZE];
 static char active_id[OBJECT_STORE_ID_SIZE] = "OBJ_0001";
 static esp_err_t metadata_validation_result = ESP_OK;
 static esp_err_t active_save_result = ESP_OK;
-static char activation_trace[16];
+static char activation_trace[32];
 static size_t activation_trace_length;
 
 static void activation_trace_push(char event)
@@ -74,6 +74,15 @@ esp_err_t object_store_internal_begin_file_operation(void)
 void object_store_internal_end_file_operation(void)
 {
     activation_trace_push('E');
+}
+
+esp_err_t object_store_internal_begin_state_operation(void)
+{
+    return ESP_OK;
+}
+
+void object_store_internal_end_state_operation(void)
+{
 }
 
 esp_err_t object_store_json_read_name_locked(
@@ -134,6 +143,7 @@ esp_err_t object_store_fs_clear_active(void)
 #include "../object_store_fs_objects.c"
 #include "../object_store_fs_list.c"
 #include "../object_store_delete_fs.c"
+#include "../object_store_lease.c"
 #include "../object_store_mutations.c"
 #include "../../object_format/object_format.c"
 
@@ -309,6 +319,64 @@ static void test_set_active_validates_before_commit(void)
     remove_known_tree();
 }
 
+static void test_object_lifetime_leases_block_delete(void)
+{
+    make_base_tree();
+    bool root_created = false;
+    assert(object_store_fs_create_layout("OBJ_0001", &root_created) == ESP_OK);
+    assert(root_created);
+    write_metadata("OBJ_0001");
+    root_created = false;
+    assert(object_store_fs_create_layout("OBJ_0002", &root_created) == ESP_OK);
+    assert(root_created);
+    write_metadata("OBJ_0002");
+
+    object_store_lease_reset_locked();
+    (void)snprintf(active_id, sizeof(active_id), "%s", "OBJ_0001");
+    activation_trace_length = 0U;
+    activation_trace[0] = '\0';
+    remove_tree_calls = 0U;
+
+    object_store_lease_t first = {0};
+    object_store_lease_t second = {0};
+    assert(object_store_lease_acquire("OBJ_0001", &first) == ESP_OK);
+    assert(object_store_lease_acquire("OBJ_0001", &second) == ESP_OK);
+    assert(first.token_id != 0U);
+    assert(second.token_id != 0U);
+    assert(first.token_id != second.token_id);
+
+    bool leased = false;
+    assert(object_store_object_is_leased("OBJ_0001", &leased) == ESP_OK);
+    assert(leased);
+
+    assert(object_store_delete("OBJ_0001") == ESP_ERR_INVALID_STATE);
+    assert(strcmp(active_id, "OBJ_0001") == 0);
+    assert(remove_tree_calls == 0U);
+
+    assert(object_store_delete("OBJ_0002") == ESP_OK);
+    assert(remove_tree_calls == 1U);
+    assert(strcmp(removed_path, STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0002") == 0);
+
+    object_store_lease_t stale = first;
+    assert(object_store_lease_release(&first) == ESP_OK);
+    assert(first.token_id == 0U);
+    assert(object_store_lease_release(&stale) == ESP_ERR_INVALID_STATE);
+    assert(object_store_object_is_leased("OBJ_0001", &leased) == ESP_OK);
+    assert(leased);
+
+    assert(object_store_lease_release(&second) == ESP_OK);
+    assert(second.token_id == 0U);
+    assert(object_store_lease_release(&second) == ESP_OK);
+    assert(object_store_object_is_leased("OBJ_0001", &leased) == ESP_OK);
+    assert(!leased);
+
+    assert(object_store_delete("OBJ_0001") == ESP_OK);
+    assert(remove_tree_calls == 2U);
+    assert(active_id[0] == '\0');
+
+    remove_known_tree();
+}
+
 int main(void)
 {
     test_path_validation_and_copy();
@@ -316,5 +384,6 @@ int main(void)
     test_exclusive_layout_reports_ownership();
     test_create_exists_list_and_delete_contracts();
     test_set_active_validates_before_commit();
+    test_object_lifetime_leases_block_delete();
     return 0;
 }

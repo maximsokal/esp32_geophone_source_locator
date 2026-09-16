@@ -5,6 +5,7 @@ idf_component_register(
         "object_store_restore.c"
         "object_store_operations.c"
         "object_store_mutations.c"
+        "object_store_lease.c"
         "object_store_fs.c"
         "object_store_fs_ids.c"
         "object_store_fs_objects.c"

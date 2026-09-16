@@ -9,6 +9,7 @@
 
 #include "object_format.h"
 #include "object_recovery_fs.h"
+#include "object_store.h"
 #include "storage_manager.h"
 
 
@@ -84,6 +85,38 @@ esp_err_t object_recovery_background_delete_guard(
         ESP_LOGE(
             TAG,
             "Deferred corrupt-object removal because object is ACTIVE: %s",
+            object_id
+        );
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return ESP_OK;
+}
+
+
+static esp_err_t object_recovery_background_lease_guard(
+    const char *object_id
+)
+{
+    bool leased = false;
+    const esp_err_t err = object_store_object_is_leased(
+        object_id,
+        &leased
+    );
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Cannot determine object lease before recovery delete object=%s err=%s",
+            object_id,
+            esp_err_to_name(err)
+        );
+        return err;
+    }
+
+    if (leased) {
+        ESP_LOGW(
+            TAG,
+            "Deferred corrupt-object removal because object is leased: %s",
             object_id
         );
         return ESP_ERR_INVALID_STATE;
@@ -212,14 +245,20 @@ static esp_err_t object_recovery_check_one_with_policy(
     );
 
     /*
-     * Runtime background recovery must re-check persisted ACTIVE authority at
-     * the final destructive boundary. The caller holds the same storage
-     * operation used by object_store_set_active(), so ACTIVE cannot be
-     * committed between this check and remove_tree(). Boot-time recovery uses
-     * the destructive policy before object_store publishes runtime authority.
+     * Runtime background recovery must re-check both persisted ACTIVE authority
+     * and process-lifetime object leases at the final destructive boundary.
+     * The caller holds the same storage operation used by object_store lease
+     * acquisition/DELETE, so neither ACTIVE nor a new lease can commit between
+     * these guards and remove_tree(). Boot-time recovery uses the destructive
+     * policy before object_store publishes runtime authority or leases.
      */
     if (protect_persisted_active) {
         err = object_recovery_background_delete_guard(object_id);
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        err = object_recovery_background_lease_guard(object_id);
         if (err != ESP_OK) {
             return err;
         }

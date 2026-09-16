@@ -13,6 +13,7 @@
 #define OBJECT_STORE_POD_COUNT 4
 #define OBJECT_STORE_LOCATION_SOURCE_SIZE 24
 #define OBJECT_STORE_DEFAULT_CABLE_LENGTH_M 5.0f
+#define OBJECT_STORE_MAX_LEASES 4U
 
 typedef object_summary_t object_store_summary_t;
 
@@ -35,6 +36,17 @@ typedef struct
     object_store_location_t location;
     float cable_lengths_m[OBJECT_STORE_POD_COUNT];
 } object_store_profile_t;
+
+/*
+ * Opaque process-lifetime anti-delete ownership token. A zero token means the
+ * caller holds no lease. Multiple independent owners may lease the same object
+ * concurrently; leases never serialize ordinary I/O or non-destructive object
+ * mutations.
+ */
+typedef struct
+{
+    uint64_t token_id;
+} object_store_lease_t;
 
 esp_err_t object_store_init(void);
 esp_err_t object_store_create(object_store_summary_t *created_object);
@@ -69,6 +81,26 @@ esp_err_t object_store_set_location(const char *object_id, const object_store_lo
 esp_err_t object_store_set_cable_length(const char *object_id, size_t pod_index, float length_m);
 esp_err_t object_store_get_cable_defaults(float lengths_m[OBJECT_STORE_POD_COUNT]);
 esp_err_t object_store_set_cable_default(size_t pod_index, float length_m);
+
+/*
+ * Shared anti-delete lease. Acquisition validates committed object existence
+ * atomically with respect to object DELETE. Release is RAM-only and does not
+ * touch FATFS/storage arbitration. The same object may have several leases.
+ */
+esp_err_t object_store_lease_acquire(
+    const char *object_id,
+    object_store_lease_t *lease
+);
+esp_err_t object_store_lease_release(
+    object_store_lease_t *lease
+);
+esp_err_t object_store_object_is_leased(
+    const char *object_id,
+    bool *leased
+);
+esp_err_t object_store_any_leases_active(
+    bool *active
+);
 
 /* RAM-only invalidation after out-of-band recovery changes. This does not
  * touch persisted/runtime ACTIVE authority and performs no filesystem work. */

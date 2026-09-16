@@ -73,6 +73,19 @@ esp_err_t object_store_delete(
         return ESP_ERR_NOT_FOUND;
     }
 
+    /*
+     * This is the authoritative destructive admission boundary. The shared
+     * storage operation and object-store mutex are both still held here, so a
+     * recorder/scan lease cannot be acquired between this test and recursive
+     * removal. Reject before touching persisted ACTIVE, RAM state, cache or
+     * filesystem contents.
+     */
+    if (object_store_lease_is_object_held_locked(object_id)) {
+        ESP_LOGW(TAG, "Delete rejected while object is leased: %s", object_id);
+        object_store_internal_end_file_operation();
+        return ESP_ERR_INVALID_STATE;
+    }
+
     bool deleting_active = strcmp(object_store_internal_active_id(), object_id) == 0;
 
     if (deleting_active) {

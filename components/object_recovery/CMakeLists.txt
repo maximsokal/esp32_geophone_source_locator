@@ -16,6 +16,7 @@ idf_component_register(
     REQUIRES
         app_config
         object_format
+        object_store
         storage_manager
         seismic_recorder
         freertos
