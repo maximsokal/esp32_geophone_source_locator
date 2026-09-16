@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "web_route_capacity.h"
 #include "web_server_lifecycle_policy.h"
+#include "web_status_cache_sections.h"
 
 /* Public power_control API used at the Web admission boundary. The component
  * dependency is explicit in CMake; keeping this narrow declaration here avoids
@@ -127,7 +128,6 @@ esp_err_t web_status_json_objects_init(void);
 void web_status_json_objects_shutdown(void);
 esp_err_t web_status_json_objects_refresh(void);
 esp_err_t web_status_json_objects_request_refresh(void);
-bool web_status_json_add_objects(cJSON *root);
 void web_status_json_objects_invalidate(void);
 bool web_status_json_objects_cache_ready(void);
 bool web_status_json_objects_cache_busy(void);
@@ -137,7 +137,6 @@ void web_status_json_objects_storage_changed(void *user_context);
 void web_status_json_objects_set_active(const char *object_id);
 bool web_status_json_add_recording(cJSON *root);
 bool web_status_json_add_measurement(cJSON *root);
-bool web_status_json_add_sessions(cJSON *root, const char *object_id);
 
 void web_json_writer_init(web_json_writer_t *writer, httpd_req_t *request);
 esp_err_t web_json_writer_write(web_json_writer_t *writer, const char *text);

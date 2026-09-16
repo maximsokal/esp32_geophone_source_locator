@@ -368,16 +368,13 @@ static bool web_status_json_add_acquisition(
         cJSON_AddNumberToObject(signal, "clip_ratio", signal_clip_ratio) != NULL;
 }
 
-static bool web_status_json_add_runtime(
-    cJSON *root
-)
+static bool web_status_json_add_runtime(cJSON *root)
 {
     runtime_observability_snapshot_t snapshot;
     runtime_observability_get_snapshot(&snapshot);
 
     cJSON *runtime = cJSON_AddObjectToObject(root, "runtime");
     if (runtime == NULL) return false;
-
     if (cJSON_AddNumberToObject(runtime, "now_ms", (double)snapshot.now_ms) == NULL) {
         return false;
     }
@@ -386,8 +383,7 @@ static bool web_status_json_add_runtime(
     if (tasks == NULL) return false;
 
     for (int i = 0; i < RUNTIME_TASK_COUNT; ++i) {
-        const runtime_observability_task_status_t *status =
-            &snapshot.tasks[i];
+        const runtime_observability_task_status_t *status = &snapshot.tasks[i];
         cJSON *task = cJSON_AddObjectToObject(
             tasks,
             runtime_observability_task_name((runtime_observability_task_t)i)
@@ -415,8 +411,7 @@ esp_err_t web_status_json_build_extended(
     if (json_out == NULL) return ESP_ERR_INVALID_ARG;
     *json_out = NULL;
 
-    const bool storage_cache_ready =
-        web_status_json_objects_cache_ready();
+    const bool storage_cache_ready = web_status_json_objects_cache_ready();
     if (
         (include_objects ||
          (sessions_object_id != NULL && sessions_object_id[0] != '\0')) &&
@@ -439,14 +434,12 @@ esp_err_t web_status_json_build_extended(
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
 
-    if (
-        cJSON_AddBoolToObject(root, "storage_busy", !storage_cache_ready) == NULL
-    ) {
+    if (cJSON_AddBoolToObject(root, "storage_busy", !storage_cache_ready) == NULL) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
 
-    bool ok =
+    const bool base_ok =
         web_status_json_add_system(
             root,
             &status,
@@ -471,17 +464,19 @@ esp_err_t web_status_json_build_extended(
         web_status_json_add_recording(root) &&
         web_status_json_add_measurement(root);
 
-    if (ok && include_objects) {
-        ok = web_status_json_add_objects(root);
-    }
-
-    if (ok && sessions_object_id != NULL && sessions_object_id[0] != '\0') {
-        ok = web_status_json_add_sessions(root, sessions_object_id);
-    }
-
-    if (!ok) {
+    if (!base_ok) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
+    }
+
+    err = web_status_json_add_cache_sections(
+        root,
+        include_objects,
+        sessions_object_id
+    );
+    if (err != ESP_OK) {
+        cJSON_Delete(root);
+        return err;
     }
 
     char *json = cJSON_PrintUnformatted(root);

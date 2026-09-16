@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "web_status_cache_sections",
+      "sources": [
+        "components/web_server/tests/web_status_cache_sections_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_cache_sections",
+        "components/web_server"
+      ]
+    }
+  ]
+}
