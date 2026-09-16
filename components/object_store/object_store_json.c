@@ -6,18 +6,24 @@
 #include "object_format.h"
 #include "storage_manager.h"
 
-esp_err_t object_store_json_write_metadata(const char *object_id)
+esp_err_t object_store_json_write_metadata(
+    const char *object_id,
+    const char *initial_name
+)
 {
     if (!object_format_id_is_valid(object_id)) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    const char *final_name =
+        initial_name != NULL ? initial_name : object_id;
 
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
 
     cJSON *schema = cJSON_AddNumberToObject(root, "schema_version", OBJECT_FORMAT_SCHEMA_VERSION);
     cJSON *id = cJSON_AddStringToObject(root, "id", object_id);
-    cJSON *name = cJSON_AddStringToObject(root, "name", object_id);
+    cJSON *name = cJSON_AddStringToObject(root, "name", final_name);
     cJSON *location = cJSON_AddObjectToObject(root, "location");
     if (schema == NULL || id == NULL || name == NULL || location == NULL) {
         cJSON_Delete(root);

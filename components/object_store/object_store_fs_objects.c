@@ -40,9 +40,15 @@ bool object_store_fs_object_exists(
 
 
 esp_err_t object_store_fs_create_layout(
-    const char *object_id
+    const char *object_id,
+    bool *root_created
 )
 {
+    if (root_created == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *root_created = false;
+
     if (
         !object_format_id_is_valid(
             object_id
@@ -67,13 +73,15 @@ esp_err_t object_store_fs_create_layout(
     }
 
     err =
-        storage_manager_create_directory(
+        storage_manager_create_directory_exclusive(
             object_path
         );
 
     if (err != ESP_OK) {
         return err;
     }
+
+    *root_created = true;
 
     char sessions_path[
         OBJECT_STORE_FS_PATH_SIZE

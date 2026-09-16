@@ -60,6 +60,34 @@ static bool object_store_fs_entry_is_directory(
 }
 
 
+static bool object_store_fs_entry_is_committed(
+    const char *object_id
+)
+{
+    char metadata_path[OBJECT_STORE_FS_PATH_SIZE];
+    if (
+        object_store_fs_metadata_path(
+            object_id,
+            metadata_path,
+            sizeof(metadata_path)
+        ) != ESP_OK
+    ) {
+        return false;
+    }
+
+    struct stat info;
+    if (stat(metadata_path, &info) != 0) {
+        return false;
+    }
+
+#ifdef _WIN32
+    return (info.st_mode & _S_IFMT) == _S_IFREG;
+#else
+    return S_ISREG(info.st_mode);
+#endif
+}
+
+
 esp_err_t object_store_fs_next_id(
     char *object_id,
     size_t object_id_size
@@ -104,6 +132,11 @@ esp_err_t object_store_fs_next_id(
         }
 
         if (!object_store_fs_entry_is_directory(entry)) {
+            continue;
+        }
+
+        /* Failed/uncommitted layout roots do not consume object numbers. */
+        if (!object_store_fs_entry_is_committed(entry->d_name)) {
             continue;
         }
 

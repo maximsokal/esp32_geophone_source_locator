@@ -151,19 +151,6 @@ static bool web_control_number(cJSON *root, const char *key, double *value)
     return true;
 }
 
-static bool web_control_name_valid(const char *name)
-{
-    if (name == NULL) return false;
-
-    const size_t length = strnlen(name, OBJECT_STORE_NAME_SIZE);
-    if (length == 0U || length >= OBJECT_STORE_NAME_SIZE) return false;
-
-    for (size_t i = 0; i < length; ++i) {
-        if ((unsigned char)name[i] < 0x20U) return false;
-    }
-    return true;
-}
-
 static bool web_control_pod_index(double value, size_t *pod_index)
 {
     if (
@@ -221,39 +208,15 @@ static esp_err_t web_control_process(
 
     if (strcmp(action, "create_object") == 0) {
         const char *name = web_control_string(root, "name");
-        if (name != NULL && !web_control_name_valid(name)) {
-            return ESP_ERR_INVALID_SIZE;
-        }
 
         object_store_summary_t created;
-        esp_err_t err = object_store_create(&created);
+        const esp_err_t err = object_store_create_named(name, &created);
         if (err != ESP_OK) {
             return err;
         }
 
-        const size_t id_length = strnlen(created.id, sizeof(created.id));
-        if (id_length >= OBJECT_STORE_ID_SIZE) {
-            (void)object_store_delete(created.id);
-            return ESP_ERR_INVALID_SIZE;
-        }
-        memcpy(object_id_out, created.id, id_length + 1U);
-
-        if (name != NULL) {
-            err = object_store_rename(created.id, name);
-            if (err != ESP_OK) {
-                const esp_err_t rollback_err = object_store_delete(created.id);
-                if (rollback_err != ESP_OK) {
-                    ESP_LOGE(
-                        TAG,
-                        "create_object rename failed (%s), rollback failed (%s)",
-                        esp_err_to_name(err),
-                        esp_err_to_name(rollback_err)
-                    );
-                }
-                object_id_out[0] = '\0';
-            }
-        }
-        return err;
+        snprintf(object_id_out, OBJECT_STORE_ID_SIZE, "%s", created.id);
+        return ESP_OK;
     }
 
     const char *object_id = web_control_string(root, "object_id");
@@ -273,7 +236,7 @@ static esp_err_t web_control_process(
     }
     if (strcmp(action, "rename_object") == 0) {
         const char *name = web_control_string(root, "name");
-        return object_id == NULL || !web_control_name_valid(name)
+        return object_id == NULL
             ? ESP_ERR_INVALID_ARG
             : object_store_rename(object_id, name);
     }
@@ -442,9 +405,9 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     cJSON_Delete(root);
 
     /*
-     * Invalidate even after a failed compound mutation: create can partially
-     * mutate storage before rollback. A cold refresh is safer than serving
-     * stale metadata after that path.
+     * A failed transactional create can still leave storage uncertain if its
+     * best-effort rollback also fails. Refresh after every object mutation
+     * attempt rather than assuming an error means no filesystem change.
      */
     if (
         object_storage_allowed &&

@@ -1,5 +1,6 @@
 #include "object_store.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "esp_log.h"
@@ -11,34 +12,98 @@ static const char *TAG =
     "OBJECT_STORE_OP";
 
 
+static esp_err_t object_store_create_transaction(
+    const char *initial_name,
+    object_store_summary_t *created_object
+)
+{
+    if (initial_name != NULL) {
+        const esp_err_t validation_err =
+            object_store_internal_validate_name(initial_name);
+        if (validation_err != ESP_OK) {
+            return validation_err;
+        }
+    }
+
+    esp_err_t err = object_store_internal_begin_file_operation();
+    if (err != ESP_OK) return err;
+
+    char object_id[OBJECT_STORE_ID_SIZE] = {0};
+    bool root_created = false;
+
+    err = object_store_fs_next_id(object_id, sizeof(object_id));
+    if (err == ESP_OK) {
+        err = object_store_fs_create_layout(object_id, &root_created);
+    }
+    if (err == ESP_OK) {
+        err = object_store_json_write_metadata(object_id, initial_name);
+    }
+    if (err == ESP_OK) {
+        /* ACTIVE is the final persistent commit point. */
+        err = object_store_fs_save_active(object_id);
+    }
+
+    if (err != ESP_OK) {
+        const esp_err_t primary_err = err;
+
+        if (root_created) {
+            const esp_err_t rollback_err =
+                object_store_fs_delete_object(object_id);
+            if (rollback_err != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "Create %s failed (%s), rollback failed (%s)",
+                    object_id[0] != '\0' ? object_id : "<unassigned>",
+                    esp_err_to_name(primary_err),
+                    esp_err_to_name(rollback_err)
+                );
+                object_store_profile_cache_reset();
+            }
+        }
+
+        object_store_internal_end_file_operation();
+        return primary_err;
+    }
+
+    const char *final_name =
+        initial_name != NULL ? initial_name : object_id;
+
+    /* Persistent commit succeeded. The rest is non-failing RAM publication. */
+    object_store_internal_set_active_id(object_id);
+    object_store_profile_cache_note_create_locked(object_id, final_name);
+    object_store_profile_cache_note_active_locked(object_id);
+
+    if (created_object != NULL) {
+        object_store_internal_fill_summary(created_object, object_id, true);
+        snprintf(
+            created_object->name,
+            sizeof(created_object->name),
+            "%s",
+            final_name
+        );
+    }
+
+    ESP_LOGI(TAG, "Created object: %s", object_id);
+
+    object_store_internal_end_file_operation();
+    return ESP_OK;
+}
+
+
 esp_err_t object_store_create(
     object_store_summary_t *created_object
 )
 {
-    esp_err_t err = object_store_internal_begin_file_operation();
-    if (err != ESP_OK) return err;
+    return object_store_create_transaction(NULL, created_object);
+}
 
-    char object_id[OBJECT_STORE_ID_SIZE];
 
-    err = object_store_fs_next_id(object_id, sizeof(object_id));
-    if (err == ESP_OK) err = object_store_fs_create_layout(object_id);
-    if (err == ESP_OK) err = object_store_json_write_metadata(object_id);
-    if (err == ESP_OK) err = object_store_fs_save_active(object_id);
-
-    if (err == ESP_OK) {
-        object_store_internal_set_active_id(object_id);
-        object_store_profile_cache_note_create_locked(object_id);
-        object_store_profile_cache_note_active_locked(object_id);
-
-        if (created_object != NULL) {
-            object_store_internal_fill_summary(created_object, object_id, true);
-        }
-
-        ESP_LOGI(TAG, "Created object: %s", object_id);
-    }
-
-    object_store_internal_end_file_operation();
-    return err;
+esp_err_t object_store_create_named(
+    const char *initial_name,
+    object_store_summary_t *created_object
+)
+{
+    return object_store_create_transaction(initial_name, created_object);
 }
 
 

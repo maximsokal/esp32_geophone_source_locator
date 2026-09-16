@@ -49,6 +49,24 @@ static bool object_store_cable_valid(float length_m)
         length_m <= OBJECT_STORE_MAX_CABLE_LENGTH_M;
 }
 
+esp_err_t object_store_internal_validate_name(const char *name)
+{
+    if (name == NULL) return ESP_ERR_INVALID_ARG;
+
+    const size_t length = strlen(name);
+    if (length == 0 || length >= OBJECT_STORE_NAME_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (size_t i = 0; i < length; ++i) {
+        if ((unsigned char)name[i] < 0x20) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    return ESP_OK;
+}
+
 static int object_store_profile_index_find_locked(const char *object_id)
 {
     for (size_t i = 0; i < s_profile_index_count; ++i) {
@@ -712,10 +730,17 @@ esp_err_t object_store_list_profiles(
     return object_store_list_profiles_with_defaults(objects, max_objects, object_count, defaults);
 }
 
-void object_store_profile_cache_note_create_locked(const char *object_id)
+void object_store_profile_cache_note_create_locked(
+    const char *object_id,
+    const char *name
+)
 {
     if (!s_profile_index_valid || !object_format_id_is_valid(object_id)) return;
     if (object_store_profile_index_find_locked(object_id) >= 0) {
+        object_store_profile_cache_note_rename_locked(
+            object_id,
+            name != NULL ? name : object_id
+        );
         object_store_profile_cache_note_active_locked(object_id);
         return;
     }
@@ -724,7 +749,12 @@ void object_store_profile_cache_note_create_locked(const char *object_id)
     object_store_profile_t *profile = &s_profile_index[s_profile_index_count++];
     memset(profile, 0, sizeof(*profile));
     snprintf(profile->summary.id, sizeof(profile->summary.id), "%s", object_id);
-    snprintf(profile->summary.name, sizeof(profile->summary.name), "%s", object_id);
+    snprintf(
+        profile->summary.name,
+        sizeof(profile->summary.name),
+        "%s",
+        name != NULL ? name : object_id
+    );
     snprintf(profile->location.source, sizeof(profile->location.source), "NONE");
 
     float defaults[OBJECT_STORE_POD_COUNT];
@@ -824,15 +854,11 @@ static esp_err_t object_store_mutation_finish(const char *object_id, cJSON *root
 
 esp_err_t object_store_rename(const char *object_id, const char *name)
 {
-    if (name == NULL) return ESP_ERR_INVALID_ARG;
-    size_t length = strlen(name);
-    if (length == 0 || length >= OBJECT_STORE_NAME_SIZE) return ESP_ERR_INVALID_SIZE;
-    for (size_t i = 0; i < length; ++i) {
-        if ((unsigned char)name[i] < 0x20) return ESP_ERR_INVALID_ARG;
-    }
+    esp_err_t err = object_store_internal_validate_name(name);
+    if (err != ESP_OK) return err;
 
     cJSON *root = NULL;
-    esp_err_t err = object_store_mutation_begin(object_id, &root);
+    err = object_store_mutation_begin(object_id, &root);
     if (err != ESP_OK) return err;
 
     cJSON_DeleteItemFromObjectCaseSensitive(root, "name");
