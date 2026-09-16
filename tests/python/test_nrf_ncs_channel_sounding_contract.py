@@ -85,9 +85,20 @@ def test_wrapper_has_sdk_manager_fallback_for_repo_outside_west_workspace():
     assert 'return Get-NcsTopDirFromSdkManager' in script
 
     env_pos = script.index('foreach ($base in @($env:NRF_BASE, $env:ZEPHYR_BASE))')
-    west_pos = script.index('$topDir = (& west topdir')
+    west_pos = script.index('$topDirOutput = @(& west topdir')
     sdk_manager_pos = script.index('return Get-NcsTopDirFromSdkManager')
     assert env_pos < west_pos < sdk_manager_pos
+
+
+def test_wrapper_treats_failed_west_topdir_as_probe_miss_on_windows_powershell():
+    script = text(NCS_PS1)
+    assert '$topDir = $null' in script
+    assert 'try {' in script
+    assert '$topDirOutput = @(& west topdir 2>$null)' in script
+    assert 'if ($LASTEXITCODE -eq 0 -and $topDirOutput.Count -gt 0)' in script
+    assert 'catch {' in script
+    assert '$topDir = $null' in script
+    assert 'return Get-NcsTopDirFromSdkManager' in script
 
 
 def test_wrapper_handles_locked_toolchain_nrfutil_home_and_current_all_fields_columns():
