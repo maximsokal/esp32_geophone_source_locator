@@ -26,12 +26,10 @@ static bool fail_cleanup;
 static char call_order[64];
 static size_t call_count;
 static bool runtime_published;
-static bool cache_created;
-static bool cache_active;
+static bool cache_membership_invalidated;
 static bool cache_reset;
 static bool cleanup_called;
 static char metadata_name[OBJECT_STORE_NAME_SIZE];
-static char cache_name[OBJECT_STORE_NAME_SIZE];
 
 static void note(char call)
 {
@@ -47,12 +45,10 @@ static void reset_state(fail_stage_t stage, bool cleanup_should_fail)
     memset(call_order, 0, sizeof(call_order));
     call_count = 0U;
     runtime_published = false;
-    cache_created = false;
-    cache_active = false;
+    cache_membership_invalidated = false;
     cache_reset = false;
     cleanup_called = false;
     metadata_name[0] = '\0';
-    cache_name[0] = '\0';
 }
 
 esp_err_t object_store_internal_validate_name(const char *name)
@@ -139,19 +135,10 @@ void object_store_internal_set_active_id(const char *object_id)
     assert(strcmp(object_id, "OBJ_0042") == 0);
 }
 
-void object_store_profile_cache_note_create_locked(const char *object_id, const char *name)
+void object_store_profile_cache_invalidate_membership_locked(void)
 {
-    note('C');
-    cache_created = true;
-    assert(strcmp(object_id, "OBJ_0042") == 0);
-    snprintf(cache_name, sizeof(cache_name), "%s", name);
-}
-
-void object_store_profile_cache_note_active_locked(const char *object_id)
-{
-    note('P');
-    cache_active = true;
-    assert(strcmp(object_id, "OBJ_0042") == 0);
+    note('I');
+    cache_membership_invalidated = true;
 }
 
 void object_store_internal_fill_summary(
@@ -184,8 +171,7 @@ esp_err_t object_store_list_profiles_responsive(
 static void assert_not_published(void)
 {
     assert(!runtime_published);
-    assert(!cache_created);
-    assert(!cache_active);
+    assert(!cache_membership_invalidated);
 }
 
 static void test_validation_precedes_storage(void)
@@ -245,18 +231,17 @@ static void test_cleanup_failure_keeps_primary_error_and_resets_cache(void)
     assert_not_published();
 }
 
-static void test_success_named_publishes_after_active(void)
+static void test_success_named_invalidates_membership_after_active(void)
 {
     reset_state(FAIL_NONE, false);
     object_store_summary_t created = {0};
     assert(object_store_create_named("Final name", &created) == ESP_OK);
-    assert(strcmp(call_order, "BNLMASCPE") == 0);
+    assert(strcmp(call_order, "BNLMASIE") == 0);
     assert(strcmp(metadata_name, "Final name") == 0);
-    assert(strcmp(cache_name, "Final name") == 0);
     assert(strcmp(created.id, "OBJ_0042") == 0);
     assert(strcmp(created.name, "Final name") == 0);
     assert(created.active);
-    assert(runtime_published && cache_created && cache_active);
+    assert(runtime_published && cache_membership_invalidated);
     assert(!cleanup_called);
 }
 
@@ -266,8 +251,8 @@ static void test_success_unnamed_uses_canonical_name(void)
     object_store_summary_t created = {0};
     assert(object_store_create(&created) == ESP_OK);
     assert(strcmp(metadata_name, "OBJ_0042") == 0);
-    assert(strcmp(cache_name, "OBJ_0042") == 0);
     assert(strcmp(created.name, "OBJ_0042") == 0);
+    assert(cache_membership_invalidated);
 }
 
 int main(void)
@@ -278,7 +263,7 @@ int main(void)
     test_metadata_failure_rolls_back_before_active();
     test_active_failure_preserves_publication_boundary();
     test_cleanup_failure_keeps_primary_error_and_resets_cache();
-    test_success_named_publishes_after_active();
+    test_success_named_invalidates_membership_after_active();
     test_success_unnamed_uses_canonical_name();
     return 0;
 }

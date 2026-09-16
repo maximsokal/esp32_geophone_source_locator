@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "object_store_archive",
+      "sources": [
+        "components/object_store/tests/object_store_archive_fs_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/tests/stubs",
+        "components/object_store",
+        "components/object_store/include",
+        "components/object_format/include"
+      ]
+    },
+    {
+      "name": "object_store_profile_cache_policy",
+      "sources": [
+        "components/object_store/tests/object_store_profile_cache_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/tests/stubs",
+        "components/object_store",
+        "components/object_store/include",
+        "components/object_format/include"
+      ]
+    }
+  ]
+}

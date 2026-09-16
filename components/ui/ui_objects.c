@@ -269,6 +269,22 @@ static void ui_objects_cache_active(
         return;
     }
 
+    bool found = false;
+    for (size_t i = 0; i < context->object_count; ++i) {
+        if (strcmp(context->objects[i].id, object_id) == 0) {
+            found = true;
+            break;
+        }
+    }
+
+    /* ACTIVE is required to be part of every authoritative bounded snapshot.
+     * If an external mutation names an object missing from this copied list,
+     * the copy is stale; do not leave a loaded list with every row inactive. */
+    if (!found) {
+        context->objects_loaded = false;
+        return;
+    }
+
     for (size_t i = 0; i < context->object_count; ++i) {
         context->objects[i].active =
             strcmp(context->objects[i].id, object_id) == 0;
@@ -288,9 +304,20 @@ static void ui_objects_cache_deleted(
         return;
     }
 
+    const bool snapshot_was_full =
+        context->object_count >= OBJECT_SERVICE_MAX_OBJECTS;
+
     for (size_t i = 0; i < context->object_count; ++i) {
         if (strcmp(context->objects[i].id, object_id) != 0) {
             continue;
+        }
+
+        /* When a full bounded snapshot loses one visible member, an older
+         * archived object may need to backfill it. Only a fresh LIST knows the
+         * canonical replacement, so mark this copied list stale. */
+        if (snapshot_was_full) {
+            context->objects_loaded = false;
+            return;
         }
 
         if (i + 1U < context->object_count) {

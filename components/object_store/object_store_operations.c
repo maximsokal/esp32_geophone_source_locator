@@ -68,10 +68,11 @@ static esp_err_t object_store_create_transaction(
     const char *final_name =
         initial_name != NULL ? initial_name : object_id;
 
-    /* Persistent commit succeeded. The rest is non-failing RAM publication. */
+    /* Persistent commit succeeded. ACTIVE changes bounded membership when the
+     * archive is full, so force the next profile snapshot through the same
+     * canonical census instead of guessing an eviction in the RAM index. */
     object_store_internal_set_active_id(object_id);
-    object_store_profile_cache_note_create_locked(object_id, final_name);
-    object_store_profile_cache_note_active_locked(object_id);
+    object_store_profile_cache_invalidate_membership_locked();
 
     if (created_object != NULL) {
         object_store_internal_fill_summary(created_object, object_id, true);

@@ -122,10 +122,14 @@ void object_store_internal_clear_active_id(void)
     active_id[0] = '\0';
 }
 
+void object_store_profile_cache_invalidate_membership_locked(void)
+{
+    activation_trace_push('C');
+}
+
 void object_store_profile_cache_note_active_locked(const char *object_id)
 {
     (void)object_id;
-    activation_trace_push('C');
 }
 
 void object_store_profile_cache_note_delete_locked(const char *object_id)
@@ -141,6 +145,7 @@ esp_err_t object_store_fs_clear_active(void)
 #include "../object_store_fs.c"
 #include "../object_store_fs_ids.c"
 #include "../object_store_fs_objects.c"
+#include "../object_store_archive_policy.c"
 #include "../object_store_fs_list.c"
 #include "../object_store_delete_fs.c"
 #include "../object_store_lease.c"

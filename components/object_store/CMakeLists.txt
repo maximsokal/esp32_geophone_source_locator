@@ -9,11 +9,13 @@ idf_component_register(
         "object_store_fs.c"
         "object_store_fs_ids.c"
         "object_store_fs_objects.c"
+        "object_store_archive_policy.c"
         "object_store_fs_list.c"
         "object_store_fs_active.c"
         "object_store_delete_fs.c"
         "object_store_json.c"
         "object_store_profile.c"
+        "object_store_profile_cache_policy.c"
         "object_store_responsive.c"
 
     INCLUDE_DIRS
