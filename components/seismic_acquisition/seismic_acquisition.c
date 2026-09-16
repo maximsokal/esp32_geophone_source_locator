@@ -16,8 +16,8 @@
 static const char *TAG = "SEISMIC_ACQ";
 
 static SemaphoreHandle_t s_lifecycle_mutex = NULL;
-static atomic_bool s_running = ATOMIC_VAR_INIT(false);
-static atomic_int s_last_error = ATOMIC_VAR_INIT(ESP_OK);
+static atomic_bool s_running = false;
+static atomic_int s_last_error = ESP_OK;
 
 
 static const seismic_source_driver_t *seismic_driver(void)
