@@ -166,7 +166,20 @@ function Get-NcsTopDir {
     }
 
     # Works when the current directory already belongs to an NCS west workspace.
-    $topDir = (& west topdir 2>$null | Select-Object -First 1)
+    # Windows PowerShell can promote native stderr to a terminating error when
+    # ErrorActionPreference is Stop, so failure here must be treated as a normal
+    # probe miss and fall through to sdk-manager metadata discovery.
+    $topDir = $null
+    try {
+        $topDirOutput = @(& west topdir 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $topDirOutput.Count -gt 0) {
+            $topDir = $topDirOutput[0]
+        }
+    }
+    catch {
+        $topDir = $null
+    }
+
     if ($topDir) {
         $topDir = $topDir.Trim()
         if (Test-NcsWorkspace $topDir) {
