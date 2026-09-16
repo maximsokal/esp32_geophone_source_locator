@@ -137,6 +137,12 @@ def test_wrapper_builds_same_canonical_zephyr_app_and_checks_resolved_kconfig():
         assert required in script
 
 
+def test_wrapper_uses_braced_action_before_colon_in_status_line():
+    script = text(NCS_PS1)
+    assert 'Write-Host "MAX-45 ${Action}: PASS"' in script
+    assert 'Write-Host "MAX-45 $Action: PASS"' not in script
+
+
 def test_existing_dual_i2c_overlay_contract_is_untouched():
     overlay = text(OVERLAY)
     assert "&i2c22" in overlay
