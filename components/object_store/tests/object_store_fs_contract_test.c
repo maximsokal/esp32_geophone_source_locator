@@ -130,6 +130,7 @@ void object_store_profile_cache_invalidate_membership_locked(void)
 void object_store_profile_cache_note_active_locked(const char *object_id)
 {
     (void)object_id;
+    activation_trace_push('C');
 }
 
 void object_store_profile_cache_note_delete_locked(const char *object_id)
