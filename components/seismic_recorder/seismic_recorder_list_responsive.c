@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "object_format.h"
+#include "seismic_recorder_session_selection.h"
 #include "storage_manager.h"
 
 
@@ -17,32 +18,6 @@ typedef enum
     SEISMIC_RECORDER_RESP_METADATA_BACKUP,
 
 } seismic_recorder_responsive_metadata_state_t;
-
-
-static bool seismic_recorder_responsive_parse_session_id(
-    const char *name
-)
-{
-    if (name == NULL) {
-        return false;
-    }
-
-    static const size_t canonical_length = sizeof("S000000") - 1U;
-    if (strlen(name) != canonical_length || name[0] != 'S') {
-        return false;
-    }
-
-    unsigned parsed = 0U;
-    for (size_t index = 1U; index < canonical_length; ++index) {
-        const char digit = name[index];
-        if (digit < '0' || digit > '9') {
-            return false;
-        }
-        parsed = parsed * 10U + (unsigned)(digit - '0');
-    }
-
-    return parsed > 0U && parsed <= 999999U;
-}
 
 
 static esp_err_t seismic_recorder_responsive_errno_to_error(
@@ -147,25 +122,6 @@ static esp_err_t seismic_recorder_responsive_metadata_state(
 }
 
 
-static void seismic_recorder_responsive_sort_sessions(
-    seismic_recorder_session_summary_t *sessions,
-    size_t count
-)
-{
-    for (size_t i = 0U; i < count; ++i) {
-        for (size_t j = i + 1U; j < count; ++j) {
-            if (strcmp(sessions[i].session_id, sessions[j].session_id) >= 0) {
-                continue;
-            }
-
-            seismic_recorder_session_summary_t temp = sessions[i];
-            sessions[i] = sessions[j];
-            sessions[j] = temp;
-        }
-    }
-}
-
-
 esp_err_t seismic_recorder_list_sessions_responsive(
     const char *object_id,
     seismic_recorder_session_summary_t *sessions,
@@ -212,16 +168,11 @@ esp_err_t seismic_recorder_list_sessions_responsive(
         return err;
     }
 
-    const size_t bounded =
-        max_sessions < SEISMIC_RECORDER_MAX_SESSIONS
-            ? max_sessions
-            : SEISMIC_RECORDER_MAX_SESSIONS;
+    seismic_recorder_session_selection_t selection;
+    seismic_recorder_session_selection_init(&selection, max_sessions);
 
-    char session_ids[SEISMIC_RECORDER_MAX_SESSIONS]
-                    [SEISMIC_RECORDER_SESSION_ID_SIZE];
-    size_t id_count = 0U;
-
-    /* Parent directory census is one bounded storage/TFT window. */
+    /* Parent directory census is one storage/TFT window. Scan all entries;
+     * membership must never depend on FAT readdir() order. */
     err = storage_manager_operation_begin();
     if (err != ESP_OK) {
         return err;
@@ -232,32 +183,24 @@ esp_err_t seismic_recorder_list_sessions_responsive(
         err = seismic_recorder_responsive_errno_to_error(errno);
     }
     else {
-        errno = 0;
-        struct dirent *entry = NULL;
-        while (id_count < bounded && (entry = readdir(directory)) != NULL) {
-            if (!seismic_recorder_responsive_parse_session_id(entry->d_name)) {
-                continue;
+        while (true) {
+            errno = 0;
+            struct dirent *entry = readdir(directory);
+            if (entry == NULL) {
+                if (errno != 0) {
+                    err = seismic_recorder_responsive_errno_to_error(errno);
+                }
+                break;
             }
 
-            /* parse_session_id() proves this is exactly the canonical
-             * seven-character Sxxxxxx form. Copy the validated length instead
-             * of snprintf("%s") so -Wformat-truncation does not have to infer
-             * the parser's length contract from struct dirent::d_name. */
-            static const size_t canonical_length = sizeof("S000000") - 1U;
-            memcpy(
-                session_ids[id_count],
-                entry->d_name,
-                canonical_length + 1U
+            seismic_recorder_session_selection_consider(
+                &selection,
+                entry->d_name
             );
-            id_count++;
         }
 
-        const int read_errno = errno;
         const int close_result = closedir(directory);
-        if (read_errno != 0) {
-            err = seismic_recorder_responsive_errno_to_error(read_errno);
-        }
-        else if (close_result != 0) {
+        if (err == ESP_OK && close_result != 0) {
             err = seismic_recorder_responsive_errno_to_error(errno);
         }
     }
@@ -268,10 +211,13 @@ esp_err_t seismic_recorder_list_sessions_responsive(
         return err;
     }
 
-    /* Each metadata read gets its own storage arbitration window. This keeps
-     * the low-priority Web cache from holding the TFT quiesced for the whole
-     * session history while preserving the same per-session recovery rules. */
-    for (size_t i = 0U; i < id_count; ++i) {
+    /* Each retained metadata read gets its own storage arbitration window.
+     * The selector is already newest-first, so no post-read sort is needed. */
+    const size_t selected_count =
+        seismic_recorder_session_selection_count(&selection);
+    for (size_t i = 0U; i < selected_count; ++i) {
+        const char *session_id =
+            seismic_recorder_session_selection_id(&selection, i);
         seismic_recorder_session_summary_t summary;
         memset(&summary, 0, sizeof(summary));
 
@@ -285,7 +231,7 @@ esp_err_t seismic_recorder_list_sessions_responsive(
         const esp_err_t metadata_err =
             seismic_recorder_responsive_metadata_state(
                 sessions_path,
-                session_ids[i],
+                session_id,
                 &metadata_state
             );
 
@@ -294,24 +240,20 @@ esp_err_t seismic_recorder_list_sessions_responsive(
                 metadata_state == SEISMIC_RECORDER_RESP_METADATA_PRIMARY
                     ? seismic_recorder_json_read_summary_known_present(
                         object_id,
-                        session_ids[i],
+                        session_id,
                         &summary
                     )
                     : metadata_state == SEISMIC_RECORDER_RESP_METADATA_BACKUP
                         ? seismic_recorder_json_read_summary(
                             object_id,
-                            session_ids[i],
+                            session_id,
                             &summary
                         )
                         : ESP_ERR_NOT_FOUND;
 
             if (summary_err != ESP_OK) {
-                snprintf(
-                    summary.session_id,
-                    sizeof(summary.session_id),
-                    "%s",
-                    session_ids[i]
-                );
+                static const size_t canonical_size = sizeof("S000000");
+                memcpy(summary.session_id, session_id, canonical_size);
                 summary.complete = false;
             }
         }
@@ -325,11 +267,6 @@ esp_err_t seismic_recorder_list_sessions_responsive(
         sessions[*session_count] = summary;
         (*session_count)++;
     }
-
-    seismic_recorder_responsive_sort_sessions(
-        sessions,
-        *session_count
-    );
 
     return ESP_OK;
 }
