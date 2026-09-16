@@ -33,3 +33,15 @@ bool object_format_id_is_valid(
 bool object_format_schema_is_supported(
     int schema_version
 );
+
+
+/*
+ * Canonical committed-object identity contract shared by runtime object-store
+ * admission and storage recovery. JSON parsing stays in the owning component;
+ * this helper only defines the semantic schema/id policy.
+ */
+bool object_format_metadata_identity_is_valid(
+    int schema_version,
+    const char *embedded_id,
+    const char *expected_id
+);

@@ -141,8 +141,36 @@ static esp_err_t object_store_load_metadata_locked(const char *object_id, cJSON 
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    const cJSON *schema_version = cJSON_GetObjectItemCaseSensitive(
+        root,
+        "schema_version"
+    );
+    const cJSON *embedded_id = cJSON_GetObjectItemCaseSensitive(
+        root,
+        "id"
+    );
+
+    if (
+        !cJSON_IsNumber(schema_version) ||
+        !cJSON_IsString(embedded_id) ||
+        embedded_id->valuestring == NULL ||
+        !object_format_metadata_identity_is_valid(
+            schema_version->valueint,
+            embedded_id->valuestring,
+            object_id
+        )
+    ) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
     *root_out = root;
     return ESP_OK;
+}
+
+static bool object_store_profile_error_is_omittable(esp_err_t err)
+{
+    return err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_RESPONSE;
 }
 
 static esp_err_t object_store_write_metadata_locked(const char *object_id, cJSON *root)
@@ -463,12 +491,22 @@ static esp_err_t object_store_profile_index_build_locked(void)
 
     s_profile_index_count = 0;
     for (size_t i = 0; i < count; ++i) {
+        object_store_profile_t profile;
         err = object_store_json_read_profile_with_defaults_locked(
             summaries[i].id,
             summaries[i].active,
             defaults,
-            &s_profile_index[s_profile_index_count]
+            &profile
         );
+        if (object_store_profile_error_is_omittable(err)) {
+            ESP_LOGW(
+                TAG,
+                "Skipping invalid/disappeared object during index build: %s err=%s",
+                summaries[i].id,
+                esp_err_to_name(err)
+            );
+            continue;
+        }
         if (err != ESP_OK) {
             s_profile_index_count = 0;
             s_profile_index_valid = false;
@@ -476,7 +514,7 @@ static esp_err_t object_store_profile_index_build_locked(void)
             free(summaries);
             return err;
         }
-        s_profile_index_count++;
+        s_profile_index[s_profile_index_count++] = profile;
     }
 
     s_profile_index_valid = true;
@@ -558,18 +596,28 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
         }
         if (s_profile_index_count >= OBJECT_STORE_MAX_OBJECTS) break;
 
+        object_store_profile_t profile;
         err = object_store_json_read_profile_with_defaults_locked(
             summaries[i].id,
             summaries[i].active,
             defaults,
-            &s_profile_index[s_profile_index_count]
+            &profile
         );
+        if (object_store_profile_error_is_omittable(err)) {
+            ESP_LOGW(
+                TAG,
+                "Skipping invalid/disappeared object during reconcile: %s err=%s",
+                summaries[i].id,
+                esp_err_to_name(err)
+            );
+            continue;
+        }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Reconcile failed for new %s: %s", summaries[i].id, esp_err_to_name(err));
             free(summaries);
             return err;
         }
-        s_profile_index_count++;
+        s_profile_index[s_profile_index_count++] = profile;
         added++;
     }
 

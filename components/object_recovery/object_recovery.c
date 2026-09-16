@@ -216,7 +216,8 @@ static bool object_recovery_session_checkpoint(
 
 static esp_err_t object_recovery_check_guarded(
     const char *object_id,
-    bool *removed
+    bool *removed,
+    bool protect_persisted_active
 )
 {
     esp_err_t err =
@@ -225,8 +226,12 @@ static esp_err_t object_recovery_check_guarded(
         return err;
     }
 
-    err =
-        object_recovery_check_one(
+    err = protect_persisted_active
+        ? object_recovery_check_one_background(
+            object_id,
+            removed
+        )
+        : object_recovery_check_one(
             object_id,
             removed
         );
@@ -236,10 +241,11 @@ static esp_err_t object_recovery_check_guarded(
 }
 
 
-esp_err_t object_recovery_run_cooperative(
+static esp_err_t object_recovery_run_cooperative_policy(
     object_recovery_stop_requested_fn stop_requested,
     void *user_context,
-    bool yield_between_objects
+    bool yield_between_objects,
+    bool protect_persisted_active
 )
 {
     ESP_LOGI(TAG, "Checking object storage mode=cooperative");
@@ -284,7 +290,8 @@ esp_err_t object_recovery_run_cooperative(
         bool removed = false;
         err = object_recovery_check_guarded(
             ids[index],
-            &removed
+            &removed,
+            protect_persisted_active
         );
         if (err != ESP_OK) {
             ESP_LOGE(
@@ -371,11 +378,29 @@ esp_err_t object_recovery_run_cooperative(
 }
 
 
+esp_err_t object_recovery_run_cooperative(
+    object_recovery_stop_requested_fn stop_requested,
+    void *user_context,
+    bool yield_between_objects
+)
+{
+    /* Production background archive recovery protects current ACTIVE. */
+    return object_recovery_run_cooperative_policy(
+        stop_requested,
+        user_context,
+        yield_between_objects,
+        true
+    );
+}
+
+
 esp_err_t object_recovery_run(void)
 {
-    return object_recovery_run_cooperative(
+    /* Synchronous tools retain the pre-runtime destructive recovery contract. */
+    return object_recovery_run_cooperative_policy(
         NULL,
         NULL,
+        false,
         false
     );
 }
@@ -412,7 +437,14 @@ esp_err_t object_recovery_run_active(void)
 
     const int64_t started_us = esp_timer_get_time();
     bool removed = false;
-    err = object_recovery_check_guarded(active_id, &removed);
+    /* Boot recovery runs before object_store_init(), so no runtime ACTIVE
+     * authority has been published yet and destructive repair/removal remains
+     * the intended behavior. */
+    err = object_recovery_check_guarded(
+        active_id,
+        &removed,
+        false
+    );
 
     ESP_LOGI(
         TAG,

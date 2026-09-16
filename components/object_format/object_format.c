@@ -55,3 +55,17 @@ bool object_format_schema_is_supported(
         schema_version >=
         OBJECT_FORMAT_SCHEMA_VERSION;
 }
+
+
+bool object_format_metadata_identity_is_valid(
+    int schema_version,
+    const char *embedded_id,
+    const char *expected_id
+)
+{
+    return
+        object_format_schema_is_supported(schema_version) &&
+        object_format_id_is_valid(embedded_id) &&
+        object_format_id_is_valid(expected_id) &&
+        strcmp(embedded_id, expected_id) == 0;
+}

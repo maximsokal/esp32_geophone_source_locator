@@ -19,6 +19,19 @@
 static unsigned remove_tree_calls;
 static char removed_path[OBJECT_STORE_FS_PATH_SIZE];
 
+static char active_id[OBJECT_STORE_ID_SIZE] = "OBJ_0001";
+static esp_err_t metadata_validation_result = ESP_OK;
+static esp_err_t active_save_result = ESP_OK;
+static char activation_trace[16];
+static size_t activation_trace_length;
+
+static void activation_trace_push(char event)
+{
+    assert(activation_trace_length + 1U < sizeof(activation_trace));
+    activation_trace[activation_trace_length++] = event;
+    activation_trace[activation_trace_length] = '\0';
+}
+
 bool storage_manager_path_exists(const char *path)
 {
     struct stat info;
@@ -52,15 +65,81 @@ esp_err_t storage_manager_remove_tree(const char *path)
     return ESP_OK;
 }
 
+esp_err_t object_store_internal_begin_file_operation(void)
+{
+    activation_trace_push('B');
+    return ESP_OK;
+}
+
+void object_store_internal_end_file_operation(void)
+{
+    activation_trace_push('E');
+}
+
+esp_err_t object_store_json_read_name_locked(
+    const char *object_id,
+    char *name,
+    size_t name_size
+)
+{
+    activation_trace_push('V');
+    if (metadata_validation_result != ESP_OK) {
+        return metadata_validation_result;
+    }
+    (void)snprintf(name, name_size, "%s", object_id);
+    return ESP_OK;
+}
+
+esp_err_t object_store_fs_save_active(const char *object_id)
+{
+    (void)object_id;
+    activation_trace_push('A');
+    return active_save_result;
+}
+
+void object_store_internal_set_active_id(const char *object_id)
+{
+    activation_trace_push('R');
+    (void)snprintf(active_id, sizeof(active_id), "%s", object_id);
+}
+
+const char *object_store_internal_active_id(void)
+{
+    return active_id;
+}
+
+void object_store_internal_clear_active_id(void)
+{
+    active_id[0] = '\0';
+}
+
+void object_store_profile_cache_note_active_locked(const char *object_id)
+{
+    (void)object_id;
+    activation_trace_push('C');
+}
+
+void object_store_profile_cache_note_delete_locked(const char *object_id)
+{
+    (void)object_id;
+}
+
+esp_err_t object_store_fs_clear_active(void)
+{
+    return ESP_OK;
+}
+
 #include "../object_store_fs.c"
 #include "../object_store_fs_ids.c"
 #include "../object_store_fs_objects.c"
 #include "../object_store_fs_list.c"
 #include "../object_store_delete_fs.c"
+#include "../object_store_mutations.c"
 #include "../../object_format/object_format.c"
 
 static void remove_known_tree(void)
 {
+    (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/object.json");
     (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0002/object.json");
     (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0003");
     (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0007/object.json");
@@ -192,11 +271,50 @@ static void test_create_exists_list_and_delete_contracts(void)
     remove_known_tree();
 }
 
+static void test_set_active_validates_before_commit(void)
+{
+    make_base_tree();
+    bool root_created = false;
+    assert(object_store_fs_create_layout("OBJ_0002", &root_created) == ESP_OK);
+    assert(root_created);
+    write_metadata("OBJ_0002");
+
+    (void)snprintf(active_id, sizeof(active_id), "%s", "OBJ_0001");
+    metadata_validation_result = ESP_ERR_INVALID_RESPONSE;
+    active_save_result = ESP_OK;
+    activation_trace_length = 0U;
+    activation_trace[0] = '\0';
+
+    assert(object_store_set_active("OBJ_0002") == ESP_ERR_INVALID_RESPONSE);
+    assert(strcmp(active_id, "OBJ_0001") == 0);
+    assert(strcmp(activation_trace, "BVE") == 0);
+
+    metadata_validation_result = ESP_OK;
+    active_save_result = ESP_FAIL;
+    activation_trace_length = 0U;
+    activation_trace[0] = '\0';
+
+    assert(object_store_set_active("OBJ_0002") == ESP_FAIL);
+    assert(strcmp(active_id, "OBJ_0001") == 0);
+    assert(strcmp(activation_trace, "BVAE") == 0);
+
+    active_save_result = ESP_OK;
+    activation_trace_length = 0U;
+    activation_trace[0] = '\0';
+
+    assert(object_store_set_active("OBJ_0002") == ESP_OK);
+    assert(strcmp(active_id, "OBJ_0002") == 0);
+    assert(strcmp(activation_trace, "BVARCE") == 0);
+
+    remove_known_tree();
+}
+
 int main(void)
 {
     test_path_validation_and_copy();
     test_next_id_uses_only_committed_directories();
     test_exclusive_layout_reports_ownership();
     test_create_exists_list_and_delete_contracts();
+    test_set_active_validates_before_commit();
     return 0;
 }

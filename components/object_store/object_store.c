@@ -71,6 +71,28 @@ esp_err_t object_store_get_active(object_store_summary_t *object)
 }
 
 
+esp_err_t object_store_invalidate_profile_cache(void)
+{
+    if (!object_store_internal_is_initialized()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    SemaphoreHandle_t mutex =
+        (SemaphoreHandle_t)object_store_internal_mutex_handle();
+    xSemaphoreTake(mutex, portMAX_DELAY);
+
+    /* RAM-only. The settings cache is cheap to refill and resetting it with
+     * the profile index avoids exposing a second cache-reset primitive while
+     * leaving persisted/runtime ACTIVE completely untouched. */
+    object_store_profile_cache_reset();
+
+    xSemaphoreGive(mutex);
+
+    ESP_LOGI(TAG, "Object profile cache invalidated after recovery");
+    return ESP_OK;
+}
+
+
 esp_err_t object_store_reset(void)
 {
     if (!object_store_internal_is_initialized()) {

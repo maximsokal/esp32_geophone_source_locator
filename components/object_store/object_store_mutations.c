@@ -29,7 +29,22 @@ esp_err_t object_store_set_active(
         return ESP_ERR_NOT_FOUND;
     }
 
-    err = object_store_fs_save_active(object_id);
+    /*
+     * Directory presence is not sufficient ACTIVE admission. Read committed
+     * metadata through the ordinary object-store loader so runtime activation
+     * enforces the same schema/id identity contract as recovery. This stays
+     * inside the existing storage operation, before the persistent commit.
+     */
+    char validated_name[OBJECT_STORE_NAME_SIZE];
+    err = object_store_json_read_name_locked(
+        object_id,
+        validated_name,
+        sizeof(validated_name)
+    );
+
+    if (err == ESP_OK) {
+        err = object_store_fs_save_active(object_id);
+    }
 
     if (err == ESP_OK) {
         object_store_internal_set_active_id(object_id);

@@ -69,4 +69,9 @@ esp_err_t object_store_set_location(const char *object_id, const object_store_lo
 esp_err_t object_store_set_cable_length(const char *object_id, size_t pod_index, float length_m);
 esp_err_t object_store_get_cable_defaults(float lengths_m[OBJECT_STORE_POD_COUNT]);
 esp_err_t object_store_set_cable_default(size_t pod_index, float length_m);
+
+/* RAM-only invalidation after out-of-band recovery changes. This does not
+ * touch persisted/runtime ACTIVE authority and performs no filesystem work. */
+esp_err_t object_store_invalidate_profile_cache(void);
+
 esp_err_t object_store_reset(void);
