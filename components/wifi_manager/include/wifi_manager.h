@@ -18,6 +18,17 @@ bool wifi_manager_is_setup_mode(void);
 
 bool wifi_manager_is_radio_state_uncertain(void);
 
+/* True while a serialized radio mode transaction is in progress. */
+bool wifi_manager_is_transition_active(void);
+
+/* True while raw ESP-IDF Wi-Fi/IP callbacks are observations only and must
+ * not select externally visible network state. This closes at transition
+ * begin and reopens atomically with the final target/stopped state commit. */
+bool wifi_manager_network_events_suppressed(void);
+
+/* True only when the runtime owns a currently accepted STA IPv4 address. */
+bool wifi_manager_sta_has_ip(void);
+
 
 typedef esp_err_t (*wifi_manager_radio_stop_prepare_callback_t)(void *context);
 typedef void (*wifi_manager_radio_stop_complete_callback_t)(

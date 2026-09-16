@@ -174,8 +174,9 @@ static esp_err_t wifi_manager_abort_mode_transition(
     }
 
     /* The old mode is already gone. A failed cleanup cannot be reported as a
-     * clean stop, even though the public running/setup flags stay false. */
-    wifi_manager_internal_commit_state(
+     * clean stop, even though the public running/setup flags stay false. Raw
+     * callbacks become authoritative only together with this final snapshot. */
+    wifi_manager_internal_commit_final_state(
         false,
         false,
         cleanup_result != ESP_OK
@@ -206,7 +207,7 @@ static esp_err_t wifi_manager_recover_uncertain_radio_state(void)
             "Wi-Fi uncertain-state cleanup retry failed: %s",
             esp_err_to_name(cleanup_result)
         );
-        wifi_manager_internal_commit_state(
+        wifi_manager_internal_commit_final_state(
             false,
             false,
             true
@@ -220,7 +221,7 @@ static esp_err_t wifi_manager_recover_uncertain_radio_state(void)
         return cleanup_result;
     }
 
-    wifi_manager_internal_commit_state(
+    wifi_manager_internal_commit_final_state(
         false,
         false,
         false
@@ -369,7 +370,7 @@ esp_err_t wifi_manager_enter_setup_mode(void)
         wifi_manager_internal_start_setup_mode();
 
     if (err == ESP_OK) {
-        wifi_manager_internal_commit_state(
+        wifi_manager_internal_commit_final_state(
             true,
             true,
             false
@@ -430,7 +431,7 @@ esp_err_t wifi_manager_connect_saved(void)
         return err;
     }
 
-    wifi_manager_internal_commit_state(
+    wifi_manager_internal_commit_final_state(
         true,
         false,
         false
@@ -494,7 +495,7 @@ esp_err_t wifi_manager_stop(void)
 
     wifi_manager_runtime_clear_setup_client();
 
-    wifi_manager_internal_commit_state(
+    wifi_manager_internal_commit_final_state(
         false,
         false,
         false

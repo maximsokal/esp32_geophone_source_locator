@@ -11,4 +11,5 @@ void wifi_manager_sta_events_set_connect_enabled(
     bool enabled
 );
 
+/* Retire the current STA event epoch and clear accepted runtime IP state. */
 void wifi_manager_sta_events_reset(void);

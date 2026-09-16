@@ -13,6 +13,7 @@ idf_component_register(
         "wifi_manager_sta_events.c"
         "wifi_manager_setup_ap.c"
         "wifi_manager_setup_events.c"
+        "wifi_manager_event_policy.c"
         "wifi_manager_mdns.c"
 
     INCLUDE_DIRS

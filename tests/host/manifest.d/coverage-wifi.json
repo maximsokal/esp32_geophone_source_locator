@@ -12,6 +12,35 @@
         "components/wifi_manager/include",
         "components/wifi_manager"
       ]
+    },
+    {
+      "name": "wifi_manager_event_policy",
+      "sources": [
+        "components/wifi_manager/wifi_manager_event_policy.c",
+        "components/wifi_manager/tests/wifi_manager_event_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "web_network_authority_policy",
+      "sources": [
+        "components/web_server/web_server_lifecycle_policy.c",
+        "components/web_server/tests/web_network_authority_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "ui_event_policy",
+      "sources": [
+        "components/ui/tests/ui_event_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ui"
+      ]
     }
   ]
 }

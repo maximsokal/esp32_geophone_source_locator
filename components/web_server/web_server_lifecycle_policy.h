@@ -60,8 +60,10 @@ size_t web_lifecycle_state_actions(
 
 
 /*
- * Apply the radio-safety override to a state derived from a network event.
- * The caller must evaluate this at the lifecycle enqueue boundary.
+ * Resolve a raw network callback at the lifecycle enqueue boundary. Firmware
+ * links the Wi-Fi authority getters, so the event payload/state is only a
+ * wakeup and current manager/runtime truth selects the result. Isolated host
+ * policy tests without those weak symbols retain the historical pure fallback.
  */
 web_lifecycle_state_t web_lifecycle_effective_network_state(
     web_lifecycle_state_t event_state,
