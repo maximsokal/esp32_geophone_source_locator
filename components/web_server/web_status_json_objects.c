@@ -19,6 +19,7 @@
 #include "measurement_service.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "storage_service.h"
 #include "web_status_cache_arbitration.h"
 
 
@@ -348,7 +349,10 @@ static void web_status_cache_refresh_task(void *argument)
 esp_err_t web_status_json_objects_init(void)
 {
     if (s_arbitration.mutex != NULL) {
-        return ESP_OK;
+        return storage_service_set_content_changed_observer(
+            web_status_json_objects_storage_changed,
+            NULL
+        );
     }
 
     esp_err_t err = web_status_cache_arbitration_init(&s_arbitration);
@@ -389,6 +393,25 @@ esp_err_t web_status_json_objects_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    err = storage_service_set_content_changed_observer(
+        web_status_json_objects_storage_changed,
+        NULL
+    );
+    if (err != ESP_OK) {
+        const web_status_cache_command_t command =
+            WEB_STATUS_CACHE_COMMAND_STOP;
+        (void)xQueueSend(s_refresh_queue, &command, portMAX_DELAY);
+        while (s_refresh_task != NULL) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        vQueueDelete(s_refresh_queue);
+        vSemaphoreDelete(s_refresh_mutex);
+        s_refresh_queue = NULL;
+        s_refresh_mutex = NULL;
+        web_status_cache_arbitration_shutdown(&s_arbitration);
+        return err;
+    }
+
     ESP_LOGI(
         TAG,
         "WEB_STATUS_CACHE initialized core=%d stack=%u stack_caps=spiram|8bit",
@@ -401,6 +424,10 @@ esp_err_t web_status_json_objects_init(void)
 
 void web_status_json_objects_shutdown(void)
 {
+    /* Unregister first. The storage-service setter waits for any callback that
+     * already snapped this cache context before payload/queue memory is freed. */
+    (void)storage_service_set_content_changed_observer(NULL, NULL);
+
     if (s_refresh_task != NULL && s_refresh_queue != NULL) {
         const web_status_cache_command_t command =
             WEB_STATUS_CACHE_COMMAND_STOP;

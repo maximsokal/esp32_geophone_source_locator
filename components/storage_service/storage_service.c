@@ -246,6 +246,17 @@ static void storage_service_task(
             watchdog_subscribed
         );
 
+        /* Content publication is independent of the TFT callback decision.
+         * A successful ERASE may intentionally return notify=false while a
+         * shutdown is pending, but its filesystem/object-store result is
+         * already authoritative and Web cache ownership must be invalidated. */
+        if (
+            command == STORAGE_COMMAND_ERASE_DATA &&
+            s_event.type == STORAGE_SERVICE_EVENT_ERASE_DONE
+        ) {
+            storage_service_internal_notify_content_changed();
+        }
+
         if (notify) {
             storage_service_notify();
         }
@@ -402,6 +413,11 @@ esp_err_t storage_service_init(void)
 
 void storage_service_shutdown(void)
 {
+    /* The content observer is independent of the UI event slot and may be
+     * registered before/after service initialization. Always close it first
+     * and wait for any snapped callback before tearing down worker state. */
+    storage_service_internal_clear_content_observer();
+
     if (!s_initialized) {
         return;
     }

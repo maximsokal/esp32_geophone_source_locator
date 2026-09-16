@@ -35,6 +35,11 @@ typedef void (*storage_service_event_callback_t)(
 );
 
 
+typedef void (*storage_service_content_changed_callback_t)(
+    void *user_context
+);
+
+
 esp_err_t storage_service_init(void);
 
 
@@ -43,6 +48,12 @@ void storage_service_shutdown(void);
 
 esp_err_t storage_service_set_event_callback(
     storage_service_event_callback_t callback,
+    void *user_context
+);
+
+
+esp_err_t storage_service_set_content_changed_observer(
+    storage_service_content_changed_callback_t callback,
     void *user_context
 );
 
