@@ -903,7 +903,16 @@ void ui_measurements_refresh_locked(void)
         summary_color
     );
 
-    if (measurement.active_object_present) {
+    const bool idle_object_context =
+        measurement.state == MEASUREMENT_SERVICE_LIVE ||
+        (measurement.state == MEASUREMENT_SERVICE_ERROR &&
+         measurement.object_id[0] == '\0');
+    const bool displayed_object_present =
+        idle_object_context
+            ? measurement.active_object_present
+            : measurement.object_id[0] != '\0';
+
+    if (displayed_object_present) {
         snprintf(
             text,
             sizeof(text),
@@ -914,6 +923,9 @@ void ui_measurements_refresh_locked(void)
             measurement.object_id
         );
     }
+    else if (measurement.state == MEASUREMENT_SERVICE_STARTING) {
+        snprintf(text, sizeof(text), "RESOLVING OBJECT...");
+    }
     else {
         snprintf(text, sizeof(text), "NO ACTIVE OBJECT");
     }
@@ -921,9 +933,11 @@ void ui_measurements_refresh_locked(void)
     (void)ui_measurements_label_set_if_changed(context->measurement_transport, text);
     (void)ui_measurements_text_color_set_if_changed(
         context->measurement_transport,
-        measurement.active_object_present
+        displayed_object_present
             ? UI_COLOR_MUTED
-            : UI_COLOR_ERROR
+            : idle_object_context
+                ? UI_COLOR_ERROR
+                : UI_COLOR_WARNING
     );
 
     uint32_t action_color = UI_COLOR_ACCENT;

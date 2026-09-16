@@ -207,6 +207,14 @@ static void measurement_service_release_start_reservation(void)
 }
 
 
+static void measurement_service_clear_session_identity_locked(void)
+{
+    s_snapshot.object_id[0] = '\0';
+    s_snapshot.object_name[0] = '\0';
+    s_snapshot.session_id[0] = '\0';
+}
+
+
 static void measurement_service_set_error(
     esp_err_t error
 )
@@ -263,7 +271,7 @@ static void measurement_service_process_start(
     s_snapshot.stop_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
     s_snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
     s_snapshot.stop_stage_error = ESP_OK;
-    s_snapshot.session_id[0] = '\0';
+    measurement_service_clear_session_identity_locked();
     s_snapshot.samples_written = 0U;
     s_snapshot.dropped_frames = 0U;
     s_snapshot.recording_ms = 0U;
@@ -512,7 +520,7 @@ static void measurement_service_process_keep(void)
     measurement_service_lock();
     s_snapshot.state = MEASUREMENT_SERVICE_LIVE;
     s_snapshot.last_error = ESP_OK;
-    s_snapshot.session_id[0] = '\0';
+    measurement_service_clear_session_identity_locked();
     s_snapshot.samples_written = 0U;
     s_snapshot.dropped_frames = 0U;
     s_snapshot.recording_ms = 0U;
@@ -548,7 +556,7 @@ static void measurement_service_process_delete(void)
     measurement_service_lock();
     s_snapshot.state = MEASUREMENT_SERVICE_LIVE;
     s_snapshot.last_error = ESP_OK;
-    s_snapshot.session_id[0] = '\0';
+    measurement_service_clear_session_identity_locked();
     s_snapshot.samples_written = 0U;
     s_snapshot.dropped_frames = 0U;
     s_snapshot.recording_ms = 0U;
@@ -1141,29 +1149,33 @@ esp_err_t measurement_service_get_snapshot(
     snapshot->busy = measurement_service_is_busy();
     measurement_service_unlock();
 
+    const bool session_owner_present = snapshot->object_id[0] != '\0';
+    const bool project_current_active =
+        snapshot->state == MEASUREMENT_SERVICE_LIVE ||
+        (snapshot->state == MEASUREMENT_SERVICE_ERROR && !session_owner_present);
+
     object_service_summary_t object;
     const esp_err_t object_err = object_service_get_active(&object);
     if (object_err == ESP_OK && object.active && object.id[0] != '\0') {
         snapshot->active_object_present = true;
-        snprintf(
-            snapshot->object_id,
-            sizeof(snapshot->object_id),
-            "%s",
-            object.id
-        );
-        snprintf(
-            snapshot->object_name,
-            sizeof(snapshot->object_name),
-            "%s",
-            object.name
-        );
+        if (project_current_active) {
+            snprintf(
+                snapshot->object_id,
+                sizeof(snapshot->object_id),
+                "%s",
+                object.id
+            );
+            snprintf(
+                snapshot->object_name,
+                sizeof(snapshot->object_name),
+                "%s",
+                object.name
+            );
+        }
     }
     else {
         snapshot->active_object_present = false;
-        if (
-            snapshot->state == MEASUREMENT_SERVICE_LIVE ||
-            snapshot->state == MEASUREMENT_SERVICE_ERROR
-        ) {
+        if (project_current_active) {
             snapshot->object_id[0] = '\0';
             snapshot->object_name[0] = '\0';
         }
@@ -1205,6 +1217,21 @@ esp_err_t measurement_service_get_snapshot(
     }
 
     return ESP_OK;
+}
+
+
+bool measurement_service_snapshot_allows_object_mutation(
+    const measurement_service_snapshot_t *snapshot
+)
+{
+    if (snapshot == NULL || snapshot->busy) {
+        return false;
+    }
+
+    return
+        snapshot->state == MEASUREMENT_SERVICE_LIVE ||
+        snapshot->state == MEASUREMENT_SERVICE_REVIEW ||
+        snapshot->state == MEASUREMENT_SERVICE_ERROR;
 }
 
 

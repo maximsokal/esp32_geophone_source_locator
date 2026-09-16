@@ -33,6 +33,8 @@ static bool fake_recorder_stop_pending;
 static unsigned fake_recorder_start_calls;
 static unsigned fake_recorder_stop_calls;
 static unsigned fake_recorder_delete_calls;
+static char fake_recorder_delete_object_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
+static char fake_recorder_delete_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 static object_service_summary_t fake_object;
 static seismic_recorder_snapshot_t fake_recorder;
 static void (*fake_busy_read_hook)(void);
@@ -276,9 +278,19 @@ esp_err_t seismic_recorder_wait_for_stop(void)
 
 esp_err_t seismic_recorder_delete_session(const char *object_id, const char *session_id)
 {
-    (void)object_id;
-    (void)session_id;
     ++fake_recorder_delete_calls;
+    snprintf(
+        fake_recorder_delete_object_id,
+        sizeof(fake_recorder_delete_object_id),
+        "%s",
+        object_id == NULL ? "" : object_id
+    );
+    snprintf(
+        fake_recorder_delete_session_id,
+        sizeof(fake_recorder_delete_session_id),
+        "%s",
+        session_id == NULL ? "" : session_id
+    );
     return fake_recorder_delete_error;
 }
 
@@ -314,6 +326,8 @@ static void reset_fakes(void)
     fake_recorder_start_calls = 0U;
     fake_recorder_stop_calls = 0U;
     fake_recorder_delete_calls = 0U;
+    fake_recorder_delete_object_id[0] = '\0';
+    fake_recorder_delete_session_id[0] = '\0';
     fake_busy_read_hook = NULL;
     fake_busy_read_interleaved = false;
     fake_start_guard_allowed = true;
@@ -323,6 +337,15 @@ static void reset_fakes(void)
     fake_start_object_last_id[0] = '\0';
     fake_start_release_calls = 0U;
     fake_start_release_saw_starting = false;
+}
+
+
+static void set_fake_active_object(const char *object_id, const char *name)
+{
+    memset(&fake_object, 0, sizeof(fake_object));
+    snprintf(fake_object.id, sizeof(fake_object.id), "%s", object_id);
+    snprintf(fake_object.name, sizeof(fake_object.name), "%s", name);
+    fake_active_object = true;
 }
 
 
@@ -460,6 +483,8 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_LIVE);
     assert(current.session_id[0] == '\0');
+    assert(s_snapshot.object_id[0] == '\0');
+    assert(s_snapshot.object_name[0] == '\0');
 
     /* DELETE is accepted only from REVIEW and returns to LIVE. */
     assert(measurement_service_start_async() == ESP_OK);
@@ -474,6 +499,8 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_LIVE);
     assert(fake_recorder_delete_calls == 1U);
+    assert(s_snapshot.object_id[0] == '\0');
+    assert(s_snapshot.object_name[0] == '\0');
     stop_service();
 }
 
@@ -576,6 +603,175 @@ static void test_object_specific_start_is_transactional(void)
     assert(strcmp(fake_recorder.object_id, "OBJ_0002") == 0);
     assert(snapshot().state == MEASUREMENT_SERVICE_RECORDING);
     stop_service();
+}
+
+
+static void test_session_owner_is_immutable_across_active_switch(void)
+{
+    start_service();
+
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+
+    measurement_service_snapshot_t current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_RECORDING);
+    assert(strcmp(current.object_id, "OBJ_0001") == 0);
+    assert(strcmp(current.object_name, "Test object") == 0);
+    assert(strcmp(fake_recorder.object_id, current.object_id) == 0);
+
+    /* Global ACTIVE may later move to B, but the live session still belongs
+     * to the object captured by START. */
+    set_fake_active_object("OBJ_0002", "Later active");
+    current = snapshot();
+    assert(current.active_object_present);
+    assert(strcmp(current.object_id, "OBJ_0001") == 0);
+    assert(strcmp(current.object_name, "Test object") == 0);
+    assert(strcmp(fake_recorder.object_id, current.object_id) == 0);
+
+    assert(measurement_service_stop_async() == ESP_OK);
+    run_pending_command();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_STOPPING);
+    assert(strcmp(current.object_id, "OBJ_0001") == 0);
+    assert(strcmp(current.object_name, "Test object") == 0);
+
+    assert(seismic_recorder_wait_for_stop() == ESP_OK);
+    measurement_service_process_stop_poll();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_REVIEW);
+    assert(strcmp(current.object_id, "OBJ_0001") == 0);
+    assert(strcmp(current.object_name, "Test object") == 0);
+    assert(measurement_service_snapshot_allows_object_mutation(&current));
+
+    /* The synchronous fake cannot observe process_delete mid-call, so expose
+     * the exact DELETING snapshot state directly and verify projection rules. */
+    measurement_service_lock();
+    s_snapshot.state = MEASUREMENT_SERVICE_DELETING;
+    measurement_service_unlock();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_DELETING);
+    assert(strcmp(current.object_id, "OBJ_0001") == 0);
+    assert(strcmp(current.object_name, "Test object") == 0);
+    assert(!measurement_service_snapshot_allows_object_mutation(&current));
+
+    measurement_service_lock();
+    s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;
+    measurement_service_unlock();
+
+    assert(measurement_service_delete_async() == ESP_OK);
+    run_pending_command();
+    assert(fake_recorder_delete_calls == 1U);
+    assert(strcmp(fake_recorder_delete_object_id, "OBJ_0001") == 0);
+    assert(strcmp(fake_recorder_delete_session_id, "S000001") == 0);
+
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_LIVE);
+    assert(current.active_object_present);
+    assert(strcmp(current.object_id, "OBJ_0002") == 0);
+    assert(strcmp(current.object_name, "Later active") == 0);
+    stop_service();
+}
+
+
+static void test_error_owner_projection_semantics(void)
+{
+    /* Failure before an owner is captured remains an idle retry context and
+     * therefore projects whichever object is currently ACTIVE. */
+    start_service();
+    fake_active_object = false;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(s_snapshot.object_id[0] == '\0');
+    set_fake_active_object("OBJ_0002", "Retry object");
+    measurement_service_snapshot_t current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(current.active_object_present);
+    assert(strcmp(current.object_id, "OBJ_0002") == 0);
+    assert(strcmp(current.object_name, "Retry object") == 0);
+    stop_service();
+
+    /* Failure after object resolution retains that concrete attempted owner,
+     * even if global ACTIVE later changes. */
+    start_service();
+    fake_recorder_start_error = ESP_FAIL;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(s_snapshot.state == MEASUREMENT_SERVICE_ERROR);
+    assert(strcmp(s_snapshot.object_id, "OBJ_0001") == 0);
+    set_fake_active_object("OBJ_0002", "Later active");
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(current.active_object_present);
+    assert(strcmp(current.object_id, "OBJ_0001") == 0);
+    assert(strcmp(current.object_name, "Test object") == 0);
+    stop_service();
+}
+
+
+static void test_keep_clears_owner_and_next_start_resolves_fresh_active(void)
+{
+    start_service();
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(measurement_service_stop_async() == ESP_OK);
+    run_pending_command();
+    assert(seismic_recorder_wait_for_stop() == ESP_OK);
+    measurement_service_process_stop_poll();
+    assert(snapshot().state == MEASUREMENT_SERVICE_REVIEW);
+
+    set_fake_active_object("OBJ_0002", "Next object");
+    assert(measurement_service_keep_async() == ESP_OK);
+    run_pending_command();
+    assert(s_snapshot.object_id[0] == '\0');
+    assert(s_snapshot.object_name[0] == '\0');
+
+    measurement_service_snapshot_t current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_LIVE);
+    assert(strcmp(current.object_id, "OBJ_0002") == 0);
+    assert(strcmp(current.object_name, "Next object") == 0);
+
+    assert(measurement_service_start_async() == ESP_OK);
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_LIVE);
+    assert(current.busy);
+    assert(strcmp(current.object_id, "OBJ_0002") == 0);
+    run_pending_command();
+    current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_RECORDING);
+    assert(strcmp(current.object_id, "OBJ_0002") == 0);
+    assert(strcmp(fake_recorder.object_id, "OBJ_0002") == 0);
+    stop_service();
+}
+
+
+static void test_object_mutation_policy_table(void)
+{
+    static const struct {
+        measurement_service_state_t state;
+        bool allowed;
+    } cases[] = {
+        {MEASUREMENT_SERVICE_LIVE, true},
+        {MEASUREMENT_SERVICE_STARTING, false},
+        {MEASUREMENT_SERVICE_RECORDING, false},
+        {MEASUREMENT_SERVICE_STOPPING, false},
+        {MEASUREMENT_SERVICE_REVIEW, true},
+        {MEASUREMENT_SERVICE_DELETING, false},
+        {MEASUREMENT_SERVICE_ERROR, true},
+    };
+
+    assert(!measurement_service_snapshot_allows_object_mutation(NULL));
+    for (size_t index = 0U; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+        measurement_service_snapshot_t current = {
+            .busy = false,
+            .state = cases[index].state,
+        };
+        assert(
+            measurement_service_snapshot_allows_object_mutation(&current) ==
+            cases[index].allowed
+        );
+        current.busy = true;
+        assert(!measurement_service_snapshot_allows_object_mutation(&current));
+    }
 }
 
 
@@ -720,6 +916,8 @@ static void test_snapshot_and_delete_errors_preserve_safe_states(void)
     assert(current.state == MEASUREMENT_SERVICE_REVIEW);
     assert(current.last_error == ESP_FAIL);
     assert(fake_recorder_delete_calls == 1U);
+    assert(strcmp(fake_recorder_delete_object_id, "OBJ_0001") == 0);
+    assert(strcmp(fake_recorder_delete_session_id, "S000001") == 0);
     stop_service();
 }
 
@@ -756,6 +954,10 @@ int main(void)
     test_retry_start_after_error_keeps_gate_until_worker_runs();
     test_start_reservation_release_waits_for_starting_state();
     test_object_specific_start_is_transactional();
+    test_session_owner_is_immutable_across_active_switch();
+    test_error_owner_projection_semantics();
+    test_keep_clears_owner_and_next_start_resolves_fresh_active();
+    test_object_mutation_policy_table();
     test_acquisition_stop_cannot_bypass_recording_state();
     test_start_guard_rejects_without_leaking_release();
     test_snapshot_state_and_busy_share_one_critical_section();

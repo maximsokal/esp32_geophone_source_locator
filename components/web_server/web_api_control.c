@@ -43,11 +43,7 @@ static bool web_control_object_storage_is_idle(void)
         return false;
     }
 
-    return
-        !measurement.busy &&
-        (measurement.state == MEASUREMENT_SERVICE_LIVE ||
-         measurement.state == MEASUREMENT_SERVICE_REVIEW ||
-         measurement.state == MEASUREMENT_SERVICE_ERROR);
+    return measurement_service_snapshot_allows_object_mutation(&measurement);
 }
 
 static esp_err_t web_control_read_body(
