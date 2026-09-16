@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_storage_boot_failure",
+      "sources": [
+        "tests/host/app_storage_boot_failure_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_storage_boot",
+        "main"
+      ]
+    }
+  ]
+}

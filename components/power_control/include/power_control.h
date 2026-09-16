@@ -15,9 +15,12 @@ esp_err_t power_control_init(void);
 
 /*
  * GPIO21 is initialized during early bring-up, but shutdown remains disarmed
- * until startup has completed and the interactive UI is ready.  This arm step
- * confirms a released button; if the button is still held, the official
- * Button PRESS_UP callback completes arming after release.
+ * until an explicit safe arm boundary is reached. Normal startup arms only
+ * after the interactive runtime is ready; a terminal boot-error screen may
+ * use the same arm primitive before waiting for a user-controlled shutdown.
+ * The arm step confirms a released button; if the button is still held, the
+ * official Button PRESS_UP callback completes arming after release, so the
+ * pre-existing hold cannot itself latch shutdown.
  */
 esp_err_t power_control_arm_shutdown_button(void);
 
