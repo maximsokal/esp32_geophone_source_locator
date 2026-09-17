@@ -76,7 +76,7 @@ def test_generic_snapshot_and_status_expose_cadence_without_private_web_dependen
         "max_successful_sample_interval_us",
     ):
         assert f"snapshot->{field}" in source
-        assert f'\\"{field}\\"' in status or field == "cadence_available"
+        assert f'"{field}"' in status or field == "cadence_available"
 
     assert 'cJSON_AddObjectToObject(object, "cadence")' in status
     assert "source_snapshot->cadence_available" in status
