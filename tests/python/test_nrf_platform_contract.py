@@ -56,14 +56,17 @@ def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources()
     assert "target_include_directories(app PRIVATE ../include)" in source
 
 
-def test_plain_xiao_overlay_disables_phantom_sense_imu_but_keeps_private_bus():
+def test_plain_xiao_overlay_disables_phantom_sense_imu_and_exposes_upstream_twis():
     source = APP_OVERLAY.read_text(encoding="utf-8")
 
     assert "/delete-property/ imu0;" in source
     assert "&lsm6ds3tr_c" in source
     assert 'status = "disabled";' in source
     assert "&i2c30" not in source
-    assert "&i2c22" not in source
+    assert "&i2c22" in source
+    assert 'compatible = "nordic,nrf-twis";' in source
+    assert "NRF_PSEL(TWIS_SDA, 1, 10)" in source
+    assert "NRF_PSEL(TWIS_SCL, 1, 11)" in source
 
 
 def test_private_sensor_bus_uses_i2c30_only_and_i2c_is_explicitly_enabled():
