@@ -34,9 +34,9 @@
         "tests/host/object_store_lifetime_barrier_test.c"
       ],
       "include_dirs": [
+        "components/object_store/include",
         "tests/host/stubs/object_store_lifetime",
-        "components/object_store/tests/stubs",
-        "components/object_store/include"
+        "components/object_store/tests/stubs"
       ]
     },
     {
