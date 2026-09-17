@@ -74,9 +74,9 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
         r"ESP_ERROR_CHECK\(\s*ui_init\(\)\s*\)",
         r"keypad_start_event_monitor\(",
         r'app_startup_log_elapsed\(\s*"interactive_ready"',
+        r"seismic_acquisition_start\(\)",
         r"web_server_start\(\)",
         r"wifi_manager_start\(\)",
-        r"seismic_acquisition_start\(\)",
     ]
     service_positions = [pattern_position(services, pattern) for pattern in service_patterns]
     assert service_positions == sorted(service_positions)
