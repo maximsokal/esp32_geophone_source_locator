@@ -88,7 +88,12 @@ describe('serialized ESP API traffic', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const snapshot = await fetchSeismic(220);
-    const points = polylinePoints(snapshot.channels[0].samples_uv, 720, 120);
+    const points = polylinePoints(
+      snapshot.channels[0].samples_uv,
+      snapshot.timestamps_ms,
+      720,
+      120,
+    );
 
     expect(snapshot.channels[0].samples_uv).toEqual([-100, 100, -50]);
     expect(points.split(' ')).toHaveLength(3);
@@ -162,7 +167,14 @@ describe('serialized ESP API traffic', () => {
     );
     expect(snapshot.points[0].channels[0]).toEqual({ id: 1, min_uv: -12000, max_uv: 18000 });
 
-    const lines = envelopePolylinePoints(snapshot.points, 0, 720, 120);
+    const lines = envelopePolylinePoints(
+      snapshot.points,
+      0,
+      720,
+      120,
+      snapshot.start_timestamp_us,
+      snapshot.end_timestamp_us,
+    );
     expect(lines.min).not.toBe('');
     expect(lines.max).not.toBe('');
     expect(lines.scale_uv).toBe(20700);
