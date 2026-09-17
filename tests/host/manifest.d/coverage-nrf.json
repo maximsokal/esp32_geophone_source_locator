@@ -141,6 +141,7 @@
         "nRF54L15/src/nrf_upstream_protocol.c",
         "nRF54L15/src/nrf_bootstrap.c",
         "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c",
         "tests/host/nrf_bootstrap_runtime_zephyr_test.c"
       ],
       "include_dirs": [
@@ -154,6 +155,16 @@
       "sources": [
         "nRF54L15/src/nrf_cs_scheduler.c",
         "tests/host/nrf_cs_scheduler_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "nrf_cs_pair_adapter",
+      "sources": [
+        "nRF54L15/src/nrf_cs_pair_adapter.c",
+        "tests/host/nrf_cs_pair_adapter_test.c"
       ],
       "include_dirs": [
         "nRF54L15/include"
