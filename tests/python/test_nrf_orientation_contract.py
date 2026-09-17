@@ -69,13 +69,21 @@ def test_orientation_deadline_skips_catchup_bursts():
     assert "while (" not in advance
 
 
-def test_wire_protocol_and_ble_surface_are_unchanged():
+def test_wire_protocol_is_unchanged_and_max51_ble_surface_is_enabled():
     protocol = read("nRF54L15/include/nrf_upstream_protocol.h")
     prj = read("nRF54L15/zephyr/prj.conf")
     assert "#define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U" in protocol
     assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 102U" in protocol
     assert "orientation" not in protocol.lower()
-    assert "CONFIG_BT" not in prj
+    for line in (
+        "CONFIG_BT=y",
+        "CONFIG_BT_CENTRAL=y",
+        "CONFIG_BT_PERIPHERAL=y",
+        "CONFIG_BT_CHANNEL_SOUNDING=y",
+        "CONFIG_BT_RAS_RREQ=y",
+        "CONFIG_BT_RAS_RRSP=y",
+    ):
+        assert line in prj
 
 
 def test_build_and_host_manifests_include_orientation_without_new_firmware_variant():
