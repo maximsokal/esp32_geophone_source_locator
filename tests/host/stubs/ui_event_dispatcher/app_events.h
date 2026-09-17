@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 
@@ -13,6 +14,7 @@ extern const char APP_EVENT_BASE[];
 #define ESP_EVENT_ANY_ID (-1)
 
 esp_event_loop_handle_t app_events_get_loop(void);
+bool app_events_keypad_delivery_enabled(void);
 
 esp_err_t esp_event_handler_register_with(
     esp_event_loop_handle_t loop,

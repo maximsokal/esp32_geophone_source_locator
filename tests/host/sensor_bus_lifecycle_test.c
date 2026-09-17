@@ -37,6 +37,16 @@ i2c_bus_device_handle_t i2c_bus_device_create(i2c_bus_handle_t bus, uint8_t addr
     return s_fail_device_create ? NULL : &s_device_token;
 }
 
+esp_err_t i2c_bus_read_byte(i2c_bus_device_handle_t device, uint8_t mem_address, uint8_t *data)
+{
+    (void)device;
+    (void)mem_address;
+    if (data != NULL) {
+        *data = 0U;
+    }
+    return ESP_FAIL;
+}
+
 esp_err_t i2c_bus_device_delete(i2c_bus_device_handle_t *device)
 {
     ++s_device_delete_calls;

@@ -297,7 +297,15 @@ $topDir = Get-NcsTopDir
 Assert-NcsBaseline $topDir
 New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 
-Push-Location $topDir
+# Zephyr 4.2.x computes the source path relative to west's current directory
+# during its pre-CMake sanity check. Keep west on the checkout's drive so a
+# repository on E: can build against an NCS workspace on C:. ZEPHYR_BASE gives
+# west the authoritative workspace anchor without moving the process to C:.
+$zephyrBase = Join-Path $topDir "zephyr"
+$originalZephyrBase = $env:ZEPHYR_BASE
+$env:ZEPHYR_BASE = $zephyrBase
+
+Push-Location $project
 try {
     switch ($Action) {
         "build" {
@@ -319,6 +327,12 @@ try {
 }
 finally {
     Pop-Location
+    if ($null -eq $originalZephyrBase) {
+        Remove-Item Env:ZEPHYR_BASE -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:ZEPHYR_BASE = $originalZephyrBase
+    }
 }
 
 Write-Host "MAX-45 ${Action}: PASS" -ForegroundColor Green
