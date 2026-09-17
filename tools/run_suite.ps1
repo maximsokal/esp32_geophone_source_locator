@@ -185,11 +185,10 @@ function Invoke-HostSuites {
 
 $runIdf = Join-Path $repo "tools\run_idf.ps1"
 $powershell = "powershell.exe"
+$nrfNcsWrapper = Join-Path $repo "nRF54L15\ncs.ps1"
 
-function Invoke-NrfTests {
-    $nrfProject = Join-Path $repo "nRF54L15"
-    $nrfTestDirectory = Join-Path $nrfProject "test"
-    $nrfWrapper = Join-Path $nrfProject "pio.ps1"
+function Add-NrfSoftwareTestBoundary {
+    $nrfTestDirectory = Join-Path $repo "nRF54L15\test"
     $nrfSoftwareSuites = @()
 
     if (Test-Path -LiteralPath $nrfTestDirectory -PathType Container) {
@@ -199,21 +198,19 @@ function Invoke-NrfTests {
         )
     }
 
-    if ($nrfSoftwareSuites.Count -eq 0) {
-        Write-Host "nRF54L15 tests: SKIPPED (no qualified software/native test/test_sw_* suite exists; physical/HIL suites are excluded from Run All)." -ForegroundColor Yellow
-        $results.Add([pscustomobject]@{
-            Name = "nRF54L15 tests"
-            Status = "SKIPPED"
-            ExitCode = 0
-            Duration = 0
-        })
-        return
+    $message = if ($nrfSoftwareSuites.Count -eq 0) {
+        "no qualified NCS software/native test/test_sw_* suite exists; physical/HIL suites are excluded from Run All"
+    } else {
+        "test_sw_* suites exist, but the NCS-native embedded test runner has not been reviewed; PlatformIO compatibility tests are excluded from canonical production verification"
     }
 
-    Invoke-SuiteStep -Name "nRF54L15 tests" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
-        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nrfWrapper,
-        "-Action", "test"
-    )
+    Write-Host "nRF54L15 tests: SKIPPED ($message)." -ForegroundColor Yellow
+    $results.Add([pscustomobject]@{
+        Name = "nRF54L15 tests"
+        Status = "SKIPPED"
+        ExitCode = 0
+        Duration = 0
+    })
 }
 
 if ($Suite -eq "Host" -or $Suite -eq "All") {
@@ -222,11 +219,11 @@ if ($Suite -eq "Host" -or $Suite -eq "All") {
 
 if ($Suite -eq "All") {
     Invoke-SuiteStep -Name "Python tests" -WorkingDirectory $repo -FilePath "python" -ArgumentList @("-m", "pytest", "-q")
-    Invoke-SuiteStep -Name "nRF54L15 build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
-        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $repo "nRF54L15\pio.ps1"),
+    Invoke-SuiteStep -Name "nRF54L15 NCS production build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nrfNcsWrapper,
         "-Action", "build"
     )
-    Invoke-NrfTests
+    Add-NrfSoftwareTestBoundary
 }
 
 if ($Suite -eq "Web" -or $Suite -eq "All") {

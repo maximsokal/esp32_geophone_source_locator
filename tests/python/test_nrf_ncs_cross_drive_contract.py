@@ -13,7 +13,7 @@ def test_ncs_wrapper_uses_no_space_alias_and_anchors_workspace_with_zephyr_base(
 
     assert 'function New-NoSpaceProjectAlias' in script
     assert 'function Remove-NoSpaceProjectAlias' in script
-    assert '$ProjectPath -notmatch \'\\s\'' in script
+    assert "$ProjectPath -notmatch '\\s'" in script
     assert 'subst {0} "{1}"' in script
     assert '$sourceAliasDrive = New-NoSpaceProjectAlias $project' in script
     assert '$buildProject = "$sourceAliasDrive\\"' in script
@@ -24,29 +24,35 @@ def test_ncs_wrapper_uses_no_space_alias_and_anchors_workspace_with_zephyr_base(
 
     zephyr_base_pos = script.index('$env:ZEPHYR_BASE = $zephyrBase')
     checkout_pos = script.index('Push-Location $buildProject')
-    build_pos = script.index('Invoke-WestBuild $csBuild $true', checkout_pos)
-    pop_pos = script.index('Pop-Location', build_pos)
+    production_build_pos = script.index('Invoke-WestBuild $productionBuild $false', checkout_pos)
+    pop_pos = script.index('Pop-Location', production_build_pos)
     cleanup_pos = script.index('Remove-NoSpaceProjectAlias $sourceAliasDrive', pop_pos)
-    assert zephyr_base_pos < checkout_pos < build_pos < pop_pos < cleanup_pos
+    assert zephyr_base_pos < checkout_pos < production_build_pos < pop_pos < cleanup_pos
 
     assert 'Remove-Item Env:ZEPHYR_BASE -ErrorAction SilentlyContinue' in script
     assert '$env:ZEPHYR_BASE = $originalZephyrBase' in script
 
 
-def test_ncs_wrapper_probes_the_application_artifacts_inside_sysbuild():
+def test_ncs_wrapper_probes_production_and_cs_proof_artifacts_inside_sysbuild():
     script = NCS_PS1.read_text(encoding="utf-8")
 
     assert 'function Get-ZephyrAppArtifactDir' in script
     assert '$sysbuildAppDir = Join-Path $BuildDir "zephyr\\zephyr"' in script
     assert 'return Join-Path $BuildDir "zephyr"' in script
 
+    production_pos = script.index('function Probe-ProductionBuild')
+    production = script[production_pos:script.index('function Probe-CsBuild', production_pos)]
+    assert '$appZephyrDir = Get-ZephyrAppArtifactDir $productionBuild' in production
+    assert '$configPath = Join-Path $appZephyrDir ".config"' in production
+    assert '$elf = Join-Path $appZephyrDir "zephyr.elf"' in production
+
     probe_pos = script.index('function Probe-CsBuild')
-    probe = script[probe_pos:script.index('function Show-Size', probe_pos)]
-    assert '$appZephyrDir = Get-ZephyrAppArtifactDir $csBuild' in probe
-    assert '$configPath = Join-Path $appZephyrDir ".config"' in probe
-    assert '$elf = Join-Path $appZephyrDir "zephyr.elf"' in probe
+    proof = script[probe_pos:script.index('function Show-Size', probe_pos)]
+    assert '$appZephyrDir = Get-ZephyrAppArtifactDir $csProofBuild' in proof
+    assert '$configPath = Join-Path $appZephyrDir ".config"' in proof
+    assert '$elf = Join-Path $appZephyrDir "zephyr.elf"' in proof
 
     size_pos = script.index('function Show-Size')
-    size = script[size_pos:script.index('if ($Action -eq "clean")', size_pos)]
+    size = script[size_pos:script.index('function Invoke-SerialMonitor', size_pos)]
     assert '$appZephyrDir = Get-ZephyrAppArtifactDir $BuildDir' in size
     assert '$elf = Join-Path $appZephyrDir "zephyr.elf"' in size

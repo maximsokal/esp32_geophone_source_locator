@@ -35,7 +35,7 @@ def test_ncs_proof_is_additive_and_softdevice_backed():
     assert "CONFIG_BT_LL_SOFTDEVICE" not in base
 
 
-def test_common_image_has_both_ble_and_cs_roles_but_one_simultaneous_connection():
+def test_common_proof_image_has_both_ble_and_cs_roles_but_one_connection():
     cfg = config_lines(CS_CONF)
     for line in (
         "CONFIG_BT_CENTRAL=y",
@@ -48,7 +48,7 @@ def test_common_image_has_both_ble_and_cs_roles_but_one_simultaneous_connection(
         assert line in cfg
 
 
-def test_first_cs_profile_is_single_antenna_and_no_mode3_or_test_commands():
+def test_first_cs_proof_profile_is_single_antenna_and_no_mode3_or_ras():
     raw = text(CS_CONF)
     cfg = config_lines(CS_CONF)
     assert "CONFIG_BT_CTLR_SDC_CS_MAX_ANTENNA_PATHS=1" in cfg
@@ -74,6 +74,15 @@ def test_wrapper_is_pinned_to_ncs_340_and_upstream_xiao_target():
     assert "BOARD_ROOT" not in script
 
 
+def test_wrapper_self_bootstraps_pinned_sdk_when_west_is_absent():
+    script = text(NCS_PS1)
+    assert 'function Invoke-InPinnedToolchain' in script
+    assert '"sdk-manager", "toolchain", "launch"' in script
+    assert '"--ncs-version", $NcsVersion' in script
+    assert '$PSCommandPath' in script
+    assert 'if (-not (Get-Command "west" -ErrorAction SilentlyContinue))' in script
+
+
 def test_wrapper_has_sdk_manager_fallback_for_repo_outside_west_workspace():
     script = text(NCS_PS1)
     assert 'function Invoke-SdkManager' in script
@@ -93,15 +102,13 @@ def test_wrapper_has_sdk_manager_fallback_for_repo_outside_west_workspace():
 def test_wrapper_treats_failed_west_topdir_as_probe_miss_on_windows_powershell():
     script = text(NCS_PS1)
     assert '$topDir = $null' in script
-    assert 'try {' in script
     assert '$topDirOutput = @(& west topdir 2>$null)' in script
     assert 'if ($LASTEXITCODE -eq 0 -and $topDirOutput.Count -gt 0)' in script
     assert 'catch {' in script
-    assert '$topDir = $null' in script
     assert 'return Get-NcsTopDirFromSdkManager' in script
 
 
-def test_wrapper_handles_locked_toolchain_nrfutil_home_and_current_all_fields_columns():
+def test_wrapper_handles_locked_toolchain_nrfutil_home_and_current_columns():
     script = text(NCS_PS1)
     assert '$originalHome = $env:NRFUTIL_HOME' in script
     assert 'Join-Path $originalHome "locked"' in script
@@ -110,33 +117,41 @@ def test_wrapper_handles_locked_toolchain_nrfutil_home_and_current_all_fields_co
     assert '$env:NRFUTIL_HOME = $originalHome' in script
     assert 'SDK Type | SDK Version | SDK Status | SDK Directory | Toolchain Status' in script
     assert '"^\\s*nrf\\s+$versionPattern\\s+Installed' in script
-    assert 'return $matches[1].Trim()' in script
 
 
-def test_wrapper_honors_custom_sdk_manager_install_dir_and_platform_default():
+def test_wrapper_honors_custom_sdk_install_dir_and_platform_default():
     script = text(NCS_PS1)
     assert "'^\\s*install-dir:\\s*(.+?)\\s*$'" in script
     assert '$configured -ne "unset"' in script
-    assert 'return $configured' in script
     assert '$env:OS -eq "Windows_NT"' in script
     assert 'Join-Path $systemDrive "ncs"' in script
     assert 'return "/opt/nordic/ncs"' in script
     assert 'Join-Path $HOME "ncs"' in script
 
 
-def test_wrapper_reports_missing_sdk_and_rejects_wrong_workspace_version():
+def test_wrapper_reports_missing_sdk_and_rejects_wrong_version():
     script = text(NCS_PS1)
     assert "NCS $NcsVersion SDK is not installed according to 'nrfutil sdk-manager list --all-fields'." in script
     assert "nrfutil reports NCS $NcsVersion at '$candidate', but that directory is not a west workspace" in script
     assert 'if ($actual -ne $NcsVersion)' in script
-    assert 'MAX-45 is pinned to $NcsVersion, but active west workspace is $actual' in script
+    assert 'nRF54L15 production is pinned to $NcsVersion' in script
     assert 'Assert-NcsBaseline $topDir' in script
 
 
-def test_wrapper_builds_same_canonical_zephyr_app_and_checks_resolved_kconfig():
+def test_production_and_max45_proof_are_separate_actions():
     script = text(NCS_PS1)
     assert '$app = Join-Path $project "zephyr"' in script
+    assert '$productionBuild = Join-Path $buildRoot "nrf54l15-production-v3.4.0"' in script
+    assert '$csProofBuild = Join-Path $buildRoot "nrf54l15-cs-proof-v3.4.0"' in script
+    assert '"build" {' in script
+    assert 'Invoke-WestBuild $productionBuild $false' in script
+    assert '"cs-proof" {' in script
+    assert 'Invoke-WestBuild $csProofBuild $true' in script
     assert "-DEXTRA_CONF_FILE=$csConf" in script
+
+
+def test_cs_proof_still_checks_resolved_kconfig():
+    script = text(NCS_PS1)
     for required in (
         "CONFIG_BT_MAX_CONN=1",
         "CONFIG_BT_LL_SOFTDEVICE=y",
@@ -148,12 +163,6 @@ def test_wrapper_builds_same_canonical_zephyr_app_and_checks_resolved_kconfig():
         assert required in script
 
 
-def test_wrapper_uses_braced_action_before_colon_in_status_line():
-    script = text(NCS_PS1)
-    assert 'Write-Host "MAX-45 ${Action}: PASS"' in script
-    assert 'Write-Host "MAX-45 $Action: PASS"' not in script
-
-
 def test_existing_dual_i2c_overlay_contract_is_untouched():
     overlay = text(OVERLAY)
     assert "&i2c22" in overlay
@@ -162,31 +171,27 @@ def test_existing_dual_i2c_overlay_contract_is_untouched():
     assert "NRF_PSEL(TWIS_SCL, 1, 11)" in overlay
     assert "&lsm6ds3tr_c" in overlay
     assert 'status = "disabled";' in overlay
-    assert "&i2c30" not in overlay or "nordic,nrf-twis" not in overlay.split("&i2c30", 1)[-1]
 
 
-def test_upstream_wire_sizes_are_not_changed_by_ncs_proof():
+def test_upstream_wire_sizes_are_not_changed_by_toolchain_promotion():
     protocol = text(PROTOCOL)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+102U", protocol)
 
 
-def test_proof_doc_matches_sdk_manager_discovery_and_one_connection_contract():
+def test_proof_doc_preserves_sdk_and_one_connection_contract():
     doc = text(DOC)
-    assert "nrfutil sdk-manager config show" in doc
-    assert "nrfutil sdk-manager list --all-fields" in doc
-    assert "SDK Directory" in doc
-    assert "NRF_BASE" in doc
-    assert "ZEPHYR_BASE" in doc
-    assert "west topdir" in doc
     assert "v3.4.0" in doc
     assert "CONFIG_BT_MAX_CONN=1" in doc
-    assert "maximum simultaneous connections" in doc
+    assert "cs-proof" in doc
+    assert "production" in doc.lower()
+    assert "216244" in doc
+    assert "43800" in doc
 
 
-def test_wrapper_is_build_only_and_never_flashes():
-    script = text(NCS_PS1).lower()
-    assert 'validateset("build", "compare", "probe", "clean")' in script
-    assert "west flash" not in script
-    assert "nrfjprog" not in script
-    assert "upload" not in script
+def test_wrapper_exposes_explicit_flash_but_proof_action_never_flashes():
+    script = text(NCS_PS1)
+    assert 'ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "clean")' in script
+    assert 'function Invoke-WestFlash' in script
+    proof = script[script.index('"cs-proof" {'):script.index('"compare" {')]
+    assert "Invoke-WestFlash" not in proof

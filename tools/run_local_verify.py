@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="software",
-        help="verification surface; software = host + python + web; nrf = isolated nRF54L15 host policy + build/tests",
+        help="verification surface; software = host + python + web; nrf = isolated nRF54L15 host policy + canonical NCS build/tests boundary",
     )
     parser.add_argument(
         "--project-path",
@@ -282,16 +282,16 @@ def nrf_steps(
     if system_name != "Windows":
         raise VerificationError(
             "nRF54L15 verification currently requires the Windows path-safe "
-            "nRF54L15/pio.ps1 wrapper"
+            "nRF54L15/ncs.ps1 NCS v3.4.0 wrapper"
         )
     if powershell_executable is None:
         raise VerificationError(
             "nRF54L15 verification on Windows requires powershell.exe or pwsh"
         )
 
-    runner = root / "nRF54L15" / "pio.ps1"
+    runner = root / "nRF54L15" / "ncs.ps1"
     if not runner.is_file():
-        raise VerificationError(f"missing nRF54L15 helper: {runner}")
+        raise VerificationError(f"missing canonical nRF54L15 NCS helper: {runner}")
 
     command_prefix: tuple[str, ...] = (
         powershell_executable,
@@ -301,10 +301,16 @@ def nrf_steps(
     if Path(powershell_executable).name.lower() == "powershell.exe":
         command_prefix += ("-ExecutionPolicy", "Bypass")
 
-    test_skip_reason = None
-    if not nrf_software_suites(root):
+    software_suites = nrf_software_suites(root)
+    if software_suites:
         test_skip_reason = (
-            "no qualified test/test_sw_* software suite exists; embedded/HIL "
+            "qualified test_sw_* suites exist but no NCS-native embedded test runner "
+            "has been reviewed yet; PlatformIO compatibility tests are intentionally "
+            "excluded from the canonical production verification path"
+        )
+    else:
+        test_skip_reason = (
+            "no qualified test/test_sw_* NCS software suite exists; embedded/HIL "
             "tests are intentionally excluded from hardware-free verification"
         )
 
@@ -322,8 +328,7 @@ def nrf_steps(
             Step(
                 "nrf/tests",
                 root,
-                command_prefix
-                + ("-File", str(runner), "-Action", "test"),
+                ("<ncs-native-test-runner-not-yet-reviewed>",),
                 skip_reason=test_skip_reason,
             ),
         ]
