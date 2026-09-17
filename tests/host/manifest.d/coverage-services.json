@@ -22,9 +22,11 @@
         "tests/host/storage_service_operations_test.c"
       ],
       "include_dirs": [
+        "components/storage_service",
+        "components/storage_service/include",
+        "components/sd_card/include",
         "tests/host/stubs/storage_service_operations",
-        "tests/host/stubs/storage_service",
-        "components/storage_service/include"
+        "tests/host/stubs/storage_service"
       ]
     },
     {
@@ -34,8 +36,9 @@
         "tests/host/object_store_lifetime_barrier_test.c"
       ],
       "include_dirs": [
+        "components/object_store",
         "components/object_store/include",
-        "tests/host/stubs/object_store_lifetime",
+        "components/object_format/include",
         "components/object_store/tests/stubs"
       ]
     },
