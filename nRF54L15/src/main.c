@@ -12,6 +12,7 @@
 #include <nrfx_power.h>
 
 #include "nrf_bootstrap_runtime_zephyr.h"
+#include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_node_state.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 
@@ -47,6 +48,11 @@ int main(void)
     }
 
     ret = nrf_sensor_upstream_runtime_zephyr_start();
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = nrf_cs_pair_runtime_zephyr_start();
     if (ret < 0) {
         return ret;
     }
