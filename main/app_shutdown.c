@@ -4,6 +4,7 @@
 
 #include "display.h"
 #include "ina3221_monitor.h"
+#include "insights_bridge.h"
 #include "keypad.h"
 #include "measurement_service.h"
 #include "nrf_topology_service.h"
@@ -31,6 +32,8 @@ static const char *TAG =
 
 static void app_shutdown_stop_network(void)
 {
+    insights_bridge_shutdown();
+
     esp_err_t err =
         web_server_stop();
 

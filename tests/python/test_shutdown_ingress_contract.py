@@ -176,6 +176,17 @@ def test_shutdown_drains_recovery_and_network_before_dependent_services():
     assert body.count("app_shutdown_stop_network();") == 1
 
 
+def test_insights_shutdown_precedes_web_and_wifi_teardown():
+    source = _read("main/app_shutdown.c")
+    helper = _between(
+        source,
+        "static void app_shutdown_stop_network(void)",
+        "static void app_shutdown_stop_storage(void)",
+    )
+    assert helper.index("insights_bridge_shutdown();") < helper.index("web_server_stop();")
+    assert helper.index("web_server_stop();") < helper.index("wifi_manager_stop();")
+
+
 def test_web_stopped_plan_keeps_https_http_exit_order():
     source = _read("components/web_server/web_server_lifecycle_policy.c")
     stopped = _between(

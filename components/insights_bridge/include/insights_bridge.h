@@ -18,6 +18,10 @@ esp_err_t insights_bridge_init(void);
 void insights_bridge_on_network_ready(void);
 
 
+/* Drain bridge-owned event/task/transport lifetime before Wi-Fi stops. */
+void insights_bridge_shutdown(void);
+
+
 /* Publish only selected runtime health counters when the bridge is enabled. */
 esp_err_t insights_bridge_publish_runtime(void);
 
