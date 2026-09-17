@@ -71,7 +71,7 @@ def test_control_admission_precedes_scan_and_body_is_bounded_and_shutdown_aware(
     source = _read("components/web_server/web_api_control.c")
     handler = source[source.index("static esp_err_t web_api_control_handler"):]
     assert handler.index("web_server_shutdown_requested()") < handler.index(
-        "web_scan_store_try_handle"
+        "web_control_scan_try_handle"
     )
 
     reader = _between(
