@@ -102,7 +102,7 @@ esp_err_t i2c_bus_read_byte(
     return ESP_OK;
 }
 
-static void test_i2c_bus_adapter_uses_contro_byte_without_register_address(void)
+static void test_i2c_bus_adapter_uses_control_byte_without_register_address(void)
 {
     s_i2c_control = 0U;
     s_i2c_write_calls = 0U;
