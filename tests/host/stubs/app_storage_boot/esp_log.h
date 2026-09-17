@@ -1,7 +1,5 @@
 #pragma once
 
-#include <stdio.h>
-
-#define ESP_LOGI(tag, fmt, ...) do { (void)(tag); if (0) { fprintf(stderr, fmt, ##__VA_ARGS__); } } while (0)
-#define ESP_LOGW(tag, fmt, ...) do { (void)(tag); if (0) { fprintf(stderr, fmt, ##__VA_ARGS__); } } while (0)
-#define ESP_LOGE(tag, fmt, ...) do { (void)(tag); if (0) { fprintf(stderr, fmt, ##__VA_ARGS__); } } while (0)
+#define ESP_LOGI(tag, ...) do { (void)(tag); } while (0)
+#define ESP_LOGW(tag, ...) do { (void)(tag); } while (0)
+#define ESP_LOGE(tag, ...) do { (void)(tag); } while (0)
