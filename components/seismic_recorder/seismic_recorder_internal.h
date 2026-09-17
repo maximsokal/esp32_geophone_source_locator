@@ -26,7 +26,7 @@
  * reader re-opens/seeks/reads/closes samples.bin inside one bounded storage
  * window per staging chunk, then performs min/max reduction after the SPI2
  * lock is released.  This avoids holding TFT quiesce across an arbitrarily
- * large requested history range while CONFIG_FATFS_FS_LOCK=0 remains safe:
+ * large requested history range while CONFIG_FATFS_FS_LOCK>=7 remains safe:
  * no FILE handle survives outside its storage arbitration window. If a whole
  * requested range is still resident in the recorder cache, the reader may use
  * the retained PSRAM session copy and avoid SD/SPI2 completely.

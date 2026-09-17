@@ -33,6 +33,29 @@ function Invoke-Checked([string]$FilePath, [object[]]$Arguments) {
     }
 }
 
+
+function Sync-RequiredSdkconfig([string]$ConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
+        -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return
+    }
+
+    $content = [IO.File]::ReadAllText($ConfigPath)
+    $pattern = '(?m)^CONFIG_FATFS_FS_LOCK=\d+[ \t]*\r?\n?'
+    $required = 'CONFIG_FATFS_FS_LOCK=7'
+    $matches = [regex]::Matches($content, $pattern)
+    if ($matches.Count -eq 1 -and $matches[0].Value.Trim() -eq $required) {
+        return
+    }
+
+    $withoutStaleValues = [regex]::Replace($content, $pattern, '')
+    $updated = $withoutStaleValues.TrimEnd() + [Environment]::NewLine + $required + [Environment]::NewLine
+    if ($updated -ne $content) {
+        [IO.File]::WriteAllText($ConfigPath, $updated)
+        Write-Host ("Migrated local sdkconfig requirement: {0}" -f $required)
+    }
+}
+
 $idfPath = "C:\Espressif\frameworks\esp-idf-v5.5.4"
 $pythonPath = "C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe"
 $idfPyPath = Join-Path $idfPath "tools\idf.py"
@@ -92,6 +115,13 @@ try {
             if (-not [string]::IsNullOrWhiteSpace($Target)) {
                 Invoke-Checked $pythonPath @($idfPyPath, "-B", $build, "set-target", $Target)
             }
+            $effectiveSdkconfig = if ($sdkconfigPath) {
+                $sdkconfigPath
+            } else {
+                Join-Path $project "sdkconfig"
+            }
+            Sync-RequiredSdkconfig $effectiveSdkconfig
+
             $reconfigureArgs = @($idfPyPath, "-B", $build)
             if ($sdkconfigPath) {
                 $reconfigureArgs += @("-D", "SDKCONFIG=$sdkconfigPath")
