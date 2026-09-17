@@ -31,3 +31,22 @@ def test_ncs_wrapper_uses_no_space_alias_and_anchors_workspace_with_zephyr_base(
 
     assert 'Remove-Item Env:ZEPHYR_BASE -ErrorAction SilentlyContinue' in script
     assert '$env:ZEPHYR_BASE = $originalZephyrBase' in script
+
+
+def test_ncs_wrapper_probes_the_application_artifacts_inside_sysbuild():
+    script = NCS_PS1.read_text(encoding="utf-8")
+
+    assert 'function Get-ZephyrAppArtifactDir' in script
+    assert '$sysbuildAppDir = Join-Path $BuildDir "zephyr\\zephyr"' in script
+    assert 'return Join-Path $BuildDir "zephyr"' in script
+
+    probe_pos = script.index('function Probe-CsBuild')
+    probe = script[probe_pos:script.index('function Show-Size', probe_pos)]
+    assert '$appZephyrDir = Get-ZephyrAppArtifactDir $csBuild' in probe
+    assert '$configPath = Join-Path $appZephyrDir ".config"' in probe
+    assert '$elf = Join-Path $appZephyrDir "zephyr.elf"' in probe
+
+    size_pos = script.index('function Show-Size')
+    size = script[size_pos:script.index('if ($Action -eq "clean")', size_pos)]
+    assert '$appZephyrDir = Get-ZephyrAppArtifactDir $BuildDir' in size
+    assert '$elf = Join-Path $appZephyrDir "zephyr.elf"' in size
