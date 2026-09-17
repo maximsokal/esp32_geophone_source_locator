@@ -72,8 +72,8 @@ def test_remote_logical_activation_precedes_published_assignment_ok():
     notify = handler.index("nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment")
     publish_ok = handler.rindex("publish_core_status();")
     assert process < notify < publish_ok
-    assert "result == NRF_UPSTREAM_RESULT_OK" in handler
-    assert "assign.role == NRF_UPSTREAM_ROLE_REMOTE" in handler
+    assert re.search(r"result\s*==\s*NRF_UPSTREAM_RESULT_OK", handler)
+    assert re.search(r"assign\.role\s*==\s*NRF_UPSTREAM_ROLE_REMOTE", handler)
     assert handler.count("assignment_runtime_failure();") >= 2
 
     failure_start = bootstrap.index("static void assignment_runtime_failure")
