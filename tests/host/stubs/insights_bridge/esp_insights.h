@@ -6,3 +6,4 @@ typedef struct {
     const char *auth_key;
 } esp_insights_config_t;
 esp_err_t esp_insights_init(const esp_insights_config_t *config);
+void esp_insights_deinit(void);

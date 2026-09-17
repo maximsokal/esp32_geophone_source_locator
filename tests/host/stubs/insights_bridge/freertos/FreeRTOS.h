@@ -10,3 +10,4 @@ typedef void (*TaskFunction_t)(void *);
 #define pdFALSE 0
 #define pdPASS 1
 #define portMAX_DELAY UINT32_MAX
+#define pdMS_TO_TICKS(ms) ((TickType_t)(ms))

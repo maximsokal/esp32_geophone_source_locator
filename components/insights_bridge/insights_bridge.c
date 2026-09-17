@@ -44,7 +44,9 @@ static atomic_bool s_initialized = false;
 
 static bool s_network_handler_registered = false;
 static atomic_bool s_retry_pending = false;
-static TaskHandle_t s_retry_task = NULL;
+static atomic_bool s_stopping = false;
+static atomic_uint s_notify_in_flight = 0U;
+static _Atomic(TaskHandle_t) s_retry_task = NULL;
 
 
 /*
@@ -127,94 +129,67 @@ static void insights_bridge_app_event_handler(
 
 static esp_err_t insights_bridge_register_network_ready_handler(void)
 {
+    if (atomic_load_explicit(&s_stopping, memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_network_handler_registered) {
         return ESP_OK;
     }
 
-    esp_event_loop_handle_t loop =
-        app_events_get_loop();
+    esp_event_loop_handle_t loop = app_events_get_loop();
     if (loop == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err =
-        esp_event_handler_register_with(
-            loop,
-            APP_EVENT,
-            APP_EVENT_WIFI_STA_CONNECTED,
-            insights_bridge_app_event_handler,
-            NULL
-        );
-
+    const esp_err_t err = esp_event_handler_register_with(
+        loop,
+        APP_EVENT,
+        APP_EVENT_WIFI_STA_CONNECTED,
+        insights_bridge_app_event_handler,
+        NULL
+    );
     if (err == ESP_OK) {
         s_network_handler_registered = true;
     }
-
     return err;
 }
 
 
 static esp_err_t insights_bridge_attempt_init(void)
 {
+    if (atomic_load_explicit(&s_stopping, memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
         return ESP_OK;
     }
-
     if (!insights_has_auth_key()) {
-        ESP_LOGW(
-            TAG,
-            "ESP Insights requested but no private auth-key provider is installed; bridge remains inactive"
-        );
-        atomic_store_explicit(
-            &s_retry_pending,
-            false,
-            memory_order_release
-        );
+        ESP_LOGW(TAG, "ESP Insights requested but no private auth-key provider is installed; bridge remains inactive");
+        atomic_store_explicit(&s_retry_pending, false, memory_order_release);
         return ESP_OK;
     }
 
     esp_insights_config_t config = {
-        /* Metrics only: application logs may contain device-specific data. */
         .log_type = 0U,
     };
-
 #if defined(CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS) && CONFIG_ESP_INSIGHTS_TRANSPORT_HTTPS
     config.auth_key = app_esp_insights_auth_key();
 #endif
 
-    /* The agent is additive and its failure must never block device boot. */
     const esp_err_t init_err = esp_insights_init(&config);
     if (init_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "ESP Insights initialization unavailable; continuing without it: %s",
-            esp_err_to_name(init_err)
-        );
-        /* The platform is ready at the normal call site, but a transient
-         * resource failure may be retried after STA obtains an IP. The
-         * APP_EVENT callback only notifies the dedicated retry worker. */
-        atomic_store_explicit(
-            &s_retry_pending,
-            true,
-            memory_order_release
-        );
+        ESP_LOGW(TAG, "ESP Insights initialization unavailable; continuing without it: %s", esp_err_to_name(init_err));
+        if (!atomic_load_explicit(&s_stopping, memory_order_acquire)) {
+            atomic_store_explicit(&s_retry_pending, true, memory_order_release);
+        }
         return ESP_OK;
     }
 
 #if defined(CONFIG_DIAG_ENABLE_METRICS) && CONFIG_DIAG_ENABLE_METRICS
     insights_register_metrics();
 #endif
-
-    atomic_store_explicit(
-        &s_initialized,
-        true,
-        memory_order_release
-    );
-    atomic_store_explicit(
-        &s_retry_pending,
-        false,
-        memory_order_release
-    );
+    atomic_store_explicit(&s_initialized, true, memory_order_release);
+    atomic_store_explicit(&s_retry_pending, false, memory_order_release);
     ESP_LOGI(TAG, "ESP Insights bridge enabled with selected runtime metrics only");
     return ESP_OK;
 }
@@ -225,52 +200,43 @@ static void insights_bridge_retry_worker(void *context)
     (void)context;
 
     for (;;) {
-        (void)ulTaskNotifyTake(
-            pdTRUE,
-            portMAX_DELAY
-        );
-
-        if (
-            atomic_load_explicit(&s_initialized, memory_order_acquire) ||
-            !atomic_load_explicit(&s_retry_pending, memory_order_acquire)
-        ) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (atomic_load_explicit(&s_stopping, memory_order_acquire)) {
+            break;
+        }
+        if (atomic_load_explicit(&s_initialized, memory_order_acquire) ||
+            !atomic_load_explicit(&s_retry_pending, memory_order_acquire)) {
             continue;
         }
 
-        /* Consume the request before entering the attempt. A failed attempt
-         * sets it again, and the next connected event will notify us again. */
-        atomic_store_explicit(
-            &s_retry_pending,
-            false,
-            memory_order_release
-        );
+        atomic_store_explicit(&s_retry_pending, false, memory_order_release);
         (void)insights_bridge_attempt_init();
     }
+
+    atomic_store_explicit(&s_retry_task, NULL, memory_order_release);
+    vTaskDelete(NULL);
 }
 
 
 static esp_err_t insights_bridge_start_retry_worker(void)
 {
-    if (s_retry_task != NULL) {
+    if (atomic_load_explicit(&s_retry_task, memory_order_acquire) != NULL) {
         return ESP_OK;
     }
-
-    const BaseType_t result =
-        xTaskCreatePinnedToCore(
-            insights_bridge_retry_worker,
-            "insights_retry",
-            APP_TASK_STACK_INSIGHTS,
-            NULL,
-            APP_TASK_PRIORITY_INSIGHTS,
-            &s_retry_task,
-            APP_TASK_CORE_SERVICES
-        );
-
+    TaskHandle_t task = NULL;
+    const BaseType_t result = xTaskCreatePinnedToCore(
+        insights_bridge_retry_worker,
+        "insights_retry",
+        APP_TASK_STACK_INSIGHTS,
+        NULL,
+        APP_TASK_PRIORITY_INSIGHTS,
+        &task,
+        APP_TASK_CORE_SERVICES
+    );
     if (result != pdPASS) {
-        s_retry_task = NULL;
         return ESP_ERR_NO_MEM;
     }
-
+    atomic_store_explicit(&s_retry_task, task, memory_order_release);
     return ESP_OK;
 }
 
@@ -307,6 +273,10 @@ esp_err_t insights_bridge_init(void)
     }
 
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
+    if (atomic_load_explicit(&s_stopping, memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     const esp_err_t worker_err =
         insights_bridge_start_retry_worker();
     if (worker_err != ESP_OK) {
@@ -338,14 +308,70 @@ esp_err_t insights_bridge_init(void)
 void insights_bridge_on_network_ready(void)
 {
 #if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
-    if (s_retry_task == NULL) {
+    if (atomic_load_explicit(&s_stopping, memory_order_acquire)) {
         return;
     }
 
-    (void)xTaskNotifyGive(s_retry_task);
+    atomic_fetch_add_explicit(&s_notify_in_flight, 1U, memory_order_acq_rel);
+    if (!atomic_load_explicit(&s_stopping, memory_order_acquire)) {
+        const TaskHandle_t task = atomic_load_explicit(&s_retry_task, memory_order_acquire);
+        if (task != NULL) {
+            (void)xTaskNotifyGive(task);
+        }
+    }
+    atomic_fetch_sub_explicit(&s_notify_in_flight, 1U, memory_order_acq_rel);
 #endif
 }
 
+
+
+void insights_bridge_shutdown(void)
+{
+#if defined(CONFIG_APP_ESP_INSIGHTS) && CONFIG_APP_ESP_INSIGHTS
+    atomic_store_explicit(&s_stopping, true, memory_order_release);
+    atomic_store_explicit(&s_retry_pending, false, memory_order_release);
+
+    esp_err_t unregister_err = ESP_OK;
+    if (s_network_handler_registered) {
+        esp_event_loop_handle_t loop = app_events_get_loop();
+        unregister_err = loop != NULL
+            ? esp_event_handler_unregister_with(
+                loop,
+                APP_EVENT,
+                APP_EVENT_WIFI_STA_CONNECTED,
+                insights_bridge_app_event_handler
+            )
+            : ESP_ERR_INVALID_STATE;
+        if (unregister_err == ESP_OK) {
+            s_network_handler_registered = false;
+        } else {
+            ESP_LOGW(TAG, "Failed to unregister ESP Insights app-event handler: %s", esp_err_to_name(unregister_err));
+        }
+    }
+
+    while (atomic_load_explicit(&s_notify_in_flight, memory_order_acquire) != 0U) {
+        vTaskDelay(pdMS_TO_TICKS(1U));
+    }
+
+    TaskHandle_t task = atomic_load_explicit(&s_retry_task, memory_order_acquire);
+    if (task != NULL) {
+        (void)xTaskNotifyGive(task);
+    }
+    while (atomic_load_explicit(&s_retry_task, memory_order_acquire) != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(1U));
+    }
+
+    if (atomic_exchange_explicit(&s_initialized, false, memory_order_acq_rel)) {
+        esp_insights_deinit();
+    }
+
+    if (unregister_err == ESP_OK) {
+        atomic_store_explicit(&s_stopping, false, memory_order_release);
+    }
+#else
+    atomic_store_explicit(&s_initialized, false, memory_order_release);
+#endif
+}
 
 esp_err_t insights_bridge_publish_runtime(void)
 {
