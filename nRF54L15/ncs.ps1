@@ -266,8 +266,23 @@ function Assert-ConfigLine([string[]]$Config, [string]$Line) {
     }
 }
 
+function Get-ZephyrAppArtifactDir([string]$BuildDir) {
+    # NCS v3.4.0 runs this application through sysbuild. The outer
+    # <build>/zephyr directory belongs to sysbuild itself; the actual Zephyr
+    # application writes .config and zephyr.elf under <build>/zephyr/zephyr.
+    # Keep a non-sysbuild fallback so the wrapper remains usable if west is
+    # explicitly configured without sysbuild in a future toolchain.
+    $sysbuildAppDir = Join-Path $BuildDir "zephyr\zephyr"
+    if (Test-Path -LiteralPath $sysbuildAppDir -PathType Container) {
+        return $sysbuildAppDir
+    }
+
+    return Join-Path $BuildDir "zephyr"
+}
+
 function Probe-CsBuild {
-    $configPath = Join-Path $csBuild "zephyr\.config"
+    $appZephyrDir = Get-ZephyrAppArtifactDir $csBuild
+    $configPath = Join-Path $appZephyrDir ".config"
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         throw "CS build config not found: $configPath. Run .\nRF54L15\ncs.ps1 build first."
     }
@@ -299,7 +314,7 @@ function Probe-CsBuild {
         Assert-ConfigLine $config $line
     }
 
-    $elf = Join-Path $csBuild "zephyr\zephyr.elf"
+    $elf = Join-Path $appZephyrDir "zephyr.elf"
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) {
         throw "CS ELF not found after build: $elf"
     }
@@ -309,7 +324,8 @@ function Probe-CsBuild {
 
 function Show-Size([string]$Label, [string]$BuildDir) {
     Require-Command "arm-zephyr-eabi-size" "The active NCS toolchain does not expose arm-zephyr-eabi-size."
-    $elf = Join-Path $BuildDir "zephyr\zephyr.elf"
+    $appZephyrDir = Get-ZephyrAppArtifactDir $BuildDir
+    $elf = Join-Path $appZephyrDir "zephyr.elf"
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) {
         throw "$Label ELF missing: $elf"
     }
