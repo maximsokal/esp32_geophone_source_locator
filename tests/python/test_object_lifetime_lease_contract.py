@@ -68,6 +68,13 @@ def test_recorder_lifetime_wraps_full_start_and_terminal_metadata() -> None:
     assert "seismic_recorder_start=seismic_recorder_start_unleased" in cmake
     assert "seismic_recorder_json_write_metadata=seismic_recorder_lifetime_write_metadata" in cmake
 
+    script_guard = cmake.index("if(NOT CMAKE_SCRIPT_MODE_FILE)")
+    first_properties = cmake.index("set_source_files_properties(")
+    guard_end = cmake.index("endif()", first_properties)
+    register = cmake.index("idf_component_register(")
+    assert script_guard < first_properties < guard_end < register
+    assert cmake.count("set_source_files_properties(") == 2
+
     lifetime = read("components/seismic_recorder/seismic_recorder_object_lifetime.c")
     start = function_slice(
         lifetime,
