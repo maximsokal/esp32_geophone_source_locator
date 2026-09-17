@@ -1,24 +1,30 @@
 #include "web_server_lifecycle_policy.h"
 
 
-#if defined(__GNUC__)
-#define WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY 1
+/*
+ * Firmware builds resolve Wi-Fi authority through weak GCC references so this
+ * policy remains host-testable without linking the Wi-Fi component. MSVC has
+ * no compatible weak-function reference. A dedicated host integration target
+ * can define WEB_LIFECYCLE_LINKED_WIFI_AUTHORITY to link explicit fake/current
+ * authority functions and exercise the same authoritative branch. Ordinary
+ * isolated MSVC tests keep the legacy event-state fallback and emit no Wi-Fi
+ * linker references.
+ */
+#if defined(WEB_LIFECYCLE_LINKED_WIFI_AUTHORITY)
+#define WEB_LIFECYCLE_HAS_WIFI_AUTHORITY 1
+#define WEB_LIFECYCLE_WIFI_AUTHORITY_ALWAYS_LINKED 1
+#define WEB_LIFECYCLE_WEAK
+#elif defined(__GNUC__)
+#define WEB_LIFECYCLE_HAS_WIFI_AUTHORITY 1
+#define WEB_LIFECYCLE_WIFI_AUTHORITY_ALWAYS_LINKED 0
 #define WEB_LIFECYCLE_WEAK __attribute__((weak))
 #else
-#define WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY 0
+#define WEB_LIFECYCLE_HAS_WIFI_AUTHORITY 0
+#define WEB_LIFECYCLE_WIFI_AUTHORITY_ALWAYS_LINKED 0
 #define WEB_LIFECYCLE_WEAK
 #endif
 
-/*
- * Keep this policy host-testable without linking the Wi-Fi component. In the
- * firmware these symbols are present and raw ESP-IDF network events become
- * wakeups only: the desired Web state is derived from current manager/runtime
- * authority. GCC/Clang builds use weak references so isolated tests can omit
- * Wi-Fi. MSVC has no compatible weak-function reference, so isolated Windows
- * host tests compile the legacy event-state fallback without emitting linker
- * references to the Wi-Fi component.
- */
-#if WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY
+#if WEB_LIFECYCLE_HAS_WIFI_AUTHORITY
 extern bool wifi_manager_is_running(void) WEB_LIFECYCLE_WEAK;
 extern bool wifi_manager_is_setup_mode(void) WEB_LIFECYCLE_WEAK;
 extern bool wifi_manager_is_radio_state_uncertain(void) WEB_LIFECYCLE_WEAK;
@@ -29,7 +35,9 @@ extern bool wifi_manager_sta_has_ip(void) WEB_LIFECYCLE_WEAK;
 
 static bool web_lifecycle_wifi_authority_available(void)
 {
-#if WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY
+#if WEB_LIFECYCLE_WIFI_AUTHORITY_ALWAYS_LINKED
+    return true;
+#elif WEB_LIFECYCLE_HAS_WIFI_AUTHORITY
     return
         wifi_manager_is_running != NULL &&
         wifi_manager_is_setup_mode != NULL &&
@@ -48,7 +56,7 @@ web_lifecycle_state_t web_lifecycle_effective_network_state(
 )
 {
     if (web_lifecycle_wifi_authority_available()) {
-#if WEB_LIFECYCLE_HAS_WEAK_WIFI_AUTHORITY
+#if WEB_LIFECYCLE_HAS_WIFI_AUTHORITY
         const bool uncertain =
             radio_state_uncertain ||
             wifi_manager_is_radio_state_uncertain();
