@@ -58,11 +58,22 @@ def test_recorder_keeps_explicit_sync_policy_instead_of_syncing_every_write():
     assert "fsync(fileno(samples_file))" in filesystem
 
 
-def test_no_fatfs_file_lock_dependency_is_hidden_by_reader_windows():
+def test_fatfs_lock_budget_is_authoritative_and_existing_configs_are_migrated():
     sdkconfig = read("sdkconfig.defaults")
-    reader = read("components/seismic_recorder/seismic_recorder_reader.c")
+    runner = read("tools/run_idf.ps1")
+    guard = read("main/app_build_config_guard.c")
+    gitignore = read(".gitignore")
 
-    assert "CONFIG_FATFS_FS_LOCK=0" in sdkconfig
+    assert "CONFIG_FATFS_FS_LOCK=7" in sdkconfig
+    assert "CONFIG_FATFS_FS_LOCK=0" not in sdkconfig
+    assert "sdkconfig\n" in gitignore.replace("\r\n", "\n")
+    assert "Sync-RequiredSdkconfig" in runner
+    assert "CONFIG_FATFS_FS_LOCK=7" in runner
+    assert "CONFIG_FATFS_FS_LOCK < 7" in guard
+
+
+def test_reader_windows_remain_bounded_with_fatfs_lock_as_defense_in_depth():
+    reader = read("components/seismic_recorder/seismic_recorder_reader.c")
     assert "SEISMIC_RECORDER_READ_STAGING_FRAMES  1024U" in read(
         "components/seismic_recorder/seismic_recorder_internal.h"
     )

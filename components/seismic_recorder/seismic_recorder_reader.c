@@ -744,7 +744,7 @@ esp_err_t seismic_recorder_read_session(
     }
 
     /*
-     * CONFIG_FATFS_FS_LOCK=0 means an unlocked long-lived FILE * cannot be
+     * CONFIG_FATFS_FS_LOCK>=7 means an unlocked long-lived FILE * cannot be
      * made safe against concurrent object/session mutation by libc itself.
      * Keep no handle across arbitration windows: every read_at callback opens,
      * seeks, reads one bounded chunk, closes, and only then releases SPI2.

@@ -78,6 +78,14 @@
 #error "GeoLocator disables legacy TLS renegotiation. Regenerate sdkconfig from project defaults."
 #endif
 
+/*
+ * Object-store leases are the primary lifetime barrier. FatFs locking is a
+ * second line of defense for the reviewed simultaneous-open-file budget.
+ */
+#if !defined(CONFIG_FATFS_FS_LOCK) || (CONFIG_FATFS_FS_LOCK < 7)
+#error "GeoLocator requires CONFIG_FATFS_FS_LOCK >= 7. Build with tools/run_idf.ps1 or regenerate sdkconfig from project defaults."
+#endif
+
 #if !defined(CONFIG_FREERTOS_USE_TRACE_FACILITY) || !CONFIG_FREERTOS_USE_TRACE_FACILITY
 #error "GeoLocator runtime observability requires CONFIG_FREERTOS_USE_TRACE_FACILITY=y. Regenerate sdkconfig from project defaults."
 #endif
