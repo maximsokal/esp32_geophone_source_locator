@@ -22,42 +22,63 @@ def text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def config_lines(path: Path) -> set[str]:
+    return {
+        line.strip()
+        for line in text(path).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
 def test_ncs_wrapper_is_canonical_production_authority_and_self_bootstraps():
     source = text(NCS)
     assert '$NcsVersion = "v3.4.0"' in source
     assert '$board = "xiao_nrf54l15/nrf54l15/cpuapp"' in source
     assert '"nrf54l15-production-v3.4.0"' in source
     assert 'ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "clean")' in source
-    assert 'function Invoke-InPinnedToolchain' in source
+    assert "function Invoke-InPinnedToolchain" in source
     assert '"sdk-manager", "toolchain", "launch"' in source
     assert '"--ncs-version", $NcsVersion' in source
     assert 'if (-not (Get-Command "west"' in source
-    assert 'Invoke-InPinnedToolchain' in source
+    assert "Invoke-InPinnedToolchain" in source
 
 
-def test_production_build_is_base_config_while_max45_overlay_stays_proof_only():
+def test_production_build_uses_permanent_max51_channel_sounding_config():
     source = text(NCS)
     build_case = source[source.index('"build" {'):source.index('"flash" {')]
     proof_case = source[source.index('"cs-proof" {'):source.index('"compare" {')]
 
-    assert 'Invoke-WestBuild $productionBuild $false' in build_case
-    assert '$csConf' not in build_case
-    assert 'Probe-ProductionBuild' in build_case
-    assert 'Invoke-WestBuild $csProofBuild $true' in proof_case
-    assert 'Probe-CsBuild' in proof_case
+    assert "Invoke-WestBuild $productionBuild $false" in build_case
+    assert "$csConf" not in build_case
+    assert "Probe-ProductionBuild" in build_case
+    assert "Invoke-WestBuild $csProofBuild $true" in proof_case
+    assert "Probe-CsBuild" in proof_case
 
-    base = text(BASE_CONF)
-    assert "CONFIG_BT_CHANNEL_SOUNDING" not in base
-    assert "CONFIG_BT_RAS" not in base
+    cfg = config_lines(BASE_CONF)
+    for required in (
+        "CONFIG_BT=y",
+        "CONFIG_BT_CENTRAL=y",
+        "CONFIG_BT_PERIPHERAL=y",
+        "CONFIG_BT_MAX_CONN=1",
+        "CONFIG_BT_LL_SOFTDEVICE=y",
+        "CONFIG_BT_LL_SOFTDEVICE_MULTIROLE=y",
+        "CONFIG_BT_CHANNEL_SOUNDING=y",
+        "CONFIG_BT_CTLR_SDC_CS_ROLE_BOTH=y",
+        "CONFIG_BT_RAS=y",
+        "CONFIG_BT_RAS_RREQ=y",
+        "CONFIG_BT_RAS_RRSP=y",
+        "CONFIG_BT_CS_DE=y",
+    ):
+        assert required in cfg
 
 
 def test_canonical_flash_is_explicit_ncs_hardware_action():
     source = text(NCS)
     flash_case = source[source.index('"flash" {'):source.index('"cs-proof" {')]
-    assert 'Invoke-WestBuild $productionBuild $false' in flash_case
-    assert 'Probe-ProductionBuild' in flash_case
-    assert 'Invoke-WestFlash $productionBuild' in flash_case
-    assert 'west flash -d $BuildDir' in source
+    assert "Invoke-WestBuild $productionBuild $false" in flash_case
+    assert "Probe-ProductionBuild" in flash_case
+    assert "Invoke-WestFlash $productionBuild" in flash_case
+    assert "west flash -d $BuildDir" in source
 
 
 def test_local_verify_routes_nrf_build_to_ncs_not_platformio():
@@ -77,7 +98,7 @@ def test_run_all_routes_nrf_build_to_ncs_not_platformio():
     assert 'Invoke-SuiteStep -Name "nRF54L15 NCS production build"' in source
     assert '"-Action", "build"' in source
     all_branch = source[source.index('if ($Suite -eq "All") {'):]
-    assert 'pio.ps1' not in all_branch
+    assert "pio.ps1" not in all_branch
     assert "PlatformIO compatibility tests are excluded" in source
 
 
