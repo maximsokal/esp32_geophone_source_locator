@@ -10,6 +10,7 @@ LOCAL_VERIFY = ROOT / "tools" / "run_local_verify.py"
 RUN_SUITE = ROOT / "tools" / "run_suite.ps1"
 TASKS = ROOT / ".vscode" / "tasks.json"
 README = ROOT / "nRF54L15" / "README.md"
+ARCHITECTURE = ROOT / "ARCHITECTURE.md"
 LOCAL_DOC = ROOT / "docs" / "local-verification.md"
 EVIDENCE = ROOT / "docs" / "verification-evidence-matrix.md"
 TEST_TASK = ROOT / "docs" / "nrf54l15-test-task.md"
@@ -106,7 +107,7 @@ def test_vscode_build_flash_and_monitor_use_ncs_and_pio_is_named_compatibility()
 
 
 def test_docs_consistently_name_ncs_340_as_canonical_and_platformio_as_compatibility():
-    for path in (README, LOCAL_DOC, EVIDENCE, TEST_TASK):
+    for path in (README, ARCHITECTURE, LOCAL_DOC, EVIDENCE, TEST_TASK):
         source = text(path)
         lowered = source.lower()
         assert "ncs v3.4.0" in lowered or "nrf connect sdk v3.4.0" in lowered
@@ -116,6 +117,14 @@ def test_docs_consistently_name_ncs_340_as_canonical_and_platformio_as_compatibi
 
     assert "pio.ps1 upload" in text(README)
     assert "not the production" in text(README).lower()
+
+    architecture = text(ARCHITECTURE)
+    assert "canonical nrf54l15 production/flash toolchain" in architecture.lower()
+    assert "one production PlatformIO environment" not in architecture
+    assert "current Seeed PlatformIO + Zephyr" not in architecture
+    assert ".\\nRF54L15\\ncs.ps1 build" in architecture
+    assert ".\\nRF54L15\\ncs.ps1 flash" in architecture
+    assert "NCS v3.4.0 /\nZephyr 4.4.0 source" in architecture
 
 
 def test_platformio_wrapper_still_exists_but_is_not_used_by_canonical_runners():

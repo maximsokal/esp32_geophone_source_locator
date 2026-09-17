@@ -198,49 +198,55 @@ Battery percentage is intentionally an **estimated 1S Li-ion voltage state-of-ch
 
 ## nRF54L15 subproject and distributed sensor topology
 
-`nRF54L15/` is a separate PlatformIO + Zephyr project inside this repository.
-The repository root remains an ESP-IDF project for the ESP32-S3; the WebUI and
-the nRF54L15 project remain independent. Do not add a root-level
-`platformio.ini`, and do not make the ESP-IDF build depend on the nRF build.
+`nRF54L15/` is an independent nRF application subtree inside this repository.
+The repository root remains the ESP-IDF ESP32-S3 project; the WebUI and nRF
+application remain separate build surfaces and the ESP-IDF root build does not
+depend on the nRF build.
 
-The nRF project currently has one production PlatformIO environment,
-`seeed-xiao-nrf54l15`, using the Seeed board ID `seeed-xiao-nrf54l15` and the
-Zephyr application target `xiao_nrf54l15/nrf54l15/cpuapp`. All nRF54L15 boards
-must use one source tree, one production environment, one implementation and
-one production firmware binary. There are no compile-time `central` and
-`remote` firmware variants; node identity, topology and the current wireless
-role are runtime state. A future native/host-only test environment is allowed
-only when needed to execute software tests without hardware; it must not
-become a second production firmware variant.
+The **canonical nRF54L15 production/flash toolchain is nRF Connect SDK v3.4.0
+(Zephyr 4.4.0)** using the upstream board target
+`xiao_nrf54l15/nrf54l15/cpuapp`. All nRF54L15 boards use the same `src`,
+`include` and `zephyr` source/configuration tree and one common runtime firmware
+image. MAIN/REMOTE topology and future Channel Sounding initiator/reflector
+roles are runtime state; there are no compile-time `central`, `remote`,
+`initiator` or `reflector` production variants.
+
+The historical Seeed PlatformIO environment `seeed-xiao-nrf54l15` remains
+commit-pinned to platform revision
+`1ec1287f8e4bc4067a6fd593991e36875aef989f` / Zephyr 4.2.1 only as an explicit
+**compatibility smoke build**. It is not the authoritative production artifact
+and `pio.ps1 upload` is not the official flash path.
 
 ### Windows build boundary
 
-The checkout path contains spaces and the current Seeed PlatformIO + Zephyr
-generation path is not reliable when it receives that path directly. The
-supported interface is therefore:
+The checkout path contains spaces, so the supported production interface is the
+pinned NCS wrapper:
 
 ```powershell
-.\nRF54L15\pio.ps1 build
-.\nRF54L15\pio.ps1 clean
-.\nRF54L15\pio.ps1 upload
-.\nRF54L15\pio.ps1 monitor
+.\nRF54L15\ncs.ps1 build
+.\nRF54L15\ncs.ps1 clean
+.\nRF54L15\ncs.ps1 flash
+.\nRF54L15\ncs.ps1 monitor -Port COM7
 ```
 
-`pio.ps1` exposes the project through a temporary no-space `SUBST` drive and
-puts PlatformIO workspace/build/libdeps under
-`%USERPROFILE%\.platformio-workspaces\nrf54l15`. Build, maintenance and test
-actions must use this wrapper; a direct `pio run -d ".\nRF54L15"` command is
-not the normal workflow. The automatic `test` action is a software-only
-boundary. PlatformIO's `--without-uploading` flag prevents upload but does not
-by itself prove a suite is hardware-free, so future physical target/HIL suites
-must be kept outside the automatic `Tests: All (no flash)` selection.
+`ncs.ps1` is pinned to NCS v3.4.0. When called from an ordinary PowerShell
+without `west`, it relaunches itself through
+`nrfutil sdk-manager toolchain launch --ncs-version v3.4.0`. On Windows it
+exposes the source through a temporary no-space `SUBST` drive and stores NCS
+build output under
+`%USERPROFILE%\.ncs-workspaces\esp32_geophone_source_locator`.
 
-The local baseline was verified on 2026-09-14 with PlatformIO Core 6.1.19,
-SeeedStudio platform 1.0.0 at `1ec1287f8e4bc4067a6fd593991e36875aef989f`,
-`framework-zephyr-nrf54l15` package `3.40201.251021` and Zephyr 4.2.1. The
-platform URL in `nRF54L15/platformio.ini` is commit-pinned to that Seeed
-revision. Board, framework, Channel Sounding and driver support must be
-rechecked after any explicit dependency refresh.
+Canonical `ncs.ps1 build` uses `nRF54L15/zephyr/prj.conf` only. The additive
+`nRF54L15/ncs/channel_sounding.conf` remains the historical MAX-45
+SoftDevice/Channel-Sounding proof fixture until MAX-51 promotes the reviewed
+RAS/CS configuration into production. Reproducible proof actions are
+`ncs.ps1 cs-proof`, `compare` and `probe`; none of them is a second production
+firmware variant. `flash` is an explicit hardware action and is excluded from
+`Tests: All (no flash)`.
+
+PlatformIO commands may still be used for explicitly named compatibility
+checks through `pio.ps1`, but they must not be treated as production build,
+flash, Channel Sounding controller or HIL evidence.
 
 ### Planned physical topology
 
@@ -410,11 +416,11 @@ state.
 
 The dual-interface foundation uses distinct peripheral instances: local D11/D12
 remains `i2c30` in controller/TWIM mode and upstream D4/D5 uses `i2c22` as the
-nRF target/TWIS side. The project overlay overrides the pinned Seeed `i2c22`
+nRF target/TWIS side. The project overlay overrides the upstream XIAO `i2c22`
 pinctrl to TWIS functions on P1.10/P1.11 and changes its compatible to
-`nordic,nrf-twis`; it does not convert `i2c30`. In the pinned Zephyr 4.2.1
-source, `drivers/i2c/i2c_nrfx_twis.c` implements the standard buffer-mode
-Zephyr target API through `i2c_target_register()` and
+`nordic,nrf-twis`; it does not convert `i2c30`. In the pinned NCS v3.4.0 /
+Zephyr 4.4.0 source, `drivers/i2c/i2c_nrfx_twis.c` implements the standard
+buffer-mode Zephyr target API through `i2c_target_register()` and
 `i2c_target_unregister()`. No project HAL bypass is required. The
 `nrf_upstream_target_zephyr` adapter exposes that platform lifecycle,
 re-address rollback and raw `hwinfo_get_device_id()` access. Project addresses
