@@ -93,8 +93,13 @@ def test_recorder_lifetime_wraps_full_start_and_terminal_metadata() -> None:
         "esp_err_t seismic_recorder_stop("
     )
     assert "object_store_get_profile" in original_start
-    metadata_stage = function_slice(
+    stop_step = function_slice(
         recorder,
+        "static void seismic_recorder_stop_step(",
+        "static void seismic_recorder_flush_if_due("
+    )
+    metadata_stage = function_slice(
+        stop_step,
         "case SEISMIC_RECORDER_STOP_STAGE_METADATA:",
         "case SEISMIC_RECORDER_STOP_STAGE_NONE:"
     )
@@ -109,8 +114,11 @@ def test_scan_lease_wraps_entire_save_load_handler() -> None:
         "static esp_err_t web_control_scan_try_handle(",
         "static const char *web_control_string("
     )
-    assert wrapper.index("object_store_lease_acquire") < wrapper.index("web_scan_store_try_handle")
-    assert wrapper.index("web_scan_store_try_handle") < wrapper.index("object_store_lease_release")
+    fallback = wrapper.index("return web_scan_store_try_handle(request, handled)")
+    acquire = wrapper.index("object_store_lease_acquire")
+    leased_scan = wrapper.index("web_scan_store_try_handle(request, handled)", acquire)
+    release = wrapper.index("object_store_lease_release", leased_scan)
+    assert fallback < acquire < leased_scan < release
 
     handler = function_slice(
         control,
