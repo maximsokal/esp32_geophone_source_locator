@@ -55,6 +55,17 @@ def _load_module(filename: str, module_name: str):
     return module
 
 
+def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8-sig") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AcceptanceError(f"invalid {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise AcceptanceError(f"invalid {label}: {path} must contain one JSON object")
+    return value
+
+
 def _aggregate_status(statuses: tuple[str, ...]) -> str:
     if "FAIL" in statuses:
         return "FAIL"
@@ -212,6 +223,8 @@ def _max10_result(storage: Any, baseline: Any) -> IssueResult:
         f"max recorder fwrite={storage.max_recorder_fwrite_us} us",
         f"max recorder operation={storage.max_recorder_operation_us} us",
         f"max dropped frames={storage.max_dropped_frames}",
+        f"transport health={storage.transport_health_status}",
+        f"transport health samples={storage.transport_health_sample_count}",
     )
     return IssueResult(
         issue="MAX-10",
@@ -220,6 +233,7 @@ def _max10_result(storage: Any, baseline: Any) -> IssueResult:
         + tuple(f"violation: {item}" for item in storage.violations),
         manual_required=(
             "confirm the baseline JSON was derived from the real board/card/configuration, not parser fixtures",
+            "confirm transport-health evidence was captured from the authoritative /api/status acquisition object",
         ),
     )
 
@@ -228,6 +242,7 @@ def analyze_report(
     content: str,
     *,
     storage_baseline_path: Path | None = None,
+    health_evidence: dict[str, Any] | None = None,
     require_inherited: bool = False,
     minimum_priority_samples: int = 1,
 ) -> Report:
@@ -275,6 +290,7 @@ def analyze_report(
             max_recorder_fwrite_us=limits["recorder_fwrite_us"],
             max_recorder_operation_us=limits["recorder_operation_us"],
             minimum_acquisition_diagnostic_channels=baseline.channels,
+            health_evidence=health_evidence,
         )
         max10 = _max10_result(storage, baseline)
         baseline_loaded = True
@@ -316,6 +332,11 @@ def parse_args() -> argparse.Namespace:
         help="measured storage baseline JSON; MAX-10 is BLOCKED when omitted",
     )
     parser.add_argument(
+        "--health-evidence",
+        type=Path,
+        help="captured AD7606 /api/status transport-health JSON; MAX-10 is BLOCKED when baseline is supplied without it",
+    )
+    parser.add_argument(
         "--require-inherited",
         action="store_true",
         help="require at least one inherited web_status_cache sample for MAX-11",
@@ -337,9 +358,15 @@ def main() -> int:
 
     try:
         content = args.log.read_text(encoding="utf-8", errors="replace")
+        health_evidence = (
+            _load_json_object(args.health_evidence, "transport health evidence")
+            if args.health_evidence is not None
+            else None
+        )
         report = analyze_report(
             content,
             storage_baseline_path=args.storage_baseline,
+            health_evidence=health_evidence,
             require_inherited=args.require_inherited,
             minimum_priority_samples=args.minimum_priority_samples,
         )
