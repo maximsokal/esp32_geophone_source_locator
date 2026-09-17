@@ -20,6 +20,41 @@ function Require-Command([string]$Name, [string]$Hint) {
     }
 }
 
+function New-NoSpaceProjectAlias([string]$ProjectPath) {
+    if ($env:OS -ne "Windows_NT" -or $ProjectPath -notmatch '\s') {
+        return $null
+    }
+
+    Require-Command "cmd.exe" "Windows command processor is required for SUBST."
+
+    $drive = $null
+    foreach ($letter in @("P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z")) {
+        if (-not (Get-PSDrive -Name $letter -ErrorAction SilentlyContinue)) {
+            $drive = "${letter}:"
+            break
+        }
+    }
+
+    if (-not $drive) {
+        throw "No free drive letter P:..Z: for the NCS no-space source alias."
+    }
+
+    & cmd.exe /d /c ('subst {0} "{1}"' -f $drive, $ProjectPath) | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "subst failed for NCS project alias: $drive -> $ProjectPath"
+    }
+
+    return $drive
+}
+
+function Remove-NoSpaceProjectAlias([string]$Drive) {
+    if (-not $Drive) {
+        return
+    }
+
+    & cmd.exe /d /c "subst $Drive /D" | Out-Null
+}
+
 function Test-NcsWorkspace([string]$Candidate) {
     if (-not $Candidate) {
         return $false
@@ -297,15 +332,25 @@ $topDir = Get-NcsTopDir
 Assert-NcsBaseline $topDir
 New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 
-# Zephyr 4.2.x computes the source path relative to west's current directory
-# during its pre-CMake sanity check. Keep west on the checkout's drive so a
-# repository on E: can build against an NCS workspace on C:. ZEPHYR_BASE gives
-# west the authoritative workspace anchor without moving the process to C:.
+# Zephyr does not support application/build source paths containing spaces.
+# Keep the real checkout untouched and expose the nRF54L15 project through a
+# temporary no-space SUBST drive on Windows. This also keeps west's current
+# directory and source directory on the same drive during its relpath sanity
+# check. Other platforms keep using the original checkout path.
+$sourceAliasDrive = New-NoSpaceProjectAlias $project
+$buildProject = $project
+if ($sourceAliasDrive) {
+    $buildProject = "$sourceAliasDrive\"
+    $app = Join-Path $buildProject "zephyr"
+    $csConf = Join-Path $buildProject "ncs\channel_sounding.conf"
+    Write-Host "NCS source alias: $buildProject -> $project"
+}
+
 $zephyrBase = Join-Path $topDir "zephyr"
 $originalZephyrBase = $env:ZEPHYR_BASE
 $env:ZEPHYR_BASE = $zephyrBase
 
-Push-Location $project
+Push-Location $buildProject
 try {
     switch ($Action) {
         "build" {
@@ -327,6 +372,7 @@ try {
 }
 finally {
     Pop-Location
+    Remove-NoSpaceProjectAlias $sourceAliasDrive
     if ($null -eq $originalZephyrBase) {
         Remove-Item Env:ZEPHYR_BASE -ErrorAction SilentlyContinue
     }
