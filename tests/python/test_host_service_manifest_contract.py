@@ -3,12 +3,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / "tests" / "host" / "manifest.d" / "coverage-services.json"
+SERVICE_MANIFEST = ROOT / "tests" / "host" / "manifest.d" / "coverage-services.json"
+ARCHIVE_MANIFEST = ROOT / "tests" / "host" / "manifest.d" / "coverage-object-archive.json"
+
+
+def manifest_tests(path: Path) -> dict[str, dict]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    return {entry["name"]: entry for entry in manifest["tests"]}
 
 
 def service_tests() -> dict[str, dict]:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    return {entry["name"]: entry for entry in manifest["tests"]}
+    return manifest_tests(SERVICE_MANIFEST)
 
 
 def test_storage_service_operations_can_reach_real_private_header_dependencies():
@@ -26,3 +31,15 @@ def test_object_store_lifetime_prefers_public_api_before_lifetime_stubs():
     lifetime_stub_index = include_dirs.index("tests/host/stubs/object_store_lifetime")
     assert public_index < lifetime_stub_index
     assert "components/object_store/tests/stubs" in include_dirs
+
+
+def test_object_create_transaction_failure_injection_is_in_host_coverage():
+    archive = manifest_tests(ARCHIVE_MANIFEST)
+    transaction = archive["object_store_create_transaction"]
+
+    assert transaction["sources"] == [
+        "components/object_store/tests/object_store_create_transaction_test.c"
+    ]
+    assert "components/object_store" in transaction["include_dirs"]
+    assert "components/object_store/include" in transaction["include_dirs"]
+    assert "components/object_store/tests/stubs" in transaction["include_dirs"]
