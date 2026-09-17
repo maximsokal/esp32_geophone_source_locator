@@ -11,6 +11,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include "nrf_bootstrap.h"
+#include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
@@ -86,6 +87,12 @@ static void publish_result_context(uint32_t request_id, nrf_upstream_result_t re
     k_spin_unlock(&s_status_lock, key);
 }
 
+static void assignment_runtime_failure(void)
+{
+    publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+    runtime_cold_reboot(NULL);
+}
+
 static void assign_work_handler(struct k_work *work)
 {
     nrf_upstream_assign_t assign;
@@ -93,16 +100,24 @@ static void assign_work_handler(struct k_work *work)
 
     while (k_msgq_get(&s_assign_queue, &assign, K_NO_WAIT) == 0) {
         nrf_upstream_result_t result;
+
         publish_result_context(assign.request_id, NRF_UPSTREAM_RESULT_PENDING);
         result = nrf_bootstrap_process_assign(&s_bootstrap, &assign);
+
         if (result == NRF_UPSTREAM_RESULT_OK &&
             assign.role == NRF_UPSTREAM_ROLE_REMOTE) {
             if (nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) != 0) {
-                publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
-                runtime_cold_reboot(NULL);
+                assignment_runtime_failure();
                 continue;
             }
         }
+
+        if (result == NRF_UPSTREAM_RESULT_OK &&
+            nrf_cs_pair_runtime_zephyr_set_node_id(assign.node_id) != 0) {
+            assignment_runtime_failure();
+            continue;
+        }
+
         publish_core_status();
     }
 }
