@@ -64,6 +64,26 @@ def healthy_log(*, inherited: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def healthy_health_evidence() -> dict[str, object]:
+    return {
+        "phase": "steady",
+        "status": {
+            "acquisition": {
+                "error_counters_available": True,
+                "consecutive_failures": 0,
+                "serial": {
+                    "quality": "HEALTHY",
+                    "stream_state": "NORMAL",
+                    "suspicious": False,
+                    "stream_stuck": False,
+                    "quality_window_frames": 500,
+                },
+                "signal": {"quality": "NORMAL"},
+            }
+        },
+    }
+
+
 def write_baseline(tmp_path: Path) -> Path:
     path = tmp_path / "baseline.json"
     path.write_text(
@@ -105,10 +125,22 @@ def test_without_storage_baseline_only_max10_is_blocked():
     assert report.storage_baseline_loaded is False
 
 
+def test_storage_baseline_without_transport_health_blocks_max10(tmp_path: Path):
+    report = runner.analyze_report(
+        healthy_log(),
+        storage_baseline_path=write_baseline(tmp_path),
+    )
+
+    assert report.machine_status == "BLOCKED"
+    assert report.max10.machine_status == "BLOCKED"
+    assert any("transport health" in item for item in report.max10.evidence)
+
+
 def test_valid_baseline_makes_all_machine_checks_pass(tmp_path: Path):
     report = runner.analyze_report(
         healthy_log(),
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
     )
 
     assert report.machine_status == "PASS"
@@ -121,12 +153,14 @@ def test_valid_baseline_makes_all_machine_checks_pass(tmp_path: Path):
     assert report.max7.manual_required
     assert "interactive_ready=2800 ms" in report.max7.evidence
     assert any("startup_total=3200 ms" in item for item in report.max7.evidence)
+    assert any("transport health=PASS" == item for item in report.max10.evidence)
 
 
 def test_require_inherited_blocks_base_only_capture(tmp_path: Path):
     report = runner.analyze_report(
         healthy_log(inherited=False),
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
         require_inherited=True,
     )
 
@@ -139,6 +173,7 @@ def test_targeted_inherited_sample_satisfies_reproduction_mode(tmp_path: Path):
     report = runner.analyze_report(
         healthy_log(inherited=True),
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
         require_inherited=True,
     )
 
@@ -153,6 +188,7 @@ def test_slow_interactive_ready_fails_max7_but_not_key_chain(tmp_path: Path):
     report = runner.analyze_report(
         content,
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
     )
 
     assert report.machine_status == "FAIL"
@@ -165,6 +201,7 @@ def test_slow_full_startup_does_not_fail_max7_interactive_budget(tmp_path: Path)
     report = runner.analyze_report(
         content,
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
     )
 
     assert report.machine_status == "PASS"
@@ -180,6 +217,7 @@ def test_missing_interactive_ready_blocks_max7_only(tmp_path: Path):
     report = runner.analyze_report(
         content,
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
     )
 
     assert report.machine_status == "BLOCKED"
@@ -196,6 +234,7 @@ def test_missing_one_ui_result_blocks_max6_but_not_max7(tmp_path: Path):
     report = runner.analyze_report(
         content,
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
     )
 
     assert report.machine_status == "BLOCKED"
@@ -209,13 +248,18 @@ def test_invalid_baseline_is_report_configuration_error(tmp_path: Path):
     baseline.write_text('{"schema_version": 1}', encoding="utf-8")
 
     with pytest.raises(runner.AcceptanceError, match="invalid storage baseline"):
-        runner.analyze_report(healthy_log(), storage_baseline_path=baseline)
+        runner.analyze_report(
+            healthy_log(),
+            storage_baseline_path=baseline,
+            health_evidence=healthy_health_evidence(),
+        )
 
 
 def test_minimum_priority_samples_is_forwarded(tmp_path: Path):
     report = runner.analyze_report(
         healthy_log(),
         storage_baseline_path=write_baseline(tmp_path),
+        health_evidence=healthy_health_evidence(),
         minimum_priority_samples=2,
     )
 
