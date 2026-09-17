@@ -104,8 +104,8 @@ def test_recovery_feeds_after_directory_and_object_progress_from_the_owner_task(
 
     run = function_body(
         source,
-        "esp_err_t object_recovery_run_cooperative(",
-        "esp_err_t object_recovery_run(void)",
+        "static esp_err_t object_recovery_run_cooperative_policy(",
+        "esp_err_t object_recovery_run_cooperative("
     )
     completed = run.index("++processed")
     checkpoint = run.index("object_recovery_watchdog_checkpoint()", completed)
