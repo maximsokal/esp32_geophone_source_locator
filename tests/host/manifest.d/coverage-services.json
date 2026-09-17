@@ -22,7 +22,9 @@
         "tests/host/storage_service_operations_test.c"
       ],
       "include_dirs": [
-        "tests/host/stubs/storage_service_operations"
+        "tests/host/stubs/storage_service_operations",
+        "tests/host/stubs/storage_service",
+        "components/storage_service/include"
       ]
     },
     {
@@ -33,7 +35,8 @@
       ],
       "include_dirs": [
         "tests/host/stubs/object_store_lifetime",
-        "components/object_store/tests/stubs"
+        "components/object_store/tests/stubs",
+        "components/object_store/include"
       ]
     },
     {
