@@ -1,0 +1,458 @@
+static int op_configure_ranging_data(void *context, bool realtime)
+{
+    int err;
+
+    ARG_UNUSED(context);
+    if (s_outgoing_conn == NULL) {
+        return -ENOTCONN;
+    }
+
+    s_realtime_ras = realtime;
+    if (realtime) {
+        return bt_ras_rreq_realtime_rd_subscribe(
+            s_outgoing_conn,
+            &s_peer_rx,
+            ranging_data_received_cb);
+    }
+
+    err = bt_ras_rreq_rd_overwritten_subscribe(
+        s_outgoing_conn,
+        ranging_data_overwritten_cb);
+    if (err != 0) {
+        return err;
+    }
+    err = bt_ras_rreq_rd_ready_subscribe(
+        s_outgoing_conn,
+        ranging_data_ready_cb);
+    if (err != 0) {
+        return err;
+    }
+    err = bt_ras_rreq_on_demand_rd_subscribe(s_outgoing_conn);
+    if (err != 0) {
+        return err;
+    }
+    return bt_ras_rreq_cp_subscribe(s_outgoing_conn);
+}
+
+static int set_default_cs_settings(struct bt_conn *conn, bool initiator)
+{
+    const struct bt_le_cs_set_default_settings_param settings = {
+        .enable_initiator_role = initiator,
+        .enable_reflector_role = !initiator,
+        .cs_sync_antenna_selection = BT_LE_CS_ANTENNA_SELECTION_OPT_REPETITIVE,
+        .max_tx_power = BT_HCI_OP_LE_CS_MAX_MAX_TX_POWER,
+    };
+    return bt_le_cs_set_default_settings(conn, &settings);
+}
+
+static int op_exchange_capabilities(void *context)
+{
+    int err;
+
+    ARG_UNUSED(context);
+    if (s_outgoing_conn == NULL) {
+        return -ENOTCONN;
+    }
+    err = set_default_cs_settings(s_outgoing_conn, true);
+    if (err != 0) {
+        return err;
+    }
+    return bt_le_cs_read_remote_supported_capabilities(s_outgoing_conn);
+}
+
+static void fill_cs_config(struct bt_le_cs_create_config_params *params)
+{
+    memset(params, 0, sizeof(*params));
+    params->id = NRF_CS_CONFIG_ID;
+    params->mode = BT_CONN_LE_CS_MAIN_MODE_2_SUB_MODE_1;
+    params->min_main_mode_steps = 2U;
+    params->max_main_mode_steps = 5U;
+    params->main_mode_repetition = 0U;
+    params->mode_0_steps = 3U;
+    params->role = BT_CONN_LE_CS_ROLE_INITIATOR;
+    params->rtt_type = BT_CONN_LE_CS_RTT_TYPE_AA_ONLY;
+    params->cs_sync_phy = BT_CONN_LE_CS_SYNC_1M_PHY;
+    params->channel_map_repetition = 1U;
+    params->channel_selection_type = BT_CONN_LE_CS_CHSEL_TYPE_3B;
+    params->ch3c_shape = BT_CONN_LE_CS_CH3C_SHAPE_HAT;
+    params->ch3c_jump = 2U;
+    bt_le_cs_set_valid_chmap_bits(params->channel_map);
+}
+
+static int op_create_config(void *context)
+{
+    struct bt_le_cs_create_config_params params;
+
+    ARG_UNUSED(context);
+    if (s_outgoing_conn == NULL) {
+        return -ENOTCONN;
+    }
+    fill_cs_config(&params);
+    return bt_le_cs_create_config(
+        s_outgoing_conn,
+        &params,
+        BT_LE_CS_CREATE_CONFIG_CONTEXT_LOCAL_AND_REMOTE);
+}
+
+static int op_enable_cs_security(void *context)
+{
+    ARG_UNUSED(context);
+    if (s_outgoing_conn == NULL) {
+        return -ENOTCONN;
+    }
+    return bt_le_cs_security_enable(s_outgoing_conn);
+}
+
+static void fill_procedure_params(
+    struct bt_le_cs_set_procedure_parameters_param *params,
+    uint8_t config_id,
+    bool reflector)
+{
+    uint16_t desired_interval = reflector ? 10U : (s_realtime_ras ? 5U : 10U);
+
+    memset(params, 0, sizeof(*params));
+    params->config_id = config_id;
+    params->max_procedure_len =
+        (uint16_t)(s_conn_param.interval_max * 2U * (desired_interval - 1U));
+    params->min_procedure_interval = reflector ? 1U : desired_interval;
+    params->max_procedure_interval = reflector ? 100U : desired_interval;
+    params->max_procedure_count = 1U;
+    params->min_subevent_len = reflector ? 10000U : 16000U;
+    params->max_subevent_len = reflector ? 75000U : 16000U;
+    params->tone_antenna_config_selection = BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1;
+    params->phy = BT_LE_CS_PROCEDURE_PHY_2M;
+    params->tx_power_delta = 0x80;
+    params->preferred_peer_antenna = BT_LE_CS_PROCEDURE_PREFERRED_PEER_ANTENNA_1;
+    params->snr_control_initiator = BT_LE_CS_SNR_CONTROL_NOT_USED;
+    params->snr_control_reflector = BT_LE_CS_SNR_CONTROL_NOT_USED;
+}
+
+static int op_start_procedure(void *context)
+{
+    struct bt_le_cs_set_procedure_parameters_param procedure;
+    struct bt_le_cs_procedure_enable_param enable = {
+        .config_id = NRF_CS_CONFIG_ID,
+        .enable = 1,
+    };
+    int err;
+
+    ARG_UNUSED(context);
+    if (s_outgoing_conn == NULL) {
+        return -ENOTCONN;
+    }
+
+    fill_procedure_params(&procedure, NRF_CS_CONFIG_ID, false);
+    err = bt_le_cs_set_procedure_parameters(s_outgoing_conn, &procedure);
+    if (err != 0) {
+        return err;
+    }
+    return bt_le_cs_procedure_enable(s_outgoing_conn, &enable);
+}
+
+static int op_cleanup(void *context)
+{
+    int err;
+
+    ARG_UNUSED(context);
+    runtime_stop_scan();
+
+    if (s_outgoing_conn == NULL) {
+        (void)k_work_submit(&s_cleanup_work);
+        return 0;
+    }
+
+    err = bt_conn_disconnect(s_outgoing_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    if (err == 0 || err == -EALREADY) {
+        return 0;
+    }
+
+    bt_conn_unref(s_outgoing_conn);
+    s_outgoing_conn = NULL;
+    s_outgoing_connected = false;
+    (void)k_work_submit(&s_cleanup_work);
+    return 0;
+}
+
+static const nrf_cs_pair_adapter_ops_t s_adapter_ops = {
+    .connect = op_connect,
+    .secure = op_secure,
+    .exchange_mtu = op_exchange_mtu,
+    .discover_ras = op_discover_ras,
+    .read_features = op_read_features,
+    .configure_ranging_data = op_configure_ranging_data,
+    .exchange_capabilities = op_exchange_capabilities,
+    .create_config = op_create_config,
+    .enable_cs_security = op_enable_cs_security,
+    .start_procedure = op_start_procedure,
+    .cleanup = op_cleanup,
+    .context = NULL,
+};
+
+static void runtime_adapter_complete(
+    const nrf_cs_step_t *step,
+    const nrf_cs_measurement_t *measurement,
+    void *context)
+{
+    nrf_cs_pair_runtime_complete_cb_t callback = s_user_complete_cb;
+    void *callback_context = s_user_complete_context;
+
+    ARG_UNUSED(context);
+    (void)k_work_cancel_delayable(&s_timeout_work);
+    s_user_complete_cb = NULL;
+    s_user_complete_context = NULL;
+    runtime_reset_ranging();
+    (void)runtime_start_advertising();
+
+    if (callback != NULL) {
+        callback(step, measurement, callback_context);
+    }
+}
+
+static void timeout_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    (void)nrf_cs_pair_adapter_timeout(&s_adapter, &s_timeout_step);
+}
+
+static void cleanup_work_handler(struct k_work *work)
+{
+    nrf_cs_step_t step;
+
+    ARG_UNUSED(work);
+    if (runtime_active_step(&step) &&
+        nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP) {
+        (void)nrf_cs_pair_adapter_cleanup_complete(&s_adapter, &step);
+    }
+}
+
+static bool report_ranging_header(struct ras_ranging_header *header, void *user_data)
+{
+    cs_de_report_t *report = user_data;
+
+    ARG_UNUSED(header);
+    report->n_ap = 1U;
+    report->role = BT_CONN_LE_CS_ROLE_INITIATOR;
+    return true;
+}
+
+static void accumulate_mean(float *mean, float value, uint16_t count)
+{
+    float alpha = 1.0f / (float)count;
+    *mean = alpha * value + (1.0f - alpha) * (*mean);
+}
+
+static void collect_pbr_step(
+    cs_de_report_t *report,
+    const struct bt_le_cs_subevent_step *local_step,
+    const struct bt_le_cs_subevent_step *peer_step)
+{
+    const struct bt_hci_le_cs_step_data_mode_2 *local;
+    const struct bt_hci_le_cs_step_data_mode_2 *peer;
+    struct bt_le_cs_iq_sample local_iq;
+    struct bt_le_cs_iq_sample peer_iq;
+    uint8_t channel_index;
+    uint16_t count;
+
+    if (local_step->channel < NRF_CS_CHANNEL_INDEX_OFFSET ||
+        local_step->channel >= (NRF_CS_CHANNEL_INDEX_OFFSET + CS_DE_NUM_CHANNELS)) {
+        return;
+    }
+
+    local = (const struct bt_hci_le_cs_step_data_mode_2 *)local_step->data;
+    peer = (const struct bt_hci_le_cs_step_data_mode_2 *)peer_step->data;
+
+    if (local->tone_info[0].quality_indicator != BT_HCI_LE_CS_TONE_QUALITY_HIGH ||
+        peer->tone_info[0].quality_indicator != BT_HCI_LE_CS_TONE_QUALITY_HIGH) {
+        return;
+    }
+
+    channel_index = (uint8_t)(local_step->channel - NRF_CS_CHANNEL_INDEX_OFFSET);
+    local_iq = bt_le_cs_parse_pct(local->tone_info[0].phase_correction_term);
+    peer_iq = bt_le_cs_parse_pct(peer->tone_info[0].phase_correction_term);
+    count = ++s_iq_counts[channel_index];
+
+    if (count == 1U) {
+        report->iq_tones[0].i_local[channel_index] = local_iq.i;
+        report->iq_tones[0].q_local[channel_index] = local_iq.q;
+        report->iq_tones[0].i_remote[channel_index] = peer_iq.i;
+        report->iq_tones[0].q_remote[channel_index] = peer_iq.q;
+        return;
+    }
+
+    accumulate_mean(&report->iq_tones[0].i_local[channel_index], local_iq.i, count);
+    accumulate_mean(&report->iq_tones[0].q_local[channel_index], local_iq.q, count);
+    accumulate_mean(&report->iq_tones[0].i_remote[channel_index], peer_iq.i, count);
+    accumulate_mean(&report->iq_tones[0].q_remote[channel_index], peer_iq.q, count);
+}
+
+static void collect_rtt_step(
+    cs_de_report_t *report,
+    const struct bt_le_cs_subevent_step *local_step,
+    const struct bt_le_cs_subevent_step *peer_step)
+{
+    const struct bt_hci_le_cs_step_data_mode_1 *local =
+        (const struct bt_hci_le_cs_step_data_mode_1 *)local_step->data;
+    const struct bt_hci_le_cs_step_data_mode_1 *peer =
+        (const struct bt_hci_le_cs_step_data_mode_1 *)peer_step->data;
+
+    if (local->packet_quality_aa_check != BT_HCI_LE_CS_PACKET_QUALITY_AA_CHECK_SUCCESSFUL ||
+        peer->packet_quality_aa_check != BT_HCI_LE_CS_PACKET_QUALITY_AA_CHECK_SUCCESSFUL ||
+        local->packet_rssi == BT_HCI_LE_CS_PACKET_RSSI_NOT_AVAILABLE ||
+        peer->packet_rssi == BT_HCI_LE_CS_PACKET_RSSI_NOT_AVAILABLE ||
+        local->toa_tod_initiator == BT_HCI_LE_CS_TIME_DIFFERENCE_NOT_AVAILABLE ||
+        peer->tod_toa_reflector == BT_HCI_LE_CS_TIME_DIFFERENCE_NOT_AVAILABLE) {
+        return;
+    }
+
+    report->rtt_accumulated_half_ns +=
+        local->toa_tod_initiator - peer->tod_toa_reflector;
+    report->rtt_count++;
+}
+
+static bool report_step_data(
+    struct bt_le_cs_subevent_step *local_step,
+    struct bt_le_cs_subevent_step *peer_step,
+    void *user_data)
+{
+    cs_de_report_t *report = user_data;
+
+    if (local_step == NULL || peer_step == NULL || report == NULL) {
+        return false;
+    }
+
+    if (local_step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_2) {
+        collect_pbr_step(report, local_step, peer_step);
+    } else if (local_step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_1) {
+        collect_rtt_step(report, local_step, peer_step);
+    }
+    return true;
+}
+
+static bool tone_quality_ok(void)
+{
+    uint8_t count = 0U;
+    uint8_t channel;
+
+    for (channel = 0U; channel < CS_DE_NUM_CHANNELS; ++channel) {
+        if (BT_LE_CS_CHANNEL_BIT_GET(
+                s_cs_config.channel_map,
+                channel + NRF_CS_CHANNEL_INDEX_OFFSET) &&
+            s_iq_counts[channel] > 0U) {
+            count++;
+        }
+    }
+    return count >= NRF_CS_TONE_OK_THRESHOLD;
+}
+
+static nrf_cs_measurement_t estimate_measurement(void)
+{
+    nrf_cs_measurement_t measurement = {
+        .outcome = NRF_CS_OUTCOME_OUTLIER,
+        .distance_mm = 0,
+        .confidence = 0U,
+        .provider_quality_flags = 0U,
+    };
+    cs_de_quality_t quality;
+    float best;
+    double mm;
+
+    memset(&s_de_report, 0, sizeof(s_de_report));
+    memset(s_iq_counts, 0, sizeof(s_iq_counts));
+    s_de_report.role = BT_CONN_LE_CS_ROLE_INITIATOR;
+    s_de_report.n_ap = 1U;
+    s_de_report.distance_estimates[0].ifft = NAN;
+    s_de_report.distance_estimates[0].phase_slope = NAN;
+    s_de_report.distance_estimates[0].rtt = NAN;
+    s_de_report.distance_estimates[0].best = NAN;
+
+    bt_ras_rreq_rd_subevent_data_parse(
+        &s_peer_owned,
+        &s_local_steps,
+        BT_CONN_LE_CS_ROLE_INITIATOR,
+        report_ranging_header,
+        NULL,
+        report_step_data,
+        &s_de_report);
+
+    s_de_report.tone_quality[0] =
+        tone_quality_ok() ? CS_DE_TONE_QUALITY_OK : CS_DE_TONE_QUALITY_BAD;
+
+    quality = cs_de_calc(&s_de_report);
+
+    if (s_realtime_ras) {
+        measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_REALTIME_RAS;
+    }
+    if (s_de_report.tone_quality[0] == CS_DE_TONE_QUALITY_OK) {
+        measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_TONE_OK;
+    }
+    if (isfinite(s_de_report.distance_estimates[0].ifft) ||
+        isfinite(s_de_report.distance_estimates[0].phase_slope)) {
+        measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_PBR_VALID;
+    }
+    if (isfinite(s_de_report.distance_estimates[0].rtt)) {
+        measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_RTT_VALID;
+    }
+
+    best = s_de_report.distance_estimates[0].best;
+    mm = (double)best * 1000.0;
+    if (quality != CS_DE_QUALITY_OK ||
+        !isfinite(best) ||
+        mm < 0.0 ||
+        mm > (double)INT32_MAX) {
+        return measurement;
+    }
+
+    measurement.outcome = NRF_CS_OUTCOME_SUCCESS;
+    measurement.distance_mm = (int32_t)(mm + 0.5);
+    measurement.confidence = 1000U;
+    return measurement;
+}
+
+static void maybe_request_on_demand_data(void)
+{
+    int err;
+
+    if (s_realtime_ras || s_on_demand_request_started ||
+        !s_local_complete ||
+        s_ready_counter == NRF_CS_RANGING_COUNTER_NONE ||
+        s_ready_counter != s_local_counter ||
+        s_outgoing_conn == NULL) {
+        return;
+    }
+
+    net_buf_simple_reset(&s_peer_rx);
+    s_on_demand_request_started = true;
+    err = bt_ras_rreq_cp_get_ranging_data(
+        s_outgoing_conn,
+        &s_peer_rx,
+        s_ready_counter,
+        ranging_data_received_cb);
+    if (err != 0) {
+        nrf_cs_step_t step;
+        if (runtime_active_step(&step)) {
+            runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR, &step, 0U, err, NULL);
+        }
+    }
+}
+
+static void maybe_complete_measurement(const nrf_cs_step_t *step)
+{
+    nrf_cs_measurement_t measurement;
+
+    if (step == NULL || !s_local_complete || !s_peer_complete) {
+        return;
+    }
+    if (s_local_counter != s_peer_counter ||
+        s_local_steps.len == 0U ||
+        s_peer_owned.len == 0U) {
+        measurement.outcome = NRF_CS_OUTCOME_OUTLIER;
+        measurement.distance_mm = 0;
+        measurement.confidence = 0U;
+        measurement.provider_quality_flags =
+            s_realtime_ras ? NRF_CS_PROVIDER_QUALITY_REALTIME_RAS : 0U;
+    } else {
+        measurement = estimate_measurement();
+    }
+
+    (void)nrf_cs_pair_adapter_measurement_ready(&s_adapter, step, &measurement);
+}
