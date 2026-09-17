@@ -18,7 +18,8 @@ _spec.loader.exec_module(runner)
 def make_repo(tmp_path: Path, *, with_software_suite: bool) -> Path:
     root = tmp_path / "repo"
     (root / "nRF54L15" / "test").mkdir(parents=True)
-    (root / "nRF54L15" / "pio.ps1").write_text("# wrapper\n", encoding="utf-8")
+    (root / "nRF54L15" / "ncs.ps1").write_text("# canonical wrapper\n", encoding="utf-8")
+    (root / "nRF54L15" / "pio.ps1").write_text("# compatibility wrapper\n", encoding="utf-8")
     (root / "tools").mkdir(parents=True)
     (root / "tools" / "run_host_tests.py").write_text("# host runner\n", encoding="utf-8")
     manifest_dir = root / "tests" / "host" / "manifest.d"
@@ -29,7 +30,7 @@ def make_repo(tmp_path: Path, *, with_software_suite: bool) -> Path:
     return root
 
 
-def test_nrf_scope_runs_host_policy_and_skips_platformio_test_without_software_suite(tmp_path: Path):
+def test_nrf_scope_runs_host_policy_and_canonical_ncs_build(tmp_path: Path):
     root = make_repo(tmp_path, with_software_suite=False)
 
     steps = runner.nrf_steps(
@@ -47,12 +48,18 @@ def test_nrf_scope_runs_host_policy_and_skips_platformio_test_without_software_s
     assert steps[0].skip_reason is None
     assert steps[0].command[0] == "python-test"
     assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
-    assert steps[1].skip_reason is None
+
+    build = steps[1]
+    assert build.skip_reason is None
+    assert "ncs.ps1" in build.command[build.command.index("-File") + 1]
+    assert build.command[-2:] == ("-Action", "build")
+    assert "pio.ps1" not in " ".join(build.command)
+
     assert steps[2].skip_reason is not None
     assert "test_sw_*" in steps[2].skip_reason
 
 
-def test_nrf_test_step_runs_only_after_a_qualified_software_suite_exists(tmp_path: Path):
+def test_nrf_embedded_test_stays_skipped_until_ncs_native_runner_is_reviewed(tmp_path: Path):
     root = make_repo(tmp_path, with_software_suite=True)
 
     steps = runner.nrf_steps(
@@ -62,8 +69,9 @@ def test_nrf_test_step_runs_only_after_a_qualified_software_suite_exists(tmp_pat
         powershell_executable="powershell-test",
     )
 
-    assert steps[2].skip_reason is None
-    assert steps[2].command[-2:] == ("-Action", "test")
+    assert steps[2].skip_reason is not None
+    assert "NCS-native embedded test runner" in steps[2].skip_reason
+    assert "PlatformIO compatibility tests" in steps[2].skip_reason
 
 
 def test_nrf_steps_can_omit_host_policy_when_all_scope_already_runs_host_manifests(tmp_path: Path):
@@ -92,8 +100,8 @@ def test_run_step_does_not_execute_a_skipped_nrf_test(monkeypatch, tmp_path: Pat
     step = runner.Step(
         "nrf/tests",
         tmp_path,
-        ("powershell-test", "-File", "pio.ps1", "-Action", "test"),
-        skip_reason="no qualified test_sw_* suite",
+        ("<ncs-native-test-runner-not-yet-reviewed>",),
+        skip_reason="no qualified NCS test_sw_* suite",
     )
 
     assert runner.run_step(step) == "SKIPPED"

@@ -1,6 +1,12 @@
+[CmdletBinding()]
 param(
-    [ValidateSet("build", "compare", "probe", "clean")]
-    [string]$Action = "build"
+    [ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "clean")]
+    [string]$Action = "build",
+
+    [string]$Port,
+
+    [ValidateRange(1200, 3000000)]
+    [int]$Baud = 115200
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,13 +17,46 @@ $app = Join-Path $project "zephyr"
 $csConf = Join-Path $project "ncs\channel_sounding.conf"
 $board = "xiao_nrf54l15/nrf54l15/cpuapp"
 $buildRoot = Join-Path $env:USERPROFILE ".ncs-workspaces\esp32_geophone_source_locator"
-$baseBuild = Join-Path $buildRoot "nrf54l15-base-v3.4.0"
-$csBuild = Join-Path $buildRoot "nrf54l15-cs-v3.4.0"
+$productionBuild = Join-Path $buildRoot "nrf54l15-production-v3.4.0"
+$csProofBuild = Join-Path $buildRoot "nrf54l15-cs-proof-v3.4.0"
+$legacyBaseBuild = Join-Path $buildRoot "nrf54l15-base-v3.4.0"
+$legacyCsBuild = Join-Path $buildRoot "nrf54l15-cs-v3.4.0"
 
 function Require-Command([string]$Name, [string]$Hint) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "$Name not found. $Hint"
     }
+}
+
+function Invoke-InPinnedToolchain {
+    Require-Command "nrfutil" "Install nRF Util and NCS $NcsVersion with sdk-manager first."
+
+    $childArgs = @(
+        "sdk-manager", "toolchain", "launch",
+        "--ncs-version", $NcsVersion,
+        "--",
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PSCommandPath,
+        "-Action", $Action
+    )
+
+    if ($Port) {
+        $childArgs += @("-Port", $Port)
+    }
+    if ($Baud -ne 115200) {
+        $childArgs += @("-Baud", [string]$Baud)
+    }
+
+    Write-Host "Launching pinned Nordic toolchain $NcsVersion..." -ForegroundColor Cyan
+    & nrfutil @childArgs
+    $exitCode = $LASTEXITCODE
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+    exit $exitCode
 }
 
 function New-NoSpaceProjectAlias([string]$ProjectPath) {
@@ -105,10 +144,9 @@ function Invoke-SdkManager([string[]]$SdkManagerArgs) {
     $originalHome = $env:NRFUTIL_HOME
     $redirectHome = $false
 
-    # Nordic's launched toolchain intentionally points NRFUTIL_HOME at a locked
-    # toolchain-local command set. sdk-manager is a user command, so use the
-    # normal user-scoped nrfutil home for metadata queries without modifying or
-    # deleting the toolchain's lock file.
+    # A launched Nordic toolchain can point NRFUTIL_HOME at a locked command
+    # set. sdk-manager metadata is user-scoped, so temporarily use the normal
+    # user nrfutil home without mutating the toolchain lock.
     if ($originalHome) {
         $lockPath = Join-Path $originalHome "locked"
         if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
@@ -186,11 +224,8 @@ function Get-NcsTopDirFromSdkManager {
 }
 
 function Get-NcsTopDir {
-    Require-Command "west" "Open the Nordic toolchain terminal first: nrfutil sdk-manager toolchain launch --ncs-version $NcsVersion --terminal"
+    Require-Command "west" "The pinned Nordic toolchain did not expose west."
 
-    # Fast path for environments that explicitly expose the SDK module roots.
-    # Nordic's sdk-manager toolchain environment does not guarantee these
-    # variables, so discovery must not depend on them being present.
     foreach ($base in @($env:NRF_BASE, $env:ZEPHYR_BASE)) {
         if ($base) {
             $candidate = Split-Path -Parent $base
@@ -200,10 +235,6 @@ function Get-NcsTopDir {
         }
     }
 
-    # Works when the current directory already belongs to an NCS west workspace.
-    # Windows PowerShell can promote native stderr to a terminating error when
-    # ErrorActionPreference is Stop, so failure here must be treated as a normal
-    # probe miss and fall through to sdk-manager metadata discovery.
     $topDir = $null
     try {
         $topDirOutput = @(& west topdir 2>$null)
@@ -222,16 +253,13 @@ function Get-NcsTopDir {
         }
     }
 
-    # The diploma checkout normally lives outside the NCS workspace. Nordic's
-    # supported sdk-manager metadata supplies both the configured install root
-    # and the SDK Directory column for the exact installed version.
     return Get-NcsTopDirFromSdkManager
 }
 
 function Assert-NcsBaseline([string]$TopDir) {
     $actual = Get-NcsVersionFromWorkspace $TopDir
     if ($actual -ne $NcsVersion) {
-        throw "MAX-45 is pinned to $NcsVersion, but active west workspace is $actual ($TopDir)."
+        throw "nRF54L15 production is pinned to $NcsVersion, but active west workspace is $actual ($TopDir)."
     }
 
     $boardDir = Join-Path $TopDir "zephyr\boards\seeed\xiao_nrf54l15"
@@ -240,7 +268,7 @@ function Assert-NcsBaseline([string]$TopDir) {
     }
 }
 
-function Invoke-WestBuild([string]$BuildDir, [bool]$WithChannelSounding) {
+function Invoke-WestBuild([string]$BuildDir, [bool]$WithChannelSoundingProof) {
     $args = @(
         "build",
         "-p", "always",
@@ -248,7 +276,7 @@ function Invoke-WestBuild([string]$BuildDir, [bool]$WithChannelSounding) {
         "-b", $board,
         $app
     )
-    if ($WithChannelSounding) {
+    if ($WithChannelSoundingProof) {
         $args += @("--", "-DEXTRA_CONF_FILE=$csConf")
     }
 
@@ -260,6 +288,15 @@ function Invoke-WestBuild([string]$BuildDir, [bool]$WithChannelSounding) {
     }
 }
 
+function Invoke-WestFlash([string]$BuildDir) {
+    Write-Host ""
+    Write-Host "west flash -d $BuildDir" -ForegroundColor Cyan
+    & west flash -d $BuildDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "west flash failed: $LASTEXITCODE"
+    }
+}
+
 function Assert-ConfigLine([string[]]$Config, [string]$Line) {
     if ($Config -notcontains $Line) {
         throw "Resolved Kconfig missing: $Line"
@@ -268,10 +305,8 @@ function Assert-ConfigLine([string[]]$Config, [string]$Line) {
 
 function Get-ZephyrAppArtifactDir([string]$BuildDir) {
     # NCS v3.4.0 runs this application through sysbuild. The outer
-    # <build>/zephyr directory belongs to sysbuild itself; the actual Zephyr
-    # application writes .config and zephyr.elf under <build>/zephyr/zephyr.
-    # Keep a non-sysbuild fallback so the wrapper remains usable if west is
-    # explicitly configured without sysbuild in a future toolchain.
+    # <build>/zephyr directory belongs to sysbuild itself; the actual app
+    # writes .config and zephyr.elf under <build>/zephyr/zephyr.
     $sysbuildAppDir = Join-Path $BuildDir "zephyr\zephyr"
     if (Test-Path -LiteralPath $sysbuildAppDir -PathType Container) {
         return $sysbuildAppDir
@@ -280,11 +315,37 @@ function Get-ZephyrAppArtifactDir([string]$BuildDir) {
     return Join-Path $BuildDir "zephyr"
 }
 
-function Probe-CsBuild {
-    $appZephyrDir = Get-ZephyrAppArtifactDir $csBuild
+function Probe-ProductionBuild {
+    $appZephyrDir = Get-ZephyrAppArtifactDir $productionBuild
     $configPath = Join-Path $appZephyrDir ".config"
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-        throw "CS build config not found: $configPath. Run .\nRF54L15\ncs.ps1 build first."
+        throw "Production build config not found: $configPath. Run .\nRF54L15\ncs.ps1 build first."
+    }
+
+    $config = Get-Content -LiteralPath $configPath
+    foreach ($line in @(
+        "CONFIG_GPIO=y",
+        "CONFIG_I2C=y",
+        "CONFIG_I2C_TARGET=y",
+        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128",
+        "CONFIG_HWINFO=y"
+    )) {
+        Assert-ConfigLine $config $line
+    }
+
+    $elf = Join-Path $appZephyrDir "zephyr.elf"
+    if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) {
+        throw "Production ELF not found after build: $elf"
+    }
+
+    Write-Host "nRF54L15 PRODUCTION_PROBE: PASS" -ForegroundColor Green
+}
+
+function Probe-CsBuild {
+    $appZephyrDir = Get-ZephyrAppArtifactDir $csProofBuild
+    $configPath = Join-Path $appZephyrDir ".config"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw "CS proof config not found: $configPath. Run .\nRF54L15\ncs.ps1 cs-proof first."
     }
 
     $config = Get-Content -LiteralPath $configPath
@@ -316,7 +377,7 @@ function Probe-CsBuild {
 
     $elf = Join-Path $appZephyrDir "zephyr.elf"
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) {
-        throw "CS ELF not found after build: $elf"
+        throw "CS proof ELF not found after build: $elf"
     }
 
     Write-Host "MAX-45 KCONFIG_PROBE: PASS" -ForegroundColor Green
@@ -337,22 +398,68 @@ function Show-Size([string]$Label, [string]$BuildDir) {
     }
 }
 
+function Invoke-SerialMonitor {
+    if ([string]::IsNullOrWhiteSpace($Port)) {
+        throw "monitor requires -Port, for example: .\nRF54L15\ncs.ps1 monitor -Port COM7"
+    }
+
+    $serial = [System.IO.Ports.SerialPort]::new(
+        $Port,
+        $Baud,
+        [System.IO.Ports.Parity]::None,
+        8,
+        [System.IO.Ports.StopBits]::One
+    )
+    $serial.ReadTimeout = 250
+    $serial.DtrEnable = $true
+
+    Write-Host "nRF54L15 serial monitor: $Port @ $Baud baud (Ctrl+C to stop)" -ForegroundColor Cyan
+    try {
+        $serial.Open()
+        while ($true) {
+            try {
+                $line = $serial.ReadLine()
+                Write-Host $line
+            }
+            catch [System.TimeoutException] {
+                # Periodic timeout keeps Ctrl+C responsive without busy looping.
+            }
+        }
+    }
+    finally {
+        if ($serial.IsOpen) {
+            $serial.Close()
+        }
+        $serial.Dispose()
+    }
+}
+
 if ($Action -eq "clean") {
-    Remove-Item -LiteralPath $baseBuild -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $csBuild -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "MAX-45 clean: PASS"
+    foreach ($path in @($productionBuild, $csProofBuild, $legacyBaseBuild, $legacyCsBuild)) {
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "nRF54L15 clean: PASS" -ForegroundColor Green
     exit 0
+}
+
+if ($Action -eq "monitor") {
+    Invoke-SerialMonitor
+    exit 0
+}
+
+# Build/flash/proof commands are safe to call from an ordinary PowerShell.
+# If west is absent, re-enter this script through Nordic's pinned toolchain.
+if (-not (Get-Command "west" -ErrorAction SilentlyContinue)) {
+    Invoke-InPinnedToolchain
 }
 
 $topDir = Get-NcsTopDir
 Assert-NcsBaseline $topDir
 New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 
-# Zephyr does not support application/build source paths containing spaces.
-# Keep the real checkout untouched and expose the nRF54L15 project through a
-# temporary no-space SUBST drive on Windows. This also keeps west's current
-# directory and source directory on the same drive during its relpath sanity
-# check. Other platforms keep using the original checkout path.
+# Zephyr does not support application/source paths containing spaces reliably.
+# Keep the checkout untouched and expose nRF54L15 through a temporary SUBST
+# drive on Windows. Build output itself stays outside the repository.
 $sourceAliasDrive = New-NoSpaceProjectAlias $project
 $buildProject = $project
 if ($sourceAliasDrive) {
@@ -370,19 +477,34 @@ Push-Location $buildProject
 try {
     switch ($Action) {
         "build" {
-            Invoke-WestBuild $csBuild $true
+            Invoke-WestBuild $productionBuild $false
+            Probe-ProductionBuild
+            Write-Host "nRF54L15 production build: PASS" -ForegroundColor Green
+        }
+        "flash" {
+            Invoke-WestBuild $productionBuild $false
+            Probe-ProductionBuild
+            Invoke-WestFlash $productionBuild
+            Write-Host "nRF54L15 production flash: PASS" -ForegroundColor Green
+        }
+        "cs-proof" {
+            Invoke-WestBuild $csProofBuild $true
             Probe-CsBuild
+            Write-Host "MAX-45 cs-proof: PASS" -ForegroundColor Green
         }
         "compare" {
-            Invoke-WestBuild $baseBuild $false
-            Invoke-WestBuild $csBuild $true
+            Invoke-WestBuild $productionBuild $false
+            Probe-ProductionBuild
+            Invoke-WestBuild $csProofBuild $true
             Probe-CsBuild
-            Show-Size "BASE" $baseBuild
-            Show-Size "CHANNEL_SOUNDING" $csBuild
+            Show-Size "PRODUCTION" $productionBuild
+            Show-Size "CHANNEL_SOUNDING_PROOF" $csProofBuild
+            Write-Host "MAX-45 compare: PASS" -ForegroundColor Green
         }
         "probe" {
             Probe-CsBuild
-            Show-Size "CHANNEL_SOUNDING" $csBuild
+            Show-Size "CHANNEL_SOUNDING_PROOF" $csProofBuild
+            Write-Host "MAX-45 probe: PASS" -ForegroundColor Green
         }
     }
 }
@@ -396,5 +518,3 @@ finally {
         $env:ZEPHYR_BASE = $originalZephyrBase
     }
 }
-
-Write-Host "MAX-45 ${Action}: PASS" -ForegroundColor Green

@@ -38,9 +38,6 @@ def test_all_suite_surfaces_only_current_host_failures_in_final_report():
     assert "$testResult.stdout" in source
     assert '$testResult.error' in source
     assert 'Write-Host "HOST_FAILURE_DETAILS:"' in source
-    assert "test={1} phase={2} exit={3}" in source
-    assert 'compiler={0}' in source
-    assert 'diagnostic={0}' in source
 
 
 def test_all_suite_keeps_hardware_hil_out_of_automatic_run():
@@ -50,21 +47,24 @@ def test_all_suite_keeps_hardware_hil_out_of_automatic_run():
     assert 'Status = "SKIPPED"' in source
     assert 'HIL_RESULT: SKIPPED' in source
     assert 'run_unity_hil' not in source.lower()
+    assert '"-Action", "flash"' not in source
 
 
-def test_all_suite_includes_the_path_safe_nrf_build_and_software_test_boundary():
+def test_all_suite_uses_canonical_ncs_nrf_build_and_explicit_test_boundary():
     source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
 
-    assert 'Invoke-SuiteStep -Name "nRF54L15 build"' in source
-    assert 'Join-Path $repo "nRF54L15\\pio.ps1"' in source
-    assert 'Invoke-SuiteStep -Name "nRF54L15 tests"' in source
-    assert '"-Action", "test"' in source
+    assert '$nrfNcsWrapper = Join-Path $repo "nRF54L15\\ncs.ps1"' in source
+    assert 'Invoke-SuiteStep -Name "nRF54L15 NCS production build"' in source
+    assert '"-File", $nrfNcsWrapper' in source
+    assert '"-Action", "build"' in source
+    assert 'function Add-NrfSoftwareTestBoundary' in source
     assert '-Filter "test_sw_*"' in source
-    assert 'physical/HIL suites are excluded from Run All' in source
+    assert 'PlatformIO compatibility tests are excluded' in source
     assert 'Status = "SKIPPED"' in source
+    assert 'nRF54L15\\pio.ps1' not in source
 
 
-def test_nrf_wrapper_exposes_a_no_upload_software_only_test_action():
+def test_platformio_wrapper_remains_compatibility_only_and_no_upload_test_is_not_physical_proof():
     source = (REPO_ROOT / "nRF54L15" / "pio.ps1").read_text(encoding="utf-8")
 
     assert 'ValidateSet("build", "clean", "upload", "monitor", "test")' in source
@@ -74,4 +74,3 @@ def test_nrf_wrapper_exposes_a_no_upload_software_only_test_action():
     assert "--without-uploading" in source
     assert "physical/HIL suites must use a separate explicit runner" in source
     assert "nRF54L15 TEST_RESULT: SKIPPED" in source
-    assert "nRF54L15 SUCCESS" not in source

@@ -28,7 +28,8 @@ def make_repo(tmp_path: Path) -> Path:
     (root / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.16)\n")
     (root / "tools" / "run_host_tests.py").write_text("# host runner\n")
     (root / "tools" / "run_idf.ps1").write_text("# idf runner\n")
-    (root / "nRF54L15" / "pio.ps1").write_text("# nRF runner\n")
+    (root / "nRF54L15" / "ncs.ps1").write_text("# canonical nRF runner\n")
+    (root / "nRF54L15" / "pio.ps1").write_text("# compatibility nRF runner\n")
     (root / "tests" / "host" / "manifest.json").write_text(
         '{"version": 1, "tests": [{"name": "base"}]}\n'
     )
@@ -43,9 +44,7 @@ def make_repo(tmp_path: Path) -> Path:
 
 def test_host_plan_runs_base_then_sorted_manifest_fragments(tmp_path: Path):
     root = make_repo(tmp_path)
-
     steps = runner.host_steps(root, "python-test")
-
     assert [step.name for step in steps] == [
         "host/base",
         "host/a-first",
@@ -62,7 +61,6 @@ def test_host_plan_runs_base_then_sorted_manifest_fragments(tmp_path: Path):
 
 def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: Path):
     root = make_repo(tmp_path)
-
     steps = runner.build_plan(
         root,
         scope="software",
@@ -75,7 +73,6 @@ def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: 
         powershell_executable="powershell-test",
         idf_executable=None,
     )
-
     names = [step.name for step in steps]
     assert names[:4] == [
         "host/base",
@@ -103,9 +100,7 @@ def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: 
 
 def test_skip_npm_ci_keeps_other_web_checks(tmp_path: Path):
     root = make_repo(tmp_path)
-
     steps = runner.web_steps(root, "npm-test", skip_npm_ci=True)
-
     names = [step.name for step in steps]
     assert "web/npm-ci" not in names
     assert names == [
@@ -119,7 +114,6 @@ def test_skip_npm_ci_keeps_other_web_checks(tmp_path: Path):
 
 def test_windows_firmware_plan_uses_existing_local_idf_helper(tmp_path: Path):
     root = make_repo(tmp_path)
-
     steps = runner.firmware_steps(
         root,
         build_dir="build-local",
@@ -128,7 +122,6 @@ def test_windows_firmware_plan_uses_existing_local_idf_helper(tmp_path: Path):
         powershell_executable=r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
         idf_executable=None,
     )
-
     assert len(steps) == 1
     command = steps[0].command
     assert steps[0].name == "firmware/esp-idf"
@@ -138,9 +131,8 @@ def test_windows_firmware_plan_uses_existing_local_idf_helper(tmp_path: Path):
     assert command[-2:] == ("-Jobs", "4")
 
 
-def test_nrf_plan_uses_host_policy_then_path_safe_wrapper(tmp_path: Path):
+def test_nrf_plan_uses_host_policy_then_canonical_ncs_wrapper(tmp_path: Path):
     root = make_repo(tmp_path)
-
     steps = runner.build_plan(
         root,
         scope="nrf",
@@ -162,17 +154,15 @@ def test_nrf_plan_uses_host_policy_then_path_safe_wrapper(tmp_path: Path):
     assert steps[0].command[0] == "python-test"
     assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
     assert steps[1].command[0] == "powershell-test"
-    assert steps[2].command[0] == "powershell-test"
-    assert any("pio.ps1" in argument for argument in steps[1].command)
-    assert any("pio.ps1" in argument for argument in steps[2].command)
+    assert any("ncs.ps1" in argument for argument in steps[1].command)
+    assert not any("pio.ps1" in argument for argument in steps[1].command)
     assert steps[1].command[-2:] == ("-Action", "build")
-    assert steps[2].command[-2:] == ("-Action", "test")
-    assert all("pio run -d" not in " ".join(step.command) for step in steps)
+    assert steps[2].skip_reason is not None
+    assert "NCS" in steps[2].skip_reason
 
 
 def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path):
     root = make_repo(tmp_path)
-
     steps = runner.build_plan(
         root,
         scope="all",
@@ -185,15 +175,15 @@ def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path):
         powershell_executable="powershell-test",
         idf_executable=None,
     )
-
     names = [step.name for step in steps]
     assert names.count("host/coverage-nrf") == 1
     assert "nrf/host-policy" not in names
+    nrf_build = next(step for step in steps if step.name == "nrf/build")
+    assert any("ncs.ps1" in arg for arg in nrf_build.command)
 
 
 def test_non_windows_firmware_does_not_fall_back_to_cloud(tmp_path: Path):
     root = make_repo(tmp_path)
-
     with pytest.raises(runner.VerificationError, match="GitHub Actions are intentionally not used"):
         runner.firmware_steps(
             root,
@@ -205,9 +195,19 @@ def test_non_windows_firmware_does_not_fall_back_to_cloud(tmp_path: Path):
         )
 
 
+def test_non_windows_nrf_does_not_fake_canonical_windows_wrapper(tmp_path: Path):
+    root = make_repo(tmp_path)
+    with pytest.raises(runner.VerificationError, match="Windows path-safe"):
+        runner.nrf_steps(
+            root,
+            python_executable="python-test",
+            system_name="Linux",
+            powershell_executable=None,
+        )
+
+
 def test_invalid_jobs_are_rejected_before_build(tmp_path: Path):
     root = make_repo(tmp_path)
-
     with pytest.raises(runner.VerificationError, match="1..32"):
         runner.firmware_steps(
             root,

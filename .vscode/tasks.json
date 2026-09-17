@@ -5,24 +5,9 @@
             "label": "Tests: Host C",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_suite.ps1",
-                "-Suite",
-                "Host"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_suite.ps1", "-Suite", "Host"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "group": "test",
             "detail": "Build and run all manifest-driven native C contract suites with the local compiler and print a final SUITE_RESULT report."
@@ -31,22 +16,9 @@
             "label": "Tests: Host C (Clang ASan+UBSan)",
             "type": "shell",
             "command": "python",
-            "args": [
-                "${workspaceFolder}/tools/run_host_tests.py",
-                "--compiler",
-                "${workspaceFolder}/.tools/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin/clang.exe",
-                "--sanitizers",
-                "address,undefined",
-                "--keep-going"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "clear": true
-            },
+            "args": ["${workspaceFolder}/tools/run_host_tests.py", "--compiler", "${workspaceFolder}/.tools/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin/clang.exe", "--sanitizers", "address,undefined", "--keep-going"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
             "problemMatcher": [],
             "group": "test",
             "detail": "Optional native Clang sanitizer pass; no ESP-IDF or hardware action."
@@ -55,19 +27,9 @@
             "label": "Tests: Python",
             "type": "shell",
             "command": "python",
-            "args": [
-                "-m",
-                "pytest",
-                "-q"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "clear": true
-            },
+            "args": ["-m", "pytest", "-q"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
             "problemMatcher": [],
             "group": "test",
             "detail": "Run deterministic pytest checks; the HIL-marked test remains gated by explicit --hil and GEOLOCATOR_HIL=1."
@@ -76,259 +38,145 @@
             "label": "Tests: Web Console",
             "type": "shell",
             "command": "npm",
-            "args": [
-                "run",
-                "test:console"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}/webui"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "clear": true
-            },
+            "args": ["run", "test:console"],
+            "options": {"cwd": "${workspaceFolder}/webui"},
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
             "problemMatcher": [],
-            "group": "test",
-            "detail": "Run the WebUI console Vitest suite."
+            "group": "test"
         },
         {
             "label": "Tests: Web XR",
             "type": "shell",
             "command": "npm",
-            "args": [
-                "run",
-                "test:xr"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}/webui"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "clear": true
-            },
+            "args": ["run", "test:xr"],
+            "options": {"cwd": "${workspaceFolder}/webui"},
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
             "problemMatcher": [],
-            "group": "test",
-            "detail": "Run the WebUI WebXR Vitest suite."
+            "group": "test"
         },
         {
             "label": "Tests: Web Typecheck",
             "type": "shell",
             "command": "npm",
-            "args": [
-                "run",
-                "typecheck"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}/webui"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "clear": true
-            },
+            "args": ["run", "typecheck"],
+            "options": {"cwd": "${workspaceFolder}/webui"},
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
             "problemMatcher": [],
-            "group": "test",
-            "detail": "Type-check the WebUI independently from the Vitest suites."
+            "group": "test"
         },
         {
             "label": "Tests: Web",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_suite.ps1",
-                "-Suite",
-                "Web"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_suite.ps1", "-Suite", "Web"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
-            "group": {
-                "kind": "test",
-                "isDefault": true
-            },
+            "group": {"kind": "test", "isDefault": true},
             "detail": "Run Web Console, WebXR, and typecheck sequentially and print a final SUITE_RESULT report."
         },
         {
             "label": "Build: ESP production",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_idf.ps1",
-                "-Action",
-                "build",
-                "-ProjectPath",
-                ".",
-                "-BuildDir",
-                "build",
-                "-Jobs",
-                "2"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_idf.ps1", "-Action", "build", "-ProjectPath", ".", "-BuildDir", "build", "-Jobs", "2"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "group": "build",
-            "detail": "Build the production ESP32-S3 firmware with the repository's cached ESP-IDF 5.5.4 Python environment."
+            "detail": "Build the production ESP32-S3 firmware with ESP-IDF 5.5.4."
         },
         {
             "label": "Build: ESP Unity",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_idf.ps1",
-                "-Action",
-                "build",
-                "-ProjectPath",
-                "tests/target/test_app",
-                "-BuildDir",
-                "build-s3",
-                "-Target",
-                "esp32s3",
-                "-Jobs",
-                "2"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_idf.ps1", "-Action", "build", "-ProjectPath", "tests/target/test_app", "-BuildDir", "build-s3", "-Target", "esp32s3", "-Jobs", "2"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "group": "build",
             "detail": "Build the standalone Unity target application; this task does not flash hardware."
         },
         {
-            "label": "Tests: nRF54L15",
+            "label": "Build: nRF54L15 production (NCS)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/nRF54L15/pio.ps1",
-                "-Action",
-                "test"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/nRF54L15/ncs.ps1", "-Action", "build"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "problemMatcher": [],
+            "group": "build",
+            "detail": "Canonical nRF54L15 production build: NCS v3.4.0 / upstream XIAO board. The wrapper self-launches the pinned Nordic toolchain."
+        },
+        {
+            "label": "Tests: nRF54L15",
+            "type": "shell",
+            "command": "python",
+            "args": ["${workspaceFolder}/tools/run_local_verify.py", "--scope", "nrf"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "group": "test",
-            "detail": "Run nRF54L15 PlatformIO/Zephyr tests through the path-safe wrapper without uploading a test image."
+            "detail": "Run nRF host-policy tests plus the canonical NCS v3.4.0 production build. Physical/HIL tests remain excluded."
         },
         {
             "label": "nRF54L15: Flash firmware",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/nRF54L15/pio.ps1",
-                "-Action",
-                "upload"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/nRF54L15/ncs.ps1", "-Action", "flash"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
-            "detail": "Build and flash the nRF54L15 firmware through the path-safe wrapper; requires a connected XIAO board."
+            "detail": "Explicit hardware write: build and flash the canonical NCS v3.4.0 nRF54L15 production image."
+        },
+        {
+            "label": "nRF54L15: Monitor logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/nRF54L15/ncs.ps1", "-Action", "monitor", "-Port", "${input:nrfMonitorPort}"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "focus": false},
+            "problemMatcher": [],
+            "detail": "Open the nRF serial log port at 115200 baud. Monitoring alone is not HIL acceptance."
+        },
+        {
+            "label": "nRF54L15: PlatformIO compatibility build",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/nRF54L15/pio.ps1", "-Action", "build"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "problemMatcher": [],
+            "detail": "Compatibility smoke only. This PlatformIO/Zephyr 4.2.1 artifact is not the production firmware and must not be flashed as the canonical image."
+        },
+        {
+            "label": "nRF54L15: MAX-45 Channel Sounding proof",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/nRF54L15/ncs.ps1", "-Action", "cs-proof"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "problemMatcher": [],
+            "detail": "Reproduce the historical MAX-45 SoftDevice Channel Sounding build proof; it is not the canonical production configuration."
         },
         {
             "label": "Tests: All (no flash)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_suite.ps1",
-                "-Suite",
-                "All"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_suite.ps1", "-Suite", "All"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
-            "group": {
-                "kind": "test",
-                "isDefault": true
-            },
-            "detail": "Run host C, Python, nRF54L15, WebUI, Unity-target, and production-build steps with a final SUITE_RESULT report; no flash."
+            "group": {"kind": "test", "isDefault": true},
+            "detail": "Run host C, Python, canonical NCS nRF54L15 build, WebUI, Unity-target, and ESP production-build steps; never flashes hardware."
         },
         {
             "label": "ESP: Check COM4",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/check_serial_ports.ps1",
-                "-Ports",
-                "COM4"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/check_serial_ports.ps1", "-Ports", "COM4"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "detail": "Confirm that the programming port COM4 is live before a flash task."
         },
@@ -336,34 +184,16 @@
             "label": "ESP: Check COM6",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/check_serial_ports.ps1",
-                "-Ports",
-                "COM6"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/check_serial_ports.ps1", "-Ports", "COM6"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "detail": "Confirm that the passive log port COM6 is live before a monitor task."
         },
         {
             "label": "ESP: Check serial ports",
             "dependsOrder": "sequence",
-            "dependsOn": [
-                "ESP: Check COM4",
-                "ESP: Check COM6"
-            ],
+            "dependsOn": ["ESP: Check COM4", "ESP: Check COM6"],
             "problemMatcher": [],
             "detail": "Confirm the programming port COM4 and passive log port COM6 before a combined HIL task."
         },
@@ -371,71 +201,23 @@
             "label": "ESP: Flash production (COM4)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_idf.ps1",
-                "-Action",
-                "flash",
-                "-ProjectPath",
-                ".",
-                "-BuildDir",
-                "build",
-                "-Port",
-                "COM4"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_idf.ps1", "-Action", "flash", "-ProjectPath", ".", "-BuildDir", "build", "-Port", "COM4"],
+            "options": {"cwd": "${workspaceFolder}"},
             "dependsOrder": "sequence",
-            "dependsOn": [
-                "ESP: Check COM4",
-                "Build: ESP production"
-            ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "dependsOn": ["ESP: Check COM4", "Build: ESP production"],
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
-            "detail": "Explicit hardware write: flash the production image through COM4."
+            "detail": "Explicit hardware write: flash the ESP32 production image through COM4."
         },
         {
             "label": "ESP: Flash Unity app (COM4)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_idf.ps1",
-                "-Action",
-                "flash",
-                "-ProjectPath",
-                "tests/target/test_app",
-                "-BuildDir",
-                "build-s3",
-                "-Port",
-                "COM4"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_idf.ps1", "-Action", "flash", "-ProjectPath", "tests/target/test_app", "-BuildDir", "build-s3", "-Port", "COM4"],
+            "options": {"cwd": "${workspaceFolder}"},
             "dependsOrder": "sequence",
-            "dependsOn": [
-                "ESP: Check COM4",
-                "Build: ESP Unity"
-            ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "dependsOn": ["ESP: Check COM4", "Build: ESP Unity"],
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "detail": "Explicit hardware write: flash the standalone Unity test app through COM4."
         },
@@ -443,173 +225,51 @@
             "label": "ESP: Production pipeline HIL (COM4 + COM6)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_pipeline_hil.ps1",
-                "-FlashPort",
-                "COM4",
-                "-LogPort",
-                "COM6",
-                "-ProjectPath",
-                ".",
-                "-BuildDir",
-                "build",
-                "-RequireFullPipeline",
-                "-BaseUrl",
-                "${input:pipelineBaseUrl}",
-                "-Record",
-                "-ObjectId",
-                "${input:pipelineObjectId}"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_pipeline_hil.ps1", "-FlashPort", "COM4", "-LogPort", "COM6", "-ProjectPath", ".", "-BuildDir", "build", "-RequireFullPipeline", "-BaseUrl", "${input:pipelineBaseUrl}", "-Record", "-ObjectId", "${input:pipelineObjectId}"],
+            "options": {"cwd": "${workspaceFolder}"},
             "dependsOrder": "sequence",
-            "dependsOn": [
-                "Build: ESP production"
-            ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "dependsOn": ["Build: ESP production"],
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
-            "detail": "Explicit production HIL: monitor COM6, flash production through COM4, require full serial/API pipeline checks, and report PIPELINE_HIL_RESULT; add the four -Confirm... switches in a direct PowerShell run after the manual TFT/keypad/power observations. -ConfirmPowerButtonTiming additionally requires measured GPIO21 HIGH -> shutdown latch plus explicit target/tolerance arguments."
+            "detail": "Explicit ESP32 production HIL: monitor COM6, flash production through COM4, and require full serial/API pipeline checks."
         },
         {
             "label": "ESP: Monitor logs (COM6)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_idf.ps1",
-                "-Action",
-                "monitor",
-                "-ProjectPath",
-                ".",
-                "-BuildDir",
-                "build",
-                "-Port",
-                "COM6"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "dependsOn": [
-                "ESP: Check COM6"
-            ],
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_idf.ps1", "-Action", "monitor", "-ProjectPath", ".", "-BuildDir", "build", "-Port", "COM6"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "dependsOn": ["ESP: Check COM6"],
             "isBackground": true,
-            "runOptions": {
-                "instanceLimit": 1
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": false
-            },
-            "problemMatcher": {
-                "owner": "esp-monitor",
-                "pattern": {
-                    "regexp": "^(.*)$",
-                    "message": 1
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": ".*"
-                }
-            },
-            "detail": "Passive 115200-baud log monitor on COM6; stop it with Ctrl+C or the task stop control."
+            "runOptions": {"instanceLimit": 1},
+            "presentation": {"reveal": "always", "panel": "dedicated", "focus": false},
+            "problemMatcher": {"owner": "esp-monitor", "pattern": {"regexp": "^(.*)$", "message": 1}, "background": {"activeOnStart": true, "beginsPattern": ".*"}},
+            "detail": "Passive 115200-baud ESP32 log monitor on COM6; stop it with Ctrl+C or the task stop control."
         },
         {
             "label": "ESP: Monitor Unity logs (COM6)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_idf.ps1",
-                "-Action",
-                "monitor",
-                "-ProjectPath",
-                "tests/target/test_app",
-                "-BuildDir",
-                "build-s3",
-                "-Port",
-                "COM6"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "dependsOn": [
-                "ESP: Check COM6"
-            ],
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_idf.ps1", "-Action", "monitor", "-ProjectPath", "tests/target/test_app", "-BuildDir", "build-s3", "-Port", "COM6"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "dependsOn": ["ESP: Check COM6"],
             "isBackground": true,
-            "runOptions": {
-                "instanceLimit": 1
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": false
-            },
-            "problemMatcher": {
-                "owner": "esp-monitor",
-                "pattern": {
-                    "regexp": "^(.*)$",
-                    "message": 1
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": ".*"
-                }
-            },
+            "runOptions": {"instanceLimit": 1},
+            "presentation": {"reveal": "always", "panel": "dedicated", "focus": false},
+            "problemMatcher": {"owner": "esp-monitor", "pattern": {"regexp": "^(.*)$", "message": 1}, "background": {"activeOnStart": true, "beginsPattern": ".*"}},
             "detail": "Passive Unity test-result monitor on COM6; start this before flashing the Unity app when using separate tasks."
         },
         {
             "label": "ESP: Unity tests (flash COM4 + logs COM6)",
             "type": "shell",
             "command": "powershell",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/tools/run_unity_hil.ps1",
-                "-FlashPort",
-                "COM4",
-                "-LogPort",
-                "COM6",
-                "-ProjectPath",
-                "tests/target/test_app",
-                "-BuildDir",
-                "build-s3"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "dependsOn": [
-                "Build: ESP Unity"
-            ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "clear": true
-            },
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_unity_hil.ps1", "-FlashPort", "COM4", "-LogPort", "COM6", "-ProjectPath", "tests/target/test_app", "-BuildDir", "build-s3"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "dependsOn": ["Build: ESP Unity"],
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "group": "test",
-            "detail": "Run all Unity cases on the board: start COM6 monitor, flash the test app via COM4, and require TEST_APP_RESULT: PASS."
+            "detail": "Run all Unity cases on the ESP32 board and require TEST_APP_RESULT: PASS."
         }
     ],
     "inputs": [
@@ -624,6 +284,12 @@
             "type": "promptString",
             "description": "Existing object ID used for recording start/stop",
             "default": "OBJ_0001"
+        },
+        {
+            "id": "nrfMonitorPort",
+            "type": "promptString",
+            "description": "COM port exposed by the connected XIAO nRF54L15 for serial logs",
+            "default": "COM7"
         }
     ]
 }

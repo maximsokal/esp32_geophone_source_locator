@@ -1,6 +1,8 @@
 # Local verification workflow
 
-Normal project verification is local. GitHub Actions are manual-only and are not part of the routine push/verification path. This file is the master project-wide `Run All` validation instruction; the detailed nRF54L15 work package is [`nrf54l15-test-task.md`](nrf54l15-test-task.md).
+Normal project verification is local. GitHub Actions are not part of the routine
+push/verification path. This file is the project-wide `Run All` instruction;
+the detailed nRF54L15 matrix is in [`nrf54l15-test-task.md`](nrf54l15-test-task.md).
 
 ## Deterministic software verification
 
@@ -10,140 +12,188 @@ From the repository root:
 python tools/run_local_verify.py --scope software
 ```
 
-This runs, in order:
+This runs the native host manifests, complete non-HIL Python suite, and WebUI
+install/typecheck/tests/build/bundle verification. It does not flash or monitor
+hardware.
 
-1. `tests/host/manifest.json` through `tools/run_host_tests.py`;
-2. every `tests/host/manifest.d/*.json` fragment in deterministic name order;
-3. the complete `tests/python` suite without `--hil` (physical HIL is therefore disabled by `tests/python/conftest.py`);
-4. WebUI `npm ci`, typecheck, console tests, XR tests, production build, and bundle verification.
-
-This is the existing deterministic host/WebUI software stage. It does not
-flash or monitor hardware.
-
-Use `--skip-npm-ci` only when intentionally reusing the current `webui/node_modules` tree.
-
-## Local ESP-IDF firmware build
-
-On the project Windows workstation:
+For the ESP32-S3 production firmware build:
 
 ```powershell
 python tools/run_local_verify.py --scope firmware --jobs 2
 ```
 
-The runner invokes the repository's existing `tools/run_idf.ps1 -Action build`, which uses the locally installed ESP-IDF 5.5.4 toolchain. It does not flash the board and does not open a serial monitor.
+Windows uses the repository's ESP-IDF 5.5.4 wrapper. No GitHub Actions fallback
+is used.
 
-On non-Windows systems the firmware scope requires `idf.py` on `PATH`. If it is unavailable, verification fails explicitly; it never falls back to GitHub Actions.
+## Canonical nRF54L15 production build
 
-## Isolated nRF54L15 build and test boundary
+The nRF54L15 production toolchain is **nRF Connect SDK v3.4.0**. PlatformIO is
+not the production authority after MAX-96.
 
-The nRF54L15 project is not part of the ESP-IDF root build. From the repository
-root, use the wrapper because the checkout path contains spaces:
+From an ordinary Windows PowerShell:
 
 ```powershell
-.\nRF54L15\pio.ps1 build
+.\nRF54L15\ncs.ps1 build
 ```
 
-The supported maintenance actions are `.\nRF54L15\pio.ps1 clean`,
-`.\nRF54L15\pio.ps1 upload`, `.\nRF54L15\pio.ps1 monitor` and
-`.\nRF54L15\pio.ps1 test`. Do not make
-`pio run -d ".\nRF54L15"` the normal command. Generated PlatformIO/Zephyr output
-belongs under `%USERPROFILE%\.platformio-workspaces\nrf54l15`, outside the
-repository.
+The wrapper is pinned to NCS v3.4.0 and the upstream board target
+`xiao_nrf54l15/nrf54l15/cpuapp`. If the current shell does not expose `west`,
+it relaunches itself through Nordic sdk-manager using the exact pinned SDK. The
+checkout may contain spaces: a temporary no-space `SUBST` source alias is used,
+and generated output lives under:
 
-The installed production hardware is the plain XIAO nRF54L15, not the Sense
-variant. Remote geophone nodes use an external GY-BMI160 and BME280 on the
-XIAO's private second-I2C pair (`D11/P0.03` SCL, `D12/P0.04` SDA); both are
-powered from that XIAO's `3V3_OUT`. They are aggregated by the remote nRF and
-are not direct ESP32/TCA9548A devices. RJ45 pin 2 (+3.3 V) is RESERVED/NC. The
-main-enclosure node does not require the remote-only sensor assembly. This
-hardware distinction belongs to physical HIL and must never be inferred from a
-successful software build.
+```text
+%USERPROFILE%\.ncs-workspaces\esp32_geophone_source_locator
+```
 
-The wrapper build and the automatic no-flash test launch are executable
-boundaries. PlatformIO's `--without-uploading` option prevents upload but does
-not by itself prove that an embedded test is hardware-free. Therefore
-`pio.ps1 test` and every project-wide no-flash runner may execute only nRF test
-suites that have been explicitly qualified as software/native tests. Physical
-one-board/multi-node/HIL suites must remain separate explicit actions.
+The canonical production build directory is:
 
-The current `nRF54L15/test` directory has no executable software/native suite,
-so the wrapper reports `nRF54L15 TEST_RESULT: SKIPPED` rather than claiming
-nRF unit/native evidence.
+```text
+nrf54l15-production-v3.4.0
+```
 
-For the isolated local verifier, use:
+`build` uses `nRF54L15/zephyr/prj.conf` only. The historical
+`nRF54L15/ncs/channel_sounding.conf` remains the MAX-45 proof overlay until
+MAX-51 promotes reviewed RAS/Channel-Sounding options into production.
+
+To reproduce the proof:
+
+```powershell
+.\nRF54L15\ncs.ps1 cs-proof
+.\nRF54L15\ncs.ps1 compare
+.\nRF54L15\ncs.ps1 probe
+```
+
+These are not alternate production images.
+
+## nRF local verification scope
+
+Use:
 
 ```powershell
 python tools/run_local_verify.py --scope nrf
 ```
 
-This plans `nrf/build` followed by the automatic nRF software-test boundary;
-`--scope all` includes the same two stages alongside the ESP32-S3 and WebUI
-surfaces. The default `--scope software` remains the existing
-host/Python/WebUI-only software scope; use `nrf` or `all` when the nRF surface
-is required.
+This performs:
 
-## Master project-wide validation (`Run All`)
+1. the native `coverage-nrf` host-policy suite;
+2. the canonical NCS v3.4.0 production build;
+3. the NCS-native embedded-test boundary.
 
-The existing no-flash entry points remain:
+The third stage currently reports `SKIPPED`: there is no reviewed NCS-native
+`test_sw_*` runner yet. Hardware/HIL suites are intentionally excluded. A
+PlatformIO `--without-uploading` run is not silently substituted, because
+`--without-uploading` alone does not prove a test is hardware-free.
+
+`python tools/run_local_verify.py --scope all --jobs 2` and VS Code
+`Tests: All (no flash)` use the same NCS production build. They never flash nRF
+hardware.
+
+## Explicit nRF hardware actions
+
+Canonical flash:
+
+```powershell
+.\nRF54L15\ncs.ps1 flash
+```
+
+This rebuilds/probes the production image and calls the resolved NCS/west board
+runner. Flashing is explicit and never part of `Run All`.
+
+Serial log monitor:
+
+```powershell
+.\nRF54L15\ncs.ps1 monitor -Port COM7
+```
+
+The monitor defaults to 115200 baud. Opening a serial stream is not a HIL pass.
+
+VS Code exposes the same authority:
+
+- `Build: nRF54L15 production (NCS)`;
+- `Tests: nRF54L15`;
+- `nRF54L15: Flash firmware`;
+- `nRF54L15: Monitor logs`.
+
+## PlatformIO compatibility boundary
+
+`nRF54L15/platformio.ini` and `pio.ps1` remain for compatibility smoke against
+the previously verified Seeed PlatformIO/Zephyr 4.2.1 stack. The corresponding
+VS Code task is explicitly named:
+
+```text
+nRF54L15: PlatformIO compatibility build
+```
+
+That artifact is not the official firmware, must not be used as Channel
+Sounding controller evidence, and is not used by `--scope nrf` or `Run All`.
+The production flash task never calls `pio.ps1 upload`.
+
+## nRF hardware contract relevant to verification
+
+The installed target is the plain XIAO nRF54L15, not the Sense variant. Remote
+nodes use an external GY-BMI160 and BME280 on the XIAO private second-I2C pair
+(D11/P0.03 SCL, D12/P0.04 SDA), powered from XIAO `3V3_OUT`. The main-enclosure
+node does not require the remote-only sensor assembly. Upstream D4/P1.10 SDA +
+D5/P1.11 SCL use `i2c22` as TWIS toward ESP32/TCA9548A. RJ45 pin 2 (+3.3 V) is
+RESERVED/NC.
+
+The common firmware and wire contracts remain:
+
+- one runtime MAIN/REMOTE image;
+- 12-byte `SENSOR_REFRESH`;
+- 102-byte REMOTE sensor snapshot;
+- no geophone TDOA/cross-node clock assumptions from nRF uptime fields.
+
+A successful build proves none of the physical wiring, sensor behavior or radio
+accuracy.
+
+## Master project-wide validation
+
+Hardware-free master entry points:
 
 ```powershell
 python tools/run_local_verify.py --scope all --jobs 2
 ```
 
-and VS Code `Tests: All (no flash)`, which calls `tools/run_suite.ps1 -Suite All`.
-The master validation contract is staged as follows:
+or VS Code `Tests: All (no flash)` / `tools/run_suite.ps1 -Suite All`.
 
-1. **ESP32-S3:** configure/build, native/component tests, Python source and
-   replay/parser contracts, and existing production/Web asset checks.
-2. **nRF54L15:** isolated wrapper production build plus only qualified
-   software/native nRF tests. One production firmware image is shared by all
-   runtime node roles; a future host/native test-only environment is allowed
-   if needed, but it must never become a central/remote production split.
-3. **WebUI:** existing install, typecheck, console/XR tests, build and bundle
-   checks.
-4. **Integration:** ESP32/nRF protocol/schema contracts when they exist,
-   architecture/task consistency, and hardware pin/configuration consistency.
-5. **Physical tiers:** run only as explicitly authorized HIL tasks after the
-   software stages; they are not hidden inside the no-flash `All` result.
+The master contract is:
 
-`Tests: All (no flash)` calls `tools/run_suite.ps1 -Suite All`. The standalone
-`run_local_verify.py --scope all` plan likewise contains nRF build and the
-qualified automatic test boundary. Neither path flashes nRF hardware and
-neither may silently attach to a test serial port merely because a physical
-PlatformIO suite was added.
+1. ESP32 host/Python/WebUI deterministic surfaces;
+2. nRF host-policy + canonical NCS production build;
+3. qualified software/native nRF tests only when an NCS-native runner is
+   explicitly reviewed;
+4. ESP32 Unity/production builds;
+5. no implicit hardware access.
 
-For a connected board, the VS Code task `nRF54L15: Flash firmware` invokes
-`nRF54L15/pio.ps1 -Action upload` through the same path-safe wrapper. A
-successful upload only proves programming completed; it is not by itself a
-single-board or multi-node HIL result.
+Physical tiers stay separate:
 
-### Validation tiers and blocking policy
-
-| Tier | Runs automatically on a developer PC/CI | Physical prerequisite |
+| Tier | Evidence | Physical prerequisite |
 | --- | --- | --- |
-| Software-only | ESP32 host/Python/WebUI checks, ESP32 builds, nRF wrapper build and explicitly qualified nRF software/native tests | None; no physical nRF board |
-| ESP32 target | ESP32 Unity/production live runners and serial/API evidence | One physical ESP32-S3 and its required ports/wiring |
-| One nRF54L15 | boot, USB log, single-board target checks; remote profile adds external LEDs + local GY-BMI160/BME280 bus and snapshot checks | One physical plain XIAO nRF54L15; remote sensor assembly only for remote-profile checks |
-| Multiple nRF54L15 | pairwise ranging, matrix, role rotation, reconnect/missing-node tests | Two or more physical nRF54L15 boards |
-| Full topology | ESP32 upstream I2C + TCA9548A channels + main nRF + remote nodes, with each remote GY-BMI160/BME280 on its private local bus and XIAO `3V3_OUT` power | Complete wired diploma topology |
+| Software-only | host/Python/WebUI, ESP32 builds, nRF host policy + NCS build | none |
+| ESP32 target | Unity/production live telemetry | physical ESP32-S3 |
+| One nRF54L15 | boot/logs/upstream I2C; remote profile adds BMI160/BME280/LEDs | one XIAO |
+| Multiple nRF54L15 | pairwise CS, reconnect, role rotation | two or more XIAOs |
+| Full topology | ESP32 + TCA + main/remote XIAOs and remote sensors | complete wiring |
 
-Absence of five physical nRF54L15 boards must never block ordinary
-software-only CI. Missing hardware or telemetry in a physical tier is
-`BLOCKED`, not an implicit pass. Replay/native/simulator results remain
-software evidence and do not become physical HIL proof.
+Missing physical hardware is `BLOCKED`, never an implicit pass.
 
 ## Narrow scopes
-
-For faster investigation:
 
 ```powershell
 python tools/run_local_verify.py --scope host
 python tools/run_local_verify.py --scope python
 python tools/run_local_verify.py --scope web
+python tools/run_local_verify.py --scope nrf
 ```
 
-`--dry-run` prints the planned local commands without executing them.
+`--dry-run` prints the planned commands without executing them.
 
 ## Evidence boundary
 
-A local software pass proves only the host/source/parser/WebUI behavior those tests exercise. It does not prove physical keypad behavior, TFT pixels, SPI2/SD electrical timing, DMA behavior, real FreeRTOS scheduling, physical XIAO GPIOs, GY-BMI160/BME280 wiring or power, Bluetooth Channel Sounding, or ESP32 runtime performance. Those remain LIVE BOARD HIL/manual evidence as defined in `docs/verification-evidence-matrix.md`.
+Software/build evidence does not prove physical keypad/TFT behavior, SPI/SD
+latency, DMA timing, GPIOs, actual GY-BMI160/BME280 wiring, Bluetooth Channel
+Sounding accuracy, RF environment, or complete TCA topology. Those remain
+explicit live-board/HIL evidence as defined in
+[`verification-evidence-matrix.md`](verification-evidence-matrix.md).

@@ -1,18 +1,25 @@
 # nRF54L15 subproject
 
-This is an independent PlatformIO + Zephyr project for all Seeed Studio XIAO
-nRF54L15 nodes used by `esp32_geophone_source_locator`. The repository root
-remains the ESP-IDF project and is not a PlatformIO project.
+This is the independent XIAO nRF54L15 firmware subtree used by
+`esp32_geophone_source_locator`. The repository root remains the ESP-IDF
+ESP32-S3 project. **nRF Connect SDK v3.4.0 is the canonical production build
+and flash toolchain for the XIAO firmware.** The historical PlatformIO + Zephyr
+4.2.1 path is retained only as an explicitly named compatibility smoke build;
+it is not an authoritative production artifact.
 
 ## Architecture rule
 
-There is one production source tree, one production PlatformIO environment and
-one firmware binary for every XIAO nRF54L15. Runtime identity,
-main/remote topology and initiator/reflector role are not compile-time
-variants. Do not create separate `central` and `remote` environments or
-firmware copies. A future host/native-only test environment is allowed if it is
-required to execute software tests without hardware; it must never become a
-second production firmware variant.
+There is one production source tree, one production NCS v3.4.0 configuration
+shape and one common runtime firmware image for every XIAO nRF54L15. Runtime
+identity, MAIN/REMOTE wired topology and Channel Sounding initiator/reflector
+role are not compile-time variants. Do not create separate `central`, `remote`,
+`initiator` or `reflector` production environments or firmware copies.
+
+The canonical application sources remain under `nRF54L15/src`, `include` and
+`zephyr`. The pinned NCS wrapper builds the upstream board target
+`xiao_nrf54l15/nrf54l15/cpuapp`. Generated NCS output belongs under
+`%USERPROFILE%\.ncs-workspaces\esp32_geophone_source_locator`, outside the
+repository.
 
 The wired topology has one main-enclosure node on the ESP32-S3 upstream I2C
 bus and one remote node per connected geophone behind the TCA9548A. With all
@@ -76,7 +83,7 @@ Because MAIN and REMOTE use the same production firmware while their external
 sensor hardware differs, GY-BMI160 and BME280 are treated as **optional runtime
 peripherals**, not as always-present Zephyr DeviceTree sensor devices. The
 private `i2c30` controller is available in every image. A successful REMOTE
-assignment now activates a dedicated low-priority sensor worker using a copied
+assignment activates a dedicated low-priority sensor worker using a copied
 assignment snapshot; MAIN and UNASSIGNED nodes do not touch the private sensor
 bus. IMU and environment sources are prepared independently, an initial sample
 is produced when at least one source is available, and a failed source can be
@@ -85,22 +92,22 @@ therefore represented as partial/no-data sensor state rather than a MAIN boot
 failure.
 
 The upstream target and local sensor controller use distinct peripheral
-instances. In the pinned Seeed/Zephyr baseline the project overlay switches
-`i2c22` on D4/D5 (`P1.10/P1.11`) to `nordic,nrf-twis`, while `i2c30` remains
-the private TWIM/controller for D11/D12. Zephyr 4.2.1 provides the Nordic nrfx
-TWIS driver through the standard `i2c_target_register()` /
-`i2c_target_unregister()` target API in buffer mode. The
-`nrf_upstream_target_zephyr` adapter binds to that API and exposes lifecycle,
-re-addressing with rollback, and raw hardware-ID access. The adapter itself
-remains address/protocol-neutral; `nrf_upstream_protocol` defines bootstrap
-addresses/frames plus SENSOR_REFRESH and the REMOTE sensor extension, while
-`nrf_bootstrap_runtime_zephyr` owns the bounded callback-to-worker handoff and
-deferred re-addressing. The TWIS buffer is explicitly 128 bytes. REMOTE reads
-prepare a fixed 102-byte frame whose first 28 bytes are exactly the legacy
-STATUS frame, so existing topology reads remain backward-compatible; the full
-extension carries request/sequence/validity/fault state, nRF completion uptime
-and BMI160/BME280 values with its own full-frame CRC. The ESP32
-`nrf_topology_service` consumes this frame through a bounded
+instances. The project overlay switches `i2c22` on D4/D5 (`P1.10/P1.11`) to
+`nordic,nrf-twis`, while `i2c30` remains the private TWIM/controller for
+D11/D12. The `nrf_upstream_target_zephyr` adapter uses Zephyr's standard
+`i2c_target_register()` / `i2c_target_unregister()` target API in buffer mode
+and exposes lifecycle, re-addressing with rollback, and raw hardware-ID access.
+The adapter itself remains address/protocol-neutral; `nrf_upstream_protocol`
+defines bootstrap addresses/frames plus SENSOR_REFRESH and the REMOTE sensor
+extension, while `nrf_bootstrap_runtime_zephyr` owns the bounded
+callback-to-worker handoff and deferred re-addressing. The TWIS buffer is
+explicitly 128 bytes.
+
+REMOTE reads prepare a fixed 102-byte frame whose first 28 bytes are exactly
+the legacy STATUS frame, so existing topology reads remain backward-compatible;
+the full extension carries request/sequence/validity/fault state, nRF
+completion uptime and BMI160/BME280 values with its own full-frame CRC. The
+ESP32 `nrf_topology_service` consumes this frame through a bounded
 select/identity-check/refresh/poll/close transaction and exposes only cached
 results/non-blocking refresh requests to callers. See
 [`../docs/nrf-topology-sensor-consumer.md`](../docs/nrf-topology-sensor-consumer.md).
@@ -111,17 +118,38 @@ clean next TWIS transaction still requires HIL validation.
 For a stationary geophone, the accelerometer gravity vector is the primary
 verticality reference. The current REMOTE sensor worker includes a pure integer
 orientation estimator and uses gyro only as a motion/stability gate. Periodic
-orientation work is serialized inside that same worker and performs an IMU-only
-BMI160 read; it never starts a BME280 forced conversion. Aggregate SENSOR_REFRESH
-samples are reused by the estimator instead of immediately issuing a redundant
-BMI160 read. The signed reference axis defaults to `UNCONFIGURED` until the
-installed BMI160-to-geophone axis is physically recorded/HIL-verified, so the
-firmware does not guess X/Y/Z orientation.
+orientation work is serialized inside that same worker and performs an
+IMU-only BMI160 read; it never starts a BME280 forced conversion. Aggregate
+SENSOR_REFRESH samples are reused by the estimator instead of immediately
+issuing a redundant BMI160 read. The signed reference axis defaults to
+`UNCONFIGURED` until the installed BMI160-to-geophone axis is physically
+recorded/HIL-verified, so the firmware does not guess X/Y/Z orientation.
 
 See the authoritative topology, Channel Sounding, external GY-BMI160 and LED
-contract in [`../ARCHITECTURE.md`](../ARCHITECTURE.md). The dedicated future
-work and test matrix are in
+contract in [`../ARCHITECTURE.md`](../ARCHITECTURE.md). The detailed test and
+HIL matrix is in
 [`../docs/nrf54l15-test-task.md`](../docs/nrf54l15-test-task.md).
+
+## Channel Sounding toolchain boundary
+
+Channel Sounding support is proven only on **NCS v3.4.0 / Zephyr 4.4.0 with
+Nordic SoftDevice Controller**. `nRF54L15/ncs/channel_sounding.conf` remains the
+historical MAX-45 additive proof fixture until the real MAX-51 Bluetooth/RAS
+adapter promotes reviewed Channel Sounding options into the permanent
+production configuration.
+
+Therefore, as of MAX-96:
+
+- `ncs.ps1 build` = canonical production image from `zephyr/prj.conf` only;
+- `ncs.ps1 cs-proof` = MAX-45 SoftDevice/Channel-Sounding proof image;
+- `ncs.ps1 compare` = build both and report their ELF sizes;
+- `ncs.ps1 probe` = inspect the existing MAX-45 proof artifact;
+- the proof overlay is **not** silently included in the production build.
+
+The platform-neutral `nrf_cs_scheduler` is already compiled in the common
+application. Real RAS/CS execution is the separate MAX-51 slice; multi-node
+execution authority/handoff is tracked separately so `BT_MAX_CONN=1` does not
+turn into an implicit distributed BLE race.
 
 ## Remote external LEDs
 
@@ -137,37 +165,61 @@ Remote external LED wiring is:
 The main-enclosure board has none of these four external LEDs. The production
 firmware starts the upstream bootstrap path and REMOTE sensor worker
 infrastructure, while the onboard `led0` alias remains only a simple
-board/toolchain heartbeat. The orientation estimator now exposes semantic
-`UNAVAILABLE`, `MOVING`, `ACCEPTED`, and graded `OUTSIDE` states, but this slice
-does **not** bind them to D0 because the installed BMI160 reference axis and
-external LED active polarity/series-resistor wiring are not yet documented.
+board/toolchain heartbeat. The orientation estimator exposes semantic
+`UNAVAILABLE`, `MOVING`, `ACCEPTED`, and graded `OUTSIDE` states, but does not
+bind them to D0 until the installed BMI160 reference axis and external LED
+active polarity/series-resistor wiring are physically documented.
 
 BLUE is intended to be steady for `ACCEPTED` and to blink progressively faster
 for graded stable `OUTSIDE` states once the physical backend is HIL-validated.
 GREEN/YELLOW/RED logger-status latch semantics remain the separate contract in
 `ARCHITECTURE.md`; this estimator does not invent those fault-to-LED policies.
 
-## Supported Windows build interface
+## Supported Windows production interface
 
-The checkout path contains spaces, and direct Seeed Zephyr generation through
-that path is unreliable. From the repository root, use the wrapper:
+From an ordinary PowerShell at the repository root:
 
 ```powershell
-.\nRF54L15\pio.ps1 build
-.\nRF54L15\pio.ps1 clean
-.\nRF54L15\pio.ps1 upload
-.\nRF54L15\pio.ps1 monitor
-.\nRF54L15\pio.ps1 test
+.\nRF54L15\ncs.ps1 build
+.\nRF54L15\ncs.ps1 clean
+.\nRF54L15\ncs.ps1 flash
+.\nRF54L15\ncs.ps1 monitor -Port COM7
 ```
 
-The wrapper uses a temporary no-space `SUBST` drive and keeps generated
-PlatformIO/Zephyr files under `%USERPROFILE%\.platformio-workspaces\nrf54l15`.
-Do not use a direct `pio run -d ".\nRF54L15"` command as the normal workflow.
-The `test` action is the supported automatic software-test entry point and
-must remain hardware-free. Physical target/HIL suites must use separate,
-explicitly authorized commands and must never be pulled into `Tests: All (no
-flash)` merely by adding a `test_*` directory.
+`ncs.ps1` is pinned to NCS v3.4.0. If `west` is not already available, the
+wrapper relaunches itself through:
 
-In VS Code, run `nRF54L15: Flash firmware` to build and upload the same
-production image through `pio.ps1 upload`. This task requires a connected XIAO
-nRF54L15 and is separate from the no-flash test tasks.
+```powershell
+nrfutil sdk-manager toolchain launch --ncs-version v3.4.0 -- ...
+```
+
+The checkout may contain spaces. On Windows the wrapper creates a temporary
+no-space `SUBST` source alias; generated NCS output stays outside the repo in
+`%USERPROFILE%\.ncs-workspaces\esp32_geophone_source_locator`.
+
+`flash` is an explicit hardware action and is never part of `Tests: All (no
+flash)`. `monitor` only opens the requested serial port and is not itself HIL
+acceptance.
+
+VS Code canonical tasks are:
+
+- `Build: nRF54L15 production (NCS)`;
+- `Tests: nRF54L15`;
+- `nRF54L15: Flash firmware`;
+- `nRF54L15: Monitor logs`.
+
+## PlatformIO compatibility path
+
+`platformio.ini` and `pio.ps1` are retained because they are still useful for
+compatibility smoke checks against the older Seeed/Zephyr 4.2.1 package. They
+are **not** the production build/flash authority after MAX-96.
+
+The supported compatibility command is deliberately named as such in VS Code:
+
+```text
+nRF54L15: PlatformIO compatibility build
+```
+
+Do not use `pio.ps1 upload` for the official firmware and do not interpret a
+successful PlatformIO build as Channel Sounding controller evidence. The
+canonical production artifact always comes from the pinned NCS v3.4.0 path.
