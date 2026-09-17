@@ -148,6 +148,16 @@
         "tests/host/stubs/nrf_upstream_target_zephyr",
         "nRF54L15/include"
       ]
+    },
+    {
+      "name": "nrf_cs_scheduler",
+      "sources": [
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "tests/host/nrf_cs_scheduler_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
     }
   ]
 }

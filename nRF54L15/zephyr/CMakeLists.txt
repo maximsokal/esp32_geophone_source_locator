@@ -26,6 +26,7 @@ target_sources(app PRIVATE
     ../src/nrf_bootstrap.c
     ../src/nrf_upstream_target_zephyr.c
     ../src/nrf_bootstrap_runtime_zephyr.c
+    ../src/nrf_cs_scheduler.c
 )
 
 target_include_directories(app PRIVATE ../include)
