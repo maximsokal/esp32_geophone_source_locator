@@ -2,7 +2,7 @@ idf_component_register(
     SRCS
         "nrf_topology.c"
         "nrf_sensor_transport.c"
-        "nrf_topology_service.c"
+        "nrf_topology_service_max97.c"
 
     INCLUDE_DIRS
         "include"
@@ -14,6 +14,8 @@ idf_component_register(
         freertos
         i2c_bus
         log
+        nrf_cs_authority
+        nrf_cs_shared
         nrf_upstream_protocol
         sensor_bus
         tca9548a_mux
