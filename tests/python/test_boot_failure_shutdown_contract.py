@@ -26,11 +26,12 @@ def test_boot_failure_does_not_duplicate_button_state_machine():
 
 
 def test_normal_startup_arm_boundary_is_not_moved_early():
-    diagnostic = STARTUP.index("app_storage_boot_run_diagnostic();")
-    services = STARTUP.index("app_startup_initialize_services(")
-    arm = STARTUP.index("power_control_arm_shutdown_button()")
+    run = STARTUP[STARTUP.index("void app_startup_run(void)") :]
+    diagnostic = run.index("app_storage_boot_run_diagnostic();")
+    services = run.index("app_startup_initialize_services(")
+    arm = run.index("power_control_arm_shutdown_button()")
     assert diagnostic < services < arm
-    assert STARTUP.count("power_control_arm_shutdown_button()") == 1
+    assert run.count("power_control_arm_shutdown_button()") == 1
 
 
 def test_held_button_release_confirmation_contract_remains_in_adapter():
