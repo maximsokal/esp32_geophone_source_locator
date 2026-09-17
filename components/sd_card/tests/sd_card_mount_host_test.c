@@ -16,6 +16,8 @@
 static esp_err_t s_gpio_config_result;
 static esp_err_t s_gpio_set_result;
 static esp_err_t s_mount_result;
+static esp_err_t s_unmount_result;
+static esp_err_t s_info_result;
 static gpio_config_t s_gpio_config;
 static gpio_num_t s_set_gpio;
 static int s_set_level;
@@ -27,7 +29,10 @@ static sdmmc_card_t s_card;
 static unsigned s_gpio_config_calls;
 static unsigned s_gpio_set_calls;
 static unsigned s_mount_calls;
+static unsigned s_unmount_calls;
+static unsigned s_info_calls;
 static unsigned s_print_calls;
+static sdmmc_card_t *s_last_unmount_card;
 static unsigned s_timeout_hint_logs;
 static unsigned s_low_frequency_logs;
 
@@ -37,6 +42,8 @@ static void reset_fakes(void)
     s_gpio_config_result = ESP_OK;
     s_gpio_set_result = ESP_OK;
     s_mount_result = ESP_OK;
+    s_unmount_result = ESP_OK;
+    s_info_result = ESP_OK;
     memset(&s_gpio_config, 0, sizeof(s_gpio_config));
     s_set_gpio = -1;
     s_set_level = -1;
@@ -49,7 +56,10 @@ static void reset_fakes(void)
     s_gpio_config_calls = 0U;
     s_gpio_set_calls = 0U;
     s_mount_calls = 0U;
+    s_unmount_calls = 0U;
+    s_info_calls = 0U;
     s_print_calls = 0U;
+    s_last_unmount_card = NULL;
     s_timeout_hint_logs = 0U;
     s_low_frequency_logs = 0U;
     sd_card_internal_set_card(NULL);
@@ -143,6 +153,26 @@ void sdmmc_card_print_info(FILE *stream, const sdmmc_card_t *card)
     assert(stream == stdout);
     assert(card == &s_card);
     s_print_calls++;
+}
+
+
+esp_err_t esp_vfs_fat_sdcard_unmount(const char *base_path, sdmmc_card_t *card)
+{
+    assert(strcmp(base_path, "/sdcard") == 0);
+    ++s_unmount_calls;
+    s_last_unmount_card = card;
+    return s_unmount_result;
+}
+
+esp_err_t esp_vfs_fat_info(const char *base_path, uint64_t *total_bytes, uint64_t *free_bytes)
+{
+    assert(strcmp(base_path, "/sdcard") == 0);
+    assert(total_bytes != NULL);
+    assert(free_bytes != NULL);
+    ++s_info_calls;
+    *total_bytes = 1024U;
+    *free_bytes = 512U;
+    return s_info_result;
 }
 
 
@@ -248,6 +278,56 @@ static void test_low_negotiated_frequency_is_visible_but_not_mount_failure(void)
 }
 
 
+static void test_unmount_success_consumes_handle(void)
+{
+    reset_fakes();
+    assert(sd_card_mount() == ESP_OK);
+    assert(sd_card_is_mounted());
+    assert(s_info_calls == 1U);
+
+    assert(sd_card_unmount() == ESP_OK);
+    assert(s_unmount_calls == 1U);
+    assert(s_last_unmount_card == &s_card);
+    assert(sd_card_internal_card() == NULL);
+    assert(!sd_card_is_mounted());
+    assert(s_info_calls == 1U);
+
+    assert(sd_card_unmount() == ESP_OK);
+    assert(s_unmount_calls == 1U);
+}
+
+static void test_unmount_cleanup_error_still_consumes_handle(void)
+{
+    reset_fakes();
+    assert(sd_card_mount() == ESP_OK);
+    s_unmount_result = ESP_ERR_INVALID_STATE;
+
+    assert(sd_card_unmount() == ESP_ERR_INVALID_STATE);
+    assert(s_unmount_calls == 1U);
+    assert(s_last_unmount_card == &s_card);
+    assert(sd_card_internal_card() == NULL);
+    assert(!sd_card_is_mounted());
+    assert(s_info_calls == 0U);
+
+    assert(sd_card_unmount() == ESP_OK);
+    assert(s_unmount_calls == 1U);
+}
+
+static void test_mount_after_consuming_unmount_attempt_uses_fresh_mount_path(void)
+{
+    reset_fakes();
+    assert(sd_card_mount() == ESP_OK);
+    s_unmount_result = ESP_ERR_INVALID_STATE;
+    assert(sd_card_unmount() == ESP_ERR_INVALID_STATE);
+    assert(sd_card_internal_card() == NULL);
+
+    s_unmount_result = ESP_OK;
+    assert(sd_card_mount() == ESP_OK);
+    assert(s_mount_calls == 2U);
+    assert(sd_card_internal_card() == &s_card);
+}
+
+
 int main(void)
 {
     test_success_and_repeated_mount_are_idempotent();
@@ -256,5 +336,8 @@ int main(void)
     test_timeout_does_not_publish_card_and_emits_hint();
     test_generic_mount_failure_does_not_publish_card();
     test_low_negotiated_frequency_is_visible_but_not_mount_failure();
+    test_unmount_success_consumes_handle();
+    test_unmount_cleanup_error_still_consumes_handle();
+    test_mount_after_consuming_unmount_attempt_uses_fresh_mount_path();
     return 0;
 }
