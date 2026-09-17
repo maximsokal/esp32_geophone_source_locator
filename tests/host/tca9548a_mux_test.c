@@ -60,6 +60,15 @@ static tca9548a_mux_t make_mux(fake_io_t *io)
     return mux;
 }
 
+static void assert_mux_state(
+    const tca9548a_mux_t *mux,
+    tca9548a_mux_state_t expected
+)
+{
+    const tca9548a_mux_state_t actual = tca9548a_mux_get_state(mux);
+    assert(actual == expected);
+}
+
 
 static int s_i2c_device_token;
 static uint8_t s_i2c_control;
@@ -116,7 +125,7 @@ static void test_select_closes_then_opens_one_channel(void)
     assert(io.write_calls == 2U);
     assert(io.read_calls == 2U);
     assert(io.control == 0x08U);
-    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_SELECTED;
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_SELECTED);
     assert(tca9548a_mux_get_selected_channel(&mux) == 3);
 }
 
@@ -128,7 +137,7 @@ static void test_invalid_channel_does_not_touch_bus(void)
     assert(tca9548a_mux_select(&mux, 8U) == ESP_ERR_INVALID_ARG);
     assert(io.write_calls == 0U);
     assert(io.read_calls == 0U);
-    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_FAULT);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_FAULT);
 }
 
 static void test_selection_write_failure_recovers_closed(void)
@@ -142,7 +151,7 @@ static void test_selection_write_failure_recovers_closed(void)
     assert(io.write_calls == 3U);
     assert(io.read_calls == 2U);
     assert(io.control == 0U);
-    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_CLOSED);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_CLOSED);
     assert(tca9548a_mux_get_selected_channel(&mux) == -1);
 }
 
@@ -158,7 +167,7 @@ static void test_selection_readback_mismatch_recovers_closed(void)
     assert(io.write_calls == 3U);
     assert(io.read_calls == 3U);
     assert(io.control == 0U);
-    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_CLOSED);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_CLOSED);
 }
 
 static void test_failed_recovery_leaves_fault(void)
@@ -171,7 +180,7 @@ static void test_failed_recovery_leaves_fault(void)
 
     assert(tca9548a_mux_select(&mux, 5U) == ESP_FAIL);
     assert(io.write_calls == 3U);
-    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_FAULT);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_FAULT);
     assert(tca9548a_mux_get_selected_channel(&mux) == -1);
 }
 
@@ -186,7 +195,7 @@ static void test_close_retry_can_recover_but_reports_original_error(void)
     assert(io.write_calls == 2U);
     assert(io.read_calls == 2U);
     assert(io.control == 0U);
-    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_CLOSED);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_CLOSED);
 }
 
 int main(void)
