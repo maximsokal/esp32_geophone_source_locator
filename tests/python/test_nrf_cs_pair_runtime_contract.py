@@ -127,7 +127,7 @@ def test_runtime_maps_node_assignment_to_advertised_identity_and_keeps_wired_rol
     header = text(RUNTIME_H)
 
     assert "nrf_cs_pair_runtime_zephyr_set_node_id(assign.node_id)" in bootstrap
-    assert "assign.role == NRF_UPSTREAM_ROLE_REMOTE" in bootstrap
+    assert re.search(r"assign\.role\s*==\s*NRF_UPSTREAM_ROLE_REMOTE", bootstrap)
     assert "nrf_cs_pair_runtime_zephyr_set_node_id" in header
     assert "BT_DATA_SVC_DATA16" in runtime
     assert "BT_UUID_RANGING_SERVICE_VAL" in runtime

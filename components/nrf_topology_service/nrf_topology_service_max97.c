@@ -232,7 +232,13 @@ esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
     if(available&&!s_cs_request_pending&&(!s_cs_snapshot_valid||!s_cs_cycle_snapshot.active)){s_cs_requested_policy=*policy;s_cs_request_pending=true;}
     else if(available){portEXIT_CRITICAL(&s_state_lock);return ESP_ERR_INVALID_STATE;}
     portEXIT_CRITICAL(&s_state_lock);
-    if(!available)return ESP_ERR_INVALID_STATE; if(task!=NULL)(void)xTaskNotifyGive(task); return ESP_OK;
+    if (!available) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (task != NULL) {
+        (void)xTaskNotifyGive(task);
+    }
+    return ESP_OK;
 }
 
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
