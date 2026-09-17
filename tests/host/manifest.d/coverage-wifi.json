@@ -31,6 +31,9 @@
       ],
       "include_dirs": [
         "components/web_server"
+      ],
+      "defines": [
+        "WEB_LIFECYCLE_LINKED_WIFI_AUTHORITY=1"
       ]
     },
     {
