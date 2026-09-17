@@ -115,8 +115,12 @@ def test_docs_consistently_name_ncs_340_as_canonical_and_platformio_as_compatibi
         assert "platformio" in lowered
         assert "compatibility" in lowered
 
-    assert "pio.ps1 upload" in text(README)
-    assert "not the production" in text(README).lower()
+    readme = text(README)
+    lowered_readme = readme.lower()
+    assert "pio.ps1 upload" in readme
+    compatibility_section = lowered_readme[lowered_readme.index("## platformio compatibility path"):]
+    assert "production build/flash authority" in compatibility_section
+    assert "not" in compatibility_section[:400]
 
     architecture = text(ARCHITECTURE)
     assert "canonical nrf54l15 production/flash toolchain" in architecture.lower()
