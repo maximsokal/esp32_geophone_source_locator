@@ -74,8 +74,13 @@ def test_remote_logical_activation_precedes_published_assignment_ok():
     assert process < notify < publish_ok
     assert "result == NRF_UPSTREAM_RESULT_OK" in handler
     assert "assign.role == NRF_UPSTREAM_ROLE_REMOTE" in handler
-    assert "publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR)" in handler
-    assert "runtime_cold_reboot(NULL)" in handler
+    assert handler.count("assignment_runtime_failure();") >= 2
+
+    failure_start = bootstrap.index("static void assignment_runtime_failure")
+    failure_end = bootstrap.index("static void assign_work_handler")
+    failure = bootstrap[failure_start:failure_end]
+    assert "publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);" in failure
+    assert "runtime_cold_reboot(NULL);" in failure
 
     notify_start = sensor.index("int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment")
     notify_end = sensor.index("int nrf_sensor_upstream_runtime_zephyr_request_refresh")
@@ -113,14 +118,21 @@ def test_one_firmware_starts_idle_sensor_worker_before_upstream_bootstrap():
     assert "../src/nrf_sensor_upstream_runtime_zephyr.c" in cmake
 
 
-def test_private_i2c_topology_and_no_bluetooth_scope_creep():
+def test_private_i2c_topology_is_preserved_with_max51_bluetooth_enabled():
     overlay = read("nRF54L15/zephyr/app.overlay")
     conf = read("nRF54L15/zephyr/prj.conf")
     assert '&i2c22 {' in overlay
     assert 'compatible = "nordic,nrf-twis";' in overlay
     assert not re.search(r"&i2c30\s*\{[^}]*compatible\s*=\s*\"nordic,nrf-twis\"", overlay, re.S)
-    assert "CONFIG_BT=y" not in conf
-    assert "CONFIG_BT_CTLR" not in conf
+    for line in (
+        "CONFIG_BT=y",
+        "CONFIG_BT_CENTRAL=y",
+        "CONFIG_BT_PERIPHERAL=y",
+        "CONFIG_BT_CHANNEL_SOUNDING=y",
+        "CONFIG_BT_RAS_RREQ=y",
+        "CONFIG_BT_RAS_RRSP=y",
+    ):
+        assert line in conf
 
 
 def test_host_manifest_covers_new_codec_session_and_zephyr_boundary():
