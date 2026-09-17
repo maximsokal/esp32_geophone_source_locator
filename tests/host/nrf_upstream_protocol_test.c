@@ -254,7 +254,10 @@ static void test_remote_snapshot_corruption_and_validation(void)
     assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
 
     sensor = make_sensor_snapshot();
-    sensor.flags &= (uint8_t)~NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE;
+    sensor.flags &= (uint8_t)(
+        NRF_UPSTREAM_SENSOR_FLAG_MASK ^
+        NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE
+    );
     assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
 
     sensor = make_sensor_snapshot();
