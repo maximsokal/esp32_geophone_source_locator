@@ -47,41 +47,28 @@ const char *sd_card_mount_point(void)
 
 esp_err_t sd_card_unmount(void)
 {
-    sdmmc_card_t *card =
-        sd_card_internal_card();
-
+    sdmmc_card_t *card = sd_card_internal_card();
     if (card == NULL) {
         return ESP_OK;
     }
 
-    esp_err_t err =
-        esp_vfs_fat_sdcard_unmount(
-            sd_card_internal_mount_point(),
-            card
-        );
+    /*
+     * ESP-IDF v5.5.4 esp_vfs_fat_sdcard_unmount() consumes/frees the card
+     * before its final VFS unregister can still report an error. Detach the
+     * application handle before transferring ownership so no error path can
+     * publish, dereference, or retry a consumed sdmmc_card_t pointer.
+     */
+    sd_card_internal_set_card(NULL);
 
+    const esp_err_t err = esp_vfs_fat_sdcard_unmount(
+        sd_card_internal_mount_point(),
+        card
+    );
     if (err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "SD unmount returned: %s",
-            esp_err_to_name(err)
-        );
-
-        /*
-         * Keep the card handle published so state still matches
-         * reality and a later recovery/unmount attempt is possible.
-         */
+        ESP_LOGW(TAG, "SD unmount cleanup returned after card ownership was consumed: %s", esp_err_to_name(err));
         return err;
     }
 
-    sd_card_internal_set_card(
-        NULL
-    );
-
-    ESP_LOGI(
-        TAG,
-        "SD card unmounted"
-    );
-
+    ESP_LOGI(TAG, "SD card unmounted");
     return ESP_OK;
 }
