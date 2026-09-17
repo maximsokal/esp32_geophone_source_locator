@@ -1,5 +1,11 @@
 #pragma once
 
-#define ESP_LOGI(tag, ...) do { (void)(tag); } while (0)
-#define ESP_LOGW(tag, ...) do { (void)(tag); } while (0)
-#define ESP_LOGE(tag, ...) do { (void)(tag); } while (0)
+static inline void esp_log_stub(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    (void)format;
+}
+
+#define ESP_LOGI(...) esp_log_stub(__VA_ARGS__)
+#define ESP_LOGW(...) esp_log_stub(__VA_ARGS__)
+#define ESP_LOGE(...) esp_log_stub(__VA_ARGS__)
