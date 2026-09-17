@@ -208,11 +208,11 @@ static void test_regular_file_and_unknown_type_fallback(void)
     memset(&entry, 0, sizeof(entry));
     snprintf(entry.d_name, sizeof(entry.d_name), "%s", "OBJ_0001");
     entry.d_type = DT_UNKNOWN;
-    assert(object_store_fs_entry_is_directory(&entry));
+    assert(object_store_fs_list_entry_is_directory(&entry));
 
     snprintf(entry.d_name, sizeof(entry.d_name), "%s", "OBJ_9999");
     entry.d_type = DT_UNKNOWN;
-    assert(!object_store_fs_entry_is_directory(&entry));
+    assert(!object_store_fs_list_entry_is_directory(&entry));
 #endif
 
     object_store_summary_t objects[4] = {0};
