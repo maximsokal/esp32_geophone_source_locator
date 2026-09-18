@@ -59,8 +59,14 @@ function Invoke-InPinnedToolchain {
     exit $exitCode
 }
 
+function Test-IsWindows {
+    return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [System.Runtime.InteropServices.OSPlatform]::Windows
+    )
+}
+
 function New-NoSpaceProjectAlias([string]$ProjectPath) {
-    if ($env:OS -ne "Windows_NT" -or $ProjectPath -notmatch '\s') {
+    if (-not (Test-IsWindows) -or $ProjectPath -notmatch '\s') {
         return $null
     }
 
@@ -126,7 +132,7 @@ function Get-NcsVersionFromWorkspace([string]$TopDir) {
 }
 
 function Get-SdkManagerDefaultInstallRoot {
-    if ($env:OS -eq "Windows_NT") {
+    if (Test-IsWindows) {
         $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { "C:" }
         return Join-Path $systemDrive "ncs"
     }

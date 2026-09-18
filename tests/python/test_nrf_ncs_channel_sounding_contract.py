@@ -140,7 +140,7 @@ def test_wrapper_honors_custom_sdk_install_dir_and_platform_default():
     script = text(NCS_PS1)
     assert "'^\\s*install-dir:\\s*(.+?)\\s*$'" in script
     assert '$configured -ne "unset"' in script
-    assert '$env:OS -eq "Windows_NT"' in script
+    assert "if (Test-IsWindows) {" in script
     assert 'Join-Path $systemDrive "ncs"' in script
     assert 'return "/opt/nordic/ncs"' in script
     assert 'Join-Path $HOME "ncs"' in script

@@ -7,6 +7,13 @@ NCS_PS1 = ROOT / "nRF54L15" / "ncs.ps1"
 def test_ncs_wrapper_uses_no_space_alias_and_anchors_workspace_with_zephyr_base():
     script = NCS_PS1.read_text(encoding="utf-8")
 
+    assert "function Test-IsWindows" in script
+    assert "[System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(" in script
+    assert "[System.Runtime.InteropServices.OSPlatform]::Windows" in script
+    assert "$env:OS" not in script
+    assert "if (-not (Test-IsWindows) -or $ProjectPath -notmatch '\\s')" in script
+    assert "if (Test-IsWindows) {" in script
+
     assert '$zephyrBase = Join-Path $topDir "zephyr"' in script
     assert '$originalZephyrBase = $env:ZEPHYR_BASE' in script
     assert '$env:ZEPHYR_BASE = $zephyrBase' in script
