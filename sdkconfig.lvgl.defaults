@@ -1,2 +1,15 @@
 # LVGL features intentionally enabled by the project UI.
 CONFIG_LV_USE_QRCODE=y
+
+# LVGL 9.6 no longer uses the former KB-sized memory setting. Keep the
+# byte-sized pool explicit so a stale generated sdkconfig cannot bring the
+# deprecated compatibility setting back into a clean configuration.
+CONFIG_LV_MEM_SIZE=65536
+# CONFIG_LV_MEM_SIZE_KILOBYTES is not set
+# CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES is not set
+
+# LVGL's default assert handler is sufficient for this project. The old
+# LV_ASSERT_HANDLER_INCLUDE compatibility hook came from the LVGL 9.5
+# generated sdkconfig and is not a project-owned customization.
+# CONFIG_LV_ASSERT_HANDLER_INCLUDE is not set
+# CONFIG_LV_ASSERT_USE_CUSTOM_INCLUDE is not set

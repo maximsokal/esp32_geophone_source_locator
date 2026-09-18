@@ -21,6 +21,7 @@
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder.h"
+#include "sensor_bus.h"
 #include "spi_bus.h"
 #include "status_indicator.h"
 #include "storage_manager.h"
@@ -164,6 +165,18 @@ static void app_startup_recorder_recovery_requested(
 
 static void app_startup_initialize_core(void)
 {
+    /*
+     * Create sensor_bus's state mutex before any task exists that could
+     * call into sensor_bus_init()/get_handles()/get_tca9548a()/deinit()
+     * concurrently (the INA3221 monitor task, later the nRF topology
+     * service task). This function runs synchronously on the single boot
+     * task, so there is no bootstrap race here even though the lock is
+     * lazily created (nothing else can be racing it yet).
+     */
+    ESP_ERROR_CHECK(
+        sensor_bus_lock_init()
+    );
+
     ESP_ERROR_CHECK(
         app_events_init()
     );
@@ -183,24 +196,6 @@ static void app_startup_initialize_core(void)
             TAG,
             "Status indicator subscriber unavailable: %s",
             esp_err_to_name(status_indicator_err)
-        );
-    }
-
-    /*
-     * INA3221 is useful telemetry, not a boot-critical dependency. The
-     * monitor task keeps retrying when the board is absent or I2C is broken,
-     * so hardware bring-up cannot trap the controller in a reboot loop.
-     */
-    const esp_err_t power_monitor_err =
-        ina3221_monitor_start();
-
-    if (power_monitor_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "INA3221 monitor unavailable: %s",
-            esp_err_to_name(
-                power_monitor_err
-            )
         );
     }
 
@@ -277,6 +272,38 @@ static void app_startup_initialize_services(
 
     app_startup_log_elapsed(
         "storage_manager_init",
+        stage_started_ms
+    );
+
+    /*
+     * The shared I2C0 sensor bus (INA3221, and later the TCA9548A/nRF54L15
+     * upstream topology) is only opened after the keypad, display and SD
+     * card stack are already interactive. A main-enclosure XIAO nRF54L15 is
+     * wired as an upstream I2C target on this same bus; probing it before
+     * the rest of local hardware bring-up is complete previously risked
+     * stalling boot on a bus that a still-booting nRF node could be holding
+     * in an indeterminate state. INA3221 remains non-boot-critical: the
+     * monitor task keeps retrying when the board is absent or I2C is
+     * broken, so this ordering only changes when the retry loop starts.
+     */
+    stage_started_ms =
+        esp_log_timestamp();
+
+    const esp_err_t power_monitor_err =
+        ina3221_monitor_start();
+
+    if (power_monitor_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "INA3221 monitor unavailable: %s",
+            esp_err_to_name(
+                power_monitor_err
+            )
+        );
+    }
+
+    app_startup_log_elapsed(
+        "sensor_bus_i2c_start",
         stage_started_ms
     );
 
@@ -391,31 +418,14 @@ static void app_startup_initialize_services(
     );
 
     /*
-     * Acquisition hardware is allowed to be absent/faulty during bring-up.
-     * Complete the first nonfatal transition before Web/Wi-Fi becomes
-     * externally reachable so a remote STOP cannot be overwritten by a later
-     * scheduled boot auto-start.
+     * The AD7606 no longer auto-starts sampling at boot. Its driver was
+     * already brought up by seismic_acquisition_init() in
+     * app_startup_initialize_core(); active acquisition now starts only when
+     * the local UI opens the Measurements screen (ui_screen_registry.c) or a
+     * Web client explicitly requests it (web_api_control.c), so the ADC is
+     * not running with nobody consuming its samples. That start call is
+     * idempotent, so both triggers may fire in either order.
      */
-    const uint32_t acquisition_started_ms =
-        esp_log_timestamp();
-
-    const esp_err_t acquisition_err =
-        seismic_acquisition_start();
-
-    app_startup_log_elapsed(
-        "seismic_acquisition_start",
-        acquisition_started_ms
-    );
-
-    if (acquisition_err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Seismic acquisition unavailable: %s",
-            esp_err_to_name(
-                acquisition_err
-            )
-        );
-    }
 
     ESP_ERROR_CHECK(
         web_server_start()

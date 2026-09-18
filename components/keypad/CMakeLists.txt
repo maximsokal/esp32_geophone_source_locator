@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "keypad.c"
         "keypad_button_adapter.c"
+        "keypad_decode.c"
 
     INCLUDE_DIRS
         "include"

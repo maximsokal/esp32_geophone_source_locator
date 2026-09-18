@@ -1,5 +1,11 @@
 #include "ui_internal.h"
 
+#include "esp_err.h"
+#include "esp_log.h"
+
+
+static const char *TAG = "UI_SCREEN";
+
 
 static void ui_screen_open_home(void)
 {
@@ -24,6 +30,12 @@ static void ui_screen_open_objects(void)
     context->object_count = 0;
     context->objects_loaded = false;
 
+    if (context->storage_recovery_active) {
+        ui_set_notice_locked("CHECKING STORAGE...");
+        ui_render_objects_locked();
+        return;
+    }
+
     esp_err_t err = object_service_list_async();
 
     ui_set_notice_locked(
@@ -43,6 +55,22 @@ static void ui_screen_open_measurements(void)
     context->selected = 0;
     context->measurement_action = 0;
     ui_set_notice_locked(NULL);
+
+    /*
+     * The AD7606 does not sample at boot; entering the Measurements screen is
+     * the local trigger that brings acquisition up so the ADC only runs
+     * while someone is actually looking at live channel data. Idempotent:
+     * a Web client may have already started it via acquisition_start.
+     */
+    const esp_err_t acquisition_err = seismic_acquisition_start();
+    if (acquisition_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Seismic acquisition unavailable on Measurements entry: %s",
+            esp_err_to_name(acquisition_err)
+        );
+    }
+
     ui_render_measurements_locked();
 }
 

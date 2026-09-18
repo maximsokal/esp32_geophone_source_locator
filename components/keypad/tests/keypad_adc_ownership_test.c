@@ -206,7 +206,7 @@ static void reset_test_state(void)
     s_try_reads = 0;
     s_direct_adc_reads = 0;
     s_now_us = 10000;
-    s_raw_value = 905;
+    s_raw_value = 550;
     s_keypad_events_posted = 0;
     s_last_keypad_event_value = 0;
 
@@ -224,20 +224,49 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     assert(keypad_button_adapter_init() == ESP_OK);
     assert(s_created == 5U);
 
-    /* UP's upper boundary must be active, and the first level query must go
-     * through the service with the same four-sample depth as the old vendor
-     * ADC Button configuration. */
-    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
+    /* A key-range value before a released baseline is quarantined. This is
+     * the disconnected/floating-input case from the supplied HIL log. */
+    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_INACTIVE);
     assert(s_service_reads == 1);
-    assert(s_last_sample_count == 4U);
+    assert(s_last_sample_count == 16U);
     assert(s_try_reads == 1);
+
+    s_now_us += 1001;
+    s_raw_value = 4095;
+    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_INACTIVE);
+
+    s_now_us += 1001;
+    s_raw_value = 550;
+
+    /* A calibrated UP value must be active, and the first level query must go
+     * through the service with the same 16-sample depth as the compatibility
+     * read path. */
+    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
+    assert(s_service_reads == 3);
+    assert(s_last_sample_count == 16U);
+    assert(s_try_reads == 3);
 
     /* Every Button object in the same timer tick sees the same broker-owned
      * conversion; no second direct ADC read is allowed. */
     assert(s_drivers[0]->get_key_level((button_driver_t *)s_drivers[0]) == BUTTON_INACTIVE);
     assert(s_drivers[4]->get_key_level((button_driver_t *)s_drivers[4]) == BUTTON_INACTIVE);
-    assert(s_service_reads == 1);
+    assert(s_service_reads == 3);
     assert(s_direct_adc_reads == 0);
+
+    /* The old direct threshold decoder turned these adjacent readings into a
+     * DOWN transition. The boundary deadband must retain UP and keep DOWN
+     * inactive instead. */
+    s_now_us += 1001;
+    s_raw_value = 899;
+    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
+    assert(s_drivers[2]->get_key_level((button_driver_t *)s_drivers[2]) == BUTTON_INACTIVE);
+    assert(s_service_reads == 4);
+
+    s_now_us += 1001;
+    s_raw_value = 906;
+    assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
+    assert(s_drivers[2]->get_key_level((button_driver_t *)s_drivers[2]) == BUTTON_INACTIVE);
+    assert(s_service_reads == 5);
 
     /* If the timer task finds the broker busy, preserve the last valid key
      * rather than synthesizing a release. A later logical Button callback in
@@ -246,8 +275,8 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     s_service_busy = true;
     assert(s_drivers[1]->get_key_level((button_driver_t *)s_drivers[1]) == BUTTON_ACTIVE);
     assert(s_drivers[2]->get_key_level((button_driver_t *)s_drivers[2]) == BUTTON_INACTIVE);
-    assert(s_service_reads == 1);
-    assert(s_try_reads == 2);
+    assert(s_service_reads == 5);
+    assert(s_try_reads == 6);
 
     /* After the failed-attempt window expires, acquire the new raw value. The
      * fake broker advances time during the read so the cache timestamp must
@@ -255,12 +284,12 @@ static void test_keypad_buttons_use_one_broker_sample(void)
     s_now_us += 1001;
     s_service_busy = false;
     s_read_duration_us = 1500;
-    s_raw_value = 1605;
+    s_raw_value = 1261;
     assert(s_drivers[2]->get_key_level((button_driver_t *)s_drivers[2]) == BUTTON_ACTIVE);
-    assert(s_service_reads == 2);
-    assert(s_try_reads == 3);
+    assert(s_service_reads == 6);
+    assert(s_try_reads == 7);
     assert(s_drivers[3]->get_key_level((button_driver_t *)s_drivers[3]) == BUTTON_INACTIVE);
-    assert(s_service_reads == 2);
+    assert(s_service_reads == 6);
     assert(s_direct_adc_reads == 0);
 
     keypad_button_adapter_stop();

@@ -52,7 +52,6 @@ def test_old_application_owned_input_and_event_files_are_removed():
     removed = (
         "components/app_event_bus",
         "components/keypad/keypad_adc.c",
-        "components/keypad/keypad_decode.c",
         "components/keypad/keypad_event_monitor.c",
         "components/keypad/keypad_event_worker.c",
         "components/power_control/power_button_monitor.c",
@@ -65,6 +64,9 @@ def test_old_application_owned_input_and_event_files_are_removed():
             assert not any(child.is_file() for child in path.rglob("*")), relative_path
         else:
             assert not path.exists(), relative_path
+
+    decoder = read("components/keypad/keypad_decode.c")
+    assert "keypad_decode_raw_with_previous" in decoder
 
     task_config = read("components/app_config/include/app_task_config.h")
     assert "APP_TASK_PRIORITY_APP_EVENT_LOOP" in task_config

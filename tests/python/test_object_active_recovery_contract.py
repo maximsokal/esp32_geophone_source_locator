@@ -77,6 +77,37 @@ def test_tft_recovery_completion_clears_copied_object_list_without_rescan() -> N
     assert "object_service_list_async" not in block
 
 
+def test_objects_screen_never_starts_archive_listing_during_recovery() -> None:
+    registry = read("components/ui/ui_screen_registry.c")
+    opening = function_slice(
+        registry,
+        "static void ui_screen_open_objects(void)",
+        "static void ui_screen_open_measurements(void)",
+    )
+    assert opening.index("context->storage_recovery_active") < opening.index(
+        "object_service_list_async"
+    )
+    assert '"CHECKING STORAGE..."' in opening
+
+    navigation = read("components/ui/ui_navigation.c")
+    started = navigation.index("case APP_EVENT_STORAGE_RECOVERY_STARTED:")
+    finished = navigation.index("case APP_EVENT_STORAGE_RECOVERY_FINISHED:", started)
+    start_block = navigation[started:finished]
+    assert "UI_SCREEN_OBJECTS" in start_block
+    assert '"CHECKING STORAGE..."' in start_block
+    assert "ui_render_objects_locked" in start_block
+
+    objects = read("components/ui/ui_objects_input.c")
+    input_block = function_slice(
+        objects,
+        "void ui_handle_objects_key_locked(",
+        None,
+    )
+    assert input_block.index("context->storage_recovery_active") < input_block.index(
+        "object_service_is_busy"
+    )
+
+
 def test_get_active_remains_ram_only() -> None:
     source = read("components/object_store/object_store.c")
     block = function_slice(

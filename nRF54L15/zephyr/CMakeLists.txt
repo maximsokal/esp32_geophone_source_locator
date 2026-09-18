@@ -3,6 +3,16 @@
 cmake_minimum_required(VERSION 3.13.1)
 
 set(EXTRA_DTC_OVERLAY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/app.overlay")
+
+# PlatformIO retains the historical Zephyr 4.2.1 compatibility smoke path.
+# Its package does not provide the NCS 3.4.0 SoftDevice/RAS/Channel Sounding
+# symbols used by the production prj.conf, so select the deliberately minimal
+# compatibility fragment only for that build system. NCS production and its
+# cs-proof continue to consume prj.conf unchanged.
+if(DEFINED PIO_PACKAGES_DIR)
+    set(CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/prj.platformio.conf")
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(geophone_nrf54l15_node)

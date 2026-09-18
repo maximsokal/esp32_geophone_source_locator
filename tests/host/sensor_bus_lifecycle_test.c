@@ -4,6 +4,38 @@
 
 #include "sensor_bus.h"
 #include "board_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+/*
+ * Sequential fixture: the production lock only needs to exist and behave
+ * correctly for a single caller here. Real cross-task mutual exclusion is
+ * covered by tests/host/sensor_bus_concurrency_test.c.
+ */
+struct test_semaphore
+{
+    int token;
+};
+
+static struct test_semaphore s_lock_token;
+
+SemaphoreHandle_t xSemaphoreCreateMutex(void)
+{
+    return &s_lock_token;
+}
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t ticks_to_wait)
+{
+    assert(semaphore == &s_lock_token);
+    assert(ticks_to_wait == portMAX_DELAY);
+    return pdTRUE;
+}
+
+BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
+{
+    assert(semaphore == &s_lock_token);
+    return pdTRUE;
+}
 
 static int s_bus_token;
 static int s_device_token;
@@ -66,6 +98,9 @@ esp_err_t i2c_bus_delete(i2c_bus_handle_t *bus)
 int main(void)
 {
     sensor_bus_handles_t handles = {0};
+
+    assert(sensor_bus_lock_init() == ESP_OK);
+    assert(sensor_bus_lock_init() == ESP_OK);
 
     assert(sensor_bus_get_handles(NULL) == ESP_ERR_INVALID_ARG);
 

@@ -220,6 +220,11 @@ The supported compatibility command is deliberately named as such in VS Code:
 nRF54L15: PlatformIO compatibility build
 ```
 
+PlatformIO selects `zephyr/prj.platformio.conf`, a minimal shared-source
+configuration for its Zephyr 4.2.1 package. The NCS-only SoftDevice/RAS/Channel
+Sounding options remain exclusively in `zephyr/prj.conf`; this keeps the
+compatibility smoke build useful without treating it as a production image.
+
 Do not use `pio.ps1 upload` for the official firmware and do not interpret a
 successful PlatformIO build as Channel Sounding controller evidence. The
 canonical production artifact always comes from the pinned NCS v3.4.0 path.

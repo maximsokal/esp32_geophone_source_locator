@@ -7,6 +7,7 @@ ACQUISITION_HEADER = REPO_ROOT / "components" / "seismic_acquisition" / "include
 ACQUISITION_CMAKE = REPO_ROOT / "components" / "seismic_acquisition" / "CMakeLists.txt"
 STARTUP = REPO_ROOT / "main" / "app_startup.c"
 WEB_CONTROL = REPO_ROOT / "components" / "web_server" / "web_api_control.c"
+UI_SCREEN_REGISTRY = REPO_ROOT / "components" / "ui" / "ui_screen_registry.c"
 
 
 def _between(text: str, start: str, end: str) -> str:
@@ -52,24 +53,49 @@ def test_start_and_stop_are_linearized_around_backend_transition():
     assert exchange < backend_stop < unlock
 
 
-def test_boot_initializes_lifecycle_and_finishes_initial_start_before_network_exposure():
+def test_boot_initializes_lifecycle_but_does_not_auto_start_acquisition():
+    """AD7606 sampling must not run unattended: the driver is brought up at
+    boot (seismic_acquisition_init), but active acquisition only starts once
+    something actually consumes samples (local Measurements screen entry, or
+    an explicit Web request) rather than unconditionally before Wi-Fi."""
     startup = STARTUP.read_text(encoding="utf-8")
     core = _between(startup, "static void app_startup_initialize_core", "static void app_startup_initialize_services")
     services = _between(startup, "static void app_startup_initialize_services", "void app_startup_run")
 
     assert core.index("seismic_buffer_init()") < core.index("seismic_acquisition_init()") < core.index("adc_service_init()")
 
+    assert "seismic_acquisition_start()" not in services
+
     interactive = services.index('"interactive_ready"')
-    acquisition_start = services.index("seismic_acquisition_start()", interactive)
     web_start = services.index("web_server_start()", interactive)
     wifi_start = services.index("wifi_manager_start()", interactive)
-    assert interactive < acquisition_start < web_start < wifi_start
+    assert interactive < web_start < wifi_start
 
-    tail = services[interactive:]
-    assert "const uint32_t acquisition_started_ms" in tail
-    assert "stage_started_ms =" not in tail
-    runtime_timing = tail[tail.index('"runtime_services"'):]
-    assert "stage_started_ms" in runtime_timing
+
+def test_measurements_screen_entry_starts_acquisition():
+    registry = UI_SCREEN_REGISTRY.read_text(encoding="utf-8")
+    open_measurements = _between(
+        registry,
+        "static void ui_screen_open_measurements(void)",
+        "static void ui_screen_open_storage(void)",
+    )
+    assert "seismic_acquisition_start()" in open_measurements
+    assert "ui_render_measurements_locked();" in open_measurements
+    assert open_measurements.index("seismic_acquisition_start()") < open_measurements.index(
+        "ui_render_measurements_locked();"
+    )
+
+
+def test_web_measurement_start_ensures_acquisition_before_queuing():
+    source = WEB_CONTROL.read_text(encoding="utf-8")
+    helper = _between(
+        source,
+        "static esp_err_t web_control_measurement_start",
+        "static esp_err_t web_control_acquisition_stop",
+    )
+    assert helper.index("seismic_acquisition_start()") < helper.index(
+        "measurement_service_start_object_async(object_id)"
+    )
 
 
 def test_web_stop_keeps_measurement_guard_before_serialized_acquisition_stop():

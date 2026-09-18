@@ -27,6 +27,16 @@ void ui_handle_objects_key_locked(
     ui_context_t *context =
         ui_context();
 
+    if (context->storage_recovery_active) {
+        if (key == KEYPAD_KEY_LEFT) {
+            ui_open_home_locked();
+        } else {
+            ui_set_notice_locked("CHECKING STORAGE...");
+            ui_render_objects_locked();
+        }
+        return;
+    }
+
     if (object_service_is_busy()) {
         return;
     }

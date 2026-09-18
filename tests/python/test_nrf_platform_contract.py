@@ -9,6 +9,7 @@ README = REPO_ROOT / "nRF54L15" / "README.md"
 TEST_TASK = REPO_ROOT / "docs" / "nrf54l15-test-task.md"
 CMAKE = REPO_ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
 PRJ_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.conf"
+PLATFORMIO_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.platformio.conf"
 APP_OVERLAY = REPO_ROOT / "nRF54L15" / "zephyr" / "app.overlay"
 MAIN = REPO_ROOT / "nRF54L15" / "src" / "main.c"
 SENSOR_BUS_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_bus_zephyr.c"
@@ -60,6 +61,21 @@ def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources()
     assert "../src/nrf_remote_sensor_runtime_zephyr.c" in source
     assert "../src/nrf_cs_scheduler.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
+
+
+def test_platformio_uses_a_minimal_compatibility_config_without_changing_ncs_production():
+    cmake = CMAKE.read_text(encoding="utf-8")
+    compatibility = PLATFORMIO_CONF.read_text(encoding="utf-8")
+    production = PRJ_CONF.read_text(encoding="utf-8")
+
+    assert "if(DEFINED PIO_PACKAGES_DIR)" in cmake
+    assert 'set(CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/prj.platformio.conf")' in cmake
+    assert "CONFIG_I2C_TARGET_BUFFER_MODE=y" in compatibility
+    assert "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128" in compatibility
+    assert "CONFIG_BT_CHANNEL_SOUNDING" not in compatibility
+    assert "CONFIG_BT_LL_SOFTDEVICE" not in compatibility
+    assert "CONFIG_BT_CHANNEL_SOUNDING=y" in production
+    assert "CONFIG_BT_LL_SOFTDEVICE=y" in production
 
 
 def test_plain_xiao_overlay_disables_phantom_sense_imu_and_exposes_upstream_twis():
