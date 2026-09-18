@@ -231,6 +231,23 @@ static esp_err_t web_control_measurement_start(const char *object_id)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /*
+     * The AD7606 no longer auto-starts at boot (it now starts on local
+     * Measurements-screen entry or this explicit request). A Web-only
+     * client that never touches the local UI must still be able to start a
+     * recording, so ensure acquisition is up before queuing the measurement
+     * start. Idempotent and non-fatal: measurement_service_start_object_async()
+     * still runs and reports its own error if the source stays unavailable.
+     */
+    const esp_err_t acquisition_err = seismic_acquisition_start();
+    if (acquisition_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Seismic acquisition unavailable for Web measurement start: %s",
+            esp_err_to_name(acquisition_err)
+        );
+    }
+
     return measurement_service_start_object_async(object_id);
 }
 

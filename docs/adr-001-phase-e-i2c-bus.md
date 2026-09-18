@@ -29,17 +29,17 @@ local sensor bus on D11/P0.03 and D12/P0.04. The local bus contains that
 remote node's GY-BMI160 and BME280; neither sensor is directly enumerated on
 ESP32-S3 I2C0/TCA9548A. Both sensor modules are planned to receive board power
 from the XIAO `3V3_OUT` rail, while the RJ45 3.3 V conductor (pin 2) remains
-RESERVED/NC. The possible identical nRF target-address collision remains
-unresolved and must be settled before an I2C/TWIS protocol or a corresponding
-test fixture is implemented.
+RESERVED/NC.
 
-The intended implementation uses separate peripheral instances for an
-upstream nRF TWIS target and a local nRF TWIM controller. The current Seeed
-board description exposes the relevant I2C nodes as TWIM by default, so the
-exact device-tree override and instance mapping remain an implementation gate.
-The official Zephyr TWIS binding further notes that the standard Zephyr I2C
-slave API is not available for these devices and points to a HAL workaround;
-the future upstream target protocol must choose and validate that API boundary.
+The nRF target-address collision and TWIS instance-mapping gate flagged in an
+earlier draft of this ADR are resolved: Linear MAX-28 defines the
+DISCOVERY(0x30)/MAIN(0x31)/REMOTE(0x32) address-state model with a one-hot
+TCA invariant, `nRF54L15/include/nrf_upstream_protocol.h` implements it, and
+MAX-28 also corrects an earlier assumption here — the pinned Zephyr v4.2.1
+already provides native TWIS support through `i2c_nrfx_twis.c`; no custom HAL
+workaround is required. MAX-29 validated the TWIS foundation build. Remaining
+open work in this area (main-enclosure XIAO power/reset sequencing when
+physically inserted) is tracked as Linear MAX-108/MAX-109, not here.
 
 The remote geophone orientation IMU is now explicitly an external **GY-BMI160**
 connected locally to each plain XIAO nRF54L15 on the XIAO's second I2C pair

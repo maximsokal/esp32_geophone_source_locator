@@ -1,0 +1,7 @@
+# Candidate retrospective: nRF PlatformIO compatibility drift
+
+- Evidence: `nRF54L15\pio.ps1 -Action build` reached Zephyr Kconfig but failed with `error: Aborting due to Kconfig warnings`; the PlatformIO package reported Zephyr `4.2.1`, while `zephyr\prj.conf` and the canonical wrapper target NCS v3.4.0 / Zephyr `4.4.0`. The failed symbols include SoftDevice, RAS, Channel Sounding and CS estimator options.
+- Root cause: the repository intentionally keeps PlatformIO as a historical compatibility smoke path, but its older framework still parses the production Channel Sounding configuration and treats unsupported symbols as fatal warnings. The canonical NCS gate could not run because `nrfutil` is absent, so both build authorities were unavailable for a production proof.
+- Recurrence count: 1 confirmed episode in this task; this is not yet a generalized rule.
+- Minimal proposal: make the compatibility path use an explicit compatibility config or fail early with a version-mismatch diagnostic; keep production acceptance gated only by pinned NCS v3.4.0. Add a test that distinguishes text-contract coverage from an actual Kconfig/build result. Do not suppress all Kconfig warnings globally. This proposal was implemented in the same task through `zephyr\prj.platformio.conf` and the `PIO_PACKAGES_DIR` CMake selection; see the follow-up draft for the post-fix evidence.
+- Affected work: current XIAO/nRF54L15 verification and the existing MAX-96 toolchain-boundary documentation. No prior task is confirmed to share this exact compatibility drift.

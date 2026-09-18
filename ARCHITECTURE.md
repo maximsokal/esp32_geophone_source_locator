@@ -16,8 +16,8 @@ app_main
        -> app_events_init
        -> power_control_init
        -> device_status_init
-       -> ina3221_monitor_start (non-fatal if hardware is absent)
        -> seismic_buffer_init
+       -> seismic_acquisition_init (driver/presence bring-up only, no sampling)
        -> adc_service_init
        -> keypad_init
        -> SPI2 init
@@ -25,6 +25,7 @@ app_main
        -> display hardware init
        -> LVGL boot UI
        -> storage_manager init
+       -> ina3221_monitor_start (I2C0; non-fatal if hardware is absent)
        -> object recovery
        -> object store
        -> object service
@@ -33,13 +34,27 @@ app_main
         -> interactive LVGL UI + APP_EVENT subscriber
         -> HTTP server
         -> Wi-Fi manager start
-       -> selected seismic source start
   -> nrf_topology_service_start (after successful app_startup_run)
   -> wait for shutdown request
   -> app_shutdown_run
 ```
 
 Each major `app_startup_run()` stage is timed and logged so slow storage or hardware bring-up is visible in the serial log. `nrf_topology_service_start()` intentionally runs only after that interactive startup path has succeeded, so low-rate nRF discovery/reconciliation does not extend the timed boot sequence.
+
+The shared I2C0 sensor bus (`ina3221_monitor_start`, and later the
+TCA9548A/nRF54L15 upstream topology) deliberately opens only after the
+keypad, display and SD card stack are already interactive, not as the first
+hardware brought up. A main-enclosure XIAO nRF54L15 is wired as an upstream
+I2C target on this same bus; see `docs/i2c-boot-race-conditions.md` for the
+full boot-ordering/race-condition audit, including the still-open questions
+around that node's power/reset sequencing.
+
+AD7606 acquisition does not auto-start at boot. `seismic_acquisition_init()`
+only brings up the driver/presence detection; active sampling
+(`seismic_acquisition_start()`) starts on demand — from the local UI
+entering the Measurements screen, or from an explicit Web `acquisition_start`
+/ `recording_start` request — so the ADC is never running with nothing
+consuming its samples. See `docs/i2c-boot-race-conditions.md` item 5.
 
 ## Core ownership
 

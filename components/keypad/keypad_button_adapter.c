@@ -14,6 +14,7 @@
 #include "board_config.h"
 #include "button_interface.h"
 #include "iot_button.h"
+#include "keypad_decode.h"
 #include "keypad_timing_stats.h"
 
 #include "esp_log.h"
@@ -25,7 +26,7 @@ static const char *TAG = "KEYPAD";
 #define KEYPAD_BUTTON_COUNT 5U
 #define KEYPAD_DEBOUNCE_MS 60U
 #define KEYPAD_SAMPLE_COUNT 16U
-#define KEYPAD_BUTTON_SAMPLE_COUNT 4U
+#define KEYPAD_BUTTON_SAMPLE_COUNT KEYPAD_SAMPLE_COUNT
 #define KEYPAD_BUTTON_CACHE_WINDOW_US 1000LL
 
 #if defined(ESP_PLATFORM) && \
@@ -42,14 +43,6 @@ static const char *TAG = "KEYPAD";
 #define KEYPAD_TIMING_PROBE_PERIOD_US 10000LL
 
 #endif
-
-/* Preserve the raw thresholds from the original KS0466 implementation for
- * both the compatibility read API and the custom Button driver below. */
-#define KEYPAD_SW1_MAX_RAW 275
-#define KEYPAD_SW2_MAX_RAW 905
-#define KEYPAD_SW3_MAX_RAW 1605
-#define KEYPAD_SW4_MAX_RAW 2411
-#define KEYPAD_SW5_MAX_RAW 3484
 
 /* The official ADC Button driver is intentionally not used: it reads a
  * borrowed ADC1 handle directly from its esp_timer callback. */
@@ -77,7 +70,9 @@ static int64_t s_adc_cache_time_us;
 static bool s_adc_cache_attempt_valid;
 static int64_t s_adc_cache_attempt_time_us;
 static keypad_key_t s_adc_cache_key;
+/* This is both the last reported raw state and the hysteresis state. */
 static keypad_key_t s_trace_key = KEYPAD_KEY_NONE;
+static bool s_release_armed;
 
 
 #if defined(ESP_PLATFORM) && \
@@ -326,27 +321,6 @@ static void keypad_timing_stop(void)
 #endif
 
 
-static keypad_key_t keypad_decode_raw(int raw)
-{
-    if (raw <= KEYPAD_SW1_MAX_RAW) {
-        return KEYPAD_KEY_LEFT;
-    }
-    if (raw <= KEYPAD_SW2_MAX_RAW) {
-        return KEYPAD_KEY_UP;
-    }
-    if (raw <= KEYPAD_SW3_MAX_RAW) {
-        return KEYPAD_KEY_DOWN;
-    }
-    if (raw <= KEYPAD_SW4_MAX_RAW) {
-        return KEYPAD_KEY_RIGHT;
-    }
-    if (raw <= KEYPAD_SW5_MAX_RAW) {
-        return KEYPAD_KEY_OK;
-    }
-    return KEYPAD_KEY_NONE;
-}
-
-
 static keypad_button_driver_t *keypad_button_driver_from_base(
     button_driver_t *driver
 )
@@ -447,7 +421,33 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
         );
 #endif
 
-        const keypad_key_t decoded_key = keypad_decode_raw(raw);
+        if (raw >= KEYPAD_RELEASE_MIN_RAW) {
+            s_release_armed = true;
+        }
+
+        keypad_key_t decoded_key = keypad_decode_raw_with_previous(
+            raw,
+            s_trace_key
+        );
+
+        /* Button objects start polling before the interactive boundary. Do
+         * not let a floating input that happens to land in a calibrated key
+         * range create the first logical press; a full-scale release must be
+         * observed first. Once a press is admitted, the normal hysteresis and
+         * Button debounce rules own the rest of that press. */
+        if (
+            s_trace_key == KEYPAD_KEY_NONE &&
+            decoded_key != KEYPAD_KEY_NONE &&
+            !s_release_armed
+        ) {
+            decoded_key = KEYPAD_KEY_NONE;
+        }
+        if (
+            s_trace_key == KEYPAD_KEY_NONE &&
+            decoded_key != KEYPAD_KEY_NONE
+        ) {
+            s_release_armed = false;
+        }
         if (decoded_key != s_trace_key) {
             ESP_LOGI(
                 TAG,
@@ -526,6 +526,7 @@ esp_err_t keypad_button_adapter_init(void)
     s_adc_cache_valid = false;
     s_adc_cache_attempt_valid = false;
     s_trace_key = KEYPAD_KEY_NONE;
+    s_release_armed = false;
 
 #if defined(ESP_PLATFORM) && \
     defined(CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS) && \
@@ -649,5 +650,6 @@ void keypad_button_adapter_stop(void)
     s_adc_cache_valid = false;
     s_adc_cache_attempt_valid = false;
     s_trace_key = KEYPAD_KEY_NONE;
+    s_release_armed = false;
     s_initialized = false;
 }

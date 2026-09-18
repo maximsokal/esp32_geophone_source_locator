@@ -25,6 +25,18 @@
       ]
     },
     {
+      "name": "sensor_bus_concurrency",
+      "sources": [
+        "components/sensor_bus/sensor_bus.c",
+        "tests/host/sensor_bus_concurrency_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/sensor_bus",
+        "components/sensor_bus/include"
+      ],
+      "libraries": ["pthread"]
+    },
+    {
       "name": "nrf_topology_reconcile",
       "sources": [
         "components/nrf_topology_service/nrf_topology.c",

@@ -184,6 +184,19 @@ static void test_right_and_ok_open_selected_screen(void)
 }
 
 
+static void test_objects_entry_does_not_list_during_recovery(void)
+{
+    reset_state();
+    s_context.storage_recovery_active = true;
+
+    ui_screen_open_locked(UI_SCREEN_OBJECTS);
+
+    assert(s_context.screen == UI_SCREEN_OBJECTS);
+    assert(s_object_list_requests == 0U);
+    assert(s_objects_renders == 1U);
+}
+
+
 static void test_left_from_system_returns_home(void)
 {
     reset_state();
@@ -272,6 +285,22 @@ static void test_recovery_event_does_not_force_other_screen_redraw(void)
 }
 
 
+static void test_recovery_start_refreshes_objects_screen_without_listing(void)
+{
+    reset_state();
+    s_context.screen = UI_SCREEN_OBJECTS;
+
+    ui_dispatch_app_event_locked(
+        APP_EVENT_STORAGE_RECOVERY_STARTED,
+        0
+    );
+
+    assert(s_context.storage_recovery_active);
+    assert(s_objects_renders == 1U);
+    assert(s_object_list_requests == 0U);
+}
+
+
 static void test_invalid_screen_is_noop(void)
 {
     reset_state();
@@ -288,11 +317,13 @@ int main(void)
     test_home_registry_mapping();
     test_home_up_down_wrap_and_render();
     test_right_and_ok_open_selected_screen();
+    test_objects_entry_does_not_list_during_recovery();
     test_left_from_system_returns_home();
     test_dispatch_uses_current_screen_driver();
     test_recovery_events_update_home_state();
     test_recovery_failure_is_sticky_until_next_start();
     test_recovery_event_does_not_force_other_screen_redraw();
+    test_recovery_start_refreshes_objects_screen_without_listing();
     test_invalid_screen_is_noop();
 
     puts("ui_home_navigation_test: PASS");

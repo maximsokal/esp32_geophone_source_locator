@@ -24,6 +24,17 @@ typedef struct
 } sensor_bus_handles_t;
 
 
+/*
+ * Create the state mutex that serializes every other function in this file.
+ * Must be called exactly once, synchronously, before any task that might
+ * call sensor_bus_init()/get_handles()/get_tca9548a()/deinit() is started
+ * (main/app_startup.c calls this from the single-threaded boot path). This
+ * avoids a lazy-init race on the mutex itself: nothing below may create the
+ * lock on first use, because "first use" can happen concurrently from the
+ * INA3221 monitor task and the nRF topology service task.
+ */
+esp_err_t sensor_bus_lock_init(void);
+
 /* Create the shared I2C0 bus and the currently contracted INA3221 device. */
 esp_err_t sensor_bus_init(void);
 

@@ -7,5 +7,6 @@ idf_component_register(
 
     REQUIRES
         board_config
+        freertos
         i2c_bus
 )

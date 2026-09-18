@@ -56,6 +56,34 @@ function Sync-RequiredSdkconfig([string]$ConfigPath) {
     }
 }
 
+function Sync-LvglSdkconfigMigration([string]$ConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
+        -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return
+    }
+
+    $content = [IO.File]::ReadAllText($ConfigPath)
+    $updated = $content
+
+    # LVGL 9.6 still accepts these LVGL 9.5 sdkconfig entries for
+    # compatibility, but emits compiler warnings when they are non-empty.
+    # Remove only obsolete non-default values; keep the generated =0/=""
+    # entries so a normal subsequent build does not trigger another reconfigure.
+    foreach ($pattern in @(
+        '(?m)^CONFIG_LV_MEM_SIZE_KILOBYTES=(?!0(?:\r?$)).*(?:\r?\n|$)',
+        '(?m)^CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=(?!0(?:\r?$)).*(?:\r?\n|$)',
+        '(?m)^CONFIG_LV_ASSERT_HANDLER_INCLUDE="[^\"]+"(?:\r?\n|$)',
+        '(?m)^CONFIG_LV_ASSERT_HANDLER_INCLUDE_IS_NON_EMPTY=y(?:\r?\n|$)'
+    )) {
+        $updated = [regex]::Replace($updated, $pattern, '')
+    }
+
+    if ($updated -ne $content) {
+        [IO.File]::WriteAllText($ConfigPath, $updated)
+        Write-Host "Migrated stale LVGL 9.5 compatibility settings from sdkconfig."
+    }
+}
+
 $idfPath = "C:\Espressif\frameworks\esp-idf-v5.5.4"
 $pythonPath = "C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe"
 $idfPyPath = Join-Path $idfPath "tools\idf.py"
@@ -121,6 +149,7 @@ try {
                 Join-Path $project "sdkconfig"
             }
             Sync-RequiredSdkconfig $effectiveSdkconfig
+            Sync-LvglSdkconfigMigration $effectiveSdkconfig
 
             $reconfigureArgs = @($idfPyPath, "-B", $build)
             if ($sdkconfigPath) {

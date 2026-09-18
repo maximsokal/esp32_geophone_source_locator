@@ -1,6 +1,9 @@
 #include "sensor_bus.h"
 #include "board_config.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #define SENSOR_BUS_I2C_PORT I2C_NUM_0
 #define SENSOR_BUS_TCA9548A_ADDR_MIN 0x70U
 #define SENSOR_BUS_TCA9548A_ADDR_MAX 0x77U
@@ -9,6 +12,18 @@ static i2c_bus_handle_t s_bus = NULL;
 static i2c_bus_device_handle_t s_ina3221 = NULL;
 static i2c_bus_device_handle_t s_tca9548a = NULL;
 static uint8_t s_tca9548a_address = NULL_I2C_DEV_ADDR;
+
+/*
+ * s_bus/s_ina3221/s_tca9548a/s_tca9548a_address are shared mutable state
+ * read and written from at least two independent FreeRTOS tasks (the
+ * INA3221 monitor worker and the nRF topology service worker), both of
+ * which call sensor_bus_init() on their own schedule. Every public function
+ * below holds this mutex across its full body, including the blocking
+ * vendor bus/device creation calls, so it must be a task mutex
+ * (portMAX_DELAY wait), not a portMUX spinlock: ESP-IDF requires blocking
+ * work to stay outside a critical section.
+ */
+static SemaphoreHandle_t s_lock = NULL;
 
 static esp_err_t sensor_bus_delete_device(i2c_bus_device_handle_t *device)
 {
@@ -36,7 +51,34 @@ static esp_err_t sensor_bus_cleanup_owned_devices(void)
     return err;
 }
 
-esp_err_t sensor_bus_init(void)
+static esp_err_t sensor_bus_lock(void)
+{
+    if (s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE
+        ? ESP_OK
+        : ESP_ERR_TIMEOUT;
+}
+
+static void sensor_bus_unlock(void)
+{
+    if (s_lock != NULL) {
+        (void)xSemaphoreGive(s_lock);
+    }
+}
+
+esp_err_t sensor_bus_lock_init(void)
+{
+    if (s_lock != NULL) {
+        return ESP_OK;
+    }
+    s_lock = xSemaphoreCreateMutex();
+    return s_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+/* Caller must already hold s_lock. */
+static esp_err_t sensor_bus_init_locked(void)
 {
     if (s_bus != NULL && s_ina3221 != NULL) {
         return ESP_OK;
@@ -70,18 +112,36 @@ esp_err_t sensor_bus_init(void)
     return ESP_OK;
 }
 
+esp_err_t sensor_bus_init(void)
+{
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+    const esp_err_t err = sensor_bus_init_locked();
+    sensor_bus_unlock();
+    return err;
+}
+
 esp_err_t sensor_bus_get_handles(sensor_bus_handles_t *handles)
 {
     if (handles == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    const esp_err_t err = sensor_bus_init();
-    if (err != ESP_OK) {
-        return err;
+
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
     }
-    handles->bus = s_bus;
-    handles->ina3221 = s_ina3221;
-    return ESP_OK;
+
+    const esp_err_t err = sensor_bus_init_locked();
+    if (err == ESP_OK) {
+        handles->bus = s_bus;
+        handles->ina3221 = s_ina3221;
+    }
+
+    sensor_bus_unlock();
+    return err;
 }
 
 esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *address)
@@ -94,8 +154,14 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
         *address = NULL_I2C_DEV_ADDR;
     }
 
-    esp_err_t err = sensor_bus_init();
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+
+    esp_err_t err = sensor_bus_init_locked();
     if (err != ESP_OK) {
+        sensor_bus_unlock();
         return err;
     }
 
@@ -104,6 +170,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
         if (address != NULL) {
             *address = s_tca9548a_address;
         }
+        sensor_bus_unlock();
         return ESP_OK;
     }
 
@@ -128,6 +195,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
             if (found != NULL) {
                 const esp_err_t candidate_delete_err = i2c_bus_device_delete(&candidate);
                 const esp_err_t found_delete_err = i2c_bus_device_delete(&found);
+                sensor_bus_unlock();
                 if (candidate_delete_err != ESP_OK) {
                     return candidate_delete_err;
                 }
@@ -153,6 +221,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
     }
 
     if (found == NULL) {
+        sensor_bus_unlock();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -162,20 +231,29 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
     if (address != NULL) {
         *address = s_tca9548a_address;
     }
+    sensor_bus_unlock();
     return ESP_OK;
 
 fail:
     if (found != NULL) {
         const esp_err_t cleanup_err = i2c_bus_device_delete(&found);
+        sensor_bus_unlock();
         if (cleanup_err != ESP_OK) {
             return cleanup_err;
         }
+        return err;
     }
+    sensor_bus_unlock();
     return err;
 }
 
 esp_err_t sensor_bus_deinit(void)
 {
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+
     esp_err_t err = sensor_bus_cleanup_owned_devices();
     if (s_bus != NULL) {
         const esp_err_t bus_err = i2c_bus_delete(&s_bus);
@@ -183,5 +261,7 @@ esp_err_t sensor_bus_deinit(void)
             err = bus_err;
         }
     }
+
+    sensor_bus_unlock();
     return err;
 }

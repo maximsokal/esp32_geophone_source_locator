@@ -95,8 +95,11 @@ def test_button_contracts_preserve_adc_and_power_safety_boundaries():
     assert "s_adc_cache_time_us = esp_timer_get_time()" in keypad_level
     assert "adc_service_handle" not in keypad
     assert "ADC_ATTEN_DB_12" in keypad
-    assert "KEYPAD_SW1_MAX_RAW" in keypad
-    assert "KEYPAD_SW5_MAX_RAW" in keypad
+    decoder = (REPO_ROOT / "components/keypad/keypad_decode.c").read_text(encoding="utf-8")
+    assert '#include "keypad_decode.h"' in keypad
+    assert "KEYPAD_SW1_MAX_RAW" in decoder
+    assert "KEYPAD_SW5_MAX_RAW" in decoder
+    assert "KEYPAD_DECODE_DEADBAND_RAW" in decoder
 
     latch = power.index("xEventGroupSetBits(state->events, POWER_EVENT_SHUTDOWN_REQUESTED)")
     hook = power.index("state->notification_hook(state->notification_context)")

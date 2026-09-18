@@ -6,6 +6,33 @@
 
 #include "board_config.h"
 #include "sensor_bus.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+struct test_semaphore
+{
+    int token;
+};
+
+static struct test_semaphore s_lock_token;
+
+SemaphoreHandle_t xSemaphoreCreateMutex(void)
+{
+    return &s_lock_token;
+}
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t ticks_to_wait)
+{
+    assert(semaphore == &s_lock_token);
+    assert(ticks_to_wait == portMAX_DELAY);
+    return pdTRUE;
+}
+
+BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
+{
+    assert(semaphore == &s_lock_token);
+    return pdTRUE;
+}
 
 typedef struct {
     uint8_t address;
@@ -178,6 +205,8 @@ static void test_non_nack_transport_error_is_not_reported_as_absence(void)
 
 int main(void)
 {
+    assert(sensor_bus_lock_init() == ESP_OK);
+
     test_absent_tca_is_nonfatal();
     test_single_tca_is_cached_and_owned();
     test_multiple_tca_candidates_are_rejected_and_cleaned();

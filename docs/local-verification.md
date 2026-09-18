@@ -129,6 +129,11 @@ That artifact is not the official firmware, must not be used as Channel
 Sounding controller evidence, and is not used by `--scope nrf` or `Run All`.
 The production flash task never calls `pio.ps1 upload`.
 
+The compatibility build selects `nRF54L15/zephyr/prj.platformio.conf`, which
+contains only the shared GPIO/I2C/runtime settings. The NCS-only
+SoftDevice/RAS/Channel Sounding symbols remain in `zephyr/prj.conf` and are
+not silently weakened for the canonical production build.
+
 ## nRF hardware contract relevant to verification
 
 The installed target is the plain XIAO nRF54L15, not the Sense variant. Remote

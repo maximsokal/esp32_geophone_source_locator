@@ -225,6 +225,13 @@ void ui_dispatch_app_event_locked(
             context->storage_recovery_failed = false;
             if (context->screen == UI_SCREEN_HOME) {
                 ui_render_home_locked();
+            } else if (context->screen == UI_SCREEN_OBJECTS) {
+                context->objects_loaded = false;
+                context->object_count = 0U;
+                context->object_index = 0U;
+                context->objects_mode = UI_OBJECTS_MENU;
+                ui_set_notice_locked("CHECKING STORAGE...");
+                ui_render_objects_locked();
             }
             return;
 
