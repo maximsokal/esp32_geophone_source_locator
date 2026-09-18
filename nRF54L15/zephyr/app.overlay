@@ -9,6 +9,14 @@
  * The same board definition maps D4/D5 to i2c22 as TWIM by default. This
  * project uses that peripheral as the upstream I2C target, so only i2c22 is
  * switched to TWIS. The private i2c30 sensor bus remains TWIM/controller.
+ *
+ * i2c22 has no internal bias-pull-up: ESP32-S3 already owns the pull-up on
+ * this shared bus (components/sensor_bus/sensor_bus.c, GPIO9/GPIO10). A
+ * second pull-up here is unnecessary on a normal I2C bus and is a candidate
+ * contributor to the MAIN-enclosure XIAO boot-interaction under
+ * investigation (Linear MAX-108/MAX-116): when this node is unpowered while
+ * ESP32 still holds the shared lines high, an enabled pull-up structure is
+ * an avoidable additional path back into this node's VDD rail.
  */
 
 / {
@@ -25,7 +33,6 @@
     group1 {
         psels = <NRF_PSEL(TWIS_SDA, 1, 10)>,
                 <NRF_PSEL(TWIS_SCL, 1, 11)>;
-        bias-pull-up;
     };
 };
 
