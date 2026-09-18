@@ -136,21 +136,24 @@ static void test_wrong_direction_and_severity(void)
     nrf_orientation_config_t config = config_for(NRF_ORIENTATION_AXIS_POS_Z);
     nrf_orientation_estimator_t estimator;
     nrf_imu_sample_t wrong = sample_xyz(0, 0, -1000, 0, 0, 0);
-    nrf_imu_sample_t slow = sample_xyz(259, 0, 966, 0, 0, 0);   /* ~15 deg */
-    nrf_imu_sample_t medium = sample_xyz(423, 0, 906, 0, 0, 0); /* ~25 deg */
-    nrf_imu_sample_t fast = sample_xyz(643, 0, 766, 0, 0, 0);   /* ~40 deg */
+    nrf_imu_sample_t near_vertical = sample_xyz(259, 0, 966, 0, 0, 0);  /* ~15 deg */
+    nrf_imu_sample_t mid_tilt = sample_xyz(423, 0, 906, 0, 0, 0);       /* ~25 deg */
+    nrf_imu_sample_t far_tilt = sample_xyz(643, 0, 766, 0, 0, 0);       /* ~40 deg */
 
+    /* Blink rate is a "getting warmer" signal: closer to the accepted
+     * vertical band blinks FASTER, a large/wrong-direction tilt blinks
+     * SLOWEST, and ACCEPTED (not exercised here) is steady. */
     assert(nrf_orientation_estimator_init(&estimator, &config));
     assert(nrf_orientation_estimator_update(&estimator, &wrong, true));
     assert(estimator.output.state == NRF_ORIENTATION_STATE_OUTSIDE);
-    assert(estimator.output.blink_class == NRF_ORIENTATION_BLINK_FAST);
-
-    assert(nrf_orientation_estimator_update(&estimator, &slow, true));
     assert(estimator.output.blink_class == NRF_ORIENTATION_BLINK_SLOW);
-    assert(nrf_orientation_estimator_update(&estimator, &medium, true));
-    assert(estimator.output.blink_class == NRF_ORIENTATION_BLINK_MEDIUM);
-    assert(nrf_orientation_estimator_update(&estimator, &fast, true));
+
+    assert(nrf_orientation_estimator_update(&estimator, &near_vertical, true));
     assert(estimator.output.blink_class == NRF_ORIENTATION_BLINK_FAST);
+    assert(nrf_orientation_estimator_update(&estimator, &mid_tilt, true));
+    assert(estimator.output.blink_class == NRF_ORIENTATION_BLINK_MEDIUM);
+    assert(nrf_orientation_estimator_update(&estimator, &far_tilt, true));
+    assert(estimator.output.blink_class == NRF_ORIENTATION_BLINK_SLOW);
 }
 
 static void test_gravity_and_motion_gates(void)

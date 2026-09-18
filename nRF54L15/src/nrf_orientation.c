@@ -155,18 +155,25 @@ void nrf_orientation_estimator_invalidate(
     clear_output(estimator, NRF_ORIENTATION_STATE_UNAVAILABLE, reason);
 }
 
+/*
+ * Blink rate is a "getting warmer" signal, not a danger signal: the closer
+ * the node is to the accepted vertical band (without yet being inside it),
+ * the FASTER the blink, culminating in a steady light once ACCEPTED. A
+ * large tilt error (or a wrong-direction/upside-down reading) is therefore
+ * the SLOWEST outside class, not the fastest.
+ */
 static nrf_orientation_blink_class_t outside_blink_class(
     const nrf_orientation_config_t *config,
     uint32_t tilt_sin2_ppm,
     bool wrong_direction)
 {
     if (wrong_direction || tilt_sin2_ppm >= config->fast_sin2_ppm) {
-        return NRF_ORIENTATION_BLINK_FAST;
+        return NRF_ORIENTATION_BLINK_SLOW;
     }
     if (tilt_sin2_ppm >= config->medium_sin2_ppm) {
         return NRF_ORIENTATION_BLINK_MEDIUM;
     }
-    return NRF_ORIENTATION_BLINK_SLOW;
+    return NRF_ORIENTATION_BLINK_FAST;
 }
 
 bool nrf_orientation_estimator_update(
