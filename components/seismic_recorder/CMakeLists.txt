@@ -31,6 +31,7 @@ idf_component_register(
         "seismic_recorder_delete.c"
         "seismic_recorder_fs.c"
         "seismic_recorder_fs_list.c"
+        "seismic_recorder_geometry_policy.c"
         "seismic_recorder_session_selection.c"
         "seismic_recorder_json.c"
         "seismic_recorder_reader.c"
@@ -50,6 +51,8 @@ idf_component_register(
 
     REQUIRES
         app_config
+        nrf_geometry_solver
+        nrf_topology_service
         object_store
         runtime_observability
         sd_card

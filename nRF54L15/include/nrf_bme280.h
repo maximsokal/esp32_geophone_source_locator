@@ -77,6 +77,18 @@ nrf_bme280_result_t nrf_bme280_init(
 /* Matches nrf_read_env_fn so it plugs directly into sensor snapshots. */
 int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample);
 
+/*
+ * Relative-altitude estimate from raw pressure, fixed-point only (no libm
+ * dependency, matching nrf_orientation's convention). Uses the linear
+ * approximation valid for small elevation ranges (~12 Pa/m near ground)
+ * rather than the full ISA barometric formula: this project only needs
+ * relative altitude between co-located nodes read close together in time,
+ * not absolute MSL altitude, so the flat local-weather-driven offset in a
+ * survey area cancels out when the caller subtracts one node's estimate
+ * from another's.
+ */
+int32_t nrf_bme280_pressure_to_altitude_mm(uint32_t pressure_pa);
+
 #ifdef __cplusplus
 }
 #endif

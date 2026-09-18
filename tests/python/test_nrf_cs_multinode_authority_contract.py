@@ -30,7 +30,10 @@ def test_control_plane_is_versioned_and_legacy_sensor_frames_are_unchanged():
     assert re.search(r"NRF_CS_CONTROL_STATUS_REQUEST_LENGTH\s+32U", control)
     assert re.search(r"NRF_CS_CONTROL_RESULT_LENGTH\s+44U", control)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", upstream)
-    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+102U", upstream)
+    # 112U as of MAX-114 (altitude/orientation fields appended); this guard
+    # is about the CS/authority work in *this* file not touching the sensor
+    # snapshot frame, not about the frame being permanently frozen at 102.
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", upstream)
     assert "NRF_UPSTREAM_PROTOCOL_VERSION" in text(CONTROL_C)
     assert "nrf_upstream_protocol_crc16_ccitt_false" in text(CONTROL_C)
 

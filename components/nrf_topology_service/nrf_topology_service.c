@@ -1130,6 +1130,41 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t nrf_topology_service_get_leveling_summary(
+    nrf_topology_leveling_summary_t *summary)
+{
+    if (summary == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t assigned = 0U;
+    size_t accepted = 0U;
+
+    portENTER_CRITICAL(&s_state_lock);
+    const bool topology_valid = s_snapshot_valid;
+    const bool sensor_valid = s_sensor_cache_valid;
+    if (topology_valid) {
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (s_snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+                continue;
+            }
+            ++assigned;
+            if (sensor_valid &&
+                s_sensor_cache[channel].response_valid &&
+                s_sensor_cache[channel].topology_current &&
+                s_sensor_cache[channel].sensor.orientation_state ==
+                    NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED) {
+                ++accepted;
+            }
+        }
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+
+    summary->assigned_count = assigned;
+    summary->accepted_count = accepted;
+    return topology_valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
 {
     TaskHandle_t task; bool available;

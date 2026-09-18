@@ -39,6 +39,25 @@ def test_one_esp32_tca_owner_and_no_second_sensor_task():
     assert "tca9548a" not in public
 
 
+def test_leveling_summary_requires_current_assigned_remote_acceptance():
+    service = read("components/nrf_topology_service/nrf_topology_service.c")
+    public = read("components/nrf_topology_service/include/nrf_topology_service.h")
+    start = service.index("esp_err_t nrf_topology_service_get_leveling_summary(")
+    end = service.index("esp_err_t nrf_topology_service_request_cs_cycle(", start)
+    body = service[start:end]
+
+    assert "nrf_topology_leveling_summary_t" in public
+    assert "nrf_topology_service_get_leveling_summary" in public
+    assert "s_snapshot_valid" in body
+    assert "s_sensor_cache_valid" in body
+    assert "NRF_TOPOLOGY_NODE_ASSIGNED" in body
+    assert "response_valid" in body
+    assert "topology_current" in body
+    assert "NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED" in body
+    assert "assigned_count" in body
+    assert "accepted_count" in body
+
+
 def test_pending_mask_is_explicit_and_duplicate_requests_coalesce():
     service = read("components/nrf_topology_service/nrf_topology_service.c")
     assert "static uint8_t s_sensor_pending_mask" in service

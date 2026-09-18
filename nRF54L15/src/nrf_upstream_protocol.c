@@ -109,7 +109,9 @@ static nrf_upstream_result_t validate_sensor_snapshot(
         (sensor->flags & ~NRF_UPSTREAM_SENSOR_FLAG_MASK) != 0U ||
         invalid_mask != 0U ||
         (sensor->valid_mask & sensor->fault_mask) != 0U ||
-        has_sample != sample_flag) {
+        has_sample != sample_flag ||
+        sensor->orientation_state > NRF_UPSTREAM_ORIENTATION_STATE_MAX ||
+        sensor->orientation_blink_class > NRF_UPSTREAM_ORIENTATION_BLINK_MAX) {
         return NRF_UPSTREAM_RESULT_INVALID_FRAME;
     }
     return NRF_UPSTREAM_RESULT_OK;
@@ -503,8 +505,12 @@ nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
     write_le_i32(&frame[88], sensor->env_temperature_milli_c);
     write_le32(&frame[92], sensor->pressure_pa);
     write_le32(&frame[96], sensor->humidity_milli_percent);
-    crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 100U);
-    write_le16(&frame[100], crc);
+    write_le_i32(&frame[100], sensor->altitude_mm);
+    frame[104] = sensor->orientation_state;
+    frame[105] = sensor->orientation_blink_class;
+    write_le32(&frame[106], sensor->orientation_tilt_sin2_ppm);
+    crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 110U);
+    write_le16(&frame[110], crc);
     return NRF_UPSTREAM_RESULT_OK;
 }
 
@@ -541,8 +547,8 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_remote_snapshot(
         return NRF_UPSTREAM_RESULT_INVALID_FRAME;
     }
 
-    expected_crc = read_le16(&frame[100]);
-    actual_crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 100U);
+    expected_crc = read_le16(&frame[110]);
+    actual_crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 110U);
     if (actual_crc != expected_crc) {
         memset(sensor, 0, sizeof(*sensor));
         return NRF_UPSTREAM_RESULT_BAD_CRC;
@@ -564,6 +570,10 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_remote_snapshot(
     sensor->env_temperature_milli_c = read_le_i32(&frame[88]);
     sensor->pressure_pa = read_le32(&frame[92]);
     sensor->humidity_milli_percent = read_le32(&frame[96]);
+    sensor->altitude_mm = read_le_i32(&frame[100]);
+    sensor->orientation_state = frame[104];
+    sensor->orientation_blink_class = frame[105];
+    sensor->orientation_tilt_sin2_ppm = read_le32(&frame[106]);
 
     result = validate_sensor_snapshot(sensor);
     if (result != NRF_UPSTREAM_RESULT_OK) {

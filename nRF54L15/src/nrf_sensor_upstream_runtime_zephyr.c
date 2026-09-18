@@ -7,6 +7,7 @@
 
 #include <zephyr/kernel.h>
 
+#include "nrf_bme280.h"
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
@@ -126,9 +127,26 @@ static void copy_runtime_payload(
         wire->env_temperature_milli_c = snapshot->env.temperature_milli_c;
         wire->pressure_pa = snapshot->env.pressure_pa;
         wire->humidity_milli_percent = snapshot->env.humidity_milli_percent;
+        wire->altitude_mm =
+            nrf_bme280_pressure_to_altitude_mm(snapshot->env.pressure_pa);
     }
     if (wire->valid_mask != 0U) {
         wire->flags |= NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE;
+    }
+
+    /*
+     * Caller must feed this refresh's IMU sample into the orientation
+     * estimator (orientation_consume_aggregate_refresh) before calling this
+     * function, so the state read here is fresh, not one cycle stale.
+     */
+    {
+        nrf_orientation_output_t orientation;
+        k_spinlock_key_t key = k_spin_lock(&s_orientation_lock);
+        nrf_orientation_estimator_get(&s_orientation_estimator, &orientation);
+        k_spin_unlock(&s_orientation_lock, key);
+        wire->orientation_state = (uint8_t)orientation.state;
+        wire->orientation_blink_class = (uint8_t)orientation.blink_class;
+        wire->orientation_tilt_sin2_ppm = orientation.tilt_sin2_ppm;
     }
 }
 
@@ -274,6 +292,13 @@ static void publish_refresh(uint32_t request_id)
             &s_worker_node_state,
             &s_runtime);
         completion_uptime_ms = runtime_uptime_ms();
+        /*
+         * Feed this refresh's IMU sample into the orientation estimator
+         * before building the wire snapshot, so orientation_state/
+         * blink_class/tilt_sin2_ppm below reflect this cycle rather than
+         * the previous one.
+         */
+        orientation_consume_aggregate_refresh(did_refresh);
         copy_runtime_payload(
             request_id,
             did_refresh,
@@ -281,6 +306,7 @@ static void publish_refresh(uint32_t request_id)
             completion_uptime_ms,
             &wire);
     } else {
+        orientation_consume_aggregate_refresh(did_refresh);
         copy_runtime_payload(
             request_id,
             false,
@@ -288,8 +314,6 @@ static void publish_refresh(uint32_t request_id)
             0U,
             &wire);
     }
-
-    orientation_consume_aggregate_refresh(did_refresh);
 
     k_spinlock_key_t key = k_spin_lock(&s_session_lock);
     (void)nrf_sensor_session_complete(&s_session, request_id, &wire);

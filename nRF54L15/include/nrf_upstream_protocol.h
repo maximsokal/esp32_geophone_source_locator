@@ -13,7 +13,7 @@ extern "C" {
 #define NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH 24U
 #define NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH 28U
 #define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U
-#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 102U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 112U
 
 #define NRF_UPSTREAM_ADDRESS_DISCOVERY 0x30U
 #define NRF_UPSTREAM_ADDRESS_MAIN      0x31U
@@ -34,6 +34,18 @@ extern "C" {
 #define NRF_UPSTREAM_SENSOR_VALID_IMU 0x01U
 #define NRF_UPSTREAM_SENSOR_VALID_ENV 0x02U
 #define NRF_UPSTREAM_SENSOR_VALID_MASK 0x03U
+
+/*
+ * Numeric range mirrors nrf_orientation_state_t/nrf_orientation_blink_class_t
+ * (UNAVAILABLE/MOVING/ACCEPTED/OUTSIDE and NONE/SLOW/MEDIUM/FAST, both 0..3).
+ * This header intentionally does not include nrf_orientation.h to stay a
+ * dependency-free wire-format definition shared as-is by the ESP32 build.
+ */
+#define NRF_UPSTREAM_ORIENTATION_STATE_MAX 3U
+#define NRF_UPSTREAM_ORIENTATION_BLINK_MAX 3U
+
+/* Mirrors nrf_orientation_state_t's NRF_ORIENTATION_STATE_ACCEPTED (2). */
+#define NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED 2U
 
 typedef enum {
     NRF_UPSTREAM_MESSAGE_ASSIGN = 0x01,
@@ -123,6 +135,17 @@ typedef struct {
     int32_t env_temperature_milli_c;
     uint32_t pressure_pa;
     uint32_t humidity_milli_percent;
+    /*
+     * Processed on the nRF, sent so ESP32 does not need to redo this work.
+     * altitude_mm validity follows the ENV valid_mask bit above (it is a
+     * pure function of pressure_pa). orientation_state/blink_class are
+     * self-describing: NRF_ORIENTATION_STATE_UNAVAILABLE already means
+     * "don't trust this," so neither needs its own valid_mask bit.
+     */
+    int32_t altitude_mm;
+    uint8_t orientation_state;
+    uint8_t orientation_blink_class;
+    uint32_t orientation_tilt_sin2_ppm;
 } nrf_upstream_sensor_snapshot_t;
 
 uint16_t nrf_upstream_protocol_crc16_ccitt_false(const uint8_t *data, size_t length);

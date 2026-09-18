@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_geometry_solver",
+      "sources": [
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "tests/host/nrf_geometry_solver_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "nrf_emergency_stop_policy",
+      "sources": [
+        "components/nrf_emergency_stop_monitor/nrf_emergency_stop_policy.c",
+        "tests/host/nrf_emergency_stop_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_emergency_stop_monitor/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_geometry_policy",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "tests/host/seismic_recorder_geometry_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "nRF54L15/include",
+        "tests/host/stubs/seismic_recorder_start"
+      ]
+    }
+  ]
+}

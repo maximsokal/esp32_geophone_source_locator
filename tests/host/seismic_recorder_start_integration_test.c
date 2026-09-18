@@ -9,11 +9,19 @@
 #include "seismic_recorder.h"
 #include "seismic_acquisition.h"
 #include "seismic_recorder_internal.h"
+#include "nrf_cs_authority.h"
+#include "nrf_topology_service.h"
 #include "object_store.h"
 #include "storage_manager.h"
 
 static seismic_acquisition_snapshot_t fake_acquisition;
 static FILE *fake_file;
+static nrf_topology_snapshot_t fake_topology;
+static nrf_topology_leveling_summary_t fake_leveling;
+static nrf_cs_cycle_snapshot_t fake_cycle;
+static nrf_remote_sensor_cache_t fake_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
+static object_store_geometry_t last_geometry;
+static bool last_geometry_set;
 
 typedef struct { unsigned held; } fake_mutex_t;
 typedef struct { EventBits_t bits; } fake_event_group_t;
@@ -34,7 +42,14 @@ int64_t esp_timer_get_time(void) { return 1000000; }
 
 bool storage_manager_is_ready(void) { return true; }
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile) { (void)object_id; memset(profile, 0, sizeof(*profile)); return ESP_OK; }
+esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry) { (void)object_id; last_geometry = *geometry; last_geometry_set = true; return ESP_OK; }
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
+
+esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary) { *summary = fake_leveling; return ESP_OK; }
+esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy) { (void)policy; return ESP_OK; }
+esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot) { *snapshot = fake_cycle; return ESP_OK; }
+esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot) { *snapshot = fake_topology; return ESP_OK; }
+esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
 
 esp_err_t seismic_recorder_fs_create_session(const char *object_id, uint32_t rate, uint8_t channels, char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE], FILE **file) { (void)object_id; (void)rate; (void)channels; snprintf(session_id, SEISMIC_RECORDER_SESSION_ID_SIZE, "S000001"); fake_file = tmpfile(); *file = fake_file; return fake_file != NULL ? ESP_OK : ESP_FAIL; }
 esp_err_t seismic_recorder_json_write_metadata(const object_store_profile_t *profile, const seismic_recorder_snapshot_t *snapshot, const char *status) { (void)profile; (void)snapshot; (void)status; return ESP_OK; }
@@ -65,8 +80,41 @@ int main(void)
     fake_acquisition.conversion_attempts = 100U;
     fake_acquisition.collapsed_periods = 0U;
 
+    /* One assigned, leveled, altitude-reporting REMOTE pod on channel 0,
+     * plus MAIN -- the minimum non-bench-test geometry gate (MAX-118). */
+    memset(&fake_topology, 0, sizeof(fake_topology));
+    fake_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.main.node_id = 0U;
+    fake_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.remotes[0].node_id = 1U;
+    fake_topology.remotes[0].mux_channel = 0U;
+
+    fake_leveling.assigned_count = 1U;
+    fake_leveling.accepted_count = 1U;
+
+    memset(fake_sensor_cache, 0, sizeof(fake_sensor_cache));
+    fake_sensor_cache[0].response_valid = true;
+    fake_sensor_cache[0].topology_current = true;
+    fake_sensor_cache[0].sensor.altitude_mm = 0;
+    fake_sensor_cache[0].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+
+    memset(&fake_cycle, 0, sizeof(fake_cycle));
+    fake_cycle.active = false;
+    fake_cycle.complete = true;
+    fake_cycle.result = NRF_CS_AUTHORITY_COMPLETE;
+    fake_cycle.pair_count = 1U;
+    fake_cycle.pairs[0].node_a = 0U;
+    fake_cycle.pairs[0].node_b = 1U;
+    fake_cycle.pairs[0].state = NRF_CS_PAIR_VALID;
+    fake_cycle.pairs[0].distance_mm = 500;
+
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
+    assert(last_geometry_set);
+    assert(!last_geometry.anchored);
+    assert(last_geometry.pods[0].computed);
+    assert(last_geometry.pods[0].leveled);
+    assert(last_geometry.pods[0].x_mm == 500 && last_geometry.pods[0].y_mm == 0);
 
     seismic_recorder_snapshot_t snapshot;
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);

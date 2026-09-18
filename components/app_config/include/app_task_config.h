@@ -114,3 +114,12 @@
  */
 #define APP_TASK_PRIORITY_WEB_LIFECYCLE 2
 #define APP_TASK_STACK_WEB_LIFECYCLE 8192
+
+/*
+ * MAX-118 whole-object emergency-stop watch. Polls nRF topology sensor cache
+ * for altitude jumps/multi-axis shifts only while a recording is active and
+ * otherwise idles; kept at the same low control-plane priority as nRF
+ * topology discovery, which it reads from.
+ */
+#define APP_TASK_PRIORITY_NRF_ESTOP_MONITOR 1
+#define APP_TASK_STACK_NRF_ESTOP_MONITOR 4096

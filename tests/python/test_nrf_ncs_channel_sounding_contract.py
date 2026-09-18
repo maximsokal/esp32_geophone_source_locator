@@ -193,7 +193,10 @@ def test_existing_dual_i2c_overlay_contract_is_untouched():
 def test_upstream_wire_sizes_are_not_changed_by_max51():
     protocol = text(PROTOCOL)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
-    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+102U", protocol)
+    # 112U as of MAX-114 (altitude/orientation fields appended); this guard
+    # is about MAX-51's Channel Sounding work not touching the sensor
+    # snapshot frame, not about the frame being frozen at 102.
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", protocol)
 
 
 def test_proof_doc_preserves_sdk_one_connection_and_historical_evidence():

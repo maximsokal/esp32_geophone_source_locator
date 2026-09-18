@@ -73,8 +73,16 @@ def test_wire_protocol_is_unchanged_and_max51_ble_surface_is_enabled():
     protocol = read("nRF54L15/include/nrf_upstream_protocol.h")
     prj = read("nRF54L15/zephyr/prj.conf")
     assert "#define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U" in protocol
-    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 102U" in protocol
-    assert "orientation" not in protocol.lower()
+    # 112U as of MAX-114, which is precisely the orientation-state upstream
+    # extension this test file predates -- the frame length changing here
+    # is the point of MAX-114, not a regression.
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 112U" in protocol
+    # This test used to assert "orientation" is absent from the wire
+    # protocol -- true when this test was written (orientation stayed
+    # local to the nRF), and precisely the gap MAX-114 closed on purpose:
+    # orientation_state/orientation_blink_class/orientation_tilt_sin2_ppm
+    # are now part of the snapshot frame so ESP32 can gate on leveling.
+    assert "orientation_state" in protocol
     for line in (
         "CONFIG_BT=y",
         "CONFIG_BT_CENTRAL=y",
