@@ -11,7 +11,7 @@ NCS_CMAKE = ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
 UPSTREAM_H = ROOT / "nRF54L15" / "include" / "nrf_upstream_protocol.h"
 AUTH_H = ROOT / "components" / "nrf_cs_authority" / "include" / "nrf_cs_authority.h"
 AUTH_C = ROOT / "components" / "nrf_cs_authority" / "nrf_cs_authority.c"
-TOPO_C = ROOT / "components" / "nrf_topology_service" / "nrf_topology_service_max97.c"
+TOPO_C = ROOT / "components" / "nrf_topology_service" / "nrf_topology_service.c"
 TOPO_CMAKE = ROOT / "components" / "nrf_topology_service" / "CMakeLists.txt"
 TOPO_H = ROOT / "components" / "nrf_topology_service" / "include" / "nrf_topology_service.h"
 SHARED_CMAKE = ROOT / "components" / "nrf_cs_shared" / "CMakeLists.txt"
@@ -83,10 +83,13 @@ def test_esp32_is_single_authority_and_reuses_max49_scheduler_in_existing_topolo
     assert "nrf_cs_scheduler_start_cycle" in authority
     assert "nrf_cs_scheduler_next_step" in authority
     assert "nrf_cs_scheduler_complete_step" in authority
-    assert '#include "nrf_topology_service.c"' in topology
-    assert "service_worker_pre_max97" in topology
-    assert "nrf_topology_service_max97.c" in cmake
-    assert "nrf_topology_service.c\"" not in cmake.replace("nrf_topology_service_max97.c\"", "")
+    assert '#include "nrf_topology_service.c"' not in topology
+    assert "service_worker_pre_max97" not in topology
+    assert "nrf_topology_service_max97.c" not in cmake
+    assert '"nrf_topology_service.c"' in cmake
+    assert "static nrf_topology_worker_state_t s_worker_state;" in topology
+    assert "uxTaskGetStackHighWaterMark(NULL)" in topology
+    assert re.search(r"NRF_TOPOLOGY_STACK_MARGIN_BYTES\s+1024U", topology)
     assert "nrf_topology_service_request_cs_cycle" in header
     assert "nrf_topology_service_get_cs_cycle" in header
     assert topology.count("xTaskCreatePinnedToCore") == 1
