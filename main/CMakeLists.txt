@@ -32,6 +32,7 @@ idf_component_register(
         device_status
         sensor_bus
         ina3221_monitor
+        nrf_emergency_stop_monitor
         nrf_topology_service
         seismic_buffer
         seismic_acquisition

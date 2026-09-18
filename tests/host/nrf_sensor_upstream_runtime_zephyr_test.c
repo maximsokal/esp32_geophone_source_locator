@@ -20,6 +20,7 @@ static unsigned s_imu_read_calls;
 static unsigned s_runtime_init_calls;
 static bool s_fail_next_queue_put;
 static bool s_exit_worker_when_empty;
+static bool s_include_env;
 static jmp_buf s_worker_exit;
 static void (*s_worker_entry)(void *, void *, void *);
 
@@ -147,6 +148,7 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
     (void)node_state;
     ++s_prepare_calls;
     runtime->core.imu_ready = true;
+    runtime->core.env_ready = s_include_env;
     runtime->core.sources.read_imu = fake_read_imu;
     runtime->core.sources.imu_context = NULL;
     return NRF_REMOTE_SENSOR_PREPARE_PARTIAL;
@@ -159,6 +161,12 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
     (void)node_state;
     ++s_refresh_calls;
     runtime->core.snapshot.valid_mask = NRF_SENSOR_VALID_IMU;
+    if (s_include_env) {
+        runtime->core.snapshot.valid_mask |= NRF_SENSOR_VALID_ENV;
+        runtime->core.snapshot.env.temperature_milli_c = 21500;
+        runtime->core.snapshot.env.pressure_pa = 101205U;
+        runtime->core.snapshot.env.humidity_milli_percent = 50300U;
+    }
     return fake_read_imu(NULL, &runtime->core.snapshot.imu) == 0
         ? NRF_SENSOR_SNAPSHOT_PARTIAL
         : NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
@@ -251,9 +259,43 @@ int main(void)
     assert(snapshot.request_id == 0U);
     assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
 
+    /*
+     * The fake refresh only marks IMU valid (no ENV), so altitude_mm must
+     * stay at its zeroed default; the wire snapshot's orientation fields
+     * must reflect the same, freshly-updated estimator state a direct
+     * get_orientation() call observes right after this refresh (accel
+     * purely on +Z, configured reference axis, exactly 1g -> ACCEPTED).
+     */
+    assert(snapshot.altitude_mm == 0);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
+    assert(orientation.state == NRF_ORIENTATION_STATE_ACCEPTED);
+    assert(snapshot.orientation_state == (uint8_t)orientation.state);
+    assert(snapshot.orientation_blink_class == (uint8_t)orientation.blink_class);
+    assert(snapshot.orientation_tilt_sin2_ppm == orientation.tilt_sin2_ppm);
+
     /* The explicit request is accepted after the activation sample completes. */
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
     assert(s_queue_put_calls == 3U);
+
+    /* A later aggregate refresh with a valid ENV sample must carry the
+     * nRF-computed altitude alongside the legacy pressure/humidity fields. */
+    s_include_env = true;
+    s_exit_worker_when_empty = true;
+    if (setjmp(s_worker_exit) == 0) {
+        s_worker_entry(NULL, NULL, NULL);
+        assert(false);
+    }
+    s_exit_worker_when_empty = false;
+    assert(s_refresh_calls == 2U);
+    assert(s_imu_read_calls == 2U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == request.request_id);
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+    assert((snapshot.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U);
+    assert(snapshot.pressure_pa == 101205U);
+    assert(snapshot.altitude_mm == 10000);
+    assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_ENV_READY);
+    assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE);
 
     /* Same assignment is idempotent; a conflicting active identity is rejected. */
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);

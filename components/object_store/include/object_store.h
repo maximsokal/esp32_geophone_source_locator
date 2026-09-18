@@ -30,11 +30,43 @@ typedef struct
     char source[OBJECT_STORE_LOCATION_SOURCE_SIZE];
 } object_store_location_t;
 
+/*
+ * Per-pod relative geometry (MAX-118): X/Y from the Channel Sounding
+ * distance mesh, Z from the BME280 altitude subtraction (MAX-114). MAIN is
+ * always the implicit origin and is not itself a pod. `computed` is false
+ * for a pod that has no path of valid CS pairs back to MAIN -- do not
+ * treat x_mm/y_mm/z_mm as meaningful unless computed is true. `leveled`
+ * mirrors that pod's nRF orientation_state == ACCEPTED at the moment the
+ * geometry was computed, not a live value.
+ */
+typedef struct
+{
+    bool computed;
+    bool leveled;
+    int32_t x_mm;
+    int32_t y_mm;
+    int32_t z_mm;
+    uint64_t computed_at_ms;
+} object_store_pod_geometry_t;
+
+/*
+ * `anchored` is always false until a later GPS/AprilTag step (not yet
+ * implemented) provides an absolute reference -- distance-only Channel
+ * Sounding cannot fix compass heading, so the layout has the right
+ * relative shape but an arbitrary rotation/mirror until then.
+ */
+typedef struct
+{
+    bool anchored;
+    object_store_pod_geometry_t pods[OBJECT_STORE_POD_COUNT];
+} object_store_geometry_t;
+
 typedef struct
 {
     object_store_summary_t summary;
     object_store_location_t location;
     float cable_lengths_m[OBJECT_STORE_POD_COUNT];
+    object_store_geometry_t geometry;
 } object_store_profile_t;
 
 /*
@@ -92,6 +124,13 @@ esp_err_t object_store_set_location(const char *object_id, const object_store_lo
 esp_err_t object_store_set_cable_length(const char *object_id, size_t pod_index, float length_m);
 esp_err_t object_store_get_cable_defaults(float lengths_m[OBJECT_STORE_POD_COUNT]);
 esp_err_t object_store_set_cable_default(size_t pod_index, float length_m);
+
+/*
+ * Replace this object's stored geometry wholesale (written once when the
+ * recording-gate solve completes, not incrementally). Passing NULL clears
+ * it back to all-pods-not-computed.
+ */
+esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry);
 
 /*
  * Shared anti-delete lease. Acquisition validates committed object existence

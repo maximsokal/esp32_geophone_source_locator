@@ -198,7 +198,10 @@ def test_main_starts_bluetooth_pair_runtime_before_assignment_processing():
 def test_existing_upstream_wire_contract_is_unchanged():
     protocol = text(PROTOCOL)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
-    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+102U", protocol)
+    # 112U as of MAX-114 (altitude/orientation fields appended); this guard
+    # is about the CS pair-runtime work in *this* file not touching the
+    # sensor snapshot frame, not about the frame being frozen at 102.
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", protocol)
 
 
 def test_max51_document_states_hil_and_max97_boundaries():

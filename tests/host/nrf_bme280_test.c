@@ -365,8 +365,27 @@ static void test_read_propagates_transfer_failure_without_stale_output(void)
     assert_sample_zero(&sample);
 }
 
+static void test_pressure_to_altitude_mm_linear_approximation(void)
+{
+    /* Sea level reference -> zero altitude. */
+    assert(nrf_bme280_pressure_to_altitude_mm(101325U) == 0);
+
+    /* Lower pressure (higher up) -> positive altitude; higher pressure
+     * (lower down) -> negative altitude. 12 Pa/m, so a 120 Pa drop is
+     * exactly 10 m = 10000 mm. */
+    assert(nrf_bme280_pressure_to_altitude_mm(101325U - 120U) == 10000);
+    assert(nrf_bme280_pressure_to_altitude_mm(101325U + 120U) == -10000);
+
+    /* The lowest representable pressure remains finite in the fixed-point
+     * calculation; the highest representable pressure exercises the negative
+     * saturation guard. */
+    assert(nrf_bme280_pressure_to_altitude_mm(0U) == 8443750);
+    assert(nrf_bme280_pressure_to_altitude_mm(UINT32_MAX) == INT32_MIN);
+}
+
 int main(void)
 {
+    test_pressure_to_altitude_mm_linear_approximation();
     test_init_rejects_invalid_arguments();
     test_init_detects_primary_and_configures_forced_profile();
     test_init_falls_back_to_secondary_address();

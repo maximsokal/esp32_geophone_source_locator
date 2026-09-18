@@ -23,7 +23,11 @@ def test_wire_lengths_fit_explicit_twis_buffer():
     assert match
     buffer_len = int(match.group(1))
     assert request_len == 12
-    assert frame_len == 102
+    # 112 bytes as of MAX-114 (altitude_mm + orientation_state/blink_class/
+    # tilt_sin2_ppm appended); was 102 before that extension. Deliberate,
+    # reviewed change -- not a silent regression. Still comfortably inside
+    # the 128-byte TWIS buffer.
+    assert frame_len == 112
     assert frame_len <= buffer_len
     assert buffer_len == 128
 
@@ -32,7 +36,8 @@ def test_remote_frame_keeps_legacy_status_prefix_contract():
     protocol = read("nRF54L15/src/nrf_upstream_protocol.c")
     assert "nrf_upstream_protocol_encode_status(status, frame)" in protocol
     assert "frame[28] = NRF_UPSTREAM_SENSOR_MAGIC_0" in protocol
-    assert "nrf_upstream_protocol_crc16_ccitt_false(frame, 100U)" in protocol
+    # CRC now covers 110 bytes (was 100 before the MAX-114 field extension).
+    assert "nrf_upstream_protocol_crc16_ccitt_false(frame, 110U)" in protocol
     assert "nrf_upstream_protocol_decode_status(\n        frame,\n        NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH" in protocol
 
     test = read("tests/host/nrf_upstream_protocol_test.c")
@@ -116,6 +121,21 @@ def test_one_firmware_starts_idle_sensor_worker_before_upstream_bootstrap():
     cmake = read("nRF54L15/zephyr/CMakeLists.txt")
     assert "../src/nrf_sensor_session.c" in cmake
     assert "../src/nrf_sensor_upstream_runtime_zephyr.c" in cmake
+    assert "../src/nrf_bme280_altitude.c" in cmake
+
+
+def test_altitude_payload_path_is_pure_and_covered_by_host_and_target_builds():
+    altitude = read("nRF54L15/src/nrf_bme280_altitude.c")
+    runtime = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
+    cmake = read("nRF54L15/zephyr/CMakeLists.txt")
+    manifest = read("tests/host/manifest.d/coverage-nrf.json")
+
+    assert "nrf_bme280_pressure_to_altitude_mm" in altitude
+    assert "pow(" not in altitude
+    assert "math.h" not in altitude
+    assert "nrf_bme280_pressure_to_altitude_mm(snapshot->env.pressure_pa)" in runtime
+    assert "../src/nrf_bme280_altitude.c" in cmake
+    assert manifest.count("nRF54L15/src/nrf_bme280_altitude.c") == 2
 
 
 def test_private_i2c_topology_is_preserved_with_max51_bluetooth_enabled():

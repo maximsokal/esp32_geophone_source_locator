@@ -14,11 +14,15 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nrf_cs_authority.h"
+#include "nrf_geometry_solver.h"
+#include "nrf_topology_service.h"
 #include "object_store.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder_cache.h"
 #include "seismic_recorder_cadence.h"
+#include "seismic_recorder_geometry_policy.h"
 #include "seismic_recorder_internal.h"
 #include "seismic_recorder_start_policy.h"
 #include "storage_manager.h"
@@ -35,6 +39,14 @@
 #define SEISMIC_RECORDER_WRITE_PERIOD_MS        500U
 #define SEISMIC_RECORDER_MIN_WRITE_FRAMES         8U
 #define SEISMIC_RECORDER_BATCH_WAIT_MS            10U
+
+/* MAX-118: default CS ranging policy for the pre-record geometry cycle.
+ * Not derived from a spec value -- a conservative, tunable default. */
+#define SEISMIC_RECORDER_GEOMETRY_CS_PAIR_TIMEOUT_MS 500U
+#define SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS       3U
+#define SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE   500U
+#define SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS            50U
+#define SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS      15000U
 
 
 static const char *TAG = "SEISMIC_RECORDER";
@@ -1044,6 +1056,134 @@ esp_err_t seismic_recorder_init(void)
 }
 
 
+/*
+ * MAX-118: block a recording session until every currently ASSIGNED REMOTE
+ * pod has reported an accepted (leveled) orientation and a completed
+ * Channel Sounding geometry cycle has placed it in 3D relative to MAIN, then
+ * persist that geometry onto the object being recorded. A MAIN-only bench
+ * setup (zero assigned pods) is rejected outright -- there is nothing to
+ * listen to. See seismic_recorder_geometry_policy.h for the pure mapping
+ * logic and the documented MAIN-altitude-is-fixed-at-zero caveat.
+ */
+static esp_err_t seismic_recorder_prepare_geometry(
+    const char *object_id
+)
+{
+    nrf_topology_leveling_summary_t leveling;
+    esp_err_t err = nrf_topology_service_get_leveling_summary(&leveling);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: topology leveling summary unavailable err=%s", esp_err_to_name(err));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = seismic_recorder_geometry_validate_leveling(leveling.assigned_count, leveling.accepted_count);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "START rejected: no REMOTE pods assigned, nothing to record");
+        } else {
+            ESP_LOGE(
+                TAG,
+                "START rejected: pods not level yet assigned=%u accepted=%u",
+                (unsigned)leveling.assigned_count,
+                (unsigned)leveling.accepted_count
+            );
+        }
+        return err;
+    }
+
+    const nrf_cs_policy_t policy = {
+        .pair_timeout_ms = SEISMIC_RECORDER_GEOMETRY_CS_PAIR_TIMEOUT_MS,
+        .max_attempts = SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS,
+        .min_confidence = SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE,
+    };
+    err = nrf_topology_service_request_cs_cycle(&policy);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "START rejected: could not request CS geometry cycle err=%s", esp_err_to_name(err));
+        return err;
+    }
+
+    nrf_cs_cycle_snapshot_t cycle;
+    memset(&cycle, 0, sizeof(cycle));
+    uint32_t waited_ms = 0U;
+    for (;;) {
+        err = nrf_topology_service_get_cs_cycle(&cycle);
+        if (err == ESP_OK && !cycle.active) {
+            break;
+        }
+        if (waited_ms >= SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS) {
+            ESP_LOGE(TAG, "START rejected: CS geometry cycle did not complete in time");
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS));
+        waited_ms += SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS;
+    }
+
+    if (cycle.result != NRF_CS_AUTHORITY_COMPLETE) {
+        ESP_LOGE(TAG, "START rejected: CS geometry cycle failed result=%d", cycle.result);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    nrf_topology_snapshot_t topology;
+    err = nrf_topology_service_get_snapshot(&topology);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: topology snapshot unavailable err=%s", esp_err_to_name(err));
+        return err;
+    }
+
+    seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
+    memset(channels, 0, sizeof(channels));
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+            continue;
+        }
+        nrf_remote_sensor_cache_t cache;
+        if (nrf_topology_service_get_sensor_snapshot(channel, &cache) != ESP_OK) {
+            continue;
+        }
+        if (!cache.response_valid || !cache.topology_current) {
+            continue;
+        }
+        channels[channel].altitude_valid = true;
+        channels[channel].altitude_mm = cache.sensor.altitude_mm;
+        channels[channel].leveled =
+            cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+    }
+
+    nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
+    size_t input_count = 0U;
+    err = seismic_recorder_geometry_build_inputs(&topology, channels, inputs, NRF_GEOMETRY_MAX_NODES, &input_count);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: could not build geometry inputs err=%s", esp_err_to_name(err));
+        return err;
+    }
+
+    nrf_geometry_solution_t solution;
+    const nrf_geometry_result_t solve_result = nrf_geometry_solver_solve(
+        inputs, input_count, cycle.pairs, cycle.pair_count, &solution);
+    if (solve_result != NRF_GEOMETRY_OK) {
+        ESP_LOGE(TAG, "START rejected: geometry solve failed result=%d", (int)solve_result);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    object_store_geometry_t geometry;
+    seismic_recorder_geometry_apply_solution(
+        &solution, &topology, channels, (uint64_t)(esp_timer_get_time() / 1000), &geometry);
+
+    if (!seismic_recorder_geometry_all_assigned_pods_computed(&topology, &geometry)) {
+        ESP_LOGE(TAG, "START rejected: geometry incomplete for one or more assigned pods");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = object_store_set_geometry(object_id, &geometry);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: could not persist geometry err=%s", esp_err_to_name(err));
+        return err;
+    }
+
+    return ESP_OK;
+}
+
+
 esp_err_t seismic_recorder_start(
     const char *object_id
 )
@@ -1122,6 +1262,12 @@ esp_err_t seismic_recorder_start(
     }
 
     err = object_store_get_profile(object_id, profile);
+    if (err != ESP_OK) {
+        free(profile);
+        return err;
+    }
+
+    err = seismic_recorder_prepare_geometry(object_id);
     if (err != ESP_OK) {
         free(profile);
         return err;

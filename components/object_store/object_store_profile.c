@@ -379,6 +379,55 @@ static void object_store_read_cables(
     }
 }
 
+static void object_store_read_geometry(
+    cJSON *root,
+    object_store_geometry_t *geometry
+)
+{
+    /* geometry defaults to zero/not-computed via the caller's memset;
+     * absent or malformed JSON leaves it exactly there -- old objects
+     * written before MAX-118 have no "geometry" key at all. */
+    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
+    if (!cJSON_IsObject(node)) {
+        return;
+    }
+
+    cJSON *anchored = cJSON_GetObjectItemCaseSensitive(node, "anchored");
+    geometry->anchored = cJSON_IsTrue(anchored);
+
+    cJSON *pods = cJSON_GetObjectItemCaseSensitive(node, "pods");
+    if (!cJSON_IsArray(pods)) {
+        return;
+    }
+
+    for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
+        cJSON *pod = cJSON_GetArrayItem(pods, (int)i);
+        if (!cJSON_IsObject(pod)) {
+            continue;
+        }
+        cJSON *computed = cJSON_GetObjectItemCaseSensitive(pod, "computed");
+        if (!cJSON_IsTrue(computed)) {
+            continue;
+        }
+        cJSON *leveled = cJSON_GetObjectItemCaseSensitive(pod, "leveled");
+        cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
+        cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
+        cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
+        cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
+        if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
+            continue;
+        }
+        geometry->pods[i].computed = true;
+        geometry->pods[i].leveled = cJSON_IsTrue(leveled);
+        geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
+        geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
+        geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
+        geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
+            ? (uint64_t)computed_at->valuedouble
+            : 0U;
+    }
+}
+
 static void object_store_profile_from_root_locked(
     const char *object_id,
     bool active,
@@ -393,6 +442,7 @@ static void object_store_profile_from_root_locked(
     profile->summary.active = active;
     object_store_read_location(root, &profile->location);
     object_store_read_cables(root, defaults, profile->cable_lengths_m);
+    object_store_read_geometry(root, &profile->geometry);
 }
 
 static esp_err_t object_store_json_read_profile_with_defaults_locked(
@@ -1049,6 +1099,52 @@ esp_err_t object_store_set_cable_length(
 
     cJSON_DeleteItemFromObjectCaseSensitive(pod, "cable_length_m");
     if (cJSON_AddNumberToObject(pod, "cable_length_m", length_m) == NULL) {
+        cJSON_Delete(root);
+        object_store_internal_end_file_operation();
+        return ESP_ERR_NO_MEM;
+    }
+    return object_store_mutation_finish(object_id, root);
+}
+
+esp_err_t object_store_set_geometry(
+    const char *object_id,
+    const object_store_geometry_t *geometry
+)
+{
+    static const object_store_geometry_t cleared = {0};
+    if (geometry == NULL) {
+        geometry = &cleared;
+    }
+
+    cJSON *root = NULL;
+    esp_err_t err = object_store_mutation_begin(object_id, &root);
+    if (err != ESP_OK) return err;
+
+    cJSON_DeleteItemFromObjectCaseSensitive(root, "geometry");
+    cJSON *node = cJSON_AddObjectToObject(root, "geometry");
+    cJSON *pods = node == NULL ? NULL : cJSON_AddArrayToObject(node, "pods");
+    bool ok = node != NULL && pods != NULL &&
+        cJSON_AddBoolToObject(node, "anchored", geometry->anchored) != NULL;
+
+    for (size_t i = 0; ok && i < OBJECT_STORE_POD_COUNT; ++i) {
+        const object_store_pod_geometry_t *pod_geometry = &geometry->pods[i];
+        cJSON *pod = cJSON_CreateObject();
+        ok = pod != NULL &&
+            cJSON_AddNumberToObject(pod, "id", (double)(i + 1)) != NULL &&
+            cJSON_AddBoolToObject(pod, "computed", pod_geometry->computed) != NULL &&
+            cJSON_AddBoolToObject(pod, "leveled", pod_geometry->leveled) != NULL &&
+            cJSON_AddNumberToObject(pod, "x_mm", (double)pod_geometry->x_mm) != NULL &&
+            cJSON_AddNumberToObject(pod, "y_mm", (double)pod_geometry->y_mm) != NULL &&
+            cJSON_AddNumberToObject(pod, "z_mm", (double)pod_geometry->z_mm) != NULL &&
+            cJSON_AddNumberToObject(pod, "computed_at_ms", (double)pod_geometry->computed_at_ms) != NULL;
+        if (ok) {
+            cJSON_AddItemToArray(pods, pod);
+        } else {
+            cJSON_Delete(pod);
+        }
+    }
+
+    if (!ok) {
         cJSON_Delete(root);
         object_store_internal_end_file_operation();
         return ESP_ERR_NO_MEM;
