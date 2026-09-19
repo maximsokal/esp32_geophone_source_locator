@@ -28,13 +28,16 @@ function Require-Command([string]$Name, [string]$Hint) {
     }
 
     if ($Name -eq "nrfutil") {
-        $knownUserPath = Join-Path $env:USERPROFILE ".nrfutil\bin\nrfutil.exe"
+        $knownUserBin = Join-Path $env:USERPROFILE ".nrfutil\bin"
+        $knownUserPath = Join-Path $knownUserBin "nrfutil.exe"
         if (Test-Path -LiteralPath $knownUserPath -PathType Leaf) {
-            throw (
-                "nrfutil not found on PATH, but it is installed at '$knownUserPath'. " +
-                "Add it to PATH for this session, e.g.: " +
-                '$env:PATH = "' + (Join-Path $env:USERPROFILE ".nrfutil\bin") + ';" + $env:PATH'
-            )
+            # VS Code tasks often start with a stale process PATH. Keep the
+            # installation user-scoped and make it available only to this
+            # script process and its pinned-toolchain children.
+            $env:PATH = "$knownUserBin;$env:PATH"
+            if (Get-Command $Name -ErrorAction SilentlyContinue) {
+                return
+            }
         }
     }
 
