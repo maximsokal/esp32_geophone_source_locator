@@ -58,6 +58,14 @@ The Espressif compiler shipped with ESP-IDF is a target cross compiler and is
 rejected as a substitute for a native host compiler. Set `HOST_CC` or pass
 `--compiler` when several native compilers are installed.
 
+ESP-IDF documents host execution as the software-first layer: the POSIX/Linux
+FreeRTOS simulator runs tasks as host POSIX threads, while CMock and host
+mocks replace hardware-dependent components. This repository's Windows
+virtual-board runner uses deterministic native mock models instead of claiming
+to be the Linux POSIX port; in both cases the bottleneck-search run is fully
+virtual and requires no physical target. See the official
+[ESP-IDF host-application guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/host-apps.html).
+
 The software-only virtual-board stress layer runs the real host-compatible
 `seismic_buffer` and recorder-cache code behind virtual AD7606/SPI3,
 SD/TFT/SPI2, Wi-Fi and I2C models. It uses virtual time, seeded SD
@@ -79,11 +87,13 @@ case; the test passes only when the model detects it instead of silently
 accepting drops or queue growth.
 
 The runner prints `VIRTUAL_BOARD_PHYSICAL_IO: NONE` and
+`VIRTUAL_BOARD_TARGET_REQUIRED: NO` plus
 `VIRTUAL_BOARD_STRESS_RUNNER_RESULT`. This is software stress evidence. It does
 not prove physical SPI signal integrity, SD-card behavior, target FreeRTOS
 timing, DMA memory fragmentation, TFT pixels or electrical sensor behavior;
 those remain separate target/HIL gates and are not part of this bottleneck
-search loop.
+search loop. The optional target stress application below is not invoked by
+this runner and is not required for this software gate.
 
 ### Optional ESP32 target integration stress app
 

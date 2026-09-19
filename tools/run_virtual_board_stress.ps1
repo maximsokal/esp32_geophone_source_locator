@@ -13,7 +13,9 @@ $runner = Join-Path $repo "tools\run_host_tests.py"
 Write-Host "VIRTUAL_BOARD_RUNNER: SOFTWARE_ONLY"
 Write-Host "VIRTUAL_BOARD_PHYSICAL_IO: NONE"
 Write-Host "VIRTUAL_BOARD_TARGET_FLASH: NONE"
+Write-Host "VIRTUAL_BOARD_TARGET_REQUIRED: NO"
 Write-Host "VIRTUAL_BOARD_SERIAL_PORTS: NONE"
+Write-Host "VIRTUAL_BOARD_HOST_MODEL: NATIVE_DISCRETE_TIME_MOCKS"
 
 $arguments = @(
     $runner,
