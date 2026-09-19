@@ -52,8 +52,17 @@ cache and queue high-water marks, protocol-model counters, deadline misses and
 SD p99 latency.
 
 The runner prints `VIRTUAL_BOARD_PHYSICAL_IO: NONE`, never opens a COM port,
-never flashes firmware and never powers a board. `tools/run_stress_tests.ps1`
+`VIRTUAL_BOARD_TARGET_REQUIRED: NO`, never flashes firmware and never powers a
+board. `tools/run_stress_tests.ps1`
 remains a compatibility alias for the same software-only suite.
+
+This follows the host-testing direction documented by ESP-IDF: use the
+POSIX/Linux FreeRTOS simulator for host scheduling or CMock/mock components
+for hardware-dependent code. The Windows implementation here uses a
+deterministic native mock model, not a physical ESP32 target. The target
+integration stress application below is a separate optional gate and is never
+part of the virtual bottleneck-search command. See the official
+[ESP-IDF host-application guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/host-apps.html).
 
 The suite includes healthy scenarios and an overloaded case. A healthy
 scenario requires no drops, cache overflow, queue overflow or deadline miss;

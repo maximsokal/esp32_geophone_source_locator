@@ -124,7 +124,9 @@ def test_virtual_board_runner_is_software_only():
         "VIRTUAL_BOARD_RUNNER: SOFTWARE_ONLY",
         "VIRTUAL_BOARD_PHYSICAL_IO: NONE",
         "VIRTUAL_BOARD_TARGET_FLASH: NONE",
+        "VIRTUAL_BOARD_TARGET_REQUIRED: NO",
         "VIRTUAL_BOARD_SERIAL_PORTS: NONE",
+        "VIRTUAL_BOARD_HOST_MODEL: NATIVE_DISCRETE_TIME_MOCKS",
         '"--only", "virtual_board_stress"',
         '"--only", "scheduler_replay_stress"',
         "VIRTUAL_BOARD_STRESS_RUNNER_RESULT",
@@ -132,6 +134,17 @@ def test_virtual_board_runner_is_software_only():
         assert marker in runner
     assert "run_idf.ps1" not in runner
     assert "-Port" not in runner
+
+
+def test_virtual_board_docs_require_virtual_host_only_bottleneck_search():
+    readme = (REPO_ROOT / "tests" / "README.md").read_text(encoding="utf-8")
+    plan = (REPO_ROOT / "docs" / "firmware-test-plan.md").read_text(encoding="utf-8")
+    for document in (readme, plan):
+        assert "POSIX/Linux" in document
+        assert "CMock" in document or "mock" in document.lower()
+        assert "VIRTUAL_BOARD_TARGET_REQUIRED: NO" in document
+        assert "host-application guide" in document
+    assert "physical target" in readme.lower()
 
 
 def test_virtual_board_stress_models_all_diploma_buses():
