@@ -102,4 +102,4 @@ def test_build_and_host_manifests_include_orientation_without_new_firmware_varia
     assert '"name": "nrf_orientation"' in manifest
     assert '"nRF54L15/src/nrf_orientation.c"' in manifest
     envs = re.findall(r"^\[env:([^]]+)\]", platformio, flags=re.MULTILINE)
-    assert envs == ["seeed-xiao-nrf54l15"]
+    assert envs == ["seeed-xiao-nrf54l15", "native"]

@@ -31,9 +31,11 @@ need a serial test port. For that reason board-dependent tests must use a
 separate explicit future HIL runner/naming convention and must never be added
 to `test_sw_*` merely to make them run from the master suite.
 
-There is currently no executable PlatformIO `test_sw_*` suite, so that automatic
-nRF test stage reports explicit `SKIPPED`. This does not mean there are no nRF
-software tests: the host C lane above is executable and must remain green.
+The `test_sw_upstream_protocol` suite is an executable native PlatformIO test
+for the dependency-free upstream wire codec. `pio.ps1 -Action test` selects the
+`native` environment, so it builds and runs without uploading firmware or
+touching a board. Board-dependent tests must keep a separate explicit HIL
+runner and must not use the `test_sw_*` prefix.
 
 Future software/native suites must cover the remote sensor aggregator contract:
 the external GY-BMI160 and BME280 share the private XIAO D11/D12 bus, are

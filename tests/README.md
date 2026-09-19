@@ -2,7 +2,7 @@
 
 The repository has four intentionally separate test surfaces:
 
-* `tools/run_host_tests.py` builds and runs the 36 C contract suites in
+* `tools/run_host_tests.py` builds and runs the manifest-driven C contract suites in
   `tests/host/manifest.json`. It applies strict C11 warnings consistently and
   writes a machine-readable report under `build/host-tests`.
 * `tests/python` contains deterministic pytest checks. Run `python -m pytest`
@@ -57,6 +57,94 @@ requests fail explicitly if the selected native compiler does not support them.
 The Espressif compiler shipped with ESP-IDF is a target cross compiler and is
 rejected as a substitute for a native host compiler. Set `HOST_CC` or pass
 `--compiler` when several native compilers are installed.
+
+The software-only virtual-board stress layer runs the real host-compatible
+`seismic_buffer` and recorder-cache code behind virtual AD7606/SPI3,
+SD/TFT/SPI2, Wi-Fi and I2C models. It uses virtual time, seeded SD
+jitter/stalls, queue limits and cache backpressure; it never flashes, opens a
+COM port or communicates with a board:
+
+```powershell
+powershell -File tools/run_virtual_board_stress.ps1
+powershell -File tools/run_virtual_board_stress.ps1 -Sanitizers address,undefined
+
+# Compatibility alias:
+powershell -File tools/run_stress_tests.ps1
+```
+
+The report prints one JSON object per scenario and includes steady 500 Hz,
+200 ms SD stall, shared SPI2 burst, 5000 Hz steady load and an intentionally
+overloaded 5000 Hz/slow-SD case. `SATURATED` is expected for the overload
+case; the test passes only when the model detects it instead of silently
+accepting drops or queue growth.
+
+The runner prints `VIRTUAL_BOARD_PHYSICAL_IO: NONE` and
+`VIRTUAL_BOARD_STRESS_RUNNER_RESULT`. This is software stress evidence. It does
+not prove physical SPI signal integrity, SD-card behavior, target FreeRTOS
+timing, DMA memory fragmentation, TFT pixels or electrical sensor behavior;
+those remain separate target/HIL gates and are not part of this bottleneck
+search loop.
+
+### Optional ESP32 target integration stress app
+
+`tests/target/stress_app` is a separate ESP-IDF 5.5.4 target project. It links
+the real seismic ring buffer and recorder cache, then runs pinned Core 0/Core 1
+FreeRTOS tasks for synthetic acquisition above the production 50 Hz test
+generator, recorder/SD stalls, UI/network/sensor pressure, DMA-capable internal
+heap and PSRAM allocation pressure, stack high-water marks, an ISR-dispatch
+timer, and a deterministic 64-event reordered schedule replay with a bounded
+runtime trace. The target application performs a 100..5000 Hz rate sweep with
+5000 Hz expected as the saturation control, binary-searches the first failed
+rate, and runs an intentional slow-SD saturation control.
+
+Build without flashing:
+
+```powershell
+powershell -File tools/run_idf.ps1 -Action build `
+  -ProjectPath tests/target/stress_app -BuildDir build-s3 -Target esp32s3 -Jobs 2
+```
+
+`tools/run_stress_hil.ps1` is the separate optional live/replay gate. `-LogPath` parses
+captured target telemetry without hardware access. In the normal two-USB setup,
+COM4 is the programming/power port and COM6 is a separate receive-only UART for
+logs; keep COM6 TX/VCC disconnected. The same USB cable is moved physically:
+first it connects ESP32 to the PC for COM4 flashing, then it is unplugged from
+the PC and connected to the USB 18650 block. A live run flashes through COM4
+and captures passive UART
+through COM6, but it reports physical AD7606/SPI3,
+shared SPI2/SD, TFT, Wi-Fi and I2C confirmation separately. Before the synthetic
+stress phases it runs production-driver probes and emits `TARGET_STRESS_PHYSICAL`
+markers for repeated AD7606 conversions/payload checks, repeated SD write-read,
+repeated TFT DMA draws, repeated I2C INA/TCA access and repeated Wi-Fi radio
+scans. A target stress PASS, host replay PASS or saved log
+never counts as physical proof; use `-RequirePhysical` with the five explicit
+`-Confirm*` attestations only after observing the current board. The probe is
+an electrical/driver gate, while TFT pixels and Wi-Fi association/API still
+require the operator confirmations.
+
+Live physical gate (only with the intended ESP32 flash/monitor ports connected):
+
+```powershell
+powershell -File tools/run_stress_hil.ps1 -FlashPort COM4 -LogPort COM6 `
+  -WaitForPowerHandoff -RequirePhysical -ConfirmAd7606 -ConfirmSpi2Sd -ConfirmTft -ConfirmWifi -ConfirmI2c
+```
+
+With `-WaitForPowerHandoff`, the runner flashes first and does not start the
+COM6 monitor until the operator has unplugged the COM4 cable from the PC and
+connected that same cable to the USB 18650 block.
+After the monitor opens, press EN/RESET; only that post-handoff boot is captured
+as the physical stress run. A live `-RequirePhysical` invocation requires this
+flag, so the runner cannot accidentally accept a COM4-powered AD7606 result.
+After you press Enter to confirm the reset, the runner waits automatically and
+prints `STRESS_RUN_COMPLETE` when `TARGET_STRESS_SUMMARY` arrives. Repeated
+brownout resets stop the run with `BROWNOUT_ABORT`.
+
+After a verified target build, `-SkipBuild` avoids repeating the full ESP-IDF
+`set-target`/clean build while preserving the COM4 flash and COM6 log steps:
+
+```powershell
+powershell -File tools/run_stress_hil.ps1 -SkipBuild -FlashPort COM4 -LogPort COM6
+```
 
 ## HIL gate
 

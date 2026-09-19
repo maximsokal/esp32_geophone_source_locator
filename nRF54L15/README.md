@@ -103,7 +103,7 @@ extension, while `nrf_bootstrap_runtime_zephyr` owns the bounded
 callback-to-worker handoff and deferred re-addressing. The TWIS buffer is
 explicitly 128 bytes.
 
-REMOTE reads prepare a fixed 102-byte frame whose first 28 bytes are exactly
+REMOTE reads prepare a fixed 112-byte frame whose first 28 bytes are exactly
 the legacy STATUS frame, so existing topology reads remain backward-compatible;
 the full extension carries request/sequence/validity/fault state, nRF
 completion uptime and BMI160/BME280 values with its own full-frame CRC. The

@@ -9,6 +9,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Child Python/CMake/ninja processes can write non-ASCII output (paths,
+# diagnostics) that a cp1251 PowerShell console cannot decode cleanly, which
+# has previously surfaced as a spurious step failure with no real test
+# regression behind it (see tools/run_idf.ps1's identical fix for idf_monitor
+# UART logs). Force UTF-8 for every child process this suite launches.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $results = New-Object System.Collections.Generic.List[object]
 $hostFailureDetails = New-Object System.Collections.Generic.List[object]
@@ -37,6 +44,15 @@ function Invoke-SuiteStep {
         $message = "Required command was not found: $FilePath"
         Write-Host $message -ForegroundColor Yellow
     } else {
+        # Pass/fail is decided below from the real $LASTEXITCODE, not from
+        # PowerShell's own error stream. A child process (python, cmake,
+        # ninja...) writing a diagnostic line to stderr must never itself
+        # abort this step under "Stop" -- that previously surfaced as a
+        # spurious FAIL (e.g. a benign CMake warning, or a pytest atexit
+        # cleanup message) even though the underlying command exited 0 and
+        # did all of its real work correctly.
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         try {
             Push-Location -LiteralPath $WorkingDirectory
             try {
@@ -54,6 +70,8 @@ function Invoke-SuiteStep {
             $status = "FAIL"
             $exitCode = 1
             $message = $_.Exception.Message
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
         }
     }
 

@@ -24,7 +24,7 @@ def test_wire_lengths_fit_explicit_twis_buffer():
     buffer_len = int(match.group(1))
     assert request_len == 12
     # 112 bytes as of MAX-114 (altitude_mm + orientation_state/blink_class/
-    # tilt_sin2_ppm appended); was 102 before that extension. Deliberate,
+    # tilt_sin2_ppm appended); the previous frame was 102 bytes. Deliberate,
     # reviewed change -- not a silent regression. Still comfortably inside
     # the 128-byte TWIS buffer.
     assert frame_len == 112
@@ -39,6 +39,23 @@ def test_remote_frame_keeps_legacy_status_prefix_contract():
     # CRC now covers 110 bytes (was 100 before the MAX-114 field extension).
     assert "nrf_upstream_protocol_crc16_ccitt_false(frame, 110U)" in protocol
     assert "nrf_upstream_protocol_decode_status(\n        frame,\n        NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH" in protocol
+
+
+def test_physical_hil_gate_is_rebased_to_the_full_112_byte_snapshot():
+    protocol_doc = read("docs/nrf-upstream-sensor-snapshot-protocol.md")
+    matrix = read("docs/verification-evidence-matrix.md")
+    architecture = read("ARCHITECTURE.md")
+    assert "a complete 112-byte read" in protocol_doc
+    assert "112-byte TX buffer" in protocol_doc
+    assert "112-byte REMOTE snapshot" in matrix
+    assert "112-byte sensor frame" in architecture
+    assert "112-byte TWIS response" in architecture
+    assert "112-byte polling" in architecture
+    assert "full 112-byte TWIS behavior" in architecture
+    assert "102-byte sensor frame" not in architecture
+    assert "102-byte TWIS response" not in architecture
+    assert "102-byte polling" not in architecture
+    assert "full 102-byte TWIS behavior" not in architecture
 
     test = read("tests/host/nrf_upstream_protocol_test.c")
     assert "memcmp(frame, status_frame, sizeof(status_frame)) == 0" in test

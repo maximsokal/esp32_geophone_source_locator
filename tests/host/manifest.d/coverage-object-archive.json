@@ -38,6 +38,21 @@
       ]
     },
     {
+      "name": "object_store_profile_round_trip",
+      "sources": [
+        "components/object_format/object_format.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/object_store/tests/object_store_profile_round_trip_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "components/object_store/tests/stubs",
+        "components/object_store",
+        "components/object_store/include",
+        "components/object_format/include"
+      ]
+    },
+    {
       "name": "object_store_create_transaction",
       "sources": [
         "components/object_store/tests/object_store_create_transaction_test.c"

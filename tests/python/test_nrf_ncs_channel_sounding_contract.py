@@ -195,7 +195,7 @@ def test_upstream_wire_sizes_are_not_changed_by_max51():
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
     # 112U as of MAX-114 (altitude/orientation fields appended); this guard
     # is about MAX-51's Channel Sounding work not touching the sensor
-    # snapshot frame, not about the frame being frozen at 102.
+    # snapshot frame, not about the frame being frozen at its previous size.
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", protocol)
 
 

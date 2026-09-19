@@ -6,6 +6,7 @@ idf_component_register(
         "../../../../components/localization/localization.c"
         "../../../../components/object_format/object_format.c"
         "../../../../components/ui/ui_measurement_trace.c"
+        "test_app_nrf_topology.c"
 
     INCLUDE_DIRS
         "."
@@ -18,5 +19,6 @@ idf_component_register(
         "../../../../components/ui"
 
     PRIV_REQUIRES unity
+    REQUIRES nrf_topology_service
     WHOLE_ARCHIVE
 )

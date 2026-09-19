@@ -58,5 +58,5 @@ def test_existing_upstream_wire_lengths_remain_unchanged() -> None:
     assert "#define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U" in protocol
     # 112U as of MAX-114 (altitude/orientation fields appended); this guard
     # is about the CS scheduler work in *this* file not touching the
-    # sensor snapshot frame, not about the frame being frozen at 102.
+    # sensor snapshot frame, not about the frame being frozen at its previous size.
     assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 112U" in protocol
