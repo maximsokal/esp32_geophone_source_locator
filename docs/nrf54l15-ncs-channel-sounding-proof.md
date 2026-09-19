@@ -115,7 +115,7 @@ The proof/toolchain path does not change:
 
 - one-image runtime MAIN/REMOTE model;
 - 12-byte `SENSOR_REFRESH`;
-- 102-byte REMOTE snapshot;
+- 112-byte REMOTE snapshot;
 - ESP32 topology/sensor consumer;
 - BMI160/BME280/orientation logic;
 - geophone acquisition/TDOA;

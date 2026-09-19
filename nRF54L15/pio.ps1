@@ -73,6 +73,7 @@ if ($LASTEXITCODE -ne 0) {
 $mappedProject = "$drive\"
 $exitCode = 1
 $actionStatus = "SUCCESS"
+$preserveExitCode = $false
 
 try {
     Push-Location $mappedProject
@@ -131,20 +132,27 @@ try {
                 if ($softwareSuites.Count -eq 0) {
                     $actionStatus = "SKIPPED"
                     Write-Host "nRF54L15 TEST_RESULT: SKIPPED (no qualified software/native test/test_sw_* suite exists yet; physical/HIL suites are intentionally excluded from this action)." -ForegroundColor Yellow
+                } elseif (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+                    $actionStatus = "BLOCKED"
+                    $exitCode = 2
+                    $preserveExitCode = $true
+                    Write-Host "nRF54L15 TEST_RESULT: BLOCKED (the native PlatformIO runner requires gcc, but no gcc executable is available in PATH; install a host GCC toolchain or run the repository MSVC host manifest)." -ForegroundColor Yellow
                 } else {
                     # This automatic entry point is reserved for suites explicitly
                     # qualified as software/native. --without-uploading alone does
                     # not make an embedded PlatformIO suite hardware-free, so
                     # physical/HIL suites must use a separate explicit runner.
                     & $pio test `
-                        --environment seeed-xiao-nrf54l15 `
+                        --environment native `
                         --filter "test_sw_*" `
                         --without-uploading
                 }
             }
         }
 
-        $exitCode = $LASTEXITCODE
+        if (-not $preserveExitCode) {
+            $exitCode = $LASTEXITCODE
+        }
     }
     finally {
         Pop-Location
@@ -158,7 +166,11 @@ Write-Host ""
 
 if ($exitCode -ne 0) {
     Write-Host "========================================"
-    Write-Host " nRF54L15 FAILED: $exitCode"
+    if ($actionStatus -eq "BLOCKED") {
+        Write-Host " nRF54L15 BLOCKED: $exitCode"
+    } else {
+        Write-Host " nRF54L15 FAILED: $exitCode"
+    }
     Write-Host "========================================"
 
     exit $exitCode

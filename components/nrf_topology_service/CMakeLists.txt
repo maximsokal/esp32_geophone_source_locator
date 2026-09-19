@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "nrf_topology.c"
         "nrf_sensor_transport.c"
+        "nrf_topology_leveling_policy.c"
         "nrf_topology_service.c"
 
     INCLUDE_DIRS

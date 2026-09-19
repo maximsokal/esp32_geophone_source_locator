@@ -200,7 +200,7 @@ def test_existing_upstream_wire_contract_is_unchanged():
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
     # 112U as of MAX-114 (altitude/orientation fields appended); this guard
     # is about the CS pair-runtime work in *this* file not touching the
-    # sensor snapshot frame, not about the frame being frozen at 102.
+    # sensor snapshot frame, not about the frame being frozen at its previous size.
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", protocol)
 
 

@@ -24,6 +24,17 @@
             "detail": "Optional native Clang sanitizer pass; no ESP-IDF or hardware action."
         },
         {
+            "label": "Tests: Virtual Board Stress",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/run_virtual_board_stress.ps1"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Software-only virtual-board stress + scheduler-replay determinism check (no flash, no serial port, no physical I/O). Already included in 'Tests: Host C' and 'Tests: All'; this task is a fast standalone re-run of just those two suites."
+        },
+        {
             "label": "Tests: Python",
             "type": "shell",
             "command": "python",
@@ -148,6 +159,17 @@
             "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
             "problemMatcher": [],
             "detail": "Compatibility smoke only. This PlatformIO/Zephyr 4.2.1 artifact is not the production firmware and must not be flashed as the canonical image."
+        },
+        {
+            "label": "nRF54L15: PlatformIO native software tests",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/nRF54L15/pio.ps1", "-Action", "test"],
+            "options": {"cwd": "${workspaceFolder}"},
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Run only qualified test_sw_* native suites without uploading or touching a board; reports BLOCKED when the host GCC toolchain is unavailable."
         },
         {
             "label": "nRF54L15: MAX-45 Channel Sounding proof",

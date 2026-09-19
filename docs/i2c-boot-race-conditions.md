@@ -156,7 +156,7 @@ entirely." **MAX-42** (Done) already implements the orientation/leveling
 estimator on the nRF (`nRF54L15/src/nrf_orientation.c`), and **MAX-39**
 (Done) already fully consumes the REMOTE sensor snapshot on the ESP32 side
 inside `nrf_topology_service`. The actual, narrower gap — verified directly
-against `nRF54L15/include/nrf_upstream_protocol.h` — is that the 102-byte
+against `nRF54L15/include/nrf_upstream_protocol.h` — is that the 112-byte
 wire struct (`nrf_upstream_sensor_snapshot_t`) only carries raw
 `accel_mg`/`gyro_mdps`/temperature/pressure/humidity; MAX-42's *computed*
 ACCEPTED/OUTSIDE/etc. state never leaves the nRF. So despite two Done issues

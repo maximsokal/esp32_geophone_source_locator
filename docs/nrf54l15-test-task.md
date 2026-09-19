@@ -40,9 +40,10 @@ Build output lives under `%USERPROFILE%\.ncs-workspaces\esp32_geophone_source_lo
 
 The historical PlatformIO baseline remains commit-pinned to Seeed platform
 revision `1ec1287f8e4bc4067a6fd593991e36875aef989f`, PlatformIO Core 6.1.19 and
-Zephyr 4.2.1. It is now **compatibility smoke only**. `platformio.ini` remains a
-single environment, but neither it nor `pio.ps1 upload` defines the official
-production artifact.
+Zephyr 4.2.1. It is now **compatibility smoke only**. The board environment
+remains pinned, while a separate `[env:native]` is reserved for qualified
+`test_sw_*` software tests. Neither environment nor `pio.ps1 upload` defines the
+official production artifact.
 
 The MAX-45 additive Channel Sounding proof remains reproducible through:
 
@@ -82,7 +83,7 @@ Existing upstream wire compatibility is frozen:
 
 - discovery/assignment/status contract remains as documented;
 - `SENSOR_REFRESH` request = 12 bytes;
-- REMOTE extended snapshot = 102 bytes;
+- REMOTE extended snapshot = 112 bytes;
 - first 28 snapshot bytes remain legacy STATUS compatible;
 - nRF uptime and ESP32 receipt uptime are separate clock domains, not TDOA
   synchronization.
@@ -153,7 +154,7 @@ Required automated evidence:
 2. source and generated output remain isolated from ESP-IDF root build;
 3. no role-specific production images exist;
 4. upstream TWIS/private TWIM overlay stays intact;
-5. 12-byte/102-byte wire constants stay intact;
+5. 12-byte/112-byte wire constants stay intact;
 6. `Run All` and `--scope nrf` use NCS, not PlatformIO;
 7. PlatformIO is named compatibility-only everywhere it remains exposed.
 
@@ -162,10 +163,12 @@ Required automated evidence:
 Pure policy/state logic belongs in host/native tests. Existing `coverage-nrf`
 is part of the canonical nRF verification surface.
 
-An NCS-native embedded `test_sw_*` runner has not yet been reviewed. Therefore
-`Tests: All (no flash)` reports that embedded nRF test stage as `SKIPPED`
-rather than silently using PlatformIO. `pio test --without-uploading` only
-prevents upload; it does not prove a test is physically hardware-free.
+The executable `test_sw_upstream_protocol` PlatformIO native suite covers the
+dependency-free 112-byte codec and rejects the previous 102-byte length.
+Invoke it explicitly with `nRF54L15/pio.ps1 -Action test`; it never uploads.
+`Tests: All (no flash)` still reports its separate canonical NCS-native embedded
+test boundary as `SKIPPED`, because a reviewed NCS-native runner has not yet
+been approved. `pio test --without-uploading` only prevents upload; it does not prove a test is physically hardware-free.
 
 ### C. One-board HIL
 
@@ -198,6 +201,14 @@ With two or more XIAOs:
 Validate MAIN always-visible behavior, one-hot TCA remote selection, private
 remote sensor buses, upstream snapshots and complete orchestration without
 breaking seismic acquisition.
+
+After any REMOTE snapshot-size change, this HIL gate must be repeated with the
+current production image: verify the ESP32/TCA path clocks exactly 112 bytes,
+the 28-byte STATUS prefix remains valid, the full-frame CRC covers bytes 0..109,
+and the next transaction is clean after STOP. The current 112-byte gate is not
+considered physically verified in this checkout until those observations are
+recorded with the XIAO/TCA setup and, where applicable, the Channel Sounding
+peer set.
 
 ## 7. Evidence vocabulary
 

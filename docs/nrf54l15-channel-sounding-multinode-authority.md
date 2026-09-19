@@ -17,7 +17,7 @@ The legacy frames remain byte-for-byte unchanged:
 - ASSIGN: 24 bytes
 - STATUS: 28 bytes
 - SENSOR_REFRESH: 12 bytes
-- REMOTE snapshot: 102 bytes
+- REMOTE snapshot: 112 bytes
 
 MAX-97 adds separate CS messages under the existing protocol version and CRC discipline:
 

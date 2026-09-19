@@ -36,6 +36,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--coverage", action="store_true", help="enable compiler coverage instrumentation")
     parser.add_argument("--list", action="store_true", help="validate and list tests without compiling")
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="run only the named manifest test; repeat the option to select several tests",
+    )
     parser.add_argument("--keep-going", action="store_true", help="run remaining tests after a failure")
     return parser.parse_args()
 
@@ -266,6 +273,17 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     manifest_path = args.manifest if args.manifest.is_absolute() else repo_root / args.manifest
     tests = load_manifest(manifest_path.resolve(), repo_root)
+    if args.only:
+        available = {entry["name"] for entry in tests}
+        unknown = sorted(set(args.only) - available)
+        if unknown:
+            raise RunnerError(
+                "--only names are not present in the manifest: " + ", ".join(unknown)
+            )
+        selected = set(args.only)
+        tests = [entry for entry in tests if entry["name"] in selected]
+        if not tests:
+            raise RunnerError("--only selected no tests")
     if args.list:
         for entry in tests:
             print(f"{entry['name']}: {len(entry['sources'])} source files")
@@ -377,6 +395,7 @@ def main() -> int:
     failed = len(results) - passed
     report = {
         "manifest": str(manifest_path),
+        "only": args.only,
         "compiler": compiler,
         "compiler_description": description,
         "flags": common_flags,

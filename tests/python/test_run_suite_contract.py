@@ -74,3 +74,4 @@ def test_platformio_wrapper_remains_compatibility_only_and_no_upload_test_is_not
     assert "--without-uploading" in source
     assert "physical/HIL suites must use a separate explicit runner" in source
     assert "nRF54L15 TEST_RESULT: SKIPPED" in source
+    assert "nRF54L15 TEST_RESULT: BLOCKED" in source

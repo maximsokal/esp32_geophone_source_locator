@@ -23,9 +23,22 @@ $legacyBaseBuild = Join-Path $buildRoot "nrf54l15-base-v3.4.0"
 $legacyCsBuild = Join-Path $buildRoot "nrf54l15-cs-v3.4.0"
 
 function Require-Command([string]$Name, [string]$Hint) {
-    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-        throw "$Name not found. $Hint"
+    if (Get-Command $Name -ErrorAction SilentlyContinue) {
+        return
     }
+
+    if ($Name -eq "nrfutil") {
+        $knownUserPath = Join-Path $env:USERPROFILE ".nrfutil\bin\nrfutil.exe"
+        if (Test-Path -LiteralPath $knownUserPath -PathType Leaf) {
+            throw (
+                "nrfutil not found on PATH, but it is installed at '$knownUserPath'. " +
+                "Add it to PATH for this session, e.g.: " +
+                '$env:PATH = "' + (Join-Path $env:USERPROFILE ".nrfutil\bin") + ';" + $env:PATH'
+            )
+        }
+    }
+
+    throw "$Name not found. $Hint"
 }
 
 function Invoke-InPinnedToolchain {

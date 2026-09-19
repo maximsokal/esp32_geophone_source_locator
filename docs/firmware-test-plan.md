@@ -12,8 +12,9 @@ The authoritative distinction between host tests, source contracts, replay/parse
 - Web Console, XR and typecheck run independently from firmware host tests.
 - COM4 is the programming port. The passive UART adapter is a separate port, normally COM6; its TX/VCC pins are not connected to the target.
 - `nRF54L15/` is an independent PlatformIO + Zephyr project. It has one
-  production `seeed-xiao-nrf54l15` environment for every installed node and is
-  built through `nRF54L15/pio.ps1`, not through the ESP-IDF root build.
+  production `seeed-xiao-nrf54l15` environment for every installed node plus a
+  separate native environment for qualified software tests. It is built through
+  `nRF54L15/pio.ps1`, not through the ESP-IDF root build.
 - Installed nRF hardware is the plain XIAO nRF54L15, not the Sense variant.
   Remote geophone nodes use an external GY-BMI160 and BME280 on a private local
   I2C bus (`D11/P0.03` SCL, `D12/P0.04` SDA), powered from XIAO `3V3_OUT` and
@@ -38,6 +39,73 @@ Critical covered areas include APP_EVENT delivery, ADC service settling, runtime
 
 Run the deterministic Python suite or the explicit files used by CI. These checks lock source/configuration invariants such as startup ordering, responsive object-store usage and runtime-priority configuration. They prove architecture/configuration constraints only; they do not execute the target runtime.
 
+### 2a. Software-only virtual-board stress model
+
+`tools/run_virtual_board_stress.ps1` selects the `virtual_board_stress` native
+host case. The case executes the production-compatible `seismic_buffer` and
+recorder-cache code with a discrete virtual clock and a virtual board model.
+The model covers AD7606 conversion/BUSY/SPI3 at 1 MHz, shared SD/TFT SPI2 at
+20 MHz, Wi-Fi events, INA3221/TCA9548A I2C transactions, bounded queues, TFT
+redraws, recorder write-behind backpressure, deterministic SD jitter and a
+200 ms storage stall. Its JSON lines report produced/recorded/dropped frames,
+cache and queue high-water marks, protocol-model counters, deadline misses and
+SD p99 latency.
+
+The runner prints `VIRTUAL_BOARD_PHYSICAL_IO: NONE`, never opens a COM port,
+never flashes firmware and never powers a board. `tools/run_stress_tests.ps1`
+remains a compatibility alias for the same software-only suite.
+
+The suite includes healthy scenarios and an overloaded case. A healthy
+scenario requires no drops, cache overflow, queue overflow or deadline miss;
+the overloaded scenario must be classified as `SATURATED`. This is the
+primary bottleneck-detection loop and is deliberately safe to run repeatedly
+on the PC. It is not physical-board evidence: exact ESP32 cache/DMA behavior,
+SD media tails, signal integrity, power rails and TFT pixels remain separate
+target/HIL concerns.
+
+### 2b. Optional ESP32 target integration stress
+
+`tests/target/stress_app` is an isolated ESP-IDF 5.5.4 project and does not
+modify the production `main` application. It links the production seismic ring
+buffer and recorder cache and creates actual pinned FreeRTOS tasks on both
+cores. The producer runs synthetic rates above the current 50 Hz test generator;
+the recorder models SD service delay; UI, sensor and network tasks create
+contention; internal DMA heap and PSRAM allocations are exercised; task stack
+high-water marks, heap snapshots, ISR-dispatch ticks and a bounded event trace
+are printed; a deterministic 64-event reordered schedule is replayed and
+validated by seed/hash/inversion markers. The application runs 100..5000 Hz
+rate-sweep phases, with 5000 Hz expected as the saturation control point; it
+also binary-searches the first failed rate and runs an intentional 5000 Hz/
+slow-SD saturation control.
+
+Build evidence is target compilation only until the image is run on an ESP32-S3:
+
+```powershell
+powershell -File tools/run_idf.ps1 -Action build `
+  -ProjectPath tests/target/stress_app -BuildDir build-s3 -Target esp32s3 -Jobs 2
+```
+
+`tools/run_stress_hil.ps1` owns optional target stress replay/live execution. Its saved
+log mode performs no hardware operation. The intended two-USB topology is
+COM4 for programming and board power, with COM6 receive-only for UART logs;
+keep COM6 TX/VCC disconnected. The same USB cable is used first for COM4
+flashing from the PC, then physically unplugged from the PC and connected to the
+USB 18650 block. Its live mode can build, flash via COM4 and capture passive UART
+via COM6; `-WaitForPowerHandoff` makes the physical sequence explicit: flash first,
+move that same cable to the USB 18650 block, open the COM6 monitor, then
+press EN/RESET for the captured run. `-SkipBuild` reuses a previously verified
+target image while preserving the flash/log steps. Live `-RequirePhysical` also
+requires `-WaitForPowerHandoff`, preventing a COM4-powered run from being accepted
+as AD7606 evidence. Before synthetic stress, the image runs production-driver probes and
+prints `TARGET_STRESS_PHYSICAL` markers for repeated AD7606 conversion/payload,
+SD write-read, TFT draw, I2C INA/TCA access and Wi-Fi radio scan. The runner
+requires those probe markers, plus the explicit operator confirmations, when
+`-RequirePhysical` is used. TFT pixels and Wi-Fi association/API remain manual
+observations. It prints `STRESS_RUN_COMPLETE` when the target summary arrives and
+aborts repeated brownout resets as `BROWNOUT_ABORT`. `TARGET_STRESS_SUMMARY: PASS`
+is therefore not a claim that those
+peripherals are physically verified.
+
 ### 3. HIL replay/parser contracts
 
 Current CI executes replay/parser tests for:
@@ -57,6 +125,10 @@ Relevant tools:
 - `tools/run_storage_spi_hil.ps1` — passive COM6 storage/SPI/recorder latency capture; it never flashes firmware.
 - `tools/run_keypad_timing_hil.ps1` — opt-in ADC broker and timer-task timing profile.
 - `tools/run_pipeline_hil.ps1` — broader measurement-pipeline verification and explicitly separated physical observations.
+
+`tools/run_stress_hil.ps1` — target FreeRTOS/heap/ISR/rate-sweep stress run
+with separate physical attestations for AD7606/SPI3, shared SPI2/SD, TFT,
+Wi-Fi and I2C.
 
 ### 5. nRF54L15 test surface
 
@@ -84,8 +156,12 @@ tests explicitly qualified as software/native and hardware-free. PlatformIO's
 embedded suite will not need a physical serial/test port, so board-dependent
 nRF tests are excluded from the automatic `Tests: All (no flash)` path.
 
-The current empty `test_sw_*` surface is reported as `SKIPPED`, not as nRF
-unit/native evidence. Do not report an ESP32/WebUI-only result as nRF evidence.
+The current `test_sw_upstream_protocol` suite is executable in the separate
+native environment and is invoked explicitly with `nRF54L15/pio.ps1 -Action
+test`. If the host has no GCC toolchain, the wrapper reports `BLOCKED`; it does
+not silently claim a pass. The canonical NCS-native embedded boundary in
+`Run All` remains `SKIPPED` until such a runner is reviewed. Do not report an
+ESP32/WebUI-only result as nRF evidence.
 
 The planned nRF layers are:
 
@@ -161,8 +237,9 @@ Before merging firmware/test changes, the normal `main` verification must pass:
 5. production Web asset build/optimization checks;
 6. ESP-IDF 5.5.4 production firmware build;
 7. isolated nRF54L15 wrapper build and the qualified automatic nRF
-   software/native test launch; no current `test_sw_*` suite means explicit
-   `SKIPPED`, not false evidence.
+   software/native test launch; the canonical NCS-native boundary remains
+   explicit `SKIPPED`, while the separate PlatformIO native suite is invoked
+   only by its dedicated task.
 
 A fully green run means the checked software contracts for the executed stages
 pass. A current ESP32/WebUI-only result does **not** close the nRF task, and no

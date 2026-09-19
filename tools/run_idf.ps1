@@ -118,6 +118,11 @@ $env:IDF_PATH = $idfPath
 $env:IDF_TOOLS_PATH = "C:\Espressif"
 $env:IDF_PYTHON_ENV_PATH = "C:\Espressif\python_env\idf5.5_py3.11_env"
 $env:ESP_ROM_ELF_DIR = "C:\Espressif\tools\esp-rom-elfs\20241011"
+# idf_monitor can receive undecodable/replacement characters from a UART
+# stream.  Force the child Python process to write UTF-8 so a redirected
+# monitor log cannot crash under a cp1251 PowerShell console.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 $toolBins = @(
     "C:\Espressif\tools\xtensa-esp-elf\esp-14.2.0_20260121\xtensa-esp-elf\bin",

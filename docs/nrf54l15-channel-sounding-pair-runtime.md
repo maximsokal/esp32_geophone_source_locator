@@ -95,7 +95,7 @@ common application rather than a second production firmware variant.
 MAX-51 does not change:
 
 - the 12-byte `SENSOR_REFRESH` frame;
-- the 102-byte REMOTE sensor snapshot;
+- the 112-byte REMOTE sensor snapshot;
 - ESP32 topology/TCA behavior;
 - BMI160/BME280 sampling;
 - geophone acquisition or TDOA;

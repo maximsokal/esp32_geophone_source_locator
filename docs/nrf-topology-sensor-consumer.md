@@ -28,7 +28,7 @@ For a topology-confirmed REMOTE channel the pure transport controller performs:
 2. optional MAIN 0x31 identity/epoch validation when MAIN is assigned;
 3. REMOTE 0x32 identity/epoch validation;
 4. one 12-byte `SENSOR_REFRESH` write with a separate non-zero ESP32 request ID;
-5. bounded polling of the canonical 102-byte REMOTE frame;
+5. bounded polling of the canonical 112-byte REMOTE frame;
 6. acceptance only of the expected request ID with a final result;
 7. ESP32 local receipt timestamp capture;
 8. verified TCA close on every selected-channel exit path.
@@ -76,4 +76,4 @@ NACK/protocol errors, abort, and close-fault dominance. Static contracts check
 single-task/single-owner scheduling and canonical codec use.
 
 Exact Windows ESP-IDF target-build evidence and real XIAO/TCA early-STOP/full
-102-byte behavior remain separate validation gates.
+112-byte behavior remain separate validation gates.

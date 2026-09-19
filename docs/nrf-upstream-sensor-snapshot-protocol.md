@@ -24,7 +24,7 @@ The pinned Zephyr 4.2.1 nrfx TWIS buffer is configured explicitly:
 CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128
 ```
 
-The reviewed full REMOTE frame is 102 bytes. i2c22 remains the only upstream
+The reviewed full REMOTE frame is 112 bytes. i2c22 remains the only upstream
 TWIS instance; i2c30 remains the private TWIM/controller.
 
 ## SENSOR_REFRESH request
@@ -47,7 +47,7 @@ request context.
 
 ## Backward-compatible REMOTE read
 
-A REMOTE read publishes a 102-byte frame. The first 28 bytes are exactly the
+A REMOTE read publishes a 112-byte frame. The first 28 bytes are exactly the
 existing STATUS frame, including the existing STATUS CRC at bytes 26..27.
 Existing topology code can therefore continue to clock only 28 bytes and use
 the unchanged STATUS decoder.
@@ -61,7 +61,7 @@ MAIN and UNASSIGNED nodes continue to publish only the 28-byte STATUS frame.
 | 28 | 2 | extension magic `53 4E` (`SN`) |
 | 30 | 1 | extension version `1` |
 | 31 | 1 | extension type `1` (sensor snapshot) |
-| 32 | 2 | full frame length `102`, LE |
+| 32 | 2 | full frame length `112`, LE |
 | 34 | 4 | sensor request ID, LE; `0` means assignment-triggered initial sample |
 | 38 | 4 | snapshot sequence, LE |
 | 42 | 4 | valid mask, LE |
@@ -75,7 +75,11 @@ MAIN and UNASSIGNED nodes continue to publish only the 28-byte STATUS frame.
 | 88 | 4 | environmental temperature, signed i32 milli-C, LE |
 | 92 | 4 | pressure, u32 Pa, LE |
 | 96 | 4 | humidity, u32 milli-percent, LE |
-| 100 | 2 | CRC-16/CCITT-FALSE over bytes 0..99, LE |
+| 100 | 4 | altitude, signed i32 mm, LE |
+| 104 | 1 | orientation state, wire value 0..3 |
+| 105 | 1 | orientation blink class, wire value 0..3 |
+| 106 | 4 | tilt sin², u32 parts per million, LE |
+| 110 | 2 | CRC-16/CCITT-FALSE over bytes 0..109, LE |
 
 The full CRC includes the nested STATUS prefix so the sensor payload is bound
 to the identity/role/node/channel/status context returned in the same read.
@@ -129,7 +133,7 @@ transport is treated as physically validated, the real XIAO/TCA harness must
 show that:
 
 1. ESP32 can clock only the 28-byte STATUS prefix from a REMOTE that prepared a
-   102-byte TX buffer, issue STOP, and perform another clean transaction;
-2. a complete 102-byte read passes both nested STATUS CRC and full-frame CRC;
+   112-byte TX buffer, issue STOP, and perform another clean transaction;
+2. a complete 112-byte read passes both nested STATUS CRC and full-frame CRC;
 3. real GY-BMI160/BME280 initialization/read timing works on D11/D12;
 4. a MAIN board with no remote sensor assembly performs no private sensor I/O.

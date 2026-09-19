@@ -26,11 +26,11 @@ REMOTE_RUNTIME_ZEPHYR = (
 VERIFIED_SEEED_PLATFORM = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
-def test_platformio_compatibility_environment_remains_commit_pinned_and_single():
+def test_platformio_compatibility_and_native_test_environments_are_explicit():
     source = PLATFORMIO.read_text(encoding="utf-8")
 
     environments = re.findall(r"(?m)^\[env:([^\]]+)\]$", source)
-    assert environments == ["seeed-xiao-nrf54l15"]
+    assert environments == ["seeed-xiao-nrf54l15", "native"]
     assert (
         "platform = https://github.com/Seeed-Studio/platform-seeedboards.git#"
         + VERIFIED_SEEED_PLATFORM
@@ -38,6 +38,8 @@ def test_platformio_compatibility_environment_remains_commit_pinned_and_single()
     assert "framework = zephyr" in source
     assert "board = seeed-xiao-nrf54l15" in source
     assert "sense" not in source.lower()
+    assert "[env:native]" in source
+    assert "test_framework = unity" in source
 
     wrapper = NCS.read_text(encoding="utf-8")
     assert '$NcsVersion = "v3.4.0"' in wrapper

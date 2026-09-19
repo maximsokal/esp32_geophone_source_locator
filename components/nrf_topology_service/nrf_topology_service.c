@@ -1133,37 +1133,48 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
 esp_err_t nrf_topology_service_get_leveling_summary(
     nrf_topology_leveling_summary_t *summary)
 {
-    if (summary == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    size_t assigned = 0U;
-    size_t accepted = 0U;
-
     portENTER_CRITICAL(&s_state_lock);
     const bool topology_valid = s_snapshot_valid;
     const bool sensor_valid = s_sensor_cache_valid;
+    const esp_err_t result = nrf_topology_leveling_summary_compute(
+        topology_valid,
+        &s_snapshot,
+        sensor_valid,
+        s_sensor_cache,
+        summary);
+    portEXIT_CRITICAL(&s_state_lock);
+    return result;
+}
+
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+esp_err_t nrf_topology_service_test_publish_state(
+    bool topology_valid,
+    const nrf_topology_snapshot_t *topology,
+    bool sensor_cache_valid,
+    const nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT])
+{
+    if ((topology_valid && topology == NULL) ||
+        (sensor_cache_valid && cache == NULL)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_snapshot_valid = topology_valid;
+    s_sensor_cache_valid = sensor_cache_valid;
     if (topology_valid) {
-        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-            if (s_snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
-                continue;
-            }
-            ++assigned;
-            if (sensor_valid &&
-                s_sensor_cache[channel].response_valid &&
-                s_sensor_cache[channel].topology_current &&
-                s_sensor_cache[channel].sensor.orientation_state ==
-                    NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED) {
-                ++accepted;
-            }
-        }
+        s_snapshot = *topology;
+    } else {
+        memset(&s_snapshot, 0, sizeof(s_snapshot));
+    }
+    if (sensor_cache_valid) {
+        memcpy(s_sensor_cache, cache, sizeof(s_sensor_cache));
+    } else {
+        memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     }
     portEXIT_CRITICAL(&s_state_lock);
-
-    summary->assigned_count = assigned;
-    summary->accepted_count = accepted;
-    return topology_valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return ESP_OK;
 }
+#endif
 
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
 {

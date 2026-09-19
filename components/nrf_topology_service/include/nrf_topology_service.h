@@ -7,6 +7,7 @@
 #include "esp_err.h"
 #include "nrf_cs_scheduler.h"
 #include "nrf_sensor_cache.h"
+#include "nrf_topology_leveling_policy.h"
 #include "nrf_topology.h"
 
 typedef struct {
@@ -27,11 +28,6 @@ typedef struct {
  * and reports NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED — a stale or
  * not-yet-refreshed cache entry does not count.
  */
-typedef struct {
-    size_t assigned_count;
-    size_t accepted_count;
-} nrf_topology_leveling_summary_t;
-
 esp_err_t nrf_topology_service_start(void);
 void nrf_topology_service_stop(void);
 esp_err_t nrf_topology_service_request_refresh(void);
@@ -42,3 +38,12 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_s
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary);
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy);
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot);
+
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+/* Test-only state injection; never enabled by production builds. */
+esp_err_t nrf_topology_service_test_publish_state(
+    bool topology_valid,
+    const nrf_topology_snapshot_t *topology,
+    bool sensor_cache_valid,
+    const nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT]);
+#endif

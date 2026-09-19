@@ -20,6 +20,7 @@ def test_vscode_tasks_cover_local_web_esp_and_canonical_nrf_surfaces_without_hid
         "nRF54L15: Flash firmware",
         "nRF54L15: Monitor logs",
         "nRF54L15: PlatformIO compatibility build",
+        "nRF54L15: PlatformIO native software tests",
         "nRF54L15: MAX-45 Channel Sounding proof",
         "Tests: All (no flash)",
         "Build: ESP Unity",
@@ -70,6 +71,14 @@ def test_vscode_tasks_cover_local_web_esp_and_canonical_nrf_surfaces_without_hid
     )
     assert "pio.ps1" in json.dumps(compatibility["args"])
     assert "not the production firmware" in compatibility["detail"].lower()
+
+    native_tests = next(
+        task for task in tasks if task["label"] == "nRF54L15: PlatformIO native software tests"
+    )
+    assert native_tests["command"] == "powershell"
+    assert any(str(arg).replace("\\", "/").endswith("nRF54L15/pio.ps1") for arg in native_tests["args"])
+    assert native_tests["args"][native_tests["args"].index("-Action") + 1] == "test"
+    assert "without uploading" in native_tests["detail"].lower()
 
     web_tests = next(task for task in tasks if task["label"] == "Tests: Web")
     assert web_tests["command"] == "powershell"

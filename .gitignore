@@ -7,6 +7,7 @@ tests/.venv-tests/
 build/host-tests/
 .tools/
 tests/target/test_app/build-s3/
+tests/target/stress_app/build-s3/
 managed_components/
 sdkconfig
 sdkconfig.old

@@ -85,6 +85,15 @@ The third stage currently reports `SKIPPED`: there is no reviewed NCS-native
 PlatformIO `--without-uploading` run is not silently substituted, because
 `--without-uploading` alone does not prove a test is hardware-free.
 
+The separately qualified dependency-free native codec suite can be invoked with:
+
+```powershell
+.\nRF54L15\pio.ps1 test
+```
+
+This is compatibility/software evidence, not the canonical NCS embedded-test
+stage; it reports `BLOCKED` rather than `SKIPPED` when host `gcc` is missing.
+
 `python tools/run_local_verify.py --scope all --jobs 2` and VS Code
 `Tests: All (no flash)` use the same NCS production build. They never flash nRF
 hardware.
@@ -113,7 +122,8 @@ VS Code exposes the same authority:
 - `Build: nRF54L15 production (NCS)`;
 - `Tests: nRF54L15`;
 - `nRF54L15: Flash firmware`;
-- `nRF54L15: Monitor logs`.
+- `nRF54L15: Monitor logs`;
+- `nRF54L15: PlatformIO native software tests`.
 
 ## PlatformIO compatibility boundary
 
@@ -147,7 +157,7 @@ The common firmware and wire contracts remain:
 
 - one runtime MAIN/REMOTE image;
 - 12-byte `SENSOR_REFRESH`;
-- 102-byte REMOTE sensor snapshot;
+- 112-byte REMOTE sensor snapshot;
 - no geophone TDOA/cross-node clock assumptions from nRF uptime fields.
 
 A successful build proves none of the physical wiring, sensor behavior or radio

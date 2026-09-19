@@ -12,7 +12,7 @@ repository state and this matrix are authoritative for acceptance decisions.
 | **PYTHON SOURCE/ARCHITECTURE CONTRACT** | `tests/python` source/config/layout checks | Required architecture/toolchain/configuration remains present and forbidden regressions are absent | Runtime or physical behavior |
 | **NRF BUILD** | `nRF54L15/ncs.ps1 build` with pinned NCS v3.4.0 | The canonical common XIAO application configures/links with the authoritative production SDK/board target | Boot, USB, sensors, upstream I2C, radio behavior or Channel Sounding accuracy |
 | **NRF PLATFORMIO COMPATIBILITY** | Explicit `nRF54L15: PlatformIO compatibility build` / `pio.ps1 build` | Sources still compile against the historical Seeed/Zephyr 4.2.1 compatibility stack | Production artifact validity or SoftDevice Channel Sounding support |
-| **NRF NATIVE/UNIT** | Host `coverage-nrf` today; later reviewed NCS-native `test_sw_*` runner | Deterministic nRF policy/state contracts actually exercised | Physical target/radio/sensor behavior |
+| **NRF NATIVE/UNIT** | Host `coverage-nrf` plus explicit PlatformIO native `test_sw_*` suites; later reviewed NCS-native runner | Deterministic nRF policy/state contracts actually exercised | Physical target/radio/sensor behavior |
 | **HIL REPLAY/PARSER** | Saved/synthetic logs through HIL parsers | Parser and threshold/error-classification logic | Current board behavior |
 | **LIVE BOARD HIL** | Runner observes telemetry from connected target | Only named machine-observable properties gated by that run | Uninstrumented behavior or unrelated hardware claims |
 | **NRF SINGLE-BOARD HIL** | Physical plain XIAO; remote profile adds BMI160/BME280/LEDs | Named boot/I2C/sensor/orientation/GPIO checks | Multi-node ranging or full TCA topology |
@@ -32,7 +32,10 @@ python tools/run_local_verify.py --scope nrf
 
 It runs `coverage-nrf`, the NCS v3.4.0 production build, then an explicit
 NCS-native embedded-test boundary. That final embedded stage currently reports
-`SKIPPED` because no reviewed NCS-native `test_sw_*` runner exists.
+`SKIPPED` because no reviewed NCS-native runner exists. The separate
+`nRF54L15/pio.ps1 -Action test` entry point now has a qualified native
+`test_sw_upstream_protocol` suite; it is compatibility/software evidence only
+and reports `BLOCKED` when the host GCC toolchain is unavailable.
 
 `Tests: All (no flash)` / `tools/run_suite.ps1 -Suite All` uses the same NCS
 production build. It never substitutes `pio.ps1` as the production builder and
@@ -84,7 +87,7 @@ RJ45 pin 2 +3.3 V is RESERVED/NC.
 Wire compatibility stays:
 
 - 12-byte `SENSOR_REFRESH`;
-- 102-byte REMOTE snapshot;
+- 112-byte REMOTE snapshot;
 - first 28 bytes compatible with legacy STATUS.
 
 Successful target linkage does not prove any of this wiring physically.
@@ -100,6 +103,12 @@ Existing ESP32-side explicit HIL tools remain separate, including:
 
 Future nRF one-board/multi-node runners must preserve the same evidence
 separation.
+
+The REMOTE snapshot HIL gate is currently rebased to 112 bytes. Any physical
+re-run must capture the exact read length, legacy 28-byte prefix result, full
+CRC result, clean post-STOP transaction, TCA one-hot state and (for the CS
+profile) the node/role/quality observations. No build or host/native pass may
+be promoted to that physical evidence.
 
 ## Recording live evidence
 
