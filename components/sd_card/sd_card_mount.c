@@ -162,6 +162,15 @@ esp_err_t sd_card_mount(void)
         return err;
     }
 
+    if (card == NULL) {
+        ESP_LOGE(
+            TAG,
+            "SD mount API returned ESP_OK without a card handle"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
     sd_card_internal_set_card(
         card
     );

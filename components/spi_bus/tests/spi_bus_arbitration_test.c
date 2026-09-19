@@ -17,6 +17,9 @@ static esp_err_t gpio_set_result;
 static esp_err_t spi_init_result;
 static gpio_num_t last_gpio_pin;
 static uint32_t last_gpio_level;
+static gpio_config_t last_gpio_config;
+static gpio_num_t gpio_set_history[4];
+static uint32_t gpio_level_history[4];
 static spi_bus_config_t last_bus_config;
 static int last_dma_channel;
 static unsigned quiesce_calls;
@@ -29,6 +32,7 @@ esp_err_t gpio_config(const gpio_config_t *config)
 {
     assert(config != NULL);
     ++gpio_config_calls;
+    last_gpio_config = *config;
     return gpio_config_result;
 }
 
@@ -37,6 +41,10 @@ esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
     ++gpio_set_calls;
     last_gpio_pin = pin;
     last_gpio_level = level;
+    if (gpio_set_calls <= 4U) {
+        gpio_set_history[gpio_set_calls - 1U] = pin;
+        gpio_level_history[gpio_set_calls - 1U] = level;
+    }
     return gpio_set_result;
 }
 
@@ -102,6 +110,11 @@ static void reset_counters(void)
     quiesce_result = ESP_OK;
     last_gpio_pin = -1;
     last_gpio_level = 0U;
+    last_gpio_config = (gpio_config_t){0};
+    for (size_t i = 0U; i < 4U; ++i) {
+        gpio_set_history[i] = -1;
+        gpio_level_history[i] = 0U;
+    }
     last_dma_channel = 0;
 }
 
@@ -111,6 +124,16 @@ static void test_init_sets_safe_levels_and_bus_config(void)
     assert(app_spi_bus_init() == ESP_OK);
     assert(gpio_config_calls == 1U);
     assert(gpio_set_calls == 2U);
+    assert(
+        last_gpio_config.pin_bit_mask ==
+        ((1ULL << GPIO_NUM_14) | (1ULL << GPIO_NUM_17))
+    );
+    assert(last_gpio_config.mode == GPIO_MODE_INPUT_OUTPUT);
+    assert((last_gpio_config.mode & GPIO_MODE_DEF_INPUT) != 0);
+    assert(gpio_set_history[0] == GPIO_NUM_14);
+    assert(gpio_level_history[0] == 1U);
+    assert(gpio_set_history[1] == GPIO_NUM_17);
+    assert(gpio_level_history[1] == 1U);
     assert(last_gpio_pin == GPIO_NUM_17);
     assert(last_gpio_level == 1U);
     assert(spi_init_calls == 1U);

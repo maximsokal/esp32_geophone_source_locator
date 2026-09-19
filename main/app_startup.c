@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ad7606_driver.h"
 #include "adc_service.h"
 #include "app_events.h"
 #include "device_status.h"
@@ -206,6 +207,26 @@ static void app_startup_initialize_core(void)
     ESP_ERROR_CHECK(
         seismic_acquisition_init()
     );
+
+    /*
+     * The AD7606 is physically powered (AVCC/VIO) from board power-on,
+     * independent of when/whether its driver is fully brought up. Without
+     * this, RESET and CONVST are left floating from boot until the user
+     * opens Measurements or issues a Web start, which can be minutes or
+     * never. This only configures GPIO idle levels (CS high, RESET/CONVST
+     * low, BUSY input); it does not touch SPI3, reset-pulse, or self-test,
+     * so it is safe even when no AD7606 is physically connected.
+     */
+    const esp_err_t ad7606_safe_gpio_err =
+        ad7606_driver_safe_gpio_init();
+
+    if (ad7606_safe_gpio_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "AD7606 safe GPIO init failed: %s",
+            esp_err_to_name(ad7606_safe_gpio_err)
+        );
+    }
 
     ESP_ERROR_CHECK(
         adc_service_init()
@@ -418,10 +439,13 @@ static void app_startup_initialize_services(
     );
 
     /*
-     * The AD7606 no longer auto-starts sampling at boot. Its driver was
-     * already brought up by seismic_acquisition_init() in
-     * app_startup_initialize_core(); active acquisition now starts only when
-     * the local UI opens the Measurements screen (ui_screen_registry.c) or a
+     * The AD7606 no longer auto-starts sampling at boot. Only its GPIOs
+     * were put into a safe idle state by ad7606_driver_safe_gpio_init() in
+     * app_startup_initialize_core() (see that call site); SPI3, the
+     * hardware reset pulse and self-test have not run yet. Active
+     * acquisition (which performs all of that via ad7606_driver_init())
+     * now starts only when the local UI opens the Measurements screen
+     * (ui_screen_registry.c) or a
      * Web client explicitly requests it (web_api_control.c), so the ADC is
      * not running with nobody consuming its samples. That start call is
      * idempotent, so both triggers may fire in either order.

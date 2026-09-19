@@ -95,8 +95,15 @@ static esp_err_t app_spi_bus_prepare_device_idle_levels(void)
             (1ULL << BOARD_TFT_CS_GPIO) |
             (1ULL << BOARD_SD_CS_GPIO),
 
+        /*
+         * INPUT_OUTPUT, not plain OUTPUT: gpio_config() disables the input
+         * path for output-only pins, so gpio_get_level() on them always
+         * returns 0 regardless of the driven level. The SD mount-failure
+         * diagnostic reads these CS lines back, and with OUTPUT it reported
+         * a permanent false "TFT_CS=0" that looked like bus contention.
+         */
         .mode =
-            GPIO_MODE_OUTPUT,
+            GPIO_MODE_INPUT_OUTPUT,
 
         .pull_up_en =
             GPIO_PULLUP_DISABLE,

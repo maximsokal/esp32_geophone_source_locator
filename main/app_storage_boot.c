@@ -12,9 +12,70 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 
 static const char *TAG =
     "APP";
+
+
+/*
+ * Tolerates a card that needs a moment longer than the first probe allows.
+ * This is insurance against a slow/transient power-up only: a card that is
+ * absent, unpowered or miswired fails all attempts identically, so repeated
+ * failures here mean the fault is physical, not a boot-timing race.
+ */
+#define APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS   3
+#define APP_STORAGE_BOOT_SD_MOUNT_RETRY_MS   150
+
+
+static esp_err_t app_storage_boot_mount_sd_with_retry(void)
+{
+    esp_err_t err =
+        ESP_FAIL;
+
+    for (
+        int attempt = 1;
+        attempt <= APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS;
+        ++attempt
+    ) {
+        err =
+            sd_card_mount();
+
+        if (err == ESP_OK) {
+            if (attempt > 1) {
+                ESP_LOGW(
+                    TAG,
+                    "SD mount succeeded on attempt %d/%d",
+                    attempt,
+                    APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS
+                );
+            }
+
+            return ESP_OK;
+        }
+
+        if (attempt < APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS) {
+            ESP_LOGW(
+                TAG,
+                "SD mount attempt %d/%d failed (%s); retrying after %d ms settle delay",
+                attempt,
+                APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS,
+                esp_err_to_name(err),
+                APP_STORAGE_BOOT_SD_MOUNT_RETRY_MS
+            );
+
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    APP_STORAGE_BOOT_SD_MOUNT_RETRY_MS
+                )
+            );
+        }
+    }
+
+    return err;
+}
 
 
 static void app_storage_boot_failure(
@@ -100,7 +161,7 @@ void app_storage_boot_run_diagnostic(void)
     );
 
     esp_err_t err =
-        sd_card_mount();
+        app_storage_boot_mount_sd_with_retry();
 
     if (err != ESP_OK) {
         app_storage_boot_failure(
