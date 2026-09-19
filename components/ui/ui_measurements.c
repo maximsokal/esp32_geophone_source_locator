@@ -286,7 +286,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     /* LVGL's default line-chart indicator is a filled bullet per point. */
     lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
     lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
-    lv_obj_remove_flag(chart, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(chart, false);
 
     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(chart, UI_MEASUREMENT_TRACE_POINTS);
@@ -344,7 +344,7 @@ static lv_obj_t *ui_measurements_create_graph_container_locked(
     lv_obj_set_style_border_width(container, 0, 0);
     lv_obj_set_style_pad_all(container, 0, 0);
     lv_obj_set_style_radius(container, 0, 0);
-    lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(container, false);
     return container;
 }
 
