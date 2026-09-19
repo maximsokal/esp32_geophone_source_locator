@@ -15,7 +15,9 @@
 
 static esp_err_t s_gpio_config_result;
 static esp_err_t s_gpio_set_result;
+static unsigned s_gpio_set_fail_on_call;
 static esp_err_t s_mount_result;
+static bool s_mount_without_card;
 static esp_err_t s_unmount_result;
 static esp_err_t s_info_result;
 static gpio_config_t s_gpio_config;
@@ -36,12 +38,22 @@ static sdmmc_card_t *s_last_unmount_card;
 static unsigned s_timeout_hint_logs;
 static unsigned s_low_frequency_logs;
 
+#define FAKE_GPIO_COUNT 64
+#define FAKE_GPIO_SET_HISTORY_CAPACITY 8
+static bool s_gpio_input_enabled[FAKE_GPIO_COUNT];
+static int s_gpio_level[FAKE_GPIO_COUNT];
+static gpio_num_t s_set_gpio_history[FAKE_GPIO_SET_HISTORY_CAPACITY];
+static int s_set_level_history[FAKE_GPIO_SET_HISTORY_CAPACITY];
+static char s_last_levels_log[192];
+
 
 static void reset_fakes(void)
 {
     s_gpio_config_result = ESP_OK;
     s_gpio_set_result = ESP_OK;
+    s_gpio_set_fail_on_call = 0U;
     s_mount_result = ESP_OK;
+    s_mount_without_card = false;
     s_unmount_result = ESP_OK;
     s_info_result = ESP_OK;
     memset(&s_gpio_config, 0, sizeof(s_gpio_config));
@@ -62,6 +74,13 @@ static void reset_fakes(void)
     s_last_unmount_card = NULL;
     s_timeout_hint_logs = 0U;
     s_low_frequency_logs = 0U;
+    memset(s_gpio_input_enabled, 0, sizeof(s_gpio_input_enabled));
+    memset(s_gpio_level, 0, sizeof(s_gpio_level));
+    for (size_t i = 0; i < FAKE_GPIO_SET_HISTORY_CAPACITY; ++i) {
+        s_set_gpio_history[i] = -1;
+        s_set_level_history[i] = -1;
+    }
+    memset(s_last_levels_log, 0, sizeof(s_last_levels_log));
     sd_card_internal_set_card(NULL);
 }
 
@@ -91,6 +110,9 @@ void fake_esp_log(const char *tag, const char *format, ...)
 
     va_list args;
     va_start(args, format);
+    if (strstr(format, "SPI2 levels") != NULL) {
+        vsnprintf(s_last_levels_log, sizeof(s_last_levels_log), format, args);
+    }
     va_end(args);
 }
 
@@ -100,6 +122,15 @@ esp_err_t gpio_config(const gpio_config_t *config)
     s_gpio_config_calls++;
     if (config != NULL) {
         s_gpio_config = *config;
+
+        if (s_gpio_config_result == ESP_OK) {
+            for (int pin = 0; pin < FAKE_GPIO_COUNT; ++pin) {
+                if ((config->pin_bit_mask & (1ULL << pin)) != 0ULL) {
+                    s_gpio_input_enabled[pin] =
+                        (config->mode & GPIO_MODE_DEF_INPUT) != 0;
+                }
+            }
+        }
     }
     return s_gpio_config_result;
 }
@@ -110,14 +141,35 @@ esp_err_t gpio_set_level(gpio_num_t gpio_num, int level)
     s_gpio_set_calls++;
     s_set_gpio = gpio_num;
     s_set_level = level;
-    return s_gpio_set_result;
+    if (s_gpio_set_calls <= FAKE_GPIO_SET_HISTORY_CAPACITY) {
+        const size_t index = s_gpio_set_calls - 1U;
+        s_set_gpio_history[index] = gpio_num;
+        s_set_level_history[index] = level;
+    }
+    const bool fail_this_call =
+        s_gpio_set_fail_on_call != 0U &&
+        s_gpio_set_calls == s_gpio_set_fail_on_call;
+    if (s_gpio_set_result == ESP_OK &&
+        !fail_this_call &&
+        gpio_num >= 0 && gpio_num < FAKE_GPIO_COUNT) {
+        s_gpio_level[gpio_num] = level;
+    }
+    return fail_this_call ? ESP_FAIL : s_gpio_set_result;
 }
 
 
+/*
+ * Models ESP-IDF: gpio_config() disables the input path for modes without
+ * GPIO_MODE_DEF_INPUT, so such a pin always reads back 0 no matter what level
+ * is driven. The previous fake returned a constant 1, which is why no host
+ * test could catch a diagnostic reading an output-only pin.
+ */
 int gpio_get_level(gpio_num_t gpio_num)
 {
-    (void)gpio_num;
-    return 1;
+    if (gpio_num < 0 || gpio_num >= FAKE_GPIO_COUNT) {
+        return 0;
+    }
+    return s_gpio_input_enabled[gpio_num] ? s_gpio_level[gpio_num] : 0;
 }
 
 
@@ -141,7 +193,7 @@ esp_err_t esp_vfs_fat_sdspi_mount(
     s_slot = *slot_config;
     s_mount_config = *mount_config;
 
-    if (s_mount_result == ESP_OK) {
+    if (s_mount_result == ESP_OK && !s_mount_without_card) {
         *out_card = &s_card;
     }
     return s_mount_result;
@@ -183,17 +235,19 @@ static void test_success_and_repeated_mount_are_idempotent(void)
     assert(sd_card_mount() == ESP_OK);
     assert(sd_card_internal_card() == &s_card);
     assert(s_gpio_config_calls == 1U);
-    assert(s_gpio_set_calls == 1U);
+    assert(s_gpio_set_calls == 2U);
     assert(s_mount_calls == 1U);
     assert(s_print_calls == 1U);
 
-    assert(s_gpio_config.pin_bit_mask == (1ULL << BOARD_TFT_CS_GPIO));
-    assert(s_gpio_config.mode == GPIO_MODE_OUTPUT);
+    assert(s_gpio_config.pin_bit_mask ==
+           ((1ULL << BOARD_TFT_CS_GPIO) | (1ULL << BOARD_SD_CS_GPIO)));
+    assert(s_gpio_config.mode == GPIO_MODE_INPUT_OUTPUT);
+    assert((s_gpio_config.mode & GPIO_MODE_DEF_INPUT) != 0);
     assert(s_gpio_config.pull_up_en == GPIO_PULLUP_DISABLE);
     assert(s_gpio_config.pull_down_en == GPIO_PULLDOWN_DISABLE);
     assert(s_gpio_config.intr_type == GPIO_INTR_DISABLE);
-    assert(s_set_gpio == BOARD_TFT_CS_GPIO);
-    assert(s_set_level == 1);
+    assert(gpio_get_level(BOARD_TFT_CS_GPIO) == 1);
+    assert(gpio_get_level(BOARD_SD_CS_GPIO) == 1);
 
     assert(strcmp(s_mount_point, "/sdcard") == 0);
     assert(s_host.slot == BOARD_SPI_HOST);
@@ -207,7 +261,7 @@ static void test_success_and_repeated_mount_are_idempotent(void)
 
     assert(sd_card_mount() == ESP_OK);
     assert(s_gpio_config_calls == 1U);
-    assert(s_gpio_set_calls == 1U);
+    assert(s_gpio_set_calls == 2U);
     assert(s_mount_calls == 1U);
     assert(s_print_calls == 1U);
 }
@@ -262,6 +316,31 @@ static void test_generic_mount_failure_does_not_publish_card(void)
     assert(s_mount_calls == 1U);
     assert(s_print_calls == 0U);
     assert(s_timeout_hint_logs == 0U);
+}
+
+
+static void test_sd_cs_set_failure_stops_before_mount(void)
+{
+    reset_fakes();
+    s_gpio_set_fail_on_call = 2U;
+
+    assert(sd_card_mount() == ESP_FAIL);
+    assert(sd_card_internal_card() == NULL);
+    assert(s_gpio_config_calls == 1U);
+    assert(s_gpio_set_calls == 2U);
+    assert(s_mount_calls == 0U);
+}
+
+
+static void test_success_without_card_handle_is_rejected(void)
+{
+    reset_fakes();
+    s_mount_without_card = true;
+
+    assert(sd_card_mount() == ESP_ERR_INVALID_STATE);
+    assert(sd_card_internal_card() == NULL);
+    assert(s_mount_calls == 1U);
+    assert(s_print_calls == 0U);
 }
 
 
@@ -328,13 +407,41 @@ static void test_mount_after_consuming_unmount_attempt_uses_fresh_mount_path(voi
 }
 
 
+/*
+ * Regression: the mount-failure diagnostic reported a permanent "TFT_CS=0"
+ * on real hardware because the pin was configured output-only and therefore
+ * unreadable. That false reading looked like SPI bus contention and sent
+ * several rounds of hardware debugging down the wrong path.
+ */
+static void test_mount_failure_diagnostic_reports_true_cs_level(void)
+{
+    reset_fakes();
+    s_mount_result = ESP_ERR_TIMEOUT;
+
+    assert(sd_card_mount() == ESP_ERR_TIMEOUT);
+
+    assert(s_set_gpio_history[0] == BOARD_TFT_CS_GPIO);
+    assert(s_set_level_history[0] == 1);
+    assert(s_set_gpio_history[1] == BOARD_SD_CS_GPIO);
+    assert(s_set_level_history[1] == 1);
+    assert(gpio_get_level(BOARD_TFT_CS_GPIO) == 1);
+    assert(gpio_get_level(BOARD_SD_CS_GPIO) == 1);
+    assert(strstr(s_last_levels_log, "TFT_CS=1") != NULL);
+    assert(strstr(s_last_levels_log, "SD_CS=1") != NULL);
+    assert(strstr(s_last_levels_log, "TFT_CS=0") == NULL);
+}
+
+
 int main(void)
 {
+    test_mount_failure_diagnostic_reports_true_cs_level();
     test_success_and_repeated_mount_are_idempotent();
     test_gpio_config_failure_stops_before_mount();
     test_gpio_set_failure_stops_before_mount();
+    test_sd_cs_set_failure_stops_before_mount();
     test_timeout_does_not_publish_card_and_emits_hint();
     test_generic_mount_failure_does_not_publish_card();
+    test_success_without_card_handle_is_rejected();
     test_low_negotiated_frequency_is_visible_but_not_mount_failure();
     test_unmount_success_consumes_handle();
     test_unmount_cleanup_error_still_consumes_handle();

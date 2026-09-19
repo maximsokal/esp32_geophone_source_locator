@@ -15,7 +15,16 @@ typedef struct {
     int intr_type;
 } gpio_config_t;
 
-#define GPIO_MODE_OUTPUT      1
+/* Mirror ESP-IDF's bitmask mode semantics: a mode without GPIO_MODE_DEF_INPUT
+ * has its input path disabled, so gpio_get_level() cannot read it back. */
+#define GPIO_MODE_DEF_INPUT   (1 << 0)
+#define GPIO_MODE_DEF_OUTPUT  (1 << 1)
+
+#define GPIO_MODE_DISABLE     0
+#define GPIO_MODE_INPUT       GPIO_MODE_DEF_INPUT
+#define GPIO_MODE_OUTPUT      GPIO_MODE_DEF_OUTPUT
+#define GPIO_MODE_INPUT_OUTPUT (GPIO_MODE_DEF_INPUT | GPIO_MODE_DEF_OUTPUT)
+
 #define GPIO_PULLUP_DISABLE   0
 #define GPIO_PULLDOWN_DISABLE 0
 #define GPIO_INTR_DISABLE     0

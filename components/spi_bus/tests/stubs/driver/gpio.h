@@ -6,9 +6,16 @@
 
 typedef int gpio_num_t;
 
+/* Mirror ESP-IDF's bitmask mode semantics: a mode without GPIO_MODE_DEF_INPUT
+ * has its input path disabled, so gpio_get_level() cannot read it back. */
+#define GPIO_MODE_DEF_INPUT   (1 << 0)
+#define GPIO_MODE_DEF_OUTPUT  (1 << 1)
+
 typedef enum {
-    GPIO_MODE_INPUT = 0,
-    GPIO_MODE_OUTPUT = 1,
+    GPIO_MODE_DISABLE = 0,
+    GPIO_MODE_INPUT = GPIO_MODE_DEF_INPUT,
+    GPIO_MODE_OUTPUT = GPIO_MODE_DEF_OUTPUT,
+    GPIO_MODE_INPUT_OUTPUT = (GPIO_MODE_DEF_INPUT | GPIO_MODE_DEF_OUTPUT),
 } gpio_mode_t;
 
 typedef enum {

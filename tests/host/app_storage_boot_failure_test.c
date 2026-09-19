@@ -7,6 +7,8 @@
 #include "app_config.h"
 #include "display.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "power_control.h"
 #include "sd_card.h"
 #include "sd_card_diagnostics.h"
@@ -32,6 +34,11 @@ typedef enum {
 static test_event_t s_events[32];
 static size_t s_event_count;
 static esp_err_t s_mount_result;
+static esp_err_t s_mount_script[8];
+static size_t s_mount_script_count;
+static size_t s_mount_attempts;
+static unsigned s_delay_calls;
+static TickType_t s_delay_ticks[8];
 static esp_err_t s_diagnostic_result;
 static esp_err_t s_display_result;
 static esp_err_t s_ui_result;
@@ -51,6 +58,11 @@ static void reset_fakes(void)
     memset(s_events, 0, sizeof(s_events));
     s_event_count = 0U;
     s_mount_result = ESP_OK;
+    memset(s_mount_script, 0, sizeof(s_mount_script));
+    s_mount_script_count = 0U;
+    s_mount_attempts = 0U;
+    s_delay_calls = 0U;
+    memset(s_delay_ticks, 0, sizeof(s_delay_ticks));
     s_diagnostic_result = ESP_OK;
     s_display_result = ESP_OK;
     s_ui_result = ESP_OK;
@@ -59,10 +71,28 @@ static void reset_fakes(void)
     s_jump_from_idle = false;
 }
 
+static void set_mount_script(const esp_err_t *results, size_t count)
+{
+    assert(count <= sizeof(s_mount_script) / sizeof(s_mount_script[0]));
+    memcpy(s_mount_script, results, count * sizeof(s_mount_script[0]));
+    s_mount_script_count = count;
+}
+
 esp_err_t sd_card_mount(void)
 {
     push_event(EVENT_SD_MOUNT);
-    return s_mount_result;
+    const esp_err_t result =
+        s_mount_attempts < s_mount_script_count
+            ? s_mount_script[s_mount_attempts]
+            : s_mount_result;
+    ++s_mount_attempts;
+    return result;
+}
+
+void vTaskDelay(TickType_t ticks)
+{
+    assert(s_delay_calls < sizeof(s_delay_ticks) / sizeof(s_delay_ticks[0]));
+    s_delay_ticks[s_delay_calls++] = ticks;
 }
 
 esp_err_t sd_card_unmount(void)
@@ -232,8 +262,14 @@ static void test_mount_failure_uses_same_safe_shutdown_helper(void)
     s_mount_result = ESP_FAIL;
     run_diagnostic_until_poweroff();
 
+    assert(s_mount_attempts == 3U);
+    assert(s_delay_calls == 2U);
+    assert(s_delay_ticks[0] == 150U);
+    assert(s_delay_ticks[1] == 150U);
     assert(s_events[0] == EVENT_SD_MOUNT);
-    assert(s_events[1] == EVENT_DISPLAY_INIT);
+    assert(s_events[1] == EVENT_SD_MOUNT);
+    assert(s_events[2] == EVENT_SD_MOUNT);
+    assert(s_events[3] == EVENT_DISPLAY_INIT);
     assert(strcmp(s_error_message, "MOUNT FAILED") == 0);
     assert(s_events[s_event_count - 2U] == EVENT_POWER_SHUTDOWN);
     assert(s_events[s_event_count - 1U] == EVENT_IDLE);
@@ -251,6 +287,33 @@ static void test_write_failure_uses_same_safe_shutdown_helper(void)
     assert(strcmp(s_error_message, "WRITE TEST FAILED") == 0);
     assert(s_events[s_event_count - 2U] == EVENT_POWER_SHUTDOWN);
     assert(s_events[s_event_count - 1U] == EVENT_IDLE);
+    assert(s_mount_attempts == 1U);
+    assert(s_delay_calls == 0U);
+}
+
+static void test_mount_retry_succeeds_before_boot_failure(void)
+{
+    reset_fakes();
+    const esp_err_t script[] = {
+        ESP_ERR_TIMEOUT,
+        ESP_ERR_INVALID_STATE,
+        ESP_OK,
+    };
+    set_mount_script(script, sizeof(script) / sizeof(script[0]));
+
+    app_storage_boot_run_diagnostic();
+
+    static const test_event_t expected[] = {
+        EVENT_SD_MOUNT,
+        EVENT_SD_MOUNT,
+        EVENT_SD_MOUNT,
+        EVENT_SD_DIAGNOSTIC,
+    };
+    assert_sequence(expected, sizeof(expected) / sizeof(expected[0]));
+    assert(s_mount_attempts == 3U);
+    assert(s_delay_calls == 2U);
+    assert(s_delay_ticks[0] == 150U);
+    assert(s_delay_ticks[1] == 150U);
 }
 
 int main(void)
@@ -260,6 +323,7 @@ int main(void)
     test_display_failure_still_arms_and_waits();
     test_mount_failure_uses_same_safe_shutdown_helper();
     test_write_failure_uses_same_safe_shutdown_helper();
+    test_mount_retry_succeeds_before_boot_failure();
     puts("APP_STORAGE_BOOT_FAILURE_HOST_PASS");
     return 0;
 }

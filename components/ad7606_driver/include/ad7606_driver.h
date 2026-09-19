@@ -47,6 +47,17 @@ esp_err_t ad7606_driver_init(void);
 
 void ad7606_driver_deinit(void);
 
+/*
+ * Puts the AD7606 GPIOs (RESET, CONVST, CS, BUSY) into their safe idle
+ * state without touching SPI3: CS high (deselected), RESET and CONVST
+ * low (inactive), BUSY as input. The chip is physically powered from
+ * boot onward regardless of whether the driver has been fully
+ * initialized, so these pins must not be left floating between power-on
+ * and the first call to ad7606_driver_init() (which also calls this
+ * internally, so calling it again there is redundant but harmless).
+ */
+esp_err_t ad7606_driver_safe_gpio_init(void);
+
 esp_err_t ad7606_driver_read(
     ad7606_sample_t *sample
 );
