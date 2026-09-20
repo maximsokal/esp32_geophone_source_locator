@@ -394,6 +394,21 @@ static void app_startup_initialize_services(
     );
 
     /*
+     * Tried and reverted (2026-09-20): running wifi_manager_init()/start()
+     * first, before display_init()/ui_boot_init()/storage/service tasks, on
+     * the theory that Core 0 being near-saturated (LVGL + three service
+     * tasks, ~94-100% busy per RUNTIME_CPU snapshots) by the time
+     * esp_wifi_start()/phy_init() ran was extending or worsening the current
+     * draw window. Three back-to-back captures with that order still hit the
+     * identical brownout at the identical `phy_init: phy_version ...` line,
+     * with the identical rst:0x3/rtc_brownout_isr_handler signature, now
+     * with zero Core 0 contention (display_init() never even ran, since
+     * Wi-Fi always crashed first) -- which rules out CPU/task-scheduling
+     * contention as the limiting factor. Do not retry this reorder without
+     * new evidence; the boot order below is not the cause.
+     */
+
+    /*
      * Keep the dynamic LVGL timer and UI event ingress out of
      * esp_wifi_start()/phy_init(). The boot screen is already visible, while
      * ui_init() starts the 42 ms render timer and allows TFT DMA activity.
