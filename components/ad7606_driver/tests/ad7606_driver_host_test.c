@@ -153,6 +153,21 @@ static void test_successful_init_and_conversion(void)
     assert(ad7606_driver_read(&sample) == ESP_ERR_INVALID_STATE);
 }
 
+static void test_two_complement_boundary_codes_convert_to_documented_uv_scale(void)
+{
+    /* MAX-74: exact raw-code -> uV endpoints for the currently documented
+     * hardware contract (+-5 V range, no oversampling). This proves the
+     * software math matches AD7606_FULL_SCALE_UV / AD7606_CODES_PER_HALF_RANGE
+     * for every two's-complement boundary; it does not (and cannot) prove
+     * that the installed module is actually strapped for +-5 V/OS=000 --
+     * that requires the physical measurement tracked separately in MAX-74. */
+    assert(ad7606_raw_to_uv(0) == 0.0f);              /* 0x0000 */
+    assert(ad7606_raw_to_uv(32767) == 4999847.5f);     /* 0x7FFF */
+    assert(ad7606_raw_to_uv(-32768) == -5000000.0f);   /* 0x8000 */
+    assert(ad7606_raw_to_uv(-1) == -152.587890625f);   /* 0xFFFF */
+}
+
+
 static void test_spi_error_does_not_publish_sample(void)
 {
     reset_fake();
@@ -210,6 +225,7 @@ static void test_spi_initialization_error_is_returned(void)
 int main(void)
 {
     test_successful_init_and_conversion();
+    test_two_complement_boundary_codes_convert_to_documented_uv_scale();
     test_spi_error_does_not_publish_sample();
     test_constant_payload_is_observable_but_not_transport_failure();
     test_busy_timeout_fails_initialization_and_releases_bus();
