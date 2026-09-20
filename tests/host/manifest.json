@@ -221,6 +221,24 @@
       ]
     },
     {
+      "name": "geophone_events",
+      "sources": [
+        "components/geophone_events/geophone_event_energy_trigger.c",
+        "components/geophone_events/geophone_event_sta_lta.c",
+        "components/geophone_events/geophone_event_arrival_refine.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/geophone_events/geophone_event_quality.c",
+        "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/tests/geophone_events_host_test.c"
+      ],
+      "include_dirs": [
+        "components/geophone_events/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "measurement_service",
       "sources": [
         "components/measurement_service/tests/measurement_service_worker_contract_test.c",
