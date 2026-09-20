@@ -24,7 +24,6 @@ static bool s_fail_spiram;
 static bool s_fail_internal;
 static unsigned s_spiram_allocs;
 static unsigned s_internal_allocs;
-static unsigned s_heap_frees;
 static unsigned s_fallback_logs;
 static unsigned s_free_caps_internal_8bit;
 static unsigned s_free_caps_internal_dma;
@@ -53,7 +52,6 @@ static void reset_runtime_storage(void)
     s_fail_internal = false;
     s_spiram_allocs = 0U;
     s_internal_allocs = 0U;
-    s_heap_frees = 0U;
     s_fallback_logs = 0U;
     s_free_caps_internal_8bit = 0U;
     s_free_caps_internal_dma = 0U;
@@ -111,9 +109,6 @@ void *heap_caps_malloc(size_t size, uint32_t caps)
 
 void heap_caps_free(void *ptr)
 {
-    if (ptr != NULL) {
-        s_heap_frees++;
-    }
     free(ptr);
 }
 
