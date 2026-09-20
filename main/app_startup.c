@@ -34,9 +34,36 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define APP_STARTUP_STACK_HWM_TARGET_BYTES 1024U
 
 static const char *TAG =
     "APP";
+
+
+static void app_startup_log_stack_hwm(void)
+{
+    const UBaseType_t free_bytes =
+        uxTaskGetStackHighWaterMark(NULL);
+
+    if (free_bytes < APP_STARTUP_STACK_HWM_TARGET_BYTES) {
+        ESP_LOGW(
+            TAG,
+            "STACK_HWM task=main free=%u target=%u",
+            (unsigned)free_bytes,
+            (unsigned)APP_STARTUP_STACK_HWM_TARGET_BYTES
+        );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "STACK_HWM task=main free=%u target=%u",
+            (unsigned)free_bytes,
+            (unsigned)APP_STARTUP_STACK_HWM_TARGET_BYTES
+        );
+    }
+}
 
 
 static void app_startup_log_elapsed(
@@ -550,6 +577,14 @@ void app_startup_run(void)
         "startup_total",
         startup_started_ms
     );
+
+    /*
+     * Explicit deterministic HWM sample for the task running app_main(),
+     * taken right after the complete synchronous startup path instead of
+     * depending on whether "main" happens to appear in the periodic
+     * runtime-observability top-N sample.
+     */
+    app_startup_log_stack_hwm();
 
     /*
      * Start the expensive archive-wide recovery only after startup_total has

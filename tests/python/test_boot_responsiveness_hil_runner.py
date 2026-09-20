@@ -40,6 +40,8 @@ def make_log(
     include_gate: bool = True,
     include_interactive: bool = True,
     cache_before_recovery_stop: bool = False,
+    main_stack_hwm_free: int | None = 4096,
+    object_recovery_stack_hwm_free: int | None = 4096,
 ) -> str:
     if len(dispatch_keys) != len(dispatch_ages):
         raise ValueError("dispatch_keys and dispatch_ages must have the same length")
@@ -49,11 +51,13 @@ def make_log(
         lines.append("I APP_EVENTS: KEYPAD_EVENT_GATE state=ARMED")
     if include_interactive:
         lines.append(f"I APP: BOOT_TIMING: interactive_ready={interactive_ms} ms")
-    lines.extend(
-        [
-            f"I APP: BOOT_TIMING: startup_total={startup_total_ms} ms",
-            "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START core=0 priority=1",
-        ]
+    lines.append(f"I APP: BOOT_TIMING: startup_total={startup_total_ms} ms")
+    if main_stack_hwm_free is not None:
+        lines.append(
+            f"I APP: STACK_HWM task=main free={main_stack_hwm_free} target=1024"
+        )
+    lines.append(
+        "I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=START core=0 priority=1"
     )
 
     total = len(recovery_ms)
@@ -84,6 +88,11 @@ def make_log(
         )
 
     lines.append("I OBJECT_RECOVERY: OBJECT_RECOVERY_BACKGROUND state=STOP result=0")
+    if object_recovery_stack_hwm_free is not None:
+        lines.append(
+            "I OBJECT_RECOVERY: STACK_HWM task=object_recovery "
+            f"free={object_recovery_stack_hwm_free} target=1024"
+        )
 
     if not cache_before_recovery_stop:
         lines.append(
@@ -132,9 +141,55 @@ def test_valid_replay_passes_telemetry_but_never_claims_physical_hil(tmp_path: P
     assert "safe_shutdown_markers=0" in result.stdout
     assert "base_priority=1 inherited_observed=True" in result.stdout
     assert "Gate -> interactive -> startup -> recovery -> Web cache ordering" in result.stdout
+    assert "Main task stack headroom" in result.stdout
+    assert "free=4096B target=1024B" in result.stdout
+    assert "Background object_recovery stack headroom" in result.stdout
     assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: PASS" in result.stdout
     assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
     assert "REPLAY_LIMITATION:" in result.stdout
+
+
+def test_replay_rejects_low_main_stack_hwm(tmp_path: Path):
+    path = tmp_path / "boot-main-hwm-fail.log"
+    path.write_text(make_log(main_stack_hwm_free=512), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "Main task stack headroom" in result.stdout
+    assert "free=512B target=1024B" in result.stdout
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: FAIL" in result.stdout
+    assert "BOOT_RESPONSIVENESS_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_replay_rejects_low_object_recovery_stack_hwm(tmp_path: Path):
+    path = tmp_path / "boot-recovery-hwm-fail.log"
+    path.write_text(make_log(object_recovery_stack_hwm_free=800), encoding="utf-8")
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "Background object_recovery stack headroom" in result.stdout
+    assert "free=800B target=1024B" in result.stdout
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: FAIL" in result.stdout
+    assert "BOOT_RESPONSIVENESS_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_replay_missing_stack_hwm_markers_is_blocked_not_pass(tmp_path: Path):
+    path = tmp_path / "boot-no-hwm.log"
+    path.write_text(
+        make_log(main_stack_hwm_free=None, object_recovery_stack_hwm_free=None),
+        encoding="utf-8",
+    )
+
+    result = run_replay(path)
+
+    assert result.returncode == 1
+    assert "Main task stack headroom" in result.stdout
+    assert "Background object_recovery stack headroom" in result.stdout
+    assert "free=missing target=1024B" in result.stdout
+    assert "BOOT_RESPONSIVENESS_TELEMETRY_RESULT: BLOCKED" in result.stdout
+    assert "BOOT_RESPONSIVENESS_HIL_RESULT: BLOCKED" in result.stdout
 
 
 def test_replay_with_repeated_single_key_is_blocked_not_false_pass(tmp_path: Path):

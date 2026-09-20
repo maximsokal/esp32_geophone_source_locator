@@ -210,7 +210,9 @@ try {
                 $analysis.MissingKeyCodes.Count -eq 0 -and
                 $content -match 'KEYPAD_EVENT_GATE state=ARMED' -and
                 $content -match 'OBJECT_RECOVERY_BACKGROUND state=STOP' -and
-                $content -match 'WEB_STATUS_CACHE refresh=done'
+                $content -match 'WEB_STATUS_CACHE refresh=done' -and
+                $analysis.MainStackHwmCount -gt 0 -and
+                $analysis.ObjectRecoveryStackHwmCount -gt 0
 
             if ($coreMarkersReady) {
                 break
@@ -281,6 +283,18 @@ try {
         $(if ($analysis.PanicCount -eq 0) { "PASS" } else { "FAIL" }) `
         ("failure_markers={0}" -f $analysis.PanicCount)
 
+    $mainStackHwmViolations = @($analysis.Violations | Where-Object { $_ -like 'STACK_HWM task=main*' })
+    $mainStackHwmOk = $analysis.MainStackHwmCount -gt 0 -and $mainStackHwmViolations.Count -eq 0
+    Add-Check $checks "Main task stack headroom" `
+        $(if ($mainStackHwmOk) { "PASS" } elseif ($analysis.MainStackHwmCount -gt 0) { "FAIL" } else { $missingStatus }) `
+        ("free={0} target=1024B" -f (Format-Metric $analysis.MinMainStackHwmFreeBytes "B"))
+
+    $objectRecoveryStackHwmViolations = @($analysis.Violations | Where-Object { $_ -like 'STACK_HWM task=object_recovery*' })
+    $objectRecoveryStackHwmOk = $analysis.ObjectRecoveryStackHwmCount -gt 0 -and $objectRecoveryStackHwmViolations.Count -eq 0
+    Add-Check $checks "Background object_recovery stack headroom" `
+        $(if ($objectRecoveryStackHwmOk) { "PASS" } elseif ($analysis.ObjectRecoveryStackHwmCount -gt 0) { "FAIL" } else { $missingStatus }) `
+        ("free={0} target=1024B" -f (Format-Metric $analysis.MinObjectRecoveryStackHwmFreeBytes "B"))
+
     $orderingViolations = @($analysis.Violations | Where-Object {
         $_ -eq 'interactive_ready logged before keypad gate was armed' -or
         $_ -eq 'startup_total logged before interactive_ready' -or
@@ -314,6 +328,8 @@ try {
         if (
             $violation -notin $orderingViolations -and
             $violation -notin $priorityViolations -and
+            $violation -notin $mainStackHwmViolations -and
+            $violation -notin $objectRecoveryStackHwmViolations -and
             $violation -notlike 'interactive_ready=*exceeds*' -and
             $violation -notlike 'recovery_window=*' -and
             $violation -notlike 'stale keypad drops*' -and
