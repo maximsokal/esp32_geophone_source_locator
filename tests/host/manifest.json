@@ -210,6 +210,28 @@
       ]
     },
     {
+      "name": "localization_event_bridge",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization/localization_event_bridge.c",
+        "components/geophone_events/geophone_event_energy_trigger.c",
+        "components/geophone_events/geophone_event_sta_lta.c",
+        "components/geophone_events/geophone_event_arrival_refine.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/geophone_events/geophone_event_quality.c",
+        "components/geophone_events/geophone_event_pick.c",
+        "components/localization/tests/localization_event_bridge_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/geophone_events/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "seismic_dsp",
       "sources": [
         "components/seismic_dsp/seismic_dsp.c",
