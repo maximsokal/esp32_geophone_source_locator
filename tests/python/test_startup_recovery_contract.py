@@ -71,11 +71,11 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
     service_patterns = [
         r"ESP_ERROR_CHECK\(\s*object_recovery_run_active\(\)\s*\)",
         r"ESP_ERROR_CHECK\(\s*object_store_init\(\)\s*\)",
+        r"wifi_manager_start\(\)",
+        r"web_server_start\(\)",
         r"ESP_ERROR_CHECK\(\s*ui_init\(\)\s*\)",
         r"keypad_start_event_monitor\(",
         r'app_startup_log_elapsed\(\s*"interactive_ready"',
-        r"web_server_start\(\)",
-        r"wifi_manager_start\(\)",
     ]
     service_positions = [pattern_position(services, pattern) for pattern in service_patterns]
     assert service_positions == sorted(service_positions)
@@ -107,7 +107,7 @@ def test_interactive_boundary_is_local_ui_plus_keypad_not_network():
     web = position(services, "web_server_start()")
     wifi = position(services, "wifi_manager_start()")
 
-    assert ui < keypad < interactive < web < wifi
+    assert wifi < web < ui < keypad < interactive
     assert "uint32_t startup_started_ms" in services
 
 

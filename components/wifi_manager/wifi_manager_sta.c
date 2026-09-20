@@ -38,6 +38,11 @@ esp_err_t wifi_manager_sta_start(void)
         true
     );
 
+    ESP_LOGI(
+        TAG,
+        "STA PHY bring-up begin"
+    );
+
     err =
         esp_wifi_start();
 
@@ -46,22 +51,28 @@ esp_err_t wifi_manager_sta_start(void)
         return err;
     }
 
+    ESP_LOGI(
+        TAG,
+        "STA PHY bring-up complete"
+    );
+
     /*
-     * This device is the HTTPS control/data endpoint, not a background Wi-Fi
-     * client. The ESP-IDF STA default enables minimum modem power save, which
-     * trades latency/throughput for energy. Keep the radio awake while STA is
-     * active so browser TLS handshakes and large embedded assets are not
-     * stretched across beacon sleep intervals.
+     * Keep the STA at the ESP-IDF minimum modem-power-save policy. The
+     * application is powered through a shared rail with the TFT, SD, INA3221
+     * and external ADC; forcing the radio permanently awake here needlessly turns every
+     * connected session into a continuous radio load and makes a marginal
+     * rail collapse more likely after startup. HTTPS correctness does not
+     * require the radio to stay awake between beacon intervals.
      */
     err =
         esp_wifi_set_ps(
-            WIFI_PS_NONE
+            WIFI_PS_MIN_MODEM
         );
 
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "Failed to disable STA modem power save: %s",
+            "Failed to keep STA modem power save enabled: %s",
             esp_err_to_name(err)
         );
 
@@ -71,7 +82,7 @@ esp_err_t wifi_manager_sta_start(void)
 
     ESP_LOGI(
         TAG,
-        "STA modem power save disabled for low-latency HTTPS"
+        "STA modem power save enabled (minimum modem policy)"
     );
 
     return ESP_OK;

@@ -44,7 +44,7 @@ def test_shared_i2c_sensor_bus_starts_after_keypad_display_and_sd_stack():
     wifi_init = services.index("wifi_manager_init()")
     wifi_start = services.index("wifi_manager_start()")
 
-    assert display < boot_screen < storage < ina3221 < wifi_init < wifi_start
+    assert display < boot_screen < storage < wifi_init < wifi_start < ina3221
 
 
 def test_ina3221_monitor_remains_non_fatal_at_its_new_call_site():
@@ -56,3 +56,5 @@ def test_ina3221_monitor_remains_non_fatal_at_its_new_call_site():
     preceding = services[max(0, call - 60) : call]
     assert "ESP_ERROR_CHECK(" not in preceding
     assert "INA3221 monitor unavailable" in services[call : call + 400]
+    assert services.index("wifi_manager_start()") < call
+    assert "sensor_bus_i2c_start_after_wifi" in services[call : call + 600]

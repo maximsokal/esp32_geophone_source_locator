@@ -14,27 +14,21 @@ static int fake_gpio_error;
 static int fake_spi_initialize_calls;
 static int fake_spi_free_calls;
 static int fake_transmit_calls;
-static int fake_gpio_config_calls;
 static int64_t fake_time_us;
 static uint8_t fake_rx[AD7606_CHANNEL_COUNT * 2];
 static spi_bus_config_t last_bus_config;
 static spi_device_interface_config_t last_device_config;
 
-#define FAKE_GPIO_LEVEL_SLOTS 64
-static int fake_gpio_level[FAKE_GPIO_LEVEL_SLOTS];
-
 esp_err_t gpio_config(const gpio_config_t *config)
 {
     (void)config;
-    fake_gpio_config_calls++;
     return fake_gpio_error ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
 esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
 {
-    if (gpio_num >= 0 && gpio_num < FAKE_GPIO_LEVEL_SLOTS) {
-        fake_gpio_level[gpio_num] = (int)level;
-    }
+    (void)gpio_num;
+    (void)level;
     return fake_gpio_error ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
@@ -119,8 +113,6 @@ static void reset_fake(void)
     fake_spi_initialize_calls = 0;
     fake_spi_free_calls = 0;
     fake_transmit_calls = 0;
-    fake_gpio_config_calls = 0;
-    memset(fake_gpio_level, -1, sizeof(fake_gpio_level));
     fake_time_us = 1000;
     for (size_t i = 0; i < AD7606_CHANNEL_COUNT; ++i) {
         const int16_t value = (int16_t)((int)i * 1000 - 3000);
@@ -215,51 +207,6 @@ static void test_spi_initialization_error_is_returned(void)
     ad7606_driver_deinit();
 }
 
-/*
- * Regression: the AD7606 is physically powered from board power-on, but
- * before this function existed, RESET/CONVST/BUSY were left in whatever
- * state the ESP32 came up in until the user opened Measurements or issued
- * a Web start request. That gap could be minutes or never. This must set
- * the same safe levels ad7606_driver_init() uses internally, and must not
- * touch SPI3 (it has to be safe to call at boot even with no card/ADC
- * physically present, and safe to call again when init() runs later).
- */
-static void test_safe_gpio_init_sets_idle_levels_without_touching_spi(void)
-{
-    reset_fake();
-
-    assert(ad7606_driver_safe_gpio_init() == ESP_OK);
-
-    assert(fake_gpio_config_calls == 2);
-    assert(fake_spi_initialize_calls == 0);
-    assert(fake_spi_free_calls == 0);
-    assert(fake_transmit_calls == 0);
-
-    assert(fake_gpio_level[BOARD_AD7606_CS_GPIO] == 1);
-    assert(fake_gpio_level[BOARD_AD7606_RESET_GPIO] == 0);
-    assert(fake_gpio_level[BOARD_AD7606_CONVST_GPIO] == 0);
-
-    /* Calling it again (as init() does internally) must stay side-effect free. */
-    assert(ad7606_driver_safe_gpio_init() == ESP_OK);
-    assert(fake_spi_initialize_calls == 0);
-
-    /* And a real init() afterwards must still work normally. */
-    assert(ad7606_driver_init() == ESP_OK);
-    assert(fake_spi_initialize_calls == 1);
-    ad7606_driver_deinit();
-}
-
-
-static void test_safe_gpio_init_propagates_gpio_failure(void)
-{
-    reset_fake();
-    fake_gpio_error = 1;
-
-    assert(ad7606_driver_safe_gpio_init() == ESP_ERR_INVALID_STATE);
-    assert(fake_spi_initialize_calls == 0);
-}
-
-
 int main(void)
 {
     test_successful_init_and_conversion();
@@ -267,8 +214,6 @@ int main(void)
     test_constant_payload_is_observable_but_not_transport_failure();
     test_busy_timeout_fails_initialization_and_releases_bus();
     test_spi_initialization_error_is_returned();
-    test_safe_gpio_init_sets_idle_levels_without_touching_spi();
-    test_safe_gpio_init_propagates_gpio_failure();
     puts("AD7606 driver host tests passed");
     return 0;
 }

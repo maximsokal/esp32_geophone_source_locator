@@ -37,7 +37,6 @@ idf_component_register(
         seismic_buffer
         seismic_acquisition
         seismic_recorder
-        ad7606_driver
         localization
         wifi_manager
         web_server

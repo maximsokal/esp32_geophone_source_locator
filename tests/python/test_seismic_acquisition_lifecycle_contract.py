@@ -66,10 +66,10 @@ def test_boot_initializes_lifecycle_but_does_not_auto_start_acquisition():
 
     assert "seismic_acquisition_start()" not in services
 
+    web_start = services.index("web_server_start()")
+    wifi_start = services.index("wifi_manager_start()")
     interactive = services.index('"interactive_ready"')
-    web_start = services.index("web_server_start()", interactive)
-    wifi_start = services.index("wifi_manager_start()", interactive)
-    assert interactive < web_start < wifi_start
+    assert wifi_start < web_start < interactive
 
 
 def test_measurements_screen_entry_starts_acquisition():

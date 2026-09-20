@@ -29,7 +29,16 @@ static const char *TAG =
 #define APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS   3
 #define APP_STORAGE_BOOT_SD_MOUNT_RETRY_MS   150
 
-
+/*
+ * A 250 ms delay before the first attempt was tried here on the theory
+ * that the shared rail needed more time to settle before the first SD
+ * probe. It made brownouts worse, not better -- disproving that theory --
+ * so it was reverted. The retry loop below is the only mitigation that
+ * has ever measurably helped (a genuinely slow card that answers on a
+ * later attempt), and even that has not been observed to change the
+ * outcome on this specific hardware. Do not reintroduce a blind delay
+ * without a specific, tested mechanism.
+ */
 static esp_err_t app_storage_boot_mount_sd_with_retry(void)
 {
     esp_err_t err =
