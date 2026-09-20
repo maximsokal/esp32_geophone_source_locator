@@ -123,3 +123,12 @@
  */
 #define APP_TASK_PRIORITY_NRF_ESTOP_MONITOR 1
 #define APP_TASK_STACK_NRF_ESTOP_MONITOR 4096
+
+/*
+ * MAX-118 live per-pod barometer surfacing (Measurements screen / Web status).
+ * Read-only bridge from the existing nRF topology sensor cache into
+ * device_status; same low control-plane priority as the other topology-cache
+ * consumers so it cannot outrank acquisition/UI work.
+ */
+#define APP_TASK_PRIORITY_POD_STATUS_BRIDGE 1
+#define APP_TASK_STACK_POD_STATUS_BRIDGE 4096
