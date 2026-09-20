@@ -79,10 +79,41 @@ static void test_sensor_cache_validity_gates_acceptance_not_assignment(void)
     assert(summary.accepted_count == 0U);
 }
 
+/*
+ * A current, valid sample that isn't ACCEPTED yet (UNAVAILABLE: no orientation
+ * sample has arrived from this node yet; MOVING: gyro says it's not settled;
+ * OUTSIDE: settled but past the tilt threshold) must still count toward
+ * assigned_count but never accepted_count. Numeric values mirror
+ * nrf_orientation_state_t (UNAVAILABLE=0, MOVING=1, ACCEPTED=2, OUTSIDE=3) per
+ * nrf_upstream_protocol.h's own comment; only ACCEPTED has a named wire
+ * constant there by design.
+ */
+static void test_current_valid_but_not_accepted_states_do_not_count(void)
+{
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    nrf_topology_leveling_summary_t summary;
+    const uint8_t non_accepted_states[] = {0U, 1U, 3U};
+
+    for (size_t i = 0U; i < sizeof(non_accepted_states) / sizeof(non_accepted_states[0]); ++i) {
+        memset(&topology, 0, sizeof(topology));
+        memset(cache, 0, sizeof(cache));
+        assign_remote(&topology, 5U);
+        accept_cache(&cache[5]);
+        cache[5].sensor.orientation_state = non_accepted_states[i];
+
+        assert(nrf_topology_leveling_summary_compute(
+                   true, &topology, true, cache, &summary) == ESP_OK);
+        assert(summary.assigned_count == 1U);
+        assert(summary.accepted_count == 0U);
+    }
+}
+
 int main(void)
 {
     test_invalid_and_unpublished_state();
     test_counts_only_current_assigned_accepted_remotes();
     test_sensor_cache_validity_gates_acceptance_not_assignment();
+    test_current_valid_but_not_accepted_states_do_not_count();
     return 0;
 }
