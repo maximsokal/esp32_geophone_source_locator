@@ -85,6 +85,18 @@ typedef struct
     uint32_t completed_stages;
     bool input_passthrough;
 
+    /* Metadata from the stages actually completed this call. Each field is
+     * 0 unless its stage bit is set in completed_stages. */
+    float dc_offset_removed; /* SEISMIC_DSP_STAGE_DC_REMOVAL: mean subtracted */
+    float energy_rms;        /* SEISMIC_DSP_STAGE_ENERGY_RMS: RMS after any
+                               * completed DC removal, before normalization
+                               * or windowing rescale it */
+    float peak_abs;          /* SEISMIC_DSP_STAGE_NORMALIZATION: pre-scale
+                               * peak |x| used as the divisor (0 for an
+                               * all-zero/degenerate block, in which case the
+                               * block is left unscaled rather than divided
+                               * by zero) */
+
 } seismic_dsp_result_t;
 
 
@@ -98,11 +110,27 @@ esp_err_t seismic_dsp_init(
 
 
 /*
- * Validate and describe one borrowed block. The current foundation does not
- * modify or retain input; requested stages are reported as placeholders.
+ * Process one borrowed block in place for every requested stage this
+ * foundation currently implements; any other requested bit is reported in
+ * placeholder_stages and left untouched, exactly as before.
+ *
+ * Implemented stages (DC_REMOVAL/DETREND, ENERGY_RMS, NORMALIZATION,
+ * WINDOWING) are deliberately parameter-free: none of them requires a
+ * cutoff frequency, filter order or propagation velocity, so none of them
+ * can violate the project rule against guessed filter bands. They are also
+ * stateless across calls, so the CADENCE CONTRACT above is satisfied
+ * trivially -- there is no cross-block state for an acquisition gap to
+ * corrupt. FIR/IIR/BANDPASS/NOTCH/FFT/CROSS_CORRELATION remain unimplemented
+ * placeholders until measured AD7606 + ZF-24HP data can justify concrete
+ * coefficients, at which point they will need real gap-aware state per the
+ * contract above.
+ *
+ * Stage order when multiple bits are requested: DC_REMOVAL, then
+ * ENERGY_RMS (measuring the DC-removed signal's original amplitude before
+ * anything rescales it), then NORMALIZATION, then WINDOWING.
  */
 esp_err_t seismic_dsp_process_block(
-    const float *input,
+    float *input,
     size_t sample_count,
     seismic_dsp_result_t *result
 );

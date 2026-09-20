@@ -124,7 +124,17 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     assert "SEISMIC_DSP_STAGE_IIR" in dsp_header
     assert "SEISMIC_DSP_STAGE_CROSS_CORRELATION" in dsp_header
     assert "xTaskCreate" not in dsp
-    assert "input_passthrough = true" in dsp
+    # MAX-133: DC removal/RMS/normalization/windowing are real, parameter-free
+    # stages now (no guessed filter band or propagation velocity is involved,
+    # per the project rule in dsp_header). input_passthrough is therefore
+    # conditional on whether any stage actually ran, not a hardcoded true.
+    assert ".input_passthrough = (completed == 0u)" in dsp
+    assert "SEISMIC_DSP_FIXED_RATE_REQUIRES_CADENCE_VALID_INPUT" in dsp_header
+    for stage in ("FIR", "IIR", "BANDPASS", "NOTCH", "FFT", "CROSS_CORRELATION"):
+        assert f"SEISMIC_DSP_STAGE_{stage}" not in dsp, (
+            f"SEISMIC_DSP_STAGE_{stage} must stay an unimplemented placeholder "
+            "until measured AD7606 + ZF-24HP data justifies its coefficients"
+        )
 
 
 def test_insights_profile_is_explicit_and_uses_non_secret_auth_fixture():
