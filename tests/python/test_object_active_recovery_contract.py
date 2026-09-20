@@ -127,6 +127,60 @@ def test_corrupt_profiles_are_omittable_but_real_errors_remain_visible() -> None
     assert "err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_RESPONSE" in responsive
 
 
+def test_prepare_metadata_uses_two_path_buffers_not_three() -> None:
+    source = read("components/object_recovery/object_recovery_metadata.c")
+    block = function_slice(
+        source,
+        "esp_err_t object_recovery_fs_prepare_metadata",
+        None,
+    )
+
+    assert block.count("OBJECT_RECOVERY_PATH_SIZE\n    ];") == 2
+    assert "char primary[" in block
+    assert "char sidecar[" in block
+    assert "char backup[" not in block
+    assert "char temporary[" not in block
+
+    # The sidecar buffer must be rebuilt for both sidecar file names, never
+    # both live at once.
+    assert block.count('"object.json.bak"') == 2
+    assert block.count('"object.json.tmp"') == 2
+
+
+def test_main_stack_hwm_telemetry_follows_synchronous_startup() -> None:
+    startup = read("main/app_startup.c")
+    block = function_slice(startup, "void app_startup_run(void)", None)
+
+    startup_total = block.index('"startup_total"')
+    hwm_call = block.index("app_startup_log_stack_hwm()")
+    assert startup_total < hwm_call
+
+    assert 'STACK_HWM task=main free=%u target=%u' in startup
+    assert "uxTaskGetStackHighWaterMark(NULL)" in startup
+
+
+def test_object_recovery_stack_hwm_telemetry_fires_on_every_worker_exit() -> None:
+    worker = read("components/object_recovery/object_recovery_worker.c")
+    block = function_slice(
+        worker,
+        "static void object_recovery_background_task(void *argument)",
+        "esp_err_t object_recovery_start_background_with_callback(",
+    )
+
+    complete_call = block.index("complete_fn(err, complete_context);")
+    hwm_call = block.index("object_recovery_log_stack_hwm();")
+    retire = block.index("s_task = NULL;")
+    delete_call = block.index("vTaskDeleteWithCaps(NULL);")
+
+    # Emitted after the completion callback and before task retirement, on
+    # the single shared tail reached by every exit path (normal pass
+    # completion, error exit, and stop-requested exit all break into it).
+    assert complete_call < hwm_call < retire < delete_call
+
+    assert 'STACK_HWM task=object_recovery free=%u target=%u' in worker
+    assert "uxTaskGetStackHighWaterMark(NULL)" in worker
+
+
 def test_max73_create_commit_order_is_unchanged() -> None:
     source = read("components/object_store/object_store_operations.c")
     block = function_slice(

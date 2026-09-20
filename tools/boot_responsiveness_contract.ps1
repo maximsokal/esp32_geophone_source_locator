@@ -94,6 +94,28 @@ function Get-BootResponsivenessTelemetry {
         }
     }
 
+    $mainStackHwm = @()
+    foreach ($match in [regex]::Matches(
+        $Content,
+        '(?im)STACK_HWM\s+task=main\s+free=(?<free>\d+)\s+target=(?<target>\d+)'
+    )) {
+        $mainStackHwm += [pscustomobject]@{
+            FreeBytes = [uint64]$match.Groups['free'].Value
+            TargetBytes = [uint64]$match.Groups['target'].Value
+        }
+    }
+
+    $objectRecoveryStackHwm = @()
+    foreach ($match in [regex]::Matches(
+        $Content,
+        '(?im)STACK_HWM\s+task=object_recovery\s+free=(?<free>\d+)\s+target=(?<target>\d+)'
+    )) {
+        $objectRecoveryStackHwm += [pscustomobject]@{
+            FreeBytes = [uint64]$match.Groups['free'].Value
+            TargetBytes = [uint64]$match.Groups['target'].Value
+        }
+    }
+
     $gateArmedPosition = $Content.IndexOf('KEYPAD_EVENT_GATE state=ARMED', [StringComparison]::OrdinalIgnoreCase)
     $interactivePosition = $Content.IndexOf('BOOT_TIMING: interactive_ready=', [StringComparison]::OrdinalIgnoreCase)
     $startupPosition = $Content.IndexOf('BOOT_TIMING: startup_total=', [StringComparison]::OrdinalIgnoreCase)
@@ -124,6 +146,8 @@ function Get-BootResponsivenessTelemetry {
         Dispatch = $dispatch
         Stale = $stale
         Priorities = $priorities
+        MainStackHwm = $mainStackHwm
+        ObjectRecoveryStackHwm = $objectRecoveryStackHwm
         GateArmedPosition = $gateArmedPosition
         InteractivePosition = $interactivePosition
         StartupPosition = $startupPosition
@@ -145,7 +169,8 @@ function Test-BootResponsivenessTelemetry {
         [uint64]$MaxRecoveryWindowMs = 250,
         [int]$MinimumRecoverySamples = 1,
         [int]$MinimumKeypadDispatches = 5,
-        [uint64]$ExpectedWebCacheBasePriority = 1
+        [uint64]$ExpectedWebCacheBasePriority = 1,
+        [uint64]$MinimumStackHwmBytes = 1024
     )
 
     $telemetry = Get-BootResponsivenessTelemetry $Content
@@ -155,6 +180,8 @@ function Test-BootResponsivenessTelemetry {
     $dispatch = @($telemetry.Dispatch)
     $stale = @($telemetry.Stale)
     $priorities = @($telemetry.Priorities)
+    $mainStackHwm = @($telemetry.MainStackHwm)
+    $objectRecoveryStackHwm = @($telemetry.ObjectRecoveryStackHwm)
 
     $missing = @()
     $violations = @()
@@ -182,6 +209,12 @@ function Test-BootResponsivenessTelemetry {
     }
     if ($telemetry.CacheDonePosition -lt 0) {
         $missing += 'WEB_STATUS_CACHE refresh=done'
+    }
+    if ($mainStackHwm.Count -lt 1) {
+        $missing += 'STACK_HWM task=main'
+    }
+    if ($objectRecoveryStackHwm.Count -lt 1) {
+        $missing += 'STACK_HWM task=object_recovery'
     }
 
     $expectedKeyCodes = @(1, 2, 3, 4, 5)
@@ -225,6 +258,22 @@ function Test-BootResponsivenessTelemetry {
     }
     if ($telemetry.PanicCount -gt 0) {
         $violations += "panic/watchdog/brownout/assert marker observed count=$($telemetry.PanicCount)"
+    }
+
+    $minMainStackHwm = $null
+    if ($mainStackHwm.Count -gt 0) {
+        $minMainStackHwm = ($mainStackHwm | ForEach-Object { $_.FreeBytes } | Measure-Object -Minimum).Minimum
+        if ($minMainStackHwm -lt $MinimumStackHwmBytes) {
+            $violations += "STACK_HWM task=main free=$($minMainStackHwm) below target=$($MinimumStackHwmBytes)"
+        }
+    }
+
+    $minObjectRecoveryStackHwm = $null
+    if ($objectRecoveryStackHwm.Count -gt 0) {
+        $minObjectRecoveryStackHwm = ($objectRecoveryStackHwm | ForEach-Object { $_.FreeBytes } | Measure-Object -Minimum).Minimum
+        if ($minObjectRecoveryStackHwm -lt $MinimumStackHwmBytes) {
+            $violations += "STACK_HWM task=object_recovery free=$($minObjectRecoveryStackHwm) below target=$($MinimumStackHwmBytes)"
+        }
     }
 
     if (
@@ -295,5 +344,9 @@ function Test-BootResponsivenessTelemetry {
         MaxRecoveryWindowMs = $maxRecovery
         MaxKeypadDispatchAgeMs = $maxDispatchAge
         InheritedObserved = $inheritedObserved
+        MainStackHwmCount = $mainStackHwm.Count
+        MinMainStackHwmFreeBytes = $minMainStackHwm
+        ObjectRecoveryStackHwmCount = $objectRecoveryStackHwm.Count
+        MinObjectRecoveryStackHwmFreeBytes = $minObjectRecoveryStackHwm
     }
 }

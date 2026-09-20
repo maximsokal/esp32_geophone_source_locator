@@ -18,6 +18,7 @@ static const char *TAG = "OBJECT_RECOVERY";
 
 #define OBJECT_RECOVERY_BACKGROUND_START_DELAY_MS   100U
 #define OBJECT_RECOVERY_BACKGROUND_RESCAN_DELAY_MS  250U
+#define OBJECT_RECOVERY_STACK_HWM_TARGET_BYTES      1024U
 
 static TaskHandle_t s_task = NULL;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -27,6 +28,29 @@ static bool s_stop_requested = false;
 static bool s_rescan_requested = false;
 static object_recovery_background_complete_fn s_complete_fn = NULL;
 static void *s_complete_context = NULL;
+
+
+static void object_recovery_log_stack_hwm(void)
+{
+    const UBaseType_t free_bytes =
+        uxTaskGetStackHighWaterMark(NULL);
+
+    if (free_bytes < OBJECT_RECOVERY_STACK_HWM_TARGET_BYTES) {
+        ESP_LOGW(
+            TAG,
+            "STACK_HWM task=object_recovery free=%u target=%u",
+            (unsigned)free_bytes,
+            (unsigned)OBJECT_RECOVERY_STACK_HWM_TARGET_BYTES
+        );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "STACK_HWM task=object_recovery free=%u target=%u",
+            (unsigned)free_bytes,
+            (unsigned)OBJECT_RECOVERY_STACK_HWM_TARGET_BYTES
+        );
+    }
+}
 
 
 static bool object_recovery_background_stop_requested(
@@ -207,6 +231,14 @@ static void object_recovery_background_task(void *argument)
     if (!stopped && complete_fn != NULL) {
         complete_fn(err, complete_context);
     }
+
+    /*
+     * Final self-HWM sample, taken after the completion callback and before
+     * task retirement so this short-lived worker cannot evade the 10 s
+     * periodic runtime-observability sampler. Emitted on every exit path
+     * (normal completion, error, or stop-requested).
+     */
+    object_recovery_log_stack_hwm();
 
     portENTER_CRITICAL(&s_state_lock);
     s_task = NULL;
