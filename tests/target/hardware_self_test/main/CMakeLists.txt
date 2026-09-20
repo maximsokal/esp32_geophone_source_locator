@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "hardware_self_test.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_event
+        esp_netif
+        esp_phy
+        esp_psram
+        esp_system
+        esp_wifi
+        heap
+        log
+        nvs_flash
+        spi_flash
+)
