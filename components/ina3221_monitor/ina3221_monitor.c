@@ -11,12 +11,14 @@
 #include "ina3221_policy.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 
 #define INA3221_MONITOR_PERIOD_MS       1000u
+#define INA3221_MONITOR_FAST_PERIOD_MS  20u
 #define INA3221_MONITOR_LOG_INTERVAL    5u
 #define INA3221_RETRY_LOG_INTERVAL      30u
 
@@ -37,6 +39,9 @@ static bool s_starting =
 static bool s_stop_requested =
     false;
 
+static int64_t s_fast_sampling_deadline_us =
+    0;
+
 
 static bool ina3221_monitor_stop_requested(void)
 {
@@ -47,6 +52,18 @@ static bool ina3221_monitor_stop_requested(void)
     portEXIT_CRITICAL(&s_state_lock);
 
     return requested;
+}
+
+
+static bool ina3221_monitor_fast_sampling_active(void)
+{
+    int64_t deadline_us;
+
+    portENTER_CRITICAL(&s_state_lock);
+    deadline_us = s_fast_sampling_deadline_us;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    return esp_timer_get_time() < deadline_us;
 }
 
 
@@ -220,11 +237,16 @@ static void ina3221_monitor_log_sample(
 
 static bool ina3221_monitor_wait_for_period_or_stop(void)
 {
+    const uint32_t period_ms =
+        ina3221_monitor_fast_sampling_active() ?
+            INA3221_MONITOR_FAST_PERIOD_MS :
+            INA3221_MONITOR_PERIOD_MS;
+
     const uint32_t notifications =
         ulTaskNotifyTake(
             pdTRUE,
             pdMS_TO_TICKS(
-                INA3221_MONITOR_PERIOD_MS
+                period_ms
             )
         );
 
@@ -376,7 +398,8 @@ static void ina3221_monitor_worker(
             if (
                 sample_count == 1 ||
                 sample_count %
-                    INA3221_MONITOR_LOG_INTERVAL == 0
+                    INA3221_MONITOR_LOG_INTERVAL == 0 ||
+                ina3221_monitor_fast_sampling_active()
             ) {
                 ina3221_monitor_log_sample(
                     channels,
@@ -445,6 +468,43 @@ esp_err_t ina3221_monitor_start(void)
     );
 
     return ESP_OK;
+}
+
+
+void ina3221_monitor_request_fast_sampling(
+    uint32_t duration_ms
+)
+{
+    const int64_t deadline_us =
+        esp_timer_get_time() +
+        (int64_t)duration_ms * 1000;
+
+    TaskHandle_t task;
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_fast_sampling_deadline_us = deadline_us;
+    task = s_task;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    ESP_LOGI(
+        TAG,
+        "Fast sampling requested: 1/%u ms for %u ms",
+        (unsigned)INA3221_MONITOR_FAST_PERIOD_MS,
+        (unsigned)duration_ms
+    );
+
+    /*
+     * The worker may already be blocked in ulTaskNotifyTake() with the old
+     * 1 s period. Reuse the stop-notification channel to wake it early: a
+     * notify with s_stop_requested still false just falls through to the
+     * normal loop body, now observing the new deadline immediately instead
+     * of up to 1 s late.
+     */
+    if (task != NULL) {
+        (void)xTaskNotifyGive(
+            task
+        );
+    }
 }
 
 

@@ -20,6 +20,8 @@ static bool s_fail_task_create;
 static unsigned s_task_create_calls;
 static unsigned s_notify_give_calls;
 static unsigned s_notify_take_calls;
+static TickType_t s_last_wait_ticks;
+static int64_t s_fake_time_us;
 static unsigned s_delay_calls;
 static unsigned s_delete_calls;
 static unsigned s_critical_enters;
@@ -116,7 +118,11 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
 {
     assert(clear_on_exit == pdTRUE);
-    assert(ticks_to_wait == pdMS_TO_TICKS(1000U));
+    assert(
+        ticks_to_wait == pdMS_TO_TICKS(1000U) ||
+        ticks_to_wait == pdMS_TO_TICKS(20U)
+    );
+    s_last_wait_ticks = ticks_to_wait;
     ++s_notify_take_calls;
 
     if (s_stop_on_wait) {
@@ -127,6 +133,11 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     }
 
     return 0U;
+}
+
+int64_t esp_timer_get_time(void)
+{
+    return s_fake_time_us;
 }
 
 void vTaskDelay(TickType_t ticks)
@@ -312,6 +323,8 @@ static void reset_fakes(void)
     s_task_create_calls = 0U;
     s_notify_give_calls = 0U;
     s_notify_take_calls = 0U;
+    s_last_wait_ticks = 0U;
+    s_fake_time_us = 0;
     s_delay_calls = 0U;
     s_delete_calls = 0U;
     s_critical_enters = 0U;
@@ -345,6 +358,7 @@ static void reset_fakes(void)
     s_task = NULL;
     s_starting = false;
     s_stop_requested = false;
+    s_fast_sampling_deadline_us = 0;
     s_state_lock.depth = 0U;
 }
 
@@ -519,6 +533,43 @@ static void test_read_failure_invalidates_and_closes_driver(void)
     assert_lock_balanced();
 }
 
+static void test_fast_sampling_request_without_running_task_stores_deadline_only(void)
+{
+    reset_fakes();
+    s_fake_time_us = 10;
+
+    ina3221_monitor_request_fast_sampling(1);
+
+    assert(s_notify_give_calls == 0U);
+    assert(ina3221_monitor_fast_sampling_active());
+    assert_lock_balanced();
+}
+
+static void test_fast_sampling_wakes_worker_and_uses_fast_period(void)
+{
+    reset_fakes();
+    assert(ina3221_monitor_start() == ESP_OK);
+    assert(!ina3221_monitor_register_current_task());
+    assert(s_task == &s_task_token);
+
+    s_fake_time_us = 1000;
+    assert(!ina3221_monitor_fast_sampling_active());
+
+    ina3221_monitor_request_fast_sampling(500);
+
+    assert(s_notify_give_calls == 1U);
+    assert(ina3221_monitor_fast_sampling_active());
+
+    s_stop_on_wait = true;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_last_wait_ticks == pdMS_TO_TICKS(20U));
+
+    s_fake_time_us = 501000;
+    assert(!ina3221_monitor_fast_sampling_active());
+    assert_lock_balanced();
+}
+
 int main(void)
 {
     test_create_failure_rolls_back_and_retries();
@@ -529,5 +580,7 @@ int main(void)
     test_worker_publishes_normal_sample_and_cleans_up();
     test_open_failure_publishes_invalid_and_stops_on_notification();
     test_read_failure_invalidates_and_closes_driver();
+    test_fast_sampling_request_without_running_task_stores_deadline_only();
+    test_fast_sampling_wakes_worker_and_uses_fast_period();
     return 0;
 }

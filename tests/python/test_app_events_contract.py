@@ -68,11 +68,12 @@ def test_ui_is_a_subscriber_not_an_event_task():
     assert "app_event_bus" not in source
 
 
-def test_startup_registers_ui_before_wifi_can_publish():
+def test_startup_defers_web_and_runtime_ui_load_until_wifi_is_running():
     source = _read("main/app_startup.c")
     assert source.index("app_events_init()") < source.index("wifi_manager_init()")
-    assert source.index("ui_init()") < source.index("wifi_manager_start()")
-    assert source.index("web_server_start()") < source.index("wifi_manager_start()")
+    assert source.index("wifi_manager_start()") < source.index("ui_init()")
+    assert source.index("wifi_manager_start()") < source.index("keypad_start_event_monitor(")
+    assert source.index("wifi_manager_start()") < source.index("web_server_start()")
 
 
 def test_application_sources_have_no_legacy_bus_dependency():

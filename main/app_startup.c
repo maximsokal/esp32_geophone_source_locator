@@ -6,7 +6,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "ad7606_driver.h"
 #include "adc_service.h"
 #include "app_events.h"
 #include "device_status.h"
@@ -209,25 +208,15 @@ static void app_startup_initialize_core(void)
     );
 
     /*
-     * The AD7606 is physically powered (AVCC/VIO) from board power-on,
-     * independent of when/whether its driver is fully brought up. Without
-     * this, RESET and CONVST are left floating from boot until the user
-     * opens Measurements or issues a Web start, which can be minutes or
-     * never. This only configures GPIO idle levels (CS high, RESET/CONVST
-     * low, BUSY input); it does not touch SPI3, reset-pulse, or self-test,
-     * so it is safe even when no AD7606 is physically connected.
+     * RESET/CONVST are intentionally left floating (not driven) from boot
+     * until the user opens Measurements or issues a Web start. Driving
+     * them low unconditionally was tried and reverted: the AD7606 is
+     * physically powered independent of the driver, and a measured VIO
+     * back-feed path exists when its own 5V is disconnected -- actively
+     * sinking current into that path from RESET/CONVST is a real hazard,
+     * not a safe idle state, until AD7606 presence/power can be confirmed
+     * first. Do not reintroduce this without gating it on that.
      */
-    const esp_err_t ad7606_safe_gpio_err =
-        ad7606_driver_safe_gpio_init();
-
-    if (ad7606_safe_gpio_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "AD7606 safe GPIO init failed: %s",
-            esp_err_to_name(ad7606_safe_gpio_err)
-        );
-    }
-
     ESP_ERROR_CHECK(
         adc_service_init()
     );
@@ -293,38 +282,6 @@ static void app_startup_initialize_services(
 
     app_startup_log_elapsed(
         "storage_manager_init",
-        stage_started_ms
-    );
-
-    /*
-     * The shared I2C0 sensor bus (INA3221, and later the TCA9548A/nRF54L15
-     * upstream topology) is only opened after the keypad, display and SD
-     * card stack are already interactive. A main-enclosure XIAO nRF54L15 is
-     * wired as an upstream I2C target on this same bus; probing it before
-     * the rest of local hardware bring-up is complete previously risked
-     * stalling boot on a bus that a still-booting nRF node could be holding
-     * in an indeterminate state. INA3221 remains non-boot-critical: the
-     * monitor task keeps retrying when the board is absent or I2C is
-     * broken, so this ordering only changes when the retry loop starts.
-     */
-    stage_started_ms =
-        esp_log_timestamp();
-
-    const esp_err_t power_monitor_err =
-        ina3221_monitor_start();
-
-    if (power_monitor_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "INA3221 monitor unavailable: %s",
-            esp_err_to_name(
-                power_monitor_err
-            )
-        );
-    }
-
-    app_startup_log_elapsed(
-        "sensor_bus_i2c_start",
         stage_started_ms
     );
 
@@ -416,16 +373,41 @@ static void app_startup_initialize_services(
             esp_err_to_name(insights_err));
     }
 
+    /*
+     * The AD7606 no longer auto-starts sampling at boot. Its driver
+     * (GPIO configuration, SPI3, hardware reset pulse and self-test, all
+     * via ad7606_driver_init()) has not run at all yet; RESET/CONVST/CS
+     * remain in whatever state they came up in, and are only touched once
+     * active acquisition starts -- when the local UI opens the
+     * Measurements screen (ui_screen_registry.c) or a
+     * Web client explicitly requests it (web_api_control.c), so the ADC is
+     * not running with nobody consuming its samples. That start call is
+     * idempotent, so both triggers may fire in either order.
+     */
+
+    ESP_ERROR_CHECK(
+        wifi_manager_start()
+    );
+
+    ESP_ERROR_CHECK(
+        web_server_start()
+    );
+
+    /*
+     * Keep the dynamic LVGL timer and UI event ingress out of
+     * esp_wifi_start()/phy_init(). The boot screen is already visible, while
+     * ui_init() starts the 42 ms render timer and allows TFT DMA activity.
+     * Starting that runtime work before the radio transition creates an
+     * avoidable shared-rail load peak exactly at the brownout boundary.
+     * web_server_start() is also deliberately after Wi-Fi: it creates the
+     * status-cache and lifecycle tasks, while its relevant IP/AP handlers are
+     * registered before those asynchronous transitions complete and it
+     * performs an immediate state check for an already-running interface.
+     */
     ESP_ERROR_CHECK(
         ui_init()
     );
 
-    /*
-     * Local TFT navigation is the interactive boot boundary. Arm keypad
-     * delivery immediately after ui_init() has installed the dispatcher;
-     * acquisition startup may run after this point without delaying local
-     * controls, but Web/Wi-Fi is not exposed until that first transition ends.
-     */
     ESP_ERROR_CHECK(
         keypad_start_event_monitor(
             ui_handle_keypad_event,
@@ -439,24 +421,31 @@ static void app_startup_initialize_services(
     );
 
     /*
-     * The AD7606 no longer auto-starts sampling at boot. Only its GPIOs
-     * were put into a safe idle state by ad7606_driver_safe_gpio_init() in
-     * app_startup_initialize_core() (see that call site); SPI3, the
-     * hardware reset pulse and self-test have not run yet. Active
-     * acquisition (which performs all of that via ad7606_driver_init())
-     * now starts only when the local UI opens the Measurements screen
-     * (ui_screen_registry.c) or a
-     * Web client explicitly requests it (web_api_control.c), so the ADC is
-     * not running with nobody consuming its samples. That start call is
-     * idempotent, so both triggers may fire in either order.
+     * INA3221 is telemetry, not a prerequisite for Wi-Fi. Do not let its I2C
+     * worker open the shared sensor bus or perform conversions while
+     * esp_wifi_start() is bringing up the PHY: that creates an avoidable
+     * startup load peak exactly at the brownout boundary. The monitor remains
+     * non-fatal and starts immediately after the radio transition completes.
      */
+    const uint32_t power_monitor_started_ms =
+        esp_log_timestamp();
 
-    ESP_ERROR_CHECK(
-        web_server_start()
-    );
+    const esp_err_t power_monitor_err =
+        ina3221_monitor_start();
 
-    ESP_ERROR_CHECK(
-        wifi_manager_start()
+    if (power_monitor_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "INA3221 monitor unavailable: %s",
+            esp_err_to_name(
+                power_monitor_err
+            )
+        );
+    }
+
+    app_startup_log_elapsed(
+        "sensor_bus_i2c_start_after_wifi",
+        power_monitor_started_ms
     );
 
     runtime_observability_log_snapshot("after-wifi");

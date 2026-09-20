@@ -193,12 +193,6 @@ static esp_err_t ad7606_configure_gpio(void)
 }
 
 
-esp_err_t ad7606_driver_safe_gpio_init(void)
-{
-    return ad7606_configure_gpio();
-}
-
-
 static esp_err_t ad7606_init_spi_bus(void)
 {
     const spi_bus_config_t bus_config = {
