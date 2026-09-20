@@ -543,10 +543,14 @@ publication, while connection events only notify the dedicated retry worker.
 
 `seismic_dsp` is a synchronous, task-free foundation for measured
 DC-removal/detrend, windowing, FIR/IIR band-pass/notch, FFT,
-cross-correlation, normalization and RMS stages. It currently reports
-placeholders and passes input through. Filter frequencies, coefficients and
-localization matrix changes remain prohibited until AD7606 + ZF-24HP data is
-available.
+cross-correlation, normalization and RMS stages. Its parameter-free stages
+(DC removal, energy RMS, peak normalization, Hann windowing) are implemented
+and process each block in place; each is stateless across blocks, so an
+acquisition gap cannot leave stale cross-block state behind. FIR, IIR,
+band-pass, notch, FFT and cross-correlation remain unimplemented
+placeholders and are reported as such in `placeholder_stages`. Filter
+frequencies, coefficients and localization matrix changes remain prohibited
+until AD7606 + ZF-24HP data is available.
 
 ### SPI2 - display and SD
 
