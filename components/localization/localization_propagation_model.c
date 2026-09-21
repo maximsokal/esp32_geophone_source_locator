@@ -113,7 +113,8 @@ esp_err_t localization_propagation_velocity_error_bound(
         observations == NULL ||
         config == NULL ||
         position_error_m_out == NULL ||
-        observation_count == 0u
+        observation_count == 0u ||
+        !isfinite(velocity_error_mps)
     ) {
         return ESP_ERR_INVALID_ARG;
     }

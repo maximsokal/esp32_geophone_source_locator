@@ -1,19 +1,45 @@
 #include "localization_traveltime_inversion.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 
 
-static size_t axis_count(
+static bool axis_count(
     double min_value,
     double max_value,
-    double step_m
+    double step_m,
+    size_t *out_count
 )
 {
-    if (max_value <= min_value) {
-        return 1u;
+    if (
+        out_count == NULL ||
+        !isfinite(min_value) ||
+        !isfinite(max_value) ||
+        !isfinite(step_m) ||
+        step_m <= 0.0 ||
+        max_value < min_value
+    ) {
+        return false;
     }
-    return (size_t)llround((max_value - min_value) / step_m) + 1u;
+
+    if (max_value == min_value) {
+        *out_count = 1u;
+        return true;
+    }
+
+    const double ratio = (max_value - min_value) / step_m;
+    if (!isfinite(ratio) || ratio < 0.0 || ratio >= (double)(LLONG_MAX - 1LL)) {
+        return false;
+    }
+
+    const long long increments = llround(ratio);
+    if (increments < 0 || increments >= LLONG_MAX - 1LL) {
+        return false;
+    }
+
+    *out_count = (size_t)increments + 1u;
+    return *out_count != 0u;
 }
 
 
@@ -68,7 +94,8 @@ static void evaluate_candidate(
         const double predicted_diff_us =
             (distance - ref_distance) / propagation_speed_mps * 1.0e6;
         const double observed_diff_us =
-            (double)(used[i].arrival_time_us - used[ref_index].arrival_time_us);
+            (double)used[i].arrival_time_us -
+            (double)used[ref_index].arrival_time_us;
         const double residual_us = observed_diff_us - predicted_diff_us;
 
         sum_sq_unweighted += residual_us * residual_us;
@@ -101,9 +128,18 @@ static esp_err_t coarse_search(
     double *out_best_chi_square
 )
 {
-    const size_t count_x = axis_count(min_corner.x_m, max_corner.x_m, step_m);
-    const size_t count_y = axis_count(min_corner.y_m, max_corner.y_m, step_m);
-    const size_t count_z = axis_count(min_corner.z_m, max_corner.z_m, step_m);
+    size_t count_x = 0u;
+    size_t count_y = 0u;
+    size_t count_z = 0u;
+    if (
+        !axis_count(min_corner.x_m, max_corner.x_m, step_m, &count_x) ||
+        !axis_count(min_corner.y_m, max_corner.y_m, step_m, &count_y) ||
+        !axis_count(min_corner.z_m, max_corner.z_m, step_m, &count_z) ||
+        count_x > SIZE_MAX / count_y ||
+        count_x * count_y > SIZE_MAX / count_z
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
     const size_t total = count_x * count_y * count_z;
 
     localization_traveltime_candidate_t *surface =
@@ -163,7 +199,7 @@ static esp_err_t coarse_search(
 }
 
 
-static void refine_search(
+static esp_err_t refine_search(
     localization_point3d_t min_corner,
     localization_point3d_t max_corner,
     double step_m,
@@ -178,9 +214,18 @@ static void refine_search(
     double *inout_best_chi_square
 )
 {
-    const size_t count_x = axis_count(min_corner.x_m, max_corner.x_m, step_m);
-    const size_t count_y = axis_count(min_corner.y_m, max_corner.y_m, step_m);
-    const size_t count_z = axis_count(min_corner.z_m, max_corner.z_m, step_m);
+    size_t count_x = 0u;
+    size_t count_y = 0u;
+    size_t count_z = 0u;
+    if (
+        !axis_count(min_corner.x_m, max_corner.x_m, step_m, &count_x) ||
+        !axis_count(min_corner.y_m, max_corner.y_m, step_m, &count_y) ||
+        !axis_count(min_corner.z_m, max_corner.z_m, step_m, &count_z) ||
+        count_x > SIZE_MAX / count_y ||
+        count_x * count_y > SIZE_MAX / count_z
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     for (size_t ix = 0u; ix < count_x; ++ix) {
         const double x =
@@ -211,6 +256,8 @@ static void refine_search(
             }
         }
     }
+
+    return ESP_OK;
 }
 
 
@@ -236,10 +283,27 @@ esp_err_t localization_traveltime_search(
     }
 
     if (
+        !isfinite(config->propagation_speed_mps) ||
         config->propagation_speed_mps <= 0.0 ||
+        !isfinite(config->timing_uncertainty_us) ||
         config->timing_uncertainty_us <= 0.0 ||
+        !isfinite(coarse_bounds->step_m) ||
         coarse_bounds->step_m <= 0.0 ||
         config->refine_divisor < 2u
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (
+        !isfinite(coarse_bounds->min_corner.x_m) ||
+        !isfinite(coarse_bounds->min_corner.y_m) ||
+        !isfinite(coarse_bounds->min_corner.z_m) ||
+        !isfinite(coarse_bounds->max_corner.x_m) ||
+        !isfinite(coarse_bounds->max_corner.y_m) ||
+        !isfinite(coarse_bounds->max_corner.z_m) ||
+        coarse_bounds->max_corner.x_m < coarse_bounds->min_corner.x_m ||
+        coarse_bounds->max_corner.y_m < coarse_bounds->min_corner.y_m ||
+        coarse_bounds->max_corner.z_m < coarse_bounds->min_corner.z_m
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -249,7 +313,17 @@ esp_err_t localization_traveltime_search(
     size_t used_count = 0u;
 
     for (size_t i = 0u; i < pick_count; ++i) {
+        if (!isfinite(picks[i].weight)) {
+            return ESP_ERR_INVALID_ARG;
+        }
         if (picks[i].weight > 0.0) {
+            if (
+                !isfinite(picks[i].observation.sensor_position.x_m) ||
+                !isfinite(picks[i].observation.sensor_position.y_m) ||
+                !isfinite(picks[i].observation.sensor_position.z_m)
+            ) {
+                return ESP_ERR_INVALID_ARG;
+            }
             used[used_count] = picks[i].observation;
             weights[used_count] = picks[i].weight;
             ++used_count;
@@ -306,11 +380,16 @@ esp_err_t localization_traveltime_search(
         .z_m = is_2d ? coarse_best.z_m : coarse_best.z_m + coarse_bounds->step_m
     };
 
-    refine_search(
+    const esp_err_t refine_err = refine_search(
         fine_min, fine_max, fine_step_m, used, weights, used_count, ref_index,
         config->propagation_speed_mps, config->timing_uncertainty_us,
         &best_position, &best_residual_rms_us, &best_chi_square
     );
+    if (refine_err != ESP_OK) {
+        free(surface);
+        free(chi_square);
+        return refine_err;
+    }
 
     /*
      * Only now, with the true global minimum chi-square known (coarse AND

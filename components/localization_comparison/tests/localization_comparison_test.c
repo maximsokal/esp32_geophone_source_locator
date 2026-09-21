@@ -251,6 +251,30 @@ static void test_rejects_invalid_arguments(void)
         localization_comparison_fuse(&non_finite_position, 1u, &result) ==
         ESP_ERR_INVALID_ARG
     );
+
+    localization_comparison_method_result_t non_finite_quality = valid[0];
+    non_finite_quality.quality = NAN;
+    assert(
+        localization_comparison_fuse(&non_finite_quality, 1u, &result) ==
+        ESP_ERR_INVALID_ARG
+    );
+    non_finite_quality.quality = INFINITY;
+    assert(
+        localization_comparison_fuse(&non_finite_quality, 1u, &result) ==
+        ESP_ERR_INVALID_ARG
+    );
+
+    localization_comparison_method_result_t out_of_range_quality = valid[0];
+    out_of_range_quality.quality = 1.0001;
+    assert(
+        localization_comparison_fuse(&out_of_range_quality, 1u, &result) ==
+        ESP_ERR_INVALID_ARG
+    );
+    out_of_range_quality.quality = -0.1;
+    assert(
+        localization_comparison_fuse(&out_of_range_quality, 1u, &result) ==
+        ESP_ERR_INVALID_ARG
+    );
 }
 
 

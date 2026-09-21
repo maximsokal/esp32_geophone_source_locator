@@ -111,6 +111,54 @@ static void test_missing_pair_state_is_not_treated_as_zero_distance(void)
     assert(a != NULL && !a->solved);
 }
 
+static void test_rejects_negative_valid_distance_and_duplicate_node_ids(void)
+{
+    nrf_geometry_node_input_t inputs[2] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t negative_pair =
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, -1);
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(
+        inputs, 2U, &negative_pair, 1U, &solution
+    ) == NRF_GEOMETRY_ERR_ARGUMENT);
+
+    negative_pair.node_a = 1U;
+    negative_pair.node_b = 1U;
+    negative_pair.distance_mm = 10;
+    assert(nrf_geometry_solver_solve(
+        inputs, 2U, &negative_pair, 1U, &solution
+    ) == NRF_GEOMETRY_ERR_ARGUMENT);
+
+    inputs[1].node_id = 0U;
+    assert(nrf_geometry_solver_solve(
+        inputs, 2U, NULL, 0U, &solution
+    ) == NRF_GEOMETRY_ERR_ARGUMENT);
+}
+
+static void test_overflowing_position_is_not_marked_solved(void)
+{
+    nrf_geometry_node_input_t inputs[3] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[2] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, INT32_MAX),
+        make_pair(1U, 2U, NRF_CS_PAIR_VALID, INT32_MAX),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 2U, &solution) ==
+           NRF_GEOMETRY_OK);
+    const nrf_geometry_node_position_t *first = find_node(&solution, 1U);
+    const nrf_geometry_node_position_t *overflowing = find_node(&solution, 2U);
+    assert(first != NULL && first->solved && first->x_mm == INT32_MAX);
+    assert(overflowing != NULL && !overflowing->solved);
+}
+
 static int32_t iabs(int32_t value)
 {
     return value < 0 ? -value : value;
@@ -275,6 +323,8 @@ int main(void)
     test_single_reference_places_along_arbitrary_heading();
     test_isolated_node_with_no_valid_pair_stays_unsolved();
     test_missing_pair_state_is_not_treated_as_zero_distance();
+    test_rejects_negative_valid_distance_and_duplicate_node_ids();
+    test_overflowing_position_is_not_marked_solved();
     test_trilateration_with_mirror_disambiguation();
     test_z_passes_through_unmodified();
     test_deterministic_randomized_noise_and_node_order();

@@ -3,6 +3,20 @@
 #include <math.h>
 
 
+static bool samples_are_finite(
+    const float *samples,
+    size_t sample_count
+)
+{
+    for (size_t i = 0u; i < sample_count; ++i) {
+        if (!isfinite(samples[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
 static double sum_squares_over(
     const float *samples,
     size_t start,
@@ -35,12 +49,19 @@ bool geophone_event_energy_trigger_detect(
         samples == NULL ||
         config == NULL ||
         config->trigger_window_samples == 0u ||
-        config->noise_window_samples == 0u
+        config->noise_window_samples == 0u ||
+        !isfinite(config->threshold_multiplier) ||
+        config->threshold_multiplier <= 0.0f
     ) {
         return false;
     }
 
-    if (sample_count < config->noise_window_samples + config->trigger_window_samples) {
+    if (
+        config->noise_window_samples > sample_count ||
+        config->trigger_window_samples >
+            sample_count - config->noise_window_samples ||
+        !samples_are_finite(samples, sample_count)
+    ) {
         return false;
     }
 

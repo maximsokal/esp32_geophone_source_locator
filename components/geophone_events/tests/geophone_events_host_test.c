@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -111,6 +112,143 @@ static void test_energy_trigger_never_fires_on_pure_silence(void)
 
     assert(!geophone_event_energy_trigger_detect(samples, 300u, &config, &result));
     assert(!result.found);
+}
+
+
+static void test_geophone_math_rejects_nonfinite_inputs(void)
+{
+    float samples[16] = { 0.0f };
+    geophone_energy_trigger_config_t energy_config = {
+        .noise_window_samples = 4u,
+        .trigger_window_samples = 4u,
+        .threshold_multiplier = 3.0f
+    };
+    geophone_energy_trigger_result_t energy_result;
+
+    energy_config.threshold_multiplier = NAN;
+    assert(!geophone_event_energy_trigger_detect(
+        samples, 16u, &energy_config, &energy_result
+    ));
+    energy_config.threshold_multiplier = INFINITY;
+    assert(!geophone_event_energy_trigger_detect(
+        samples, 16u, &energy_config, &energy_result
+    ));
+    energy_config.threshold_multiplier = 0.0f;
+    assert(!geophone_event_energy_trigger_detect(
+        samples, 16u, &energy_config, &energy_result
+    ));
+
+    samples[3] = NAN;
+    energy_config.threshold_multiplier = 3.0f;
+    assert(!geophone_event_energy_trigger_detect(
+        samples, 16u, &energy_config, &energy_result
+    ));
+
+    geophone_sta_lta_config_t sta_lta_config = {
+        .sta_window_samples = 2u,
+        .lta_window_samples = 8u,
+        .trigger_ratio = 3.0f
+    };
+    geophone_sta_lta_result_t sta_lta_result;
+    samples[3] = 0.0f;
+    sta_lta_config.trigger_ratio = NAN;
+    assert(!geophone_event_sta_lta_detect(
+        samples, 16u, &sta_lta_config, &sta_lta_result
+    ));
+    sta_lta_config.trigger_ratio = 0.0f;
+    assert(!geophone_event_sta_lta_detect(
+        samples, 16u, &sta_lta_config, &sta_lta_result
+    ));
+    sta_lta_config.trigger_ratio = 3.0f;
+    samples[4] = INFINITY;
+    assert(!geophone_event_sta_lta_detect(
+        samples, 16u, &sta_lta_config, &sta_lta_result
+    ));
+
+    geophone_arrival_refine_config_t refine_config = {
+        .lookback_samples = 2u,
+        .lookahead_samples = 2u,
+        .amplitude_fraction = 0.5f
+    };
+    geophone_arrival_refine_result_t refine_result;
+    samples[4] = 0.0f;
+    refine_config.amplitude_fraction = NAN;
+    assert(!geophone_event_refine_arrival(
+        samples, 16u, 4u, &refine_config, &refine_result
+    ));
+    refine_config.amplitude_fraction = 1.1f;
+    assert(!geophone_event_refine_arrival(
+        samples, 16u, 4u, &refine_config, &refine_result
+    ));
+    refine_config.amplitude_fraction = 0.5f;
+    samples[4] = -INFINITY;
+    assert(!geophone_event_refine_arrival(
+        samples, 16u, 4u, &refine_config, &refine_result
+    ));
+
+    float channel_b[16] = { 0.0f };
+    geophone_cross_correlation_config_t correlation_config = {
+        .max_lag_samples = 2u
+    };
+    geophone_cross_correlation_result_t correlation_result;
+    samples[4] = 1.0f;
+    channel_b[4] = 1.0f;
+    channel_b[5] = NAN;
+    assert(!geophone_event_cross_correlate(
+        samples, channel_b, 16u, &correlation_config, &correlation_result
+    ));
+
+    samples[4] = 0.0f;
+    samples[5] = 0.0f;
+    assert(geophone_event_compute_snr(samples, 16u, 4u, 4u, 4u) == 0.0f);
+
+    const geophone_pick_quality_config_t quality_config = {
+        .minimum_snr = 5.0f
+    };
+    assert(!geophone_event_pick_is_acceptable(NAN, &quality_config));
+    assert(!geophone_event_pick_is_acceptable(INFINITY, &quality_config));
+
+    const geophone_pick_quality_config_t nan_threshold = {
+        .minimum_snr = NAN
+    };
+    assert(!geophone_event_pick_is_acceptable(5.0f, &nan_threshold));
+
+    const geophone_pick_quality_config_t negative_threshold = {
+        .minimum_snr = -1.0f
+    };
+    assert(!geophone_event_pick_is_acceptable(5.0f, &negative_threshold));
+}
+
+
+static void test_geophone_math_rejects_window_overflow_and_clamps_edges(void)
+{
+    float samples[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
+    geophone_energy_trigger_config_t energy_config = {
+        .noise_window_samples = SIZE_MAX,
+        .trigger_window_samples = 1u,
+        .threshold_multiplier = 3.0f
+    };
+    geophone_energy_trigger_result_t energy_result;
+    assert(!geophone_event_energy_trigger_detect(
+        samples, 4u, &energy_config, &energy_result
+    ));
+
+    const geophone_arrival_refine_config_t refine_config = {
+        .lookback_samples = 0u,
+        .lookahead_samples = SIZE_MAX,
+        .amplitude_fraction = 0.5f
+    };
+    geophone_arrival_refine_result_t refine_result;
+    assert(geophone_event_refine_arrival(
+        samples, 4u, 2u, &refine_config, &refine_result
+    ));
+    assert(refine_result.refined_index == 2u);
+
+    const float snr = geophone_event_compute_snr(
+        samples, 4u, 1u, 2u, SIZE_MAX
+    );
+    assert(snr == 1.0e6f);
+    assert(isfinite(snr));
 }
 
 
@@ -420,11 +558,31 @@ static void test_pick_channel_arrival_rejects_null_arguments(void)
 }
 
 
+static void test_pick_uncertainty_saturates_instead_of_wrapping(void)
+{
+    float samples[300] = { 0 };
+    fill_background_sine(samples, 0u, 300u, 0.01f, 0.05f);
+    insert_rect_pulse(samples, 200u, 20u, 1.0f);
+
+    geophone_channel_pick_config_t config = default_pick_config();
+    config.refine_lookback_samples = SIZE_MAX;
+    config.refine_lookahead_samples = SIZE_MAX;
+    geophone_channel_pick_t result;
+
+    assert(geophone_event_pick_channel_arrival(
+        samples, 300u, 1000u, &config, &result
+    ));
+    assert(result.uncertainty_samples == SIZE_MAX);
+}
+
+
 int main(void)
 {
     test_energy_trigger_finds_impulse_after_quiet_baseline();
     test_energy_trigger_rejects_invalid_arguments();
     test_energy_trigger_never_fires_on_pure_silence();
+    test_geophone_math_rejects_nonfinite_inputs();
+    test_geophone_math_rejects_window_overflow_and_clamps_edges();
 
     test_sta_lta_finds_impulse_over_quiet_background();
     test_sta_lta_missing_channel_never_triggers();
@@ -447,6 +605,7 @@ int main(void)
     test_pick_channel_arrival_rejects_missing_channel();
     test_pick_channel_arrival_rejects_low_snr_gate();
     test_pick_channel_arrival_rejects_null_arguments();
+    test_pick_uncertainty_saturates_instead_of_wrapping();
 
     puts("geophone_events host tests passed");
     return 0;

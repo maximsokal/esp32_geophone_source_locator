@@ -1,7 +1,17 @@
 #include "nrf_geometry_solver.h"
 
+#include <limits.h>
 #include <math.h>
 #include <string.h>
+
+
+static bool rounded_position_fits_i32(double value)
+{
+    return
+        isfinite(value) &&
+        value >= (double)INT32_MIN - 0.5 &&
+        value <= (double)INT32_MAX + 0.5;
+}
 
 /* Millimeter-scale distances as double; ESP32-S3 has a hardware FPU and
  * this is a low-rate, small-N (<=5 nodes) computation, so there is no
@@ -174,6 +184,23 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
         return NRF_GEOMETRY_ERR_ARGUMENT;
     }
 
+    for (size_t i = 0u; i < input_count; ++i) {
+        for (size_t j = i + 1u; j < input_count; ++j) {
+            if (inputs[i].node_id == inputs[j].node_id) {
+                return NRF_GEOMETRY_ERR_ARGUMENT;
+            }
+        }
+    }
+
+    for (size_t i = 0u; i < pair_count; ++i) {
+        if (
+            pairs[i].state == NRF_CS_PAIR_VALID &&
+            (pairs[i].distance_mm < 0 || pairs[i].node_a == pairs[i].node_b)
+        ) {
+            return NRF_GEOMETRY_ERR_ARGUMENT;
+        }
+    }
+
     memset(solution, 0, sizeof(*solution));
     solution->node_count = input_count;
 
@@ -185,6 +212,9 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
         solution->nodes[i].x_mm = 0;
         solution->nodes[i].y_mm = 0;
         if (inputs[i].node_id == 0U) {
+            if (main_index >= 0) {
+                return NRF_GEOMETRY_ERR_ARGUMENT;
+            }
             main_index = (int)i;
         }
     }
@@ -217,6 +247,9 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
             }
             double x_mm, y_mm;
             if (solve_node_position(solution, pairs, pair_count, target, &x_mm, &y_mm)) {
+                if (!rounded_position_fits_i32(x_mm) || !rounded_position_fits_i32(y_mm)) {
+                    continue;
+                }
                 solution->nodes[i].x_mm = (int32_t)lround(x_mm);
                 solution->nodes[i].y_mm = (int32_t)lround(y_mm);
                 solution->nodes[i].solved = true;

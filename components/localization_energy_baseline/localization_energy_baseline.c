@@ -1,5 +1,7 @@
 #include "localization_energy_baseline.h"
 
+#include <math.h>
+
 
 esp_err_t localization_energy_baseline_estimate(
     const localization_energy_baseline_channel_t *channels,
@@ -30,11 +32,21 @@ esp_err_t localization_energy_baseline_estimate(
         if (channels[i].weight <= 0.0) {
             continue;
         }
-        if (channels[i].energy < 0.0) {
+        if (
+            !isfinite(channels[i].weight) ||
+            !isfinite(channels[i].energy) ||
+            !isfinite(channels[i].sensor_position.x_m) ||
+            !isfinite(channels[i].sensor_position.y_m) ||
+            !isfinite(channels[i].sensor_position.z_m) ||
+            channels[i].energy < 0.0
+        ) {
             return ESP_ERR_INVALID_ARG;
         }
 
         const double weighted_energy = channels[i].weight * channels[i].energy;
+        if (!isfinite(weighted_energy)) {
+            return ESP_ERR_INVALID_ARG;
+        }
         sum_x += weighted_energy * channels[i].sensor_position.x_m;
         sum_y += weighted_energy * channels[i].sensor_position.y_m;
         sum_z += weighted_energy * channels[i].sensor_position.z_m;

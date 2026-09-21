@@ -4,6 +4,40 @@
 #include <stdlib.h>
 
 
+static bool add_i64_checked(
+    int64_t value,
+    int64_t delta,
+    int64_t *out
+)
+{
+    if (delta > 0 && value > INT64_MAX - delta) {
+        return false;
+    }
+    if (delta < 0 && value < INT64_MIN - delta) {
+        return false;
+    }
+    *out = value + delta;
+    return true;
+}
+
+
+static bool add_alternating_jitter_checked(
+    int64_t value,
+    int64_t jitter_us,
+    bool subtract,
+    int64_t *out
+)
+{
+    if (!subtract) {
+        return add_i64_checked(value, jitter_us, out);
+    }
+    if (jitter_us == INT64_MIN) {
+        return false;
+    }
+    return add_i64_checked(value, -jitter_us, out);
+}
+
+
 #define LOCALIZATION_TIMING_BUDGET_MAX_OBSERVATIONS 32u
 
 
@@ -37,8 +71,14 @@ esp_err_t localization_timing_jitter_error_bound(
     localization_observation_t perturbed[LOCALIZATION_TIMING_BUDGET_MAX_OBSERVATIONS];
     for (size_t i = 0u; i < observation_count; ++i) {
         perturbed[i] = observations[i];
-        perturbed[i].arrival_time_us +=
-            (i % 2u == 0u) ? jitter_us : -jitter_us;
+        if (!add_alternating_jitter_checked(
+                observations[i].arrival_time_us,
+                jitter_us,
+                i % 2u != 0u,
+                &perturbed[i].arrival_time_us
+            )) {
+            return ESP_ERR_INVALID_ARG;
+        }
     }
 
     localization_result_t jittered;

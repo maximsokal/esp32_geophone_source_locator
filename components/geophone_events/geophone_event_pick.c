@@ -1,5 +1,13 @@
 #include "geophone_events.h"
 
+#include <stdint.h>
+
+
+static size_t saturating_add_size(size_t left, size_t right)
+{
+    return left > SIZE_MAX - right ? SIZE_MAX : left + right;
+}
+
 
 bool geophone_event_pick_channel_arrival(
     const float *samples,
@@ -19,9 +27,11 @@ bool geophone_event_pick_channel_arrival(
         .arrival_sample_index = 0u,
         .arrival_time_s = 0.0f,
         .snr = 0.0f,
-        .uncertainty_samples =
-            config != NULL
-            ? config->refine_lookback_samples + config->refine_lookahead_samples
+        .uncertainty_samples = config != NULL
+            ? saturating_add_size(
+                config->refine_lookback_samples,
+                config->refine_lookahead_samples
+            )
             : 0u
     };
 

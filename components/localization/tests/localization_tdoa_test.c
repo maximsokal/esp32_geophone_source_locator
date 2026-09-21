@@ -150,9 +150,30 @@ static void test_validation_and_geometry_contracts(void)
     ) == ESP_ERR_INVALID_ARG);
 
     config.propagation_speed_mps = 1000.0;
+    assert(localization_tdoa_solve(NULL, 4, &config, NULL, &result) == ESP_ERR_INVALID_ARG);
+    assert(localization_tdoa_solve(observations, 4, NULL, NULL, &result) == ESP_ERR_INVALID_ARG);
+    assert(localization_tdoa_solve(observations, 4, &config, NULL, NULL) == ESP_ERR_INVALID_ARG);
     assert(localization_tdoa_solve(
         observations, 3, &config, NULL, &result
     ) == ESP_ERR_INVALID_ARG);
+
+    config.propagation_speed_mps = NAN;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, NULL, &result
+    ) == ESP_ERR_INVALID_ARG);
+    config.propagation_speed_mps = 1000.0;
+
+    config.convergence_m = NAN;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, NULL, &result
+    ) == ESP_ERR_INVALID_ARG);
+    config.convergence_m = 1.0e-3;
+
+    config.damping = NAN;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, NULL, &result
+    ) == ESP_ERR_INVALID_ARG);
+    config.damping = 1.0e-6;
 
     observations[3].sensor_position.z_m = 0.0;
     assert(localization_tdoa_solve(
@@ -160,6 +181,11 @@ static void test_validation_and_geometry_contracts(void)
     ) == ESP_ERR_INVALID_STATE);
 
     observations[3].sensor_position.z_m = 1.0;
+    observations[1].sensor_position.x_m = INFINITY;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, NULL, &result
+    ) == ESP_ERR_INVALID_ARG);
+    observations[1].sensor_position.x_m = 1.0;
     observations[0].arrival_time_us = 0;
     observations[1].arrival_time_us = 1000;
     observations[2].arrival_time_us = 1000;
@@ -168,6 +194,11 @@ static void test_validation_and_geometry_contracts(void)
     assert(localization_tdoa_solve(
         observations, 4, &config, &bad_guess, &result
     ) == ESP_ERR_INVALID_ARG);
+
+    const localization_point3d_t sensor_guess = observations[0].sensor_position;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, &sensor_guess, &result
+    ) == ESP_ERR_INVALID_STATE);
 
     config.damping = -1.0;
     assert(localization_tdoa_solve(
