@@ -255,6 +255,22 @@
       ]
     },
     {
+      "name": "localization_traveltime_inversion",
+      "sources": [
+        "components/localization/localization_dimensionality_policy.c",
+        "components/localization_traveltime_inversion/localization_traveltime_inversion.c",
+        "components/localization_traveltime_inversion/tests/localization_traveltime_inversion_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_traveltime_inversion/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "localization_event_bridge",
       "sources": [
         "components/localization/localization.c",
