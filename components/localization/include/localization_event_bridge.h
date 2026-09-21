@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "geophone_events.h"
 #include "localization.h"
+#include "localization_dimensionality_policy.h"
 
 /*
  * MAX-135: wires geophone_events picks into localization_tdoa_solve()
@@ -16,6 +17,14 @@
  * Per the MAX-132 project rule, propagation_speed_mps is never invented
  * here -- it is part of the caller-supplied localization_config_t, exactly
  * as localization.h already requires.
+ *
+ * MAX-170: the wired TDOA Gauss-Newton solver is a 3D-only method
+ * (LOCALIZATION_MIN_SENSORS_3D == 4), so it is registered against
+ * localization_dimensionality_policy as LOCALIZATION_METHOD_REQUIRES_3D.
+ * Exactly 3 accepted channels is therefore reported as this *method* being
+ * unavailable at the session's (valid, supported) planar/2D dimensionality
+ * -- not as a generic "insufficient data" failure -- so a future 2D-capable
+ * method can still run against the same picks.
  */
 
 
@@ -30,9 +39,17 @@ typedef struct
 
 typedef enum
 {
-    /* Fewer than LOCALIZATION_MIN_SENSORS_3D channels had an accepted pick;
-     * localization_tdoa_solve() was never called. */
+    /* Fewer than LOCALIZATION_DIMENSIONALITY_MIN_PLANAR_2D (3) channels had
+     * an accepted pick: no method could run, per
+     * localization_dimensionality_policy. localization_tdoa_solve() was
+     * never called. */
     LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS = 0,
+
+    /* Exactly 3 accepted channels (a valid, supported planar/2D session),
+     * but the wired TDOA solver specifically requires 3D. Distinct from
+     * INSUFFICIENT_CHANNELS: the session's data is fine, this one method
+     * just doesn't support it. localization_tdoa_solve() was never called. */
+    LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY,
 
     /* Enough channels had accepted picks, but localization_tdoa_solve()
      * itself rejected the input (degenerate/coplanar geometry, singular
@@ -57,6 +74,10 @@ typedef struct
     uint32_t channel_mask_used;
     uint32_t channel_mask_rejected;
     size_t channels_used_count;
+
+    /* Classification of channels_used_count, per MAX-170's project-wide
+     * policy. Always populated, regardless of status. */
+    localization_dimensionality_t dimensionality;
 
     /* Valid only when status == LOCALIZATION_EVENT_SOLVED. */
     localization_result_t solver_result;
