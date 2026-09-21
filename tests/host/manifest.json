@@ -243,6 +243,29 @@
       ]
     },
     {
+      "name": "localization_pipeline_validation",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization/localization_event_bridge.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "components/geophone_events/geophone_event_energy_trigger.c",
+        "components/geophone_events/geophone_event_sta_lta.c",
+        "components/geophone_events/geophone_event_arrival_refine.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/geophone_events/geophone_event_quality.c",
+        "components/geophone_events/geophone_event_pick.c",
+        "tests/host/localization_pipeline_validation_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/geophone_events/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "recording_gate",
       "sources": [
         "components/localization/localization_dimensionality_policy.c",
