@@ -118,6 +118,61 @@ static bool seismic_recorder_json_add_cables(
 }
 
 
+/*
+ * MAX-166: freeze this recording's as-solved per-pod geometry into the
+ * session's own metadata, separate from object.json. object_store_geometry_t
+ * on the object can be recomputed/overwritten by a later recording of the
+ * same object; this copy is what "this recording's sensor geometry" means
+ * from now on, regardless of what the object's live geometry becomes later.
+ */
+static bool seismic_recorder_json_add_geometry(
+    cJSON *root,
+    const object_store_geometry_t *geometry
+)
+{
+    cJSON *object = cJSON_AddObjectToObject(root, "geometry");
+    if (object == NULL) {
+        return false;
+    }
+
+    if (cJSON_AddBoolToObject(object, "anchored", geometry->anchored) == NULL) {
+        return false;
+    }
+
+    cJSON *pods = cJSON_AddArrayToObject(object, "pods");
+    if (pods == NULL) {
+        return false;
+    }
+
+    for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
+        const object_store_pod_geometry_t *pod = &geometry->pods[i];
+
+        cJSON *pod_object = cJSON_CreateObject();
+        if (pod_object == NULL) {
+            return false;
+        }
+        cJSON_AddItemToArray(pods, pod_object);
+
+        if (
+            cJSON_AddBoolToObject(pod_object, "computed", pod->computed) == NULL ||
+            cJSON_AddBoolToObject(pod_object, "leveled", pod->leveled) == NULL ||
+            cJSON_AddNumberToObject(pod_object, "x_mm", pod->x_mm) == NULL ||
+            cJSON_AddNumberToObject(pod_object, "y_mm", pod->y_mm) == NULL ||
+            cJSON_AddNumberToObject(pod_object, "z_mm", pod->z_mm) == NULL ||
+            cJSON_AddNumberToObject(
+                pod_object,
+                "computed_at_ms",
+                (double)pod->computed_at_ms
+            ) == NULL
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
 static bool seismic_recorder_json_add_cadence(
     cJSON *root,
     const seismic_recorder_cadence_t *cadence
@@ -242,6 +297,9 @@ esp_err_t seismic_recorder_json_write_metadata(
     }
     if (ok) {
         ok = seismic_recorder_json_add_cables(root, profile);
+    }
+    if (ok) {
+        ok = seismic_recorder_json_add_geometry(root, &profile->geometry);
     }
 
     if (!ok) {

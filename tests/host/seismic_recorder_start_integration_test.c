@@ -22,6 +22,8 @@ static nrf_cs_cycle_snapshot_t fake_cycle;
 static nrf_remote_sensor_cache_t fake_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static object_store_geometry_t last_geometry;
 static bool last_geometry_set;
+static object_store_profile_t last_written_profile;
+static bool last_written_profile_set;
 
 typedef struct { unsigned held; } fake_mutex_t;
 typedef struct { EventBits_t bits; } fake_event_group_t;
@@ -41,7 +43,20 @@ void runtime_observability_beat(runtime_observability_task_t task, uint64_t prog
 int64_t esp_timer_get_time(void) { return 1000000; }
 
 bool storage_manager_is_ready(void) { return true; }
-esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile) { (void)object_id; memset(profile, 0, sizeof(*profile)); return ESP_OK; }
+esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile) {
+    (void)object_id;
+    memset(profile, 0, sizeof(*profile));
+    /* MAX-166: simulate real object_store persistence -- a fetch only sees
+     * geometry that a *prior* object_store_set_geometry() call already
+     * committed. If seismic_recorder_start() fetched the profile before
+     * running the geometry solve, this would return the all-zero default
+     * and the ordering regression this test guards against would go
+     * unnoticed. */
+    if (last_geometry_set) {
+        profile->geometry = last_geometry;
+    }
+    return ESP_OK;
+}
 esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry) { (void)object_id; last_geometry = *geometry; last_geometry_set = true; return ESP_OK; }
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
 
@@ -52,7 +67,7 @@ esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot) {
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
 
 esp_err_t seismic_recorder_fs_create_session(const char *object_id, uint32_t rate, uint8_t channels, char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE], FILE **file) { (void)object_id; (void)rate; (void)channels; snprintf(session_id, SEISMIC_RECORDER_SESSION_ID_SIZE, "S000001"); fake_file = tmpfile(); *file = fake_file; return fake_file != NULL ? ESP_OK : ESP_FAIL; }
-esp_err_t seismic_recorder_json_write_metadata(const object_store_profile_t *profile, const seismic_recorder_snapshot_t *snapshot, const char *status) { (void)profile; (void)snapshot; (void)status; return ESP_OK; }
+esp_err_t seismic_recorder_json_write_metadata(const object_store_profile_t *profile, const seismic_recorder_snapshot_t *snapshot, const char *status) { (void)snapshot; (void)status; last_written_profile = *profile; last_written_profile_set = true; return ESP_OK; }
 esp_err_t seismic_buffer_copy_latest(seismic_frame_t *frames, size_t max_frames, size_t *count, seismic_buffer_info_t *info) { (void)frames; (void)max_frames; *count = 0U; memset(info, 0, sizeof(*info)); info->total_frames = 0U; return ESP_OK; }
 esp_err_t seismic_buffer_copy_since(uint64_t *cursor, seismic_frame_t *frames, size_t max_frames, size_t *count, uint64_t *dropped, seismic_buffer_info_t *info) { (void)cursor; (void)frames; (void)max_frames; (void)count; (void)dropped; (void)info; return ESP_ERR_TIMEOUT; }
 esp_err_t seismic_recorder_fs_close(FILE *file) { if (file != NULL) fclose(file); return ESP_OK; }
@@ -115,6 +130,14 @@ int main(void)
     assert(last_geometry.pods[0].computed);
     assert(last_geometry.pods[0].leveled);
     assert(last_geometry.pods[0].x_mm == 500 && last_geometry.pods[0].y_mm == 0);
+
+    /* MAX-166: the profile handed to seismic_recorder_json_write_metadata()
+     * (which freezes it into session.json) must reflect the geometry this
+     * same recording just solved, not a stale pre-solve fetch. */
+    assert(last_written_profile_set);
+    assert(last_written_profile.geometry.pods[0].computed);
+    assert(last_written_profile.geometry.pods[0].leveled);
+    assert(last_written_profile.geometry.pods[0].x_mm == 500);
 
     seismic_recorder_snapshot_t snapshot;
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
