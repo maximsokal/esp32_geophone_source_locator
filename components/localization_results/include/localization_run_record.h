@@ -36,7 +36,14 @@
 #define LOCALIZATION_RUN_OBJECT_ID_SIZE   16U
 #define LOCALIZATION_RUN_SESSION_ID_SIZE  16U
 #define LOCALIZATION_RUN_METHOD_NAME_SIZE 32U
-#define LOCALIZATION_RUN_REJECTION_REASON_SIZE 96U
+/*
+ * 128, not a smaller round number: localization_method_availability_reason()
+ * (localization_dimensionality_policy.h)'s LOCALIZATION_METHOD_SKIPPED_
+ * REQUIRES_3D string alone is 105 chars + NUL -- discovered by a real
+ * truncation failure once a caller actually round-tripped that policy
+ * string through this field instead of assuming it would fit.
+ */
+#define LOCALIZATION_RUN_REJECTION_REASON_SIZE 128U
 
 
 typedef enum
