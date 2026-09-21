@@ -1261,13 +1261,20 @@ esp_err_t seismic_recorder_start(
         return ESP_ERR_NO_MEM;
     }
 
-    err = object_store_get_profile(object_id, profile);
+    /*
+     * MAX-166: fetch the profile *after* the geometry solve, not before.
+     * seismic_recorder_prepare_geometry() calls object_store_set_geometry()
+     * internally; fetching the profile first would freeze the session's
+     * metadata with the object's stale pre-solve geometry (or none at all)
+     * instead of the geometry this exact recording actually solved.
+     */
+    err = seismic_recorder_prepare_geometry(object_id);
     if (err != ESP_OK) {
         free(profile);
         return err;
     }
 
-    err = seismic_recorder_prepare_geometry(object_id);
+    err = object_store_get_profile(object_id, profile);
     if (err != ESP_OK) {
         free(profile);
         return err;
