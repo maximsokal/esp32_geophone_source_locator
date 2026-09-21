@@ -101,6 +101,10 @@ esp_err_t localization_run_record_to_json(
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (!isfinite(record->confidence_score) || record->confidence_score < 0.0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (
         record->solved &&
         (
@@ -156,6 +160,9 @@ esp_err_t localization_run_record_to_json(
             root,
             "propagation_speed_uncertainty_mps",
             record->propagation_speed_uncertainty_mps
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            root, "confidence_score", record->confidence_score
         ) != NULL &&
         cJSON_AddBoolToObject(root, "solved", record->solved) != NULL;
 
@@ -288,6 +295,7 @@ esp_err_t localization_run_record_from_json(
     double geometry_computed_at_ms = 0.0;
     double propagation_speed_mps = 0.0;
     double propagation_speed_uncertainty_mps = 0.0;
+    double confidence_score = 0.0;
     bool solved = false;
 
     bool ok =
@@ -328,6 +336,8 @@ esp_err_t localization_run_record_from_json(
             &propagation_speed_uncertainty_mps
         ) &&
         propagation_speed_uncertainty_mps >= 0.0 &&
+        read_number(root, "confidence_score", &confidence_score) &&
+        confidence_score >= 0.0 &&
         read_bool(root, "solved", &solved);
 
     if (!ok) {
@@ -342,6 +352,7 @@ esp_err_t localization_run_record_from_json(
     record->geometry_computed_at_ms = (uint64_t)geometry_computed_at_ms;
     record->propagation_speed_mps = propagation_speed_mps;
     record->propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
+    record->confidence_score = confidence_score;
     record->solved = solved;
 
     if (solved) {
