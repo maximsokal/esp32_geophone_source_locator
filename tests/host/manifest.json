@@ -255,6 +255,23 @@
       ]
     },
     {
+      "name": "localization_run_record",
+      "sources": [
+        "components/localization_results/localization_run_record_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_results/tests/localization_run_record_json_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "tests/host/stubs/object_store_profile",
+        "components/localization_results/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "seismic_dsp",
       "sources": [
         "components/seismic_dsp/seismic_dsp.c",

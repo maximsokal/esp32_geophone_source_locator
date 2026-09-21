@@ -329,6 +329,8 @@ bool cJSON_IsObject(const cJSON *item) { return item != NULL && item->type == cJ
 bool cJSON_IsString(const cJSON *item) { return item != NULL && item->type == cJSON_String; }
 bool cJSON_IsTrue(const cJSON *item) { return item != NULL && item->type == cJSON_True; }
 
+bool cJSON_IsBool(const cJSON *item) { return item != NULL && (item->type == cJSON_True || item->type == cJSON_False); }
+
 void cJSON_DeleteItemFromObjectCaseSensitive(cJSON *object, const char *name)
 {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);

@@ -43,6 +43,7 @@ bool cJSON_IsNumber(const cJSON *item);
 bool cJSON_IsObject(const cJSON *item);
 bool cJSON_IsString(const cJSON *item);
 bool cJSON_IsTrue(const cJSON *item);
+bool cJSON_IsBool(const cJSON *item);
 void cJSON_DeleteItemFromObjectCaseSensitive(cJSON *object, const char *name);
 void cJSON_Delete(cJSON *item);
 char *cJSON_PrintUnformatted(const cJSON *item);
