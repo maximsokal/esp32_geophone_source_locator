@@ -22,7 +22,13 @@ static localization_run_record_t solved_record(void)
     record.channel_mask_rejected = 0u;
     record.dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
     record.geometry_computed_at_ms = 123400000ULL;
+    snprintf(
+        record.propagation_model_name,
+        sizeof(record.propagation_model_name),
+        "bench_calibration"
+    );
     record.propagation_speed_mps = 340.0;
+    record.propagation_speed_uncertainty_mps = 1.25;
     record.solved = true;
     record.source_position = (localization_point3d_t) { 1.25, 0.5, 2.0 };
     record.emission_time_us = 987654321LL;
@@ -85,7 +91,14 @@ static void test_solved_record_round_trips(void)
     assert(parsed.channel_mask_rejected == original.channel_mask_rejected);
     assert(parsed.dimensionality == original.dimensionality);
     assert(parsed.geometry_computed_at_ms == original.geometry_computed_at_ms);
+    assert(strcmp(parsed.propagation_model_name, original.propagation_model_name) == 0);
     assert(fabs(parsed.propagation_speed_mps - original.propagation_speed_mps) < 1e-9);
+    assert(
+        fabs(
+            parsed.propagation_speed_uncertainty_mps -
+            original.propagation_speed_uncertainty_mps
+        ) < 1e-9
+    );
     assert(parsed.solved);
     assert(fabs(parsed.source_position.x_m - original.source_position.x_m) < 1e-9);
     assert(fabs(parsed.source_position.y_m - original.source_position.y_m) < 1e-9);
@@ -142,6 +155,36 @@ static void test_solved_record_with_non_finite_position_is_rejected(void)
 }
 
 
+static void test_negative_propagation_uncertainty_is_rejected(void)
+{
+    localization_run_record_t record = solved_record();
+    record.propagation_speed_uncertainty_mps = -1.0;
+    char *json = NULL;
+
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+}
+
+
+static void test_unknown_propagation_uncertainty_round_trips_as_zero(void)
+{
+    /* "0 means unknown", not "exactly zero uncertainty" -- a caller that
+     * never calibrated a model must still be able to persist a run. */
+    localization_run_record_t record = solved_record();
+    record.propagation_model_name[0] = '\0';
+    record.propagation_speed_uncertainty_mps = 0.0;
+    char *json = NULL;
+
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.propagation_model_name[0] == '\0');
+    assert(parsed.propagation_speed_uncertainty_mps == 0.0);
+
+    free(json);
+}
+
+
 static void test_future_schema_version_is_not_found(void)
 {
     const char *future_json =
@@ -168,8 +211,18 @@ static void test_malformed_json_is_invalid_response(void)
         localization_run_record_from_json("not json", &parsed) ==
         ESP_ERR_INVALID_RESPONSE
     );
+
+    /* Current schema version, but missing every other required field --
+     * must be INVALID_RESPONSE (malformed), not NOT_FOUND (wrong version). */
+    char current_version_only[64];
+    snprintf(
+        current_version_only,
+        sizeof(current_version_only),
+        "{\"schema_version\":%u}",
+        (unsigned)LOCALIZATION_RUN_SCHEMA_VERSION
+    );
     assert(
-        localization_run_record_from_json("{\"schema_version\":1}", &parsed) ==
+        localization_run_record_from_json(current_version_only, &parsed) ==
         ESP_ERR_INVALID_RESPONSE
     );
 }
@@ -194,6 +247,8 @@ int main(void)
     test_rejected_record_round_trips_with_reason();
     test_unsolved_record_without_reason_is_rejected();
     test_solved_record_with_non_finite_position_is_rejected();
+    test_negative_propagation_uncertainty_is_rejected();
+    test_unknown_propagation_uncertainty_round_trips_as_zero();
     test_future_schema_version_is_not_found();
     test_malformed_json_is_invalid_response();
     test_rejects_null_arguments();

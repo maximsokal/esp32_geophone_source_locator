@@ -225,6 +225,21 @@
       ]
     },
     {
+      "name": "localization_propagation_model",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization/localization_propagation_model.c",
+        "components/localization/tests/localization_propagation_model_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "localization_event_bridge",
       "sources": [
         "components/localization/localization.c",

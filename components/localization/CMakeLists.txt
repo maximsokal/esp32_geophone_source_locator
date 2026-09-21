@@ -4,6 +4,7 @@ idf_component_register(
         "localization_event_bridge.c"
         "localization_dimensionality_policy.c"
         "localization_timing_budget.c"
+        "localization_propagation_model.c"
 
     INCLUDE_DIRS
         "include"
