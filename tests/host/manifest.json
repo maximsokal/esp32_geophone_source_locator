@@ -243,6 +243,18 @@
       ]
     },
     {
+      "name": "recording_gate",
+      "sources": [
+        "components/localization/localization_dimensionality_policy.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/recording_gate/tests/recording_gate_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/include",
+        "components/recording_gate/include"
+      ]
+    },
+    {
       "name": "seismic_dsp",
       "sources": [
         "components/seismic_dsp/seismic_dsp.c",
