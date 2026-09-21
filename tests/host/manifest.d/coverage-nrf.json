@@ -115,6 +115,19 @@
         "components/nrf_topology_service/include",
         "nRF54L15/include"
       ]
+    },
+    {
+      "name": "app_pod_status_local_position_policy",
+      "sources": [
+        "components/device_status_pod_bridge/app_pod_status_local_position_policy.c",
+        "tests/host/app_pod_status_local_position_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/tests/stubs",
+        "components/device_status_pod_bridge/include",
+        "components/object_store/include",
+        "components/object_format/include"
+      ]
     }
   ]
 }

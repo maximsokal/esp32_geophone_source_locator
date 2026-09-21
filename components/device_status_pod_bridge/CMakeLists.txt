@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "app_pod_status_barometer_policy.c"
+        "app_pod_status_local_position_policy.c"
         "app_pod_status_bridge.c"
 
     INCLUDE_DIRS
@@ -12,4 +13,5 @@ idf_component_register(
         freertos
         log
         nrf_topology_service
+        object_store
 )

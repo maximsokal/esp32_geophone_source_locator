@@ -1,11 +1,14 @@
 #include "app_pod_status_bridge.h"
 
 #include <stdbool.h>
+#include <string.h>
 
 #include "app_pod_status_barometer_policy.h"
+#include "app_pod_status_local_position_policy.h"
 #include "app_task_config.h"
 #include "device_status.h"
 #include "nrf_topology_service.h"
+#include "object_store.h"
 
 #include "esp_log.h"
 
@@ -15,6 +18,14 @@
 
 #define APP_POD_STATUS_BRIDGE_PERIOD_MS 2000U
 #define APP_POD_STATUS_BRIDGE_REFERENCE_PRESSURE_PA 101325.0f
+
+/* The bridge indexes object_store's per-pod geometry array with the same
+ * channel index device_status uses; this must hold or that indexing is
+ * silently wrong. MAX-118 already confirmed both are 4 in practice -- this
+ * just makes that invariant load-bearing and visible if it ever changes. */
+_Static_assert(
+    DEVICE_STATUS_POD_COUNT == OBJECT_STORE_POD_COUNT,
+    "device_status and object_store must agree on pod count");
 
 
 static const char *TAG =
@@ -83,6 +94,54 @@ static void publish_channel_barometer(uint8_t channel)
 }
 
 
+/*
+ * Fetches the currently active object's frozen Channel-Sounding-derived
+ * geometry (MAX-118) at most once per cycle -- every pod shares the same
+ * active object, so there is no reason to re-fetch per channel. `has_profile`
+ * is false (and every pod therefore reports an invalid local_position) when
+ * nothing is active, or the fetch fails; this deliberately never falls back
+ * to a stale previously-active object's geometry.
+ */
+static void publish_channel_local_position(
+    uint8_t channel,
+    bool has_profile,
+    const object_store_profile_t *profile
+)
+{
+    const app_pod_status_local_position_reading_t reading =
+        app_pod_status_bridge_compute_local_position_reading(
+            has_profile ? &profile->geometry.pods[channel] : NULL);
+
+    (void)device_status_set_pod_local_position(
+        channel,
+        reading.local_x_m,
+        reading.local_y_m,
+        reading.valid);
+}
+
+
+static void publish_cycle(void)
+{
+    object_store_summary_t active;
+    object_store_profile_t profile;
+    memset(&profile, 0, sizeof(profile));
+    const bool has_profile =
+        object_store_get_active(&active) == ESP_OK &&
+        active.active &&
+        active.id[0] != '\0' &&
+        object_store_get_profile(active.id, &profile) == ESP_OK;
+
+    for (
+        uint8_t channel = 0U;
+        channel < DEVICE_STATUS_POD_COUNT;
+        ++channel
+    ) {
+        publish_channel_barometer(channel);
+        publish_channel_local_position(channel, has_profile, &profile);
+    }
+}
+
+
 static void bridge_task(void *argument)
 {
     (void)argument;
@@ -91,13 +150,7 @@ static void bridge_task(void *argument)
         bridge_register_current_task();
 
     while (!stop_before_start && !bridge_stop_requested()) {
-        for (
-            uint8_t channel = 0U;
-            channel < DEVICE_STATUS_POD_COUNT;
-            ++channel
-        ) {
-            publish_channel_barometer(channel);
-        }
+        publish_cycle();
 
         const uint32_t notifications =
             ulTaskNotifyTake(
@@ -148,7 +201,7 @@ esp_err_t app_pod_status_bridge_start(void)
 
     ESP_LOGI(
         TAG,
-        "Pod barometer status bridge started on core=%d",
+        "Pod barometer/local-position status bridge started on core=%d",
         APP_TASK_CORE_SERVICES);
     return ESP_OK;
 }
