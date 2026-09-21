@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 #include "object_format.h"
 #include "object_store.h"
+#include "seismic_recorder.h"
 #include "storage_manager.h"
 
 #define WEB_SCAN_QUERY_SIZE       160U
@@ -67,19 +68,21 @@ static esp_err_t web_scan_send_json(
     httpd_req_t *request,
     const char *action,
     const char *object_id,
+    const char *session_id,
     esp_err_t result,
     size_t bytes
 )
 {
-    char body[224];
+    char body[256];
     int written = 0;
     if (result == ESP_OK) {
         written = snprintf(
             body,
             sizeof(body),
-            "{\"ok\":true,\"action\":\"%s\",\"object_id\":\"%s\",\"bytes\":%u}",
+            "{\"ok\":true,\"action\":\"%s\",\"object_id\":\"%s\",\"session_id\":\"%s\",\"bytes\":%u}",
             action,
             object_id,
+            session_id,
             (unsigned)bytes
         );
     }
@@ -87,9 +90,10 @@ static esp_err_t web_scan_send_json(
         written = snprintf(
             body,
             sizeof(body),
-            "{\"ok\":false,\"action\":\"%s\",\"object_id\":\"%s\",\"error\":\"%s\"}",
+            "{\"ok\":false,\"action\":\"%s\",\"object_id\":\"%s\",\"session_id\":\"%s\",\"error\":\"%s\"}",
             action,
             object_id,
+            session_id,
             esp_err_to_name(result)
         );
     }
@@ -135,18 +139,22 @@ static esp_err_t web_scan_query_value(
 
 static esp_err_t web_scan_paths(
     const char *object_id,
+    const char *session_id,
     char final_path[WEB_SCAN_PATH_SIZE],
     char temp_path[WEB_SCAN_PATH_SIZE],
     char backup_path[WEB_SCAN_PATH_SIZE]
 )
 {
     if (!object_format_id_is_valid(object_id)) return ESP_ERR_INVALID_ARG;
+    /* MAX-167: a scan belongs to one recording/session, under that session's
+     * own directory -- never directly under the object. */
     const int final_written = snprintf(
         final_path,
         WEB_SCAN_PATH_SIZE,
-        "%s/%s/%s",
+        "%s/%s/sessions/%s/%s",
         STORAGE_MANAGER_OBJECTS_PATH,
         object_id,
+        session_id,
         SCAN_FILE_NAME
     );
     if (final_written <= 0 || final_written >= (int)WEB_SCAN_PATH_SIZE) return ESP_ERR_INVALID_SIZE;
@@ -174,6 +182,28 @@ static esp_err_t web_scan_verify_object(const char *object_id)
     if (!object_format_id_is_valid(object_id)) return ESP_ERR_INVALID_ARG;
     object_store_profile_t profile;
     return object_store_get_profile(object_id, &profile);
+}
+
+
+/*
+ * MAX-167: a scan may only attach to a session that actually exists for this
+ * object -- this is also the request's security boundary against a
+ * malformed/malicious session_id, since a caller-supplied string that does
+ * not exactly match a real recorded session is rejected here, before it is
+ * ever used to build a filesystem path.
+ */
+static esp_err_t web_scan_verify_session(const char *object_id, const char *session_id)
+{
+    seismic_recorder_session_summary_t sessions[SEISMIC_RECORDER_MAX_SESSIONS];
+    size_t session_count = 0U;
+    const esp_err_t err = seismic_recorder_list_sessions(
+        object_id, sessions, SEISMIC_RECORDER_MAX_SESSIONS, &session_count);
+    if (err != ESP_OK) return err;
+
+    for (size_t i = 0U; i < session_count; ++i) {
+        if (strcmp(sessions[i].session_id, session_id) == 0) return ESP_OK;
+    }
+    return ESP_ERR_NOT_FOUND;
 }
 
 
@@ -322,18 +352,19 @@ static void web_scan_remove_temp_best_effort(const char *temp_path)
 }
 
 
-static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
+static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id)
 {
     if (request->content_len <= 0 || (size_t)request->content_len > WEB_SCAN_MAX_BYTES) {
-        return web_scan_send_json(request, "scan_save", object_id, ESP_ERR_INVALID_SIZE, 0U);
+        return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
     }
 
     esp_err_t err = web_scan_verify_object(object_id);
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, err, 0U);
+    if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, final_path, temp_path, backup_path);
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, err, 0U);
+    err = web_scan_paths(object_id, session_id, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
     unsigned char *buffer = heap_caps_malloc(
@@ -341,7 +372,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
     if (buffer == NULL) {
-        return web_scan_send_json(request, "scan_save", object_id, ESP_ERR_NO_MEM, 0U);
+        return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_NO_MEM, 0U);
     }
 
     const web_scan_priority_guard_t priority_guard = web_scan_priority_enter();
@@ -432,7 +463,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id)
             esp_err_to_name(err)
         );
     }
-    return web_scan_send_json(request, "scan_save", object_id, err, received_total);
+    return web_scan_send_json(request, "scan_save", object_id, session_id, err, received_total);
 }
 
 
@@ -507,14 +538,15 @@ static esp_err_t web_scan_read_chunk(
 }
 
 
-static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
+static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, const char *session_id)
 {
     esp_err_t err = web_scan_verify_object(object_id);
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, err, 0U);
+    if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, final_path, temp_path, backup_path);
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, err, 0U);
+    err = web_scan_paths(object_id, session_id, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
     FILE *file = NULL;
@@ -527,7 +559,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
         &size
     );
     if (err != ESP_OK) {
-        return web_scan_send_json(request, "scan_load", object_id, err, 0U);
+        return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
     }
 
     unsigned char *buffer = heap_caps_malloc(
@@ -536,7 +568,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
     );
     if (buffer == NULL) {
         (void)web_scan_close_reader(&file);
-        return web_scan_send_json(request, "scan_load", object_id, ESP_ERR_NO_MEM, 0U);
+        return web_scan_send_json(request, "scan_load", object_id, session_id, ESP_ERR_NO_MEM, 0U);
     }
 
     const web_scan_priority_guard_t priority_guard = web_scan_priority_enter();
@@ -610,24 +642,27 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id)
 }
 
 
-static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id)
+static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, const char *session_id)
 {
     esp_err_t err = web_scan_verify_object(object_id);
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
+    if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, final_path, temp_path, backup_path);
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
+    err = web_scan_paths(object_id, session_id, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
 
     err = storage_manager_operation_begin();
-    if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
     if (remove(final_path) != 0 && errno != ENOENT) err = ESP_FAIL;
     if (remove(temp_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
     if (remove(backup_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
     storage_manager_operation_end();
 
-    if (err == ESP_OK) ESP_LOGI(TAG, "Deleted saved 3D scan: object=%s", object_id);
-    return web_scan_send_json(request, "scan_delete", object_id, err, 0U);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Deleted saved 3D scan: object=%s session=%s", object_id, session_id);
+    }
+    return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
 }
 
 
@@ -645,11 +680,17 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
     char object_id[OBJECT_STORE_ID_SIZE];
     err = web_scan_query_value(request, "object_id", object_id, sizeof(object_id));
     if (err != ESP_OK || !object_format_id_is_valid(object_id)) {
-        return web_scan_send_json(request, "scan", "INVALID", ESP_ERR_INVALID_ARG, 0U);
+        return web_scan_send_json(request, "scan", "INVALID", "INVALID", ESP_ERR_INVALID_ARG, 0U);
     }
 
-    if (strcmp(action, "save") == 0) return web_scan_save(request, object_id);
-    if (strcmp(action, "load") == 0) return web_scan_load(request, object_id);
-    if (strcmp(action, "delete") == 0) return web_scan_delete(request, object_id);
-    return web_scan_send_json(request, "scan", object_id, ESP_ERR_NOT_SUPPORTED, 0U);
+    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+    err = web_scan_query_value(request, "session_id", session_id, sizeof(session_id));
+    if (err != ESP_OK) {
+        return web_scan_send_json(request, "scan", object_id, "INVALID", ESP_ERR_INVALID_ARG, 0U);
+    }
+
+    if (strcmp(action, "save") == 0) return web_scan_save(request, object_id, session_id);
+    if (strcmp(action, "load") == 0) return web_scan_load(request, object_id, session_id);
+    if (strcmp(action, "delete") == 0) return web_scan_delete(request, object_id, session_id);
+    return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_NOT_SUPPORTED, 0U);
 }

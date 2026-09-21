@@ -53,6 +53,9 @@ export default function DeviceConsoleApp() {
   const [objects, setObjects] = useState<ObjectStoreState | null>(null);
   const [sessions, setSessions] = useState<RecordingSessionCollection | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /* MAX-167: which recording/session a 3D scan attaches to -- a scan has no
+   * valid object-level home any more, so the scanner screen needs both IDs. */
+  const [scannerSessionId, setScannerSessionId] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -315,7 +318,7 @@ export default function DeviceConsoleApp() {
       <div className="scanner-feature-shell">
         <button className="console-floating-back" onClick={() => setScreen('objects')}>← Object</button>
         <Suspense fallback={<main className="console-loading">Loading WebXR scanner…</main>}>
-          <XrScannerFeature objectId={scannerObjectId} />
+          <XrScannerFeature objectId={scannerObjectId} sessionId={scannerSessionId} />
         </Suspense>
       </div>
     );
@@ -385,7 +388,7 @@ export default function DeviceConsoleApp() {
           onRecording={async (id, running) => {
             await runControl(running ? 'measurement_start' : 'measurement_stop', running ? { object_id: id } : {});
           }}
-          onOpenScanner={(id) => { setSelectedId(id); setScreen('scanner'); }}
+          onOpenScanner={(id, sessionId) => { setSelectedId(id); setScannerSessionId(sessionId); setScreen('scanner'); }}
         />
       )}
 
