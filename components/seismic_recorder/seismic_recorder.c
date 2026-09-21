@@ -18,6 +18,7 @@
 #include "nrf_geometry_solver.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
+#include "recording_gate.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder_cache.h"
@@ -1057,13 +1058,18 @@ esp_err_t seismic_recorder_init(void)
 
 
 /*
- * MAX-118: block a recording session until every currently ASSIGNED REMOTE
- * pod has reported an accepted (leveled) orientation and a completed
- * Channel Sounding geometry cycle has placed it in 3D relative to MAIN, then
- * persist that geometry onto the object being recorded. A MAIN-only bench
- * setup (zero assigned pods) is rejected outright -- there is nothing to
- * listen to. See seismic_recorder_geometry_policy.h for the pure mapping
- * logic and the documented MAIN-altitude-is-fixed-at-zero caveat.
+ * MAX-118/MAX-165: block a recording session until the Record-button gate
+ * (recording_gate_evaluate(), MAX-165 -- at least 3 currently ASSIGNED
+ * REMOTE pods, all reporting accepted/leveled orientation) allows it, then
+ * run a completed Channel Sounding geometry cycle that places every one of
+ * them in 3D relative to MAIN, and persist that geometry onto the object
+ * being recorded. Exactly 3 assigned pods is allowed but planar/2D-only
+ * (logged as a warning, matching the WebUI's required warning text); fewer
+ * than 3, or any assigned pod not yet level, is rejected outright -- see
+ * recording_gate.h for the exact decision table this reuses (shared with
+ * MAX-170's post-recording method-availability policy, so both always
+ * agree). See seismic_recorder_geometry_policy.h for the pure geometry
+ * mapping logic and the documented MAIN-altitude-is-fixed-at-zero caveat.
  */
 static esp_err_t seismic_recorder_prepare_geometry(
     const char *object_id
@@ -1076,19 +1082,23 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return ESP_ERR_INVALID_STATE;
     }
 
-    err = seismic_recorder_geometry_validate_leveling(leveling.assigned_count, leveling.accepted_count);
-    if (err != ESP_OK) {
-        if (err == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "START rejected: no REMOTE pods assigned, nothing to record");
-        } else {
-            ESP_LOGE(
-                TAG,
-                "START rejected: pods not level yet assigned=%u accepted=%u",
-                (unsigned)leveling.assigned_count,
-                (unsigned)leveling.accepted_count
-            );
-        }
-        return err;
+    const recording_gate_result_t gate =
+        recording_gate_evaluate(leveling.assigned_count, leveling.accepted_count);
+    if (gate.decision == RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES ||
+        gate.decision == RECORDING_GATE_BLOCKED_NOT_LEVEL) {
+        ESP_LOGE(
+            TAG,
+            "START rejected: %s (assigned=%u accepted=%u)",
+            recording_gate_decision_reason(gate.decision),
+            (unsigned)leveling.assigned_count,
+            (unsigned)leveling.accepted_count
+        );
+        return gate.decision == RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES
+            ? ESP_ERR_NOT_FOUND
+            : ESP_ERR_INVALID_STATE;
+    }
+    if (gate.decision == RECORDING_GATE_ALLOWED_PLANAR_2D) {
+        ESP_LOGW(TAG, "START: %s", recording_gate_planar_warning(gate.decision));
     }
 
     const nrf_cs_policy_t policy = {

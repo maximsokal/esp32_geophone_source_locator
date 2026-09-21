@@ -16,14 +16,6 @@ static void set_assigned(
 }
 
 
-static void test_validate_leveling(void)
-{
-    assert(seismic_recorder_geometry_validate_leveling(0U, 0U) == ESP_ERR_NOT_FOUND);
-    assert(seismic_recorder_geometry_validate_leveling(2U, 1U) == ESP_ERR_INVALID_STATE);
-    assert(seismic_recorder_geometry_validate_leveling(2U, 2U) == ESP_OK);
-}
-
-
 static void test_build_inputs_requires_main(void)
 {
     nrf_topology_snapshot_t topology;
@@ -142,7 +134,6 @@ static void test_apply_solution_maps_pods_and_skips_unsolved(void)
 
 int main(void)
 {
-    test_validate_leveling();
     test_build_inputs_requires_main();
     test_build_inputs_skips_unassigned_and_invalid_altitude();
     test_build_inputs_rejects_overflow();

@@ -10,6 +10,7 @@ import {
   measurementControlLocked,
   measurementOwnsRecorder,
 } from './measurementTransition';
+import { recordingGateBlocksStart as isRecordingGateBlockingStart } from './recordingGate';
 import '../seismic/SavedSeismicViewer.css';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
@@ -81,9 +82,19 @@ export default function ObjectsFeature(props: Props) {
     && measurementOwnsTheRecorder
     && measurementObjectId === selected.id;
   const anotherRecording = measurementOwnsTheRecorder && !selectedRecording;
+  const recordingGate = status?.recording_gate;
+  /* MAX-165: block starting a *new* recording when the gate says so (fewer
+   * than 3 assigned REMOTEs, or an assigned REMOTE that is not yet level).
+   * Never blocks stopping an already-running recording -- the gate is about
+   * admission, not about an in-progress session. */
+  const recordingGateBlocksStart = isRecordingGateBlockingStart(
+    recordingGate,
+    selectedRecording,
+  );
   const recordingToggleDisabled =
     busy ||
     anotherRecording ||
+    recordingGateBlocksStart ||
     (measurementLocked && measurement?.state !== 'RECORDING');
   const selectedSessions = selected !== null && sessions?.object_id === selected.id
     ? sessions.sessions
@@ -254,6 +265,19 @@ export default function ObjectsFeature(props: Props) {
               {anotherRecording && (
                 <div className="console-alert">
                   Recording {recording?.session_id ?? ''} belongs to object {recording?.object_id}. Stop it before starting another object.
+                </div>
+              )}
+
+              {recordingGateBlocksStart && (
+                <div className="console-alert" role="alert">
+                  Record disabled: {recordingGate?.reason}
+                  {' '}({recordingGate?.assigned_count ?? 0} assigned, {recordingGate?.accepted_count ?? 0} level)
+                </div>
+              )}
+
+              {recordingGate?.decision === 'ALLOWED_PLANAR_2D' && (
+                <div className="console-alert warning" role="status">
+                  {recordingGate.warning}
                 </div>
               )}
 

@@ -26,18 +26,6 @@ typedef struct
 
 
 /*
- * Recording-start leveling gate (MAX-118). Rejects outright when nothing is
- * assigned -- a MAIN-only bench setup has no external geophone to listen to
- * -- and rejects while any currently assigned REMOTE has not yet reported
- * NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED.
- */
-esp_err_t seismic_recorder_geometry_validate_leveling(
-    size_t assigned_count,
-    size_t accepted_count
-);
-
-
-/*
  * Build the geometry solver's node list from the current topology snapshot
  * and per-channel altitude status. MAIN is always included at z_mm == 0 (the
  * fixed-origin convention, MAX-118 design decision -- not a sensor reading:

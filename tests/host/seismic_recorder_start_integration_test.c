@@ -95,41 +95,108 @@ int main(void)
     fake_acquisition.conversion_attempts = 100U;
     fake_acquisition.collapsed_periods = 0U;
 
-    /* One assigned, leveled, altitude-reporting REMOTE pod on channel 0,
-     * plus MAIN -- the minimum non-bench-test geometry gate (MAX-118). */
+    /* MAX-165 regression: fewer than 3 assigned REMOTEs must be rejected
+     * before any geometry solve is attempted, even though every assigned
+     * pod is level -- this is exactly the gap left open by the increment
+     * that only landed recording_gate_evaluate() as a tested-but-unwired
+     * pure function. Runs first, on a freshly-initialized recorder, so the
+     * rejection is observed before s_starting is ever set. */
     memset(&fake_topology, 0, sizeof(fake_topology));
     fake_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
     fake_topology.main.node_id = 0U;
     fake_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
     fake_topology.remotes[0].node_id = 1U;
     fake_topology.remotes[0].mux_channel = 0U;
+    fake_topology.remotes[1].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.remotes[1].node_id = 2U;
+    fake_topology.remotes[1].mux_channel = 1U;
 
-    fake_leveling.assigned_count = 1U;
-    fake_leveling.accepted_count = 1U;
+    fake_leveling.assigned_count = 2U;
+    fake_leveling.accepted_count = 2U;
 
     memset(fake_sensor_cache, 0, sizeof(fake_sensor_cache));
-    fake_sensor_cache[0].response_valid = true;
-    fake_sensor_cache[0].topology_current = true;
-    fake_sensor_cache[0].sensor.altitude_mm = 0;
-    fake_sensor_cache[0].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+    for (uint8_t channel = 0U; channel < 2U; ++channel) {
+        fake_sensor_cache[channel].response_valid = true;
+        fake_sensor_cache[channel].topology_current = true;
+        fake_sensor_cache[channel].sensor.altitude_mm = 0;
+        fake_sensor_cache[channel].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+    }
+
+    assert(seismic_recorder_init() == ESP_OK);
+    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_NOT_FOUND);
+    assert(!last_geometry_set);
+    assert(!last_written_profile_set);
+
+    /* MAX-165: three assigned REMOTEs with only two accepted level reports
+     * must be rejected as not-level before CS geometry is attempted. Keep the
+     * same minimum-capable topology as the success case below so this checks
+     * the leveling gate rather than the insufficient-remotes gate. */
+    fake_topology.remotes[2].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.remotes[2].node_id = 3U;
+    fake_topology.remotes[2].mux_channel = 2U;
+    fake_leveling.assigned_count = 3U;
+    fake_leveling.accepted_count = 2U;
+
+    assert(seismic_recorder_init() == ESP_OK);
+    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set);
+    assert(!last_written_profile_set);
+
+    /* Three assigned, leveled, altitude-reporting REMOTE pods on channels
+     * 0-2, plus MAIN -- the MAX-165 minimum ("exactly 3 = allowed, planar/2D
+     * only") rather than MAX-118's older, now-superseded 1-REMOTE minimum.
+     * Reuses the exact mirror-disambiguation 3-4-5-triangle mesh from
+     * nrf_geometry_solver_test.c's test_trilateration_with_mirror_disambiguation
+     * (MAIN=(0,0), A=(300,0) via a single reference, B=(150,200) and
+     * C=(150,-200) distinguished only via their own 400mm pair) so the
+     * geometry math here is known-correct, not re-derived. */
+    memset(&fake_topology, 0, sizeof(fake_topology));
+    fake_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.main.node_id = 0U;
+    fake_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.remotes[0].node_id = 1U;
+    fake_topology.remotes[0].mux_channel = 0U;
+    fake_topology.remotes[1].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.remotes[1].node_id = 2U;
+    fake_topology.remotes[1].mux_channel = 1U;
+    fake_topology.remotes[2].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.remotes[2].node_id = 3U;
+    fake_topology.remotes[2].mux_channel = 2U;
+
+    fake_leveling.assigned_count = 3U;
+    fake_leveling.accepted_count = 3U;
+
+    memset(fake_sensor_cache, 0, sizeof(fake_sensor_cache));
+    for (uint8_t channel = 0U; channel < 3U; ++channel) {
+        fake_sensor_cache[channel].response_valid = true;
+        fake_sensor_cache[channel].topology_current = true;
+        fake_sensor_cache[channel].sensor.altitude_mm = 0;
+        fake_sensor_cache[channel].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+    }
 
     memset(&fake_cycle, 0, sizeof(fake_cycle));
     fake_cycle.active = false;
     fake_cycle.complete = true;
     fake_cycle.result = NRF_CS_AUTHORITY_COMPLETE;
-    fake_cycle.pair_count = 1U;
-    fake_cycle.pairs[0].node_a = 0U;
-    fake_cycle.pairs[0].node_b = 1U;
-    fake_cycle.pairs[0].state = NRF_CS_PAIR_VALID;
-    fake_cycle.pairs[0].distance_mm = 500;
+    fake_cycle.pair_count = 6U;
+    fake_cycle.pairs[0] = (nrf_cs_pair_result_t){ .node_a = 0U, .node_b = 1U, .state = NRF_CS_PAIR_VALID, .distance_mm = 300 };
+    fake_cycle.pairs[1] = (nrf_cs_pair_result_t){ .node_a = 0U, .node_b = 2U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
+    fake_cycle.pairs[2] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 2U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
+    fake_cycle.pairs[3] = (nrf_cs_pair_result_t){ .node_a = 0U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
+    fake_cycle.pairs[4] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
+    fake_cycle.pairs[5] = (nrf_cs_pair_result_t){ .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 400 };
 
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
     assert(last_geometry_set);
     assert(!last_geometry.anchored);
-    assert(last_geometry.pods[0].computed);
-    assert(last_geometry.pods[0].leveled);
-    assert(last_geometry.pods[0].x_mm == 500 && last_geometry.pods[0].y_mm == 0);
+    assert(last_geometry.pods[0].computed && last_geometry.pods[0].leveled);
+    assert(last_geometry.pods[0].x_mm == 300 && last_geometry.pods[0].y_mm == 0);
+    assert(last_geometry.pods[1].computed && last_geometry.pods[1].leveled);
+    assert(abs(last_geometry.pods[1].x_mm - 150) <= 2 && abs(last_geometry.pods[1].y_mm - 200) <= 2);
+    assert(last_geometry.pods[2].computed && last_geometry.pods[2].leveled);
+    /* The mirror-disambiguated point, not (150,200) again. */
+    assert(abs(last_geometry.pods[2].x_mm - 150) <= 2 && abs(last_geometry.pods[2].y_mm - (-200)) <= 2);
 
     /* MAX-166: the profile handed to seismic_recorder_json_write_metadata()
      * (which freezes it into session.json) must reflect the geometry this
@@ -137,7 +204,7 @@ int main(void)
     assert(last_written_profile_set);
     assert(last_written_profile.geometry.pods[0].computed);
     assert(last_written_profile.geometry.pods[0].leveled);
-    assert(last_written_profile.geometry.pods[0].x_mm == 500);
+    assert(last_written_profile.geometry.pods[0].x_mm == 300);
 
     seismic_recorder_snapshot_t snapshot;
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);

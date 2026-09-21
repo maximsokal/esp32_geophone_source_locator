@@ -719,6 +719,8 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
@@ -736,6 +738,8 @@
         "components/nrf_geometry_solver/include",
         "components/nrf_topology_service/include",
         "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
         "nRF54L15/include"
       ],
       "libraries": [
@@ -852,6 +856,24 @@
       ],
       "include_dirs": [
         "components/web_server"
+      ]
+    },
+    {
+      "name": "web_status_recording_gate",
+      "sources": [
+        "components/web_server/web_status_json_recording.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_status_recording_gate_host_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_recording_gate",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server/tests/stubs",
+        "components/web_server",
+        "components/recording_gate/include",
+        "components/localization/include"
       ]
     },
     {

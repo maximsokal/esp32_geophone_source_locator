@@ -462,6 +462,7 @@ esp_err_t web_status_json_build_extended(
         ) &&
         web_status_json_add_runtime(root) &&
         web_status_json_add_recording(root) &&
+        web_status_json_add_recording_gate(root) &&
         web_status_json_add_measurement(root);
 
     if (!base_ok) {
