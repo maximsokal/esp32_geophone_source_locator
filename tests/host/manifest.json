@@ -540,6 +540,18 @@
       ]
     },
     {
+      "name": "object_recovery_legacy_scan",
+      "sources": [
+        "components/object_recovery/object_recovery_legacy_scan.c",
+        "components/object_recovery/tests/object_recovery_legacy_scan_test.c"
+      ],
+      "include_dirs": [
+        "components/object_recovery/tests/stubs/legacy_scan",
+        "components/object_recovery/tests/stubs",
+        "components/object_recovery"
+      ]
+    },
+    {
       "name": "spi_bus_arbitration",
       "sources": [
         "components/spi_bus/spi_bus.c",

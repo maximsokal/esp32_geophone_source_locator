@@ -6,6 +6,7 @@ idf_component_register(
         "object_recovery_fs.c"
         "object_recovery_metadata_validate.c"
         "object_recovery_metadata.c"
+        "object_recovery_legacy_scan.c"
 
     INCLUDE_DIRS
         "include"

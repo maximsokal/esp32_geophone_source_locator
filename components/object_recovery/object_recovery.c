@@ -325,6 +325,12 @@ static esp_err_t object_recovery_run_cooperative_policy(
                 break;
             }
             recovered_sessions_total += recovered_sessions;
+
+            /* MAX-167: after session recovery so the newest-session lookup
+             * this uses reflects the post-recovery session list, not a
+             * possibly-incomplete pre-recovery one. Best-effort by design
+             * (always ESP_OK) -- never gates this loop's err/break path. */
+            (void)object_recovery_migrate_legacy_scan(ids[index]);
         }
 
         ++processed;

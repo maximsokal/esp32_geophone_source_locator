@@ -140,13 +140,13 @@ function jsonRequest<T>(
   return queuedApiRequest(() => performJsonRequest<T>(url, init, timeoutMs));
 }
 
-function scanControlUrl(action: 'save' | 'load' | 'delete', objectId: string): string {
-  const query = new URLSearchParams({ scan: action, object_id: objectId });
+function scanControlUrl(action: 'save' | 'load' | 'delete', objectId: string, sessionId: string): string {
+  const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
   return `/api/control?${query.toString()}`;
 }
 
-async function performScanSave(objectId: string, artifact: Uint8Array): Promise<ControlResult> {
-  const url = scanControlUrl('save', objectId);
+async function performScanSave(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
+  const url = scanControlUrl('save', objectId, sessionId);
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
   try {
@@ -185,8 +185,8 @@ async function performScanSave(objectId: string, artifact: Uint8Array): Promise<
   }
 }
 
-async function performScanLoad(objectId: string): Promise<Uint8Array | null> {
-  const url = scanControlUrl('load', objectId);
+async function performScanLoad(objectId: string, sessionId: string): Promise<Uint8Array | null> {
+  const url = scanControlUrl('load', objectId, sessionId);
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
   try {
@@ -270,16 +270,16 @@ export function sendControl(
   }, DEVICE_API_CONTROL_TIMEOUT_MS);
 }
 
-export function saveObjectScanArtifact(objectId: string, artifact: Uint8Array): Promise<ControlResult> {
-  return queuedApiRequest(() => performScanSave(objectId, artifact));
+export function saveObjectScanArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
+  return queuedApiRequest(() => performScanSave(objectId, sessionId, artifact));
 }
 
-export function loadObjectScanArtifact(objectId: string): Promise<Uint8Array | null> {
-  return queuedApiRequest(() => performScanLoad(objectId));
+export function loadObjectScanArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
+  return queuedApiRequest(() => performScanLoad(objectId, sessionId));
 }
 
-export function deleteObjectScanArtifact(objectId: string): Promise<ControlResult> {
-  return jsonRequest<ControlResult>(scanControlUrl('delete', objectId), {
+export function deleteObjectScanArtifact(objectId: string, sessionId: string): Promise<ControlResult> {
+  return jsonRequest<ControlResult>(scanControlUrl('delete', objectId, sessionId), {
     method: 'POST',
   }, DEVICE_API_SCAN_TIMEOUT_MS);
 }

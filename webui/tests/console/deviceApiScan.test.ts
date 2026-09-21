@@ -18,8 +18,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('object-owned 3D scan transport', () => {
-  it('uploads the artifact as exact opaque bytes to the selected object', async () => {
+describe('session-owned 3D scan transport (MAX-167)', () => {
+  it('uploads the artifact as exact opaque bytes to the selected recording/session', async () => {
     const artifact = new Uint8Array([0x47, 0x58, 0x52, 0x53, 1, 2, 3, 255]);
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = init?.body;
@@ -29,11 +29,11 @@ describe('object-owned 3D scan transport', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await saveObjectScanArtifact('OBJ_0008', artifact);
+    const result = await saveObjectScanArtifact('OBJ_0008', 'S000001', artifact);
 
     expect(result.bytes).toBe(artifact.length);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/control?scan=save&object_id=OBJ_0008');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/control?scan=save&object_id=OBJ_0008&session_id=S000001');
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
@@ -47,16 +47,16 @@ describe('object-owned 3D scan transport', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const loaded = await loadObjectScanArtifact('OBJ_0008');
+    const loaded = await loadObjectScanArtifact('OBJ_0008', 'S000001');
 
     expect(loaded).not.toBeNull();
     expect(Array.from(loaded ?? [])).toEqual(Array.from(artifact));
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/control?scan=load&object_id=OBJ_0008');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/control?scan=load&object_id=OBJ_0008&session_id=S000001');
   });
 
   it('treats only HTTP 404 as no saved scan', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'ESP_ERR_NOT_FOUND' }, 404)));
-    await expect(loadObjectScanArtifact('OBJ_0010')).resolves.toBeNull();
+    await expect(loadObjectScanArtifact('OBJ_0010', 'S000002')).resolves.toBeNull();
   });
 
   it('serializes scan upload ahead of a status poll to avoid a second ESP TLS request', async () => {
@@ -69,7 +69,7 @@ describe('object-owned 3D scan transport', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const save = saveObjectScanArtifact('OBJ_0008', new Uint8Array([1, 2, 3]));
+    const save = saveObjectScanArtifact('OBJ_0008', 'S000001', new Uint8Array([1, 2, 3]));
     const status = fetchDeviceStatus(false);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

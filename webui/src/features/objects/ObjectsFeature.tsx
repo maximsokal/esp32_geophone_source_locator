@@ -33,7 +33,9 @@ interface Props {
   onDefaultCable: (podId: number, length: number) => Promise<void>;
   onAcquisition: (running: boolean) => Promise<void>;
   onRecording: (id: string, running: boolean) => Promise<void>;
-  onOpenScanner: (id: string) => void;
+  /* MAX-167: a 3D scan belongs to one recording/session, never the object
+   * directly -- the caller must know which session it's attaching to. */
+  onOpenScanner: (objectId: string, sessionId: string) => void;
 }
 
 function formatDuration(milliseconds: number | undefined): string {
@@ -182,7 +184,6 @@ export default function ObjectsFeature(props: Props) {
               </div>
               <div className="console-actions">
                 {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>Set active</button>}
-                <button disabled={busy} className="secondary" onClick={() => props.onOpenScanner(selected.id)}>Open 3D scan</button>
                 <button
                   disabled={busy || selectedRecording}
                   className="danger"
@@ -348,14 +349,29 @@ export default function ObjectsFeature(props: Props) {
             </article>
 
             {openSession !== null && (
-              <Suspense fallback={<div className="console-card">Loading saved waveform module…</div>}>
-                <SavedSeismicViewer
-                  objectId={selected.id}
-                  sessionId={openSession.session_id}
-                  summary={openSession}
-                  onClose={() => setOpenSessionId(null)}
-                />
-              </Suspense>
+              <>
+                <article className="console-card">
+                  <div className="card-heading">
+                    <div><span className="eyebrow">SESSION {openSession.session_id}</span><h2>3D scan</h2></div>
+                  </div>
+                  <p>A 3D scan belongs to this recording, not the object -- open it here to add or review the scan captured for session {openSession.session_id}.</p>
+                  <div className="console-actions">
+                    <button
+                      disabled={busy}
+                      className="secondary"
+                      onClick={() => props.onOpenScanner(selected.id, openSession.session_id)}
+                    >Open 3D scan</button>
+                  </div>
+                </article>
+                <Suspense fallback={<div className="console-card">Loading saved waveform module…</div>}>
+                  <SavedSeismicViewer
+                    objectId={selected.id}
+                    sessionId={openSession.session_id}
+                    summary={openSession}
+                    onClose={() => setOpenSessionId(null)}
+                  />
+                </Suspense>
+              </>
             )}
 
             {showLive && liveAvailable && (

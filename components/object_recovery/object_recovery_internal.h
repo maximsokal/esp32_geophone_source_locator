@@ -34,3 +34,15 @@ esp_err_t object_recovery_run_cooperative(
     void *user_context,
     bool yield_between_objects
 );
+
+
+/*
+ * MAX-167: migrate one object's legacy object-level 3D scan (if any) onto
+ * its newest recorded session. See object_recovery_legacy_scan.c for the
+ * full policy (no session -> left in place; destination already has a scan
+ * -> left in place; always returns ESP_OK, since a stuck legacy file for one
+ * object must never block recovery for every other object).
+ */
+esp_err_t object_recovery_migrate_legacy_scan(
+    const char *object_id
+);

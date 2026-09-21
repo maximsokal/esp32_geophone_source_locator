@@ -42,6 +42,13 @@ type ScanStoragePhase =
 
 interface AppProps {
   objectId: string | null;
+  /*
+   * MAX-167: a 3D scan belongs to one recording/session, never directly to
+   * the object. Every scan storage action is gated on both IDs together --
+   * an object without an open session has nowhere valid to attach a new
+   * scan, exactly like objectId === null before this change.
+   */
+  sessionId: string | null;
 }
 
 class ResultViewportErrorBoundary extends Component<
@@ -116,12 +123,14 @@ function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null): str
   }
 }
 
-export default function App({ objectId }: AppProps) {
+export default function App({ objectId, sessionId }: AppProps) {
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
   const [computeProfile, setComputeProfile] = useState<DeviceComputeProfile | null>(null);
   const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
-  const [scanStoragePhase, setScanStoragePhase] = useState<ScanStoragePhase>(objectId === null ? 'unbound' : 'loading');
+  const [scanStoragePhase, setScanStoragePhase] = useState<ScanStoragePhase>(
+    objectId === null || sessionId === null ? 'unbound' : 'loading',
+  );
   const [scanStorageError, setScanStorageError] = useState<string | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
@@ -197,19 +206,19 @@ export default function App({ objectId }: AppProps) {
     setScanSnapshot(null);
     setScanStorageError(null);
 
-    if (objectId === null) {
+    if (objectId === null || sessionId === null) {
       setScanStoragePhase('unbound');
       return undefined;
     }
 
     setScanStoragePhase('loading');
     let cancelled = false;
-    void loadObjectScanArtifact(objectId).then(
+    void loadObjectScanArtifact(objectId, sessionId).then(
       (artifact) => {
         if (cancelled || generation !== storageGeneration.current) return;
         if (artifact === null) {
           setScanStoragePhase('none');
-          clientDiagnostics.info('SCAN_RESULT_NOT_SAVED', { objectId });
+          clientDiagnostics.info('SCAN_RESULT_NOT_SAVED', { objectId, sessionId });
           void clientDiagnostics.flush();
           return;
         }
@@ -222,6 +231,7 @@ export default function App({ objectId }: AppProps) {
           setScanStoragePhase('loaded');
           clientDiagnostics.info('SCAN_RESULT_RESTORED', {
             objectId,
+            sessionId,
             bytes: artifact.byteLength,
             stablePoints: restored.pointCount,
             tentativePoints: restored.tentativePointCount,
@@ -234,7 +244,7 @@ export default function App({ objectId }: AppProps) {
           const message = reason instanceof Error ? reason.message : String(reason);
           setScanStorageError(message);
           setScanStoragePhase('error');
-          clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, error: message });
+          clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
           void clientDiagnostics.flush();
         }
       },
@@ -243,13 +253,13 @@ export default function App({ objectId }: AppProps) {
         const message = reason instanceof Error ? reason.message : String(reason);
         setScanStorageError(message);
         setScanStoragePhase('error');
-        clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, error: message });
+        clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
         void clientDiagnostics.flush();
       },
     );
 
     return () => { cancelled = true; };
-  }, [objectId, selectMode]);
+  }, [objectId, sessionId, selectMode]);
 
   const handleScanIntent = useCallback((intent: ScanStartIntent): boolean => {
     setScanStorageError(null);
@@ -296,7 +306,7 @@ export default function App({ objectId }: AppProps) {
       else {
         setScanSnapshot(null);
       }
-      setScanStoragePhase(objectId === null ? 'unbound' : 'scanning');
+      setScanStoragePhase(objectId === null || sessionId === null ? 'unbound' : 'scanning');
       return;
     }
 
@@ -357,8 +367,8 @@ export default function App({ objectId }: AppProps) {
     });
     void clientDiagnostics.flush();
 
-    if (objectId === null) {
-      setScanStorageError('No object is selected; the completed scan exists only in browser memory.');
+    if (objectId === null || sessionId === null) {
+      setScanStorageError('No recording/session is open; the completed scan exists only in browser memory.');
       setScanStoragePhase('error');
       return;
     }
@@ -371,14 +381,14 @@ export default function App({ objectId }: AppProps) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setScanStorageError(message);
       setScanStoragePhase('error');
-      clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, stage: 'encode', error: message });
+      clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'encode', error: message });
       void clientDiagnostics.flush();
       return;
     }
 
     const generation = ++storageGeneration.current;
     setScanStoragePhase('saving');
-    void saveObjectScanArtifact(objectId, artifact).then(
+    void saveObjectScanArtifact(objectId, sessionId, artifact).then(
       (result) => {
         if (generation !== storageGeneration.current) return;
         setScanStoragePhase('saved');
@@ -387,6 +397,7 @@ export default function App({ objectId }: AppProps) {
         continuationBase.current = null;
         clientDiagnostics.info('SCAN_RESULT_SAVED', {
           objectId,
+          sessionId,
           bytes: result.bytes ?? artifact.byteLength,
           stablePoints: snapshot.pointCount,
           manualPoints: snapshot.manualControlPoints.length,
@@ -399,16 +410,16 @@ export default function App({ objectId }: AppProps) {
         const message = reason instanceof Error ? reason.message : String(reason);
         setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
         setScanStoragePhase('error');
-        clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, stage: 'transport', error: message });
+        clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'transport', error: message });
         void clientDiagnostics.flush();
       },
     );
-  }, [objectId, selectMode]);
+  }, [objectId, sessionId, selectMode]);
 
   const deleteSavedScan = useCallback((): void => {
     scanIntent.current = 'fresh';
     continuationBase.current = null;
-    if (objectId === null) {
+    if (objectId === null || sessionId === null) {
       setScanSnapshot(null);
       setScanStoragePhase('unbound');
       return;
@@ -416,12 +427,12 @@ export default function App({ objectId }: AppProps) {
     const generation = ++storageGeneration.current;
     setScanStoragePhase('deleting');
     setScanStorageError(null);
-    void deleteObjectScanArtifact(objectId).then(
+    void deleteObjectScanArtifact(objectId, sessionId).then(
       () => {
         if (generation !== storageGeneration.current) return;
         setScanSnapshot(null);
         setScanStoragePhase('none');
-        clientDiagnostics.info('SCAN_RESULT_DELETED', { objectId });
+        clientDiagnostics.info('SCAN_RESULT_DELETED', { objectId, sessionId });
         void clientDiagnostics.flush();
       },
       (reason) => {
@@ -429,11 +440,11 @@ export default function App({ objectId }: AppProps) {
         const message = reason instanceof Error ? reason.message : String(reason);
         setScanStorageError(message);
         setScanStoragePhase('error');
-        clientDiagnostics.warn('SCAN_RESULT_DELETE_FAILED', { objectId, error: message });
+        clientDiagnostics.warn('SCAN_RESULT_DELETE_FAILED', { objectId, sessionId, error: message });
         void clientDiagnostics.flush();
       },
     );
-  }, [objectId]);
+  }, [objectId, sessionId]);
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
   const httpsReady = xrCapabilities?.secureContext === true;
