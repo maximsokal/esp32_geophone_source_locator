@@ -214,6 +214,7 @@
       "sources": [
         "components/localization/localization.c",
         "components/localization/localization_event_bridge.c",
+        "components/localization/localization_dimensionality_policy.c",
         "components/geophone_events/geophone_event_energy_trigger.c",
         "components/geophone_events/geophone_event_sta_lta.c",
         "components/geophone_events/geophone_event_arrival_refine.c",
@@ -229,6 +230,16 @@
       ],
       "libraries": [
         "m"
+      ]
+    },
+    {
+      "name": "localization_dimensionality_policy",
+      "sources": [
+        "components/localization/localization_dimensionality_policy.c",
+        "components/localization/tests/localization_dimensionality_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/include"
       ]
     },
     {

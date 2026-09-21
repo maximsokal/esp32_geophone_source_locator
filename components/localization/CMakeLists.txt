@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "localization.c"
         "localization_event_bridge.c"
+        "localization_dimensionality_policy.c"
 
     INCLUDE_DIRS
         "include"

@@ -67,9 +67,21 @@ esp_err_t localization_event_solve(
     }
 
     result->channels_used_count = used_count;
+    result->dimensionality = localization_dimensionality_classify(used_count);
 
-    if (used_count < LOCALIZATION_MIN_SENSORS_3D) {
+    const localization_method_availability_t availability =
+        localization_method_availability(
+            result->dimensionality,
+            LOCALIZATION_METHOD_REQUIRES_3D
+        );
+
+    if (availability == LOCALIZATION_METHOD_SKIPPED_INSUFFICIENT_SENSORS) {
         result->status = LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS;
+        return ESP_OK;
+    }
+
+    if (availability == LOCALIZATION_METHOD_SKIPPED_REQUIRES_3D) {
+        result->status = LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY;
         return ESP_OK;
     }
 

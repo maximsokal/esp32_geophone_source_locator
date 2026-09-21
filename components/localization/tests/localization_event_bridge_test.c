@@ -91,6 +91,7 @@ static void test_solves_when_all_channels_are_accepted(void)
     assert(result.channel_mask_used == 0x0Fu);
     assert(result.channel_mask_rejected == 0u);
     assert(result.channels_used_count == 4u);
+    assert(result.dimensionality == LOCALIZATION_DIMENSIONALITY_CAPABLE_3D);
     assert(result.solver_result.converged);
     assert_near(result.solver_result.source_position.x_m, s_expected_source.x_m, 0.01);
     assert_near(result.solver_result.source_position.y_m, s_expected_source.y_m, 0.01);
@@ -98,8 +99,12 @@ static void test_solves_when_all_channels_are_accepted(void)
 }
 
 
-static void test_one_rejected_pick_leaves_too_few_channels(void)
+static void test_one_rejected_pick_leaves_planar_2d_method_unavailable(void)
 {
+    /* MAX-170: exactly 3 remaining accepted channels is a valid, supported
+     * planar/2D session -- not a generic "insufficient data" failure. The
+     * wired TDOA solver specifically requires 3D, so it reports the more
+     * precise METHOD_UNAVAILABLE_FOR_DIMENSIONALITY status instead. */
     localization_event_channel_input_t channels[4];
     for (size_t i = 0u; i < 4u; ++i) {
         channels[i] = (localization_event_channel_input_t) {
@@ -114,7 +119,8 @@ static void test_one_rejected_pick_leaves_too_few_channels(void)
     localization_event_result_t result;
 
     assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
-    assert(result.status == LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS);
+    assert(result.status == LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY);
+    assert(result.dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D);
     assert(result.channel_mask_used == 0x0Du); /* bits 0,2,3 */
     assert(result.channel_mask_rejected == 0x02u); /* bit 1 */
     assert(result.channels_used_count == 3u);
@@ -137,9 +143,33 @@ static void test_accepted_pick_with_unknown_sample_rate_is_excluded(void)
     localization_event_result_t result;
 
     assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
-    assert(result.status == LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS);
+    assert(result.status == LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY);
+    assert(result.dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D);
     assert(result.channel_mask_rejected == 0x04u); /* bit 2 */
     assert(result.channels_used_count == 3u);
+}
+
+
+static void test_two_channels_is_genuinely_insufficient(void)
+{
+    localization_event_channel_input_t channels[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+    channels[1].pick = rejected_pick();
+    channels[2].pick = rejected_pick();
+
+    const localization_config_t config = test_config();
+    localization_event_result_t result;
+
+    assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS);
+    assert(result.dimensionality == LOCALIZATION_DIMENSIONALITY_INSUFFICIENT);
+    assert(result.channels_used_count == 2u);
 }
 
 
@@ -178,8 +208,9 @@ static void test_rejects_invalid_arguments(void)
 int main(void)
 {
     test_solves_when_all_channels_are_accepted();
-    test_one_rejected_pick_leaves_too_few_channels();
+    test_one_rejected_pick_leaves_planar_2d_method_unavailable();
     test_accepted_pick_with_unknown_sample_rate_is_excluded();
+    test_two_channels_is_genuinely_insufficient();
     test_degenerate_coplanar_geometry_is_solver_rejected();
     test_rejects_invalid_arguments();
     puts("localization event bridge tests passed");
