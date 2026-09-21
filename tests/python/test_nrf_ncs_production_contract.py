@@ -35,7 +35,7 @@ def test_ncs_wrapper_is_canonical_production_authority_and_self_bootstraps():
     assert '$NcsVersion = "v3.4.0"' in source
     assert '$board = "xiao_nrf54l15/nrf54l15/cpuapp"' in source
     assert '"nrf54l15-production-v3.4.0"' in source
-    assert 'ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "clean")' in source
+    assert 'ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "native-test", "ncs-test-build", "ncs-cs-test-build", "clean")' in source
     assert "function Invoke-InPinnedToolchain" in source
     assert '"sdk-manager", "toolchain", "launch"' in source
     assert '"--ncs-version", $NcsVersion' in source
@@ -88,8 +88,9 @@ def test_local_verify_routes_nrf_build_to_ncs_not_platformio():
     nrf = source[nrf_start:nrf_end]
     assert 'root / "nRF54L15" / "ncs.ps1"' in nrf
     assert '"-Action", "build"' in nrf
+    assert '"-Action", "ncs-test-build"' in nrf
+    assert '"-Action", "ncs-cs-test-build"' in nrf
     assert "pio.ps1" not in nrf
-    assert "PlatformIO compatibility tests are intentionally" in nrf
 
 
 def test_run_all_routes_nrf_build_to_ncs_not_platformio():
@@ -99,7 +100,8 @@ def test_run_all_routes_nrf_build_to_ncs_not_platformio():
     assert '"-Action", "build"' in source
     all_branch = source[source.index('if ($Suite -eq "All") {'):]
     assert "pio.ps1" not in all_branch
-    assert "PlatformIO compatibility tests are excluded" in source
+    assert '"-Action", "ncs-test-build"' in source
+    assert '"-Action", "ncs-cs-test-build"' in source
 
 
 def test_vscode_build_flash_and_monitor_use_ncs_and_pio_is_named_compatibility():

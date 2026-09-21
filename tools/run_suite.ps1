@@ -206,29 +206,14 @@ $powershell = "powershell.exe"
 $nrfNcsWrapper = Join-Path $repo "nRF54L15\ncs.ps1"
 
 function Add-NrfSoftwareTestBoundary {
-    $nrfTestDirectory = Join-Path $repo "nRF54L15\test"
-    $nrfSoftwareSuites = @()
-
-    if (Test-Path -LiteralPath $nrfTestDirectory -PathType Container) {
-        $nrfSoftwareSuites = @(
-            Get-ChildItem -LiteralPath $nrfTestDirectory -Directory -Filter "test_sw_*" |
-                Sort-Object Name
-        )
-    }
-
-    $message = if ($nrfSoftwareSuites.Count -eq 0) {
-        "no qualified NCS software/native test/test_sw_* suite exists; physical/HIL suites are excluded from Run All"
-    } else {
-        "test_sw_* suites exist, but the NCS-native embedded test runner has not been reviewed; PlatformIO compatibility tests are excluded from canonical production verification"
-    }
-
-    Write-Host "nRF54L15 tests: SKIPPED ($message)." -ForegroundColor Yellow
-    $results.Add([pscustomobject]@{
-        Name = "nRF54L15 tests"
-        Status = "SKIPPED"
-        ExitCode = 0
-        Duration = 0
-    })
+    Invoke-SuiteStep -Name "nRF54L15 NCS bridge test build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nrfNcsWrapper,
+        "-Action", "ncs-test-build"
+    )
+    Invoke-SuiteStep -Name "nRF54L15 NCS Channel Sounding test build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nrfNcsWrapper,
+        "-Action", "ncs-cs-test-build"
+    )
 }
 
 if ($Suite -eq "Host" -or $Suite -eq "All") {

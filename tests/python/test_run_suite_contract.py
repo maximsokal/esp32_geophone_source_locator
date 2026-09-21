@@ -58,9 +58,10 @@ def test_all_suite_uses_canonical_ncs_nrf_build_and_explicit_test_boundary():
     assert '"-File", $nrfNcsWrapper' in source
     assert '"-Action", "build"' in source
     assert 'function Add-NrfSoftwareTestBoundary' in source
-    assert '-Filter "test_sw_*"' in source
-    assert 'PlatformIO compatibility tests are excluded' in source
-    assert 'Status = "SKIPPED"' in source
+    assert 'Invoke-SuiteStep -Name "nRF54L15 NCS bridge test build"' in source
+    assert 'Invoke-SuiteStep -Name "nRF54L15 NCS Channel Sounding test build"' in source
+    assert '"-Action", "ncs-test-build"' in source
+    assert '"-Action", "ncs-cs-test-build"' in source
     assert 'nRF54L15\\pio.ps1' not in source
 
 

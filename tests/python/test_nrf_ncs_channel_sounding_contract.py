@@ -211,7 +211,7 @@ def test_proof_doc_preserves_sdk_one_connection_and_historical_evidence():
 
 def test_wrapper_exposes_explicit_flash_but_proof_action_never_flashes():
     script = text(NCS_PS1)
-    assert 'ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "clean")' in script
+    assert 'ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "native-test", "ncs-test-build", "ncs-cs-test-build", "clean")' in script
     assert "function Invoke-WestFlash" in script
     proof = script[script.index('"cs-proof" {'):script.index('"compare" {')]
     assert "Invoke-WestFlash" not in proof

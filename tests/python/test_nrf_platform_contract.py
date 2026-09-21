@@ -194,6 +194,6 @@ def test_nrf_docs_record_ncs_as_canonical_and_old_seeed_revision_as_compatibilit
 def test_nrf_automatic_test_contract_does_not_equate_no_upload_with_native_execution():
     task = TEST_TASK.read_text(encoding="utf-8")
 
-    assert "`pio test --without-uploading`" in task
-    assert "does not prove a test is physically hardware-free" in task
+    assert "no-upload mode does not replace NCS evidence" in task
+    assert "considered physically verified" in task
     assert "NCS-native" in task

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "clean")]
+    [ValidateSet("build", "flash", "monitor", "cs-proof", "compare", "probe", "native-test", "ncs-test-build", "ncs-cs-test-build", "clean")]
     [string]$Action = "build",
 
     [string]$Port,
@@ -15,12 +15,17 @@ $NcsVersion = "v3.4.0"
 $project = $PSScriptRoot
 $app = Join-Path $project "zephyr"
 $csConf = Join-Path $project "ncs\channel_sounding.conf"
+$productionConf = Join-Path $project "zephyr\prj.conf"
+$csTestConf = Join-Path $project "tests\ncs_native\prj.cs.conf"
 $board = "xiao_nrf54l15/nrf54l15/cpuapp"
 $buildRoot = Join-Path $env:USERPROFILE ".ncs-workspaces\esp32_geophone_source_locator"
 $productionBuild = Join-Path $buildRoot "nrf54l15-production-v3.4.0"
 $csProofBuild = Join-Path $buildRoot "nrf54l15-cs-proof-v3.4.0"
 $legacyBaseBuild = Join-Path $buildRoot "nrf54l15-base-v3.4.0"
 $legacyCsBuild = Join-Path $buildRoot "nrf54l15-cs-v3.4.0"
+$nativeTestBuild = Join-Path $buildRoot "nrf54l15-ncs-native-v3.4.0"
+$targetTestBuild = Join-Path $buildRoot "nrf54l15-ncs-target-v3.4.0"
+$targetCsTestBuild = Join-Path $buildRoot "nrf54l15-ncs-cs-target-v3.4.0"
 
 function Require-Command([string]$Name, [string]$Hint) {
     if (Get-Command $Name -ErrorAction SilentlyContinue) {
@@ -319,6 +324,58 @@ function Invoke-WestFlash([string]$BuildDir) {
     }
 }
 
+function Invoke-WestNativeTestBuild {
+    $args = @(
+        "build",
+        "-p", "always",
+        "-d", $nativeTestBuild,
+        "-b", "native_sim",
+        $nativeTestApp
+    )
+
+    Write-Host ""
+    Write-Host "west $($args -join ' ')"
+    & west @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "west native test build failed: $LASTEXITCODE"
+    }
+}
+
+function Invoke-WestNativeTestRun {
+    Write-Host ""
+    Write-Host "west build -d $nativeTestBuild -t run" -ForegroundColor Cyan
+    & west build -d $nativeTestBuild -t run
+    if ($LASTEXITCODE -ne 0) {
+        throw "west native test run failed: $LASTEXITCODE"
+    }
+}
+
+function Invoke-WestTargetTestBuild([bool]$WithChannelSounding) {
+    $args = @(
+        "build",
+        "-p", "always",
+        "-d", $targetTestBuild,
+        "-b", $board,
+        $nativeTestApp
+    )
+    if ($WithChannelSounding) {
+        $productionConfCmake = $productionConf.Replace('\', '/')
+        $csTestConfCmake = $csTestConf.Replace('\', '/')
+        $args += @(
+            "--",
+            "-DCONF_FILE=$productionConfCmake",
+            "-DEXTRA_CONF_FILE=$csTestConfCmake"
+        )
+    }
+
+    Write-Host ""
+    Write-Host "west $($args -join ' ')"
+    & west @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "west NCS target test build failed: $LASTEXITCODE"
+    }
+}
+
 function Assert-ConfigLine([string[]]$Config, [string]$Line) {
     if ($Config -notcontains $Line) {
         throw "Resolved Kconfig missing: $Line"
@@ -457,7 +514,7 @@ function Invoke-SerialMonitor {
 }
 
 if ($Action -eq "clean") {
-    foreach ($path in @($productionBuild, $csProofBuild, $legacyBaseBuild, $legacyCsBuild)) {
+    foreach ($path in @($productionBuild, $csProofBuild, $legacyBaseBuild, $legacyCsBuild, $nativeTestBuild, $targetTestBuild, $targetCsTestBuild)) {
         Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
     }
     Write-Host "nRF54L15 clean: PASS" -ForegroundColor Green
@@ -484,10 +541,14 @@ New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 # drive on Windows. Build output itself stays outside the repository.
 $sourceAliasDrive = New-NoSpaceProjectAlias $project
 $buildProject = $project
+$nativeTestApp = Join-Path $buildProject "tests\ncs_native"
 if ($sourceAliasDrive) {
     $buildProject = "$sourceAliasDrive\"
     $app = Join-Path $buildProject "zephyr"
     $csConf = Join-Path $buildProject "ncs\channel_sounding.conf"
+    $productionConf = Join-Path $buildProject "zephyr\prj.conf"
+    $csTestConf = Join-Path $buildProject "tests\ncs_native\prj.cs.conf"
+    $nativeTestApp = Join-Path $buildProject "tests\ncs_native"
     Write-Host "NCS source alias: $buildProject -> $project"
 }
 
@@ -527,6 +588,20 @@ try {
             Probe-CsBuild
             Show-Size "CHANNEL_SOUNDING_PROOF" $csProofBuild
             Write-Host "MAX-45 probe: PASS" -ForegroundColor Green
+        }
+        "native-test" {
+            Invoke-WestNativeTestBuild
+            Invoke-WestNativeTestRun
+            Write-Host "nRF54L15 NCS native tests: PASS" -ForegroundColor Green
+        }
+        "ncs-test-build" {
+            Invoke-WestTargetTestBuild $false
+            Write-Host "nRF54L15 NCS target test build: PASS" -ForegroundColor Green
+        }
+        "ncs-cs-test-build" {
+            $targetTestBuild = $targetCsTestBuild
+            Invoke-WestTargetTestBuild $true
+            Write-Host "nRF54L15 NCS Channel Sounding test build: PASS" -ForegroundColor Green
         }
     }
 }

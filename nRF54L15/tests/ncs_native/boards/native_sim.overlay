@@ -1,0 +1,6 @@
+/ {
+    i2c30: nrf54l15_ncs_test_i2c30 {
+        compatible = "nrf54l15,ncs-test-i2c";
+        status = "okay";
+    };
+};

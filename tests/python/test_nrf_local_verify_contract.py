@@ -44,6 +44,7 @@ def test_nrf_scope_runs_host_policy_and_canonical_ncs_build(tmp_path: Path):
         "nrf/host-policy",
         "nrf/build",
         "nrf/tests",
+        "nrf/cs-tests",
     ]
     assert steps[0].skip_reason is None
     assert steps[0].command[0] == "python-test"
@@ -55,11 +56,14 @@ def test_nrf_scope_runs_host_policy_and_canonical_ncs_build(tmp_path: Path):
     assert build.command[-2:] == ("-Action", "build")
     assert "pio.ps1" not in " ".join(build.command)
 
-    assert steps[2].skip_reason is not None
-    assert "test_sw_*" in steps[2].skip_reason
+    assert steps[2].skip_reason is None
+    assert steps[2].command[-2:] == ("-Action", "ncs-test-build")
+    assert steps[3].name == "nrf/cs-tests"
+    assert steps[3].skip_reason is None
+    assert steps[3].command[-2:] == ("-Action", "ncs-cs-test-build")
 
 
-def test_nrf_embedded_test_stays_skipped_until_ncs_native_runner_is_reviewed(tmp_path: Path):
+def test_nrf_embedded_test_builds_are_independent_of_platformio_compatibility_suite(tmp_path: Path):
     root = make_repo(tmp_path, with_software_suite=True)
 
     steps = runner.nrf_steps(
@@ -69,9 +73,9 @@ def test_nrf_embedded_test_stays_skipped_until_ncs_native_runner_is_reviewed(tmp
         powershell_executable="powershell-test",
     )
 
-    assert steps[2].skip_reason is not None
-    assert "NCS-native embedded test runner" in steps[2].skip_reason
-    assert "PlatformIO compatibility tests" in steps[2].skip_reason
+    assert steps[2].skip_reason is None
+    assert steps[3].skip_reason is None
+    assert all("pio.ps1" not in " ".join(step.command) for step in steps[2:])
 
 
 def test_nrf_steps_can_omit_host_policy_when_all_scope_already_runs_host_manifests(tmp_path: Path):
@@ -85,10 +89,10 @@ def test_nrf_steps_can_omit_host_policy_when_all_scope_already_runs_host_manifes
         include_host_policy=False,
     )
 
-    assert [step.name for step in steps] == ["nrf/build", "nrf/tests"]
+    assert [step.name for step in steps] == ["nrf/build", "nrf/tests", "nrf/cs-tests"]
 
 
-def test_run_step_does_not_execute_a_skipped_nrf_test(monkeypatch, tmp_path: Path):
+def test_run_step_does_not_execute_an_explicitly_skipped_step(monkeypatch, tmp_path: Path):
     called = False
 
     def forbidden_run(*args, **kwargs):
@@ -98,10 +102,10 @@ def test_run_step_does_not_execute_a_skipped_nrf_test(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr(runner.subprocess, "run", forbidden_run)
     step = runner.Step(
-        "nrf/tests",
+        "diagnostic/optional",
         tmp_path,
-        ("<ncs-native-test-runner-not-yet-reviewed>",),
-        skip_reason="no qualified NCS test_sw_* suite",
+        ("<optional-runner>",),
+        skip_reason="hardware-only step",
     )
 
     assert runner.run_step(step) == "SKIPPED"
