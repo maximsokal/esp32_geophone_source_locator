@@ -240,6 +240,21 @@
       ]
     },
     {
+      "name": "localization_semblance",
+      "sources": [
+        "components/localization_semblance/localization_semblance.c",
+        "components/localization_semblance/tests/localization_semblance_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_semblance/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "localization_event_bridge",
       "sources": [
         "components/localization/localization.c",
