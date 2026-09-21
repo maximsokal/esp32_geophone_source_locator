@@ -288,6 +288,162 @@ static void test_3d_search_recovers_known_source(void)
 }
 
 
+static void test_channel_amplitude_differences_do_not_prevent_recovery(void)
+{
+    /* Real geometric attenuation: amplitude falls off with distance, so the
+     * nearest and farthest sensors see very different signal levels. The
+     * ticket requires this backend to be tested against amplitude
+     * differences, not just equal-amplitude synthetic channels. */
+    const size_t reference_sample_index =
+        (size_t)llround(s_emission_s * (double)s_sample_rate_hz);
+
+    localization_semblance_channel_t channels[4];
+    float *buffers[4];
+
+    for (size_t ch = 0u; ch < 4u; ++ch) {
+        const double dx = s_source_planar.x_m - s_sensors_planar[ch].x_m;
+        const double dy = s_source_planar.y_m - s_sensors_planar[ch].y_m;
+        const double dz = s_source_planar.z_m - s_sensors_planar[ch].z_m;
+        const double distance = sqrt(dx * dx + dy * dy + dz * dz);
+        const size_t shift_samples =
+            (size_t)llround((distance / s_speed_mps) * (double)s_sample_rate_hz);
+        const size_t arrival_index = reference_sample_index + shift_samples;
+        const float amplitude = (float)(3.0 / (1.0 + distance));
+
+        buffers[ch] = build_channel(
+            s_buffer_len, arrival_index, s_pulse_width, amplitude, 0.02f, (uint32_t)ch
+        );
+        channels[ch] = (localization_semblance_channel_t) {
+            .samples = buffers[ch],
+            .sample_count = s_buffer_len,
+            .sample_rate_hz = s_sample_rate_hz,
+            .sensor_position = s_sensors_planar[ch]
+        };
+    }
+
+    const localization_semblance_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 0.0 },
+        .step_m = 0.5
+    };
+    const localization_semblance_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .reference_sample_index = reference_sample_index,
+        .window_half_span_samples = 15u,
+        .refine_divisor = 5u
+    };
+
+    localization_semblance_result_t result;
+    assert(
+        localization_semblance_search(channels, 4u, &bounds, &config, &result) ==
+        ESP_OK
+    );
+    assert(result.found);
+
+    const double error_m = position_error_m(result.best_position, s_source_planar);
+    printf(
+        "[MAX-137] amplitude-mismatch search: error=%.4f m semblance=%.4f\n",
+        error_m, result.best_semblance
+    );
+    assert(error_m < 0.3);
+    assert(result.best_semblance > 0.5);
+
+    for (size_t ch = 0u; ch < 4u; ++ch) {
+        free(buffers[ch]);
+    }
+}
+
+
+static void test_weaker_echo_does_not_hijack_the_estimate(void)
+{
+    /* A weaker, noisier secondary arrival from a DIFFERENT position (a
+     * reflection/echo) is superimposed on every channel's true direct
+     * arrival. The search must still lock onto the stronger, cleaner
+     * primary source, not be pulled toward the echo's geometry. */
+    static const localization_point3d_t echo_source = { 3.2, 3.4, 0.0 };
+    const float primary_amplitude = 1.0f;
+    const float echo_amplitude = 0.35f;
+    const float background_noise_amplitude = 0.15f;
+
+    const size_t reference_sample_index =
+        (size_t)llround(s_emission_s * (double)s_sample_rate_hz);
+
+    localization_semblance_channel_t channels[4];
+    float *buffers[4];
+
+    for (size_t ch = 0u; ch < 4u; ++ch) {
+        double dx = s_source_planar.x_m - s_sensors_planar[ch].x_m;
+        double dy = s_source_planar.y_m - s_sensors_planar[ch].y_m;
+        double dz = s_source_planar.z_m - s_sensors_planar[ch].z_m;
+        double distance = sqrt(dx * dx + dy * dy + dz * dz);
+        size_t shift_samples =
+            (size_t)llround((distance / s_speed_mps) * (double)s_sample_rate_hz);
+        const size_t primary_index = reference_sample_index + shift_samples;
+
+        buffers[ch] = build_channel(
+            s_buffer_len, primary_index, s_pulse_width, primary_amplitude,
+            background_noise_amplitude, (uint32_t)ch
+        );
+
+        dx = echo_source.x_m - s_sensors_planar[ch].x_m;
+        dy = echo_source.y_m - s_sensors_planar[ch].y_m;
+        dz = echo_source.z_m - s_sensors_planar[ch].z_m;
+        distance = sqrt(dx * dx + dy * dy + dz * dz);
+        shift_samples =
+            (size_t)llround((distance / s_speed_mps) * (double)s_sample_rate_hz);
+        const size_t echo_index = reference_sample_index + shift_samples;
+        const size_t echo_end =
+            echo_index + s_pulse_width > s_buffer_len
+            ? s_buffer_len
+            : echo_index + s_pulse_width;
+        for (size_t i = echo_index; i < echo_end; ++i) {
+            buffers[ch][i] += pulse_shape(i - echo_index, s_pulse_width, echo_amplitude);
+        }
+
+        channels[ch] = (localization_semblance_channel_t) {
+            .samples = buffers[ch],
+            .sample_count = s_buffer_len,
+            .sample_rate_hz = s_sample_rate_hz,
+            .sensor_position = s_sensors_planar[ch]
+        };
+    }
+
+    const localization_semblance_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 0.0 },
+        .step_m = 0.5
+    };
+    const localization_semblance_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .reference_sample_index = reference_sample_index,
+        .window_half_span_samples = 15u,
+        .refine_divisor = 5u
+    };
+
+    localization_semblance_result_t result;
+    assert(
+        localization_semblance_search(channels, 4u, &bounds, &config, &result) ==
+        ESP_OK
+    );
+    assert(result.found);
+
+    const double primary_error_m = position_error_m(result.best_position, s_source_planar);
+    const double echo_error_m = position_error_m(result.best_position, echo_source);
+    printf(
+        "[MAX-137] echo-robustness search: best=(%.3f,%.3f) primary_error=%.4f m "
+        "echo_error=%.4f m semblance=%.4f\n",
+        result.best_position.x_m, result.best_position.y_m,
+        primary_error_m, echo_error_m, result.best_semblance
+    );
+    assert(primary_error_m < echo_error_m);
+    assert(primary_error_m < 0.3);
+
+    for (size_t ch = 0u; ch < 4u; ++ch) {
+        free(buffers[ch]);
+    }
+}
+
+
 static void test_rejects_too_few_channels(void)
 {
     size_t reference_sample_index = 0u;
@@ -424,6 +580,8 @@ int main(void)
 {
     test_planar_search_recovers_known_source_with_high_semblance();
     test_3d_search_recovers_known_source();
+    test_channel_amplitude_differences_do_not_prevent_recovery();
+    test_weaker_echo_does_not_hijack_the_estimate();
     test_rejects_too_few_channels();
     test_rejects_mismatched_sample_rate();
     test_rejects_invalid_config_and_null_arguments();
