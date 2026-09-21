@@ -86,11 +86,17 @@ static void test_bandpass_requires_valid_corners(void)
         .requested_stages = SEISMIC_DSP_STAGE_BANDPASS,
         .bandpass = { .low_cutoff_hz = 0.0f, .high_cutoff_hz = 150.0f }
     };
+    const seismic_dsp_config_t high_at_nyquist = {
+        .sample_rate_hz = 1000u,
+        .requested_stages = SEISMIC_DSP_STAGE_BANDPASS,
+        .bandpass = { .low_cutoff_hz = 50.0f, .high_cutoff_hz = 500.0f }
+    };
 
     assert(seismic_dsp_init(&missing_rate) == ESP_ERR_INVALID_ARG);
     assert(seismic_dsp_init(&inverted_corners) == ESP_ERR_INVALID_ARG);
     assert(seismic_dsp_init(&above_nyquist) == ESP_ERR_INVALID_ARG);
     assert(seismic_dsp_init(&zero_low) == ESP_ERR_INVALID_ARG);
+    assert(seismic_dsp_init(&high_at_nyquist) == ESP_ERR_INVALID_ARG);
 }
 
 
@@ -105,6 +111,16 @@ static void test_notch_requires_valid_parameters(void)
         .requested_stages = SEISMIC_DSP_STAGE_NOTCH,
         .notch = { .center_hz = 100.0f, .q_factor = 0.0f }
     };
+    const seismic_dsp_config_t zero_center = {
+        .sample_rate_hz = 1000u,
+        .requested_stages = SEISMIC_DSP_STAGE_NOTCH,
+        .notch = { .center_hz = 0.0f, .q_factor = 10.0f }
+    };
+    const seismic_dsp_config_t center_at_nyquist = {
+        .sample_rate_hz = 1000u,
+        .requested_stages = SEISMIC_DSP_STAGE_NOTCH,
+        .notch = { .center_hz = 500.0f, .q_factor = 10.0f }
+    };
     const seismic_dsp_config_t above_nyquist = {
         .sample_rate_hz = 1000u,
         .requested_stages = SEISMIC_DSP_STAGE_NOTCH,
@@ -113,7 +129,54 @@ static void test_notch_requires_valid_parameters(void)
 
     assert(seismic_dsp_init(&missing_rate) == ESP_ERR_INVALID_ARG);
     assert(seismic_dsp_init(&zero_q) == ESP_ERR_INVALID_ARG);
+    assert(seismic_dsp_init(&zero_center) == ESP_ERR_INVALID_ARG);
+    assert(seismic_dsp_init(&center_at_nyquist) == ESP_ERR_INVALID_ARG);
     assert(seismic_dsp_init(&above_nyquist) == ESP_ERR_INVALID_ARG);
+}
+
+
+static void test_empty_block_leaves_requested_stages_pending(void)
+{
+    const seismic_dsp_config_t config = {
+        .sample_rate_hz = 1000u,
+        .requested_stages =
+            SEISMIC_DSP_STAGE_DC_REMOVAL |
+            SEISMIC_DSP_STAGE_BANDPASS |
+            SEISMIC_DSP_STAGE_NOTCH |
+            SEISMIC_DSP_STAGE_ENERGY_RMS |
+            SEISMIC_DSP_STAGE_NORMALIZATION |
+            SEISMIC_DSP_STAGE_WINDOWING |
+            SEISMIC_DSP_STAGE_FFT,
+        .bandpass = { .low_cutoff_hz = 50.0f, .high_cutoff_hz = 150.0f },
+        .notch = { .center_hz = 100.0f, .q_factor = 10.0f }
+    };
+    seismic_dsp_result_t result;
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(NULL, 0u, false, &result) == ESP_OK);
+    assert(result.sample_count == 0u);
+    assert(result.completed_stages == 0u);
+    assert(result.placeholder_stages == config.requested_stages);
+    assert(result.input_passthrough);
+    assert(result.cadence_reset_applied);
+    assert(result.energy_rms == 0.0f);
+    assert(result.peak_abs == 0.0f);
+    assert(result.fft_dominant_frequency_hz == 0.0f);
+    assert(result.fft_dominant_magnitude == 0.0f);
+}
+
+
+static void test_stateless_gap_does_not_claim_filter_reset(void)
+{
+    const seismic_dsp_config_t config = {
+        .requested_stages = SEISMIC_DSP_STAGE_DC_REMOVAL
+    };
+    float samples[] = { 1.0f, 2.0f };
+    seismic_dsp_result_t result;
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(samples, 2u, false, &result) == ESP_OK);
+    assert(!result.cadence_reset_applied);
 }
 
 
@@ -528,6 +591,50 @@ static void test_cadence_contiguous_false_resets_filter_state(void)
 }
 
 
+static void test_cadence_contiguous_false_resets_notch_state(void)
+{
+    const seismic_dsp_config_t config = {
+        .sample_rate_hz = 1000u,
+        .requested_stages = SEISMIC_DSP_STAGE_NOTCH,
+        .notch = { .center_hz = 100.0f, .q_factor = 10.0f }
+    };
+    seismic_dsp_result_t result;
+    float warmup[8];
+    for (size_t i = 0u; i < 8u; ++i) {
+        warmup[i] = (i == 0u) ? 1.0f : 0.0f;
+    }
+
+    float reset_probe[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float continued_probe[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float fresh_probe[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(warmup, 8u, false, &result) == ESP_OK);
+    assert(seismic_dsp_process_block(reset_probe, 4u, false, &result) == ESP_OK);
+    assert(result.cadence_reset_applied);
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(warmup, 8u, false, &result) == ESP_OK);
+    assert(seismic_dsp_process_block(continued_probe, 4u, true, &result) == ESP_OK);
+    assert(!result.cadence_reset_applied);
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(fresh_probe, 4u, false, &result) == ESP_OK);
+
+    for (size_t i = 0u; i < 4u; ++i) {
+        assert(nearly_equal(reset_probe[i], fresh_probe[i]));
+    }
+
+    bool continued_probe_differs = false;
+    for (size_t i = 0u; i < 4u; ++i) {
+        if (!nearly_equal(continued_probe[i], fresh_probe[i])) {
+            continued_probe_differs = true;
+        }
+    }
+    assert(continued_probe_differs);
+}
+
+
 static void test_fft_reports_dominant_bin_aligned_frequency(void)
 {
     const seismic_dsp_config_t config = {
@@ -593,6 +700,44 @@ static void test_fft_short_block_reports_zero_rather_than_garbage(void)
     assert(result.completed_stages == SEISMIC_DSP_STAGE_FFT);
     assert(result.fft_dominant_frequency_hz == 0.0f);
     assert(result.fft_dominant_magnitude == 0.0f);
+}
+
+
+static void test_fft_zero_block_has_no_fake_dominant_bin(void)
+{
+    const seismic_dsp_config_t config = {
+        .sample_rate_hz = 1000u,
+        .requested_stages = SEISMIC_DSP_STAGE_FFT
+    };
+    float samples[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    seismic_dsp_result_t result;
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(samples, 4u, true, &result) == ESP_OK);
+    assert(result.completed_stages == SEISMIC_DSP_STAGE_FFT);
+    assert(result.fft_dominant_frequency_hz == 0.0f);
+    assert(result.fft_dominant_magnitude == 0.0f);
+}
+
+
+static void test_fft_runs_after_normalization(void)
+{
+    const seismic_dsp_config_t config = {
+        .sample_rate_hz = 4u,
+        .requested_stages =
+            SEISMIC_DSP_STAGE_NORMALIZATION | SEISMIC_DSP_STAGE_FFT
+    };
+    float samples[] = { 0.0f, 2.0f, 0.0f, -2.0f };
+    seismic_dsp_result_t result;
+
+    assert(seismic_dsp_init(&config) == ESP_OK);
+    assert(seismic_dsp_process_block(samples, 4u, true, &result) == ESP_OK);
+    assert(result.completed_stages == config.requested_stages);
+    assert(nearly_equal(result.peak_abs, 2.0f));
+    assert(nearly_equal(result.fft_dominant_frequency_hz, 1.0f));
+    assert(nearly_equal(result.fft_dominant_magnitude, 2.0f));
+    assert(nearly_equal(samples[1], 1.0f));
+    assert(nearly_equal(samples[3], -1.0f));
 }
 
 
@@ -691,6 +836,8 @@ int main(void)
     test_rejects_unknown_stage_bits();
     test_bandpass_requires_valid_corners();
     test_notch_requires_valid_parameters();
+    test_empty_block_leaves_requested_stages_pending();
+    test_stateless_gap_does_not_claim_filter_reset();
     test_unrequested_stages_stay_placeholder_and_passthrough();
     test_unimplemented_stages_remain_placeholders();
     test_dc_removal_subtracts_the_block_mean();
@@ -708,9 +855,12 @@ int main(void)
     test_notch_passes_frequencies_away_from_center();
     test_bandpass_impulse_response_is_finite_and_decays();
     test_cadence_contiguous_false_resets_filter_state();
+    test_cadence_contiguous_false_resets_notch_state();
     test_fft_reports_dominant_bin_aligned_frequency();
     test_fft_dominant_frequency_is_unscaled_when_sample_rate_unknown();
     test_fft_short_block_reports_zero_rather_than_garbage();
+    test_fft_zero_block_has_no_fake_dominant_bin();
+    test_fft_runs_after_normalization();
     test_synthetic_recorded_style_fixture_regression();
     puts("seismic_dsp host tests passed");
     return 0;

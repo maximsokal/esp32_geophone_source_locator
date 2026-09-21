@@ -373,7 +373,10 @@ esp_err_t seismic_dsp_process_block(
     float fft_frequency = 0.0f;
     float fft_magnitude = 0.0f;
 
-    const bool cadence_reset_applied = !cadence_contiguous;
+    const bool stateful_filter_requested =
+        (requested & (SEISMIC_DSP_STAGE_BANDPASS | SEISMIC_DSP_STAGE_NOTCH)) != 0u;
+    const bool cadence_reset_applied =
+        !cadence_contiguous && stateful_filter_requested;
     if (cadence_reset_applied) {
         s_bandpass_state = (seismic_dsp_biquad_state_t) { 0 };
         s_notch_state = (seismic_dsp_biquad_state_t) { 0 };
