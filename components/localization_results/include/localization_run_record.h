@@ -21,10 +21,17 @@
  * several of each without one silently overwriting another -- MAX-138's
  * "never overwrite the individual outputs" requirement is a caller-side
  * discipline (write each run under its own generation/version), not
- * something this schema enforces by itself.
+ * something this schema enforces by itself. localization_run_store (a
+ * separate component) is what actually assigns each run its own file.
+ *
+ * Schema v3 added confidence_score: v2 could only cleanly represent the
+ * iterative Gauss-Newton TDOA solver's own result shape (iterations,
+ * converged, emission_time_us), which the other backends in this epic
+ * (semblance/coherency, statistical traveltime inversion, and the joint
+ * fusion, MAX-136/137/138) have no equivalent of.
  */
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 2U
+#define LOCALIZATION_RUN_SCHEMA_VERSION 3U
 
 #define LOCALIZATION_RUN_OBJECT_ID_SIZE   16U
 #define LOCALIZATION_RUN_SESSION_ID_SIZE  16U
@@ -75,7 +82,25 @@ typedef struct
 
     bool solved;
 
-    /* Valid only when solved is true. */
+    /*
+     * A generic, method-defined [0, 1] confidence/focus score -- 0 means
+     * "not computed", not "confirmed zero confidence". This is the one
+     * field every method in the MAX-136/137/138 family can populate with
+     * its own native quality measure without pretending to be an
+     * iterative solver: TDOA / traveltime inversion use their own
+     * Gaussian residual-based score, semblance uses best_semblance
+     * directly, and localization_comparison's own `quality` (MAX-138)
+     * uses exactly this same convention, so a joint-fusion run's
+     * confidence_score is literally its joint_total_quality-derived
+     * weight. Always present (even when solved is false) so a caller
+     * never needs to special-case reading it.
+     */
+    double confidence_score;
+
+    /* Valid only when solved is true. emission_time_us/iterations/
+     * converged are meaningful only for the iterative Gauss-Newton TDOA
+     * solver -- 0/false for every other method's solved run, not omitted,
+     * so old readers never need method-specific parsing. */
     localization_point3d_t source_position;
     int64_t emission_time_us;
     double rms_residual_us;

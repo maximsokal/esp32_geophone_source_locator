@@ -51,3 +51,16 @@ def test_persists_the_channel_mask_and_dimensionality_from_max_135_and_max_170()
 def test_ties_the_run_to_the_frozen_max_166_geometry_snapshot():
     header = read("components/localization_results/include/localization_run_record.h")
     assert "geometry_computed_at_ms" in header
+
+
+def test_confidence_score_lets_non_iterative_methods_persist_their_own_quality():
+    """v2 could only cleanly represent the iterative Gauss-Newton TDOA
+    solver's own shape (iterations/converged) -- semblance (MAX-137),
+    traveltime inversion (MAX-136), and the joint fusion (MAX-138) have no
+    equivalent and need a generic quality field instead."""
+    header = read("components/localization_results/include/localization_run_record.h")
+    source = read("components/localization_results/localization_run_record_json.c")
+
+    assert "double confidence_score;" in header
+    assert '"confidence_score"' in source
+    assert "confidence_score < 0.0" in source

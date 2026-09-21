@@ -185,6 +185,36 @@ static void test_unknown_propagation_uncertainty_round_trips_as_zero(void)
 }
 
 
+static void test_confidence_score_round_trips(void)
+{
+    /* MAX-136/137/138: the field that lets a semblance/traveltime-
+     * inversion/joint-fusion run persist its own native quality score,
+     * since it has no "iterations"/"converged" of its own. */
+    localization_run_record_t record = solved_record();
+    record.confidence_score = 0.9263;
+    char *json = NULL;
+
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"confidence_score\":0.9263") != NULL);
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(fabs(parsed.confidence_score - 0.9263) < 1e-9);
+
+    free(json);
+}
+
+
+static void test_negative_confidence_score_is_rejected(void)
+{
+    localization_run_record_t record = solved_record();
+    record.confidence_score = -0.1;
+    char *json = NULL;
+
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+}
+
+
 static void test_future_schema_version_is_not_found(void)
 {
     const char *future_json =
@@ -249,6 +279,8 @@ int main(void)
     test_solved_record_with_non_finite_position_is_rejected();
     test_negative_propagation_uncertainty_is_rejected();
     test_unknown_propagation_uncertainty_round_trips_as_zero();
+    test_confidence_score_round_trips();
+    test_negative_confidence_score_is_rejected();
     test_future_schema_version_is_not_found();
     test_malformed_json_is_invalid_response();
     test_rejects_null_arguments();
