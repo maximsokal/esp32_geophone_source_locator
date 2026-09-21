@@ -7,6 +7,7 @@
 #include "esp_err.h"
 #include "localization.h"
 #include "localization_dimensionality_policy.h"
+#include "localization_propagation_model.h"
 
 /*
  * MAX-140: a versioned, backward-compatible record for one localization
@@ -23,7 +24,7 @@
  * something this schema enforces by itself.
  */
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 1U
+#define LOCALIZATION_RUN_SCHEMA_VERSION 2U
 
 #define LOCALIZATION_RUN_OBJECT_ID_SIZE   16U
 #define LOCALIZATION_RUN_SESSION_ID_SIZE  16U
@@ -63,11 +64,14 @@ typedef struct
      * "not available" rather than "computed at epoch". */
     uint64_t geometry_computed_at_ms;
 
-    /* The propagation model actually used for this run (MAX-139 will grow
-     * this into a fuller model + uncertainty; for now this is the same
-     * scalar localization_config_t.propagation_speed_mps already requires
-     * the caller to supply explicitly, never a hidden default). */
+    /* The propagation model actually used for this run (MAX-139). Name is
+     * empty when the caller did not attach a named/calibrated model (still
+     * a caller-supplied scalar via localization_config_t.propagation_speed_mps,
+     * never a hidden default). uncertainty_mps is 0 when unknown, matching
+     * localization_propagation_model_t's own "0 means unknown" convention. */
+    char propagation_model_name[LOCALIZATION_PROPAGATION_MODEL_NAME_SIZE];
     double propagation_speed_mps;
+    double propagation_speed_uncertainty_mps;
 
     bool solved;
 
