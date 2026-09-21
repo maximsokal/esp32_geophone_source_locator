@@ -18,7 +18,7 @@ Before such processing is enabled, the reviewed implementation must use one expl
 2. split the stream and reset state around every known cadence gap; or
 3. resample irregularly timed data with an explicitly reviewed resampling algorithm.
 
-The current `seismic_dsp` implementation remains a placeholder/pass-through foundation and does not implement any of these algorithms yet.
+As of MAX-133, `seismic_dsp`'s BANDPASS and NOTCH stages are real, stateful biquad filters and implement policy 2: `seismic_dsp_process_block()` takes an explicit `cadence_contiguous` argument, and the caller must pass `false` for the first block of a run and for any block immediately following a known collapsed/missing acquisition period, which zeroes both filters' carried history before that block is processed. DC_REMOVAL, ENERGY_RMS, NORMALIZATION and WINDOWING stay stateless (no cross-block history to leak, so the contract is satisfied trivially), and FFT is diagnostic-only and stateless. FIR, IIR (as generic, coefficient-free-form stages) and CROSS_CORRELATION remain an unimplemented placeholder/pass-through and do not yet implement any of these three policies.
 
 ## Recorder and Web boundary
 

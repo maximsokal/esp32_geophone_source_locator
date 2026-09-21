@@ -130,11 +130,23 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     # conditional on whether any stage actually ran, not a hardcoded true.
     assert ".input_passthrough = (completed == 0u)" in dsp
     assert "SEISMIC_DSP_FIXED_RATE_REQUIRES_CADENCE_VALID_INPUT" in dsp_header
-    for stage in ("FIR", "IIR", "BANDPASS", "NOTCH", "FFT", "CROSS_CORRELATION"):
+    for stage in ("FIR", "IIR", "CROSS_CORRELATION"):
         assert f"SEISMIC_DSP_STAGE_{stage}" not in dsp, (
             f"SEISMIC_DSP_STAGE_{stage} must stay an unimplemented placeholder "
-            "until measured AD7606 + ZF-24HP data justifies its coefficients"
+            "(MAX-133 scoped BANDPASS/NOTCH/FFT only; FIR/IIR are generic "
+            "stages with no concrete need yet and CROSS_CORRELATION needs a "
+            "second reference buffer this single-buffer API does not have)"
         )
+    # MAX-133: BANDPASS/NOTCH are real biquad filters designed entirely from
+    # caller-supplied corner/center frequencies (no invented coefficient), and
+    # FFT is a diagnostic-only direct DFT. None of the three can violate the
+    # project rule against guessed filter bands because none of them invents
+    # one.
+    assert "SEISMIC_DSP_STAGE_BANDPASS" in dsp
+    assert "SEISMIC_DSP_STAGE_NOTCH" in dsp
+    assert "SEISMIC_DSP_STAGE_FFT" in dsp
+    assert "bandpass_config_is_valid(" in dsp
+    assert "notch_config_is_valid(" in dsp
 
 
 def test_insights_profile_is_explicit_and_uses_non_secret_auth_fixture():
