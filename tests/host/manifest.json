@@ -210,6 +210,21 @@
       ]
     },
     {
+      "name": "localization_timing_budget",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization/localization_timing_budget.c",
+        "components/localization/tests/localization_timing_budget_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "localization_event_bridge",
       "sources": [
         "components/localization/localization.c",
