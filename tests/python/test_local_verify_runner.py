@@ -150,6 +150,7 @@ def test_nrf_plan_uses_host_policy_then_canonical_ncs_wrapper(tmp_path: Path):
         "nrf/host-policy",
         "nrf/build",
         "nrf/tests",
+        "nrf/cs-tests",
     ]
     assert steps[0].command[0] == "python-test"
     assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
@@ -157,8 +158,10 @@ def test_nrf_plan_uses_host_policy_then_canonical_ncs_wrapper(tmp_path: Path):
     assert any("ncs.ps1" in argument for argument in steps[1].command)
     assert not any("pio.ps1" in argument for argument in steps[1].command)
     assert steps[1].command[-2:] == ("-Action", "build")
-    assert steps[2].skip_reason is not None
-    assert "NCS" in steps[2].skip_reason
+    assert steps[2].skip_reason is None
+    assert steps[2].command[-2:] == ("-Action", "ncs-test-build")
+    assert steps[3].skip_reason is None
+    assert steps[3].command[-2:] == ("-Action", "ncs-cs-test-build")
 
 
 def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path):

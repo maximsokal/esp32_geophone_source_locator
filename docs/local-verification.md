@@ -78,12 +78,18 @@ This performs:
 
 1. the native `coverage-nrf` host-policy suite;
 2. the canonical NCS v3.4.0 production build;
-3. the NCS-native embedded-test boundary.
+3. the NCS target bridge/runtime test build;
+4. the NCS target build with the real Channel Sounding/RAS runtime branch.
 
-The third stage currently reports `SKIPPED`: there is no reviewed NCS-native
-`test_sw_*` runner yet. Hardware/HIL suites are intentionally excluded. A
-PlatformIO `--without-uploading` run is not silently substituted, because
-`--without-uploading` alone does not prove a test is hardware-free.
+Stages 3 and 4 compile the reviewed Zephyr `ztest` application and production
+bridge/runtime sources for the XIAO target. They are `COMPILES` evidence, not a
+claim that the image was flashed or that tests ran on a physical board. The
+optional `ncs.ps1 native-test` action can execute the app under `native_sim`
+when host GCC is installed; this machine currently reports that action as
+blocked because the pinned NCS toolchain exposes ARM GCC but no host `gcc`.
+Hardware/HIL suites are intentionally excluded. A PlatformIO
+`--without-uploading` run is not silently substituted, because that flag alone
+does not prove a test is hardware-free.
 
 The separately qualified dependency-free native codec suite can be invoked with:
 
@@ -177,8 +183,7 @@ The master contract is:
 
 1. ESP32 host/Python/WebUI deterministic surfaces;
 2. nRF host-policy + canonical NCS production build;
-3. qualified software/native nRF tests only when an NCS-native runner is
-   explicitly reviewed;
+3. optional host-native execution only when host GCC is installed;
 4. ESP32 Unity/production builds;
 5. no implicit hardware access.
 
@@ -186,7 +191,7 @@ Physical tiers stay separate:
 
 | Tier | Evidence | Physical prerequisite |
 | --- | --- | --- |
-| Software-only | host/Python/WebUI, ESP32 builds, nRF host policy + NCS build | none |
+| Software-only | host/Python/WebUI, ESP32 builds, nRF host policy + NCS production/bridge/CS builds | none |
 | ESP32 target | Unity/production live telemetry | physical ESP32-S3 |
 | One nRF54L15 | boot/logs/upstream I2C; remote profile adds BMI160/BME280/LEDs | one XIAO |
 | Multiple nRF54L15 | pairwise CS, reconnect, role rotation | two or more XIAOs |

@@ -153,24 +153,25 @@ The wrapper is required because this checkout's Windows path contains spaces;
 generated PlatformIO/Zephyr output stays in
 `%USERPROFILE%\.platformio-workspaces\nrf54l15`.
 
-The automatic no-flash test launch is:
+The automatic no-flash nRF test-build boundary is:
 
 ```powershell
-.\nRF54L15\pio.ps1 test
+.\nRF54L15\ncs.ps1 ncs-test-build
+.\nRF54L15\ncs.ps1 ncs-cs-test-build
 ```
 
-That action is restricted to suites named `test_sw_*`, which are reserved for
-tests explicitly qualified as software/native and hardware-free. PlatformIO's
+These actions build the reviewed Zephyr `ztest` application twice: once for
+the bridge/runtime profile and once with the production RAS/Channel Sounding
+branch enabled. They are target compile evidence only; flashing and physical
+execution remain explicit HIL actions. PlatformIO's
 `--without-uploading` prevents upload but does not by itself guarantee that an
-embedded suite will not need a physical serial/test port, so board-dependent
-nRF tests are excluded from the automatic `Tests: All (no flash)` path.
+embedded suite will not need a physical serial/test port.
 
 The current `test_sw_upstream_protocol` suite is executable in the separate
 native environment and is invoked explicitly with `nRF54L15/pio.ps1 -Action
 test`. If the host has no GCC toolchain, the wrapper reports `BLOCKED`; it does
-not silently claim a pass. The canonical NCS-native embedded boundary in
-`Run All` remains `SKIPPED` until such a runner is reviewed. Do not report an
-ESP32/WebUI-only result as nRF evidence.
+not silently claim a pass. Do not report an ESP32/WebUI-only result as nRF
+evidence.
 
 The planned nRF layers are:
 
@@ -245,10 +246,9 @@ Before merging firmware/test changes, the normal `main` verification must pass:
 4. startup/storage/runtime source contracts;
 5. production Web asset build/optimization checks;
 6. ESP-IDF 5.5.4 production firmware build;
-7. isolated nRF54L15 wrapper build and the qualified automatic nRF
-   software/native test launch; the canonical NCS-native boundary remains
-   explicit `SKIPPED`, while the separate PlatformIO native suite is invoked
-   only by its dedicated task.
+7. isolated nRF54L15 production build plus the bridge and Channel Sounding
+   target test builds; the separate PlatformIO native suite remains a
+   compatibility-only dedicated task.
 
 A fully green run means the checked software contracts for the executed stages
 pass. A current ESP32/WebUI-only result does **not** close the nRF task, and no

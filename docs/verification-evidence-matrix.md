@@ -12,7 +12,8 @@ repository state and this matrix are authoritative for acceptance decisions.
 | **PYTHON SOURCE/ARCHITECTURE CONTRACT** | `tests/python` source/config/layout checks | Required architecture/toolchain/configuration remains present and forbidden regressions are absent | Runtime or physical behavior |
 | **NRF BUILD** | `nRF54L15/ncs.ps1 build` with pinned NCS v3.4.0 | The canonical common XIAO application configures/links with the authoritative production SDK/board target | Boot, USB, sensors, upstream I2C, radio behavior or Channel Sounding accuracy |
 | **NRF PLATFORMIO COMPATIBILITY** | Explicit `nRF54L15: PlatformIO compatibility build` / `pio.ps1 build` | Sources still compile against the historical Seeed/Zephyr 4.2.1 compatibility stack | Production artifact validity or SoftDevice Channel Sounding support |
-| **NRF NATIVE/UNIT** | Host `coverage-nrf` plus explicit PlatformIO native `test_sw_*` suites; later reviewed NCS-native runner | Deterministic nRF policy/state contracts actually exercised | Physical target/radio/sensor behavior |
+| **NRF NATIVE/UNIT** | Host `coverage-nrf` plus explicit PlatformIO native `test_sw_*` compatibility suite | Deterministic nRF policy/state contracts exercised by the host suite | Physical target/radio/sensor behavior |
+| **NRF NCS TEST BUILD** | Reviewed Zephyr `ztest` bridge/runtime app built for the XIAO target, with and without the real CS/RAS branch | Production bridge/runtime sources and both Kconfig/source profiles compile/link | Test execution on target, radio/sensor behavior or Channel Sounding accuracy |
 | **HIL REPLAY/PARSER** | Saved/synthetic logs through HIL parsers | Parser and threshold/error-classification logic | Current board behavior |
 | **LIVE BOARD HIL** | Runner observes telemetry from connected target | Only named machine-observable properties gated by that run | Uninstrumented behavior or unrelated hardware claims |
 | **NRF SINGLE-BOARD HIL** | Physical plain XIAO; remote profile adds BMI160/BME280/LEDs | Named boot/I2C/sensor/orientation/GPIO checks | Multi-node ranging or full TCA topology |
@@ -30,12 +31,13 @@ The canonical nRF surface is:
 python tools/run_local_verify.py --scope nrf
 ```
 
-It runs `coverage-nrf`, the NCS v3.4.0 production build, then an explicit
-NCS-native embedded-test boundary. That final embedded stage currently reports
-`SKIPPED` because no reviewed NCS-native runner exists. The separate
-`nRF54L15/pio.ps1 -Action test` entry point now has a qualified native
-`test_sw_upstream_protocol` suite; it is compatibility/software evidence only
-and reports `BLOCKED` when the host GCC toolchain is unavailable.
+It runs `coverage-nrf`, the NCS v3.4.0 production build, then the reviewed
+bridge/runtime and real CS/RAS target test builds. Those two stages are compile
+evidence (`COMPILES`) and do not flash or run a board. The optional
+`nRF54L15/ncs.ps1 native-test` action can execute the same app under
+`native_sim` when host GCC is installed. The separate `nRF54L15/pio.ps1
+-Action test` entry point remains compatibility/software evidence only and
+reports `BLOCKED` when the host GCC toolchain is unavailable.
 
 `Tests: All (no flash)` / `tools/run_suite.ps1 -Suite All` uses the same NCS
 production build. It never substitutes `pio.ps1` as the production builder and
@@ -58,7 +60,7 @@ itself.
 | nRF common firmware/toolchain | Python contracts + `coverage-nrf` + canonical NCS v3.4.0 link | one-board boot/flash evidence when physical acceptance is required |
 | nRF orientation/snapshot/logger | deterministic driver/runtime/orientation tests | remote plain XIAO + BMI160/BME280/LED wiring and behavior |
 | nRF Channel Sounding scheduler | `nrf_cs_scheduler` host tests | none for pure scheduler itself |
-| nRF Channel Sounding execution/geometry | future MAX-51 adapter mocks + NCS target build | real pair/multi-node CS, repeatability, initiator rotation and RF-environment behavior |
+| nRF Channel Sounding execution/geometry | scheduler host tests + NCS CS/RAS target build + accuracy-runner replay/parser tests | real pair/multi-node CS, measured repeatability/accuracy, initiator rotation and RF-environment behavior |
 
 ## Canonical nRF toolchain evidence
 

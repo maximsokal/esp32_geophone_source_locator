@@ -163,12 +163,28 @@ Required automated evidence:
 Pure policy/state logic belongs in host/native tests. Existing `coverage-nrf`
 is part of the canonical nRF verification surface.
 
-The executable `test_sw_upstream_protocol` PlatformIO native suite covers the
-dependency-free 112-byte codec and rejects the previous 102-byte length.
-Invoke it explicitly with `nRF54L15/pio.ps1 -Action test`; it never uploads.
-`Tests: All (no flash)` still reports its separate canonical NCS-native embedded
-test boundary as `SKIPPED`, because a reviewed NCS-native runner has not yet
-been approved. `pio test --without-uploading` only prevents upload; it does not prove a test is physically hardware-free.
+The NCS-native test application is now the canonical embedded bridge/runtime
+surface. It uses Zephyr `ztest` and the production sensor bridge sources. The
+regular profile checks the real Zephyr I2C API path against a deterministic fake
+bus, BMI160/BME280 bridge argument guards and remote/main role behavior:
+
+```powershell
+.\nRF54L15\ncs.ps1 ncs-test-build
+```
+
+The Channel Sounding profile merges the production `zephyr/prj.conf` with the
+test application configuration, so the real RAS/CS-DE runtime branch is
+compiled together with the bridge tests:
+
+```powershell
+.\nRF54L15\ncs.ps1 ncs-cs-test-build
+```
+
+These two commands are target compile evidence (`COMPILES`), not a claim that
+the image was flashed or that the ztests ran on a physical XIAO. The optional
+`ncs.ps1 native-test` action can execute the same app under `native_sim` when a
+host GCC is installed. The PlatformIO `test_sw_upstream_protocol` suite remains
+compatibility-only; its no-upload mode does not replace NCS evidence.
 
 ### C. One-board HIL
 
@@ -195,6 +211,30 @@ With two or more XIAOs:
 - disconnect/reconnect/reboot;
 - missing-node behavior;
 - eventual matrix completion/recovery.
+
+The repeatability/accuracy gate has a separate runner and must not be inferred
+from a successful build. The runner accepts either a captured serial log or a
+live port and evaluates every completed pair sample against the measured
+fixture distance, success rate, bias, p95 error, maximum error and repeatability
+standard deviation. A live PASS additionally requires explicit fixture
+confirmation:
+
+```powershell
+# Replay a previously captured run without touching hardware.
+.\tools\run_nrf_cs_accuracy_hil.ps1 `
+  -LogPath artifacts\nrf-cs-accuracy-hil\capture.log `
+  -ExpectedDistanceMm 1000 -MaxErrorMm 50 -Repeats 20 -MinSuccessRate 0.90
+
+# Live two-board run; only this explicit command opens the ESP32 serial port.
+.\tools\run_nrf_cs_accuracy_hil.ps1 `
+  -Port COM4 -ExpectedDistanceMm 1000 -MaxErrorMm 50 `
+  -Repeats 20 -MinSuccessRate 0.90 -FixtureConfirmed
+```
+
+The physical fixture must contain the ESP32/TCA topology controller and two
+XIAO nRF54L15 nodes at a measured separation. The runner does not erase flash,
+erase NVS or write eFuses. Without two assigned nodes, a complete capture, or
+fixture confirmation, the result is `BLOCKED`, never physical proof.
 
 ### E. Full ESP32 + TCA topology HIL
 
