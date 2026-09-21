@@ -46,6 +46,34 @@ export interface RecordingState {
   error?: string;
 }
 
+export type RecordingGateDecision =
+  | 'BLOCKED_INSUFFICIENT_REMOTES'
+  | 'BLOCKED_NOT_LEVEL'
+  | 'ALLOWED_PLANAR_2D'
+  | 'ALLOWED_3D_CAPABLE';
+
+export type LocalizationDimensionality =
+  | 'INSUFFICIENT'
+  | 'PLANAR_2D'
+  | 'CAPABLE_3D';
+
+/**
+ * MAX-165: the same Record-button admission decision seismic_recorder_start()
+ * itself enforces, surfaced ahead of time so a rejection can be shown before
+ * the operator presses Record rather than only after.
+ */
+export interface RecordingGateStatus {
+  available: boolean;
+  assigned_count?: number;
+  accepted_count?: number;
+  decision?: RecordingGateDecision;
+  dimensionality?: LocalizationDimensionality;
+  allowed?: boolean;
+  reason?: string;
+  warning?: string;
+  error?: string;
+}
+
 export type MeasurementServiceState =
   | 'LIVE'
   | 'STARTING'
@@ -234,6 +262,7 @@ export interface DeviceStatus {
   pods: DevicePod[];
   acquisition: DeviceAcquisitionStatus;
   recording?: RecordingState;
+  recording_gate?: RecordingGateStatus;
   measurement?: MeasurementServiceStatus;
   object_store?: ObjectStoreState;
   recording_sessions?: RecordingSessionCollection;

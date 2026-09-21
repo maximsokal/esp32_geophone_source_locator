@@ -35,3 +35,48 @@ def test_blocked_decisions_have_reasons_allowed_decisions_do_not_invent_one():
     assert "RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES" in source
     assert "RECORDING_GATE_BLOCKED_NOT_LEVEL" in source
     assert 'return "";' in source
+
+
+def test_gate_is_actually_wired_into_the_real_recording_admission_path():
+    """A tested-but-unwired pure function does not protect production: this
+    pins that seismic_recorder's own START path calls the real gate (not
+    just its own narrower assigned/accepted check), so a bench setup with
+    fewer than 3 REMOTEs is actually rejected before recording, not merely
+    provably rejectable in isolation."""
+    recorder = read("components/seismic_recorder/seismic_recorder.c")
+    cmake = read("components/seismic_recorder/CMakeLists.txt")
+
+    assert '#include "recording_gate.h"' in recorder
+    assert "recording_gate_evaluate(" in recorder
+    assert "RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES" in recorder
+    assert "RECORDING_GATE_BLOCKED_NOT_LEVEL" in recorder
+    assert "RECORDING_GATE_ALLOWED_PLANAR_2D" in recorder
+    assert "recording_gate" in cmake
+
+    # The old MAX-118-era leveling check this supersedes must be gone, not
+    # left as unreachable dead code alongside the real gate.
+    assert "seismic_recorder_geometry_validate_leveling" not in recorder
+    policy_header = read("components/seismic_recorder/seismic_recorder_geometry_policy.h")
+    policy_source = read("components/seismic_recorder/seismic_recorder_geometry_policy.c")
+    assert "seismic_recorder_geometry_validate_leveling" not in policy_header
+    assert "seismic_recorder_geometry_validate_leveling" not in policy_source
+
+
+def test_gate_is_exposed_in_extended_status_and_consumable_by_the_webui():
+    """The UI gate must be present in the same status response that drives
+    the Record button, not only in an isolated JSON helper."""
+    status_builder = read("components/web_server/web_status_json.c")
+    recording_json = read("components/web_server/web_status_json_recording.c")
+    internal_header = read("components/web_server/web_server_internal.h")
+    web_cmake = read("components/web_server/CMakeLists.txt")
+    webui_device = read("webui/src/domain/device.ts")
+    webui_feature = read("webui/src/features/objects/ObjectsFeature.tsx")
+
+    assert "web_status_json_add_recording_gate(root)" in status_builder
+    assert "bool web_status_json_add_recording_gate(cJSON *root);" in internal_header
+    assert '"recording_gate"' in recording_json
+    assert "nrf_topology_service" in web_cmake
+    assert "recording_gate" in web_cmake
+    assert "RecordingGateStatus" in webui_device
+    assert "status?.recording_gate" in webui_feature
+    assert "recordingGateBlocksStart" in webui_feature

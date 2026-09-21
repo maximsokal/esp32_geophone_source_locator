@@ -54,6 +54,7 @@ idf_component_register(
         nrf_geometry_solver
         nrf_topology_service
         object_store
+        recording_gate
         runtime_observability
         sd_card
         seismic_acquisition

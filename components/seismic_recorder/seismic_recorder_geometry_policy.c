@@ -3,23 +3,6 @@
 #include <string.h>
 
 
-esp_err_t seismic_recorder_geometry_validate_leveling(
-    size_t assigned_count,
-    size_t accepted_count
-)
-{
-    if (assigned_count == 0U) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    if (accepted_count < assigned_count) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    return ESP_OK;
-}
-
-
 esp_err_t seismic_recorder_geometry_build_inputs(
     const nrf_topology_snapshot_t *topology,
     const seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT],

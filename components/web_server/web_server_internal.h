@@ -136,6 +136,7 @@ void web_status_json_objects_release_start_reservation(void *user_context);
 void web_status_json_objects_storage_changed(void *user_context);
 void web_status_json_objects_set_active(const char *object_id);
 bool web_status_json_add_recording(cJSON *root);
+bool web_status_json_add_recording_gate(cJSON *root);
 bool web_status_json_add_measurement(cJSON *root);
 
 void web_json_writer_init(web_json_writer_t *writer, httpd_req_t *request);

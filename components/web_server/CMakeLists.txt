@@ -347,8 +347,10 @@ idf_component_register(
         app_events
         device_status
         measurement_service
+        nrf_topology_service
         object_store
         power_control
+        recording_gate
         runtime_observability
         sd_card
         seismic_acquisition
