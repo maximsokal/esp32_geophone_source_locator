@@ -1,5 +1,21 @@
 #include "geophone_events.h"
 
+#include <math.h>
+
+
+static bool samples_are_finite(
+    const float *samples,
+    size_t sample_count
+)
+{
+    for (size_t i = 0u; i < sample_count; ++i) {
+        if (!isfinite(samples[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 
 bool geophone_event_sta_lta_detect(
     const float *samples,
@@ -18,7 +34,9 @@ bool geophone_event_sta_lta_detect(
         samples == NULL ||
         config == NULL ||
         config->sta_window_samples == 0u ||
-        config->lta_window_samples <= config->sta_window_samples
+        config->lta_window_samples <= config->sta_window_samples ||
+        !isfinite(config->trigger_ratio) ||
+        config->trigger_ratio <= 0.0f
     ) {
         return false;
     }
@@ -26,7 +44,7 @@ bool geophone_event_sta_lta_detect(
     const size_t sta_w = config->sta_window_samples;
     const size_t lta_w = config->lta_window_samples;
 
-    if (sample_count < lta_w) {
+    if (sample_count < lta_w || !samples_are_finite(samples, sample_count)) {
         return false;
     }
 

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "localization_timing_budget.h"
@@ -154,6 +155,17 @@ static void test_rejects_invalid_arguments(void)
     assert(
         localization_timing_jitter_error_bound(
             observations, 0u, &config, NULL, 100, &error_m
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    assert(
+        localization_timing_jitter_error_bound(
+            observations, 4u, &config, NULL, INT64_MAX, &error_m
+        ) == ESP_ERR_INVALID_ARG
+    );
+    assert(
+        localization_timing_jitter_error_bound(
+            observations, 4u, &config, NULL, INT64_MIN, &error_m
         ) == ESP_ERR_INVALID_ARG
     );
 }

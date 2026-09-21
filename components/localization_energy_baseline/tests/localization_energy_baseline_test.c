@@ -143,6 +143,41 @@ static void test_rejects_negative_energy_and_invalid_arguments(void)
 }
 
 
+static void test_rejects_nonfinite_active_energy_weight_and_position(void)
+{
+    const localization_energy_baseline_channel_t valid = {
+        .sensor_position = { 0.0, 0.0, 0.0 },
+        .energy = 1.0,
+        .weight = 1.0
+    };
+    localization_energy_baseline_result_t result;
+
+    localization_energy_baseline_channel_t bad = valid;
+    bad.energy = NAN;
+    assert(localization_energy_baseline_estimate(&bad, 1u, &result) == ESP_ERR_INVALID_ARG);
+
+    bad = valid;
+    bad.energy = INFINITY;
+    assert(localization_energy_baseline_estimate(&bad, 1u, &result) == ESP_ERR_INVALID_ARG);
+
+    bad = valid;
+    bad.weight = NAN;
+    assert(localization_energy_baseline_estimate(&bad, 1u, &result) == ESP_ERR_INVALID_ARG);
+
+    bad = valid;
+    bad.weight = INFINITY;
+    assert(localization_energy_baseline_estimate(&bad, 1u, &result) == ESP_ERR_INVALID_ARG);
+
+    bad = valid;
+    bad.sensor_position.y_m = NAN;
+    assert(localization_energy_baseline_estimate(&bad, 1u, &result) == ESP_ERR_INVALID_ARG);
+
+    bad = valid;
+    bad.sensor_position.z_m = INFINITY;
+    assert(localization_energy_baseline_estimate(&bad, 1u, &result) == ESP_ERR_INVALID_ARG);
+}
+
+
 int main(void)
 {
     test_two_equal_energy_channels_centroid_at_midpoint();
@@ -152,6 +187,7 @@ int main(void)
     test_all_zero_energy_is_not_found();
     test_all_channels_excluded_is_not_found();
     test_rejects_negative_energy_and_invalid_arguments();
+    test_rejects_nonfinite_active_energy_weight_and_position();
     puts("localization energy baseline tests passed");
     return 0;
 }

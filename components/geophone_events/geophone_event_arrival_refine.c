@@ -20,11 +20,19 @@ bool geophone_event_refine_arrival(
     if (
         samples == NULL ||
         config == NULL ||
+        !isfinite(config->amplitude_fraction) ||
         config->amplitude_fraction <= 0.0f ||
+        config->amplitude_fraction > 1.0f ||
         sample_count == 0u ||
         coarse_trigger_index >= sample_count
     ) {
         return false;
+    }
+
+    for (size_t i = 0u; i < sample_count; ++i) {
+        if (!isfinite(samples[i])) {
+            return false;
+        }
     }
 
     const size_t window_start =
@@ -32,8 +40,9 @@ bool geophone_event_refine_arrival(
         ? 0u
         : coarse_trigger_index - config->lookback_samples;
 
+    const size_t samples_after_coarse = sample_count - coarse_trigger_index;
     const size_t window_end_exclusive =
-        coarse_trigger_index + config->lookahead_samples + 1u > sample_count
+        config->lookahead_samples >= samples_after_coarse
         ? sample_count
         : coarse_trigger_index + config->lookahead_samples + 1u;
 

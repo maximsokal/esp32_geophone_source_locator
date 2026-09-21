@@ -7,10 +7,12 @@
  * that a deliberately wrong region of the same recording scores lower.
  */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "localization_semblance.h"
 
@@ -571,6 +573,75 @@ static void test_rejects_invalid_config_and_null_arguments(void)
             recording.channels, 4u, &bad_step, &config, &result
         ) == ESP_ERR_INVALID_ARG
     );
+
+    localization_semblance_config_t bad_nonfinite_speed = config;
+    bad_nonfinite_speed.propagation_speed_mps = NAN;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &bounds, &bad_nonfinite_speed, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    localization_semblance_config_t bad_window = config;
+    bad_window.window_half_span_samples = SIZE_MAX;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &bounds, &bad_window, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    localization_semblance_search_bounds_t reversed_bounds = bounds;
+    reversed_bounds.max_corner.x_m = reversed_bounds.min_corner.x_m - 1.0;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &reversed_bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    localization_semblance_search_bounds_t huge_bounds = bounds;
+    huge_bounds.max_corner.x_m = DBL_MAX;
+    huge_bounds.step_m = 1.0;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &huge_bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    const float saved_sample = recording.buffers[0][0];
+    recording.buffers[0][0] = NAN;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+    recording.buffers[0][0] = saved_sample;
+
+    const localization_point3d_t saved_position = recording.channels[0].sensor_position;
+    recording.channels[0].sensor_position.x_m = INFINITY;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+    recording.channels[0].sensor_position = saved_position;
+
+    const uint32_t saved_rate = recording.channels[0].sample_rate_hz;
+    recording.channels[0].sample_rate_hz = 0u;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+    recording.channels[0].sample_rate_hz = saved_rate;
+
+    const float *saved_samples = recording.channels[0].samples;
+    recording.channels[0].samples = NULL;
+    assert(
+        localization_semblance_search(
+            recording.channels, 4u, &bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+    recording.channels[0].samples = saved_samples;
 
     free_recording(&recording);
 }

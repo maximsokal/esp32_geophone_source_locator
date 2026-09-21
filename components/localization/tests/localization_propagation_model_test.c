@@ -233,6 +233,16 @@ static void test_velocity_error_bound_rejects_invalid_arguments(void)
             s_observations, 4u, &config, NULL, -340.0, &error_m
         ) == ESP_ERR_INVALID_ARG
     );
+    assert(
+        localization_propagation_velocity_error_bound(
+            s_observations, 4u, &config, NULL, NAN, &error_m
+        ) == ESP_ERR_INVALID_ARG
+    );
+    assert(
+        localization_propagation_velocity_error_bound(
+            s_observations, 4u, &config, NULL, INFINITY, &error_m
+        ) == ESP_ERR_INVALID_ARG
+    );
 }
 
 

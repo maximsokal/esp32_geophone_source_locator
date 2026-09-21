@@ -39,6 +39,14 @@ esp_err_t localization_comparison_fuse(
             return ESP_ERR_INVALID_ARG;
         }
 
+        if (
+            !isfinite(methods[i].quality) ||
+            methods[i].quality < 0.0 ||
+            methods[i].quality > 1.0
+        ) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
         if (methods[i].solved) {
             if (
                 !isfinite(methods[i].position.x_m) ||

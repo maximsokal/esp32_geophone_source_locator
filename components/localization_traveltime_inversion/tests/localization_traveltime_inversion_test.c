@@ -7,9 +7,11 @@
  * real per-candidate surface (not a stand-in for a point estimate).
  */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #define TEST_PRINTF(...) do { printf(__VA_ARGS__); fflush(stdout); } while (0)
 
@@ -351,6 +353,53 @@ static void test_surface_has_real_per_candidate_variation(void)
 }
 
 
+static void test_extreme_int64_arrival_difference_is_safe(void)
+{
+    const localization_traveltime_pick_t picks[3] = {
+        {
+            .observation = {
+                .sensor_position = s_sensors3[0],
+                .arrival_time_us = INT64_MIN
+            },
+            .weight = 1.0
+        },
+        {
+            .observation = {
+                .sensor_position = s_sensors3[1],
+                .arrival_time_us = INT64_MAX
+            },
+            .weight = 1.0
+        },
+        {
+            .observation = {
+                .sensor_position = s_sensors3[2],
+                .arrival_time_us = INT64_MAX
+            },
+            .weight = 1.0
+        }
+    };
+    const localization_traveltime_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 0.0, 0.0, 0.0 },
+        .step_m = 1.0
+    };
+    const localization_traveltime_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .timing_uncertainty_us = s_timing_uncertainty_us,
+        .refine_divisor = 2u
+    };
+    localization_traveltime_result_t result;
+
+    assert(localization_traveltime_search(
+        picks, 3u, &bounds, &config, &result
+    ) == ESP_OK);
+    assert(result.surface != NULL);
+    assert(result.surface_count == 1u);
+    assert(isfinite(result.best_residual_rms_us));
+    free(result.surface);
+}
+
+
 static void test_rejects_invalid_config_and_null_arguments(void)
 {
     localization_traveltime_pick_t picks[3];
@@ -411,12 +460,23 @@ static void test_rejects_invalid_config_and_null_arguments(void)
         localization_traveltime_search(picks, 3u, &bounds, &bad_speed, &result) ==
         ESP_ERR_INVALID_ARG
     );
+    bad_speed.propagation_speed_mps = NAN;
+    assert(
+        localization_traveltime_search(picks, 3u, &bounds, &bad_speed, &result) ==
+        ESP_ERR_INVALID_ARG
+    );
 
     localization_traveltime_config_t bad_uncertainty = config;
     bad_uncertainty.timing_uncertainty_us = 0.0;
     assert(
         localization_traveltime_search(picks, 3u, &bounds, &bad_uncertainty, &result) ==
         ESP_ERR_INVALID_ARG
+    );
+    bad_uncertainty.timing_uncertainty_us = INFINITY;
+    assert(
+        localization_traveltime_search(
+            picks, 3u, &bounds, &bad_uncertainty, &result
+        ) == ESP_ERR_INVALID_ARG
     );
 
     localization_traveltime_config_t bad_divisor = config;
@@ -432,6 +492,43 @@ static void test_rejects_invalid_config_and_null_arguments(void)
         localization_traveltime_search(picks, 3u, &bad_step, &config, &result) ==
         ESP_ERR_INVALID_ARG
     );
+
+    localization_traveltime_search_bounds_t reversed_bounds = bounds;
+    reversed_bounds.max_corner.x_m = reversed_bounds.min_corner.x_m - 1.0;
+    assert(
+        localization_traveltime_search(
+            picks, 3u, &reversed_bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    localization_traveltime_search_bounds_t huge_bounds = bounds;
+    huge_bounds.max_corner.x_m = DBL_MAX;
+    huge_bounds.step_m = 1.0;
+    assert(
+        localization_traveltime_search(
+            picks, 3u, &huge_bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    localization_traveltime_pick_t bad_weight[3] = {
+        picks[0], picks[1], picks[2]
+    };
+    bad_weight[0].weight = NAN;
+    assert(
+        localization_traveltime_search(
+            bad_weight, 3u, &bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
+
+    localization_traveltime_pick_t bad_position[3] = {
+        picks[0], picks[1], picks[2]
+    };
+    bad_position[0].observation.sensor_position.x_m = INFINITY;
+    assert(
+        localization_traveltime_search(
+            bad_position, 3u, &bounds, &config, &result
+        ) == ESP_ERR_INVALID_ARG
+    );
 }
 
 
@@ -442,6 +539,7 @@ int main(void)
     test_insufficient_picks_after_weighting_is_reported();
     test_down_weighted_bad_pick_is_excluded_from_hijacking_the_estimate();
     test_surface_has_real_per_candidate_variation();
+    test_extreme_int64_arrival_difference_is_safe();
     test_rejects_invalid_config_and_null_arguments();
     puts("localization traveltime inversion tests passed");
     return 0;

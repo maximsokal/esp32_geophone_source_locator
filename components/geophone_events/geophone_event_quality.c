@@ -21,14 +21,21 @@ float geophone_event_compute_snr(
         return 0.0f;
     }
 
+    for (size_t i = 0u; i < sample_count; ++i) {
+        if (!isfinite(samples[i])) {
+            return 0.0f;
+        }
+    }
+
     double noise_sum_squares = 0.0;
     for (size_t i = 0u; i < noise_window_samples; ++i) {
         noise_sum_squares += (double)samples[i] * (double)samples[i];
     }
     const double noise_rms = sqrt(noise_sum_squares / (double)noise_window_samples);
 
+    const size_t samples_after_arrival = sample_count - arrival_index;
     const size_t signal_end =
-        arrival_index + signal_window_samples > sample_count
+        signal_window_samples >= samples_after_arrival
         ? sample_count
         : arrival_index + signal_window_samples;
 
@@ -60,5 +67,9 @@ bool geophone_event_pick_is_acceptable(
         return false;
     }
 
-    return snr >= config->minimum_snr;
+    return
+        isfinite(snr) &&
+        isfinite(config->minimum_snr) &&
+        config->minimum_snr >= 0.0f &&
+        snr >= config->minimum_snr;
 }

@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 
 
 bool geophone_event_cross_correlate(
@@ -23,7 +24,8 @@ bool geophone_event_cross_correlate(
         channel_b == NULL ||
         config == NULL ||
         sample_count == 0u ||
-        config->max_lag_samples >= sample_count
+        config->max_lag_samples >= sample_count ||
+        config->max_lag_samples > (size_t)PTRDIFF_MAX
     ) {
         return false;
     }
@@ -31,11 +33,19 @@ bool geophone_event_cross_correlate(
     double energy_a = 0.0;
     double energy_b = 0.0;
     for (size_t i = 0u; i < sample_count; ++i) {
+        if (!isfinite(channel_a[i]) || !isfinite(channel_b[i])) {
+            return false;
+        }
         energy_a += (double)channel_a[i] * (double)channel_a[i];
         energy_b += (double)channel_b[i] * (double)channel_b[i];
     }
 
-    if (energy_a <= 0.0 || energy_b <= 0.0) {
+    if (
+        !isfinite(energy_a) ||
+        !isfinite(energy_b) ||
+        energy_a <= 0.0 ||
+        energy_b <= 0.0
+    ) {
         return false;
     }
 

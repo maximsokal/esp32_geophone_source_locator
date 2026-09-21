@@ -1,6 +1,7 @@
 """Source contracts for the timing-jitter error budget tool (MAX-142)."""
 
 from pathlib import Path
+import re
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,7 +18,9 @@ def test_never_invents_a_measured_jitter_value():
     source = read("components/localization/localization_timing_budget.c")
 
     assert "int64_t jitter_us" in header
-    assert "jitter_us =" not in source  # never assigned a default/guessed value
+    # Equality checks such as ``jitter_us == INT64_MIN`` are validation, not
+    # assignments.  Keep the contract focused on an actual assignment token.
+    assert re.search(r"(?<![=!<>])\bjitter_us\s*=(?!=)", source) is None
 
 
 def test_solver_files_stay_unaware_of_timing_budget_tooling():
