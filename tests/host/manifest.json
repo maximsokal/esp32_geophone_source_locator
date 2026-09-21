@@ -255,6 +255,33 @@
       ]
     },
     {
+      "name": "localization_comparison",
+      "sources": [
+        "components/localization_comparison/localization_comparison.c",
+        "components/localization_comparison/tests/localization_comparison_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_comparison/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_energy_baseline",
+      "sources": [
+        "components/localization_energy_baseline/localization_energy_baseline.c",
+        "components/localization_energy_baseline/tests/localization_energy_baseline_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_energy_baseline/include"
+      ]
+    },
+    {
       "name": "localization_traveltime_inversion",
       "sources": [
         "components/localization/localization_dimensionality_policy.c",
