@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
-import type { LocalizationRun } from '../../api/deviceApi';
+import type { LocalizationRun, LocalizationSessionGeometry } from '../../api/deviceApi';
 
 interface Props {
   objectId: string;
@@ -71,11 +71,34 @@ function formatPosition(run: LocalizationRun): string {
   return `${x_m.toFixed(2)}, ${y_m.toFixed(2)}, ${z_m.toFixed(2)} m`;
 }
 
+function formatMm(value: number | undefined): string {
+  return value === undefined ? '—' : `${(value / 1000).toFixed(2)} m`;
+}
+
 export default function LocalizationCalculatePanel({ objectId, sessionId, busy, onClose }: Props) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runs, setRuns] = useState<LocalizationRun[] | null>(null);
+  const [geometry, setGeometry] = useState<LocalizationSessionGeometry | null>(null);
+  const [geometryError, setGeometryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setGeometry(null);
+    setGeometryError(null);
+    fetchLocalizationRuns(objectId, sessionId)
+      .then((listing) => {
+        if (cancelled) return;
+        setGeometry(listing.geometry);
+        setRuns(listing.runs.length > 0 ? listing.runs : null);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setGeometryError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => { cancelled = true; };
+  }, [objectId, sessionId]);
 
   const set = (key: keyof FormState) => (event: React.ChangeEvent<HTMLInputElement>) => {
     setForm((previous) => ({ ...previous, [key]: event.target.value }));
@@ -142,6 +165,27 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         against this session's frozen geometry and raw samples. Every value below must come from this
         object's own measured/reviewed calibration -- nothing here is a guessed default.
       </p>
+
+      <h3>Sensor geometry (frozen for this session)</h3>
+      {geometryError !== null && <div className="console-alert" role="alert">{geometryError}</div>}
+      {geometry === null && geometryError === null && <p>Loading sensor geometry…</p>}
+      {geometry !== null && !geometry.available && (
+        <p>No frozen geometry was recorded for this session (recorded before per-session geometry freezing, or never solved).</p>
+      )}
+      {geometry !== null && geometry.available && (
+        <dl className="console-dl">
+          {geometry.pods.map((pod) => (
+            <div key={pod.pod}>
+              <dt>Pod {pod.pod}</dt>
+              <dd>
+                {pod.computed
+                  ? `${formatMm(pod.x_mm)}, ${formatMm(pod.y_mm)}, ${formatMm(pod.z_mm)} · ${pod.leveled ? 'level' : 'not level'}`
+                  : 'not participating'}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
 
       <div className="cable-grid">
         <label>
@@ -217,6 +261,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       </div>
 
       {runs !== null && (
+        <>
+        <h3>Localization runs</h3>
         <div className="session-list">
           {runs.length === 0 ? (
             <p>No localization runs persisted for this session.</p>
@@ -237,6 +283,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
             </div>
           ))}
         </div>
+        </>
       )}
     </article>
   );

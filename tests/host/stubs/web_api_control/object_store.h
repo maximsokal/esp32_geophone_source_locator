@@ -35,6 +35,20 @@ typedef struct {
     uint64_t token_id;
 } object_store_lease_t;
 
+typedef struct {
+    bool computed;
+    bool leveled;
+    int32_t x_mm;
+    int32_t y_mm;
+    int32_t z_mm;
+    uint64_t computed_at_ms;
+} object_store_pod_geometry_t;
+
+typedef struct {
+    bool anchored;
+    object_store_pod_geometry_t pods[OBJECT_STORE_POD_COUNT];
+} object_store_geometry_t;
+
 esp_err_t object_store_create_named(const char *name, object_store_summary_t *created_object);
 esp_err_t object_store_set_active(const char *object_id);
 esp_err_t object_store_delete(const char *object_id);

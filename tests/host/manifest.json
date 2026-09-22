@@ -559,6 +559,8 @@
         "components/localization/include",
         "components/localization_results/include",
         "components/localization_run_store/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
         "components/web_server"
       ],
       "libraries": [
