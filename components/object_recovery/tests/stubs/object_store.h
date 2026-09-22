@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -26,9 +27,31 @@ typedef struct
 
 } object_store_geometry_t;
 
+#define OBJECT_STORE_MAX_CS_PAIRS 10U
+
+typedef struct
+{
+    uint8_t node_a;
+    uint8_t node_b;
+    bool valid;
+    int32_t distance_mm;
+    uint16_t confidence;
+    uint16_t attempts;
+    uint8_t valid_samples;
+
+} object_store_cs_pair_t;
+
+typedef struct
+{
+    size_t pair_count;
+    object_store_cs_pair_t pairs[OBJECT_STORE_MAX_CS_PAIRS];
+
+} object_store_cs_pairs_t;
+
 typedef struct
 {
     object_summary_t summary;
+    object_store_cs_pairs_t cs_pairs;
 
 } object_store_profile_t;
 

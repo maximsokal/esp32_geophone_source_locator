@@ -173,6 +173,53 @@ static bool seismic_recorder_json_add_geometry(
 }
 
 
+/*
+ * MAX-148: freeze this recording's own CS pair evidence alongside its
+ * geometry -- same rationale as seismic_recorder_json_add_geometry() above:
+ * the object's live cs_pairs can be overwritten by a later recording, this
+ * copy is what "this recording's placement confidence" means from now on.
+ */
+static bool seismic_recorder_json_add_cs_pairs(
+    cJSON *root,
+    const object_store_cs_pairs_t *cs_pairs
+)
+{
+    cJSON *object = cJSON_AddObjectToObject(root, "cs_pairs");
+    if (object == NULL) {
+        return false;
+    }
+
+    cJSON *pairs = cJSON_AddArrayToObject(object, "pairs");
+    if (pairs == NULL) {
+        return false;
+    }
+
+    for (size_t i = 0; i < cs_pairs->pair_count && i < OBJECT_STORE_MAX_CS_PAIRS; ++i) {
+        const object_store_cs_pair_t *pair = &cs_pairs->pairs[i];
+
+        cJSON *pair_object = cJSON_CreateObject();
+        if (pair_object == NULL) {
+            return false;
+        }
+        cJSON_AddItemToArray(pairs, pair_object);
+
+        if (
+            cJSON_AddNumberToObject(pair_object, "node_a", pair->node_a) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "node_b", pair->node_b) == NULL ||
+            cJSON_AddBoolToObject(pair_object, "valid", pair->valid) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "distance_mm", (double)pair->distance_mm) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "confidence", pair->confidence) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "attempts", pair->attempts) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "valid_samples", pair->valid_samples) == NULL
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
 static bool seismic_recorder_json_add_cadence(
     cJSON *root,
     const seismic_recorder_cadence_t *cadence
@@ -300,6 +347,9 @@ esp_err_t seismic_recorder_json_write_metadata(
     }
     if (ok) {
         ok = seismic_recorder_json_add_geometry(root, &profile->geometry);
+    }
+    if (ok) {
+        ok = seismic_recorder_json_add_cs_pairs(root, &profile->cs_pairs);
     }
 
     if (!ok) {
@@ -819,6 +869,112 @@ esp_err_t seismic_recorder_read_session_geometry(
             ? (uint64_t)computed_at->valuedouble
             : 0U;
     }
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+
+/*
+ * MAX-148: read back the CS pair evidence frozen into session.json alongside
+ * this session's geometry (see seismic_recorder_read_session_geometry()
+ * above for the same "never the object's current live state" rationale).
+ * Mirrors object_store_profile.c's object_store_read_cs_pairs() parse logic
+ * against this session's own JSON instead of object.json. A missing or
+ * malformed "cs_pairs" key is not an error -- it just means pair_count stays
+ * 0, matching a session recorded before MAX-148 ever existed.
+ */
+esp_err_t seismic_recorder_read_session_cs_pairs(
+    const char *object_id,
+    const char *session_id,
+    object_store_cs_pairs_t *cs_pairs
+)
+{
+    if (object_id == NULL || session_id == NULL || cs_pairs == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(cs_pairs, 0, sizeof(*cs_pairs));
+
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = seismic_recorder_json_metadata_path(
+        object_id,
+        session_id,
+        path,
+        SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (err != ESP_OK) {
+        free(path);
+        return err;
+    }
+
+    char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    if (buffer == NULL) {
+        free(path);
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = storage_manager_read_text(path, buffer, SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    free(path);
+    if (err != ESP_OK) {
+        free(buffer);
+        return err;
+    }
+
+    cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
+    if (root == NULL) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "cs_pairs");
+    if (!cJSON_IsObject(node)) {
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    cJSON *pairs = cJSON_GetObjectItemCaseSensitive(node, "pairs");
+    if (!cJSON_IsArray(pairs)) {
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    size_t count = 0U;
+    const int array_size = cJSON_GetArraySize(pairs);
+    for (int i = 0; i < array_size && count < OBJECT_STORE_MAX_CS_PAIRS; ++i) {
+        cJSON *pair = cJSON_GetArrayItem(pairs, i);
+        if (!cJSON_IsObject(pair)) {
+            continue;
+        }
+        cJSON *node_a = cJSON_GetObjectItemCaseSensitive(pair, "node_a");
+        cJSON *node_b = cJSON_GetObjectItemCaseSensitive(pair, "node_b");
+        cJSON *valid = cJSON_GetObjectItemCaseSensitive(pair, "valid");
+        cJSON *distance_mm = cJSON_GetObjectItemCaseSensitive(pair, "distance_mm");
+        cJSON *confidence = cJSON_GetObjectItemCaseSensitive(pair, "confidence");
+        cJSON *attempts = cJSON_GetObjectItemCaseSensitive(pair, "attempts");
+        cJSON *valid_samples = cJSON_GetObjectItemCaseSensitive(pair, "valid_samples");
+        if (
+            !cJSON_IsNumber(node_a) || !cJSON_IsNumber(node_b) ||
+            !cJSON_IsNumber(distance_mm) || !cJSON_IsNumber(confidence) ||
+            !cJSON_IsNumber(attempts) || !cJSON_IsNumber(valid_samples)
+        ) {
+            continue;
+        }
+        object_store_cs_pair_t *out = &cs_pairs->pairs[count];
+        out->node_a = (uint8_t)node_a->valuedouble;
+        out->node_b = (uint8_t)node_b->valuedouble;
+        out->valid = cJSON_IsTrue(valid);
+        out->distance_mm = (int32_t)distance_mm->valuedouble;
+        out->confidence = (uint16_t)confidence->valuedouble;
+        out->attempts = (uint16_t)attempts->valuedouble;
+        out->valid_samples = (uint8_t)valid_samples->valuedouble;
+        ++count;
+    }
+    cs_pairs->pair_count = count;
 
     cJSON_Delete(root);
     return ESP_OK;

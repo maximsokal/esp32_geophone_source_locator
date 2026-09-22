@@ -1190,6 +1190,20 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return err;
     }
 
+    /*
+     * MAX-148: persist the raw CS pair evidence behind this same solve,
+     * best-effort -- a WebUI placement-confidence view is strictly less
+     * important than the recording itself, so a failure here logs and
+     * continues rather than rejecting START (unlike the geometry write
+     * above, which the recording gate's own admission promise depends on).
+     */
+    object_store_cs_pairs_t cs_pairs;
+    seismic_recorder_geometry_apply_cs_pairs(cycle.pairs, cycle.pair_count, &cs_pairs);
+    const esp_err_t cs_pairs_err = object_store_set_cs_pairs(object_id, &cs_pairs);
+    if (cs_pairs_err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not persist CS pair evidence err=%s", esp_err_to_name(cs_pairs_err));
+    }
+
     return ESP_OK;
 }
 

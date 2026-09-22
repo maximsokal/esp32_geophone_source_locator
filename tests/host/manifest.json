@@ -653,6 +653,21 @@
       ]
     },
     {
+      "name": "object_store_cs_pairs_round_trip",
+      "sources": [
+        "components/object_format/object_format.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/object_store/tests/object_store_cs_pairs_round_trip_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "components/object_store/tests/stubs",
+        "components/object_store",
+        "components/object_store/include",
+        "components/object_format/include"
+      ]
+    },
+    {
       "name": "nrf_geometry_solver",
       "sources": [
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
@@ -927,6 +942,24 @@
         "components/seismic_recorder/seismic_recorder_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/seismic_recorder/tests/seismic_recorder_session_geometry_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/object_store_profile"
+      ]
+    },
+    {
+      "name": "seismic_recorder_session_cs_pairs",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/seismic_recorder/tests/seismic_recorder_session_cs_pairs_test.c"
       ],
       "include_dirs": [
         "components/seismic_recorder/tests/stubs/session_geometry",

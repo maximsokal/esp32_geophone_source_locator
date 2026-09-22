@@ -308,3 +308,15 @@ esp_err_t seismic_recorder_read_session_geometry(
     const char *session_id,
     object_store_geometry_t *geometry
 );
+
+
+/*
+ * MAX-148: read back the CS pair evidence frozen into this session
+ * alongside its geometry -- never the object's current live topology. Stays
+ * empty (pair_count == 0) if this session predates MAX-148 entirely.
+ */
+esp_err_t seismic_recorder_read_session_cs_pairs(
+    const char *object_id,
+    const char *session_id,
+    object_store_cs_pairs_t *cs_pairs
+);

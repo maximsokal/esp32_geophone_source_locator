@@ -61,12 +61,43 @@ typedef struct
     object_store_pod_geometry_t pods[OBJECT_STORE_POD_COUNT];
 } object_store_geometry_t;
 
+/*
+ * MAX-148: the raw Channel Sounding pair evidence that produced `geometry`
+ * above, for a WebUI placement-confidence view -- distinct from the solved
+ * X/Y/Z, which is all `object_store_pod_geometry_t` keeps. node_a/node_b are
+ * the physical node indices (0 = MAIN, 1..4 = REMOTE pods 1..4) this pair
+ * measured between. `valid` mirrors the CS scheduler's own VALID state (not
+ * PENDING/MISSING/RETRY_EXHAUSTED); a pair the scheduler never resolved is
+ * simply absent from the array rather than present with fabricated values.
+ * confidence is 0..1000 (the CS provider's own scale, passed through
+ * unmodified -- never rescaled/reinterpreted here).
+ */
+#define OBJECT_STORE_MAX_CS_PAIRS 10U
+
+typedef struct
+{
+    uint8_t node_a;
+    uint8_t node_b;
+    bool valid;
+    int32_t distance_mm;
+    uint16_t confidence;
+    uint16_t attempts;
+    uint8_t valid_samples;
+} object_store_cs_pair_t;
+
+typedef struct
+{
+    size_t pair_count;
+    object_store_cs_pair_t pairs[OBJECT_STORE_MAX_CS_PAIRS];
+} object_store_cs_pairs_t;
+
 typedef struct
 {
     object_store_summary_t summary;
     object_store_location_t location;
     float cable_lengths_m[OBJECT_STORE_POD_COUNT];
     object_store_geometry_t geometry;
+    object_store_cs_pairs_t cs_pairs;
 } object_store_profile_t;
 
 /*
@@ -131,6 +162,13 @@ esp_err_t object_store_set_cable_default(size_t pod_index, float length_m);
  * it back to all-pods-not-computed.
  */
 esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry);
+
+/*
+ * Replace this object's stored CS pair evidence wholesale (written once
+ * alongside object_store_set_geometry(), from the same completed CS cycle
+ * that produced the geometry solve). Passing NULL clears it back to empty.
+ */
+esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs);
 
 /*
  * Shared anti-delete lease. Acquisition validates committed object existence

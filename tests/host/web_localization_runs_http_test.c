@@ -17,6 +17,8 @@ static char s_list_object_id[OBJECT_STORE_ID_SIZE];
 static char s_list_session_id[LOCALIZATION_RUN_SESSION_ID_SIZE];
 static unsigned s_geometry_calls;
 static esp_err_t s_geometry_result;
+static unsigned s_cs_pairs_calls;
+static esp_err_t s_cs_pairs_result;
 
 static void reset_fakes(void)
 {
@@ -26,6 +28,8 @@ static void reset_fakes(void)
     memset(s_list_session_id, 0, sizeof(s_list_session_id));
     s_geometry_calls = 0U;
     s_geometry_result = ESP_OK;
+    s_cs_pairs_calls = 0U;
+    s_cs_pairs_result = ESP_OK;
 }
 
 esp_err_t seismic_recorder_read_session_geometry(
@@ -57,6 +61,32 @@ esp_err_t seismic_recorder_read_session_geometry(
     geometry->pods[1].computed_at_ms = 222ULL;
     /* pods 2 and 3 stay not-computed, matching a session with only 3
      * participating REMOTEs. */
+    return ESP_OK;
+}
+
+esp_err_t seismic_recorder_read_session_cs_pairs(
+    const char *object_id,
+    const char *session_id,
+    object_store_cs_pairs_t *cs_pairs
+)
+{
+    (void)object_id;
+    (void)session_id;
+    assert(cs_pairs != NULL);
+    s_cs_pairs_calls++;
+    if (s_cs_pairs_result != ESP_OK) {
+        return s_cs_pairs_result;
+    }
+
+    memset(cs_pairs, 0, sizeof(*cs_pairs));
+    cs_pairs->pair_count = 1U;
+    cs_pairs->pairs[0].node_a = 0U;
+    cs_pairs->pairs[0].node_b = 1U;
+    cs_pairs->pairs[0].valid = true;
+    cs_pairs->pairs[0].distance_mm = 3200;
+    cs_pairs->pairs[0].confidence = 950U;
+    cs_pairs->pairs[0].attempts = 1U;
+    cs_pairs->pairs[0].valid_samples = 12U;
     return ESP_OK;
 }
 
@@ -272,12 +302,21 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "\"pod\":3,\"computed\":false,\"leveled\":false") != NULL);
     /* geometry must appear before runs, matching the documented response shape. */
     assert(strstr(response, "\"geometry\":") < strstr(response, "\"runs\":["));
+
+    assert(s_cs_pairs_calls == 1U);
+    assert(strstr(response, "\"cs_pairs\":{\"available\":true") != NULL);
+    assert(strstr(response, "\"node_a\":0,\"node_b\":1,\"valid\":true,\"distance_mm\":3200") != NULL);
+    assert(strstr(response, "\"confidence\":950,\"attempts\":1,\"valid_samples\":12") != NULL);
+    /* cs_pairs must appear between geometry and runs. */
+    assert(strstr(response, "\"geometry\":") < strstr(response, "\"cs_pairs\":"));
+    assert(strstr(response, "\"cs_pairs\":") < strstr(response, "\"runs\":["));
 }
 
 static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
 {
     reset_fakes();
     s_geometry_result = ESP_ERR_NOT_FOUND;
+    s_cs_pairs_result = ESP_ERR_NOT_FOUND;
     char response[2048] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
@@ -285,6 +324,8 @@ static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
     assert(request.response_status == NULL);
     assert(s_geometry_calls == 1U);
     assert(strstr(response, "\"geometry\":{\"available\":false") != NULL);
+    assert(s_cs_pairs_calls == 1U);
+    assert(strstr(response, "\"cs_pairs\":{\"available\":false,\"pairs\":[]}") != NULL);
     assert(strstr(response, "\"runs\":[") != NULL);
 }
 
@@ -299,6 +340,7 @@ static void test_runs_listing_requires_both_query_parameters(void)
     assert(strcmp(request.response_status, "400 Bad Request") == 0);
     assert(s_list_calls == 0U);
     assert(s_geometry_calls == 0U);
+    assert(s_cs_pairs_calls == 0U);
 }
 
 static void test_runs_listing_surfaces_not_found_as_404(void)
@@ -313,6 +355,7 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
     assert(strcmp(request.response_status, "404 Not Found") == 0);
     assert(s_list_calls == 1U);
     assert(s_geometry_calls == 0U);
+    assert(s_cs_pairs_calls == 0U);
 }
 
 int main(void)

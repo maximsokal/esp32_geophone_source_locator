@@ -428,6 +428,59 @@ static void object_store_read_geometry(
     }
 }
 
+static void object_store_read_cs_pairs(
+    cJSON *root,
+    object_store_cs_pairs_t *cs_pairs
+)
+{
+    /* cs_pairs defaults to zero/empty via the caller's memset; absent or
+     * malformed JSON leaves it exactly there -- objects written before
+     * MAX-148 have no "cs_pairs" key at all. */
+    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "cs_pairs");
+    if (!cJSON_IsObject(node)) {
+        return;
+    }
+
+    cJSON *pairs = cJSON_GetObjectItemCaseSensitive(node, "pairs");
+    if (!cJSON_IsArray(pairs)) {
+        return;
+    }
+
+    size_t count = 0U;
+    const int array_size = cJSON_GetArraySize(pairs);
+    for (int i = 0; i < array_size && count < OBJECT_STORE_MAX_CS_PAIRS; ++i) {
+        cJSON *pair = cJSON_GetArrayItem(pairs, i);
+        if (!cJSON_IsObject(pair)) {
+            continue;
+        }
+        cJSON *node_a = cJSON_GetObjectItemCaseSensitive(pair, "node_a");
+        cJSON *node_b = cJSON_GetObjectItemCaseSensitive(pair, "node_b");
+        cJSON *valid = cJSON_GetObjectItemCaseSensitive(pair, "valid");
+        cJSON *distance_mm = cJSON_GetObjectItemCaseSensitive(pair, "distance_mm");
+        cJSON *confidence = cJSON_GetObjectItemCaseSensitive(pair, "confidence");
+        cJSON *attempts = cJSON_GetObjectItemCaseSensitive(pair, "attempts");
+        cJSON *valid_samples = cJSON_GetObjectItemCaseSensitive(pair, "valid_samples");
+        if (
+            !cJSON_IsNumber(node_a) || !cJSON_IsNumber(node_b) ||
+            !cJSON_IsNumber(distance_mm) || !cJSON_IsNumber(confidence) ||
+            !cJSON_IsNumber(attempts) || !cJSON_IsNumber(valid_samples)
+        ) {
+            continue;
+        }
+        object_store_cs_pair_t *out = &cs_pairs->pairs[count];
+        out->node_a = (uint8_t)node_a->valuedouble;
+        out->node_b = (uint8_t)node_b->valuedouble;
+        out->valid = cJSON_IsTrue(valid);
+        out->distance_mm = (int32_t)distance_mm->valuedouble;
+        out->confidence = (uint16_t)confidence->valuedouble;
+        out->attempts = (uint16_t)attempts->valuedouble;
+        out->valid_samples = (uint8_t)valid_samples->valuedouble;
+        ++count;
+    }
+    cs_pairs->pair_count = count;
+}
+
+
 static void object_store_profile_from_root_locked(
     const char *object_id,
     bool active,
@@ -443,6 +496,7 @@ static void object_store_profile_from_root_locked(
     object_store_read_location(root, &profile->location);
     object_store_read_cables(root, defaults, profile->cable_lengths_m);
     object_store_read_geometry(root, &profile->geometry);
+    object_store_read_cs_pairs(root, &profile->cs_pairs);
 }
 
 static esp_err_t object_store_json_read_profile_with_defaults_locked(
@@ -1141,6 +1195,54 @@ esp_err_t object_store_set_geometry(
             cJSON_AddItemToArray(pods, pod);
         } else {
             cJSON_Delete(pod);
+        }
+    }
+
+    if (!ok) {
+        cJSON_Delete(root);
+        object_store_internal_end_file_operation();
+        return ESP_ERR_NO_MEM;
+    }
+    return object_store_mutation_finish(object_id, root);
+}
+
+esp_err_t object_store_set_cs_pairs(
+    const char *object_id,
+    const object_store_cs_pairs_t *cs_pairs
+)
+{
+    static const object_store_cs_pairs_t cleared = {0};
+    if (cs_pairs == NULL) {
+        cs_pairs = &cleared;
+    }
+
+    cJSON *root = NULL;
+    esp_err_t err = object_store_mutation_begin(object_id, &root);
+    if (err != ESP_OK) return err;
+
+    cJSON_DeleteItemFromObjectCaseSensitive(root, "cs_pairs");
+    cJSON *node = cJSON_AddObjectToObject(root, "cs_pairs");
+    cJSON *pairs = node == NULL ? NULL : cJSON_AddArrayToObject(node, "pairs");
+    bool ok = node != NULL && pairs != NULL;
+
+    const size_t pair_count = cs_pairs->pair_count < OBJECT_STORE_MAX_CS_PAIRS
+        ? cs_pairs->pair_count
+        : OBJECT_STORE_MAX_CS_PAIRS;
+    for (size_t i = 0; ok && i < pair_count; ++i) {
+        const object_store_cs_pair_t *pair_result = &cs_pairs->pairs[i];
+        cJSON *pair = cJSON_CreateObject();
+        ok = pair != NULL &&
+            cJSON_AddNumberToObject(pair, "node_a", pair_result->node_a) != NULL &&
+            cJSON_AddNumberToObject(pair, "node_b", pair_result->node_b) != NULL &&
+            cJSON_AddBoolToObject(pair, "valid", pair_result->valid) != NULL &&
+            cJSON_AddNumberToObject(pair, "distance_mm", (double)pair_result->distance_mm) != NULL &&
+            cJSON_AddNumberToObject(pair, "confidence", pair_result->confidence) != NULL &&
+            cJSON_AddNumberToObject(pair, "attempts", pair_result->attempts) != NULL &&
+            cJSON_AddNumberToObject(pair, "valid_samples", pair_result->valid_samples) != NULL;
+        if (ok) {
+            cJSON_AddItemToArray(pairs, pair);
+        } else {
+            cJSON_Delete(pair);
         }
     }
 
