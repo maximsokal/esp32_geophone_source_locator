@@ -912,6 +912,30 @@
       ]
     },
     {
+      "name": "web_api_control_http",
+      "sources": [
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_api_control_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_api_control",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "web_scan_store_http",
+      "sources": [
+        "tests/host/web_scan_store_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_scan_store",
+        "tests/host/stubs/web_api_control",
+        "components/app_config/include",
+        "components/object_format/include",
+        "components/web_server"
+      ]
+    },
+    {
       "name": "web_status_cache_arbitration",
       "sources": [
         "components/web_server/web_status_cache_arbitration.c",

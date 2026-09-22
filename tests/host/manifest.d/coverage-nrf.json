@@ -128,6 +128,25 @@
         "components/object_store/include",
         "components/object_format/include"
       ]
+    },
+    {
+      "name": "app_pod_status_bridge_runtime",
+      "sources": [
+        "components/device_status_pod_bridge/app_pod_status_barometer_policy.c",
+        "components/device_status_pod_bridge/app_pod_status_local_position_policy.c",
+        "components/device_status_pod_bridge/app_pod_status_bridge.c",
+        "tests/host/app_pod_status_bridge_runtime_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_pod_status_bridge",
+        "components/app_config/include",
+        "components/device_status_pod_bridge/include",
+        "components/nrf_topology_service/include",
+        "components/object_store/tests/stubs",
+        "components/object_store/include",
+        "components/object_format/include",
+        "nRF54L15/include"
+      ]
     }
   ]
 }
