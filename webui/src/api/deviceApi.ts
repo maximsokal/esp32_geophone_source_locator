@@ -368,9 +368,25 @@ export interface LocalizationRun {
   rejection_reason?: string;
 }
 
+export interface LocalizationSessionPodGeometry {
+  pod: number;
+  computed: boolean;
+  leveled: boolean;
+  x_mm?: number;
+  y_mm?: number;
+  z_mm?: number;
+  computed_at_ms?: number;
+}
+
+export interface LocalizationSessionGeometry {
+  available: boolean;
+  pods: LocalizationSessionPodGeometry[];
+}
+
 export interface LocalizationRunListing {
   object_id: string;
   session_id: string;
+  geometry: LocalizationSessionGeometry;
   runs: LocalizationRun[];
 }
 

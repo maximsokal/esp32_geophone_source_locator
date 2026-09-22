@@ -8,12 +8,15 @@
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "object_store.h"
+#include "seismic_recorder.h"
 #include "web_server_internal.h"
 
 static unsigned s_list_calls;
 static esp_err_t s_list_result;
 static char s_list_object_id[OBJECT_STORE_ID_SIZE];
 static char s_list_session_id[LOCALIZATION_RUN_SESSION_ID_SIZE];
+static unsigned s_geometry_calls;
+static esp_err_t s_geometry_result;
 
 static void reset_fakes(void)
 {
@@ -21,6 +24,40 @@ static void reset_fakes(void)
     s_list_result = ESP_OK;
     memset(s_list_object_id, 0, sizeof(s_list_object_id));
     memset(s_list_session_id, 0, sizeof(s_list_session_id));
+    s_geometry_calls = 0U;
+    s_geometry_result = ESP_OK;
+}
+
+esp_err_t seismic_recorder_read_session_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry
+)
+{
+    (void)object_id;
+    (void)session_id;
+    assert(geometry != NULL);
+    s_geometry_calls++;
+    if (s_geometry_result != ESP_OK) {
+        return s_geometry_result;
+    }
+
+    memset(geometry, 0, sizeof(*geometry));
+    geometry->pods[0].computed = true;
+    geometry->pods[0].leveled = true;
+    geometry->pods[0].x_mm = 300;
+    geometry->pods[0].y_mm = -150;
+    geometry->pods[0].z_mm = 50;
+    geometry->pods[0].computed_at_ms = 111ULL;
+    geometry->pods[1].computed = true;
+    geometry->pods[1].leveled = false;
+    geometry->pods[1].x_mm = -300;
+    geometry->pods[1].y_mm = 150;
+    geometry->pods[1].z_mm = -20;
+    geometry->pods[1].computed_at_ms = 222ULL;
+    /* pods 2 and 3 stay not-computed, matching a session with only 3
+     * participating REMOTEs. */
+    return ESP_OK;
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -228,6 +265,27 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "\"solved\":true") != NULL);
     assert(strstr(response, "\"solved\":false") != NULL);
     assert(strstr(response, "no coherent candidate") != NULL);
+    assert(s_geometry_calls == 1U);
+    assert(strstr(response, "\"geometry\":{\"available\":true") != NULL);
+    assert(strstr(response, "\"pod\":1,\"computed\":true,\"leveled\":true") != NULL);
+    assert(strstr(response, "\"x_mm\":300,\"y_mm\":-150") != NULL);
+    assert(strstr(response, "\"pod\":3,\"computed\":false,\"leveled\":false") != NULL);
+    /* geometry must appear before runs, matching the documented response shape. */
+    assert(strstr(response, "\"geometry\":") < strstr(response, "\"runs\":["));
+}
+
+static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
+{
+    reset_fakes();
+    s_geometry_result = ESP_ERR_NOT_FOUND;
+    char response[2048] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_geometry_calls == 1U);
+    assert(strstr(response, "\"geometry\":{\"available\":false") != NULL);
+    assert(strstr(response, "\"runs\":[") != NULL);
 }
 
 static void test_runs_listing_requires_both_query_parameters(void)
@@ -240,6 +298,7 @@ static void test_runs_listing_requires_both_query_parameters(void)
     assert(request.response_status != NULL);
     assert(strcmp(request.response_status, "400 Bad Request") == 0);
     assert(s_list_calls == 0U);
+    assert(s_geometry_calls == 0U);
 }
 
 static void test_runs_listing_surfaces_not_found_as_404(void)
@@ -253,11 +312,13 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
     assert(request.response_status != NULL);
     assert(strcmp(request.response_status, "404 Not Found") == 0);
     assert(s_list_calls == 1U);
+    assert(s_geometry_calls == 0U);
 }
 
 int main(void)
 {
     test_runs_listing_round_trips_persisted_records();
+    test_runs_listing_reports_geometry_unavailable_without_failing();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     return 0;

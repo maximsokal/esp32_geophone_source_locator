@@ -1,10 +1,12 @@
 #include "web_server_internal.h"
 
+#include <inttypes.h>
 #include <stdlib.h>
 
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "object_store.h"
+#include "seismic_recorder.h"
 
 /*
  * MAX-168: read-only listing of every localization run already persisted
@@ -13,6 +15,16 @@
  * each entry verbatim rather than re-deriving a response schema, so this
  * route can never drift from what localization_run_store actually wrote to
  * disk.
+ *
+ * MAX-148 (first slice): also reports this session's own frozen per-pod
+ * sensor geometry (X/Y/Z, leveled) alongside the runs -- the same
+ * seismic_recorder_read_session_geometry() localization_calculate_run()
+ * already reads, so the WebUI can show "sensor XYZ, leveling state" for
+ * the exact geometry a run was actually computed against, never the
+ * object's current live topology. Best-effort: a geometry read failure
+ * (e.g. a session recorded before MAX-166) reports geometry.available =
+ * false rather than failing the whole request -- the run listing above
+ * remains this route's primary payload.
  */
 
 static esp_err_t web_localization_query_copy(
@@ -93,6 +105,10 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         );
     }
 
+    object_store_geometry_t geometry;
+    const bool geometry_available =
+        seismic_recorder_read_session_geometry(object_id, session_id, &geometry) == ESP_OK;
+
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
 
@@ -100,11 +116,47 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     web_json_writer_init(&writer, request);
     web_json_writer_printf(
         &writer,
-        "{\"object_id\":\"%s\",\"session_id\":\"%s\",\"runs\":[",
+        "{\"object_id\":\"%s\",\"session_id\":\"%s\",",
         object_id,
         session_id
     );
 
+    web_json_writer_printf(
+        &writer, "\"geometry\":{\"available\":%s,\"pods\":[", geometry_available ? "true" : "false"
+    );
+    for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
+        if (pod > 0U) {
+            web_json_writer_write(&writer, ",");
+        }
+        if (geometry_available) {
+            /* Split across two printf calls: the worst-case single string
+             * (large negative mm values + a full uint64 timestamp) can
+             * exceed web_json_writer_printf()'s internal 128-byte buffer. */
+            web_json_writer_printf(
+                &writer,
+                "{\"pod\":%u,\"computed\":%s,\"leveled\":%s,"
+                "\"x_mm\":%" PRId32 ",\"y_mm\":%" PRId32 ",",
+                (unsigned)(pod + 1U),
+                geometry.pods[pod].computed ? "true" : "false",
+                geometry.pods[pod].leveled ? "true" : "false",
+                geometry.pods[pod].x_mm,
+                geometry.pods[pod].y_mm
+            );
+            web_json_writer_printf(
+                &writer,
+                "\"z_mm\":%" PRId32 ",\"computed_at_ms\":%" PRIu64 "}",
+                geometry.pods[pod].z_mm,
+                geometry.pods[pod].computed_at_ms
+            );
+        } else {
+            web_json_writer_printf(
+                &writer, "{\"pod\":%u,\"computed\":false,\"leveled\":false}", (unsigned)(pod + 1U)
+            );
+        }
+    }
+    web_json_writer_write(&writer, "]},");
+
+    web_json_writer_write(&writer, "\"runs\":[");
     for (size_t i = 0U; i < record_count; ++i) {
         if (i > 0U) {
             web_json_writer_write(&writer, ",");
