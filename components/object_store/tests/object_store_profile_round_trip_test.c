@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -155,6 +156,23 @@ static void assert_geometry_equal(
     }
 }
 
+
+static void assert_location_equal(
+    const object_store_location_t *expected,
+    const object_store_location_t *actual
+)
+{
+    assert(expected->valid == actual->valid);
+    assert(fabs(expected->latitude - actual->latitude) < 1e-9);
+    assert(fabs(expected->longitude - actual->longitude) < 1e-9);
+    assert(fabsf(expected->accuracy_m - actual->accuracy_m) < 1e-6f);
+    assert(expected->altitude_valid == actual->altitude_valid);
+    assert(fabs(expected->altitude_m - actual->altitude_m) < 1e-9);
+    assert(fabsf(expected->altitude_accuracy_m - actual->altitude_accuracy_m) < 1e-6f);
+    assert(expected->captured_at_ms == actual->captured_at_ms);
+    assert(strcmp(expected->source, actual->source) == 0);
+}
+
 static void test_geometry_write_close_reopen_round_trip(void)
 {
     set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
@@ -203,6 +221,56 @@ static void test_old_and_partial_geometry_are_safe(void)
     assert(!profile.geometry.pods[3].computed);
 }
 
+
+static void test_phone_location_write_close_reopen_round_trip(void)
+{
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+
+    object_store_location_t expected = {
+        .valid = true,
+        .latitude = 50.4501,
+        .longitude = 30.5234,
+        .accuracy_m = 3.2f,
+        .altitude_valid = true,
+        .altitude_m = 179.4,
+        .altitude_accuracy_m = 5.5f,
+        .captured_at_ms = 123456789U,
+    };
+    (void)snprintf(expected.source, sizeof(expected.source), "PHONE_GPS");
+
+    assert(object_store_set_location("OBJ_0001", &expected) == ESP_OK);
+    assert(strstr(persisted_json, "\"location\"") != NULL);
+    assert(strstr(persisted_json, "PHONE_GPS") != NULL);
+
+    object_store_profile_t reopened;
+    assert(object_store_get_profile("OBJ_0001", &reopened) == ESP_OK);
+    assert_location_equal(&expected, &reopened.location);
+}
+
+
+static void test_phone_location_rejects_invalid_coordinates_and_accuracy(void)
+{
+    object_store_location_t invalid = {
+        .valid = true,
+        .latitude = 91.0,
+        .longitude = 30.0,
+        .accuracy_m = 1.0f,
+    };
+    assert(object_store_set_location("OBJ_0001", &invalid) == ESP_ERR_INVALID_ARG);
+
+    invalid.latitude = 50.0;
+    invalid.longitude = -181.0;
+    assert(object_store_set_location("OBJ_0001", &invalid) == ESP_ERR_INVALID_ARG);
+
+    invalid.longitude = 30.0;
+    invalid.accuracy_m = -1.0f;
+    assert(object_store_set_location("OBJ_0001", &invalid) == ESP_ERR_INVALID_ARG);
+
+    invalid.accuracy_m = 1.0f;
+    invalid.latitude = NAN;
+    assert(object_store_set_location("OBJ_0001", &invalid) == ESP_ERR_INVALID_ARG);
+}
+
 static void test_interrupted_update_is_rejected(void)
 {
     set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\"");
@@ -214,6 +282,8 @@ int main(void)
 {
     test_geometry_write_close_reopen_round_trip();
     test_old_and_partial_geometry_are_safe();
+    test_phone_location_write_close_reopen_round_trip();
+    test_phone_location_rejects_invalid_coordinates_and_accuracy();
     test_interrupted_update_is_rejected();
     puts("OBJECT_STORE_PROFILE_ROUND_TRIP_HOST_PASS");
     return 0;

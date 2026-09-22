@@ -7,7 +7,7 @@
 
 /* The protocol implementation is dependency-free and is intentionally
  * compiled into this native PlatformIO suite, not copied into the test. */
-#include "../../src/nrf_upstream_protocol.c"
+#include "../../../src/nrf_upstream_protocol.c"
 
 static void test_remote_snapshot_is_112_bytes_and_round_trips(void)
 {

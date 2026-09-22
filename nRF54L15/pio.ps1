@@ -120,7 +120,7 @@ try {
             }
 
             "test" {
-                $testDirectory = Join-Path $mappedProject "test"
+                $testDirectory = Join-Path $mappedProject "tests\platformio_native"
                 $softwareSuites = @()
                 if (Test-Path -LiteralPath $testDirectory -PathType Container) {
                     $softwareSuites = @(
@@ -131,7 +131,7 @@ try {
 
                 if ($softwareSuites.Count -eq 0) {
                     $actionStatus = "SKIPPED"
-                    Write-Host "nRF54L15 TEST_RESULT: SKIPPED (no qualified software/native test/test_sw_* suite exists yet; physical/HIL suites are intentionally excluded from this action)." -ForegroundColor Yellow
+                    Write-Host "nRF54L15 TEST_RESULT: SKIPPED (no qualified software/native tests/platformio_native/test_sw_* suite exists yet; physical/HIL suites are intentionally excluded from this action)." -ForegroundColor Yellow
                 } elseif (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
                     $actionStatus = "BLOCKED"
                     $exitCode = 2
