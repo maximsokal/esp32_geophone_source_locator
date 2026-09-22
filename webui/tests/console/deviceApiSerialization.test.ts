@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  capturePhoneLocation,
   fetchDeviceStatus,
   fetchSavedSeismicSession,
   fetchSeismic,
@@ -22,6 +23,38 @@ afterEach(() => {
 });
 
 describe('serialized ESP API traffic', () => {
+  it('captures all phone GPS fields before the control POST', async () => {
+    const getCurrentPosition = vi.fn((success: PositionCallback) => {
+      success({
+        coords: {
+          latitude: 50.4501,
+          longitude: 30.5234,
+          accuracy: 3.2,
+          altitude: 179.4,
+          altitudeAccuracy: 5.5,
+          heading: null,
+          speed: null,
+        },
+        timestamp: 123456789,
+      } as GeolocationPosition);
+    });
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
+
+    await expect(capturePhoneLocation()).resolves.toEqual({
+      latitude: 50.4501,
+      longitude: 30.5234,
+      accuracy_m: 3.2,
+      altitude_m: 179.4,
+      altitude_accuracy_m: 5.5,
+      captured_at_ms: 123456789,
+    });
+    expect(getCurrentPosition).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.any(Function),
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
+    );
+  });
+
   it('does not start a control POST while a status fetch is still in flight', async () => {
     let resolveStatus!: (response: Response) => void;
     const fetchMock = vi.fn((url: string) => {
@@ -178,6 +211,35 @@ describe('serialized ESP API traffic', () => {
     expect(lines.min).not.toBe('');
     expect(lines.max).not.toBe('');
     expect(lines.scale_uv).toBe(20700);
+  });
+
+  it('serializes the phone GPS payload sent back to the ESP object API', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        action: 'set_object_location',
+        object_id: 'OBJ_0001',
+        latitude: 50.4501,
+        longitude: 30.5234,
+        accuracy_m: 3.2,
+        altitude_m: 179.4,
+        altitude_accuracy_m: 5.5,
+        captured_at_ms: 123456789,
+      });
+      return jsonResponse({ ok: true, action: 'set_object_location', object_id: 'OBJ_0001' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(sendControl('set_object_location', {
+      object_id: 'OBJ_0001',
+      latitude: 50.4501,
+      longitude: 30.5234,
+      accuracy_m: 3.2,
+      altitude_m: 179.4,
+      altitude_accuracy_m: 5.5,
+      captured_at_ms: 123456789,
+    })).resolves.toMatchObject({ ok: true, action: 'set_object_location' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/control');
   });
 
   it('keeps saved-session requests behind the shared API serialization gate', async () => {

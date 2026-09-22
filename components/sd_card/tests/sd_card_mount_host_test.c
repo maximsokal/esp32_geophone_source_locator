@@ -236,6 +236,8 @@ static void test_success_and_repeated_mount_are_idempotent(void)
     assert(sd_card_internal_card() == &s_card);
     assert(s_gpio_config_calls == 1U);
     assert(s_gpio_set_calls == 2U);
+    assert(s_set_gpio == BOARD_SD_CS_GPIO);
+    assert(s_set_level == 1);
     assert(s_mount_calls == 1U);
     assert(s_print_calls == 1U);
 

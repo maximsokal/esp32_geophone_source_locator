@@ -1,4 +1,18 @@
-# nRF54L15 PlatformIO test surface
+# nRF54L15 test surface
+
+All nRF54L15 tests now live below this single `tests` root. The runner-specific
+subdirectories are intentional because PlatformIO Unity and Zephyr/NCS ztest
+have different build systems:
+
+```text
+tests/
++-- platformio_native/  # dependency-free PlatformIO/Unity host tests
+`-- ncs_native/         # Zephyr/NCS ztest build and native_sim target
+```
+
+Do not create another top-level `test` directory. Add a software/native
+PlatformIO suite under `tests/platformio_native/test_sw_*`; add a Zephyr test
+case under `tests/ncs_native`.
 
 The nRF subsystem already has executable hardware-free C coverage in the
 repository root host-test harness:
@@ -12,7 +26,8 @@ contract, and role-aware aggregated sensor snapshots with the normal host C
 compiler. `python tools/run_local_verify.py --scope nrf` runs this host policy
 lane before the Zephyr production build.
 
-This directory is reserved for future PlatformIO nRF54L15 test suites.
+The `platformio_native` directory is reserved for PlatformIO nRF54L15 test
+suites.
 
 The automatic project-wide no-flash path is deliberately restricted to suites
 named:

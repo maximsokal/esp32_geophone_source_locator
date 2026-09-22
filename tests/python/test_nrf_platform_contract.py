@@ -4,6 +4,9 @@ import re
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLATFORMIO = REPO_ROOT / "nRF54L15" / "platformio.ini"
+NRF_TEST_ROOT = REPO_ROOT / "nRF54L15" / "tests"
+PLATFORMIO_TEST_ROOT = NRF_TEST_ROOT / "platformio_native"
+NCS_TEST_ROOT = NRF_TEST_ROOT / "ncs_native"
 NCS = REPO_ROOT / "nRF54L15" / "ncs.ps1"
 README = REPO_ROOT / "nRF54L15" / "README.md"
 TEST_TASK = REPO_ROOT / "docs" / "nrf54l15-test-task.md"
@@ -40,6 +43,12 @@ def test_platformio_compatibility_and_native_test_environments_are_explicit():
     assert "sense" not in source.lower()
     assert "[env:native]" in source
     assert "test_framework = unity" in source
+    assert "test_dir = tests/platformio_native" in source
+
+    assert PLATFORMIO_TEST_ROOT.is_dir()
+    assert (PLATFORMIO_TEST_ROOT / "test_sw_upstream_protocol").is_dir()
+    assert NCS_TEST_ROOT.is_dir()
+    assert not (REPO_ROOT / "nRF54L15" / "test").exists()
 
     wrapper = NCS.read_text(encoding="utf-8")
     assert '$NcsVersion = "v3.4.0"' in wrapper
