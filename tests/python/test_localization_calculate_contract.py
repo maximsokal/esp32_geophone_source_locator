@@ -113,3 +113,24 @@ def test_max_frames_bound_is_documented_not_guessed():
     define_index = source.index("#define LOCALIZATION_CALCULATE_MAX_FRAMES")
     comment_window = source[max(0, define_index - 500):define_index]
     assert "500 Hz" in comment_window or "MAX-141" in comment_window
+
+
+def test_pick_evidence_persistence_is_best_effort_not_gating():
+    source = orchestrator_source()
+
+    # MAX-148 slice 3: a pick-record write failure must never be checked /
+    # propagated -- it is diagnostic context, not part of the run's own
+    # solved/unsolved outcome or the recording-gate's admission promise.
+    write_index = source.index("localization_run_store_write_picks(object_id, session_id, &pick_record)")
+    call_line_start = source.rindex("\n", 0, write_index) + 1
+    call_line_end = source.index("\n", write_index)
+    call_line = source[call_line_start:call_line_end]
+    assert call_line.strip().startswith("(void)")
+
+    # The pick record must be built (and therefore written) before any
+    # method-record persistence begins, so a WebUI reading "why was channel
+    # N rejected" always has evidence for every run sharing that
+    # computed_at_ms -- never a race where picks lag behind the runs that
+    # depended on them.
+    first_run_write = source.index("localization_run_store_write(object_id, session_id, &records[i]);")
+    assert write_index < first_run_write

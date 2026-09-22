@@ -1,8 +1,10 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
+#include "localization_pick_record.h"
 #include "localization_run_record.h"
 
 /*
@@ -26,6 +28,15 @@
 #define LOCALIZATION_RUN_STORE_PATH_MAX 160U
 #define LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE 2048U
 #define LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION 64U
+
+/*
+ * A generous cap: MAX-168's orchestrator (localization_calculate_run())
+ * writes exactly one pick record per invocation, so this bounds how many
+ * past "Calculate source" invocations one session's history can hold, not
+ * how many channels a record itself carries (that is the fixed
+ * LOCALIZATION_PICK_RECORD_CHANNEL_COUNT).
+ */
+#define LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION 64U
 
 
 /*
@@ -69,6 +80,38 @@ esp_err_t localization_run_store_list(
     const char *object_id,
     const char *session_id,
     localization_run_record_t *records,
+    size_t max_records,
+    size_t *record_count_out
+);
+
+
+/*
+ * MAX-148 (slice 3): the pick-record analog of the three functions above,
+ * for localization_pick_record_t (components/localization_results). A
+ * pick record is versioned by computed_at_ms exactly like a run record
+ * (see localization_pick_record.h), but is not tied to any one method, so
+ * its own path never includes a method_name.
+ */
+esp_err_t localization_run_store_build_picks_path(
+    const char *object_id,
+    const char *session_id,
+    uint64_t computed_at_ms,
+    char *path_out,
+    size_t path_out_size
+);
+
+
+esp_err_t localization_run_store_write_picks(
+    const char *object_id,
+    const char *session_id,
+    const localization_pick_record_t *record
+);
+
+
+esp_err_t localization_run_store_list_picks(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
     size_t max_records,
     size_t *record_count_out
 );

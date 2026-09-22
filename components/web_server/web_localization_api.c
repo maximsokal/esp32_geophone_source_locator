@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
+#include "localization_pick_record.h"
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "object_store.h"
@@ -17,13 +18,15 @@
  * disk.
  *
  * MAX-148: also reports this session's own frozen per-pod sensor geometry
- * (X/Y/Z, leveled) and the raw CS pair evidence behind it (distance,
- * confidence, valid/attempts), alongside the runs -- the exact session-
- * frozen state a run was actually computed against, never the object's
- * current live topology. Both are best-effort: a read failure (e.g. a
- * session recorded before MAX-166/MAX-148) reports its own *_available ==
- * false rather than failing the whole request -- the run listing above
- * remains this route's primary payload.
+ * (X/Y/Z, leveled), the raw CS pair evidence behind it (distance,
+ * confidence, valid/attempts), and every persisted per-channel pick
+ * evidence record (one per past "Calculate source" invocation) -- the
+ * exact session-frozen state and per-computation evidence a run was
+ * actually produced from, never the object's current live topology. All
+ * three are best-effort: a read/listing failure (e.g. a session recorded
+ * before MAX-166/MAX-148) reports empty/unavailable rather than failing
+ * the whole request -- the run listing remains this route's primary
+ * payload.
  */
 
 static esp_err_t web_localization_query_copy(
@@ -191,6 +194,44 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         );
     }
     web_json_writer_write(&writer, "]},");
+
+    /*
+     * MAX-148 (slice 3): every persisted pick-evidence record for this
+     * session (one per past "Calculate source" invocation, versioned by
+     * computed_at_ms -- see localization_pick_record.h). Best-effort like
+     * geometry/cs_pairs above: a listing failure reports an empty array
+     * rather than failing the whole response.
+     */
+    localization_pick_record_t *picks = calloc(
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, sizeof(*picks)
+    );
+    size_t pick_count = 0U;
+    if (picks != NULL) {
+        if (
+            localization_run_store_list_picks(
+                object_id, session_id, picks, LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count
+            ) != ESP_OK
+        ) {
+            pick_count = 0U;
+        }
+    }
+
+    web_json_writer_write(&writer, "\"picks\":[");
+    for (size_t i = 0U; i < pick_count; ++i) {
+        if (i > 0U) {
+            web_json_writer_write(&writer, ",");
+        }
+
+        char *pick_json = NULL;
+        if (localization_pick_record_to_json(&picks[i], &pick_json) == ESP_OK && pick_json != NULL) {
+            web_json_writer_write(&writer, pick_json);
+        } else {
+            web_json_writer_write(&writer, "null");
+        }
+        free(pick_json);
+    }
+    free(picks);
+    web_json_writer_write(&writer, "],");
 
     web_json_writer_write(&writer, "\"runs\":[");
     for (size_t i = 0U; i < record_count; ++i) {

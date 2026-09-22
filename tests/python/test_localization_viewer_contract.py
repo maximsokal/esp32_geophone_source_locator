@@ -1,9 +1,10 @@
 """Source contracts for MAX-148: exposing this session's own frozen sensor
-geometry (X/Y/Z, leveled) and CS pair evidence (distance/confidence/valid)
-alongside its persisted localization runs, best-effort and never as a hard
-failure of the listing route -- plus the persistence path that freezes CS
-pairs into object_store/session.json alongside the existing geometry
-freeze."""
+geometry (X/Y/Z, leveled), CS pair evidence (distance/confidence/valid) and
+per-channel arrival-pick evidence, alongside its persisted localization
+runs -- all best-effort, never a hard failure of the listing route -- plus
+the persistence paths that freeze CS pairs into object_store/session.json
+alongside the existing geometry freeze, and pick evidence into its own
+computed_at_ms-versioned record per "Calculate source" invocation."""
 
 from pathlib import Path
 
@@ -24,6 +25,14 @@ def object_store_header() -> str:
 
 def prepare_geometry_source() -> str:
     return read("components/seismic_recorder/seismic_recorder.c")
+
+
+def orchestrator_source() -> str:
+    return read("components/localization_calculate/localization_calculate.c")
+
+
+def run_store_header() -> str:
+    return read("components/localization_run_store/include/localization_run_store.h")
 
 
 def test_geometry_read_never_uses_object_live_topology():
@@ -83,12 +92,49 @@ def test_cs_pairs_read_failure_does_not_fail_the_request():
     assert "return httpd_resp_send_err" not in after_read
 
 
-def test_response_field_order_is_geometry_then_cs_pairs_then_runs():
+def test_response_field_order_is_geometry_then_cs_pairs_then_picks_then_runs():
     source = handler_source()
     geometry_index = source.index('\\"geometry\\"')
     cs_pairs_index = source.index('\\"cs_pairs\\"')
+    picks_index = source.index('\\"picks\\"')
     runs_index = source.index('\\"runs\\"')
-    assert geometry_index < cs_pairs_index < runs_index
+    assert geometry_index < cs_pairs_index < picks_index < runs_index
+
+
+def test_picks_listing_failure_does_not_fail_the_request():
+    source = handler_source()
+    list_index = source.index(
+        "localization_run_store_list_picks(\n"
+        "                object_id, session_id, picks, LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count\n"
+        "            )"
+    )
+    after_list = source[list_index:list_index + 400]
+    assert "return httpd_resp_send_err" not in after_list
+
+
+def test_pick_record_schema_exists_and_is_decoupled_from_object_store():
+    header = read("components/localization_results/include/localization_pick_record.h")
+    # Reuses geophone_channel_pick_t verbatim (the established shared shape
+    # for "one channel's pick result" -- localization_event_bridge.h
+    # already embeds it the same way) rather than a local channel count
+    # dependency on object_store.h.
+    assert "geophone_channel_pick_t pick;" in header
+    assert '#include "object_store.h"' not in header
+    assert "LOCALIZATION_PICK_RECORD_CHANNEL_COUNT" in header
+
+
+def test_run_store_provides_a_pick_record_write_and_list_analog():
+    header = run_store_header()
+    assert "localization_run_store_write_picks(" in header
+    assert "localization_run_store_list_picks(" in header
+    assert "localization_run_store_build_picks_path(" in header
+
+
+def test_orchestrator_persists_pick_evidence_before_any_method_record():
+    source = orchestrator_source()
+    pick_write_index = source.index("localization_run_store_write_picks(object_id, session_id, &pick_record)")
+    first_method_write_index = source.index("localization_run_store_write(object_id, session_id, &records[i]);")
+    assert pick_write_index < first_method_write_index
 
 
 def test_object_store_defines_a_decoupled_cs_pair_schema():

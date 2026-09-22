@@ -250,3 +250,149 @@ esp_err_t localization_run_store_list(
     *record_count_out = count;
     return ESP_OK;
 }
+
+
+esp_err_t localization_run_store_build_picks_path(
+    const char *object_id,
+    const char *session_id,
+    uint64_t computed_at_ms,
+    char *path_out,
+    size_t path_out_size
+)
+{
+    if (path_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!object_format_id_is_valid(object_id) || !is_canonical_session_id(session_id)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const int written = snprintf(
+        path_out,
+        path_out_size,
+        "%s/%s/sessions/%s/localization_picks_%llu.json",
+        STORAGE_MANAGER_OBJECTS_PATH,
+        object_id,
+        session_id,
+        (unsigned long long)computed_at_ms
+    );
+
+    return
+        written < 0 || written >= (int)path_out_size
+            ? ESP_ERR_INVALID_SIZE
+            : ESP_OK;
+}
+
+
+esp_err_t localization_run_store_write_picks(
+    const char *object_id,
+    const char *session_id,
+    const localization_pick_record_t *record
+)
+{
+    if (record == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char path[LOCALIZATION_RUN_STORE_PATH_MAX];
+    const esp_err_t path_err = localization_run_store_build_picks_path(
+        object_id, session_id, record->computed_at_ms, path, sizeof(path)
+    );
+    if (path_err != ESP_OK) {
+        return path_err;
+    }
+
+    char *json = NULL;
+    const esp_err_t json_err = localization_pick_record_to_json(record, &json);
+    if (json_err != ESP_OK) {
+        return json_err;
+    }
+
+    const esp_err_t write_err = storage_manager_atomic_write_text(path, json);
+    free(json);
+    return write_err;
+}
+
+
+static bool is_pick_record_filename(
+    const char *name
+)
+{
+    static const char prefix[] = "localization_picks_";
+    static const char suffix[] = ".json";
+    const size_t name_length = strlen(name);
+    const size_t prefix_length = sizeof(prefix) - 1U;
+    const size_t suffix_length = sizeof(suffix) - 1U;
+
+    return
+        name_length > prefix_length + suffix_length &&
+        strncmp(name, prefix, prefix_length) == 0 &&
+        strcmp(name + name_length - suffix_length, suffix) == 0;
+}
+
+
+esp_err_t localization_run_store_list_picks(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
+    size_t max_records,
+    size_t *record_count_out
+)
+{
+    if (records == NULL || max_records == 0U || record_count_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *record_count_out = 0U;
+
+    char directory_path[LOCALIZATION_RUN_STORE_PATH_MAX];
+    const esp_err_t path_err = build_session_directory_path(
+        object_id, session_id, directory_path, sizeof(directory_path)
+    );
+    if (path_err != ESP_OK) {
+        return path_err;
+    }
+
+    DIR *directory = opendir(directory_path);
+    if (directory == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    char *json = malloc(LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE);
+    if (json == NULL) {
+        closedir(directory);
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t count = 0U;
+    struct dirent *entry;
+    while (count < max_records && (entry = readdir(directory)) != NULL) {
+        if (!is_pick_record_filename(entry->d_name)) {
+            continue;
+        }
+
+        char file_path[LOCALIZATION_RUN_STORE_PATH_MAX];
+        const int written = snprintf(
+            file_path, sizeof(file_path), "%s/%s", directory_path, entry->d_name
+        );
+        if (written < 0 || written >= (int)sizeof(file_path)) {
+            continue;
+        }
+
+        if (storage_manager_read_text(file_path, json, LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE) != ESP_OK) {
+            continue;
+        }
+
+        if (localization_pick_record_from_json(json, &records[count]) != ESP_OK) {
+            continue;
+        }
+
+        ++count;
+    }
+
+    free(json);
+    closedir(directory);
+
+    *record_count_out = count;
+    return ESP_OK;
+}
