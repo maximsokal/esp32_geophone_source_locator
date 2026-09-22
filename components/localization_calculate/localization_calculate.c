@@ -200,6 +200,27 @@ esp_err_t localization_calculate_run(
         }
     }
 
+    /*
+     * MAX-148 (slice 3): persist the per-channel pick evidence this run
+     * actually used, versioned by the same computed_at_ms as the method
+     * records below -- so a WebUI can explain *why* a channel was rejected
+     * (no trigger / no refinement / low SNR) rather than only seeing the
+     * aggregate channel_mask_rejected each run record carries. Best-effort:
+     * pick evidence is diagnostic context for the runs below, not itself
+     * part of the recording-gate's admission promise, so a persistence
+     * failure here must never abort the whole calculate_source invocation.
+     */
+    localization_pick_record_t pick_record;
+    memset(&pick_record, 0, sizeof(pick_record));
+    snprintf(pick_record.object_id, sizeof(pick_record.object_id), "%s", object_id);
+    snprintf(pick_record.session_id, sizeof(pick_record.session_id), "%s", session_id);
+    pick_record.computed_at_ms = computed_at_ms;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        pick_record.channels[ch].participating = geometry.pods[ch].computed;
+        pick_record.channels[ch].pick = event_channels[ch].pick;
+    }
+    (void)localization_run_store_write_picks(object_id, session_id, &pick_record);
+
     localization_point3d_t participant_positions[OBJECT_STORE_POD_COUNT];
     size_t participant_position_count = 0U;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {

@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
-import type { LocalizationRun, LocalizationSessionCsPairs, LocalizationSessionGeometry } from '../../api/deviceApi';
+import type {
+  LocalizationPickRecord,
+  LocalizationRun,
+  LocalizationSessionCsPairs,
+  LocalizationSessionGeometry,
+} from '../../api/deviceApi';
 
 interface Props {
   objectId: string;
@@ -79,6 +84,23 @@ function nodeLabel(node: number): string {
   return node === 0 ? 'MAIN' : `Pod ${node}`;
 }
 
+function pickStatusLabel(status: LocalizationPickRecord['channels'][number]['status']): string {
+  switch (status) {
+    case 'accepted': return 'accepted';
+    case 'rejected_no_trigger': return 'no trigger';
+    case 'rejected_no_refinement': return 'no refinement';
+    case 'rejected_low_snr': return 'low SNR';
+    default: return status;
+  }
+}
+
+function latestPickRecord(picks: LocalizationPickRecord[]): LocalizationPickRecord | null {
+  return picks.reduce<LocalizationPickRecord | null>(
+    (latest, record) => (latest === null || record.computed_at_ms > latest.computed_at_ms ? record : latest),
+    null,
+  );
+}
+
 export default function LocalizationCalculatePanel({ objectId, sessionId, busy, onClose }: Props) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
@@ -86,18 +108,21 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [runs, setRuns] = useState<LocalizationRun[] | null>(null);
   const [geometry, setGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
+  const [picks, setPicks] = useState<LocalizationPickRecord[] | null>(null);
   const [geometryError, setGeometryError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setGeometry(null);
     setCsPairs(null);
+    setPicks(null);
     setGeometryError(null);
     fetchLocalizationRuns(objectId, sessionId)
       .then((listing) => {
         if (cancelled) return;
         setGeometry(listing.geometry);
         setCsPairs(listing.cs_pairs);
+        setPicks(listing.picks);
         setRuns(listing.runs.length > 0 ? listing.runs : null);
       })
       .catch((reason: unknown) => {
@@ -156,7 +181,10 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         if (!result.ok) throw new Error(result.error ?? 'calculate_source failed');
         return fetchLocalizationRuns(objectId, sessionId);
       })
-      .then((listing) => setRuns(listing.runs))
+      .then((listing) => {
+        setRuns(listing.runs);
+        setPicks(listing.picks);
+      })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => setRunning(false));
   };
@@ -213,6 +241,30 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
           </div>
         </details>
       )}
+
+      {picks !== null && picks.length > 0 && (() => {
+        const latest = latestPickRecord(picks);
+        if (latest === null) return null;
+        return (
+          <details className="settings-details">
+            <summary>Arrival pick evidence (latest calculate, {picks.length} on record)</summary>
+            <div className="session-list">
+              {latest.channels.map((channel) => (
+                <div className="session-row" key={channel.channel}>
+                  <span>
+                    <strong>Channel {channel.channel}</strong>
+                    <small>{channel.participating ? pickStatusLabel(channel.status) : 'not participating'}</small>
+                  </span>
+                  <span>
+                    <strong>{channel.status === 'accepted' ? `${channel.arrival_time_s.toFixed(3)} s` : '—'}</strong>
+                    <small>SNR {channel.snr.toFixed(1)}</small>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
+        );
+      })()}
 
       <div className="cable-grid">
         <label>

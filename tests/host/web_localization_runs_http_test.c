@@ -19,6 +19,8 @@ static unsigned s_geometry_calls;
 static esp_err_t s_geometry_result;
 static unsigned s_cs_pairs_calls;
 static esp_err_t s_cs_pairs_result;
+static unsigned s_picks_list_calls;
+static esp_err_t s_picks_list_result;
 
 static void reset_fakes(void)
 {
@@ -30,6 +32,8 @@ static void reset_fakes(void)
     s_geometry_result = ESP_OK;
     s_cs_pairs_calls = 0U;
     s_cs_pairs_result = ESP_OK;
+    s_picks_list_calls = 0U;
+    s_picks_list_result = ESP_OK;
 }
 
 esp_err_t seismic_recorder_read_session_geometry(
@@ -87,6 +91,40 @@ esp_err_t seismic_recorder_read_session_cs_pairs(
     cs_pairs->pairs[0].confidence = 950U;
     cs_pairs->pairs[0].attempts = 1U;
     cs_pairs->pairs[0].valid_samples = 12U;
+    return ESP_OK;
+}
+
+esp_err_t localization_run_store_list_picks(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
+    size_t max_records,
+    size_t *record_count_out
+)
+{
+    (void)object_id;
+    (void)session_id;
+    assert(records != NULL && max_records >= 1U && record_count_out != NULL);
+    s_picks_list_calls++;
+    *record_count_out = 0U;
+    if (s_picks_list_result != ESP_OK) {
+        return s_picks_list_result;
+    }
+
+    memset(&records[0], 0, sizeof(records[0]));
+    records[0].schema_version = LOCALIZATION_PICK_RECORD_SCHEMA_VERSION;
+    snprintf(records[0].object_id, sizeof(records[0].object_id), "OBJ_0001");
+    snprintf(records[0].session_id, sizeof(records[0].session_id), "S000001");
+    records[0].computed_at_ms = 999ULL;
+    records[0].channels[0].participating = true;
+    records[0].channels[0].pick.status = GEOPHONE_PICK_ACCEPTED;
+    records[0].channels[0].pick.arrival_sample_index = 1200U;
+    records[0].channels[0].pick.arrival_time_s = 2.4f;
+    records[0].channels[0].pick.snr = 14.5f;
+    records[0].channels[0].pick.uncertainty_samples = 5U;
+    records[0].channels[1].participating = true;
+    records[0].channels[1].pick.status = GEOPHONE_PICK_REJECTED_LOW_SNR;
+    *record_count_out = 1U;
     return ESP_OK;
 }
 
@@ -280,7 +318,7 @@ static httpd_req_t make_request(const char *query, char *response, size_t respon
 static void test_runs_listing_round_trips_persisted_records(void)
 {
     reset_fakes();
-    char response[2048] = {0};
+    char response[4096] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
     assert(web_localization_runs_handler(&request) == ESP_OK);
@@ -310,6 +348,15 @@ static void test_runs_listing_round_trips_persisted_records(void)
     /* cs_pairs must appear between geometry and runs. */
     assert(strstr(response, "\"geometry\":") < strstr(response, "\"cs_pairs\":"));
     assert(strstr(response, "\"cs_pairs\":") < strstr(response, "\"runs\":["));
+
+    assert(s_picks_list_calls == 1U);
+    assert(strstr(response, "\"picks\":[") != NULL);
+    assert(strstr(response, "\"computed_at_ms\":999") != NULL);
+    assert(strstr(response, "\"accepted\"") != NULL);
+    assert(strstr(response, "\"rejected_low_snr\"") != NULL);
+    /* picks must appear between cs_pairs and runs. */
+    assert(strstr(response, "\"cs_pairs\":") < strstr(response, "\"picks\":["));
+    assert(strstr(response, "\"picks\":[") < strstr(response, "\"runs\":["));
 }
 
 static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
@@ -317,6 +364,7 @@ static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
     reset_fakes();
     s_geometry_result = ESP_ERR_NOT_FOUND;
     s_cs_pairs_result = ESP_ERR_NOT_FOUND;
+    s_picks_list_result = ESP_ERR_NOT_FOUND;
     char response[2048] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
@@ -326,6 +374,8 @@ static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
     assert(strstr(response, "\"geometry\":{\"available\":false") != NULL);
     assert(s_cs_pairs_calls == 1U);
     assert(strstr(response, "\"cs_pairs\":{\"available\":false,\"pairs\":[]}") != NULL);
+    assert(s_picks_list_calls == 1U);
+    assert(strstr(response, "\"picks\":[]") != NULL);
     assert(strstr(response, "\"runs\":[") != NULL);
 }
 
@@ -341,6 +391,7 @@ static void test_runs_listing_requires_both_query_parameters(void)
     assert(s_list_calls == 0U);
     assert(s_geometry_calls == 0U);
     assert(s_cs_pairs_calls == 0U);
+    assert(s_picks_list_calls == 0U);
 }
 
 static void test_runs_listing_surfaces_not_found_as_404(void)
@@ -356,6 +407,7 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
     assert(s_list_calls == 1U);
     assert(s_geometry_calls == 0U);
     assert(s_cs_pairs_calls == 0U);
+    assert(s_picks_list_calls == 0U);
 }
 
 int main(void)

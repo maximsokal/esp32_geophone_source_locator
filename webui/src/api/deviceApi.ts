@@ -398,11 +398,31 @@ export interface LocalizationSessionCsPairs {
   pairs: LocalizationCsPair[];
 }
 
+export interface LocalizationPickChannel {
+  channel: number;
+  participating: boolean;
+  status: 'accepted' | 'rejected_no_trigger' | 'rejected_no_refinement' | 'rejected_low_snr';
+  method: string;
+  arrival_sample_index: number;
+  arrival_time_s: number;
+  snr: number;
+  uncertainty_samples: number;
+}
+
+export interface LocalizationPickRecord {
+  schema_version: number;
+  object_id: string;
+  session_id: string;
+  computed_at_ms: number;
+  channels: LocalizationPickChannel[];
+}
+
 export interface LocalizationRunListing {
   object_id: string;
   session_id: string;
   geometry: LocalizationSessionGeometry;
   cs_pairs: LocalizationSessionCsPairs;
+  picks: LocalizationPickRecord[];
   runs: LocalizationRun[];
 }
 

@@ -457,6 +457,24 @@
       ]
     },
     {
+      "name": "localization_pick_record",
+      "sources": [
+        "components/localization_results/localization_pick_record.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_results/tests/localization_pick_record_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/geophone_events/include",
+        "tests/host/stubs/object_store_profile",
+        "components/localization_results/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "localization_event_run_record",
       "sources": [
         "components/localization/localization_dimensionality_policy.c",
@@ -481,6 +499,7 @@
       "sources": [
         "components/object_format/object_format.c",
         "components/localization_results/localization_run_record_json.c",
+        "components/localization_results/localization_pick_record.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/localization_run_store/localization_run_store.c",
         "components/localization_run_store/tests/localization_run_store_test.c"
@@ -490,6 +509,32 @@
         "components/seismic_recorder/tests/stubs",
         "components/localization/tests/stubs",
         "components/localization/include",
+        "components/geophone_events/include",
+        "tests/host/stubs/object_store_profile",
+        "components/localization_results/include",
+        "components/localization_run_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_run_store_picks",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/localization_results/localization_run_record_json.c",
+        "components/localization_results/localization_pick_record.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_run_store/localization_run_store.c",
+        "components/localization_run_store/tests/localization_run_store_picks_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/localization_run_store",
+        "components/seismic_recorder/tests/stubs",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/geophone_events/include",
         "tests/host/stubs/object_store_profile",
         "components/localization_results/include",
         "components/localization_run_store/include",
@@ -504,6 +549,7 @@
       "sources": [
         "components/object_format/object_format.c",
         "components/localization_results/localization_run_record_json.c",
+        "components/localization_results/localization_pick_record.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/localization_run_store/localization_run_store.c",
         "components/localization_run_store/tests/localization_run_store_list_test.c"
@@ -513,6 +559,7 @@
         "components/seismic_recorder/tests/stubs",
         "components/localization/tests/stubs",
         "components/localization/include",
+        "components/geophone_events/include",
         "tests/host/stubs/object_store_profile",
         "components/localization_results/include",
         "components/localization_run_store/include",
@@ -550,6 +597,7 @@
       "sources": [
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/localization_results/localization_run_record_json.c",
+        "components/localization_results/localization_pick_record.c",
         "components/web_server/web_json_writer.c",
         "tests/host/web_localization_runs_http_test.c"
       ],
@@ -559,6 +607,7 @@
         "components/localization/include",
         "components/localization_results/include",
         "components/localization_run_store/include",
+        "components/geophone_events/include",
         "components/seismic_recorder/include",
         "components/seismic_buffer/include",
         "components/web_server"
