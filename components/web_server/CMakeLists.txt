@@ -328,6 +328,7 @@ idf_component_register(
         "web_seismic.c"
         "web_seismic_api.c"
         "web_seismic_page.c"
+        "web_localization_api.c"
         "web_wifi_setup.c"
         "web_wifi_setup_page.c"
         "web_wifi_setup_request.c"
@@ -346,6 +347,9 @@ idf_component_register(
         app_config
         app_events
         device_status
+        localization_calculate
+        localization_results
+        localization_run_store
         measurement_service
         nrf_topology_service
         object_store

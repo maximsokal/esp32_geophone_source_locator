@@ -15,6 +15,7 @@ import '../seismic/SavedSeismicViewer.css';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
 const SavedSeismicViewer = lazy(() => import('../seismic/SavedSeismicViewer'));
+const LocalizationCalculatePanel = lazy(() => import('./LocalizationCalculatePanel'));
 
 interface Props {
   status: DeviceStatus | null;
@@ -56,6 +57,7 @@ export default function ObjectsFeature(props: Props) {
   const [defaults, setDefaults] = useState<number[]>(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
   const [showLive, setShowLive] = useState(false);
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
+  const [showCalculate, setShowCalculate] = useState(false);
   const [gpsMessage, setGpsMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -65,7 +67,12 @@ export default function ObjectsFeature(props: Props) {
 
   useEffect(() => {
     setOpenSessionId(null);
+    setShowCalculate(false);
   }, [selected?.id]);
+
+  useEffect(() => {
+    setShowCalculate(false);
+  }, [openSessionId]);
 
   useEffect(() => {
     setDefaults(store?.default_cable_lengths_m ?? [5, 5, 5, 5]);
@@ -361,8 +368,23 @@ export default function ObjectsFeature(props: Props) {
                       className="secondary"
                       onClick={() => props.onOpenScanner(selected.id, openSession.session_id)}
                     >Open 3D scan</button>
+                    <button
+                      disabled={busy}
+                      className="secondary"
+                      onClick={() => setShowCalculate((value) => !value)}
+                    >{showCalculate ? 'Hide' : 'Calculate source'}</button>
                   </div>
                 </article>
+                {showCalculate && (
+                  <Suspense fallback={<div className="console-card">Loading localization module…</div>}>
+                    <LocalizationCalculatePanel
+                      objectId={selected.id}
+                      sessionId={openSession.session_id}
+                      busy={busy}
+                      onClose={() => setShowCalculate(false)}
+                    />
+                  </Suspense>
+                )}
                 <Suspense fallback={<div className="console-card">Loading saved waveform module…</div>}>
                   <SavedSeismicViewer
                     objectId={selected.id}

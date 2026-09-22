@@ -48,4 +48,5 @@ esp_err_t httpd_resp_set_hdr(httpd_req_t *request, const char *field, const char
 esp_err_t httpd_resp_set_status(httpd_req_t *request, const char *status);
 esp_err_t httpd_resp_send_err(httpd_req_t *request, int status, const char *message);
 esp_err_t httpd_resp_send(httpd_req_t *request, const char *buffer, ssize_t length);
+esp_err_t httpd_resp_send_chunk(httpd_req_t *request, const char *buffer, ssize_t length);
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *uri);
