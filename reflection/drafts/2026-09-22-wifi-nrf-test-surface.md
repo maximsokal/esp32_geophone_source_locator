@@ -39,3 +39,16 @@ For each device/network boundary, name the evidence level in the test and keep o
 ## Follow-up minimal rule
 
 - Compile every new host seam immediately under the strict runner and preserve existing source-contract anchors when adding test seams. Use short Windows build roots for filesystem tests whose relative paths are appended to the executable working directory.
+
+## Follow-up correction evidence (continued 2026-09-22)
+
+- The new event-runtime host test forced failure injection at each Wi-Fi event-registration step. It reproduced a real partial-registration leak: the first callback stayed registered when a later registration returned an error. Production rollback was added and the retry/handler-count assertions now pass under strict C11 and ASan/UBSan.
+- The Web localization HTTP test initially had an incomplete executable manifest: production `web_json_writer.c` was not linked, and the shared host HTTP header omitted `httpd_resp_send_chunk`. Adding the actual writer source and declaration made the test execute the intended path; strict and sanitizer runs pass.
+
+## Follow-up root cause and recurrence
+
+- Registration cleanup was treated as an all-or-nothing API call even though ESP event registration is incremental. The localization test had been added without tracing its transitive writer/stub dependencies. One confirmed occurrence of each issue in this task; no generalized process rule is proposed yet.
+
+## Follow-up minimal rule
+
+- For multi-step registration, inject failure after every step and assert rollback before retry. For host HTTP tests, verify the manifest links the production writer/transport helper actually reached by the handler, not only the handler source itself.
