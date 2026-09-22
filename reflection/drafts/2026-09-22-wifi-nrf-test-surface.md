@@ -25,3 +25,17 @@ For each device/network boundary, name the evidence level in the test and keep o
 - Wi-Fi host/policy/physical-probe evidence separation.
 - Phone GPS WebUI -> `/api/control` -> object store -> `/api/status` path.
 - MAX-118 pod-status bridge runtime coverage audit.
+
+## Follow-up correction evidence (2026-09-22)
+
+- The first strict compile of the new bridge/API host seams exposed two portability issues: the new ESP_LOG stubs used GNU `##__VA_ARGS__`, and renaming the production cycle helper broke an existing source contract. The stubs now use standard variadic forwarding, and the original `static publish_cycle()` remains the production implementation with a thin test seam around it; the focused contracts and strict host manifests then passed.
+- A deliberately long diagnostic build directory produced one false host failure (`fopen` errno 2) at an absolute path of 271 characters. Re-running with the short `build/hve-0922` path passed 72/72; this is a Windows path-budget constraint, not a product failure.
+
+## Follow-up root cause and recurrence
+
+- Host stubs were initially optimized for no-op logging without checking the repository's C11/MSVC portability contract; the seam name was changed without preserving the source-contract anchor. The long-path failure came from the diagnostic command, not the implementation.
+- One confirmed occurrence of each correction in this task; no repository-wide rule change is proposed yet.
+
+## Follow-up minimal rule
+
+- Compile every new host seam immediately under the strict runner and preserve existing source-contract anchors when adding test seams. Use short Windows build roots for filesystem tests whose relative paths are appended to the executable working directory.

@@ -1,4 +1,5 @@
 #include "app_pod_status_bridge.h"
+#include "app_pod_status_bridge_internal.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -139,6 +140,12 @@ static void publish_cycle(void)
         publish_channel_barometer(channel);
         publish_channel_local_position(channel, has_profile, &profile);
     }
+}
+
+
+void app_pod_status_bridge_publish_cycle(void)
+{
+    publish_cycle();
 }
 
 
