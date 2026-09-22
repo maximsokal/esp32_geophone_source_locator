@@ -24,6 +24,8 @@
  */
 
 #define LOCALIZATION_RUN_STORE_PATH_MAX 160U
+#define LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE 2048U
+#define LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION 64U
 
 
 /*
@@ -54,4 +56,19 @@ esp_err_t localization_run_store_write(
     const char *object_id,
     const char *session_id,
     const localization_run_record_t *record
+);
+
+
+/*
+ * Enumerates every run record already persisted for one session (see
+ * localization_run_store.c for the full skip-on-error policy). Returns
+ * ESP_ERR_NOT_FOUND if the session directory itself does not exist (no
+ * recording under that id, or nothing has ever been written for it yet).
+ */
+esp_err_t localization_run_store_list(
+    const char *object_id,
+    const char *session_id,
+    localization_run_record_t *records,
+    size_t max_records,
+    size_t *record_count_out
 );

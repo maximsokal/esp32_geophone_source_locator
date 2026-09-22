@@ -871,3 +871,162 @@ esp_err_t seismic_recorder_read_session(
     }
     return err;
 }
+
+
+/*
+ * MAX-168: full-resolution read of one entire finished session, for offline
+ * analysis (arrival-time picking, array-processing localization backends)
+ * rather than display. Always reads the whole session from the start --
+ * unlike seismic_recorder_read_session() there is no partial-range use case
+ * here, so this intentionally has no start_frame/frame_count parameters.
+ * Bypasses the recorder PSRAM cache and any LOD sidecar entirely: both are
+ * display-scrolling optimizations that would silently reduce/stale-copy the
+ * exact samples a localization backend must see. `frame_capacity` bounds how
+ * long a session this can analyze in one call; a session that does not fit
+ * fails closed with ESP_ERR_INVALID_SIZE rather than silently truncating.
+ */
+esp_err_t seismic_recorder_read_session_raw(
+    const char *object_id,
+    const char *session_id,
+    seismic_frame_t *frames,
+    size_t frame_capacity,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out
+)
+{
+    if (
+        object_id == NULL ||
+        session_id == NULL ||
+        frames == NULL ||
+        frame_capacity == 0U ||
+        frame_count_out == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *frame_count_out = 0U;
+
+    object_store_profile_t *profile = malloc(sizeof(*profile));
+    if (profile == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = object_store_get_profile(object_id, profile);
+    free(profile);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    seismic_recorder_session_summary_t summary;
+    err = seismic_recorder_json_read_summary(object_id, session_id, &summary);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (!summary.readable && !summary.complete) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (summary.samples_written > (uint64_t)frame_capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    char *samples_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (samples_path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = seismic_recorder_fs_build_session_path(
+        object_id,
+        session_id,
+        samples_path,
+        SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_append_suffix(
+            samples_path,
+            SEISMIC_RECORDER_PATH_SIZE,
+            "/samples.bin"
+        );
+    }
+    if (err != ESP_OK) {
+        free(samples_path);
+        return err;
+    }
+
+    uint64_t raw_file_size = 0U;
+    err = seismic_recorder_reader_file_size(samples_path, &raw_file_size);
+    if (err != ESP_OK) {
+        free(samples_path);
+        return err;
+    }
+
+    uint64_t expected_raw_file_size = 0U;
+    if (!seismic_recorder_reader_virtual_file_size(summary.samples_written, &expected_raw_file_size)) {
+        free(samples_path);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    /* Matches seismic_recorder_read_session()'s own terminal-prefix contract:
+     * an ERROR session that was never recovered may have a discarded
+     * physical tail past its committed metadata prefix. */
+    const bool terminal_error_prefix =
+        summary.status == SEISMIC_RECORDER_SESSION_ERROR && !summary.recovered;
+    if (
+        raw_file_size < expected_raw_file_size ||
+        (!terminal_error_prefix && raw_file_size != expected_raw_file_size)
+    ) {
+        free(samples_path);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    const uint64_t contract_raw_file_size = expected_raw_file_size;
+
+    if (summary.samples_written == 0U) {
+        free(samples_path);
+        if (summary_out != NULL) {
+            *summary_out = summary;
+        }
+        return ESP_OK;
+    }
+
+    seismic_frame_t *staging = heap_caps_malloc(
+        sizeof(*staging) * SEISMIC_RECORDER_READ_STAGING_FRAMES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (staging == NULL) {
+        free(samples_path);
+        return ESP_ERR_NO_MEM;
+    }
+
+    seismic_recorder_bounded_reader_t raw_reader = {
+        .path = samples_path,
+    };
+
+#ifdef ESP_PLATFORM
+    const seismic_recorder_reader_priority_guard_t priority_guard =
+        seismic_recorder_reader_priority_enter();
+#endif
+    err = seismic_recorder_waveform_read_raw_source(
+        seismic_recorder_reader_read_at,
+        &raw_reader,
+        contract_raw_file_size,
+        &summary,
+        0U,
+        summary.samples_written,
+        staging,
+        SEISMIC_RECORDER_READ_STAGING_FRAMES,
+        frames,
+        frame_capacity,
+        frame_count_out
+    );
+#ifdef ESP_PLATFORM
+    seismic_recorder_reader_priority_leave(priority_guard);
+#endif
+
+    heap_caps_free(staging);
+    free(samples_path);
+
+    if (err == ESP_OK && summary_out != NULL) {
+        *summary_out = summary;
+    }
+    return err;
+}

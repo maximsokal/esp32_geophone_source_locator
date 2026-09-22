@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "object_store.h"
+#include "seismic_buffer.h"
 
 
 #define SEISMIC_RECORDER_OBJECT_ID_SIZE   16
@@ -275,4 +277,34 @@ esp_err_t seismic_recorder_read_session(
     seismic_recorder_waveform_point_t *points,
     size_t point_capacity,
     seismic_recorder_waveform_info_t *info
+);
+
+
+/*
+ * MAX-168: read one entire finished session at full sample resolution, for
+ * offline localization analysis rather than display. `summary_out` may be
+ * NULL if the caller does not need session metadata (sample_rate_hz,
+ * channel_count, etc.) alongside the frames.
+ */
+esp_err_t seismic_recorder_read_session_raw(
+    const char *object_id,
+    const char *session_id,
+    seismic_frame_t *frames,
+    size_t frame_capacity,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out
+);
+
+
+/*
+ * MAX-168: read back the exact per-pod geometry MAX-166 froze into this
+ * session at recording-start time -- never the object's current live
+ * geometry, which a later recording of the same object may have already
+ * overwritten. A pod stays `computed == false` if it was never solved for
+ * this session, or if this session predates MAX-166 entirely.
+ */
+esp_err_t seismic_recorder_read_session_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry
 );

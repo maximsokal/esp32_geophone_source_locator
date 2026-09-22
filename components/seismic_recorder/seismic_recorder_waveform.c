@@ -371,6 +371,146 @@ esp_err_t seismic_recorder_waveform_read_source(
 }
 
 
+/*
+ * Full-resolution counterpart of seismic_recorder_waveform_read_source():
+ * copies exact seismic_frame_t records into `frames` instead of reducing
+ * them into display envelope points. Offline analysis (MAX-168 source
+ * localization) needs every real sample -- arrival-time picking and
+ * array-processing backends cannot work from a min/max-reduced waveform.
+ * Shares the same header/contract validation and the same bounded, chunked,
+ * finite-value/monotonic-timestamp-checked read discipline as the envelope
+ * path above; it deliberately does not know about the recorder PSRAM cache
+ * or LOD sidecars, both of which are display-scrolling optimizations with no
+ * meaning for a one-shot full-session analysis read.
+ */
+esp_err_t seismic_recorder_waveform_read_raw_source(
+    seismic_recorder_waveform_read_at_fn read_at,
+    void *read_context,
+    uint64_t file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    seismic_frame_t *staging,
+    size_t staging_capacity,
+    seismic_frame_t *frames,
+    size_t frame_capacity,
+    size_t *frame_count_out
+)
+{
+    if (
+        read_at == NULL ||
+        summary == NULL ||
+        staging == NULL ||
+        staging_capacity == 0U ||
+        staging_capacity > SIZE_MAX / sizeof(seismic_frame_t) ||
+        frames == NULL ||
+        frame_capacity == 0U ||
+        frame_count_out == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *frame_count_out = 0U;
+
+    if (file_size < sizeof(seismic_recorder_binary_header_t)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (file_size > (uint64_t)LONG_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    seismic_recorder_binary_header_t header;
+    esp_err_t err = read_at(read_context, 0U, &header, sizeof(header));
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = seismic_recorder_waveform_validate_contract(file_size, &header, summary);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint64_t source_frame_count = summary->samples_written;
+    if (start_frame > source_frame_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (frame_count == 0U) {
+        frame_count = source_frame_count - start_frame;
+    }
+    if (frame_count > source_frame_count - start_frame) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (frame_count > (uint64_t)frame_capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint64_t processed = 0U;
+    int64_t last_timestamp_us = 0;
+    bool have_timestamp = false;
+
+    while (processed < frame_count) {
+        const uint64_t remaining = frame_count - processed;
+        const size_t chunk_count =
+            remaining < (uint64_t)staging_capacity
+                ? (size_t)remaining
+                : staging_capacity;
+
+        uint64_t chunk_frame_offset = 0U;
+        uint64_t chunk_offset_bytes = 0U;
+        const uint64_t absolute_frame = start_frame + processed;
+        if (
+            seismic_recorder_waveform_mul_overflows(
+                absolute_frame,
+                sizeof(seismic_frame_t),
+                &chunk_frame_offset
+            ) ||
+            seismic_recorder_waveform_add_overflows(
+                sizeof(seismic_recorder_binary_header_t),
+                chunk_frame_offset,
+                &chunk_offset_bytes
+            ) ||
+            chunk_offset_bytes > (uint64_t)LONG_MAX
+        ) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        const size_t chunk_bytes = chunk_count * sizeof(seismic_frame_t);
+        err = read_at(
+            read_context,
+            chunk_offset_bytes,
+            staging,
+            chunk_bytes
+        );
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        for (size_t chunk_index = 0U; chunk_index < chunk_count; ++chunk_index) {
+            const seismic_frame_t *frame = &staging[chunk_index];
+
+            if (have_timestamp && frame->timestamp_us < last_timestamp_us) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            have_timestamp = true;
+            last_timestamp_us = frame->timestamp_us;
+
+            for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+                if (!isfinite(frame->channel_uv[channel])) {
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+            }
+
+            frames[processed + chunk_index] = *frame;
+        }
+
+        processed += (uint64_t)chunk_count;
+    }
+
+    *frame_count_out = (size_t)frame_count;
+    return ESP_OK;
+}
+
+
 esp_err_t seismic_recorder_waveform_read_file(
     FILE *samples_file,
     uint64_t file_size,

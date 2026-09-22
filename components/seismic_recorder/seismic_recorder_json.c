@@ -716,3 +716,110 @@ esp_err_t seismic_recorder_json_read_summary_known_present(
         true
     );
 }
+
+
+/*
+ * MAX-168: read back the exact per-session geometry snapshot MAX-166 froze
+ * into session.json at recording start -- never the object's current live
+ * geometry, which a later recording may have already overwritten. Mirrors
+ * object_store_profile.c's object_store_read_geometry() parse logic against
+ * this session's own JSON instead of object.json.
+ *
+ * A session.json that fails to open/parse is a real error (the session was
+ * already confirmed to exist by the caller). A missing or malformed
+ * "geometry" key inside an otherwise-valid session.json is not an error --
+ * it just means every pod stays computed=false, matching a session recorded
+ * before MAX-166 ever existed.
+ */
+esp_err_t seismic_recorder_read_session_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry
+)
+{
+    if (object_id == NULL || session_id == NULL || geometry == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(geometry, 0, sizeof(*geometry));
+
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = seismic_recorder_json_metadata_path(
+        object_id,
+        session_id,
+        path,
+        SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (err != ESP_OK) {
+        free(path);
+        return err;
+    }
+
+    char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    if (buffer == NULL) {
+        free(path);
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = storage_manager_read_text(path, buffer, SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    free(path);
+    if (err != ESP_OK) {
+        free(buffer);
+        return err;
+    }
+
+    cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
+    if (root == NULL) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
+    if (!cJSON_IsObject(node)) {
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    cJSON *anchored = cJSON_GetObjectItemCaseSensitive(node, "anchored");
+    geometry->anchored = cJSON_IsTrue(anchored);
+
+    cJSON *pods = cJSON_GetObjectItemCaseSensitive(node, "pods");
+    if (!cJSON_IsArray(pods)) {
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
+        cJSON *pod = cJSON_GetArrayItem(pods, (int)i);
+        if (!cJSON_IsObject(pod)) {
+            continue;
+        }
+        cJSON *computed = cJSON_GetObjectItemCaseSensitive(pod, "computed");
+        if (!cJSON_IsTrue(computed)) {
+            continue;
+        }
+        cJSON *leveled = cJSON_GetObjectItemCaseSensitive(pod, "leveled");
+        cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
+        cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
+        cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
+        cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
+        if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
+            continue;
+        }
+        geometry->pods[i].computed = true;
+        geometry->pods[i].leveled = cJSON_IsTrue(leveled);
+        geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
+        geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
+        geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
+        geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
+            ? (uint64_t)computed_at->valuedouble
+            : 0U;
+    }
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
