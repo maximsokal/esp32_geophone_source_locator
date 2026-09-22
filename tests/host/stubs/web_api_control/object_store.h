@@ -49,6 +49,23 @@ typedef struct {
     object_store_pod_geometry_t pods[OBJECT_STORE_POD_COUNT];
 } object_store_geometry_t;
 
+#define OBJECT_STORE_MAX_CS_PAIRS 10U
+
+typedef struct {
+    uint8_t node_a;
+    uint8_t node_b;
+    bool valid;
+    int32_t distance_mm;
+    uint16_t confidence;
+    uint16_t attempts;
+    uint8_t valid_samples;
+} object_store_cs_pair_t;
+
+typedef struct {
+    size_t pair_count;
+    object_store_cs_pair_t pairs[OBJECT_STORE_MAX_CS_PAIRS];
+} object_store_cs_pairs_t;
+
 esp_err_t object_store_create_named(const char *name, object_store_summary_t *created_object);
 esp_err_t object_store_set_active(const char *object_id);
 esp_err_t object_store_delete(const char *object_id);

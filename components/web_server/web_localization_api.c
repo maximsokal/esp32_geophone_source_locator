@@ -16,13 +16,12 @@
  * route can never drift from what localization_run_store actually wrote to
  * disk.
  *
- * MAX-148 (first slice): also reports this session's own frozen per-pod
- * sensor geometry (X/Y/Z, leveled) alongside the runs -- the same
- * seismic_recorder_read_session_geometry() localization_calculate_run()
- * already reads, so the WebUI can show "sensor XYZ, leveling state" for
- * the exact geometry a run was actually computed against, never the
- * object's current live topology. Best-effort: a geometry read failure
- * (e.g. a session recorded before MAX-166) reports geometry.available =
+ * MAX-148: also reports this session's own frozen per-pod sensor geometry
+ * (X/Y/Z, leveled) and the raw CS pair evidence behind it (distance,
+ * confidence, valid/attempts), alongside the runs -- the exact session-
+ * frozen state a run was actually computed against, never the object's
+ * current live topology. Both are best-effort: a read failure (e.g. a
+ * session recorded before MAX-166/MAX-148) reports its own *_available ==
  * false rather than failing the whole request -- the run listing above
  * remains this route's primary payload.
  */
@@ -109,6 +108,10 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     const bool geometry_available =
         seismic_recorder_read_session_geometry(object_id, session_id, &geometry) == ESP_OK;
 
+    object_store_cs_pairs_t cs_pairs;
+    const bool cs_pairs_available =
+        seismic_recorder_read_session_cs_pairs(object_id, session_id, &cs_pairs) == ESP_OK;
+
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
 
@@ -153,6 +156,39 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
                 &writer, "{\"pod\":%u,\"computed\":false,\"leveled\":false}", (unsigned)(pod + 1U)
             );
         }
+    }
+    web_json_writer_write(&writer, "]},");
+
+    /*
+     * MAX-148: CS pair placement-confidence evidence frozen alongside the
+     * geometry above -- same best-effort contract (cs_pairs_available ==
+     * false for a session recorded before this existed, never a hard
+     * failure of the whole response).
+     */
+    web_json_writer_printf(
+        &writer, "\"cs_pairs\":{\"available\":%s,\"pairs\":[", cs_pairs_available ? "true" : "false"
+    );
+    const size_t cs_pair_count = cs_pairs_available ? cs_pairs.pair_count : 0U;
+    for (size_t i = 0U; i < cs_pair_count; ++i) {
+        if (i > 0U) {
+            web_json_writer_write(&writer, ",");
+        }
+        const object_store_cs_pair_t *pair = &cs_pairs.pairs[i];
+        web_json_writer_printf(
+            &writer,
+            "{\"node_a\":%u,\"node_b\":%u,\"valid\":%s,\"distance_mm\":%" PRId32 ",",
+            (unsigned)pair->node_a,
+            (unsigned)pair->node_b,
+            pair->valid ? "true" : "false",
+            pair->distance_mm
+        );
+        web_json_writer_printf(
+            &writer,
+            "\"confidence\":%u,\"attempts\":%u,\"valid_samples\":%u}",
+            (unsigned)pair->confidence,
+            (unsigned)pair->attempts,
+            (unsigned)pair->valid_samples
+        );
     }
     web_json_writer_write(&writer, "]},");
 

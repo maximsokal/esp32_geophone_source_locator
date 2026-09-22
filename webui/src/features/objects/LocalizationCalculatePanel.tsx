@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
-import type { LocalizationRun, LocalizationSessionGeometry } from '../../api/deviceApi';
+import type { LocalizationRun, LocalizationSessionCsPairs, LocalizationSessionGeometry } from '../../api/deviceApi';
 
 interface Props {
   objectId: string;
@@ -75,22 +75,29 @@ function formatMm(value: number | undefined): string {
   return value === undefined ? '—' : `${(value / 1000).toFixed(2)} m`;
 }
 
+function nodeLabel(node: number): string {
+  return node === 0 ? 'MAIN' : `Pod ${node}`;
+}
+
 export default function LocalizationCalculatePanel({ objectId, sessionId, busy, onClose }: Props) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runs, setRuns] = useState<LocalizationRun[] | null>(null);
   const [geometry, setGeometry] = useState<LocalizationSessionGeometry | null>(null);
+  const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
   const [geometryError, setGeometryError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setGeometry(null);
+    setCsPairs(null);
     setGeometryError(null);
     fetchLocalizationRuns(objectId, sessionId)
       .then((listing) => {
         if (cancelled) return;
         setGeometry(listing.geometry);
+        setCsPairs(listing.cs_pairs);
         setRuns(listing.runs.length > 0 ? listing.runs : null);
       })
       .catch((reason: unknown) => {
@@ -185,6 +192,26 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
             </div>
           ))}
         </dl>
+      )}
+
+      {csPairs !== null && csPairs.available && csPairs.pairs.length > 0 && (
+        <details className="settings-details">
+          <summary>Channel Sounding pair evidence ({csPairs.pairs.length})</summary>
+          <div className="session-list">
+            {csPairs.pairs.map((pair) => (
+              <div className="session-row" key={`${pair.node_a}-${pair.node_b}`}>
+                <span>
+                  <strong>{nodeLabel(pair.node_a)} ↔ {nodeLabel(pair.node_b)}</strong>
+                  <small>{pair.valid ? 'valid' : 'invalid'} · {pair.attempts} attempt{pair.attempts === 1 ? '' : 's'}</small>
+                </span>
+                <span>
+                  <strong>{(pair.distance_mm / 1000).toFixed(2)} m</strong>
+                  <small>confidence {(pair.confidence / 1000).toFixed(2)} · {pair.valid_samples} samples</small>
+                </span>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       <div className="cable-grid">

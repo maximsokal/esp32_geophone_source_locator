@@ -22,6 +22,8 @@ static nrf_cs_cycle_snapshot_t fake_cycle;
 static nrf_remote_sensor_cache_t fake_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static object_store_geometry_t last_geometry;
 static bool last_geometry_set;
+static object_store_cs_pairs_t last_cs_pairs;
+static bool last_cs_pairs_set;
 static object_store_profile_t last_written_profile;
 static bool last_written_profile_set;
 
@@ -55,9 +57,13 @@ esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t
     if (last_geometry_set) {
         profile->geometry = last_geometry;
     }
+    if (last_cs_pairs_set) {
+        profile->cs_pairs = last_cs_pairs;
+    }
     return ESP_OK;
 }
 esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry) { (void)object_id; last_geometry = *geometry; last_geometry_set = true; return ESP_OK; }
+esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs) { (void)object_id; last_cs_pairs = *cs_pairs; last_cs_pairs_set = true; return ESP_OK; }
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
 
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary) { *summary = fake_leveling; return ESP_OK; }
@@ -125,6 +131,7 @@ int main(void)
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_NOT_FOUND);
     assert(!last_geometry_set);
+    assert(!last_cs_pairs_set);
     assert(!last_written_profile_set);
 
     /* MAX-165: three assigned REMOTEs with only two accepted level reports
@@ -140,6 +147,7 @@ int main(void)
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
     assert(!last_geometry_set);
+    assert(!last_cs_pairs_set);
     assert(!last_written_profile_set);
 
     /* Three assigned, leveled, altitude-reporting REMOTE pods on channels
@@ -205,6 +213,16 @@ int main(void)
     assert(last_written_profile.geometry.pods[0].computed);
     assert(last_written_profile.geometry.pods[0].leveled);
     assert(last_written_profile.geometry.pods[0].x_mm == 300);
+
+    /* MAX-148: the same "solve first, persist after" ordering must hold for
+     * the CS pair evidence behind that solve. */
+    assert(last_cs_pairs_set);
+    assert(last_cs_pairs.pair_count == 6U);
+    assert(last_cs_pairs.pairs[0].node_a == 0U && last_cs_pairs.pairs[0].node_b == 1U);
+    assert(last_cs_pairs.pairs[0].valid);
+    assert(last_cs_pairs.pairs[0].distance_mm == 300);
+    assert(last_written_profile.cs_pairs.pair_count == 6U);
+    assert(last_written_profile.cs_pairs.pairs[0].distance_mm == 300);
 
     seismic_recorder_snapshot_t snapshot;
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);

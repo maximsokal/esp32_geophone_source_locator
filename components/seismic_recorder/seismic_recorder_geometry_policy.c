@@ -123,3 +123,34 @@ bool seismic_recorder_geometry_all_assigned_pods_computed(
 
     return true;
 }
+
+
+void seismic_recorder_geometry_apply_cs_pairs(
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    object_store_cs_pairs_t *cs_pairs_out
+)
+{
+    if (cs_pairs_out == NULL) {
+        return;
+    }
+
+    memset(cs_pairs_out, 0, sizeof(*cs_pairs_out));
+    if (pairs == NULL) {
+        return;
+    }
+
+    size_t count = 0U;
+    for (size_t i = 0U; i < pair_count && count < OBJECT_STORE_MAX_CS_PAIRS; ++i) {
+        object_store_cs_pair_t *out = &cs_pairs_out->pairs[count];
+        out->node_a = pairs[i].node_a;
+        out->node_b = pairs[i].node_b;
+        out->valid = pairs[i].state == NRF_CS_PAIR_VALID;
+        out->distance_mm = pairs[i].distance_mm;
+        out->confidence = pairs[i].confidence;
+        out->attempts = pairs[i].attempts;
+        out->valid_samples = pairs[i].valid_samples;
+        ++count;
+    }
+    cs_pairs_out->pair_count = count;
+}

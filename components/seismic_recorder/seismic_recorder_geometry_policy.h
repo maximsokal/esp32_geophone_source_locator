@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "nrf_cs_scheduler.h"
 #include "nrf_geometry_solver.h"
 #include "nrf_topology.h"
 #include "object_store.h"
@@ -81,4 +82,22 @@ void seismic_recorder_geometry_apply_solution(
 bool seismic_recorder_geometry_all_assigned_pods_computed(
     const nrf_topology_snapshot_t *topology,
     const object_store_geometry_t *geometry
+);
+
+
+/*
+ * MAX-148: map the CS scheduler's own pair results (whatever cycle.pairs the
+ * impure caller read from nrf_topology_service_get_cs_cycle()) onto
+ * object_store's decoupled, persistence-facing schema -- verbatim, no
+ * reinterpretation of distance/confidence/attempts. `valid` mirrors
+ * NRF_CS_PAIR_VALID exactly; every other state (including one this cycle
+ * never reached, e.g. still PENDING) maps to valid == false rather than
+ * being silently upgraded. Pairs beyond OBJECT_STORE_MAX_CS_PAIRS are
+ * dropped (cannot happen in practice: NRF_CS_MAX_PAIRS ==
+ * OBJECT_STORE_MAX_CS_PAIRS, both derived from the same 5-node mesh cap).
+ */
+void seismic_recorder_geometry_apply_cs_pairs(
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    object_store_cs_pairs_t *cs_pairs_out
 );

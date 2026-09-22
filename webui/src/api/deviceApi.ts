@@ -383,10 +383,26 @@ export interface LocalizationSessionGeometry {
   pods: LocalizationSessionPodGeometry[];
 }
 
+export interface LocalizationCsPair {
+  node_a: number;
+  node_b: number;
+  valid: boolean;
+  distance_mm: number;
+  confidence: number;
+  attempts: number;
+  valid_samples: number;
+}
+
+export interface LocalizationSessionCsPairs {
+  available: boolean;
+  pairs: LocalizationCsPair[];
+}
+
 export interface LocalizationRunListing {
   object_id: string;
   session_id: string;
   geometry: LocalizationSessionGeometry;
+  cs_pairs: LocalizationSessionCsPairs;
   runs: LocalizationRun[];
 }
 
