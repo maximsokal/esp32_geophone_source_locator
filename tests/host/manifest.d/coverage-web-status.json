@@ -10,6 +10,36 @@
         "tests/host/stubs/web_status_cache_sections",
         "components/web_server"
       ]
+    },
+    {
+      "name": "web_api_status_http",
+      "sources": [
+        "components/web_server/web_api_status.c",
+        "tests/host/web_api_status_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_api_status",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "web_status_json_builder",
+      "sources": [
+        "components/web_server/web_status_json.c",
+        "components/web_server/web_status_json_pods.c",
+        "components/web_server/web_status_policy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_status_json_builder_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_json",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server",
+        "components/device_status/include",
+        "components/runtime_observability/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include"
+      ]
     }
   ]
 }

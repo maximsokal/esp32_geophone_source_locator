@@ -364,11 +364,18 @@ esp_err_t wifi_manager_sta_events_init(void)
             NULL
         );
 
-    if (err == ESP_OK) {
-        portENTER_CRITICAL(&s_state_lock);
-        s_state.initialized = true;
-        portEXIT_CRITICAL(&s_state_lock);
+    if (err != ESP_OK) {
+        (void)esp_event_handler_unregister(
+            WIFI_EVENT,
+            ESP_EVENT_ANY_ID,
+            wifi_manager_sta_on_wifi_event
+        );
+        return err;
     }
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.initialized = true;
+    portEXIT_CRITICAL(&s_state_lock);
 
     return err;
 }

@@ -1,0 +1,3 @@
+#pragma once
+
+#define OBJECT_STORE_ID_SIZE 32

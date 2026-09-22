@@ -1,0 +1,465 @@
+#include <assert.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "cJSON.h"
+#include "device_status.h"
+#include "runtime_observability.h"
+#include "seismic_acquisition.h"
+#include "web_server_internal.h"
+
+static device_status_snapshot_t g_status;
+static esp_err_t g_status_result;
+static bool g_cache_ready;
+static esp_err_t g_objects_result;
+static esp_err_t g_sessions_result;
+static bool g_objects_called;
+static bool g_sessions_called;
+static bool g_recording_called;
+static int64_t g_now_us;
+
+static bool g_acquisition_running;
+static bool g_acquisition_healthy;
+static esp_err_t g_acquisition_error;
+static esp_err_t g_acquisition_snapshot_result;
+static seismic_acquisition_snapshot_t g_acquisition_snapshot;
+static runtime_observability_snapshot_t g_runtime_snapshot;
+
+static void reset_fakes(void)
+{
+    memset(&g_status, 0, sizeof(g_status));
+    g_status_result = ESP_OK;
+    g_cache_ready = true;
+    g_objects_result = ESP_OK;
+    g_sessions_result = ESP_OK;
+    g_objects_called = false;
+    g_sessions_called = false;
+    g_recording_called = false;
+    g_now_us = 1234567;
+
+    g_acquisition_running = true;
+    g_acquisition_healthy = true;
+    g_acquisition_error = ESP_OK;
+    g_acquisition_snapshot_result = ESP_OK;
+    memset(&g_acquisition_snapshot, 0, sizeof(g_acquisition_snapshot));
+    memset(&g_runtime_snapshot, 0, sizeof(g_runtime_snapshot));
+}
+
+esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    if (g_status_result != ESP_OK) return g_status_result;
+    *snapshot = g_status;
+    return ESP_OK;
+}
+
+const char *device_status_mode_name(device_mode_t mode)
+{
+    switch (mode) {
+        case DEVICE_MODE_MEASUREMENT: return "MEASUREMENT";
+        case DEVICE_MODE_WIFI: return "WIFI";
+        case DEVICE_MODE_IDLE: default: return "IDLE";
+    }
+}
+
+const char *device_status_power_source_name(device_power_source_t source)
+{
+    switch (source) {
+        case DEVICE_POWER_SOURCE_BATTERY: return "BATTERY";
+        case DEVICE_POWER_SOURCE_USB: return "USB";
+        case DEVICE_POWER_SOURCE_UNKNOWN: default: return "UNKNOWN";
+    }
+}
+
+const char *device_status_pod_name(pod_state_t state)
+{
+    switch (state) {
+        case POD_STATE_READY: return "READY";
+        case POD_STATE_WARNING: return "WARNING";
+        case POD_STATE_ERROR: return "ERROR";
+        case POD_STATE_DISCONNECTED: default: return "DISCONNECTED";
+    }
+}
+
+bool seismic_acquisition_is_running(void)
+{
+    return g_acquisition_running;
+}
+
+bool seismic_acquisition_source_healthy(void)
+{
+    return g_acquisition_healthy;
+}
+
+esp_err_t seismic_acquisition_last_error(void)
+{
+    return g_acquisition_error;
+}
+
+const char *seismic_acquisition_source_name(void)
+{
+    return "HOST_FAKE_AD7606";
+}
+
+esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    if (g_acquisition_snapshot_result != ESP_OK) return g_acquisition_snapshot_result;
+    *snapshot = g_acquisition_snapshot;
+    return ESP_OK;
+}
+
+void runtime_observability_get_snapshot(runtime_observability_snapshot_t *snapshot)
+{
+    assert(snapshot != NULL);
+    *snapshot = g_runtime_snapshot;
+}
+
+const char *runtime_observability_task_name(runtime_observability_task_t task)
+{
+    switch (task) {
+        case RUNTIME_TASK_ACQUISITION: return "acquisition";
+        case RUNTIME_TASK_RECORDER: return "recorder";
+        case RUNTIME_TASK_UI: return "ui";
+        case RUNTIME_TASK_COUNT: default: return "unknown";
+    }
+}
+
+bool web_status_json_objects_cache_ready(void)
+{
+    return g_cache_ready;
+}
+
+esp_err_t web_status_json_add_objects(cJSON *root)
+{
+    g_objects_called = true;
+    if (g_objects_result != ESP_OK) return g_objects_result;
+    return cJSON_AddStringToObject(root, "object_store_marker", "objects-added") != NULL
+        ? ESP_OK
+        : ESP_ERR_NO_MEM;
+}
+
+esp_err_t web_status_json_add_sessions(cJSON *root, const char *object_id)
+{
+    g_sessions_called = true;
+    if (g_sessions_result != ESP_OK) return g_sessions_result;
+    return
+        cJSON_AddStringToObject(root, "sessions_marker", object_id) != NULL
+            ? ESP_OK
+            : ESP_ERR_NO_MEM;
+}
+
+bool web_status_json_add_recording(cJSON *root)
+{
+    g_recording_called = true;
+    return cJSON_AddStringToObject(root, "recording_marker", "recording-added") != NULL;
+}
+
+bool web_status_json_add_recording_gate(cJSON *root)
+{
+    return cJSON_AddStringToObject(root, "recording_gate_marker", "gate-added") != NULL;
+}
+
+bool web_status_json_add_measurement(cJSON *root)
+{
+    return cJSON_AddStringToObject(root, "measurement_marker", "measurement-added") != NULL;
+}
+
+int64_t esp_timer_get_time(void)
+{
+    return g_now_us;
+}
+
+static cJSON *object_item(const cJSON *object, const char *name)
+{
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+    assert(item != NULL);
+    return item;
+}
+
+static const char *string_item(const cJSON *object, const char *name)
+{
+    cJSON *item = object_item(object, name);
+    assert(cJSON_IsString(item));
+    return item->valuestring;
+}
+
+static double number_item(const cJSON *object, const char *name)
+{
+    cJSON *item = object_item(object, name);
+    assert(cJSON_IsNumber(item));
+    return item->valuedouble;
+}
+
+static bool bool_item(const cJSON *object, const char *name)
+{
+    cJSON *item = object_item(object, name);
+    assert(cJSON_IsBool(item));
+    return cJSON_IsTrue(item);
+}
+
+static void assert_number_near(double actual, double expected)
+{
+    assert(fabs(actual - expected) < 0.000001);
+}
+
+static void fill_status(void)
+{
+    g_status.mode = DEVICE_MODE_MEASUREMENT;
+    g_status.power.valid = true;
+    g_status.power.voltage_v = 12.5f;
+    g_status.power.current_a = 0.75f;
+    g_status.power.power_w = 9.375f;
+    g_status.power.source = DEVICE_POWER_SOURCE_USB;
+    g_status.power.battery_present = true;
+    g_status.power.battery_percent_valid = true;
+    g_status.power.battery_voltage_v = 3.9f;
+    g_status.power.battery_current_a = 0.2f;
+    g_status.power.battery_percent_estimate = 64.0f;
+    g_status.power.usb_present = true;
+    g_status.power.charging = true;
+    for (size_t i = 0; i < DEVICE_STATUS_POWER_CHANNEL_COUNT; ++i) {
+        g_status.power.channels[i].valid = true;
+        g_status.power.channels[i].voltage_v = (float)(i + 1U);
+        g_status.power.channels[i].current_a = (float)(i + 2U);
+        g_status.power.channels[i].power_w = (float)(i + 3U);
+    }
+
+    g_status.environment.valid = true;
+    g_status.environment.temperature_c = 22.5f;
+    g_status.environment.humidity_percent = 48.0f;
+    g_status.environment.pressure_pa = 100321.0f;
+    g_status.mux.valid = true;
+    g_status.mux.active_channel = 3;
+    g_status.mux.active_pod = 2;
+
+    for (size_t i = 0; i < DEVICE_STATUS_POD_COUNT; ++i) {
+        device_pod_status_t *pod = &g_status.pods[i];
+        pod->state = POD_STATE_READY;
+        pod->capabilities.barometer = true;
+        pod->capabilities.environment = true;
+        pod->capabilities.imu = true;
+        pod->capabilities.geophone = true;
+        pod->capabilities.local_position = true;
+        pod->capabilities.global_position = true;
+    }
+
+    device_pod_status_t *pod = &g_status.pods[0];
+    pod->barometer.valid = true;
+    pod->barometer.pressure_pa = 100111.0f;
+    pod->barometer.relative_altitude_cm = 12.5f;
+    pod->barometer.reference_pressure_pa = 100000.0f;
+    pod->environment.valid = true;
+    pod->environment.temperature_valid = true;
+    pod->environment.temperature_c = 23.25f;
+    pod->environment.humidity_valid = true;
+    pod->environment.humidity_percent = 51.0f;
+    pod->imu.valid = true;
+    pod->imu.roll_deg = 1.5f;
+    pod->imu.pitch_deg = -2.5f;
+    pod->imu.yaw_relative_deg = 33.0f;
+    pod->geophone.valid = true;
+    pod->geophone.instant_uv = 4.0f;
+    pod->geophone.rms_uv = 2.0f;
+    pod->geophone.peak_uv = 8.0f;
+    pod->geophone.noise_rms_uv = 0.5f;
+    pod->geophone.snr_db = 12.0f;
+    pod->position.local_valid = true;
+    pod->position.local_x_m = 1.25f;
+    pod->position.local_y_m = -0.75f;
+    pod->position.global_valid = true;
+    pod->position.latitude = 50.4501;
+    pod->position.longitude = 30.5234;
+    pod->position.altitude_valid = true;
+    pod->position.altitude_m = 179.2;
+
+    g_status.acquisition.running = true;
+    g_status.acquisition.sample_rate_hz = 4000;
+    g_status.acquisition.samples_recorded = 987654;
+    g_status.acquisition.recording_ms = 12345;
+
+    g_acquisition_snapshot.running = true;
+    g_acquisition_snapshot.source_healthy = true;
+    g_acquisition_snapshot.latest_valid = true;
+    g_acquisition_snapshot.sample_rate_hz = 4000;
+    g_acquisition_snapshot.read_errors = 2;
+    g_acquisition_snapshot.consecutive_failures = 1;
+    g_acquisition_snapshot.cadence_available = true;
+    g_acquisition_snapshot.timer_ticks = 1000;
+    g_acquisition_snapshot.conversion_attempts = 998;
+    g_acquisition_snapshot.collapsed_periods = 2;
+    g_acquisition_snapshot.last_successful_sample_interval_us = 250;
+    g_acquisition_snapshot.max_successful_sample_interval_us = 500;
+    g_acquisition_snapshot.serial_suspicious = true;
+    g_acquisition_snapshot.serial_pattern = "VARIED";
+    g_acquisition_snapshot.serial_quality = "GOOD";
+    g_acquisition_snapshot.serial_stream_state = "RUNNING";
+    g_acquisition_snapshot.serial_stream_stuck = false;
+    g_acquisition_snapshot.signal_quality = "CLEAN";
+    g_acquisition_snapshot.serial_suspicious_streak = 3;
+    g_acquisition_snapshot.serial_repeated_frame_streak = 4;
+    g_acquisition_snapshot.serial_all_zero_frames = 5;
+    g_acquisition_snapshot.serial_all_ff_frames = 6;
+    g_acquisition_snapshot.serial_all_identical_frames = 7;
+    g_acquisition_snapshot.serial_varied_frames = 8;
+    g_acquisition_snapshot.serial_digital_interference_frames = 9;
+    g_acquisition_snapshot.signal_rail_hit_frames = 10;
+    g_acquisition_snapshot.signal_clip_frames = 11;
+    g_acquisition_snapshot.serial_quality_window_frames = 10;
+    g_acquisition_snapshot.serial_quality_window_bad_frames = 2;
+    g_acquisition_snapshot.serial_quality_window_all_zero_frames = 1;
+    g_acquisition_snapshot.serial_quality_window_all_ff_frames = 3;
+    g_acquisition_snapshot.serial_quality_window_all_identical_frames = 4;
+    g_acquisition_snapshot.serial_quality_window_repeated_frames = 5;
+    g_acquisition_snapshot.serial_quality_window_digital_interference_frames = 6;
+    g_acquisition_snapshot.signal_quality_window_rail_hit_frames = 7;
+    g_acquisition_snapshot.signal_quality_window_clip_frames = 8;
+    g_acquisition_snapshot.serial_busy_level = 2;
+
+    g_runtime_snapshot.now_ms = 4567;
+    g_runtime_snapshot.tasks[RUNTIME_TASK_ACQUISITION].observed = true;
+    g_runtime_snapshot.tasks[RUNTIME_TASK_ACQUISITION].heartbeat = 11;
+    g_runtime_snapshot.tasks[RUNTIME_TASK_ACQUISITION].progress = 22;
+    g_runtime_snapshot.tasks[RUNTIME_TASK_ACQUISITION].last_heartbeat_ms = 3333;
+}
+
+static cJSON *build_json(bool include_objects, const char *sessions_object_id)
+{
+    char *json = NULL;
+    assert(web_status_json_build_extended(
+        &json,
+        include_objects,
+        sessions_object_id
+    ) == ESP_OK);
+    assert(json != NULL);
+    cJSON *root = cJSON_Parse(json);
+    assert(root != NULL);
+    web_status_json_free(json);
+    return root;
+}
+
+static void test_full_builder_and_pods(void)
+{
+    reset_fakes();
+    fill_status();
+    cJSON *root = build_json(false, NULL);
+
+    assert(!bool_item(root, "storage_busy"));
+    cJSON *system = object_item(root, "system");
+    assert(strcmp(string_item(system, "state"), "READY") == 0);
+    assert(strcmp(string_item(system, "mode"), "MEASUREMENT") == 0);
+    assert_number_near(number_item(system, "uptime_ms"), 1234.0);
+    assert_number_near(number_item(system, "ready_pods"), 4.0);
+    assert_number_near(number_item(system, "required_pods"), 4.0);
+
+    cJSON *power = object_item(root, "power");
+    assert(bool_item(power, "valid"));
+    assert(strcmp(string_item(power, "source"), "USB") == 0);
+    assert_number_near(number_item(power, "power_w"), 9.375);
+    assert(cJSON_GetArraySize(object_item(power, "channels")) == 3);
+
+    cJSON *acquisition = object_item(root, "acquisition");
+    assert(bool_item(acquisition, "running"));
+    assert_number_near(number_item(acquisition, "sample_rate_hz"), 4000.0);
+    assert_number_near(number_item(acquisition, "read_errors"), 2.0);
+    cJSON *cadence = object_item(acquisition, "cadence");
+    assert(bool_item(cadence, "available"));
+    assert_number_near(number_item(cadence, "collapsed_periods"), 2.0);
+    cJSON *serial = object_item(acquisition, "serial");
+    assert(strcmp(string_item(serial, "quality"), "GOOD") == 0);
+    assert_number_near(number_item(serial, "quality_bad_ratio"), 0.2);
+    assert_number_near(number_item(serial, "quality_all_ff_ratio"), 0.3);
+    assert_number_near(number_item(serial, "busy_level"), 2.0);
+    cJSON *signal = object_item(acquisition, "signal");
+    assert(strcmp(string_item(signal, "quality"), "CLEAN") == 0);
+    assert_number_near(number_item(signal, "clip_ratio"), 0.8);
+
+    cJSON *runtime = object_item(root, "runtime");
+    assert_number_near(number_item(runtime, "now_ms"), 4567.0);
+    cJSON *runtime_acquisition = object_item(object_item(runtime, "tasks"), "acquisition");
+    assert(bool_item(runtime_acquisition, "observed"));
+    assert_number_near(number_item(runtime_acquisition, "progress"), 22.0);
+
+    cJSON *pods = object_item(root, "pods");
+    assert(cJSON_GetArraySize(pods) == DEVICE_STATUS_POD_COUNT);
+    cJSON *pod = cJSON_GetArrayItem(pods, 0);
+    assert(strcmp(string_item(pod, "state"), "READY") == 0);
+    assert(bool_item(object_item(pod, "capabilities"), "global_position"));
+    assert_number_near(number_item(object_item(pod, "geophone"), "snr_db"), 12.0);
+    assert_number_near(number_item(object_item(pod, "position"), "latitude"), 50.4501);
+    assert(bool_item(object_item(pod, "position"), "altitude_valid"));
+
+    assert(g_recording_called);
+    cJSON_Delete(root);
+}
+
+static void test_policy_fault_and_snapshot_fallback(void)
+{
+    reset_fakes();
+    fill_status();
+    g_status.pods[3].state = POD_STATE_ERROR;
+    cJSON *root = build_json(false, NULL);
+    assert(strcmp(string_item(object_item(root, "system"), "state"), "FAULT") == 0);
+    cJSON_Delete(root);
+
+    reset_fakes();
+    g_status.acquisition.running = false;
+    g_acquisition_running = false;
+    g_acquisition_healthy = false;
+    g_acquisition_error = ESP_FAIL;
+    g_acquisition_snapshot_result = ESP_FAIL;
+    root = build_json(false, NULL);
+    cJSON *acquisition = object_item(root, "acquisition");
+    assert(!bool_item(acquisition, "running"));
+    assert(!bool_item(acquisition, "error_counters_available"));
+    assert(strcmp(string_item(object_item(acquisition, "serial"), "pattern"), "UNKNOWN") == 0);
+    assert_number_near(number_item(object_item(acquisition, "serial"), "busy_level"), -1.0);
+    assert(!bool_item(object_item(acquisition, "cadence"), "available"));
+    cJSON_Delete(root);
+}
+
+static void test_extended_cache_and_errors(void)
+{
+    reset_fakes();
+    fill_status();
+    cJSON *root = build_json(true, "OBJ-1");
+    assert(g_objects_called);
+    assert(g_sessions_called);
+    assert(strcmp(string_item(root, "object_store_marker"), "objects-added") == 0);
+    assert(strcmp(string_item(root, "sessions_marker"), "OBJ-1") == 0);
+    cJSON_Delete(root);
+
+    reset_fakes();
+    fill_status();
+    g_cache_ready = false;
+    char *json = NULL;
+    assert(web_status_json_build_extended(&json, true, NULL) == ESP_ERR_INVALID_STATE);
+    assert(json == NULL);
+
+    assert(web_status_json_build_extended(NULL, false, NULL) == ESP_ERR_INVALID_ARG);
+
+    reset_fakes();
+    fill_status();
+    g_status_result = ESP_FAIL;
+    assert(web_status_json_build_extended(&json, false, NULL) == ESP_FAIL);
+    assert(json == NULL);
+
+    reset_fakes();
+    fill_status();
+    g_objects_result = ESP_ERR_INVALID_STATE;
+    assert(web_status_json_build_extended(&json, true, NULL) == ESP_ERR_INVALID_STATE);
+    assert(json == NULL);
+}
+
+int main(void)
+{
+    test_full_builder_and_pods();
+    test_policy_fault_and_snapshot_fallback();
+    test_extended_cache_and_errors();
+    puts("web_status_json_builder_test: PASS");
+    return 0;
+}

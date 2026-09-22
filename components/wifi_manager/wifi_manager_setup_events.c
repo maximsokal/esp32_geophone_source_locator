@@ -421,6 +421,11 @@ esp_err_t wifi_manager_setup_events_init(void)
         );
 
     if (err != ESP_OK) {
+        (void)esp_event_handler_unregister(
+            WIFI_EVENT,
+            WIFI_EVENT_AP_STACONNECTED,
+            wifi_manager_setup_wifi_event
+        );
         return err;
     }
 
@@ -432,11 +437,23 @@ esp_err_t wifi_manager_setup_events_init(void)
             NULL
         );
 
-    if (err == ESP_OK) {
-        portENTER_CRITICAL(&s_state_lock);
-        s_state.initialized = true;
-        portEXIT_CRITICAL(&s_state_lock);
+    if (err != ESP_OK) {
+        (void)esp_event_handler_unregister(
+            WIFI_EVENT,
+            WIFI_EVENT_AP_STACONNECTED,
+            wifi_manager_setup_wifi_event
+        );
+        (void)esp_event_handler_unregister(
+            WIFI_EVENT,
+            WIFI_EVENT_AP_STADISCONNECTED,
+            wifi_manager_setup_wifi_event
+        );
+        return err;
     }
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_state.initialized = true;
+    portEXIT_CRITICAL(&s_state_lock);
 
     return err;
 }

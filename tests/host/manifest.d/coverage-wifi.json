@@ -24,6 +24,80 @@
       ]
     },
     {
+      "name": "wifi_manager_events_runtime",
+      "sources": [
+        "components/wifi_manager/wifi_manager_event_policy.c",
+        "components/wifi_manager/wifi_manager_runtime.c",
+        "components/wifi_manager/wifi_manager_runtime_format.c",
+        "components/wifi_manager/wifi_manager_status.c",
+        "components/wifi_manager/wifi_manager_sta_events.c",
+        "components/wifi_manager/wifi_manager_setup_events.c",
+        "tests/host/wifi_manager_events_runtime_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_events",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "wifi_manager_storage",
+      "sources": [
+        "components/wifi_manager/wifi_manager_credentials.c",
+        "components/wifi_manager/wifi_manager_profile.c",
+        "components/wifi_manager/wifi_manager_runtime.c",
+        "components/wifi_manager/wifi_manager_runtime_format.c",
+        "components/wifi_manager/wifi_manager_config.c",
+        "tests/host/wifi_manager_storage_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_storage",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "wifi_manager_radio_start",
+      "sources": [
+        "components/wifi_manager/wifi_manager_sta.c",
+        "components/wifi_manager/wifi_manager_setup_ap.c",
+        "tests/host/wifi_manager_radio_start_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_radio",
+        "components/app_config/include",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "web_wifi_setup_input",
+      "sources": [
+        "components/web_server/web_wifi_setup_decode.c",
+        "components/web_server/web_wifi_setup_form.c",
+        "components/web_server/web_wifi_setup_request.c",
+        "tests/host/web_wifi_setup_input_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_wifi_input",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "wifi_manager_platform_mdns",
+      "sources": [
+        "components/wifi_manager/wifi_manager_platform.c",
+        "components/wifi_manager/wifi_manager_mdns.c",
+        "tests/host/wifi_manager_platform_mdns_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_platform",
+        "components/app_config/include",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
       "name": "web_network_authority_policy",
       "sources": [
         "components/web_server/web_server_lifecycle_policy.c",
