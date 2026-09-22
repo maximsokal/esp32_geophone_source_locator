@@ -21,7 +21,7 @@ static esp_err_t web_json_writer_flush(
         httpd_resp_send_chunk(
             writer->request,
             writer->buffer,
-            writer->length
+            (ssize_t)writer->length
         );
 
     writer->length = 0;
@@ -70,7 +70,7 @@ esp_err_t web_json_writer_write(
             httpd_resp_send_chunk(
                 writer->request,
                 text,
-                text_length
+                (ssize_t)text_length
             );
 
         return writer->status;

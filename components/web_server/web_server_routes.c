@@ -170,6 +170,9 @@ esp_err_t web_server_routes_register(httpd_handle_t server)
     err = web_seismic_register(server);
     if (err != ESP_OK) return err;
 
+    err = web_localization_api_register(server);
+    if (err != ESP_OK) return err;
+
     err = web_https_onboarding_secure_register(server);
     if (err != ESP_OK) return err;
 

@@ -108,6 +108,80 @@
       ]
     },
     {
+      "name": "wifi_manager_events_runtime",
+      "sources": [
+        "components/wifi_manager/wifi_manager_event_policy.c",
+        "components/wifi_manager/wifi_manager_runtime.c",
+        "components/wifi_manager/wifi_manager_runtime_format.c",
+        "components/wifi_manager/wifi_manager_status.c",
+        "components/wifi_manager/wifi_manager_sta_events.c",
+        "components/wifi_manager/wifi_manager_setup_events.c",
+        "tests/host/wifi_manager_events_runtime_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_events",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "wifi_manager_storage",
+      "sources": [
+        "components/wifi_manager/wifi_manager_credentials.c",
+        "components/wifi_manager/wifi_manager_profile.c",
+        "components/wifi_manager/wifi_manager_runtime.c",
+        "components/wifi_manager/wifi_manager_runtime_format.c",
+        "components/wifi_manager/wifi_manager_config.c",
+        "tests/host/wifi_manager_storage_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_storage",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "wifi_manager_radio_start",
+      "sources": [
+        "components/wifi_manager/wifi_manager_sta.c",
+        "components/wifi_manager/wifi_manager_setup_ap.c",
+        "tests/host/wifi_manager_radio_start_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_radio",
+        "components/app_config/include",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "web_wifi_setup_input",
+      "sources": [
+        "components/web_server/web_wifi_setup_decode.c",
+        "components/web_server/web_wifi_setup_form.c",
+        "components/web_server/web_wifi_setup_request.c",
+        "tests/host/web_wifi_setup_input_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_wifi_input",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "wifi_manager_platform_mdns",
+      "sources": [
+        "components/wifi_manager/wifi_manager_platform.c",
+        "components/wifi_manager/wifi_manager_mdns.c",
+        "tests/host/wifi_manager_platform_mdns_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_platform",
+        "components/app_config/include",
+        "components/wifi_manager/include",
+        "components/wifi_manager"
+      ]
+    },
+    {
       "name": "ad7606_driver",
       "sources": [
         "components/ad7606_driver/ad7606_driver.c",
@@ -443,6 +517,49 @@
         "components/localization_results/include",
         "components/localization_run_store/include",
         "components/object_format/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_calculate_policy",
+      "sources": [
+        "components/localization_calculate/localization_calculate_policy.c",
+        "components/localization_calculate/tests/localization_calculate_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_calculate/include",
+        "components/localization_comparison/include",
+        "components/localization_energy_baseline/include",
+        "components/localization_semblance/include",
+        "components/localization_traveltime_inversion/include",
+        "components/localization_results/include",
+        "components/geophone_events/include",
+        "components/object_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "web_localization_runs_http",
+      "sources": [
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_results/localization_run_record_json.c",
+        "components/web_server/web_json_writer.c",
+        "tests/host/web_localization_runs_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_api_control",
+        "tests/host/stubs/object_store_profile",
+        "components/localization/include",
+        "components/localization_results/include",
+        "components/localization_run_store/include",
+        "components/web_server"
       ],
       "libraries": [
         "m"
@@ -923,6 +1040,17 @@
       ]
     },
     {
+      "name": "web_api_status_http",
+      "sources": [
+        "components/web_server/web_api_status.c",
+        "tests/host/web_api_status_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_api_status",
+        "components/web_server"
+      ]
+    },
+    {
       "name": "web_scan_store_http",
       "sources": [
         "tests/host/web_scan_store_http_test.c"
@@ -972,6 +1100,25 @@
         "components/web_server",
         "components/recording_gate/include",
         "components/localization/include"
+      ]
+    },
+    {
+      "name": "web_status_json_builder",
+      "sources": [
+        "components/web_server/web_status_json.c",
+        "components/web_server/web_status_json_pods.c",
+        "components/web_server/web_status_policy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_status_json_builder_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_json",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server",
+        "components/device_status/include",
+        "components/runtime_observability/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include"
       ]
     },
     {

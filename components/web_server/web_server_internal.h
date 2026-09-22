@@ -91,6 +91,7 @@ esp_err_t web_server_routes_register(httpd_handle_t server);
 esp_err_t web_api_status_register(httpd_handle_t server);
 esp_err_t web_api_control_register(httpd_handle_t server);
 esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled);
+esp_err_t web_localization_api_register(httpd_handle_t server);
 
 esp_err_t web_page_send_index(httpd_req_t *request);
 

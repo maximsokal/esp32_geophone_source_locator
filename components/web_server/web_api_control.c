@@ -8,7 +8,9 @@
 #include "object_store.h"
 #include "measurement_service.h"
 #include "seismic_acquisition.h"
+#include "localization_calculate.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #define WEB_CONTROL_MAX_BODY 1024U
 #define WEB_CONTROL_ACTION_SIZE 48U
@@ -225,6 +227,86 @@ static bool web_control_pod_index(double value, size_t *pod_index)
     return true;
 }
 
+static bool web_control_size(cJSON *root, const char *key, size_t *value)
+{
+    double raw = 0.0;
+    if (!web_control_number(root, key, &raw) || raw < 0.0 || floor(raw) != raw) {
+        return false;
+    }
+    *value = (size_t)raw;
+    return true;
+}
+
+/*
+ * MAX-168: every physically-measured/method-tuning parameter (propagation
+ * speed, timing uncertainty, pick-detection config) is required, explicit
+ * caller input -- this handler invents none of it, only transports what the
+ * WebUI form collected into localization_calculate_run()'s own config
+ * struct, which independently re-validates the physical-parameter subset.
+ */
+static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id)
+{
+    if (object_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *session_id = web_control_string(root, "session_id");
+    if (session_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    double propagation_speed_mps = 0.0;
+    double propagation_speed_uncertainty_mps = 0.0;
+    double timing_uncertainty_us = 0.0;
+    double sta_lta_trigger_ratio = 0.0;
+    double refine_amplitude_fraction = 0.0;
+    double minimum_snr = 0.0;
+
+    localization_calculate_config_t config;
+    memset(&config, 0, sizeof(config));
+
+    if (
+        !web_control_number(root, "propagation_speed_mps", &propagation_speed_mps) ||
+        !web_control_number(root, "propagation_speed_uncertainty_mps", &propagation_speed_uncertainty_mps) ||
+        !web_control_number(root, "timing_uncertainty_us", &timing_uncertainty_us) ||
+        !web_control_size(root, "noise_window_samples", &config.pick_config.noise_window_samples) ||
+        !web_control_size(root, "sta_window_samples", &config.pick_config.sta_window_samples) ||
+        !web_control_size(root, "lta_window_samples", &config.pick_config.lta_window_samples) ||
+        !web_control_number(root, "sta_lta_trigger_ratio", &sta_lta_trigger_ratio) ||
+        !web_control_size(root, "refine_lookback_samples", &config.pick_config.refine_lookback_samples) ||
+        !web_control_size(root, "refine_lookahead_samples", &config.pick_config.refine_lookahead_samples) ||
+        !web_control_number(root, "refine_amplitude_fraction", &refine_amplitude_fraction) ||
+        !web_control_size(root, "snr_signal_window_samples", &config.pick_config.snr_signal_window_samples) ||
+        !web_control_number(root, "minimum_snr", &minimum_snr) ||
+        !web_control_size(root, "semblance_window_half_span_samples", &config.semblance_window_half_span_samples)
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    config.propagation_speed_mps = propagation_speed_mps;
+    config.propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
+    config.timing_uncertainty_us = timing_uncertainty_us;
+    config.pick_config.sta_lta_trigger_ratio = (float)sta_lta_trigger_ratio;
+    config.pick_config.refine_amplitude_fraction = (float)refine_amplitude_fraction;
+    config.pick_config.minimum_snr = (float)minimum_snr;
+
+    const char *model_name = web_control_string(root, "propagation_model_name");
+    if (model_name != NULL) {
+        snprintf(
+            config.propagation_model_name, sizeof(config.propagation_model_name), "%s", model_name
+        );
+    }
+
+    localization_calculate_summary_t summary;
+    return localization_calculate_run(
+        object_id,
+        session_id,
+        &config,
+        (uint64_t)(esp_timer_get_time() / 1000),
+        &summary
+    );
+}
+
 static esp_err_t web_control_measurement_start(const char *object_id)
 {
     if (object_id == NULL) {
@@ -394,6 +476,9 @@ static esp_err_t web_control_process(
     }
     if (strcmp(action, "acquisition_stop") == 0) {
         return web_control_acquisition_stop();
+    }
+    if (strcmp(action, "calculate_source") == 0) {
+        return web_control_calculate_source(root, object_id);
     }
 
     return ESP_ERR_NOT_SUPPORTED;

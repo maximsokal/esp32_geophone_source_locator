@@ -7,6 +7,7 @@
 
 #include "cJSON.h"
 #include "esp_http_server.h"
+#include "localization_calculate.h"
 #include "measurement_service.h"
 #include "object_store.h"
 #include "web_server_internal.h"
@@ -15,6 +16,10 @@ static object_store_location_t s_saved_location;
 static unsigned s_location_calls;
 static unsigned s_cache_invalidations;
 static unsigned s_cache_refresh_requests;
+static unsigned s_calculate_calls;
+static localization_calculate_config_t s_last_calculate_config;
+static char s_last_calculate_session_id[32];
+static esp_err_t s_calculate_result;
 
 static void reset_fakes(void)
 {
@@ -22,6 +27,10 @@ static void reset_fakes(void)
     s_location_calls = 0U;
     s_cache_invalidations = 0U;
     s_cache_refresh_requests = 0U;
+    s_calculate_calls = 0U;
+    memset(&s_last_calculate_config, 0, sizeof(s_last_calculate_config));
+    memset(s_last_calculate_session_id, 0, sizeof(s_last_calculate_session_id));
+    s_calculate_result = ESP_OK;
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -139,6 +148,35 @@ esp_err_t object_store_lease_release(object_store_lease_t *lease)
 {
     (void)lease;
     return ESP_OK;
+}
+
+int64_t esp_timer_get_time(void)
+{
+    return 1000000;
+}
+
+esp_err_t localization_calculate_run(
+    const char *object_id,
+    const char *session_id,
+    const localization_calculate_config_t *config,
+    uint64_t computed_at_ms,
+    localization_calculate_summary_t *summary_out
+)
+{
+    (void)object_id;
+    (void)computed_at_ms;
+    assert(config != NULL && summary_out != NULL);
+    s_calculate_calls++;
+    s_last_calculate_config = *config;
+    snprintf(s_last_calculate_session_id, sizeof(s_last_calculate_session_id), "%s", session_id);
+    memset(summary_out, 0, sizeof(*summary_out));
+    if (s_calculate_result == ESP_OK) {
+        summary_out->participating_channel_count = 4U;
+        summary_out->methods_attempted = 4U;
+        summary_out->methods_solved = 3U;
+        summary_out->methods_persisted = 5U;
+    }
+    return s_calculate_result;
 }
 
 bool object_format_id_is_valid(const char *object_id)
@@ -321,9 +359,84 @@ static void test_phone_location_handler_rejects_negative_capture_time(void)
     assert(s_location_calls == 0U);
 }
 
+static const char *const CALCULATE_SOURCE_BODY =
+    "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+    "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+    "\"propagation_model_name\":\"tap_calibrated\",\"timing_uncertainty_us\":2000.0,"
+    "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+    "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+    "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+    "\"semblance_window_half_span_samples\":25}";
+
+static void test_calculate_source_action_dispatches_to_localization_calculate_run(void)
+{
+    reset_fakes();
+    s_calculate_result = ESP_OK;
+    char response[512] = {0};
+    httpd_req_t request = make_request(CALCULATE_SOURCE_BODY, response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(strstr(response, "calculate_source") != NULL);
+    assert(s_calculate_calls == 1U);
+    assert(strcmp(s_last_calculate_session_id, "S000001") == 0);
+    assert(s_last_calculate_config.propagation_speed_mps == 340.0);
+    assert(s_last_calculate_config.propagation_speed_uncertainty_mps == 5.0);
+    assert(strcmp(s_last_calculate_config.propagation_model_name, "tap_calibrated") == 0);
+    assert(s_last_calculate_config.timing_uncertainty_us == 2000.0);
+    assert(s_last_calculate_config.pick_config.noise_window_samples == 50U);
+    assert(s_last_calculate_config.pick_config.sta_window_samples == 5U);
+    assert(s_last_calculate_config.pick_config.lta_window_samples == 50U);
+    assert(s_last_calculate_config.pick_config.sta_lta_trigger_ratio == 3.5f);
+    assert(s_last_calculate_config.pick_config.refine_lookback_samples == 10U);
+    assert(s_last_calculate_config.pick_config.refine_lookahead_samples == 10U);
+    assert(s_last_calculate_config.pick_config.refine_amplitude_fraction == 0.5f);
+    assert(s_last_calculate_config.pick_config.snr_signal_window_samples == 50U);
+    assert(s_last_calculate_config.pick_config.minimum_snr == 2.0f);
+    assert(s_last_calculate_config.semblance_window_half_span_samples == 25U);
+    /* No object mutation occurred: object cache must not be touched. */
+    assert(s_cache_invalidations == 0U);
+    assert(s_cache_refresh_requests == 0U);
+}
+
+static void test_calculate_source_action_rejects_missing_session_id(void)
+{
+    reset_fakes();
+    const char *body =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0}";
+    char response[512] = {0};
+    httpd_req_t request = make_request(body, response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "\"ok\":false") != NULL);
+    assert(s_calculate_calls == 0U);
+}
+
+static void test_calculate_source_action_surfaces_solver_failure(void)
+{
+    reset_fakes();
+    s_calculate_result = ESP_ERR_INVALID_STATE;
+    char response[512] = {0};
+    httpd_req_t request = make_request(CALCULATE_SOURCE_BODY, response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "\"ok\":false") != NULL);
+    assert(s_calculate_calls == 1U);
+}
+
 int main(void)
 {
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
+    test_calculate_source_action_dispatches_to_localization_calculate_run();
+    test_calculate_source_action_rejects_missing_session_id();
+    test_calculate_source_action_surfaces_solver_failure();
     return 0;
 }

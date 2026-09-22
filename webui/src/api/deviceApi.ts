@@ -337,6 +337,52 @@ export function fetchSavedSeismicSession(
   ).then(normalizeSavedSeismicSnapshot);
 }
 
+export interface LocalizationRunPosition {
+  x_m: number;
+  y_m: number;
+  z_m: number;
+}
+
+export interface LocalizationRun {
+  schema_version: number;
+  object_id: string;
+  session_id: string;
+  computed_at_ms: number;
+  kind: 'individual_method' | 'joint_fusion';
+  method_name: string;
+  method_version: number;
+  channel_mask_used: number;
+  channel_mask_rejected: number;
+  dimensionality: 'insufficient' | 'planar_2d' | 'capable_3d';
+  geometry_computed_at_ms: number;
+  propagation_model_name: string;
+  propagation_speed_mps: number;
+  propagation_speed_uncertainty_mps: number;
+  confidence_score: number;
+  solved: boolean;
+  source_position?: LocalizationRunPosition;
+  emission_time_us?: number;
+  rms_residual_us?: number;
+  iterations?: number;
+  converged?: boolean;
+  rejection_reason?: string;
+}
+
+export interface LocalizationRunListing {
+  object_id: string;
+  session_id: string;
+  runs: LocalizationRun[];
+}
+
+export function fetchLocalizationRuns(objectId: string, sessionId: string): Promise<LocalizationRunListing> {
+  const query = new URLSearchParams({ object_id: objectId, session_id: sessionId });
+  return jsonRequest<LocalizationRunListing>(
+    `/api/localization/runs?${query.toString()}`,
+    {},
+    DEVICE_API_EXTENDED_TIMEOUT_MS,
+  );
+}
+
 export function capturePhoneLocation(): Promise<PhoneLocationInput> {
   if (!('geolocation' in navigator)) {
     return Promise.reject(new Error('Geolocation is not supported by this browser.'));
