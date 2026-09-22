@@ -10,6 +10,19 @@ static char s_last_path[512];
 static char s_last_text[4096];
 static esp_err_t s_next_write_result = ESP_OK;
 
+esp_err_t storage_manager_read_text(
+    const char *path,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    (void)path;
+    (void)buffer;
+    (void)buffer_size;
+    return ESP_ERR_NOT_FOUND;
+}
+
+
 esp_err_t storage_manager_atomic_write_text(
     const char *path,
     const char *text

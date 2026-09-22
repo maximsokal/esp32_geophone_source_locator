@@ -88,7 +88,9 @@
         "components/object_format/include",
         "components/seismic_recorder/include",
         "tests/host/stubs/runtime_observability",
-        "components/runtime_observability/include"
+        "components/runtime_observability/include",
+        "components/object_store/include",
+        "components/seismic_buffer/include"
       ]
     }
   ]

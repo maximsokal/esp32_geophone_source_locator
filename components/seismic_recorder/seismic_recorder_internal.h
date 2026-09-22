@@ -111,6 +111,21 @@ esp_err_t seismic_recorder_waveform_read_file(
 );
 
 
+esp_err_t seismic_recorder_waveform_read_raw_source(
+    seismic_recorder_waveform_read_at_fn read_at,
+    void *read_context,
+    uint64_t file_size,
+    const seismic_recorder_session_summary_t *summary,
+    uint64_t start_frame,
+    uint64_t frame_count,
+    seismic_frame_t *staging,
+    size_t staging_capacity,
+    seismic_frame_t *frames,
+    size_t frame_capacity,
+    size_t *frame_count_out
+);
+
+
 esp_err_t seismic_recorder_fs_create_session(
     const char *object_id,
     uint32_t sample_rate_hz,

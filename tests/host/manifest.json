@@ -413,6 +413,30 @@
       ],
       "include_dirs": [
         "tests/host/stubs/localization_run_store",
+        "components/seismic_recorder/tests/stubs",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "tests/host/stubs/object_store_profile",
+        "components/localization_results/include",
+        "components/localization_run_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_run_store_list",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/localization_results/localization_run_record_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_run_store/localization_run_store.c",
+        "components/localization_run_store/tests/localization_run_store_list_test.c"
+      ],
+      "include_dirs": [
+        "components/localization_run_store/tests/stubs/list",
+        "components/seismic_recorder/tests/stubs",
         "components/localization/tests/stubs",
         "components/localization/include",
         "tests/host/stubs/object_store_profile",
@@ -466,6 +490,8 @@
         "components/object_service/include",
         "components/object_format/include",
         "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/seismic_buffer/include",
         "tests/host/stubs/runtime_observability",
         "components/runtime_observability/include"
       ]
@@ -637,7 +663,8 @@
         "components/seismic_buffer/include",
         "components/seismic_recorder/tests/stubs",
         "components/seismic_recorder",
-        "components/seismic_recorder/include"
+        "components/seismic_recorder/include",
+        "components/object_store/include"
       ]
     },
     {
@@ -720,7 +747,9 @@
         "components/ad7606_acquisition/include",
         "components/ad7606_driver/include",
         "tests/host/stubs/seismic_pipeline",
-        "tests/host/stubs/seismic_recorder_start"
+        "tests/host/stubs/seismic_recorder_start",
+        "components/object_store/include",
+        "components/seismic_buffer/include"
       ]
     },
     {
@@ -763,6 +792,39 @@
       "sources": [
         "components/seismic_recorder/seismic_recorder_waveform.c",
         "components/seismic_recorder/tests/seismic_recorder_waveform_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_session_geometry",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/seismic_recorder/tests/seismic_recorder_session_geometry_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/object_store_profile"
+      ]
+    },
+    {
+      "name": "seismic_recorder_waveform_raw",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/tests/seismic_recorder_waveform_raw_test.c"
       ],
       "include_dirs": [
         "components/seismic_recorder/tests/stubs",
