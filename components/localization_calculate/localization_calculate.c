@@ -234,7 +234,7 @@ esp_err_t localization_calculate_run(
     localization_traveltime_search_bounds_t traveltime_bounds;
     localization_calculate_search_bounds(
         participant_positions, participant_position_count, dimensionality,
-        &semblance_bounds, &traveltime_bounds
+        config->max_source_depth_m, &semblance_bounds, &traveltime_bounds
     );
 
     const uint64_t geometry_computed_at_ms =

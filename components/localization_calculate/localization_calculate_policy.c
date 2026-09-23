@@ -106,6 +106,7 @@ void localization_calculate_search_bounds(
     const localization_point3d_t *positions,
     size_t position_count,
     localization_dimensionality_t dimensionality,
+    double max_source_depth_m,
     localization_semblance_search_bounds_t *semblance_bounds_out,
     localization_traveltime_search_bounds_t *traveltime_bounds_out
 )
@@ -138,16 +139,22 @@ void localization_calculate_search_bounds(
 
     const double mean_z = (min_z + max_z) / 2.0;
     const bool planar = dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D;
+    const double depth =
+        isfinite(max_source_depth_m) && max_source_depth_m > 0.0
+        ? max_source_depth_m
+        : margin;
 
+    /* MAX-211: the search never goes above the highest sensor (the surface
+     * the geophones lie on); it only goes down, by `depth`. */
     const localization_point3d_t min_corner = {
         min_x - margin,
         min_y - margin,
-        planar ? mean_z : min_z - margin,
+        planar ? mean_z : min_z - depth,
     };
     const localization_point3d_t max_corner = {
         max_x + margin,
         max_y + margin,
-        planar ? mean_z : max_z + margin,
+        planar ? mean_z : max_z,
     };
 
     if (semblance_bounds_out != NULL) {

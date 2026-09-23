@@ -66,6 +66,12 @@ typedef struct
      * this stays explicit caller input like the pick config above. */
     size_t semblance_window_half_span_samples;
 
+    /* Optional (MAX-211): how far below the lowest sensor a 3D search may
+     * place the source, in meters. <= 0 selects the geometry-derived default
+     * (see localization_calculate_search_bounds()). The search never goes
+     * above the highest sensor. */
+    double max_source_depth_m;
+
 } localization_calculate_config_t;
 
 

@@ -212,11 +212,38 @@ static void test_validation_and_geometry_contracts(void)
     ) == ESP_ERR_INVALID_ARG);
 }
 
+/* MAX-211: a practically flat surface array whose only vertical "relief" is
+ * barometric noise (a few cm over 5 m) must not be accepted as 3D -- the
+ * solved depth would be determined by that noise. */
+static void test_flat_array_with_height_noise_is_rejected(void)
+{
+    localization_observation_t observations[4] = {
+        { .sensor_position = { 0.0, 0.0, 0.00 }, .arrival_time_us = 0 },
+        { .sensor_position = { 5.0, 0.0, 0.05 }, .arrival_time_us = 1000 },
+        { .sensor_position = { 0.0, 5.0, -0.03 }, .arrival_time_us = 1200 },
+        { .sensor_position = { 5.0, 5.0, 0.02 }, .arrival_time_us = 1500 },
+    };
+    localization_config_t config = localization_default_config();
+    config.propagation_speed_mps = 1000.0;
+    localization_result_t result;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, NULL, &result
+    ) == ESP_ERR_INVALID_STATE);
+
+    /* ~1 m of real relief across the same footprint is depth-resolving. */
+    observations[3].sensor_position.z_m = 1.0;
+    assert(localization_tdoa_solve(
+        observations, 4, &config, NULL, &result
+    ) == ESP_OK);
+}
+
+
 int main(void)
 {
     test_synthetic_ground_truth();
     test_four_sensor_offset_noise_and_iteration_contracts();
     test_validation_and_geometry_contracts();
+    test_flat_array_with_height_noise_is_rejected();
     puts("localization TDOA tests passed");
     return 0;
 }

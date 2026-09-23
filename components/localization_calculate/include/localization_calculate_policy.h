@@ -88,15 +88,21 @@ int64_t localization_calculate_arrival_time_us(
  * measurement, unlike propagation speed (see localization_calculate.h).
  * Collapses to a single Z layer (min_corner.z_m == max_corner.z_m == the
  * mean sensor Z) when dimensionality is PLANAR_2D, matching both grid-
- * search backends' own documented 2D convention. Margin and step are fixed,
- * documented constants (localization_calculate_policy.c), not invented per
- * call -- they scale with the array's own footprint, never with anything
- * physically measured.
+ * search backends' own documented 2D convention. Horizontal margin and step
+ * are fixed, documented constants (localization_calculate_policy.c).
+ *
+ * MAX-211 (3D): geophones lie ON the surface and the source is buried, so
+ * the box never extends above the highest sensor (a near-planar surface
+ * array cannot distinguish a source below it from its mirror image above
+ * it; only the physical one is searched). It extends max_source_depth_m
+ * below the lowest sensor; max_source_depth_m <= 0 (or non-finite) selects
+ * the default: the horizontal margin (half the array diagonal, >= 1 m).
  */
 void localization_calculate_search_bounds(
     const localization_point3d_t *positions,
     size_t position_count,
     localization_dimensionality_t dimensionality,
+    double max_source_depth_m,
     localization_semblance_search_bounds_t *semblance_bounds_out,
     localization_traveltime_search_bounds_t *traveltime_bounds_out
 );

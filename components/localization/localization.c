@@ -9,7 +9,14 @@
 #define LOCALIZATION_DEFAULT_CONVERGENCE_M  0.001
 #define LOCALIZATION_DEFAULT_DAMPING         1.0e-6
 #define LOCALIZATION_DISTANCE_EPSILON_M      1.0e-9
-#define LOCALIZATION_GEOMETRY_EPSILON        1.0e-6
+/*
+ * MAX-211: minimum |6 x tetrahedron volume| / scale^3 for the sensor layout
+ * to resolve depth. The old 1e-6 accepted any barometric noise as "3D": a
+ * flat 5x5 m layout with 5 cm of Z noise scores ~0.0035 and would have let
+ * noise determine the depth. 0.05 needs roughly >= 0.7 m of vertical relief
+ * across a 5 m array (a regular tetrahedron scores ~0.71).
+ */
+#define LOCALIZATION_MIN_DEPTH_RESOLVING_VOLUME_RATIO 0.05
 
 
 static localization_point3d_t point_subtract(
@@ -138,7 +145,7 @@ static bool localization_geometry_is_3d(
     }
 
     return max_six_volume >
-        LOCALIZATION_GEOMETRY_EPSILON * scale * scale * scale;
+        LOCALIZATION_MIN_DEPTH_RESOLVING_VOLUME_RATIO * scale * scale * scale;
 }
 
 

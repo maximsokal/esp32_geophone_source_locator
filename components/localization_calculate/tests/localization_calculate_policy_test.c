@@ -103,7 +103,7 @@ static void test_search_bounds_wraps_the_sensor_bounding_box_with_a_margin(void)
     localization_traveltime_search_bounds_t traveltime_bounds;
 
     localization_calculate_search_bounds(
-        positions, 3U, LOCALIZATION_DIMENSIONALITY_CAPABLE_3D,
+        positions, 3U, LOCALIZATION_DIMENSIONALITY_CAPABLE_3D, 0.0,
         &semblance_bounds, &traveltime_bounds
     );
 
@@ -132,7 +132,7 @@ static void test_search_bounds_collapses_to_one_layer_when_planar(void)
     localization_traveltime_search_bounds_t traveltime_bounds;
 
     localization_calculate_search_bounds(
-        positions, 3U, LOCALIZATION_DIMENSIONALITY_PLANAR_2D,
+        positions, 3U, LOCALIZATION_DIMENSIONALITY_PLANAR_2D, 0.0,
         &semblance_bounds, &traveltime_bounds
     );
 
@@ -146,10 +146,44 @@ static void test_search_bounds_handles_zero_positions_without_crashing(void)
     localization_semblance_search_bounds_t semblance_bounds;
     localization_traveltime_search_bounds_t traveltime_bounds;
     localization_calculate_search_bounds(
-        NULL, 0U, LOCALIZATION_DIMENSIONALITY_CAPABLE_3D,
+        NULL, 0U, LOCALIZATION_DIMENSIONALITY_CAPABLE_3D, 0.0,
         &semblance_bounds, &traveltime_bounds
     );
     assert(semblance_bounds.max_corner.x_m > semblance_bounds.min_corner.x_m);
+}
+
+
+/* MAX-211: a buried source is only searched for below the surface the
+ * geophones lie on, never in its mirror position above it, and an explicit
+ * maximum depth is honored. */
+static void test_search_bounds_stay_below_surface_and_honor_depth(void)
+{
+    const localization_point3d_t positions[4] = {
+        { 0.0, 0.0, 0.10 },
+        { 5.0, 0.0, 0.30 },
+        { 0.0, 5.0, 0.00 },
+        { 5.0, 5.0, 0.20 },
+    };
+    localization_semblance_search_bounds_t semblance_bounds;
+    localization_traveltime_search_bounds_t traveltime_bounds;
+
+    localization_calculate_search_bounds(
+        positions, 4U, LOCALIZATION_DIMENSIONALITY_CAPABLE_3D, 0.0,
+        &semblance_bounds, &traveltime_bounds
+    );
+    /* Top of the box is the highest sensor, not above it. */
+    assert(semblance_bounds.max_corner.z_m == 0.30);
+    assert(traveltime_bounds.max_corner.z_m == 0.30);
+    /* Default depth: half the 5x5 m diagonal below the lowest sensor. */
+    assert(fabs(semblance_bounds.min_corner.z_m - (0.0 - sqrt(50.0) / 2.0)) < 1e-9);
+
+    localization_calculate_search_bounds(
+        positions, 4U, LOCALIZATION_DIMENSIONALITY_CAPABLE_3D, 8.0,
+        &semblance_bounds, &traveltime_bounds
+    );
+    assert(semblance_bounds.min_corner.z_m == -8.0);
+    assert(traveltime_bounds.min_corner.z_m == -8.0);
+    assert(traveltime_bounds.max_corner.z_m == 0.30);
 }
 
 
@@ -425,6 +459,7 @@ int main(void)
     test_search_bounds_wraps_the_sensor_bounding_box_with_a_margin();
     test_search_bounds_collapses_to_one_layer_when_planar();
     test_search_bounds_handles_zero_positions_without_crashing();
+    test_search_bounds_stay_below_surface_and_honor_depth();
     test_geometry_computed_at_ms_takes_the_latest_computed_pod();
     test_arrival_time_us_converts_sample_index_precisely();
     test_traveltime_adapter_common_fields();

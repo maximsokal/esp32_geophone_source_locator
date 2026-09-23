@@ -29,6 +29,7 @@ typedef struct
     double timing_uncertainty_us;
     geophone_channel_pick_config_t pick_config;
     size_t semblance_window_half_span_samples;
+    double max_source_depth_m;
 
 } localization_calculate_config_t;
 
