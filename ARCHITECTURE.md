@@ -128,7 +128,7 @@ Do not introduce new application tasks with ad-hoc priorities. Add them to `app_
 | **GPIO21** | input | External power-button sense line | Official GPIO Button adapter input, active-high. Internal pull-up/pull-down is disabled, therefore the external power-control/button circuit must provide a defined logic level. |
 | **GPIO39** | input | AD7606 `DOUTA/DB7` | Dedicated SPI3 MISO/data output from AD7606. |
 | **GPIO40** | output | AD7606 `RD/SCLK` | Dedicated SPI3 clock. |
-| **GPIO41** | output | AD7606 `CS` **plus external 10 kOhm pull-up to 3.3 V** | `CS` is active LOW. The 10 kOhm resistor keeps the ADC deselected while ESP32 is resetting/booting and GPIO41 is not yet actively driven. Firmware then drives CS HIGH before handing the pin to SPI3. **Do not remove this pull-up when rewiring.** |
+| **GPIO41** | output | AD7606 `CS` **plus external 10 kOhm pull-up to AD7606 VIO (LD1117 OUT, 3.3 V)** | `CS` is active LOW. The 10 kOhm resistor keeps the ADC deselected while ESP32 is resetting/booting and GPIO41 is not yet actively driven. Firmware then drives CS HIGH before handing the pin to SPI3. The pull-up terminates at the AD7606's own VIO, never at the always-on ESP32 3.3 V (see the AD7606 VIO section). **Do not remove this pull-up when rewiring.** |
 | **GPIO42** | output | AD7606 `CVA` + `CVB`, physically tied together | One rising edge starts the simultaneous conversion of all eight AD7606 channels. Both CONVST inputs must remain tied to this GPIO for simultaneous sampling. |
 | **GPIO43** | output | ESP32-S3 UART0 TX -> external CH340 `RXD` for passive serial monitoring | Used for battery-only COM6 logging. In passive-monitor setup only ESP32 TX -> CH340 RXD and common GND are used. |
 | **GPIO44** | input / reserved | UART0 RX; **not connected to CH340 TXD in passive-monitor setup** | Leave disconnected during passive COM6 monitoring so the CH340 cannot drive the ESP32. |
@@ -141,12 +141,17 @@ All other ESP32-S3 GPIOs are currently **unallocated by `board_config.h`** unles
 #### GPIO41 AD7606 CS pull-up - permanent prototype requirement
 
 ```text
-3.3 V
+AD7606 VIO (LD1117V33 OUT, 3.3 V)
   |
  [10 kOhm]
   |
   +------ GPIO41 ------ AD7606 CS
 ```
+
+Since 2026-09-23 the pull-up is fed from the AD7606's own VIO rail, not from
+ESP32 3.3 V: when the AD7606 +5 V rail is off, VIO and the pull-up are off
+too, so there is no ESP32 3.3 V -> 10 kOhm -> CS path into an unpowered
+AD7606 (digital inputs must stay <= VDRIVE + 0.3 V).
 
 The resistor is a **pull-up**, not a series resistor. AD7606 CS is active LOW. During ESP32 reset, boot and the interval before `ad7606_driver` configures GPIO41, the ESP32 pin can be high-impedance. Without an external pull-up the CS line could float and the ADC could be selected unintentionally. The 10 kOhm pull-up establishes the safe hardware state independently of firmware. Once initialized, the ESP32 drives the same line normally and SPI3 controls CS during transactions.
 
@@ -207,7 +212,9 @@ Battery percentage is intentionally an **estimated 1S Li-ion voltage state-of-ch
 
 - ESP32-S3, TFT, microSD, INA3221, AD7606, keypad, power-control board and any external serial monitor used for signal observation require a **common reference GND** where they exchange logic signals.
 - INA3221 `VS` is connected to ESP32 **3.3 V**; its measured bus rails may be around 5 V because bus-voltage inputs are separate from `VS`.
-- The GPIO41 pull-up terminates at the ESP32 **3.3 V** rail.
+- The GPIO41 pull-up terminates at the **AD7606 VIO** rail (LD1117V33 OUT), not at ESP32 3.3 V (changed 2026-09-23).
+- **AD7606 VIO/VDRIVE is powered by its own LD1117V33** (TO-220, pins GND/OUT/IN; the tab is VOUT) fed from the **same +5 V that powers AD7606 AVCC**, with 100 nF IN->GND and 10 uF (electrolytic) OUT->GND. The former ESP32 3V3 -> AD7606 VIO wire is **removed**; two 3.3 V sources must never be tied together. This makes AVCC = 0 V with VDRIVE = 3.3 V (an AD7606 absolute-maximum violation: VDRIVE <= AVCC + 0.3 V) impossible in hardware. Post-rework check (before connecting ESP32): +5 V off -> VIO ~= 0 V; +5 V ~= 5 V -> VIO ~= 3.3 V; no VIO<->GND short; no VIO<->ESP32 3V3 connection.
+- **MAIN XIAO nRF54L15** is powered from **ESP32 5 V -> XIAO 5V/VBUS** with common GND (changed 2026-09-23), so it is powered whenever the ESP32 is and is never left unpowered on the active upstream I2C bus (MAX-108 scenario). Do not connect XIAO USB while it is fed from ESP32 5 V without checking the XIAO's VBUS path.
 - The CH340 VCC pin stays disconnected in passive battery-monitor mode; only RXD and GND are connected.
 - Exact present VCC rail routing for every external module is not represented by firmware GPIO definitions. Before a complete prototype teardown, add the measured/verified module power wiring here rather than reconstructing it from memory.
 
@@ -600,7 +607,7 @@ The current source sets the SD runtime ceiling to `SDMMC_FREQ_DEFAULT` (20 MHz),
 ```text
 GPIO39 <- AD7606 DOUTA/DB7
 GPIO40 -> AD7606 RD/SCLK
-GPIO41 -> AD7606 CS        + 10 kOhm pull-up to 3.3 V
+GPIO41 -> AD7606 CS        + 10 kOhm pull-up to AD7606 VIO (LD1117V33 OUT)
 GPIO42 -> AD7606 CVA + CVB (tied together)
 GPIO47 <- AD7606 BUSY
 GPIO2  -> AD7606 RESET
