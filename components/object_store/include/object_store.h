@@ -87,6 +87,10 @@ typedef struct
     uint16_t confidence;
     uint16_t attempts;
     uint8_t valid_samples;
+    /* MAX-206: robust sample spread (1.4826 x MAD) in mm and samples
+     * discarded as outliers; 0 when unknown (older records). */
+    int32_t spread_mm;
+    uint8_t rejected_samples;
 } object_store_cs_pair_t;
 
 typedef struct

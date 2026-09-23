@@ -10,6 +10,7 @@ static nrf_cs_policy_t test_policy(uint8_t max_attempts)
     policy.pair_timeout_ms = 120U;
     policy.max_attempts = max_attempts;
     policy.min_confidence = 600U;
+    policy.samples_per_pair = 1U;
     return policy;
 }
 
@@ -347,8 +348,74 @@ static void test_invalid_inputs_are_rejected(void)
     assert(nrf_cs_scheduler_start_cycle(&scheduler, NULL, 1U) == NRF_CS_ERR_ARGUMENT);
 }
 
+/* MAX-206: one step per pair ran until the first success; the pair's
+ * distance was that single sample. With samples_per_pair the pair keeps
+ * sampling, takes the median and discards outliers by MAD. */
+static void run_single_pair_samples(
+    const int32_t *distances,
+    size_t count,
+    nrf_cs_pair_result_t *out)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(2U);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };
+    nrf_cs_step_t step;
+    size_t served = 0U;
+
+    policy.samples_per_pair = (uint8_t)count;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    while (nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY) {
+        /* Pair 0 gets the scripted distances; other pairs a constant. */
+        const int32_t distance = step.pair_index == 0U ? distances[served++] : 2000;
+        const nrf_cs_measurement_t measurement = success_measurement(distance, 900U);
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    }
+    assert(served == count);
+    assert(nrf_cs_scheduler_is_complete(&scheduler));
+    *out = *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+}
+
+static void test_multi_sample_median_rejects_outlier(void)
+{
+    const int32_t distances[5] = { 3010, 2990, 3005, 5400, 2995 };
+    nrf_cs_pair_result_t pair;
+    run_single_pair_samples(distances, 5U, &pair);
+
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    assert(pair.valid_samples == 5U);
+    assert(pair.rejected_samples == 1U);
+    assert(pair.distance_mm == 3000);           /* median of the 4 kept */
+    assert(pair.spread_mm > 0 && pair.spread_mm < 50);
+    assert((pair.scheduler_quality_flags & NRF_CS_QUALITY_OUTLIER) != 0U);
+    assert(pair.confidence == 900U);
+}
+
+static void test_single_sample_policy_keeps_legacy_behaviour(void)
+{
+    const int32_t distances[1] = { 4321 };
+    nrf_cs_pair_result_t pair;
+    run_single_pair_samples(distances, 1U, &pair);
+    assert(pair.valid_samples == 1U);
+    assert(pair.distance_mm == 4321);
+    assert(pair.spread_mm == 0);
+    assert(pair.rejected_samples == 0U);
+}
+
+static void test_samples_per_pair_is_bounded(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(1U);
+    policy.samples_per_pair = NRF_CS_MAX_SAMPLES_PER_EXECUTION + 1U;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_ERR_ARGUMENT);
+}
+
+
 int main(void)
 {
+    test_multi_sample_median_rejects_outlier();
+    test_single_sample_policy_keeps_legacy_behaviour();
+    test_samples_per_pair_is_bounded();
     test_pair_enumeration_is_canonical_and_discovery_order_independent();
     test_initiator_fairness_for_three_four_and_five_nodes();
     test_two_nodes_get_reciprocal_directed_steps_for_one_matrix_pair();

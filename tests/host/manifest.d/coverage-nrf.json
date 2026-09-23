@@ -72,6 +72,12 @@
       "include_dirs": ["nRF54L15/include"]
     },
     {
+      "name": "nrf_cs_measurement_quality",
+      "sources": ["nRF54L15/src/nrf_cs_measurement_quality.c", "tests/host/nrf_cs_measurement_quality_test.c"],
+      "include_dirs": ["nRF54L15/include"],
+      "libraries": ["m"]
+    },
+    {
       "name": "nrf_cs_pair_adapter",
       "sources": ["nRF54L15/src/nrf_cs_pair_adapter.c", "tests/host/nrf_cs_pair_adapter_test.c"],
       "include_dirs": ["nRF54L15/include"]

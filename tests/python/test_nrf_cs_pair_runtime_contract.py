@@ -153,14 +153,20 @@ def test_runtime_executes_one_directed_attempt_and_leaves_multi_node_authority_o
     assert "NRF_CS_MAX_NODES" in scheduler_header
 
 
-def test_distance_mapping_is_binary_usability_not_fake_accuracy():
+def test_distance_confidence_comes_from_measurement_evidence():
+    """MAX-206: a success no longer reports a constant 1000; confidence is
+    derived from tone coverage and PBR/RTT agreement by a pure, host-tested
+    function (nrf_cs_measurement_quality.c)."""
     runtime = runtime_source()
     header = text(RUNTIME_H)
 
     assert "CS_DE_QUALITY_OK" in runtime
     assert "distance_estimates[0].best" in runtime
     assert "isfinite(best)" in runtime
-    assert "measurement.confidence = 1000U" in runtime
+    assert "measurement.confidence = 1000U" not in runtime
+    assert "measurement.confidence = nrf_cs_measurement_confidence(" in runtime
+    assert "good_tones" in runtime
+    assert "distance_estimates[0].rtt" in runtime
     assert "NRF_CS_OUTCOME_OUTLIER" in runtime
     assert "NRF_CS_PROVIDER_QUALITY_TONE_OK" in header
     assert "NRF_CS_PROVIDER_QUALITY_PBR_VALID" in header

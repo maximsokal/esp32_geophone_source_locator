@@ -7,7 +7,43 @@ static bool nrf_cs_policy_valid(const nrf_cs_policy_t *policy)
     return policy != NULL &&
            policy->pair_timeout_ms > 0U &&
            policy->max_attempts > 0U &&
-           policy->min_confidence <= NRF_CS_CONFIDENCE_MAX;
+           policy->min_confidence <= NRF_CS_CONFIDENCE_MAX &&
+           policy->samples_per_pair <= NRF_CS_MAX_SAMPLES_PER_EXECUTION;
+}
+
+static uint8_t nrf_cs_samples_target(const nrf_cs_policy_t *policy)
+{
+    return policy->samples_per_pair == 0U ? 1U : policy->samples_per_pair;
+}
+
+static void nrf_cs_sort_i32(int32_t *values, size_t count)
+{
+    size_t i;
+
+    for (i = 1U; i < count; ++i) {
+        int32_t value = values[i];
+        size_t j = i;
+
+        while (j > 0U && values[j - 1U] > value) {
+            values[j] = values[j - 1U];
+            --j;
+        }
+        values[j] = value;
+    }
+}
+
+/* Median of a sorted array; the mean of the middle pair for even counts. */
+static int32_t nrf_cs_sorted_median(const int32_t *sorted, size_t count)
+{
+    if ((count % 2U) == 1U) {
+        return sorted[count / 2U];
+    }
+    return (int32_t)(((int64_t)sorted[count / 2U - 1U] + (int64_t)sorted[count / 2U]) / 2);
+}
+
+static int32_t nrf_cs_abs_i32(int32_t value)
+{
+    return value < 0 ? -value : value;
 }
 
 static void nrf_cs_sort_nodes(nrf_cs_node_id_t *nodes, size_t count)
@@ -184,14 +220,51 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
     }
 
     if (pair->valid_samples > 0U) {
+        const size_t count = pair->valid_samples;
+        int32_t sorted[NRF_CS_MAX_SAMPLES_PER_PAIR];
+        int32_t deviations[NRF_CS_MAX_SAMPLES_PER_PAIR];
+
         pair->state = NRF_CS_PAIR_VALID;
         if (any_failure) {
             pair->scheduler_quality_flags |= NRF_CS_QUALITY_PARTIAL;
         }
-        pair->distance_mm = (int32_t)(
-            scheduler->distance_sum_mm[pair_index] / pair->valid_samples);
-        pair->confidence = (uint16_t)(
-            scheduler->confidence_sum[pair_index] / pair->valid_samples);
+
+        /* MAX-206: median + MAD outlier rejection over every accepted
+         * sample, instead of trusting whichever single sample came first. */
+        memcpy(sorted, scheduler->sample_distance_mm[pair_index], count * sizeof(sorted[0]));
+        nrf_cs_sort_i32(sorted, count);
+        const int32_t median = nrf_cs_sorted_median(sorted, count);
+        for (i = 0U; i < count; ++i) {
+            deviations[i] = nrf_cs_abs_i32(scheduler->sample_distance_mm[pair_index][i] - median);
+        }
+        nrf_cs_sort_i32(deviations, count);
+        const int32_t mad = nrf_cs_sorted_median(deviations, count);
+        /* 1.4826 x MAD estimates sigma for Gaussian range noise. */
+        const int32_t sigma = (int32_t)(((int64_t)mad * 14826 + 5000) / 10000);
+        int32_t band = 3 * sigma;
+        if (band < NRF_CS_MIN_OUTLIER_BAND_MM) {
+            band = NRF_CS_MIN_OUTLIER_BAND_MM;
+        }
+
+        int32_t kept[NRF_CS_MAX_SAMPLES_PER_PAIR];
+        size_t kept_count = 0U;
+        uint32_t kept_confidence_sum = 0U;
+        for (i = 0U; i < count; ++i) {
+            const int32_t sample = scheduler->sample_distance_mm[pair_index][i];
+            if (nrf_cs_abs_i32(sample - median) <= band) {
+                kept[kept_count++] = sample;
+                kept_confidence_sum += scheduler->sample_confidence[pair_index][i];
+            }
+        }
+        nrf_cs_sort_i32(kept, kept_count);
+
+        pair->distance_mm = nrf_cs_sorted_median(kept, kept_count);
+        pair->confidence = (uint16_t)(kept_confidence_sum / kept_count);
+        pair->spread_mm = count > 1U ? sigma : 0;
+        pair->rejected_samples = (uint8_t)(count - kept_count);
+        if (pair->rejected_samples > 0U) {
+            pair->scheduler_quality_flags |= NRF_CS_QUALITY_OUTLIER;
+        }
     } else if (any_disconnect) {
         pair->state = NRF_CS_PAIR_MISSING;
     } else {
@@ -269,8 +342,8 @@ nrf_cs_result_t nrf_cs_scheduler_start_cycle(
     scheduler->execution_count = 0U;
     scheduler->active = false;
     memset(scheduler->pairs, 0, sizeof(scheduler->pairs));
-    memset(scheduler->distance_sum_mm, 0, sizeof(scheduler->distance_sum_mm));
-    memset(scheduler->confidence_sum, 0, sizeof(scheduler->confidence_sum));
+    memset(scheduler->sample_distance_mm, 0, sizeof(scheduler->sample_distance_mm));
+    memset(scheduler->sample_confidence, 0, sizeof(scheduler->sample_confidence));
     memset(scheduler->executions, 0, sizeof(scheduler->executions));
     memset(&scheduler->active_step, 0, sizeof(scheduler->active_step));
 
@@ -360,12 +433,17 @@ nrf_cs_result_t nrf_cs_scheduler_complete_step(
     accepted_success = measurement->outcome == NRF_CS_OUTCOME_SUCCESS &&
                        measurement->confidence >= scheduler->policy.min_confidence;
     if (accepted_success) {
-        execution->terminal = true;
-        execution->succeeded = true;
         execution->last_failure = NRF_CS_FAILURE_NONE;
-        ++pair->valid_samples;
-        scheduler->distance_sum_mm[pair_index] += measurement->distance_mm;
-        scheduler->confidence_sum[pair_index] += measurement->confidence;
+        ++execution->successes;
+        execution->succeeded = true;
+        if (pair->valid_samples < NRF_CS_MAX_SAMPLES_PER_PAIR) {
+            scheduler->sample_distance_mm[pair_index][pair->valid_samples] = measurement->distance_mm;
+            scheduler->sample_confidence[pair_index][pair->valid_samples] = measurement->confidence;
+            ++pair->valid_samples;
+        }
+        if (execution->successes >= nrf_cs_samples_target(&scheduler->policy)) {
+            execution->terminal = true;
+        }
     } else {
         failure = nrf_cs_failure_from_outcome(measurement->outcome);
         if (measurement->outcome == NRF_CS_OUTCOME_SUCCESS) {
@@ -376,9 +454,11 @@ nrf_cs_result_t nrf_cs_scheduler_complete_step(
         pair->last_failure = failure;
         nrf_cs_record_failure_quality(pair, failure);
 
-        if (execution->attempts >= scheduler->policy.max_attempts) {
+        /* Only failed attempts consume the retry budget; the successes an
+         * execution already collected are kept (a partial sample set). */
+        if ((uint8_t)(execution->attempts - execution->successes) >= scheduler->policy.max_attempts) {
             execution->terminal = true;
-            execution->succeeded = false;
+            execution->succeeded = execution->successes > 0U;
         } else {
             pair->scheduler_quality_flags |= NRF_CS_QUALITY_HAD_RETRY;
         }

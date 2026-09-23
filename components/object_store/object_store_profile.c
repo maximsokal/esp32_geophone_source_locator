@@ -481,6 +481,19 @@ static void object_store_read_cs_pairs(
         out->confidence = (uint16_t)confidence->valuedouble;
         out->attempts = (uint16_t)attempts->valuedouble;
         out->valid_samples = (uint8_t)valid_samples->valuedouble;
+        /* Optional (MAX-206): absent in records written before the fields. */
+        cJSON *spread_mm = cJSON_GetObjectItemCaseSensitive(pair, "spread_mm");
+        cJSON *rejected_samples = cJSON_GetObjectItemCaseSensitive(pair, "rejected_samples");
+        out->spread_mm =
+            cJSON_IsNumber(spread_mm) && spread_mm->valuedouble >= 0.0 &&
+            spread_mm->valuedouble <= (double)INT32_MAX
+            ? (int32_t)spread_mm->valuedouble
+            : 0;
+        out->rejected_samples =
+            cJSON_IsNumber(rejected_samples) && rejected_samples->valuedouble >= 0.0 &&
+            rejected_samples->valuedouble <= 255.0
+            ? (uint8_t)rejected_samples->valuedouble
+            : 0U;
         ++count;
     }
     cs_pairs->pair_count = count;
@@ -1245,7 +1258,9 @@ esp_err_t object_store_set_cs_pairs(
             cJSON_AddNumberToObject(pair, "distance_mm", (double)pair_result->distance_mm) != NULL &&
             cJSON_AddNumberToObject(pair, "confidence", pair_result->confidence) != NULL &&
             cJSON_AddNumberToObject(pair, "attempts", pair_result->attempts) != NULL &&
-            cJSON_AddNumberToObject(pair, "valid_samples", pair_result->valid_samples) != NULL;
+            cJSON_AddNumberToObject(pair, "valid_samples", pair_result->valid_samples) != NULL &&
+            cJSON_AddNumberToObject(pair, "spread_mm", (double)pair_result->spread_mm) != NULL &&
+            cJSON_AddNumberToObject(pair, "rejected_samples", pair_result->rejected_samples) != NULL;
         if (ok) {
             cJSON_AddItemToArray(pairs, pair);
         } else {

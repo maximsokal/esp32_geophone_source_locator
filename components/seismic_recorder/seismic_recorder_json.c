@@ -211,7 +211,9 @@ static bool seismic_recorder_json_add_cs_pairs(
             cJSON_AddNumberToObject(pair_object, "distance_mm", (double)pair->distance_mm) == NULL ||
             cJSON_AddNumberToObject(pair_object, "confidence", pair->confidence) == NULL ||
             cJSON_AddNumberToObject(pair_object, "attempts", pair->attempts) == NULL ||
-            cJSON_AddNumberToObject(pair_object, "valid_samples", pair->valid_samples) == NULL
+            cJSON_AddNumberToObject(pair_object, "valid_samples", pair->valid_samples) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "spread_mm", (double)pair->spread_mm) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "rejected_samples", pair->rejected_samples) == NULL
         ) {
             return false;
         }
@@ -979,6 +981,19 @@ esp_err_t seismic_recorder_read_session_cs_pairs(
         out->confidence = (uint16_t)confidence->valuedouble;
         out->attempts = (uint16_t)attempts->valuedouble;
         out->valid_samples = (uint8_t)valid_samples->valuedouble;
+        /* Optional (MAX-206): absent in records written before the fields. */
+        cJSON *spread_mm = cJSON_GetObjectItemCaseSensitive(pair, "spread_mm");
+        cJSON *rejected_samples = cJSON_GetObjectItemCaseSensitive(pair, "rejected_samples");
+        out->spread_mm =
+            cJSON_IsNumber(spread_mm) && spread_mm->valuedouble >= 0.0 &&
+            spread_mm->valuedouble <= (double)INT32_MAX
+            ? (int32_t)spread_mm->valuedouble
+            : 0;
+        out->rejected_samples =
+            cJSON_IsNumber(rejected_samples) && rejected_samples->valuedouble >= 0.0 &&
+            rejected_samples->valuedouble <= 255.0
+            ? (uint8_t)rejected_samples->valuedouble
+            : 0U;
         ++count;
     }
     cs_pairs->pair_count = count;
