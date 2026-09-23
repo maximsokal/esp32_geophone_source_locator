@@ -55,7 +55,8 @@ esp_err_t localization_event_solve(
          * would quietly degrade TDOA precision.
          */
         const double arrival_time_us =
-            (double)channels[i].pick.arrival_sample_index *
+            ((double)channels[i].pick.arrival_sample_index +
+             (double)channels[i].pick.arrival_subsample_offset) *
             1.0e6 /
             (double)channels[i].sample_rate_hz;
 

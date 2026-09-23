@@ -235,3 +235,71 @@ bool localization_calculate_event_window(
     size_t *start_out,
     size_t *end_out
 );
+
+
+/* MAX-209: a pick's sub-sample onset position, in samples. */
+double localization_calculate_pick_sample_position(
+    const geophone_channel_pick_t *pick
+);
+
+/* Sub-sample-aware variant of localization_calculate_arrival_time_us(). */
+int64_t localization_calculate_arrival_time_us_at(
+    double sample_position,
+    uint32_t sample_rate_hz
+);
+
+/*
+ * MAX-209: physical consistency gate across channels. Two picks i, j are
+ * compatible when |t_i - t_j| <= distance(i, j) / v_min + tolerance_s, with
+ * v_min = propagation_speed_mps - propagation_speed_uncertainty_mps (or
+ * propagation_speed_mps when that is not positive): no single wave can
+ * reach two sensors further apart in time than their separation allows.
+ * Returns the largest subset of `candidate_mask` whose members are all
+ * pairwise compatible (ties: the subset with the smallest arrival-time
+ * span, then the lowest mask value). Channels outside the returned mask
+ * should be rejected as GEOPHONE_PICK_REJECTED_INCONSISTENT.
+ */
+uint32_t localization_calculate_consistent_pick_mask(
+    const double *arrival_time_s,
+    const localization_point3d_t *positions,
+    size_t channel_count,
+    uint32_t candidate_mask,
+    double propagation_speed_mps,
+    double propagation_speed_uncertainty_mps,
+    double tolerance_s
+);
+
+/*
+ * Minimum normalized correlation for a cross-correlation delay to replace
+ * the per-channel pick difference (MAX-209). Below it the two windows are
+ * not similar enough for the correlation peak to mean "same wavelet".
+ */
+#define LOCALIZATION_CALCULATE_XCORR_MIN_CORRELATION 0.7
+
+/* Largest change, in samples, cross-correlation may make to the picked
+ * relative delay; beyond it the correlation is assumed to have locked onto
+ * a neighbouring cycle of the wavelet. */
+#define LOCALIZATION_CALCULATE_XCORR_MAX_ADJUST_SAMPLES 2.0
+
+/*
+ * MAX-209: refines the relative delay of `channel` behind `reference`
+ * (both full-length, same sample_count) by cross-correlating equal windows
+ * [start, start + window + max_lag) with start = reference_pick -
+ * window / 2 (clamped). Succeeds only when the correlation peak reaches
+ * LOCALIZATION_CALCULATE_XCORR_MIN_CORRELATION and the sub-sample delay lies
+ * within max_adjust_samples of pick_delay_samples (the independent pick
+ * difference) -- a larger disagreement means the correlation locked onto a
+ * different cycle, and the picks are kept.
+ */
+bool localization_calculate_xcorr_relative_delay(
+    const float *reference,
+    const float *channel,
+    size_t sample_count,
+    size_t reference_pick_index,
+    double pick_delay_samples,
+    size_t window_samples,
+    size_t max_lag_samples,
+    double max_adjust_samples,
+    double *delay_samples_out
+);
+

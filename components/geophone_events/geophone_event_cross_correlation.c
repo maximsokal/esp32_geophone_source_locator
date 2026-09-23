@@ -5,6 +5,26 @@
 #include <stdint.h>
 
 
+static double correlation_at(
+    const float *channel_a,
+    const float *channel_b,
+    size_t sample_count,
+    ptrdiff_t lag
+)
+{
+    const size_t start = lag >= 0 ? 0u : (size_t)(-lag);
+    const size_t end =
+        lag >= 0 ? sample_count - (size_t)lag : sample_count;
+
+    double sum = 0.0;
+    for (size_t i = start; i < end; ++i) {
+        const size_t b_index = (size_t)((ptrdiff_t)i + lag);
+        sum += (double)channel_a[i] * (double)channel_b[b_index];
+    }
+    return sum;
+}
+
+
 bool geophone_event_cross_correlate(
     const float *channel_a,
     const float *channel_b,
@@ -56,25 +76,30 @@ bool geophone_event_cross_correlate(
     ptrdiff_t best_lag = 0;
 
     for (ptrdiff_t lag = -max_lag; lag <= max_lag; ++lag) {
-        const size_t start = lag >= 0 ? 0u : (size_t)(-lag);
-        const size_t end =
-            lag >= 0 ? sample_count - (size_t)lag : sample_count;
-
-        double sum = 0.0;
-        for (size_t i = start; i < end; ++i) {
-            const size_t b_index = (size_t)((ptrdiff_t)i + lag);
-            sum += (double)channel_a[i] * (double)channel_b[b_index];
-        }
-
-        const double correlation = sum / normalizer;
+        const double correlation = correlation_at(channel_a, channel_b, sample_count, lag) / normalizer;
         if (correlation > best_correlation) {
             best_correlation = correlation;
             best_lag = lag;
         }
     }
 
+    /* MAX-209: parabolic interpolation of the peak for sub-sample delay. */
+    double refined = (double)best_lag;
+    if (best_lag > -max_lag && best_lag < max_lag) {
+        const double left = correlation_at(channel_a, channel_b, sample_count, best_lag - 1) / normalizer;
+        const double right = correlation_at(channel_a, channel_b, sample_count, best_lag + 1) / normalizer;
+        const double denominator = left - 2.0 * best_correlation + right;
+        if (denominator < 0.0) {
+            const double shift = 0.5 * (left - right) / denominator;
+            if (shift > -1.0 && shift < 1.0) {
+                refined += shift;
+            }
+        }
+    }
+
     result->found = true;
     result->delay_samples = (int32_t)best_lag;
+    result->delay_refined_samples = refined;
     result->peak_correlation = (float)best_correlation;
     return true;
 }

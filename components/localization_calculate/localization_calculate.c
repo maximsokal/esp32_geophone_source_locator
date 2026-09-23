@@ -189,6 +189,100 @@ esp_err_t localization_calculate_run(
     heap_caps_free(frames);
     frames = NULL;
 
+    /* --- MAX-209: cross-channel physical consistency + xcorr refinement --- */
+
+    const uint32_t sample_rate_hz = session_summary.sample_rate_hz;
+    double max_sensor_distance_m = 0.0;
+    for (size_t a = 0U; a < OBJECT_STORE_POD_COUNT; ++a) {
+        for (size_t b = a + 1U; geometry.pods[a].computed && b < OBJECT_STORE_POD_COUNT; ++b) {
+            if (!geometry.pods[b].computed) {
+                continue;
+            }
+            const double dx = event_channels[a].sensor_position.x_m - event_channels[b].sensor_position.x_m;
+            const double dy = event_channels[a].sensor_position.y_m - event_channels[b].sensor_position.y_m;
+            const double dz = event_channels[a].sensor_position.z_m - event_channels[b].sensor_position.z_m;
+            const double distance = sqrt(dx * dx + dy * dy + dz * dz);
+            if (distance > max_sensor_distance_m) {
+                max_sensor_distance_m = distance;
+            }
+        }
+    }
+
+    {
+        double arrival_s[OBJECT_STORE_POD_COUNT] = { 0 };
+        localization_point3d_t gate_positions[OBJECT_STORE_POD_COUNT];
+        uint32_t accepted_mask = 0U;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            gate_positions[ch] = event_channels[ch].sensor_position;
+            if (event_channels[ch].pick.status == GEOPHONE_PICK_ACCEPTED) {
+                arrival_s[ch] =
+                    localization_calculate_pick_sample_position(&event_channels[ch].pick) /
+                    (double)sample_rate_hz;
+                accepted_mask |= (1U << ch);
+            }
+        }
+        /* 3 sigma of pick noise plus one sample of quantization. */
+        const double tolerance_s =
+            3.0 * config->timing_uncertainty_us / 1.0e6 + 1.0 / (double)sample_rate_hz;
+        const uint32_t consistent_mask = localization_calculate_consistent_pick_mask(
+            arrival_s, gate_positions, OBJECT_STORE_POD_COUNT, accepted_mask,
+            config->propagation_speed_mps, config->propagation_speed_uncertainty_mps,
+            tolerance_s
+        );
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            if ((accepted_mask & (1U << ch)) != 0U && (consistent_mask & (1U << ch)) == 0U) {
+                event_channels[ch].pick.status = GEOPHONE_PICK_REJECTED_INCONSISTENT;
+            }
+        }
+
+        /* Refine every other accepted pick's delay behind the earliest one
+         * by cross-correlation (sub-sample); kept only when the waveforms
+         * are similar and agree with the independent picks. */
+        size_t reference_channel = OBJECT_STORE_POD_COUNT;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            if (
+                event_channels[ch].pick.status == GEOPHONE_PICK_ACCEPTED &&
+                (reference_channel == OBJECT_STORE_POD_COUNT || arrival_s[ch] < arrival_s[reference_channel])
+            ) {
+                reference_channel = ch;
+            }
+        }
+        const double v_min =
+            config->propagation_speed_uncertainty_mps > 0.0 &&
+            config->propagation_speed_mps > config->propagation_speed_uncertainty_mps
+            ? config->propagation_speed_mps - config->propagation_speed_uncertainty_mps
+            : config->propagation_speed_mps;
+        const size_t max_lag_samples =
+            (size_t)ceil(max_sensor_distance_m / v_min * (double)sample_rate_hz) + 2U;
+
+        for (size_t ch = 0U; reference_channel < OBJECT_STORE_POD_COUNT && ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            if (ch == reference_channel || event_channels[ch].pick.status != GEOPHONE_PICK_ACCEPTED) {
+                continue;
+            }
+            const double reference_position =
+                localization_calculate_pick_sample_position(&event_channels[reference_channel].pick);
+            const double pick_delay =
+                localization_calculate_pick_sample_position(&event_channels[ch].pick) - reference_position;
+            double refined_delay = 0.0;
+            if (
+                localization_calculate_xcorr_relative_delay(
+                    channel_samples[reference_channel], channel_samples[ch], frame_count,
+                    event_channels[reference_channel].pick.arrival_sample_index,
+                    pick_delay, config->pick_config.snr_signal_window_samples,
+                    max_lag_samples, LOCALIZATION_CALCULATE_XCORR_MAX_ADJUST_SAMPLES,
+                    &refined_delay
+                ) &&
+                reference_position + refined_delay >= 0.0
+            ) {
+                const double position = reference_position + refined_delay;
+                const double index = ceil(position);
+                event_channels[ch].pick.arrival_sample_index = (size_t)index;
+                event_channels[ch].pick.arrival_subsample_offset = (float)(position - index);
+                event_channels[ch].pick.arrival_time_s = (float)(position / (double)sample_rate_hz);
+            }
+        }
+    }
+
     bool any_accepted = false;
     size_t reference_sample_index = 0U;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
@@ -289,8 +383,9 @@ esp_err_t localization_calculate_run(
 
         traveltime_picks[ch].observation.sensor_position = event_channels[ch].sensor_position;
         traveltime_picks[ch].observation.arrival_time_us = usable
-            ? localization_calculate_arrival_time_us(
-                  event_channels[ch].pick.arrival_sample_index, session_summary.sample_rate_hz
+            ? localization_calculate_arrival_time_us_at(
+                  localization_calculate_pick_sample_position(&event_channels[ch].pick),
+                  session_summary.sample_rate_hz
               )
             : 0;
         traveltime_picks[ch].weight = usable ? 1.0 : 0.0;
@@ -388,19 +483,6 @@ esp_err_t localization_calculate_run(
      * signal window + the array's largest moveout), not the whole recording,
      * which is dominated by background noise. Without an accepted pick there
      * is no event window, so the baseline is not attempted. */
-    double max_sensor_distance_m = 0.0;
-    for (size_t a = 0U; a < participant_position_count; ++a) {
-        for (size_t b = a + 1U; b < participant_position_count; ++b) {
-            const double dx = participant_positions[a].x_m - participant_positions[b].x_m;
-            const double dy = participant_positions[a].y_m - participant_positions[b].y_m;
-            const double dz = participant_positions[a].z_m - participant_positions[b].z_m;
-            const double distance = sqrt(dx * dx + dy * dy + dz * dz);
-            if (distance > max_sensor_distance_m) {
-                max_sensor_distance_m = distance;
-            }
-        }
-    }
-
     size_t energy_start = 0U;
     size_t energy_end = 0U;
     const bool energy_window_known =

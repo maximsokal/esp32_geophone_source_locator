@@ -450,3 +450,178 @@ bool localization_calculate_event_window(
         : reference_sample_index + (size_t)length;
     return true;
 }
+
+
+double localization_calculate_pick_sample_position(
+    const geophone_channel_pick_t *pick
+)
+{
+    if (pick == NULL) {
+        return 0.0;
+    }
+    return (double)pick->arrival_sample_index + (double)pick->arrival_subsample_offset;
+}
+
+
+int64_t localization_calculate_arrival_time_us_at(
+    double sample_position,
+    uint32_t sample_rate_hz
+)
+{
+    if (sample_rate_hz == 0U || !isfinite(sample_position) || sample_position < 0.0) {
+        return 0;
+    }
+    return (int64_t)llround(sample_position * 1.0e6 / (double)sample_rate_hz);
+}
+
+
+static bool picks_compatible(
+    const double *arrival_time_s,
+    const localization_point3d_t *positions,
+    size_t i,
+    size_t j,
+    double v_min,
+    double tolerance_s
+)
+{
+    const double dx = positions[i].x_m - positions[j].x_m;
+    const double dy = positions[i].y_m - positions[j].y_m;
+    const double dz = positions[i].z_m - positions[j].z_m;
+    const double max_dt = sqrt(dx * dx + dy * dy + dz * dz) / v_min + tolerance_s;
+    return fabs(arrival_time_s[i] - arrival_time_s[j]) <= max_dt;
+}
+
+
+uint32_t localization_calculate_consistent_pick_mask(
+    const double *arrival_time_s,
+    const localization_point3d_t *positions,
+    size_t channel_count,
+    uint32_t candidate_mask,
+    double propagation_speed_mps,
+    double propagation_speed_uncertainty_mps,
+    double tolerance_s
+)
+{
+    if (
+        arrival_time_s == NULL ||
+        positions == NULL ||
+        channel_count == 0U ||
+        channel_count > 16U ||
+        !(propagation_speed_mps > 0.0) ||
+        !(tolerance_s >= 0.0)
+    ) {
+        return 0U;
+    }
+
+    double v_min = propagation_speed_mps;
+    if (
+        isfinite(propagation_speed_uncertainty_mps) &&
+        propagation_speed_uncertainty_mps > 0.0 &&
+        propagation_speed_mps - propagation_speed_uncertainty_mps > 0.0
+    ) {
+        v_min = propagation_speed_mps - propagation_speed_uncertainty_mps;
+    }
+
+    const uint32_t all = (1U << channel_count) - 1U;
+    candidate_mask &= all;
+
+    uint32_t best_mask = 0U;
+    unsigned best_count = 0U;
+    double best_span = 0.0;
+
+    for (uint32_t subset = candidate_mask; ; subset = (subset - 1U) & candidate_mask) {
+        unsigned count = 0U;
+        bool consistent = true;
+        double earliest = 0.0;
+        double latest = 0.0;
+        for (size_t i = 0U; consistent && i < channel_count; ++i) {
+            if ((subset & (1U << i)) == 0U) {
+                continue;
+            }
+            if (count == 0U || arrival_time_s[i] < earliest) earliest = arrival_time_s[i];
+            if (count == 0U || arrival_time_s[i] > latest) latest = arrival_time_s[i];
+            ++count;
+            for (size_t j = i + 1U; j < channel_count; ++j) {
+                if (
+                    (subset & (1U << j)) != 0U &&
+                    !picks_compatible(arrival_time_s, positions, i, j, v_min, tolerance_s)
+                ) {
+                    consistent = false;
+                    break;
+                }
+            }
+        }
+
+        if (consistent && count > 0U) {
+            const double span = latest - earliest;
+            if (
+                count > best_count ||
+                (count == best_count && span < best_span) ||
+                (count == best_count && span == best_span && subset < best_mask)
+            ) {
+                best_mask = subset;
+                best_count = count;
+                best_span = span;
+            }
+        }
+
+        if (subset == 0U) {
+            break;
+        }
+    }
+
+    return best_mask;
+}
+
+
+bool localization_calculate_xcorr_relative_delay(
+    const float *reference,
+    const float *channel,
+    size_t sample_count,
+    size_t reference_pick_index,
+    double pick_delay_samples,
+    size_t window_samples,
+    size_t max_lag_samples,
+    double max_adjust_samples,
+    double *delay_samples_out
+)
+{
+    if (
+        reference == NULL ||
+        channel == NULL ||
+        delay_samples_out == NULL ||
+        window_samples == 0U ||
+        reference_pick_index >= sample_count ||
+        !isfinite(pick_delay_samples) ||
+        !(max_adjust_samples >= 0.0)
+    ) {
+        return false;
+    }
+
+    const size_t start =
+        reference_pick_index > window_samples / 2U ? reference_pick_index - window_samples / 2U : 0U;
+    size_t length = window_samples + max_lag_samples;
+    if (length > sample_count - start) {
+        length = sample_count - start;
+    }
+    if (max_lag_samples >= length) {
+        return false;
+    }
+
+    const geophone_cross_correlation_config_t config = { .max_lag_samples = max_lag_samples };
+    geophone_cross_correlation_result_t result;
+    if (
+        !geophone_event_cross_correlate(
+            reference + start, channel + start, length, &config, &result
+        ) ||
+        !result.found ||
+        (double)result.peak_correlation < LOCALIZATION_CALCULATE_XCORR_MIN_CORRELATION ||
+        fabs(result.delay_refined_samples - pick_delay_samples) > max_adjust_samples
+    ) {
+        return false;
+    }
+
+    *delay_samples_out = result.delay_refined_samples;
+    return true;
+}
+
