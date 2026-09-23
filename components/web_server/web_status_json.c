@@ -272,6 +272,24 @@ static bool web_status_json_add_acquisition(
             "stream_stuck",
             source_snapshot_available && source_snapshot->serial_stream_stuck
         ) != NULL &&
+        /* MAX-242: AD7606 +5 V rail interlock. */
+        cJSON_AddStringToObject(
+            serial,
+            "power_gate",
+            source_snapshot_available && source_snapshot->power_gate != NULL
+                ? source_snapshot->power_gate
+                : "unknown"
+        ) != NULL &&
+        cJSON_AddBoolToObject(
+            serial,
+            "power_fault_latched",
+            source_snapshot_available && source_snapshot->power_fault_latched
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            serial,
+            "power_fault_rail_v",
+            source_snapshot_available ? (double)source_snapshot->power_fault_rail_v : 0.0
+        ) != NULL &&
         cJSON_AddStringToObject(serial, "pattern", pattern) != NULL &&
         cJSON_AddNumberToObject(
             serial,

@@ -47,6 +47,14 @@ esp_err_t ad7606_driver_init(void);
 
 void ad7606_driver_deinit(void);
 
+/*
+ * MAX-242: release RESET, CONVST, CS and SCLK to Hi-Z inputs without
+ * internal pulls (CS stays deselected through its external pull-up to the
+ * AD7606 VIO). Used by deinit, by every init failure path and when the
+ * AD7606 +5 V rail is lost; safe to call at any time.
+ */
+void ad7606_driver_enter_safe_state(void);
+
 esp_err_t ad7606_driver_read(
     ad7606_sample_t *sample
 );

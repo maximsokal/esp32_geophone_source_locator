@@ -39,6 +39,21 @@ static bool s_starting =
 static bool s_stop_requested =
     false;
 
+/* MAX-242: last published per-rail readings, guarded by s_state_lock. */
+static ina3221_monitor_rail_t s_rails[INA3221_POLICY_CHANNEL_COUNT];
+
+static void ina3221_monitor_store_rail(size_t index, bool valid, float voltage_v, float current_a)
+{
+    const int64_t now_us = esp_timer_get_time();
+    portENTER_CRITICAL(&s_state_lock);
+    s_rails[index].available = true;
+    s_rails[index].valid = valid;
+    s_rails[index].bus_voltage_v = voltage_v;
+    s_rails[index].current_a = current_a;
+    s_rails[index].sampled_at_us = now_us;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
 static int64_t s_fast_sampling_deadline_us =
     0;
 
@@ -131,6 +146,7 @@ static void ina3221_monitor_publish_invalid(void)
             0.0f,
             false
         );
+        ina3221_monitor_store_rail(i, false, 0.0f, 0.0f);
     }
 
     (void)device_status_set_power_battery(
@@ -162,6 +178,9 @@ static void ina3221_monitor_publish(
             channels[i].bus_voltage_v,
             channels[i].current_a,
             channels[i].valid
+        );
+        ina3221_monitor_store_rail(
+            i, channels[i].valid, channels[i].bus_voltage_v, channels[i].current_a
         );
     }
 
@@ -556,3 +575,19 @@ void ina3221_monitor_stop(void)
     s_stop_requested = false;
     portEXIT_CRITICAL(&s_state_lock);
 }
+
+
+esp_err_t ina3221_monitor_get_rail(
+    size_t channel_index,
+    ina3221_monitor_rail_t *rail_out
+)
+{
+    if (rail_out == NULL || channel_index >= INA3221_POLICY_CHANNEL_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    *rail_out = s_rails[channel_index];
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
+

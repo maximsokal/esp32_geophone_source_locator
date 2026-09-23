@@ -230,6 +230,10 @@ export interface DeviceAcquisitionStatus {
     quality?: string;
     stream_state?: string;
     stream_stuck?: boolean;
+    /** MAX-242 AD7606 +5 V rail interlock: 'ok' | 'unverified' | 'rail_low' | 'unknown'. */
+    power_gate?: string;
+    power_fault_latched?: boolean;
+    power_fault_rail_v?: number;
     suspicious_streak: number;
     repeated_frame_streak: number;
     all_zero_frames: number;

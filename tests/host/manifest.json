@@ -195,6 +195,17 @@
       ]
     },
     {
+      "name": "ad7606_power_policy",
+      "sources": [
+        "components/ad7606_acquisition/ad7606_power_policy.c",
+        "components/ad7606_acquisition/tests/ad7606_power_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_acquisition/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "ad7606_serial",
       "sources": [
         "components/ad7606_driver/ad7606_serial.c",

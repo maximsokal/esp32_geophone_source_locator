@@ -33,6 +33,21 @@ menu "Seismic Acquisition"
         range 100 5000
         default 500
 
+    config SEISMIC_AD7606_RAIL_INTERLOCK
+        bool
+        prompt "AD7606 +5 V rail interlock via INA3221 CH3" if SEISMIC_SOURCE_AD7606
+        default y
+        help
+            MAX-242 firmware layer on top of the LD1117V33 VIO hardware fix.
+            Before starting, a fresh INA3221 CH3 reading of the AD7606 +5 V
+            rail below 4.75 V refuses the start without driving any AD7606
+            pin; while running, two consecutive fresh readings below 4.50 V
+            stop acquisition, release every AD7606 pin to Hi-Z and latch a
+            power fault. Missing or stale INA3221 data only warns.
+            Disable ONLY if the AD7606 +5 V supply is not routed through
+            INA3221 channel 3 (otherwise the interlock would see 0 V and
+            refuse every start).
+
     config SEISMIC_RECORDER_PSRAM_CACHE_KB
         int "Recorder PSRAM write-behind cache (KiB)"
         range 256 4096
