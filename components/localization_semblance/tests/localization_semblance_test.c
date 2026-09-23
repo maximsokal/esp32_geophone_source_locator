@@ -89,6 +89,31 @@ typedef struct
 } synthetic_recording_t;
 
 
+static size_t earliest_arrival_index(
+    const localization_point3d_t *sensors,
+    size_t sensor_count,
+    localization_point3d_t source,
+    double speed_mps,
+    uint32_t sample_rate_hz,
+    size_t emission_index
+)
+{
+    size_t earliest = SIZE_MAX;
+    for (size_t ch = 0u; ch < sensor_count; ++ch) {
+        const double dx = source.x_m - sensors[ch].x_m;
+        const double dy = source.y_m - sensors[ch].y_m;
+        const double dz = source.z_m - sensors[ch].z_m;
+        const size_t arrival = emission_index + (size_t)llround(
+            (sqrt(dx * dx + dy * dy + dz * dz) / speed_mps) * (double)sample_rate_hz
+        );
+        if (arrival < earliest) {
+            earliest = arrival;
+        }
+    }
+    return earliest;
+}
+
+
 static synthetic_recording_t build_recording(
     const localization_point3d_t *sensors,
     size_t sensor_count,
@@ -107,7 +132,10 @@ static synthetic_recording_t build_recording(
 
     const size_t reference_sample_index =
         (size_t)llround(emission_s * (double)sample_rate_hz);
-    *out_reference_sample_index = reference_sample_index;
+    /* The backend's reference is the earliest observed arrival (MAX-207),
+     * exactly what localization_calculate derives from real picks. */
+    *out_reference_sample_index =
+        earliest_arrival_index(sensors, sensor_count, source, speed_mps, sample_rate_hz, reference_sample_index);
 
     for (size_t ch = 0u; ch < sensor_count; ++ch) {
         const double dx = source.x_m - sensors[ch].x_m;
@@ -330,7 +358,10 @@ static void test_channel_amplitude_differences_do_not_prevent_recovery(void)
     };
     const localization_semblance_config_t config = {
         .propagation_speed_mps = s_speed_mps,
-        .reference_sample_index = reference_sample_index,
+        .reference_sample_index = earliest_arrival_index(
+            s_sensors_planar, 4u, s_source_planar, s_speed_mps,
+            s_sample_rate_hz, reference_sample_index
+        ),
         .window_half_span_samples = 15u,
         .refine_divisor = 5u
     };
@@ -417,7 +448,10 @@ static void test_weaker_echo_does_not_hijack_the_estimate(void)
     };
     const localization_semblance_config_t config = {
         .propagation_speed_mps = s_speed_mps,
-        .reference_sample_index = reference_sample_index,
+        .reference_sample_index = earliest_arrival_index(
+            s_sensors_planar, 4u, s_source_planar, s_speed_mps,
+            s_sample_rate_hz, reference_sample_index
+        ),
         .window_half_span_samples = 15u,
         .refine_divisor = 5u
     };
@@ -443,6 +477,51 @@ static void test_weaker_echo_does_not_hijack_the_estimate(void)
     for (size_t ch = 0u; ch < 4u; ++ch) {
         free(buffers[ch]);
     }
+}
+
+
+/* MAX-207 regression: the orchestrator anchors on the EARLIEST observed
+ * arrival. For this source the minimum travel time (~1.53 m / 340 m/s,
+ * ~22 samples at 5 kHz) exceeds the +-15-sample window, so adding the
+ * absolute travel time again (the pre-MAX-207 formula) would place every
+ * candidate's windows past the onset of the nearest sensor. */
+static void test_earliest_arrival_anchor_recovers_off_center_source(void)
+{
+    static const localization_point3d_t outside_source = { 2.9, 2.8, 0.0 };
+    const size_t buffer_len = s_buffer_len;
+    size_t reference_sample_index = 0u;
+    synthetic_recording_t recording = build_recording(
+        s_sensors_planar, 4u, outside_source, s_speed_mps, s_emission_s,
+        s_sample_rate_hz, s_pulse_width, buffer_len, &reference_sample_index
+    );
+
+    const localization_semblance_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 0.0 },
+        .step_m = 0.5
+    };
+    const localization_semblance_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .reference_sample_index = reference_sample_index,
+        .window_half_span_samples = 15u,
+        .refine_divisor = 5u
+    };
+
+    localization_semblance_result_t result;
+    assert(
+        localization_semblance_search(recording.channels, 4u, &bounds, &config, &result) ==
+        ESP_OK
+    );
+    assert(result.found);
+    const double error_m = position_error_m(result.best_position, outside_source);
+    printf(
+        "[MAX-207] earliest-arrival anchor, off-center source: error=%.4f m semblance=%.4f\n",
+        error_m, result.best_semblance
+    );
+    assert(error_m < 0.3);
+    assert(result.best_semblance > 0.5);
+
+    free_recording(&recording);
 }
 
 
@@ -653,6 +732,7 @@ int main(void)
     test_3d_search_recovers_known_source();
     test_channel_amplitude_differences_do_not_prevent_recovery();
     test_weaker_echo_does_not_hijack_the_estimate();
+    test_earliest_arrival_anchor_recovers_off_center_source();
     test_rejects_too_few_channels();
     test_rejects_mismatched_sample_rate();
     test_rejects_invalid_config_and_null_arguments();

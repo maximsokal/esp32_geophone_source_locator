@@ -59,18 +59,20 @@ typedef struct
 {
     double propagation_speed_mps;
 
-    /* An approximate "event window center" shared by all channels (e.g.
-     * derived from the earliest accepted geophone_events pick). This
-     * backend never invents this reference itself -- without it, there is
-     * no way to know which few hundred milliseconds of a long recording to
-     * search. */
+    /* The EARLIEST observed arrival across all channels (e.g. the earliest
+     * accepted geophone_events pick) -- an arrival time, not the unknown
+     * emission time. This backend never invents this reference itself --
+     * without it, there is no way to know which few hundred milliseconds of
+     * a long recording to search. */
     size_t reference_sample_index;
 
     /* Each candidate's analysis window is
-     * [reference_sample_index + predicted_shift - window_half_span_samples,
-     *  reference_sample_index + predicted_shift + window_half_span_samples],
-     * per channel, where predicted_shift is that channel's whole-sample
-     * travel-time-to-the-candidate rounded to the nearest sample. */
+     * [reference_sample_index + (shift_i - min_j shift_j) - window_half_span_samples,
+     *  reference_sample_index + (shift_i - min_j shift_j) + window_half_span_samples],
+     * per channel, where shift_i is that channel's whole-sample
+     * travel-time-to-the-candidate rounded to the nearest sample. Only the
+     * differential delay is added (MAX-207): the reference already contains
+     * the travel time to the nearest sensor. */
     size_t window_half_span_samples;
 
     /* Coarse pass uses search_bounds.step_m; the refinement pass searches
