@@ -628,6 +628,7 @@ export function registerAndMergeScanContinuation(
     occupancyBridgeRescanComponentCount: base.occupancyBridgeRescanComponentCount + extension.occupancyBridgeRescanComponentCount,
     occupancyBridgeEvidenceTruncated: base.occupancyBridgeEvidenceTruncated || extension.occupancyBridgeEvidenceTruncated,
     occupancyCellsSaturated: Boolean(base.occupancyCellsSaturated) || Boolean(extension.occupancyCellsSaturated),
+    occupancyFineVoxelSizeMeters: base.occupancyFineVoxelSizeMeters ?? extension.occupancyFineVoxelSizeMeters,
     occupancyDroppedCellUpdates: (base.occupancyDroppedCellUpdates ?? 0) + (extension.occupancyDroppedCellUpdates ?? 0),
     ...tsdf,
     manualControlPoints,

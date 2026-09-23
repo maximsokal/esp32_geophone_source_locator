@@ -368,9 +368,63 @@ static void test_scan_rejects_unknown_session_before_file_access(void)
     remove_layout();
 }
 
+static bool save_kind(const char *query, const unsigned char *body, size_t length)
+{
+    char response[512] = {0};
+    httpd_req_t request = make_request(query, body, length, response, sizeof(response));
+    bool handled = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
+    assert(handled);
+    return strstr(response, "\"ok\":true") != NULL;
+}
+
+static size_t load_kind(const char *query, char *response, size_t capacity)
+{
+    httpd_req_t request = make_request(query, NULL, 0U, response, capacity);
+    bool handled = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
+    assert(handled);
+    return request.response_length;
+}
+
+/* MAX-162: the compact occupancy artifact lives next to the scan in the same
+ * session directory, is stored/loaded independently via kind=occupancy, and
+ * is deleted together with the scan it was derived from. */
+static void test_occupancy_kind_is_stored_beside_the_scan(void)
+{
+    make_layout();
+    const unsigned char scan[] = {1U, 2U, 3U};
+    const unsigned char occupancy[] = {'G', 'O', 'C', 'C', 9U};
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, sizeof(occupancy)));
+
+    char response[512] = {0};
+    assert(load_kind("scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001", response, sizeof(response)) == sizeof(occupancy));
+    assert(memcmp(response, occupancy, sizeof(occupancy)) == 0);
+    memset(response, 0, sizeof(response));
+    assert(load_kind("scan=load&object_id=OBJ_0001&session_id=S000001", response, sizeof(response)) == sizeof(scan));
+    assert(memcmp(response, scan, sizeof(scan)) == 0);
+
+    /* Deleting the scan also removes the occupancy derived from it. */
+    assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
+    memset(response, 0, sizeof(response));
+    httpd_req_t request = make_request(
+        "scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response)
+    );
+    bool handled = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "404 Not Found") == 0);
+
+    /* Unknown kinds are rejected; oversized occupancy is refused. */
+    assert(!save_kind("scan=save&kind=bogus&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+    remove_layout();
+}
+
 int main(void)
 {
     test_scan_save_and_chunked_load_round_trip();
     test_scan_rejects_unknown_session_before_file_access();
+    test_occupancy_kind_is_stored_beside_the_scan();
     return 0;
 }

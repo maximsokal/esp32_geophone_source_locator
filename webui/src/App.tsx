@@ -6,7 +6,9 @@ import {
   deleteObjectScanArtifact,
   loadObjectScanArtifact,
   saveObjectScanArtifact,
+  saveSessionOccupancyArtifact,
 } from './api/deviceApi';
+import { encodeOccupancySolverArtifact, occupancyCrc32 } from './xr/occupancySolverArtifact';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
@@ -404,6 +406,29 @@ export default function App({ objectId, sessionId }: AppProps) {
           operatorEdges: snapshot.operatorEdges.length,
         });
         void clientDiagnostics.flush();
+
+        // MAX-162: the compact occupancy for ESP32-side localization, bound
+        // to exactly this saved scan by its CRC. Best-effort: the scan itself
+        // is already safely stored. No sensor<->scan registration exists yet
+        // (MAX-145), so the ESP32 keeps the constraint disabled (fail closed).
+        try {
+          const occupancy = encodeOccupancySolverArtifact(snapshot, {
+            frameId: `scan-crc32:${occupancyCrc32(artifact).toString(16).padStart(8, '0')}`,
+            createdAtMs: Date.now(),
+            registration: null,
+          });
+          void saveSessionOccupancyArtifact(objectId, sessionId, occupancy).then(
+            () => clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId, bytes: occupancy.byteLength }),
+            (reason) => clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {
+              objectId, sessionId, error: reason instanceof Error ? reason.message : String(reason),
+            }),
+          );
+        }
+        catch (reason) {
+          clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {
+            objectId, sessionId, stage: 'encode', error: reason instanceof Error ? reason.message : String(reason),
+          });
+        }
       },
       (reason) => {
         if (generation !== storageGeneration.current) return;
