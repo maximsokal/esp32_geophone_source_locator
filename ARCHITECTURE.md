@@ -505,6 +505,26 @@ address       0x40 (A0 tied to GND)
 
 `sensor_bus` is the sole application owner of I2C0 and configures the shared bus at 100 kHz through `espressif/i2c_bus`. `ina3221_monitor` borrows the INA3221 device handle at address `0x40`; it never creates or deletes the bus. INA3221 runs continuous shunt+bus conversion on all three channels with hardware averaging x16 and 1.1 ms conversion time. A low-priority Core 0 task publishes one status update per second. Missing/faulty INA3221 hardware invalidates power telemetry and is retried without rebooting the device. The same bus may also expose a single discovered TCA9548A at `0x70..0x77`; `sensor_bus` owns its device handle, while `nrf_topology_service` borrows it and exclusively performs verified one-hot channel selection/close for MAIN/REMOTE topology and sensor transactions. The nRF runtime addresses are discovery `0x30`, MAIN `0x31` and selected REMOTE `0x32`.
 
+#### I2C pull-ups over the TCA9548A / RJ45 runs (MAX-214 - open HIL item)
+
+Today the only pull-ups on the upstream GPIO9/GPIO10 bus are the ESP32-S3
+internal ones (~45 kOhm typical); the nRF upstream TWIS pins deliberately have
+none (MAX-116), and no pull-ups are documented on the TCA9548A downstream
+channels. TI sizes each bus segment with
+
+```text
+Rp(max) = tr(max) / (0.8473 * Cb)        Standard-mode: tr(max) = 1 us
+```
+
+For an estimated Cb ~= 300 pF per 5 m RJ45 channel: 45 kOhm gives tr ~= 11.4 us
+(out of spec), 4.7 kOhm ~= 1.19 us (still slightly out), Rp(max) ~= 3.9 kOhm.
+Until measured, treat 2.2-3.3 kOhm to 3.3 V on EACH downstream channel as the
+starting point (keep total sink current <= 3 mA), then verify tr and VOL at the
+far end with an oscilloscope. NXP PCA9615 (differential I2C, full spec to 3 m)
+or a lower bus clock is the fallback for 5 m runs. Pull-ups must never feed an
+unpowered node (MAX-108/MAX-155). Record the measured Cb, chosen Rp and
+measured tr here.
+
 ### Application events and input ownership
 
 `components/app_events` owns one ESP-IDF `esp_event` user loop (`APP_EVENT`) with
@@ -563,6 +583,15 @@ GPIO15      -> TFT DC
 GPIO16      -> TFT RESET
 GPIO17      -> SD CS
 ```
+
+GPIO13 is shared by the SD card MISO and the ILI9341 SDO, but no production
+code ever reads the display (MAX-215). If the TFT module allows it, leave its
+SDO unconnected so the two drivers can never contend on MISO. `spi_bus`
+drives TFT_CS/SD_CS high early with internal pulls disabled; during
+reset/boot before that, both CS lines are defined only if the modules carry
+their own pull-ups -- if they do not, fit ~10 kOhm to 3.3 V on each (the SD
+spec expects a CS pull-up). Record the module check here; do not attribute
+SD faults to this without a measurement.
 
 The current source sets the SD runtime ceiling to `SDMMC_FREQ_DEFAULT` (20 MHz), after 400 kHz discovery. This replaces the older 2 MHz setting in this document; physical stability on the current assembly still requires a separate hardware check.
 
