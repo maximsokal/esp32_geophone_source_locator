@@ -214,7 +214,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
               <dt>Pod {pod.pod}</dt>
               <dd>
                 {pod.computed
-                  ? `${formatMm(pod.x_mm)}, ${formatMm(pod.y_mm)}, ${formatMm(pod.z_mm)} · ${pod.leveled ? 'level' : 'not level'}`
+                  ? `${formatMm(pod.x_mm)}, ${formatMm(pod.y_mm)}, ${formatMm(pod.z_mm)} · ${pod.leveled ? 'level' : 'not level'}` +
+                    (pod.residual_mm !== undefined ? ` · CS residual ${formatMm(pod.residual_mm)}` : '')
                   : 'not participating'}
               </dd>
             </div>

@@ -27,6 +27,7 @@
       "name": "seismic_recorder_geometry_policy",
       "sources": [
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "tests/host/seismic_recorder_geometry_policy_test.c"
       ],
       "include_dirs": [
@@ -37,7 +38,8 @@
         "components/object_format/include",
         "nRF54L15/include",
         "tests/host/stubs/seismic_recorder_start"
-      ]
+      ],
+      "libraries": ["m"]
     }
   ]
 }

@@ -35,13 +35,34 @@ typedef struct {
     int32_t x_mm;
     int32_t y_mm;
     int32_t z_mm;
+    /* Largest |solved 3D distance - measured CS distance| over every valid
+     * pair between this node and another solved node (0 for an unsolved
+     * node or one with no such pair). */
+    int32_t residual_mm;
 } nrf_geometry_node_position_t;
 
 #define NRF_GEOMETRY_MAX_NODES NRF_CS_MAX_NODES
 
+/*
+ * Distance-consistency tolerance (MAX-205), about 2.5x a typical single
+ * Channel Sounding range error. Used for three decisions: a pair whose slant
+ * distance is shorter than the nodes' height difference by more than this
+ * is physically impossible and never used; two reference circles that miss
+ * each other by at most this are treated as tangent (noise), by more as
+ * inconsistent; and a pair whose solved distance disagrees with its
+ * measurement by more than this counts as inconsistent.
+ */
+#define NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM 750
+
 typedef struct {
     size_t node_count;
     nrf_geometry_node_position_t nodes[NRF_GEOMETRY_MAX_NODES];
+    /* Max residual_mm over every solved node. */
+    int32_t max_residual_mm;
+    /* Valid pairs that are physically impossible (slant < |dz| - tolerance)
+     * or, between two solved nodes, disagree with the solved layout by more
+     * than NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM. */
+    size_t inconsistent_pair_count;
 } nrf_geometry_solution_t;
 
 typedef enum {
@@ -62,6 +83,17 @@ typedef enum {
  * Nodes with no path of valid pairs back to MAIN through already-solved
  * nodes are reported with solved == false (x_mm/y_mm/z_mm left at 0), not
  * silently dropped -- the caller decides whether that blocks the gate.
+ *
+ * A node is also left unsolved (never placed by an arbitrary fallback) when
+ * its position is not determined by its references (MAX-205):
+ *   - only one usable reference once the layout's rotation is already fixed
+ *     (the very first node placed after MAIN defines +X and is the only
+ *     single-reference placement allowed);
+ *   - exactly two references, a genuine mirror ambiguity, and the layout's
+ *     reflection is already fixed (the first two-reference placement defines
+ *     +Y and is the only one resolved by convention);
+ *   - reference circles that miss each other by more than the tolerance, or
+ *     a placement that disagrees with any reference by more than it.
  */
 nrf_geometry_result_t nrf_geometry_solver_solve(
     const nrf_geometry_node_input_t *inputs,

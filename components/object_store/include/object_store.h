@@ -46,6 +46,10 @@ typedef struct
     int32_t x_mm;
     int32_t y_mm;
     int32_t z_mm;
+    /* MAX-205: largest |solved - measured| CS distance over this pod's
+     * valid pairs in the solve that produced x/y/z (0 when unknown, e.g. a
+     * profile written before this field existed). */
+    int32_t residual_mm;
     uint64_t computed_at_ms;
 } object_store_pod_geometry_t;
 
