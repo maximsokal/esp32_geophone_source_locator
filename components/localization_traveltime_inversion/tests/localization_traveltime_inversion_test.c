@@ -89,7 +89,8 @@ static void test_planar_search_recovers_known_source_in_2d(void)
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = s_timing_uncertainty_us,
-        .refine_divisor = 10u
+        .refine_divisor = 10u,
+        .retain_surface = true
     };
 
     localization_traveltime_result_t result;
@@ -143,7 +144,8 @@ static void test_3d_search_recovers_known_source(void)
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = s_timing_uncertainty_us,
-        .refine_divisor = 10u
+        .refine_divisor = 10u,
+        .retain_surface = true
     };
 
     localization_traveltime_result_t result;
@@ -196,7 +198,8 @@ static void test_insufficient_picks_after_weighting_is_reported(void)
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = s_timing_uncertainty_us,
-        .refine_divisor = 10u
+        .refine_divisor = 10u,
+        .retain_surface = true
     };
 
     localization_traveltime_result_t result;
@@ -249,7 +252,8 @@ static void test_down_weighted_bad_pick_is_excluded_from_hijacking_the_estimate(
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = s_timing_uncertainty_us,
-        .refine_divisor = 10u
+        .refine_divisor = 10u,
+        .retain_surface = true
     };
 
     localization_traveltime_result_t corrupted_result;
@@ -315,7 +319,8 @@ static void test_surface_has_real_per_candidate_variation(void)
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = 2000.0,
-        .refine_divisor = 10u
+        .refine_divisor = 10u,
+        .retain_surface = true
     };
 
     localization_traveltime_result_t result;
@@ -386,7 +391,8 @@ static void test_extreme_int64_arrival_difference_is_safe(void)
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = s_timing_uncertainty_us,
-        .refine_divisor = 2u
+        .refine_divisor = 2u,
+        .retain_surface = true
     };
     localization_traveltime_result_t result;
 
@@ -423,7 +429,8 @@ static void test_rejects_invalid_config_and_null_arguments(void)
     const localization_traveltime_config_t config = {
         .propagation_speed_mps = s_speed_mps,
         .timing_uncertainty_us = s_timing_uncertainty_us,
-        .refine_divisor = 10u
+        .refine_divisor = 10u,
+        .retain_surface = true
     };
 
     localization_traveltime_result_t result;
@@ -532,8 +539,136 @@ static void test_rejects_invalid_config_and_null_arguments(void)
 }
 
 
+/* MAX-208: the production search box for a 5x5 m 3D array at a 0.1 m step
+ * was X=122, Y=122, Z=72 = 1,071,648 candidates (~49 MiB with a retained
+ * surface) -- guaranteed ESP_ERR_NO_MEM on 8 MiB PSRAM. The streaming search
+ * must solve it with no surface and within the candidate budget. */
+static const localization_point3d_t s_sensors_5x5[4] = {
+    { 0.0, 0.0, 0.0 },
+    { 5.0, 0.0, 0.2 },
+    { 0.0, 5.0, -0.1 },
+    { 5.0, 5.0, 0.3 }
+};
+
+static void fill_picks_5x5(localization_traveltime_pick_t picks[4], localization_point3d_t source)
+{
+    for (size_t i = 0u; i < 4u; ++i) {
+        picks[i] = (localization_traveltime_pick_t) {
+            .observation = {
+                .sensor_position = s_sensors_5x5[i],
+                .arrival_time_us = true_arrival_time_us(
+                    s_sensors_5x5[i], source, s_speed_mps, s_emission_time_us
+                )
+            },
+            .weight = 1.0
+        };
+    }
+}
+
+static const localization_traveltime_search_bounds_t s_bounds_5x5 = {
+    .min_corner = { -3.5355, -3.5355, -3.6355 },
+    .max_corner = { 8.5355, 8.5355, 3.8355 },
+    .step_m = 0.1
+};
+
+static void test_realistic_3d_grid_streams_within_budget(void)
+{
+    const localization_point3d_t source = { 2.0, 3.0, -1.0 };
+    localization_traveltime_pick_t picks[4];
+    fill_picks_5x5(picks, source);
+
+    const localization_traveltime_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .timing_uncertainty_us = s_timing_uncertainty_us,
+        .refine_divisor = 4u,
+    };
+    localization_traveltime_result_t result;
+    assert(localization_traveltime_search(picks, 4u, &s_bounds_5x5, &config, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_TRAVELTIME_SOLVED);
+    assert(result.surface == NULL && result.surface_count == 0u);
+    /* 1.07 M candidates exceed the default 200k budget: the step grows. */
+    assert(result.coarse_step_m_used > 0.1);
+
+    const double dx = result.best_position.x_m - source.x_m;
+    const double dy = result.best_position.y_m - source.y_m;
+    const double horizontal_error_m = sqrt(dx * dx + dy * dy);
+    TEST_PRINTF(
+        "[MAX-208] streaming 5x5 m 3D: step_used=%.2f m best=(%.2f,%.2f,%.2f) horizontal_error=%.4f m\n",
+        result.coarse_step_m_used, result.best_position.x_m, result.best_position.y_m,
+        result.best_position.z_m, horizontal_error_m
+    );
+    /* The fine pass restores sub-coarse-step horizontal resolution. Depth
+     * SIGN is not asserted: a near-coplanar surface array cannot tell a
+     * source below it from its mirror above it (the MAX-211 below-surface
+     * search policy handles that, not this backend). */
+    assert(horizontal_error_m < 0.25);
+}
+
+static void test_retained_surface_is_capped(void)
+{
+    const localization_point3d_t source = { 2.0, 3.0, -1.0 };
+    localization_traveltime_pick_t picks[4];
+    fill_picks_5x5(picks, source);
+
+    const localization_traveltime_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .timing_uncertainty_us = s_timing_uncertainty_us,
+        .refine_divisor = 4u,
+        .retain_surface = true
+    };
+    localization_traveltime_result_t result;
+    assert(localization_traveltime_search(picks, 4u, &s_bounds_5x5, &config, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_TRAVELTIME_SOLVED);
+    assert(result.surface != NULL);
+    assert(result.surface_count <= LOCALIZATION_TRAVELTIME_MAX_SURFACE_CANDIDATES);
+    free(result.surface);
+}
+
+static void test_streaming_matches_retained_on_small_grid(void)
+{
+    localization_traveltime_pick_t picks[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        picks[i] = (localization_traveltime_pick_t) {
+            .observation = {
+                .sensor_position = s_sensors4[i],
+                .arrival_time_us = true_arrival_time_us(
+                    s_sensors4[i], s_source3d, s_speed_mps, s_emission_time_us
+                )
+            },
+            .weight = 1.0
+        };
+    }
+    const localization_traveltime_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 4.0 },
+        .step_m = 1.0
+    };
+    localization_traveltime_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .timing_uncertainty_us = s_timing_uncertainty_us,
+        .refine_divisor = 10u,
+        .retain_surface = true
+    };
+    localization_traveltime_result_t retained;
+    assert(localization_traveltime_search(picks, 4u, &bounds, &config, &retained) == ESP_OK);
+    config.retain_surface = false;
+    localization_traveltime_result_t streamed;
+    assert(localization_traveltime_search(picks, 4u, &bounds, &config, &streamed) == ESP_OK);
+
+    assert(streamed.surface == NULL);
+    assert(streamed.coarse_step_m_used == 1.0 && retained.coarse_step_m_used == 1.0);
+    assert(streamed.best_position.x_m == retained.best_position.x_m);
+    assert(streamed.best_position.y_m == retained.best_position.y_m);
+    assert(streamed.best_position.z_m == retained.best_position.z_m);
+    free(retained.surface);
+}
+
+
 int main(void)
 {
+    test_realistic_3d_grid_streams_within_budget();
+    test_retained_surface_is_capped();
+    test_streaming_matches_retained_on_small_grid();
     test_planar_search_recovers_known_source_in_2d();
     test_3d_search_recovers_known_source();
     test_insufficient_picks_after_weighting_is_reported();

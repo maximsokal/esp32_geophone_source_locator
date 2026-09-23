@@ -83,7 +83,28 @@ typedef struct
      * step_m / refine_divisor (>= 2). */
     uint32_t refine_divisor;
 
+    /*
+     * MAX-208 budgets. The coarse grid is never larger than
+     * max_coarse_candidates (0 selects
+     * LOCALIZATION_TRAVELTIME_DEFAULT_MAX_COARSE_CANDIDATES): when the
+     * requested step would exceed it, the coarse step is enlarged by the
+     * smallest integer factor that fits, reported as
+     * result.coarse_step_m_used. The search itself is streaming -- O(1)
+     * memory -- unless retain_surface is set, in which case the per-candidate
+     * surface is allocated and the grid is additionally capped at
+     * LOCALIZATION_TRAVELTIME_MAX_SURFACE_CANDIDATES.
+     */
+    size_t max_coarse_candidates;
+    bool retain_surface;
+
 } localization_traveltime_config_t;
+
+
+/* 20000 x (40 B candidate + 8 B chi-square) ~= 0.94 MiB of PSRAM. */
+#define LOCALIZATION_TRAVELTIME_MAX_SURFACE_CANDIDATES 20000U
+
+/* Streaming search time bound (no memory): 200k candidates x <= 8 picks. */
+#define LOCALIZATION_TRAVELTIME_DEFAULT_MAX_COARSE_CANDIDATES 200000U
 
 
 typedef struct
@@ -125,11 +146,15 @@ typedef struct
     localization_point3d_t best_position;
     double best_residual_rms_us; /* absolute fit quality of best_position, in microseconds */
 
+    /* Coarse step actually searched (>= the requested step; larger only when
+     * the requested grid would exceed the candidate budget). */
+    double coarse_step_m_used;
+
     /*
-     * The retained coarse-grid residual/likelihood surface: one entry per
-     * coarse candidate searched, in scan order. The caller owns this memory
-     * and must free(result->surface) exactly once when status == SOLVED
-     * (NULL/0 otherwise -- nothing to free).
+     * The retained coarse-grid residual/likelihood surface (only when
+     * config.retain_surface): one entry per coarse candidate searched, in
+     * scan order. The caller owns this memory and must free(result->surface)
+     * exactly once when non-NULL (NULL/0 otherwise -- nothing to free).
      */
     localization_traveltime_candidate_t *surface;
     size_t surface_count;

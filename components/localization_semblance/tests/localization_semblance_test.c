@@ -525,6 +525,39 @@ static void test_earliest_arrival_anchor_recovers_off_center_source(void)
 }
 
 
+/* MAX-208: a requested grid over the candidate budget is searched at the
+ * smallest enlarged coarse step that fits, still refining to the source. */
+static void test_coarse_grid_respects_candidate_budget(void)
+{
+    size_t reference_sample_index = 0u;
+    synthetic_recording_t recording = build_recording(
+        s_sensors_planar, 4u, s_source_planar, s_speed_mps, s_emission_s,
+        s_sample_rate_hz, s_pulse_width, s_buffer_len, &reference_sample_index
+    );
+    const localization_semblance_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 0.0 },
+        .step_m = 0.1   /* 41 x 41 = 1681 candidates */
+    };
+    const localization_semblance_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .reference_sample_index = reference_sample_index,
+        .window_half_span_samples = 15u,
+        .refine_divisor = 5u,
+        .max_coarse_candidates = 100u
+    };
+    localization_semblance_result_t result;
+    assert(
+        localization_semblance_search(recording.channels, 4u, &bounds, &config, &result) ==
+        ESP_OK
+    );
+    assert(result.found);
+    assert(result.coarse_step_m_used > 0.1);
+    assert(position_error_m(result.best_position, s_source_planar) < 0.3);
+    free_recording(&recording);
+}
+
+
 static void test_rejects_too_few_channels(void)
 {
     size_t reference_sample_index = 0u;
@@ -733,6 +766,7 @@ int main(void)
     test_channel_amplitude_differences_do_not_prevent_recovery();
     test_weaker_echo_does_not_hijack_the_estimate();
     test_earliest_arrival_anchor_recovers_off_center_source();
+    test_coarse_grid_respects_candidate_budget();
     test_rejects_too_few_channels();
     test_rejects_mismatched_sample_rate();
     test_rejects_invalid_config_and_null_arguments();
