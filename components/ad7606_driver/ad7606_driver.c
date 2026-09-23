@@ -89,93 +89,48 @@ static esp_err_t ad7606_wait_busy_level(
 }
 
 
+/*
+ * MAX-242: the output register is loaded BEFORE the pins become outputs.
+ * gpio_config(OUTPUT) first would drive each pin from the register's reset
+ * value (0) for a moment -- a LOW glitch on CS selects the ADC before the
+ * firmware deselects it.
+ */
 static esp_err_t ad7606_configure_gpio(void)
 {
+    esp_err_t err = gpio_set_level(BOARD_AD7606_CS_GPIO, 1);
+    if (err == ESP_OK) {
+        err = gpio_set_level(BOARD_AD7606_RESET_GPIO, 0);
+    }
+    if (err == ESP_OK) {
+        err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 0);
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+
     const gpio_config_t output_config = {
         .pin_bit_mask =
             (1ULL << BOARD_AD7606_RESET_GPIO) |
             (1ULL << BOARD_AD7606_CONVST_GPIO) |
             (1ULL << BOARD_AD7606_CS_GPIO),
-
-        .mode =
-            GPIO_MODE_OUTPUT,
-
-        .pull_up_en =
-            GPIO_PULLUP_DISABLE,
-
-        .pull_down_en =
-            GPIO_PULLDOWN_DISABLE,
-
-        .intr_type =
-            GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
-
-    esp_err_t err =
-        gpio_config(
-            &output_config
-        );
-
+    err = gpio_config(&output_config);
     if (err != ESP_OK) {
         return err;
     }
 
     const gpio_config_t busy_config = {
-        .pin_bit_mask =
-            (1ULL << BOARD_AD7606_BUSY_GPIO),
-
-        .mode =
-            GPIO_MODE_INPUT,
-
-        .pull_up_en =
-            GPIO_PULLUP_DISABLE,
-
-        .pull_down_en =
-            GPIO_PULLDOWN_DISABLE,
-
-        .intr_type =
-            GPIO_INTR_DISABLE,
+        .pin_bit_mask = (1ULL << BOARD_AD7606_BUSY_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
-
-    err =
-        gpio_config(
-            &busy_config
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    /*
-     * Keep the ADC deselected before SPI3 takes ownership of CS.
-     * The hardware 10 kOhm pull-up on CS provides the same safe
-     * state before the ESP32 configures this GPIO.
-     */
-    err =
-        gpio_set_level(
-            BOARD_AD7606_CS_GPIO,
-            1
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
-        gpio_set_level(
-            BOARD_AD7606_RESET_GPIO,
-            0
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err =
-        gpio_set_level(
-            BOARD_AD7606_CONVST_GPIO,
-            0
-        );
-
+    err = gpio_config(&busy_config);
     if (err != ESP_OK) {
         return err;
     }
@@ -190,6 +145,32 @@ static esp_err_t ad7606_configure_gpio(void)
     );
 
     return ESP_OK;
+}
+
+
+void ad7606_driver_enter_safe_state(void)
+{
+    /*
+     * MAX-242: every ESP32 pin that can drive the AD7606 becomes a Hi-Z
+     * input with no internal pull. CS is then held deselected by the
+     * external 10 kOhm pull-up to the AD7606's own VIO, which disappears
+     * together with the AD7606 +5 V rail -- so an unpowered AD7606 is never
+     * back-fed through an actively driven ESP32 output.
+     */
+    const gpio_config_t safe_config = {
+        .pin_bit_mask =
+            (1ULL << BOARD_AD7606_RESET_GPIO) |
+            (1ULL << BOARD_AD7606_CONVST_GPIO) |
+            (1ULL << BOARD_AD7606_CS_GPIO) |
+            (1ULL << BOARD_AD7606_SPI_SCLK_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if (gpio_config(&safe_config) != ESP_OK) {
+        ESP_LOGE(TAG, "Could not release AD7606 pins to Hi-Z");
+    }
 }
 
 
@@ -702,6 +683,7 @@ esp_err_t ad7606_driver_init(void)
             esp_err_to_name(err)
         );
 
+        ad7606_driver_enter_safe_state();
         return err;
     }
 
@@ -765,21 +747,7 @@ esp_err_t ad7606_driver_init(void)
 fail:
 
     ad7606_release_spi();
-
-    (void)gpio_set_level(
-        BOARD_AD7606_CS_GPIO,
-        1
-    );
-
-    (void)gpio_set_level(
-        BOARD_AD7606_CONVST_GPIO,
-        0
-    );
-
-    (void)gpio_set_level(
-        BOARD_AD7606_RESET_GPIO,
-        0
-    );
+    ad7606_driver_enter_safe_state();
 
     ESP_LOGE(
         TAG,
@@ -794,21 +762,7 @@ fail:
 void ad7606_driver_deinit(void)
 {
     ad7606_release_spi();
-
-    (void)gpio_set_level(
-        BOARD_AD7606_CS_GPIO,
-        1
-    );
-
-    (void)gpio_set_level(
-        BOARD_AD7606_CONVST_GPIO,
-        0
-    );
-
-    (void)gpio_set_level(
-        BOARD_AD7606_RESET_GPIO,
-        0
-    );
+    ad7606_driver_enter_safe_state();
 
     s_initialized =
         false;

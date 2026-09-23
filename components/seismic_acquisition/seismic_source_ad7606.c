@@ -7,6 +7,7 @@
 
 #include "ad7606_acquisition.h"
 #include "ad7606_driver.h"
+#include "ad7606_power_policy.h"
 #include "app_task_config.h"
 
 
@@ -80,6 +81,9 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_stream_state =
         ad7606_serial_stream_state_name(status.stream_state);
     snapshot->serial_stream_stuck = status.stream_stuck;
+    snapshot->power_fault_latched = status.power_fault_latched;
+    snapshot->power_fault_rail_v = status.power_fault_rail_v;
+    snapshot->power_gate = ad7606_power_gate_name((ad7606_power_gate_t)status.power_gate);
     snapshot->signal_quality = ad7606_signal_quality_name(status.signal_quality);
     snapshot->serial_suspicious_streak = status.suspicious_streak;
     snapshot->serial_repeated_frame_streak = status.repeated_frame_streak;

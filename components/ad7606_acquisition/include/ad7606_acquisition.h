@@ -54,6 +54,13 @@ typedef struct
 
     float latest_uv[AD7606_CHANNEL_COUNT];
 
+    /* MAX-242 power interlock: last start-gate decision
+     * (ad7606_power_gate_t), and a fault latched by a refused start or a
+     * confirmed rail loss -- cleared only by the next explicit start. */
+    int power_gate;
+    bool power_fault_latched;
+    float power_fault_rail_v;
+
 } ad7606_acquisition_status_t;
 
 

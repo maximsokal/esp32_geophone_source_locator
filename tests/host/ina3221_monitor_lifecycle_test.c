@@ -481,6 +481,15 @@ static void test_worker_publishes_normal_sample_and_cleans_up(void)
     assert(s_task == NULL);
     assert(!s_starting);
     assert_lock_balanced();
+
+    /* MAX-242: the AD7606 rail reading is published with its timestamp. */
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(rail.available && rail.valid);
+    assert(rail.sampled_at_us == s_fake_time_us);
+    assert(ina3221_monitor_get_rail(3U, &rail) == ESP_ERR_INVALID_ARG);
+    assert(ina3221_monitor_get_rail(0U, NULL) == ESP_ERR_INVALID_ARG);
+    assert_lock_balanced();
 }
 
 static void test_open_failure_publishes_invalid_and_stops_on_notification(void)
@@ -530,6 +539,13 @@ static void test_read_failure_invalidates_and_closes_driver(void)
     assert(s_notify_take_calls == 1U);
     assert(s_delete_calls == 1U);
     assert(s_task == NULL);
+    assert_lock_balanced();
+
+    /* A failed read publishes an available-but-invalid rail, never the
+     * previous good voltage. */
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(rail.available && !rail.valid);
     assert_lock_balanced();
 }
 

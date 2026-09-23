@@ -16,6 +16,16 @@ export default function SensorsFeature({ status, object, error }: Props) {
   const serial = acquisition?.serial;
   const streamStuck = serial?.stream_stuck === true || serial?.stream_state === 'STUCK';
   const serialInterference = serial?.suspicious === true || serial?.stream_state === 'SUSPICIOUS';
+  const powerFault = serial?.power_fault_latched === true;
+  const powerInterlock = serial?.power_gate === undefined
+    ? 'not reported'
+    : powerFault
+      ? `POWER FAULT: AD7606 +5 V ${(serial.power_fault_rail_v ?? 0).toFixed(2)} V — pins released to Hi-Z`
+      : serial.power_gate === 'ok'
+        ? 'AD7606 +5 V verified (INA3221 CH3)'
+        : serial.power_gate === 'unverified'
+          ? 'not verified (no fresh INA3221 CH3 reading)'
+          : serial.power_gate;
   const serialStream = serial === undefined
     ? 'not observed'
     : streamStuck
@@ -27,6 +37,11 @@ export default function SensorsFeature({ status, object, error }: Props) {
   return (
     <section className="console-page">
       {error !== null && <div className="console-alert" role="alert">ESP API: {error}</div>}
+      {powerFault && (
+        <div className="console-alert" role="alert">
+          AD7606 power fault latched: its +5 V rail was below the safe threshold, so acquisition was stopped and every AD7606 pin released to Hi-Z. Check the AD7606 supply, then start acquisition again.
+        </div>
+      )}
 
       <div className="section-heading">
         <div><span className="eyebrow">HARDWARE DIAGNOSTICS</span><h1>Acquisition + four remote assemblies</h1></div>
@@ -45,6 +60,7 @@ export default function SensorsFeature({ status, object, error }: Props) {
           <div><dt>Acquisition</dt><dd>{acquisition?.running ? 'running' : acquisition?.requested_running ? 'requested but unhealthy' : 'stopped'}</dd></div>
           <div><dt>Last error</dt><dd>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? acquisition.last_error_name : 'none'}</dd></div>
           <div><dt>Sample rate</dt><dd>{acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz` : '—'}</dd></div>
+          <div><dt>Power interlock</dt><dd>{powerInterlock}</dd></div>
           <div><dt>Serial stream</dt><dd>{serialStream}</dd></div>
           <div><dt>Stream state</dt><dd>{serial?.stream_state ?? 'not observed'}</dd></div>
           <div><dt>Serial quality</dt><dd>{serial?.quality ?? 'not observed'}</dd></div>

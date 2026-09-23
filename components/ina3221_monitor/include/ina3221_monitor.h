@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -36,3 +38,33 @@ void ina3221_monitor_stop(void);
 void ina3221_monitor_request_fast_sampling(
     uint32_t duration_ms
 );
+
+
+/* Zero-based INA3221 channel indices (physical CH1..CH3). */
+#define INA3221_MONITOR_RAIL_BATTERY 0U
+#define INA3221_MONITOR_RAIL_ESP32_5V 1U
+#define INA3221_MONITOR_RAIL_AD7606_5V 2U
+
+typedef struct
+{
+    /* At least one read attempt has been published for this channel. */
+    bool available;
+    /* The last read of this channel succeeded (false after an INA3221 fault). */
+    bool valid;
+    float bus_voltage_v;
+    float current_a;
+    /* esp_timer time of the last published read (0 when never). */
+    int64_t sampled_at_us;
+
+} ina3221_monitor_rail_t;
+
+/*
+ * MAX-242: the latest published reading of one rail with its timestamp, so
+ * a consumer (the AD7606 power interlock) can tell a fresh reading from a
+ * stale one left behind by a stopped monitor.
+ */
+esp_err_t ina3221_monitor_get_rail(
+    size_t channel_index,
+    ina3221_monitor_rail_t *rail_out
+);
+

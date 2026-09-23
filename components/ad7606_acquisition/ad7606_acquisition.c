@@ -11,6 +11,8 @@
 
 #include "ad7606_driver.h"
 #include "ad7606_acquisition_timing.h"
+#include "ad7606_power_policy.h"
+#include "ina3221_monitor.h"
 
 #include "runtime_observability.h"
 #include "app_task_config.h"
@@ -48,6 +50,11 @@ static portMUX_TYPE s_status_lock =
     portMUX_INITIALIZER_UNLOCKED;
 
 static ad7606_acquisition_status_t s_status;
+
+/* MAX-242: rail watch state, owned by the Core 1 worker. */
+static ad7606_rail_watch_t s_rail_watch;
+static int64_t s_rail_last_check_us = 0;
+#define AD7606_RAIL_CHECK_PERIOD_US 1000000LL
 
 
 #define AD7606_SERIAL_DIAG_LOG_INTERVAL_US  1000000LL
@@ -244,6 +251,34 @@ static void ad7606_status_reset(void)
     portEXIT_CRITICAL(
         &s_status_lock
     );
+}
+
+
+static void ad7606_status_set_power(
+    ad7606_power_gate_t gate,
+    bool fault_latched,
+    float rail_v
+)
+{
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.power_gate = (int)gate;
+    if (fault_latched) {
+        s_status.power_fault_latched = true;
+        s_status.power_fault_rail_v = rail_v;
+    }
+    portEXIT_CRITICAL(&s_status_lock);
+}
+
+
+/* MAX-242: the INA3221 CH3 reading of the AD7606 +5 V rail. */
+static void ad7606_read_rail(
+    ina3221_monitor_rail_t *rail
+)
+{
+    memset(rail, 0, sizeof(*rail));
+    if (ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, rail) != ESP_OK) {
+        memset(rail, 0, sizeof(*rail));
+    }
 }
 
 
@@ -766,6 +801,35 @@ static void ad7606_worker(
             notification_count
         );
 
+#if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
+        {
+            const int64_t now_us = esp_timer_get_time();
+            if (now_us - s_rail_last_check_us >= AD7606_RAIL_CHECK_PERIOD_US) {
+                s_rail_last_check_us = now_us;
+                ina3221_monitor_rail_t rail;
+                ad7606_read_rail(&rail);
+                if (ad7606_rail_watch_update(
+                        &s_rail_watch, rail.available, rail.valid,
+                        rail.bus_voltage_v, rail.sampled_at_us, now_us)) {
+                    ESP_LOGE(
+                        TAG,
+                        "AD7606 +5 V rail lost (INA3221 CH3 %.2f V < %.2f V): "
+                        "stopping acquisition and releasing AD7606 pins to Hi-Z",
+                        (double)rail.bus_voltage_v,
+                        (double)AD7606_RAIL_LOSS_V
+                    );
+                    ad7606_status_set_power(
+                        AD7606_POWER_GATE_RAIL_LOW, true, rail.bus_voltage_v
+                    );
+                    /* Cleanup below deinitializes the driver, which enters
+                     * the Hi-Z safe state. */
+                    s_running = false;
+                    break;
+                }
+            }
+        }
+#endif
+
         ad7606_sample_t sample = {0};
 
         esp_err_t err =
@@ -919,6 +983,41 @@ esp_err_t ad7606_acquisition_start(void)
     }
 
     ad7606_status_reset();
+    ad7606_rail_watch_reset(&s_rail_watch);
+    s_rail_last_check_us = 0;
+
+#if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
+    {
+        /* MAX-242: decide BEFORE the Core 1 worker exists, so a refused
+         * start never configures or drives a single AD7606 pin. */
+        ina3221_monitor_rail_t rail;
+        ad7606_read_rail(&rail);
+        const ad7606_power_gate_t gate = ad7606_power_gate(
+            rail.available, rail.valid, rail.bus_voltage_v,
+            rail.sampled_at_us, esp_timer_get_time()
+        );
+        if (gate == AD7606_POWER_GATE_RAIL_LOW) {
+            ESP_LOGE(
+                TAG,
+                "START refused: AD7606 +5 V rail %.2f V < %.2f V (INA3221 CH3); "
+                "no AD7606 pin was driven. If the AD7606 supply is not routed "
+                "through INA3221 CH3, disable CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK.",
+                (double)rail.bus_voltage_v,
+                (double)AD7606_RAIL_START_MIN_V
+            );
+            ad7606_status_set_power(gate, true, rail.bus_voltage_v);
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (gate == AD7606_POWER_GATE_UNVERIFIED) {
+            ESP_LOGW(
+                TAG,
+                "AD7606 +5 V rail not verified (no fresh INA3221 CH3 reading); "
+                "starting on the hardware VIO interlock alone"
+            );
+        }
+        ad7606_status_set_power(gate, false, rail.bus_voltage_v);
+    }
+#endif
 
     ad7606_start_context_t start_context = {
         .ready =

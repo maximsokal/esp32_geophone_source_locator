@@ -53,6 +53,10 @@ typedef struct
     const char *serial_quality;
     const char *serial_stream_state;
     bool serial_stream_stuck;
+    /* MAX-242: AD7606 power interlock (false/"" for other sources). */
+    bool power_fault_latched;
+    float power_fault_rail_v;
+    const char *power_gate;
     const char *signal_quality;
     uint32_t serial_suspicious_streak;
     uint32_t serial_repeated_frame_streak;

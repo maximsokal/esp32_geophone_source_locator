@@ -299,6 +299,9 @@ static void fill_status(void)
     g_acquisition_snapshot.serial_quality = "GOOD";
     g_acquisition_snapshot.serial_stream_state = "RUNNING";
     g_acquisition_snapshot.serial_stream_stuck = false;
+    g_acquisition_snapshot.power_gate = "rail_low";
+    g_acquisition_snapshot.power_fault_latched = true;
+    g_acquisition_snapshot.power_fault_rail_v = 3.25f;
     g_acquisition_snapshot.signal_quality = "CLEAN";
     g_acquisition_snapshot.serial_suspicious_streak = 3;
     g_acquisition_snapshot.serial_repeated_frame_streak = 4;
@@ -374,6 +377,10 @@ static void test_full_builder_and_pods(void)
     assert_number_near(number_item(serial, "quality_bad_ratio"), 0.2);
     assert_number_near(number_item(serial, "quality_all_ff_ratio"), 0.3);
     assert_number_near(number_item(serial, "busy_level"), 2.0);
+    /* MAX-242: the AD7606 power interlock reaches the status JSON. */
+    assert(strcmp(string_item(serial, "power_gate"), "rail_low") == 0);
+    assert(bool_item(serial, "power_fault_latched"));
+    assert_number_near(number_item(serial, "power_fault_rail_v"), 3.25);
     cJSON *signal = object_item(acquisition, "signal");
     assert(strcmp(string_item(signal, "quality"), "CLEAN") == 0);
     assert_number_near(number_item(signal, "clip_ratio"), 0.8);
@@ -418,6 +425,8 @@ static void test_policy_fault_and_snapshot_fallback(void)
     assert(!bool_item(acquisition, "error_counters_available"));
     assert(strcmp(string_item(object_item(acquisition, "serial"), "pattern"), "UNKNOWN") == 0);
     assert_number_near(number_item(object_item(acquisition, "serial"), "busy_level"), -1.0);
+    assert(strcmp(string_item(object_item(acquisition, "serial"), "power_gate"), "unknown") == 0);
+    assert(!bool_item(object_item(acquisition, "serial"), "power_fault_latched"));
     assert(!bool_item(object_item(acquisition, "cadence"), "available"));
     cJSON_Delete(root);
 }

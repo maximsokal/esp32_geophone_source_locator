@@ -19,17 +19,62 @@ static uint8_t fake_rx[AD7606_CHANNEL_COUNT * 2];
 static spi_bus_config_t last_bus_config;
 static spi_device_interface_config_t last_device_config;
 
+/*
+ * MAX-242: a per-pin GPIO model (mode + output register), so pin polarity
+ * and Hi-Z release are actually asserted. `cs_driven_low_events` counts
+ * every moment the CS pin is an OUTPUT with a LOW output register -- the
+ * firmware must never do that (SPI3 owns CS only inside transactions, and
+ * this model does not route SPI3 through the GPIO calls).
+ */
+#define FAKE_GPIO_COUNT 64
+static gpio_mode_t fake_pin_mode[FAKE_GPIO_COUNT];
+static int fake_pin_level[FAKE_GPIO_COUNT];
+static int fake_pin_configured[FAKE_GPIO_COUNT];
+static int cs_driven_low_events;
+
+static void check_cs(void)
+{
+    if (fake_pin_mode[GPIO_NUM_41] == GPIO_MODE_OUTPUT && fake_pin_level[GPIO_NUM_41] == 0) {
+        cs_driven_low_events++;
+    }
+}
+
 esp_err_t gpio_config(const gpio_config_t *config)
 {
-    (void)config;
-    return fake_gpio_error ? ESP_ERR_INVALID_STATE : ESP_OK;
+    if (fake_gpio_error) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (int pin = 0; pin < FAKE_GPIO_COUNT; ++pin) {
+        if ((config->pin_bit_mask & (1ULL << pin)) != 0U) {
+            fake_pin_mode[pin] = config->mode;
+            fake_pin_configured[pin] = 1;
+            /* Every pin this driver configures must have its pulls off. */
+            assert(config->pull_up_en == GPIO_PULLUP_DISABLE);
+            assert(config->pull_down_en == GPIO_PULLDOWN_DISABLE);
+        }
+    }
+    check_cs();
+    return ESP_OK;
 }
 
 esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
 {
-    (void)gpio_num;
-    (void)level;
-    return fake_gpio_error ? ESP_ERR_INVALID_STATE : ESP_OK;
+    if (fake_gpio_error) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    assert(gpio_num >= 0 && gpio_num < FAKE_GPIO_COUNT);
+    fake_pin_level[gpio_num] = level != 0U ? 1 : 0;
+    check_cs();
+    return ESP_OK;
+}
+
+static void assert_ad7606_pins_hi_z(void)
+{
+    const int pins[4] = { GPIO_NUM_2, GPIO_NUM_40, GPIO_NUM_41, GPIO_NUM_42 };
+    for (size_t i = 0; i < 4U; ++i) {
+        assert(fake_pin_configured[pins[i]]);
+        assert(fake_pin_mode[pins[i]] == GPIO_MODE_INPUT);
+    }
 }
 
 int gpio_get_level(gpio_num_t gpio_num)
@@ -107,6 +152,13 @@ void esp_rom_delay_us(uint32_t us)
 
 static void reset_fake(void)
 {
+    for (int pin = 0; pin < FAKE_GPIO_COUNT; ++pin) {
+        /* Reset/boot state: every pin a floating input, output register 0. */
+        fake_pin_mode[pin] = GPIO_MODE_INPUT;
+        fake_pin_level[pin] = 0;
+        fake_pin_configured[pin] = 0;
+    }
+    cs_driven_low_events = 0;
     fake_busy_level = 0;
     fake_spi_error = 0;
     fake_gpio_error = 0;
@@ -222,8 +274,54 @@ static void test_spi_initialization_error_is_returned(void)
     ad7606_driver_deinit();
 }
 
+
+/* MAX-242: pin safety across the driver lifecycle. */
+static void test_init_never_drives_cs_low_and_sets_safe_levels(void)
+{
+    reset_fake();
+    assert(ad7606_driver_init() == ESP_OK);
+    assert(cs_driven_low_events == 0);
+    assert(fake_pin_mode[GPIO_NUM_41] == GPIO_MODE_OUTPUT && fake_pin_level[GPIO_NUM_41] == 1);
+    assert(fake_pin_mode[GPIO_NUM_2] == GPIO_MODE_OUTPUT);
+    assert(fake_pin_mode[GPIO_NUM_42] == GPIO_MODE_OUTPUT && fake_pin_level[GPIO_NUM_42] == 0);
+    assert(fake_pin_mode[GPIO_NUM_47] == GPIO_MODE_INPUT);
+    ad7606_driver_deinit();
+}
+
+static void test_deinit_releases_every_ad7606_pin_to_hi_z(void)
+{
+    reset_fake();
+    assert(ad7606_driver_init() == ESP_OK);
+    ad7606_driver_deinit();
+    assert_ad7606_pins_hi_z();
+    assert(cs_driven_low_events == 0);
+    assert(ad7606_driver_read(NULL) == ESP_ERR_INVALID_STATE);
+}
+
+static void test_init_failure_leaves_pins_hi_z(void)
+{
+    reset_fake();
+    fake_spi_error = 1;
+    assert(ad7606_driver_init() != ESP_OK);
+    fake_spi_error = 0;
+    assert_ad7606_pins_hi_z();
+    assert(cs_driven_low_events == 0);
+}
+
+static void test_safe_state_is_callable_any_time(void)
+{
+    reset_fake();
+    ad7606_driver_enter_safe_state();
+    assert_ad7606_pins_hi_z();
+    assert(cs_driven_low_events == 0);
+}
+
 int main(void)
 {
+    test_init_never_drives_cs_low_and_sets_safe_levels();
+    test_deinit_releases_every_ad7606_pin_to_hi_z();
+    test_init_failure_leaves_pins_hi_z();
+    test_safe_state_is_callable_any_time();
     test_successful_init_and_conversion();
     test_two_complement_boundary_codes_convert_to_documented_uv_scale();
     test_spi_error_does_not_publish_sample();

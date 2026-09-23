@@ -615,6 +615,21 @@ GPIO2  -> AD7606 RESET
 
 SPI3 is read-only for this AD7606 connection; MOSI is intentionally unused.
 
+**Power interlock (MAX-242, firmware layer on top of the LD1117V33 VIO fix).**
+`ad7606_driver` loads the output levels (CS=1, RESET=0, CONVST=0) before it
+enables the outputs, so CS never glitches LOW, and every exit path (deinit,
+any init failure, rail loss) calls `ad7606_driver_enter_safe_state()`:
+RESET/CONVST/CS/SCLK become Hi-Z inputs without internal pulls, with CS held
+deselected by its pull-up to the AD7606 VIO. With
+`CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK` (default y) `ad7606_acquisition_start()`
+refuses to start -- without touching any AD7606 pin -- when a fresh INA3221
+CH3 reading shows the AD7606 +5 V below 4.75 V; while running, two consecutive
+fresh readings below 4.50 V stop acquisition, release the pins and latch a
+power fault (`acquisition.serial.power_fault_latched` in `/api/status`, shown
+on the Sensors page) until the next explicit start. Missing/stale INA3221
+data only warns. Disable the option only if the AD7606 supply is not routed
+through INA3221 CH3.
+
 Current AD7606 acquisition assumptions are 8 channels, SPI mode 2, 1 MHz bus clock, +/-5 V input range and hardware oversampling x1. The physical RANGE / OS0 / OS1 / OS2 module straps must continue to match those assumptions when the board is rewired.
 
 ## Seismic acquisition interface
