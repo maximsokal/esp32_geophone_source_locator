@@ -52,6 +52,14 @@ export interface OccupancySnapshot {
   freeAirPositions: Float32Array;
   occupiedSurfacePositions: Float32Array;
   unknownCandidatePositions: Float32Array;
+  /**
+   * MAX-213: the sparse map hit its cell budget and silently stopped creating
+   * cells, so areas scanned afterwards stayed UNKNOWN for lack of storage, not
+   * lack of evidence. Optional: absent in artifacts saved before the field.
+   */
+  occupancyCellsSaturated?: boolean;
+  /** Evidence updates discarded because the cell budget was exhausted. */
+  occupancyDroppedCellUpdates?: number;
 }
 
 /**
@@ -83,7 +91,6 @@ const MIN_DEPTH_METERS = 0.18;
 const MIN_LOCAL_SCORE = 0.45;
 const MAX_RAY_VOXELS = 192;
 const MAX_ENUMERATED_VOLUME_CELLS = 120000;
-const MAX_DISPLAY_POINTS_PER_CLASS = 12000;
 
 function probabilityToLogOdds(probability: number): number {
   const p = Math.min(0.999999, Math.max(0.000001, probability));
@@ -238,6 +245,7 @@ export class SparseOccupancyGrid {
   private readonly freeCellKeys = new Set<string>();
   private readonly occupiedCellKeys = new Set<string>();
   private lastIntegratedKeyframe = -1;
+  private droppedCellUpdates = 0;
 
   constructor(voxelSizeMeters = DEFAULT_VOXEL_SIZE_METERS, maxCells = DEFAULT_MAX_CELLS) {
     this.voxelSizeMeters = clamp(voxelSizeMeters, 0.08, 0.50);
@@ -249,6 +257,7 @@ export class SparseOccupancyGrid {
     this.freeCellKeys.clear();
     this.occupiedCellKeys.clear();
     this.lastIntegratedKeyframe = -1;
+    this.droppedCellUpdates = 0;
   }
 
   get voxelSize(): number { return this.voxelSizeMeters; }
@@ -382,21 +391,30 @@ export class SparseOccupancyGrid {
     };
   }
 
+  /**
+   * Complete occupancy for display AND persistence (MAX-213): FREE and
+   * OCCUPIED are every classified cell (already bounded by maxCells), never a
+   * display-capped subset whose counts disagree with the saved arrays.
+   *
+   * UNKNOWN is enumerated inside candidateBounds. When that volume exceeds
+   * MAX_ENUMERATED_VOLUME_CELLS it is reported on a coarser grid of
+   * `stride` fine cells aligned to the world origin: each point is the
+   * CENTER of its coarse cell (classified by the fine cell at that center)
+   * and occupancyVoxelSizeMeters is that coarse size, so re-hashing the
+   * saved points at the declared size lands every point in its own cell.
+   */
   snapshot(candidateBounds: OccupancyBounds | null): OccupancySnapshot {
     const free: number[] = [];
     const occupied: number[] = [];
 
-    const append = (target: number[], point: OccupancyPoint): void => {
-      if (target.length / 3 >= MAX_DISPLAY_POINTS_PER_CLASS) return;
-      target.push(point[0], point[1], point[2]);
-    };
-
-    // Classified-state sets avoid rescanning and reclassifying every sparse cell
-    // whenever the UI or final snapshot needs display points.
-    for (const key of this.freeCellKeys) append(free, voxelCenterFromKey(key, this.voxelSizeMeters));
-    for (const key of this.occupiedCellKeys) append(occupied, voxelCenterFromKey(key, this.voxelSizeMeters));
+    for (const key of this.freeCellKeys) free.push(...voxelCenterFromKey(key, this.voxelSizeMeters));
+    for (const key of this.occupiedCellKeys) occupied.push(...voxelCenterFromKey(key, this.voxelSizeMeters));
     const knownFreeVoxelCount = this.freeCellKeys.size;
     const occupiedSurfaceVoxelCount = this.occupiedCellKeys.size;
+    const saturation = {
+      occupancyCellsSaturated: this.droppedCellUpdates > 0,
+      occupancyDroppedCellUpdates: this.droppedCellUpdates,
+    };
 
     if (candidateBounds === null) {
       return {
@@ -407,6 +425,7 @@ export class SparseOccupancyGrid {
         freeAirPositions: Float32Array.from(free),
         occupiedSurfacePositions: Float32Array.from(occupied),
         unknownCandidatePositions: new Float32Array(0),
+        ...saturation,
       };
     }
 
@@ -424,28 +443,31 @@ export class SparseOccupancyGrid {
     const nz = Math.max(1, maxZ - minZ + 1);
     const totalCells = nx * ny * nz;
     const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
+    const half = Math.floor(stride / 2);
     const unknown: number[] = [];
-    let unknownCandidateVoxelCount = 0;
+    const coarseSize = this.voxelSizeMeters * stride;
 
-    for (let x = minX; x <= maxX; x += stride) {
-      for (let y = minY; y <= maxY; y += stride) {
-        for (let z = minZ; z <= maxZ; z += stride) {
-          const state = this.classifyCell(this.cells.get(keyFromCoordinates(x, y, z)));
+    for (let cx = Math.floor(minX / stride); cx <= Math.floor(maxX / stride); cx += 1) {
+      for (let cy = Math.floor(minY / stride); cy <= Math.floor(maxY / stride); cy += 1) {
+        for (let cz = Math.floor(minZ / stride); cz <= Math.floor(maxZ / stride); cz += 1) {
+          const state = this.classifyCell(
+            this.cells.get(keyFromCoordinates(cx * stride + half, cy * stride + half, cz * stride + half)),
+          );
           if (state !== 'unknown') continue;
-          unknownCandidateVoxelCount += 1;
-          append(unknown, voxelCenterFromCoordinates(x, y, z, this.voxelSizeMeters));
+          unknown.push((cx + 0.5) * coarseSize, (cy + 0.5) * coarseSize, (cz + 0.5) * coarseSize);
         }
       }
     }
 
     return {
-      occupancyVoxelSizeMeters: this.voxelSizeMeters * stride,
+      occupancyVoxelSizeMeters: coarseSize,
       knownFreeVoxelCount,
       occupiedSurfaceVoxelCount,
-      unknownCandidateVoxelCount,
+      unknownCandidateVoxelCount: unknown.length / 3,
       freeAirPositions: Float32Array.from(free),
       occupiedSurfacePositions: Float32Array.from(occupied),
       unknownCandidatePositions: Float32Array.from(unknown),
+      ...saturation,
     };
   }
 
@@ -467,7 +489,10 @@ export class SparseOccupancyGrid {
   private updateCell(key: string, occupied: boolean, weight: number, keyframeId: number): void {
     let cell = this.cells.get(key);
     if (cell === undefined) {
-      if (this.cells.size >= this.maxCells) return;
+      if (this.cells.size >= this.maxCells) {
+        this.droppedCellUpdates += 1;
+        return;
+      }
       cell = {
         logOdds: 0,
         hitKeyframes: 0,

@@ -46,9 +46,25 @@ export type {
   DepthFusionResult,
 } from './depthPointCloudV2';
 
+/**
+ * MAX-213: a buried source lies BELOW the lowest surface the camera saw, so a
+ * candidate volume bounded by that surface would exclude it. The solver
+ * (MAX-147/162) treats this depth under the envelope as candidate space -- a
+ * soft prior, never evidence of a void ("not observed", not "empty").
+ */
+const SOLVER_CANDIDATE_BELOW_SURFACE_METERS = 2.0;
+
 export interface ScanPointCloudSnapshot extends SurfaceScanPointCloudSnapshot, OccupancySnapshot {
   /** Component-aware bounds used only to enumerate UNKNOWN source candidates. */
   occupancyEnvelopeBounds: PointCloudBounds | null;
+  /**
+   * MAX-213: the source-localization candidate volume is
+   * occupancyEnvelopeBounds extended this far BELOW its lowest surface, minus
+   * verified FREE cells (0 without an envelope; absent in older artifacts).
+   * Declared, not enumerated: unknownCandidatePositions stays the measured
+   * display volume and never invents thickness under a single plane.
+   */
+  occupancySolverCandidateBelowSurfaceMeters?: number;
   occupancyEnvelopeComponentCount: number;
   occupancyQuarantinedSurfaceComponentCount: number;
   occupancyQuarantinedSurfacePointCount: number;
@@ -256,6 +272,7 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
       ...surface,
       ...occupancy,
       occupancyEnvelopeBounds: envelope.bounds,
+      occupancySolverCandidateBelowSurfaceMeters: envelope.bounds === null ? 0 : SOLVER_CANDIDATE_BELOW_SURFACE_METERS,
       occupancyEnvelopeComponentCount: envelope.retainedComponentIds.length,
       occupancyQuarantinedSurfaceComponentCount: envelope.quarantinedComponentIds.length,
       occupancyQuarantinedSurfacePointCount: envelope.quarantinedPointCount,
