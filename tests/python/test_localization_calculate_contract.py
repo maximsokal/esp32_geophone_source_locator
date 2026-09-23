@@ -149,10 +149,10 @@ def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
     assert '"%s/%s/sessions/%s/occupancy-v1.bin"' in source
     assert "scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms)" in source
     assert "constraint not applied" in source
-    assert '"traveltime_inversion_scan_constrained"' in source
+    assert '"traveltime_scan_constrained"' in source
     assert '"semblance_scan_constrained"' in source
     # Fusion only ever sees the unconstrained records.
     assert "comparison_methods, fused_record_count, &comparison_result" in source
     fused_index = source.index("const size_t fused_record_count = record_count;")
-    constrained_index = source.index('"traveltime_inversion_scan_constrained"')
+    constrained_index = source.index('"traveltime_scan_constrained"')
     assert fused_index < constrained_index
