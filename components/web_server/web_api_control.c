@@ -290,6 +290,29 @@ static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id
     config.pick_config.refine_amplitude_fraction = (float)refine_amplitude_fraction;
     config.pick_config.minimum_snr = (float)minimum_snr;
 
+    /* MAX-210: STA is the trailing sub-window of LTA, so STA/LTA can never
+     * exceed lta/sta. A threshold at or above that bound would silently
+     * never trigger on any channel -- reject it instead. */
+    if (
+        config.pick_config.sta_window_samples == 0U ||
+        config.pick_config.lta_window_samples <= config.pick_config.sta_window_samples ||
+        sta_lta_trigger_ratio >=
+            (double)config.pick_config.lta_window_samples /
+            (double)config.pick_config.sta_window_samples
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Optional (MAX-211): absent means the geometry-derived default. When
+     * present it must be a positive finite depth in meters. */
+    cJSON *max_depth = cJSON_GetObjectItemCaseSensitive(root, "max_source_depth_m");
+    if (max_depth != NULL) {
+        if (!cJSON_IsNumber(max_depth) || !isfinite(max_depth->valuedouble) || max_depth->valuedouble <= 0.0) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        config.max_source_depth_m = max_depth->valuedouble;
+    }
+
     const char *model_name = web_control_string(root, "propagation_model_name");
     if (model_name != NULL) {
         snprintf(

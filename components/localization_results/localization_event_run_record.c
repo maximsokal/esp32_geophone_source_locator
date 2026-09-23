@@ -39,8 +39,8 @@ static const char *rejection_reason_for_status(
 
         case LOCALIZATION_EVENT_SOLVER_REJECTED:
             return
-                "TDOA solver rejected the input "
-                "(degenerate/coplanar geometry or non-finite estimate)";
+                "TDOA solver rejected the input (sensor layout too flat to "
+                "resolve depth, degenerate geometry or non-finite estimate)";
 
         case LOCALIZATION_EVENT_SOLVED:
         default:

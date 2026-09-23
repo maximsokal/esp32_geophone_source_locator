@@ -395,9 +395,68 @@ static void test_calculate_source_action_dispatches_to_localization_calculate_ru
     assert(s_last_calculate_config.pick_config.snr_signal_window_samples == 50U);
     assert(s_last_calculate_config.pick_config.minimum_snr == 2.0f);
     assert(s_last_calculate_config.semblance_window_half_span_samples == 25U);
+    /* Optional max_source_depth_m absent: geometry-derived default (MAX-211). */
+    assert(s_last_calculate_config.max_source_depth_m == 0.0);
     /* No object mutation occurred: object cache must not be touched. */
     assert(s_cache_invalidations == 0U);
     assert(s_cache_refresh_requests == 0U);
+}
+
+static void test_calculate_source_optional_max_depth(void)
+{
+    static const char *const with_depth =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,\"max_source_depth_m\":6.5}";
+    reset_fakes();
+    s_calculate_result = ESP_OK;
+    char response[512] = {0};
+    httpd_req_t request = make_request(with_depth, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_calculate_calls == 1U);
+    assert(s_last_calculate_config.max_source_depth_m == 6.5);
+
+    static const char *const bad_depth =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,\"max_source_depth_m\":-1.0}";
+    reset_fakes();
+    char bad_response[512] = {0};
+    request = make_request(bad_depth, bad_response, sizeof(bad_response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_calculate_calls == 0U);
+}
+
+/* MAX-210: sta=10, lta=50 bounds STA/LTA at 5.0; a 6.0 threshold could
+ * never trigger and must be rejected rather than dispatched. */
+static void test_calculate_source_rejects_unreachable_sta_lta_threshold(void)
+{
+    static const char *const body =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":10,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":6.0,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25}";
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(body, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_calculate_calls == 0U);
 }
 
 static void test_calculate_source_action_rejects_missing_session_id(void)
@@ -436,6 +495,8 @@ int main(void)
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
     test_calculate_source_action_dispatches_to_localization_calculate_run();
+    test_calculate_source_optional_max_depth();
+    test_calculate_source_rejects_unreachable_sta_lta_threshold();
     test_calculate_source_action_rejects_missing_session_id();
     test_calculate_source_action_surfaces_solver_failure();
     return 0;

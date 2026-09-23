@@ -29,6 +29,7 @@ interface FormState {
   snrSignalWindowSamples: string;
   minimumSnr: string;
   semblanceWindowHalfSpanSamples: string;
+  maxSourceDepthM: string;
 }
 
 /*
@@ -53,6 +54,7 @@ const EMPTY_FORM: FormState = {
   snrSignalWindowSamples: '',
   minimumSnr: '',
   semblanceWindowHalfSpanSamples: '',
+  maxSourceDepthM: '',
 };
 
 function positiveNumber(text: string): number | null {
@@ -63,6 +65,24 @@ function positiveNumber(text: string): number | null {
 function nonNegativeNumber(text: string): number | null {
   const value = Number(text);
   return text.trim().length > 0 && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/*
+ * MAX-210: STA is the trailing sub-window of LTA, so STA/LTA can never exceed
+ * LTA/STA. A threshold at or above that bound silently never triggers.
+ */
+export function staLtaThresholdIssue(
+  staWindowSamples: number | null,
+  ltaWindowSamples: number | null,
+  triggerRatio: number | null,
+): string | null {
+  if (staWindowSamples === null || ltaWindowSamples === null || triggerRatio === null) return null;
+  if (ltaWindowSamples <= staWindowSamples) return 'LTA window must be longer than the STA window.';
+  const maximum = ltaWindowSamples / staWindowSamples;
+  if (triggerRatio >= maximum) {
+    return `STA/LTA can never reach ${triggerRatio}: with these windows the ratio is at most ${maximum.toFixed(2)}.`;
+  }
+  return null;
 }
 
 function positiveInteger(text: string): number | null {
@@ -151,7 +171,13 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     minimumSnr: nonNegativeNumber(form.minimumSnr),
     semblanceWindowHalfSpanSamples: positiveInteger(form.semblanceWindowHalfSpanSamples),
   };
-  const formValid = Object.values(parsed).every((value) => value !== null);
+  /* Optional (MAX-211): blank selects the geometry-derived default depth. */
+  const maxSourceDepthM = form.maxSourceDepthM.trim().length === 0 ? undefined : positiveNumber(form.maxSourceDepthM);
+  const staLtaIssue = staLtaThresholdIssue(parsed.staWindowSamples, parsed.ltaWindowSamples, parsed.staLtaTriggerRatio);
+  const formValid =
+    Object.values(parsed).every((value) => value !== null) &&
+    maxSourceDepthM !== null &&
+    staLtaIssue === null;
 
   const runCalculate = (): void => {
     if (!formValid) return;
@@ -176,6 +202,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       snr_signal_window_samples: parsed.snrSignalWindowSamples,
       minimum_snr: parsed.minimumSnr,
       semblance_window_half_span_samples: parsed.semblanceWindowHalfSpanSamples,
+      ...(maxSourceDepthM !== undefined ? { max_source_depth_m: maxSourceDepthM } : {}),
     })
       .then((result) => {
         if (!result.ok) throw new Error(result.error ?? 'calculate_source failed');
@@ -321,15 +348,21 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
             <span>SNR signal window (samples)</span>
             <input type="number" min="1" step="1" value={form.snrSignalWindowSamples} onChange={set('snrSignalWindowSamples')} />
           </label>
-          <label>
-            <span>Minimum SNR</span>
+          <label title="SNR here is the peak |amplitude| after the pick divided by the RMS of the noise window at the start of the recording. Pure noise already scores above 1 (its own peaks exceed its RMS), so choose the threshold from this site's measured recordings.">
+            <span>Minimum SNR (peak / noise RMS)</span>
             <input type="number" min="0" step="any" value={form.minimumSnr} onChange={set('minimumSnr')} />
           </label>
           <label>
             <span>Semblance window half-span (samples)</span>
             <input type="number" min="1" step="1" value={form.semblanceWindowHalfSpanSamples} onChange={set('semblanceWindowHalfSpanSamples')} />
           </label>
+          <label title="How far below the lowest geophone a 3D search may place the source. Blank = half the array diagonal (at least 1 m). The search never goes above the highest geophone.">
+            <span>Max source depth (m, optional)</span>
+            <input type="number" min="0" step="any" value={form.maxSourceDepthM} onChange={set('maxSourceDepthM')} />
+          </label>
         </div>
+        {staLtaIssue !== null && <div className="console-alert" role="alert">{staLtaIssue}</div>}
+        {maxSourceDepthM === null && <div className="console-alert" role="alert">Max source depth must be a positive number of meters, or blank.</div>}
       </details>
 
       {error !== null && <div className="console-alert" role="alert">{error}</div>}
