@@ -107,7 +107,8 @@ def test_likelihood_is_normalized_relative_to_the_global_best_not_absolute():
     )
 
     assert "chi_square[i] - best_chi_square" in source
-    assert "chi_square[idx] < best_chi_square" in source
+    # Ranking uses the raw chi-square (streaming pass, MAX-208).
+    assert "candidate_chi_square < best_chi_square" in source
 
 
 def test_no_file_io():

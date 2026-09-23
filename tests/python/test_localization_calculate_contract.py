@@ -99,13 +99,17 @@ def test_pick_status_never_defaults_to_a_silently_accepted_zero_value():
     assert source.count("event_channels[ch].pick.status = GEOPHONE_PICK_REJECTED_NO_TRIGGER;") >= 2
 
 
-def test_traveltime_surface_memory_is_freed_after_use():
+def test_traveltime_search_is_streaming_and_surface_never_leaks():
+    """MAX-208: the orchestrator never asks for the per-candidate surface
+    (it was ~49 MiB for a 5x5 m 3D array and was never persisted); the
+    result's surface is NULL then, and free(NULL) keeps the cleanup
+    unconditional and leak-proof if that ever changes."""
     source = orchestrator_source()
+    assert ".retain_surface = false," in source
     assert "free(traveltime_result.surface);" in source
-    # Must only be freed when the backend actually allocated it (SOLVED).
-    free_index = source.index("free(traveltime_result.surface);")
-    guard_window = source[max(0, free_index - 200):free_index]
-    assert "LOCALIZATION_TRAVELTIME_SOLVED" in guard_window
+    # The result is zero-initialized before the call, so an early error
+    # return can never leave a garbage pointer to free.
+    assert "memset(&traveltime_result, 0, sizeof(traveltime_result));" in source
 
 
 def test_max_frames_bound_is_documented_not_guessed():
