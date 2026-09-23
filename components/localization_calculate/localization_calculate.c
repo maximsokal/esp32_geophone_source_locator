@@ -1,5 +1,6 @@
 #include "localization_calculate.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,7 +124,6 @@ esp_err_t localization_calculate_run(
     float *channel_samples[OBJECT_STORE_POD_COUNT] = { 0 };
     localization_event_channel_input_t event_channels[OBJECT_STORE_POD_COUNT];
     memset(event_channels, 0, sizeof(event_channels));
-    double channel_energy_rms[OBJECT_STORE_POD_COUNT] = { 0 };
 
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         event_channels[ch].sample_rate_hz = session_summary.sample_rate_hz;
@@ -160,7 +160,7 @@ esp_err_t localization_calculate_run(
 
         const seismic_dsp_config_t dsp_config = {
             .sample_rate_hz = session_summary.sample_rate_hz,
-            .requested_stages = SEISMIC_DSP_STAGE_DC_REMOVAL | SEISMIC_DSP_STAGE_ENERGY_RMS,
+            .requested_stages = SEISMIC_DSP_STAGE_DC_REMOVAL,
         };
         /* Both dsp calls only fail for a malformed config or NULL result,
          * neither possible with the fixed, parameter-free stages requested
@@ -177,7 +177,6 @@ esp_err_t localization_calculate_run(
             heap_caps_free(frames);
             return err;
         }
-        channel_energy_rms[ch] = (double)dsp_result.energy_rms;
 
         geophone_event_pick_channel_arrival(
             samples, frame_count, session_summary.sample_rate_hz,
@@ -271,6 +270,11 @@ esp_err_t localization_calculate_run(
         config->propagation_speed_mps, config->propagation_speed_uncertainty_mps,
         config->timing_uncertainty_us, &records[record_count]
     );
+    /* MAX-212: the Gauss-Newton TDOA solve is always 3D. */
+    localization_calculate_apply_redundancy(
+        &records[record_count],
+        localization_calculate_degrees_of_freedom(event_result.channels_used_count, false)
+    );
     ++record_count;
 
     /* --- Statistical traveltime inversion (MAX-136) ---------------------- */
@@ -320,6 +324,13 @@ esp_err_t localization_calculate_run(
         traveltime_used_mask, traveltime_rejected_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count],
+        localization_calculate_degrees_of_freedom(
+            traveltime_result.picks_used_count,
+            dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
+        )
     );
     ++record_count;
     free(traveltime_result.surface);
@@ -373,13 +384,45 @@ esp_err_t localization_calculate_run(
 
     /* --- Energy baseline (MAX-138 part 1) --------------------------------- */
 
+    /* MAX-212: energy over the EVENT window (earliest accepted pick +
+     * signal window + the array's largest moveout), not the whole recording,
+     * which is dominated by background noise. Without an accepted pick there
+     * is no event window, so the baseline is not attempted. */
+    double max_sensor_distance_m = 0.0;
+    for (size_t a = 0U; a < participant_position_count; ++a) {
+        for (size_t b = a + 1U; b < participant_position_count; ++b) {
+            const double dx = participant_positions[a].x_m - participant_positions[b].x_m;
+            const double dy = participant_positions[a].y_m - participant_positions[b].y_m;
+            const double dz = participant_positions[a].z_m - participant_positions[b].z_m;
+            const double distance = sqrt(dx * dx + dy * dy + dz * dz);
+            if (distance > max_sensor_distance_m) {
+                max_sensor_distance_m = distance;
+            }
+        }
+    }
+
+    size_t energy_start = 0U;
+    size_t energy_end = 0U;
+    const bool energy_window_known =
+        any_accepted &&
+        localization_calculate_event_window(
+            reference_sample_index, frame_count,
+            config->pick_config.snr_signal_window_samples,
+            max_sensor_distance_m, config->propagation_speed_mps,
+            session_summary.sample_rate_hz, &energy_start, &energy_end
+        );
+
     localization_energy_baseline_channel_t energy_channels[OBJECT_STORE_POD_COUNT];
     size_t energy_channel_count = 0U;
-    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
-        if (geometry.pods[ch].computed) {
+    for (size_t ch = 0U; energy_window_known && ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if (geometry.pods[ch].computed && channel_samples[ch] != NULL) {
+            double sum_squares = 0.0;
+            for (size_t i = energy_start; i < energy_end; ++i) {
+                sum_squares += (double)channel_samples[ch][i] * (double)channel_samples[ch][i];
+            }
             energy_channels[energy_channel_count].sensor_position = event_channels[ch].sensor_position;
             energy_channels[energy_channel_count].energy =
-                channel_energy_rms[ch] * channel_energy_rms[ch];
+                energy_end > energy_start ? sum_squares / (double)(energy_end - energy_start) : 0.0;
             energy_channels[energy_channel_count].weight = 1.0;
             ++energy_channel_count;
         }
@@ -387,16 +430,26 @@ esp_err_t localization_calculate_run(
 
     localization_energy_baseline_result_t energy_result;
     memset(&energy_result, 0, sizeof(energy_result));
-    const esp_err_t energy_err = localization_energy_baseline_estimate(
-        energy_channels, energy_channel_count, &energy_result
-    );
-    summary_out->methods_attempted++;
+    esp_err_t energy_err = ESP_ERR_INVALID_STATE;
+    if (energy_window_known) {
+        energy_err = localization_energy_baseline_estimate(
+            energy_channels, energy_channel_count, &energy_result
+        );
+        summary_out->methods_attempted++;
+    }
 
     localization_calculate_energy_baseline_to_run_record(
         &context, energy_err == ESP_OK ? &energy_result : NULL,
         all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
         LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
     );
+    if (!energy_window_known) {
+        snprintf(
+            records[record_count].rejection_reason,
+            sizeof(records[record_count].rejection_reason), "%s",
+            "no accepted arrival pick to define the event energy window"
+        );
+    }
     ++record_count;
 
     free_channel_buffers(channel_samples);

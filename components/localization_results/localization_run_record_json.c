@@ -164,6 +164,9 @@ esp_err_t localization_run_record_to_json(
         cJSON_AddNumberToObject(
             root, "confidence_score", record->confidence_score
         ) != NULL &&
+        cJSON_AddNumberToObject(
+            root, "degrees_of_freedom", (double)record->degrees_of_freedom
+        ) != NULL &&
         cJSON_AddBoolToObject(root, "solved", record->solved) != NULL;
 
     if (ok && record->solved) {
@@ -354,6 +357,17 @@ esp_err_t localization_run_record_from_json(
     record->propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
     record->confidence_score = confidence_score;
     record->solved = solved;
+
+    /* Optional (MAX-212): absent in records written before the field. */
+    double degrees_of_freedom = -1.0;
+    if (
+        !read_number(root, "degrees_of_freedom", &degrees_of_freedom) ||
+        degrees_of_freedom < -1.0 ||
+        degrees_of_freedom > 64.0
+    ) {
+        degrees_of_freedom = -1.0;
+    }
+    record->degrees_of_freedom = (int32_t)degrees_of_freedom;
 
     if (solved) {
         const cJSON *position =

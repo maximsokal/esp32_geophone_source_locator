@@ -73,6 +73,29 @@ esp_err_t localization_comparison_fuse(
             continue;
         }
 
+        /* Correlated evidence: only the best member of a nonzero group
+         * contributes (ties go to the earliest entry). */
+        bool superseded = false;
+        for (size_t j = 0u; methods[i].evidence_group != 0u && j < method_count; ++j) {
+            if (
+                j == i ||
+                methods[j].evidence_group != methods[i].evidence_group ||
+                !methods[j].solved
+            ) {
+                continue;
+            }
+            if (
+                methods[j].quality > methods[i].quality ||
+                (methods[j].quality == methods[i].quality && j < i)
+            ) {
+                superseded = true;
+                break;
+            }
+        }
+        if (superseded) {
+            continue;
+        }
+
         const double weight = methods[i].quality;
         sum_weight += weight;
         sum_weighted_x += weight * methods[i].position.x_m;

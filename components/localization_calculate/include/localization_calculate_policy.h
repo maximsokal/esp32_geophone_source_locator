@@ -185,3 +185,53 @@ void localization_calculate_run_record_to_comparison_method(
     const localization_run_record_t *record,
     localization_comparison_method_result_t *method_out
 );
+
+
+/*
+ * MAX-212: the most a solved-but-unverifiable (degrees_of_freedom <= 0)
+ * residual-based fit may claim. With zero redundancy a wrong pick set fits
+ * exactly as well as a right one, so the residual carries no evidence
+ * either way; 0.5 is "no better than a coin flip", never "confirmed".
+ */
+#define LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP 0.5
+
+/* Evidence group shared by every method fitted to the same arrival picks. */
+#define LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP 1U
+
+/*
+ * Redundancy of a differential-arrival fit: (picks_used - 1) independent
+ * differences minus the spatial unknowns (2 for a planar search, 3 for 3D).
+ * Returns -1 when fewer than two picks exist.
+ */
+int32_t localization_calculate_degrees_of_freedom(
+    size_t picks_used,
+    bool planar
+);
+
+/*
+ * Stores `degrees_of_freedom` on a solved pick-based record and, when it is
+ * <= 0, caps confidence_score at LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP.
+ */
+void localization_calculate_apply_redundancy(
+    localization_run_record_t *record,
+    int32_t degrees_of_freedom
+);
+
+/*
+ * MAX-212: the analysis window for event energy, instead of the whole
+ * recording (which is dominated by background noise): from the earliest
+ * accepted pick to that pick + signal_window_samples + the largest moveout
+ * across the array (max_sensor_distance_m / propagation_speed_mps), clamped
+ * to [0, frame_count). Returns false (window unset) for invalid inputs or a
+ * reference outside the recording.
+ */
+bool localization_calculate_event_window(
+    size_t reference_sample_index,
+    size_t frame_count,
+    size_t signal_window_samples,
+    double max_sensor_distance_m,
+    double propagation_speed_mps,
+    uint32_t sample_rate_hz,
+    size_t *start_out,
+    size_t *end_out
+);

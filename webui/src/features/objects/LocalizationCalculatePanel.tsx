@@ -389,7 +389,9 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
                 <strong>{run.solved ? formatPosition(run) : 'unsolved'}</strong>
                 <small>
                   {run.solved
-                    ? `confidence ${run.confidence_score.toFixed(2)}`
+                    ? `confidence ${run.confidence_score.toFixed(2)}` +
+                      (run.degrees_of_freedom === 0 ? ' · unverified (no redundant picks)' : '') +
+                      (run.method_name === 'energy_baseline' ? ' · diagnostic only, not fused' : '')
                     : run.rejection_reason}
                 </small>
               </span>

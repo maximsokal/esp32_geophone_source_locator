@@ -201,6 +201,7 @@ static void fill_common_fields(
     );
     record_out->propagation_speed_mps = context->propagation_speed_mps;
     record_out->propagation_speed_uncertainty_mps = context->propagation_speed_uncertainty_mps;
+    record_out->degrees_of_freedom = -1;
 }
 
 
@@ -355,6 +356,20 @@ void localization_calculate_run_record_to_comparison_method(
     if (record->solved) {
         method_out->position = record->source_position;
         method_out->quality = record->confidence_score;
+        /* MAX-212: TDOA and traveltime inversion fit the same picks --
+         * correlated, not independent, evidence. */
+        if (
+            strcmp(record->method_name, "tdoa_gauss_newton") == 0 ||
+            strcmp(record->method_name, "traveltime_inversion") == 0
+        ) {
+            method_out->evidence_group = LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP;
+        }
+        /* The energy baseline is a sensor-weighted centroid that can never
+         * leave the array's convex hull and whose "concentration" is >= 1/N
+         * even for pure noise: diagnostic only, never a fusion weight. */
+        if (strcmp(record->method_name, "energy_baseline") == 0) {
+            method_out->quality = 0.0;
+        }
     }
     else {
         /* localization_comparison's rejection_reason field (96 bytes) is
@@ -366,4 +381,72 @@ void localization_calculate_run_record_to_comparison_method(
             (int)(sizeof(method_out->rejection_reason) - 1U), record->rejection_reason
         );
     }
+}
+
+
+int32_t localization_calculate_degrees_of_freedom(
+    size_t picks_used,
+    bool planar
+)
+{
+    if (picks_used < 2U) {
+        return -1;
+    }
+    return (int32_t)(picks_used - 1U) - (planar ? 2 : 3);
+}
+
+
+void localization_calculate_apply_redundancy(
+    localization_run_record_t *record,
+    int32_t degrees_of_freedom
+)
+{
+    if (record == NULL) {
+        return;
+    }
+    record->degrees_of_freedom = degrees_of_freedom;
+    if (
+        record->solved &&
+        degrees_of_freedom <= 0 &&
+        record->confidence_score > LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP
+    ) {
+        record->confidence_score = LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP;
+    }
+}
+
+
+bool localization_calculate_event_window(
+    size_t reference_sample_index,
+    size_t frame_count,
+    size_t signal_window_samples,
+    double max_sensor_distance_m,
+    double propagation_speed_mps,
+    uint32_t sample_rate_hz,
+    size_t *start_out,
+    size_t *end_out
+)
+{
+    if (
+        start_out == NULL ||
+        end_out == NULL ||
+        reference_sample_index >= frame_count ||
+        !(propagation_speed_mps > 0.0) ||
+        !isfinite(max_sensor_distance_m) ||
+        max_sensor_distance_m < 0.0 ||
+        sample_rate_hz == 0U
+    ) {
+        return false;
+    }
+
+    const double moveout = ceil(
+        max_sensor_distance_m / propagation_speed_mps * (double)sample_rate_hz
+    );
+    const double length = (double)signal_window_samples + moveout + 1.0;
+    const double remaining = (double)(frame_count - reference_sample_index);
+
+    *start_out = reference_sample_index;
+    *end_out = length >= remaining
+        ? frame_count
+        : reference_sample_index + (size_t)length;
+    return true;
 }

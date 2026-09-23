@@ -104,6 +104,16 @@ typedef struct
      */
     double confidence_score;
 
+    /*
+     * MAX-212: statistical redundancy of a pick-based fit -- independent
+     * observations beyond the unknowns (differential arrivals minus spatial
+     * unknowns). 0 means an exactly-determined fit: its residual is ~0 by
+     * construction and cannot confirm the position, so such a result is
+     * "unverified". -1 means not applicable (semblance, energy, joint) or
+     * unknown (a record written before this field existed).
+     */
+    int32_t degrees_of_freedom;
+
     /* Valid only when solved is true. emission_time_us/iterations/
      * converged are meaningful only for the iterative Gauss-Newton TDOA
      * solver -- 0/false for every other method's solved run, not omitted,
