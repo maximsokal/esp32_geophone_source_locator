@@ -10,7 +10,9 @@
 #include "localization_event_run_record.h"
 #include "localization_run_store.h"
 #include "seismic_dsp.h"
+#include "scan_occupancy.h"
 #include "seismic_recorder.h"
+#include "storage_manager.h"
 
 
 /*
@@ -33,6 +35,64 @@
 
 #define LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK \
     ((1U << OBJECT_STORE_POD_COUNT) - 1U)
+
+
+/*
+ * MAX-147/162: loads the compact scan occupancy saved beside THIS session's
+ * scan (never another session's or the object's latest). ESP_ERR_NOT_FOUND
+ * when the session has no occupancy artifact.
+ */
+static esp_err_t load_session_occupancy(
+    const char *object_id,
+    const char *session_id,
+    scan_occupancy_t *occupancy
+)
+{
+    char path[192];
+    const int written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    if (written <= 0 || (size_t)written >= sizeof(path)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        return err;
+    }
+    uint8_t *data = NULL;
+    size_t length = 0U;
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+    } else {
+        long size = -1L;
+        if (fseek(file, 0L, SEEK_END) == 0) {
+            size = ftell(file);
+        }
+        if (size <= 0L || (unsigned long)size > SCAN_OCCUPANCY_MAX_BYTES || fseek(file, 0L, SEEK_SET) != 0) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else {
+            data = heap_caps_malloc((size_t)size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (data == NULL) {
+                err = ESP_ERR_NO_MEM;
+            } else if (fread(data, 1U, (size_t)size, file) != (size_t)size) {
+                err = ESP_FAIL;
+            } else {
+                length = (size_t)size;
+            }
+        }
+        fclose(file);
+    }
+    storage_manager_operation_end();
+
+    if (err == ESP_OK) {
+        err = scan_occupancy_parse(data, length, occupancy);
+    }
+    heap_caps_free(data);
+    return err;
+}
 
 
 static void free_channel_buffers(
@@ -344,7 +404,11 @@ esp_err_t localization_calculate_run(
         .propagation_speed_uncertainty_mps = config->propagation_speed_uncertainty_mps,
     };
 
-    localization_run_record_t records[4];
+    /* Four unconstrained methods (fused below) plus up to two
+     * scan-constrained variants (MAX-147), which are persisted for
+     * comparison but never fused -- the joint result stays the
+     * unconstrained one. */
+    localization_run_record_t records[6];
     size_t record_count = 0U;
 
     /* --- TDOA (Gauss-Newton), via the existing MAX-135 bridge ------------ */
@@ -534,6 +598,111 @@ esp_err_t localization_calculate_run(
     }
     ++record_count;
 
+    const size_t fused_record_count = record_count;
+
+    /* --- MAX-147: scan-occupancy-constrained variants ---------------------
+     * Only from the occupancy saved with THIS session's scan, and only with a
+     * registration made against this exact frozen geometry; otherwise the
+     * constraint is recorded as not applied (fail closed). The
+     * unconstrained records above are always kept for comparison. */
+    scan_occupancy_t occupancy;
+    const esp_err_t occupancy_err = load_session_occupancy(object_id, session_id, &occupancy);
+    if (occupancy_err != ESP_ERR_NOT_FOUND) {
+        const bool usable =
+            occupancy_err == ESP_OK &&
+            scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms);
+        const char *not_applied_reason =
+            occupancy_err != ESP_OK
+                ? "scan occupancy artifact unreadable or invalid: constraint not applied"
+                : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied";
+
+        /* Traveltime, constrained. */
+        localization_traveltime_result_t constrained_traveltime;
+        memset(&constrained_traveltime, 0, sizeof(constrained_traveltime));
+        esp_err_t constrained_traveltime_err = ESP_ERR_INVALID_STATE;
+        if (usable) {
+            localization_traveltime_config_t constrained_config = traveltime_config;
+            constrained_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            constrained_config.candidate_filter.context = &occupancy;
+            constrained_traveltime_err = localization_traveltime_search(
+                traveltime_picks, OBJECT_STORE_POD_COUNT, &traveltime_bounds,
+                &constrained_config, &constrained_traveltime
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_traveltime_to_run_record(
+            &context, constrained_traveltime_err == ESP_OK ? &constrained_traveltime : NULL,
+            traveltime_used_mask, traveltime_rejected_mask,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+            &records[record_count]
+        );
+        localization_calculate_apply_redundancy(
+            &records[record_count],
+            localization_calculate_degrees_of_freedom(
+                constrained_traveltime.picks_used_count,
+                dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
+            )
+        );
+        snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
+                 "%s", "traveltime_inversion_scan_constrained");
+        if (!usable) {
+            records[record_count].solved = false;
+            snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
+                     "%s", not_applied_reason);
+        }
+        free(constrained_traveltime.surface);
+        ++record_count;
+
+        /* Semblance, constrained. */
+        localization_semblance_result_t constrained_semblance;
+        memset(&constrained_semblance, 0, sizeof(constrained_semblance));
+        esp_err_t constrained_semblance_err = ESP_ERR_INVALID_STATE;
+        if (usable && semblance_attempted) {
+            localization_semblance_channel_t semblance_channels[OBJECT_STORE_POD_COUNT];
+            size_t semblance_channel_count = 0U;
+            for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+                if (geometry.pods[ch].computed) {
+                    semblance_channels[semblance_channel_count].samples = channel_samples[ch];
+                    semblance_channels[semblance_channel_count].sample_count = frame_count;
+                    semblance_channels[semblance_channel_count].sample_rate_hz = session_summary.sample_rate_hz;
+                    semblance_channels[semblance_channel_count].sensor_position = event_channels[ch].sensor_position;
+                    ++semblance_channel_count;
+                }
+            }
+            localization_semblance_config_t constrained_config = {
+                .propagation_speed_mps = config->propagation_speed_mps,
+                .reference_sample_index = reference_sample_index,
+                .window_half_span_samples = config->semblance_window_half_span_samples,
+                .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+            };
+            constrained_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            constrained_config.candidate_filter.context = &occupancy;
+            constrained_semblance_err = localization_semblance_search(
+                semblance_channels, semblance_channel_count, &semblance_bounds,
+                &constrained_config, &constrained_semblance
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_semblance_to_run_record(
+            &context,
+            (usable && semblance_attempted && constrained_semblance_err == ESP_OK) ? &constrained_semblance : NULL,
+            !usable
+                ? not_applied_reason
+                : (semblance_attempted
+                    ? "scan occupancy excluded every candidate or the search failed"
+                    : "no accepted arrival pick to anchor the search window"),
+            all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
+        );
+        snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
+                 "%s", "semblance_scan_constrained");
+        ++record_count;
+
+        if (occupancy_err == ESP_OK) {
+            scan_occupancy_free(&occupancy);
+        }
+    }
+
     free_channel_buffers(channel_samples);
 
     for (size_t i = 0U; i < record_count; ++i) {
@@ -557,14 +726,14 @@ esp_err_t localization_calculate_run(
     /* --- Joint quality-weighted fusion (MAX-138 part 4) ------------------- */
 
     localization_comparison_method_result_t comparison_methods[4];
-    for (size_t i = 0U; i < record_count; ++i) {
+    for (size_t i = 0U; i < fused_record_count; ++i) {
         localization_calculate_run_record_to_comparison_method(&records[i], &comparison_methods[i]);
     }
 
     localization_comparison_result_t comparison_result;
     memset(&comparison_result, 0, sizeof(comparison_result));
     const esp_err_t comparison_err = localization_comparison_fuse(
-        comparison_methods, record_count, &comparison_result
+        comparison_methods, fused_record_count, &comparison_result
     );
 
     localization_run_record_t joint_record;

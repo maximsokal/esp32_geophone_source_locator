@@ -601,8 +601,57 @@ static void test_fractional_arrival_time(void)
 }
 
 
+/* MAX-147: scan-constrained admission. Occupancy (voxel 1 m): FREE cell
+ * (2,0,0), OCCUPIED cell (0,0,0); envelope [-1,-1,-1]..[4,4,1] with 2 m of
+ * candidate volume below it. Registration shifts sensor x by +1 m. */
+static int64_t test_pack_key(int32_t ix, int32_t iy, int32_t iz)
+{
+    return ((int64_t)(ix + 32768) << 32) | ((int64_t)(iy + 32768) << 16) | (int64_t)(iz + 32768);
+}
+
+static void test_scan_candidate_filter_rejects_free_and_outside(void)
+{
+    int64_t free_keys[1] = { test_pack_key(2, 0, 0) };
+    int64_t occupied_keys[1] = { test_pack_key(0, 0, 0) };
+    scan_occupancy_t occupancy;
+    memset(&occupancy, 0, sizeof(occupancy));
+    occupancy.voxel_size_m = 1.0;
+    occupancy.below_surface_m = 2.0;
+    occupancy.has_envelope = true;
+    occupancy.envelope_min[0] = -1.0; occupancy.envelope_min[1] = -1.0; occupancy.envelope_min[2] = -1.0;
+    occupancy.envelope_max[0] = 4.0; occupancy.envelope_max[1] = 4.0; occupancy.envelope_max[2] = 1.0;
+    occupancy.free_keys = free_keys;
+    occupancy.free_count = 1U;
+    occupancy.occupied_keys = occupied_keys;
+    occupancy.occupied_count = 1U;
+    occupancy.registration.present = true;
+    occupancy.registration.geometry_computed_at_ms = 42U;
+    const double identity_shift[16] = { 1, 0, 0, 1,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1 };
+    memcpy(occupancy.registration.sensor_to_scan, identity_shift, sizeof(identity_shift));
+    assert(scan_occupancy_registration_usable(&occupancy, 42U));
+
+    /* sensor (1.5,0.5,0.5) -> scan (2.5,0.5,0.5): FREE air -> rejected. */
+    const localization_point3d_t in_free = { 1.5, 0.5, 0.5 };
+    /* sensor (-0.5,0.5,0.5) -> scan (0.5,...): OCCUPIED surface -> allowed. */
+    const localization_point3d_t in_occupied = { -0.5, 0.5, 0.5 };
+    /* sensor (1.5,2.5,-2.0) -> scan (2.5,2.5,-2.0): UNKNOWN below surface -> allowed. */
+    const localization_point3d_t below_surface = { 1.5, 2.5, -2.0 };
+    /* sensor (1.5,2.5,-4.0): deeper than the declared candidate volume -> rejected. */
+    const localization_point3d_t too_deep = { 1.5, 2.5, -4.0 };
+    /* sensor (9,0,0): outside the scanned object -> rejected. */
+    const localization_point3d_t outside = { 9.0, 0.0, 0.0 };
+
+    assert(!localization_calculate_scan_candidate_allowed(&in_free, &occupancy));
+    assert(localization_calculate_scan_candidate_allowed(&in_occupied, &occupancy));
+    assert(localization_calculate_scan_candidate_allowed(&below_surface, &occupancy));
+    assert(!localization_calculate_scan_candidate_allowed(&too_deep, &occupancy));
+    assert(!localization_calculate_scan_candidate_allowed(&outside, &occupancy));
+}
+
+
 int main(void)
 {
+    test_scan_candidate_filter_rejects_free_and_outside();
     test_quality_from_residual_matches_the_gaussian_formula();
     test_quality_from_residual_fails_closed_not_nan();
     test_participating_channels_counts_and_masks_computed_pods();

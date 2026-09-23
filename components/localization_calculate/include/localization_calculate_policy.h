@@ -11,6 +11,7 @@
 #include "localization_semblance.h"
 #include "localization_traveltime_inversion.h"
 #include "object_store.h"
+#include "scan_occupancy.h"
 
 /*
  * Pure policy/adapter layer for MAX-168: everything here is plain math over
@@ -301,5 +302,20 @@ bool localization_calculate_xcorr_relative_delay(
     size_t max_lag_samples,
     double max_adjust_samples,
     double *delay_samples_out
+);
+
+
+/*
+ * MAX-147: candidate filter for the grid-search backends. `context` is a
+ * `const scan_occupancy_t *` whose registration the caller has already
+ * checked with scan_occupancy_registration_usable(). The candidate (sensor
+ * frame) is transformed into the scan frame and admitted only in UNKNOWN or
+ * OCCUPIED cells: scan-verified FREE air and space outside the scanned
+ * candidate volume can never hold the source. UNKNOWN is never treated as
+ * empty.
+ */
+bool localization_calculate_scan_candidate_allowed(
+    const localization_point3d_t *candidate,
+    void *context
 );
 

@@ -89,6 +89,9 @@ typedef struct
      * integer factor that fits, reported as result.coarse_step_m_used. */
     size_t max_coarse_candidates;
 
+    /* MAX-147: candidates the filter rejects are never scored. */
+    localization_candidate_filter_t candidate_filter;
+
 } localization_semblance_config_t;
 
 

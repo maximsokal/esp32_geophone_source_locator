@@ -224,7 +224,9 @@ void localization_calculate_traveltime_to_run_record(
         record_out->solved = false;
         snprintf(
             record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
-            "insufficient accepted picks for traveltime inversion"
+            result != NULL && result->status == LOCALIZATION_TRAVELTIME_NO_ALLOWED_CANDIDATE
+                ? "scan occupancy excluded every candidate (verified FREE air or outside the scan)"
+                : "insufficient accepted picks for traveltime inversion"
         );
         return;
     }
@@ -623,5 +625,22 @@ bool localization_calculate_xcorr_relative_delay(
 
     *delay_samples_out = result.delay_refined_samples;
     return true;
+}
+
+
+bool localization_calculate_scan_candidate_allowed(
+    const localization_point3d_t *candidate,
+    void *context
+)
+{
+    const scan_occupancy_t *occupancy = (const scan_occupancy_t *)context;
+    if (candidate == NULL || occupancy == NULL) {
+        return true;
+    }
+    const double sensor[3] = { candidate->x_m, candidate->y_m, candidate->z_m };
+    double scan[3];
+    scan_occupancy_sensor_to_scan(occupancy, sensor, scan);
+    const scan_occupancy_class_t cls = scan_occupancy_classify(occupancy, scan);
+    return cls == SCAN_OCCUPANCY_UNKNOWN || cls == SCAN_OCCUPANCY_OCCUPIED;
 }
 
