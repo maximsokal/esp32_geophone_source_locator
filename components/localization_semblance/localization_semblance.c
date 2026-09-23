@@ -54,6 +54,52 @@ static bool axis_count(
  * out-of-buffer samples are treated as silence, which naturally penalizes
  * (rather than crashes on) a candidate with no real evidence there.
  */
+static bool grid_total(
+    localization_point3d_t min_corner,
+    localization_point3d_t max_corner,
+    double step_m,
+    size_t *out_total
+)
+{
+    size_t count_x = 0u;
+    size_t count_y = 0u;
+    size_t count_z = 0u;
+    if (
+        !axis_count(min_corner.x_m, max_corner.x_m, step_m, &count_x) ||
+        !axis_count(min_corner.y_m, max_corner.y_m, step_m, &count_y) ||
+        !axis_count(min_corner.z_m, max_corner.z_m, step_m, &count_z) ||
+        count_x > SIZE_MAX / count_y ||
+        count_x * count_y > SIZE_MAX / count_z
+    ) {
+        return false;
+    }
+    *out_total = count_x * count_y * count_z;
+    return true;
+}
+
+
+/* Smallest integer multiple of the requested step whose grid fits the
+ * candidate budget (MAX-208). */
+static bool budgeted_step(
+    localization_point3d_t min_corner,
+    localization_point3d_t max_corner,
+    double requested_step_m,
+    size_t budget,
+    double *out_step_m
+)
+{
+    for (unsigned factor = 1u; factor <= 100000u; ++factor) {
+        const double step_m = requested_step_m * (double)factor;
+        size_t total = 0u;
+        if (grid_total(min_corner, max_corner, step_m, &total) && total <= budget) {
+            *out_step_m = step_m;
+            return true;
+        }
+    }
+    return false;
+}
+
+
 static void compute_semblance_at(
     localization_point3d_t candidate,
     const localization_semblance_channel_t *channels,
@@ -264,6 +310,18 @@ esp_err_t localization_semblance_search(
         .candidates_searched = 0u
     };
 
+    const size_t budget =
+        config->max_coarse_candidates == 0u
+        ? LOCALIZATION_SEMBLANCE_DEFAULT_MAX_COARSE_CANDIDATES
+        : config->max_coarse_candidates;
+    double coarse_step_m = coarse_bounds->step_m;
+    if (!budgeted_step(
+            coarse_bounds->min_corner, coarse_bounds->max_corner,
+            coarse_bounds->step_m, budget, &coarse_step_m)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    result->coarse_step_m_used = coarse_step_m;
+
     /* One stack buffer for the whole search instead of one allocation per
      * candidate position. */
     double *stack = calloc(2u * config->window_half_span_samples + 1u, sizeof(double));
@@ -274,7 +332,7 @@ esp_err_t localization_semblance_search(
     esp_err_t err = search_grid(
         coarse_bounds->min_corner,
         coarse_bounds->max_corner,
-        coarse_bounds->step_m,
+        coarse_step_m,
         channels,
         channel_count,
         config,
@@ -286,19 +344,19 @@ esp_err_t localization_semblance_search(
         return err;
     }
 
-    const double fine_step_m = coarse_bounds->step_m / (double)config->refine_divisor;
+    const double fine_step_m = coarse_step_m / (double)config->refine_divisor;
     const bool is_2d = coarse_bounds->min_corner.z_m == coarse_bounds->max_corner.z_m;
 
     const localization_point3d_t coarse_best = result->best_position;
     const localization_point3d_t fine_min = {
-        .x_m = coarse_best.x_m - coarse_bounds->step_m,
-        .y_m = coarse_best.y_m - coarse_bounds->step_m,
-        .z_m = is_2d ? coarse_best.z_m : coarse_best.z_m - coarse_bounds->step_m
+        .x_m = coarse_best.x_m - coarse_step_m,
+        .y_m = coarse_best.y_m - coarse_step_m,
+        .z_m = is_2d ? coarse_best.z_m : coarse_best.z_m - coarse_step_m
     };
     const localization_point3d_t fine_max = {
-        .x_m = coarse_best.x_m + coarse_bounds->step_m,
-        .y_m = coarse_best.y_m + coarse_bounds->step_m,
-        .z_m = is_2d ? coarse_best.z_m : coarse_best.z_m + coarse_bounds->step_m
+        .x_m = coarse_best.x_m + coarse_step_m,
+        .y_m = coarse_best.y_m + coarse_step_m,
+        .z_m = is_2d ? coarse_best.z_m : coarse_best.z_m + coarse_step_m
     };
 
     err = search_grid(

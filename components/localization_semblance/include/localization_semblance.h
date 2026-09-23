@@ -32,6 +32,9 @@
 
 #define LOCALIZATION_SEMBLANCE_MAX_CHANNELS 8U
 
+/* Each candidate costs channel_count x (2 * half_span + 1) samples. */
+#define LOCALIZATION_SEMBLANCE_DEFAULT_MAX_COARSE_CANDIDATES 200000U
+
 
 typedef struct
 {
@@ -80,6 +83,12 @@ typedef struct
      * step_m / refine_divisor (>= 2). */
     uint32_t refine_divisor;
 
+    /* MAX-208 time budget: the coarse grid never exceeds this many
+     * candidates (0 selects LOCALIZATION_SEMBLANCE_DEFAULT_MAX_COARSE_CANDIDATES);
+     * a larger requested grid enlarges the coarse step by the smallest
+     * integer factor that fits, reported as result.coarse_step_m_used. */
+    size_t max_coarse_candidates;
+
 } localization_semblance_config_t;
 
 
@@ -90,6 +99,7 @@ typedef struct
     double best_semblance;      /* [0, 1]; 1.0 = perfectly coherent stack */
     double worst_semblance;     /* diagnostic: worst score seen in the search */
     size_t candidates_searched; /* diagnostic: total grid points evaluated (both passes) */
+    double coarse_step_m_used;  /* >= the requested step; larger only when over budget */
 
 } localization_semblance_result_t;
 

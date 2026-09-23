@@ -1,5 +1,6 @@
 #include "localization_calculate.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -301,6 +302,10 @@ esp_err_t localization_calculate_run(
         .propagation_speed_mps = config->propagation_speed_mps,
         .timing_uncertainty_us = config->timing_uncertainty_us,
         .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+        /* MAX-208: streaming search within the default candidate budget; the
+         * per-candidate surface is not persisted, so it is never built. */
+        .max_coarse_candidates = 0U,
+        .retain_surface = false,
     };
     localization_traveltime_result_t traveltime_result;
     memset(&traveltime_result, 0, sizeof(traveltime_result));
@@ -317,9 +322,7 @@ esp_err_t localization_calculate_run(
         &records[record_count]
     );
     ++record_count;
-    if (traveltime_err == ESP_OK && traveltime_result.status == LOCALIZATION_TRAVELTIME_SOLVED) {
-        free(traveltime_result.surface);
-    }
+    free(traveltime_result.surface);
 
     /* --- Semblance / coherency (MAX-137) ---------------------------------
      * Uses every participating channel's raw DC-removed window regardless
