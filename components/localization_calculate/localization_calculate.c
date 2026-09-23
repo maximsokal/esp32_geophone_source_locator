@@ -644,7 +644,7 @@ esp_err_t localization_calculate_run(
             )
         );
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
-                 "%s", "traveltime_inversion_scan_constrained");
+                 "%s", "traveltime_scan_constrained");
         if (!usable) {
             records[record_count].solved = false;
             snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
