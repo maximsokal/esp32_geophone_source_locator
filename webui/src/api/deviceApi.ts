@@ -375,6 +375,8 @@ export interface LocalizationSessionPodGeometry {
   x_mm?: number;
   y_mm?: number;
   z_mm?: number;
+  /** Largest |solved - measured| CS distance for this pod (MAX-205). */
+  residual_mm?: number;
   computed_at_ms?: number;
 }
 

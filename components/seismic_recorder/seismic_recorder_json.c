@@ -159,6 +159,7 @@ static bool seismic_recorder_json_add_geometry(
             cJSON_AddNumberToObject(pod_object, "x_mm", pod->x_mm) == NULL ||
             cJSON_AddNumberToObject(pod_object, "y_mm", pod->y_mm) == NULL ||
             cJSON_AddNumberToObject(pod_object, "z_mm", pod->z_mm) == NULL ||
+            cJSON_AddNumberToObject(pod_object, "residual_mm", pod->residual_mm) == NULL ||
             cJSON_AddNumberToObject(
                 pod_object,
                 "computed_at_ms",
@@ -856,6 +857,7 @@ esp_err_t seismic_recorder_read_session_geometry(
         cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
         cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
         cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
+        cJSON *residual_mm = cJSON_GetObjectItemCaseSensitive(pod, "residual_mm");
         cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
         if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
             continue;
@@ -865,6 +867,11 @@ esp_err_t seismic_recorder_read_session_geometry(
         geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
         geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
         geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
+        geometry->pods[i].residual_mm =
+            cJSON_IsNumber(residual_mm) && residual_mm->valuedouble >= 0.0 &&
+            residual_mm->valuedouble <= (double)INT32_MAX
+            ? (int32_t)residual_mm->valuedouble
+            : 0;
         geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
             ? (uint64_t)computed_at->valuedouble
             : 0U;

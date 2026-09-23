@@ -2,6 +2,7 @@
 
 #include "runtime_observability.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,11 @@
 #define SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE   500U
 #define SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS            50U
 #define SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS      15000U
+
+/* MAX-204: uncalibrated BME280 units disagree by up to ~+-8 m of apparent
+ * height, so the frozen layout is planar until per-device barometric offset
+ * calibration exists (see seismic_recorder_geometry_z_policy_t). */
+#define SEISMIC_RECORDER_GEOMETRY_Z_POLICY SEISMIC_RECORDER_GEOMETRY_Z_PLANAR
 
 
 static const char *TAG = "SEISMIC_RECORDER";
@@ -1153,15 +1159,18 @@ static esp_err_t seismic_recorder_prepare_geometry(
         if (!cache.response_valid || !cache.topology_current) {
             continue;
         }
-        channels[channel].altitude_valid = true;
-        channels[channel].altitude_mm = cache.sensor.altitude_mm;
+        channels[channel].sensor_valid = true;
+        channels[channel].barometric_altitude_mm = cache.sensor.altitude_mm;
         channels[channel].leveled =
             cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
     }
 
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t input_count = 0U;
-    err = seismic_recorder_geometry_build_inputs(&topology, channels, inputs, NRF_GEOMETRY_MAX_NODES, &input_count);
+    err = seismic_recorder_geometry_build_inputs(
+        &topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_POLICY,
+        inputs, NRF_GEOMETRY_MAX_NODES, &input_count
+    );
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "START rejected: could not build geometry inputs err=%s", esp_err_to_name(err));
         return err;
@@ -1181,6 +1190,16 @@ static esp_err_t seismic_recorder_prepare_geometry(
 
     if (!seismic_recorder_geometry_all_assigned_pods_computed(&topology, &geometry)) {
         ESP_LOGE(TAG, "START rejected: geometry incomplete for one or more assigned pods");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!seismic_recorder_geometry_solution_consistent(&solution)) {
+        ESP_LOGE(
+            TAG,
+            "START rejected: CS geometry inconsistent max_residual_mm=%" PRId32 " inconsistent_pairs=%u",
+            solution.max_residual_mm,
+            (unsigned)solution.inconsistent_pair_count
+        );
         return ESP_ERR_INVALID_STATE;
     }
 

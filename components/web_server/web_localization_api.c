@@ -150,8 +150,13 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             );
             web_json_writer_printf(
                 &writer,
-                "\"z_mm\":%" PRId32 ",\"computed_at_ms\":%" PRIu64 "}",
+                "\"z_mm\":%" PRId32 ",\"residual_mm\":%" PRId32 ",",
                 geometry.pods[pod].z_mm,
+                geometry.pods[pod].residual_mm
+            );
+            web_json_writer_printf(
+                &writer,
+                "\"computed_at_ms\":%" PRIu64 "}",
                 geometry.pods[pod].computed_at_ms
             );
         } else {

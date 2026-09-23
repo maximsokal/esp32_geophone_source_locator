@@ -316,6 +316,154 @@ static void test_z_passes_through_unmodified(void)
     assert(iabs(a->x_mm - 300) <= 1);
 }
 
+/* MAX-205: a slant distance shorter than the height difference is physically
+ * impossible; it must not collapse to a zero horizontal distance and be
+ * reported as a solved position on top of MAIN. */
+static void test_impossible_height_difference_is_not_solved(void)
+{
+    nrf_geometry_node_input_t inputs[2] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 110000},
+    };
+    nrf_cs_pair_result_t pairs[1] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 5000),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 2U, pairs, 1U, &solution) ==
+           NRF_GEOMETRY_OK);
+    const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
+    assert(a != NULL && !a->solved);
+    assert(solution.inconsistent_pair_count == 1U);
+}
+
+/* Circles that miss by far more than range noise must not fall back to an
+ * arbitrary +X placement. MAIN=(0,0), A=(4000,0); B claims 1000 mm to both. */
+static void test_disjoint_reference_circles_leave_node_unsolved(void)
+{
+    nrf_geometry_node_input_t inputs[3] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[3] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 4000),
+        make_pair(0U, 2U, NRF_CS_PAIR_VALID, 1000),
+        make_pair(1U, 2U, NRF_CS_PAIR_VALID, 1000),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 3U, &solution) ==
+           NRF_GEOMETRY_OK);
+    const nrf_geometry_node_position_t *b = find_node(&solution, 2U);
+    assert(b != NULL && !b->solved);
+}
+
+/* A small miss (range noise) is resolved at the closest-approach midpoint,
+ * with the disagreement reported as a residual rather than hidden. */
+static void test_near_miss_within_tolerance_is_solved_with_residual(void)
+{
+    nrf_geometry_node_input_t inputs[3] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[3] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 4000),
+        make_pair(0U, 2U, NRF_CS_PAIR_VALID, 1900),
+        make_pair(1U, 2U, NRF_CS_PAIR_VALID, 1900),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 3U, &solution) ==
+           NRF_GEOMETRY_OK);
+    const nrf_geometry_node_position_t *b = find_node(&solution, 2U);
+    assert(b != NULL && b->solved);
+    assert(iabs(b->x_mm - 2000) <= 1 && iabs(b->y_mm) <= 1);
+    assert(b->residual_mm == 100);
+    assert(solution.max_residual_mm == 100);
+    assert(solution.inconsistent_pair_count == 0U);
+}
+
+/* Only the first node after MAIN may be placed from a single distance; a
+ * later one would be an arbitrary point on a circle. */
+static void test_second_single_reference_node_stays_unsolved(void)
+{
+    nrf_geometry_node_input_t inputs[3] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[2] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 3000),
+        make_pair(0U, 2U, NRF_CS_PAIR_VALID, 3000),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 2U, &solution) ==
+           NRF_GEOMETRY_OK);
+    assert(find_node(&solution, 1U)->solved);
+    assert(!find_node(&solution, 2U)->solved);
+}
+
+/* Once the layout's reflection is fixed, two references that leave two
+ * clearly distinct mirror candidates must not be resolved by guessing.
+ * MAIN=(0,0), A=(3000,0), B=(0,3000); C pairs only with A and B. */
+static void test_two_reference_mirror_ambiguity_after_reflection_fixed(void)
+{
+    nrf_geometry_node_input_t inputs[4] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+        {.node_id = 3U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[5] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 3000),
+        make_pair(0U, 2U, NRF_CS_PAIR_VALID, 3000),
+        make_pair(1U, 2U, NRF_CS_PAIR_VALID, 4243),
+        /* C truly at (3000,3000): 3000 to A and to B; mirror is (0,0). */
+        make_pair(1U, 3U, NRF_CS_PAIR_VALID, 3000),
+        make_pair(2U, 3U, NRF_CS_PAIR_VALID, 3000),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 4U, pairs, 5U, &solution) ==
+           NRF_GEOMETRY_OK);
+    assert(find_node(&solution, 1U)->solved);
+    assert(find_node(&solution, 2U)->solved);
+    assert(!find_node(&solution, 3U)->solved);
+}
+
+/* A reference that disagrees with the two-circle placement by more than the
+ * tolerance makes the node unsolved instead of silently accepted.
+ * MAIN=(0,0), A=(3000,0), B=(0,4000); C truly at (3000,4000) but its pair
+ * to MAIN claims 3200 mm instead of 5000 mm -- 1800 mm off from both the
+ * true point and its mirror across A-B, (-840,1120) at 1400 mm from MAIN. */
+static void test_contradicting_third_reference_leaves_node_unsolved(void)
+{
+    nrf_geometry_node_input_t inputs[4] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+        {.node_id = 3U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[6] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 3000),
+        make_pair(0U, 2U, NRF_CS_PAIR_VALID, 4000),
+        make_pair(1U, 2U, NRF_CS_PAIR_VALID, 5000),
+        make_pair(0U, 3U, NRF_CS_PAIR_VALID, 3200),
+        make_pair(1U, 3U, NRF_CS_PAIR_VALID, 4000),
+        make_pair(2U, 3U, NRF_CS_PAIR_VALID, 3000),
+    };
+    nrf_geometry_solution_t solution;
+
+    assert(nrf_geometry_solver_solve(inputs, 4U, pairs, 6U, &solution) ==
+           NRF_GEOMETRY_OK);
+    assert(find_node(&solution, 1U)->solved);
+    assert(find_node(&solution, 2U)->solved);
+    assert(!find_node(&solution, 3U)->solved);
+}
+
 int main(void)
 {
     test_rejects_missing_main_and_bad_arguments();
@@ -328,5 +476,11 @@ int main(void)
     test_trilateration_with_mirror_disambiguation();
     test_z_passes_through_unmodified();
     test_deterministic_randomized_noise_and_node_order();
+    test_impossible_height_difference_is_not_solved();
+    test_disjoint_reference_circles_leave_node_unsolved();
+    test_near_miss_within_tolerance_is_solved_with_residual();
+    test_second_single_reference_node_stays_unsolved();
+    test_two_reference_mirror_ambiguity_after_reflection_fixed();
+    test_contradicting_third_reference_leaves_node_unsolved();
     return 0;
 }
