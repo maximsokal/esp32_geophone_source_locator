@@ -576,6 +576,9 @@ export default function App({ objectId, sessionId }: AppProps) {
                 <div><dt>Known free air voxels</dt><dd>{scanSnapshot.knownFreeVoxelCount.toLocaleString()}</dd></div>
                 <div><dt>Observed surface voxels</dt><dd>{scanSnapshot.occupiedSurfaceVoxelCount.toLocaleString()}</dd></div>
                 <div><dt>Unknown / candidate voxels</dt><dd>{scanSnapshot.unknownCandidateVoxelCount.toLocaleString()}</dd></div>
+                {scanSnapshot.occupancyCellsSaturated === true && (
+                  <div><dt>Occupancy map full</dt><dd>{(scanSnapshot.occupancyDroppedCellUpdates ?? 0).toLocaleString()} updates dropped — areas scanned late stay UNKNOWN</dd></div>
+                )}
                 {scanSnapshot.occupancyBridgeRescanComponentCount > 0 && (
                   <div><dt>Rescan bridge islands</dt><dd>{scanSnapshot.occupancyBridgeRescanComponentCount.toLocaleString()}</dd></div>
                 )}
