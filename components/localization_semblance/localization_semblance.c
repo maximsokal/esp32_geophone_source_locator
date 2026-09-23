@@ -54,22 +54,29 @@ static bool axis_count(
  * out-of-buffer samples are treated as silence, which naturally penalizes
  * (rather than crashes on) a candidate with no real evidence there.
  */
-static bool compute_semblance_at(
+static void compute_semblance_at(
     localization_point3d_t candidate,
     const localization_semblance_channel_t *channels,
     size_t channel_count,
     const localization_semblance_config_t *config,
+    double *stack,
     double *out_semblance
 )
 {
     const size_t window_len = 2u * config->window_half_span_samples + 1u;
-    double *stack = calloc(window_len, sizeof(double));
-    if (stack == NULL) {
-        return false;
+    for (size_t t = 0u; t < window_len; ++t) {
+        stack[t] = 0.0;
     }
 
-    double sum_squares_all = 0.0;
-
+    /* MAX-207: reference_sample_index is the EARLIEST observed arrival, which
+     * already contains the (unknown) origin time plus the travel time to the
+     * nearest sensor. Only differential delays are therefore added: the
+     * channel with the shortest predicted travel time is aligned exactly on
+     * the reference, every other channel later by its extra travel time.
+     * Adding the full travel time again would shift every window late by
+     * this candidate's own minimum travel time. */
+    long shift_samples[LOCALIZATION_SEMBLANCE_MAX_CHANNELS];
+    long min_shift = LONG_MAX;
     for (size_t ch = 0u; ch < channel_count; ++ch) {
         const double dx = candidate.x_m - channels[ch].sensor_position.x_m;
         const double dy = candidate.y_m - channels[ch].sensor_position.y_m;
@@ -77,13 +84,20 @@ static bool compute_semblance_at(
         const double distance = sqrt(dx * dx + dy * dy + dz * dz);
         const double predicted_delay_s =
             distance / config->propagation_speed_mps;
-        const long shift_samples = (long)llround(
+        shift_samples[ch] = (long)llround(
             predicted_delay_s * (double)channels[ch].sample_rate_hz
         );
+        if (shift_samples[ch] < min_shift) {
+            min_shift = shift_samples[ch];
+        }
+    }
 
+    double sum_squares_all = 0.0;
+
+    for (size_t ch = 0u; ch < channel_count; ++ch) {
         const long window_start =
             (long)config->reference_sample_index +
-            shift_samples -
+            (shift_samples[ch] - min_shift) -
             (long)config->window_half_span_samples;
 
         for (size_t t = 0u; t < window_len; ++t) {
@@ -101,13 +115,11 @@ static bool compute_semblance_at(
     for (size_t t = 0u; t < window_len; ++t) {
         sum_stack_squares += stack[t] * stack[t];
     }
-    free(stack);
 
     *out_semblance =
         sum_squares_all > 0.0
         ? sum_stack_squares / ((double)channel_count * sum_squares_all)
         : 0.0;
-    return true;
 }
 
 
@@ -118,6 +130,7 @@ static esp_err_t search_grid(
     const localization_semblance_channel_t *channels,
     size_t channel_count,
     const localization_semblance_config_t *config,
+    double *stack,
     localization_semblance_result_t *result
 )
 {
@@ -148,13 +161,9 @@ static esp_err_t search_grid(
 
                 const localization_point3d_t candidate = { x, y, z };
                 double semblance = 0.0;
-                if (
-                    !compute_semblance_at(
-                        candidate, channels, channel_count, config, &semblance
-                    )
-                ) {
-                    return ESP_ERR_NO_MEM;
-                }
+                compute_semblance_at(
+                    candidate, channels, channel_count, config, stack, &semblance
+                );
 
                 result->candidates_searched += 1u;
                 if (semblance > result->best_semblance) {
@@ -255,6 +264,13 @@ esp_err_t localization_semblance_search(
         .candidates_searched = 0u
     };
 
+    /* One stack buffer for the whole search instead of one allocation per
+     * candidate position. */
+    double *stack = calloc(2u * config->window_half_span_samples + 1u, sizeof(double));
+    if (stack == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     esp_err_t err = search_grid(
         coarse_bounds->min_corner,
         coarse_bounds->max_corner,
@@ -262,9 +278,11 @@ esp_err_t localization_semblance_search(
         channels,
         channel_count,
         config,
+        stack,
         result
     );
     if (err != ESP_OK || !result->found) {
+        free(stack);
         return err;
     }
 
@@ -283,7 +301,9 @@ esp_err_t localization_semblance_search(
         .z_m = is_2d ? coarse_best.z_m : coarse_best.z_m + coarse_bounds->step_m
     };
 
-    return search_grid(
-        fine_min, fine_max, fine_step_m, channels, channel_count, config, result
+    err = search_grid(
+        fine_min, fine_max, fine_step_m, channels, channel_count, config, stack, result
     );
+    free(stack);
+    return err;
 }
