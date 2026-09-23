@@ -110,6 +110,7 @@ function pickStatusLabel(status: LocalizationPickRecord['channels'][number]['sta
     case 'rejected_no_trigger': return 'no trigger';
     case 'rejected_no_refinement': return 'no refinement';
     case 'rejected_low_snr': return 'low SNR';
+    case 'rejected_inconsistent': return 'inconsistent with other channels';
     default: return status;
   }
 }

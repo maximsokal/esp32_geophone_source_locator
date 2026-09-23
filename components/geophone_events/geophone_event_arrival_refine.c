@@ -60,13 +60,49 @@ bool geophone_event_refine_arrival(
 
     result->local_peak_abs = local_peak;
 
-    const float threshold = config->amplitude_fraction * local_peak;
+    size_t peak_index = window_start;
     for (size_t i = window_start; i < window_end_exclusive; ++i) {
-        if (fabsf(samples[i]) >= threshold) {
-            result->found = true;
-            result->refined_index = i;
-            return true;
+        if (fabsf(samples[i]) == local_peak) {
+            peak_index = i;
+            break;
         }
+    }
+
+    /*
+     * MAX-209: the onset is the first threshold crossing that belongs to the
+     * peak's own burst: the mean |x| from the candidate to the peak must be
+     * at least half the threshold. A lone early noise spike above the
+     * threshold is followed by a quiet gap, which pulls that mean far below
+     * it, so the spike is skipped instead of dragging the pick early. The
+     * peak itself always qualifies, so a crossing is always found.
+     */
+    const float threshold = config->amplitude_fraction * local_peak;
+    for (size_t i = window_start; i <= peak_index; ++i) {
+        if (fabsf(samples[i]) < threshold) {
+            continue;
+        }
+
+        double sum_abs = 0.0;
+        for (size_t k = i; k <= peak_index; ++k) {
+            sum_abs += (double)fabsf(samples[k]);
+        }
+        const double mean_abs = sum_abs / (double)(peak_index - i + 1U);
+        if (mean_abs < 0.5 * (double)threshold) {
+            continue;
+        }
+
+        result->found = true;
+        result->refined_index = i;
+        result->refined_fraction = 0.0f;
+        if (i > window_start) {
+            const float before = fabsf(samples[i - 1U]);
+            const float at = fabsf(samples[i]);
+            if (before < threshold && at > before) {
+                /* Linear interpolation of the crossing between i-1 and i. */
+                result->refined_fraction = (threshold - before) / (at - before) - 1.0f;
+            }
+        }
+        return true;
     }
 
     return false;

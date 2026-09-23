@@ -405,7 +405,7 @@ export interface LocalizationSessionCsPairs {
 export interface LocalizationPickChannel {
   channel: number;
   participating: boolean;
-  status: 'accepted' | 'rejected_no_trigger' | 'rejected_no_refinement' | 'rejected_low_snr';
+  status: 'accepted' | 'rejected_no_trigger' | 'rejected_no_refinement' | 'rejected_low_snr' | 'rejected_inconsistent';
   method: string;
   arrival_sample_index: number;
   arrival_time_s: number;

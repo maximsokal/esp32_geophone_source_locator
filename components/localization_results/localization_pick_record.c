@@ -20,6 +20,8 @@ static const char *pick_status_name(
             return "rejected_no_refinement";
         case GEOPHONE_PICK_REJECTED_LOW_SNR:
             return "rejected_low_snr";
+        case GEOPHONE_PICK_REJECTED_INCONSISTENT:
+            return "rejected_inconsistent";
         default:
             return "rejected_no_trigger";
     }
@@ -48,6 +50,10 @@ static bool pick_status_from_name(
     }
     if (strcmp(name, "rejected_low_snr") == 0) {
         *status = GEOPHONE_PICK_REJECTED_LOW_SNR;
+        return true;
+    }
+    if (strcmp(name, "rejected_inconsistent") == 0) {
+        *status = GEOPHONE_PICK_REJECTED_INCONSISTENT;
         return true;
     }
     return false;
@@ -137,6 +143,9 @@ esp_err_t localization_pick_record_to_json(
                 ) != NULL &&
                 cJSON_AddNumberToObject(
                     entry, "arrival_sample_index", (double)channel->pick.arrival_sample_index
+                ) != NULL &&
+                cJSON_AddNumberToObject(
+                    entry, "arrival_subsample_offset", (double)channel->pick.arrival_subsample_offset
                 ) != NULL &&
                 cJSON_AddNumberToObject(
                     entry, "arrival_time_s", (double)channel->pick.arrival_time_s
@@ -293,6 +302,16 @@ esp_err_t localization_pick_record_from_json(
         record->channels[i].participating = participating;
         record->channels[i].pick.arrival_sample_index = (size_t)arrival_sample_index;
         record->channels[i].pick.arrival_time_s = (float)arrival_time_s;
+        /* Optional (MAX-209): absent in records written before the field. */
+        double subsample_offset = 0.0;
+        if (
+            !read_number(entry, "arrival_subsample_offset", &subsample_offset) ||
+            subsample_offset <= -1.0 ||
+            subsample_offset > 0.0
+        ) {
+            subsample_offset = 0.0;
+        }
+        record->channels[i].pick.arrival_subsample_offset = (float)subsample_offset;
         record->channels[i].pick.snr = (float)snr;
         record->channels[i].pick.uncertainty_samples = (size_t)uncertainty_samples;
     }

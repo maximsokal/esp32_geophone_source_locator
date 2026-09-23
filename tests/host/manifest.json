@@ -573,6 +573,7 @@
       "name": "localization_calculate_policy",
       "sources": [
         "components/localization_calculate/localization_calculate_policy.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
         "components/localization_calculate/tests/localization_calculate_policy_test.c"
       ],
       "include_dirs": [

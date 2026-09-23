@@ -77,9 +77,13 @@ bool geophone_event_pick_channel_arrival(
     );
 
     result->arrival_sample_index = refine_result.refined_index;
+    result->arrival_subsample_offset = refine_result.refined_fraction;
     result->arrival_time_s =
         sample_rate_hz > 0u
-        ? (float)refine_result.refined_index / (float)sample_rate_hz
+        ? (float)(
+              ((double)refine_result.refined_index + (double)refine_result.refined_fraction) /
+              (double)sample_rate_hz
+          )
         : 0.0f;
     result->snr = snr;
 

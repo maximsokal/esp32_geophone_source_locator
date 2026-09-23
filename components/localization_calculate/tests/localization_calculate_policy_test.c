@@ -523,6 +523,84 @@ static void test_fusion_mapping_groups_picks_and_excludes_energy(void)
 }
 
 
+/* MAX-209: four sensors 5 m apart at 300 m/s allow at most ~23.6 ms of
+ * arrival difference across the diagonal. Channel 3 "arrived" 0.5 s after
+ * the others (a footstep, not the event) and must be excluded. */
+static void test_consistency_gate_rejects_physically_impossible_pick(void)
+{
+    const localization_point3d_t positions[4] = {
+        { 0.0, 0.0, 0.0 }, { 5.0, 0.0, 0.0 }, { 0.0, 5.0, 0.0 }, { 5.0, 5.0, 0.0 },
+    };
+    double arrival_s[4] = { 1.000, 1.010, 1.012, 1.520 };
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 4U, 0xFU, 300.0, 0.0, 0.002
+    ) == 0x7U);
+
+    /* All plausible: nothing is rejected. */
+    arrival_s[3] = 1.018;
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 4U, 0xFU, 300.0, 0.0, 0.002
+    ) == 0xFU);
+
+    /* Only accepted candidates are considered. */
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 4U, 0x5U, 300.0, 0.0, 0.002
+    ) == 0x5U);
+
+    /* A slower worst-case speed widens the window: 5 m at 150 m/s = 33 ms. */
+    arrival_s[1] = 1.030;
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 4U, 0x3U, 300.0, 0.0, 0.002
+    ) == 0x1U);
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 4U, 0x3U, 300.0, 150.0, 0.002
+    ) == 0x3U);
+}
+
+
+static void test_xcorr_refines_relative_delay_to_sub_sample(void)
+{
+    float reference[600];
+    float channel[600];
+    for (size_t i = 0U; i < 600U; ++i) {
+        const double ta = ((double)i - 300.0) / 5.0;
+        const double tb = ((double)i - 307.3) / 5.0;
+        reference[i] = (float)exp(-0.5 * ta * ta);
+        channel[i] = (float)(0.5 * exp(-0.5 * tb * tb));
+    }
+    double delay = 0.0;
+    /* Picks said 7 samples; xcorr refines to ~7.3. */
+    assert(localization_calculate_xcorr_relative_delay(
+        reference, channel, 600U, 290U, 7.0, 60U, 20U, 2.0, &delay
+    ));
+    assert(fabs(delay - 7.3) < 0.1);
+
+    /* A pick difference far from the correlation peak is not overridden. */
+    assert(!localization_calculate_xcorr_relative_delay(
+        reference, channel, 600U, 290U, 15.0, 60U, 20U, 2.0, &delay
+    ));
+
+    /* Dissimilar windows (noise vs pulse) are not trusted. */
+    for (size_t i = 0U; i < 600U; ++i) {
+        channel[i] = (float)((i * 7919U) % 13U) - 6.0f;
+    }
+    assert(!localization_calculate_xcorr_relative_delay(
+        reference, channel, 600U, 290U, 0.0, 60U, 20U, 20.0, &delay
+    ));
+}
+
+
+static void test_fractional_arrival_time(void)
+{
+    geophone_channel_pick_t pick;
+    memset(&pick, 0, sizeof(pick));
+    pick.arrival_sample_index = 1000U;
+    pick.arrival_subsample_offset = -0.25f;
+    assert(localization_calculate_pick_sample_position(&pick) == 999.75);
+    assert(localization_calculate_arrival_time_us_at(999.75, 500U) == 1999500);
+}
+
+
 int main(void)
 {
     test_quality_from_residual_matches_the_gaussian_formula();
@@ -537,6 +615,9 @@ int main(void)
     test_redundancy_caps_unverified_confidence();
     test_event_window_covers_signal_and_moveout();
     test_fusion_mapping_groups_picks_and_excludes_energy();
+    test_consistency_gate_rejects_physically_impossible_pick();
+    test_xcorr_refines_relative_delay_to_sub_sample();
+    test_fractional_arrival_time();
     test_geometry_computed_at_ms_takes_the_latest_computed_pod();
     test_arrival_time_us_converts_sample_index_precisely();
     test_traveltime_adapter_common_fields();

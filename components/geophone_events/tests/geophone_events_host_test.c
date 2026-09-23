@@ -446,6 +446,71 @@ static void test_cross_correlate_identical_signal_peaks_at_zero_lag(void)
 }
 
 
+/* MAX-209: a lone early noise spike above the threshold must not become the
+ * onset; the pick belongs to the burst that contains the peak. */
+static void test_refine_arrival_ignores_isolated_early_spike(void)
+{
+    float samples[300] = { 0 };
+    insert_rect_pulse(samples, 200u, 50u, 1.0f);
+    samples[188] = 0.7f; /* spike 12 samples before the true onset */
+
+    const geophone_arrival_refine_config_t config = {
+        .lookback_samples = 15u,
+        .lookahead_samples = 15u,
+        .amplitude_fraction = 0.5f
+    };
+    geophone_arrival_refine_result_t result;
+    assert(geophone_event_refine_arrival(samples, 300u, 191u, &config, &result));
+    assert(result.refined_index == 200u);
+}
+
+
+/* MAX-209: a linear ramp crossing the threshold between samples resolves
+ * to a sub-sample onset. */
+static void test_refine_arrival_interpolates_sub_sample_crossing(void)
+{
+    float samples[300] = { 0 };
+    /* 0, 0.2, 0.4, 0.6, 0.8, 1.0 ... from index 100: 0.5 lies at 102.5. */
+    for (size_t i = 0u; i < 6u; ++i) {
+        samples[100u + i] = 0.2f * (float)i;
+    }
+    for (size_t i = 106u; i < 140u; ++i) {
+        samples[i] = 1.0f;
+    }
+
+    const geophone_arrival_refine_config_t config = {
+        .lookback_samples = 10u,
+        .lookahead_samples = 20u,
+        .amplitude_fraction = 0.5f
+    };
+    geophone_arrival_refine_result_t result;
+    assert(geophone_event_refine_arrival(samples, 300u, 100u, &config, &result));
+    assert(result.refined_index == 103u);
+    assert(fabsf(((float)result.refined_index + result.refined_fraction) - 102.5f) < 1e-4f);
+}
+
+
+/* MAX-209: parabolic interpolation recovers a fractional delay. */
+static void test_cross_correlate_recovers_fractional_delay(void)
+{
+    float channel_a[400] = { 0 };
+    float channel_b[400] = { 0 };
+    /* Smooth Gaussian pulses 12.4 samples apart. */
+    for (size_t i = 0u; i < 400u; ++i) {
+        const double ta = ((double)i - 150.0) / 6.0;
+        const double tb = ((double)i - 162.4) / 6.0;
+        channel_a[i] = (float)exp(-0.5 * ta * ta);
+        channel_b[i] = (float)(0.4 * exp(-0.5 * tb * tb));
+    }
+
+    const geophone_cross_correlation_config_t config = { .max_lag_samples = 40u };
+    geophone_cross_correlation_result_t result;
+    assert(geophone_event_cross_correlate(channel_a, channel_b, 400u, &config, &result));
+    assert(result.delay_samples == 12);
+    assert(fabs(result.delay_refined_samples - 12.4) < 0.1);
+}
+
+
 /* ---------------------------------------------------------------- */
 /* SNR / accept-reject gate                                          */
 /* ---------------------------------------------------------------- */
@@ -578,6 +643,9 @@ static void test_pick_uncertainty_saturates_instead_of_wrapping(void)
 
 int main(void)
 {
+    test_refine_arrival_ignores_isolated_early_spike();
+    test_refine_arrival_interpolates_sub_sample_crossing();
+    test_cross_correlate_recovers_fractional_delay();
     test_energy_trigger_finds_impulse_after_quiet_baseline();
     test_energy_trigger_rejects_invalid_arguments();
     test_energy_trigger_never_fires_on_pure_silence();

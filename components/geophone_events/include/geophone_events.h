@@ -95,7 +95,9 @@ typedef struct
     size_t lookback_samples;   /* how far before the coarse trigger to search */
     size_t lookahead_samples;  /* how far after it, to locate the local peak */
     float amplitude_fraction;  /* refine to the first sample >= this fraction
-                                 * of the local peak found in the search window */
+                                 * of the local peak found in the search window
+                                 * that belongs to the peak's own burst (see
+                                 * geophone_event_refine_arrival()) */
 
 } geophone_arrival_refine_config_t;
 
@@ -104,6 +106,11 @@ typedef struct
 {
     bool found;
     size_t refined_index;
+    /* MAX-209: linear-interpolated threshold crossing between
+     * refined_index - 1 and refined_index, in samples, within (-1, 0]; the
+     * sub-sample onset is refined_index + refined_fraction. 0 when the
+     * crossing sample is the first of the search window. */
+    float refined_fraction;
     float local_peak_abs;
 
 } geophone_arrival_refine_result_t;
@@ -132,6 +139,10 @@ typedef struct
     bool found;
     int32_t delay_samples;  /* positive: channel_b lags channel_a */
     float peak_correlation; /* normalized coefficient, ideally in [-1, 1] */
+    /* MAX-209: sub-sample delay from a parabola through the correlation at
+     * delay_samples - 1, delay_samples, delay_samples + 1 (equal to
+     * delay_samples at the edge of the lag range). */
+    double delay_refined_samples;
 
 } geophone_cross_correlation_result_t;
 
@@ -190,7 +201,12 @@ typedef enum
     GEOPHONE_PICK_ACCEPTED = 0,
     GEOPHONE_PICK_REJECTED_NO_TRIGGER,
     GEOPHONE_PICK_REJECTED_NO_REFINEMENT,
-    GEOPHONE_PICK_REJECTED_LOW_SNR
+    GEOPHONE_PICK_REJECTED_LOW_SNR,
+    /* MAX-209: accepted on its own, but its arrival time is physically
+     * incompatible with the other channels' picks (a time difference larger
+     * than the sensor separation allows at the propagation speed) -- most
+     * likely a different event, e.g. a footstep next to one sensor. */
+    GEOPHONE_PICK_REJECTED_INCONSISTENT
 
 } geophone_pick_status_t;
 
@@ -218,7 +234,10 @@ typedef struct
     geophone_pick_status_t status;
     geophone_pick_method_t method;
     size_t arrival_sample_index;
-    float arrival_time_s;
+    /* MAX-209: sub-sample correction in (-1, 0]; the onset is at
+     * arrival_sample_index + arrival_subsample_offset samples. */
+    float arrival_subsample_offset;
+    float arrival_time_s; /* (arrival_sample_index + offset) / sample_rate */
     float snr;
     size_t uncertainty_samples; /* pick resolution proxy: the refine search span */
 
