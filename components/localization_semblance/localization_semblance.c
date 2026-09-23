@@ -206,6 +206,9 @@ static esp_err_t search_grid(
                     : min_corner.z_m + (double)iz * step_m;
 
                 const localization_point3d_t candidate = { x, y, z };
+                if (!localization_candidate_admitted(&config->candidate_filter, &candidate)) {
+                    continue;
+                }
                 double semblance = 0.0;
                 compute_semblance_at(
                     candidate, channels, channel_count, config, stack, &semblance

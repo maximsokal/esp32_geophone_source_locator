@@ -20,6 +20,33 @@ typedef struct
 } localization_point3d_t;
 
 
+/*
+ * MAX-147: optional per-candidate admission test for the grid-search
+ * backends (e.g. "not in scan-verified FREE space"). A zero-initialized
+ * filter (allowed == NULL) admits every candidate.
+ */
+typedef bool (*localization_candidate_allowed_fn)(
+    const localization_point3d_t *candidate,
+    void *context
+);
+
+typedef struct
+{
+    localization_candidate_allowed_fn allowed;
+    void *context;
+
+} localization_candidate_filter_t;
+
+
+static inline bool localization_candidate_admitted(
+    const localization_candidate_filter_t *filter,
+    const localization_point3d_t *candidate
+)
+{
+    return filter == NULL || filter->allowed == NULL || filter->allowed(candidate, filter->context);
+}
+
+
 typedef struct
 {
     localization_point3d_t sensor_position;

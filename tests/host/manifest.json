@@ -588,9 +588,13 @@
       "sources": [
         "components/localization_calculate/localization_calculate_policy.c",
         "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
         "components/localization_calculate/tests/localization_calculate_policy_test.c"
       ],
       "include_dirs": [
+        "components/scan_occupancy/include",
+        "tests/host/stubs/object_store_profile",
         "components/localization/tests/stubs",
         "components/localization/include",
         "components/localization_calculate/include",

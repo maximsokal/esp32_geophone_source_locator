@@ -664,8 +664,62 @@ static void test_streaming_matches_retained_on_small_grid(void)
 }
 
 
+/* MAX-147: a candidate filter excludes grid points (e.g. scan-verified FREE
+ * air); the search returns the best ADMITTED point, and reports when the
+ * filter admits nothing at all. */
+static bool reject_x_below_2(const localization_point3d_t *candidate, void *context)
+{
+    (void)context;
+    return candidate->x_m >= 2.0;
+}
+
+static bool reject_everything(const localization_point3d_t *candidate, void *context)
+{
+    (void)candidate;
+    (void)context;
+    return false;
+}
+
+static void test_candidate_filter_constrains_the_answer(void)
+{
+    localization_traveltime_pick_t picks[3];
+    for (size_t i = 0u; i < 3u; ++i) {
+        picks[i] = (localization_traveltime_pick_t) {
+            .observation = {
+                .sensor_position = s_sensors3[i],
+                .arrival_time_us = true_arrival_time_us(
+                    s_sensors3[i], s_source2d, s_speed_mps, s_emission_time_us
+                )
+            },
+            .weight = 1.0
+        };
+    }
+    const localization_traveltime_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 0.0 },
+        .step_m = 0.5
+    };
+    localization_traveltime_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .timing_uncertainty_us = s_timing_uncertainty_us,
+        .refine_divisor = 10u,
+        .candidate_filter = { .allowed = reject_x_below_2, .context = NULL },
+    };
+    localization_traveltime_result_t result;
+    assert(localization_traveltime_search(picks, 3u, &bounds, &config, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_TRAVELTIME_SOLVED);
+    assert(result.best_position.x_m >= 2.0);
+
+    config.candidate_filter.allowed = reject_everything;
+    assert(localization_traveltime_search(picks, 3u, &bounds, &config, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_TRAVELTIME_NO_ALLOWED_CANDIDATE);
+    assert(result.surface == NULL);
+}
+
+
 int main(void)
 {
+    test_candidate_filter_constrains_the_answer();
     test_realistic_3d_grid_streams_within_budget();
     test_retained_surface_is_capped();
     test_streaming_matches_retained_on_small_grid();

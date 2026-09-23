@@ -173,6 +173,7 @@ static esp_err_t coarse_search(
     size_t ref_index,
     double propagation_speed_mps,
     double timing_uncertainty_us,
+    const localization_candidate_filter_t *filter,
     localization_traveltime_candidate_t *surface,
     double *chi_square,
     localization_point3d_t *out_best_position,
@@ -208,6 +209,15 @@ static esp_err_t coarse_search(
                 const localization_point3d_t candidate = { x, y, z };
                 double residual_rms_us = 0.0;
                 double candidate_chi_square = 0.0;
+                if (!localization_candidate_admitted(filter, &candidate)) {
+                    if (surface != NULL) {
+                        surface[idx].position = candidate;
+                        surface[idx].residual_rms_us = INFINITY;
+                        chi_square[idx] = INFINITY;
+                    }
+                    ++idx;
+                    continue;
+                }
                 evaluate_candidate(
                     candidate, used, weights, used_count, ref_index,
                     propagation_speed_mps, timing_uncertainty_us,
@@ -246,6 +256,7 @@ static esp_err_t refine_search(
     size_t ref_index,
     double propagation_speed_mps,
     double timing_uncertainty_us,
+    const localization_candidate_filter_t *filter,
     localization_point3d_t *inout_best_position,
     double *inout_best_residual_rms_us,
     double *inout_best_chi_square
@@ -279,6 +290,9 @@ static esp_err_t refine_search(
                 const localization_point3d_t candidate = { x, y, z };
                 double residual_rms_us = 0.0;
                 double chi_square = 0.0;
+                if (!localization_candidate_admitted(filter, &candidate)) {
+                    continue;
+                }
                 evaluate_candidate(
                     candidate, used, weights, used_count, ref_index,
                     propagation_speed_mps, timing_uncertainty_us,
@@ -426,6 +440,7 @@ esp_err_t localization_traveltime_search(
         coarse_bounds->min_corner, coarse_bounds->max_corner, coarse_step_m,
         used, weights, used_count, ref_index,
         config->propagation_speed_mps, config->timing_uncertainty_us,
+        &config->candidate_filter,
         surface, chi_square,
         &best_position, &best_residual_rms_us, &best_chi_square
     );
@@ -433,6 +448,14 @@ esp_err_t localization_traveltime_search(
         free(surface);
         free(chi_square);
         return coarse_err;
+    }
+    if (best_chi_square < 0.0) {
+        /* MAX-147: the filter admitted no grid point at all. */
+        free(surface);
+        free(chi_square);
+        result->status = LOCALIZATION_TRAVELTIME_NO_ALLOWED_CANDIDATE;
+        result->coarse_step_m_used = coarse_step_m;
+        return ESP_OK;
     }
 
     const double fine_step_m = coarse_step_m / (double)config->refine_divisor;
@@ -452,6 +475,7 @@ esp_err_t localization_traveltime_search(
     const esp_err_t refine_err = refine_search(
         fine_min, fine_max, fine_step_m, used, weights, used_count, ref_index,
         config->propagation_speed_mps, config->timing_uncertainty_us,
+        &config->candidate_filter,
         &best_position, &best_residual_rms_us, &best_chi_square
     );
     if (refine_err != ESP_OK) {

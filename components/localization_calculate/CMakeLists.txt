@@ -16,6 +16,8 @@ idf_component_register(
         localization_semblance
         localization_traveltime_inversion
         object_store
+        scan_occupancy
+        storage_manager
         seismic_dsp
         seismic_recorder
 )

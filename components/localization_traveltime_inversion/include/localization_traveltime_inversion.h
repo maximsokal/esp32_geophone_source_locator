@@ -97,6 +97,10 @@ typedef struct
     size_t max_coarse_candidates;
     bool retain_surface;
 
+    /* MAX-147: candidates the filter rejects are never the answer (in a
+     * retained surface they appear with an infinite residual). */
+    localization_candidate_filter_t candidate_filter;
+
 } localization_traveltime_config_t;
 
 
@@ -132,7 +136,10 @@ typedef enum
 
     /* Fewer than LOCALIZATION_DIMENSIONALITY_MIN_PLANAR_2D usable
      * (weight > 0) picks: no method, statistical or otherwise, can run. */
-    LOCALIZATION_TRAVELTIME_INSUFFICIENT_PICKS
+    LOCALIZATION_TRAVELTIME_INSUFFICIENT_PICKS,
+
+    /* MAX-147: the candidate filter rejected every grid point. */
+    LOCALIZATION_TRAVELTIME_NO_ALLOWED_CANDIDATE
 
 } localization_traveltime_status_t;
 

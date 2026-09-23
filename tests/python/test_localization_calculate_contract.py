@@ -138,3 +138,21 @@ def test_pick_evidence_persistence_is_best_effort_not_gating():
     # depended on them.
     first_run_write = source.index("localization_run_store_write(object_id, session_id, &records[i]);")
     assert write_index < first_run_write
+
+
+def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
+    """MAX-147: occupancy comes only from THIS session's directory, applies
+    only with a registration bound to this session's frozen geometry, and the
+    constrained variants are persisted beside -- never fused into -- the
+    unconstrained results."""
+    source = orchestrator_source()
+    assert '"%s/%s/sessions/%s/occupancy-v1.bin"' in source
+    assert "scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms)" in source
+    assert "constraint not applied" in source
+    assert '"traveltime_inversion_scan_constrained"' in source
+    assert '"semblance_scan_constrained"' in source
+    # Fusion only ever sees the unconstrained records.
+    assert "comparison_methods, fused_record_count, &comparison_result" in source
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    constrained_index = source.index('"traveltime_inversion_scan_constrained"')
+    assert fused_index < constrained_index
