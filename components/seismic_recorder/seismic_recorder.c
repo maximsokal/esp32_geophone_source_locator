@@ -1188,6 +1188,14 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return ESP_ERR_INVALID_STATE;
     }
 
+    ESP_LOGI(
+        TAG,
+        "CS geometry: refined=%d iterations=%u max_residual_mm=%" PRId32,
+        solution.refined ? 1 : 0,
+        (unsigned)solution.refine_iterations,
+        solution.max_residual_mm
+    );
+
     object_store_geometry_t geometry;
     seismic_recorder_geometry_apply_solution(
         &solution, &topology, channels, (uint64_t)(esp_timer_get_time() / 1000), &geometry);
