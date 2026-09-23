@@ -24,7 +24,31 @@
 #define WEB_SCAN_RECV_TIMEOUTS    5U
 
 static const char *TAG = "WEB_SCAN_STORE";
-static const char *SCAN_FILE_NAME = "scan-v1.bin";
+/*
+ * MAX-162: the same session directory also holds the compact FREE/OCCUPIED
+ * occupancy artifact derived from that scan (components/scan_occupancy),
+ * selected with `kind=occupancy`. It uses the identical crash-safe
+ * temp/backup replace path, with its own, much smaller size bound.
+ */
+typedef struct
+{
+    const char *file_name;
+    size_t max_bytes;
+    const char *label;
+
+} web_scan_kind_t;
+
+static const web_scan_kind_t WEB_SCAN_KIND_SCAN = {
+    .file_name = "scan-v1.bin",
+    .max_bytes = WEB_SCAN_MAX_BYTES,
+    .label = "3D scan",
+};
+
+static const web_scan_kind_t WEB_SCAN_KIND_OCCUPANCY = {
+    .file_name = "occupancy-v1.bin",
+    .max_bytes = 1024U * 1024U,
+    .label = "scan occupancy",
+};
 
 
 typedef struct
@@ -140,6 +164,7 @@ static esp_err_t web_scan_query_value(
 static esp_err_t web_scan_paths(
     const char *object_id,
     const char *session_id,
+    const web_scan_kind_t *kind,
     char final_path[WEB_SCAN_PATH_SIZE],
     char temp_path[WEB_SCAN_PATH_SIZE],
     char backup_path[WEB_SCAN_PATH_SIZE]
@@ -155,7 +180,7 @@ static esp_err_t web_scan_paths(
         STORAGE_MANAGER_OBJECTS_PATH,
         object_id,
         session_id,
-        SCAN_FILE_NAME
+        kind->file_name
     );
     if (final_written <= 0 || final_written >= (int)WEB_SCAN_PATH_SIZE) return ESP_ERR_INVALID_SIZE;
     const int temp_written = snprintf(temp_path, WEB_SCAN_PATH_SIZE, "%s.tmp", final_path);
@@ -352,9 +377,9 @@ static void web_scan_remove_temp_best_effort(const char *temp_path)
 }
 
 
-static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id)
+static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
-    if (request->content_len <= 0 || (size_t)request->content_len > WEB_SCAN_MAX_BYTES) {
+    if (request->content_len <= 0 || (size_t)request->content_len > kind->max_bytes) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
     }
 
@@ -363,7 +388,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, session_id, final_path, temp_path, backup_path);
+    err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
@@ -538,14 +563,14 @@ static esp_err_t web_scan_read_chunk(
 }
 
 
-static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, const char *session_id)
+static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, session_id, final_path, temp_path, backup_path);
+    err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
@@ -642,14 +667,14 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
 }
 
 
-static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, const char *session_id)
+static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, session_id, final_path, temp_path, backup_path);
+    err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
 
     err = storage_manager_operation_begin();
@@ -657,10 +682,20 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
     if (remove(final_path) != 0 && errno != ENOENT) err = ESP_FAIL;
     if (remove(temp_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
     if (remove(backup_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
+    if (err == ESP_OK && kind == &WEB_SCAN_KIND_SCAN) {
+        /* The occupancy artifact is derived from this scan: deleting the
+         * scan must never leave a stale occupancy constraint behind. */
+        char occ_final[WEB_SCAN_PATH_SIZE], occ_temp[WEB_SCAN_PATH_SIZE], occ_backup[WEB_SCAN_PATH_SIZE];
+        if (web_scan_paths(object_id, session_id, &WEB_SCAN_KIND_OCCUPANCY, occ_final, occ_temp, occ_backup) == ESP_OK) {
+            if (remove(occ_final) != 0 && errno != ENOENT) err = ESP_FAIL;
+            if (remove(occ_temp) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
+            if (remove(occ_backup) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
+        }
+    }
     storage_manager_operation_end();
 
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Deleted saved 3D scan: object=%s session=%s", object_id, session_id);
+        ESP_LOGI(TAG, "Deleted saved %s: object=%s session=%s", kind->label, object_id, session_id);
     }
     return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
 }
@@ -689,8 +724,22 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
         return web_scan_send_json(request, "scan", object_id, "INVALID", ESP_ERR_INVALID_ARG, 0U);
     }
 
-    if (strcmp(action, "save") == 0) return web_scan_save(request, object_id, session_id);
-    if (strcmp(action, "load") == 0) return web_scan_load(request, object_id, session_id);
-    if (strcmp(action, "delete") == 0) return web_scan_delete(request, object_id, session_id);
+    /* Optional `kind`: absent or "scan" = the full scan artifact. */
+    const web_scan_kind_t *kind = &WEB_SCAN_KIND_SCAN;
+    char kind_value[16];
+    err = web_scan_query_value(request, "kind", kind_value, sizeof(kind_value));
+    if (err == ESP_OK) {
+        if (strcmp(kind_value, "occupancy") == 0) {
+            kind = &WEB_SCAN_KIND_OCCUPANCY;
+        } else if (strcmp(kind_value, "scan") != 0) {
+            return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_INVALID_ARG, 0U);
+        }
+    } else if (err != ESP_ERR_NOT_FOUND) {
+        return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_INVALID_ARG, 0U);
+    }
+
+    if (strcmp(action, "save") == 0) return web_scan_save(request, object_id, session_id, kind);
+    if (strcmp(action, "load") == 0) return web_scan_load(request, object_id, session_id, kind);
+    if (strcmp(action, "delete") == 0) return web_scan_delete(request, object_id, session_id, kind);
     return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_NOT_SUPPORTED, 0U);
 }

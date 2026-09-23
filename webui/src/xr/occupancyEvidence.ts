@@ -58,6 +58,11 @@ export interface OccupancySnapshot {
    * lack of evidence. Optional: absent in artifacts saved before the field.
    */
   occupancyCellsSaturated?: boolean;
+  /**
+   * MAX-162: voxel size of the FREE/OCCUPIED cells (occupancyVoxelSizeMeters
+   * may be a coarser UNKNOWN display grid). Absent in older artifacts.
+   */
+  occupancyFineVoxelSizeMeters?: number;
   /** Evidence updates discarded because the cell budget was exhausted. */
   occupancyDroppedCellUpdates?: number;
 }
@@ -414,6 +419,7 @@ export class SparseOccupancyGrid {
     const saturation = {
       occupancyCellsSaturated: this.droppedCellUpdates > 0,
       occupancyDroppedCellUpdates: this.droppedCellUpdates,
+      occupancyFineVoxelSizeMeters: this.voxelSizeMeters,
     };
 
     if (candidateBounds === null) {

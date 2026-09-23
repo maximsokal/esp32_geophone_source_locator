@@ -1,0 +1,2 @@
+# Binary test vectors / artifacts must never be line-ending converted.
+*.bin binary

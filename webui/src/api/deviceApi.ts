@@ -140,13 +140,16 @@ function jsonRequest<T>(
   return queuedApiRequest(() => performJsonRequest<T>(url, init, timeoutMs));
 }
 
-function scanControlUrl(action: 'save' | 'load' | 'delete', objectId: string, sessionId: string): string {
+type ScanStoreKind = 'scan' | 'occupancy';
+
+function scanControlUrl(action: 'save' | 'load' | 'delete', objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): string {
   const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
+  if (kind !== 'scan') query.set('kind', kind);
   return `/api/control?${query.toString()}`;
 }
 
-async function performScanSave(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
-  const url = scanControlUrl('save', objectId, sessionId);
+async function performScanSave(objectId: string, sessionId: string, artifact: Uint8Array, kind: ScanStoreKind = 'scan'): Promise<ControlResult> {
+  const url = scanControlUrl('save', objectId, sessionId, kind);
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
   try {
@@ -272,6 +275,14 @@ export function sendControl(
 
 export function saveObjectScanArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
   return queuedApiRequest(() => performScanSave(objectId, sessionId, artifact));
+}
+
+/**
+ * MAX-162: the compact FREE/OCCUPIED occupancy artifact derived from the
+ * session's saved scan, stored beside it (deleted together with the scan).
+ */
+export function saveSessionOccupancyArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
+  return queuedApiRequest(() => performScanSave(objectId, sessionId, artifact, 'occupancy'));
 }
 
 export function loadObjectScanArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {

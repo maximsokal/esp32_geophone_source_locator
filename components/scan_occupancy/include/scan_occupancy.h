@@ -1,0 +1,107 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "esp_err.h"
+
+/*
+ * MAX-162: ESP32-side reader for the compact FREE/OCCUPIED occupancy
+ * artifact the WebUI derives from a saved scan (layout documented in
+ * webui/src/xr/occupancySolverArtifact.ts, golden vector
+ * tests/vectors/scan_occupancy_v1.bin). Pure: no file I/O, no RTOS.
+ *
+ * Coordinates are the scan's project frame (meters, Z up). A voxel index is
+ * floor(coordinate / voxel_size_m). UNKNOWN is never stored: a cell inside
+ * the candidate volume (envelope extended below_surface_m downward) that is
+ * neither FREE nor OCCUPIED is UNKNOWN.
+ */
+
+#define SCAN_OCCUPANCY_SCHEMA 1U
+#define SCAN_OCCUPANCY_MAX_BYTES (1024U * 1024U)
+#define SCAN_OCCUPANCY_FRAME_ID_SIZE 64U
+#define SCAN_OCCUPANCY_SOURCE_SIZE 32U
+
+typedef enum
+{
+    SCAN_OCCUPANCY_UNKNOWN = 0,
+    SCAN_OCCUPANCY_FREE,
+    SCAN_OCCUPANCY_OCCUPIED,
+    /* Outside the scanned candidate volume: nothing was measured there and
+     * it is not part of the scanned object. */
+    SCAN_OCCUPANCY_OUTSIDE,
+
+} scan_occupancy_class_t;
+
+typedef struct
+{
+    bool present;
+    char source[SCAN_OCCUPANCY_SOURCE_SIZE];
+    uint64_t geometry_computed_at_ms;
+    /* Row-major 4x4 homogeneous sensor(localization) -> scan transform. */
+    double sensor_to_scan[16];
+    double residual_m;
+
+} scan_occupancy_registration_t;
+
+typedef struct
+{
+    char frame_id[SCAN_OCCUPANCY_FRAME_ID_SIZE];
+    double voxel_size_m;
+    double below_surface_m;
+    bool has_envelope;
+    double envelope_min[3];
+    double envelope_max[3];
+    bool saturated;
+    uint64_t created_at_ms;
+    scan_occupancy_registration_t registration;
+
+    /* Sorted packed voxel keys (heap-owned; release with scan_occupancy_free). */
+    int64_t *free_keys;
+    size_t free_count;
+    int64_t *occupied_keys;
+    size_t occupied_count;
+
+} scan_occupancy_t;
+
+
+/*
+ * Parses and validates (magic, length table, CRC32, schema, counts) an
+ * artifact. On success `out` owns heap memory; on failure `out` holds
+ * nothing to free. ESP_ERR_INVALID_CRC for a checksum mismatch,
+ * ESP_ERR_INVALID_VERSION for a foreign magic/schema, ESP_ERR_INVALID_SIZE
+ * for an inconsistent length table, ESP_ERR_INVALID_ARG otherwise.
+ */
+esp_err_t scan_occupancy_parse(
+    const uint8_t *data,
+    size_t length,
+    scan_occupancy_t *out
+);
+
+void scan_occupancy_free(scan_occupancy_t *occupancy);
+
+/* Classifies a point given in the SCAN frame. */
+scan_occupancy_class_t scan_occupancy_classify(
+    const scan_occupancy_t *occupancy,
+    const double point_scan[3]
+);
+
+/*
+ * The occupancy constraint may be applied to a localization run only when
+ * the artifact carries a registration made against exactly this session's
+ * frozen geometry version and its transform is a finite rigid motion
+ * (rotation or reflection, the CS layout may be mirrored). Anything else
+ * fails closed.
+ */
+bool scan_occupancy_registration_usable(
+    const scan_occupancy_t *occupancy,
+    uint64_t geometry_computed_at_ms
+);
+
+/* Applies the registration transform: sensor frame -> scan frame. */
+void scan_occupancy_sensor_to_scan(
+    const scan_occupancy_t *occupancy,
+    const double point_sensor[3],
+    double point_scan[3]
+);
