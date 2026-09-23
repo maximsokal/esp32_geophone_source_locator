@@ -192,10 +192,16 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         );
         web_json_writer_printf(
             &writer,
-            "\"confidence\":%u,\"attempts\":%u,\"valid_samples\":%u}",
+            "\"confidence\":%u,\"attempts\":%u,\"valid_samples\":%u,",
             (unsigned)pair->confidence,
             (unsigned)pair->attempts,
             (unsigned)pair->valid_samples
+        );
+        web_json_writer_printf(
+            &writer,
+            "\"spread_mm\":%" PRId32 ",\"rejected_samples\":%u}",
+            pair->spread_mm,
+            (unsigned)pair->rejected_samples
         );
     }
     web_json_writer_write(&writer, "]},");

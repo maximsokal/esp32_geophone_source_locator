@@ -15,6 +15,19 @@ extern "C" {
 #define NRF_CS_CONFIDENCE_MAX 1000U
 
 /*
+ * MAX-206: a pair collects up to this many accepted samples in one cycle
+ * (policy.samples_per_pair per execution; the 2-node mode runs two
+ * executions per pair). Distance is the median of the samples that survive
+ * a MAD outlier test, not the single first success.
+ */
+#define NRF_CS_MAX_SAMPLES_PER_PAIR 16U
+#define NRF_CS_MAX_SAMPLES_PER_EXECUTION 8U
+
+/* Samples within this band of the median are never rejected, so a very
+ * tight cluster (MAD ~ 0) does not throw away millimetre-level jitter. */
+#define NRF_CS_MIN_OUTLIER_BAND_MM 100
+
+/*
  * Platform-neutral Channel Sounding cycle core. Bluetooth/NCS adapters feed
  * provider outcomes into this scheduler; the scheduler never owns a link.
  */
@@ -65,8 +78,12 @@ typedef enum {
 
 typedef struct {
     uint32_t pair_timeout_ms;
+    /* Failed attempts allowed per execution before it gives up. */
     uint8_t max_attempts;
     uint16_t min_confidence;
+    /* MAX-206: accepted samples to collect per execution, 1..
+     * NRF_CS_MAX_SAMPLES_PER_EXECUTION; 0 is treated as 1. */
+    uint8_t samples_per_pair;
 } nrf_cs_policy_t;
 
 typedef struct {
@@ -87,6 +104,11 @@ typedef struct {
     uint16_t scheduler_quality_flags;
     uint16_t attempts;
     uint8_t valid_samples;
+    /* MAX-206: robust spread (1.4826 x MAD) of the accepted samples, in mm;
+     * 0 with a single sample. */
+    int32_t spread_mm;
+    /* Accepted samples discarded as outliers from the median. */
+    uint8_t rejected_samples;
 } nrf_cs_pair_result_t;
 
 /* A directed execution token for one undirected matrix cell. */
@@ -106,6 +128,7 @@ typedef struct {
     nrf_cs_node_id_t initiator;
     nrf_cs_node_id_t reflector;
     uint8_t attempts;
+    uint8_t successes;
     bool terminal;
     bool succeeded;
     nrf_cs_failure_reason_t last_failure;
@@ -121,8 +144,8 @@ typedef struct {
     size_t node_count;
     uint8_t disconnected_mask;
     nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
-    int64_t distance_sum_mm[NRF_CS_MAX_PAIRS];
-    uint32_t confidence_sum[NRF_CS_MAX_PAIRS];
+    int32_t sample_distance_mm[NRF_CS_MAX_PAIRS][NRF_CS_MAX_SAMPLES_PER_PAIR];
+    uint16_t sample_confidence[NRF_CS_MAX_PAIRS][NRF_CS_MAX_SAMPLES_PER_PAIR];
     size_t pair_count;
     nrf_cs_execution_t executions[NRF_CS_MAX_EXECUTIONS];
     size_t execution_count;

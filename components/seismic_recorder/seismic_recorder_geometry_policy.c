@@ -219,6 +219,8 @@ void seismic_recorder_geometry_apply_cs_pairs(
         out->confidence = pairs[i].confidence;
         out->attempts = pairs[i].attempts;
         out->valid_samples = pairs[i].valid_samples;
+        out->spread_mm = pairs[i].spread_mm;
+        out->rejected_samples = pairs[i].rejected_samples;
         ++count;
     }
     cs_pairs_out->pair_count = count;

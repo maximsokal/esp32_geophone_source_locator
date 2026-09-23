@@ -48,7 +48,10 @@
 #define SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS       3U
 #define SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE   500U
 #define SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS            50U
-#define SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS      15000U
+/* MAX-206: accepted samples per pair (median + MAD outlier rejection)
+ * instead of trusting one procedure; the cycle budget scales with it. */
+#define SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR    3U
+#define SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS     (15000U * SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR)
 
 /* MAX-204: uncalibrated BME280 units disagree by up to ~+-8 m of apparent
  * height, so the frozen layout is planar until per-device barometric offset
@@ -1111,6 +1114,7 @@ static esp_err_t seismic_recorder_prepare_geometry(
         .pair_timeout_ms = SEISMIC_RECORDER_GEOMETRY_CS_PAIR_TIMEOUT_MS,
         .max_attempts = SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS,
         .min_confidence = SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE,
+        .samples_per_pair = SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR,
     };
     err = nrf_topology_service_request_cs_cycle(&policy);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {

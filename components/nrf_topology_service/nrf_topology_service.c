@@ -1179,7 +1179,7 @@ esp_err_t nrf_topology_service_test_publish_state(
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
 {
     TaskHandle_t task; bool available;
-    if(policy==NULL||policy->pair_timeout_ms==0U||policy->max_attempts==0U||policy->min_confidence>NRF_CS_CONFIDENCE_MAX)return ESP_ERR_INVALID_ARG;
+    if(policy==NULL||policy->pair_timeout_ms==0U||policy->max_attempts==0U||policy->min_confidence>NRF_CS_CONFIDENCE_MAX||policy->samples_per_pair>NRF_CS_MAX_SAMPLES_PER_EXECUTION)return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&s_state_lock); task=s_task; available=task!=NULL||s_starting;
     if(available&&!s_cs_request_pending&&(!s_cs_snapshot_valid||!s_cs_cycle_snapshot.active)){s_cs_requested_policy=*policy;s_cs_request_pending=true;}
     else if(available){portEXIT_CRITICAL(&s_state_lock);return ESP_ERR_INVALID_STATE;}

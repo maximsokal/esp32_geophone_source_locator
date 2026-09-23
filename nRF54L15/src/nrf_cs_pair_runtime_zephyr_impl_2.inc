@@ -328,9 +328,9 @@ static bool report_step_data(
     return true;
 }
 
-static bool tone_quality_ok(void)
+static uint16_t good_tone_channel_count(void)
 {
-    uint8_t count = 0U;
+    uint16_t count = 0U;
     uint8_t channel;
 
     for (channel = 0U; channel < CS_DE_NUM_CHANNELS; ++channel) {
@@ -341,7 +341,7 @@ static bool tone_quality_ok(void)
             count++;
         }
     }
-    return count >= NRF_CS_TONE_OK_THRESHOLD;
+    return count;
 }
 
 static nrf_cs_measurement_t estimate_measurement(void)
@@ -374,8 +374,9 @@ static nrf_cs_measurement_t estimate_measurement(void)
         report_step_data,
         &s_de_report);
 
+    const uint16_t good_tones = good_tone_channel_count();
     s_de_report.tone_quality[0] =
-        tone_quality_ok() ? CS_DE_TONE_QUALITY_OK : CS_DE_TONE_QUALITY_BAD;
+        good_tones >= NRF_CS_TONE_OK_THRESHOLD ? CS_DE_TONE_QUALITY_OK : CS_DE_TONE_QUALITY_BAD;
 
     quality = cs_de_calc(&s_de_report);
 
@@ -404,7 +405,16 @@ static nrf_cs_measurement_t estimate_measurement(void)
 
     measurement.outcome = NRF_CS_OUTCOME_SUCCESS;
     measurement.distance_mm = (int32_t)(mm + 0.5);
-    measurement.confidence = 1000U;
+    /* MAX-206: evidence-based confidence (tone coverage, PBR/RTT agreement)
+     * instead of a constant 1000 for every success. */
+    measurement.confidence = nrf_cs_measurement_confidence(
+        good_tones,
+        NRF_CS_TONE_OK_THRESHOLD,
+        (measurement.provider_quality_flags & NRF_CS_PROVIDER_QUALITY_PBR_VALID) != 0U,
+        (measurement.provider_quality_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID) != 0U,
+        best,
+        s_de_report.distance_estimates[0].rtt
+    );
     return measurement;
 }
 

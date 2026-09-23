@@ -263,7 +263,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
                 </span>
                 <span>
                   <strong>{(pair.distance_mm / 1000).toFixed(2)} m</strong>
-                  <small>confidence {(pair.confidence / 1000).toFixed(2)} · {pair.valid_samples} samples</small>
+                  <small>confidence {(pair.confidence / 1000).toFixed(2)} · {pair.valid_samples} samples{pair.spread_mm !== undefined && pair.valid_samples > 1 ? ` · spread ${formatMm(pair.spread_mm)}` : ''}{pair.rejected_samples ? ` · ${pair.rejected_samples} outlier${pair.rejected_samples === 1 ? '' : 's'} dropped` : ''}</small>
                 </span>
               </div>
             ))}

@@ -39,6 +39,8 @@ typedef struct
     uint16_t confidence;
     uint16_t attempts;
     uint8_t valid_samples;
+    int32_t spread_mm;
+    uint8_t rejected_samples;
 
 } object_store_cs_pair_t;
 

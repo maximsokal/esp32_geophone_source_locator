@@ -395,6 +395,9 @@ export interface LocalizationCsPair {
   confidence: number;
   attempts: number;
   valid_samples: number;
+  /** MAX-206: robust spread of the accepted samples (mm) and outliers dropped. */
+  spread_mm?: number;
+  rejected_samples?: number;
 }
 
 export interface LocalizationSessionCsPairs {
