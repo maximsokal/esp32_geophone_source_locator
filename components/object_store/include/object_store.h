@@ -50,6 +50,10 @@ typedef struct
      * valid pairs in the solve that produced x/y/z (0 when unknown, e.g. a
      * profile written before this field existed). */
     int32_t residual_mm;
+    /* MAX-144: 1-sigma horizontal position uncertainty from the full-mesh
+     * refinement, in mm (0 = not computed; INT32_MAX = not determined by
+     * the mesh). */
+    int32_t uncertainty_mm;
     uint64_t computed_at_ms;
 } object_store_pod_geometry_t;
 

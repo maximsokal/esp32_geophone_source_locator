@@ -290,9 +290,11 @@ static void test_solution_consistency_gate_and_residual_mapping(void)
     solution.nodes[0].node_id = 1U;
     solution.nodes[0].solved = true;
     solution.nodes[0].residual_mm = 42;
+    solution.nodes[0].uncertainty_mm = 180;
     object_store_geometry_t geometry;
     seismic_recorder_geometry_apply_solution(&solution, &topology, channels, 1ULL, &geometry);
     assert(geometry.pods[0].residual_mm == 42);
+    assert(geometry.pods[0].uncertainty_mm == 180);
 }
 
 int main(void)

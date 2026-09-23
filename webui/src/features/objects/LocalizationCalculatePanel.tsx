@@ -243,7 +243,12 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
               <dd>
                 {pod.computed
                   ? `${formatMm(pod.x_mm)}, ${formatMm(pod.y_mm)}, ${formatMm(pod.z_mm)} · ${pod.leveled ? 'level' : 'not level'}` +
-                    (pod.residual_mm !== undefined ? ` · CS residual ${formatMm(pod.residual_mm)}` : '')
+                    (pod.residual_mm !== undefined ? ` · CS residual ${formatMm(pod.residual_mm)}` : '') +
+                    (pod.uncertainty_mm === undefined || pod.uncertainty_mm === 0
+                      ? ''
+                      : pod.uncertainty_mm >= 2147483647
+                        ? ' · position not determined by the CS mesh'
+                        : ` · ±${formatMm(pod.uncertainty_mm)}`)
                   : 'not participating'}
               </dd>
             </div>

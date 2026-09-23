@@ -414,6 +414,7 @@ static void object_store_read_geometry(
         cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
         cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
         cJSON *residual_mm = cJSON_GetObjectItemCaseSensitive(pod, "residual_mm");
+        cJSON *uncertainty_mm = cJSON_GetObjectItemCaseSensitive(pod, "uncertainty_mm");
         cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
         if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
             continue;
@@ -427,6 +428,11 @@ static void object_store_read_geometry(
             cJSON_IsNumber(residual_mm) && residual_mm->valuedouble >= 0.0 &&
             residual_mm->valuedouble <= (double)INT32_MAX
             ? (int32_t)residual_mm->valuedouble
+            : 0;
+        geometry->pods[i].uncertainty_mm =
+            cJSON_IsNumber(uncertainty_mm) && uncertainty_mm->valuedouble >= 0.0 &&
+            uncertainty_mm->valuedouble <= (double)INT32_MAX
+            ? (int32_t)uncertainty_mm->valuedouble
             : 0;
         geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
             ? (uint64_t)computed_at->valuedouble
@@ -1210,6 +1216,7 @@ esp_err_t object_store_set_geometry(
             cJSON_AddNumberToObject(pod, "y_mm", (double)pod_geometry->y_mm) != NULL &&
             cJSON_AddNumberToObject(pod, "z_mm", (double)pod_geometry->z_mm) != NULL &&
             cJSON_AddNumberToObject(pod, "residual_mm", (double)pod_geometry->residual_mm) != NULL &&
+            cJSON_AddNumberToObject(pod, "uncertainty_mm", (double)pod_geometry->uncertainty_mm) != NULL &&
             cJSON_AddNumberToObject(pod, "computed_at_ms", (double)pod_geometry->computed_at_ms) != NULL;
         if (ok) {
             cJSON_AddItemToArray(pods, pod);

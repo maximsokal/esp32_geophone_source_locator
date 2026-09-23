@@ -39,6 +39,11 @@ typedef struct {
      * pair between this node and another solved node (0 for an unsolved
      * node or one with no such pair). */
     int32_t residual_mm;
+    /* MAX-144: 1-sigma horizontal position uncertainty from the refined
+     * full-mesh covariance. 0 for MAIN (the fixed origin) and when no
+     * refinement ran; INT32_MAX when the mesh does not determine the node
+     * (singular/ill-conditioned normal equations). */
+    int32_t uncertainty_mm;
 } nrf_geometry_node_position_t;
 
 #define NRF_GEOMETRY_MAX_NODES NRF_CS_MAX_NODES
@@ -54,6 +59,14 @@ typedef struct {
  */
 #define NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM 750
 
+/*
+ * MAX-144: 1-sigma range error used to weight a CS pair in the full-mesh
+ * refinement: the pair's own sample spread (MAX-206) but never less than
+ * this floor, which covers the per-pair bias that repeated samples cannot
+ * reveal (to be replaced by the MAX-143 calibration).
+ */
+#define NRF_GEOMETRY_RANGE_SIGMA_FLOOR_MM 150
+
 typedef struct {
     size_t node_count;
     nrf_geometry_node_position_t nodes[NRF_GEOMETRY_MAX_NODES];
@@ -63,6 +76,10 @@ typedef struct {
      * or, between two solved nodes, disagree with the solved layout by more
      * than NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM. */
     size_t inconsistent_pair_count;
+    /* MAX-144: the weighted robust full-mesh refinement replaced the
+     * sequential layout (false = sequential layout kept). */
+    bool refined;
+    uint8_t refine_iterations;
 } nrf_geometry_solution_t;
 
 typedef enum {

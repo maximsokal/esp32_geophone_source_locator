@@ -42,6 +42,7 @@ typedef struct {
     int32_t y_mm;
     int32_t z_mm;
     int32_t residual_mm;
+    int32_t uncertainty_mm;
     uint64_t computed_at_ms;
 } object_store_pod_geometry_t;
 

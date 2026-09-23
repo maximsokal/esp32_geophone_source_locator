@@ -165,6 +165,7 @@ void seismic_recorder_geometry_apply_solution(
         pod->y_mm = node->y_mm;
         pod->z_mm = node->z_mm;
         pod->residual_mm = node->residual_mm;
+        pod->uncertainty_mm = node->uncertainty_mm;
         pod->computed_at_ms = computed_at_ms;
     }
 }

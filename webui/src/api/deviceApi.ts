@@ -379,6 +379,8 @@ export interface LocalizationSessionPodGeometry {
   z_mm?: number;
   /** Largest |solved - measured| CS distance for this pod (MAX-205). */
   residual_mm?: number;
+  /** MAX-144: 1-sigma position uncertainty (mm); 0 = n/a, 2147483647 = undetermined. */
+  uncertainty_mm?: number;
   computed_at_ms?: number;
 }
 

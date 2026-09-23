@@ -172,6 +172,74 @@ static double max_reference_error(
 }
 
 /*
+ * Two-or-more-reference placement: circle intersection on the most widely
+ * separated reference pair (the best-conditioned baseline), mirror choice by
+ * the other references. Returns the largest horizontal disagreement with any
+ * of `refs`, or -1 when no position is determined (circles miss by more than
+ * the tolerance, or a two-reference mirror ambiguity once the layout's
+ * reflection is already fixed).
+ */
+static double place_from_references(
+    const nrf_geometry_solution_t *solution,
+    const reference_t *refs,
+    size_t ref_count,
+    size_t already_solved,
+    double *out_x,
+    double *out_y)
+{
+    size_t best_a = 0U;
+    size_t best_b = 1U;
+    double best_separation = -1.0;
+    for (size_t a = 0; a < ref_count; ++a) {
+        for (size_t b = a + 1U; b < ref_count; ++b) {
+            const nrf_geometry_node_position_t *na = &solution->nodes[refs[a].index];
+            const nrf_geometry_node_position_t *nb = &solution->nodes[refs[b].index];
+            const double separation = hypot(
+                (double)na->x_mm - (double)nb->x_mm,
+                (double)na->y_mm - (double)nb->y_mm
+            );
+            if (separation > best_separation) {
+                best_separation = separation;
+                best_a = a;
+                best_b = b;
+            }
+        }
+    }
+
+    const nrf_geometry_node_position_t *ref_a = &solution->nodes[refs[best_a].index];
+    const nrf_geometry_node_position_t *ref_b = &solution->nodes[refs[best_b].index];
+    double p1x, p1y, p2x, p2y;
+    if (!circle_intersect(
+            (double)ref_a->x_mm, (double)ref_a->y_mm, refs[best_a].horizontal_mm,
+            (double)ref_b->x_mm, (double)ref_b->y_mm, refs[best_b].horizontal_mm,
+            &p1x, &p1y, &p2x, &p2y)) {
+        return -1.0;
+    }
+
+    double x = p1x;
+    double y = p1y;
+    if (ref_count >= 3U) {
+        const double e1 = max_reference_error(solution, refs, ref_count, best_a, best_b, p1x, p1y);
+        const double e2 = max_reference_error(solution, refs, ref_count, best_a, best_b, p2x, p2y);
+        if (e2 < e1) {
+            x = p2x;
+            y = p2y;
+        }
+    } else if (hypot(p1x - p2x, p1y - p2y) > 2.0 * TOLERANCE_MM && already_solved > 2U) {
+        /* Two references only, the two mirror candidates are clearly
+         * distinct, and the layout's reflection was already fixed by an
+         * earlier placement: picking one would be a guess. */
+        return -1.0;
+    }
+    /* Otherwise (first two-reference placement) p1 -- the candidate on the
+     * left of the ref_a -> ref_b baseline -- defines the layout's +Y. */
+
+    *out_x = x;
+    *out_y = y;
+    return max_reference_error(solution, refs, ref_count, ref_count, ref_count, x, y);
+}
+
+/*
  * Places `target` using the horizontal distances already known to every
  * currently-solved node. See the header for when a node is deliberately
  * left unsolved instead of being placed by convention. The layout keeps
@@ -230,58 +298,43 @@ static bool solve_node_position(
         return true;
     }
 
-    /* Most widely separated reference pair: the best-conditioned baseline. */
-    size_t best_a = 0U;
-    size_t best_b = 1U;
-    double best_separation = -1.0;
-    for (size_t a = 0; a < ref_count; ++a) {
-        for (size_t b = a + 1U; b < ref_count; ++b) {
-            const nrf_geometry_node_position_t *na = &solution->nodes[refs[a].index];
-            const nrf_geometry_node_position_t *nb = &solution->nodes[refs[b].index];
-            const double separation = hypot(
-                (double)na->x_mm - (double)nb->x_mm,
-                (double)na->y_mm - (double)nb->y_mm
-            );
-            if (separation > best_separation) {
-                best_separation = separation;
-                best_a = a;
-                best_b = b;
+    double x = 0.0;
+    double y = 0.0;
+    double error = place_from_references(solution, refs, ref_count, already_solved, &x, &y);
+
+    if (!(error >= 0.0 && error <= TOLERANCE_MM)) {
+        /* MAX-144 outlier policy: with four or more references a single bad
+         * pair is tolerated. Rebuild the candidate without each reference in
+         * turn (the outlier may be one of the baseline circles, in which
+         * case the candidate itself is wrong and a CORRECT reference would
+         * look worst) and keep the most self-consistent leave-one-out
+         * placement. The full-mesh refinement and the residual report still
+         * see -- and flag -- the dropped pair. */
+        if (ref_count < 4U) {
+            return false;
+        }
+        double best_error = -1.0;
+        for (size_t drop = 0; drop < ref_count; ++drop) {
+            reference_t remaining[NRF_GEOMETRY_MAX_NODES];
+            size_t remaining_count = 0U;
+            for (size_t r = 0; r < ref_count; ++r) {
+                if (r != drop) {
+                    remaining[remaining_count++] = refs[r];
+                }
+            }
+            double cx = 0.0;
+            double cy = 0.0;
+            const double candidate_error =
+                place_from_references(solution, remaining, remaining_count, already_solved, &cx, &cy);
+            if (candidate_error >= 0.0 && (best_error < 0.0 || candidate_error < best_error)) {
+                best_error = candidate_error;
+                x = cx;
+                y = cy;
             }
         }
-    }
-
-    const nrf_geometry_node_position_t *ref_a = &solution->nodes[refs[best_a].index];
-    const nrf_geometry_node_position_t *ref_b = &solution->nodes[refs[best_b].index];
-    double p1x, p1y, p2x, p2y;
-    if (!circle_intersect(
-            (double)ref_a->x_mm, (double)ref_a->y_mm, refs[best_a].horizontal_mm,
-            (double)ref_b->x_mm, (double)ref_b->y_mm, refs[best_b].horizontal_mm,
-            &p1x, &p1y, &p2x, &p2y)) {
-        return false;
-    }
-
-    const double mirror_separation = hypot(p1x - p2x, p1y - p2y);
-    double x = p1x;
-    double y = p1y;
-
-    if (ref_count >= 3U) {
-        const double e1 = max_reference_error(solution, refs, ref_count, best_a, best_b, p1x, p1y);
-        const double e2 = max_reference_error(solution, refs, ref_count, best_a, best_b, p2x, p2y);
-        if (e2 < e1) {
-            x = p2x;
-            y = p2y;
+        if (!(best_error >= 0.0 && best_error <= TOLERANCE_MM)) {
+            return false;
         }
-    } else if (mirror_separation > 2.0 * TOLERANCE_MM && already_solved > 2U) {
-        /* Two references only, the two mirror candidates are clearly
-         * distinct, and the layout's reflection was already fixed by an
-         * earlier placement: picking one would be a guess. */
-        return false;
-    }
-    /* Otherwise (first two-reference placement) p1 -- the candidate on the
-     * left of the ref_a -> ref_b baseline -- defines the layout's +Y. */
-
-    if (max_reference_error(solution, refs, ref_count, ref_count, ref_count, x, y) > TOLERANCE_MM) {
-        return false;
     }
 
     *out_x_mm = x;
@@ -345,6 +398,490 @@ static void compute_residuals(
     }
 }
 
+/*
+ * ---- MAX-144: weighted, robust full-mesh refinement ------------------------
+ *
+ * The sequential placement above uses at most three references per node and
+ * ignores every other measured distance. This pass refines the X/Y of every
+ * solved node against ALL valid pairs between solved nodes at once:
+ * weighted nonlinear least squares (Levenberg-Marquardt) with a Huber robust
+ * loss, initialized from the sequential layout, which it also falls back to
+ * whenever the refinement fails or does not lower the cost.
+ *
+ * Gauge: distances fix the layout only up to rotation/reflection/translation.
+ * MAIN stays at the origin, the first node placed after MAIN keeps y == 0
+ * (it defines +X), and the reflection chosen by the initializer is kept.
+ * Heights are known inputs, not unknowns.
+ */
+
+#define REFINE_MAX_UNKNOWNS (2U * NRF_GEOMETRY_MAX_NODES)
+#define REFINE_MAX_ITERATIONS 30U
+#define REFINE_HUBER_K 1.5
+
+typedef struct {
+    size_t a;
+    size_t b;
+    double distance_mm;
+    double sigma_mm;
+} refine_edge_t;
+
+static double pair_sigma_mm(const nrf_cs_pair_result_t *pair)
+{
+    const double spread = pair->spread_mm > 0 ? (double)pair->spread_mm : 0.0;
+    return spread > (double)NRF_GEOMETRY_RANGE_SIGMA_FLOOR_MM
+        ? spread
+        : (double)NRF_GEOMETRY_RANGE_SIGMA_FLOOR_MM;
+}
+
+/* Gaussian elimination with partial pivoting on an n x n system; `matrix`
+ * and `rhs` are destroyed. */
+static bool solve_dense(size_t n, double matrix[REFINE_MAX_UNKNOWNS][REFINE_MAX_UNKNOWNS], double *rhs)
+{
+    /* Relative singularity threshold: entries are in 1/mm^2 and tiny. */
+    double scale = 0.0;
+    for (size_t r = 0; r < n; ++r) {
+        for (size_t c = 0; c < n; ++c) {
+            if (fabs(matrix[r][c]) > scale) {
+                scale = fabs(matrix[r][c]);
+            }
+        }
+    }
+    const double threshold = scale * 1e-12;
+
+    for (size_t pivot = 0; pivot < n; ++pivot) {
+        size_t best = pivot;
+        for (size_t row = pivot + 1U; row < n; ++row) {
+            if (fabs(matrix[row][pivot]) > fabs(matrix[best][pivot])) {
+                best = row;
+            }
+        }
+        if (!(fabs(matrix[best][pivot]) > threshold) || !(scale > 0.0)) {
+            return false;
+        }
+        if (best != pivot) {
+            for (size_t col = 0; col < n; ++col) {
+                const double t = matrix[pivot][col];
+                matrix[pivot][col] = matrix[best][col];
+                matrix[best][col] = t;
+            }
+            const double t = rhs[pivot];
+            rhs[pivot] = rhs[best];
+            rhs[best] = t;
+        }
+        for (size_t row = pivot + 1U; row < n; ++row) {
+            const double factor = matrix[row][pivot] / matrix[pivot][pivot];
+            for (size_t col = pivot; col < n; ++col) {
+                matrix[row][col] -= factor * matrix[pivot][col];
+            }
+            rhs[row] -= factor * rhs[pivot];
+        }
+    }
+    for (size_t k = n; k-- > 0U;) {
+        double sum = rhs[k];
+        for (size_t col = k + 1U; col < n; ++col) {
+            sum -= matrix[k][col] * rhs[col];
+        }
+        rhs[k] = sum / matrix[k][k];
+        if (!isfinite(rhs[k])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+typedef struct {
+    int x_var[NRF_GEOMETRY_MAX_NODES]; /* -1 = fixed */
+    int y_var[NRF_GEOMETRY_MAX_NODES];
+    size_t unknowns;
+} refine_layout_t;
+
+static void node_xy(
+    const nrf_geometry_solution_t *solution,
+    const refine_layout_t *layout,
+    const double *params,
+    size_t node,
+    double *x,
+    double *y)
+{
+    *x = layout->x_var[node] >= 0 ? params[layout->x_var[node]] : (double)solution->nodes[node].x_mm;
+    *y = layout->y_var[node] >= 0 ? params[layout->y_var[node]] : (double)solution->nodes[node].y_mm;
+}
+
+/* Builds J^T W J and J^T W r at `params`; returns the robust cost. */
+static double refine_normal_equations(
+    const nrf_geometry_solution_t *solution,
+    const refine_layout_t *layout,
+    const refine_edge_t *edges,
+    size_t edge_count,
+    const double *params,
+    double normal[REFINE_MAX_UNKNOWNS][REFINE_MAX_UNKNOWNS],
+    double *gradient)
+{
+    double cost = 0.0;
+    if (normal != NULL) {
+        memset(normal, 0, sizeof(double) * REFINE_MAX_UNKNOWNS * REFINE_MAX_UNKNOWNS);
+        memset(gradient, 0, sizeof(double) * REFINE_MAX_UNKNOWNS);
+    }
+
+    for (size_t e = 0; e < edge_count; ++e) {
+        double ax, ay, bx, by;
+        node_xy(solution, layout, params, edges[e].a, &ax, &ay);
+        node_xy(solution, layout, params, edges[e].b, &bx, &by);
+        const double dz = (double)solution->nodes[edges[e].a].z_mm - (double)solution->nodes[edges[e].b].z_mm;
+        const double dx = ax - bx;
+        const double dy = ay - by;
+        const double modeled = sqrt(dx * dx + dy * dy + dz * dz);
+        const double residual = modeled - edges[e].distance_mm;
+        const double sigma = edges[e].sigma_mm;
+        const double scaled = fabs(residual) / sigma;
+
+        /* Huber: quadratic within k sigma, linear beyond (IRLS weight). */
+        double robust_weight = 1.0;
+        if (scaled > REFINE_HUBER_K) {
+            robust_weight = REFINE_HUBER_K / scaled;
+            cost += 2.0 * REFINE_HUBER_K * scaled - REFINE_HUBER_K * REFINE_HUBER_K;
+        } else {
+            cost += scaled * scaled;
+        }
+
+        if (normal == NULL || modeled < 1.0) {
+            continue;
+        }
+        const double weight = robust_weight / (sigma * sigma);
+        double jac[REFINE_MAX_UNKNOWNS];
+        int idx[4];
+        size_t count = 0U;
+        const int vars[4] = {
+            layout->x_var[edges[e].a], layout->y_var[edges[e].a],
+            layout->x_var[edges[e].b], layout->y_var[edges[e].b],
+        };
+        const double derivs[4] = { dx / modeled, dy / modeled, -dx / modeled, -dy / modeled };
+        for (size_t k = 0; k < 4U; ++k) {
+            if (vars[k] >= 0) {
+                idx[count] = vars[k];
+                jac[count] = derivs[k];
+                ++count;
+            }
+        }
+        for (size_t r = 0; r < count; ++r) {
+            gradient[idx[r]] += weight * jac[r] * residual;
+            for (size_t c = 0; c < count; ++c) {
+                normal[idx[r]][idx[c]] += weight * jac[r] * jac[c];
+            }
+        }
+    }
+    return cost;
+}
+
+static void refine_solution(
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    int main_index,
+    int axis_index,
+    nrf_geometry_solution_t *solution)
+{
+    refine_layout_t layout;
+    double params[REFINE_MAX_UNKNOWNS];
+    refine_edge_t edges[NRF_CS_MAX_PAIRS];
+    size_t edge_count = 0U;
+
+    layout.unknowns = 0U;
+    for (size_t i = 0; i < solution->node_count; ++i) {
+        layout.x_var[i] = -1;
+        layout.y_var[i] = -1;
+        if (!solution->nodes[i].solved || (int)i == main_index) {
+            continue;
+        }
+        layout.x_var[i] = (int)layout.unknowns;
+        params[layout.unknowns++] = (double)solution->nodes[i].x_mm;
+        if ((int)i != axis_index) {
+            layout.y_var[i] = (int)layout.unknowns;
+            params[layout.unknowns++] = (double)solution->nodes[i].y_mm;
+        }
+    }
+    if (layout.unknowns == 0U) {
+        return;
+    }
+
+    for (size_t p = 0; p < pair_count && edge_count < NRF_CS_MAX_PAIRS; ++p) {
+        if (pairs[p].state != NRF_CS_PAIR_VALID) {
+            continue;
+        }
+        size_t a = SIZE_MAX;
+        size_t b = SIZE_MAX;
+        for (size_t i = 0; i < solution->node_count; ++i) {
+            if (!solution->nodes[i].solved) {
+                continue;
+            }
+            if (solution->nodes[i].node_id == pairs[p].node_a) a = i;
+            if (solution->nodes[i].node_id == pairs[p].node_b) b = i;
+        }
+        if (a == SIZE_MAX || b == SIZE_MAX) {
+            continue;
+        }
+        const double dz = (double)solution->nodes[a].z_mm - (double)solution->nodes[b].z_mm;
+        if ((double)pairs[p].distance_mm + TOLERANCE_MM < fabs(dz)) {
+            continue; /* physically impossible pair: never a constraint */
+        }
+        edges[edge_count].a = a;
+        edges[edge_count].b = b;
+        edges[edge_count].distance_mm = (double)pairs[p].distance_mm;
+        edges[edge_count].sigma_mm = pair_sigma_mm(&pairs[p]);
+        ++edge_count;
+    }
+    if (edge_count == 0U) {
+        return;
+    }
+
+    double normal[REFINE_MAX_UNKNOWNS][REFINE_MAX_UNKNOWNS];
+    double gradient[REFINE_MAX_UNKNOWNS];
+    double cost = refine_normal_equations(solution, &layout, edges, edge_count, params, normal, gradient);
+    const double initial_cost = cost;
+    double lambda = 1e-3;
+    uint8_t iterations = 0U;
+
+    for (uint8_t iteration = 0U; iteration < REFINE_MAX_ITERATIONS; ++iteration) {
+        double system[REFINE_MAX_UNKNOWNS][REFINE_MAX_UNKNOWNS];
+        double step[REFINE_MAX_UNKNOWNS];
+        bool accepted = false;
+
+        /* Absolute regularization floor for directions with no curvature
+         * (e.g. a node's y on the axis line: the reflection-degenerate
+         * direction), so they neither block the solve nor force heavy
+         * damping onto every other direction. */
+        double trace = 0.0;
+        for (size_t r = 0; r < layout.unknowns; ++r) {
+            trace += normal[r][r];
+        }
+        const double floor_term = 1e-6 * trace / (double)layout.unknowns;
+
+        for (unsigned attempt = 0U; attempt < 8U && !accepted; ++attempt) {
+            for (size_t r = 0; r < layout.unknowns; ++r) {
+                for (size_t c = 0; c < layout.unknowns; ++c) {
+                    system[r][c] = normal[r][c];
+                }
+                system[r][r] += lambda * normal[r][r] + floor_term;
+                step[r] = -gradient[r];
+            }
+            if (!solve_dense(layout.unknowns, system, step)) {
+                lambda *= 10.0;
+                continue;
+            }
+            double trial[REFINE_MAX_UNKNOWNS];
+            for (size_t k = 0; k < layout.unknowns; ++k) {
+                trial[k] = params[k] + step[k];
+            }
+            const double trial_cost =
+                refine_normal_equations(solution, &layout, edges, edge_count, trial, NULL, NULL);
+            if (isfinite(trial_cost) && trial_cost < cost) {
+                memcpy(params, trial, sizeof(double) * layout.unknowns);
+                cost = trial_cost;
+                lambda = lambda > 1e-9 ? lambda / 10.0 : lambda;
+                accepted = true;
+            } else {
+                lambda *= 10.0;
+            }
+        }
+        if (!accepted) {
+            break;
+        }
+        iterations = (uint8_t)(iteration + 1U);
+
+        double step_norm = 0.0;
+        for (size_t k = 0; k < layout.unknowns; ++k) {
+            step_norm += step[k] * step[k];
+        }
+        cost = refine_normal_equations(solution, &layout, edges, edge_count, params, normal, gradient);
+        if (sqrt(step_norm) < 0.1) {
+            break;
+        }
+    }
+
+    if (!(cost <= initial_cost)) {
+        return; /* keep the sequential layout */
+    }
+    for (size_t i = 0; i < solution->node_count; ++i) {
+        double x, y;
+        node_xy(solution, &layout, params, i, &x, &y);
+        if (!rounded_position_fits_i32(x) || !rounded_position_fits_i32(y)) {
+            return;
+        }
+    }
+    for (size_t i = 0; i < solution->node_count; ++i) {
+        double x, y;
+        node_xy(solution, &layout, params, i, &x, &y);
+        solution->nodes[i].x_mm = (int32_t)lround(x);
+        solution->nodes[i].y_mm = (int32_t)lround(y);
+    }
+    solution->refined = true;
+    solution->refine_iterations = iterations;
+
+    /* Per-node 1-sigma horizontal uncertainty from the covariance
+     * (J^T W J)^-1 at the refined layout (MAIN is the fixed origin: 0). */
+    (void)refine_normal_equations(solution, &layout, edges, edge_count, params, normal, gradient);
+    double covariance_trace = 0.0;
+    for (size_t r = 0; r < layout.unknowns; ++r) {
+        covariance_trace += normal[r][r];
+    }
+    /* Same tiny floor as the solve: a direction the mesh does not constrain
+     * then shows up as a huge variance for THAT node only, instead of making
+     * the whole matrix singular for every node. */
+    const double covariance_floor = 1e-9 * covariance_trace / (double)layout.unknowns;
+    for (size_t i = 0; i < solution->node_count; ++i) {
+        if (layout.x_var[i] < 0) {
+            continue;
+        }
+        double variance = 0.0;
+        bool ok = true;
+        const int vars[2] = { layout.x_var[i], layout.y_var[i] };
+        for (size_t v = 0; v < 2U && ok; ++v) {
+            if (vars[v] < 0) {
+                continue;
+            }
+            double system[REFINE_MAX_UNKNOWNS][REFINE_MAX_UNKNOWNS];
+            double column[REFINE_MAX_UNKNOWNS];
+            for (size_t r = 0; r < layout.unknowns; ++r) {
+                for (size_t c = 0; c < layout.unknowns; ++c) {
+                    system[r][c] = normal[r][c];
+                }
+                system[r][r] += covariance_floor;
+                column[r] = (int)r == vars[v] ? 1.0 : 0.0;
+            }
+            ok = solve_dense(layout.unknowns, system, column);
+            if (ok) {
+                variance += column[vars[v]];
+            }
+        }
+        if (ok && isfinite(variance) && variance >= 0.0) {
+            const double sigma = sqrt(variance);
+            solution->nodes[i].uncertainty_mm =
+                sigma >= (double)INT32_MAX ? INT32_MAX : (int32_t)lround(sigma);
+        } else {
+            /* Singular/ill-conditioned: this node's position is not
+             * determined by the mesh -- report it as such. */
+            solution->nodes[i].uncertainty_mm = INT32_MAX;
+        }
+    }
+}
+
+/*
+ * MAX-144: two unsolved nodes that each have exactly two references are a
+ * mirror ambiguity one at a time, but a measured pair BETWEEN them can tell
+ * the four mirror combinations apart. Places both when exactly one
+ * combination agrees with that pair within the tolerance; never guesses.
+ */
+static bool two_reference_candidates(
+    const nrf_geometry_solution_t *solution,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    const nrf_geometry_node_input_t *target,
+    double candidates[2][2])
+{
+    reference_t refs[2];
+    size_t ref_count = 0U;
+    for (size_t i = 0; i < solution->node_count; ++i) {
+        if (!solution->nodes[i].solved) {
+            continue;
+        }
+        double slant_mm;
+        double horizontal_mm;
+        if (!find_pair_distance(pairs, pair_count, target->node_id, solution->nodes[i].node_id, &slant_mm) ||
+            !horizontal_distance_mm(slant_mm, (double)target->z_mm - (double)solution->nodes[i].z_mm, &horizontal_mm)) {
+            continue;
+        }
+        if (ref_count == 2U) {
+            return false; /* three or more references: not this case */
+        }
+        refs[ref_count].index = i;
+        refs[ref_count].horizontal_mm = horizontal_mm;
+        ++ref_count;
+    }
+    if (ref_count != 2U) {
+        return false;
+    }
+    const nrf_geometry_node_position_t *a = &solution->nodes[refs[0].index];
+    const nrf_geometry_node_position_t *b = &solution->nodes[refs[1].index];
+    return circle_intersect(
+        (double)a->x_mm, (double)a->y_mm, refs[0].horizontal_mm,
+        (double)b->x_mm, (double)b->y_mm, refs[1].horizontal_mm,
+        &candidates[0][0], &candidates[0][1], &candidates[1][0], &candidates[1][1]);
+}
+
+static const nrf_geometry_node_input_t *input_for_node(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    nrf_cs_node_id_t node_id)
+{
+    for (size_t j = 0; j < input_count; ++j) {
+        if (inputs[j].node_id == node_id) {
+            return &inputs[j];
+        }
+    }
+    return NULL;
+}
+
+static bool resolve_ambiguous_pair(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_geometry_solution_t *solution)
+{
+    for (size_t i = 0; i < solution->node_count; ++i) {
+        const nrf_geometry_node_input_t *ti = input_for_node(inputs, input_count, solution->nodes[i].node_id);
+        double ci[2][2];
+        if (solution->nodes[i].solved || ti == NULL ||
+            !two_reference_candidates(solution, pairs, pair_count, ti, ci)) {
+            continue;
+        }
+        for (size_t j = i + 1U; j < solution->node_count; ++j) {
+            const nrf_geometry_node_input_t *tj = input_for_node(inputs, input_count, solution->nodes[j].node_id);
+            double cj[2][2];
+            double slant_mm;
+            double horizontal_mm;
+            if (solution->nodes[j].solved || tj == NULL ||
+                !two_reference_candidates(solution, pairs, pair_count, tj, cj) ||
+                !find_pair_distance(pairs, pair_count, ti->node_id, tj->node_id, &slant_mm) ||
+                !horizontal_distance_mm(slant_mm, (double)ti->z_mm - (double)tj->z_mm, &horizontal_mm)) {
+                continue;
+            }
+            double best = -1.0;
+            double second = -1.0;
+            size_t best_a = 0U;
+            size_t best_b = 0U;
+            for (size_t a = 0; a < 2U; ++a) {
+                for (size_t b = 0; b < 2U; ++b) {
+                    const double error = fabs(
+                        hypot(ci[a][0] - cj[b][0], ci[a][1] - cj[b][1]) - horizontal_mm);
+                    if (best < 0.0 || error < best) {
+                        second = best;
+                        best = error;
+                        best_a = a;
+                        best_b = b;
+                    } else if (second < 0.0 || error < second) {
+                        second = error;
+                    }
+                }
+            }
+            if (!(best <= TOLERANCE_MM && second > TOLERANCE_MM)) {
+                continue;
+            }
+            if (!rounded_position_fits_i32(ci[best_a][0]) || !rounded_position_fits_i32(ci[best_a][1]) ||
+                !rounded_position_fits_i32(cj[best_b][0]) || !rounded_position_fits_i32(cj[best_b][1])) {
+                continue;
+            }
+            solution->nodes[i].x_mm = (int32_t)lround(ci[best_a][0]);
+            solution->nodes[i].y_mm = (int32_t)lround(ci[best_a][1]);
+            solution->nodes[i].solved = true;
+            solution->nodes[j].x_mm = (int32_t)lround(cj[best_b][0]);
+            solution->nodes[j].y_mm = (int32_t)lround(cj[best_b][1]);
+            solution->nodes[j].solved = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 nrf_geometry_result_t nrf_geometry_solver_solve(
     const nrf_geometry_node_input_t *inputs,
     size_t input_count,
@@ -401,7 +938,9 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
     solution->nodes[main_index].y_mm = 0;
 
     /* Iteratively place every node reachable through valid CS pairs from
-     * the already-solved set. Nodes with no such path stay unsolved. */
+     * the already-solved set. Nodes with no such path stay unsolved. The
+     * first node placed after MAIN defines +X (the refinement gauge). */
+    int axis_index = -1;
     bool progress = true;
     while (progress) {
         progress = false;
@@ -420,6 +959,7 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
                 continue;
             }
             double x_mm, y_mm;
+            const bool defines_axis = solved_count(solution) == 1U;
             if (solve_node_position(solution, pairs, pair_count, target, &x_mm, &y_mm)) {
                 if (!rounded_position_fits_i32(x_mm) || !rounded_position_fits_i32(y_mm)) {
                     continue;
@@ -427,11 +967,18 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
                 solution->nodes[i].x_mm = (int32_t)lround(x_mm);
                 solution->nodes[i].y_mm = (int32_t)lround(y_mm);
                 solution->nodes[i].solved = true;
+                if (defines_axis && axis_index < 0) {
+                    axis_index = (int)i;
+                }
                 progress = true;
             }
         }
+        if (!progress) {
+            progress = resolve_ambiguous_pair(inputs, input_count, pairs, pair_count, solution);
+        }
     }
 
+    refine_solution(pairs, pair_count, main_index, axis_index, solution);
     compute_residuals(pairs, pair_count, solution);
     return NRF_GEOMETRY_OK;
 }

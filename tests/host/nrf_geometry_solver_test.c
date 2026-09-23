@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "nrf_geometry_solver.h"
 
@@ -359,8 +360,12 @@ static void test_disjoint_reference_circles_leave_node_unsolved(void)
     assert(b != NULL && !b->solved);
 }
 
-/* A small miss (range noise) is resolved at the closest-approach midpoint,
- * with the disagreement reported as a residual rather than hidden. */
+/* A small miss (range noise) is resolved, with the disagreement reported as
+ * a residual rather than hidden. Sequential placement alone puts B at the
+ * closest-approach midpoint (2000,0) with the whole 200 mm miss on B's two
+ * pairs (100 mm each); the MAX-144 full-mesh refinement also moves A and
+ * spreads the triangle inequality violation over all three equally-weighted
+ * pairs (~67 mm each). */
 static void test_near_miss_within_tolerance_is_solved_with_residual(void)
 {
     nrf_geometry_node_input_t inputs[3] = {
@@ -379,9 +384,12 @@ static void test_near_miss_within_tolerance_is_solved_with_residual(void)
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *b = find_node(&solution, 2U);
     assert(b != NULL && b->solved);
-    assert(iabs(b->x_mm - 2000) <= 1 && iabs(b->y_mm) <= 1);
-    assert(b->residual_mm == 100);
-    assert(solution.max_residual_mm == 100);
+    const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
+    assert(solution.refined);
+    assert(iabs(b->y_mm) <= 1);
+    assert(a->x_mm < 4000 && a->y_mm == 0);
+    assert(iabs(b->x_mm * 2 - a->x_mm) <= 2);   /* B stays midway */
+    assert(solution.max_residual_mm >= 60 && solution.max_residual_mm <= 72);
     assert(solution.inconsistent_pair_count == 0U);
 }
 
@@ -464,6 +472,228 @@ static void test_contradicting_third_reference_leaves_node_unsolved(void)
     assert(!find_node(&solution, 3U)->solved);
 }
 
+
+/* ---- MAX-144: weighted robust full-mesh refinement ---------------------- */
+
+typedef struct { double x, y; } xy_t;
+
+/* MAIN=(0,0) plus four REMOTEs on a 5x4 m rectangle-ish layout. */
+static const xy_t s_truth[5] = {
+    {0.0, 0.0}, {5000.0, 0.0}, {4800.0, 4100.0}, {-300.0, 3900.0}, {2400.0, 1800.0},
+};
+
+static int32_t true_distance(size_t a, size_t b)
+{
+    return (int32_t)lround(hypot(s_truth[a].x - s_truth[b].x, s_truth[a].y - s_truth[b].y));
+}
+
+static size_t full_mesh(nrf_cs_pair_result_t pairs[10])
+{
+    size_t count = 0U;
+    for (size_t a = 0U; a < 5U; ++a) {
+        for (size_t b = a + 1U; b < 5U; ++b) {
+            pairs[count++] = make_pair((nrf_cs_node_id_t)a, (nrf_cs_node_id_t)b,
+                                       NRF_CS_PAIR_VALID, true_distance(a, b));
+        }
+    }
+    return count;
+}
+
+static void solve_mesh(const nrf_cs_pair_result_t *pairs, size_t count, nrf_geometry_solution_t *solution)
+{
+    nrf_geometry_node_input_t inputs[5];
+    for (size_t i = 0U; i < 5U; ++i) {
+        inputs[i].node_id = (nrf_cs_node_id_t)i;
+        inputs[i].z_mm = 0;
+    }
+    assert(nrf_geometry_solver_solve(inputs, 5U, pairs, count, solution) == NRF_GEOMETRY_OK);
+}
+
+/* Distance-only layouts are defined up to rotation/reflection: compare
+ * through every pairwise distance instead of raw coordinates. */
+static double max_shape_error_mm(const nrf_geometry_solution_t *solution)
+{
+    double worst = 0.0;
+    for (size_t a = 0U; a < 5U; ++a) {
+        for (size_t b = a + 1U; b < 5U; ++b) {
+            const nrf_geometry_node_position_t *na = find_node(solution, (nrf_cs_node_id_t)a);
+            const nrf_geometry_node_position_t *nb = find_node(solution, (nrf_cs_node_id_t)b);
+            assert(na->solved && nb->solved);
+            const double solved = hypot((double)(na->x_mm - nb->x_mm), (double)(na->y_mm - nb->y_mm));
+            const double error = fabs(solved - (double)true_distance(a, b));
+            if (error > worst) worst = error;
+        }
+    }
+    return worst;
+}
+
+static void test_refinement_exact_mesh_reports_uncertainty(void)
+{
+    nrf_cs_pair_result_t pairs[10];
+    nrf_geometry_solution_t solution;
+    solve_mesh(pairs, full_mesh(pairs), &solution);
+
+    assert(solution.refined);
+    assert(max_shape_error_mm(&solution) <= 2.0);
+    assert(solution.max_residual_mm <= 2);
+    assert(solution.inconsistent_pair_count == 0U);
+    assert(find_node(&solution, 0U)->uncertainty_mm == 0);   /* fixed origin */
+    for (nrf_cs_node_id_t id = 1U; id < 5U; ++id) {
+        const int32_t sigma = find_node(&solution, id)->uncertainty_mm;
+        /* A redundant mesh pins every node to around the range sigma. */
+        assert(sigma > 0 && sigma < 600);
+    }
+}
+
+/* One pair biased by +400 mm (within tolerance, so no node is rejected):
+ * the refinement spreads it over the redundant mesh instead of letting the
+ * sequential placement absorb it into one node's coordinates. */
+static void test_refinement_absorbs_a_biased_pair(void)
+{
+    nrf_cs_pair_result_t pairs[10];
+    const size_t count = full_mesh(pairs);
+    for (size_t i = 0U; i < count; ++i) {
+        if (pairs[i].node_a == 2U && pairs[i].node_b == 3U) pairs[i].distance_mm += 400;
+    }
+    nrf_geometry_solution_t solution;
+    solve_mesh(pairs, count, &solution);
+    assert(solution.refined);
+    assert(solution.inconsistent_pair_count == 0U);
+    /* The biased pair itself is partly absorbed by the flexible mesh, but
+     * every OTHER distance stays close to the truth. */
+    for (size_t a = 0U; a < 5U; ++a) {
+        for (size_t b = a + 1U; b < 5U; ++b) {
+            if (a == 2U && b == 3U) continue;
+            const nrf_geometry_node_position_t *na = find_node(&solution, (nrf_cs_node_id_t)a);
+            const nrf_geometry_node_position_t *nb = find_node(&solution, (nrf_cs_node_id_t)b);
+            const double solved = hypot((double)(na->x_mm - nb->x_mm), (double)(na->y_mm - nb->y_mm));
+            assert(fabs(solved - (double)true_distance(a, b)) < 250.0);
+        }
+    }
+}
+
+/* A single gross outlier (+3 m) on one pair: the node is still placed from
+ * its other references, the robust refinement keeps the layout accurate,
+ * and the bad pair is reported (the START gate then refuses it). */
+static void test_refinement_survives_single_gross_outlier(void)
+{
+    nrf_cs_pair_result_t pairs[10];
+    const size_t count = full_mesh(pairs);
+    for (size_t i = 0U; i < count; ++i) {
+        if (pairs[i].node_a == 3U && pairs[i].node_b == 4U) pairs[i].distance_mm += 3000;
+    }
+    nrf_geometry_solution_t solution;
+    solve_mesh(pairs, count, &solution);
+    for (nrf_cs_node_id_t id = 0U; id < 5U; ++id) {
+        assert(find_node(&solution, id)->solved);
+    }
+    /* Every TRUE distance except the outlier pair's is still recovered. */
+    for (size_t a = 0U; a < 5U; ++a) {
+        for (size_t b = a + 1U; b < 5U; ++b) {
+            if (a == 3U && b == 4U) continue;
+            const nrf_geometry_node_position_t *na = find_node(&solution, (nrf_cs_node_id_t)a);
+            const nrf_geometry_node_position_t *nb = find_node(&solution, (nrf_cs_node_id_t)b);
+            const double solved = hypot((double)(na->x_mm - nb->x_mm), (double)(na->y_mm - nb->y_mm));
+            assert(fabs(solved - (double)true_distance(a, b)) < 300.0);
+        }
+    }
+    assert(solution.inconsistent_pair_count >= 1U);
+}
+
+/* Two MISSING pairs (distance field 0) are never used as 0 mm, and the
+ * placement order adapts: node 2 (no pair to the axis node 1) is placed on
+ * a later pass once nodes 3 and 4 are known. With 1-3 and 2-4 missing
+ * instead, nodes 3 and 4 each have only two references (a mirror ambiguity
+ * one at a time); their 3-4 pair would resolve them jointly only if exactly
+ * one mirror combination fit it -- here node 3's mirror also fits within
+ * 371 mm (< tolerance), so both stay unsolved instead of being guessed. */
+static void test_refinement_with_missing_pairs(void)
+{
+    nrf_cs_pair_result_t pairs[10];
+    const size_t count = full_mesh(pairs);
+    for (size_t i = 0U; i < count; ++i) {
+        if ((pairs[i].node_a == 1U && pairs[i].node_b == 2U) ||
+            (pairs[i].node_a == 3U && pairs[i].node_b == 4U)) {
+            pairs[i].state = NRF_CS_PAIR_MISSING;
+            pairs[i].distance_mm = 0;
+        }
+    }
+    nrf_geometry_solution_t solution;
+    solve_mesh(pairs, count, &solution);
+    assert(solution.refined);
+    assert(max_shape_error_mm(&solution) <= 3.0);
+
+    nrf_cs_pair_result_t joint[10];
+    const size_t joint_count = full_mesh(joint);
+    for (size_t i = 0U; i < joint_count; ++i) {
+        if ((joint[i].node_a == 1U && joint[i].node_b == 3U) ||
+            (joint[i].node_a == 2U && joint[i].node_b == 4U)) {
+            joint[i].state = NRF_CS_PAIR_MISSING;
+            joint[i].distance_mm = 0;
+        }
+    }
+    solve_mesh(joint, joint_count, &solution);
+    assert(!find_node(&solution, 3U)->solved);
+    assert(!find_node(&solution, 4U)->solved);
+}
+
+/* Near-degenerate: every REMOTE almost on one line through MAIN. Along-line
+ * coordinates are well determined; the perpendicular one is not, and that
+ * must show up as a large uncertainty rather than false confidence. */
+static void test_near_collinear_layout_reports_large_uncertainty(void)
+{
+    const xy_t line[4] = { {0.0, 0.0}, {2000.0, 0.0}, {4000.0, 5.0}, {6000.0, -5.0} };
+    nrf_geometry_node_input_t inputs[4];
+    nrf_cs_pair_result_t pairs[6];
+    size_t count = 0U;
+    for (size_t i = 0U; i < 4U; ++i) {
+        inputs[i].node_id = (nrf_cs_node_id_t)i;
+        inputs[i].z_mm = 0;
+        for (size_t j = i + 1U; j < 4U; ++j) {
+            pairs[count++] = make_pair((nrf_cs_node_id_t)i, (nrf_cs_node_id_t)j, NRF_CS_PAIR_VALID,
+                (int32_t)lround(hypot(line[i].x - line[j].x, line[i].y - line[j].y)));
+        }
+    }
+    nrf_geometry_solution_t solution;
+    assert(nrf_geometry_solver_solve(inputs, 4U, pairs, count, &solution) == NRF_GEOMETRY_OK);
+    /* At least one off-axis node's position is poorly determined. */
+    int32_t largest = 0;
+    for (nrf_cs_node_id_t id = 1U; id < 4U; ++id) {
+        if (find_node(&solution, id)->uncertainty_mm > largest) largest = find_node(&solution, id)->uncertainty_mm;
+    }
+    assert(largest > 1000);
+}
+
+
+/* Joint mirror resolution does fire when the shared pair is decisive:
+ * MAIN=(0,0), A=(4000,0), B=(0,4000); C and D pair only with MAIN/A (resp.
+ * MAIN/B) plus each other. Only one mirror combination fits C-D. */
+static void test_joint_mirror_resolution_through_shared_pair(void)
+{
+    const xy_t points[5] = { {0, 0}, {4000, 0}, {0, 4000}, {3000, 3500}, {3500, 5000} };
+    nrf_geometry_node_input_t inputs[5];
+    nrf_cs_pair_result_t pairs[8];
+    size_t count = 0U;
+    const size_t edges[8][2] = { {0,1}, {0,2}, {1,2}, {0,3}, {1,3}, {0,4}, {2,4}, {3,4} };
+    for (size_t i = 0U; i < 5U; ++i) {
+        inputs[i].node_id = (nrf_cs_node_id_t)i;
+        inputs[i].z_mm = 0;
+    }
+    for (size_t e = 0U; e < 8U; ++e) {
+        const xy_t a = points[edges[e][0]];
+        const xy_t b = points[edges[e][1]];
+        pairs[count++] = make_pair((nrf_cs_node_id_t)edges[e][0], (nrf_cs_node_id_t)edges[e][1],
+            NRF_CS_PAIR_VALID, (int32_t)lround(hypot(a.x - b.x, a.y - b.y)));
+    }
+    nrf_geometry_solution_t solution;
+    assert(nrf_geometry_solver_solve(inputs, 5U, pairs, count, &solution) == NRF_GEOMETRY_OK);
+    const nrf_geometry_node_position_t *c = find_node(&solution, 3U);
+    const nrf_geometry_node_position_t *d = find_node(&solution, 4U);
+    assert(c->solved && d->solved);
+    assert(iabs(c->x_mm - 3000) <= 5 && iabs(c->y_mm - 3500) <= 5);
+    assert(iabs(d->x_mm - 3500) <= 5 && iabs(d->y_mm - 5000) <= 5);
+}
+
 int main(void)
 {
     test_rejects_missing_main_and_bad_arguments();
@@ -482,5 +712,11 @@ int main(void)
     test_second_single_reference_node_stays_unsolved();
     test_two_reference_mirror_ambiguity_after_reflection_fixed();
     test_contradicting_third_reference_leaves_node_unsolved();
+    test_refinement_exact_mesh_reports_uncertainty();
+    test_refinement_absorbs_a_biased_pair();
+    test_refinement_survives_single_gross_outlier();
+    test_refinement_with_missing_pairs();
+    test_near_collinear_layout_reports_large_uncertainty();
+    test_joint_mirror_resolution_through_shared_pair();
     return 0;
 }
