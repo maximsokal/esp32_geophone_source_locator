@@ -449,6 +449,80 @@ static void test_run_record_to_comparison_method_round_trips_unsolved(void)
 }
 
 
+
+/* MAX-212: with 4 sensors a 3D differential fit has no redundancy; a
+ * perfect-looking residual must not read as a confirmed position. */
+static void test_redundancy_caps_unverified_confidence(void)
+{
+    assert(localization_calculate_degrees_of_freedom(4U, false) == 0);
+    assert(localization_calculate_degrees_of_freedom(3U, true) == 0);
+    assert(localization_calculate_degrees_of_freedom(5U, false) == 1);
+    assert(localization_calculate_degrees_of_freedom(1U, false) == -1);
+
+    localization_run_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.solved = true;
+    record.confidence_score = localization_calculate_quality_from_residual_us(0.0, 2000.0);
+    assert(record.confidence_score == 1.0);
+    localization_calculate_apply_redundancy(&record, 0);
+    assert(record.degrees_of_freedom == 0);
+    assert(record.confidence_score == LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP);
+
+    record.confidence_score = 0.9;
+    localization_calculate_apply_redundancy(&record, 2);
+    assert(record.confidence_score == 0.9);
+    assert(record.degrees_of_freedom == 2);
+}
+
+
+static void test_event_window_covers_signal_and_moveout(void)
+{
+    size_t start = 0U;
+    size_t end = 0U;
+    /* 7.07 m at 340 m/s and 500 Hz: ceil(10.4) = 11 samples of moveout. */
+    assert(localization_calculate_event_window(1000U, 30000U, 50U, 7.07, 340.0, 500U, &start, &end));
+    assert(start == 1000U);
+    assert(end == 1000U + 50U + 11U + 1U);
+
+    /* Clamped at the end of the recording. */
+    assert(localization_calculate_event_window(29990U, 30000U, 50U, 7.07, 340.0, 500U, &start, &end));
+    assert(end == 30000U);
+
+    assert(!localization_calculate_event_window(30000U, 30000U, 50U, 7.07, 340.0, 500U, &start, &end));
+    assert(!localization_calculate_event_window(10U, 30000U, 50U, 7.07, 0.0, 500U, &start, &end));
+}
+
+
+static void test_fusion_mapping_groups_picks_and_excludes_energy(void)
+{
+    localization_run_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.solved = true;
+    record.confidence_score = 0.4;
+    localization_comparison_method_result_t method;
+
+    snprintf(record.method_name, sizeof(record.method_name), "%s", "tdoa_gauss_newton");
+    localization_calculate_run_record_to_comparison_method(&record, &method);
+    assert(method.evidence_group == LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP);
+    assert(method.quality == 0.4);
+
+    snprintf(record.method_name, sizeof(record.method_name), "%s", "traveltime_inversion");
+    localization_calculate_run_record_to_comparison_method(&record, &method);
+    assert(method.evidence_group == LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP);
+
+    snprintf(record.method_name, sizeof(record.method_name), "%s", "semblance");
+    localization_calculate_run_record_to_comparison_method(&record, &method);
+    assert(method.evidence_group == 0U);
+    assert(method.quality == 0.4);
+
+    /* Energy centroid is diagnostic only: zero fusion weight, still solved. */
+    snprintf(record.method_name, sizeof(record.method_name), "%s", "energy_baseline");
+    localization_calculate_run_record_to_comparison_method(&record, &method);
+    assert(method.solved);
+    assert(method.quality == 0.0);
+}
+
+
 int main(void)
 {
     test_quality_from_residual_matches_the_gaussian_formula();
@@ -460,6 +534,9 @@ int main(void)
     test_search_bounds_collapses_to_one_layer_when_planar();
     test_search_bounds_handles_zero_positions_without_crashing();
     test_search_bounds_stay_below_surface_and_honor_depth();
+    test_redundancy_caps_unverified_confidence();
+    test_event_window_covers_signal_and_moveout();
+    test_fusion_mapping_groups_picks_and_excludes_energy();
     test_geometry_computed_at_ms_takes_the_latest_computed_pod();
     test_arrival_time_us_converts_sample_index_precisely();
     test_traveltime_adapter_common_fields();

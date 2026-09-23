@@ -359,6 +359,8 @@ export interface LocalizationRun {
   propagation_speed_mps: number;
   propagation_speed_uncertainty_mps: number;
   confidence_score: number;
+  /** MAX-212: redundancy of a pick-based fit; 0 = exactly determined (unverified), -1/absent = n/a. */
+  degrees_of_freedom?: number;
   solved: boolean;
   source_position?: LocalizationRunPosition;
   emission_time_us?: number;

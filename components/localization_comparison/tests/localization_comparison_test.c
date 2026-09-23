@@ -278,9 +278,34 @@ static void test_rejects_invalid_arguments(void)
 }
 
 
+
+/* MAX-212: TDOA and traveltime fit the SAME picks; only the better one of
+ * a shared evidence group contributes to the joint position. */
+static void test_correlated_evidence_group_counts_once(void)
+{
+    localization_comparison_method_result_t methods[3] = {
+        solved_method("tdoa_gauss_newton", (localization_point3d_t) { 0.0, 0.0, 0.0 }, 0.4),
+        solved_method("traveltime_inversion", (localization_point3d_t) { 0.2, 0.0, 0.0 }, 0.5),
+        solved_method("semblance", (localization_point3d_t) { 4.0, 0.0, 0.0 }, 0.5)
+    };
+    methods[0].evidence_group = 1u;
+    methods[1].evidence_group = 1u;
+
+    localization_comparison_result_t result;
+    assert(localization_comparison_fuse(methods, 3u, &result) == ESP_OK);
+    assert(result.joint_found);
+    /* traveltime (0.5) + semblance (0.5); TDOA superseded. */
+    assert(result.joint_methods_used_count == 2u);
+    assert(fabs(result.joint_position.x_m - 2.1) < 1e-9);
+    /* Every method stays visible. */
+    assert(result.method_count == 3u);
+}
+
+
 int main(void)
 {
     test_equal_quality_methods_fuse_to_the_midpoint();
+    test_correlated_evidence_group_counts_once();
     test_a_low_quality_method_cannot_dominate_the_joint_result();
     test_zero_quality_solved_method_is_excluded_from_joint_but_kept_visible();
     test_mixed_solved_and_unsolved_methods_retain_reasons();

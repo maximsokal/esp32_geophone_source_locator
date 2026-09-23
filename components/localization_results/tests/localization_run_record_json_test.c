@@ -271,6 +271,31 @@ static void test_rejects_null_arguments(void)
 }
 
 
+
+/* MAX-212: redundancy round-trips; a record written before the field
+ * existed reads back as -1 ("unknown"), never as 0 ("exactly determined"). */
+static void test_degrees_of_freedom_round_trips_and_defaults(void)
+{
+    localization_run_record_t record = solved_record();
+    record.degrees_of_freedom = 0;
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"degrees_of_freedom\":0") != NULL);
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.degrees_of_freedom == 0);
+
+    char *legacy = strstr(json, ",\"degrees_of_freedom\":0");
+    assert(legacy != NULL);
+    memmove(legacy, legacy + strlen(",\"degrees_of_freedom\":0"),
+            strlen(legacy + strlen(",\"degrees_of_freedom\":0")) + 1U);
+    assert(strstr(json, "degrees_of_freedom") == NULL);
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.degrees_of_freedom == -1);
+    free(json);
+}
+
+
 int main(void)
 {
     test_solved_record_round_trips();
@@ -280,6 +305,7 @@ int main(void)
     test_negative_propagation_uncertainty_is_rejected();
     test_unknown_propagation_uncertainty_round_trips_as_zero();
     test_confidence_score_round_trips();
+    test_degrees_of_freedom_round_trips_and_defaults();
     test_negative_confidence_score_is_rejected();
     test_future_schema_version_is_not_found();
     test_malformed_json_is_invalid_response();

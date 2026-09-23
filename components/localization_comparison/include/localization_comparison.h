@@ -30,9 +30,14 @@
  *   - Semblance/coherency: quality = best_semblance directly -- the
  *     Neidell & Taner score is already a coherence measure bounded in
  *     [0, 1] by construction.
- *   - Energy baseline: quality = energy_concentration -- a spread-out,
- *     ambiguous energy pattern is intrinsically a weaker position
- *     estimate than one clearly dominated by the nearest sensor.
+ *   - Energy baseline: localization_calculate passes quality 0 (MAX-212):
+ *     a sensor-weighted centroid never leaves the array's convex hull and
+ *     its energy_concentration is >= 1/N even for pure noise, so it stays
+ *     a visible diagnostic but never pulls the joint result.
+ *
+ * Methods fitted to the same observations (TDOA and traveltime inversion
+ * both use the same arrival picks) share a nonzero evidence_group so the
+ * joint fusion counts that evidence once.
  *
  * This component never overwrites the individual per-method outcomes it
  * is given -- they are copied verbatim into result->methods[] alongside
@@ -66,6 +71,15 @@ typedef struct
      * clamped to something nonzero.
      */
     double quality;
+
+    /*
+     * MAX-212: methods that are NOT independent evidence share a nonzero
+     * group id (e.g. TDOA and traveltime inversion both fit the same
+     * arrival picks). Within one nonzero group only the highest-quality
+     * solved member contributes to the joint fusion, so the same picks are
+     * never counted twice. 0 = independent evidence.
+     */
+    unsigned evidence_group;
 
     /* Valid only if !solved -- never left blank for an unsolved method. */
     char rejection_reason[LOCALIZATION_COMPARISON_REJECTION_REASON_SIZE];
