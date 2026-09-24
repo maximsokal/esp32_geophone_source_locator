@@ -334,28 +334,89 @@ function robustPlaneFit(points: readonly WeightedPoint[]): { center: ProjectPoin
   return { ...fit, support: supportPoints.length, supportPoints };
 }
 
+/*
+ * MAX-255: patches must not depend on where the object sits relative to the
+ * 10 cm grid or on how it is oriented. The grid only chooses SEEDS: inside a
+ * cell, normals are clustered into families with an angular gate (no fixed
+ * orientation bins), and each family then gathers its plane support from all
+ * compatible points within PATCH_SUPPORT_RADIUS_METERS of its centroid in the
+ * neighbouring cells too, so a face straddling a cell boundary keeps its full
+ * support instead of being cut into two half-supported patches.
+ */
+const PATCH_FAMILY_DOT = Math.cos((24 * Math.PI) / 180);
+const PATCH_SUPPORT_NORMAL_DOT = Math.cos((30 * Math.PI) / 180);
+const PATCH_SUPPORT_RADIUS_METERS = 0.08;
+const PATCH_SUPPORT_PLANE_METERS = 0.03;
+
+interface PatchFamily { sx: number; sy: number; sz: number; nx: number; ny: number; nz: number; weight: number; members: number }
+
+function comparePatchSeeds(a: WeightedPoint, b: WeightedPoint): number {
+  if (a.confidence !== b.confidence) return b.confidence - a.confidence;
+  for (let axis = 0; axis < 3; axis += 1) if (a.inputNormal[axis] !== b.inputNormal[axis]) return a.inputNormal[axis] - b.inputNormal[axis];
+  for (let axis = 0; axis < 3; axis += 1) if (a.point[axis] !== b.point[axis]) return a.point[axis] - b.point[axis];
+  return 0;
+}
+
 function buildPlanePatches(input: StructuralGuideInput): PlanePatch[] {
-  const buckets = new Map<string, { points: WeightedPoint[]; ix: number; iy: number; iz: number }>();
+  const cells = new Map<string, { points: WeightedPoint[]; ix: number; iy: number; iz: number }>();
   const count = Math.min(Math.floor(input.positions.length / 3), Math.floor(input.normals.length / 3), input.confidence.length);
   for (let index = 0; index < count; index += 1) {
     const confidence = input.confidence[index]; if (confidence < MIN_POINT_CONFIDENCE) continue;
     const offset = index * 3; const x = input.positions[offset]; const y = input.positions[offset + 1]; const z = input.positions[offset + 2];
-    let nx = input.normals[offset]; let ny = input.normals[offset + 1]; let nz = input.normals[offset + 2];
+    const nx = input.normals[offset]; const ny = input.normals[offset + 1]; const nz = input.normals[offset + 2];
     if (!finite3(x, y, z) || !finite3(nx, ny, nz)) continue;
     const normalized = normalize([nx, ny, nz]); if (normalized === null) continue;
-    const oriented = canonicalNormal(normalized); nx = oriented[0]; ny = oriented[1]; nz = oriented[2];
     const ix = cellCoord(x, PATCH_CELL_METERS); const iy = cellCoord(y, PATCH_CELL_METERS); const iz = cellCoord(z, PATCH_CELL_METERS);
-    const orientationKey = `${Math.round(nx * 3)}:${Math.round(ny * 3)}:${Math.round(nz * 3)}`;
-    const key = `${cellKeyFromCoords(ix, iy, iz)}:${orientationKey}`;
-    const bucket = buckets.get(key) ?? { points: [], ix, iy, iz };
-    bucket.points.push({ point: [x, y, z], inputNormal: [nx, ny, nz], confidence }); buckets.set(key, bucket);
+    const key = cellKeyFromCoords(ix, iy, iz);
+    const cell = cells.get(key) ?? { points: [], ix, iy, iz };
+    cell.points.push({ point: [x, y, z], inputNormal: canonicalNormal(normalized), confidence }); cells.set(key, cell);
   }
+
   const patches: PlanePatch[] = [];
-  for (const [key, bucket] of buckets) {
-    const fit = robustPlaneFit(bucket.points);
-    if (fit === null || fit.support < MIN_PATCH_SUPPORT) continue;
-    if (fit.planarity < PATCH_MIN_PLANARITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS || fit.confidence < 0.48) continue;
-    patches.push({ key, center: fit.center, normal: fit.normal, d: dot(fit.normal, fit.center), support: fit.support, supportPoints: fit.supportPoints, confidence: fit.confidence, planarity: fit.planarity, residualMeters: fit.residual, ix: bucket.ix, iy: bucket.iy, iz: bucket.iz });
+  const orderedKeys = [...cells.keys()].sort();
+  for (const key of orderedKeys) {
+    const cell = cells.get(key)!;
+    // Greedy angular families, deterministic regardless of input order.
+    const families: PatchFamily[] = [];
+    for (const sample of [...cell.points].sort(comparePatchSeeds)) {
+      let best: PatchFamily | null = null; let bestDot = PATCH_FAMILY_DOT;
+      for (const family of families) {
+        const mean = normalize([family.nx, family.ny, family.nz]); if (mean === null) continue;
+        const similarity = Math.abs(dot(mean, sample.inputNormal));
+        if (similarity >= bestDot) { best = family; bestDot = similarity; }
+      }
+      const w = sample.confidence;
+      if (best === null) {
+        families.push({ sx: sample.point[0] * w, sy: sample.point[1] * w, sz: sample.point[2] * w, nx: sample.inputNormal[0] * w, ny: sample.inputNormal[1] * w, nz: sample.inputNormal[2] * w, weight: w, members: 1 });
+        continue;
+      }
+      const sign = best.nx * sample.inputNormal[0] + best.ny * sample.inputNormal[1] + best.nz * sample.inputNormal[2] < 0 ? -1 : 1;
+      best.sx += sample.point[0] * w; best.sy += sample.point[1] * w; best.sz += sample.point[2] * w;
+      best.nx += sample.inputNormal[0] * w * sign; best.ny += sample.inputNormal[1] * w * sign; best.nz += sample.inputNormal[2] * w * sign;
+      best.weight += w; best.members += 1;
+    }
+    families.forEach((family, familyIndex) => {
+      if (family.members < MIN_PATCH_SUPPORT) return;
+      const seedNormal = normalize([family.nx, family.ny, family.nz]); if (seedNormal === null) return;
+      const seed: ProjectPoint = [family.sx / family.weight, family.sy / family.weight, family.sz / family.weight];
+      const support: WeightedPoint[] = [];
+      for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) for (let dz = -1; dz <= 1; dz += 1) {
+        const neighbour = cells.get(cellKeyFromCoords(cell.ix + dx, cell.iy + dy, cell.iz + dz)); if (neighbour === undefined) continue;
+        for (const sample of neighbour.points) {
+          if (distance(sample.point, seed) > PATCH_SUPPORT_RADIUS_METERS) continue;
+          if (Math.abs(dot(seedNormal, sample.inputNormal)) < PATCH_SUPPORT_NORMAL_DOT) continue;
+          const offsetFromPlane = dot(seedNormal, [sample.point[0] - seed[0], sample.point[1] - seed[1], sample.point[2] - seed[2]]);
+          if (Math.abs(offsetFromPlane) > PATCH_SUPPORT_PLANE_METERS) continue;
+          support.push(sample);
+        }
+      }
+      if (support.length < MIN_PATCH_SUPPORT) return;
+      support.sort(comparePatchSeeds);
+      const fit = robustPlaneFit(support);
+      if (fit === null || fit.support < MIN_PATCH_SUPPORT) return;
+      if (fit.planarity < PATCH_MIN_PLANARITY || fit.residual > PATCH_RESIDUAL_REJECT_METERS || fit.confidence < 0.48) return;
+      patches.push({ key: `${key}:f${familyIndex}`, center: fit.center, normal: fit.normal, d: dot(fit.normal, fit.center), support: fit.support, supportPoints: fit.supportPoints, confidence: fit.confidence, planarity: fit.planarity, residualMeters: fit.residual, ix: cell.ix, iy: cell.iy, iz: cell.iz });
+    });
   }
   return patches;
 }
@@ -589,10 +650,17 @@ export function detectStructuralGuideGeometry(
     };
   }
   const corners: RawCorner[] = [];
-  for (const [i, neighboursSet] of adjacency) {
-    const neighbours = [...neighboursSet].sort((a, b) => a - b); const a = patches[i];
+  // Any patch adjacent to the other two may be the hub of a corner (the three
+  // faces need not be pairwise connected by accepted edges); each unordered
+  // triple is evaluated once.
+  const visitedTriples = new Set<string>();
+  for (const i of [...adjacency.keys()].sort((a, b) => a - b)) {
+    const neighbours = [...adjacency.get(i)!].sort((a, b) => a - b); const a = patches[i];
     for (let x = 0; x < neighbours.length; x += 1) for (let y = x + 1; y < neighbours.length; y += 1) {
-      const bIndex = neighbours[x]; const cIndex = neighbours[y]; if (bIndex <= i || cIndex <= i) continue;
+      const bIndex = neighbours[x]; const cIndex = neighbours[y];
+      const triple = [i, bIndex, cIndex].sort((l, r) => l - r).join(':');
+      if (visitedTriples.has(triple)) continue;
+      visitedTriples.add(triple);
       const b = patches[bIndex]; const c = patches[cIndex]; const angleBC = Math.acos(Math.min(1, Math.abs(dot(b.normal, c.normal)))); if (angleBC < MIN_PLANE_ANGLE_RAD) continue;
       const point = solveThreePlanes(a, b, c); if (point === null) continue;
       const maxDistance = Math.max(distance(point, a.center), distance(point, b.center), distance(point, c.center)); if (maxDistance > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
@@ -737,4 +805,10 @@ export function matchEdgeToManualPoints(edge: StructuralEdgeCandidate, points: r
   return best === null ? null : [best.a, best.b];
 }
 
-export const structuralGuideMathForTests = { symmetricEigen3, isIndependentEvidence };
+export const structuralGuideMathForTests = {
+  symmetricEigen3,
+  isIndependentEvidence,
+  /** Patch keys are `<cell>:f<family>`; exposed so tests can count patches per spatial cell. */
+  buildPlanePatches: (input: StructuralGuideInput): ReadonlyArray<{ key: string; cell: string; support: number; normal: ProjectVector; center: ProjectPoint }> =>
+    buildPlanePatches(input).map((patch) => ({ key: patch.key, cell: cellKeyFromCoords(patch.ix, patch.iy, patch.iz), support: patch.support, normal: patch.normal, center: patch.center })),
+};
