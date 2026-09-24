@@ -507,6 +507,22 @@ export function normalErrorDeg(measured: Vec3, truth: Vec3): number {
   return Math.acos(Math.min(1, Math.abs(dot(measured, truth)) / length)) / DEG;
 }
 
+/**
+ * A point within `ambiguityMeters` of several faces (on or next to a crease)
+ * may legitimately carry any of their normals; the error is against the best
+ * of them. 1 cm ~ 3 sigma of depth noise at 1.5 m plus fused position error.
+ */
+export const FACE_AMBIGUITY_METERS = 0.01;
+
+export function sceneNormalErrorDeg(scene: SyntheticScene, point: Vec3, measured: Vec3, ambiguityMeters = FACE_AMBIGUITY_METERS): number {
+  const nearest = nearestPolygon(scene, point).distance;
+  let best = 180;
+  for (const polygon of scene.polygons) {
+    if (distanceToPolygon(polygon, point) <= nearest + ambiguityMeters) best = Math.min(best, normalErrorDeg(measured, polygon.normal));
+  }
+  return best;
+}
+
 export interface PointSet {
   positions: ArrayLike<number>;
   normals?: ArrayLike<number>;
@@ -551,7 +567,7 @@ export function creaseBinStats(scene: SyntheticScene, set: PointSet, voxelSizeMe
       if (!(crease >= from && crease < to)) continue;
       const nearest = nearestPolygon(scene, p);
       distances.push(nearest.distance);
-      if (set.normals !== undefined) errors.push(normalErrorDeg(normalAt(set, i), nearest.polygon.normal));
+      if (set.normals !== undefined) errors.push(sceneNormalErrorDeg(scene, p, normalAt(set, i)));
     }
     const mean = (values: number[]): number => values.length === 0 ? Number.NaN : values.reduce((s, v) => s + v, 0) / values.length;
     return {
@@ -568,7 +584,7 @@ export function wrongNormalPassingGate(scene: SyntheticScene, set: PointSet, gat
   for (let i = 0; i < set.count; i += 1) {
     if (Number(set.confidence![i]) < gate) continue;
     const p = pointAt(set, i);
-    if (normalErrorDeg(normalAt(set, i), nearestPolygon(scene, p).polygon.normal) > maxErrorDeg) count += 1;
+    if (sceneNormalErrorDeg(scene, p, normalAt(set, i)) > maxErrorDeg) count += 1;
   }
   return count;
 }
