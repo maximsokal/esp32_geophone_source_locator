@@ -296,6 +296,46 @@ static void test_degrees_of_freedom_round_trips_and_defaults(void)
 }
 
 
+static void test_estimated_velocities_round_trip_and_stay_optional(void)
+{
+    /* A velocity-free method reports the velocities it estimated. */
+    localization_run_record_t record = solved_record();
+    snprintf(record.method_name, sizeof(record.method_name), "psafuvs");
+    record.estimated_p_velocity_mps = 321.5;
+    record.estimated_s_velocity_mps = 171.25;
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"estimated_p_velocity_mps\":321.5") != NULL);
+    assert(strstr(json, "\"estimated_s_velocity_mps\":171.25") != NULL);
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.estimated_p_velocity_mps == 321.5);
+    assert(parsed.estimated_s_velocity_mps == 171.25);
+    free(json);
+
+    /* Every other method omits them; old records parse as "not estimated". */
+    record = solved_record();
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "estimated_") == NULL);
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.estimated_p_velocity_mps == 0.0 && parsed.estimated_s_velocity_mps == 0.0);
+    free(json);
+
+    /* An unsolved record never carries them. */
+    record = rejected_record();
+    record.estimated_p_velocity_mps = 300.0;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "estimated_") == NULL);
+    free(json);
+
+    record = solved_record();
+    record.estimated_s_velocity_mps = NAN;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+    record.estimated_s_velocity_mps = -1.0;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+}
+
+
 int main(void)
 {
     test_solved_record_round_trips();
@@ -306,6 +346,7 @@ int main(void)
     test_unknown_propagation_uncertainty_round_trips_as_zero();
     test_confidence_score_round_trips();
     test_degrees_of_freedom_round_trips_and_defaults();
+    test_estimated_velocities_round_trip_and_stay_optional();
     test_negative_confidence_score_is_rejected();
     test_future_schema_version_is_not_found();
     test_malformed_json_is_invalid_response();

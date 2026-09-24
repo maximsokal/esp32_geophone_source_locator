@@ -5,6 +5,7 @@
 #include <direct.h>
 #define mkdir(path, mode) _mkdir(path)
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 

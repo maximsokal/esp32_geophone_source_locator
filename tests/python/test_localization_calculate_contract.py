@@ -30,6 +30,7 @@ def test_component_is_registered_in_cmake():
         "localization_run_store",
         "localization_semblance",
         "localization_traveltime_inversion",
+        "localization_velocity_free",
         "object_store",
         "seismic_dsp",
         "seismic_recorder",
@@ -152,7 +153,75 @@ def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
     assert '"traveltime_scan_constrained"' in source
     assert '"semblance_scan_constrained"' in source
     # Fusion only ever sees the unconstrained records.
-    assert "comparison_methods, fused_record_count, &comparison_result" in source
+    assert "comparison_methods, fused_record_count, comparison_result" in source
     fused_index = source.index("const size_t fused_record_count = record_count;")
     constrained_index = source.index('"traveltime_scan_constrained"')
     assert fused_index < constrained_index
+
+
+def test_velocity_free_methods_run_on_the_same_picks_and_are_fused_once():
+    """TDCAS, PSAFUVS and SUEA are persisted as their own records before the
+    fused prefix ends; the policy puts them in the shared P-pick evidence
+    group so the joint fusion never counts the same picks twice."""
+    source = orchestrator_source()
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    for call in (
+        "localization_tdcas_solve(p_observations, p_observation_count, NULL, tdcas_result)",
+        "localization_psafuvs_solve(",
+        "localization_suea_locate(",
+    ):
+        assert source.index(call) < fused_index, call
+    for adapter in (
+        "localization_calculate_tdcas_to_run_record(",
+        "localization_calculate_psafuvs_to_run_record(",
+        "localization_calculate_suea_to_run_record(",
+    ):
+        assert source.index(adapter) < fused_index, adapter
+
+    policy = read("components/localization_calculate/localization_calculate_policy.c")
+    group_block = policy[policy.index("MAX-212: TDOA, traveltime inversion and the velocity-free"):]
+    group_block = group_block[:group_block.index("LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP")]
+    for name in ('"tdcas"', '"psafuvs"', '"suea"'):
+        assert name in group_block
+
+
+def test_velocity_free_scan_variants_are_constrained_and_never_fused():
+    source = orchestrator_source()
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    for name in ('"tdcas_scan_constrained"', '"psafuvs_scan_constrained"', '"suea_scan_voids"'):
+        assert source.index(name) > fused_index, name
+    # Straight-ray methods get both the FREE-air candidate filter and the
+    # void ray screening; SUEA gets the scan-classified grid.
+    assert ".clear = localization_calculate_scan_ray_clear," in source
+    assert "constrained_config.ray_filter.clear = localization_calculate_scan_ray_clear;" in source
+    assert "localization_suea_grid_classify(suea_grid, localization_calculate_scan_suea_cell, &occupancy);" in source
+
+
+def test_s_picks_are_explicit_caller_configuration():
+    """MAX-132: PSAFUVS needs S picks, and the S picker's windows/thresholds
+    come only from the caller; without them PSAFUVS is persisted as not
+    attempted with a reason."""
+    header = read("components/localization_calculate/include/localization_calculate.h")
+    assert "bool s_pick_enabled;" in header
+    assert "geophone_secondary_pick_config_t s_pick_config;" in header
+    source = orchestrator_source()
+    assert "config->s_pick_enabled" in source
+    assert "&config->s_pick_config" in source
+    assert "S-wave picking not configured" in source
+
+
+def test_suea_prior_uses_the_callers_velocity_and_uncertainty():
+    source = orchestrator_source()
+    assert ".prior_velocity_mps = config->propagation_speed_mps," in source
+    assert ".prior_velocity_sigma_mps = config->propagation_speed_uncertainty_mps," in source
+
+
+def test_run_state_lives_on_the_heap_not_the_https_stack():
+    """The orchestrator runs on the 8 KiB HTTPS task: the records and fusion
+    state are one heap workspace, allocated before the first write and freed
+    on the way out."""
+    source = orchestrator_source()
+    assert "localization_calculate_workspace_t *workspace = heap_caps_calloc(" in source
+    assert "localization_run_record_t *records = workspace->records;" in source
+    assert source.index("heap_caps_calloc(") < source.index("localization_run_store_write_picks(")
+    assert source.rstrip().endswith("heap_caps_free(workspace);\n    return first_write_err;\n}")

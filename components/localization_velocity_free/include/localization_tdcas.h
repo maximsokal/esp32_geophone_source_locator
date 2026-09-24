@@ -117,7 +117,8 @@ typedef struct
 /*
  * observation_count must be in [1, LOCALIZATION_TDCAS_MAX_SENSORS]; config
  * may be NULL (no filters). Returns ESP_ERR_INVALID_ARG for NULL/invalid
- * input (non-finite coordinates). Data-driven failures are ESP_OK with a
+ * input (non-finite coordinates), ESP_ERR_NO_MEM when its small heap
+ * workspace cannot be allocated. Data-driven failures are ESP_OK with a
  * non-SOLVED status.
  */
 esp_err_t localization_tdcas_solve(

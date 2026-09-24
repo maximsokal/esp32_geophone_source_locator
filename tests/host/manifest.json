@@ -584,6 +584,7 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/geophone_events/geophone_event_quality.c",
         "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
         "components/localization/tests/localization_event_bridge_test.c"
       ],
       "include_dirs": [
@@ -617,6 +618,7 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/geophone_events/geophone_event_quality.c",
         "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
         "tests/host/localization_pipeline_validation_test.c"
       ],
       "include_dirs": [
@@ -865,6 +867,7 @@
         "components/localization_energy_baseline/include",
         "components/localization_semblance/include",
         "components/localization_traveltime_inversion/include",
+        "components/localization_velocity_free/include",
         "components/localization_results/include",
         "components/geophone_events/include",
         "components/object_store/include",
@@ -907,7 +910,8 @@
       "include_dirs": [
         "components/seismic_dsp/tests/stubs",
         "components/seismic_dsp/include"
-      ]
+      ],
+      "libraries": ["m"]
     },
     {
       "name": "geophone_events",
@@ -918,6 +922,7 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/geophone_events/geophone_event_quality.c",
         "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
         "components/geophone_events/tests/geophone_events_host_test.c"
       ],
       "include_dirs": [
@@ -1283,7 +1288,9 @@
         "components/object_format/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/object_store_profile"
-      ]
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
     },
     {
       "name": "seismic_recorder_session_cs_pairs",
@@ -1301,7 +1308,9 @@
         "components/object_format/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/object_store_profile"
-      ]
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
     },
     {
       "name": "seismic_recorder_waveform_raw",
@@ -1403,7 +1412,9 @@
       "include_dirs": [
         "tests/host/stubs/web_api_control",
         "components/web_server"
-      ]
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
     },
     {
       "name": "web_api_status_http",

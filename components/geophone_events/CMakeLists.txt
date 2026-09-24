@@ -6,6 +6,7 @@ idf_component_register(
         "geophone_event_cross_correlation.c"
         "geophone_event_quality.c"
         "geophone_event_pick.c"
+        "geophone_event_secondary_pick.c"
 
     INCLUDE_DIRS
         "include"

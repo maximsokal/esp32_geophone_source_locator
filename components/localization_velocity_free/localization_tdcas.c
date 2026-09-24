@@ -1,6 +1,7 @@
 #include "localization_tdcas.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "localization_vf_math.h"
@@ -25,6 +26,14 @@ typedef struct
     double velocity_mps;
 
 } tdcas_candidate_t;
+
+
+typedef struct
+{
+    tdcas_candidate_t candidates[TDCAS_MAX_COMBINATIONS];
+    double samples[TDCAS_MAX_COMBINATIONS];
+
+} tdcas_workspace_t;
 
 
 static bool next_combination(size_t *indices, size_t k, size_t n)
@@ -274,7 +283,12 @@ esp_err_t localization_tdcas_solve(
         }
     }
 
-    tdcas_candidate_t candidates[TDCAS_MAX_COMBINATIONS];
+    /* Heap, not stack: this runs on the HTTPS task (see localization_vf_math.h). */
+    tdcas_workspace_t *workspace = malloc(sizeof(*workspace));
+    if (workspace == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    tdcas_candidate_t *candidates = workspace->candidates;
     size_t candidate_count = 0U;
     size_t indices[LOCALIZATION_TDCAS_MIN_SENSORS_3D];
     for (size_t i = 0U; i < k; ++i) {
@@ -322,11 +336,12 @@ esp_err_t localization_tdcas_solve(
         result->status = result->combinations_valid > 0U
             ? LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION
             : LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
+        free(workspace);
         return ESP_OK;
     }
 
     /* Comprehensive solution: logistic location of each coordinate. */
-    double samples[TDCAS_MAX_COMBINATIONS];
+    double *samples = workspace->samples;
     double location[4];
     double scale[4];
     for (size_t axis = 0U; axis < 4U; ++axis) {
@@ -340,9 +355,11 @@ esp_err_t localization_tdcas_solve(
         }
         if (!vf_fit_logistic(samples, candidate_count, &location[axis], &scale[axis])) {
             result->status = LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
+            free(workspace);
             return ESP_OK;
         }
     }
+    free(workspace);
 
     result->position = (localization_point3d_t) { location[0], location[1], location[2] };
     result->position_scale_m = (localization_point3d_t) { scale[0], scale[1], scale[2] };

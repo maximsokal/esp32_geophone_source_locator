@@ -7,8 +7,11 @@
 #include "localization_comparison.h"
 #include "localization_energy_baseline.h"
 #include "localization_event_bridge.h"
+#include "localization_psafuvs.h"
 #include "localization_run_record.h"
 #include "localization_semblance.h"
+#include "localization_suea.h"
+#include "localization_tdcas.h"
 #include "localization_traveltime_inversion.h"
 #include "object_store.h"
 #include "scan_occupancy.h"
@@ -319,3 +322,109 @@ bool localization_calculate_scan_candidate_allowed(
     void *context
 );
 
+
+
+/* ---- Velocity-free methods: TDCAS, PSAFUVS, SUEA --------------------------
+ * Each adapter writes the method's own estimated velocity (P, and S for
+ * PSAFUVS) into estimated_*_velocity_mps and scores confidence from its
+ * residual exactly like TDOA / traveltime inversion. A NULL result means
+ * the method was not attempted; not_attempted_reason (PSAFUVS) must then
+ * say why. */
+
+void localization_calculate_tdcas_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_tdcas_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+void localization_calculate_psafuvs_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_psafuvs_result_t *result,
+    const char *not_attempted_reason,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+void localization_calculate_suea_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_suea_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/*
+ * SUEA grid box from the traveltime search box: one search step wider in x
+ * and y and one step higher, so the surface sensors (at the box top) and the
+ * rays that bend around empty areas near the box edge stay inside the grid.
+ * A planar search stays a single layer.
+ */
+void localization_calculate_suea_grid_bounds(
+    const localization_traveltime_search_bounds_t *search,
+    localization_point3d_t *min_out,
+    localization_point3d_t *max_out
+);
+
+/* Redundancy of a fit with `unknowns` parameters to `observations`
+ * independent arrivals: observations - unknowns (-1 when no observation).
+ * TDCAS: N P picks, 5 unknowns (x, y, z, t0, v). PSAFUVS: 2N arrivals,
+ * 6 unknowns (x, y, z, t0, vP, vS). */
+int32_t localization_calculate_velocity_free_degrees_of_freedom(
+    size_t observations,
+    size_t unknowns
+);
+
+
+/* ---- Scan occupancy -> velocity-free methods (MAX-147/162) ---------------
+ * Both callbacks take points in the SENSOR (localization) frame and map
+ * them through the occupancy's registration, which the caller has already
+ * checked with scan_occupancy_registration_usable(). */
+
+/*
+ * SUEA cell class of a sensor-frame point: scan-verified FREE air is
+ * EMPTY (a wave cannot cross it), OCCUPIED surface is SOLID, UNKNOWN stays
+ * UNKNOWN (passable, never assumed empty). OUTSIDE the scanned volume is
+ * EMPTY only above the envelope top (open air over the rubble) and
+ * UNKNOWN otherwise. `context` is a `const scan_occupancy_t *`.
+ */
+localization_suea_cell_t localization_calculate_scan_suea_cell(
+    const localization_point3d_t *point,
+    void *context
+);
+
+
+typedef struct
+{
+    const scan_occupancy_t *occupancy;
+
+    /* Samples closer than this to the sensor end are ignored: a pod lies
+     * ON the surface and registration puts it a few cm into the air as
+     * often as into the rubble. */
+    double sensor_clearance_m;
+
+} localization_calculate_scan_ray_context_t;
+
+/* Default sensor clearance: one and a half scan voxels. */
+#define LOCALIZATION_CALCULATE_SCAN_RAY_CLEARANCE_VOXELS 1.5
+
+/*
+ * Straight-ray clearance for TDCAS / PSAFUVS: false when the segment
+ * sensor -> candidate crosses scan-verified FREE space -- at least two
+ * consecutive samples at half-voxel spacing, so a single noisy voxel does
+ * not veto a ray a wave would simply pass. `context` is a
+ * `const localization_calculate_scan_ray_context_t *`.
+ */
+bool localization_calculate_scan_ray_clear(
+    const localization_point3d_t *sensor,
+    const localization_point3d_t *candidate,
+    void *context
+);
