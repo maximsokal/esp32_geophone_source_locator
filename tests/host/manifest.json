@@ -228,6 +228,19 @@
       ]
     },
     {
+      "name": "power_output_gpio18",
+      "sources": [
+        "components/power_control/power_output.c",
+        "components/power_control/power_control.c",
+        "components/power_control/tests/power_output_gpio18_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/power_output",
+        "components/power_control",
+        "components/power_control/include"
+      ]
+    },
+    {
       "name": "ad7606_serial",
       "sources": [
         "components/ad7606_driver/ad7606_serial.c",
