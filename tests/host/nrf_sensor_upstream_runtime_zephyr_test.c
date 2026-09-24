@@ -11,6 +11,7 @@
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
+#include "nrf_watchdog_zephyr.h"
 
 static unsigned s_thread_create_calls;
 static unsigned s_queue_put_calls;
@@ -19,6 +20,15 @@ static unsigned s_refresh_calls;
 static unsigned s_imu_read_calls;
 static unsigned s_runtime_init_calls;
 static bool s_fail_next_queue_put;
+/* MAX-244 */
+static unsigned s_sensor_worker_checkins;
+static k_timeout_t s_max_worker_wait = K_NO_WAIT;
+
+void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
+{
+    assert(participant == NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
+    ++s_sensor_worker_checkins;
+}
 static bool s_exit_worker_when_empty;
 static bool s_include_env;
 static jmp_buf s_worker_exit;
@@ -48,7 +58,13 @@ int k_msgq_put(struct k_msgq *q, const void *data, k_timeout_t timeout)
 
 int k_msgq_get(struct k_msgq *q, void *data, k_timeout_t timeout)
 {
-    (void)timeout;
+    /* The worker must never block forever: it would stop checking in and
+     * the watchdog would reset a healthy idle node. */
+    assert(timeout != K_FOREVER);
+    assert(timeout <= K_MSEC(1000));
+    if (timeout > s_max_worker_wait) {
+        s_max_worker_wait = timeout;
+    }
     if (q->count == 0U) {
         if (s_exit_worker_when_empty) {
             longjmp(s_worker_exit, 1);
@@ -251,6 +267,11 @@ int main(void)
         assert(false);
     }
     s_exit_worker_when_empty = false;
+
+    /* One check-in per loop iteration: the ACTIVATE pass and the idle
+     * pass that escaped the loop. */
+    assert(s_sensor_worker_checkins == 2U);
+    assert(s_max_worker_wait > K_NO_WAIT);
 
     assert(s_prepare_calls == 1U);
     assert(s_refresh_calls == 1U);

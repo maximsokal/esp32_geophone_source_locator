@@ -15,6 +15,9 @@
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_node_state.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
+#include "nrf_watchdog_zephyr.h"
+
+#include <zephyr/sys/printk.h>
 
 #define SLEEP_TIME_MS 1000
 #define LED0_NODE DT_ALIAS(led0)
@@ -62,7 +65,16 @@ int main(void)
         return ret;
     }
 
+    /* MAX-244: armed last, once every monitored runtime exists. A failure
+     * leaves the node running unprotected instead of refusing to boot. */
+    ret = nrf_watchdog_zephyr_start();
+    if (ret < 0) {
+        printk("nrf_watchdog: NOT armed (%d); a hung node will not self-reset\n", ret);
+    }
+
     while (1) {
+        nrf_watchdog_zephyr_service();
+
         ret = gpio_pin_set_dt(&led, (int)led_is_on);
         if (ret < 0) {
             return ret;

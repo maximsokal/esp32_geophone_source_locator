@@ -7,6 +7,11 @@
       "include_dirs": ["nRF54L15/include"]
     },
     {
+      "name": "nrf_watchdog_health",
+      "sources": ["nRF54L15/src/nrf_watchdog_health.c", "tests/host/nrf_watchdog_health_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
       "name": "nrf_sensor_bus",
       "sources": ["nRF54L15/src/nrf_sensor_bus.c", "tests/host/nrf_sensor_bus_test.c"],
       "include_dirs": ["nRF54L15/include"]
