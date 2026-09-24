@@ -225,3 +225,16 @@ def test_run_state_lives_on_the_heap_not_the_https_stack():
     assert "localization_run_record_t *records = workspace->records;" in source
     assert source.index("heap_caps_calloc(") < source.index("localization_run_store_write_picks(")
     assert source.rstrip().endswith("heap_caps_free(workspace);\n    return first_write_err;\n}")
+
+
+def test_obstructed_sensor_masks_are_mapped_back_to_channels():
+    """TDCAS/PSAFUVS report obstructed sensors by OBSERVATION index; the
+    observation arrays skip channels without picks, so the run record's
+    channel masks must go through the explicit observation -> channel map."""
+    source = orchestrator_source()
+    assert "workspace->p_channel[p_observation_count] = ch;" in source
+    assert "workspace->ps_channel[ps_observation_count] = ch;" in source
+    assert "constrained_tdcas->sensor_mask_obstructed, workspace->p_channel, p_observation_count" in source
+    assert "constrained_psafuvs->sensor_mask_obstructed, workspace->ps_channel, ps_observation_count" in source
+    assert "~constrained_tdcas->sensor_mask_obstructed" not in source
+    assert "~constrained_psafuvs->sensor_mask_obstructed" not in source

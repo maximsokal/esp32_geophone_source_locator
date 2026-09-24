@@ -63,6 +63,10 @@ typedef struct
     /* Velocity-free methods' inputs and results. */
     localization_observation_t p_observations[OBJECT_STORE_POD_COUNT];
     localization_psafuvs_observation_t ps_observations[OBJECT_STORE_POD_COUNT];
+    /* Observation index -> channel: the observation arrays skip channels
+     * without the needed picks. */
+    size_t p_channel[OBJECT_STORE_POD_COUNT];
+    size_t ps_channel[OBJECT_STORE_POD_COUNT];
     localization_suea_pick_t suea_picks[OBJECT_STORE_POD_COUNT];
     localization_tdcas_result_t tdcas;
     localization_psafuvs_result_t psafuvs;
@@ -73,6 +77,19 @@ typedef struct
     localization_suea_grid_t suea_grid;
 
 } localization_calculate_workspace_t;
+
+
+/* An observation-indexed mask (bit i: observations[i]) as a channel mask. */
+static uint32_t observation_mask_to_channels(uint32_t observation_mask, const size_t *channel, size_t count)
+{
+    uint32_t channels = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        if ((observation_mask & (1U << i)) != 0U) {
+            channels |= 1U << channel[i];
+        }
+    }
+    return channels;
+}
 
 
 /*
@@ -652,6 +669,7 @@ esp_err_t localization_calculate_run(
     size_t p_observation_count = 0U;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         if ((traveltime_used_mask & (1U << ch)) != 0U) {
+            workspace->p_channel[p_observation_count] = ch;
             p_observations[p_observation_count++] = traveltime_picks[ch].observation;
         }
     }
@@ -702,6 +720,7 @@ esp_err_t localization_calculate_run(
         ps_observations[ps_observation_count].sensor_position = event_channels[ch].sensor_position;
         ps_observations[ps_observation_count].p_arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
         ps_observations[ps_observation_count].s_arrival_time_us = s_arrival_us;
+        workspace->ps_channel[ps_observation_count] = ch;
         ps_used_mask |= 1U << ch;
         ++ps_observation_count;
     }
@@ -907,9 +926,13 @@ esp_err_t localization_calculate_run(
             );
             summary_out->methods_attempted++;
         }
+        const uint32_t tdcas_obstructed_channels = observation_mask_to_channels(
+            constrained_tdcas->sensor_mask_obstructed, workspace->p_channel, p_observation_count
+        );
         localization_calculate_tdcas_to_run_record(
             &context, constrained_tdcas_err == ESP_OK ? constrained_tdcas : NULL,
-            traveltime_used_mask, traveltime_rejected_mask,
+            traveltime_used_mask & ~tdcas_obstructed_channels,
+            traveltime_rejected_mask | tdcas_obstructed_channels,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
             &records[record_count]
         );
@@ -942,11 +965,14 @@ esp_err_t localization_calculate_run(
             );
             summary_out->methods_attempted++;
         }
+        const uint32_t psafuvs_obstructed_channels = observation_mask_to_channels(
+            constrained_psafuvs->sensor_mask_obstructed, workspace->ps_channel, ps_observation_count
+        );
         localization_calculate_psafuvs_to_run_record(
             &context, constrained_psafuvs_err == ESP_OK ? constrained_psafuvs : NULL,
             usable ? psafuvs_not_attempted : not_applied_reason,
-            ps_used_mask & ~constrained_psafuvs->sensor_mask_obstructed,
-            ((~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK) | constrained_psafuvs->sensor_mask_obstructed,
+            ps_used_mask & ~psafuvs_obstructed_channels,
+            ((~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK) | psafuvs_obstructed_channels,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
             &records[record_count]
         );
