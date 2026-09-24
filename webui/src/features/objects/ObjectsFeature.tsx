@@ -59,6 +59,7 @@ export default function ObjectsFeature(props: Props) {
   const [showLive, setShowLive] = useState(false);
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [showCalculate, setShowCalculate] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [gpsMessage, setGpsMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -379,7 +380,18 @@ export default function ObjectsFeature(props: Props) {
                       className="secondary"
                       onClick={() => setShowCalculate((value) => !value)}
                     >{showCalculate ? 'Hide localization' : 'Calculate / view localization'}</button>
+                    <button
+                      disabled={busy}
+                      className="secondary"
+                      onClick={() => {
+                        setReportError(null);
+                        void import('../report/reportExport')
+                          .then((module) => module.openRecordingReport(selected, openSession))
+                          .catch((reason: unknown) => setReportError(reason instanceof Error ? reason.message : String(reason)));
+                      }}
+                    >Export report (PDF)</button>
                   </div>
+                  {reportError !== null && <p className="overlay-note">Report: {reportError}</p>}
                 </article>
                 {showCalculate && (
                   <Suspense fallback={<div className="console-card">Loading localization module…</div>}>
