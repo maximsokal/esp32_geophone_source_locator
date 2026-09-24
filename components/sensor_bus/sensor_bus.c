@@ -155,6 +155,23 @@ static i2c_line_result_t sensor_bus_live_clear_locked(void)
     return sda_stuck ? I2C_LINES_SDA_STUCK : I2C_LINES_RECOVERED;
 }
 
+/* Caller holds s_lock and I2C0 exists. */
+static esp_err_t sensor_bus_classify_locked(uint8_t address, esp_err_t transfer_err)
+{
+    if (transfer_err == ESP_FAIL) {
+        return ESP_ERR_NOT_FOUND;  /* legacy driver NACK */
+    }
+    if (transfer_err != ESP_ERR_INVALID_STATE) {
+        return transfer_err;
+    }
+    const esp_err_t probe_err = sensor_bus_lines_probe(s_bus, address);
+    if (probe_err == ESP_ERR_NOT_FOUND) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* ACK: the target is there and the transfer itself failed. */
+    return probe_err == ESP_OK ? transfer_err : probe_err;
+}
+
 /* Caller must already hold s_lock. */
 static esp_err_t sensor_bus_init_locked(void)
 {
@@ -274,7 +291,11 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
         }
 
         uint8_t control = 0U;
-        const esp_err_t probe_err = i2c_bus_read_byte(candidate, NULL_I2C_MEM_ADDR, &control);
+        /* MAX-248: a NACK is ESP_ERR_NOT_FOUND after classification,
+         * whatever code the backend used for it. */
+        const esp_err_t probe_err = sensor_bus_classify_locked(
+            candidate_address,
+            i2c_bus_read_byte(candidate, NULL_I2C_MEM_ADDR, &control));
         (void)control;
 
         if (probe_err == ESP_OK) {
@@ -300,7 +321,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
             err = delete_err;
             goto fail;
         }
-        if (probe_err != ESP_FAIL) {
+        if (probe_err != ESP_ERR_NOT_FOUND) {
             err = probe_err;
             goto fail;
         }
@@ -329,6 +350,25 @@ fail:
         }
         return err;
     }
+    sensor_bus_unlock();
+    return err;
+}
+
+esp_err_t sensor_bus_classify_transfer_error(uint8_t address, esp_err_t transfer_err)
+{
+    if (transfer_err == ESP_OK) {
+        return ESP_OK;
+    }
+    if (transfer_err != ESP_ERR_INVALID_STATE) {
+        return transfer_err == ESP_FAIL ? ESP_ERR_NOT_FOUND : transfer_err;
+    }
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return transfer_err;
+    }
+    const esp_err_t err = s_bus != NULL
+        ? sensor_bus_classify_locked(address, transfer_err)
+        : transfer_err;
     sensor_bus_unlock();
     return err;
 }

@@ -8,6 +8,7 @@
 #include "sensor_bus.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "sensor_bus_lines_fake.h"
 
 struct test_semaphore
 {
@@ -62,6 +63,21 @@ static void fake_reset(void)
     s_delete_count = 0U;
     s_bus_create_calls = 0U;
     s_bus_delete_calls = 0U;
+    fake_lines_reset();
+}
+
+/*
+ * MAX-248: ESP-IDF >= 5.3 (i2c_bus v2 over i2c_master) reports a NACK as
+ * ESP_ERR_INVALID_STATE, the same code as a hardware timeout. Only an
+ * address probe can tell them apart.
+ */
+static void idf55_nack_everywhere(void)
+{
+    for (size_t i = 0; i < 128U; ++i) {
+        s_probe_error[i] = ESP_ERR_INVALID_STATE;
+        g_fake_lines.probe_result[i] = ESP_ERR_NOT_FOUND;
+    }
+    g_fake_lines.probe_configured = true;
 }
 
 i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *config)
@@ -203,6 +219,77 @@ static void test_non_nack_transport_error_is_not_reported_as_absence(void)
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
+static void test_idf55_nack_means_absent_not_fault(void)
+{
+    fake_reset();
+    idf55_nack_everywhere();
+    i2c_bus_device_handle_t tca = NULL;
+    assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_NOT_FOUND);
+    assert(tca == NULL);
+    assert(g_fake_lines.probe_calls == 8);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_idf55_single_tca_is_found_among_nacks(void)
+{
+    fake_reset();
+    idf55_nack_everywhere();
+    s_present[0x75U] = true;
+    i2c_bus_device_handle_t tca = NULL;
+    uint8_t address = 0U;
+    assert(sensor_bus_get_tca9548a(&tca, &address) == ESP_OK);
+    assert(tca != NULL);
+    assert(address == 0x75U);
+    /* The ACKing TCA itself needs no probe. */
+    assert(g_fake_lines.probe_calls == 7);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_idf55_present_but_failing_is_a_fault(void)
+{
+    fake_reset();
+    idf55_nack_everywhere();
+    /* 0x72 ACKs its address but the read fails: not "absent". */
+    g_fake_lines.probe_result[0x72U] = ESP_OK;
+    i2c_bus_device_handle_t tca = NULL;
+    assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_INVALID_STATE);
+    assert(tca == NULL);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_idf55_probe_timeout_is_a_fault(void)
+{
+    fake_reset();
+    idf55_nack_everywhere();
+    g_fake_lines.probe_result[0x70U] = ESP_ERR_TIMEOUT;
+    i2c_bus_device_handle_t tca = NULL;
+    assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_TIMEOUT);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_classify_transfer_error(void)
+{
+    fake_reset();
+    idf55_nack_everywhere();
+    sensor_bus_handles_t handles;
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    g_fake_lines.probe_result[0x31U] = ESP_OK;
+    g_fake_lines.probe_result[0x32U] = ESP_ERR_TIMEOUT;
+
+    assert(sensor_bus_classify_transfer_error(0x30U, ESP_OK) == ESP_OK);
+    assert(sensor_bus_classify_transfer_error(0x30U, ESP_FAIL) == ESP_ERR_NOT_FOUND);
+    assert(sensor_bus_classify_transfer_error(0x30U, ESP_ERR_INVALID_STATE) == ESP_ERR_NOT_FOUND);
+    assert(sensor_bus_classify_transfer_error(0x31U, ESP_ERR_INVALID_STATE) == ESP_ERR_INVALID_STATE);
+    assert(sensor_bus_classify_transfer_error(0x32U, ESP_ERR_INVALID_STATE) == ESP_ERR_TIMEOUT);
+    /* Codes that are not ambiguous are never probed. */
+    const int probes = g_fake_lines.probe_calls;
+    assert(sensor_bus_classify_transfer_error(0x31U, ESP_ERR_TIMEOUT) == ESP_ERR_TIMEOUT);
+    assert(g_fake_lines.probe_calls == probes);
+    assert(sensor_bus_deinit() == ESP_OK);
+    /* Without a bus nothing can be probed: the error is returned as is. */
+    assert(sensor_bus_classify_transfer_error(0x30U, ESP_ERR_INVALID_STATE) == ESP_ERR_INVALID_STATE);
+}
+
 int main(void)
 {
     assert(sensor_bus_lock_init() == ESP_OK);
@@ -211,5 +298,10 @@ int main(void)
     test_single_tca_is_cached_and_owned();
     test_multiple_tca_candidates_are_rejected_and_cleaned();
     test_non_nack_transport_error_is_not_reported_as_absence();
+    test_idf55_nack_means_absent_not_fault();
+    test_idf55_single_tca_is_found_among_nacks();
+    test_idf55_present_but_failing_is_a_fault();
+    test_idf55_probe_timeout_is_a_fault();
+    test_classify_transfer_error();
     return 0;
 }

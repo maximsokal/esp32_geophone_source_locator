@@ -230,10 +230,15 @@ static esp_err_t platform_recovery_mux_close(void *context)
 
 static esp_err_t platform_normalize_transfer_error(
     nrf_topology_platform_t *platform,
+    uint8_t address,
     esp_err_t err)
 {
-    /* i2c_bus/legacy ESP-IDF reports a slave NACK as ESP_FAIL. */
-    if (err == ESP_FAIL) {
+    /* MAX-248: a NACK is ESP_FAIL on the legacy driver but
+     * ESP_ERR_INVALID_STATE on i2c_bus v2 / ESP-IDF 5.5 (like a timeout).
+     * An absent XIAO must read as ESP_ERR_NOT_FOUND, never as a transport
+     * fault, and must not trigger a bus recovery. */
+    err = sensor_bus_classify_transfer_error(address, err);
+    if (err == ESP_ERR_NOT_FOUND) {
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -282,7 +287,7 @@ static esp_err_t platform_read_status(
         sizeof(frame),
         frame);
     if (err != ESP_OK) {
-        return platform_normalize_transfer_error(platform, err);
+        return platform_normalize_transfer_error(platform, address, err);
     }
 
     return nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) == NRF_UPSTREAM_RESULT_OK
@@ -316,7 +321,7 @@ static esp_err_t platform_write_assign(
         NULL_I2C_MEM_ADDR,
         sizeof(frame),
         frame);
-    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, err);
+    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, address, err);
 }
 
 static esp_err_t platform_write_sensor_refresh(
@@ -338,7 +343,7 @@ static esp_err_t platform_write_sensor_refresh(
         NULL_I2C_MEM_ADDR,
         sizeof(frame),
         frame);
-    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, err);
+    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
 
 static esp_err_t platform_read_remote_snapshot(
@@ -359,7 +364,7 @@ static esp_err_t platform_read_remote_snapshot(
         sizeof(frame),
         frame);
     if (err != ESP_OK) {
-        return platform_normalize_transfer_error(platform, err);
+        return platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
     }
     return nrf_upstream_protocol_decode_remote_snapshot(frame, sizeof(frame), status, sensor) == NRF_UPSTREAM_RESULT_OK
         ? ESP_OK

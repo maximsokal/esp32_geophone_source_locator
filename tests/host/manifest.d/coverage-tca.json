@@ -23,7 +23,8 @@
       ],
       "include_dirs": [
         "tests/host/stubs/tca9548a",
-        "components/sensor_bus/include"
+        "components/sensor_bus/include",
+        "tests/host/stubs/sensor_bus"
       ]
     },
     {
