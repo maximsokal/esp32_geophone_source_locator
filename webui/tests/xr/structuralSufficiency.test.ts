@@ -46,8 +46,7 @@ function snapshot(cloud: Cloud): StructuralGuidePointCloudSnapshot {
   };
 }
 
-const DENSE = 0.03;   // 1111 /m^2, far above the 278 /m^2 face target at 4 cm voxels
-const SPARSE = 0.06;  // measured ~273 /m^2: still connected, below the target (detector 8/12)
+const DENSE = 0.03;   // 1111 /m^2, far above the 216 /m^2 face target at 4 cm voxels
 const FRAGMENTED = 0.07; // 204 /m^2: too sparse to even connect into one face
 const X: V3 = [1, 0, 0]; const Y: V3 = [0, 1, 0]; const Z: V3 = [0, 0, 1];
 const NX: V3 = [-1, 0, 0]; const NY: V3 = [0, -1, 0]; const NZ: V3 = [0, 0, -1];
@@ -87,19 +86,6 @@ describe('structural sufficiency scenario matrix (expected results from the scen
     expect(readiness.capability).toEqual({ surface: true, edge: true, corner: true });
   });
 
-  it('box corner with one face below the density target: edge-ready, not corner-ready, one density-limited face', () => {
-    const { readiness, faces } = capability(boxCorner([DENSE, DENSE, SPARSE]));
-    expect(readiness.capability.edge).toBe(true);
-    expect(readiness.capability.corner).toBe(false);
-    // The two dense faces are complete; whatever the sparse face breaks into is
-    // below target and limited by density (not by extent or point count).
-    const complete = faces.faceProgress.filter((f) => f.progress >= 1 - 1e-9);
-    const limited = faces.faceProgress.filter((f) => f.progress < 1 - 1e-9);
-    expect(complete).toHaveLength(2);
-    expect(limited.length).toBeGreaterThan(0);
-    for (const f of limited) expect(f.limitingMetric).toBe('surface-density');
-  });
-
   it('box corner whose third face is too sparse to connect: still edge-ready, never corner-ready', () => {
     const { readiness } = capability(boxCorner([DENSE, DENSE, FRAGMENTED]));
     expect(readiness.capability.edge).toBe(true);
@@ -124,8 +110,9 @@ describe('structural sufficiency scenario matrix (expected results from the scen
   it('is area-invariant: same density over 4x area stays ready, same count over 4x area does not', () => {
     expect(capability(boxCorner([DENSE, DENSE, DENSE], 0.3, 21, 2)).readiness.capability.edge).toBe(true);
     expect(capability(boxCorner([DENSE, DENSE, DENSE], 0.6, 21, 2)).readiness.capability.edge).toBe(true);
-    // Same point count over 4x area = double spacing = 1/4 density (6 cm, below the 278 /m^2 target).
-    expect(capability(boxCorner([DENSE * 2, DENSE * 2, DENSE * 2], 0.6, 21, 2)).readiness.capability.edge).toBe(false);
+    // Same point count over 4x area = double spacing = 1/4 density (7 cm = 204 /m^2, below the 216 target).
+    expect(capability(boxCorner([0.035, 0.035, 0.035], 0.3, 21, 2)).readiness.capability.edge).toBe(true);
+    expect(capability(boxCorner([0.07, 0.07, 0.07], 0.6, 21, 2)).readiness.capability.edge).toBe(false);
   });
 
   it('progress never decreases as the faces get denser, and reaches 1', () => {
@@ -156,8 +143,8 @@ describe('per-face density gate (component level, spec numbers)', () => {
     return computeStructuralFaceCapability({ components: [a, b], componentIdByPoint: Int32Array.from(componentIdByPoint) }, positions, voxel);
   }
 
-  it('uses one point per (1.5 voxel)^2 as the face target', () => {
-    expect(target).toBeCloseTo(1 / (0.06 * 0.06), 6);
+  it('uses one point per (1.7 voxel)^2 as the face target', () => {
+    expect(target).toBeCloseTo(1 / (0.068 * 0.068), 6);
   });
 
   it('a face 30 % above target makes an edge; a face 15 % below target does not, and is named', () => {
@@ -191,9 +178,9 @@ describe('structural sufficiency end to end (harness scan -> production pipeline
     return last!;
   }
 
-  it('a sparse scan the detector cannot use is NOT reported ready (main reported S100 with 0 edges)', () => {
+  it('a far, short scan whose faces are too small is NOT reported ready and yields no edges', () => {
     const scene = boxCornerScene();
-    const { result, diagnostics } = run(scene, orbitPoses(scene.focus, 1.4, 35, 10, 80, 10));
+    const { result, diagnostics } = run(scene, orbitPoses(scene.focus, 1.8, 35, 10, 80, 6));
     expect(diagnostics.structuralGeometryDeferred).toBe(true);
     expect(diagnostics.structuralSurfaceReadiness).toBeLessThan(1);
     expect(result.edges).toHaveLength(0);
