@@ -12,9 +12,31 @@ export interface IndependentViewUpdate {
 export interface DepthNeighbourhoodQuality {
   accepted: boolean;
   score: number;
+  /** Depth DISCONTINUITY (silhouette/step): the sample may be a mixed pixel. */
   edge: boolean;
   dominantAxis: 'u' | 'v' | 'none';
   supportingNeighbours: number;
+  /**
+   * MAX-252: slope CHANGE with continuous depth (box edge, inside corner, fold).
+   * A crease sample is a real surface point, but a symmetric normal stencil
+   * straddles two faces there. Never set together with `edge`.
+   */
+  crease: boolean;
+  creaseAxis: 'u' | 'v' | 'none';
+  /** Signed distance (m) of the centre from the plane through the axis neighbours; > 0 = convex toward the camera. */
+  creaseResidualMeters: number;
+}
+
+/**
+ * Lateral position of each neighbour ray relative to the centre ray as a
+ * view-space tangent (x/z), all magnitudes >= 0. 0 marks a neighbour that
+ * reads the same depth pixel as the centre (unusable for curvature).
+ */
+export interface DepthStencilGeometry {
+  left: number;
+  right: number;
+  up: number;
+  down: number;
 }
 
 export interface SurfaceConfidenceInput {
@@ -162,9 +184,50 @@ function median(values: number[]): number {
     : values[middle];
 }
 
+/**
+ * Depth sensor noise model used for crease decisions (1 sigma, metres):
+ * ~1 mm floor plus the ARCore-like quadratic range term.
+ */
+export function depthNoiseSigmaMeters(depthMeters: number): number {
+  return 0.001 + 0.0015 * depthMeters * depthMeters;
+}
+
+/*
+ * The inverse-depth chord residual of a 3-sample stencil has noise ~sqrt(1.5)
+ * sigma for a symmetric stencil; 3 of those keeps the per-axis false-positive
+ * rate on a flat surface at ~0.3 %.
+ */
+const CREASE_NOISE_SIGMAS = 3;
+const CREASE_RESIDUAL_NOISE_FACTOR = Math.sqrt(1.5);
+
+export function creaseGateMeters(depthMeters: number): number {
+  return CREASE_NOISE_SIGMAS * CREASE_RESIDUAL_NOISE_FACTOR * depthNoiseSigmaMeters(depthMeters);
+}
+
+/**
+ * For ANY plane, inverse depth is affine in the view-space tangent, so the
+ * centre's inverse depth lies on the chord through its two neighbours no
+ * matter how steep the plane is or how unevenly the neighbours are spaced.
+ * Returns the signed metric deviation from that plane (> 0: centre nearer).
+ */
+export function creaseResidualMeters(
+  centerDepth: number,
+  nearOffset: number,
+  near: number | null,
+  farOffset: number,
+  far: number | null,
+): number | null {
+  if (near === null || far === null || !(nearOffset > 0) || !(farOffset > 0)) return null;
+  if (!(centerDepth > 0) || !(near > 0) || !(far > 0)) return null;
+  const chordInverse = (farOffset / near + nearOffset / far) / (nearOffset + farOffset);
+  return 1 / chordInverse - centerDepth;
+}
+
 export function depthToleranceMeters(depthMeters: number): number {
   return clamp(0.020 + 0.0040 * depthMeters * depthMeters, 0.026, 0.105);
 }
+
+const NO_CREASE = { crease: false, creaseAxis: 'none', creaseResidualMeters: 0 } as const;
 
 export function classifyDepthNeighbourhood(
   centerDepth: number,
@@ -172,9 +235,10 @@ export function classifyDepthNeighbourhood(
   right: number | null,
   up: number | null,
   down: number | null,
+  geometry: DepthStencilGeometry = { left: 1, right: 1, up: 1, down: 1 },
 ): DepthNeighbourhoodQuality {
   if (!Number.isFinite(centerDepth) || centerDepth <= 0) {
-    return { accepted: false, score: 0, edge: false, dominantAxis: 'none', supportingNeighbours: 0 };
+    return { accepted: false, score: 0, edge: false, dominantAxis: 'none', supportingNeighbours: 0, ...NO_CREASE };
   }
 
   const tolerance = depthToleranceMeters(centerDepth);
@@ -185,7 +249,7 @@ export function classifyDepthNeighbourhood(
   add('u', left); add('u', right); add('v', up); add('v', down);
 
   if (entries.length < 2) {
-    return { accepted: true, score: 0.34, edge: false, dominantAxis: 'none', supportingNeighbours: entries.length };
+    return { accepted: true, score: 0.34, edge: false, dominantAxis: 'none', supportingNeighbours: entries.length, ...NO_CREASE };
   }
 
   const residuals = entries.map((entry) => Math.abs(entry.value - centerDepth));
@@ -207,6 +271,21 @@ export function classifyDepthNeighbourhood(
     dominantAxis = uJump >= vJump ? 'u' : 'v';
   }
 
+  // A discontinuity sample is a possible mixed pixel, never a crease.
+  let creaseFields: Pick<DepthNeighbourhoodQuality, 'crease' | 'creaseAxis' | 'creaseResidualMeters'> = NO_CREASE;
+  if (!edge) {
+    const usable = (value: number | null): number | null => (value !== null && Number.isFinite(value) && value > 0 ? value : null);
+    const uResidual = creaseResidualMeters(centerDepth, geometry.left, usable(left), geometry.right, usable(right));
+    const vResidual = creaseResidualMeters(centerDepth, geometry.up, usable(up), geometry.down, usable(down));
+    const uMagnitude = uResidual === null ? -1 : Math.abs(uResidual);
+    const vMagnitude = vResidual === null ? -1 : Math.abs(vResidual);
+    const axis: 'u' | 'v' = uMagnitude >= vMagnitude ? 'u' : 'v';
+    const residual = axis === 'u' ? uResidual : vResidual;
+    if (residual !== null && Math.abs(residual) >= creaseGateMeters(centerDepth)) {
+      creaseFields = { crease: true, creaseAxis: axis, creaseResidualMeters: residual };
+    }
+  }
+
   if (support.length >= 2) {
     const inlierMedian = median(support.slice());
     const residualScore = 1 - clamp01(inlierMedian / tolerance);
@@ -221,14 +300,15 @@ export function classifyDepthNeighbourhood(
       edge,
       dominantAxis,
       supportingNeighbours: support.length,
+      ...creaseFields,
     };
   }
 
   if (support.length === 1 && edge) {
-    return { accepted: true, score: 0.18, edge: true, dominantAxis, supportingNeighbours: 1 };
+    return { accepted: true, score: 0.18, edge: true, dominantAxis, supportingNeighbours: 1, ...NO_CREASE };
   }
 
-  return { accepted: false, score: 0, edge, dominantAxis, supportingNeighbours: support.length };
+  return { accepted: false, score: 0, edge, dominantAxis, supportingNeighbours: support.length, ...creaseFields };
 }
 
 /**
