@@ -142,7 +142,7 @@ function jsonRequest<T>(
 
 type ScanStoreKind = 'scan' | 'occupancy';
 
-function scanControlUrl(action: 'save' | 'load' | 'delete', objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): string {
+function scanControlUrl(action: 'save' | 'load' | 'delete' | 'info', objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): string {
   const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
   if (kind !== 'scan') query.set('kind', kind);
   return `/api/control?${query.toString()}`;
@@ -287,6 +287,30 @@ export function saveSessionOccupancyArtifact(objectId: string, sessionId: string
 
 export function loadObjectScanArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
   return queuedApiRequest(() => performScanLoad(objectId, sessionId));
+}
+
+export interface ScanArtifactInfo {
+  present: boolean;
+  bytes: number;
+}
+
+/** MAX-169: presence/size of a session's scan (or occupancy) without downloading it. */
+export async function fetchScanInfo(objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): Promise<ScanArtifactInfo> {
+  try {
+    const result = await jsonRequest<{ ok: boolean; bytes?: number; error?: string }>(
+      scanControlUrl('info', objectId, sessionId, kind),
+      { method: 'POST' },
+      DEVICE_API_EXTENDED_TIMEOUT_MS,
+    );
+    if (result.ok) return { present: true, bytes: result.bytes ?? 0 };
+    if (result.error === 'ESP_ERR_NOT_FOUND') return { present: false, bytes: 0 };
+    throw new Error(result.error ?? 'scan info failed');
+  }
+  catch (reason) {
+    const text = reason instanceof Error ? reason.message : String(reason);
+    if (text.includes('ESP API 404') || text.includes('ESP_ERR_NOT_FOUND')) return { present: false, bytes: 0 };
+    throw reason;
+  }
 }
 
 export function deleteObjectScanArtifact(objectId: string, sessionId: string): Promise<ControlResult> {

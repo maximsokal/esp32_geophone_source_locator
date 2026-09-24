@@ -405,8 +405,34 @@ static void test_occupancy_kind_is_stored_beside_the_scan(void)
     assert(load_kind("scan=load&object_id=OBJ_0001&session_id=S000001", response, sizeof(response)) == sizeof(scan));
     assert(memcmp(response, scan, sizeof(scan)) == 0);
 
+    /* MAX-169: info reports presence and size without streaming. */
+    {
+        char info[512] = {0};
+        httpd_req_t info_request = make_request(
+            "scan=info&object_id=OBJ_0001&session_id=S000001", NULL, 0U, info, sizeof(info));
+        bool info_handled = false;
+        assert(web_scan_store_try_handle(&info_request, &info_handled) == ESP_OK);
+        assert(info_handled);
+        assert(strstr(info, "\"ok\":true") != NULL);
+        assert(strstr(info, "\"action\":\"scan_info\"") != NULL);
+        assert(strstr(info, "\"bytes\":3") != NULL);
+        memset(info, 0, sizeof(info));
+        info_request = make_request(
+            "scan=info&kind=occupancy&object_id=OBJ_0001&session_id=S000001", NULL, 0U, info, sizeof(info));
+        assert(web_scan_store_try_handle(&info_request, &info_handled) == ESP_OK);
+        assert(strstr(info, "\"bytes\":5") != NULL);
+    }
+
     /* Deleting the scan also removes the occupancy derived from it. */
     assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
+    {
+        char info[512] = {0};
+        httpd_req_t info_request = make_request(
+            "scan=info&object_id=OBJ_0001&session_id=S000001", NULL, 0U, info, sizeof(info));
+        bool info_handled = false;
+        assert(web_scan_store_try_handle(&info_request, &info_handled) == ESP_OK);
+        assert(strstr(info, "ESP_ERR_NOT_FOUND") != NULL);
+    }
     memset(response, 0, sizeof(response));
     httpd_req_t request = make_request(
         "scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response)

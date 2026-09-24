@@ -1,0 +1,119 @@
+import type {
+  LocalizationRun,
+  LocalizationRunListing,
+  LocalizationRunPosition,
+  ScanArtifactInfo,
+} from '../api/deviceApi';
+
+/**
+ * MAX-169: what one saved recording carries, from that recording's own
+ * frozen evidence only (never the live topology, never another session).
+ */
+
+export const UNDETERMINED_UNCERTAINTY_MM = 2147483647;
+const REMOTE_PODS = 4;
+
+export type ScanState = 'unknown' | 'absent' | 'available';
+export type LocalizationState = 'unknown' | 'not_calculated' | 'calculated' | 'failed';
+export type PolicyState = 'unknown' | 'insufficient' | 'planar_2d' | 'capable_3d';
+
+export interface EvidencePosition {
+  label: string;
+  position: LocalizationRunPosition;
+  leveled: boolean;
+}
+
+export interface RecordingEvidence {
+  geometryAvailable: boolean;
+  /** Computed REMOTE pods (1..4) in this recording's frozen geometry. */
+  remotes: number[];
+  remoteSummary: string;
+  leveledRemotes: number;
+  policy: PolicyState;
+  positions: EvidencePosition[];
+  /** Worst CS residual across pods, metres (null = none reported). */
+  worstResidualM: number | null;
+  /** Worst determined 1-sigma position uncertainty, metres. */
+  worstUncertaintyM: number | null;
+  /** Pods whose position the CS mesh could not determine. */
+  undeterminedPods: number[];
+  geometryComputedAtMs: number | null;
+  scan: ScanState;
+  scanBytes: number;
+  occupancy: ScanState;
+  /** Scan <-> sensor registration (AprilTag/ArUco) does not exist yet (MAX-145). */
+  scanRegistered: false;
+  localization: LocalizationState;
+  solvedMethods: string[];
+  failedMethods: string[];
+  lastCalculatedAtMs: number | null;
+}
+
+function policyFor(remotes: number): PolicyState {
+  if (remotes < 3) return 'insufficient';
+  return remotes >= 4 ? 'capable_3d' : 'planar_2d';
+}
+
+function scanState(info: ScanArtifactInfo | null | undefined): ScanState {
+  if (info === null || info === undefined) return 'unknown';
+  return info.present ? 'available' : 'absent';
+}
+
+function latestRuns(runs: LocalizationRun[]): LocalizationRun[] {
+  const latest = new Map<string, LocalizationRun>();
+  for (const run of runs) {
+    const current = latest.get(run.method_name);
+    if (current === undefined || run.computed_at_ms > current.computed_at_ms) latest.set(run.method_name, run);
+  }
+  return [...latest.values()];
+}
+
+export function buildRecordingEvidence(
+  listing: LocalizationRunListing | null,
+  scan: ScanArtifactInfo | null,
+  occupancy: ScanArtifactInfo | null,
+): RecordingEvidence {
+  const geometry = listing?.geometry;
+  const computed = geometry?.available === true
+    ? geometry.pods.filter((pod) => pod.computed && pod.x_mm !== undefined && pod.y_mm !== undefined)
+    : [];
+  const remotes = computed.filter((pod) => pod.pod >= 1 && pod.pod <= REMOTE_PODS).map((pod) => pod.pod).sort((a, b) => a - b);
+
+  const residuals = computed.map((pod) => pod.residual_mm).filter((v): v is number => v !== undefined && v > 0);
+  const uncertainties = computed
+    .map((pod) => pod.uncertainty_mm)
+    .filter((v): v is number => v !== undefined && v > 0 && v < UNDETERMINED_UNCERTAINTY_MM);
+  const computedAt = computed.map((pod) => pod.computed_at_ms).filter((v): v is number => v !== undefined && v > 0);
+
+  const runs = listing === null ? [] : latestRuns(listing.runs);
+  const solved = runs.filter((run) => run.solved && run.source_position !== undefined).map((run) => run.method_name).sort();
+  const failed = runs.filter((run) => !(run.solved && run.source_position !== undefined)).map((run) => run.method_name).sort();
+  const localization: LocalizationState = listing === null
+    ? 'unknown'
+    : runs.length === 0 ? 'not_calculated' : solved.length > 0 ? 'calculated' : 'failed';
+
+  return {
+    geometryAvailable: computed.length > 0,
+    remotes,
+    remoteSummary: geometry?.available === true ? `${remotes.length}/${REMOTE_PODS}` : 'unknown',
+    leveledRemotes: computed.filter((pod) => pod.pod >= 1 && pod.leveled).length,
+    policy: geometry?.available === true ? policyFor(remotes.length) : 'unknown',
+    positions: computed.map((pod) => ({
+      label: pod.pod === 0 ? 'MAIN' : `Pod ${pod.pod}`,
+      position: { x_m: (pod.x_mm ?? 0) / 1000, y_m: (pod.y_mm ?? 0) / 1000, z_m: (pod.z_mm ?? 0) / 1000 },
+      leveled: pod.leveled,
+    })),
+    worstResidualM: residuals.length === 0 ? null : Math.max(...residuals) / 1000,
+    worstUncertaintyM: uncertainties.length === 0 ? null : Math.max(...uncertainties) / 1000,
+    undeterminedPods: computed.filter((pod) => pod.uncertainty_mm === UNDETERMINED_UNCERTAINTY_MM).map((pod) => pod.pod),
+    geometryComputedAtMs: computedAt.length === 0 ? null : Math.max(...computedAt),
+    scan: scanState(scan),
+    scanBytes: scan?.present ? scan.bytes : 0,
+    occupancy: scanState(occupancy),
+    scanRegistered: false,
+    localization,
+    solvedMethods: solved,
+    failedMethods: failed,
+    lastCalculatedAtMs: runs.length === 0 ? null : Math.max(...runs.map((run) => run.computed_at_ms)),
+  };
+}

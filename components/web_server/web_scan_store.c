@@ -706,6 +706,29 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
 }
 
 
+/* MAX-169: does this session have a scan / occupancy artifact, and how big
+ * is it -- without streaming megabytes over the ESP link. Absent is
+ * {"ok":false,...,"error":"ESP_ERR_NOT_FOUND"}; present is {"ok":true,"bytes":N}. */
+static esp_err_t web_scan_info(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
+{
+    esp_err_t err = web_scan_verify_object(object_id);
+    if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_info", object_id, session_id, err, 0U);
+
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+    err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_info", object_id, session_id, err, 0U);
+
+    FILE *file = NULL;
+    size_t size = 0U;
+    err = web_scan_open_for_stream(final_path, temp_path, backup_path, &file, &size);
+    if (err == ESP_OK) {
+        err = web_scan_close_reader(&file);
+    }
+    return web_scan_send_json(request, "scan_info", object_id, session_id, err, err == ESP_OK ? size : 0U);
+}
+
+
 esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
 {
     if (request == NULL || handled == NULL) return ESP_ERR_INVALID_ARG;
@@ -746,5 +769,6 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
     if (strcmp(action, "save") == 0) return web_scan_save(request, object_id, session_id, kind);
     if (strcmp(action, "load") == 0) return web_scan_load(request, object_id, session_id, kind);
     if (strcmp(action, "delete") == 0) return web_scan_delete(request, object_id, session_id, kind);
+    if (strcmp(action, "info") == 0) return web_scan_info(request, object_id, session_id, kind);
     return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_NOT_SUPPORTED, 0U);
 }
