@@ -683,9 +683,39 @@ function solveThreePlanes(a: PlanePatch, b: PlanePatch, c: PlanePatch): ProjectP
   const point: ProjectPoint = [(a.d * bc[0] + b.d * ca[0] + c.d * ab[0]) * inverse, (a.d * bc[1] + b.d * ca[1] + c.d * ab[1]) * inverse, (a.d * bc[2] + b.d * ca[2] + c.d * ab[2]) * inverse];
   return finite3(point[0], point[1], point[2]) ? point : null;
 }
-function pairGeometryScore(a: PlanePatch, b: PlanePatch, centerDistance: number, localLineQuality: number): number {
-  const absDot = Math.min(1, Math.abs(dot(a.normal, b.normal))); const angle = Math.acos(absDot); const conditioning = clamp01(Math.sin(angle));
-  const angleScore = clamp01((angle - MIN_PLANE_ANGLE_RAD) / (Math.PI / 2 - MIN_PLANE_ANGLE_RAD)); const supportScore = clamp01((a.support + b.support) / 18);
+/*
+ * MAX-256: whether two planes form an edge cannot be decided from |n_a . n_b|:
+ * a 20 deg knife edge and a 160 deg gentle fold have the same value. The
+ * interior dihedral is measured geometrically instead: from the intersection
+ * line, the in-plane directions toward each patch's measured support. Acute
+ * edges (knife edges, slab rims, V-notches) keep a small dihedral, folds a
+ * large one; parallel faces (slabs, facing walls) have no nearby line at all.
+ */
+const MIN_EDGE_DIHEDRAL_RAD = (18 * Math.PI) / 180;
+const MAX_EDGE_DIHEDRAL_RAD = Math.PI - MIN_PLANE_ANGLE_RAD;
+
+function interiorDihedral(a: PlanePatch, b: PlanePatch, line: { point: ProjectPoint; direction: ProjectVector }): number | null {
+  const toward = (patch: PlanePatch): ProjectVector | null => {
+    const delta: ProjectVector = [patch.center[0] - line.point[0], patch.center[1] - line.point[1], patch.center[2] - line.point[2]];
+    const along = dot(delta, line.direction);
+    return normalize([delta[0] - line.direction[0] * along, delta[1] - line.direction[1] * along, delta[2] - line.direction[2] * along]);
+  };
+  const da = toward(a); const db = toward(b);
+  if (da === null || db === null) return null;
+  return Math.acos(clamp(dot(da, db), -1, 1));
+}
+
+function isEdgeDihedral(dihedral: number | null): dihedral is number {
+  return dihedral !== null && dihedral >= MIN_EDGE_DIHEDRAL_RAD && dihedral <= MAX_EDGE_DIHEDRAL_RAD;
+}
+
+function pairGeometryScore(a: PlanePatch, b: PlanePatch, centerDistance: number, localLineQuality: number, dihedral: number): number {
+  // Conditioning of the intersection depends on the angle between the planes
+  // (sin of the dihedral); sharpness counts the turn away from a flat fold,
+  // so a knife edge scores as a strong feature rather than as "nearly parallel".
+  const conditioning = clamp01(Math.sin(dihedral) / Math.sin(MIN_EDGE_DIHEDRAL_RAD + (Math.PI / 2 - MIN_EDGE_DIHEDRAL_RAD) * 0.5));
+  const turn = Math.PI - dihedral;
+  const angleScore = clamp01((turn - MIN_PLANE_ANGLE_RAD) / (Math.PI / 2 - MIN_PLANE_ANGLE_RAD)); const supportScore = clamp01((a.support + b.support) / 18);
   const fitQuality = (a.confidence + b.confidence) * 0.5; const planarity = (a.planarity + b.planarity) * 0.5; const proximity = clamp01(1 - centerDistance / MAX_PATCH_NEIGHBOUR_METERS);
   return clamp01(
     angleScore * 0.18 +
@@ -735,11 +765,11 @@ export function detectStructuralGuideGeometry(
       for (const j of neighbours) {
         if (j <= i) continue; candidateComparisons += 1; const b = patches[j]; const centerDistance = distance(a.center, b.center);
         if (centerDistance > MAX_PATCH_NEIGHBOUR_METERS) continue;
-        const angle = Math.acos(Math.min(1, Math.abs(dot(a.normal, b.normal)))); if (angle < MIN_PLANE_ANGLE_RAD) continue;
         const intersection = intersectTwoPlanesNear(a, b, midpoint(a.center, b.center)); if (intersection === null) continue;
         if (distance(intersection.point, a.center) > MAX_CORNER_CENTER_DISTANCE_METERS || distance(intersection.point, b.center) > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
+        const dihedral = interiorDihedral(a, b, intersection); if (!isEdgeDihedral(dihedral)) continue;
         const edge = supportedEdgeFromPatches(a, b, intersection, input.voxelSizeMeters, faceOf(i), faceOf(j)); if (edge === null) continue;
-        const geometric = pairGeometryScore(a, b, centerDistance, edge.geometryConfidence); if (geometric < 0.48) continue;
+        const geometric = pairGeometryScore(a, b, centerDistance, edge.geometryConfidence, dihedral); if (geometric < 0.48) continue;
         edge.geometryConfidence = clamp01(geometric * 0.72 + edge.geometryConfidence * 0.28);
         const freeConflict = edgeFreeSpaceConflict(freeSpace, edge); if (freeConflict >= 0.43) { rejectedByFreeSpace += 1; continue; }
         edge.geometryConfidence *= 1 - freeConflict * 0.72; if (edge.geometryConfidence < 0.48) { rejectedByFreeSpace += 1; continue; }
@@ -769,7 +799,7 @@ export function detectStructuralGuideGeometry(
       const triple = [i, bIndex, cIndex].sort((l, r) => l - r).join(':');
       if (visitedTriples.has(triple)) continue;
       visitedTriples.add(triple);
-      const b = patches[bIndex]; const c = patches[cIndex]; const angleBC = Math.acos(Math.min(1, Math.abs(dot(b.normal, c.normal)))); if (angleBC < MIN_PLANE_ANGLE_RAD) continue;
+      const b = patches[bIndex]; const c = patches[cIndex]; const lineBC = intersectTwoPlanesNear(b, c, midpoint(b.center, c.center)); if (lineBC === null || !isEdgeDihedral(interiorDihedral(b, c, lineBC))) continue;
       const point = solveThreePlanes(a, b, c); if (point === null) continue;
       const maxDistance = Math.max(distance(point, a.center), distance(point, b.center), distance(point, c.center)); if (maxDistance > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
       const localA = localCornerSupport(faceOf(i), point), localB = localCornerSupport(faceOf(bIndex), point), localC = localCornerSupport(faceOf(cIndex), point);
