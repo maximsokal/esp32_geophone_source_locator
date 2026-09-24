@@ -75,6 +75,11 @@ const char *device_status_power_source_name(device_power_source_t source)
     }
 }
 
+const char *device_status_battery_soc_quality_name(device_battery_soc_quality_t quality)
+{
+    return quality == DEVICE_BATTERY_SOC_COULOMB_TRACKED ? "COULOMB_TRACKED" : "OTHER";
+}
+
 const char *device_status_power_state_name(device_power_state_t state)
 {
     return state == DEVICE_POWER_STATE_BATTERY_CRITICAL ? "BATTERY_CRITICAL" : "OTHER";
@@ -328,6 +333,7 @@ static void fill_status(void)
     g_status.power.state = DEVICE_POWER_STATE_BATTERY_CRITICAL;
     g_status.power.low_battery = DEVICE_LOW_BATTERY_GRACE;
     g_status.power.shutdown_in_s = 7U;
+    g_status.power.battery_soc_quality = DEVICE_BATTERY_SOC_COULOMB_TRACKED;
     g_status.power.battery_full = false;
     g_status.power.channels[2].overcurrent = DEVICE_POWER_OVERCURRENT_CRITICAL;
     g_status.power.channels[2].overcurrent_latched = true;
@@ -396,6 +402,7 @@ static void test_full_builder_and_pods(void)
     assert(strcmp(string_item(power, "state"), "BATTERY_CRITICAL") == 0);
     assert(strcmp(string_item(power, "low_battery"), "grace") == 0);
     assert_number_near(number_item(power, "shutdown_in_s"), 7.0);
+    assert(strcmp(string_item(power, "battery_soc_source"), "COULOMB_TRACKED") == 0);
     assert(!bool_item(power, "battery_full"));
     {
         cJSON *channels = object_item(power, "channels");

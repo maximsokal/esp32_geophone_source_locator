@@ -169,6 +169,20 @@ const char *device_status_mode_name(
 }
 
 
+const char *device_status_battery_soc_quality_name(
+    device_battery_soc_quality_t quality
+)
+{
+    switch (quality) {
+        case DEVICE_BATTERY_SOC_VOLTAGE_ONLY: return "VOLTAGE_ONLY";
+        case DEVICE_BATTERY_SOC_COULOMB_TRACKED: return "COULOMB_TRACKED";
+        case DEVICE_BATTERY_SOC_FULL_ANCHORED: return "FULL_ANCHORED";
+        case DEVICE_BATTERY_SOC_INVALID:
+        default: return "INVALID";
+    }
+}
+
+
 const char *device_status_power_state_name(
     device_power_state_t state
 )

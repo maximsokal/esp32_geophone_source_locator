@@ -78,6 +78,14 @@ esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value)
     return ESP_OK;
 }
 
+static device_battery_soc_quality_t s_status_soc_quality;
+
+esp_err_t device_status_set_battery_soc_quality(device_battery_soc_quality_t quality)
+{
+    s_status_soc_quality = quality;
+    return ESP_OK;
+}
+
 esp_err_t device_status_set_power_state(
     device_power_state_t state,
     bool battery_full,
@@ -821,6 +829,9 @@ static void test_healthy_battery_never_alerts(void)
     assert(s_alert_count == 0U);
     assert(s_status_power_state == DEVICE_POWER_STATE_BATTERY);
     assert(s_status_shutdown_in_s == 0U);
+    /* MAX-181: capacity unknown on the host (no Kconfig): the percentage
+     * is a labelled voltage-only estimate. */
+    assert(s_status_soc_quality == DEVICE_BATTERY_SOC_VOLTAGE_ONLY);
 }
 
 int main(void)

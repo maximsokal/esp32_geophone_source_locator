@@ -34,6 +34,15 @@ typedef enum {
     DEVICE_LOW_BATTERY_SHUTDOWN,
 } device_low_battery_phase_t;
 
+typedef enum {
+    DEVICE_BATTERY_SOC_INVALID = 0,
+    DEVICE_BATTERY_SOC_VOLTAGE_ONLY,
+    DEVICE_BATTERY_SOC_COULOMB_TRACKED,
+    DEVICE_BATTERY_SOC_FULL_ANCHORED,
+} device_battery_soc_quality_t;
+
+esp_err_t device_status_set_battery_soc_quality(device_battery_soc_quality_t quality);
+
 esp_err_t device_status_set_power_state(
     device_power_state_t state,
     bool battery_full,

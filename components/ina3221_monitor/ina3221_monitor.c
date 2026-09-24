@@ -11,6 +11,7 @@
 #include "ina3221_limits.h"
 #include "ina3221_low_battery.h"
 #include "ina3221_power_ux.h"
+#include "ina3221_soc.h"
 #include "app_events.h"
 #include "ina3221_policy.h"
 
@@ -79,6 +80,37 @@ static ina3221_power_ux_config_t s_ux_config;
 static ina3221_power_ux_t s_ux;
 static ina3221_low_battery_t s_low_battery;
 static ina3221_monitor_critical_battery_handler_t s_critical_battery_handler;
+/* MAX-181 */
+static ina3221_soc_config_t s_soc_config;
+static ina3221_soc_t s_soc;
+
+_Static_assert(INA3221_SOC_FULL_ANCHORED == 3 && DEVICE_BATTERY_SOC_FULL_ANCHORED == 3 &&
+               INA3221_SOC_VOLTAGE_ONLY == 1 && DEVICE_BATTERY_SOC_VOLTAGE_ONLY == 1,
+               "device_battery_soc_quality_t must mirror ina3221_soc_quality_t");
+
+
+/* MAX-181: replace the voltage-only percentage with the hybrid estimate and
+ * record where it came from. */
+static void ina3221_monitor_apply_soc(
+    ina3221_power_decision_t *decision
+)
+{
+    const ina3221_soc_input_t input = {
+        .valid = decision->battery_present,
+        .voltage_v = decision->battery_voltage_v,
+        .current_a = decision->battery_current_a,
+        .usb_present = decision->usb_present,
+        .charging = decision->charging,
+    };
+    ina3221_soc_update(&s_soc, &s_soc_config, &input, esp_timer_get_time() / 1000);
+    if (decision->battery_present && s_soc.quality != INA3221_SOC_INVALID) {
+        decision->battery_percent_estimate = ina3221_soc_percent(&s_soc, &s_soc_config);
+        decision->battery_percent_valid = true;
+    }
+    (void)device_status_set_battery_soc_quality(
+        (device_battery_soc_quality_t)s_soc.quality
+    );
+}
 
 /* device_status mirrors these enums value by value (it must not depend on
  * this component); pin both sides to the same numbers. */
@@ -111,6 +143,13 @@ static void ina3221_monitor_load_power_ux(void)
     }
     ina3221_power_ux_reset(&s_ux);
     ina3221_low_battery_init(&s_low_battery, grace_ms);
+
+    ina3221_soc_default_config(&s_soc_config);
+    s_soc_config.full_v = s_ux_config.full_v;
+#if defined(CONFIG_POWER_BATTERY_CAPACITY_MAH)
+    s_soc_config.capacity_mah = (float)CONFIG_POWER_BATTERY_CAPACITY_MAH;
+#endif
+    ina3221_soc_reset(&s_soc);
 }
 
 
@@ -623,6 +662,8 @@ static void ina3221_monitor_worker(
                 stable_state,
                 &decision
             );
+
+            ina3221_monitor_apply_soc(&decision);
 
             ina3221_monitor_publish(
                 channels,

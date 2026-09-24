@@ -285,6 +285,8 @@ export interface DeviceStatus {
     /** MAX-183: normal | warning | grace | shutdown. */
     low_battery?: string;
     shutdown_in_s?: number;
+    /** MAX-181: VOLTAGE_ONLY | COULOMB_TRACKED | FULL_ANCHORED | INVALID. */
+    battery_soc_source?: string;
   };
   environment: ValidValue & { temperature_c: number; humidity_percent: number; pressure_pa: number };
   mux: ValidValue & { active_channel: number; active_pod: number };

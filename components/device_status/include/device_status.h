@@ -90,6 +90,17 @@ typedef enum
 } device_low_battery_phase_t;
 
 
+/* MAX-181: where battery_percent_estimate comes from (mirrors ina3221_soc). */
+typedef enum
+{
+    DEVICE_BATTERY_SOC_INVALID = 0,
+    DEVICE_BATTERY_SOC_VOLTAGE_ONLY,
+    DEVICE_BATTERY_SOC_COULOMB_TRACKED,
+    DEVICE_BATTERY_SOC_FULL_ANCHORED,
+
+} device_battery_soc_quality_t;
+
+
 typedef struct
 {
     bool valid;
@@ -106,6 +117,7 @@ typedef struct
     device_low_battery_phase_t low_battery;
     /* Seconds until the low-battery shutdown (GRACE only). */
     uint32_t shutdown_in_s;
+    device_battery_soc_quality_t battery_soc_quality;
 
     bool battery_present;
     bool battery_percent_valid;
@@ -486,6 +498,14 @@ esp_err_t device_status_set_power_state(
     bool battery_full,
     device_low_battery_phase_t low_battery,
     uint32_t shutdown_in_s
+);
+
+esp_err_t device_status_set_battery_soc_quality(
+    device_battery_soc_quality_t quality
+);
+
+const char *device_status_battery_soc_quality_name(
+    device_battery_soc_quality_t quality
 );
 
 const char *device_status_power_state_name(

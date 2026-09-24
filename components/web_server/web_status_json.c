@@ -102,6 +102,11 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
     cJSON_AddBoolToObject(object, "battery_full", power->battery_full);
     cJSON_AddStringToObject(object, "low_battery", device_status_low_battery_name(power->low_battery));
     cJSON_AddNumberToObject(object, "shutdown_in_s", (double)power->shutdown_in_s);
+    /* MAX-181: provenance of battery_percent_estimate. */
+    cJSON_AddStringToObject(
+        object,
+        "battery_soc_source",
+        device_status_battery_soc_quality_name(power->battery_soc_quality));
 
     cJSON *channels = cJSON_AddArrayToObject(object, "channels");
     if (channels == NULL) return false;
