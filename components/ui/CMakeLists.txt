@@ -5,6 +5,7 @@ idf_component_register(
         "ui_event_dispatcher.c"
         "ui_shell.c"
         "ui_power_badge.c"
+        "ui_preview3d.c"
         "ui_screen_registry.c"
         "ui_navigation.c"
         "ui_boot_error.c"
@@ -36,6 +37,7 @@ idf_component_register(
         object_service
         measurement_service
         runtime_observability
+        scan_occupancy
         storage_service
         storage_manager
         seismic_acquisition

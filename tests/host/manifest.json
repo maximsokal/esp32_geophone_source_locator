@@ -347,6 +347,23 @@
       "libraries": ["m"]
     },
     {
+      "name": "ui_preview3d",
+      "sources": [
+        "components/ui/ui_preview3d.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/ui/tests/ui_preview3d_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/scan_occupancy",
+        "tests/host/stubs/object_store_profile",
+        "components/scan_occupancy/include",
+        "components/ui",
+        "components/ui/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "ui_power_badge",
       "sources": [
         "components/ui/ui_power_badge.c",
