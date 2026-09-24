@@ -163,7 +163,6 @@ const MIN_EDGE_LOCAL_SUPPORT_POINTS = 3;
 const MIN_EDGE_SUPPORTED_LENGTH_METERS = 0.035;
 const MAX_EDGE_SUPPORTED_LENGTH_METERS = 0.34;
 const MIN_EDGE_LINEAR_BIN_COVERAGE = 0.60;
-const MAX_EDGE_LINEAR_GAP_FACTOR = 2.20;
 const CORNER_LOCAL_SUPPORT_RADIUS_METERS = 0.125;
 const MIN_CORNER_LOCAL_SUPPORT_POINTS = 2;
 const CORNER_TRACK_RADIUS_METERS = 0.16;
@@ -357,8 +356,10 @@ function comparePatchSeeds(a: WeightedPoint, b: WeightedPoint): number {
   return 0;
 }
 
-function buildPlanePatches(input: StructuralGuideInput): PlanePatch[] {
-  const cells = new Map<string, { points: WeightedPoint[]; ix: number; iy: number; iz: number }>();
+type StructuralPointIndex = Map<string, { points: WeightedPoint[]; ix: number; iy: number; iz: number }>;
+
+function indexStructuralPoints(input: StructuralGuideInput): StructuralPointIndex {
+  const cells: StructuralPointIndex = new Map();
   const count = Math.min(Math.floor(input.positions.length / 3), Math.floor(input.normals.length / 3), input.confidence.length);
   for (let index = 0; index < count; index += 1) {
     const confidence = input.confidence[index]; if (confidence < MIN_POINT_CONFIDENCE) continue;
@@ -371,7 +372,10 @@ function buildPlanePatches(input: StructuralGuideInput): PlanePatch[] {
     const cell = cells.get(key) ?? { points: [], ix, iy, iz };
     cell.points.push({ point: [x, y, z], inputNormal: canonicalNormal(normalized), confidence }); cells.set(key, cell);
   }
+  return cells;
+}
 
+function buildPlanePatches(input: StructuralGuideInput, cells: StructuralPointIndex = indexStructuralPoints(input)): PlanePatch[] {
   const patches: PlanePatch[] = [];
   const orderedKeys = [...cells.keys()].sort();
   for (const key of orderedKeys) {
@@ -445,30 +449,121 @@ function intersectTwoPlanesNear(a: PlanePatch, b: PlanePatch, anchor: ProjectPoi
   const point: ProjectPoint = [anchor[0] + a.normal[0] * la + b.normal[0] * lb, anchor[1] + a.normal[1] * la + b.normal[1] * lb, anchor[2] + a.normal[2] * la + b.normal[2] * lb];
   const direction = normalize(cross(a.normal, b.normal)); return direction === null ? null : { point, direction: canonicalDirection(direction) };
 }
-function supportIntervalOnIntersection(patch: PlanePatch, linePoint: ProjectPoint, direction: ProjectVector): SupportInterval | null {
-  const parameters: number[] = [];
-  let perpendicularSum = 0;
-  for (const point of patch.supportPoints) {
-    const delta: ProjectVector = [point[0] - linePoint[0], point[1] - linePoint[1], point[2] - linePoint[2]];
-    const t = dot(delta, direction);
-    const closest = addScaled(linePoint, direction, t);
-    const perpendicular = distance(point, closest);
-    if (perpendicular > LOCAL_EDGE_SUPPORT_RADIUS_METERS) continue;
-    parameters.push(t);
-    perpendicularSum += perpendicular;
+/*
+ * MAX-258: the scanner delivers ~400 structural points/m^2 (surfels merge
+ * within ~3.4 cm), so the 8 cm patch around one seed rarely holds enough
+ * points along a crease. Line support is therefore gathered from EVERY point
+ * of the face near the intersection line (plane distance, normal and
+ * perpendicular gates), split into runs at physical gaps, and the run at the
+ * pair's anchor is used. Evenness is judged against the face's measured
+ * sampling spacing, bounded by physical limits.
+ */
+const LINE_SUPPORT_WINDOW_METERS = MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5 + 0.06;
+const LINE_SUPPORT_NORMAL_DOT = Math.cos((30 * Math.PI) / 180);
+const MIN_LINE_PLANE_GATE_METERS = 0.015;
+/** A gap longer than this is never bridged, whatever the sampling density. */
+const MAX_LINE_GAP_METERS = 0.10;
+/** Below this, depth noise alone can open gaps between neighbouring surfels. */
+const MIN_LINE_GAP_METERS = 0.03;
+const LINE_GAP_SPACINGS = 2;
+/** Face points are gathered once per patch within this radius of its centre. */
+const FACE_POINT_RADIUS_METERS = MAX_CORNER_CENTER_DISTANCE_METERS + LOCAL_EDGE_SUPPORT_RADIUS_METERS;
+
+type FacePoints = readonly ProjectPoint[];
+
+/** All structural points on a patch's plane (plane + normal gates) around it, gathered once per patch. */
+function gatherFacePoints(index: StructuralPointIndex, patch: PlanePatch): FacePoints {
+  const planeGate = Math.max(MIN_LINE_PLANE_GATE_METERS, patch.residualMeters * 3);
+  const reach = Math.ceil(FACE_POINT_RADIUS_METERS / PATCH_CELL_METERS);
+  const cx = cellCoord(patch.center[0], PATCH_CELL_METERS); const cy = cellCoord(patch.center[1], PATCH_CELL_METERS); const cz = cellCoord(patch.center[2], PATCH_CELL_METERS);
+  const points: ProjectPoint[] = [];
+  for (let dx = -reach; dx <= reach; dx += 1) for (let dy = -reach; dy <= reach; dy += 1) for (let dz = -reach; dz <= reach; dz += 1) {
+    const cell = index.get(cellKeyFromCoords(cx + dx, cy + dy, cz + dz)); if (cell === undefined) continue;
+    for (const sample of cell.points) {
+      if (Math.abs(dot(patch.normal, sample.inputNormal)) < LINE_SUPPORT_NORMAL_DOT) continue;
+      if (Math.abs(dot(patch.normal, sample.point) - patch.d) > planeGate) continue;
+      if (distance(sample.point, patch.center) > FACE_POINT_RADIUS_METERS) continue;
+      points.push(sample.point);
+    }
   }
-  const count = parameters.length;
-  if (count < MIN_EDGE_LOCAL_SUPPORT_POINTS) return null;
-  parameters.sort((a, b) => a - b);
-  const trim = count >= 5 ? Math.max(1, Math.floor(count * 0.10)) : 0;
-  const low = trim;
-  const high = count - 1 - trim;
-  if (high <= low) return null;
+  return points;
+}
+
+function faceLineSupport(
+  face: FacePoints,
+  linePoint: ProjectPoint,
+  direction: ProjectVector,
+): { parameters: number[]; perpendicular: number[] } {
+  const parameters: number[] = []; const perpendicular: number[] = [];
+  for (const point of face) {
+    const delta: ProjectVector = [point[0] - linePoint[0], point[1] - linePoint[1], point[2] - linePoint[2]];
+    const along = dot(delta, direction);
+    if (Math.abs(along) > LINE_SUPPORT_WINDOW_METERS) continue;
+    const offLine = distance(point, addScaled(linePoint, direction, along));
+    if (offLine > LOCAL_EDGE_SUPPORT_RADIUS_METERS) continue;
+    parameters.push(along); perpendicular.push(offLine);
+  }
+  return { parameters, perpendicular };
+}
+
+interface LineSampling { spacing: number; distinct: number }
+
+/**
+ * Along-line sampling of a face: median gap between DISTINCT projected
+ * positions (grid rows project onto the same parameter, so zero gaps are not
+ * sampling information).
+ */
+function lineSampling(sorted: readonly number[]): LineSampling {
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i += 1) {
+    const gap = sorted[i] - sorted[i - 1];
+    if (gap > 0.001) gaps.push(gap);
+  }
+  const distinct = sorted.length === 0 ? 0 : gaps.length + 1;
+  if (gaps.length === 0) return { spacing: Number.POSITIVE_INFINITY, distinct };
+  // Median, so one far outlier cannot inflate the spacing it is judged against.
+  gaps.sort((a, b) => a - b);
+  return { spacing: gaps[Math.floor(gaps.length / 2)], distinct };
+}
+
+/**
+ * A gap is real when it exceeds what the face's own sampling explains: for
+ * n roughly uniform random samples the largest gap grows ~ spacing * ln(n),
+ * so allow spacing * (ln n + LINE_GAP_SPACINGS), within physical bounds.
+ */
+function allowedLineGapMeters(sampling: LineSampling): number {
+  if (!Number.isFinite(sampling.spacing)) return MIN_LINE_GAP_METERS;
+  return clamp(sampling.spacing * (Math.log(Math.max(2, sampling.distinct)) + LINE_GAP_SPACINGS), MIN_LINE_GAP_METERS, MAX_LINE_GAP_METERS);
+}
+
+/** The contiguous run (no gap above `maxGap`) that contains, or is nearest to, t = 0. */
+function supportRunAtAnchor(
+  support: { parameters: number[]; perpendicular: number[] },
+  voxelSizeMeters: number,
+): SupportInterval | null {
+  const order = support.parameters.map((value, i) => i).sort((l, r) => support.parameters[l] - support.parameters[r]);
+  const sorted = order.map((i) => support.parameters[i]);
+  if (sorted.length < MIN_EDGE_LOCAL_SUPPORT_POINTS) return null;
+  void voxelSizeMeters;
+  const maxGap = allowedLineGapMeters(lineSampling(sorted));
+  let best: { from: number; to: number; distance: number } | null = null;
+  let from = 0;
+  for (let i = 1; i <= sorted.length; i += 1) {
+    if (i < sorted.length && sorted[i] - sorted[i - 1] <= maxGap) continue;
+    const to = i - 1;
+    const runDistance = sorted[from] > 0 ? sorted[from] : sorted[to] < 0 ? -sorted[to] : 0;
+    if (best === null || runDistance < best.distance) best = { from, to, distance: runDistance };
+    from = i;
+  }
+  if (best === null || best.to - best.from + 1 < MIN_EDGE_LOCAL_SUPPORT_POINTS) return null;
+  const parameters = sorted.slice(best.from, best.to + 1);
+  let perpendicularSum = 0;
+  for (let k = best.from; k <= best.to; k += 1) perpendicularSum += support.perpendicular[order[k]];
   return {
-    min: parameters[low],
-    max: parameters[high],
-    count,
-    meanPerpendicularMeters: perpendicularSum / count,
+    min: parameters[0],
+    max: parameters[parameters.length - 1],
+    count: parameters.length,
+    meanPerpendicularMeters: perpendicularSum / parameters.length,
     parameters,
   };
 }
@@ -484,10 +579,12 @@ function distributedLineSupport(
     return { accepted: false, supportCount: 0, occupiedBins: 0, binCount: 0, coverageRatio: 0, maximumGapMeters: Number.POSITIVE_INFINITY, quality: 0 };
   }
   const voxel = clamp(Math.abs(voxelSizeMeters), 0.025, 0.10);
-  const binSize = clamp(voxel * 0.90, 0.028, 0.055);
+  const parameters = interval.parameters.filter((value) => value >= startT - 1e-7 && value <= endT + 1e-7);
+  const sampling = lineSampling(parameters);
+  // Bins sized so a uniformly sampled face fills them; never finer than before.
+  const binSize = clamp(Math.max(voxel * 0.90, Number.isFinite(sampling.spacing) ? sampling.spacing * 1.5 : 0), 0.028, 0.075);
   const binCount = Math.max(2, Math.ceil(span / binSize));
   const bins = new Uint8Array(binCount);
-  const parameters = interval.parameters.filter((value) => value >= startT - 1e-7 && value <= endT + 1e-7);
   const requiredSupport = Math.max(
     MIN_EDGE_LOCAL_SUPPORT_POINTS,
     Math.ceil(span / EDGE_SUPPORT_INTERVAL_METERS) + 1,
@@ -506,7 +603,7 @@ function distributedLineSupport(
     previous = value;
   }
   maximumGapMeters = Math.max(maximumGapMeters, endT - previous);
-  const allowedGapMeters = Math.max(binSize * MAX_EDGE_LINEAR_GAP_FACTOR, voxel * 1.8);
+  const allowedGapMeters = allowedLineGapMeters(sampling);
   const gapQuality = clamp01(1 - maximumGapMeters / Math.max(allowedGapMeters * 1.35, 1e-9));
   const densityQuality = clamp01(parameters.length / Math.max(requiredSupport, 1));
   const quality = clamp01(coverageRatio * 0.50 + gapQuality * 0.28 + densityQuality * 0.22);
@@ -530,9 +627,11 @@ function supportedEdgeFromPatches(
   b: PlanePatch,
   intersection: { point: ProjectPoint; direction: ProjectVector },
   voxelSizeMeters: number,
+  faceA: FacePoints,
+  faceB: FacePoints,
 ): RawEdge | null {
-  const supportA = supportIntervalOnIntersection(a, intersection.point, intersection.direction);
-  const supportB = supportIntervalOnIntersection(b, intersection.point, intersection.direction);
+  const supportA = supportRunAtAnchor(faceLineSupport(faceA, intersection.point, intersection.direction), voxelSizeMeters);
+  const supportB = supportRunAtAnchor(faceLineSupport(faceB, intersection.point, intersection.direction), voxelSizeMeters);
   if (supportA === null || supportB === null) return null;
 
   // Margins may extend a confirmed line for display, but they must never bridge
@@ -543,7 +642,8 @@ function supportedEdgeFromPatches(
   const minimumCoreLength = Math.max(MIN_EDGE_SUPPORTED_LENGTH_METERS, clamp(Math.abs(voxelSizeMeters) * 0.90, 0.032, 0.055));
   if (coreEndT - coreStartT < minimumCoreLength) return null;
   if (coreEndT - coreStartT > MAX_EDGE_SUPPORTED_LENGTH_METERS) {
-    const center = (coreStartT + coreEndT) * 0.5;
+    // Keep the window nearest the pair's anchor (t = 0).
+    const center = clamp(0, coreStartT + MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5, coreEndT - MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5);
     coreStartT = center - MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
     coreEndT = center + MAX_EDGE_SUPPORTED_LENGTH_METERS * 0.5;
   }
@@ -571,9 +671,10 @@ function supportedEdgeFromPatches(
     support: distributedA.supportCount + distributedB.supportCount,
   };
 }
-function localCornerSupport(patch: PlanePatch, point: ProjectPoint): number {
+/** Points of the patch's whole face (MAX-258) within the corner support radius. */
+function localCornerSupport(face: FacePoints, point: ProjectPoint): number {
   let count = 0;
-  for (const supportPoint of patch.supportPoints) if (distance(supportPoint, point) <= CORNER_LOCAL_SUPPORT_RADIUS_METERS) count += 1;
+  for (const facePoint of face) if (distance(facePoint, point) <= CORNER_LOCAL_SUPPORT_RADIUS_METERS) count += 1;
   return count;
 }
 function solveThreePlanes(a: PlanePatch, b: PlanePatch, c: PlanePatch): ProjectPoint | null {
@@ -614,7 +715,14 @@ export function detectStructuralGuideGeometry(
   input: StructuralGuideInput,
   includeRawCorners = true,
 ): GeometryDetectionResult {
-  const patches = buildPlanePatches(input); const patchByCell = new Map<string, number[]>();
+  const pointIndex = indexStructuralPoints(input);
+  const patches = buildPlanePatches(input, pointIndex); const patchByCell = new Map<string, number[]>();
+  const faceCache = new Map<number, FacePoints>();
+  const faceOf = (patchIndex: number): FacePoints => {
+    let face = faceCache.get(patchIndex);
+    if (face === undefined) { face = gatherFacePoints(pointIndex, patches[patchIndex]); faceCache.set(patchIndex, face); }
+    return face;
+  };
   for (let index = 0; index < patches.length; index += 1) {
     const patch = patches[index]; const key = cellKeyFromCoords(patch.ix, patch.iy, patch.iz); const bucket = patchByCell.get(key) ?? []; bucket.push(index); patchByCell.set(key, bucket);
   }
@@ -630,7 +738,7 @@ export function detectStructuralGuideGeometry(
         const angle = Math.acos(Math.min(1, Math.abs(dot(a.normal, b.normal)))); if (angle < MIN_PLANE_ANGLE_RAD) continue;
         const intersection = intersectTwoPlanesNear(a, b, midpoint(a.center, b.center)); if (intersection === null) continue;
         if (distance(intersection.point, a.center) > MAX_CORNER_CENTER_DISTANCE_METERS || distance(intersection.point, b.center) > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
-        const edge = supportedEdgeFromPatches(a, b, intersection, input.voxelSizeMeters); if (edge === null) continue;
+        const edge = supportedEdgeFromPatches(a, b, intersection, input.voxelSizeMeters, faceOf(i), faceOf(j)); if (edge === null) continue;
         const geometric = pairGeometryScore(a, b, centerDistance, edge.geometryConfidence); if (geometric < 0.48) continue;
         edge.geometryConfidence = clamp01(geometric * 0.72 + edge.geometryConfidence * 0.28);
         const freeConflict = edgeFreeSpaceConflict(freeSpace, edge); if (freeConflict >= 0.43) { rejectedByFreeSpace += 1; continue; }
@@ -664,7 +772,7 @@ export function detectStructuralGuideGeometry(
       const b = patches[bIndex]; const c = patches[cIndex]; const angleBC = Math.acos(Math.min(1, Math.abs(dot(b.normal, c.normal)))); if (angleBC < MIN_PLANE_ANGLE_RAD) continue;
       const point = solveThreePlanes(a, b, c); if (point === null) continue;
       const maxDistance = Math.max(distance(point, a.center), distance(point, b.center), distance(point, c.center)); if (maxDistance > MAX_CORNER_CENTER_DISTANCE_METERS) continue;
-      const localA = localCornerSupport(a, point), localB = localCornerSupport(b, point), localC = localCornerSupport(c, point);
+      const localA = localCornerSupport(faceOf(i), point), localB = localCornerSupport(faceOf(bIndex), point), localC = localCornerSupport(faceOf(cIndex), point);
       if (Math.min(localA, localB, localC) < MIN_CORNER_LOCAL_SUPPORT_POINTS) continue;
       if (isVerifiedFree(freeSpace, point)) { rejectedByFreeSpace += 1; continue; }
       const determinant = Math.abs(dot(a.normal, cross(b.normal, c.normal))); const conditioning = clamp01(determinant / 0.78);
