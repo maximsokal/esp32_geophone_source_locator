@@ -69,6 +69,12 @@ const METHOD_COLORS: Record<string, string> = {
   semblance_scan: '#34d399',
   traveltime_scan_constrained: '#c084fc',
   semblance_scan_constrained: '#6ee7b7',
+  tdcas: '#22d3ee',
+  tdcas_scan_constrained: '#67e8f9',
+  psafuvs: '#fb923c',
+  psafuvs_scan_constrained: '#fdba74',
+  suea: '#a3e635',
+  suea_scan_voids: '#d9f99d',
   joint_fusion: '#f472b6',
 };
 const FALLBACK_COLORS = ['#fb7185', '#facc15', '#60a5fa', '#4ade80'];

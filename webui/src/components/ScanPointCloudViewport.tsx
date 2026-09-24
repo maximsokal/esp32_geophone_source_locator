@@ -11,6 +11,18 @@ import {
   type ScanDisplayOptions,
   type ScanMode,
 } from '../xr/scanDisplayModes';
+import {
+  cameraPoseForPreset,
+  clamp,
+  orbitDistanceLimits,
+  prepareScanScene,
+  scanDimensionsText,
+  scanLayerPlan,
+  scanSourceBadgeText,
+  toViewportPositions,
+  type PreparedScanScene,
+  type ScanLayerSpec,
+} from '../xr/scanViewportScene';
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
 import type { SparseTsdfMesh } from '../xr/sparseTsdf';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
@@ -24,112 +36,11 @@ interface ScanPointCloudViewportProps {
   mode: ScanMode | null;
 }
 
-interface QualityBands {
-  weak: Float32Array;
-  improving: Float32Array;
-  stable: Float32Array;
-}
-
-interface PreparedScene {
-  good: QualityBands;
-  bad: QualityBands;
-  manualPositions: ReadonlyArray<readonly [number, number, number]>;
-  operatorEdgePositions: Float32Array;
-  freeAirPositions: Float32Array;
-  unknownPositions: Float32Array;
-  boundsLines: Float32Array;
-  centerX: number;
-  centerY: number;
-  centerZ: number;
-  extent: number;
-  extentX: number;
-  extentY: number;
-  extentZ: number;
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.max(minimum, Math.min(maximum, value));
-}
-
-function transformOne(x: number, y: number, z: number, centerX: number, centerY: number, centerZ: number): readonly [number, number, number] {
-  return [x - centerX, z - centerZ, -(y - centerY)];
-}
-
-function transformPositions(source: Float32Array, centerX: number, centerY: number, centerZ: number): Float32Array {
-  const output = new Float32Array(source.length);
-  for (let index = 0; index < source.length; index += 3) {
-    const transformed = transformOne(source[index], source[index + 1], source[index + 2], centerX, centerY, centerZ);
-    output[index] = transformed[0]; output[index + 1] = transformed[1]; output[index + 2] = transformed[2];
-  }
-  return output;
-}
-
-function splitConfidenceBands(positions: Float32Array, confidence: Float32Array, centerX: number, centerY: number, centerZ: number): QualityBands {
-  const weak: number[] = []; const improving: number[] = []; const stable: number[] = [];
-  const count = Math.min(Math.floor(positions.length / 3), confidence.length);
-  for (let index = 0; index < count; index += 1) {
-    const offset = index * 3;
-    const transformed = transformOne(positions[offset], positions[offset + 1], positions[offset + 2], centerX, centerY, centerZ);
-    const target = confidence[index] < 0.42 ? weak : confidence[index] < 0.72 ? improving : stable;
-    target.push(transformed[0], transformed[1], transformed[2]);
-  }
-  return { weak: Float32Array.from(weak), improving: Float32Array.from(improving), stable: Float32Array.from(stable) };
-}
-
-function boundsLinePositions(snapshot: ScanPointCloudSnapshot, centerX: number, centerY: number, centerZ: number): Float32Array {
-  const bounds = snapshot.bounds;
-  if (bounds === null) return new Float32Array(0);
-  const corners: Array<readonly [number, number, number]> = [];
-  for (const x of [bounds.min[0], bounds.max[0]]) for (const y of [bounds.min[1], bounds.max[1]]) for (const z of [bounds.min[2], bounds.max[2]]) corners.push(transformOne(x, y, z, centerX, centerY, centerZ));
-  const edges: readonly [number, number][] = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
-  const output = new Float32Array(edges.length * 6); let write = 0;
-  for (const [a,b] of edges) for (const pointIndex of [a,b]) { const point = corners[pointIndex]; output[write++] = point[0]; output[write++] = point[1]; output[write++] = point[2]; }
-  return output;
-}
-
-function operatorEdgePositions(snapshot: ScanPointCloudSnapshot, centerX:number, centerY:number, centerZ:number): Float32Array {
-  const output = new Float32Array(snapshot.operatorEdges.length * 6);
-  let write = 0;
-  for (const edge of snapshot.operatorEdges) {
-    for (const point of [edge.start, edge.end] as const) {
-      const transformed = transformOne(point[0], point[1], point[2], centerX, centerY, centerZ);
-      output[write++] = transformed[0]; output[write++] = transformed[1]; output[write++] = transformed[2];
-    }
-  }
-  return output;
-}
-
-function prepareScene(snapshot: ScanPointCloudSnapshot): PreparedScene {
-  const bounds = snapshot.bounds;
-  const centerX = bounds === null ? 0 : (bounds.min[0] + bounds.max[0]) * 0.5;
-  const centerY = bounds === null ? 0 : (bounds.min[1] + bounds.max[1]) * 0.5;
-  const centerZ = bounds === null ? 0 : (bounds.min[2] + bounds.max[2]) * 0.5;
-  const extentX = bounds === null ? 0 : bounds.max[0] - bounds.min[0];
-  const extentY = bounds === null ? 0 : bounds.max[1] - bounds.min[1];
-  const extentZ = bounds === null ? 0 : bounds.max[2] - bounds.min[2];
-  const extent = Math.max(0.8, extentX, extentY, extentZ);
-  return {
-    good: splitConfidenceBands(snapshot.positions, snapshot.confidence, centerX, centerY, centerZ),
-    bad: splitConfidenceBands(snapshot.tentativePositions, snapshot.tentativeConfidence, centerX, centerY, centerZ),
-    manualPositions: snapshot.manualControlPoints.map((point) => transformOne(point.position[0], point.position[1], point.position[2], centerX, centerY, centerZ)),
-    operatorEdgePositions: operatorEdgePositions(snapshot, centerX, centerY, centerZ),
-    freeAirPositions: transformPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
-    unknownPositions: transformPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
-    boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ),
-    centerX, centerY, centerZ, extent, extentX, extentY, extentZ,
-  };
-}
-
 function PointLayer({ positions, color, size, opacity, depthTest = true, renderOrder = 0 }: { positions: Float32Array; color: string; size: number; opacity: number; depthTest?: boolean; renderOrder?: number }) {
   const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); return next; }, [positions]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   if (positions.length === 0) return null;
   return <points geometry={geometry} frustumCulled={false} renderOrder={renderOrder}><pointsMaterial color={color} size={size} sizeAttenuation transparent={opacity < 1} opacity={opacity} depthTest={depthTest} depthWrite={false} /></points>;
-}
-
-function QualityPointLayers({ bands, extent, faint = false }: { bands: QualityBands; extent: number; faint?: boolean }) {
-  const base = clamp(extent * 0.008, 0.014, 0.045);
-  return <><PointLayer positions={bands.weak} color="#ff3d28" size={base * 0.86} opacity={faint ? 0.42 : 0.62} /><PointLayer positions={bands.improving} color="#facc15" size={base} opacity={faint ? 0.58 : 0.82} /><PointLayer positions={bands.stable} color="#2ee6a6" size={base * 1.12} opacity={faint ? 0.76 : 0.98} /></>;
 }
 
 function SurfaceMesh({ positions, wireframe }: { positions: Float32Array; wireframe: boolean }) {
@@ -138,16 +49,10 @@ function SurfaceMesh({ positions, wireframe }: { positions: Float32Array; wirefr
   return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color="#38cfd2" transparent opacity={wireframe ? 0.30 : 0.22} side={THREE.DoubleSide} depthWrite={false} /></mesh>{wireframe && <mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color="#a5f3fc" transparent opacity={0.22} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh>}</group>;
 }
 
-function BoundsLines({ positions }: { positions: Float32Array }) {
+function LineLayer({ positions, color, opacity, renderOrder }: { positions: Float32Array; color: string; opacity: number; renderOrder: number }) {
   const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); return next; }, [positions]);
   useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
-  return <lineSegments geometry={geometry} renderOrder={20}><lineBasicMaterial color="#dbeafe" transparent opacity={0.78} depthTest={false} /></lineSegments>;
-}
-
-function OperatorEdges({ positions }: { positions: Float32Array }) {
-  const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); return next; }, [positions]);
-  useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
-  return <lineSegments geometry={geometry} renderOrder={48}><lineBasicMaterial color="#f05cff" transparent opacity={0.96} depthTest={false} /></lineSegments>;
+  return <lineSegments geometry={geometry} renderOrder={renderOrder}><lineBasicMaterial color={color} transparent opacity={opacity} depthTest={false} /></lineSegments>;
 }
 
 function ManualPin({ position, extent, id }: { position: readonly [number, number, number]; extent: number; id: number }) {
@@ -159,29 +64,39 @@ function CameraController({ command, extent, onInteractionEnd }: { command: View
   const { camera, gl } = useThree();
   const controls = useMemo(() => new OrbitControls(camera, gl.domElement), [camera, gl.domElement]);
   useEffect(() => {
-    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = Math.max(0.18, extent*0.10); controls.maxDistance = Math.max(18, extent*10); controls.touches.ONE = THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.target.set(0,0,0); controls.update();
+    const limits = orbitDistanceLimits(extent);
+    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = limits.minDistance; controls.maxDistance = limits.maxDistance; controls.touches.ONE = THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.target.set(0,0,0); controls.update();
     const handleStart = (): void => clientDiagnostics.info('SCAN_VIEW_GESTURE_START');
     const handleEnd = (): void => { const distance = controls.getDistance(); onInteractionEnd(distance); clientDiagnostics.info('SCAN_VIEW_GESTURE_END', { distance: Number(distance.toFixed(3)), x: Number(camera.position.x.toFixed(3)), y: Number(camera.position.y.toFixed(3)), z: Number(camera.position.z.toFixed(3)) }); };
     controls.addEventListener('start', handleStart); controls.addEventListener('end', handleEnd);
     return () => { controls.removeEventListener('start', handleStart); controls.removeEventListener('end', handleEnd); controls.dispose(); };
   }, [camera, controls, extent, onInteractionEnd]);
   useEffect(() => {
-    const distance = Math.max(1.5, extent * 1.75); controls.target.set(0,0,0);
-    if (command.preset === 'top') { camera.up.set(0,0,-1); camera.position.set(0,distance,0.001); }
-    else if (command.preset === 'front') { camera.up.set(0,1,0); camera.position.set(0,extent*0.08,distance); }
-    else { camera.up.set(0,1,0); camera.position.set(distance*0.66,distance*0.52,distance*0.72); }
+    const pose = cameraPoseForPreset(command.preset, extent);
+    controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+    camera.up.set(pose.up[0], pose.up[1], pose.up[2]);
+    camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
     camera.lookAt(controls.target); if (camera instanceof THREE.PerspectiveCamera) camera.updateProjectionMatrix(); controls.update(); onInteractionEnd(controls.getDistance());
   }, [camera, command.preset, command.sequence, controls, extent, onInteractionEnd]);
   useFrame(() => controls.update()); return null;
 }
 
-function SceneLayers({ prepared, display, meshPositions, wireframe }: { prepared: PreparedScene; display: ScanDisplayOptions; meshPositions: Float32Array; wireframe: boolean }) {
-  const voxelPointSize = clamp(prepared.extent*0.010,0.018,0.055);
-  return <><color attach="background" args={['#07101a']} />{display.unknownSpace && <PointLayer positions={prepared.unknownPositions} color="#f59e0b" size={voxelPointSize} opacity={0.30} depthTest={false} renderOrder={1} />}{display.freeAir && <PointLayer positions={prepared.freeAirPositions} color="#38bdf8" size={voxelPointSize*0.82} opacity={0.48} depthTest={false} renderOrder={2} />}{display.mesh && <SurfaceMesh positions={meshPositions} wireframe={wireframe} />}{display.badPoints && <QualityPointLayers bands={prepared.bad} extent={prepared.extent} faint />}{display.goodPoints && <QualityPointLayers bands={prepared.good} extent={prepared.extent} />}{display.manualPoints && <OperatorEdges positions={prepared.operatorEdgePositions} />}{display.manualPoints && prepared.manualPositions.map((position,index) => <ManualPin key={index} id={index+1} position={position} extent={prepared.extent} />)}{display.dimensions && <BoundsLines positions={prepared.boundsLines} />}</>;
+function LayerView({ layer, extent }: { layer: ScanLayerSpec; extent: number }) {
+  switch (layer.kind) {
+    case 'points': return <PointLayer positions={layer.positions} color={layer.color} size={layer.size} opacity={layer.opacity} depthTest={layer.depthTest} renderOrder={layer.renderOrder} />;
+    case 'mesh': return <SurfaceMesh positions={layer.positions} wireframe={layer.wireframe} />;
+    case 'lines': return <LineLayer positions={layer.positions} color={layer.color} opacity={layer.opacity} renderOrder={layer.renderOrder} />;
+    case 'pins': return <>{layer.pins.map((position, index) => <ManualPin key={index} id={index + 1} position={position} extent={extent} />)}</>;
+  }
+}
+
+function SceneLayers({ prepared, display, meshPositions, wireframe }: { prepared: PreparedScanScene; display: ScanDisplayOptions; meshPositions: Float32Array; wireframe: boolean }) {
+  const layers = useMemo(() => scanLayerPlan(prepared, display, meshPositions, wireframe), [prepared, display, meshPositions, wireframe]);
+  return <><color attach="background" args={['#07101a']} />{layers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} />)}</>;
 }
 
 export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }: ScanPointCloudViewportProps) {
-  const prepared = useMemo(() => prepareScene(snapshot), [snapshot]);
+  const prepared = useMemo(() => prepareScanScene(snapshot), [snapshot]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
   const [tsdfError, setTsdfError] = useState<string | null>(null);
@@ -253,7 +168,7 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
   const meshPositions = useMemo(
     () => tsdfMesh === null
       ? new Float32Array(0)
-      : transformPositions(tsdfMesh.trianglePositions, prepared.centerX, prepared.centerY, prepared.centerZ),
+      : toViewportPositions(tsdfMesh.trianglePositions, prepared.centerX, prepared.centerY, prepared.centerZ),
     [prepared.centerX, prepared.centerY, prepared.centerZ, tsdfMesh],
   );
 
@@ -270,9 +185,9 @@ export function ScanPointCloudViewport({ snapshot, viewCommand, display, mode }:
 
   return <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume" data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
-    <div className="scan-source-badge">SURFACE {snapshot.pointCount.toLocaleString()} · FREE {snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN {snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS {snapshot.manualControlPoints.length.toLocaleString()} · EDGES {snapshot.operatorEdges.length.toLocaleString()}</div>
+    <div className="scan-source-badge">{scanSourceBadgeText(snapshot)}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
-    {display.dimensions && <div className="scan-dimension-overlay">X {prepared.extentX.toFixed(2)} m · Y {prepared.extentY.toFixed(2)} m · Z {prepared.extentZ.toFixed(2)} m</div>}
+    {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared)}</div>}
     {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
     <div className="axis-note">1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height</div>
   </div>;
