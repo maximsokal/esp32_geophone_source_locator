@@ -227,6 +227,11 @@ export function depthToleranceMeters(depthMeters: number): number {
   return clamp(0.020 + 0.0040 * depthMeters * depthMeters, 0.026, 0.105);
 }
 
+/** A neighbour this far from the centre depth is on another surface (step / silhouette). */
+export function depthDiscontinuityGateMeters(depthMeters: number): number {
+  return Math.max(0.075, depthToleranceMeters(depthMeters) * 2.2);
+}
+
 const NO_CREASE = { crease: false, creaseAxis: 'none', creaseResidualMeters: 0 } as const;
 
 export function classifyDepthNeighbourhood(
@@ -254,7 +259,7 @@ export function classifyDepthNeighbourhood(
 
   const residuals = entries.map((entry) => Math.abs(entry.value - centerDepth));
   const support = residuals.filter((residual) => residual <= tolerance);
-  const discontinuityGate = Math.max(0.075, tolerance * 2.2);
+  const discontinuityGate = depthDiscontinuityGateMeters(centerDepth);
   const far = entries.filter((entry) => Math.abs(entry.value - centerDepth) >= discontinuityGate);
   const edge = far.length > 0;
 

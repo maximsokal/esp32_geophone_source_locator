@@ -6,6 +6,9 @@ import {
 import { metricFeatureProbeRadius } from './metricFeatureProbe';
 import {
   classifyDepthNeighbourhood,
+  creaseGateMeters,
+  creaseResidualMeters,
+  depthDiscontinuityGateMeters,
   type DepthStencilGeometry,
   clamp01,
   crossVector,
@@ -31,6 +34,11 @@ export interface ScanPointCloudSnapshot {
   positions: Float32Array;
   confidence: Float32Array;
   normals: Float32Array;
+  /**
+   * MAX-253: per-point normal confidence (0 = unknown; the exported normal is
+   * then only the direction toward the observing camera, a TSDF sign hint).
+   */
+  normalConfidence?: Float32Array;
   pointCount: number;
   /** Retained hypotheses that did not make the final stable surface. */
   tentativePositions: Float32Array;
@@ -132,6 +140,8 @@ interface RepresentativePoint {
   normalY: number;
   normalZ: number;
   normalConfidence: number;
+  /** False while no stencil could measure the orientation (normal = view-direction hint). */
+  normalKnown: boolean;
   weight: number;
   acceptedSamples: number;
   independentViews: number;
@@ -453,12 +463,24 @@ function subtract(a: ProjectPoint, b: ProjectPoint): ProjectVector {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
+/*
+ * MAX-253: normals from a planarity-checked stencil.
+ *
+ * Each image axis contributes one tangent. Both neighbours are used only when
+ * the centre lies on their inverse-depth chord (a plane at ANY slope does, so
+ * steep faces keep a real normal). A crease on an axis means the two halves
+ * belong to different faces: the half that stays planar over a second pixel
+ * is used, never the average. Confidence follows the fit residual, not the
+ * neighbour count. No measurable orientation -> null (unknown), never a
+ * made-up normal.
+ */
+interface AxisTangent { tangent: ProjectVector; quality: number }
+
 function estimateSurfaceNormal(
   depth: CpuDepthInformationLike,
   u: number,
   v: number,
   centerDepth: number,
-  center: ProjectPoint,
   neighbours: SurfaceNeighbourhood,
   p00: number,
   p11: number,
@@ -469,35 +491,76 @@ function estimateSurfaceNormal(
 ): SurfaceNormalEstimate | null {
   const du = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.width);
   const dv = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
-  const tolerance = depthToleranceMeters(centerDepth) * 1.45;
+  const gate = creaseGateMeters(centerDepth);
+  const discontinuity = depthDiscontinuityGateMeters(centerDepth);
+  const cu = pixelCentre(u, depth.width);
+  const cv = pixelCentre(v, depth.height);
+  // Every read is the nearest pixel, so unproject at pixel centres for exact tangents.
+  const at = (su: number, sv: number, d: number): ProjectPoint | null =>
+    unprojectProjectPoint(pixelCentre(su, depth.width), pixelCentre(sv, depth.height), d, p00, p11, p20, p21, worldFromView);
+  const center = unprojectProjectPoint(cu, cv, centerDepth, p00, p11, p20, p21, worldFromView);
+  if (center === null) return null;
 
-  const projectNeighbour = (su: number, sv: number, d: number | null): ProjectPoint | null => {
-    if (d === null || Math.abs(d - centerDepth) > tolerance) return null;
-    return unprojectProjectPoint(su, sv, d, p00, p11, p20, p21, worldFromView);
+  const axis = (
+    near: number | null,
+    far: number | null,
+    nearOffset: number,
+    farOffset: number,
+    step: readonly [number, number],
+    scaleToTangent: number,
+    size: number,
+    coordinate: number,
+  ): AxisTangent | null => {
+    const usable = (value: number | null, offset: number): value is number =>
+      value !== null && offset > 0 && Math.abs(value - centerDepth) < discontinuity;
+    const nearOk = usable(near, nearOffset);
+    const farOk = usable(far, farOffset);
+    const nearPoint = nearOk ? at(u - step[0], v - step[1], near) : null;
+    const farPoint = farOk ? at(u + step[0], v + step[1], far) : null;
+    // One half of the stencil, extended one more pixel outward: usable only if
+    // the inner neighbour lies on the chord centre->outer (that half is planar).
+    // The tangent uses the outer sample, doubling the baseline against noise.
+    const half = (sign: -1 | 1, inner: number, innerOffset: number): AxisTangent | null => {
+      const su = u + sign * 2 * step[0];
+      const sv = v + sign * 2 * step[1];
+      const outerDepth = safeDepth(depth, su, sv);
+      if (outerDepth === null || Math.abs(outerDepth - inner) >= discontinuity) return null;
+      const outerOffset = Math.abs(pixelCentre(coordinate + sign * 2 * (step[0] + step[1]), size) - pixelCentre(coordinate + sign * (step[0] + step[1]), size)) * scaleToTangent;
+      const halfResidual = creaseResidualMeters(inner, innerOffset, centerDepth, outerOffset, outerDepth);
+      if (halfResidual === null || Math.abs(halfResidual) >= gate) return null;
+      const outerPoint = at(su, sv, outerDepth);
+      if (outerPoint === null) return null;
+      const tangent = sign < 0 ? subtract(center, outerPoint) : subtract(outerPoint, center);
+      return { tangent, quality: 0.5 + 0.35 * (1 - Math.abs(halfResidual) / gate) };
+    };
+    if (nearPoint !== null && farPoint !== null && near !== null && far !== null) {
+      const residual = creaseResidualMeters(centerDepth, nearOffset, near, farOffset, far);
+      if (residual !== null && Math.abs(residual) < gate) {
+        return { tangent: subtract(farPoint, nearPoint), quality: 0.55 + 0.45 * (1 - Math.abs(residual) / gate) };
+      }
+      // Crease across this axis: keep the half that stays planar, never the average.
+      const left = half(-1, near, nearOffset);
+      const right = half(1, far, farOffset);
+      if (left !== null && right !== null) return left.quality >= right.quality ? left : right;
+      return left ?? right;
+    }
+    // Only one side measured (surface border, occlusion): a planar-checked
+    // longer half if possible, otherwise a short, explicitly weak tangent.
+    if (nearPoint !== null && near !== null) return half(-1, near, nearOffset) ?? { tangent: subtract(center, nearPoint), quality: 0.3 };
+    if (farPoint !== null && far !== null) return half(1, far, farOffset) ?? { tangent: subtract(farPoint, center), quality: 0.3 };
+    return null;
   };
 
-  const left = projectNeighbour(u - du, v, neighbours.left);
-  const right = projectNeighbour(u + du, v, neighbours.right);
-  const up = projectNeighbour(u, v - dv, neighbours.up);
-  const down = projectNeighbour(u, v + dv, neighbours.down);
-
-  let tangentU: ProjectVector | null = null;
-  let tangentV: ProjectVector | null = null;
-  if (left !== null && right !== null) tangentU = subtract(right, left);
-  else if (right !== null) tangentU = subtract(right, center);
-  else if (left !== null) tangentU = subtract(center, left);
-
-  if (up !== null && down !== null) tangentV = subtract(down, up);
-  else if (down !== null) tangentV = subtract(down, center);
-  else if (up !== null) tangentV = subtract(center, up);
-
+  const geometry = stencilGeometry(depth, u, v, du, dv, p00, p11);
+  const tangentU = axis(neighbours.left, neighbours.right, geometry.left, geometry.right, [du, 0], 2 / Math.abs(p00), depth.width, u);
+  const tangentV = axis(neighbours.up, neighbours.down, geometry.up, geometry.down, [0, dv], 2 / Math.abs(p11), depth.height, v);
   if (tangentU === null || tangentV === null) return null;
-  if (Math.hypot(...tangentU) < 1e-5 || Math.hypot(...tangentV) < 1e-5) return null;
-
+  if (Math.hypot(...tangentU.tangent) < 1e-5 || Math.hypot(...tangentV.tangent) < 1e-5) return null;
+  const crossed = crossVector(tangentU.tangent, tangentV.tangent);
+  if (Math.hypot(...crossed) < 1e-10) return null;
   const towardCamera = cameraDirection(center[0], center[1], center[2], camera);
-  const normal = orientNormalToward(crossVector(tangentU, tangentV), towardCamera);
-  const supportCount = Number(left !== null) + Number(right !== null) + Number(up !== null) + Number(down !== null);
-  return { normal, confidence: clamp01(0.22 + supportCount * 0.19) };
+  const normal = orientNormalToward(crossed, towardCamera);
+  return { normal, confidence: clamp01(Math.min(tangentU.quality, tangentV.quality)) };
 }
 
 export class DepthPointCloudAccumulator {
@@ -613,7 +676,7 @@ export class DepthPointCloudAccumulator {
       const project = unprojectProjectPoint(u, v, depthMeters, p00, p11, p20, p21, worldFromView);
       if (project === null) return local;
       const normalEstimate = estimateSurfaceNormal(
-        depth, u, v, depthMeters, project, neighbourhood, p00, p11, p20, p21, worldFromView,
+        depth, u, v, depthMeters, neighbourhood, p00, p11, p20, p21, worldFromView,
         context.cameraProjectPosition,
       );
 
@@ -777,13 +840,15 @@ export class DepthPointCloudAccumulator {
     // builds tentative arrays, support maps, robust sorted bounds and occupancy
     // in the wrapper. Here we copy only the promoted surfel state required by
     // the off-main-thread plane/corner detector.
+    // MAX-253: a point without a measured orientation carries no structural
+    // evidence (plane fits, edge families), so it is not exported here.
     const count = this.promotedRepresentativeCount;
     const positions = new Float32Array(count * 3);
     const normals = new Float32Array(count * 3);
     const confidence = new Float32Array(count);
     let write = 0;
     for (const point of this.representatives.values()) {
-      if (!point.promoted) continue;
+      if (!point.promoted || !point.normalKnown) continue;
       const offset = write * 3;
       positions[offset] = point.x;
       positions[offset + 1] = point.y;
@@ -823,6 +888,7 @@ export class DepthPointCloudAccumulator {
     const finalPositions = new Float32Array(finalPoints.length * 3);
     const finalConfidence = new Float32Array(finalPoints.length);
     const finalNormals = new Float32Array(finalPoints.length * 3);
+    const finalNormalConfidence = new Float32Array(finalPoints.length);
     let residualSum = 0;
     finalPoints.forEach((point, index) => {
       const offset = index * 3;
@@ -833,6 +899,7 @@ export class DepthPointCloudAccumulator {
       finalNormals[offset] = point.normalX;
       finalNormals[offset + 1] = point.normalY;
       finalNormals[offset + 2] = point.normalZ;
+      finalNormalConfidence[index] = point.normalKnown ? point.normalConfidence : 0;
       residualSum += representativeResidual(point);
     });
 
@@ -854,6 +921,7 @@ export class DepthPointCloudAccumulator {
       positions: finalPositions,
       confidence: finalConfidence,
       normals: finalNormals,
+      normalConfidence: finalNormalConfidence,
       pointCount: finalPoints.length,
       tentativePositions,
       tentativeConfidence,
@@ -949,12 +1017,14 @@ export class DepthPointCloudAccumulator {
 
     const direction = cameraDirection(x, y, z, context.cameraProjectPosition);
     const initialView = packInitialView(direction);
-    const normal = normalEstimate?.normal ?? ([0, 0, 1] as const);
+    // Unknown orientation: keep only the camera direction as a sign hint, flagged unknown.
+    const normal = normalEstimate?.normal ?? direction;
     const id = `${key}#${this.nextId++}`;
     const candidate: RepresentativePoint = {
       id, x, y, z,
       normalX: normal[0], normalY: normal[1], normalZ: normal[2],
       normalConfidence: normalEstimate?.confidence ?? 0,
+      normalKnown: normalEstimate !== null,
       weight: Math.min(MAX_FUSION_WEIGHT, observationWeight),
       acceptedSamples: 1,
       independentViews: 1,
@@ -1010,7 +1080,14 @@ export class DepthPointCloudAccumulator {
     point.lastSeenEpoch = this.sampleEpoch;
     point.contradictionWeight *= 0.84;
 
-    if (normalEstimate !== null) {
+    if (normalEstimate !== null && !point.normalKnown) {
+      // First real measurement replaces the view-direction hint outright.
+      point.normalX = normalEstimate.normal[0];
+      point.normalY = normalEstimate.normal[1];
+      point.normalZ = normalEstimate.normal[2];
+      point.normalConfidence = normalEstimate.confidence;
+      point.normalKnown = true;
+    } else if (normalEstimate !== null) {
       const beta = clamp01(alpha * (0.35 + normalEstimate.confidence * 0.65));
       // Surface-normal sign is view-dependent here: the fresh estimate is
       // oriented toward the current camera, while the stored surfel may have
