@@ -2,6 +2,7 @@ import type { RecordingReport } from '../../domain/reportModel';
 import { makeProjection } from '../../domain/reportModel';
 import type { ProjectionAxis } from '../../domain/reportModel';
 import { encodeQr, qrSvgPath } from '../../domain/qrCode';
+import { describeFrames } from '../../domain/spatialFrames';
 
 /*
  * MAX-150: printable report of one saved recording. Pure view (no network,
@@ -120,6 +121,31 @@ export default function ReportView({ report }: { report: RecordingReport }) {
             </div>
           </>
         )}
+      </section>
+
+      <section>
+        <h2>Coordinate frames</h2>
+        {(() => {
+          const frames = describeFrames(location, report.scanPoints.length > 0);
+          return (
+            <>
+              <p>{frames.axisConvention} Heading (true north) is not known and is never derived from the GPS fix.</p>
+              <table>
+                <thead><tr><th>Transform</th><th>Status</th><th>Source</th><th>Note</th></tr></thead>
+                <tbody>
+                  {frames.transforms.map((t) => (
+                    <tr key={`${t.from}-${t.to}`}>
+                      <td>{t.from} → {t.to}</td>
+                      <td>{t.status.replace('_', ' ')}{t.translationUncertaintyM !== null && t.status === 'translation_only' ? ` (±${fmt(t.translationUncertaintyM, 0)} m)` : ''}</td>
+                      <td>{t.source}</td>
+                      <td>{t.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          );
+        })()}
       </section>
 
       <section>

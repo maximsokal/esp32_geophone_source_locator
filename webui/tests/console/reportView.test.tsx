@@ -70,6 +70,9 @@ describe('ReportView', () => {
     expect(html).toContain('gauss_newton_tdoa');
     expect(html).toContain('joint (joint)');
     expect(html).toContain('unavailable: geometry is collinear');
+    /* MAX-151: frames are explicit; heading never from GPS. */
+    expect(html).toContain('Heading (true north) is not known');
+    expect(html).toContain('translation only (±4 m)');
     /* Report QR. */
     expect(html).toContain('aria-label="Result summary"');
   });
