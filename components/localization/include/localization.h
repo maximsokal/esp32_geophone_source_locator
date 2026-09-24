@@ -47,6 +47,37 @@ static inline bool localization_candidate_admitted(
 }
 
 
+/*
+ * Optional straight-ray clearance test for the analytical (straight-ray)
+ * backends (TDCAS, PSAFUVS): false when the straight segment sensor ->
+ * candidate crosses scan-verified empty space, i.e. the straight-ray
+ * travel-time model cannot hold for that sensor. A zero-initialized filter
+ * (clear == NULL) treats every ray as clear.
+ */
+typedef bool (*localization_ray_clear_fn)(
+    const localization_point3d_t *sensor,
+    const localization_point3d_t *candidate,
+    void *context
+);
+
+typedef struct
+{
+    localization_ray_clear_fn clear;
+    void *context;
+
+} localization_ray_filter_t;
+
+
+static inline bool localization_ray_admitted(
+    const localization_ray_filter_t *filter,
+    const localization_point3d_t *sensor,
+    const localization_point3d_t *candidate
+)
+{
+    return filter == NULL || filter->clear == NULL || filter->clear(sensor, candidate, filter->context);
+}
+
+
 typedef struct
 {
     localization_point3d_t sensor_position;
@@ -87,6 +118,18 @@ typedef struct
  * zero so the caller must set a measured/modelled value before solving.
  */
 localization_config_t localization_default_config(void);
+
+
+/*
+ * MAX-211 depth-resolution test shared by every backend: true when some
+ * four of the positions span a tetrahedron whose |6 x volume| exceeds
+ * 0.05 x (largest pairwise distance)^3, i.e. the layout has enough vertical
+ * relief to resolve depth. A near-planar surface array returns false.
+ */
+bool localization_positions_resolve_depth(
+    const localization_point3d_t *positions,
+    size_t position_count
+);
 
 
 /*

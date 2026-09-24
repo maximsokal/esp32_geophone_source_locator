@@ -149,6 +149,73 @@ static bool localization_geometry_is_3d(
 }
 
 
+/* Order-independent variant: every tetrahedron, not only those through the
+ * first position, so the answer never depends on which sensor is listed
+ * first. */
+static bool localization_points_span_depth(
+    const localization_point3d_t *positions,
+    size_t count,
+    double scale
+)
+{
+    if (count < LOCALIZATION_MIN_SENSORS_3D || scale <= LOCALIZATION_DISTANCE_EPSILON_M) {
+        return false;
+    }
+
+    double max_six_volume = 0.0;
+
+    for (size_t h = 0; h < count; ++h) {
+        for (size_t i = h + 1; i < count; ++i) {
+            const localization_point3d_t a = point_subtract(positions[i], positions[h]);
+
+            for (size_t j = i + 1; j < count; ++j) {
+                const localization_point3d_t b = point_subtract(positions[j], positions[h]);
+
+                for (size_t k = j + 1; k < count; ++k) {
+                    const localization_point3d_t c = point_subtract(positions[k], positions[h]);
+                    const double six_volume = fabs(point_dot(a, point_cross(b, c)));
+
+                    if (six_volume > max_six_volume) {
+                        max_six_volume = six_volume;
+                    }
+                }
+            }
+        }
+    }
+
+    return max_six_volume >
+        LOCALIZATION_MIN_DEPTH_RESOLVING_VOLUME_RATIO * scale * scale * scale;
+}
+
+
+bool localization_positions_resolve_depth(
+    const localization_point3d_t *positions,
+    size_t position_count
+)
+{
+    if (positions == NULL || position_count > LOCALIZATION_MAX_SENSORS) {
+        return false;
+    }
+
+    double scale = 0.0;
+
+    for (size_t i = 0; i < position_count; ++i) {
+        if (!point_is_finite(positions[i])) {
+            return false;
+        }
+
+        for (size_t j = i + 1; j < position_count; ++j) {
+            const double distance = point_distance(positions[i], positions[j]);
+            if (distance > scale) {
+                scale = distance;
+            }
+        }
+    }
+
+    return localization_points_span_depth(positions, position_count, scale);
+}
+
+
 static localization_point3d_t localization_centroid(
     const localization_observation_t *observations,
     size_t count
