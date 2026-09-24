@@ -1,5 +1,6 @@
 import type { StructuralGuidePointCloudSnapshot } from './depthPointCloudV2';
 import {
+  computeStructuralFaceCapability,
   computeSurfaceStructuralReadiness,
   summarizeSurfaceComponentReadiness,
   type StructuralSurfaceReadiness,
@@ -66,6 +67,7 @@ export function prepareStructuralGuideReadiness(
   const surfaceReadiness = summarizeSurfaceComponentReadiness(
     structuralComponentAnalysis,
     meshComponentAnalysis,
+    computeStructuralFaceCapability(structuralComponentAnalysis, structuralSurface.positions, structuralSurface.voxelSizeMeters),
   );
 
   return {

@@ -181,6 +181,9 @@ interface CoverageCell {
   /** Revision for which retentionComplexityCachedScore is valid. */
   retentionComplexityCachedRevision: number;
   retentionComplexityCachedScore: number;
+  /** MAX-254: per-face readiness cached against retentionComplexityRevision. */
+  facesReadyCachedRevision: number;
+  facesReadyCachedValue: boolean;
 }
 
 interface CellQuality {
@@ -249,6 +252,16 @@ const TARGET_INDEPENDENT_VIEWS = 3;
 const CELL_READY_MIN_PROMOTED = 4;
 const CELL_READY_BASELINE_METERS = 0.10;
 const CELL_TARGET_BASELINE_METERS = 0.22;
+/*
+ * MAX-254: a coverage cell may hold several faces (edge, corner). Each face
+ * (normal family with measured orientation, spatially supported) must have its
+ * own CELL_READY_MIN_PROMOTED multi-view points; a corner cell with one face
+ * seen from a single viewpoint is not ready.
+ */
+const CELL_FACE_FAMILY_DOT = Math.cos((24 * Math.PI) / 180);
+const CELL_FACE_MIN_NORMAL_CONFIDENCE = 0.35;
+const CELL_FACE_MIN_MEMBERS = 2;
+const CELL_FACE_MIN_SPAN_METERS = 0.02;
 const TENTATIVE_MAX_KEYFRAME_AGE = 7;
 const TENTATIVE_PRUNE_INTERVAL_KEYFRAMES = 5;
 const FINAL_SUPPORT_CELL_METERS = 0.12;
@@ -1220,6 +1233,8 @@ export class DepthPointCloudAccumulator {
       retentionComplexityRevision: 0,
       retentionComplexityCachedRevision: -1,
       retentionComplexityCachedScore: 0,
+      facesReadyCachedRevision: -1,
+      facesReadyCachedValue: false,
     };
   }
   private recordCellEvidence(cell: CoverageCell, context: DepthFusionFrameContext): void {
@@ -1258,8 +1273,49 @@ export class DepthPointCloudAccumulator {
       promotedPoints >= CELL_READY_MIN_PROMOTED &&
       cell.evidenceKeyframes >= TARGET_INDEPENDENT_VIEWS &&
       cell.maxBaselineMeters >= CELL_READY_BASELINE_METERS &&
-      confidence >= 0.72;
+      confidence >= 0.72 &&
+      this.everyCellFaceReady(cell);
     return { confidence, visible, ready, promotedPoints };
+  }
+
+  private everyCellFaceReady(cell: CoverageCell): boolean {
+    if (cell.facesReadyCachedRevision === cell.retentionComplexityRevision) return cell.facesReadyCachedValue;
+    const measured = [...cell.representatives.values()]
+      .filter((point) => point.normalKnown && point.normalConfidence >= CELL_FACE_MIN_NORMAL_CONFIDENCE)
+      .sort((a, b) =>
+        b.normalConfidence - a.normalConfidence || a.normalX - b.normalX || a.normalY - b.normalY ||
+        a.normalZ - b.normalZ || a.x - b.x || a.y - b.y || a.z - b.z);
+    const faces: Array<{ nx: number; ny: number; nz: number; members: number; promoted: number; minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number }> = [];
+    for (const point of measured) {
+      let best: (typeof faces)[number] | null = null; let bestDot = CELL_FACE_FAMILY_DOT;
+      for (const face of faces) {
+        const length = Math.hypot(face.nx, face.ny, face.nz) || 1;
+        const similarity = Math.abs((face.nx * point.normalX + face.ny * point.normalY + face.nz * point.normalZ) / length);
+        if (similarity >= bestDot) { best = face; bestDot = similarity; }
+      }
+      if (best === null) {
+        faces.push({ nx: point.normalX, ny: point.normalY, nz: point.normalZ, members: 1, promoted: point.promoted ? 1 : 0, minX: point.x, minY: point.y, minZ: point.z, maxX: point.x, maxY: point.y, maxZ: point.z });
+        continue;
+      }
+      const sign = best.nx * point.normalX + best.ny * point.normalY + best.nz * point.normalZ < 0 ? -1 : 1;
+      best.nx += point.normalX * sign; best.ny += point.normalY * sign; best.nz += point.normalZ * sign;
+      best.members += 1; if (point.promoted) best.promoted += 1;
+      best.minX = Math.min(best.minX, point.x); best.minY = Math.min(best.minY, point.y); best.minZ = Math.min(best.minZ, point.z);
+      best.maxX = Math.max(best.maxX, point.x); best.maxY = Math.max(best.maxY, point.y); best.maxZ = Math.max(best.maxZ, point.z);
+    }
+    const ready = faces.every((face) =>
+      face.members < CELL_FACE_MIN_MEMBERS ||
+      Math.hypot(face.maxX - face.minX, face.maxY - face.minY, face.maxZ - face.minZ) < CELL_FACE_MIN_SPAN_METERS ||
+      face.promoted >= CELL_READY_MIN_PROMOTED);
+    cell.facesReadyCachedRevision = cell.retentionComplexityRevision;
+    cell.facesReadyCachedValue = ready;
+    return ready;
+  }
+
+  /** Diagnostic: readiness of the coverage cell containing a project point (null if no cell). */
+  coverageCellReadyAt(point: ProjectPoint): boolean | null {
+    const cell = this.coverageCells.get(cellKey(point[0], point[1], point[2], COVERAGE_CELL_METERS));
+    return cell === undefined ? null : this.cellQuality(cell).ready;
   }
 
   private markRetentionComplexityDirty(cell: CoverageCell | undefined): void {
