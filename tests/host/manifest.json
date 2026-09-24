@@ -241,6 +241,19 @@
       ]
     },
     {
+      "name": "ad7606_presence_runtime",
+      "sources": [
+        "components/ad7606_driver/ad7606_presence.c",
+        "components/ad7606_driver/ad7606_presence_policy.c",
+        "components/ad7606_driver/tests/ad7606_presence_runtime_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ad7606_presence",
+        "components/ad7606_driver/include",
+        "components/ad7606_driver"
+      ]
+    },
+    {
       "name": "ad7606_serial",
       "sources": [
         "components/ad7606_driver/ad7606_serial.c",
