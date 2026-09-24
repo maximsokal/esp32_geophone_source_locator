@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import { StructuralGuideOverlay } from './StructuralGuideOverlay';
+import { BleRoughPlacementHud } from './BleRoughPlacementHud';
+import { BleRoughPlacement } from '../xr/bleRoughPlacement';
+import { bleRssiSupport, describeBleRssiSupport, WebBluetoothRssiSource } from '../xr/bleRssiSource';
 import { describeAiPrior } from '../xr/aiPriorUi';
 import {
   getCertifiedGuideRegistrySummary,
@@ -24,6 +27,7 @@ import {
   WebXrRuntime,
   type ScanPointCloudSnapshot,
   type WebXrCapabilities,
+  type WebXrPoseSnapshot,
   type WebXrRuntimeState,
   type XrRuntimePhase,
 } from '../xr/webxrRuntime';
@@ -106,6 +110,21 @@ export function XrRuntimePanel({
   useEffect(()=>{const previous=previousRuntimePhase.current;previousRuntimePhase.current=runtimeState.phase;if(runtimeState.phase==='starting'&&previous!=='starting')onPointCloudReadyRef.current?.(null);else if(runtimeState.phase==='ended'&&previous!=='ended'&&runtimeState.pointCount>0)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());},[runtime,runtimeState.phase,runtimeState.pointCount]);
   useEffect(()=>{if(runtimeState.manualPointCount>previousManualCount.current)setManualCursor((current)=>({...current,phase:'confirmed'}));previousManualCount.current=runtimeState.manualPointCount;},[runtimeState.manualPointCount]);
   useEffect(()=>{if(runtimeState.manualPointError!==null)setManualCursor((current)=>({...current,phase:'scan-more'}));},[runtimeState.manualPointError]);
+  /* MAX-146: optional BLE RSSI node hints. Samples are only taken with a live XR pose and reset per session (new reference frame). */
+  const bleNavigator=typeof navigator==='undefined'?undefined:(navigator as unknown as Parameters<typeof bleRssiSupport>[0]);
+  const bleSupport=useMemo(()=>bleRssiSupport(bleNavigator,typeof window!=='undefined'&&window.isSecureContext),[bleNavigator]);
+  const blePlacement=useMemo(()=>new BleRoughPlacement(),[]);const bleSource=useMemo(()=>new WebBluetoothRssiSource(bleNavigator),[bleNavigator]);
+  const[bleActive,setBleActive]=useState(false);const[bleTick,setBleTick]=useState(0);const posePointer=useRef<WebXrPoseSnapshot|null>(null);
+  useEffect(()=>{posePointer.current=runtimeState.phase==='running'&&runtimeState.tracking?runtimeState.pose:null;},[runtimeState.phase,runtimeState.tracking,runtimeState.pose]);
+  useEffect(()=>()=>bleSource.stop(),[bleSource]);
+  useEffect(()=>{if(runtimeState.phase==='starting')blePlacement.reset();else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&bleSource.active){clientDiagnostics.info('XR_BLE_RSSI_DIAGNOSTICS',blePlacement.diagnostics(Date.now()));void clientDiagnostics.flush();}},[runtimeState.phase,blePlacement,bleSource]);
+  useEffect(()=>{if(!bleActive||runtimeState.phase!=='running')return;const id=window.setInterval(()=>setBleTick((tick)=>tick+1),1000);return()=>window.clearInterval(id);},[bleActive,runtimeState.phase]);
+  const bleEstimates=useMemo(()=>(bleActive&&bleTick>=0?blePlacement.estimates(Date.now()):[]),[blePlacement,bleActive,bleTick]);
+  const toggleBle=async():Promise<void>=>{
+    if(bleSource.active){bleSource.stop();setBleActive(false);clientDiagnostics.info('XR_BLE_RSSI',{enabled:false});return;}
+    const started=await bleSource.start((advert)=>{const pose=posePointer.current;if(pose===null)return;blePlacement.addSample({...advert,phonePosition:pose.position,timestampMs:Date.now()});});
+    setBleActive(started);clientDiagnostics.info('XR_BLE_RSSI',{enabled:started,support:bleSupport});void clientDiagnostics.flush();
+  };
 
   const running=runtimeState.phase==='running',busy=computePreparing||runtimeState.phase==='starting'||runtimeState.phase==='stopping';const canStart=canAttemptImmersiveAr(capabilities)&&!running&&!busy;const readyVisible=`${runtimeState.coverageReadyCells.toLocaleString()} / ${runtimeState.coverageVisibleCells.toLocaleString()}`;
   const computeScheduler=liveComputeScheduler.snapshot();const computeMaximum=computeScheduler.maximumBudget;const computeEffective=computeScheduler.effectiveBudget;const computeLabel=computeMaximum===null?'W?/?':`W${computeEffective??0}/${computeMaximum}`;
@@ -176,6 +195,7 @@ export function XrRuntimePanel({
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('fresh')}>{computePreparing?'Starting AR…':runtimeState.phase==='interrupted'?'Discard partial & start again':'Start 3D scan'}</button>
         </>}
         <button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>{aiPriorEnabled?'AI geometry check: ON · after Finish':'AI geometry check: OFF'}</button>
+        {bleSupport==='supported'?<button type="button" className={bleActive?'xr-undo-button active':'xr-undo-button'} aria-pressed={bleActive} onClick={()=>void toggleBle()} title="Rough node hints from BLE signal strength; never used as sensor geometry">{bleActive?'BLE node hints: ON':'BLE node hints: OFF'}</button>:<div className="xr-finish-explainer">{describeBleRssiSupport(bleSupport)}</div>}
         <div className="xr-finish-explainer">AI is optional and defaults OFF. When enabled, live XR only stages RGB + physical anchors; ONNX inference starts after Finish &amp; save.</div>
       </div>
       {aiPriorEnabled&&optionalMonocularPrior.status==='unavailable'&&<div className="xr-runtime-warning" role="status">Optional AI prior is unavailable on this browser/GPU. Physical ARCore depth and RGB structural validation continue normally.</div>}
@@ -196,6 +216,7 @@ export function XrRuntimePanel({
       {running&&manualMode&&<div className="xr-manual-hit-surface" aria-label="Manual corner placement surface" onPointerDown={handleManualPointerDown} onPointerMove={handleManualPointerMove} onPointerUp={handleManualPointerUp} onPointerCancel={handleManualPointerCancel}>
         <div className={`xr-manual-reticle ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}} aria-hidden="true"/><div className={`xr-manual-cursor-state ${manualCursor.phase}`} style={{left:`${manualCursor.u*100}%`,top:`${manualCursor.v*100}%`}}>{cursorLabel(manualCursor,runtimeState.manualPointCount)}</div><div className="xr-manual-instruction">Aim at a validated structural edge or corner. If the global worker has no certified target yet, local robust multi-plane geometry may still produce EDGE/CORNER LOCK; ray-verified FREE remains a hard veto.</div>
       </div>}
+      {running&&bleActive&&<BleRoughPlacementHud estimates={bleEstimates} pose={runtimeState.pose}/>}
       <div className="xr-overlay-card xr-overlay-card-compact"><div className="xr-overlay-topline"><strong className={runtimeState.motionState==='too-fast'?'bad-text':''}>{phaseLabel(runtimeState)}</strong><span>{runtimeState.wakeLockActive?'SCREEN LOCK ✓':''}</span></div>
         <div className="xr-overlay-scan-grid xr-overlay-scan-grid-compact"><div><span>STABLE</span><strong>{runtimeState.pointCount.toLocaleString()}</strong></div><div><span>READY</span><strong>{readyVisible}</strong></div><div><span>MOTION</span><strong>{formatMotion(runtimeState)}</strong></div><div><span>CPU</span><strong className={computeScheduler.degraded?'bad-text':''}>{computeLabel}</strong></div></div>
         {running&&activeScanIntent==='continue'&&<div className="xr-overlay-hint">CONTINUE MODE · First scan a recognizable area that is already in the saved model from several viewpoints. {continuationSampleReady?'Enough stable points exist for a registration attempt; keep some old area in view before expanding.':`Registration sample ${runtimeState.pointCount.toLocaleString()} / 120 stable points minimum.`} Finish will keep the old SD scan if rigid registration fails.</div>}

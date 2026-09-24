@@ -16,6 +16,8 @@ The system has four coordinate frames. Each has a fixed convention. The transfor
 * **Scan ↔ sensor frame: no transform yet.** It needs the AprilTag/ArUco registration (MAX-145). Until then, localization results are never drawn on the scan (MAX-161, MAX-150).
 * **GPS ↔ sensor frame: translation only.** MAIN sits at the GPS anchor within the stated GPS accuracy. There is no rotation.
 
+* **BLE RSSI node hints (MAX-146) live in the scan frame of one XR session.** They are reset when a session starts, never persisted as geometry, and never better than ±1.5 m. They are logged only as diagnostics (`XR_BLE_RSSI_DIAGNOSTICS`).
+
 ## Reproducibility
 
 Everything a view or report draws comes from values frozen with the recording: the per-session geometry, the localization runs and the scan artifact. No step applies a live heading, a live sensor position or another recording's data. Reloading or reconnecting therefore reproduces the same sensor and source coordinates and the same top and side projections.
