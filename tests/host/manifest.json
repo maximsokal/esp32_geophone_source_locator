@@ -206,6 +206,28 @@
       "libraries": ["m"]
     },
     {
+      "name": "i2c_line_recovery",
+      "sources": [
+        "components/sensor_bus/i2c_line_recovery.c",
+        "components/sensor_bus/tests/i2c_line_recovery_test.c"
+      ],
+      "include_dirs": [
+        "components/sensor_bus/include"
+      ]
+    },
+    {
+      "name": "nrf_topology_bus_recovery",
+      "sources": [
+        "components/nrf_topology_service/nrf_topology_bus_recovery.c",
+        "components/nrf_topology_service/tests/nrf_topology_bus_recovery_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "components/sensor_bus/include",
+        "components/nrf_topology_service/include"
+      ]
+    },
+    {
       "name": "ad7606_serial",
       "sources": [
         "components/ad7606_driver/ad7606_serial.c",

@@ -1,5 +1,8 @@
 #include "sensor_bus.h"
+#include "sensor_bus_lines.h"
 #include "board_config.h"
+
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -24,6 +27,15 @@ static uint8_t s_tca9548a_address = NULL_I2C_DEV_ADDR;
  * work to stay outside a critical section.
  */
 static SemaphoreHandle_t s_lock = NULL;
+
+/* MAX-243: guarded by s_lock. */
+static sensor_bus_recovery_status_t s_recovery;
+
+/* A live bus is judged stuck only if a line reads low on every sample over
+ * ~1 ms: at 100 kHz a transfer of another task toggles SCL every 5 us, so a
+ * normal transaction or clock stretch cannot look stuck. */
+#define SENSOR_BUS_STUCK_SAMPLES 10U
+#define SENSOR_BUS_STUCK_SAMPLE_US 100U
 
 static esp_err_t sensor_bus_delete_device(i2c_bus_device_handle_t *device)
 {
@@ -77,6 +89,72 @@ esp_err_t sensor_bus_lock_init(void)
     return s_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+/* Caller holds s_lock. */
+static void sensor_bus_record_recovery(i2c_line_result_t result, int64_t now_us)
+{
+    ++s_recovery.attempts;
+    s_recovery.last_result = result;
+    s_recovery.last_attempt_us = now_us;
+    if (result == I2C_LINES_RECOVERED) {
+        ++s_recovery.recoveries;
+    }
+    if (result == I2C_LINES_SDA_STUCK || result == I2C_LINES_SCL_STUCK) {
+        ++s_recovery.failures;
+        ++s_recovery.consecutive_failures;
+    } else {
+        s_recovery.consecutive_failures = 0U;
+    }
+}
+
+/* Caller holds s_lock and no I2C driver owns the pins. */
+static i2c_line_result_t sensor_bus_bitbang_clear_locked(void)
+{
+    i2c_line_io_t io;
+    if (sensor_bus_lines_bitbang_io(&io) != ESP_OK) {
+        return I2C_LINES_SCL_STUCK;
+    }
+    return i2c_line_recover(&io).result;
+}
+
+/* Caller holds s_lock and I2C0 exists. */
+static void sensor_bus_sample_live_lines(bool *sda_stuck, bool *scl_stuck)
+{
+    *sda_stuck = true;
+    *scl_stuck = true;
+    for (uint32_t i = 0U; i < SENSOR_BUS_STUCK_SAMPLES; ++i) {
+        if (i > 0U) {
+            sensor_bus_lines_delay_us(SENSOR_BUS_STUCK_SAMPLE_US);
+        }
+        bool sda_high = false;
+        bool scl_high = false;
+        sensor_bus_lines_read(&sda_high, &scl_high);
+        *sda_stuck = *sda_stuck && !sda_high;
+        *scl_stuck = *scl_stuck && !scl_high;
+    }
+}
+
+/* Caller holds s_lock and I2C0 exists. */
+static i2c_line_result_t sensor_bus_live_clear_locked(void)
+{
+    bool sda_stuck = false;
+    bool scl_stuck = false;
+    sensor_bus_sample_live_lines(&sda_stuck, &scl_stuck);
+    if (scl_stuck) {
+        return I2C_LINES_SCL_STUCK;  /* never clock against a held SCL */
+    }
+    if (!sda_stuck) {
+        return I2C_LINES_IDLE;
+    }
+    if (sensor_bus_lines_controller_reset(s_bus) != ESP_OK) {
+        return I2C_LINES_SDA_STUCK;
+    }
+    sensor_bus_sample_live_lines(&sda_stuck, &scl_stuck);
+    if (scl_stuck) {
+        return I2C_LINES_SCL_STUCK;
+    }
+    return sda_stuck ? I2C_LINES_SDA_STUCK : I2C_LINES_RECOVERED;
+}
+
 /* Caller must already hold s_lock. */
 static esp_err_t sensor_bus_init_locked(void)
 {
@@ -88,6 +166,14 @@ static esp_err_t sensor_bus_init_locked(void)
     if (s_bus != NULL) {
         (void)i2c_bus_delete(&s_bus);
     }
+
+    /* MAX-243: a target reset mid-transfer can hold SDA low across our own
+     * reboot; clear it while the pins are still free. A stuck line is only
+     * recorded -- the bus is still created, and its transfers fail and are
+     * reported by their consumers. */
+    sensor_bus_record_recovery(
+        sensor_bus_bitbang_clear_locked(), sensor_bus_lines_now_us()
+    );
 
     const i2c_config_t config = {
         .mode = I2C_MODE_MASTER,
@@ -245,6 +331,48 @@ fail:
     }
     sensor_bus_unlock();
     return err;
+}
+
+esp_err_t sensor_bus_recover(i2c_line_result_t *result)
+{
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+
+    const int64_t now_us = sensor_bus_lines_now_us();
+    if (!i2c_line_recovery_backoff_allows(
+            now_us, s_recovery.last_attempt_us, s_recovery.consecutive_failures)) {
+        sensor_bus_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const i2c_line_result_t line_result = s_bus != NULL
+        ? sensor_bus_live_clear_locked()
+        : sensor_bus_bitbang_clear_locked();
+    sensor_bus_record_recovery(line_result, now_us);
+    sensor_bus_unlock();
+
+    if (result != NULL) {
+        *result = line_result;
+    }
+    return line_result == I2C_LINES_IDLE || line_result == I2C_LINES_RECOVERED
+        ? ESP_OK
+        : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t sensor_bus_get_recovery_status(sensor_bus_recovery_status_t *status)
+{
+    if (status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+    memcpy(status, &s_recovery, sizeof(*status));
+    sensor_bus_unlock();
+    return ESP_OK;
 }
 
 esp_err_t sensor_bus_deinit(void)

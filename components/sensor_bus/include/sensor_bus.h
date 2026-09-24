@@ -4,6 +4,7 @@
 
 #include "esp_err.h"
 #include "i2c_bus.h"
+#include "i2c_line_recovery.h"
 
 
 /*
@@ -54,6 +55,39 @@ esp_err_t sensor_bus_get_handles(
 esp_err_t sensor_bus_get_tca9548a(
     i2c_bus_device_handle_t *device,
     uint8_t *address
+);
+
+/*
+ * MAX-243 stuck-bus handling (NXP UM10204 bus clear).
+ *
+ * Before I2C0 is created, sensor_bus_init() bit-bangs a bus clear on the
+ * still-free pins. After a transfer timeout a consumer calls
+ * sensor_bus_recover(): SDA held low -> controller bus clear (up to 9 SCL
+ * clocks + STOP); SCL held low -> reported as a target fault WITHOUT
+ * clocking (only a reset/power cycle of that target clears it). Attempts
+ * are rate-limited by i2c_line_recovery_backoff_allows(); a refused
+ * attempt returns ESP_ERR_INVALID_STATE without touching the bus.
+ *
+ * Returns ESP_OK when both lines are high afterwards (IDLE or RECOVERED),
+ * ESP_ERR_TIMEOUT when a line stays stuck. `result` may be NULL.
+ */
+typedef struct
+{
+    uint32_t attempts;
+    uint32_t recoveries;
+    uint32_t failures;
+    uint32_t consecutive_failures;
+    i2c_line_result_t last_result;
+    int64_t last_attempt_us;
+
+} sensor_bus_recovery_status_t;
+
+esp_err_t sensor_bus_recover(
+    i2c_line_result_t *result
+);
+
+esp_err_t sensor_bus_get_recovery_status(
+    sensor_bus_recovery_status_t *status
 );
 
 /*
