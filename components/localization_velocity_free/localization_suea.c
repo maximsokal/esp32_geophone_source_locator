@@ -17,9 +17,10 @@
  * misfit (sum of squares) by at least this fraction. */
 #define SUEA_MIN_IDENTIFY_IMPROVEMENT 1.0e-3
 
-/* Cells crossed by delayed rays at least this fraction of the strongest
- * one are marked empty in one round. */
-#define SUEA_IDENTIFY_SCORE_FRACTION 0.5
+/* A round marks the cells crossed by delayed rays at least this fraction of
+ * the strongest one -- the strictest first; a looser fraction is tried only
+ * when the stricter marks did not lower the misfit. */
+static const float SUEA_IDENTIFY_SCORE_FRACTIONS[] = { 0.8f, 0.65f, 0.5f };
 
 /* Upper bound on single-cell elimination tests per pass (each re-runs the
  * path search for every sensor). */
@@ -269,6 +270,47 @@ void localization_suea_grid_classify(
 
 /* ---- Voxel traversal (Amanatides-Woo) --------------------------------- */
 
+static bool cell_empty_at(const localization_suea_grid_t *grid, const long cell[3])
+{
+    return grid->cells[cell_index(grid, (size_t)cell[0], (size_t)cell[1], (size_t)cell[2])] ==
+        (uint8_t)LOCALIZATION_SUEA_CELL_EMPTY;
+}
+
+
+/*
+ * A segment crossing an edge or corner exactly (a tie between axes) passes
+ * between the side cells, entering neither. It is sealed only when every
+ * way round is EMPTY: for two tied axes, both side cells; for three, all
+ * single-step or all double-step side cells. `tied` flags the axes that
+ * step now; `cell` is the cell being left.
+ */
+static bool tie_sealed(const localization_suea_grid_t *grid, const long cell[3], const long step[3], const bool tied[3])
+{
+    size_t tied_count = 0U;
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        tied_count += tied[axis] ? 1U : 0U;
+    }
+    if (tied_count < 2U) {
+        return false;
+    }
+    bool single_open = false;
+    bool double_open = false;
+    for (size_t a = 0U; a < 3U; ++a) {
+        if (!tied[a]) {
+            continue;
+        }
+        long side[3] = { cell[0], cell[1], cell[2] };
+        side[a] += step[a];
+        single_open = single_open || !cell_empty_at(grid, side);
+        for (size_t b = a + 1U; tied_count == 3U && b < 3U; ++b) {
+            long corner[3] = { side[0], side[1], side[2] };
+            corner[b] += step[b];
+            double_open = double_open || !cell_empty_at(grid, corner);
+        }
+    }
+    return tied_count == 2U ? !single_open : (!single_open || !double_open);
+}
+
 typedef bool (*suea_visit_fn)(size_t index, void *context);
 
 /* Visits every cell the segment a -> b passes through, in order. False
@@ -333,16 +375,29 @@ static bool traverse(
         return false;
     }
     while ((cell[0] != end[0] || cell[1] != end[1] || cell[2] != end[2]) && guard-- > 0) {
-        size_t axis = 0U;
-        if (t_max[1] < t_max[axis]) axis = 1U;
-        if (t_max[2] < t_max[axis]) axis = 2U;
-        if (!(t_max[axis] <= 1.0 + 1.0e-9)) {
+        const double t_min = fmin(t_max[0], fmin(t_max[1], t_max[2]));
+        if (!(t_min <= 1.0 + 1.0e-9)) {
             break;
         }
-        cell[axis] += step[axis];
-        t_max[axis] += t_delta[axis];
-        if (cell[axis] < 0 || cell[axis] >= n[axis]) {
+        /* Crossing an edge or corner exactly (a tie) steps diagonally:
+         * touching a corner does not enter the side cells, unless they
+         * seal the passage (tie_sealed()). */
+        bool tied[3];
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            tied[axis] = t_max[axis] <= t_min + 1.0e-9;
+            const long next = cell[axis] + (tied[axis] ? step[axis] : 0);
+            if (next < 0 || next >= n[axis]) {
+                return false;
+            }
+        }
+        if (tie_sealed(grid, cell, step, tied)) {
             return false;
+        }
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            if (tied[axis]) {
+                cell[axis] += step[axis];
+                t_max[axis] += t_delta[axis];
+            }
         }
         if (!visit(cell_index(grid, (size_t)cell[0], (size_t)cell[1], (size_t)cell[2]), context)) {
             return false;
@@ -365,7 +420,12 @@ static bool line_of_sight(const localization_suea_grid_t *grid, localization_poi
 }
 
 
-/* ---- Lazy Theta* over the whole field --------------------------------- */
+/* ---- Lazy Theta* over the whole field ---------------------------------
+ *
+ * The hot loop runs in single precision and in grid units (cell centers at
+ * i + 0.5): the ESP32-S3 FPU is single-precision only, so double math here
+ * would be software-emulated. Lengths are converted to meters once, at the
+ * end; float resolves ~1e-5 cell over the grid sizes used. */
 
 typedef struct
 {
@@ -375,19 +435,118 @@ typedef struct
     int32_t *heap_position;
     uint8_t *state;
     size_t heap_size;
+    float source[3]; /* the source point in grid units */
 
 } suea_search_t;
 
 
-static localization_point3d_t vertex_point(const suea_search_t *search, int32_t vertex)
+static void cell_center_grid(const localization_suea_grid_t *grid, size_t index, float out[3])
 {
-    return vertex < 0 ? search->field->source : index_center(search->grid, (size_t)vertex);
+    size_t ix = 0U, iy = 0U, iz = 0U;
+    cell_coords(grid, index, &ix, &iy, &iz);
+    out[0] = (float)ix + 0.5f;
+    out[1] = (float)iy + 0.5f;
+    out[2] = (float)iz + 0.5f;
 }
 
 
-static double vertex_length(const suea_search_t *search, int32_t vertex)
+static void vertex_grid(const suea_search_t *search, int32_t vertex, float out[3])
 {
-    return vertex < 0 ? 0.0 : (double)search->field->length_m[vertex];
+    if (vertex < 0) {
+        out[0] = search->source[0];
+        out[1] = search->source[1];
+        out[2] = search->source[2];
+    } else {
+        cell_center_grid(search->grid, (size_t)vertex, out);
+    }
+}
+
+
+static float vertex_length(const suea_search_t *search, int32_t vertex)
+{
+    return vertex < 0 ? 0.0f : search->field->length_m[vertex];
+}
+
+
+static float distance_grid(const float a[3], const float b[3])
+{
+    const float dx = a[0] - b[0];
+    const float dy = a[1] - b[1];
+    const float dz = a[2] - b[2];
+    return sqrtf(dx * dx + dy * dy + dz * dz);
+}
+
+
+/* Single-precision line of sight in grid units (Amanatides-Woo): false when
+ * the segment enters an EMPTY cell or leaves the grid. */
+static bool line_of_sight_grid(const localization_suea_grid_t *grid, const float a[3], const float b[3])
+{
+    const long n[3] = { (long)grid->nx, (long)grid->ny, (long)grid->nz };
+    long cell[3];
+    long end[3];
+    long step[3];
+    float t_max[3];
+    float t_delta[3];
+    long guard = 3;
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        cell[axis] = (long)floorf(a[axis]);
+        end[axis] = (long)floorf(b[axis]);
+        if (cell[axis] == n[axis]) cell[axis] = n[axis] - 1;
+        if (end[axis] == n[axis]) end[axis] = n[axis] - 1;
+        if (cell[axis] < 0 || cell[axis] >= n[axis] || end[axis] < 0 || end[axis] >= n[axis]) {
+            return false;
+        }
+        const float d = b[axis] - a[axis];
+        if (d > 0.0f) {
+            step[axis] = 1;
+            t_max[axis] = ((float)cell[axis] + 1.0f - a[axis]) / d;
+            t_delta[axis] = 1.0f / d;
+        } else if (d < 0.0f) {
+            step[axis] = -1;
+            t_max[axis] = (a[axis] - (float)cell[axis]) / -d;
+            t_delta[axis] = -1.0f / d;
+        } else {
+            step[axis] = 0;
+            t_max[axis] = INFINITY;
+            t_delta[axis] = INFINITY;
+        }
+        guard += labs(end[axis] - cell[axis]);
+    }
+
+    const size_t nxy = grid->nx * grid->ny;
+    size_t index = ((size_t)cell[2] * nxy) + ((size_t)cell[1] * grid->nx) + (size_t)cell[0];
+    if (grid->cells[index] == (uint8_t)LOCALIZATION_SUEA_CELL_EMPTY) {
+        return false;
+    }
+    while ((cell[0] != end[0] || cell[1] != end[1] || cell[2] != end[2]) && guard-- > 0) {
+        const float t_min = fminf(t_max[0], fminf(t_max[1], t_max[2]));
+        if (!(t_min <= 1.0f + 1.0e-5f)) {
+            break;
+        }
+        /* An exact edge/corner crossing steps diagonally, as in traverse(). */
+        bool tied[3];
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            tied[axis] = t_max[axis] <= t_min + 1.0e-6f;
+            const long next = cell[axis] + (tied[axis] ? step[axis] : 0);
+            if (next < 0 || next >= n[axis]) {
+                return false;
+            }
+        }
+        if (tie_sealed(grid, cell, step, tied)) {
+            return false;
+        }
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            if (tied[axis]) {
+                cell[axis] += step[axis];
+                t_max[axis] += t_delta[axis];
+            }
+        }
+        index = ((size_t)cell[2] * nxy) + ((size_t)cell[1] * grid->nx) + (size_t)cell[0];
+        if (grid->cells[index] == (uint8_t)LOCALIZATION_SUEA_CELL_EMPTY) {
+            return false;
+        }
+    }
+    return true;
 }
 
 
@@ -548,6 +707,11 @@ esp_err_t localization_suea_field_compute(
         .heap = malloc(count * sizeof(int32_t)),
         .heap_position = malloc(count * sizeof(int32_t)),
         .state = calloc(count, 1U),
+        .source = {
+            (float)((source->x_m - grid->origin.x_m) / grid->cell_m),
+            (float)((source->y_m - grid->origin.y_m) / grid->cell_m),
+            (float)((source->z_m - grid->origin.z_m) / grid->cell_m),
+        },
     };
     if (
         field->length_m == NULL || field->parent == NULL ||
@@ -565,39 +729,50 @@ esp_err_t localization_suea_field_compute(
         search.heap_position[i] = -1;
     }
 
-    field->length_m[start] = (float)vf_distance(*source, index_center(grid, start));
+    /* Grid-unit lengths while searching (the heap key); meters at the end. */
+    float start_center[3];
+    cell_center_grid(grid, start, start_center);
+    field->length_m[start] = distance_grid(search.source, start_center);
     field->parent[start] = SUEA_SOURCE_PARENT;
     search.state[start] = SUEA_STATE_OPEN;
     heap_push(&search, (int32_t)start);
 
+    const long nx = (long)grid->nx;
+    const long ny = (long)grid->ny;
+    const long nz = (long)grid->nz;
+    const long nxy = nx * ny;
+
     while (search.heap_size > 0U) {
         const int32_t current = heap_pop(&search);
-        const localization_point3d_t current_center = index_center(grid, (size_t)current);
+        size_t cx = 0U, cy = 0U, cz = 0U;
+        cell_coords(grid, (size_t)current, &cx, &cy, &cz);
+        const float center[3] = { (float)cx + 0.5f, (float)cy + 0.5f, (float)cz + 0.5f };
 
         /* Lazy Theta* SetVertex: verify the optimistic any-angle parent,
          * else fall back to the best already-closed neighbor. */
         const int32_t assumed = field->parent[current];
-        if (
-            (size_t)current != start &&
-            !line_of_sight(grid, vertex_point(&search, assumed), current_center)
-        ) {
-            double best = INFINITY;
+        float assumed_point[3];
+        vertex_grid(&search, assumed, assumed_point);
+        if ((size_t)current != start && !line_of_sight_grid(grid, assumed_point, center)) {
+            float best = INFINITY;
             int32_t best_parent = SUEA_NO_PARENT;
             for (int dz = -1; dz <= 1; ++dz) {
                 for (int dy = -1; dy <= 1; ++dy) {
                     for (int dx = -1; dx <= 1; ++dx) {
-                        size_t neighbor = 0U;
+                        const long x = (long)cx + dx, y = (long)cy + dy, z = (long)cz + dz;
                         if (
                             (dx == 0 && dy == 0 && dz == 0) ||
-                            !neighbor_index(grid, (size_t)current, dx, dy, dz, &neighbor) ||
-                            search.state[neighbor] != SUEA_STATE_CLOSED
+                            x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz
                         ) {
                             continue;
                         }
-                        const localization_point3d_t neighbor_center = index_center(grid, neighbor);
-                        const double candidate =
-                            (double)field->length_m[neighbor] + vf_distance(neighbor_center, current_center);
-                        if (candidate < best && line_of_sight(grid, neighbor_center, current_center)) {
+                        const size_t neighbor = (size_t)(z * nxy + y * nx + x);
+                        if (search.state[neighbor] != SUEA_STATE_CLOSED) {
+                            continue;
+                        }
+                        const float neighbor_center[3] = { (float)x + 0.5f, (float)y + 0.5f, (float)z + 0.5f };
+                        const float candidate = field->length_m[neighbor] + distance_grid(neighbor_center, center);
+                        if (candidate < best && line_of_sight_grid(grid, neighbor_center, center)) {
                             best = candidate;
                             best_parent = (int32_t)neighbor;
                         }
@@ -610,35 +785,41 @@ esp_err_t localization_suea_field_compute(
                 search.state[current] = SUEA_STATE_CLOSED;
                 continue;
             }
-            field->length_m[current] = (float)best;
+            field->length_m[current] = best;
             field->parent[current] = best_parent;
         }
         search.state[current] = SUEA_STATE_CLOSED;
 
         const int32_t parent = field->parent[current];
-        const localization_point3d_t parent_point = vertex_point(&search, parent);
-        const double parent_length = vertex_length(&search, parent);
+        float parent_point[3];
+        vertex_grid(&search, parent, parent_point);
+        const float parent_length = vertex_length(&search, parent);
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
-                    size_t neighbor = 0U;
+                    const long x = (long)cx + dx, y = (long)cy + dy, z = (long)cz + dz;
                     if (
                         (dx == 0 && dy == 0 && dz == 0) ||
-                        !neighbor_index(grid, (size_t)current, dx, dy, dz, &neighbor) ||
+                        x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz
+                    ) {
+                        continue;
+                    }
+                    const size_t neighbor = (size_t)(z * nxy + y * nx + x);
+                    if (
                         search.state[neighbor] == SUEA_STATE_CLOSED ||
                         grid->cells[neighbor] == (uint8_t)LOCALIZATION_SUEA_CELL_EMPTY
                     ) {
                         continue;
                     }
-                    const double candidate =
-                        parent_length + vf_distance(parent_point, index_center(grid, neighbor));
+                    const float neighbor_center[3] = { (float)x + 0.5f, (float)y + 0.5f, (float)z + 0.5f };
+                    const float candidate = parent_length + distance_grid(parent_point, neighbor_center);
                     if (search.state[neighbor] == SUEA_STATE_NEW) {
-                        field->length_m[neighbor] = (float)candidate;
+                        field->length_m[neighbor] = candidate;
                         field->parent[neighbor] = parent;
                         search.state[neighbor] = SUEA_STATE_OPEN;
                         heap_push(&search, (int32_t)neighbor);
-                    } else if ((float)candidate < field->length_m[neighbor]) {
-                        field->length_m[neighbor] = (float)candidate;
+                    } else if (candidate < field->length_m[neighbor]) {
+                        field->length_m[neighbor] = candidate;
                         field->parent[neighbor] = parent;
                         heap_up(&search, (size_t)search.heap_position[neighbor]);
                     }
@@ -647,10 +828,13 @@ esp_err_t localization_suea_field_compute(
         }
     }
 
+    const float cell_m = (float)grid->cell_m;
     for (size_t i = 0U; i < count; ++i) {
-        if (search.state[i] != SUEA_STATE_CLOSED) {
+        if (search.state[i] != SUEA_STATE_CLOSED || !isfinite(field->length_m[i])) {
             field->length_m[i] = INFINITY;
             field->parent[i] = SUEA_NO_PARENT;
+        } else {
+            field->length_m[i] *= cell_m;
         }
     }
     free(search.heap);
@@ -1236,43 +1420,21 @@ esp_err_t localization_suea_identify_empty_areas(
     const double late_s = config->late_threshold_sigma * sigma_s;
 
     /* accepted[0, accepted_count) holds every cell kept EMPTY, in marking
-     * order; the current round's marks follow it until the round is judged. */
+     * order; an attempt's marks follow it until the attempt is judged. */
     size_t accepted_count = 0U;
-    size_t round_count = 0U;
-    double best_sse = INFINITY;
     esp_err_t err = ESP_OK;
 
-    for (uint32_t round = 0U; ; ++round) {
-        const bool fitted = evaluate_model(
-            grid, sensor_positions, sensor_count, shots, shot_count, late_s, fields, model, &err
-        );
-        if (err != ESP_OK) {
-            break;
-        }
+    const bool initial_fit = evaluate_model(
+        grid, sensor_positions, sensor_count, shots, shot_count, late_s, fields, model, &err
+    );
+    double best_sse = initial_fit ? model->sse : INFINITY;
+    if (initial_fit) {
+        result->rms_before_us = sqrt(model->sse / (double)model->rays) * 1.0e6;
+    }
 
-        if (round == 0U) {
-            if (!fitted) {
-                break;
-            }
-            best_sse = model->sse;
-            result->rms_before_us = sqrt(model->sse / (double)model->rays) * 1.0e6;
-        } else if (fitted && model->sse < best_sse * (1.0 - SUEA_MIN_IDENTIFY_IMPROVEMENT)) {
-            best_sse = model->sse;
-            accepted_count += round_count;
-        } else {
-            /* The last round did not explain the delays better: undo it. */
-            for (size_t k = 0U; k < round_count; ++k) {
-                grid->cells[accepted[accepted_count + k]] = (uint8_t)LOCALIZATION_SUEA_CELL_UNKNOWN;
-            }
-            break;
-        }
-        result->iterations = round;
-        round_count = 0U;
-        if (round >= config->max_iterations) {
-            break;
-        }
-
-        /* On-time rays certify their path; delayed rays vote for voids. */
+    for (uint32_t round = 1U; err == ESP_OK && initial_fit && round <= config->max_iterations; ++round) {
+        /* The fields and model describe the current grid here. On-time rays
+         * certify their path; delayed rays vote for voids. */
         suea_mark_context_t mark = {
             .grid = grid, .score = score, .sensor_votes = sensor_votes, .shot_votes = shot_votes,
         };
@@ -1318,20 +1480,43 @@ esp_err_t localization_suea_identify_empty_areas(
         if (!(max_score > 0.0f)) {
             break;
         }
-        for (size_t c = 0U; c < total; ++c) {
-            if (
-                grid->cells[c] == (uint8_t)LOCALIZATION_SUEA_CELL_UNKNOWN &&
-                bit_count(sensor_votes[c]) >= min_sensor_votes &&
-                bit_count(shot_votes[c]) >= min_shot_votes &&
-                score[c] >= (float)SUEA_IDENTIFY_SCORE_FRACTION * max_score
-            ) {
-                grid->cells[c] = (uint8_t)LOCALIZATION_SUEA_CELL_EMPTY;
-                accepted[accepted_count + round_count++] = c;
+
+        bool kept = false;
+        const size_t fraction_count = sizeof(SUEA_IDENTIFY_SCORE_FRACTIONS) / sizeof(SUEA_IDENTIFY_SCORE_FRACTIONS[0]);
+        for (size_t f = 0U; !kept && err == ESP_OK && f < fraction_count; ++f) {
+            size_t attempt_count = 0U;
+            for (size_t c = 0U; c < total; ++c) {
+                if (
+                    grid->cells[c] == (uint8_t)LOCALIZATION_SUEA_CELL_UNKNOWN &&
+                    bit_count(sensor_votes[c]) >= min_sensor_votes &&
+                    bit_count(shot_votes[c]) >= min_shot_votes &&
+                    score[c] >= SUEA_IDENTIFY_SCORE_FRACTIONS[f] * max_score
+                ) {
+                    grid->cells[c] = (uint8_t)LOCALIZATION_SUEA_CELL_EMPTY;
+                    accepted[accepted_count + attempt_count++] = c;
+                }
+            }
+            if (attempt_count == 0U) {
+                continue;
+            }
+            const bool fitted = evaluate_model(
+                grid, sensor_positions, sensor_count, shots, shot_count, late_s, fields, model, &err
+            );
+            if (err == ESP_OK && fitted && model->sse < best_sse * (1.0 - SUEA_MIN_IDENTIFY_IMPROVEMENT)) {
+                best_sse = model->sse;
+                accepted_count += attempt_count;
+                kept = true;
+            } else {
+                /* Did not explain the delays better: undo the attempt. */
+                for (size_t k = 0U; k < attempt_count; ++k) {
+                    grid->cells[accepted[accepted_count + k]] = (uint8_t)LOCALIZATION_SUEA_CELL_UNKNOWN;
+                }
             }
         }
-        if (round_count == 0U) {
+        if (!kept) {
             break;
         }
+        result->iterations = round;
     }
 
     /*

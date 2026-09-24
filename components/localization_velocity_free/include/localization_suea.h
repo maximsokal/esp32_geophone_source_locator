@@ -25,7 +25,10 @@
  *   3. computes, for every sensor, the shortest non-empty travel path to
  *      every grid point (an A*-family search; here Lazy Theta*, an
  *      any-angle A* variant whose paths are not restricted to the 26 grid
- *      directions, run once per sensor for the whole field);
+ *      directions, run once per sensor for the whole field). A ray may
+ *      touch an empty cell's edge or corner, but never squeeze between two
+ *      empty cells that share one. The search runs in single precision
+ *      (the ESP32-S3 FPU); lengths are reported in meters;
  *   4. locates the source without a pre-measured velocity: at each grid
  *      point the arrivals are fitted as t_i = t0 + L_i / v, and the point
  *      whose fit deviates least wins (localization_suea_locate()).
@@ -311,9 +314,10 @@ typedef struct
  * cell that is already SOLID or EMPTY -- scan evidence is not overruled.
  * Each round marks the unknown cells most consistently crossed by delayed
  * rays of at least two sensors and two shots (and by no on-time ray) and
- * keeps them only if the refitted travel-time misfit drops; otherwise the
- * round is undone and the growth stops. A final backward elimination
- * removes edge cells the misfit does not need.
+ * keeps them only if the refitted travel-time misfit drops -- the most
+ * consistently delayed cells first, a looser selection only if those did
+ * not help; when none helps, the growth stops. A final backward
+ * elimination removes edge cells the misfit does not need.
  */
 esp_err_t localization_suea_identify_empty_areas(
     localization_suea_grid_t *grid,

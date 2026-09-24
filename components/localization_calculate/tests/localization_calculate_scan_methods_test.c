@@ -313,7 +313,7 @@ static void test_suea_travels_around_scanned_voids(void)
     /* Resolution-limited: at the pipeline's 0.1 m cells the 0.3 m trench is
      * classified up to half a cell wider and deeper, and any-angle paths
      * pivot on cell centers rather than the true corner (far-pod paths come
-     * out 3-5 % long). The scan still halves the error and explains the
+     * out ~3 % long). The scan still halves the error and explains the
      * arrivals several times better than straight rays. */
     const double before = distance(straight.best_position, SOURCE);
     const double after = distance(with_scan.best_position, SOURCE);

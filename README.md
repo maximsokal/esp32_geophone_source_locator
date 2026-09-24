@@ -230,6 +230,8 @@ It returns:
 
 The solver rejects degenerate/coplanar 3D sensor geometry and uses damped nonlinear least-squares iterations.
 
+Beside it, `localization_velocity_free` provides three methods that estimate the event's own velocity: **TDCAS** (P picks, 6 sensors or 5 on a flat array), **PSAFUVS** (P and S picks, 4 flat sensors suffice) and **SUEA** (shortest travel paths around empty areas). "Calculate source" runs all of them; when the session has a registered 3D scan, their scan-constrained variants use the scan's empty (FREE) and filled (OCCUPIED) space. See [ARCHITECTURE.md](ARCHITECTURE.md#velocity-free-methods-and-the-3d-scans-emptyfilled-space).
+
 **Important:** this does not mean the end-to-end locator is finished. The firmware still needs a validated preprocessing/event-detection stage that converts raw geophone data into reliable per-channel arrival timestamps. The propagation speed also cannot be hard-coded as a universal constant for heterogeneous rubble; `localization_default_config()` deliberately leaves `propagation_speed_mps` unset so the caller must provide a measured or modelled value.
 
 Planned end-to-end path:
