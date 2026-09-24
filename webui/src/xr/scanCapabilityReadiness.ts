@@ -94,8 +94,9 @@ const STRUCTURAL_MINOR_EXTENT_METERS = 0.045;
  * small or not formed. Target: one point per (1.7 voxel)^2 (216 /m^2 at 4 cm).
  */
 const STRUCTURAL_MAX_SPACING_VOXELS = 1.7;
-/** Detector pair gate (structuralGuide MIN_PLANE_ANGLE_RAD). */
-const STRUCTURAL_EDGE_MIN_ANGLE_RAD = (34 * Math.PI) / 180;
+/** Detector pair gate on the INTERIOR dihedral (structuralGuide MAX-256): 18..146 deg. */
+const STRUCTURAL_EDGE_MIN_DIHEDRAL_RAD = (18 * Math.PI) / 180;
+const STRUCTURAL_EDGE_MAX_DIHEDRAL_RAD = Math.PI - (34 * Math.PI) / 180;
 /** Detector three-plane conditioning (structuralGuide solveThreePlanes). */
 const STRUCTURAL_CORNER_MIN_DETERMINANT = 0.12;
 /** Faces meeting at an edge have points this close (> max sampling spacing + noise). */
@@ -193,6 +194,37 @@ function normalAngle(a: SurfaceComponent, b: SurfaceComponent): number {
   if (a.normal === undefined || b.normal === undefined) return 0;
   const d = Math.abs(a.normal[0] * b.normal[0] + a.normal[1] * b.normal[1] + a.normal[2] * b.normal[2]);
   return Math.acos(Math.min(1, d));
+}
+
+/**
+ * Interior dihedral between two faces, measured like the detector does: from
+ * their intersection line (near the midpoint of the centres) toward each
+ * face's centre. |n_a . n_b| alone cannot tell a knife edge from a gentle fold.
+ */
+function interiorDihedral(a: SurfaceComponent, b: SurfaceComponent): number | null {
+  if (a.normal === undefined || b.normal === undefined) return null;
+  const na = a.normal; const nb = b.normal;
+  const c = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
+  const determinant = 1 - c * c;
+  if (determinant < 1e-4) return null;
+  const anchor: [number, number, number] = [(a.center[0] + b.center[0]) / 2, (a.center[1] + b.center[1]) / 2, (a.center[2] + b.center[2]) / 2];
+  const ra = na[0] * (a.center[0] - anchor[0]) + na[1] * (a.center[1] - anchor[1]) + na[2] * (a.center[2] - anchor[2]);
+  const rb = nb[0] * (b.center[0] - anchor[0]) + nb[1] * (b.center[1] - anchor[1]) + nb[2] * (b.center[2] - anchor[2]);
+  const la = (ra - c * rb) / determinant; const lb = (rb - c * ra) / determinant;
+  const point = [anchor[0] + na[0] * la + nb[0] * lb, anchor[1] + na[1] * la + nb[1] * lb, anchor[2] + na[2] * la + nb[2] * lb];
+  const dir = [na[1] * nb[2] - na[2] * nb[1], na[2] * nb[0] - na[0] * nb[2], na[0] * nb[1] - na[1] * nb[0]];
+  const dirLength = Math.hypot(dir[0], dir[1], dir[2]); if (dirLength < 1e-9) return null;
+  for (let axis = 0; axis < 3; axis += 1) dir[axis] /= dirLength;
+  const toward = (face: SurfaceComponent): number[] | null => {
+    const delta = [face.center[0] - point[0], face.center[1] - point[1], face.center[2] - point[2]];
+    const along = delta[0] * dir[0] + delta[1] * dir[1] + delta[2] * dir[2];
+    const v = [delta[0] - dir[0] * along, delta[1] - dir[1] * along, delta[2] - dir[2] * along];
+    const length = Math.hypot(v[0], v[1], v[2]);
+    return length < 1e-9 ? null : [v[0] / length, v[1] / length, v[2] / length];
+  };
+  const da = toward(a); const db = toward(b);
+  if (da === null || db === null) return null;
+  return Math.acos(clamp(da[0] * db[0] + da[1] * db[1] + da[2] * db[2], -1, 1));
 }
 
 function tripleDeterminant(a: SurfaceComponent, b: SurfaceComponent, c: SurfaceComponent): number {
@@ -305,7 +337,10 @@ export function computeStructuralFaceCapability(
   const adjacency = faceIdByPoint === undefined ? new Set<string>() : componentAdjacency(positions, faceIdByPoint);
   const isAdjacent = (a: SurfaceComponent, b: SurfaceComponent): boolean => adjacency.has(a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`);
   const edgeCapable = (a: SurfaceComponent, b: SurfaceComponent): boolean =>
-    isAdjacent(a, b) && normalAngle(a, b) >= STRUCTURAL_EDGE_MIN_ANGLE_RAD;
+    isAdjacent(a, b) && (() => {
+      const dihedral = interiorDihedral(a, b);
+      return dihedral !== null && dihedral >= STRUCTURAL_EDGE_MIN_DIHEDRAL_RAD && dihedral <= STRUCTURAL_EDGE_MAX_DIHEDRAL_RAD;
+    })();
 
   let edgeComponents: readonly [SurfaceComponent, SurfaceComponent] | null = null; let edgeProgress = 0;
   let cornerComponents: readonly [SurfaceComponent, SurfaceComponent, SurfaceComponent] | null = null; let cornerProgress = 0;

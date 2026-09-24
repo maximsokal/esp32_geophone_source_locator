@@ -131,8 +131,10 @@ describe('per-face density gate (component level, spec numbers)', () => {
   const target = structuralFaceDensityTarget(voxel);
   function component(id: number, pointCount: number, area: number, normal: V3): SurfaceComponent {
     const side = Math.sqrt(area);
+    // Faces of a box corner at the origin: each face's centre lies inside it, away from the shared edge.
+    const center: V3 = normal[0] !== 0 ? [0, -side / 2, -side / 2] : [-side / 2, 0, -side / 2];
     return {
-      id, pointCount, occupiedCellCount: 50, center: [0, 0, 0], majorExtentMeters: side, minorExtentMeters: side,
+      id, pointCount, occupiedCellCount: 50, center, majorExtentMeters: side, minorExtentMeters: side,
       thicknessMeters: 0.005, occupancyRatio: 0.8, meshReadiness: 1, meshEligible: true, normal, estimatedAreaSquareMeters: area,
     };
   }
