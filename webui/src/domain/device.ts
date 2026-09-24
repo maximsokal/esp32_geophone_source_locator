@@ -274,7 +274,18 @@ export interface DevicePowerChannel {
 export interface DeviceStatus {
   storage_busy?: boolean;
   system: DeviceSystemStatus;
-  power: ValidValue & { voltage_v: number; current_a: number; power_w: number; channels?: DevicePowerChannel[] };
+  power: ValidValue & {
+    voltage_v: number;
+    current_a: number;
+    power_w: number;
+    channels?: DevicePowerChannel[];
+    /** MAX-180: USB_ONLY_NO_BATTERY | USB_CHARGING | USB_BATTERY_READY | BATTERY | BATTERY_LOW | BATTERY_CRITICAL | UNKNOWN. */
+    state?: string;
+    battery_full?: boolean;
+    /** MAX-183: normal | warning | grace | shutdown. */
+    low_battery?: string;
+    shutdown_in_s?: number;
+  };
   environment: ValidValue & { temperature_c: number; humidity_percent: number; pressure_pa: number };
   mux: ValidValue & { active_channel: number; active_pod: number };
   pods: DevicePod[];

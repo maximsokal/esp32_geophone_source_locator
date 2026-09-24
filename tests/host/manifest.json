@@ -336,6 +336,42 @@
       ]
     },
     {
+      "name": "ina3221_power_ux",
+      "sources": [
+        "components/ina3221_monitor/ina3221_power_ux.c",
+        "components/ina3221_monitor/tests/ina3221_power_ux_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "ui_power_badge",
+      "sources": [
+        "components/ui/ui_power_badge.c",
+        "components/ui/tests/ui_power_badge_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/device_status",
+        "components/device_status/include",
+        "components/ui"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "ina3221_low_battery",
+      "sources": [
+        "components/ina3221_monitor/ina3221_power_ux.c",
+        "components/ina3221_monitor/ina3221_low_battery.c",
+        "components/ina3221_monitor/tests/ina3221_low_battery_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "ina3221_limits",
       "sources": [
         "components/ina3221_monitor/ina3221_limits.c",

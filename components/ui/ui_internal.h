@@ -76,6 +76,8 @@ typedef struct
 
     lv_obj_t *header_source;
     lv_obj_t *header_wifi;
+    /* MAX-182: battery/USB badge, refreshed with the header. */
+    lv_obj_t *header_power;
 
     ui_screen_t screen;
     size_t selected;

@@ -65,6 +65,31 @@ typedef struct
 } device_power_channel_status_t;
 
 
+/* MAX-180: user-facing power state (values mirror ina3221_power_ux). */
+typedef enum
+{
+    DEVICE_POWER_STATE_UNKNOWN = 0,
+    DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY,
+    DEVICE_POWER_STATE_USB_CHARGING,
+    DEVICE_POWER_STATE_USB_BATTERY_READY,
+    DEVICE_POWER_STATE_BATTERY,
+    DEVICE_POWER_STATE_BATTERY_LOW,
+    DEVICE_POWER_STATE_BATTERY_CRITICAL,
+
+} device_power_state_t;
+
+
+/* MAX-183: low-battery reaction (values mirror ina3221_low_battery). */
+typedef enum
+{
+    DEVICE_LOW_BATTERY_NORMAL = 0,
+    DEVICE_LOW_BATTERY_WARNING,
+    DEVICE_LOW_BATTERY_GRACE,
+    DEVICE_LOW_BATTERY_SHUTDOWN,
+
+} device_low_battery_phase_t;
+
+
 typedef struct
 {
     bool valid;
@@ -74,6 +99,13 @@ typedef struct
     float power_w;
 
     device_power_source_t source;
+
+    device_power_state_t state;
+    /* USB present, not charging and at/above the "full" voltage. */
+    bool battery_full;
+    device_low_battery_phase_t low_battery;
+    /* Seconds until the low-battery shutdown (GRACE only). */
+    uint32_t shutdown_in_s;
 
     bool battery_present;
     bool battery_percent_valid;
@@ -447,6 +479,21 @@ esp_err_t device_status_set_power_channel_overcurrent(
     size_t channel_index,
     device_power_overcurrent_t overcurrent,
     bool latched
+);
+
+esp_err_t device_status_set_power_state(
+    device_power_state_t state,
+    bool battery_full,
+    device_low_battery_phase_t low_battery,
+    uint32_t shutdown_in_s
+);
+
+const char *device_status_power_state_name(
+    device_power_state_t state
+);
+
+const char *device_status_low_battery_name(
+    device_low_battery_phase_t phase
 );
 
 const char *device_status_power_overcurrent_name(

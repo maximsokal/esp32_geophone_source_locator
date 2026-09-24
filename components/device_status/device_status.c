@@ -169,6 +169,37 @@ const char *device_status_mode_name(
 }
 
 
+const char *device_status_power_state_name(
+    device_power_state_t state
+)
+{
+    switch (state) {
+        case DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY: return "USB_ONLY_NO_BATTERY";
+        case DEVICE_POWER_STATE_USB_CHARGING: return "USB_CHARGING";
+        case DEVICE_POWER_STATE_USB_BATTERY_READY: return "USB_BATTERY_READY";
+        case DEVICE_POWER_STATE_BATTERY: return "BATTERY";
+        case DEVICE_POWER_STATE_BATTERY_LOW: return "BATTERY_LOW";
+        case DEVICE_POWER_STATE_BATTERY_CRITICAL: return "BATTERY_CRITICAL";
+        case DEVICE_POWER_STATE_UNKNOWN:
+        default: return "UNKNOWN";
+    }
+}
+
+
+const char *device_status_low_battery_name(
+    device_low_battery_phase_t phase
+)
+{
+    switch (phase) {
+        case DEVICE_LOW_BATTERY_NORMAL: return "normal";
+        case DEVICE_LOW_BATTERY_WARNING: return "warning";
+        case DEVICE_LOW_BATTERY_GRACE: return "grace";
+        case DEVICE_LOW_BATTERY_SHUTDOWN: return "shutdown";
+        default: return "unknown";
+    }
+}
+
+
 const char *device_status_power_overcurrent_name(
     device_power_overcurrent_t overcurrent
 )

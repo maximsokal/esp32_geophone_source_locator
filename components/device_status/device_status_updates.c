@@ -43,6 +43,36 @@ esp_err_t device_status_set_power(
 }
 
 
+esp_err_t device_status_set_power_state(
+    device_power_state_t state,
+    bool battery_full,
+    device_low_battery_phase_t low_battery,
+    uint32_t shutdown_in_s
+)
+{
+    if (
+        state > DEVICE_POWER_STATE_BATTERY_CRITICAL ||
+        low_battery > DEVICE_LOW_BATTERY_SHUTDOWN
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    device_status_snapshot_t *status;
+    esp_err_t err = device_status_internal_lock(&status);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    status->power.state = state;
+    status->power.battery_full = battery_full;
+    status->power.low_battery = low_battery;
+    status->power.shutdown_in_s = shutdown_in_s;
+
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_power_channel_overcurrent(
     size_t channel_index,
     device_power_overcurrent_t overcurrent,

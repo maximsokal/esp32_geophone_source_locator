@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 typedef enum {
@@ -15,6 +16,30 @@ typedef enum {
     DEVICE_POWER_OVERCURRENT_WARNING,
     DEVICE_POWER_OVERCURRENT_CRITICAL,
 } device_power_overcurrent_t;
+
+typedef enum {
+    DEVICE_POWER_STATE_UNKNOWN = 0,
+    DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY,
+    DEVICE_POWER_STATE_USB_CHARGING,
+    DEVICE_POWER_STATE_USB_BATTERY_READY,
+    DEVICE_POWER_STATE_BATTERY,
+    DEVICE_POWER_STATE_BATTERY_LOW,
+    DEVICE_POWER_STATE_BATTERY_CRITICAL,
+} device_power_state_t;
+
+typedef enum {
+    DEVICE_LOW_BATTERY_NORMAL = 0,
+    DEVICE_LOW_BATTERY_WARNING,
+    DEVICE_LOW_BATTERY_GRACE,
+    DEVICE_LOW_BATTERY_SHUTDOWN,
+} device_low_battery_phase_t;
+
+esp_err_t device_status_set_power_state(
+    device_power_state_t state,
+    bool battery_full,
+    device_low_battery_phase_t low_battery,
+    uint32_t shutdown_in_s
+);
 
 esp_err_t device_status_set_power(float voltage_v, float current_a, bool valid);
 esp_err_t device_status_set_power_channel_overcurrent(

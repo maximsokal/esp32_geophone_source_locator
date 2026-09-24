@@ -43,6 +43,21 @@ static const char *TAG =
     "APP";
 
 
+/* MAX-183: runs on the INA3221 monitor task. */
+static void app_startup_request_low_battery_shutdown(void)
+{
+    const esp_err_t err =
+        power_control_request_shutdown(POWER_SHUTDOWN_REASON_LOW_BATTERY);
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Low-battery shutdown request failed: %s",
+            esp_err_to_name(err)
+        );
+    }
+}
+
+
 static void app_startup_log_stack_hwm(void)
 {
     const UBaseType_t free_bytes =
@@ -471,6 +486,12 @@ static void app_startup_initialize_services(
      */
     const uint32_t power_monitor_started_ms =
         esp_log_timestamp();
+
+    /* MAX-183: a confirmed critical battery that outlasts the grace period
+     * starts the same safe shutdown as the power button. */
+    ina3221_monitor_set_critical_battery_handler(
+        app_startup_request_low_battery_shutdown
+    );
 
     const esp_err_t power_monitor_err =
         ina3221_monitor_start();

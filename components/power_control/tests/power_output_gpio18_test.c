@@ -138,6 +138,18 @@ bool power_button_adapter_is_shutdown_requested(void)
     return s_shutdown_requested;
 }
 
+static unsigned s_adapter_request_calls;
+static esp_err_t s_adapter_request_result = ESP_OK;
+
+esp_err_t power_button_adapter_request_shutdown(void)
+{
+    ++s_adapter_request_calls;
+    if (s_adapter_request_result == ESP_OK) {
+        s_shutdown_requested = true;
+    }
+    return s_adapter_request_result;
+}
+
 void power_button_adapter_stop(void)
 {
     ++s_adapter_stop_calls;
@@ -221,6 +233,52 @@ static void test_shutdown_is_one_exact_pulse_after_button_stop(void)
     assert(s_register_level == 0U);
 }
 
+/* MAX-183: a firmware shutdown request (critical battery) uses the same
+ * latch, never pulses GPIO18 by itself, and keeps the first reason. */
+static void test_low_battery_request_uses_the_latch_without_pulsing(void)
+{
+    reset_model(0U);
+    assert(power_control_init() == ESP_OK);
+    s_shutdown_requested = false;
+    s_adapter_request_calls = 0U;
+    s_adapter_request_result = ESP_OK;
+
+    assert(power_control_shutdown_reason() == POWER_SHUTDOWN_REASON_NONE);
+    assert(power_control_request_shutdown(POWER_SHUTDOWN_REASON_BUTTON) == ESP_ERR_INVALID_ARG);
+    assert(power_control_request_shutdown(POWER_SHUTDOWN_REASON_NONE) == ESP_ERR_INVALID_ARG);
+    assert(s_adapter_request_calls == 0U);
+
+    assert(power_control_request_shutdown(POWER_SHUTDOWN_REASON_LOW_BATTERY) == ESP_OK);
+    assert(s_adapter_request_calls == 1U);
+    assert(power_control_is_shutdown_requested());
+    assert(power_control_shutdown_reason() == POWER_SHUTDOWN_REASON_LOW_BATTERY);
+    assert(strcmp(power_control_shutdown_reason_name(POWER_SHUTDOWN_REASON_LOW_BATTERY), "low_battery") == 0);
+    /* Requesting is not cutting power: GPIO18 stays LOW until the app's
+     * shutdown sequence calls power_control_shutdown(). */
+    assert(s_pulses == 0U && !s_pad_high);
+
+    /* Idempotent: a second request neither re-latches nor changes reason. */
+    assert(power_control_request_shutdown(POWER_SHUTDOWN_REASON_LOW_BATTERY) == ESP_OK);
+    assert(s_adapter_request_calls == 1U);
+
+    s_shutdown_requested = false;
+}
+
+static void test_request_failure_leaves_no_reason(void)
+{
+    reset_model(0U);
+    assert(power_control_init() == ESP_OK);
+    s_shutdown_requested = false;
+    s_adapter_request_result = ESP_ERR_INVALID_STATE;
+    assert(power_control_request_shutdown(POWER_SHUTDOWN_REASON_LOW_BATTERY) == ESP_ERR_INVALID_STATE);
+    assert(power_control_shutdown_reason() == POWER_SHUTDOWN_REASON_NONE);
+    /* A later button latch is reported as the button. */
+    s_adapter_request_result = ESP_OK;
+    s_shutdown_requested = true;
+    assert(power_control_shutdown_reason() == POWER_SHUTDOWN_REASON_BUTTON);
+    s_shutdown_requested = false;
+}
+
 int main(void)
 {
     test_boot_drives_off_low_and_never_high();
@@ -228,5 +286,7 @@ int main(void)
     test_init_failure_never_drives_high();
     test_runtime_api_never_pulses();
     test_shutdown_is_one_exact_pulse_after_button_stop();
+    test_low_battery_request_uses_the_latch_without_pulsing();
+    test_request_failure_leaves_no_reason();
     return 0;
 }

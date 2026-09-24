@@ -127,6 +127,48 @@ config WEB_SERVER_WEBUI_PSRAM_CACHE
 
 endmenu
 
+menu "Battery states and low-battery shutdown"
+
+    comment "MAX-180/183: battery SOURCE voltage, uncalibrated 1S defaults -- measure under load (MAX-184)"
+
+    config POWER_BATTERY_LOW_ENTER_MV
+        int "BATTERY_LOW below, mV"
+        range 2800 4200
+        default 3450
+
+    config POWER_BATTERY_LOW_EXIT_MV
+        int "BATTERY_LOW clears above, mV"
+        range 2800 4200
+        default 3600
+
+    config POWER_BATTERY_CRITICAL_ENTER_MV
+        int "BATTERY_CRITICAL below, mV"
+        range 2800 4200
+        default 3300
+
+    config POWER_BATTERY_CRITICAL_EXIT_MV
+        int "BATTERY_CRITICAL clears above, mV"
+        range 2800 4200
+        default 3450
+
+    config POWER_BATTERY_FULL_MV
+        int "USB battery reported full at/above, mV"
+        range 3800 4350
+        default 4100
+
+    config POWER_LOW_BATTERY_GRACE_S
+        int "Seconds to plug in USB before the low-battery shutdown"
+        range 0 120
+        default 10
+        help
+            After BATTERY_CRITICAL is confirmed (5 samples), the TFT and
+            WebUI show a countdown. Stable USB power within this time
+            cancels the shutdown; after it the safe shutdown (recorder
+            finalised, SD flushed, OFF pulse) starts and is not cancelled.
+            The UPS cutoff must come later than CRITICAL + grace + shutdown.
+
+endmenu
+
 menu "INA3221 over-current limits"
 
     comment "MAX-245: engineering estimates, not measured -- calibrate on the bench"

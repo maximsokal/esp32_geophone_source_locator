@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "ui_power_badge.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -89,6 +90,7 @@ lv_obj_t *ui_create_screen_base_locked(
 
     context->header_source = NULL;
     context->header_wifi = NULL;
+    context->header_power = NULL;
     memset(context->home_rows, 0, sizeof(context->home_rows));
     memset(
         context->measurement_channel_labels,
@@ -147,11 +149,16 @@ lv_obj_t *ui_create_screen_base_locked(
     );
 
     context->header_source = ui_create_label_locked(
-        header, 128, 9, 112, "ADC --", UI_COLOR_ACCENT
+        header, 124, 9, 76, "ADC --", UI_COLOR_ACCENT
+    );
+
+    /* MAX-182: power badge on every screen (icon + about 6 characters). */
+    context->header_power = ui_create_label_locked(
+        header, 200, 9, 58, "PWR ?", UI_COLOR_MUTED
     );
 
     context->header_wifi = ui_create_label_locked(
-        header, 248, 9, 66, "NET --", UI_COLOR_MUTED
+        header, 258, 9, 56, "NET --", UI_COLOR_MUTED
     );
 
     if (context->header_wifi != NULL) {
@@ -301,6 +308,56 @@ void ui_set_notice_locked(const char *text)
 }
 
 
+static const char *ui_power_icon_symbol(ui_power_icon_t icon)
+{
+    switch (icon) {
+        case UI_POWER_ICON_USB: return LV_SYMBOL_USB;
+        case UI_POWER_ICON_CHARGE: return LV_SYMBOL_CHARGE;
+        case UI_POWER_ICON_BATTERY_FULL: return LV_SYMBOL_BATTERY_FULL;
+        case UI_POWER_ICON_BATTERY_3: return LV_SYMBOL_BATTERY_3;
+        case UI_POWER_ICON_BATTERY_2: return LV_SYMBOL_BATTERY_2;
+        case UI_POWER_ICON_BATTERY_1: return LV_SYMBOL_BATTERY_1;
+        case UI_POWER_ICON_BATTERY_EMPTY: return LV_SYMBOL_BATTERY_EMPTY;
+        case UI_POWER_ICON_NONE:
+        default: return "";
+    }
+}
+
+
+static uint32_t ui_power_severity_color(ui_power_severity_t severity)
+{
+    switch (severity) {
+        case UI_POWER_SEVERITY_GOOD: return UI_COLOR_GOOD;
+        case UI_POWER_SEVERITY_NORMAL: return UI_COLOR_TEXT;
+        case UI_POWER_SEVERITY_WARNING: return UI_COLOR_WARNING;
+        case UI_POWER_SEVERITY_ALERT: return UI_COLOR_ERROR;
+        case UI_POWER_SEVERITY_MUTED:
+        default: return UI_COLOR_MUTED;
+    }
+}
+
+
+static void ui_refresh_power_badge_locked(ui_context_t *context)
+{
+    if (context->header_power == NULL) {
+        return;
+    }
+    /* Static: the snapshot is large and this runs on the LVGL task. */
+    static device_status_snapshot_t snapshot;
+    ui_power_badge_t badge;
+    if (device_status_get_snapshot(&snapshot) == ESP_OK) {
+        ui_power_badge_from_status(&snapshot.power, &badge);
+    } else {
+        ui_power_badge_from_status(NULL, &badge);
+    }
+    char text[UI_POWER_BADGE_TEXT_MAX + 8];
+    const char *symbol = ui_power_icon_symbol(badge.icon);
+    snprintf(text, sizeof(text), "%s%s%s", symbol, symbol[0] != '\0' ? " " : "", badge.text);
+    ui_set_label_text_if_changed(context->header_power, text);
+    ui_set_label_color_if_changed(context->header_power, ui_power_severity_color(badge.severity));
+}
+
+
 void ui_refresh_header_locked(void)
 {
     ui_context_t *context = ui_context();
@@ -323,7 +380,7 @@ void ui_refresh_header_locked(void)
             acquisition.source_name != NULL
                 ? acquisition.source_name
                 : "ADC",
-            acquisition.running ? "RUN" : "OFF"
+            acquisition.running ? LV_SYMBOL_PLAY : LV_SYMBOL_STOP
         );
 
         ui_set_label_text_if_changed(context->header_source, text);
@@ -338,6 +395,8 @@ void ui_refresh_header_locked(void)
             UI_COLOR_MUTED
         );
     }
+
+    ui_refresh_power_badge_locked(context);
 
     char ip[24] = {0};
 

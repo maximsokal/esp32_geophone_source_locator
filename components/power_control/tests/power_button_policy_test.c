@@ -27,6 +27,7 @@ esp_err_t power_button_adapter_set_notification_hook(
 void power_button_adapter_wait_for_shutdown_request(void);
 bool power_button_adapter_is_shutdown_requested(void);
 void power_button_adapter_stop(void);
+esp_err_t power_button_adapter_request_shutdown(void);
 
 
 static EventBits_t fake_event_bits;
@@ -115,10 +116,14 @@ esp_err_t app_events_post(app_event_type_t type, int32_t value)
 }
 
 
+static int32_t last_post_value = -1;
+
 esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value)
 {
     assert(type == APP_EVENT_POWER_SHUTDOWN_REQUESTED);
-    assert(value == 0);
+    /* 0 = button, 1 = firmware request (MAX-183). */
+    assert(value == 0 || value == 1);
+    last_post_value = value;
     app_event_posts++;
     return fake_best_effort_result;
 }
@@ -423,12 +428,43 @@ static void test_arm_while_held_waits_for_debounced_release(void)
 }
 
 
+/* MAX-183: a firmware request sets the same latch, closes the keypad and
+ * does not wait for a button release that will never come. */
+static void test_firmware_request_sets_the_latch_without_arming(void)
+{
+    reset_fakes();
+    assert(power_button_adapter_request_shutdown() == ESP_ERR_INVALID_STATE); /* not initialised */
+
+    fake_gpio_level = 0;
+    assert(power_button_adapter_init(notification_hook, NULL) == ESP_OK);
+    /* Not armed (boot not finished): a critical battery must still work. */
+    assert(power_button_adapter_request_shutdown() == ESP_OK);
+    assert(power_button_adapter_is_shutdown_requested());
+    assert(!keypad_delivery_enabled);
+    /* Keypad closed before the latch became visible. */
+    assert(keypad_gate_close_calls == 1U);
+    assert((keypad_gate_close_bits & BIT0) == 0U);
+    assert(app_event_posts == 1U && last_post_value == 1);
+    assert(hook_calls == 1U);
+    /* The waiter must not block on a button release: both the latch and
+     * the RELEASED bit are set. */
+    assert((fake_event_bits & (BIT0 | (BIT0 << 1))) == (BIT0 | (BIT0 << 1)));
+    power_button_adapter_wait_for_shutdown_request();
+
+    /* Idempotent. */
+    assert(power_button_adapter_request_shutdown() == ESP_OK);
+    assert(app_event_posts == 1U && hook_calls == 1U);
+    power_button_adapter_stop();
+}
+
+
 int main(void)
 {
     test_button_registration_rejects_equal_effective_ticks();
     test_boot_long_press_cannot_latch_before_explicit_arm();
     test_arm_after_stable_release_then_shutdown();
     test_arm_while_held_waits_for_debounced_release();
+    test_firmware_request_sets_the_latch_without_arming();
     puts("power button tests passed");
     return 0;
 }

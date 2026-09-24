@@ -49,7 +49,16 @@ typedef enum
     APP_EVENT_STORAGE_RECOVERY_STARTED,
     APP_EVENT_STORAGE_RECOVERY_FINISHED,
 
+    /* MAX-183: battery alert; value is an APP_POWER_ALERT_* code. */
+    APP_EVENT_POWER_BATTERY_ALERT,
+
 } app_event_type_t;
+
+
+#define APP_POWER_ALERT_LOW              1
+#define APP_POWER_ALERT_CRITICAL_GRACE   2
+#define APP_POWER_ALERT_CANCELLED        3
+#define APP_POWER_ALERT_SHUTDOWN         4
 
 
 esp_err_t app_events_init(void);

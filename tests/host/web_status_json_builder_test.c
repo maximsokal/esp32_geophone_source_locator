@@ -75,6 +75,16 @@ const char *device_status_power_source_name(device_power_source_t source)
     }
 }
 
+const char *device_status_power_state_name(device_power_state_t state)
+{
+    return state == DEVICE_POWER_STATE_BATTERY_CRITICAL ? "BATTERY_CRITICAL" : "OTHER";
+}
+
+const char *device_status_low_battery_name(device_low_battery_phase_t phase)
+{
+    return phase == DEVICE_LOW_BATTERY_GRACE ? "grace" : "other";
+}
+
 const char *device_status_power_overcurrent_name(device_power_overcurrent_t overcurrent)
 {
     switch (overcurrent) {
@@ -315,6 +325,10 @@ static void fill_status(void)
     g_acquisition_snapshot.power_fault_latched = true;
     g_acquisition_snapshot.power_fault_rail_v = 3.25f;
     g_acquisition_snapshot.power_fault_current_a = 0.42f;
+    g_status.power.state = DEVICE_POWER_STATE_BATTERY_CRITICAL;
+    g_status.power.low_battery = DEVICE_LOW_BATTERY_GRACE;
+    g_status.power.shutdown_in_s = 7U;
+    g_status.power.battery_full = false;
     g_status.power.channels[2].overcurrent = DEVICE_POWER_OVERCURRENT_CRITICAL;
     g_status.power.channels[2].overcurrent_latched = true;
     g_acquisition_snapshot.signal_quality = "CLEAN";
@@ -379,6 +393,10 @@ static void test_full_builder_and_pods(void)
     assert(strcmp(string_item(power, "source"), "USB") == 0);
     assert_number_near(number_item(power, "power_w"), 9.375);
     assert(cJSON_GetArraySize(object_item(power, "channels")) == 3);
+    assert(strcmp(string_item(power, "state"), "BATTERY_CRITICAL") == 0);
+    assert(strcmp(string_item(power, "low_battery"), "grace") == 0);
+    assert_number_near(number_item(power, "shutdown_in_s"), 7.0);
+    assert(!bool_item(power, "battery_full"));
     {
         cJSON *channels = object_item(power, "channels");
         cJSON *ad7606 = cJSON_GetArrayItem(channels, 2);

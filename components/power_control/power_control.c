@@ -21,12 +21,15 @@ esp_err_t power_button_adapter_set_notification_hook(
 void power_button_adapter_wait_for_shutdown_request(void);
 bool power_button_adapter_is_shutdown_requested(void);
 void power_button_adapter_stop(void);
+esp_err_t power_button_adapter_request_shutdown(void);
 
 
 static const char *TAG =
     "POWER_CONTROL";
 
 static power_control_shutdown_notification_hook_t s_notification_hook;
+/* MAX-183: why the latch was set; written before the latch is published. */
+static volatile power_shutdown_reason_t s_shutdown_reason = POWER_SHUTDOWN_REASON_NONE;
 static void *s_notification_context;
 
 
@@ -96,6 +99,62 @@ esp_err_t power_control_set_shutdown_notification_hook(
 void power_control_wait_for_shutdown_request(void)
 {
     power_button_adapter_wait_for_shutdown_request();
+}
+
+
+esp_err_t power_control_request_shutdown(
+    power_shutdown_reason_t reason
+)
+{
+    if (
+        reason == POWER_SHUTDOWN_REASON_NONE ||
+        reason == POWER_SHUTDOWN_REASON_BUTTON
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (power_button_adapter_is_shutdown_requested()) {
+        return ESP_OK; /* first reason wins */
+    }
+
+    s_shutdown_reason = reason;
+    const esp_err_t err = power_button_adapter_request_shutdown();
+    if (err != ESP_OK) {
+        s_shutdown_reason = POWER_SHUTDOWN_REASON_NONE;
+        return err;
+    }
+    ESP_LOGW(
+        TAG,
+        "Safe shutdown requested: %s",
+        power_control_shutdown_reason_name(reason)
+    );
+    return ESP_OK;
+}
+
+
+power_shutdown_reason_t power_control_shutdown_reason(void)
+{
+    if (!power_button_adapter_is_shutdown_requested()) {
+        return POWER_SHUTDOWN_REASON_NONE;
+    }
+    return s_shutdown_reason == POWER_SHUTDOWN_REASON_NONE
+        ? POWER_SHUTDOWN_REASON_BUTTON
+        : s_shutdown_reason;
+}
+
+
+const char *power_control_shutdown_reason_name(
+    power_shutdown_reason_t reason
+)
+{
+    switch (reason) {
+        case POWER_SHUTDOWN_REASON_BUTTON:
+            return "button";
+        case POWER_SHUTDOWN_REASON_LOW_BATTERY:
+            return "low_battery";
+        case POWER_SHUTDOWN_REASON_NONE:
+        default:
+            return "none";
+    }
 }
 
 

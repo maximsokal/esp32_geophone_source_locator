@@ -85,3 +85,15 @@ esp_err_t ina3221_monitor_clear_overcurrent(
     size_t channel_index
 );
 
+/*
+ * MAX-183: called from the monitor task, once, when a confirmed critical
+ * battery outlasted the grace period (USB not connected). The application
+ * registers power_control_request_shutdown() here; the monitor itself does
+ * not depend on power_control.
+ */
+typedef void (*ina3221_monitor_critical_battery_handler_t)(void);
+
+void ina3221_monitor_set_critical_battery_handler(
+    ina3221_monitor_critical_battery_handler_t handler
+);
+

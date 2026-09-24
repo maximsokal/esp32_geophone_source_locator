@@ -119,7 +119,10 @@ void app_shutdown_wait_and_run(void)
 
     ESP_LOGW(
         TAG,
-        "Safe shutdown started"
+        "Safe shutdown started (reason: %s)",
+        power_control_shutdown_reason_name(
+            power_control_shutdown_reason()
+        )
     );
 
     keypad_stop_event_monitor();

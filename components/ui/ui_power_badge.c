@@ -1,0 +1,105 @@
+#include "ui_power_badge.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+
+static int clamp_percent(float percent)
+{
+    if (!isfinite(percent) || percent <= 0.0f) {
+        return 0;
+    }
+    if (percent >= 100.0f) {
+        return 100;
+    }
+    return (int)(percent + 0.5f);
+}
+
+
+static ui_power_icon_t battery_icon(int percent)
+{
+    if (percent >= 85) {
+        return UI_POWER_ICON_BATTERY_FULL;
+    }
+    if (percent >= 60) {
+        return UI_POWER_ICON_BATTERY_3;
+    }
+    if (percent >= 35) {
+        return UI_POWER_ICON_BATTERY_2;
+    }
+    if (percent >= 10) {
+        return UI_POWER_ICON_BATTERY_1;
+    }
+    return UI_POWER_ICON_BATTERY_EMPTY;
+}
+
+
+static void set(ui_power_badge_t *badge, ui_power_icon_t icon, ui_power_severity_t severity, const char *text)
+{
+    badge->icon = icon;
+    badge->severity = severity;
+    snprintf(badge->text, sizeof(badge->text), "%s", text);
+}
+
+
+void ui_power_badge_from_status(
+    const device_power_status_t *power,
+    ui_power_badge_t *badge)
+{
+    if (badge == NULL) {
+        return;
+    }
+    if (power == NULL) {
+        set(badge, UI_POWER_ICON_NONE, UI_POWER_SEVERITY_MUTED, "PWR ?");
+        return;
+    }
+
+    char percent_text[UI_POWER_BADGE_TEXT_MAX];
+    const int percent = clamp_percent(power->battery_percent_estimate);
+    snprintf(percent_text, sizeof(percent_text), "%d%%", percent);
+
+    /* The low-battery reaction outranks every other state. */
+    if (power->low_battery == DEVICE_LOW_BATTERY_SHUTDOWN) {
+        set(badge, UI_POWER_ICON_BATTERY_EMPTY, UI_POWER_SEVERITY_ALERT, "OFF");
+        return;
+    }
+    if (power->low_battery == DEVICE_LOW_BATTERY_GRACE) {
+        char text[UI_POWER_BADGE_TEXT_MAX];
+        snprintf(text, sizeof(text), "USB %us", (unsigned)(power->shutdown_in_s % 1000U));
+        set(badge, UI_POWER_ICON_BATTERY_EMPTY, UI_POWER_SEVERITY_ALERT, text);
+        return;
+    }
+
+    switch (power->state) {
+        case DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY:
+            set(badge, UI_POWER_ICON_USB, UI_POWER_SEVERITY_NORMAL, "USB");
+            return;
+        case DEVICE_POWER_STATE_USB_CHARGING:
+            set(badge, UI_POWER_ICON_CHARGE, UI_POWER_SEVERITY_GOOD,
+                power->battery_percent_valid ? percent_text : "CHG");
+            return;
+        case DEVICE_POWER_STATE_USB_BATTERY_READY:
+            if (power->battery_full) {
+                set(badge, UI_POWER_ICON_BATTERY_FULL, UI_POWER_SEVERITY_GOOD, "FULL");
+            } else {
+                set(badge, UI_POWER_ICON_USB, UI_POWER_SEVERITY_NORMAL,
+                    power->battery_percent_valid ? percent_text : "USB");
+            }
+            return;
+        case DEVICE_POWER_STATE_BATTERY:
+            set(badge, battery_icon(percent), UI_POWER_SEVERITY_NORMAL,
+                power->battery_percent_valid ? percent_text : "BAT");
+            return;
+        case DEVICE_POWER_STATE_BATTERY_LOW:
+            set(badge, UI_POWER_ICON_BATTERY_1, UI_POWER_SEVERITY_WARNING, "LOW");
+            return;
+        case DEVICE_POWER_STATE_BATTERY_CRITICAL:
+            set(badge, UI_POWER_ICON_BATTERY_EMPTY, UI_POWER_SEVERITY_ALERT, "CRIT");
+            return;
+        case DEVICE_POWER_STATE_UNKNOWN:
+        default:
+            set(badge, UI_POWER_ICON_NONE, UI_POWER_SEVERITY_MUTED, "PWR ?");
+            return;
+    }
+}
