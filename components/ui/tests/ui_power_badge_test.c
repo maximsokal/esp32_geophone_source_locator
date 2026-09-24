@@ -96,9 +96,9 @@ static void test_unknown_and_null(void)
 {
     device_power_status_t p = power_with(DEVICE_POWER_STATE_UNKNOWN, 50.0f);
     ui_power_badge_t b = badge_of(&p);
-    assert(b.icon == UI_POWER_ICON_NONE && strcmp(b.text, "PWR ?") == 0 && b.severity == UI_POWER_SEVERITY_MUTED);
+    assert(b.icon == UI_POWER_ICON_NONE && strcmp(b.text, "--") == 0 && b.severity == UI_POWER_SEVERITY_MUTED);
     ui_power_badge_from_status(NULL, &b);
-    assert(strcmp(b.text, "PWR ?") == 0);
+    assert(strcmp(b.text, "--") == 0);
     ui_power_badge_from_status(&p, NULL);
 }
 

@@ -73,6 +73,24 @@ esp_err_t device_status_set_power_state(
 }
 
 
+esp_err_t device_status_set_battery_soc_quality(
+    device_battery_soc_quality_t quality
+)
+{
+    if (quality > DEVICE_BATTERY_SOC_FULL_ANCHORED) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    device_status_snapshot_t *status;
+    esp_err_t err = device_status_internal_lock(&status);
+    if (err != ESP_OK) {
+        return err;
+    }
+    status->power.battery_soc_quality = quality;
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_power_channel_overcurrent(
     size_t channel_index,
     device_power_overcurrent_t overcurrent,

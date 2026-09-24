@@ -360,6 +360,17 @@
       "libraries": ["m"]
     },
     {
+      "name": "ina3221_soc",
+      "sources": [
+        "components/ina3221_monitor/ina3221_soc.c",
+        "components/ina3221_monitor/tests/ina3221_soc_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "ina3221_low_battery",
       "sources": [
         "components/ina3221_monitor/ina3221_power_ux.c",

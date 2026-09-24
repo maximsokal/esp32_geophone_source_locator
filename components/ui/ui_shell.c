@@ -154,7 +154,7 @@ lv_obj_t *ui_create_screen_base_locked(
 
     /* MAX-182: power badge on every screen (icon + about 6 characters). */
     context->header_power = ui_create_label_locked(
-        header, 200, 9, 58, "PWR ?", UI_COLOR_MUTED
+        header, 200, 9, 58, "--", UI_COLOR_MUTED
     );
 
     context->header_wifi = ui_create_label_locked(

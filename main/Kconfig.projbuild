@@ -156,6 +156,17 @@ menu "Battery states and low-battery shutdown"
         range 3800 4350
         default 4100
 
+    config POWER_BATTERY_CAPACITY_MAH
+        int "Usable pack capacity for coulomb counting, mAh (0 = unknown)"
+        range 0 20000
+        default 0
+        help
+            MAX-181. Leave 0 until the pack topology (1S2P vs 2S) and the
+            usable capacity are measured (MAX-184): with 0 the battery
+            percentage stays a labelled voltage-only estimate
+            (battery_soc_source = VOLTAGE_ONLY) instead of pretending to
+            count coulombs against a guessed capacity.
+
     config POWER_LOW_BATTERY_GRACE_S
         int "Seconds to plug in USB before the low-battery shutdown"
         range 0 120

@@ -51,7 +51,7 @@ void ui_power_badge_from_status(
         return;
     }
     if (power == NULL) {
-        set(badge, UI_POWER_ICON_NONE, UI_POWER_SEVERITY_MUTED, "PWR ?");
+        set(badge, UI_POWER_ICON_NONE, UI_POWER_SEVERITY_MUTED, "--");
         return;
     }
 
@@ -99,7 +99,7 @@ void ui_power_badge_from_status(
             return;
         case DEVICE_POWER_STATE_UNKNOWN:
         default:
-            set(badge, UI_POWER_ICON_NONE, UI_POWER_SEVERITY_MUTED, "PWR ?");
+            set(badge, UI_POWER_ICON_NONE, UI_POWER_SEVERITY_MUTED, "--");
             return;
     }
 }
