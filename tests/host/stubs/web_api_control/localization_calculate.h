@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -23,6 +24,17 @@ typedef struct
 
 typedef struct
 {
+    size_t min_separation_samples;
+    size_t max_separation_samples;
+    size_t sta_window_samples;
+    size_t lta_window_samples;
+    float sta_lta_trigger_ratio;
+    float minimum_snr;
+
+} geophone_secondary_pick_config_t;
+
+typedef struct
+{
     double propagation_speed_mps;
     double propagation_speed_uncertainty_mps;
     char propagation_model_name[LOCALIZATION_CALCULATE_STUB_MODEL_NAME_SIZE];
@@ -30,6 +42,8 @@ typedef struct
     geophone_channel_pick_config_t pick_config;
     size_t semblance_window_half_span_samples;
     double max_source_depth_m;
+    bool s_pick_enabled;
+    geophone_secondary_pick_config_t s_pick_config;
 
 } localization_calculate_config_t;
 

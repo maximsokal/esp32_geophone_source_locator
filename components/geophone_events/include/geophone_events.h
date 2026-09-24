@@ -258,3 +258,35 @@ bool geophone_event_pick_channel_arrival(
     const geophone_channel_pick_config_t *config,
     geophone_channel_pick_t *result
 );
+
+
+/* ---- Secondary (S-wave) arrival after an accepted P pick ---------------
+ * PSAFUVS locates without a velocity from P AND S arrivals. On a
+ * single-component geophone the S wave is a second, later energy increase
+ * on top of the P coda: an STA/LTA whose long window lies entirely after
+ * the P onset (so it measures the coda, never the pre-event noise) fires on
+ * it. The trigger is then refined with the parameter-free AIC onset picker
+ * (Maeda 1985) over the coda + trigger window. Every window and threshold
+ * is caller input (MAX-132); the S pick is reported with
+ * uncertainty_samples = sta_window_samples and no sub-sample offset. */
+typedef struct
+{
+    /* The S onset is searched only in [P + min, P + max] samples. */
+    size_t min_separation_samples;
+    size_t max_separation_samples;
+    size_t sta_window_samples;
+    size_t lta_window_samples; /* > sta; lies after the P onset */
+    float sta_lta_trigger_ratio;
+    /* RMS of the S window over RMS of the P coda just before it. */
+    float minimum_snr;
+
+} geophone_secondary_pick_config_t;
+
+bool geophone_event_pick_secondary_arrival(
+    const float *samples,
+    size_t sample_count,
+    uint32_t sample_rate_hz,
+    size_t primary_arrival_index,
+    const geophone_secondary_pick_config_t *config,
+    geophone_channel_pick_t *result
+);

@@ -649,6 +649,210 @@ static void test_scan_candidate_filter_rejects_free_and_outside(void)
 }
 
 
+/* ---- Velocity-free methods (TDCAS, PSAFUVS, SUEA) ------------------------ */
+
+static void test_tdcas_adapter_reports_estimated_velocity_and_reasons(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_tdcas_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = LOCALIZATION_TDCAS_SOLVED;
+    result.position = (localization_point3d_t) { 1.0, 2.0, -1.5 };
+    result.velocity_mps = 236.5;
+    result.emission_time_us = 777;
+    result.rms_residual_us = 10.0;
+    localization_run_record_t record;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0x3FU, 0xC0U, 2U, 10.0, &record);
+    assert(record.solved);
+    assert(strcmp(record.method_name, "tdcas") == 0);
+    assert(record.kind == LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD);
+    assert(record.estimated_p_velocity_mps == 236.5);
+    assert(record.estimated_s_velocity_mps == 0.0);
+    assert(record.emission_time_us == 777);
+    assert(nearly_equal(record.confidence_score, exp(-0.5), 1e-12));
+    assert(record.channel_mask_used == 0x3FU && record.channel_mask_rejected == 0xC0U);
+    /* The caller's model stays on record: TDCAS simply did not use it. */
+    assert(record.propagation_speed_mps == 340.0);
+
+    /* The 4-pod hardware: the reason names the minimum and the count. */
+    result.status = LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS;
+    result.planar_layout = true;
+    result.sensors_used = 4U;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
+    assert(!record.solved);
+    assert(strstr(record.rejection_reason, "needs 5") != NULL);
+    assert(strstr(record.rejection_reason, "have 4") != NULL);
+    result.status = LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
+    assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
+    localization_calculate_tdcas_to_run_record(&context, NULL, 0xFU, 0U, 2U, 10.0, &record);
+    assert(!record.solved && record.rejection_reason[0] != '\0');
+}
+
+
+static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_psafuvs_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = LOCALIZATION_PSAFUVS_SOLVED;
+    result.position = (localization_point3d_t) { 0.5, 0.5, -1.0 };
+    result.p_velocity_mps = 320.0;
+    result.s_velocity_mps = 170.0;
+    result.rms_residual_us = 0.0;
+    result.iterations = 4U;
+    result.converged = true;
+    localization_run_record_t record;
+    localization_calculate_psafuvs_to_run_record(&context, &result, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved);
+    assert(strcmp(record.method_name, "psafuvs") == 0);
+    assert(record.estimated_p_velocity_mps == 320.0 && record.estimated_s_velocity_mps == 170.0);
+    assert(record.iterations == 4U && record.converged);
+    assert(nearly_equal(record.confidence_score, 1.0, 1e-12));
+
+    /* Not attempted: the caller's reason is kept verbatim. */
+    localization_calculate_psafuvs_to_run_record(
+        &context, NULL, "S-wave picking not configured", 0U, 0xFU, 1U, 20.0, &record
+    );
+    assert(!record.solved);
+    assert(strcmp(record.rejection_reason, "S-wave picking not configured") == 0);
+
+    const localization_psafuvs_status_t statuses[] = {
+        LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS, LOCALIZATION_PSAFUVS_DEGENERATE,
+        LOCALIZATION_PSAFUVS_NONPHYSICAL_VELOCITIES, LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED,
+        LOCALIZATION_PSAFUVS_NO_ALLOWED_CANDIDATE,
+    };
+    for (size_t i = 0U; i < sizeof(statuses) / sizeof(statuses[0]); ++i) {
+        result.status = statuses[i];
+        localization_calculate_psafuvs_to_run_record(&context, &result, NULL, 0xFU, 0U, 1U, 20.0, &record);
+        assert(!record.solved && record.rejection_reason[0] != '\0');
+        assert(record.estimated_p_velocity_mps == 0.0);
+    }
+}
+
+
+static void test_suea_adapter_and_redundancy(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_suea_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = LOCALIZATION_SUEA_SOLVED;
+    result.best_position = (localization_point3d_t) { 2.0, 1.0, -0.8 };
+    result.best_residual_rms_us = 20.0;
+    result.velocity_mps = 251.0;
+    localization_run_record_t record;
+    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "suea") == 0);
+    assert(record.estimated_p_velocity_mps == 251.0);
+    assert(nearly_equal(record.confidence_score, exp(-0.5), 1e-12));
+
+    result.status = LOCALIZATION_SUEA_INSUFFICIENT_PICKS;
+    result.pick_mask_unreachable = 0x2U;
+    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "empty space") != NULL);
+    result.status = LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE;
+    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
+    assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
+
+    /* Velocity-free redundancy: 4 P picks cannot verify 5 unknowns;
+     * 4 P + 4 S picks leave 2 degrees of freedom for PSAFUVS. */
+    assert(localization_calculate_velocity_free_degrees_of_freedom(4U, 5U) == -1);
+    assert(localization_calculate_velocity_free_degrees_of_freedom(8U, 6U) == 2);
+    assert(localization_calculate_velocity_free_degrees_of_freedom(0U, 5U) == -1);
+}
+
+
+static void test_velocity_free_methods_share_the_pick_evidence_group(void)
+{
+    const char *names[] = { "tdcas", "psafuvs", "suea" };
+    for (size_t i = 0U; i < 3U; ++i) {
+        localization_run_record_t record;
+        memset(&record, 0, sizeof(record));
+        snprintf(record.method_name, sizeof(record.method_name), "%s", names[i]);
+        record.solved = true;
+        record.confidence_score = 0.8;
+        localization_comparison_method_result_t method;
+        localization_calculate_run_record_to_comparison_method(&record, &method);
+        assert(method.evidence_group == LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP);
+        assert(method.quality == 0.8);
+    }
+}
+
+
+static void test_suea_grid_bounds_extend_the_search_box(void)
+{
+    localization_traveltime_search_bounds_t search = {
+        .min_corner = { -1.0, -2.0, -3.0 },
+        .max_corner = { 4.0, 5.0, 0.2 },
+        .step_m = 0.1,
+    };
+    localization_point3d_t lo, hi;
+    localization_calculate_suea_grid_bounds(&search, &lo, &hi);
+    assert(nearly_equal(lo.x_m, -1.1, 1e-12) && nearly_equal(lo.y_m, -2.1, 1e-12) && lo.z_m == -3.0);
+    assert(nearly_equal(hi.x_m, 4.1, 1e-12) && nearly_equal(hi.y_m, 5.1, 1e-12) && nearly_equal(hi.z_m, 0.3, 1e-12));
+    /* Planar stays one layer. */
+    search.min_corner.z_m = search.max_corner.z_m = 0.05;
+    localization_calculate_suea_grid_bounds(&search, &lo, &hi);
+    assert(lo.z_m == 0.05 && hi.z_m == 0.05);
+}
+
+
+static void test_scan_sectors_map_to_suea_cells_and_ray_screening(void)
+{
+    /* Same synthetic scan as the candidate filter test: voxel 1 m, FREE
+     * (2,0,0), OCCUPIED (0,0,0), envelope z <= 1, registration +1 m in x. */
+    int64_t free_keys[2] = { test_pack_key(2, 0, 0), test_pack_key(3, 0, 0) };
+    int64_t occupied_keys[1] = { test_pack_key(0, 0, 0) };
+    scan_occupancy_t occupancy;
+    memset(&occupancy, 0, sizeof(occupancy));
+    occupancy.voxel_size_m = 1.0;
+    occupancy.below_surface_m = 2.0;
+    occupancy.has_envelope = true;
+    occupancy.envelope_min[0] = -1.0; occupancy.envelope_min[1] = -1.0; occupancy.envelope_min[2] = -1.0;
+    occupancy.envelope_max[0] = 6.0; occupancy.envelope_max[1] = 4.0; occupancy.envelope_max[2] = 1.0;
+    occupancy.free_keys = free_keys;
+    occupancy.free_count = 2U;
+    occupancy.occupied_keys = occupied_keys;
+    occupancy.occupied_count = 1U;
+    occupancy.registration.present = true;
+    occupancy.registration.geometry_computed_at_ms = 42U;
+    const double shift[16] = { 1, 0, 0, 1,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1 };
+    memcpy(occupancy.registration.sensor_to_scan, shift, sizeof(shift));
+
+    /* FREE air (empty sector) blocks waves; OCCUPIED (filled) is solid;
+     * the unseen interior stays passable UNKNOWN, never empty. */
+    const localization_point3d_t free_air = { 1.5, 0.5, 0.5 };
+    const localization_point3d_t surface = { -0.5, 0.5, 0.5 };
+    const localization_point3d_t interior = { 1.5, 2.5, -1.5 };
+    const localization_point3d_t above_scan = { 1.5, 2.5, 3.0 };
+    const localization_point3d_t beside_scan = { 9.0, 0.5, 0.5 };
+    assert(localization_calculate_scan_suea_cell(&free_air, &occupancy) == LOCALIZATION_SUEA_CELL_EMPTY);
+    assert(localization_calculate_scan_suea_cell(&surface, &occupancy) == LOCALIZATION_SUEA_CELL_SOLID);
+    assert(localization_calculate_scan_suea_cell(&interior, &occupancy) == LOCALIZATION_SUEA_CELL_UNKNOWN);
+    assert(localization_calculate_scan_suea_cell(&above_scan, &occupancy) == LOCALIZATION_SUEA_CELL_EMPTY);
+    assert(localization_calculate_scan_suea_cell(&beside_scan, &occupancy) == LOCALIZATION_SUEA_CELL_UNKNOWN);
+    assert(localization_calculate_scan_suea_cell(&free_air, NULL) == LOCALIZATION_SUEA_CELL_UNKNOWN);
+
+    const localization_calculate_scan_ray_context_t ray = { .occupancy = &occupancy, .sensor_clearance_m = 0.5 };
+    /* Along y = 0.5, z = 0.5 the ray crosses the two FREE voxels (scan x
+     * in [2, 4)): obstructed. */
+    const localization_point3d_t sensor = { -0.5, 0.5, 0.5 };
+    const localization_point3d_t across_void = { 4.5, 0.5, 0.5 };
+    assert(!localization_calculate_scan_ray_clear(&sensor, &across_void, (void *)&ray));
+    /* Below the void: clear. */
+    const localization_point3d_t below_void = { 4.5, 0.5, -1.5 };
+    const localization_point3d_t sensor_low = { -0.5, 0.5, -1.5 };
+    assert(localization_calculate_scan_ray_clear(&sensor_low, &below_void, (void *)&ray));
+    /* A sensor sitting in FREE air at its own end is ignored (clearance):
+     * only the rest of the ray counts. */
+    const localization_point3d_t hovering = { 2.4, 0.5, 0.5 };
+    const localization_point3d_t down = { 2.4, 0.5, -1.8 };
+    assert(localization_calculate_scan_ray_clear(&hovering, &down, (void *)&ray));
+    /* No context: every ray is clear (no constraint without a scan). */
+    assert(localization_calculate_scan_ray_clear(&sensor, &across_void, NULL));
+}
+
+
 int main(void)
 {
     test_scan_candidate_filter_rejects_free_and_outside();
@@ -680,5 +884,11 @@ int main(void)
     test_joint_adapter_not_found_is_unsolved();
     test_run_record_to_comparison_method_round_trips_solved();
     test_run_record_to_comparison_method_round_trips_unsolved();
+    test_tdcas_adapter_reports_estimated_velocity_and_reasons();
+    test_psafuvs_adapter_reports_both_velocities_and_reasons();
+    test_suea_adapter_and_redundancy();
+    test_velocity_free_methods_share_the_pick_evidence_group();
+    test_suea_grid_bounds_extend_the_search_box();
+    test_scan_sectors_map_to_suea_cells_and_ray_screening();
     return 0;
 }

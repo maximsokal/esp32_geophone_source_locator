@@ -8,7 +8,10 @@
 #include "esp_heap_caps.h"
 #include "localization_calculate_policy.h"
 #include "localization_event_run_record.h"
+#include "localization_psafuvs.h"
 #include "localization_run_store.h"
+#include "localization_suea.h"
+#include "localization_tdcas.h"
 #include "seismic_dsp.h"
 #include "scan_occupancy.h"
 #include "seismic_recorder.h"
@@ -35,6 +38,41 @@
 
 #define LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK \
     ((1U << OBJECT_STORE_POD_COUNT) - 1U)
+
+/* Seven unconstrained methods (fused) plus up to five scan-constrained
+ * variants (persisted for comparison, never fused). */
+#define LOCALIZATION_CALCULATE_MAX_RECORDS 12U
+
+/* Unknowns of the velocity-free fits: TDCAS (x, y, z, t0, v) over N P
+ * picks; PSAFUVS (x, y, z, t0, vP, vS) over 2N P and S picks. */
+#define LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS 5U
+#define LOCALIZATION_CALCULATE_PSAFUVS_UNKNOWNS 6U
+
+
+/*
+ * The run's records and fusion state live on the heap, not the stack:
+ * localization_calculate_run() runs on the 8 KiB HTTPS task, and the
+ * records alone are ~4 KiB.
+ */
+typedef struct
+{
+    localization_run_record_t records[LOCALIZATION_CALCULATE_MAX_RECORDS];
+    localization_comparison_method_result_t comparison_methods[LOCALIZATION_COMPARISON_MAX_METHODS];
+    localization_comparison_result_t comparison_result;
+
+    /* Velocity-free methods' inputs and results. */
+    localization_observation_t p_observations[OBJECT_STORE_POD_COUNT];
+    localization_psafuvs_observation_t ps_observations[OBJECT_STORE_POD_COUNT];
+    localization_suea_pick_t suea_picks[OBJECT_STORE_POD_COUNT];
+    localization_tdcas_result_t tdcas;
+    localization_psafuvs_result_t psafuvs;
+    localization_suea_result_t suea;
+    localization_tdcas_result_t scan_tdcas;
+    localization_psafuvs_result_t scan_psafuvs;
+    localization_suea_result_t scan_suea;
+    localization_suea_grid_t suea_grid;
+
+} localization_calculate_workspace_t;
 
 
 /*
@@ -354,6 +392,14 @@ esp_err_t localization_calculate_run(
         }
     }
 
+    localization_calculate_workspace_t *workspace = heap_caps_calloc(
+        1U, sizeof(*workspace), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (workspace == NULL) {
+        free_channel_buffers(channel_samples);
+        return ESP_ERR_NO_MEM;
+    }
+
     /*
      * MAX-148 (slice 3): persist the per-channel pick evidence this run
      * actually used, versioned by the same computed_at_ms as the method
@@ -404,11 +450,11 @@ esp_err_t localization_calculate_run(
         .propagation_speed_uncertainty_mps = config->propagation_speed_uncertainty_mps,
     };
 
-    /* Four unconstrained methods (fused below) plus up to two
+    /* Seven unconstrained methods (fused below) plus up to five
      * scan-constrained variants (MAX-147), which are persisted for
      * comparison but never fused -- the joint result stays the
      * unconstrained one. */
-    localization_run_record_t records[6];
+    localization_run_record_t *records = workspace->records;
     size_t record_count = 0U;
 
     /* --- TDOA (Gauss-Newton), via the existing MAX-135 bridge ------------ */
@@ -598,6 +644,142 @@ esp_err_t localization_calculate_run(
     }
     ++record_count;
 
+    /* --- Velocity-free methods (TDCAS, PSAFUVS, SUEA) ----------------------
+     * Same accepted P picks as TDOA / traveltime inversion, but the event's
+     * own velocity is estimated instead of trusted. */
+
+    localization_observation_t *p_observations = workspace->p_observations;
+    size_t p_observation_count = 0U;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if ((traveltime_used_mask & (1U << ch)) != 0U) {
+            p_observations[p_observation_count++] = traveltime_picks[ch].observation;
+        }
+    }
+
+    /* TDCAS: needs 6 picks (5 on a planar array); with fewer the record
+     * says so rather than inventing a position. */
+    localization_tdcas_result_t *tdcas_result = &workspace->tdcas;
+    const esp_err_t tdcas_err = p_observation_count > 0U
+        ? localization_tdcas_solve(p_observations, p_observation_count, NULL, tdcas_result)
+        : ESP_ERR_INVALID_ARG;
+    summary_out->methods_attempted++;
+    localization_calculate_tdcas_to_run_record(
+        &context, tdcas_err == ESP_OK ? tdcas_result : NULL,
+        traveltime_used_mask, traveltime_rejected_mask,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count],
+        localization_calculate_velocity_free_degrees_of_freedom(
+            p_observation_count, LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS
+        )
+    );
+    ++record_count;
+
+    /* PSAFUVS: an S pick after every accepted P pick, when configured. */
+    localization_psafuvs_observation_t *ps_observations = workspace->ps_observations;
+    size_t ps_observation_count = 0U;
+    uint32_t ps_used_mask = 0U;
+    const char *psafuvs_not_attempted = "S-wave picking not configured: PSAFUVS needs P and S arrivals";
+    for (size_t ch = 0U; config->s_pick_enabled && ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if ((traveltime_used_mask & (1U << ch)) == 0U || channel_samples[ch] == NULL) {
+            continue;
+        }
+        geophone_channel_pick_t s_pick;
+        if (!geophone_event_pick_secondary_arrival(
+                channel_samples[ch], frame_count, session_summary.sample_rate_hz,
+                event_channels[ch].pick.arrival_sample_index, &config->s_pick_config, &s_pick
+            )) {
+            continue;
+        }
+        const int64_t s_arrival_us = localization_calculate_arrival_time_us(
+            s_pick.arrival_sample_index, session_summary.sample_rate_hz
+        );
+        if (s_arrival_us <= traveltime_picks[ch].observation.arrival_time_us) {
+            continue;
+        }
+        ps_observations[ps_observation_count].sensor_position = event_channels[ch].sensor_position;
+        ps_observations[ps_observation_count].p_arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
+        ps_observations[ps_observation_count].s_arrival_time_us = s_arrival_us;
+        ps_used_mask |= 1U << ch;
+        ++ps_observation_count;
+    }
+    if (config->s_pick_enabled) {
+        psafuvs_not_attempted = "no channel has an accepted S pick after its P pick";
+    }
+    const localization_psafuvs_config_t psafuvs_config = localization_psafuvs_default_config();
+    localization_psafuvs_result_t *psafuvs_result = &workspace->psafuvs;
+    esp_err_t psafuvs_err = ESP_ERR_INVALID_STATE;
+    if (ps_observation_count > 0U) {
+        psafuvs_err = localization_psafuvs_solve(
+            ps_observations, ps_observation_count, &psafuvs_config, psafuvs_result
+        );
+        summary_out->methods_attempted++;
+    }
+    localization_calculate_psafuvs_to_run_record(
+        &context, psafuvs_err == ESP_OK ? psafuvs_result : NULL, psafuvs_not_attempted,
+        ps_used_mask, (~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count],
+        localization_calculate_velocity_free_degrees_of_freedom(
+            2U * ps_observation_count, LOCALIZATION_CALCULATE_PSAFUVS_UNKNOWNS
+        )
+    );
+    ++record_count;
+
+    /* SUEA without a scan: every cell passable (straight rays); the
+     * caller's velocity enters only as a prior with its own uncertainty (a
+     * 0 "unknown" uncertainty fixes it, as every other method uses it). */
+    localization_point3d_t suea_min;
+    localization_point3d_t suea_max;
+    localization_calculate_suea_grid_bounds(&traveltime_bounds, &suea_min, &suea_max);
+    localization_suea_grid_t *suea_grid = &workspace->suea_grid;
+    const esp_err_t suea_grid_err = localization_suea_grid_init(
+        suea_grid, &suea_min, &suea_max, traveltime_bounds.step_m, 0U
+    );
+    localization_suea_pick_t *suea_picks = workspace->suea_picks;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        suea_picks[ch].sensor_position = event_channels[ch].sensor_position;
+        if (dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D) {
+            /* The planar search is one layer at the mean sensor height. */
+            suea_picks[ch].sensor_position.z_m = traveltime_bounds.min_corner.z_m;
+        }
+        suea_picks[ch].arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
+        suea_picks[ch].weight = traveltime_picks[ch].weight;
+    }
+    const localization_suea_config_t suea_config = {
+        .timing_uncertainty_us = config->timing_uncertainty_us,
+        .prior_velocity_mps = config->propagation_speed_mps,
+        .prior_velocity_sigma_mps = config->propagation_speed_uncertainty_mps,
+        .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+    };
+    localization_suea_result_t *suea_result = &workspace->suea;
+    esp_err_t suea_err = suea_grid_err;
+    if (suea_grid_err == ESP_OK) {
+        suea_err = localization_suea_locate(
+            suea_grid, suea_picks, OBJECT_STORE_POD_COUNT, &suea_config, suea_result
+        );
+    }
+    summary_out->methods_attempted++;
+    localization_calculate_suea_to_run_record(
+        &context, suea_err == ESP_OK ? suea_result : NULL,
+        traveltime_used_mask, traveltime_rejected_mask,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count],
+        localization_calculate_degrees_of_freedom(
+            suea_result->picks_used_count,
+            dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
+        )
+    );
+    ++record_count;
+
     const size_t fused_record_count = record_count;
 
     /* --- MAX-147: scan-occupancy-constrained variants ---------------------
@@ -698,9 +880,131 @@ esp_err_t localization_calculate_run(
                  "%s", "semblance_scan_constrained");
         ++record_count;
 
+        /* Straight-ray methods: candidates never in FREE air, and sensors /
+         * combinations whose ray crosses scan-verified empty space dropped. */
+        const localization_calculate_scan_ray_context_t ray_context = {
+            .occupancy = &occupancy,
+            .sensor_clearance_m =
+                LOCALIZATION_CALCULATE_SCAN_RAY_CLEARANCE_VOXELS * occupancy.voxel_size_m,
+        };
+
+        /* TDCAS, constrained. */
+        localization_tdcas_result_t *constrained_tdcas = &workspace->scan_tdcas;
+        esp_err_t constrained_tdcas_err = ESP_ERR_INVALID_STATE;
+        if (usable && p_observation_count > 0U) {
+            const localization_tdcas_config_t constrained_config = {
+                .candidate_filter = {
+                    .allowed = localization_calculate_scan_candidate_allowed,
+                    .context = &occupancy,
+                },
+                .ray_filter = {
+                    .clear = localization_calculate_scan_ray_clear,
+                    .context = (void *)&ray_context,
+                },
+            };
+            constrained_tdcas_err = localization_tdcas_solve(
+                p_observations, p_observation_count, &constrained_config, constrained_tdcas
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_tdcas_to_run_record(
+            &context, constrained_tdcas_err == ESP_OK ? constrained_tdcas : NULL,
+            traveltime_used_mask, traveltime_rejected_mask,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+            &records[record_count]
+        );
+        localization_calculate_apply_redundancy(
+            &records[record_count],
+            localization_calculate_velocity_free_degrees_of_freedom(
+                p_observation_count, LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS
+            )
+        );
+        snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
+                 "%s", "tdcas_scan_constrained");
+        if (!usable) {
+            records[record_count].solved = false;
+            snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
+                     "%s", not_applied_reason);
+        }
+        ++record_count;
+
+        /* PSAFUVS, constrained. */
+        localization_psafuvs_result_t *constrained_psafuvs = &workspace->scan_psafuvs;
+        esp_err_t constrained_psafuvs_err = ESP_ERR_INVALID_STATE;
+        if (usable && ps_observation_count > 0U) {
+            localization_psafuvs_config_t constrained_config = localization_psafuvs_default_config();
+            constrained_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            constrained_config.candidate_filter.context = &occupancy;
+            constrained_config.ray_filter.clear = localization_calculate_scan_ray_clear;
+            constrained_config.ray_filter.context = (void *)&ray_context;
+            constrained_psafuvs_err = localization_psafuvs_solve(
+                ps_observations, ps_observation_count, &constrained_config, constrained_psafuvs
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_psafuvs_to_run_record(
+            &context, constrained_psafuvs_err == ESP_OK ? constrained_psafuvs : NULL,
+            usable ? psafuvs_not_attempted : not_applied_reason,
+            ps_used_mask & ~constrained_psafuvs->sensor_mask_obstructed,
+            ((~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK) | constrained_psafuvs->sensor_mask_obstructed,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+            &records[record_count]
+        );
+        localization_calculate_apply_redundancy(
+            &records[record_count],
+            localization_calculate_velocity_free_degrees_of_freedom(
+                2U * constrained_psafuvs->sensors_used, LOCALIZATION_CALCULATE_PSAFUVS_UNKNOWNS
+            )
+        );
+        snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
+                 "%s", "psafuvs_scan_constrained");
+        ++record_count;
+
+        /* SUEA: rays travel around the scan's empty areas (FREE air is
+         * EMPTY, observed surface SOLID, the unseen interior UNKNOWN). */
+        localization_suea_result_t *scan_suea = &workspace->scan_suea;
+        esp_err_t scan_suea_err = ESP_ERR_INVALID_STATE;
+        if (usable && suea_grid_err == ESP_OK) {
+            localization_suea_grid_classify(suea_grid, localization_calculate_scan_suea_cell, &occupancy);
+            localization_suea_config_t scan_suea_config = suea_config;
+            scan_suea_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            scan_suea_config.candidate_filter.context = &occupancy;
+            scan_suea_err = localization_suea_locate(
+                suea_grid, suea_picks, OBJECT_STORE_POD_COUNT, &scan_suea_config, scan_suea
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_suea_to_run_record(
+            &context, scan_suea_err == ESP_OK ? scan_suea : NULL,
+            scan_suea->pick_mask_used != 0U ? scan_suea->pick_mask_used : traveltime_used_mask,
+            scan_suea->pick_mask_used != 0U
+                ? (~scan_suea->pick_mask_used) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK
+                : traveltime_rejected_mask,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+            &records[record_count]
+        );
+        localization_calculate_apply_redundancy(
+            &records[record_count],
+            localization_calculate_degrees_of_freedom(
+                scan_suea->picks_used_count,
+                dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
+            )
+        );
+        snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
+                 "%s", "suea_scan_voids");
+        if (!usable) {
+            records[record_count].solved = false;
+            snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
+                     "%s", not_applied_reason);
+        }
+        ++record_count;
+
         if (occupancy_err == ESP_OK) {
             scan_occupancy_free(&occupancy);
         }
+    }
+    if (suea_grid_err == ESP_OK) {
+        localization_suea_grid_free(suea_grid);
     }
 
     free_channel_buffers(channel_samples);
@@ -725,20 +1029,19 @@ esp_err_t localization_calculate_run(
 
     /* --- Joint quality-weighted fusion (MAX-138 part 4) ------------------- */
 
-    localization_comparison_method_result_t comparison_methods[4];
+    localization_comparison_method_result_t *comparison_methods = workspace->comparison_methods;
     for (size_t i = 0U; i < fused_record_count; ++i) {
         localization_calculate_run_record_to_comparison_method(&records[i], &comparison_methods[i]);
     }
 
-    localization_comparison_result_t comparison_result;
-    memset(&comparison_result, 0, sizeof(comparison_result));
+    localization_comparison_result_t *comparison_result = &workspace->comparison_result;
     const esp_err_t comparison_err = localization_comparison_fuse(
-        comparison_methods, fused_record_count, &comparison_result
+        comparison_methods, fused_record_count, comparison_result
     );
 
     localization_run_record_t joint_record;
     localization_calculate_joint_to_run_record(
-        &context, comparison_err == ESP_OK ? &comparison_result : NULL,
+        &context, comparison_err == ESP_OK ? comparison_result : NULL,
         all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
         LOCALIZATION_CALCULATE_METHOD_VERSION, &joint_record
     );
@@ -753,5 +1056,6 @@ esp_err_t localization_calculate_run(
         first_write_err = joint_write_err;
     }
 
+    heap_caps_free(workspace);
     return first_write_err;
 }

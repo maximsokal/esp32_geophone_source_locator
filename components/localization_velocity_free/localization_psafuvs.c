@@ -1,6 +1,7 @@
 #include "localization_psafuvs.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "localization_vf_math.h"
@@ -36,6 +37,19 @@ typedef struct
     bool converged;
 
 } psafuvs_fit_t;
+
+
+/* Heap, not stack: this runs on the HTTPS task (see localization_vf_math.h). */
+typedef struct
+{
+    psafuvs_subset_t subset;
+    psafuvs_fit_t fit;
+    double jacobian[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS * PSAFUVS_PARAMETERS];
+    double residuals[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS];
+    double a[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS * 5U];
+    double b[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS];
+
+} psafuvs_workspace_t;
 
 
 localization_psafuvs_config_t localization_psafuvs_default_config(void)
@@ -99,11 +113,13 @@ static void keep_below_plane(const psafuvs_fit_t *fit, double *theta)
 }
 
 
-static bool analytical_position(const psafuvs_subset_t *subset, psafuvs_fit_t *fit, localization_point3d_t *position)
+static bool analytical_position(psafuvs_workspace_t *work, localization_point3d_t *position)
 {
+    const psafuvs_subset_t *subset = &work->subset;
+    psafuvs_fit_t *fit = &work->fit;
     const size_t n = subset->count;
-    double a[LOCALIZATION_PSAFUVS_MAX_SENSORS * 5U];
-    double b[LOCALIZATION_PSAFUVS_MAX_SENSORS];
+    double *a = work->a;
+    double *b = work->b;
     double solution[5];
 
     if (!fit->planar) {
@@ -171,8 +187,10 @@ static bool analytical_position(const psafuvs_subset_t *subset, psafuvs_fit_t *f
 }
 
 
-static void solve_subset(const psafuvs_subset_t *subset, const localization_psafuvs_config_t *config, psafuvs_fit_t *fit)
+static void solve_subset(psafuvs_workspace_t *work, const localization_psafuvs_config_t *config)
 {
+    const psafuvs_subset_t *subset = &work->subset;
+    psafuvs_fit_t *fit = &work->fit;
     memset(fit, 0, sizeof(*fit));
     const size_t n = subset->count;
 
@@ -188,14 +206,14 @@ static void solve_subset(const psafuvs_subset_t *subset, const localization_psaf
     }
 
     localization_point3d_t position;
-    if (!analytical_position(subset, fit, &position)) {
+    if (!analytical_position(work, &position)) {
         fit->status = LOCALIZATION_PSAFUVS_DEGENERATE;
         return;
     }
 
     /* (t0, 1/vP, 1/vS) given the analytical distances: linear. */
-    double a[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS * 3U];
-    double b[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS];
+    double *a = work->a;
+    double *b = work->b;
     for (size_t i = 0U; i < n; ++i) {
         const double d = vf_distance(position, subset->position[i]);
         a[(2U * i) * 3U + 0U] = 1.0; a[(2U * i) * 3U + 1U] = d;   a[(2U * i) * 3U + 2U] = 0.0;
@@ -213,8 +231,8 @@ static void solve_subset(const psafuvs_subset_t *subset, const localization_psaf
     };
 
     /* Levenberg-Marquardt over all 2N arrivals. */
-    double jacobian[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS * PSAFUVS_PARAMETERS];
-    double residuals[2U * LOCALIZATION_PSAFUVS_MAX_SENSORS];
+    double *jacobian = work->jacobian;
+    double *residuals = work->residuals;
     double cost = cost_of(subset, theta, NULL, NULL);
     double lambda = 1.0e-3;
     const uint8_t max_iterations = config != NULL ? config->max_iterations : PSAFUVS_DEFAULT_ITERATIONS;
@@ -343,27 +361,33 @@ esp_err_t localization_psafuvs_solve(
 
     memset(result, 0, sizeof(*result));
 
+    psafuvs_workspace_t *work = malloc(sizeof(*work));
+    if (work == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    const psafuvs_subset_t *subset_view = &work->subset;
+    const psafuvs_fit_t *fit_view = &work->fit;
     uint32_t mask = (1U << observation_count) - 1U;
     uint32_t obstructed = 0U;
-    psafuvs_subset_t subset;
-    psafuvs_fit_t fit;
 
     /* Solve, drop sensors whose straight ray is obstructed, re-solve; each
      * pass removes at least one sensor, so this terminates. */
     for (;;) {
-        build_subset(observations, observation_count, mask, first_us, &subset);
-        solve_subset(&subset, config, &fit);
-        if (fit.status != LOCALIZATION_PSAFUVS_SOLVED) {
-            if (obstructed != 0U && fit.status == LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS) {
-                fit.status = LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED;
+        build_subset(observations, observation_count, mask, first_us, &work->subset);
+        solve_subset(work, config);
+        psafuvs_fit_t *fit = &work->fit;
+        const psafuvs_subset_t *subset = subset_view;
+        if (fit->status != LOCALIZATION_PSAFUVS_SOLVED) {
+            if (obstructed != 0U && fit->status == LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS) {
+                fit->status = LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED;
             }
             break;
         }
-        const localization_point3d_t source = { fit.theta[0], fit.theta[1], fit.theta[2] };
+        const localization_point3d_t source = { fit->theta[0], fit->theta[1], fit->theta[2] };
         uint32_t newly_obstructed = 0U;
-        for (size_t k = 0U; config != NULL && k < subset.count; ++k) {
-            if (!localization_ray_admitted(&config->ray_filter, &subset.position[k], &source)) {
-                newly_obstructed |= 1U << subset.index[k];
+        for (size_t k = 0U; config != NULL && k < subset->count; ++k) {
+            if (!localization_ray_admitted(&config->ray_filter, &subset->position[k], &source)) {
+                newly_obstructed |= 1U << subset->index[k];
             }
         }
         if (newly_obstructed == 0U) {
@@ -373,13 +397,15 @@ esp_err_t localization_psafuvs_solve(
         mask &= ~newly_obstructed;
     }
 
+    const psafuvs_fit_t fit = *fit_view;
     result->planar_layout = fit.planar;
-    result->sensors_used = subset.count;
+    result->sensors_used = subset_view->count;
     result->sensor_mask_used = mask;
     result->sensor_mask_obstructed = obstructed;
     result->iterations = fit.iterations;
     result->converged = fit.converged;
     result->status = fit.status;
+    free(work);
     if (fit.status != LOCALIZATION_PSAFUVS_SOLVED) {
         return ESP_OK;
     }

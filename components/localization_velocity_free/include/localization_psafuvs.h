@@ -122,8 +122,9 @@ localization_psafuvs_config_t localization_psafuvs_default_config(void);
 /*
  * observation_count in [1, LOCALIZATION_PSAFUVS_MAX_SENSORS]; config may be
  * NULL (defaults, no filters). ESP_ERR_INVALID_ARG for NULL/non-finite
- * input or an S arrival not after its P arrival. Data-driven failures are
- * ESP_OK with a non-SOLVED status.
+ * input or an S arrival not after its P arrival, ESP_ERR_NO_MEM when its
+ * small heap workspace cannot be allocated. Data-driven failures are ESP_OK
+ * with a non-SOLVED status.
  */
 esp_err_t localization_psafuvs_solve(
     const localization_psafuvs_observation_t *observations,

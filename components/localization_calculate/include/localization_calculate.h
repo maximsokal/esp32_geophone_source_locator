@@ -28,10 +28,19 @@
  * knobs (max_iterations, convergence_m, damping) and the one field it
  * deliberately leaves zeroed (propagation_speed_mps).
  *
- * Scope: only the unconstrained (no 3D scan) path. A session-owned 3D
- * scan/occupancy/AprilTag-registration-constrained variant (ticket item 5)
- * is not implemented -- no occupancy artifact or AprilTag registration
- * exists anywhere in this repo yet to constrain against.
+ * Velocity-free methods (TDCAS, PSAFUVS, SUEA; components/
+ * localization_velocity_free) run beside them on the same picks: they
+ * estimate the event's own velocity instead of trusting
+ * propagation_speed_mps (SUEA takes it only as a prior with the caller's
+ * uncertainty). PSAFUVS additionally needs S picks (s_pick_enabled).
+ *
+ * Scan constraint (MAX-147): when THIS session saved a scan occupancy whose
+ * registration matches its frozen geometry, constrained variants are
+ * persisted beside -- never fused into -- the unconstrained results:
+ * candidate filtering (traveltime, semblance, TDCAS, PSAFUVS), straight-ray
+ * void screening (TDCAS, PSAFUVS drop sensors/combinations whose ray
+ * crosses scan-verified FREE space) and SUEA's travel paths around the
+ * scanned empty areas (suea_scan_voids). UNKNOWN is never treated as empty.
  */
 
 
@@ -71,6 +80,13 @@ typedef struct
      * (see localization_calculate_search_bounds()). The search never goes
      * above the highest sensor. */
     double max_source_depth_m;
+
+    /* Optional (PSAFUVS): pick the S-wave onset after each accepted P pick.
+     * false leaves PSAFUVS persisted as not attempted, with that reason;
+     * when true every s_pick_config field must come from measured/reviewed
+     * values, exactly like pick_config (MAX-132). */
+    bool s_pick_enabled;
+    geophone_secondary_pick_config_t s_pick_config;
 
 } localization_calculate_config_t;
 

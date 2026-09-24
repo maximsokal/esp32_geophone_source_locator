@@ -14,7 +14,8 @@
         "components/ina3221_monitor",
         "tests/host/stubs/ina3221_monitor",
         "components/ina3221_monitor/include"
-      ]
+      ],
+      "libraries": ["m"]
     }
   ]
 }

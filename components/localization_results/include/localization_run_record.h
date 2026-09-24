@@ -114,6 +114,16 @@ typedef struct
      */
     int32_t degrees_of_freedom;
 
+    /*
+     * Velocity-free methods (TDCAS, PSAFUVS, SUEA) estimate the event's own
+     * propagation velocities instead of using propagation_speed_mps: the P
+     * (or single-phase) and S velocities they found, in m/s. 0 means "not
+     * estimated" (every other method, or a record written before these
+     * optional fields existed). Serialized only for a solved run.
+     */
+    double estimated_p_velocity_mps;
+    double estimated_s_velocity_mps;
+
     /* Valid only when solved is true. emission_time_us/iterations/
      * converged are meaningful only for the iterative Gauss-Newton TDOA
      * solver -- 0/false for every other method's solved run, not omitted,

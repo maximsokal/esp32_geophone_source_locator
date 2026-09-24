@@ -313,6 +313,33 @@ static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id
         config.max_source_depth_m = max_depth->valuedouble;
     }
 
+    /* Optional (PSAFUVS): S-wave picking. Present only as a complete set --
+     * the handler never fills in a missing window or threshold (MAX-132). */
+    if (cJSON_GetObjectItemCaseSensitive(root, "s_sta_window_samples") != NULL) {
+        double s_trigger_ratio = 0.0;
+        double s_minimum_snr = 0.0;
+        geophone_secondary_pick_config_t *s_pick = &config.s_pick_config;
+        if (
+            !web_control_size(root, "s_min_separation_samples", &s_pick->min_separation_samples) ||
+            !web_control_size(root, "s_max_separation_samples", &s_pick->max_separation_samples) ||
+            !web_control_size(root, "s_sta_window_samples", &s_pick->sta_window_samples) ||
+            !web_control_size(root, "s_lta_window_samples", &s_pick->lta_window_samples) ||
+            !web_control_number(root, "s_sta_lta_trigger_ratio", &s_trigger_ratio) ||
+            !web_control_number(root, "s_minimum_snr", &s_minimum_snr) ||
+            s_pick->sta_window_samples == 0U ||
+            s_pick->lta_window_samples <= s_pick->sta_window_samples ||
+            s_pick->max_separation_samples <= s_pick->min_separation_samples ||
+            !(s_trigger_ratio > 0.0) ||
+            s_trigger_ratio >= (double)s_pick->lta_window_samples / (double)s_pick->sta_window_samples ||
+            s_minimum_snr < 0.0
+        ) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_pick->sta_lta_trigger_ratio = (float)s_trigger_ratio;
+        s_pick->minimum_snr = (float)s_minimum_snr;
+        config.s_pick_enabled = true;
+    }
+
     const char *model_name = web_control_string(root, "propagation_model_name");
     if (model_name != NULL) {
         snprintf(

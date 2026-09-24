@@ -8,10 +8,12 @@
 /*
  * Private numerical helpers shared by the velocity-free backends (TDCAS,
  * PSAFUVS, SUEA). Pure, allocation-free and bounded: every routine works on
- * caller stack arrays no larger than the constants below.
+ * stack arrays no larger than the constants below. The largest system is
+ * PSAFUVS's 2 x 8 arrivals; the bound keeps the frames small enough for the
+ * 8 KiB HTTPS task that runs "Calculate source".
  */
 
-#define VF_MAX_ROWS 32U
+#define VF_MAX_ROWS 16U
 #define VF_MAX_COLS 6U
 
 

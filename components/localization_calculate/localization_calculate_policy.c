@@ -358,11 +358,15 @@ void localization_calculate_run_record_to_comparison_method(
     if (record->solved) {
         method_out->position = record->source_position;
         method_out->quality = record->confidence_score;
-        /* MAX-212: TDOA and traveltime inversion fit the same picks --
-         * correlated, not independent, evidence. */
+        /* MAX-212: TDOA, traveltime inversion and the velocity-free
+         * methods all fit the same P picks -- correlated, not independent,
+         * evidence (PSAFUVS adds S picks but shares the P picks). */
         if (
             strcmp(record->method_name, "tdoa_gauss_newton") == 0 ||
-            strcmp(record->method_name, "traveltime_inversion") == 0
+            strcmp(record->method_name, "traveltime_inversion") == 0 ||
+            strcmp(record->method_name, "tdcas") == 0 ||
+            strcmp(record->method_name, "psafuvs") == 0 ||
+            strcmp(record->method_name, "suea") == 0
         ) {
             method_out->evidence_group = LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP;
         }
@@ -644,3 +648,265 @@ bool localization_calculate_scan_candidate_allowed(
     return cls == SCAN_OCCUPANCY_UNKNOWN || cls == SCAN_OCCUPANCY_OCCUPIED;
 }
 
+
+
+void localization_calculate_tdcas_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_tdcas_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "tdcas",
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+
+    if (result == NULL || result->status != LOCALIZATION_TDCAS_SOLVED) {
+        record_out->solved = false;
+        if (result != NULL && result->status == LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS) {
+            snprintf(
+                record_out->rejection_reason, sizeof(record_out->rejection_reason),
+                "TDCAS needs %u accepted P picks for this layout (%s), have %u",
+                (unsigned)(result->planar_layout ? LOCALIZATION_TDCAS_MIN_SENSORS_PLANAR : LOCALIZATION_TDCAS_MIN_SENSORS_3D),
+                result->planar_layout ? "planar surface array" : "depth-resolving array",
+                (unsigned)result->sensors_used
+            );
+        } else {
+            snprintf(
+                record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
+                result == NULL
+                    ? "TDCAS was not attempted"
+                    : result->status == LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION
+                        ? "scan occupancy excluded every sensor combination (FREE air or obstructed rays)"
+                        : "no sensor combination gave a physical velocity-free solution"
+            );
+        }
+        return;
+    }
+
+    record_out->solved = true;
+    record_out->source_position = result->position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->rms_residual_us;
+    record_out->estimated_p_velocity_mps = result->velocity_mps;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_residual_us, timing_uncertainty_us
+    );
+}
+
+
+void localization_calculate_psafuvs_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_psafuvs_result_t *result,
+    const char *not_attempted_reason,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "psafuvs",
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+
+    if (result == NULL || result->status != LOCALIZATION_PSAFUVS_SOLVED) {
+        record_out->solved = false;
+        const char *reason = "PSAFUVS was not attempted";
+        if (result == NULL) {
+            if (not_attempted_reason != NULL && not_attempted_reason[0] != '\0') {
+                reason = not_attempted_reason;
+            }
+        } else {
+            switch (result->status) {
+                case LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS:
+                    reason = result->planar_layout
+                        ? "PSAFUVS needs 4 channels with accepted P and S picks on a planar array"
+                        : "PSAFUVS needs 5 channels with accepted P and S picks on a depth-resolving array";
+                    break;
+                case LOCALIZATION_PSAFUVS_NONPHYSICAL_VELOCITIES:
+                    reason = "P/S fit is not physical (S velocity not below P velocity)";
+                    break;
+                case LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED:
+                    reason = "scan voids obstruct too many straight rays for PSAFUVS";
+                    break;
+                case LOCALIZATION_PSAFUVS_NO_ALLOWED_CANDIDATE:
+                    reason = "PSAFUVS solution lies in scan-verified FREE air or outside the scan";
+                    break;
+                case LOCALIZATION_PSAFUVS_DEGENERATE:
+                default:
+                    reason = "P and S arrivals do not describe one source (degenerate system)";
+                    break;
+            }
+        }
+        snprintf(record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s", reason);
+        return;
+    }
+
+    record_out->solved = true;
+    record_out->source_position = result->position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->rms_residual_us;
+    record_out->iterations = result->iterations;
+    record_out->converged = result->converged;
+    record_out->estimated_p_velocity_mps = result->p_velocity_mps;
+    record_out->estimated_s_velocity_mps = result->s_velocity_mps;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_residual_us, timing_uncertainty_us
+    );
+}
+
+
+void localization_calculate_suea_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_suea_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "suea",
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+
+    if (result == NULL || result->status != LOCALIZATION_SUEA_SOLVED) {
+        record_out->solved = false;
+        snprintf(
+            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
+            result == NULL
+                ? "SUEA was not attempted"
+                : result->status == LOCALIZATION_SUEA_INSUFFICIENT_PICKS
+                    ? (result->pick_mask_unreachable != 0U
+                        ? "fewer than 3 usable picks: some sensors sit inside scan-verified empty space"
+                        : "fewer than 3 accepted picks for SUEA")
+                    : result->status == LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE
+                        ? "scan occupancy excluded every reachable grid point"
+                        : "no grid point is reachable from every sensor with a physical fit"
+        );
+        return;
+    }
+
+    record_out->solved = true;
+    record_out->source_position = result->best_position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->best_residual_rms_us;
+    record_out->estimated_p_velocity_mps = result->velocity_mps;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->best_residual_rms_us, timing_uncertainty_us
+    );
+}
+
+
+void localization_calculate_suea_grid_bounds(
+    const localization_traveltime_search_bounds_t *search,
+    localization_point3d_t *min_out,
+    localization_point3d_t *max_out
+)
+{
+    if (search == NULL || min_out == NULL || max_out == NULL) {
+        return;
+    }
+    const double margin = search->step_m > 0.0 ? search->step_m : 0.0;
+    const bool planar = search->min_corner.z_m == search->max_corner.z_m;
+    *min_out = (localization_point3d_t) {
+        search->min_corner.x_m - margin,
+        search->min_corner.y_m - margin,
+        search->min_corner.z_m,
+    };
+    *max_out = (localization_point3d_t) {
+        search->max_corner.x_m + margin,
+        search->max_corner.y_m + margin,
+        planar ? search->max_corner.z_m : search->max_corner.z_m + margin,
+    };
+}
+
+
+int32_t localization_calculate_velocity_free_degrees_of_freedom(
+    size_t observations,
+    size_t unknowns
+)
+{
+    if (observations == 0U) {
+        return -1;
+    }
+    return (int32_t)observations - (int32_t)unknowns;
+}
+
+
+localization_suea_cell_t localization_calculate_scan_suea_cell(
+    const localization_point3d_t *point,
+    void *context
+)
+{
+    const scan_occupancy_t *occupancy = (const scan_occupancy_t *)context;
+    if (point == NULL || occupancy == NULL) {
+        return LOCALIZATION_SUEA_CELL_UNKNOWN;
+    }
+    const double sensor[3] = { point->x_m, point->y_m, point->z_m };
+    double scan[3];
+    scan_occupancy_sensor_to_scan(occupancy, sensor, scan);
+    switch (scan_occupancy_classify(occupancy, scan)) {
+        case SCAN_OCCUPANCY_FREE:
+            return LOCALIZATION_SUEA_CELL_EMPTY;
+        case SCAN_OCCUPANCY_OCCUPIED:
+            return LOCALIZATION_SUEA_CELL_SOLID;
+        case SCAN_OCCUPANCY_OUTSIDE:
+            return occupancy->has_envelope && scan[2] > occupancy->envelope_max[2]
+                ? LOCALIZATION_SUEA_CELL_EMPTY
+                : LOCALIZATION_SUEA_CELL_UNKNOWN;
+        case SCAN_OCCUPANCY_UNKNOWN:
+        default:
+            return LOCALIZATION_SUEA_CELL_UNKNOWN;
+    }
+}
+
+
+bool localization_calculate_scan_ray_clear(
+    const localization_point3d_t *sensor,
+    const localization_point3d_t *candidate,
+    void *context
+)
+{
+    const localization_calculate_scan_ray_context_t *ray =
+        (const localization_calculate_scan_ray_context_t *)context;
+    if (
+        sensor == NULL || candidate == NULL || ray == NULL || ray->occupancy == NULL ||
+        !(ray->occupancy->voxel_size_m > 0.0)
+    ) {
+        return true;
+    }
+
+    const double dx = candidate->x_m - sensor->x_m;
+    const double dy = candidate->y_m - sensor->y_m;
+    const double dz = candidate->z_m - sensor->z_m;
+    const double length = sqrt(dx * dx + dy * dy + dz * dz);
+    if (!isfinite(length)) {
+        return true;
+    }
+    const double step = 0.5 * ray->occupancy->voxel_size_m;
+    const double clearance = ray->sensor_clearance_m > 0.0 ? ray->sensor_clearance_m : 0.0;
+
+    unsigned free_run = 0U;
+    for (double t = clearance; t <= length; t += step) {
+        const double f = length > 0.0 ? t / length : 0.0;
+        const double point[3] = { sensor->x_m + f * dx, sensor->y_m + f * dy, sensor->z_m + f * dz };
+        double scan[3];
+        scan_occupancy_sensor_to_scan(ray->occupancy, point, scan);
+        if (scan_occupancy_classify(ray->occupancy, scan) == SCAN_OCCUPANCY_FREE) {
+            if (++free_run >= 2U) {
+                return false;
+            }
+        } else {
+            free_run = 0U;
+        }
+    }
+    return true;
+}

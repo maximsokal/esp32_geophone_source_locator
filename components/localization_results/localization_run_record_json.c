@@ -106,6 +106,13 @@ esp_err_t localization_run_record_to_json(
     }
 
     if (
+        !isfinite(record->estimated_p_velocity_mps) || record->estimated_p_velocity_mps < 0.0 ||
+        !isfinite(record->estimated_s_velocity_mps) || record->estimated_s_velocity_mps < 0.0
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (
         record->solved &&
         (
             !isfinite(record->source_position.x_m) ||
@@ -185,6 +192,18 @@ esp_err_t localization_run_record_to_json(
             ) != NULL &&
             cJSON_AddNumberToObject(root, "iterations", record->iterations) != NULL &&
             cJSON_AddBoolToObject(root, "converged", record->converged) != NULL;
+
+        /* Optional: only velocity-free methods estimate velocities. */
+        if (ok && record->estimated_p_velocity_mps > 0.0) {
+            ok = cJSON_AddNumberToObject(
+                root, "estimated_p_velocity_mps", record->estimated_p_velocity_mps
+            ) != NULL;
+        }
+        if (ok && record->estimated_s_velocity_mps > 0.0) {
+            ok = cJSON_AddNumberToObject(
+                root, "estimated_s_velocity_mps", record->estimated_s_velocity_mps
+            ) != NULL;
+        }
     }
 
     if (ok && !record->solved) {
@@ -403,6 +422,17 @@ esp_err_t localization_run_record_from_json(
         record->rms_residual_us = rms_residual_us;
         record->iterations = (uint8_t)iterations;
         record->converged = converged;
+
+        /* Optional: absent (0) for methods that use a given velocity and in
+         * records written before the fields existed. */
+        double estimated = 0.0;
+        if (read_number(root, "estimated_p_velocity_mps", &estimated) && estimated > 0.0) {
+            record->estimated_p_velocity_mps = estimated;
+        }
+        estimated = 0.0;
+        if (read_number(root, "estimated_s_velocity_mps", &estimated) && estimated > 0.0) {
+            record->estimated_s_velocity_mps = estimated;
+        }
     } else {
         ok = read_string(
             root,

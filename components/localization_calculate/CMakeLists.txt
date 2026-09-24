@@ -15,6 +15,7 @@ idf_component_register(
         localization_run_store
         localization_semblance
         localization_traveltime_inversion
+        localization_velocity_free
         object_store
         scan_occupancy
         storage_manager

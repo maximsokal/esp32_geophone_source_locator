@@ -397,6 +397,8 @@ static void test_calculate_source_action_dispatches_to_localization_calculate_ru
     assert(s_last_calculate_config.semblance_window_half_span_samples == 25U);
     /* Optional max_source_depth_m absent: geometry-derived default (MAX-211). */
     assert(s_last_calculate_config.max_source_depth_m == 0.0);
+    /* Optional S picking absent: PSAFUVS stays unattempted. */
+    assert(!s_last_calculate_config.s_pick_enabled);
     /* No object mutation occurred: object cache must not be touched. */
     assert(s_cache_invalidations == 0U);
     assert(s_cache_refresh_requests == 0U);
@@ -436,6 +438,70 @@ static void test_calculate_source_optional_max_depth(void)
     assert(request.response_status != NULL);
     assert(strcmp(request.response_status, "400 Bad Request") == 0);
     assert(s_calculate_calls == 0U);
+}
+
+/* PSAFUVS: the S-wave pick settings arrive as one complete, validated set. */
+static void test_calculate_source_optional_s_wave_picking(void)
+{
+    static const char *const with_s =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,"
+        "\"s_min_separation_samples\":20,\"s_max_separation_samples\":400,"
+        "\"s_sta_window_samples\":10,\"s_lta_window_samples\":60,"
+        "\"s_sta_lta_trigger_ratio\":3.0,\"s_minimum_snr\":2.0}";
+    reset_fakes();
+    s_calculate_result = ESP_OK;
+    char response[512] = {0};
+    httpd_req_t request = make_request(with_s, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_calculate_calls == 1U);
+    assert(s_last_calculate_config.s_pick_enabled);
+    assert(s_last_calculate_config.s_pick_config.min_separation_samples == 20U);
+    assert(s_last_calculate_config.s_pick_config.max_separation_samples == 400U);
+    assert(s_last_calculate_config.s_pick_config.sta_window_samples == 10U);
+    assert(s_last_calculate_config.s_pick_config.lta_window_samples == 60U);
+    assert(s_last_calculate_config.s_pick_config.sta_lta_trigger_ratio == 3.0f);
+    assert(s_last_calculate_config.s_pick_config.minimum_snr == 2.0f);
+
+    /* Incomplete (no s_minimum_snr) or unreachable (ratio >= lta/sta)
+     * settings are refused, never completed with a guess. */
+    static const char *const incomplete =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,"
+        "\"s_min_separation_samples\":20,\"s_max_separation_samples\":400,"
+        "\"s_sta_window_samples\":10,\"s_lta_window_samples\":60,\"s_sta_lta_trigger_ratio\":3.0}";
+    static const char *const unreachable =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,"
+        "\"s_min_separation_samples\":20,\"s_max_separation_samples\":400,"
+        "\"s_sta_window_samples\":10,\"s_lta_window_samples\":60,"
+        "\"s_sta_lta_trigger_ratio\":6.0,\"s_minimum_snr\":2.0}";
+    const char *const bad[] = { incomplete, unreachable };
+    for (size_t i = 0U; i < 2U; ++i) {
+        reset_fakes();
+        char bad_response[512] = {0};
+        request = make_request(bad[i], bad_response, sizeof(bad_response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL);
+        assert(strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_calculate_calls == 0U);
+    }
 }
 
 /* MAX-210: sta=10, lta=50 bounds STA/LTA at 5.0; a 6.0 threshold could
@@ -496,6 +562,7 @@ int main(void)
     test_phone_location_handler_rejects_negative_capture_time();
     test_calculate_source_action_dispatches_to_localization_calculate_run();
     test_calculate_source_optional_max_depth();
+    test_calculate_source_optional_s_wave_picking();
     test_calculate_source_rejects_unreachable_sta_lta_threshold();
     test_calculate_source_action_rejects_missing_session_id();
     test_calculate_source_action_surfaces_solver_failure();
