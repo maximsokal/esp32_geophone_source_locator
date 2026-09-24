@@ -285,6 +285,87 @@ function structuralFeatureNearSeed(
   return feature.spatiallySupportedFamilies >= MIN_SEED_ORIENTATION_FAMILIES && feature.score >= MIN_SEED_FEATURE_SCORE;
 }
 
+/*
+ * MAX-259: near a concave vertex the surfels are seen from fewer poses, so the
+ * highest-confidence point of every 13 cm seed cell lies >= 10 cm away and the
+ * solver only locks the edge. When the local evidence around a seed shows three
+ * well-separated planar families, their plane intersection is a far better
+ * starting point; the solver stays authoritative for acceptance.
+ */
+const HYPOTHESIS_FAMILY_DOT = Math.cos((24 * Math.PI) / 180);
+const HYPOTHESIS_MIN_FAMILY_MEMBERS = 5;
+const HYPOTHESIS_MIN_FAMILY_SPAN_METERS = 0.03;
+const HYPOTHESIS_MIN_PAIR_ANGLE_RADIANS = (34 * Math.PI) / 180;
+const HYPOTHESIS_MIN_DETERMINANT = 0.12;
+const HYPOTHESIS_MAX_SEED_DISTANCE_METERS = 0.25;
+
+function cornerHypothesis(
+  snapshot: ManualPlacementSurfaceSnapshot,
+  spatialIndex: BoundedSpatialPointIndex,
+  seed: Seed,
+): ProjectPoint | null {
+  const usable = spatialIndex.queryRadius(seed.position, FEATURE_QUERY_RADIUS_METERS).filter((index) => {
+    const confidence = optionalAt(snapshot.confidence, index, 0);
+    const ready = optionalAt(snapshot.coverageReady, index, 1) > 0;
+    const residual = optionalAt(snapshot.residualMeters, index, 0.012);
+    const normalConfidence = optionalAt(snapshot.normalConfidence, index, confidence);
+    return ready && confidence >= 0.62 && residual <= 0.040 && normalConfidence >= 0.22;
+  });
+  const ordered = boundedFeatureIndices(snapshot, usable);
+  const families: Array<{ n: [number, number, number]; c: [number, number, number]; weight: number; members: number; min: [number, number, number]; max: [number, number, number] }> = [];
+  for (const index of ordered) {
+    const offset = index * 3;
+    const normal = normalize([snapshot.normals[offset], snapshot.normals[offset + 1], snapshot.normals[offset + 2]]);
+    if (normal === null) continue;
+    const position: [number, number, number] = [snapshot.positions[offset], snapshot.positions[offset + 1], snapshot.positions[offset + 2]];
+    const weight = Math.max(0.05, optionalAt(snapshot.normalConfidence, index, snapshot.confidence[index]));
+    let best: (typeof families)[number] | null = null; let bestDot = HYPOTHESIS_FAMILY_DOT;
+    for (const family of families) {
+      const mean = normalize(family.n); if (mean === null) continue;
+      const similarity = Math.abs(dot(mean, normal));
+      if (similarity >= bestDot) { best = family; bestDot = similarity; }
+    }
+    if (best === null) {
+      families.push({ n: [normal[0] * weight, normal[1] * weight, normal[2] * weight], c: [position[0] * weight, position[1] * weight, position[2] * weight], weight, members: 1, min: [...position], max: [...position] });
+      continue;
+    }
+    const sign = dot(best.n, normal) < 0 ? -1 : 1;
+    for (let axis = 0; axis < 3; axis += 1) {
+      best.n[axis] += normal[axis] * weight * sign;
+      best.c[axis] += position[axis] * weight;
+      best.min[axis] = Math.min(best.min[axis], position[axis]);
+      best.max[axis] = Math.max(best.max[axis], position[axis]);
+    }
+    best.weight += weight; best.members += 1;
+  }
+  const planes = families
+    .filter((family) => family.members >= HYPOTHESIS_MIN_FAMILY_MEMBERS &&
+      Math.hypot(family.max[0] - family.min[0], family.max[1] - family.min[1], family.max[2] - family.min[2]) >= HYPOTHESIS_MIN_FAMILY_SPAN_METERS)
+    .sort((a, b) => b.weight - a.weight)
+    .map((family) => {
+      const normal = normalize(family.n)!;
+      const centroid: ProjectPoint = [family.c[0] / family.weight, family.c[1] / family.weight, family.c[2] / family.weight];
+      return { normal, d: dot(normal, centroid) };
+    });
+  for (let a = 0; a < planes.length; a += 1) for (let b = a + 1; b < planes.length; b += 1) for (let c = b + 1; c < planes.length; c += 1) {
+    const [pa, pb, pc] = [planes[a], planes[b], planes[c]];
+    const separated = [[pa, pb], [pa, pc], [pb, pc]].every(([x, y]) => Math.acos(Math.min(1, Math.abs(dot(x.normal, y.normal)))) >= HYPOTHESIS_MIN_PAIR_ANGLE_RADIANS);
+    if (!separated) continue;
+    const bc: readonly [number, number, number] = [pb.normal[1] * pc.normal[2] - pb.normal[2] * pc.normal[1], pb.normal[2] * pc.normal[0] - pb.normal[0] * pc.normal[2], pb.normal[0] * pc.normal[1] - pb.normal[1] * pc.normal[0]];
+    const ca: readonly [number, number, number] = [pc.normal[1] * pa.normal[2] - pc.normal[2] * pa.normal[1], pc.normal[2] * pa.normal[0] - pc.normal[0] * pa.normal[2], pc.normal[0] * pa.normal[1] - pc.normal[1] * pa.normal[0]];
+    const ab: readonly [number, number, number] = [pa.normal[1] * pb.normal[2] - pa.normal[2] * pb.normal[1], pa.normal[2] * pb.normal[0] - pa.normal[0] * pb.normal[2], pa.normal[0] * pb.normal[1] - pa.normal[1] * pb.normal[0]];
+    const determinant = dot(pa.normal, bc);
+    if (Math.abs(determinant) < HYPOTHESIS_MIN_DETERMINANT) continue;
+    const point: ProjectPoint = [
+      (pa.d * bc[0] + pb.d * ca[0] + pc.d * ab[0]) / determinant,
+      (pa.d * bc[1] + pb.d * ca[1] + pc.d * ab[1]) / determinant,
+      (pa.d * bc[2] + pb.d * ca[2] + pc.d * ab[2]) / determinant,
+    ];
+    if (point.every(Number.isFinite) && distance(point, seed.position) <= HYPOTHESIS_MAX_SEED_DISTANCE_METERS) return point;
+  }
+  return null;
+}
+
 /**
  * Spatially sparse robust corner discovery on the already fused surface map.
  *
@@ -348,7 +429,14 @@ export function detectCertifiedStructuralCorners(
   const corners: CertifiedCornerObservation[] = [];
   for (const seed of seeds) {
     if (!structuralFeatureNearSeed(snapshot, spatialIndex, seed)) continue;
-    const result = solveManualPlacementOnStableSurface(seed.position, snapshot);
+    let result = solveManualPlacementOnStableSurface(seed.position, snapshot);
+    if (!result.accepted || result.mode !== 'corner') {
+      const hypothesis = cornerHypothesis(snapshot, spatialIndex, seed);
+      if (hypothesis !== null) {
+        const refined = solveManualPlacementOnStableSurface(hypothesis, snapshot);
+        if (refined.accepted && refined.mode === 'corner') result = refined;
+      }
+    }
     const uncertaintyMeters = result.uncertaintyMeters ?? Number.POSITIVE_INFINITY;
     const minimumArmSpanMeters = result.minimumCornerArmSpanMeters ?? 0;
     if (
