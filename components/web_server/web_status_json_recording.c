@@ -108,6 +108,33 @@ bool web_status_json_add_recording_gate(cJSON *root)
     const recording_gate_result_t gate =
         recording_gate_evaluate(leveling.assigned_count, leveling.accepted_count);
 
+    /* MAX-114: which node blocks the gate, and by how much it is tilted. */
+    nrf_topology_leveling_nodes_t nodes;
+    if (nrf_topology_service_get_leveling_nodes(&nodes) == ESP_OK) {
+        cJSON *list = cJSON_AddArrayToObject(object, "nodes");
+        if (list == NULL) {
+            return false;
+        }
+        for (size_t i = 0; i < nodes.count; ++i) {
+            const nrf_topology_leveling_node_t *node = &nodes.nodes[i];
+            cJSON *item = cJSON_CreateObject();
+            if (item == NULL) {
+                return false;
+            }
+            cJSON_AddItemToArray(list, item);
+            if (cJSON_AddNumberToObject(item, "channel", (double)node->channel) == NULL ||
+                cJSON_AddNumberToObject(item, "node_id", (double)node->node_id) == NULL ||
+                cJSON_AddStringToObject(
+                    item, "state", nrf_topology_leveling_node_state_name(node->state)) == NULL) {
+                return false;
+            }
+            if (node->tilt_valid &&
+                cJSON_AddNumberToObject(item, "tilt_deg", (double)node->tilt_deg) == NULL) {
+                return false;
+            }
+        }
+    }
+
     return
         cJSON_AddNumberToObject(object, "assigned_count", (double)gate.assigned_count) != NULL &&
         cJSON_AddNumberToObject(object, "accepted_count", (double)gate.accepted_count) != NULL &&

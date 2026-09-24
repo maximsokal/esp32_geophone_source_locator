@@ -26,6 +26,25 @@ esp_err_t nrf_topology_service_get_leveling_summary(
 }
 
 
+static nrf_topology_leveling_nodes_t g_nodes;
+static esp_err_t g_nodes_error = ESP_OK;
+
+esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes)
+{
+    if (g_nodes_error != ESP_OK) {
+        return g_nodes_error;
+    }
+    *nodes = g_nodes;
+    return ESP_OK;
+}
+
+const char *nrf_topology_leveling_node_state_name(nrf_topology_leveling_node_state_t state)
+{
+    return state == NRF_TOPOLOGY_LEVELING_ACCEPTED ? "level"
+        : state == NRF_TOPOLOGY_LEVELING_OUTSIDE ? "tilted" : "no_data";
+}
+
+
 esp_err_t measurement_service_get_snapshot(
     measurement_service_snapshot_t *snapshot
 )
@@ -137,6 +156,42 @@ static void test_not_level_gate_is_serialized_as_blocked(void)
 }
 
 
+/* MAX-114: the per-node list tells the operator which node is not level. */
+static void test_per_node_leveling_is_serialized(void)
+{
+    g_leveling = (nrf_topology_leveling_summary_t){ .assigned_count = 2U, .accepted_count = 1U };
+    g_leveling_error = ESP_OK;
+    g_nodes_error = ESP_OK;
+    g_nodes.count = 2U;
+    g_nodes.nodes[0] = (nrf_topology_leveling_node_t){ .channel = 0U, .node_id = 1U,
+        .state = NRF_TOPOLOGY_LEVELING_ACCEPTED, .tilt_valid = true, .tilt_deg = 0.5f };
+    g_nodes.nodes[1] = (nrf_topology_leveling_node_t){ .channel = 3U, .node_id = 4U,
+        .state = NRF_TOPOLOGY_LEVELING_NO_DATA, .tilt_valid = false, .tilt_deg = 0.0f };
+    cJSON *root = cJSON_CreateObject();
+    assert(web_status_json_add_recording_gate(root));
+    const cJSON *nodes = item(item(root, "recording_gate"), "nodes");
+    assert(cJSON_GetArraySize(nodes) == 2);
+    const cJSON *first = cJSON_GetArrayItem(nodes, 0);
+    assert_string(first, "state", "level");
+    assert(item(first, "tilt_deg")->valuedouble > 0.49 && item(first, "tilt_deg")->valuedouble < 0.51);
+    const cJSON *second = cJSON_GetArrayItem(nodes, 1);
+    assert(item(second, "channel")->valuedouble == 3.0);
+    assert_string(second, "state", "no_data");
+    /* No tilt without a reading. */
+    assert(cJSON_GetObjectItemCaseSensitive(second, "tilt_deg") == NULL);
+    cJSON_Delete(root);
+
+    /* A failing per-node read never breaks the gate itself. */
+    g_nodes_error = ESP_ERR_INVALID_STATE;
+    root = cJSON_CreateObject();
+    assert(web_status_json_add_recording_gate(root));
+    assert(cJSON_GetObjectItemCaseSensitive(item(root, "recording_gate"), "nodes") == NULL);
+    cJSON_Delete(root);
+    g_nodes_error = ESP_OK;
+    g_nodes.count = 0U;
+}
+
+
 static void test_three_dimensional_gate_is_serialized_without_warning(void)
 {
     g_leveling = (nrf_topology_leveling_summary_t){ .assigned_count = 4U, .accepted_count = 4U };
@@ -200,6 +255,7 @@ int main(void)
     test_insufficient_gate_is_serialized_as_blocked();
     test_topology_error_is_available_false_with_error_name();
     test_null_root_is_rejected_without_topology_access();
+    test_per_node_leveling_is_serialized();
     puts("web status recording gate host tests passed");
     return 0;
 }

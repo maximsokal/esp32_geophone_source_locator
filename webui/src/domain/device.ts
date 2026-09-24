@@ -72,6 +72,16 @@ export interface RecordingGateStatus {
   reason?: string;
   warning?: string;
   error?: string;
+  /** MAX-114: every assigned REMOTE; tilt_deg only when the node reported one. */
+  nodes?: RecordingGateNode[];
+}
+
+export interface RecordingGateNode {
+  channel: number;
+  node_id: number;
+  /** level | tilted | moving | unavailable | no_data */
+  state: string;
+  tilt_deg?: number;
 }
 
 export type MeasurementServiceState =

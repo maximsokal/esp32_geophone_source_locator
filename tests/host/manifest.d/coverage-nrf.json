@@ -112,7 +112,8 @@
         "tests/host/stubs/seismic_recorder_start",
         "components/nrf_topology_service/include",
         "nRF54L15/include"
-      ]
+      ],
+      "libraries": ["m"]
     },
     {
       "name": "app_pod_status_barometer_policy",
