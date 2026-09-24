@@ -88,3 +88,27 @@ ina3221_power_ux_state_t ina3221_power_ux_update(
 bool ina3221_power_ux_usb_present(ina3221_power_ux_state_t state);
 
 const char *ina3221_power_ux_state_name(ina3221_power_ux_state_t state);
+
+/*
+ * MAX-186: raw evidence whose changes are logged the moment they happen
+ * (the periodic sample line is throttled). The first observation reports
+ * nothing: there is no previous value to change from.
+ */
+typedef struct
+{
+    bool observed;
+    bool battery_present;
+    bool usb_present;
+    bool charging;
+    int soc_quality;
+
+} ina3221_power_evidence_t;
+
+#define INA3221_EVIDENCE_BATTERY_CHANGED  (1U << 0)
+#define INA3221_EVIDENCE_USB_CHANGED      (1U << 1)
+#define INA3221_EVIDENCE_CHARGING_CHANGED (1U << 2)
+#define INA3221_EVIDENCE_SOC_CHANGED      (1U << 3)
+
+uint32_t ina3221_power_evidence_changes(
+    const ina3221_power_evidence_t *previous,
+    const ina3221_power_evidence_t *current);
