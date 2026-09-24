@@ -10,6 +10,7 @@
 
 #include "app_task_config.h"
 #include "sensor_bus.h"
+#include "nrf_topology_bus_recovery.h"
 #include "tca9548a_mux.h"
 #include "tca9548a_mux_i2c_bus.h"
 
@@ -212,10 +213,49 @@ static i2c_bus_device_handle_t platform_device_for_address(
     return NULL;
 }
 
-static esp_err_t platform_normalize_transfer_error(esp_err_t err)
+static esp_err_t platform_recovery_bus_recover(void *context, i2c_line_result_t *result)
+{
+    (void)context;
+    return sensor_bus_recover(result);
+}
+
+static esp_err_t platform_recovery_mux_close(void *context)
+{
+    nrf_topology_platform_t *platform = context;
+    if (platform == NULL || !platform->mux_bound) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return tca9548a_mux_close(&platform->mux);
+}
+
+static esp_err_t platform_normalize_transfer_error(
+    nrf_topology_platform_t *platform,
+    esp_err_t err)
 {
     /* i2c_bus/legacy ESP-IDF reports a slave NACK as ESP_FAIL. */
-    return err == ESP_FAIL ? ESP_ERR_NOT_FOUND : err;
+    if (err == ESP_FAIL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* MAX-243: a bus-level failure gets a line check; a stuck SDA is
+     * cleared and the mux closed + verified before the next transfer. */
+    const nrf_topology_bus_recovery_ops_t ops = {
+        .recover = platform_recovery_bus_recover,
+        .mux_close = platform_recovery_mux_close,
+        .context = platform,
+    };
+    nrf_topology_bus_recovery_outcome_t outcome = NRF_TOPOLOGY_BUS_NOT_CHECKED;
+    const esp_err_t result = nrf_topology_bus_recover_after_error(err, &ops, &outcome);
+    if (outcome == NRF_TOPOLOGY_BUS_STUCK) {
+        ESP_LOGE(TAG, "I2C0 line stuck after %s; a target holds the bus (reset/power-cycle it)",
+                 esp_err_to_name(err));
+    } else if (outcome == NRF_TOPOLOGY_BUS_RECOVERED_MUX_CLOSED) {
+        ESP_LOGW(TAG, "I2C0 SDA stuck after %s: bus cleared, mux closed and verified",
+                 esp_err_to_name(err));
+    } else if (outcome == NRF_TOPOLOGY_BUS_RECOVERED_MUX_FAULT) {
+        ESP_LOGE(TAG, "I2C0 bus cleared but mux close/readback failed");
+    }
+    return result;
 }
 
 static esp_err_t platform_read_status(
@@ -242,7 +282,7 @@ static esp_err_t platform_read_status(
         sizeof(frame),
         frame);
     if (err != ESP_OK) {
-        return platform_normalize_transfer_error(err);
+        return platform_normalize_transfer_error(platform, err);
     }
 
     return nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) == NRF_UPSTREAM_RESULT_OK
@@ -276,7 +316,7 @@ static esp_err_t platform_write_assign(
         NULL_I2C_MEM_ADDR,
         sizeof(frame),
         frame);
-    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(err);
+    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, err);
 }
 
 static esp_err_t platform_write_sensor_refresh(
@@ -298,7 +338,7 @@ static esp_err_t platform_write_sensor_refresh(
         NULL_I2C_MEM_ADDR,
         sizeof(frame),
         frame);
-    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(err);
+    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, err);
 }
 
 static esp_err_t platform_read_remote_snapshot(
@@ -319,7 +359,7 @@ static esp_err_t platform_read_remote_snapshot(
         sizeof(frame),
         frame);
     if (err != ESP_OK) {
-        return platform_normalize_transfer_error(err);
+        return platform_normalize_transfer_error(platform, err);
     }
     return nrf_upstream_protocol_decode_remote_snapshot(frame, sizeof(frame), status, sensor) == NRF_UPSTREAM_RESULT_OK
         ? ESP_OK
