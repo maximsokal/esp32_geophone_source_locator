@@ -23,5 +23,9 @@ void sensor_bus_lines_read(bool *sda_high, bool *scl_high);
 /* Controller-side bus clear (clocks + STOP + FSM reset) of a live bus. */
 esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus);
 
+/* Address-only probe (START + address + STOP): ESP_OK when a target ACKs,
+ * ESP_ERR_NOT_FOUND on NACK, ESP_ERR_TIMEOUT when the bus is busy/stuck. */
+esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address);
+
 void sensor_bus_lines_delay_us(uint32_t us);
 int64_t sensor_bus_lines_now_us(void);

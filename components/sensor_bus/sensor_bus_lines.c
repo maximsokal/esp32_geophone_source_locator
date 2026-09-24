@@ -6,6 +6,8 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 
+#define SENSOR_BUS_LINES_PROBE_TIMEOUT_MS 20
+
 
 static bool line_read(void *context, gpio_num_t pin)
 {
@@ -97,6 +99,16 @@ esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus)
         return ESP_ERR_INVALID_STATE;
     }
     return i2c_master_bus_reset(handle);
+}
+
+
+esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
+{
+    i2c_master_bus_handle_t handle = i2c_bus_get_internal_bus_handle(bus);
+    if (handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return i2c_master_probe(handle, address, SENSOR_BUS_LINES_PROBE_TIMEOUT_MS);
 }
 
 

@@ -17,7 +17,9 @@ The result contract is:
 - no responding address: `ESP_ERR_NOT_FOUND`; INA3221/shared-bus operation remains valid;
 - exactly one responding address: retain and cache that device handle;
 - more than one responding address: delete candidates and return `ESP_ERR_INVALID_STATE`;
-- an I2C error other than the normal NACK-style `ESP_FAIL`: propagate the transport error instead of misreporting the TCA as absent.
+- an I2C error other than a NACK: propagate the transport error instead of misreporting the TCA as absent.
+
+A NACK is not one error code (MAX-248). The legacy driver reports it as `ESP_FAIL`, but the `i2c_bus` v2 backend used with ESP-IDF 5.5 returns `ESP_ERR_INVALID_STATE`, the same code as a hardware timeout. `sensor_bus_classify_transfer_error()` resolves that code with an address-only `i2c_master_probe()`: `ESP_ERR_NOT_FOUND` is a NACK (absent), an ACK means the target is present and the transfer failed, and a probe timeout is a bus fault. The nRF topology service uses the same classification, so a missing XIAO reads as absent rather than as a transport error.
 
 There is intentionally no full `0x00..0x7F` scan during boot.
 

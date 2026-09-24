@@ -20,6 +20,12 @@ typedef struct
     int rising_edges;
     int64_t now_us;
 
+    /* MAX-248 address probe: result per 7-bit address (default ESP_OK is
+     * overridden by probe_default when probe_configured is false). */
+    bool probe_configured;
+    int probe_result[128];
+    int probe_calls;
+
     /* Internal controller-side drive (bit-bang); zero state = healthy idle bus. */
     bool ctrl_sda_low;
     bool ctrl_scl_low;

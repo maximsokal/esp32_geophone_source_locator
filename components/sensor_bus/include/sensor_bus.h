@@ -58,6 +58,23 @@ esp_err_t sensor_bus_get_tca9548a(
 );
 
 /*
+ * MAX-248: map a failed transfer to "nobody answered at this address".
+ *
+ * The i2c_bus v2 backend (ESP-IDF >= 5.3) returns ESP_ERR_INVALID_STATE
+ * for a NACK -- the same code as a hardware timeout -- while the legacy
+ * driver returned ESP_FAIL. Given the failed transfer's error, this
+ * returns ESP_ERR_NOT_FOUND when the address NACKs (legacy ESP_FAIL, or an
+ * address-only probe that finds nobody), and otherwise the error that
+ * describes the fault: the original error when the address ACKs (target
+ * present, transfer failed), or the probe's error (e.g. ESP_ERR_TIMEOUT
+ * for a busy/stuck bus). ESP_OK and non-bus errors pass through untouched.
+ */
+esp_err_t sensor_bus_classify_transfer_error(
+    uint8_t address,
+    esp_err_t transfer_err
+);
+
+/*
  * MAX-243 stuck-bus handling (NXP UM10204 bus clear).
  *
  * Before I2C0 is created, sensor_bus_init() bit-bangs a bus clear on the

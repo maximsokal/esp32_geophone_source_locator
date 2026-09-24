@@ -99,6 +99,15 @@ esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus)
     return ESP_OK;
 }
 
+esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
+{
+    assert(bus != NULL);
+    assert(address < 128U);
+    ++g_fake_lines.probe_calls;
+    /* Unconfigured: nobody answers the probe. */
+    return g_fake_lines.probe_configured ? g_fake_lines.probe_result[address] : ESP_ERR_NOT_FOUND;
+}
+
 void sensor_bus_lines_delay_us(uint32_t us)
 {
     g_fake_lines.now_us += us;

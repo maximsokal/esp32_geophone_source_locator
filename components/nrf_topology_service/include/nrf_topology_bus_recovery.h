@@ -7,11 +7,11 @@
  * MAX-243: what the topology worker does after a failed upstream transfer.
  *
  * ESP-IDF 5.5 i2c_master reports a target NACK and a hardware timeout both
- * as ESP_ERR_INVALID_STATE, and a software/bus-busy timeout as
- * ESP_ERR_TIMEOUT, so the error code alone cannot tell "XIAO absent" from
- * "bus stuck". The line check inside `recover` (sensor_bus_recover) decides:
- *  - lines idle      -> it was a NACK/transient; the mux is left alone (a
- *                       discovery scan NACKs routinely);
+ * as ESP_ERR_INVALID_STATE. Callers first classify the error with
+ * sensor_bus_classify_transfer_error() (MAX-248), so a plain NACK arrives
+ * here as ESP_ERR_NOT_FOUND and is never checked. What remains is decided
+ * by the line check inside `recover` (sensor_bus_recover):
+ *  - lines idle      -> transient; the mux is left alone;
  *  - SDA cleared     -> close the mux (tca9548a_mux_close reads the control
  *                       register back) so no half-selected channel remains;
  *  - line still stuck-> fault, the mux is not touched (the bus cannot carry
