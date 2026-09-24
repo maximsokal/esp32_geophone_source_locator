@@ -36,6 +36,34 @@ esp_err_t power_control_set_shutdown_notification_hook(
 void power_control_wait_for_shutdown_request(void);
 
 
+/* MAX-183: why the device is shutting down. */
+typedef enum
+{
+    POWER_SHUTDOWN_REASON_NONE = 0,
+    POWER_SHUTDOWN_REASON_BUTTON,
+    POWER_SHUTDOWN_REASON_LOW_BATTERY,
+
+} power_shutdown_reason_t;
+
+
+/*
+ * Request the same safe shutdown the button triggers, from firmware (e.g. a
+ * critical battery). Works whether or not the button is armed. The first
+ * request wins; later ones return ESP_OK without changing the reason.
+ * BUTTON/NONE are rejected (the button path owns BUTTON).
+ */
+esp_err_t power_control_request_shutdown(
+    power_shutdown_reason_t reason
+);
+
+/* NONE until the latch is set; BUTTON when the button set it. */
+power_shutdown_reason_t power_control_shutdown_reason(void);
+
+const char *power_control_shutdown_reason_name(
+    power_shutdown_reason_t reason
+);
+
+
 bool power_control_is_shutdown_requested(void);
 
 

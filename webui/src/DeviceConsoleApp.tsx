@@ -21,6 +21,7 @@ import {
   waitForMeasurementTransition,
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
+import PowerBanner from './components/PowerBanner';
 
 const XrScannerFeature = lazy(() => import('./App'));
 
@@ -342,6 +343,8 @@ export default function DeviceConsoleApp() {
         </nav>
         <div className={`device-dot ${apiOnline ? 'online' : 'offline'}`}>{apiLabel}</div>
       </header>
+
+      <PowerBanner status={status} />
 
       {screen === 'dashboard' && (
         <DeviceDashboard

@@ -97,6 +97,11 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
     cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate);
     cJSON_AddBoolToObject(object, "usb_present", power->usb_present);
     cJSON_AddBoolToObject(object, "charging", power->charging);
+    /* MAX-180/183: user-facing state and the low-battery reaction. */
+    cJSON_AddStringToObject(object, "state", device_status_power_state_name(power->state));
+    cJSON_AddBoolToObject(object, "battery_full", power->battery_full);
+    cJSON_AddStringToObject(object, "low_battery", device_status_low_battery_name(power->low_battery));
+    cJSON_AddNumberToObject(object, "shutdown_in_s", (double)power->shutdown_in_s);
 
     cJSON *channels = cJSON_AddArrayToObject(object, "channels");
     if (channels == NULL) return false;

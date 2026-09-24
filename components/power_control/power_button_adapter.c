@@ -315,6 +315,40 @@ void power_button_adapter_wait_for_shutdown_request(void)
 }
 
 
+/*
+ * MAX-183: a shutdown requested by firmware (critical battery) instead of
+ * the button. It sets the same authoritative latch, so everything that
+ * already honours the button (keypad admission, Web command ingress,
+ * app_shutdown_wait_and_run) behaves identically. The RELEASED bit is set
+ * too: no button is being held, the waiter must not wait for a release.
+ */
+esp_err_t power_button_adapter_request_shutdown(void)
+{
+    if (!s_state.initialized || s_state.events == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((xEventGroupGetBits(s_state.events) & POWER_EVENT_SHUTDOWN_REQUESTED) != 0) {
+        return ESP_OK;
+    }
+
+    app_events_set_keypad_delivery_enabled(false);
+    xEventGroupSetBits(
+        s_state.events,
+        POWER_EVENT_BUTTON_RELEASED | POWER_EVENT_SHUTDOWN_REQUESTED
+    );
+    ESP_LOGW(TAG, "Shutdown requested by firmware (not the button)");
+
+    (void)app_events_post_best_effort(
+        APP_EVENT_POWER_SHUTDOWN_REQUESTED,
+        1
+    );
+    if (s_state.notification_hook != NULL) {
+        s_state.notification_hook(s_state.notification_context);
+    }
+    return ESP_OK;
+}
+
+
 bool power_button_adapter_is_shutdown_requested(void)
 {
     if (!s_state.initialized || s_state.events == NULL) {

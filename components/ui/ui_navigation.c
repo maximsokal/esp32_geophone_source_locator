@@ -220,6 +220,28 @@ void ui_dispatch_app_event_locked(
             }
             break;
 
+        case APP_EVENT_POWER_BATTERY_ALERT:
+            /* MAX-183: the header badge shows the state on every screen;
+             * the notice adds the instruction where a screen has room. */
+            switch (event_value) {
+                case APP_POWER_ALERT_LOW:
+                    ui_set_notice_locked("LOW BATTERY - CONNECT USB SOON");
+                    break;
+                case APP_POWER_ALERT_CRITICAL_GRACE:
+                    ui_set_notice_locked("LOW BATTERY - CONNECT USB - SHUTTING DOWN");
+                    break;
+                case APP_POWER_ALERT_CANCELLED:
+                    ui_set_notice_locked("USB CONNECTED - SHUTDOWN CANCELLED");
+                    break;
+                case APP_POWER_ALERT_SHUTDOWN:
+                    ui_set_notice_locked("LOW BATTERY - SHUTTING DOWN");
+                    break;
+                default:
+                    return;
+            }
+            ui_refresh_header_locked();
+            return;
+
         case APP_EVENT_STORAGE_RECOVERY_STARTED:
             context->storage_recovery_active = true;
             context->storage_recovery_failed = false;

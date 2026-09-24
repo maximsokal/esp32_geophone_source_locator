@@ -59,6 +59,39 @@ static device_power_source_t s_last_source;
 static float s_last_power_voltage;
 static float s_last_power_current;
 
+/* MAX-180/183 */
+static ina3221_power_state_t s_fake_source_state = INA3221_POWER_STATE_USB_CHARGING;
+static float s_fake_battery_v = 4.0f;
+static unsigned s_critical_handler_calls;
+static int64_t s_critical_handler_time_us;
+static device_power_state_t s_status_power_state;
+static device_low_battery_phase_t s_status_low_battery;
+static uint32_t s_status_shutdown_in_s;
+static int32_t s_alerts[16];
+static unsigned s_alert_count;
+
+esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value)
+{
+    assert(type == APP_EVENT_POWER_BATTERY_ALERT);
+    assert(s_alert_count < 16U);
+    s_alerts[s_alert_count++] = value;
+    return ESP_OK;
+}
+
+esp_err_t device_status_set_power_state(
+    device_power_state_t state,
+    bool battery_full,
+    device_low_battery_phase_t low_battery,
+    uint32_t shutdown_in_s
+)
+{
+    (void)battery_full;
+    s_status_power_state = state;
+    s_status_low_battery = low_battery;
+    s_status_shutdown_in_s = shutdown_in_s;
+    return ESP_OK;
+}
+
 /* MAX-245 */
 static float s_ad7606_current_a = 0.10f;
 static unsigned s_stop_after_waits;
@@ -266,7 +299,7 @@ ina3221_power_state_t ina3221_policy_classify_instant(
 {
     assert(channels != NULL);
     ++s_classify_calls;
-    return INA3221_POWER_STATE_USB_CHARGING;
+    return s_fake_source_state;
 }
 
 ina3221_power_state_t ina3221_policy_classifier_update(
@@ -289,14 +322,14 @@ void ina3221_policy_make_decision(
 {
     assert(channels != NULL);
     assert(decision != NULL);
-    assert(stable_state == INA3221_POWER_STATE_USB_CHARGING);
+    assert(stable_state == s_fake_source_state);
     ++s_make_decision_calls;
 
     *decision = (ina3221_power_decision_t) {
         .state = stable_state,
         .battery_present = true,
         .battery_percent_valid = true,
-        .battery_voltage_v = 4.0f,
+        .battery_voltage_v = s_fake_battery_v,
         .battery_current_a = -0.25f,
         .battery_percent_estimate = 75.0f,
         .usb_present = true,
@@ -406,6 +439,15 @@ static void reset_fakes(void)
     s_state_lock.depth = 0U;
 
     s_ad7606_current_a = 0.10f;
+    s_fake_source_state = INA3221_POWER_STATE_USB_CHARGING;
+    s_fake_battery_v = 4.0f;
+    s_critical_handler_calls = 0U;
+    s_critical_handler_time_us = 0;
+    s_status_power_state = DEVICE_POWER_STATE_UNKNOWN;
+    s_status_low_battery = DEVICE_LOW_BATTERY_NORMAL;
+    s_status_shutdown_in_s = 0U;
+    s_alert_count = 0U;
+    ina3221_monitor_set_critical_battery_handler(NULL);
     s_stop_after_waits = 0U;
     s_wait_hook = NULL;
     s_wait_hook_at = 0U;
@@ -712,6 +754,75 @@ static void test_overcurrent_clear_reaches_the_running_worker(void)
     assert_lock_balanced();
 }
 
+static void critical_handler(void)
+{
+    ++s_critical_handler_calls;
+    s_critical_handler_time_us = s_fake_time_us;
+}
+
+static void plug_usb(void)
+{
+    s_fake_source_state = INA3221_POWER_STATE_USB_CHARGING;
+}
+
+static void test_critical_battery_requests_shutdown_after_grace(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f; /* below the 3.30 V default critical */
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 20U; /* 20 samples, 1 s apart */
+    s_worker_entry(s_worker_argument);
+
+    /* Critical confirmed on the 5th sample (t = 4 s), then 10 s of grace:
+     * exactly one shutdown request, at t = 14 s. */
+    assert(s_critical_handler_calls == 1U);
+    assert(s_critical_handler_time_us == 14000000);
+    assert(s_status_power_state == DEVICE_POWER_STATE_BATTERY_CRITICAL);
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_SHUTDOWN);
+    assert(s_alert_count == 2U);
+    assert(s_alerts[0] == APP_POWER_ALERT_CRITICAL_GRACE);
+    assert(s_alerts[1] == APP_POWER_ALERT_SHUTDOWN);
+    assert_lock_balanced();
+}
+
+static void test_usb_during_grace_cancels_the_shutdown(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_wait_hook = plug_usb;
+    s_wait_hook_at = 8U;      /* USB plugged in 3-4 s into the grace */
+    s_stop_after_waits = 25U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_critical_handler_calls == 0U);
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_NORMAL);
+    assert(s_status_power_state == DEVICE_POWER_STATE_USB_CHARGING);
+    assert(s_alert_count == 2U);
+    assert(s_alerts[0] == APP_POWER_ALERT_CRITICAL_GRACE);
+    assert(s_alerts[1] == APP_POWER_ALERT_CANCELLED);
+    assert_lock_balanced();
+}
+
+static void test_healthy_battery_never_alerts(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.90f;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 30U;
+    s_worker_entry(s_worker_argument);
+    assert(s_critical_handler_calls == 0U);
+    assert(s_alert_count == 0U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_BATTERY);
+    assert(s_status_shutdown_in_s == 0U);
+}
+
 int main(void)
 {
     test_create_failure_rolls_back_and_retries();
@@ -727,5 +838,8 @@ int main(void)
     test_limits_are_programmed_after_open();
     test_ad7606_overcurrent_latches_and_is_published();
     test_overcurrent_clear_reaches_the_running_worker();
+    test_critical_battery_requests_shutdown_after_grace();
+    test_usb_during_grace_cancels_the_shutdown();
+    test_healthy_battery_never_alerts();
     return 0;
 }

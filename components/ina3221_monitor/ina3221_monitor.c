@@ -9,6 +9,9 @@
 #include "device_status.h"
 #include "ina3221_driver.h"
 #include "ina3221_limits.h"
+#include "ina3221_low_battery.h"
+#include "ina3221_power_ux.h"
+#include "app_events.h"
 #include "ina3221_policy.h"
 
 #include "esp_log.h"
@@ -70,6 +73,118 @@ static int64_t s_fast_sampling_deadline_us =
 static ina3221_limits_t s_limits;
 static ina3221_overcurrent_tracker_t s_overcurrent;
 static uint8_t s_overcurrent_clear_mask = 0U;
+
+/* MAX-180/183: owned by the worker. */
+static ina3221_power_ux_config_t s_ux_config;
+static ina3221_power_ux_t s_ux;
+static ina3221_low_battery_t s_low_battery;
+static ina3221_monitor_critical_battery_handler_t s_critical_battery_handler;
+
+/* device_status mirrors these enums value by value (it must not depend on
+ * this component); pin both sides to the same numbers. */
+_Static_assert(INA3221_POWER_UX_USB_BATTERY_READY == 3 && INA3221_POWER_UX_BATTERY_CRITICAL == 6,
+               "ina3221_power_ux_state_t numbering changed");
+_Static_assert(DEVICE_POWER_STATE_USB_BATTERY_READY == 3 && DEVICE_POWER_STATE_BATTERY_CRITICAL == 6,
+               "device_power_state_t must mirror ina3221_power_ux_state_t");
+_Static_assert(INA3221_LOW_BATTERY_GRACE == 2 && INA3221_LOW_BATTERY_SHUTDOWN == 3,
+               "ina3221_low_battery_phase_t numbering changed");
+_Static_assert(DEVICE_LOW_BATTERY_GRACE == 2 && DEVICE_LOW_BATTERY_SHUTDOWN == 3,
+               "device_low_battery_phase_t must mirror ina3221_low_battery_phase_t");
+
+
+static void ina3221_monitor_load_power_ux(void)
+{
+    ina3221_power_ux_default_config(&s_ux_config);
+    uint32_t grace_ms = 10000U;
+#if defined(CONFIG_POWER_BATTERY_LOW_ENTER_MV)
+    s_ux_config.low_enter_v = (float)CONFIG_POWER_BATTERY_LOW_ENTER_MV / 1000.0f;
+    s_ux_config.low_exit_v = (float)CONFIG_POWER_BATTERY_LOW_EXIT_MV / 1000.0f;
+    s_ux_config.critical_enter_v = (float)CONFIG_POWER_BATTERY_CRITICAL_ENTER_MV / 1000.0f;
+    s_ux_config.critical_exit_v = (float)CONFIG_POWER_BATTERY_CRITICAL_EXIT_MV / 1000.0f;
+    s_ux_config.full_v = (float)CONFIG_POWER_BATTERY_FULL_MV / 1000.0f;
+    grace_ms = (uint32_t)CONFIG_POWER_LOW_BATTERY_GRACE_S * 1000U;
+#endif
+    if (!ina3221_power_ux_config_valid(&s_ux_config)) {
+        ESP_LOGE(TAG, "Configured battery thresholds are inconsistent "
+                      "(critical < low, enter < exit); using the built-in defaults");
+        ina3221_power_ux_default_config(&s_ux_config);
+    }
+    ina3221_power_ux_reset(&s_ux);
+    ina3221_low_battery_init(&s_low_battery, grace_ms);
+}
+
+
+static void ina3221_monitor_apply_power_state(
+    ina3221_power_state_t source_state,
+    const ina3221_power_decision_t *decision,
+    bool telemetry_valid
+)
+{
+    const ina3221_power_ux_input_t input = {
+        .source = source_state,
+        .telemetry_valid = telemetry_valid,
+        .battery_present = decision != NULL && decision->battery_present,
+        .battery_voltage_v = decision != NULL ? decision->battery_voltage_v : 0.0f,
+    };
+    const ina3221_power_ux_state_t previous = s_ux.state;
+    const ina3221_power_ux_state_t state =
+        ina3221_power_ux_update(&s_ux, &s_ux_config, &input);
+    if (state != previous) {
+        ESP_LOGI(
+            TAG,
+            "Power state %s -> %s (battery %.3f V)",
+            ina3221_power_ux_state_name(previous),
+            ina3221_power_ux_state_name(state),
+            (double)input.battery_voltage_v
+        );
+    }
+
+    const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    const ina3221_low_battery_action_t action =
+        ina3221_low_battery_update(&s_low_battery, state, now_ms);
+    const uint32_t shutdown_in_s =
+        ina3221_low_battery_remaining_s(&s_low_battery, now_ms);
+
+    switch (action) {
+        case INA3221_LOW_BATTERY_ACTION_WARN:
+            ESP_LOGW(TAG, "LOW BATTERY: %.3f V", (double)input.battery_voltage_v);
+            (void)app_events_post_best_effort(APP_EVENT_POWER_BATTERY_ALERT, APP_POWER_ALERT_LOW);
+            break;
+        case INA3221_LOW_BATTERY_ACTION_START_GRACE:
+            ESP_LOGE(
+                TAG,
+                "CRITICAL BATTERY %.3f V: connect USB within %u s or the device shuts down",
+                (double)input.battery_voltage_v,
+                (unsigned)shutdown_in_s
+            );
+            (void)app_events_post_best_effort(APP_EVENT_POWER_BATTERY_ALERT, APP_POWER_ALERT_CRITICAL_GRACE);
+            break;
+        case INA3221_LOW_BATTERY_ACTION_CANCELLED:
+            ESP_LOGW(TAG, "USB power restored: low-battery shutdown cancelled");
+            (void)app_events_post_best_effort(APP_EVENT_POWER_BATTERY_ALERT, APP_POWER_ALERT_CANCELLED);
+            break;
+        case INA3221_LOW_BATTERY_ACTION_REQUEST_SHUTDOWN:
+            ESP_LOGE(TAG, "CRITICAL BATTERY: starting safe shutdown (recorder, SD, power off)");
+            (void)app_events_post_best_effort(APP_EVENT_POWER_BATTERY_ALERT, APP_POWER_ALERT_SHUTDOWN);
+            if (s_critical_battery_handler != NULL) {
+                s_critical_battery_handler();
+            } else {
+                ESP_LOGE(TAG, "No critical-battery handler registered; cannot shut down");
+            }
+            break;
+        case INA3221_LOW_BATTERY_ACTION_NONE:
+        default:
+            break;
+    }
+
+    (void)device_status_set_power_state(
+        (device_power_state_t)state,
+        state == INA3221_POWER_UX_USB_BATTERY_READY &&
+            input.battery_voltage_v >= s_ux_config.full_v,
+        (device_low_battery_phase_t)s_low_battery.phase,
+        shutdown_in_s
+    );
+}
 
 
 static void ina3221_monitor_load_limits(void)
@@ -374,6 +489,7 @@ static void ina3221_monitor_worker(
 
     ina3221_monitor_load_limits();
     ina3221_overcurrent_reset(&s_overcurrent);
+    ina3221_monitor_load_power_ux();
 
     uint32_t sample_count = 0;
     uint32_t retry_count = 0;
@@ -514,6 +630,8 @@ static void ina3221_monitor_worker(
             );
 
             ina3221_monitor_apply_overcurrent(channels);
+
+            ina3221_monitor_apply_power_state(stable_state, &decision, true);
 
             sample_count++;
 
@@ -676,6 +794,16 @@ void ina3221_monitor_stop(void)
 
     portENTER_CRITICAL(&s_state_lock);
     s_stop_requested = false;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+void ina3221_monitor_set_critical_battery_handler(
+    ina3221_monitor_critical_battery_handler_t handler
+)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_critical_battery_handler = handler;
     portEXIT_CRITICAL(&s_state_lock);
 }
 
