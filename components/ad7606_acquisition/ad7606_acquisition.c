@@ -270,6 +270,20 @@ static void ad7606_status_set_power(
 }
 
 
+static void ad7606_status_set_overcurrent(
+    float rail_v,
+    float current_a
+)
+{
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.power_gate = (int)AD7606_POWER_GATE_OVERCURRENT;
+    s_status.power_fault_latched = true;
+    s_status.power_fault_rail_v = rail_v;
+    s_status.power_fault_current_a = current_a;
+    portEXIT_CRITICAL(&s_status_lock);
+}
+
+
 /* MAX-242: the INA3221 CH3 reading of the AD7606 +5 V rail. */
 static void ad7606_read_rail(
     ina3221_monitor_rail_t *rail
@@ -808,6 +822,23 @@ static void ad7606_worker(
                 s_rail_last_check_us = now_us;
                 ina3221_monitor_rail_t rail;
                 ad7606_read_rail(&rail);
+                if (rail.overcurrent_latched) {
+                    /* MAX-245: the monitor confirmed a critical current on
+                     * this rail (two samples). Same reaction as rail loss:
+                     * software protection only, ~1-3 s -- the supply's own
+                     * current limit is the fast protection. */
+                    ESP_LOGE(
+                        TAG,
+                        "AD7606 +5 V rail over-current (INA3221 CH3 %.3f A): "
+                        "stopping acquisition and releasing AD7606 pins to Hi-Z",
+                        (double)rail.overcurrent_latched_current_a
+                    );
+                    ad7606_status_set_overcurrent(
+                        rail.bus_voltage_v, rail.overcurrent_latched_current_a
+                    );
+                    s_running = false;
+                    break;
+                }
                 if (ad7606_rail_watch_update(
                         &s_rail_watch, rail.available, rail.valid,
                         rail.bus_voltage_v, rail.sampled_at_us, now_us)) {
@@ -988,6 +1019,11 @@ esp_err_t ad7606_acquisition_start(void)
 
 #if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
     {
+        /* MAX-245: an explicit start clears a latched over-current; if
+         * the fault persists the monitor re-confirms it within ~2 s and
+         * the worker stops again. */
+        (void)ina3221_monitor_clear_overcurrent(INA3221_MONITOR_RAIL_AD7606_5V);
+
         /* MAX-242: decide BEFORE the Core 1 worker exists, so a refused
          * start never configures or drives a single AD7606 pin. */
         ina3221_monitor_rail_t rail;

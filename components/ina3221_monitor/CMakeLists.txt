@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "ina3221_driver.c"
+        "ina3221_limits.c"
         "ina3221_monitor.c"
         "ina3221_policy.c"
 

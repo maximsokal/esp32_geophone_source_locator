@@ -75,6 +75,16 @@ const char *device_status_power_source_name(device_power_source_t source)
     }
 }
 
+const char *device_status_power_overcurrent_name(device_power_overcurrent_t overcurrent)
+{
+    switch (overcurrent) {
+        case DEVICE_POWER_OVERCURRENT_NONE: return "none";
+        case DEVICE_POWER_OVERCURRENT_WARNING: return "warning";
+        case DEVICE_POWER_OVERCURRENT_CRITICAL: return "critical";
+        default: return "unknown";
+    }
+}
+
 const char *device_status_pod_name(pod_state_t state)
 {
     switch (state) {
@@ -227,6 +237,8 @@ static void fill_status(void)
         g_status.power.channels[i].voltage_v = (float)(i + 1U);
         g_status.power.channels[i].current_a = (float)(i + 2U);
         g_status.power.channels[i].power_w = (float)(i + 3U);
+        g_status.power.channels[i].overcurrent = DEVICE_POWER_OVERCURRENT_NONE;
+        g_status.power.channels[i].overcurrent_latched = false;
     }
 
     g_status.environment.valid = true;
@@ -302,6 +314,9 @@ static void fill_status(void)
     g_acquisition_snapshot.power_gate = "rail_low";
     g_acquisition_snapshot.power_fault_latched = true;
     g_acquisition_snapshot.power_fault_rail_v = 3.25f;
+    g_acquisition_snapshot.power_fault_current_a = 0.42f;
+    g_status.power.channels[2].overcurrent = DEVICE_POWER_OVERCURRENT_CRITICAL;
+    g_status.power.channels[2].overcurrent_latched = true;
     g_acquisition_snapshot.signal_quality = "CLEAN";
     g_acquisition_snapshot.serial_suspicious_streak = 3;
     g_acquisition_snapshot.serial_repeated_frame_streak = 4;
@@ -364,6 +379,16 @@ static void test_full_builder_and_pods(void)
     assert(strcmp(string_item(power, "source"), "USB") == 0);
     assert_number_near(number_item(power, "power_w"), 9.375);
     assert(cJSON_GetArraySize(object_item(power, "channels")) == 3);
+    {
+        cJSON *channels = object_item(power, "channels");
+        cJSON *ad7606 = cJSON_GetArrayItem(channels, 2);
+        assert(strcmp(string_item(ad7606, "name"), "AD7606_5V") == 0);
+        assert(strcmp(string_item(ad7606, "overcurrent"), "critical") == 0);
+        assert(bool_item(ad7606, "overcurrent_latched"));
+        cJSON *battery = cJSON_GetArrayItem(channels, 0);
+        assert(strcmp(string_item(battery, "overcurrent"), "none") == 0);
+        assert(!bool_item(battery, "overcurrent_latched"));
+    }
 
     cJSON *acquisition = object_item(root, "acquisition");
     assert(bool_item(acquisition, "running"));
@@ -381,6 +406,7 @@ static void test_full_builder_and_pods(void)
     assert(strcmp(string_item(serial, "power_gate"), "rail_low") == 0);
     assert(bool_item(serial, "power_fault_latched"));
     assert_number_near(number_item(serial, "power_fault_rail_v"), 3.25);
+    assert_number_near(number_item(serial, "power_fault_current_a"), 0.42);
     cJSON *signal = object_item(acquisition, "signal");
     assert(strcmp(string_item(signal, "quality"), "CLEAN") == 0);
     assert_number_near(number_item(signal, "clip_ratio"), 0.8);

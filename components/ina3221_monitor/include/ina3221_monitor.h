@@ -56,6 +56,13 @@ typedef struct
     /* esp_timer time of the last published read (0 when never). */
     int64_t sampled_at_us;
 
+    /* MAX-245 software over-current state: 0 none, 1 warning, 2 critical
+     * (ina3221_overcurrent_level_t). A confirmed critical stays latched
+     * until ina3221_monitor_clear_overcurrent(). */
+    int overcurrent_level;
+    bool overcurrent_latched;
+    float overcurrent_latched_current_a;
+
 } ina3221_monitor_rail_t;
 
 /*
@@ -66,5 +73,15 @@ typedef struct
 esp_err_t ina3221_monitor_get_rail(
     size_t channel_index,
     ina3221_monitor_rail_t *rail_out
+);
+
+/*
+ * MAX-245: clear a latched over-current of one channel (the published
+ * state immediately, the worker's tracker at its next sample). If the
+ * over-current persists it is confirmed and latched again within two
+ * samples.
+ */
+esp_err_t ina3221_monitor_clear_overcurrent(
+    size_t channel_index
 );
 

@@ -55,6 +55,18 @@ int main(void)
     assert(device_status_set_power(5.0f, 2.0f, true) == ESP_OK);
     assert(device_status_set_power_channel(1, 4.9f, 0.5f, true) == ESP_OK);
     assert(device_status_set_power_channel(DEVICE_STATUS_POWER_CHANNEL_COUNT, 1.0f, 1.0f, true) == ESP_ERR_INVALID_ARG);
+    /* MAX-245 over-current state per channel. */
+    assert(device_status_set_power_channel_overcurrent(2, DEVICE_POWER_OVERCURRENT_CRITICAL, true) == ESP_OK);
+    assert(device_status_set_power_channel_overcurrent(DEVICE_STATUS_POWER_CHANNEL_COUNT, DEVICE_POWER_OVERCURRENT_NONE, false) == ESP_ERR_INVALID_ARG);
+    assert(device_status_set_power_channel_overcurrent(0, (device_power_overcurrent_t)7, false) == ESP_ERR_INVALID_ARG);
+    {
+        device_status_snapshot_t oc_snapshot;
+        assert(device_status_get_snapshot(&oc_snapshot) == ESP_OK);
+        assert(oc_snapshot.power.channels[2].overcurrent == DEVICE_POWER_OVERCURRENT_CRITICAL);
+        assert(oc_snapshot.power.channels[2].overcurrent_latched);
+        assert(oc_snapshot.power.channels[0].overcurrent == DEVICE_POWER_OVERCURRENT_NONE);
+        assert(strcmp(device_status_power_overcurrent_name(DEVICE_POWER_OVERCURRENT_WARNING), "warning") == 0);
+    }
     assert(device_status_set_power_battery(4.1f, 0.2f, 80.0f, true, true, false, false, DEVICE_POWER_SOURCE_BATTERY) == ESP_OK);
     assert(device_status_set_power_battery(0, 0, 0, false, false, false, false, (device_power_source_t)99) == ESP_ERR_INVALID_ARG);
     assert(device_status_set_environment(22.5f, 48.0f, 100500.0f, true) == ESP_OK);

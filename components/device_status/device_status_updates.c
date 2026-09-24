@@ -43,6 +43,33 @@ esp_err_t device_status_set_power(
 }
 
 
+esp_err_t device_status_set_power_channel_overcurrent(
+    size_t channel_index,
+    device_power_overcurrent_t overcurrent,
+    bool latched
+)
+{
+    if (
+        channel_index >= DEVICE_STATUS_POWER_CHANNEL_COUNT ||
+        overcurrent > DEVICE_POWER_OVERCURRENT_CRITICAL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    device_status_snapshot_t *status;
+    esp_err_t err = device_status_internal_lock(&status);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    status->power.channels[channel_index].overcurrent = overcurrent;
+    status->power.channels[channel_index].overcurrent_latched = latched;
+
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_power_channel(
     size_t channel_index,
     float voltage_v,

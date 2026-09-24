@@ -126,3 +126,44 @@ config WEB_SERVER_WEBUI_PSRAM_CACHE
         transparently fall back to the embedded flash assets otherwise.
 
 endmenu
+
+menu "INA3221 over-current limits"
+
+    comment "MAX-245: engineering estimates, not measured -- calibrate on the bench"
+
+    config INA3221_BATTERY_WARNING_MA
+        int "Battery (CH1) warning current, mA"
+        range 50 1600
+        default 1200
+
+    config INA3221_BATTERY_CRITICAL_MA
+        int "Battery (CH1) critical current, mA"
+        range 50 1630
+        default 1500
+
+    config INA3221_ESP32_WARNING_MA
+        int "ESP32 5 V rail (CH2) warning current, mA"
+        range 50 1600
+        default 800
+
+    config INA3221_ESP32_CRITICAL_MA
+        int "ESP32 5 V rail (CH2) critical current, mA"
+        range 50 1630
+        default 1200
+
+    config INA3221_AD7606_WARNING_MA
+        int "AD7606 5 V rail (CH3) warning current, mA"
+        range 10 1600
+        default 150
+
+    config INA3221_AD7606_CRITICAL_MA
+        int "AD7606 5 V rail (CH3) critical current, mA"
+        range 10 1630
+        default 250
+        help
+            Two consecutive samples at or above this current latch a critical
+            over-current on the AD7606 rail: acquisition stops and every
+            AD7606 pin is released to Hi-Z (MAX-242 interlock). The latch is
+            cleared by the next explicit acquisition start.
+
+endmenu
