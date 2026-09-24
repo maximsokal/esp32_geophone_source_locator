@@ -8,6 +8,7 @@
 #include "app_task_config.h"
 #include "device_status.h"
 #include "ina3221_driver.h"
+#include "ina3221_limits.h"
 #include "ina3221_policy.h"
 
 #include "esp_log.h"
@@ -15,6 +16,12 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+/* The Kconfig limits must reach this file on the target (FreeRTOS.h pulls
+ * in sdkconfig.h); silently falling back to defaults would hide a typo. */
+#if defined(ESP_PLATFORM) && !defined(CONFIG_INA3221_AD7606_CRITICAL_MA)
+#error "INA3221 over-current Kconfig limits are not visible"
+#endif
 
 
 #define INA3221_MONITOR_PERIOD_MS       1000u
@@ -56,6 +63,84 @@ static void ina3221_monitor_store_rail(size_t index, bool valid, float voltage_v
 
 static int64_t s_fast_sampling_deadline_us =
     0;
+
+/* MAX-245: limits are fixed per run; the tracker is owned by the worker.
+ * Clear requests from other tasks are a channel bit mask under
+ * s_state_lock. */
+static ina3221_limits_t s_limits;
+static ina3221_overcurrent_tracker_t s_overcurrent;
+static uint8_t s_overcurrent_clear_mask = 0U;
+
+
+static void ina3221_monitor_load_limits(void)
+{
+    ina3221_limits_default(&s_limits);
+#if defined(CONFIG_INA3221_BATTERY_WARNING_MA)
+    s_limits.channels[INA3221_POLICY_BATTERY_INDEX].warning_a =
+        (float)CONFIG_INA3221_BATTERY_WARNING_MA / 1000.0f;
+    s_limits.channels[INA3221_POLICY_BATTERY_INDEX].critical_a =
+        (float)CONFIG_INA3221_BATTERY_CRITICAL_MA / 1000.0f;
+    s_limits.channels[INA3221_POLICY_ESP32_INDEX].warning_a =
+        (float)CONFIG_INA3221_ESP32_WARNING_MA / 1000.0f;
+    s_limits.channels[INA3221_POLICY_ESP32_INDEX].critical_a =
+        (float)CONFIG_INA3221_ESP32_CRITICAL_MA / 1000.0f;
+    s_limits.channels[INA3221_POLICY_AD7606_INDEX].warning_a =
+        (float)CONFIG_INA3221_AD7606_WARNING_MA / 1000.0f;
+    s_limits.channels[INA3221_POLICY_AD7606_INDEX].critical_a =
+        (float)CONFIG_INA3221_AD7606_CRITICAL_MA / 1000.0f;
+#endif
+    if (!ina3221_limits_valid(&s_limits, 0.1f)) {
+        ESP_LOGE(TAG, "Configured over-current limits are invalid (warning must be below critical, "
+                      "critical <= 1.63 A); using the built-in defaults");
+        ina3221_limits_default(&s_limits);
+    }
+}
+
+
+static void ina3221_monitor_apply_overcurrent(
+    const ina3221_channel_sample_t channels[INA3221_POLICY_CHANNEL_COUNT]
+)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    const uint8_t clear_mask = s_overcurrent_clear_mask;
+    s_overcurrent_clear_mask = 0U;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    for (size_t i = 0; i < INA3221_POLICY_CHANNEL_COUNT; ++i) {
+        if ((clear_mask & (uint8_t)(1U << i)) != 0U) {
+            ina3221_overcurrent_clear_latch(&s_overcurrent, i);
+        }
+    }
+
+    if (ina3221_overcurrent_update(&s_overcurrent, &s_limits, channels)) {
+        for (size_t i = 0; i < INA3221_POLICY_CHANNEL_COUNT; ++i) {
+            const ina3221_overcurrent_channel_t *oc = &s_overcurrent.channels[i];
+            if (oc->latched && oc->level == INA3221_OVERCURRENT_CRITICAL) {
+                ESP_LOGE(
+                    TAG,
+                    "OVER-CURRENT %s: %.3f A >= %.3f A (latched)",
+                    ina3221_policy_channel_name(i),
+                    (double)oc->latched_current_a,
+                    (double)s_limits.channels[i].critical_a
+                );
+            }
+        }
+    }
+
+    for (size_t i = 0; i < INA3221_POLICY_CHANNEL_COUNT; ++i) {
+        const ina3221_overcurrent_channel_t *oc = &s_overcurrent.channels[i];
+        portENTER_CRITICAL(&s_state_lock);
+        s_rails[i].overcurrent_level = (int)oc->level;
+        s_rails[i].overcurrent_latched = oc->latched;
+        s_rails[i].overcurrent_latched_current_a = oc->latched_current_a;
+        portEXIT_CRITICAL(&s_state_lock);
+        (void)device_status_set_power_channel_overcurrent(
+            i,
+            (device_power_overcurrent_t)oc->level,
+            oc->latched
+        );
+    }
+}
 
 
 static bool ina3221_monitor_stop_requested(void)
@@ -287,6 +372,9 @@ static void ina3221_monitor_worker(
     ina3221_driver_t driver = { 0 };
     ina3221_power_classifier_t classifier = { 0 };
 
+    ina3221_monitor_load_limits();
+    ina3221_overcurrent_reset(&s_overcurrent);
+
     uint32_t sample_count = 0;
     uint32_t retry_count = 0;
 
@@ -337,6 +425,19 @@ static void ina3221_monitor_worker(
                     0,
                     sizeof(classifier)
                 );
+
+                /* MAX-245: CH1 hardware alert limits (CRI/WAR are not
+                 * wired, so this is observability only); the software
+                 * reaction below does not depend on it. */
+                const esp_err_t limits_err =
+                    ina3221_driver_program_limits(&driver, &s_limits);
+                if (limits_err != ESP_OK) {
+                    ESP_LOGW(
+                        TAG,
+                        "INA3221 alert limits not programmed: %s",
+                        esp_err_to_name(limits_err)
+                    );
+                }
 
                 if (!hardware_available) {
                     ESP_LOGI(
@@ -411,6 +512,8 @@ static void ina3221_monitor_worker(
                 channels,
                 &decision
             );
+
+            ina3221_monitor_apply_overcurrent(channels);
 
             sample_count++;
 
@@ -574,6 +677,25 @@ void ina3221_monitor_stop(void)
     portENTER_CRITICAL(&s_state_lock);
     s_stop_requested = false;
     portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+esp_err_t ina3221_monitor_clear_overcurrent(
+    size_t channel_index
+)
+{
+    if (channel_index >= INA3221_POLICY_CHANNEL_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    s_overcurrent_clear_mask |= (uint8_t)(1U << channel_index);
+    s_rails[channel_index].overcurrent_level = 0;
+    s_rails[channel_index].overcurrent_latched = false;
+    s_rails[channel_index].overcurrent_latched_current_a = 0.0f;
+    portEXIT_CRITICAL(&s_state_lock);
+    (void)device_status_set_power_channel_overcurrent(
+        channel_index, DEVICE_POWER_OVERCURRENT_NONE, false);
+    return ESP_OK;
 }
 
 

@@ -83,6 +83,7 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_stream_stuck = status.stream_stuck;
     snapshot->power_fault_latched = status.power_fault_latched;
     snapshot->power_fault_rail_v = status.power_fault_rail_v;
+    snapshot->power_fault_current_a = status.power_fault_current_a;
     snapshot->power_gate = ad7606_power_gate_name((ad7606_power_gate_t)status.power_gate);
     snapshot->signal_quality = ad7606_signal_quality_name(status.signal_quality);
     snapshot->serial_suspicious_streak = status.suspicious_streak;

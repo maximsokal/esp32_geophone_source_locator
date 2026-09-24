@@ -35,6 +35,9 @@ typedef enum
     /* A fresh, valid reading shows the rail below the start threshold:
      * never drive any AD7606 pin. */
     AD7606_POWER_GATE_RAIL_LOW,
+    /* MAX-245: the INA3221 monitor latched a critical over-current on the
+     * AD7606 +5 V rail while it was running. */
+    AD7606_POWER_GATE_OVERCURRENT,
 
 } ad7606_power_gate_t;
 

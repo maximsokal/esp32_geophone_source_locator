@@ -40,6 +40,16 @@ typedef enum
 } device_power_source_t;
 
 
+/* MAX-245: software over-current state of one INA3221 channel. */
+typedef enum
+{
+    DEVICE_POWER_OVERCURRENT_NONE = 0,
+    DEVICE_POWER_OVERCURRENT_WARNING,
+    DEVICE_POWER_OVERCURRENT_CRITICAL,
+
+} device_power_overcurrent_t;
+
+
 typedef struct
 {
     bool valid;
@@ -47,6 +57,10 @@ typedef struct
     float voltage_v;
     float current_a;
     float power_w;
+
+    device_power_overcurrent_t overcurrent;
+    /* A confirmed CRITICAL stays latched until explicitly cleared. */
+    bool overcurrent_latched;
 
 } device_power_channel_status_t;
 
@@ -429,6 +443,16 @@ const char *device_status_mode_name(
 /*
  * Power source name suitable for logs and JSON.
  */
+esp_err_t device_status_set_power_channel_overcurrent(
+    size_t channel_index,
+    device_power_overcurrent_t overcurrent,
+    bool latched
+);
+
+const char *device_status_power_overcurrent_name(
+    device_power_overcurrent_t overcurrent
+);
+
 const char *device_status_power_source_name(
     device_power_source_t source
 );

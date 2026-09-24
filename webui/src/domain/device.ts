@@ -230,10 +230,12 @@ export interface DeviceAcquisitionStatus {
     quality?: string;
     stream_state?: string;
     stream_stuck?: boolean;
-    /** MAX-242 AD7606 +5 V rail interlock: 'ok' | 'unverified' | 'rail_low' | 'unknown'. */
+    /** MAX-242/245 AD7606 +5 V rail interlock: 'ok' | 'unverified' | 'rail_low' | 'overcurrent' | 'unknown'. */
     power_gate?: string;
     power_fault_latched?: boolean;
     power_fault_rail_v?: number;
+    /** MAX-245: rail current when an over-current fault latched (A). */
+    power_fault_current_a?: number;
     suspicious_streak: number;
     repeated_frame_streak: number;
     all_zero_frames: number;
@@ -257,10 +259,22 @@ export interface DeviceAcquisitionStatus {
   };
 }
 
+/** One INA3221 channel (MAX-245 adds the software over-current state). */
+export interface DevicePowerChannel {
+  id: number;
+  name: string;
+  valid: boolean;
+  voltage_v: number;
+  current_a: number;
+  power_w: number;
+  overcurrent?: 'none' | 'warning' | 'critical' | string;
+  overcurrent_latched?: boolean;
+}
+
 export interface DeviceStatus {
   storage_busy?: boolean;
   system: DeviceSystemStatus;
-  power: ValidValue & { voltage_v: number; current_a: number; power_w: number };
+  power: ValidValue & { voltage_v: number; current_a: number; power_w: number; channels?: DevicePowerChannel[] };
   environment: ValidValue & { temperature_c: number; humidity_percent: number; pressure_pa: number };
   mux: ValidValue & { active_channel: number; active_pod: number };
   pods: DevicePod[];

@@ -4,6 +4,7 @@
     {
       "name": "ina3221_monitor_lifecycle",
       "sources": [
+        "components/ina3221_monitor/ina3221_limits.c",
         "tests/host/ina3221_monitor_lifecycle_test.c"
       ],
       "include_dirs": [

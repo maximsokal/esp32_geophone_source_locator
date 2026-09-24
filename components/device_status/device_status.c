@@ -169,6 +169,23 @@ const char *device_status_mode_name(
 }
 
 
+const char *device_status_power_overcurrent_name(
+    device_power_overcurrent_t overcurrent
+)
+{
+    switch (overcurrent) {
+        case DEVICE_POWER_OVERCURRENT_NONE:
+            return "none";
+        case DEVICE_POWER_OVERCURRENT_WARNING:
+            return "warning";
+        case DEVICE_POWER_OVERCURRENT_CRITICAL:
+            return "critical";
+        default:
+            return "unknown";
+    }
+}
+
+
 const char *device_status_power_source_name(
     device_power_source_t source
 )

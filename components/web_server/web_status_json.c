@@ -111,6 +111,12 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
         cJSON_AddNumberToObject(channel_object, "voltage_v", channel->voltage_v);
         cJSON_AddNumberToObject(channel_object, "current_a", channel->current_a);
         cJSON_AddNumberToObject(channel_object, "power_w", channel->power_w);
+        /* MAX-245 software over-current state. */
+        cJSON_AddStringToObject(
+            channel_object,
+            "overcurrent",
+            device_status_power_overcurrent_name(channel->overcurrent));
+        cJSON_AddBoolToObject(channel_object, "overcurrent_latched", channel->overcurrent_latched);
     }
     return true;
 }
@@ -289,6 +295,12 @@ static bool web_status_json_add_acquisition(
             serial,
             "power_fault_rail_v",
             source_snapshot_available ? (double)source_snapshot->power_fault_rail_v : 0.0
+        ) != NULL &&
+        /* MAX-245: rail current at an over-current fault. */
+        cJSON_AddNumberToObject(
+            serial,
+            "power_fault_current_a",
+            source_snapshot_available ? (double)source_snapshot->power_fault_current_a : 0.0
         ) != NULL &&
         cJSON_AddStringToObject(serial, "pattern", pattern) != NULL &&
         cJSON_AddNumberToObject(

@@ -24,6 +24,7 @@ static esp_err_t s_get_handles_err;
 static unsigned s_writes;
 static uint8_t s_last_write_reg;
 static uint8_t s_last_write_bytes[2];
+static uint8_t s_limit_stuck_reg;
 
 static void reset_chip(void)
 {
@@ -35,6 +36,12 @@ static void reset_chip(void)
     s_config_ignores_writes = false;
     s_get_handles_err = ESP_OK;
     s_writes = 0U;
+    s_limit_stuck_reg = 0U;
+    /* Power-on default alert limits: all disabled. */
+    for (uint8_t r = 0x07U; r <= 0x0CU; ++r) {
+        s_regs[r] = 0x7FF8U;
+    }
+    s_regs[0x0F] = 0x0002U;
 }
 
 static esp_err_t access_result(void)
@@ -78,9 +85,12 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     ++s_writes;
     s_last_write_reg = mem_address;
     memcpy(s_last_write_bytes, data, 2U);
-    /* The driver only ever writes the configuration register. */
-    assert(mem_address == 0x00U);
-    if (!s_config_ignores_writes) {
+    /* Writable here: configuration and the six alert limits (MAX-245). */
+    assert(mem_address == 0x00U || (mem_address >= 0x07U && mem_address <= 0x0CU));
+    if (s_limit_stuck_reg != 0U && mem_address == s_limit_stuck_reg) {
+        return ESP_OK; /* register ignores the write */
+    }
+    if (!s_config_ignores_writes || mem_address != 0x00U) {
         s_regs[mem_address] = (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
     }
     return ESP_OK;
@@ -232,6 +242,75 @@ static void test_close_and_guards(void)
     ina3221_driver_close(NULL);
 }
 
+static void test_program_limits_writes_and_verifies_all_six(void)
+{
+    reset_chip();
+    ina3221_driver_t driver;
+    open_ok(&driver);
+    ina3221_limits_t limits;
+    ina3221_limits_default(&limits);
+    /* Make the AD7606 rail visibly different before programming. */
+    s_regs[0x0B] = 0x1234U;
+    const unsigned accesses_before = s_accesses;
+    assert(ina3221_driver_program_limits(&driver, &limits) == ESP_OK);
+    /* CH1 battery programmed (150 mV / 120 mV); rails disabled. */
+    assert(s_regs[0x07] == (uint16_t)(3750 * 8));
+    assert(s_regs[0x08] == (uint16_t)(3000 * 8));
+    for (uint8_t r = 0x09U; r <= 0x0CU; ++r) {
+        assert(s_regs[r] == 0x7FF8U);
+    }
+    /* 6 writes + 6 readbacks. */
+    assert(s_accesses - accesses_before == 12U);
+}
+
+static void test_program_limits_failures(void)
+{
+    ina3221_limits_t limits;
+    ina3221_limits_default(&limits);
+
+    /* A limit register that does not latch the write is reported. */
+    reset_chip();
+    ina3221_driver_t driver;
+    open_ok(&driver);
+    s_limit_stuck_reg = 0x08U;
+    s_regs[0x08] = 0x0000U;
+    assert(ina3221_driver_program_limits(&driver, &limits) == ESP_ERR_INVALID_RESPONSE);
+
+    /* Any bus error on the way out is propagated. */
+    for (unsigned failing = 1U; failing <= 12U; ++failing) {
+        reset_chip();
+        open_ok(&driver);
+        s_fail_access = s_accesses + failing;
+        assert(ina3221_driver_program_limits(&driver, &limits) == ESP_ERR_TIMEOUT);
+    }
+
+    /* Invalid limits never reach the chip. */
+    reset_chip();
+    open_ok(&driver);
+    const unsigned writes = s_writes;
+    limits.channels[0].critical_a = 5.0f;
+    assert(ina3221_driver_program_limits(&driver, &limits) == ESP_ERR_INVALID_ARG);
+    assert(s_writes == writes);
+
+    /* Not open. */
+    ina3221_driver_close(&driver);
+    ina3221_limits_default(&limits);
+    assert(ina3221_driver_program_limits(&driver, &limits) == ESP_ERR_INVALID_STATE);
+}
+
+static void test_alert_flags(void)
+{
+    reset_chip();
+    ina3221_driver_t driver;
+    open_ok(&driver);
+    s_regs[0x0F] = (uint16_t)(INA3221_DRIVER_MASK_CF1 | INA3221_DRIVER_MASK_WF1 | 0x0002U);
+    uint16_t flags = 0U;
+    assert(ina3221_driver_read_alert_flags(&driver, &flags) == ESP_OK);
+    assert((flags & INA3221_DRIVER_MASK_CF1) != 0U);
+    assert((flags & INA3221_DRIVER_MASK_WF1) != 0U);
+    assert(ina3221_driver_read_alert_flags(&driver, NULL) == ESP_ERR_INVALID_STATE);
+}
+
 int main(void)
 {
     test_open_writes_exact_config_and_verifies();
@@ -240,5 +319,8 @@ int main(void)
     test_read_channels_addressing_scaling_and_signs();
     test_read_channels_propagates_any_bus_error();
     test_close_and_guards();
+    test_program_limits_writes_and_verifies_all_six();
+    test_program_limits_failures();
+    test_alert_flags();
     return 0;
 }

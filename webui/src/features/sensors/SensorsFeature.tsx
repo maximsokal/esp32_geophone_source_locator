@@ -17,15 +17,21 @@ export default function SensorsFeature({ status, object, error }: Props) {
   const streamStuck = serial?.stream_stuck === true || serial?.stream_state === 'STUCK';
   const serialInterference = serial?.suspicious === true || serial?.stream_state === 'SUSPICIOUS';
   const powerFault = serial?.power_fault_latched === true;
+  const overcurrentFault = powerFault && serial?.power_gate === 'overcurrent';
   const powerInterlock = serial?.power_gate === undefined
     ? 'not reported'
-    : powerFault
+    : overcurrentFault
+      ? `OVER-CURRENT: AD7606 +5 V ${(serial.power_fault_current_a ?? 0).toFixed(3)} A — pins released to Hi-Z`
+      : powerFault
       ? `POWER FAULT: AD7606 +5 V ${(serial.power_fault_rail_v ?? 0).toFixed(2)} V — pins released to Hi-Z`
       : serial.power_gate === 'ok'
         ? 'AD7606 +5 V verified (INA3221 CH3)'
         : serial.power_gate === 'unverified'
           ? 'not verified (no fresh INA3221 CH3 reading)'
           : serial.power_gate;
+  const overcurrentChannels = (status?.power.channels ?? []).filter(
+    (channel) => channel.overcurrent === 'warning' || channel.overcurrent === 'critical',
+  );
   const serialStream = serial === undefined
     ? 'not observed'
     : streamStuck
@@ -37,11 +43,21 @@ export default function SensorsFeature({ status, object, error }: Props) {
   return (
     <section className="console-page">
       {error !== null && <div className="console-alert" role="alert">ESP API: {error}</div>}
-      {powerFault && (
+      {powerFault && !overcurrentFault && (
         <div className="console-alert" role="alert">
           AD7606 power fault latched: its +5 V rail was below the safe threshold, so acquisition was stopped and every AD7606 pin released to Hi-Z. Check the AD7606 supply, then start acquisition again.
         </div>
       )}
+      {overcurrentFault && (
+        <div className="console-alert" role="alert">
+          AD7606 over-current latched: its +5 V rail drew more than the critical limit, so acquisition was stopped and every AD7606 pin released to Hi-Z. Look for a short on the AD7606 module, then start acquisition again.
+        </div>
+      )}
+      {overcurrentChannels.map((channel) => (
+        <div className="console-alert" role="alert" key={`oc-${channel.id}`}>
+          INA3221 {channel.name}: {channel.overcurrent === 'critical' ? 'CRITICAL over-current' : 'over-current warning'} ({channel.current_a.toFixed(3)} A){channel.overcurrent_latched ? ', latched' : ''}.
+        </div>
+      ))}
 
       <div className="section-heading">
         <div><span className="eyebrow">HARDWARE DIAGNOSTICS</span><h1>Acquisition + four remote assemblies</h1></div>

@@ -59,6 +59,43 @@ static device_power_source_t s_last_source;
 static float s_last_power_voltage;
 static float s_last_power_current;
 
+/* MAX-245 */
+static float s_ad7606_current_a = 0.10f;
+static unsigned s_stop_after_waits;
+/* Called from inside the worker's wait number s_wait_hook_at (1-based). */
+static void (*s_wait_hook)(void);
+static unsigned s_wait_hook_at;
+static unsigned s_program_limits_calls;
+static bool s_program_limits_valid;
+static device_power_overcurrent_t s_status_overcurrent[INA3221_POLICY_CHANNEL_COUNT];
+static bool s_status_overcurrent_latched[INA3221_POLICY_CHANNEL_COUNT];
+
+esp_err_t ina3221_driver_program_limits(ina3221_driver_t *driver, const ina3221_limits_t *limits)
+{
+    assert(driver != NULL && driver->ready);
+    ++s_program_limits_calls;
+    s_program_limits_valid = ina3221_limits_valid(limits, 0.1f);
+    return ESP_OK;
+}
+
+const char *ina3221_policy_channel_name(size_t channel_index)
+{
+    (void)channel_index;
+    return "stub";
+}
+
+esp_err_t device_status_set_power_channel_overcurrent(
+    size_t channel_index,
+    device_power_overcurrent_t overcurrent,
+    bool latched
+)
+{
+    assert(channel_index < INA3221_POLICY_CHANNEL_COUNT);
+    s_status_overcurrent[channel_index] = overcurrent;
+    s_status_overcurrent_latched[channel_index] = latched;
+    return ESP_OK;
+}
+
 void test_port_enter_critical(portMUX_TYPE *mux)
 {
     assert(mux != NULL);
@@ -124,8 +161,15 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     );
     s_last_wait_ticks = ticks_to_wait;
     ++s_notify_take_calls;
+    if (s_wait_hook != NULL && s_notify_take_calls == s_wait_hook_at) {
+        s_wait_hook();
+    }
 
-    if (s_stop_on_wait) {
+    if (s_stop_after_waits != 0U && s_notify_take_calls < s_stop_after_waits) {
+        s_fake_time_us += 1000000;
+        return 0U;
+    }
+    if (s_stop_on_wait || s_stop_after_waits != 0U) {
         portENTER_CRITICAL(&s_state_lock);
         s_stop_requested = true;
         portEXIT_CRITICAL(&s_state_lock);
@@ -211,7 +255,7 @@ esp_err_t ina3221_driver_read_channels(
     channels[2] = (ina3221_channel_sample_t) {
         .valid = true,
         .bus_voltage_v = 5.0f,
-        .current_a = 0.10f,
+        .current_a = s_ad7606_current_a,
     };
     return ESP_OK;
 }
@@ -360,6 +404,17 @@ static void reset_fakes(void)
     s_stop_requested = false;
     s_fast_sampling_deadline_us = 0;
     s_state_lock.depth = 0U;
+
+    s_ad7606_current_a = 0.10f;
+    s_stop_after_waits = 0U;
+    s_wait_hook = NULL;
+    s_wait_hook_at = 0U;
+    s_program_limits_calls = 0U;
+    s_program_limits_valid = false;
+    memset(s_status_overcurrent, 0, sizeof(s_status_overcurrent));
+    memset(s_status_overcurrent_latched, 0, sizeof(s_status_overcurrent_latched));
+    memset(s_rails, 0, sizeof(s_rails));
+    s_overcurrent_clear_mask = 0U;
 }
 
 static void assert_lock_balanced(void)
@@ -586,6 +641,77 @@ static void test_fast_sampling_wakes_worker_and_uses_fast_period(void)
     assert_lock_balanced();
 }
 
+static void test_limits_are_programmed_after_open(void)
+{
+    reset_fakes();
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_on_wait = true;
+    s_worker_entry(s_worker_argument);
+    assert(s_program_limits_calls == 1U);
+    assert(s_program_limits_valid);
+    /* Normal currents: nothing reported. */
+    for (size_t i = 0; i < INA3221_POLICY_CHANNEL_COUNT; ++i) {
+        assert(s_status_overcurrent[i] == DEVICE_POWER_OVERCURRENT_NONE);
+    }
+    assert_lock_balanced();
+}
+
+static void test_ad7606_overcurrent_latches_and_is_published(void)
+{
+    reset_fakes();
+    s_ad7606_current_a = 0.40f; /* above the 250 mA critical default */
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 3U;    /* three samples */
+    s_worker_entry(s_worker_argument);
+    assert(s_read_calls == 3U);
+
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(rail.overcurrent_level == (int)INA3221_OVERCURRENT_CRITICAL);
+    assert(rail.overcurrent_latched);
+    assert(rail.overcurrent_latched_current_a > 0.39f);
+    assert(s_status_overcurrent[2] == DEVICE_POWER_OVERCURRENT_CRITICAL);
+    assert(s_status_overcurrent_latched[2]);
+    /* Other rails untouched. */
+    assert(!s_status_overcurrent_latched[0] && !s_status_overcurrent_latched[1]);
+
+    /* Explicit clear: published state clears at once... */
+    assert(ina3221_monitor_clear_overcurrent(INA3221_MONITOR_RAIL_AD7606_5V) == ESP_OK);
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(!rail.overcurrent_latched && rail.overcurrent_level == 0);
+    assert(!s_status_overcurrent_latched[2]);
+    assert(ina3221_monitor_clear_overcurrent(3U) == ESP_ERR_INVALID_ARG);
+    assert_lock_balanced();
+}
+
+static void clear_and_heal_ad7606(void)
+{
+    assert(ina3221_monitor_clear_overcurrent(INA3221_MONITOR_RAIL_AD7606_5V) == ESP_OK);
+    s_ad7606_current_a = 0.05f; /* fault removed */
+}
+
+static void test_overcurrent_clear_reaches_the_running_worker(void)
+{
+    /* One run: two faulty samples latch, then (between samples) the latch
+     * is cleared and the fault removed. The worker must drop its own
+     * latch, otherwise the next sample would publish it again. */
+    reset_fakes();
+    s_ad7606_current_a = 0.40f;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_wait_hook = clear_and_heal_ad7606;
+    s_wait_hook_at = 2U;          /* after sample 2 (latched) */
+    s_stop_after_waits = 4U;      /* samples 3 and 4 are healthy */
+    s_worker_entry(s_worker_argument);
+    assert(s_read_calls == 4U);
+
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(!rail.overcurrent_latched);
+    assert(rail.overcurrent_level == (int)INA3221_OVERCURRENT_NONE);
+    assert(!s_status_overcurrent_latched[2]);
+    assert_lock_balanced();
+}
+
 int main(void)
 {
     test_create_failure_rolls_back_and_retries();
@@ -598,5 +724,8 @@ int main(void)
     test_read_failure_invalidates_and_closes_driver();
     test_fast_sampling_request_without_running_task_stores_deadline_only();
     test_fast_sampling_wakes_worker_and_uses_fast_period();
+    test_limits_are_programmed_after_open();
+    test_ad7606_overcurrent_latches_and_is_published();
+    test_overcurrent_clear_reaches_the_running_worker();
     return 0;
 }

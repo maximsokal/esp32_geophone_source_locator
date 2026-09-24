@@ -336,9 +336,21 @@
       ]
     },
     {
+      "name": "ina3221_limits",
+      "sources": [
+        "components/ina3221_monitor/ina3221_limits.c",
+        "components/ina3221_monitor/tests/ina3221_limits_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "ina3221_driver",
       "sources": [
         "components/ina3221_monitor/ina3221_driver.c",
+        "components/ina3221_monitor/ina3221_limits.c",
         "components/ina3221_monitor/ina3221_policy.c",
         "components/ina3221_monitor/tests/ina3221_driver_test.c"
       ],

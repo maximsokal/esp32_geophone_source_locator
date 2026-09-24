@@ -7,6 +7,7 @@
 #define INA3221_REG_CONFIG            0x00u
 #define INA3221_REG_SHUNT_CH1         0x01u
 #define INA3221_REG_BUS_CH1           0x02u
+#define INA3221_REG_MASK_ENABLE       0x0Fu
 
 #define INA3221_CONFIG_CH_ALL          0x7000u
 #define INA3221_CONFIG_AVG_16          0x0400u
@@ -190,6 +191,56 @@ void ina3221_driver_close(
         driver->bus =
             NULL;
     }
+}
+
+
+esp_err_t ina3221_driver_program_limits(
+    ina3221_driver_t *driver,
+    const ina3221_limits_t *limits
+)
+{
+    if (driver == NULL || !driver->ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!ina3221_limits_valid(limits, INA3221_SHUNT_RESISTANCE_OHM)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (size_t i = 0; i < INA3221_POLICY_CHANNEL_COUNT; ++i) {
+        uint16_t values[2];
+        ina3221_limits_channel_registers(
+            limits, i, INA3221_SHUNT_RESISTANCE_OHM, &values[0], &values[1]);
+        for (size_t k = 0; k < 2U; ++k) {
+            /* Critical then Warning: CH1 0x07/0x08, CH2 0x09/0x0A, CH3 0x0B/0x0C. */
+            const uint8_t reg = (uint8_t)(
+                INA3221_LIMITS_REG_CRITICAL_CH1 + (2u * i) + k);
+            esp_err_t err = ina3221_driver_write_register(driver, reg, values[k]);
+            if (err != ESP_OK) {
+                return err;
+            }
+            uint16_t readback = 0;
+            err = ina3221_driver_read_register(driver, reg, &readback);
+            if (err != ESP_OK) {
+                return err;
+            }
+            if (readback != values[k]) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+    }
+    return ESP_OK;
+}
+
+
+esp_err_t ina3221_driver_read_alert_flags(
+    ina3221_driver_t *driver,
+    uint16_t *mask_enable
+)
+{
+    if (driver == NULL || !driver->ready || mask_enable == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ina3221_driver_read_register(driver, INA3221_REG_MASK_ENABLE, mask_enable);
 }
 
 

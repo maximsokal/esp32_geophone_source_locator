@@ -82,6 +82,8 @@ const char *ad7606_power_gate_name(ad7606_power_gate_t gate)
             return "unverified";
         case AD7606_POWER_GATE_RAIL_LOW:
             return "rail_low";
+        case AD7606_POWER_GATE_OVERCURRENT:
+            return "overcurrent";
         default:
             return "unknown";
     }

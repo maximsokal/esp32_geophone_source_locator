@@ -80,6 +80,7 @@ static void test_names_and_null_safety(void)
     assert(strcmp(ad7606_power_gate_name(AD7606_POWER_GATE_OK), "ok") == 0);
     assert(strcmp(ad7606_power_gate_name(AD7606_POWER_GATE_UNVERIFIED), "unverified") == 0);
     assert(strcmp(ad7606_power_gate_name(AD7606_POWER_GATE_RAIL_LOW), "rail_low") == 0);
+    assert(strcmp(ad7606_power_gate_name(AD7606_POWER_GATE_OVERCURRENT), "overcurrent") == 0);
     ad7606_rail_watch_reset(NULL);
     assert(!ad7606_rail_watch_update(NULL, true, true, 0.0f, NOW_US, NOW_US));
 }

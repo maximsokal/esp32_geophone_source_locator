@@ -60,6 +60,8 @@ typedef struct
     int power_gate;
     bool power_fault_latched;
     float power_fault_rail_v;
+    /* MAX-245: rail current when an over-current fault latched (A). */
+    float power_fault_current_a;
 
 } ad7606_acquisition_status_t;
 

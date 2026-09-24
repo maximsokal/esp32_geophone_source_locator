@@ -84,6 +84,11 @@ static bool s_rail_fresh;
 static int64_t s_rail_low_from_us;
 static int64_t s_rail_low_until_us;
 static float s_rail_low_v;
+/* MAX-245: monitor latches an over-current from this time on. */
+static int64_t s_rail_oc_from_us;
+static unsigned s_oc_clear_calls;
+static bool s_oc_cleared_before_gate_read;
+static unsigned s_rail_reads;
 
 static void reset_world(void)
 {
@@ -122,6 +127,10 @@ static void reset_world(void)
     s_rail_low_from_us = INT64_MAX;
     s_rail_low_until_us = INT64_MAX;
     s_rail_low_v = 0.0f;
+    s_rail_oc_from_us = INT64_MAX;
+    s_oc_clear_calls = 0U;
+    s_oc_cleared_before_gate_read = false;
+    s_rail_reads = 0U;
 }
 
 static void script(event_type_t type, uint32_t count)
@@ -365,6 +374,23 @@ esp_err_t ina3221_monitor_get_rail(size_t channel_index, ina3221_monitor_rail_t 
         (s_now_us >= s_rail_low_from_us && s_now_us < s_rail_low_until_us) ? s_rail_low_v : s_rail_v;
     /* Each reading is a distinct conversion stamped "now" when fresh. */
     rail->sampled_at_us = s_rail_fresh ? s_now_us : s_now_us - 10000000LL;
+    if (s_now_us >= s_rail_oc_from_us) {
+        rail->overcurrent_level = 2;
+        rail->overcurrent_latched = true;
+        rail->overcurrent_latched_current_a = 0.42f;
+    }
+    if (s_rail_reads == 0U) {
+        s_oc_cleared_before_gate_read = s_oc_clear_calls == 1U;
+    }
+    ++s_rail_reads;
+    return ESP_OK;
+}
+
+esp_err_t ina3221_monitor_clear_overcurrent(size_t channel_index)
+{
+    assert(channel_index == INA3221_MONITOR_RAIL_AD7606_5V);
+    assert(!s_in_worker); /* cleared by the explicit start, not by the worker */
+    ++s_oc_clear_calls;
     return ESP_OK;
 }
 
@@ -614,6 +640,32 @@ static void test_restart_clears_a_latched_fault(void)
     assert(!status_now().running);
 }
 
+static void test_overcurrent_stops_and_latches(void)
+{
+    reset_world();
+    const int64_t t0 = s_now_us;
+    s_rail_oc_from_us = t0 + 1500000LL;
+    for (int i = 0; i < 40; ++i) {
+        script(EV_TICK, 100U); /* 0.2 s per wake */
+    }
+    /* No STOP: the worker must stop by itself at the next rail check. */
+    assert(ad7606_acquisition_start() == ESP_OK);
+    /* The explicit start cleared the previous latch before deciding. */
+    assert(s_oc_clear_calls == 1U);
+    assert(s_oc_cleared_before_gate_read);
+
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.power_fault_latched);
+    assert(status.power_gate == AD7606_POWER_GATE_OVERCURRENT);
+    assert(fabsf(status.power_fault_current_a - 0.42f) < 1e-6f);
+    assert(s_driver_deinits == 1U);
+    assert(s_reads_after_deinit == 0U);
+    assert_fully_released();
+    /* Checks at ~0.2, 1.2 (clean) and 2.2 s (latched) -> stopped there. */
+    assert(s_now_us - t0 >= 2000000LL && s_now_us - t0 <= 2400000LL);
+    assert(s_script_pos < s_script_len);
+}
+
 int main(void)
 {
     test_run_samples_then_stop_releases_everything();
@@ -625,5 +677,6 @@ int main(void)
     test_read_errors_are_counted_and_not_pushed();
     test_startup_failures_clean_up();
     test_restart_clears_a_latched_fault();
+    test_overcurrent_stops_and_latches();
     return 0;
 }
