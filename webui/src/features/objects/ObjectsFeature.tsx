@@ -1,3 +1,4 @@
+import RecordingEvidenceCard from './RecordingEvidenceCard';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import type {
   DeviceStatus,
@@ -357,6 +358,11 @@ export default function ObjectsFeature(props: Props) {
 
             {openSession !== null && (
               <>
+                <RecordingEvidenceCard
+                  objectId={selected.id}
+                  sessionId={openSession.session_id}
+                  refreshKey={showCalculate ? 1 : 0}
+                />
                 <article className="console-card">
                   <div className="card-heading">
                     <div><span className="eyebrow">SESSION {openSession.session_id}</span><h2>3D scan</h2></div>
@@ -367,12 +373,12 @@ export default function ObjectsFeature(props: Props) {
                       disabled={busy}
                       className="secondary"
                       onClick={() => props.onOpenScanner(selected.id, openSession.session_id)}
-                    >Open 3D scan</button>
+                    >Add / open 3D scan</button>
                     <button
                       disabled={busy}
                       className="secondary"
                       onClick={() => setShowCalculate((value) => !value)}
-                    >{showCalculate ? 'Hide' : 'Calculate source'}</button>
+                    >{showCalculate ? 'Hide localization' : 'Calculate / view localization'}</button>
                   </div>
                 </article>
                 {showCalculate && (
