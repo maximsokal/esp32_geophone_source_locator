@@ -153,6 +153,8 @@ static void assert_geometry_equal(
         assert(expected->pods[i].y_mm == actual->pods[i].y_mm);
         assert(expected->pods[i].z_mm == actual->pods[i].z_mm);
         assert(expected->pods[i].computed_at_ms == actual->pods[i].computed_at_ms);
+        assert(expected->pods[i].residual_mm == actual->pods[i].residual_mm);
+        assert(expected->pods[i].uncertainty_mm == actual->pods[i].uncertainty_mm);
     }
 }
 
@@ -186,9 +188,9 @@ static void test_geometry_write_close_reopen_round_trip(void)
 
     object_store_geometry_t expected = {0};
     expected.anchored = true;
-    expected.pods[0] = (object_store_pod_geometry_t){true, true, -123, 456, 789, 1001U};
-    expected.pods[1] = (object_store_pod_geometry_t){true, false, 1200, -340, 55, 1002U};
-    expected.pods[3] = (object_store_pod_geometry_t){true, true, 0, 0, 2500, 1003U};
+    expected.pods[0] = (object_store_pod_geometry_t){.computed = true, .leveled = true, .x_mm = -123, .y_mm = 456, .z_mm = 789, .residual_mm = 17, .uncertainty_mm = 42, .computed_at_ms = 1001U};
+    expected.pods[1] = (object_store_pod_geometry_t){.computed = true, .leveled = false, .x_mm = 1200, .y_mm = -340, .z_mm = 55, .computed_at_ms = 1002U};
+    expected.pods[3] = (object_store_pod_geometry_t){.computed = true, .leveled = true, .x_mm = 0, .y_mm = 0, .z_mm = 2500, .computed_at_ms = 1003U};
 
     assert(object_store_set_geometry("OBJ_0001", &expected) == ESP_OK);
     assert(strstr(persisted_json, "\"geometry\"") != NULL);

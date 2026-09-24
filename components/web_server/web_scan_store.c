@@ -6,6 +6,11 @@
 #include <string.h>
 #include <sys/stat.h>
 
+/* MSVC's <sys/stat.h> has S_IFREG but not the POSIX test macro. */
+#if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
+#define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
+#endif
+
 #include "app_task_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"

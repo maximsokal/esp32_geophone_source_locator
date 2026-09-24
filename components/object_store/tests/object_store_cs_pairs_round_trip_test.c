@@ -167,8 +167,8 @@ static void test_cs_pairs_write_close_reopen_round_trip(void)
 
     object_store_cs_pairs_t expected = {0};
     expected.pair_count = 2U;
-    expected.pairs[0] = (object_store_cs_pair_t){0, 1, true, 3200, 950U, 1U, 12U};
-    expected.pairs[1] = (object_store_cs_pair_t){0, 2, false, 0, 0U, 5U, 0U};
+    expected.pairs[0] = (object_store_cs_pair_t){.node_a = 0, .node_b = 1, .valid = true, .distance_mm = 3200, .confidence = 950U, .attempts = 1U, .valid_samples = 12U};
+    expected.pairs[1] = (object_store_cs_pair_t){.node_a = 0, .node_b = 2, .valid = false, .distance_mm = 0, .confidence = 0U, .attempts = 5U, .valid_samples = 0U};
 
     assert(object_store_set_cs_pairs("OBJ_0001", &expected) == ESP_OK);
     assert(strstr(persisted_json, "\"cs_pairs\"") != NULL);
@@ -180,7 +180,7 @@ static void test_cs_pairs_write_close_reopen_round_trip(void)
     /* Setting geometry afterward must not clobber the already-persisted
      * cs_pairs (both are independent top-level object.json keys). */
     object_store_geometry_t geometry = {0};
-    geometry.pods[0] = (object_store_pod_geometry_t){true, true, 1, 2, 3, 99U};
+    geometry.pods[0] = (object_store_pod_geometry_t){.computed = true, .leveled = true, .x_mm = 1, .y_mm = 2, .z_mm = 3, .computed_at_ms = 99U};
     assert(object_store_set_geometry("OBJ_0001", &geometry) == ESP_OK);
 
     object_store_profile_t after_geometry;
@@ -195,7 +195,7 @@ static void test_cs_pairs_clear_with_null(void)
 
     object_store_cs_pairs_t populated = {0};
     populated.pair_count = 1U;
-    populated.pairs[0] = (object_store_cs_pair_t){0, 3, true, 1000, 800U, 1U, 20U};
+    populated.pairs[0] = (object_store_cs_pair_t){.node_a = 0, .node_b = 3, .valid = true, .distance_mm = 1000, .confidence = 800U, .attempts = 1U, .valid_samples = 20U};
     assert(object_store_set_cs_pairs("OBJ_0001", &populated) == ESP_OK);
 
     assert(object_store_set_cs_pairs("OBJ_0001", NULL) == ESP_OK);

@@ -1,5 +1,10 @@
 #pragma once
 
+/* MSVC has no ssize_t; <sys/types.h> below provides it elsewhere. */
+#if defined(_MSC_VER)
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
 #include <stddef.h>
 #include <sys/types.h>
 

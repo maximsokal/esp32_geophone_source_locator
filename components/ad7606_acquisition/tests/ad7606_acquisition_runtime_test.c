@@ -224,6 +224,13 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
 {
     assert(task == &s_task_token);
     ++s_notify_gives;
+    if (s_stop_waiting) {
+        /* The worker (priority 7) outranks every caller of stop(): the
+         * notification preempts the caller and the worker runs at once,
+         * seeing whatever s_running holds at this instant. */
+        s_stop_waiting = false;
+        longjmp(s_stop_return, 1);
+    }
     return pdPASS;
 }
 
@@ -484,6 +491,12 @@ static void test_run_samples_then_stop_releases_everything(void)
     const ad7606_acquisition_status_t status = status_now();
     assert(status.samples == 3U);
     assert(status.read_errors == 0U);
+    /* The STOP notification wakes the worker but is not a timer period:
+     * it is neither counted nor converted (s_running is cleared before
+     * the worker is notified). */
+    assert(status.timer_ticks == 3U);
+    assert(status.conversion_attempts == 3U);
+    assert(status.collapsed_periods == 0U);
     assert(status.power_gate == AD7606_POWER_GATE_OK);
     assert(!status.power_fault_latched);
 
@@ -504,6 +517,9 @@ static void test_collapsed_periods_are_one_conversion(void)
     assert(status.timer_ticks == 4U);
     assert(status.conversion_attempts == 1U);
     assert(status.collapsed_periods == 3U);
+    /* Collapsed periods are scheduler lateness, not read failures. */
+    assert(status.read_errors == 0U);
+    assert(status.consecutive_failures == 0U);
 }
 
 static void test_low_rail_refuses_start_without_touching_the_adc(void)
@@ -600,6 +616,9 @@ static void test_read_errors_are_counted_and_not_pushed(void)
     assert(status.read_errors == 2U);
     assert(status.consecutive_failures == 2U);
     assert(status.samples == 0U);
+    /* Read failures are not counted as collapsed timer periods. */
+    assert(status.collapsed_periods == 0U);
+    assert(status.timer_ticks == 2U);
     assert(s_beats >= 2U); /* still alive for the watchdog */
     assert_fully_released();
 }
@@ -621,6 +640,24 @@ static void test_startup_failures_clean_up(void)
         assert(s_script_pos == 0U);
         assert_fully_released();
     }
+}
+
+static void test_restart_resets_cadence_counters(void)
+{
+    reset_world();
+    script(EV_TICK, 5U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(status_now().collapsed_periods == 4U);
+
+    reset_world();
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.timer_ticks == 1U);
+    assert(status.collapsed_periods == 0U);
+    assert(status.samples == 1U);
 }
 
 static void test_restart_clears_a_latched_fault(void)
@@ -676,6 +713,7 @@ int main(void)
     test_single_low_reading_does_not_stop();
     test_read_errors_are_counted_and_not_pushed();
     test_startup_failures_clean_up();
+    test_restart_resets_cadence_counters();
     test_restart_clears_a_latched_fault();
     test_overcurrent_stops_and_latches();
     return 0;

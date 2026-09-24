@@ -643,6 +643,17 @@ on the Sensors page) until the next explicit start. Missing/stale INA3221
 data only warns. Disable the option only if the AD7606 supply is not routed
 through INA3221 CH3.
 
+**GPIO drive strength (MAX-247 review, decision: unchanged).** The outputs to
+the AD7606, TFT, SD card and power switch stay at the ESP-IDF default drive
+capability. `gpio_set_drive_capability()` only changes the output driver's
+strength and edge rate; it is **not** a programmable current limit and would not
+protect a pin from a short or from back-powering an unpowered device. That
+protection comes from the hardware: separate supplies (LD1117V33 VIO), Hi-Z
+safe states in firmware (MAX-242), and, if needed, series resistors (for
+example 33–100 Ohm on the AD7606 SCLK/CS/CONVST lines) or buffers. Lowering the
+drive strength is only worth revisiting if a bench measurement shows ringing
+or EMI on the long AD7606/RJ45 lines.
+
 Current AD7606 acquisition assumptions are 8 channels, SPI mode 2, 1 MHz bus clock, +/-5 V input range and hardware oversampling x1. The physical RANGE / OS0 / OS1 / OS2 module straps must continue to match those assumptions when the board is rewired.
 
 ## Seismic acquisition interface

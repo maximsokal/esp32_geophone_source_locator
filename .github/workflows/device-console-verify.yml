@@ -130,6 +130,58 @@ jobs:
           find dist/assets -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
           find esp-dist/assets -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
 
+  # MAX-247: the same native host tests under AddressSanitizer +
+  # UndefinedBehaviorSanitizer (gcc/Linux). Any report fails the test.
+  host-sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Host tests with ASan + UBSan
+        run: |
+          set -e
+          python tools/run_host_tests.py --sanitizers address,undefined \
+            --build-dir build/host-san --keep-going
+          for manifest in tests/host/manifest.d/*.json; do
+            suite="$(basename "$manifest" .json)"
+            python tools/run_host_tests.py --manifest "$manifest" \
+              --sanitizers address,undefined \
+              --build-dir "build/host-san-$suite" --keep-going
+          done
+
+  # MAX-247: line-coverage ratchet for hardware-facing C files
+  # (tests/host/coverage-gate.json).
+  host-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Host tests with coverage instrumentation
+        run: |
+          set -e
+          python tools/run_host_tests.py --coverage \
+            --build-dir build/host-cov/main --keep-going
+          for manifest in tests/host/manifest.d/*.json; do
+            suite="$(basename "$manifest" .json)"
+            python tools/run_host_tests.py --manifest "$manifest" --coverage \
+              --build-dir "build/host-cov/$suite" --keep-going
+          done
+      - name: Coverage gate
+        run: >-
+          python tools/check_host_coverage.py
+          --build-root build/host-cov
+          --config tests/host/coverage-gate.json
+          --gcov gcov
+
   firmware:
     runs-on: ubuntu-latest
     timeout-minutes: 35
