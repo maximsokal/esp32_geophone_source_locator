@@ -254,6 +254,26 @@
       ]
     },
     {
+      "name": "ad7606_acquisition_runtime",
+      "sources": [
+        "components/ad7606_acquisition/ad7606_acquisition.c",
+        "components/ad7606_acquisition/ad7606_acquisition_timing.c",
+        "components/ad7606_acquisition/ad7606_power_policy.c",
+        "components/ad7606_driver/ad7606_serial.c",
+        "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ad7606_acquisition",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/seismic_buffer/include",
+        "components/runtime_observability/include",
+        "components/app_config/include",
+        "components/ina3221_monitor/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "ad7606_serial",
       "sources": [
         "components/ad7606_driver/ad7606_serial.c",
