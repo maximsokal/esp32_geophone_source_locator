@@ -109,8 +109,63 @@ static void test_current_valid_but_not_accepted_states_do_not_count(void)
     }
 }
 
+static void test_per_node_states_and_tilt(void)
+{
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    nrf_topology_leveling_nodes_t nodes;
+    memset(&topology, 0, sizeof(topology));
+    memset(cache, 0, sizeof(cache));
+    assign_remote(&topology, 1U);
+    assign_remote(&topology, 4U);
+    assign_remote(&topology, 6U);
+    assign_remote(&topology, 7U);
+
+    accept_cache(&cache[1]);
+    cache[1].sensor.orientation_tilt_sin2_ppm = 0U;
+    /* OUTSIDE by 30 degrees: sin^2(30) = 0.25. */
+    accept_cache(&cache[4]);
+    cache[4].sensor.orientation_state = 3U;
+    cache[4].sensor.orientation_tilt_sin2_ppm = 250000U;
+    /* 6: no response yet. 7: out-of-range wire value. */
+    accept_cache(&cache[7]);
+    cache[7].sensor.orientation_state = 9U;
+    /* Unassigned channel with data is not listed. */
+    accept_cache(&cache[2]);
+
+    assert(nrf_topology_leveling_nodes_compute(true, &topology, true, cache, &nodes) == ESP_OK);
+    assert(nodes.count == 4U);
+    assert(nodes.nodes[0].channel == 1U && nodes.nodes[0].node_id == 2U);
+    assert(nodes.nodes[0].state == NRF_TOPOLOGY_LEVELING_ACCEPTED);
+    assert(nodes.nodes[0].tilt_valid && nodes.nodes[0].tilt_deg < 0.01f);
+    assert(nodes.nodes[1].channel == 4U && nodes.nodes[1].state == NRF_TOPOLOGY_LEVELING_OUTSIDE);
+    assert(nodes.nodes[1].tilt_deg > 29.9f && nodes.nodes[1].tilt_deg < 30.1f);
+    assert(nodes.nodes[2].channel == 6U && nodes.nodes[2].state == NRF_TOPOLOGY_LEVELING_NO_DATA);
+    assert(!nodes.nodes[2].tilt_valid);
+    assert(nodes.nodes[3].state == NRF_TOPOLOGY_LEVELING_NO_DATA);
+
+    /* UNAVAILABLE has no meaningful tilt. */
+    cache[1].sensor.orientation_state = 0U;
+    assert(nrf_topology_leveling_nodes_compute(true, &topology, true, cache, &nodes) == ESP_OK);
+    assert(nodes.nodes[0].state == NRF_TOPOLOGY_LEVELING_UNAVAILABLE && !nodes.nodes[0].tilt_valid);
+
+    /* Without a sensor cache every assigned node is NO_DATA. */
+    assert(nrf_topology_leveling_nodes_compute(true, &topology, false, NULL, &nodes) == ESP_OK);
+    assert(nodes.count == 4U && nodes.nodes[1].state == NRF_TOPOLOGY_LEVELING_NO_DATA);
+
+    assert(nrf_topology_leveling_nodes_compute(false, &topology, true, cache, &nodes) == ESP_ERR_INVALID_STATE);
+    assert(nodes.count == 0U);
+    assert(nrf_topology_leveling_nodes_compute(true, &topology, true, cache, NULL) == ESP_ERR_INVALID_ARG);
+
+    assert(nrf_topology_leveling_tilt_deg(1000000U) > 89.9f);
+    assert(nrf_topology_leveling_tilt_deg(5000000U) > 89.9f); /* clamped */
+    assert(strcmp(nrf_topology_leveling_node_state_name(NRF_TOPOLOGY_LEVELING_ACCEPTED), "level") == 0);
+    assert(strcmp(nrf_topology_leveling_node_state_name(NRF_TOPOLOGY_LEVELING_OUTSIDE), "tilted") == 0);
+}
+
 int main(void)
 {
+    test_per_node_states_and_tilt();
     test_invalid_and_unpublished_state();
     test_counts_only_current_assigned_accepted_remotes();
     test_sensor_cache_validity_gates_acceptance_not_assignment();

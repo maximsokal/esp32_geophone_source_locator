@@ -1,4 +1,5 @@
 import type { DeviceStatus, ObjectProfile } from '../../domain/device';
+import LevelingCard from './LevelingCard';
 
 interface Props {
   status: DeviceStatus | null;
@@ -84,6 +85,8 @@ export default function SensorsFeature({ status, object, error }: Props) {
           <div><dt>Serial streak</dt><dd>{serial ? `${serial.suspicious_streak} abnormal · ${serial.busy_level} BUSY` : 'not observed'}</dd></div>
         </dl>
       </article>
+
+      <LevelingCard gate={status?.recording_gate} />
 
       <div className="pod-grid">
         {[0, 1, 2, 3].map((index) => {

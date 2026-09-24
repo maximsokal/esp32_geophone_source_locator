@@ -1191,6 +1191,20 @@ esp_err_t nrf_topology_service_get_leveling_summary(
     return result;
 }
 
+esp_err_t nrf_topology_service_get_leveling_nodes(
+    nrf_topology_leveling_nodes_t *nodes)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    const esp_err_t result = nrf_topology_leveling_nodes_compute(
+        s_snapshot_valid,
+        &s_snapshot,
+        s_sensor_cache_valid,
+        s_sensor_cache,
+        nodes);
+    portEXIT_CRITICAL(&s_state_lock);
+    return result;
+}
+
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 esp_err_t nrf_topology_service_test_publish_state(
     bool topology_valid,
