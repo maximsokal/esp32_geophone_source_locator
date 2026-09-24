@@ -184,6 +184,19 @@ static void test_right_and_ok_open_selected_screen(void)
 }
 
 
+static void test_wifi_entry_renders_the_wifi_screen(void)
+{
+    reset_state();
+    ui_screen_open_locked(UI_SCREEN_HOME);
+    ui_screen_handle_key_locked(UI_SCREEN_HOME, KEYPAD_KEY_UP); /* 0 -> 4 */
+    ui_screen_handle_key_locked(UI_SCREEN_HOME, KEYPAD_KEY_UP); /* 4 -> 3 */
+    assert(s_context.selected == 3U);
+    ui_screen_handle_key_locked(UI_SCREEN_HOME, KEYPAD_KEY_OK);
+    assert(s_context.screen == UI_SCREEN_WIFI);
+    assert(s_wifi_renders == 1U);
+}
+
+
 static void test_objects_entry_does_not_list_during_recovery(void)
 {
     reset_state();
@@ -317,6 +330,7 @@ int main(void)
     test_home_registry_mapping();
     test_home_up_down_wrap_and_render();
     test_right_and_ok_open_selected_screen();
+    test_wifi_entry_renders_the_wifi_screen();
     test_objects_entry_does_not_list_during_recovery();
     test_left_from_system_returns_home();
     test_dispatch_uses_current_screen_driver();

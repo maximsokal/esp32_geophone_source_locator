@@ -381,10 +381,12 @@ int main(void)
     assert(unregister_calls == 1U);
     ui_event_dispatcher_dispatch_pending_locked();
     assert(app_dispatch_calls == 0U);
+    assert(last_app_event_id == 0 && last_app_event_value == 0);
 
     emit_event(55, 4321);
     assert(wake_calls == 2U);
     assert(app_dispatch_calls == 0U);
+    assert(last_app_event_id == 0 && last_app_event_value == 0);
 
     ui_event_dispatcher_stop();
     assert(unregister_calls == 1U);
@@ -428,6 +430,7 @@ int main(void)
 
     ui_event_dispatcher_dispatch_pending_locked();
     assert(app_dispatch_calls == 0U);
+    assert(last_app_event_id == 0 && last_app_event_value == 0);
 
     sync_destroy();
     puts("ui event dispatcher lifecycle tests passed");

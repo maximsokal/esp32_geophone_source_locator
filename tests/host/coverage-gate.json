@@ -1,0 +1,19 @@
+{
+  "comment": "MAX-247 ratchet: minimum line coverage of hardware-facing C files from the host tests (best single test binary). Set a little below the values measured on 2026-09-24; raise when coverage improves, never lower to make CI pass.",
+  "minimum_line_percent": {
+    "components/power_control/power_output.c": 95,
+    "components/power_control/power_control.c": 75,
+    "components/ina3221_monitor/ina3221_driver.c": 95,
+    "components/ina3221_monitor/ina3221_limits.c": 95,
+    "components/ina3221_monitor/ina3221_policy.c": 80,
+    "components/ad7606_driver/ad7606_presence.c": 90,
+    "components/ad7606_driver/ad7606_driver.c": 85,
+    "components/ad7606_acquisition/ad7606_acquisition.c": 80,
+    "components/ad7606_acquisition/ad7606_power_policy.c": 95,
+    "components/sensor_bus/sensor_bus.c": 60,
+    "components/sensor_bus/i2c_line_recovery.c": 90,
+    "components/tca9548a_mux/tca9548a_mux.c": 88,
+    "components/nrf_topology_service/nrf_topology_service.c": 55,
+    "components/nrf_topology_service/nrf_topology_bus_recovery.c": 95
+  }
+}

@@ -16,51 +16,14 @@ def _between(text: str, start: str, end: str) -> str:
     return text[begin:finish]
 
 
-def test_worker_accounts_only_running_timer_wakes_and_never_burst_catches_up():
-    text = ACQUISITION.read_text(encoding="utf-8")
-    worker = _between(text, "static void ad7606_worker", "esp_err_t ad7606_acquisition_start")
-
-    notify = worker.index("ulTaskNotifyTake")
-    stop_guard = worker.index("if (!s_running)", notify)
-    account = worker.index("ad7606_status_record_timer_wake", stop_guard)
-    physical_read = worker.index("ad7606_driver_read", account)
-    failure = worker.index("ad7606_status_record_failure", physical_read)
-
-    assert notify < stop_guard < account < physical_read < failure
-    assert worker.count("ad7606_driver_read(") == 1
-
-
-def test_stop_notification_is_marked_manual_before_worker_is_woken():
-    text = ACQUISITION.read_text(encoding="utf-8")
-    stop = text[text.index("void ad7606_acquisition_stop") :]
-    assert stop.index("s_running =") < stop.index("xTaskNotifyGive")
-
-
-def test_read_failure_counter_is_distinct_from_scheduler_collapse_counter():
-    text = ACQUISITION.read_text(encoding="utf-8")
-    failure = _between(
-        text,
-        "static uint32_t ad7606_status_record_failure",
-        "static void ad7606_status_record_sample",
-    )
-    timer = _between(
-        text,
-        "static void ad7606_status_record_timer_wake",
-        "static uint32_t ad7606_status_record_failure",
-    )
-
-    assert "read_errors" in failure
-    assert "consecutive_failures" in failure
-    assert "collapsed_periods" not in failure
-    assert "read_errors" not in timer
-    assert "conversion_attempts" in timer
-    assert "collapsed_periods" in timer
-
-
-def test_acquisition_restart_resets_cadence_state_before_worker_creation():
-    text = ACQUISITION.read_text(encoding="utf-8")
-    start = _between(text, "esp_err_t ad7606_acquisition_start", "void ad7606_acquisition_stop")
-    assert start.index("ad7606_status_reset()") < start.index("xTaskCreatePinnedToCore")
+# MAX-247: the worker/stop/restart cadence rules used to be checked here by
+# searching the source text (call order inside the worker, stop() clearing
+# s_running before notifying, separate failure/collapse counters, status
+# reset before task creation). They are now behavioural assertions in the
+# host test components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c,
+# which runs the real worker and catches the same mutations (including the
+# stop() ordering race, via a preempting xTaskNotifyGive). Only the
+# cross-component wiring contract below remains a source contract.
 
 
 def test_generic_snapshot_and_status_expose_cadence_without_private_web_dependency():

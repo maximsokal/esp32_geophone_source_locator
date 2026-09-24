@@ -69,8 +69,9 @@ esp_err_t wifi_manager_setup_ap_start(
         sizeof(config.ap.password)
     );
 
+    /* An SSID is at most 32 bytes; ssid_len is uint8_t. */
     config.ap.ssid_len =
-        strlen(
+        (uint8_t)strlen(
             APP_WIFI_AP_SSID
         );
 

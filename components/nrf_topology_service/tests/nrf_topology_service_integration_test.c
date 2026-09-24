@@ -530,6 +530,8 @@ static void test_full_topology_is_assigned_one_hot(void)
     assert(s_collisions == 0U);
     assert(s_seen_tca_control == 0x00U);
     assert(s_tca_control == 0x00U);
+    /* The mux was really driven (select + close per channel). */
+    assert(s_tca_writes >= 2U * NRF_TOPOLOGY_REMOTE_COUNT);
 }
 
 static void test_without_tca_only_main_is_managed(void)
