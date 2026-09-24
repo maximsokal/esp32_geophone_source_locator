@@ -205,6 +205,7 @@ static void test_tdcas_with_scan_voids(void)
     /* Exactly the two far-side pods are dropped, with every combination
      * containing them (C(7,5) - C(5,5) = 20 of 21 when all are valid). */
     assert(constrained.sensor_mask_obstructed == FAR_SIDE_MASK);
+    assert(constrained.sensors_used == 5U);
     assert(constrained.combinations_filtered > 0U);
     assert(localization_calculate_scan_candidate_allowed(&constrained.position, &occupancy));
 

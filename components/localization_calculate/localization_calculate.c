@@ -939,7 +939,7 @@ esp_err_t localization_calculate_run(
         localization_calculate_apply_redundancy(
             &records[record_count],
             localization_calculate_velocity_free_degrees_of_freedom(
-                p_observation_count, LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS
+                constrained_tdcas->sensors_used, LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS
             )
         );
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),

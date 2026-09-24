@@ -235,6 +235,7 @@ static void test_scan_void_ray_filter_removes_detoured_sensor(void)
     /* Judged per sensor against the consensus, so sensor 6 is excluded
      * with all six combinations containing it. */
     assert(filtered.sensor_mask_obstructed == (1U << 6));
+    assert(filtered.sensors_used == 6U);
     /* Only the one combination without sensor 6 is fused (some that
      * contain the delayed pick are not even physically valid). */
     assert(filtered.combinations_filtered == filtered.combinations_valid - 1U);
