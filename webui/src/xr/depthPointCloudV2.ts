@@ -6,6 +6,7 @@ import {
 import { metricFeatureProbeRadius } from './metricFeatureProbe';
 import {
   classifyDepthNeighbourhood,
+  type DepthStencilGeometry,
   clamp01,
   crossVector,
   depthToleranceMeters,
@@ -371,11 +372,45 @@ function safeDepth(depth: CpuDepthInformationLike, u: number, v: number): number
   const value = depth.getDepthInMeters(u, v);
   return finite(value) && value >= MIN_DEPTH_METERS ? value : null;
 }
+/*
+ * The CPU depth sampler returns the NEAREST depth pixel, so each read really
+ * measures the ray through that pixel's centre (identity
+ * normDepthBufferFromNormView assumed, as elsewhere in this accumulator).
+ * Using those centres makes the stencil geometry exact even when the 1.5 px
+ * offsets land 1 or 2 pixels away.
+ */
+function pixelCentre(coordinate: number, size: number): number {
+  const count = Math.max(1, Math.floor(size));
+  return (clamp(Math.trunc(coordinate * count), 0, count - 1) + 0.5) / count;
+}
+function stencilGeometry(
+  depth: CpuDepthInformationLike,
+  u: number,
+  v: number,
+  du: number,
+  dv: number,
+  p00: number,
+  p11: number,
+): DepthStencilGeometry {
+  // Normalised image offset -> NDC (x2) -> view-space tangent (/p).
+  const uScale = 2 / Math.abs(p00);
+  const vScale = 2 / Math.abs(p11);
+  const cu = pixelCentre(u, depth.width);
+  const cv = pixelCentre(v, depth.height);
+  return {
+    left: (cu - pixelCentre(u - du, depth.width)) * uScale,
+    right: (pixelCentre(u + du, depth.width) - cu) * uScale,
+    up: (cv - pixelCentre(v - dv, depth.height)) * vScale,
+    down: (pixelCentre(v + dv, depth.height) - cv) * vScale,
+  };
+}
 function readSurfaceNeighbourhood(
   depth: CpuDepthInformationLike,
   u: number,
   v: number,
   center: number,
+  p00: number,
+  p11: number,
 ): SurfaceNeighbourhood {
   const du = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.width);
   const dv = NORMAL_PROBE_PIXEL_OFFSET / Math.max(1, depth.height);
@@ -384,7 +419,7 @@ function readSurfaceNeighbourhood(
   const up = safeDepth(depth, u, v - dv);
   const down = safeDepth(depth, u, v + dv);
   return {
-    quality: classifyDepthNeighbourhood(center, left, right, up, down),
+    quality: classifyDepthNeighbourhood(center, left, right, up, down, stencilGeometry(depth, u, v, du, dv, p00, p11)),
     left,
     right,
     up,
@@ -571,7 +606,7 @@ export class DepthPointCloudAccumulator {
       if (u <= SAMPLE_MARGIN || u >= 1 - SAMPLE_MARGIN || v <= SAMPLE_MARGIN || v >= 1 - SAMPLE_MARGIN) return null;
       const depthMeters = depth.getDepthInMeters(u, v);
       if (!finite(depthMeters) || depthMeters < MIN_DEPTH_METERS || depthMeters > this.maxDepthMeters) return null;
-      const neighbourhood = readSurfaceNeighbourhood(depth, u, v, depthMeters);
+      const neighbourhood = readSurfaceNeighbourhood(depth, u, v, depthMeters, p00, p11);
       const local = neighbourhood.quality;
       if (!local.accepted) { this.discardedSampleCount += 1; return local; }
 
