@@ -86,14 +86,14 @@ const STRUCTURAL_COMPONENT_POINTS = 18;
 const STRUCTURAL_MAJOR_EXTENT_METERS = 0.12;
 const STRUCTURAL_MINOR_EXTENT_METERS = 0.045;
 /*
- * Calibrated through the production path (prepareStructuralGuideReadiness ->
- * structural surface -> this area estimator -> edge/corner detector on the
- * same surface; 4 cm voxels, jittered sampling + 4 mm noise, 12 placements):
- * true 5.5 cm spacing -> measured face density p10 274 /m^2, corner 12/12;
- * true 6 cm -> median 273 /m^2, corner 8/12; 6.5 cm -> faces fragment, 0/12.
- * Target: measured density of one point per (1.5 voxel)^2 = 278 /m^2.
+ * Calibrated on 45 MAX-251 harness scans (ridge / box corner / inside corner,
+ * 0.8-1.8 m, 6-16 poses) through the production path: readiness "edge-ready"
+ * vs the detector finding an edge on the same structural surface. Spacing
+ * 1.5 voxels: 24 agree / 14 missed / 1 false; 1.7-2.2 voxels: 27 / 11 / 1 --
+ * density stops being the limit at 1.7 and the remaining misses are faces too
+ * small or not formed. Target: one point per (1.7 voxel)^2 (216 /m^2 at 4 cm).
  */
-const STRUCTURAL_MAX_SPACING_VOXELS = 1.5;
+const STRUCTURAL_MAX_SPACING_VOXELS = 1.7;
 /** Detector pair gate (structuralGuide MIN_PLANE_ANGLE_RAD). */
 const STRUCTURAL_EDGE_MIN_ANGLE_RAD = (34 * Math.PI) / 180;
 /** Detector three-plane conditioning (structuralGuide solveThreePlanes). */
@@ -237,15 +237,72 @@ function componentAdjacency(
 }
 
 /** MAX-254: edge/corner capability of the measured faces (see StructuralFaceCapability). */
+/*
+ * At the density the scanner delivers, one physical plane often breaks into
+ * several connected components (a sparse row is enough to cut connectivity),
+ * while the edge detector gathers support by plane, not by connectivity. So
+ * coplanar components are one FACE here: points and areas add up.
+ */
+const FACE_MERGE_MAX_ANGLE_RADIANS = (10 * Math.PI) / 180;
+const FACE_MERGE_MAX_OFFSET_METERS = 0.02;
+
+function coplanar(a: SurfaceComponent, b: SurfaceComponent): boolean {
+  if (a.normal === undefined || b.normal === undefined) return false;
+  if (normalAngle(a, b) > FACE_MERGE_MAX_ANGLE_RADIANS) return false;
+  const offset = (n: readonly [number, number, number], from: SurfaceComponent, to: SurfaceComponent): number =>
+    Math.abs(n[0] * (to.center[0] - from.center[0]) + n[1] * (to.center[1] - from.center[1]) + n[2] * (to.center[2] - from.center[2]));
+  return offset(a.normal, a, b) <= FACE_MERGE_MAX_OFFSET_METERS && offset(b.normal, b, a) <= FACE_MERGE_MAX_OFFSET_METERS;
+}
+
+function mergeCoplanarComponents(components: readonly SurfaceComponent[]): { faces: SurfaceComponent[]; faceOf: Map<number, number> } {
+  const parent = components.map((_, i) => i);
+  const find = (i: number): number => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  for (let i = 0; i < components.length; i += 1) for (let j = i + 1; j < components.length; j += 1) {
+    if (coplanar(components[i], components[j])) parent[find(j)] = find(i);
+  }
+  const groups = new Map<number, SurfaceComponent[]>();
+  components.forEach((component, i) => { const root = find(i); groups.set(root, [...(groups.get(root) ?? []), component]); });
+  const faces: SurfaceComponent[] = []; const faceOf = new Map<number, number>();
+  for (const members of groups.values()) {
+    const reference = members.reduce((best, c) => (c.pointCount > best.pointCount ? c : best));
+    const total = members.reduce((sum, c) => sum + c.pointCount, 0);
+    const normal: [number, number, number] = [0, 0, 0]; const center: [number, number, number] = [0, 0, 0];
+    for (const c of members) {
+      const sign = c.normal![0] * reference.normal![0] + c.normal![1] * reference.normal![1] + c.normal![2] * reference.normal![2] < 0 ? -1 : 1;
+      for (let axis = 0; axis < 3; axis += 1) { normal[axis] += c.normal![axis] * sign * c.pointCount; center[axis] += c.center[axis] * c.pointCount; }
+    }
+    const length = Math.hypot(...normal) || 1;
+    const face: SurfaceComponent = {
+      ...reference,
+      id: Math.min(...members.map((c) => c.id)),
+      pointCount: total,
+      center: [center[0] / total, center[1] / total, center[2] / total],
+      majorExtentMeters: Math.max(...members.map((c) => c.majorExtentMeters)),
+      minorExtentMeters: Math.max(...members.map((c) => c.minorExtentMeters)),
+      occupiedCellCount: members.reduce((sum, c) => sum + c.occupiedCellCount, 0),
+      normal: [normal[0] / length, normal[1] / length, normal[2] / length],
+      estimatedAreaSquareMeters: members.reduce((sum, c) => sum + (c.estimatedAreaSquareMeters ?? 0), 0),
+    };
+    faces.push(face);
+    for (const c of members) faceOf.set(c.id, face.id);
+  }
+  return { faces, faceOf };
+}
+
+/** MAX-254: edge/corner capability of the measured faces (see StructuralFaceCapability). */
 export function computeStructuralFaceCapability(
   analysis: Pick<SurfaceComponentAnalysis, 'components' | 'componentIdByPoint'>,
   positions: ArrayLike<number>,
   voxelSizeMeters: number,
 ): StructuralFaceCapability {
-  const faces = analysis.components.filter((component) => component.normal !== undefined && component.pointCount >= 3);
+  const planar = analysis.components.filter((component) => component.normal !== undefined && component.pointCount >= 3);
+  const { faces, faceOf } = mergeCoplanarComponents(planar);
   const faceProgress = faces.map((component) => ({ id: component.id, ...componentStructuralProgress(component, voxelSizeMeters) }));
   const progressById = new Map(faceProgress.map((face) => [face.id, face.progress]));
-  const adjacency = analysis.componentIdByPoint === undefined ? new Set<string>() : componentAdjacency(positions, analysis.componentIdByPoint);
+  const faceIdByPoint = analysis.componentIdByPoint === undefined
+    ? undefined
+    : Array.from(analysis.componentIdByPoint, (id) => (id < 0 ? -1 : faceOf.get(id) ?? -1));
+  const adjacency = faceIdByPoint === undefined ? new Set<string>() : componentAdjacency(positions, faceIdByPoint);
   const isAdjacent = (a: SurfaceComponent, b: SurfaceComponent): boolean => adjacency.has(a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`);
   const edgeCapable = (a: SurfaceComponent, b: SurfaceComponent): boolean =>
     isAdjacent(a, b) && normalAngle(a, b) >= STRUCTURAL_EDGE_MIN_ANGLE_RAD;
