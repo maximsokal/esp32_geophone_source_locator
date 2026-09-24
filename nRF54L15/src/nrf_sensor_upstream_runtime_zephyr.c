@@ -11,10 +11,13 @@
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
+#include "nrf_watchdog_zephyr.h"
 
 #define NRF_SENSOR_EVENT_QUEUE_DEPTH 4U
 #define NRF_SENSOR_WORKER_STACK_SIZE 3072U
 #define NRF_SENSOR_WORKER_PRIORITY K_PRIO_PREEMPT(10)
+/* MAX-244: longest idle wait, well below NRF_WATCHDOG_MAX_SILENCE_MS. */
+#define NRF_SENSOR_WORKER_HEARTBEAT_MS 1000U
 
 typedef enum {
     NRF_SENSOR_EVENT_ACTIVATE = 1,
@@ -209,13 +212,15 @@ static bool orientation_periodic_enabled(void)
            s_runtime.core.sources.read_imu != NULL;
 }
 
-static k_timeout_t orientation_wait_timeout(void)
+/* MAX-244: never wait longer than the worker heartbeat, so an idle
+ * (non-REMOTE) worker still checks in with the watchdog. */
+static k_timeout_t sensor_worker_wait_timeout(void)
 {
     uint64_t now;
     uint64_t remaining;
 
     if (!orientation_periodic_enabled()) {
-        return K_FOREVER;
+        return K_MSEC(NRF_SENSOR_WORKER_HEARTBEAT_MS);
     }
 
     now = runtime_uptime_ms();
@@ -226,6 +231,9 @@ static k_timeout_t orientation_wait_timeout(void)
         return K_NO_WAIT;
     }
     remaining = s_next_orientation_due_ms - now;
+    if (remaining > NRF_SENSOR_WORKER_HEARTBEAT_MS) {
+        remaining = NRF_SENSOR_WORKER_HEARTBEAT_MS;
+    }
     return K_MSEC(remaining);
 }
 
@@ -370,10 +378,14 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
     (void)arg3;
 
     while (true) {
+        /* MAX-244: check in every iteration and never block longer than
+         * the heartbeat period, so an idle (non-REMOTE) worker stays
+         * provably alive for the watchdog. */
+        nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
         const int queue_result = k_msgq_get(
             &s_sensor_queue,
             &event,
-            orientation_wait_timeout());
+            sensor_worker_wait_timeout());
 
         if (queue_result == 0) {
             if (event.type == NRF_SENSOR_EVENT_ACTIVATE) {

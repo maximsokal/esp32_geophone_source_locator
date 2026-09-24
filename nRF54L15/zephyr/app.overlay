@@ -43,6 +43,11 @@
     };
 };
 
+/* MAX-244: application watchdog (alias watchdog0 on this board). */
+&wdt31 {
+    status = "okay";
+};
+
 &i2c22 {
     compatible = "nordic,nrf-twis";
     pinctrl-0 = <&i2c22_default>;

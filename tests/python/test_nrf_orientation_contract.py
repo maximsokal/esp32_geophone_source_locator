@@ -26,8 +26,12 @@ def test_orientation_is_pure_integer_and_explicit_axis():
 def test_worker_remains_single_thread_and_uses_timed_msgq_wait():
     source = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
     assert source.count("k_thread_create(") == 1
-    assert "k_msgq_get(\n            &s_sensor_queue,\n            &event,\n            orientation_wait_timeout())" in source
+    assert "k_msgq_get(\n            &s_sensor_queue,\n            &event,\n            sensor_worker_wait_timeout())" in source
     assert "K_MSEC(remaining)" in source
+    # MAX-244: an idle worker must still wake up to check in with the
+    # watchdog (behaviourally asserted in nrf_sensor_upstream_runtime_zephyr_test.c).
+    assert "K_FOREVER" not in source
+    assert "nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);" in source
     assert "k_timer" not in source
     assert "k_work" not in source
 
@@ -44,7 +48,7 @@ def test_periodic_orientation_is_imu_only_and_aggregate_refresh_is_reused():
 
 def test_role_and_axis_gates_prevent_unapproved_periodic_io():
     source = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
-    enabled = source[source.index("static bool orientation_periodic_enabled"):source.index("static k_timeout_t orientation_wait_timeout")]
+    enabled = source[source.index("static bool orientation_periodic_enabled"):source.index("static k_timeout_t sensor_worker_wait_timeout")]
     assert "NRF_ORIENTATION_AXIS_UNCONFIGURED" in enabled
     assert "NRF_NODE_ROLE_REMOTE" in enabled
     assert "s_runtime.core.imu_ready" in enabled

@@ -312,6 +312,15 @@ contract is documented in
 and the ESP32 orchestrator contract is in
 [`docs/nrf-topology-service.md`](docs/nrf-topology-service.md).
 
+Every XIAO runs the WDT31 hardware watchdog (MAX-244, 8 s timeout). The main
+loop feeds it only while the sensor worker and the system workqueue both
+checked in within the last 5 s (`nrf_watchdog_health`). The sensor worker
+therefore never blocks longer than 1 s, even when idle. A hung node resets
+and comes back UNASSIGNED at the discovery address, where the ESP32 topology
+service re-assigns it. The reset cause is printed on the XIAO console at
+boot; it is not yet reported over I2C, because the status decoder rejects
+unknown flag bits, so that needs a protocol version change.
+
 ESP32-S3 remains the wired-I2C controller. `sensor_bus` is still the sole
 application owner of I2C0; `nrf_topology_service` borrows that bus and the
 TCA9548A handle and is the sole application-level owner of TCA channel

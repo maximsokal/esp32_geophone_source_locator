@@ -43,6 +43,8 @@ target_sources(app PRIVATE
     ../src/nrf_cs_pair_runtime_zephyr.c
     ../src/nrf_cs_control_protocol.c
     ../src/nrf_cs_control_runtime.c
+    ../src/nrf_watchdog_health.c
+    ../src/nrf_watchdog_zephyr.c
 )
 
 target_include_directories(app PRIVATE ../include)
