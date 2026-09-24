@@ -5,6 +5,10 @@ import {
   type DepthFusionFrameContext,
   type DepthSampleView,
 } from '../../src/xr/depthPointCloudV2';
+import {
+  ARCORE_NOISE, nearestPolygon, orbitPoses, rectangle, scanScene, stepScene, tiltedPlaneScene,
+  type SyntheticScene,
+} from './support/syntheticDepthScene';
 
 const projection = new Float32Array([
   1, 0, 0, 0,
@@ -125,17 +129,6 @@ describe('independent evidence and anti-saturation', () => {
     expect(Math.max(...guide.confidence)).toBeLessThanOrEqual(0.46);
   });
 
-  it('promotes surfaces after a real side baseline creates independent view evidence', () => {
-    const accumulator = new DepthPointCloudAccumulator();
-    const flat = depthPlane(() => 1.5);
-    accumulator.sampleDepthFrame(flat, view, context(1, true, [0, 0, 0]));
-    accumulator.sampleDepthFrame(flat, view, context(2, true, [0.45, 0, 0]));
-    expect(accumulator.promotedCount).toBeGreaterThan(0);
-    const snapshot = accumulator.snapshot(2, 2);
-    expect(snapshot.pointCount).toBeGreaterThan(0);
-    expect(Math.max(...snapshot.confidence)).toBeGreaterThan(0.5);
-  });
-
   it('allows polish frames to refine matched surfaces but never create new geometry', () => {
     const accumulator = new DepthPointCloudAccumulator();
     const flat = depthPlane(() => 1.5);
@@ -170,18 +163,6 @@ describe('independent evidence and anti-saturation', () => {
 });
 
 describe('surface reconstruction behaviour', () => {
-  it('preserves both sides of a sharp depth step', () => {
-    const accumulator = new DepthPointCloudAccumulator();
-    const edge = depthPlane((u) => (u < 0.5 ? 1.0 : 2.0));
-    accumulator.sampleDepthFrame(edge, view, context(1, true, [0, 0, 0]));
-    accumulator.sampleDepthFrame(edge, view, context(2, true, [0.45, 0, 0]));
-    accumulator.sampleDepthFrame(edge, view, context(3, true, [-0.45, 0, 0]));
-    const snapshot = accumulator.snapshot(3, 3);
-    expect(snapshot.pointCount).toBeGreaterThan(50);
-    expect(snapshot.bounds).not.toBeNull();
-    expect((snapshot.bounds?.max[1] ?? 0) - (snapshot.bounds?.min[1] ?? 0)).toBeGreaterThan(0.65);
-  });
-
   it('rejects isolated single-pixel-like depth spikes instead of promoting them', () => {
     const accumulator = new DepthPointCloudAccumulator();
     const spike = depthPlane((u, v) => (Math.abs(u - 0.5) < 0.01 && Math.abs(v - 0.5) < 0.01 ? 0.55 : 1.5));
@@ -208,26 +189,6 @@ describe('surface reconstruction behaviour', () => {
     const afterError = Math.abs(meanDepth(after.positions) - 1.5);
     expect(after.pointCount).toBe(before.pointCount);
     expect(afterError).toBeLessThan(beforeError * 0.85);
-  });
-
-  it('retains a narrow protrusion smaller than the old 1/40 image-grid column', () => {
-    const accumulator = new DepthPointCloudAccumulator();
-    const protrusion = depthPlane((u, v) =>
-      u > 0.490 && u < 0.510 && v > 0.25 && v < 0.75 ? 1.0 : 1.5,
-    );
-    const cameras: Array<readonly [number, number, number]> = [
-      [0, 0, 0], [0.45, 0, 0], [-0.45, 0, 0], [0.30, 0.20, 0], [-0.30, 0.20, 0],
-    ];
-    cameras.forEach((camera, index) => accumulator.sampleDepthFrame(protrusion, view, context(index + 1, true, camera)));
-    const snapshot = accumulator.snapshot(cameras.length, cameras.length);
-    let protrusionPoints = 0; let wallPoints = 0;
-    for (let index = 1; index < snapshot.positions.length; index += 3) {
-      const depth = snapshot.positions[index];
-      if (depth < 1.2) protrusionPoints += 1;
-      if (depth > 1.35) wallPoints += 1;
-    }
-    expect(protrusionPoints).toBeGreaterThan(3);
-    expect(wallPoints).toBeGreaterThan(100);
   });
 
   it('produces meaningful normals on a planar surface', () => {
@@ -299,5 +260,67 @@ describe('surface reconstruction behaviour', () => {
       expect(snapshot.averageStableResidualMeters).toBeLessThan(0.06);
       assertFiniteArray(snapshot.positions);
     }
+  });
+});
+
+/*
+ * MAX-251: the three cases below used to feed ONE depth map with an identity
+ * transform for every "camera", so no parallax existed. They now scan analytic
+ * scenes from real look-at poses (tests/xr/support/syntheticDepthScene.ts).
+ */
+describe('multi-view behaviour on geometrically consistent scans', () => {
+  it('promotes surfaces only after a real side baseline creates independent view evidence', () => {
+    const scene = tiltedPlaneScene(0, 0, 1.2);
+    const poses = orbitPoses(scene.focus, 1.5, 70, 0, 120, 3);
+    const single = new DepthPointCloudAccumulator();
+    scanScene(single, scene, [poses[0]], { noise: ARCORE_NOISE });
+    expect(single.promotedCount).toBe(0);
+    const moved = new DepthPointCloudAccumulator();
+    scanScene(moved, scene, poses, { noise: ARCORE_NOISE });
+    expect(moved.promotedCount).toBeGreaterThan(0);
+    const snapshot = moved.snapshot(3, 3);
+    expect(snapshot.pointCount).toBeGreaterThan(0);
+    expect(Math.max(...snapshot.confidence)).toBeGreaterThan(0.5);
+  });
+
+  it('preserves both sides of a sharp depth step', () => {
+    const scene = stepScene(0.25, 1.0);
+    const accumulator = new DepthPointCloudAccumulator();
+    scanScene(accumulator, scene, orbitPoses(scene.focus, 1.4, 60, 150, 210, 5), { noise: ARCORE_NOISE });
+    const snapshot = accumulator.snapshot(5, 5);
+    const onFace = { lower: 0, upper: 0 };
+    for (let i = 0; i < snapshot.pointCount; i += 1) {
+      const hit = nearestPolygon(scene, [snapshot.positions[i * 3], snapshot.positions[i * 3 + 1], snapshot.positions[i * 3 + 2]]);
+      // 1.5 cm = ~3 sigma of the depth noise at 1.4-1.7 m.
+      if (hit.distance < 0.015 && (hit.polygon.label === 'lower' || hit.polygon.label === 'upper')) onFace[hit.polygon.label] += 1;
+    }
+    expect(onFace.lower).toBeGreaterThan(30);
+    expect(onFace.upper).toBeGreaterThan(30);
+  });
+
+  it('retains a narrow protrusion about 1.5 depth pixels wide', () => {
+    // 2.5 cm wide bar standing 0.3 m above a floor; at 1.2 m one depth pixel is ~1.5 cm.
+    const bar = 0.0125;
+    const scene: SyntheticScene = {
+      name: 'narrow-bar',
+      polygons: [
+        rectangle([0, 0, 0], [0.6, 0, 0], [0, 0.6, 0], 'floor'),
+        rectangle([0, 0, 0.3], [bar, 0, 0], [0, 0.25, 0], 'bar-top'),
+        rectangle([bar, 0, 0.15], [0, 0.25, 0], [0, 0, 0.15], 'bar+x'),
+        rectangle([-bar, 0, 0.15], [0, 0, 0.15], [0, 0.25, 0], 'bar-x'),
+      ],
+      creases: [], corners: [], focus: [0, 0, 0.15],
+    };
+    const accumulator = new DepthPointCloudAccumulator();
+    scanScene(accumulator, scene, orbitPoses(scene.focus, 1.2, 65, 0, 300, 6), { noise: ARCORE_NOISE });
+    const snapshot = accumulator.snapshot(6, 6);
+    let barTop = 0; let floor = 0;
+    for (let i = 0; i < snapshot.pointCount; i += 1) {
+      const z = snapshot.positions[i * 3 + 2];
+      if (z > 0.27) barTop += 1;
+      if (z < 0.03) floor += 1;
+    }
+    expect(barTop).toBeGreaterThan(3);
+    expect(floor).toBeGreaterThan(100);
   });
 });
