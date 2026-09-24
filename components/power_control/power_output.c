@@ -19,6 +19,27 @@ static const char *TAG =
 
 esp_err_t power_output_init(void)
 {
+    /*
+     * MAX-246: load LOW into the output register BEFORE the pin becomes an
+     * output. Configuring first would drive whatever the register still
+     * holds; a stale 1 would momentarily assert OFF and cut the battery.
+     */
+    esp_err_t err =
+        gpio_set_level(
+            BOARD_POWER_OFF_GPIO,
+            0
+        );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to set OFF GPIO LOW: %s",
+            esp_err_to_name(err)
+        );
+
+        return err;
+    }
+
     const gpio_config_t off_config = {
         .pin_bit_mask =
             1ULL <<
@@ -37,7 +58,7 @@ esp_err_t power_output_init(void)
             GPIO_INTR_DISABLE,
     };
 
-    esp_err_t err =
+    err =
         gpio_config(
             &off_config
         );
@@ -46,22 +67,6 @@ esp_err_t power_output_init(void)
         ESP_LOGE(
             TAG,
             "Failed to configure OFF GPIO: %s",
-            esp_err_to_name(err)
-        );
-
-        return err;
-    }
-
-    err =
-        gpio_set_level(
-            BOARD_POWER_OFF_GPIO,
-            0
-        );
-
-    if (err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Failed to set OFF GPIO LOW: %s",
             esp_err_to_name(err)
         );
 
