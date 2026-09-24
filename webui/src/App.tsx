@@ -8,7 +8,7 @@ import {
   saveObjectScanArtifact,
   saveSessionOccupancyArtifact,
 } from './api/deviceApi';
-import { encodeOccupancySolverArtifact, occupancyCrc32 } from './xr/occupancySolverArtifact';
+import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
@@ -21,6 +21,8 @@ import { decodeScanArtifact, encodeScanArtifact } from './xr/scanArtifact';
 import { registerAndMergeScanContinuation } from './xr/scanContinuation';
 import {
   displayForScanMode,
+  scanViewForMode,
+  toggleScanLayer,
   type ScanDisplayOptions,
   type ScanMode,
 } from './xr/scanDisplayModes';
@@ -185,16 +187,16 @@ export default function App({ objectId, sessionId }: AppProps) {
   }, []);
 
   const selectMode = useCallback((mode: ScanMode): void => {
-    const next = displayForScanMode(mode);
-    setScanMode(mode);
-    setDisplay(next);
-    clientDiagnostics.info('SCAN_RESULT_MODE', { mode, display: next });
+    const next = scanViewForMode(mode);
+    setScanMode(next.mode);
+    setDisplay(next.display);
+    clientDiagnostics.info('SCAN_RESULT_MODE', { mode, display: next.display });
   }, []);
 
   const toggleDisplay = useCallback((key: keyof ScanDisplayOptions): void => {
     setScanMode(null);
     setDisplay((current) => {
-      const next = { ...current, [key]: !current[key] };
+      const next = toggleScanLayer({ mode: null, display: current }, key).display;
       clientDiagnostics.info('SCAN_RESULT_LAYER_TOGGLE', { layer: key, enabled: next[key] });
       return next;
     });
@@ -412,11 +414,7 @@ export default function App({ objectId, sessionId }: AppProps) {
         // is already safely stored. No sensor<->scan registration exists yet
         // (MAX-145), so the ESP32 keeps the constraint disabled (fail closed).
         try {
-          const occupancy = encodeOccupancySolverArtifact(snapshot, {
-            frameId: `scan-crc32:${occupancyCrc32(artifact).toString(16).padStart(8, '0')}`,
-            createdAtMs: Date.now(),
-            registration: null,
-          });
+          const occupancy = buildSessionOccupancyArtifact(snapshot, artifact, Date.now());
           void saveSessionOccupancyArtifact(objectId, sessionId, occupancy).then(
             () => clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId, bytes: occupancy.byteLength }),
             (reason) => clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {

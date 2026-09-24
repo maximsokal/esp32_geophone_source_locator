@@ -191,3 +191,27 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   const occupied = read(header.occupied_count);
   return { header, free, occupied };
 }
+
+/** Identity of the exact saved scan an occupancy artifact was derived from. */
+export function occupancyFrameIdForScan(scanArtifact: Uint8Array): string {
+  return `scan-crc32:${occupancyCrc32(scanArtifact).toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * MAX-162: the compact occupancy saved beside a session's scan, bound to
+ * exactly that scan by its CRC. Until an AprilTag sensor<->scan
+ * registration exists (MAX-145) `registration` stays null and the ESP32
+ * keeps the constraint disabled (fail closed).
+ */
+export function buildSessionOccupancyArtifact(
+  snapshot: Parameters<typeof encodeOccupancySolverArtifact>[0],
+  scanArtifact: Uint8Array,
+  createdAtMs: number,
+  registration: OccupancyRegistration | null = null,
+): Uint8Array {
+  return encodeOccupancySolverArtifact(snapshot, {
+    frameId: occupancyFrameIdForScan(scanArtifact),
+    createdAtMs,
+    registration,
+  });
+}

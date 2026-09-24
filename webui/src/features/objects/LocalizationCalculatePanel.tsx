@@ -31,6 +31,12 @@ interface FormState {
   minimumSnr: string;
   semblanceWindowHalfSpanSamples: string;
   maxSourceDepthM: string;
+  sMinSeparationSamples: string;
+  sMaxSeparationSamples: string;
+  sStaWindowSamples: string;
+  sLtaWindowSamples: string;
+  sStaLtaTriggerRatio: string;
+  sMinimumSnr: string;
 }
 
 /*
@@ -56,6 +62,12 @@ const EMPTY_FORM: FormState = {
   minimumSnr: '',
   semblanceWindowHalfSpanSamples: '',
   maxSourceDepthM: '',
+  sMinSeparationSamples: '',
+  sMaxSeparationSamples: '',
+  sStaWindowSamples: '',
+  sLtaWindowSamples: '',
+  sStaLtaTriggerRatio: '',
+  sMinimumSnr: '',
 };
 
 function positiveNumber(text: string): number | null {
@@ -89,6 +101,83 @@ export function staLtaThresholdIssue(
 function positiveInteger(text: string): number | null {
   const value = Number(text);
   return text.trim().length > 0 && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function nonNegativeInteger(text: string): number | null {
+  const value = Number(text);
+  return text.trim().length > 0 && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+export interface SWavePickFields {
+  minSeparationSamples: string;
+  maxSeparationSamples: string;
+  staWindowSamples: string;
+  ltaWindowSamples: string;
+  staLtaTriggerRatio: string;
+  minimumSnr: string;
+}
+
+export interface SWavePickPayload {
+  s_min_separation_samples: number;
+  s_max_separation_samples: number;
+  s_sta_window_samples: number;
+  s_lta_window_samples: number;
+  s_sta_lta_trigger_ratio: number;
+  s_minimum_snr: number;
+}
+
+export type SWavePickSettings =
+  | { state: 'off' }
+  | { state: 'invalid'; issue: string }
+  | { state: 'on'; payload: SWavePickPayload };
+
+/*
+ * PSAFUVS needs S-wave arrivals. The S picker is optional, but like the P
+ * picker it never runs on guessed windows (MAX-132): all fields blank turns
+ * it off (PSAFUVS is then reported as not attempted), all fields valid
+ * turns it on, anything in between blocks the calculation.
+ */
+export function sWavePickSettings(fields: SWavePickFields): SWavePickSettings {
+  const texts = Object.values(fields);
+  if (texts.every((text) => text.trim().length === 0)) return { state: 'off' };
+  if (texts.some((text) => text.trim().length === 0)) {
+    return { state: 'invalid', issue: 'S-wave picking needs every field filled in, or all left blank.' };
+  }
+  const minSeparation = nonNegativeInteger(fields.minSeparationSamples);
+  const maxSeparation = positiveInteger(fields.maxSeparationSamples);
+  const sta = positiveInteger(fields.staWindowSamples);
+  const lta = positiveInteger(fields.ltaWindowSamples);
+  const ratio = positiveNumber(fields.staLtaTriggerRatio);
+  const minimumSnr = nonNegativeNumber(fields.minimumSnr);
+  if (minSeparation === null || maxSeparation === null || sta === null || lta === null || ratio === null || minimumSnr === null) {
+    return { state: 'invalid', issue: 'S-wave windows must be whole samples; ratio and SNR must be positive numbers.' };
+  }
+  if (maxSeparation <= minSeparation) {
+    return { state: 'invalid', issue: 'S-wave search: the maximum P-to-S separation must exceed the minimum.' };
+  }
+  const thresholdIssue = staLtaThresholdIssue(sta, lta, ratio);
+  if (thresholdIssue !== null) return { state: 'invalid', issue: `S-wave ${thresholdIssue}` };
+  return {
+    state: 'on',
+    payload: {
+      s_min_separation_samples: minSeparation,
+      s_max_separation_samples: maxSeparation,
+      s_sta_window_samples: sta,
+      s_lta_window_samples: lta,
+      s_sta_lta_trigger_ratio: ratio,
+      s_minimum_snr: minimumSnr,
+    },
+  };
+}
+
+/** Velocities a velocity-free method (TDCAS, PSAFUVS, SUEA) estimated for this event. */
+export function estimatedVelocityText(run: Pick<LocalizationRun, 'estimated_p_velocity_mps' | 'estimated_s_velocity_mps'>): string {
+  const p = run.estimated_p_velocity_mps;
+  const s = run.estimated_s_velocity_mps;
+  if (p === undefined || !(p > 0)) return '';
+  return s !== undefined && s > 0
+    ? ` · estimated vP ${p.toFixed(0)} m/s, vS ${s.toFixed(0)} m/s`
+    : ` · estimated v ${p.toFixed(0)} m/s`;
 }
 
 function formatPosition(run: LocalizationRun): string {
@@ -176,10 +265,19 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   /* Optional (MAX-211): blank selects the geometry-derived default depth. */
   const maxSourceDepthM = form.maxSourceDepthM.trim().length === 0 ? undefined : positiveNumber(form.maxSourceDepthM);
   const staLtaIssue = staLtaThresholdIssue(parsed.staWindowSamples, parsed.ltaWindowSamples, parsed.staLtaTriggerRatio);
+  const sWave = sWavePickSettings({
+    minSeparationSamples: form.sMinSeparationSamples,
+    maxSeparationSamples: form.sMaxSeparationSamples,
+    staWindowSamples: form.sStaWindowSamples,
+    ltaWindowSamples: form.sLtaWindowSamples,
+    staLtaTriggerRatio: form.sStaLtaTriggerRatio,
+    minimumSnr: form.sMinimumSnr,
+  });
   const formValid =
     Object.values(parsed).every((value) => value !== null) &&
     maxSourceDepthM !== null &&
-    staLtaIssue === null;
+    staLtaIssue === null &&
+    sWave.state !== 'invalid';
 
   const runCalculate = (): void => {
     if (!formValid) return;
@@ -205,6 +303,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       minimum_snr: parsed.minimumSnr,
       semblance_window_half_span_samples: parsed.semblanceWindowHalfSpanSamples,
       ...(maxSourceDepthM !== undefined ? { max_source_depth_m: maxSourceDepthM } : {}),
+      ...(sWave.state === 'on' ? sWave.payload : {}),
     })
       .then((result) => {
         if (!result.ok) throw new Error(result.error ?? 'calculate_source failed');
@@ -225,9 +324,11 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         <button disabled={busy || running} onClick={onClose}>Close</button>
       </div>
       <p>
-        Runs every localization backend (TDOA, traveltime inversion, semblance, energy baseline, joint fusion)
-        against this session's frozen geometry and raw samples. Every value below must come from this
-        object's own measured/reviewed calibration -- nothing here is a guessed default.
+        Runs every localization backend (TDOA, traveltime inversion, semblance, energy baseline, the
+        velocity-free TDCAS / PSAFUVS / SUEA, joint fusion) against this session's frozen geometry and raw
+        samples; with a registered 3D scan, scan-constrained variants also use its empty and filled space.
+        Every value below must come from this object's own measured/reviewed calibration -- nothing here is
+        a guessed default.
       </p>
 
       <h3>Sensor geometry (frozen for this session)</h3>
@@ -372,6 +473,37 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         {maxSourceDepthM === null && <div className="console-alert" role="alert">Max source depth must be a positive number of meters, or blank.</div>}
       </details>
 
+      <details className="settings-details">
+        <summary>S-wave picking for PSAFUVS (optional: all fields or none)</summary>
+        <div className="cable-grid">
+          <label title="The S onset is searched from this many samples after the P pick.">
+            <span>Min P→S separation (samples)</span>
+            <input type="number" min="0" step="1" value={form.sMinSeparationSamples} onChange={set('sMinSeparationSamples')} />
+          </label>
+          <label title="... up to this many samples after the P pick.">
+            <span>Max P→S separation (samples)</span>
+            <input type="number" min="1" step="1" value={form.sMaxSeparationSamples} onChange={set('sMaxSeparationSamples')} />
+          </label>
+          <label>
+            <span>S STA window (samples)</span>
+            <input type="number" min="1" step="1" value={form.sStaWindowSamples} onChange={set('sStaWindowSamples')} />
+          </label>
+          <label title="Measured over the P coda, never the pre-event noise.">
+            <span>S LTA window (samples)</span>
+            <input type="number" min="1" step="1" value={form.sLtaWindowSamples} onChange={set('sLtaWindowSamples')} />
+          </label>
+          <label>
+            <span>S STA/LTA trigger ratio</span>
+            <input type="number" min="0" step="any" value={form.sStaLtaTriggerRatio} onChange={set('sStaLtaTriggerRatio')} />
+          </label>
+          <label title="RMS of the S window over RMS of the P coda just before it.">
+            <span>S minimum SNR (S / P-coda RMS)</span>
+            <input type="number" min="0" step="any" value={form.sMinimumSnr} onChange={set('sMinimumSnr')} />
+          </label>
+        </div>
+        {sWave.state === 'invalid' && <div className="console-alert" role="alert">{sWave.issue}</div>}
+      </details>
+
       {error !== null && <div className="console-alert" role="alert">{error}</div>}
 
       <div className="console-actions">
@@ -402,6 +534,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
                   {run.solved
                     ? `confidence ${run.confidence_score.toFixed(2)}` +
                       (run.degrees_of_freedom === 0 ? ' · unverified (no redundant picks)' : '') +
+                      estimatedVelocityText(run) +
                       (run.method_name === 'energy_baseline' ? ' · diagnostic only, not fused' : '')
                     : run.rejection_reason}
                 </small>

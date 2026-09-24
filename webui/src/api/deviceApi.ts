@@ -396,6 +396,9 @@ export interface LocalizationRun {
   confidence_score: number;
   /** MAX-212: redundancy of a pick-based fit; 0 = exactly determined (unverified), -1/absent = n/a. */
   degrees_of_freedom?: number;
+  /** Velocity-free methods (TDCAS, PSAFUVS, SUEA): the event's own estimated P (or single-phase) and S velocities; absent = not estimated. */
+  estimated_p_velocity_mps?: number;
+  estimated_s_velocity_mps?: number;
   solved: boolean;
   source_position?: LocalizationRunPosition;
   emission_time_us?: number;
