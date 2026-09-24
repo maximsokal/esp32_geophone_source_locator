@@ -151,7 +151,9 @@ describe('scan capability readiness', () => {
     });
     expect(readiness.objectMajorExtentMeters).toBeCloseTo(0.22, 6);
     expect(readiness.objectMinorExtentMeters).toBeCloseTo(0.10, 6);
-    expect(readiness.structural.ready).toBe(true);
+    // MAX-254: one sufficient face cannot carry an edge; the next step is another face.
+    expect(readiness.structural.ready).toBe(false);
+    expect(readiness.structural.limitingMetric).toBe('faces');
   });
 
   it('reports mesh readiness independently from structural readiness', () => {
@@ -168,7 +170,9 @@ describe('scan capability readiness', () => {
       }),
       viewpoints: [view(1, 0.4, 0), view(2, -0.4, 0)],
     });
-    expect(readiness.structural.ready).toBe(true);
+    // MAX-254: a single face is never structurally (edge) ready.
+    expect(readiness.structural.ready).toBe(false);
+    expect(readiness.structural.limitingMetric).toBe('faces');
     expect(readiness.mesh?.progress).toBeCloseTo(0.80, 6);
     expect(readiness.mesh?.ready).toBe(false);
   });

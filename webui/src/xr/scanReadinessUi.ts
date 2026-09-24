@@ -59,6 +59,10 @@ export function compactScanReadinessLabel(
     // More frames from the same pose do not satisfy this gate. Tell the operator
     // to change viewpoint instead of silently encouraging more stationary scans.
     parts.push('MOVE');
+  } else if (!readiness.structural.ready && readiness.structural.limitingMetric === 'faces') {
+    // MAX-254: one face is measured well, but an edge needs an adjacent,
+    // non-parallel face: scan around the corner rather than the same side.
+    parts.push('FACE+');
   }
   if (counts.certifiedCorners > 0 || counts.certifiedEdges > 0) {
     parts.push(`C${counts.visibleCorners}/${counts.certifiedCorners}`);

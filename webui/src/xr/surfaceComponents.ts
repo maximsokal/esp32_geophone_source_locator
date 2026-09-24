@@ -24,6 +24,10 @@ export interface SurfaceComponent {
   occupancyRatio: number;
   meshReadiness: number;
   meshEligible: boolean;
+  /** MAX-254: unit plane normal (smallest principal axis) of the component. */
+  normal?: SurfaceComponentNormal;
+  /** MAX-254: planar area estimate (convex hull in the plane + half-spacing border). */
+  estimatedAreaSquareMeters?: number;
 }
 
 export interface SurfaceComponentAnalysis {
@@ -477,6 +481,55 @@ function robustProjectedExtent(
   return Math.max(cellSizeMeters, Number.isFinite(high - low) ? high - low : 0);
 }
 
+/**
+ * MAX-254: planar area of a component. PCA extents are unusable for this: on a
+ * square face the in-plane eigenvalues are equal, the axes may lie along the
+ * diagonals and major x minor then doubles the area. Instead take the convex
+ * hull of the points in the plane (independent of the axis choice) and add the
+ * half-spacing border strip that sampled points cannot reach.
+ */
+function planarAreaEstimate(
+  pointIndices: readonly number[],
+  input: SurfaceComponentInput,
+  center: SurfaceComponentPoint,
+  axisU: SurfaceComponentNormal,
+  axisV: SurfaceComponentNormal,
+): number {
+  const n = pointIndices.length;
+  if (n < 3) return 0;
+  const points: Array<[number, number]> = pointIndices.map((index) => {
+    const offset = index * 3;
+    const dx = Number(input.positions[offset]) - center[0];
+    const dy = Number(input.positions[offset + 1]) - center[1];
+    const dz = Number(input.positions[offset + 2]) - center[2];
+    return [dx * axisU[0] + dy * axisU[1] + dz * axisU[2], dx * axisV[0] + dy * axisV[1] + dz * axisV[2]];
+  });
+  points.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]): number =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: Array<[number, number]> = [];
+  for (const point of points) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper: Array<[number, number]> = [];
+  for (let i = points.length - 1; i >= 0; i -= 1) {
+    const point = points[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  let twiceArea = 0; let perimeter = 0;
+  for (let i = 0; i < hull.length; i += 1) {
+    const a = hull[i]; const b = hull[(i + 1) % hull.length];
+    twiceArea += a[0] * b[1] - b[0] * a[1];
+    perimeter += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  const hullArea = Math.abs(twiceArea) / 2;
+  const spacing = Math.sqrt(hullArea / n);
+  return hullArea + perimeter * spacing * 0.5 + spacing * spacing;
+}
+
 function componentMetrics(
   id: number,
   pointIndices: readonly number[],
@@ -523,6 +576,11 @@ function componentMetrics(
   );
   const occupancyRatio = clamp01(occupiedCellCount / expectedSurfaceCells);
   const thresholds = meshThresholds(input.voxelSizeMeters);
+  const estimatedAreaSquareMeters = planarAreaEstimate(pointIndices, input, center, eigen.vectors[1], eigen.vectors[2]);
+  const normalLength = Math.hypot(eigen.vectors[0][0], eigen.vectors[0][1], eigen.vectors[0][2]);
+  const normal: SurfaceComponentNormal = normalLength > 1e-9
+    ? [eigen.vectors[0][0] / normalLength, eigen.vectors[0][1] / normalLength, eigen.vectors[0][2] / normalLength]
+    : [0, 0, 1];
   const meshReadiness = Math.min(
     readinessRatio(pointIndices.length, thresholds.points),
     readinessRatio(occupiedCellCount, thresholds.cells),
@@ -541,6 +599,8 @@ function componentMetrics(
     occupancyRatio,
     meshReadiness,
     meshEligible: meshReadiness >= 1 - 1e-9,
+    normal,
+    estimatedAreaSquareMeters,
   };
 }
 
