@@ -172,3 +172,27 @@ const char *ina3221_power_ux_state_name(ina3221_power_ux_state_t state)
         default: return "UNKNOWN";
     }
 }
+
+
+uint32_t ina3221_power_evidence_changes(
+    const ina3221_power_evidence_t *previous,
+    const ina3221_power_evidence_t *current)
+{
+    if (previous == NULL || current == NULL || !previous->observed || !current->observed) {
+        return 0U;
+    }
+    uint32_t changes = 0U;
+    if (previous->battery_present != current->battery_present) {
+        changes |= INA3221_EVIDENCE_BATTERY_CHANGED;
+    }
+    if (previous->usb_present != current->usb_present) {
+        changes |= INA3221_EVIDENCE_USB_CHANGED;
+    }
+    if (previous->charging != current->charging) {
+        changes |= INA3221_EVIDENCE_CHARGING_CHANGED;
+    }
+    if (previous->soc_quality != current->soc_quality) {
+        changes |= INA3221_EVIDENCE_SOC_CHANGED;
+    }
+    return changes;
+}

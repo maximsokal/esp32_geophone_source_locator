@@ -129,6 +129,24 @@ static void test_names(void)
     assert(ina3221_power_ux_update(NULL, &cfg, NULL) == INA3221_POWER_UX_UNKNOWN);
 }
 
+static void test_evidence_changes(void)
+{
+    ina3221_power_evidence_t a = { .observed = true, .battery_present = true, .usb_present = false, .charging = false, .soc_quality = 1 };
+    ina3221_power_evidence_t b = a;
+    assert(ina3221_power_evidence_changes(&a, &b) == 0U);
+    b.usb_present = true;
+    b.charging = true;
+    assert(ina3221_power_evidence_changes(&a, &b) == (INA3221_EVIDENCE_USB_CHANGED | INA3221_EVIDENCE_CHARGING_CHANGED));
+    b = a;
+    b.battery_present = false;
+    b.soc_quality = 0;
+    assert(ina3221_power_evidence_changes(&a, &b) == (INA3221_EVIDENCE_BATTERY_CHANGED | INA3221_EVIDENCE_SOC_CHANGED));
+    /* First observation: nothing to compare with. */
+    ina3221_power_evidence_t none = { 0 };
+    assert(ina3221_power_evidence_changes(&none, &a) == 0U);
+    assert(ina3221_power_evidence_changes(NULL, &a) == 0U);
+}
+
 int main(void)
 {
     test_config();
@@ -136,5 +154,6 @@ int main(void)
     test_battery_bands_with_hysteresis();
     test_time_qualification();
     test_names();
+    test_evidence_changes();
     return 0;
 }

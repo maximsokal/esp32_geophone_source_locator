@@ -83,6 +83,43 @@ static ina3221_monitor_critical_battery_handler_t s_critical_battery_handler;
 /* MAX-181 */
 static ina3221_soc_config_t s_soc_config;
 static ina3221_soc_t s_soc;
+/* MAX-186: last logged evidence (worker only). */
+static ina3221_power_evidence_t s_evidence;
+
+
+static void ina3221_monitor_log_evidence_changes(
+    const ina3221_power_decision_t *decision
+)
+{
+    const ina3221_power_evidence_t current = {
+        .observed = true,
+        .battery_present = decision->battery_present,
+        .usb_present = decision->usb_present,
+        .charging = decision->charging,
+        .soc_quality = (int)s_soc.quality,
+    };
+    const uint32_t changes = ina3221_power_evidence_changes(&s_evidence, &current);
+    if ((changes & INA3221_EVIDENCE_BATTERY_CHANGED) != 0U) {
+        ESP_LOGI(TAG, "POWER_EVIDENCE battery %s (%.3f V)",
+                 current.battery_present ? "present" : "absent",
+                 (double)decision->battery_voltage_v);
+    }
+    if ((changes & INA3221_EVIDENCE_USB_CHANGED) != 0U) {
+        ESP_LOGI(TAG, "POWER_EVIDENCE USB %s", current.usb_present ? "present" : "absent");
+    }
+    if ((changes & INA3221_EVIDENCE_CHARGING_CHANGED) != 0U) {
+        ESP_LOGI(TAG, "POWER_EVIDENCE charging %s (%+.3f A)",
+                 current.charging ? "started" : "stopped",
+                 (double)decision->battery_current_a);
+    }
+    if ((changes & INA3221_EVIDENCE_SOC_CHANGED) != 0U) {
+        ESP_LOGI(TAG, "POWER_EVIDENCE SoC source %s -> %s (%.0f%%)",
+                 ina3221_soc_quality_name((ina3221_soc_quality_t)s_evidence.soc_quality),
+                 ina3221_soc_quality_name(s_soc.quality),
+                 (double)decision->battery_percent_estimate);
+    }
+    s_evidence = current;
+}
 
 _Static_assert(INA3221_SOC_FULL_ANCHORED == 3 && DEVICE_BATTERY_SOC_FULL_ANCHORED == 3 &&
                INA3221_SOC_VOLTAGE_ONLY == 1 && DEVICE_BATTERY_SOC_VOLTAGE_ONLY == 1,
@@ -150,6 +187,7 @@ static void ina3221_monitor_load_power_ux(void)
     s_soc_config.capacity_mah = (float)CONFIG_POWER_BATTERY_CAPACITY_MAH;
 #endif
     ina3221_soc_reset(&s_soc);
+    memset(&s_evidence, 0, sizeof(s_evidence));
 }
 
 
@@ -458,13 +496,15 @@ static void ina3221_monitor_log_sample(
     if (decision->battery_present) {
         ESP_LOGI(
             TAG,
-            "source=%s INA_CH1_BATTERY=%.3fV %+.3fA %.0f%% usb=%s charging=%s INA_CH2_ESP32_5V=%.3fV %+.3fA INA_CH3_AD7606_5V=%.3fV %+.3fA",
+            "state=%s source=%s INA_CH1_BATTERY=%.3fV %+.3fA %.0f%% soc=%s usb=%s charging=%s INA_CH2_ESP32_5V=%.3fV %+.3fA INA_CH3_AD7606_5V=%.3fV %+.3fA",
+            ina3221_power_ux_state_name(s_ux.state),
             ina3221_policy_state_name(
                 decision->state
             ),
             decision->battery_voltage_v,
             decision->battery_current_a,
             decision->battery_percent_estimate,
+            ina3221_soc_quality_name(s_soc.quality),
             decision->usb_present ? "yes" : "no",
             decision->charging ? "yes" : "no",
             channels[1].bus_voltage_v,
@@ -478,7 +518,8 @@ static void ina3221_monitor_log_sample(
 
     ESP_LOGI(
         TAG,
-        "source=%s INA_CH1_BATTERY=absent %.3fV %+.3fA usb=%s INA_CH2_ESP32_5V=%.3fV %+.3fA INA_CH3_AD7606_5V=%.3fV %+.3fA",
+        "state=%s source=%s INA_CH1_BATTERY=absent %.3fV %+.3fA usb=%s INA_CH2_ESP32_5V=%.3fV %+.3fA INA_CH3_AD7606_5V=%.3fV %+.3fA",
+        ina3221_power_ux_state_name(s_ux.state),
         ina3221_policy_state_name(
             decision->state
         ),
@@ -664,6 +705,7 @@ static void ina3221_monitor_worker(
             );
 
             ina3221_monitor_apply_soc(&decision);
+            ina3221_monitor_log_evidence_changes(&decision);
 
             ina3221_monitor_publish(
                 channels,
