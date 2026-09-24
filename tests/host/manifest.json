@@ -878,6 +878,40 @@
       ]
     },
     {
+      "name": "localization_calculate_scan_methods",
+      "sources": [
+        "components/localization_calculate/localization_calculate_policy.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_tdcas.c",
+        "components/localization_velocity_free/localization_psafuvs.c",
+        "components/localization_velocity_free/localization_suea.c",
+        "components/localization_calculate/tests/localization_calculate_scan_methods_test.c"
+      ],
+      "include_dirs": [
+        "components/scan_occupancy/include",
+        "tests/host/stubs/object_store_profile",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_calculate/include",
+        "components/localization_comparison/include",
+        "components/localization_energy_baseline/include",
+        "components/localization_semblance/include",
+        "components/localization_traveltime_inversion/include",
+        "components/localization_velocity_free/include",
+        "components/localization_results/include",
+        "components/geophone_events/include",
+        "components/object_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "web_localization_runs_http",
       "sources": [
         "tests/host/stubs/object_store_profile/cJSON.c",

@@ -24,6 +24,8 @@ typedef struct
 {
     localization_point3d_t position;
     double velocity_mps;
+    uint32_t members; /* bit i: observation i is in this combination */
+    bool admitted;    /* passed the candidate filter */
 
 } tdcas_candidate_t;
 
@@ -187,25 +189,36 @@ static bool solve_combination_planar(
 }
 
 
-static bool combination_admitted(
-    const localization_tdcas_config_t *config,
-    const localization_observation_t *observations,
-    const size_t *indices,
-    size_t k,
-    const localization_point3d_t *candidate
+/* Logistic ("comprehensive") fusion of the admitted combinations that use
+ * none of the excluded sensors. False when no combination qualifies. */
+static bool fuse_combinations(
+    tdcas_workspace_t *workspace,
+    size_t candidate_count,
+    uint32_t excluded,
+    double location[4],
+    double scale[4],
+    size_t *used_out
 )
 {
-    if (config == NULL) {
-        return true;
-    }
-    if (!localization_candidate_admitted(&config->candidate_filter, candidate)) {
-        return false;
-    }
-    for (size_t i = 0U; i < k; ++i) {
-        if (!localization_ray_admitted(&config->ray_filter, &observations[indices[i]].sensor_position, candidate)) {
+    size_t used = 0U;
+    for (size_t axis = 0U; axis < 4U; ++axis) {
+        used = 0U;
+        for (size_t i = 0U; i < candidate_count; ++i) {
+            const tdcas_candidate_t *c = &workspace->candidates[i];
+            if (!c->admitted || (c->members & excluded) != 0U) {
+                continue;
+            }
+            workspace->samples[used++] =
+                axis == 0U ? c->position.x_m :
+                axis == 1U ? c->position.y_m :
+                axis == 2U ? c->position.z_m :
+                c->velocity_mps;
+        }
+        if (used == 0U || !vf_fit_logistic(workspace->samples, used, &location[axis], &scale[axis])) {
             return false;
         }
     }
+    *used_out = used;
     return true;
 }
 
@@ -321,45 +334,60 @@ esp_err_t localization_tdcas_solve(
         }
 
         ++result->combinations_valid;
-        if (!combination_admitted(config, observations, indices, k, &position)) {
-            ++result->combinations_filtered;
-            continue;
-        }
         if (candidate_count < TDCAS_MAX_COMBINATIONS) {
+            uint32_t members = 0U;
+            for (size_t i = 0U; i < k; ++i) {
+                members |= 1U << indices[i];
+            }
             candidates[candidate_count].position = position;
             candidates[candidate_count].velocity_mps = velocity;
+            candidates[candidate_count].members = members;
+            candidates[candidate_count].admitted =
+                config == NULL || localization_candidate_admitted(&config->candidate_filter, &position);
             ++candidate_count;
         }
     } while (next_combination(indices, k, observation_count));
 
-    if (candidate_count == 0U) {
+    /*
+     * Comprehensive solution: logistic location of each coordinate over the
+     * admitted combinations. Rays are then checked per SENSOR against that
+     * consensus position (never against a combination's own solution, which
+     * a delayed pick can bias until its own ray looks clear): a sensor whose
+     * straight ray crosses empty space is excluded with every combination
+     * containing it, and the fusion repeats until no new sensor is excluded.
+     */
+    double location[4];
+    double scale[4];
+    size_t used = 0U;
+    uint32_t excluded = 0U;
+    bool fused = fuse_combinations(workspace, candidate_count, excluded, location, scale, &used);
+    for (size_t pass = 0U; fused && config != NULL && pass < observation_count; ++pass) {
+        const localization_point3d_t consensus = { location[0], location[1], location[2] };
+        uint32_t newly = 0U;
+        for (size_t i = 0U; i < observation_count; ++i) {
+            if (
+                (excluded & (1U << i)) == 0U &&
+                !localization_ray_admitted(&config->ray_filter, &positions[i], &consensus)
+            ) {
+                newly |= 1U << i;
+            }
+        }
+        if (newly == 0U) {
+            break;
+        }
+        excluded |= newly;
+        fused = fuse_combinations(workspace, candidate_count, excluded, location, scale, &used);
+    }
+    free(workspace);
+
+    result->sensor_mask_obstructed = excluded;
+    result->combinations_filtered = result->combinations_valid - (fused ? used : 0U);
+    if (!fused) {
         result->status = result->combinations_valid > 0U
             ? LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION
             : LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
-        free(workspace);
         return ESP_OK;
     }
-
-    /* Comprehensive solution: logistic location of each coordinate. */
-    double *samples = workspace->samples;
-    double location[4];
-    double scale[4];
-    for (size_t axis = 0U; axis < 4U; ++axis) {
-        for (size_t i = 0U; i < candidate_count; ++i) {
-            const localization_point3d_t p = candidates[i].position;
-            samples[i] =
-                axis == 0U ? p.x_m :
-                axis == 1U ? p.y_m :
-                axis == 2U ? p.z_m :
-                candidates[i].velocity_mps;
-        }
-        if (!vf_fit_logistic(samples, candidate_count, &location[axis], &scale[axis])) {
-            result->status = LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
-            free(workspace);
-            return ESP_OK;
-        }
-    }
-    free(workspace);
 
     result->position = (localization_point3d_t) { location[0], location[1], location[2] };
     result->position_scale_m = (localization_point3d_t) { scale[0], scale[1], scale[2] };

@@ -57,9 +57,10 @@ typedef struct
      * (e.g. scan-verified FREE air) is discarded before the fusion. */
     localization_candidate_filter_t candidate_filter;
 
-    /* A combination is discarded when any of its sensors' straight ray to
-     * that combination's solution is obstructed (scan-verified empty space
-     * on the ray): the straight-ray equations cannot hold for it. */
+    /* A sensor whose straight ray to the fused (consensus) position is
+     * obstructed (scan-verified empty space on the ray) is excluded with
+     * every combination containing it, and the fusion is repeated: the
+     * straight-ray equations cannot hold for it. */
     localization_ray_filter_t ray_filter;
 
 } localization_tdcas_config_t;
@@ -76,8 +77,8 @@ typedef enum
      * time after an arrival, a negative squared depth). */
     LOCALIZATION_TDCAS_NO_VALID_COMBINATION,
 
-    /* Valid combinations existed, but the candidate/ray filters rejected
-     * every one of them. */
+    /* Valid combinations existed, but the candidate/ray filters left none
+     * to fuse. */
     LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION
 
 } localization_tdcas_status_t;
@@ -92,9 +93,10 @@ typedef struct
     bool planar_layout;
 
     size_t sensors_used;
+    uint32_t sensor_mask_obstructed; /* bit i: excluded by the ray filter */
     size_t combinations_total;
     size_t combinations_valid;
-    size_t combinations_filtered;
+    size_t combinations_filtered;    /* valid but not fused (filters) */
 
     localization_point3d_t position;
 

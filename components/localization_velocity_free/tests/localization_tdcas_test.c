@@ -232,7 +232,12 @@ static void test_scan_void_ray_filter_removes_detoured_sensor(void)
     assert(localization_tdcas_solve(observations, 7U, &config, &filtered) == ESP_OK);
     assert(filtered.status == LOCALIZATION_TDCAS_SOLVED);
     assert(filtered.combinations_total == 7U);
-    assert(filtered.combinations_filtered >= 6U - (filtered.combinations_total - filtered.combinations_valid));
+    /* Judged per sensor against the consensus, so sensor 6 is excluded
+     * with all six combinations containing it. */
+    assert(filtered.sensor_mask_obstructed == (1U << 6));
+    /* Only the one combination without sensor 6 is fused (some that
+     * contain the delayed pick are not even physically valid). */
+    assert(filtered.combinations_filtered == filtered.combinations_valid - 1U);
 
     const double unfiltered_error = unfiltered.status == LOCALIZATION_TDCAS_SOLVED
         ? distance(unfiltered.position, source)
