@@ -381,6 +381,9 @@ esp_err_t localization_tdcas_solve(
     free(workspace);
 
     result->sensor_mask_obstructed = excluded;
+    for (uint32_t bits = excluded; bits != 0U; bits &= bits - 1U) {
+        --result->sensors_used;
+    }
     result->combinations_filtered = result->combinations_valid - (fused ? used : 0U);
     if (!fused) {
         result->status = result->combinations_valid > 0U

@@ -92,7 +92,7 @@ typedef struct
      * variant (5-sensor combinations + recovered depth) was used. */
     bool planar_layout;
 
-    size_t sensors_used;
+    size_t sensors_used;             /* after excluding obstructed sensors */
     uint32_t sensor_mask_obstructed; /* bit i: excluded by the ray filter */
     size_t combinations_total;
     size_t combinations_valid;
