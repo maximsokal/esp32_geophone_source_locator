@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
+import LocalizationOverlay from './LocalizationOverlay';
 import type {
   LocalizationPickRecord,
   LocalizationRun,
@@ -378,6 +379,10 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
           {running ? 'Calculating…' : 'Calculate source'}
         </button>
       </div>
+
+      {runs !== null && runs.length > 0 && (
+        <LocalizationOverlay runs={runs} geometry={geometry} />
+      )}
 
       {runs !== null && (
         <>
