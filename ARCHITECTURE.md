@@ -834,6 +834,32 @@ AD7606 frames
 
 Keeping arrival picking and geometry solving separate allows both stages to be bench-tested independently.
 
+### Velocity-free methods and the 3D scan's empty/filled space
+
+`components/localization_velocity_free` adds three methods from Longjun Dong's group that estimate the event's own propagation velocity instead of trusting a pre-measured one:
+
+| Method | Input | Minimum sensors | Scan use |
+| --- | --- | --- | --- |
+| TDCAS (IEEE Access 2017) | P picks | 6 (5 on a planar surface array) | straight rays crossing scan FREE space drop the sensor |
+| PSAFUVS (IJDSN 2013) | P + S picks | 5 (4 on a planar surface array) | same ray screening; candidate filter |
+| SUEA (IJMST 2022) | P picks (+ optional velocity prior) | 3 | travel paths go *around* empty cells |
+
+- TDCAS solves every 6-sensor (planar: 5-sensor) combination analytically and fuses them with a logistic-PDF maximum-likelihood fit. The current 4-pod hardware cannot satisfy it; its run record says so.
+- PSAFUVS linearizes `|x - s_i|^2 = K^2 (t_S,i - t_P,i)^2` and refines all 2N arrivals with Levenberg-Marquardt; it works with the 4 flat pods. S onsets come from `geophone_event_pick_secondary_arrival()` (STA/LTA over the P coda + AIC); its settings are optional caller input (`s_*` fields of `calculate_source`).
+- SUEA runs an any-angle Lazy Theta* shortest-path field per sensor over a SOLID / UNKNOWN / EMPTY voxel grid and a velocity-free (or velocity-prior) grid search. `localization_suea_identify_empty_areas()` turns UNKNOWN cells EMPTY or SOLID from active shots at known positions; it never overrules scan evidence.
+
+Scan data flow (never assuming the unseen interior is empty):
+
+```text
+phone scan (WebXR) -> FREE / OCCUPIED voxels (UNKNOWN implicit)
+  -> occupancy-v1.bin beside the session's scan (kind=occupancy)
+  -> scan_occupancy_parse() + registration bound to the frozen geometry
+  -> FREE = EMPTY SUEA cell / ray obstruction, OCCUPIED = SOLID, UNKNOWN = passable
+  -> tdcas/psafuvs_scan_constrained, suea_scan_voids (persisted, never fused)
+```
+
+`tests/vectors/scan_occupancy_void_scene_v1.bin` is written by the WebUI encoder and consumed by `localization_calculate_scan_methods_test.c`, so the whole path is tested across both languages. SUEA accuracy is bounded by the grid (0.1 m cells by default).
+
 ## Web component convention
 
 The public web API is only `include/web_server.h`. Internal route/JSON/setup helpers are implementation details of the `web_server` component and should use component-private declarations, not grow additional public headers.
