@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_err.h"
 #include "localization_event_bridge.h"
@@ -205,6 +206,182 @@ static void test_rejects_invalid_arguments(void)
 }
 
 
+static void test_channel_count_at_the_32_channel_boundary_is_accepted(void)
+{
+    /* LOCALIZATION_EVENT_MAX_CHANNELS is 32; exactly 32 must be accepted
+     * (33 is already proven rejected above), and only the first 4 carry
+     * accepted picks -- the rest are rejected for no trigger, same as any
+     * other unusable channel, so the bridge still reports a normal solve. */
+    localization_event_channel_input_t channels[32];
+    memset(channels, 0, sizeof(channels));
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+    for (size_t i = 4u; i < 32u; ++i) {
+        channels[i].pick = rejected_pick();
+        channels[i].sample_rate_hz = TEST_SAMPLE_RATE_HZ;
+    }
+
+    const localization_config_t config = test_config();
+    localization_event_result_t result;
+
+    assert(localization_event_solve(channels, 32u, &config, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_SOLVED);
+    assert(result.channel_mask_used == 0x0Fu);
+    assert(result.channel_mask_rejected == 0xFFFFFFF0u);
+    assert(result.channels_used_count == 4u);
+    assert(result.solver_result.converged);
+}
+
+
+static void test_zero_and_negative_propagation_speed_are_solver_rejected(void)
+{
+    /* The bridge itself never validates propagation_speed_mps -- that is
+     * localization_tdoa_solve()'s own job (localization.c's
+     * localization_validate()) -- so a non-physical speed must surface as
+     * LOCALIZATION_EVENT_SOLVER_REJECTED, not a silent bridge-level guess
+     * or a crash. */
+    localization_event_channel_input_t channels[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+
+    localization_config_t config = test_config();
+    localization_event_result_t result;
+
+    config.propagation_speed_mps = 0.0;
+    assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_SOLVER_REJECTED);
+    assert(result.channels_used_count == 4u);
+
+    config.propagation_speed_mps = -340.0;
+    assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_SOLVER_REJECTED);
+    assert(result.channels_used_count == 4u);
+}
+
+
+static void test_non_finite_propagation_speed_is_solver_rejected(void)
+{
+    localization_event_channel_input_t channels[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+
+    localization_config_t config = test_config();
+    config.propagation_speed_mps = NAN;
+    localization_event_result_t result;
+
+    assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_SOLVER_REJECTED);
+}
+
+
+static void test_non_finite_sensor_position_is_solver_rejected(void)
+{
+    /* A NaN/inf sensor position (e.g. an un-anchored pod) must reach the
+     * solver's own finiteness check via the bridge's plain pass-through,
+     * not be silently coerced or crash the conversion math. */
+    localization_event_channel_input_t channels[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+    channels[3].sensor_position.z_m = INFINITY;
+
+    const localization_config_t config = test_config();
+    localization_event_result_t result;
+
+    assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_SOLVER_REJECTED);
+    assert(result.channels_used_count == 4u);
+}
+
+
+static void test_solver_non_convergence_is_still_reported_as_solved(void)
+{
+    /* Per localization_event_bridge.h: "a low-quality or non-converged
+     * solve is still reported here, not upgraded/downgraded by this
+     * bridge" -- callers must inspect solver_result.converged themselves. */
+    localization_event_channel_input_t channels[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+
+    localization_config_t config = test_config();
+    config.max_iterations = 1;
+    config.convergence_m = 1.0e-12;
+    const localization_point3d_t distant_guess = { 50.0, 50.0, 50.0 };
+    localization_event_result_t result;
+
+    assert(localization_event_solve(channels, 4u, &config, &distant_guess, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_EVENT_SOLVED);
+    assert(!result.solver_result.converged);
+    assert(result.solver_result.iterations == 1);
+}
+
+
+static void test_subsample_offset_shifts_the_converted_arrival_time(void)
+{
+    /* arrival_subsample_offset (MAX-209's cross-correlation refinement)
+     * must be folded into the microsecond conversion alongside the whole
+     * sample index, not ignored -- otherwise sub-sample timing refinement
+     * would be silently thrown away by this bridge. */
+    localization_event_channel_input_t channels[4];
+    for (size_t i = 0u; i < 4u; ++i) {
+        channels[i] = (localization_event_channel_input_t) {
+            .pick = accepted_pick(s_sample_indices[i]),
+            .sample_rate_hz = TEST_SAMPLE_RATE_HZ,
+            .sensor_position = s_sensors[i]
+        };
+    }
+
+    const localization_config_t config = test_config();
+    localization_event_result_t baseline;
+    assert(localization_event_solve(channels, 4u, &config, NULL, &baseline) == ESP_OK);
+    assert(baseline.status == LOCALIZATION_EVENT_SOLVED);
+
+    /* Shift only one channel's arrival via arrival_subsample_offset (a
+     * uniform shift across every channel would cancel out in the TDOA
+     * differences and prove nothing). With exactly 4 observations feeding
+     * TDOA's 4 unknowns (x, y, z, emission time) the system is exactly
+     * determined, so the solver re-fits perfectly around the perturbation
+     * either way -- the residual stays near zero regardless, and only the
+     * solved position itself reveals whether the offset was actually
+     * consumed instead of silently dropped. */
+    channels[1].pick.arrival_subsample_offset = 50.0f;
+
+    localization_event_result_t shifted;
+    assert(localization_event_solve(channels, 4u, &config, NULL, &shifted) == ESP_OK);
+    assert(shifted.status == LOCALIZATION_EVENT_SOLVED);
+    assert(shifted.solver_result.converged);
+
+    const double dx = fabs(shifted.solver_result.source_position.x_m - baseline.solver_result.source_position.x_m);
+    const double dy = fabs(shifted.solver_result.source_position.y_m - baseline.solver_result.source_position.y_m);
+    const double dz = fabs(shifted.solver_result.source_position.z_m - baseline.solver_result.source_position.z_m);
+    assert(dx > 1.0e-6 || dy > 1.0e-6 || dz > 1.0e-6);
+}
+
+
 int main(void)
 {
     test_solves_when_all_channels_are_accepted();
@@ -213,6 +390,12 @@ int main(void)
     test_two_channels_is_genuinely_insufficient();
     test_degenerate_coplanar_geometry_is_solver_rejected();
     test_rejects_invalid_arguments();
+    test_channel_count_at_the_32_channel_boundary_is_accepted();
+    test_zero_and_negative_propagation_speed_are_solver_rejected();
+    test_non_finite_propagation_speed_is_solver_rejected();
+    test_non_finite_sensor_position_is_solver_rejected();
+    test_solver_non_convergence_is_still_reported_as_solved();
+    test_subsample_offset_shifts_the_converted_arrival_time();
     puts("localization event bridge tests passed");
     return 0;
 }

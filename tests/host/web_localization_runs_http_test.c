@@ -427,6 +427,77 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
     assert(s_picks_list_calls == 0U);
 }
 
+static void test_runs_listing_surfaces_invalid_arg_as_422(void)
+{
+    reset_fakes();
+    s_list_result = ESP_ERR_INVALID_ARG;
+    char response[512] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "422 Unprocessable Entity") == 0);
+    assert(s_list_calls == 1U);
+    /* Fails closed: geometry/cs_pairs/picks are never read once the run
+     * listing itself failed. */
+    assert(s_geometry_calls == 0U);
+    assert(s_cs_pairs_calls == 0U);
+    assert(s_picks_list_calls == 0U);
+}
+
+static void test_runs_listing_surfaces_invalid_size_as_422(void)
+{
+    reset_fakes();
+    s_list_result = ESP_ERR_INVALID_SIZE;
+    char response[512] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "422 Unprocessable Entity") == 0);
+    assert(s_list_calls == 1U);
+}
+
+static void test_runs_listing_surfaces_unexpected_errors_as_500(void)
+{
+    reset_fakes();
+    s_list_result = ESP_ERR_NO_MEM;
+    char response[512] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "500 Internal Server Error") == 0);
+    assert(s_list_calls == 1U);
+
+    reset_fakes();
+    /* Any other error code this store could return also fails closed as
+     * 500 rather than being silently reported as a successful, empty
+     * listing -- web_localization_http_status()'s default branch. */
+    s_list_result = ESP_FAIL;
+    char response2[512] = {0};
+    httpd_req_t request2 = make_request("object_id=OBJ_0001&session_id=S000001", response2, sizeof(response2));
+    assert(web_localization_runs_handler(&request2) == ESP_OK);
+    assert(strcmp(request2.response_status, "500 Internal Server Error") == 0);
+}
+
+static void test_runs_listing_rejects_query_string_too_long(void)
+{
+    reset_fakes();
+    /* A query string that does not fit the handler's fixed 160-byte buffer
+     * must be rejected as a bad request, not truncated/misparsed. */
+    char long_query[512];
+    memset(long_query, 'a', sizeof(long_query) - 1U);
+    long_query[sizeof(long_query) - 1U] = '\0';
+    char response[512] = {0};
+    httpd_req_t request = make_request(long_query, response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_list_calls == 0U);
+}
+
 static void test_job_status_shares_the_runs_route(void)
 {
     reset_fakes();
@@ -456,6 +527,10 @@ int main(void)
     test_runs_listing_reports_geometry_unavailable_without_failing();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
+    test_runs_listing_surfaces_invalid_arg_as_422();
+    test_runs_listing_surfaces_invalid_size_as_422();
+    test_runs_listing_surfaces_unexpected_errors_as_500();
+    test_runs_listing_rejects_query_string_too_long();
     test_job_status_shares_the_runs_route();
     return 0;
 }
