@@ -146,6 +146,55 @@ static void test_planar_surface_array_recovers_depth(void)
 }
 
 
+/* 7 sensors flat (z = 0) plus one elevated sensor: the full 8-set resolves
+ * depth (volume from the elevated sensor), but every 6-subset drawn purely
+ * from the 7 flat sensors is exactly coplanar. The 3D solve path must
+ * recognize that a coplanar 6-subset "cannot resolve z" (see the comment in
+ * localization_tdcas_solve) and skip it without reading the subset's
+ * would-be position -- regression for a stack read of an uninitialized
+ * localization_point3d_t on that skip path. */
+static const localization_point3d_t SENSORS_MOSTLY_FLAT[8] = {
+    { 0.0, 0.0, 0.0 },
+    { 4.0, 0.0, 0.0 },
+    { 0.0, 4.0, 0.0 },
+    { 4.0, 4.0, 0.0 },
+    { 2.0, 1.0, 0.0 },
+    { 1.0, 3.0, 0.0 },
+    { 3.0, 2.0, 0.0 },
+    { 2.0, 2.0, 5.0 },
+};
+
+
+static void test_coplanar_subset_of_3d_array_is_skipped_not_uninitialized(void)
+{
+    const localization_point3d_t source = { 2.0, 2.0, -1.0 };
+    localization_observation_t observations[8];
+    make_observations(SENSORS_MOSTLY_FLAT, 8U, source, 0.25, 220.0, observations);
+
+    /* The full 8-sensor set has volume (the elevated sensor), so it resolves
+     * depth even though most of it is flat. */
+    assert(localization_positions_resolve_depth(SENSORS_MOSTLY_FLAT, 8U));
+    /* Every one of the 7 flat sensors is exactly coplanar with the others. */
+    assert(!localization_positions_resolve_depth(SENSORS_MOSTLY_FLAT, 7U));
+
+    localization_tdcas_result_t result;
+    assert(localization_tdcas_solve(observations, 8U, NULL, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(!result.planar_layout);
+    /* C(8,6) = 28 combinations attempted; the C(7,6) = 7 combinations drawn
+     * only from the flat sensors are coplanar and must be rejected before
+     * ever touching the candidate position, leaving strictly fewer valid
+     * combinations than attempted. */
+    assert(result.combinations_total == 28U);
+    assert(result.combinations_valid <= 21U);
+    assert(result.combinations_valid > 0U);
+    assert(distance(result.position, source) < 0.05);
+    printf("[TDCAS] coplanar 6-subset skip: total=%u valid=%u error=%.4f m\n",
+           (unsigned)result.combinations_total, (unsigned)result.combinations_valid,
+           distance(result.position, source));
+}
+
+
 static void test_current_four_geophone_hardware_is_insufficient(void)
 {
     const localization_point3d_t source = { 1.0, 1.0, -1.0 };
@@ -305,6 +354,7 @@ int main(void)
     test_six_sensor_explicit_solution();
     test_comprehensive_solution_with_pick_noise();
     test_planar_surface_array_recovers_depth();
+    test_coplanar_subset_of_3d_array_is_skipped_not_uninitialized();
     test_current_four_geophone_hardware_is_insufficient();
     test_velocity_free_beats_a_misspecified_velocity();
     test_scan_void_ray_filter_removes_detoured_sensor();

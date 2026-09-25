@@ -311,7 +311,7 @@ esp_err_t localization_tdcas_solve(
     do {
         ++result->combinations_total;
 
-        localization_point3d_t position;
+        localization_point3d_t position = { 0.0, 0.0, 0.0 };
         double velocity = 0.0;
         bool solved = false;
         if (resolves_depth) {
@@ -323,9 +323,11 @@ esp_err_t localization_tdcas_solve(
             solved =
                 localization_positions_resolve_depth(subset, k) &&
                 solve_combination_3d(centered, times, indices, &position, &velocity);
-            position.x_m += centroid.x_m;
-            position.y_m += centroid.y_m;
-            position.z_m += centroid.z_m;
+            if (solved) {
+                position.x_m += centroid.x_m;
+                position.y_m += centroid.y_m;
+                position.z_m += centroid.z_m;
+            }
         } else {
             solved = solve_combination_planar(u, v, times, indices, &frame, &position, &velocity);
         }

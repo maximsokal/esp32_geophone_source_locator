@@ -433,7 +433,7 @@ static esp_err_t solve_levels(
      */
     const size_t max_cells = config->max_cells > 0U ? config->max_cells : BAYES_DEFAULT_CELLS;
     localization_extended_bounds_t level_bounds = *bounds;
-    ext_lattice_t lattice;
+    ext_lattice_t lattice = { 0 };
     size_t map_index = 0U;
     size_t evaluated = 0U;
     bool have_level = false;
