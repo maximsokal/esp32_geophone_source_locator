@@ -334,3 +334,31 @@ def test_every_method_is_timed_and_the_heavy_ones_respect_the_deadline():
         "semblance_eikonal_voids", "bayesian_scan_voids",
     ):
         assert f'"{skippable}", true)' in source, skippable
+
+
+def test_calculate_source_never_runs_on_the_https_task():
+    """The HTTP handler only queues the job; the run happens on the
+    localization_job worker (16 KiB PSRAM stack, idle priority on the
+    signal-processing core), created before the web server starts."""
+    control = read("components/web_server/web_api_control.c")
+    assert "return localization_calculate_run(" not in control
+    assert "localization_calculate_summary_t summary;" not in control
+    assert "return localization_job_submit(object_id, session_id, &config, budget_ms, NULL);" in control
+    job = read("components/localization_job/localization_job.c")
+    assert "localization_calculate_run(" in job
+    assert "LOCALIZATION_JOB_STACK_BYTES," in job
+    assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in job
+    assert "APP_TASK_CORE_REALTIME" in job
+    assert "uxTaskGetStackHighWaterMark(NULL)" in job
+    header = read("components/localization_job/include/localization_job.h")
+    assert "#define LOCALIZATION_JOB_STACK_BYTES 16384U" in header
+    tasks = read("components/app_config/include/app_task_config.h")
+    assert "#define APP_TASK_PRIORITY_LOCALIZATION_JOB 0" in tasks
+    startup = read("main/app_startup.c")
+    assert startup.index("localization_job_init()") < startup.index("web_server_start()")
+    assert "localization_job" in read("main/CMakeLists.txt")
+    assert "localization_job" in read("components/web_server/CMakeLists.txt")
+    # Status shares the runs route: no extra HTTPS handler slot.
+    api = read("components/web_server/web_localization_api.c")
+    assert 'strcmp(value, "status") == 0' in api
+    assert "localization_job_status_json(&json)" in api

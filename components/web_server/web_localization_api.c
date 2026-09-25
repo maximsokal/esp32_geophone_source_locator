@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
+#include "localization_job.h"
 #include "localization_pick_record.h"
 #include "localization_run_record.h"
 #include "localization_run_store.h"
@@ -27,6 +28,11 @@
  * before MAX-166/MAX-148) reports empty/unavailable rather than failing
  * the whole request -- the run listing remains this route's primary
  * payload.
+ *
+ * `?job=status` instead reports the background "Calculate source" job
+ * (localization_job): state, method running, elapsed / budget, every
+ * method's measured time and the worker's stack high-water mark. It shares
+ * this URI so the HTTPS server spends no extra handler slot on it.
  */
 
 static esp_err_t web_localization_query_copy(
@@ -76,8 +82,35 @@ static int web_localization_http_status(esp_err_t err)
     }
 }
 
+static bool web_localization_job_status_requested(httpd_req_t *request)
+{
+    char query[160];
+    char value[16];
+    return
+        web_localization_query_copy(request, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "job", value, sizeof(value)) == ESP_OK &&
+        strcmp(value, "status") == 0;
+}
+
+static esp_err_t web_localization_job_status_handler(httpd_req_t *request)
+{
+    char *json = NULL;
+    if (localization_job_status_json(&json) != ESP_OK || json == NULL) {
+        return httpd_resp_send_err(request, 500, "Localization job status unavailable");
+    }
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    const esp_err_t err = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
+    free(json);
+    return err;
+}
+
 static esp_err_t web_localization_runs_handler(httpd_req_t *request)
 {
+    if (web_localization_job_status_requested(request)) {
+        return web_localization_job_status_handler(request);
+    }
+
     char object_id[OBJECT_STORE_ID_SIZE] = {0};
     char session_id[LOCALIZATION_RUN_SESSION_ID_SIZE] = {0};
 

@@ -20,6 +20,7 @@ static unsigned s_calculate_calls;
 static localization_calculate_config_t s_last_calculate_config;
 static char s_last_calculate_session_id[32];
 static esp_err_t s_calculate_result;
+static uint32_t s_last_budget_ms;
 
 static void reset_fakes(void)
 {
@@ -31,6 +32,7 @@ static void reset_fakes(void)
     memset(&s_last_calculate_config, 0, sizeof(s_last_calculate_config));
     memset(s_last_calculate_session_id, 0, sizeof(s_last_calculate_session_id));
     s_calculate_result = ESP_OK;
+    s_last_budget_ms = 12345U;
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -155,27 +157,23 @@ int64_t esp_timer_get_time(void)
     return 1000000;
 }
 
-esp_err_t localization_calculate_run(
+/* calculate_source hands the run to the background job; the stub records
+ * what was submitted (the job itself is tested in localization_job). */
+esp_err_t localization_job_submit(
     const char *object_id,
     const char *session_id,
     const localization_calculate_config_t *config,
-    uint64_t computed_at_ms,
-    localization_calculate_summary_t *summary_out
+    uint32_t budget_ms,
+    uint32_t *job_id_out
 )
 {
     (void)object_id;
-    (void)computed_at_ms;
-    assert(config != NULL && summary_out != NULL);
+    (void)job_id_out;
+    assert(config != NULL);
     s_calculate_calls++;
     s_last_calculate_config = *config;
+    s_last_budget_ms = budget_ms;
     snprintf(s_last_calculate_session_id, sizeof(s_last_calculate_session_id), "%s", session_id);
-    memset(summary_out, 0, sizeof(*summary_out));
-    if (s_calculate_result == ESP_OK) {
-        summary_out->participating_channel_count = 4U;
-        summary_out->methods_attempted = 4U;
-        summary_out->methods_solved = 3U;
-        summary_out->methods_persisted = 5U;
-    }
     return s_calculate_result;
 }
 
@@ -368,7 +366,7 @@ static const char *const CALCULATE_SOURCE_BODY =
     "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
     "\"semblance_window_half_span_samples\":25}";
 
-static void test_calculate_source_action_dispatches_to_localization_calculate_run(void)
+static void test_calculate_source_action_submits_a_background_job(void)
 {
     reset_fakes();
     s_calculate_result = ESP_OK;
@@ -399,6 +397,8 @@ static void test_calculate_source_action_dispatches_to_localization_calculate_ru
     assert(s_last_calculate_config.max_source_depth_m == 0.0);
     /* Optional S picking absent: PSAFUVS stays unattempted. */
     assert(!s_last_calculate_config.s_pick_enabled);
+    /* No time budget given: the job's default (0). */
+    assert(s_last_budget_ms == 0U);
     /* No object mutation occurred: object cache must not be touched. */
     assert(s_cache_invalidations == 0U);
     assert(s_cache_refresh_requests == 0U);
@@ -542,6 +542,40 @@ static void test_calculate_source_action_rejects_missing_session_id(void)
     assert(s_calculate_calls == 0U);
 }
 
+static void test_calculate_source_time_budget(void)
+{
+    static const char *const prefix =
+        "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,\"time_budget_s\":";
+    char body[1024];
+    char response[512];
+
+    reset_fakes();
+    snprintf(body, sizeof(body), "%s%s}", prefix, "45.5");
+    memset(response, 0, sizeof(response));
+    httpd_req_t request = make_request(body, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL && s_calculate_calls == 1U);
+    assert(s_last_budget_ms == 45500U);
+
+    static const char *const invalid[] = { "0.5", "601", "\"60\"", "-3" };
+    for (size_t i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        reset_fakes();
+        snprintf(body, sizeof(body), "%s%s}", prefix, invalid[i]);
+        memset(response, 0, sizeof(response));
+        request = make_request(body, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_calculate_calls == 0U);
+    }
+}
+
+/* A job already queued or running: refused with 409, never queued. */
 static void test_calculate_source_action_surfaces_solver_failure(void)
 {
     reset_fakes();
@@ -560,11 +594,12 @@ int main(void)
 {
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
-    test_calculate_source_action_dispatches_to_localization_calculate_run();
+    test_calculate_source_action_submits_a_background_job();
     test_calculate_source_optional_max_depth();
     test_calculate_source_optional_s_wave_picking();
     test_calculate_source_rejects_unreachable_sta_lta_threshold();
     test_calculate_source_action_rejects_missing_session_id();
     test_calculate_source_action_surfaces_solver_failure();
+    test_calculate_source_time_budget();
     return 0;
 }

@@ -148,7 +148,10 @@ export function uncertaintyText(run: Pick<LocalizationRun, 'uncertainty'>): stri
   const size = u.credible_volume_m3 > 0
     ? `${u.credible_volume_m3 < 0.01 ? u.credible_volume_m3.toExponential(1) : u.credible_volume_m3.toFixed(2)} m³`
     : `${u.credible_area_m2 < 0.01 ? u.credible_area_m2.toExponential(1) : u.credible_area_m2.toFixed(2)} m²`;
-  return `${sd} · ${percent}% region ${size}`;
+  const inflation = u.sigma_inflation !== undefined && u.sigma_inflation > 1
+    ? ` · widened ×${u.sigma_inflation.toFixed(1)} (data misfit)`
+    : '';
+  return `${sd} · ${percent}% region ${size}${inflation}`;
 }
 
 export function sectorRadius(run: LocalizationRun): { radiusM: number; source: 'residual' | 'posterior' | 'nominal' } {

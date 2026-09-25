@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
-import { fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
+import { fetchLocalizationJob, fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
+import LocalizationJobReport from './LocalizationJobReport';
 import LocalizationOverlay from './LocalizationOverlay';
+import {
+  jobProgressText,
+  waitForLocalizationJob,
+  type LocalizationJobStatus,
+} from '../../domain/localizationJob';
 import { uncertaintyText } from '../../domain/localizationOverlay';
 import type {
   LocalizationPickRecord,
@@ -32,6 +38,7 @@ interface FormState {
   minimumSnr: string;
   semblanceWindowHalfSpanSamples: string;
   maxSourceDepthM: string;
+  timeBudgetS: string;
   sMinSeparationSamples: string;
   sMaxSeparationSamples: string;
   sStaWindowSamples: string;
@@ -63,6 +70,7 @@ const EMPTY_FORM: FormState = {
   minimumSnr: '',
   semblanceWindowHalfSpanSamples: '',
   maxSourceDepthM: '',
+  timeBudgetS: '',
   sMinSeparationSamples: '',
   sMaxSeparationSamples: '',
   sStaWindowSamples: '',
@@ -171,6 +179,16 @@ export function sWavePickSettings(fields: SWavePickFields): SWavePickSettings {
   };
 }
 
+/** The device's default budget (LOCALIZATION_JOB_DEFAULT_BUDGET_MS). */
+export const DEFAULT_TIME_BUDGET_S = 60;
+
+/** Blank: undefined (device default); otherwise 1..600 s, or null when invalid. */
+export function timeBudgetSeconds(value: string): number | undefined | null {
+  if (value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 600 ? parsed : null;
+}
+
 /** Velocities a method (TDCAS, PSAFUVS, SUEA, PSP, eikonal, Bayesian) estimated for this event. */
 export function estimatedVelocityText(run: Pick<LocalizationRun, 'estimated_p_velocity_mps' | 'estimated_s_velocity_mps'>): string {
   const p = run.estimated_p_velocity_mps;
@@ -217,6 +235,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [job, setJob] = useState<LocalizationJobStatus | null>(null);
   const [runs, setRuns] = useState<LocalizationRun[] | null>(null);
   const [geometry, setGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
@@ -265,6 +284,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   };
   /* Optional (MAX-211): blank selects the geometry-derived default depth. */
   const maxSourceDepthM = form.maxSourceDepthM.trim().length === 0 ? undefined : positiveNumber(form.maxSourceDepthM);
+  /* Optional: blank = the device's default budget (60 s). */
+  const timeBudgetS = timeBudgetSeconds(form.timeBudgetS);
   const staLtaIssue = staLtaThresholdIssue(parsed.staWindowSamples, parsed.ltaWindowSamples, parsed.staLtaTriggerRatio);
   const sWave = sWavePickSettings({
     minSeparationSamples: form.sMinSeparationSamples,
@@ -277,6 +298,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const formValid =
     Object.values(parsed).every((value) => value !== null) &&
     maxSourceDepthM !== null &&
+    timeBudgetS !== null &&
     staLtaIssue === null &&
     sWave.state !== 'invalid';
 
@@ -285,6 +307,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     setRunning(true);
     setError(null);
     setRuns(null);
+    setJob(null);
 
     void sendControl('calculate_source', {
       object_id: objectId,
@@ -305,9 +328,20 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       semblance_window_half_span_samples: parsed.semblanceWindowHalfSpanSamples,
       ...(maxSourceDepthM !== undefined ? { max_source_depth_m: maxSourceDepthM } : {}),
       ...(sWave.state === 'on' ? sWave.payload : {}),
+      ...(timeBudgetS !== undefined ? { time_budget_s: timeBudgetS } : {}),
     })
       .then((result) => {
+        /* The device only queued the job (409: one is already running). */
         if (!result.ok) throw new Error(result.error ?? 'calculate_source failed');
+        return waitForLocalizationJob(fetchLocalizationJob, {
+          objectId,
+          sessionId,
+          budgetMs: (timeBudgetS ?? DEFAULT_TIME_BUDGET_S) * 1000,
+          onProgress: setJob,
+        });
+      })
+      .then((finished) => {
+        if (finished.state === 'failed') throw new Error(jobProgressText(finished));
         return fetchLocalizationRuns(objectId, sessionId);
       })
       .then((listing) => {
@@ -471,9 +505,14 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
             <span>Max source depth (m, optional)</span>
             <input type="number" min="0" step="any" value={form.maxSourceDepthM} onChange={set('maxSourceDepthM')} />
           </label>
+          <label title="The calculation runs on the device in the background. Methods not started within this many seconds are recorded as skipped (their reason says so). Blank = 60 s.">
+            <span>Time budget (s, optional)</span>
+            <input type="number" min="1" max="600" step="any" value={form.timeBudgetS} onChange={set('timeBudgetS')} />
+          </label>
         </div>
         {staLtaIssue !== null && <div className="console-alert" role="alert">{staLtaIssue}</div>}
         {maxSourceDepthM === null && <div className="console-alert" role="alert">Max source depth must be a positive number of meters, or blank.</div>}
+        {timeBudgetS === null && <div className="console-alert" role="alert">Time budget must be 1–600 seconds, or blank.</div>}
       </details>
 
       <details className="settings-details">
@@ -514,6 +553,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
           {running ? 'Calculating…' : 'Calculate source'}
         </button>
       </div>
+
+      {job !== null && <LocalizationJobReport status={job} />}
 
       {runs !== null && runs.length > 0 && (
         <LocalizationOverlay runs={runs} geometry={geometry} />
