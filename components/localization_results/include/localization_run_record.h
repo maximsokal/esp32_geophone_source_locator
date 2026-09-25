@@ -54,6 +54,30 @@ typedef enum
 } localization_run_kind_t;
 
 
+/*
+ * Position uncertainty of a run that has one (the Bayesian methods): the
+ * posterior's per-axis standard deviations and the smallest region
+ * holding credible_level of the probability -- its volume (3D search) or
+ * area (planar search) and bounding box. credible_level == 0 means "not
+ * computed" (every other method, or a record written before the field).
+ */
+typedef struct
+{
+    localization_point3d_t std_m;
+    double credible_level;
+    double credible_volume_m3;
+    double credible_area_m2;
+    localization_point3d_t credible_min;
+    localization_point3d_t credible_max;
+
+    /* >= 1: the factor every sigma was scaled by because the fit's chi^2
+     * showed them too small (1 = the configured sigmas explained the data;
+     * absent in older records, read as 1). */
+    double sigma_inflation;
+
+} localization_run_uncertainty_t;
+
+
 typedef struct
 {
     uint32_t schema_version;
@@ -113,6 +137,19 @@ typedef struct
      * unknown (a record written before this field existed).
      */
     int32_t degrees_of_freedom;
+
+    /*
+     * Velocity-free methods (TDCAS, PSAFUVS, SUEA) estimate the event's own
+     * propagation velocities instead of using propagation_speed_mps: the P
+     * (or single-phase) and S velocities they found, in m/s. 0 means "not
+     * estimated" (every other method, or a record written before these
+     * optional fields existed). Serialized only for a solved run.
+     */
+    double estimated_p_velocity_mps;
+    double estimated_s_velocity_mps;
+
+    /* Optional; serialized only for a solved run with credible_level > 0. */
+    localization_run_uncertainty_t uncertainty;
 
     /* Valid only when solved is true. emission_time_us/iterations/
      * converged are meaningful only for the iterative Gauss-Newton TDOA

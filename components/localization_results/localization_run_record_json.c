@@ -81,6 +81,42 @@ static bool dimensionality_from_name(
 }
 
 
+static bool point_finite(const localization_point3d_t *p)
+{
+    return isfinite(p->x_m) && isfinite(p->y_m) && isfinite(p->z_m);
+}
+
+
+/* An absent uncertainty (credible_level 0) is valid; a present one must be
+ * a level in (0, 1), finite non-negative sizes and an ordered box. */
+static bool uncertainty_valid(const localization_run_uncertainty_t *u)
+{
+    if (u->credible_level == 0.0) {
+        return true;
+    }
+    return
+        isfinite(u->credible_level) && u->credible_level > 0.0 && u->credible_level < 1.0 &&
+        point_finite(&u->std_m) && u->std_m.x_m >= 0.0 && u->std_m.y_m >= 0.0 && u->std_m.z_m >= 0.0 &&
+        isfinite(u->credible_volume_m3) && u->credible_volume_m3 >= 0.0 &&
+        isfinite(u->credible_area_m2) && u->credible_area_m2 >= 0.0 &&
+        point_finite(&u->credible_min) && point_finite(&u->credible_max) &&
+        isfinite(u->sigma_inflation) && (u->sigma_inflation == 0.0 || u->sigma_inflation >= 1.0) &&
+        u->credible_min.x_m <= u->credible_max.x_m &&
+        u->credible_min.y_m <= u->credible_max.y_m &&
+        u->credible_min.z_m <= u->credible_max.z_m;
+}
+
+
+static bool add_point(cJSON *parent, const char *name, const localization_point3d_t *p)
+{
+    cJSON *object = cJSON_AddObjectToObject(parent, name);
+    return object != NULL &&
+        cJSON_AddNumberToObject(object, "x_m", p->x_m) != NULL &&
+        cJSON_AddNumberToObject(object, "y_m", p->y_m) != NULL &&
+        cJSON_AddNumberToObject(object, "z_m", p->z_m) != NULL;
+}
+
+
 esp_err_t localization_run_record_to_json(
     const localization_run_record_t *record,
     char **json_out
@@ -102,6 +138,17 @@ esp_err_t localization_run_record_to_json(
     }
 
     if (!isfinite(record->confidence_score) || record->confidence_score < 0.0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (
+        !isfinite(record->estimated_p_velocity_mps) || record->estimated_p_velocity_mps < 0.0 ||
+        !isfinite(record->estimated_s_velocity_mps) || record->estimated_s_velocity_mps < 0.0
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (record->solved && !uncertainty_valid(&record->uncertainty)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -185,6 +232,33 @@ esp_err_t localization_run_record_to_json(
             ) != NULL &&
             cJSON_AddNumberToObject(root, "iterations", record->iterations) != NULL &&
             cJSON_AddBoolToObject(root, "converged", record->converged) != NULL;
+
+        /* Optional: only velocity-free methods estimate velocities. */
+        if (ok && record->estimated_p_velocity_mps > 0.0) {
+            ok = cJSON_AddNumberToObject(
+                root, "estimated_p_velocity_mps", record->estimated_p_velocity_mps
+            ) != NULL;
+        }
+        if (ok && record->estimated_s_velocity_mps > 0.0) {
+            ok = cJSON_AddNumberToObject(
+                root, "estimated_s_velocity_mps", record->estimated_s_velocity_mps
+            ) != NULL;
+        }
+        /* Optional: only methods with a posterior report an uncertainty. */
+        if (ok && record->uncertainty.credible_level > 0.0) {
+            const localization_run_uncertainty_t *u = &record->uncertainty;
+            cJSON *uncertainty = cJSON_AddObjectToObject(root, "uncertainty");
+            ok = uncertainty != NULL &&
+                add_point(uncertainty, "std_m", &u->std_m) &&
+                cJSON_AddNumberToObject(uncertainty, "credible_level", u->credible_level) != NULL &&
+                cJSON_AddNumberToObject(uncertainty, "credible_volume_m3", u->credible_volume_m3) != NULL &&
+                cJSON_AddNumberToObject(uncertainty, "credible_area_m2", u->credible_area_m2) != NULL &&
+                add_point(uncertainty, "credible_min", &u->credible_min) &&
+                add_point(uncertainty, "credible_max", &u->credible_max) &&
+                cJSON_AddNumberToObject(
+                    uncertainty, "sigma_inflation", u->sigma_inflation >= 1.0 ? u->sigma_inflation : 1.0
+                ) != NULL;
+        }
     }
 
     if (ok && !record->solved) {
@@ -240,6 +314,16 @@ static bool read_number(
     }
     *out = item->valuedouble;
     return true;
+}
+
+
+static bool read_point(const cJSON *parent, const char *name, localization_point3d_t *p)
+{
+    const cJSON *object = cJSON_GetObjectItemCaseSensitive(parent, name);
+    return cJSON_IsObject(object) &&
+        read_number(object, "x_m", &p->x_m) &&
+        read_number(object, "y_m", &p->y_m) &&
+        read_number(object, "z_m", &p->z_m);
 }
 
 
@@ -403,6 +487,40 @@ esp_err_t localization_run_record_from_json(
         record->rms_residual_us = rms_residual_us;
         record->iterations = (uint8_t)iterations;
         record->converged = converged;
+
+        /* Optional: absent (0) for methods that use a given velocity and in
+         * records written before the fields existed. */
+        double estimated = 0.0;
+        if (read_number(root, "estimated_p_velocity_mps", &estimated) && estimated > 0.0) {
+            record->estimated_p_velocity_mps = estimated;
+        }
+        estimated = 0.0;
+        if (read_number(root, "estimated_s_velocity_mps", &estimated) && estimated > 0.0) {
+            record->estimated_s_velocity_mps = estimated;
+        }
+
+        /* Optional; when present it must be complete and consistent. */
+        const cJSON *uncertainty = cJSON_GetObjectItemCaseSensitive(root, "uncertainty");
+        if (uncertainty != NULL) {
+            localization_run_uncertainty_t *u = &record->uncertainty;
+            ok = cJSON_IsObject(uncertainty) &&
+                read_point(uncertainty, "std_m", &u->std_m) &&
+                read_number(uncertainty, "credible_level", &u->credible_level) &&
+                read_number(uncertainty, "credible_volume_m3", &u->credible_volume_m3) &&
+                read_number(uncertainty, "credible_area_m2", &u->credible_area_m2) &&
+                read_point(uncertainty, "credible_min", &u->credible_min) &&
+                read_point(uncertainty, "credible_max", &u->credible_max) &&
+                u->credible_level > 0.0;
+            /* Optional inside the object (records before it existed). */
+            if (ok && !read_number(uncertainty, "sigma_inflation", &u->sigma_inflation)) {
+                u->sigma_inflation = 1.0;
+            }
+            ok = ok && uncertainty_valid(u);
+            if (!ok) {
+                cJSON_Delete(root);
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
     } else {
         ok = read_string(
             root,

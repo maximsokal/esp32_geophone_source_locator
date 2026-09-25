@@ -834,6 +834,71 @@ AD7606 frames
 
 Keeping arrival picking and geometry solving separate allows both stages to be bench-tested independently.
 
+### Velocity-free methods and the 3D scan's empty/filled space
+
+`components/localization_velocity_free` adds three methods from Longjun Dong's group that estimate the event's own propagation velocity instead of trusting a pre-measured one:
+
+| Method | Input | Minimum sensors | Scan use |
+| --- | --- | --- | --- |
+| TDCAS (IEEE Access 2017) | P picks | 6 (5 on a planar surface array) | straight rays crossing scan FREE space drop the sensor |
+| PSAFUVS (IJDSN 2013) | P + S picks | 5 (4 on a planar surface array, not on one circle) | same ray screening; candidate filter |
+| SUEA (IJMST 2022) | P picks (+ optional velocity prior) | 3 | travel paths go *around* empty cells |
+
+- TDCAS solves every 6-sensor (planar: 5-sensor) combination analytically and fuses them with a logistic-PDF maximum-likelihood fit. The current 4-pod hardware cannot satisfy it; its run record says so.
+- PSAFUVS linearizes `|x - s_i|^2 = K^2 (t_S,i - t_P,i)^2` and refines all 2N arrivals with Levenberg-Marquardt; it works with the 4 flat pods. S onsets come from `geophone_event_pick_secondary_arrival()` (STA/LTA over the P coda + AIC); its settings are optional caller input (`s_*` fields of `calculate_source`).
+- SUEA runs an any-angle Lazy Theta* shortest-path field per sensor over a SOLID / UNKNOWN / EMPTY voxel grid and a velocity-free (or velocity-prior) grid search. `localization_suea_identify_empty_areas()` turns UNKNOWN cells EMPTY or SOLID from active shots at known positions; it never overrules scan evidence.
+
+Scan data flow (never assuming the unseen interior is empty):
+
+```text
+phone scan (WebXR) -> FREE / OCCUPIED voxels (UNKNOWN implicit)
+  -> occupancy-v1.bin beside the session's scan (kind=occupancy)
+  -> scan_occupancy_parse() + registration bound to the frozen geometry
+  -> FREE = EMPTY SUEA cell / ray obstruction, OCCUPIED = SOLID, UNKNOWN = passable
+  -> tdcas/psafuvs_scan_constrained, suea_scan_voids (persisted, never fused)
+```
+
+`tests/vectors/scan_occupancy_void_scene_v1.bin` is written by the WebUI encoder and consumed by `localization_calculate_scan_methods_test.c`, so the whole path is tested across both languages. SUEA accuracy is bounded by the grid (0.1 m cells by default).
+
+### Extended methods: waveform delays, robust fits, P-S, eikonal, posterior
+
+`components/localization_extended` adds five more locators; "Calculate source" runs all of them on the same P arrivals (one evidence group in the fusion) and persists each record:
+
+| Record | Method | What it adds | Current 4 pods |
+| --- | --- | --- | --- |
+| `xcorr_tdoa` | every channel pair cross-correlated (band-limited sub-sample peak); pair-network closure; robust fit to all N(N-1)/2 delays | delays from whole waveforms, not onset picks; a cycle-skipped pair is flagged by the closure | yes (6 pairs) |
+| `robust_tdoa` | Huber / Tukey IRLS seeded by an exhaustive minimal-subset consensus (MSAC) | a wrong pick (reflection, noise trigger) is dropped, not averaged in | detects an inconsistency but cannot name the pick (reported as ambiguous) |
+| `psp_joint` | P-TDOA + S-P jointly, each S-P interval weighted by the S/P onset SNR | range from S-P, direction from P; a doubtful S pick gets a small say | yes with the caller's vP uncertainty as prior; velocity-free only if the pods are not on one circle |
+| `eikonal_fmm` / `eikonal_scan_voids` | second-order fast marching in a velocity grid; scan voids impassable | first arrivals around voids and through heterogeneous material | yes |
+| `bayesian` / `bayesian_scan_voids` | grid posterior, origin time and velocity marginalized, Student-t likelihood | MAP + per-axis sd + 90% credible region (`uncertainty` in the run record) | yes; the region is tall in depth under a flat array, as it should be |
+
+`semblance_eikonal_voids` is the existing semblance focusing with the eikonal times instead of straight rays.
+
+Scan voids enter the eikonal model as zero velocity. A lattice node is blocked only when its whole cell is empty: blocking every node that touches a void widens it by half a cell on each side, and the discrete wave then detours around a trench ~0.2 m wider than scanned.
+
+Calibration hits (`localization_eikonal_calibrate()`): hammer hits at known positions give measured-minus-modelled times, spread back along their rays (SIRT), smoothed and clamped; the result is a velocity map (slow, loosened zones come out slow), kept only while the misfit falls. It is a library call with host tests; the WebUI flow to record calibration hits is not built yet.
+
+Four coplanar sensors on one circle (a rectangle, an isosceles trapezoid) make every velocity-free fit degenerate: the affine identity that fixes the distance scale, sum a_i |x - s_i|^2 = sum a_i |s_i|^2, has a zero right-hand side exactly for concyclic points. PSP then reports `underdetermined`, PSAFUVS `degenerate`; a vP prior or moving one pod off the circle resolves it.
+
+Budgets on the device (numerical strategy, not physics): 40000 eikonal nodes, 8000 posterior cells per zoom level with 5 velocity nodes, 6000 seeding lattice points. Run records per "Calculate source": 20 + joint; the run store keeps 128 per session.
+
+Posterior regions cover the model as well as the picks. Each pick's sigma adds, in quadrature, the forward model's own error: for `bayesian_scan_voids` 1.5 % of the travel time (the measured fast-marching bound) plus cell / (v sqrt 6) for a void edge discretized at the eikonal or scan cell. Both Bayesian runs then check the MAP fit: when chi^2 exceeds its mean + 3 sd, every sigma is scaled by the Birge ratio sqrt(chi^2 / dof) and the posterior recomputed, so a region only ever widens (`uncertainty.sigma_inflation` in the run record; the WebUI says "widened x N"). With correctly stated sigmas the check stayed off in 60/60 Monte Carlo events; straight rays past the scanned trench trigger it (x21) instead of reporting a falsely tight region.
+
+### "Calculate source" as a background job
+
+A full run takes seconds and several KiB of stack, so it never runs in an HTTP handler (8 KiB HTTPS task, 12 s WebUI timeout):
+
+```text
+WebUI --POST /api/control {calculate_source, time_budget_s?}--> localization_job_submit()   (returns at once; 409 while one runs)
+localization_job worker: core 1, idle priority, 16 KiB PSRAM stack --> localization_calculate_run(deadline, progress)
+WebUI --GET /api/localization/runs?job=status (1 s)--> state, method running, elapsed / budget,
+      every method's measured ms, worker stack high-water mark --> then GET the runs
+```
+
+- Time budget (default 60 s, 1-600 s): methods not started by the deadline are persisted unsolved with "not run: the calculation time budget was used up"; TDOA and the energy baseline (cheap) always run.
+- Time and stack are measured on the device on every run and shown in the WebUI ("Measured on the device") and the log (`STACK_HWM`); a high-water mark below 4 KiB free is flagged. Host `-fstack-usage`: orchestrator 3.8 KiB, deepest new chain ~6.2 KiB; the 16 KiB worker stack leaves room for Xtensa windowed-ABI frames.
+- Idle priority on the signal-processing core: acquisition always preempts it, and IDLE1 still runs every tick, so the task watchdog is fed however long a run takes.
+
 ## Web component convention
 
 The public web API is only `include/web_server.h`. Internal route/JSON/setup helpers are implementation details of the `web_server` component and should use component-private declarations, not grow additional public headers.

@@ -90,3 +90,22 @@ export function displayFingerprint(display: ScanDisplayOptions): string {
     display.dimensions ? 'dims' : '',
   ].filter(Boolean).join('+') || 'empty';
 }
+
+export interface ScanViewState {
+  mode: ScanMode | null;
+  display: ScanDisplayOptions;
+}
+
+/** A mode button: the preset's layers, labelled with the preset. */
+export function scanViewForMode(mode: ScanMode): ScanViewState {
+  return { mode, display: displayForScanMode(mode) };
+}
+
+/**
+ * A single layer button flips exactly that layer. The result is no longer a
+ * preset -- it is labelled CUSTOM LAYERS even if it happens to equal one,
+ * so the operator always sees that layers were changed by hand.
+ */
+export function toggleScanLayer(state: ScanViewState, layer: keyof ScanDisplayOptions): ScanViewState {
+  return { mode: null, display: { ...state.display, [layer]: !state.display[layer] } };
+}

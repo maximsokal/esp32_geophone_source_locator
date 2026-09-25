@@ -27,8 +27,14 @@ export interface OverlaySector {
   position: LocalizationRunPosition;
   /** Visual radius, metres (see radiusSource). */
   radiusM: number;
-  /** residual: RMS time residual x propagation speed; nominal: no residual available. */
-  radiusSource: 'residual' | 'nominal';
+  /**
+   * residual: RMS time residual x propagation speed; posterior: twice the
+   * largest posterior standard deviation (Bayesian runs); nominal: neither
+   * available.
+   */
+  radiusSource: 'residual' | 'posterior' | 'nominal';
+  /** Bayesian runs: the credible region as an axis-aligned box. */
+  credibleBox: OverlayCredibleBox | null;
   confidence: number;
   rmsResidualUs: number | null;
   degreesOfFreedom: number | null;
@@ -36,6 +42,14 @@ export interface OverlaySector {
   computedAtMs: number;
   color: string;
   emphasis: OverlayEmphasis;
+}
+
+export interface OverlayCredibleBox {
+  level: number;
+  center: LocalizationRunPosition;
+  /** Edge lengths, metres (0 on an axis the search did not span). */
+  size: LocalizationRunPosition;
+  std: LocalizationRunPosition;
 }
 
 export interface OverlayUnavailable {
@@ -69,6 +83,20 @@ const METHOD_COLORS: Record<string, string> = {
   semblance_scan: '#34d399',
   traveltime_scan_constrained: '#c084fc',
   semblance_scan_constrained: '#6ee7b7',
+  tdcas: '#22d3ee',
+  tdcas_scan_constrained: '#67e8f9',
+  psafuvs: '#fb923c',
+  psafuvs_scan_constrained: '#fdba74',
+  suea: '#a3e635',
+  suea_scan_voids: '#d9f99d',
+  xcorr_tdoa: '#2dd4bf',
+  robust_tdoa: '#818cf8',
+  psp_joint: '#fbbf24',
+  eikonal_fmm: '#f87171',
+  eikonal_scan_voids: '#fca5a5',
+  semblance_eikonal_voids: '#10b981',
+  bayesian: '#e879f9',
+  bayesian_scan_voids: '#f0abfc',
   joint_fusion: '#f472b6',
 };
 const FALLBACK_COLORS = ['#fb7185', '#facc15', '#60a5fa', '#4ade80'];
@@ -93,7 +121,46 @@ function finitePosition(position: LocalizationRunPosition | undefined): position
     Number.isFinite(position.x_m) && Number.isFinite(position.y_m) && Number.isFinite(position.z_m);
 }
 
-export function sectorRadius(run: LocalizationRun): { radiusM: number; source: 'residual' | 'nominal' } {
+function finiteUncertainty(run: LocalizationRun): run is LocalizationRun & { uncertainty: NonNullable<LocalizationRun['uncertainty']> } {
+  const u = run.uncertainty;
+  return u !== undefined && u.credible_level > 0 && u.credible_level < 1 &&
+    finitePosition(u.std_m) && finitePosition(u.credible_min) && finitePosition(u.credible_max);
+}
+
+/** The credible region of a Bayesian run as a box, or null. */
+export function credibleBox(run: LocalizationRun): OverlayCredibleBox | null {
+  if (!finiteUncertainty(run)) return null;
+  const { credible_min: lo, credible_max: hi } = run.uncertainty;
+  return {
+    level: run.uncertainty.credible_level,
+    center: { x_m: (lo.x_m + hi.x_m) / 2, y_m: (lo.y_m + hi.y_m) / 2, z_m: (lo.z_m + hi.z_m) / 2 },
+    size: { x_m: hi.x_m - lo.x_m, y_m: hi.y_m - lo.y_m, z_m: hi.z_m - lo.z_m },
+    std: { ...run.uncertainty.std_m },
+  };
+}
+
+/** Table text: per-axis 1-sd and the credible region's size ('' when none). */
+export function uncertaintyText(run: Pick<LocalizationRun, 'uncertainty'>): string {
+  const u = run.uncertainty;
+  if (u === undefined || !(u.credible_level > 0)) return '';
+  const sd = `±${u.std_m.x_m.toFixed(2)} / ${u.std_m.y_m.toFixed(2)} / ${u.std_m.z_m.toFixed(2)} m (1 sd)`;
+  const percent = Math.round(u.credible_level * 100);
+  const size = u.credible_volume_m3 > 0
+    ? `${u.credible_volume_m3 < 0.01 ? u.credible_volume_m3.toExponential(1) : u.credible_volume_m3.toFixed(2)} m³`
+    : `${u.credible_area_m2 < 0.01 ? u.credible_area_m2.toExponential(1) : u.credible_area_m2.toFixed(2)} m²`;
+  const inflation = u.sigma_inflation !== undefined && u.sigma_inflation > 1
+    ? ` · widened ×${u.sigma_inflation.toFixed(1)} (data misfit)`
+    : '';
+  return `${sd} · ${percent}% region ${size}${inflation}`;
+}
+
+export function sectorRadius(run: LocalizationRun): { radiusM: number; source: 'residual' | 'posterior' | 'nominal' } {
+  if (finiteUncertainty(run)) {
+    const sd = Math.max(run.uncertainty.std_m.x_m, run.uncertainty.std_m.y_m, run.uncertainty.std_m.z_m);
+    if (sd > 0) {
+      return { radiusM: Math.min(MAX_SECTOR_RADIUS_M, Math.max(MIN_SECTOR_RADIUS_M, 2 * sd)), source: 'posterior' };
+    }
+  }
   const residual = run.rms_residual_us;
   if (residual === undefined || !Number.isFinite(residual) || residual <= 0 ||
       !Number.isFinite(run.propagation_speed_mps) || run.propagation_speed_mps <= 0) {
@@ -143,6 +210,7 @@ export function buildLocalizationOverlay(
       position: { ...run.source_position },
       radiusM,
       radiusSource: source,
+      credibleBox: credibleBox(run),
       confidence: run.confidence_score,
       rmsResidualUs: run.rms_residual_us ?? null,
       degreesOfFreedom: run.degrees_of_freedom !== undefined && run.degrees_of_freedom >= 0 ? run.degrees_of_freedom : null,

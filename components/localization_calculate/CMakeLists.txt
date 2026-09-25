@@ -7,14 +7,17 @@ idf_component_register(
         "include"
 
     REQUIRES
+        esp_timer
         geophone_events
         localization
         localization_comparison
         localization_energy_baseline
+        localization_extended
         localization_results
         localization_run_store
         localization_semblance
         localization_traveltime_inversion
+        localization_velocity_free
         object_store
         scan_occupancy
         storage_manager

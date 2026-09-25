@@ -641,6 +641,115 @@ static void test_pick_uncertainty_saturates_instead_of_wrapping(void)
 }
 
 
+/* ---- Secondary (S-wave) pick for PSAFUVS -------------------------------- */
+
+/* Deterministic background noise, a P wavelet at p_index with a decaying
+ * coda, and a larger, lower-frequency S wavelet at s_index (0 = none). */
+static void synth_p_s_trace(float *buffer, size_t count, size_t p_index, size_t s_index, float s_amplitude)
+{
+    uint32_t state = 7u;
+    for (size_t i = 0u; i < count; ++i) {
+        state = state * 1664525u + 1013904223u;
+        buffer[i] = 0.02f * ((float)(state >> 8) / (float)(1u << 24) - 0.5f);
+        if (i >= p_index) {
+            const float t = (float)(i - p_index);
+            buffer[i] += 1.0f * expf(-t / 60.0f) * sinf(TWO_PI * 0.08f * t);
+        }
+        if (s_index > 0u && i >= s_index) {
+            const float t = (float)(i - s_index);
+            buffer[i] += s_amplitude * expf(-t / 90.0f) * sinf(TWO_PI * 0.03f * t);
+        }
+    }
+}
+
+
+static geophone_secondary_pick_config_t secondary_config(void)
+{
+    return (geophone_secondary_pick_config_t) {
+        .min_separation_samples = 20u,
+        .max_separation_samples = 400u,
+        .sta_window_samples = 10u,
+        .lta_window_samples = 60u,
+        .sta_lta_trigger_ratio = 3.0f,
+        .minimum_snr = 2.0f,
+    };
+}
+
+
+static void test_secondary_pick_finds_the_s_onset_after_p(void)
+{
+    float trace[1000];
+    synth_p_s_trace(trace, 1000u, 200u, 350u, 3.0f);
+    const geophone_secondary_pick_config_t config = secondary_config();
+    geophone_channel_pick_t pick;
+    assert(geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    assert(pick.status == GEOPHONE_PICK_ACCEPTED);
+    assert(pick.arrival_sample_index >= 347u && pick.arrival_sample_index <= 353u);
+    assert(fabsf(pick.arrival_time_s - (float)pick.arrival_sample_index / 500.0f) < 1.0e-6f);
+    assert(pick.snr >= 2.0f);
+    assert(pick.uncertainty_samples == 10u);
+    assert(pick.arrival_subsample_offset == 0.0f);
+}
+
+
+static void test_secondary_pick_never_triggers_on_the_p_arrival_itself(void)
+{
+    /* No S wave: the P onset and its coda alone must not produce a pick. */
+    float trace[1000];
+    synth_p_s_trace(trace, 1000u, 200u, 0u, 0.0f);
+    const geophone_secondary_pick_config_t config = secondary_config();
+    geophone_channel_pick_t pick;
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    assert(pick.status != GEOPHONE_PICK_ACCEPTED);
+}
+
+
+static void test_secondary_pick_respects_the_search_window_and_snr(void)
+{
+    float trace[1000];
+    synth_p_s_trace(trace, 1000u, 200u, 700u, 3.0f);
+    geophone_secondary_pick_config_t config = secondary_config();
+    geophone_channel_pick_t pick;
+    /* S at P + 500 lies outside [P + 20, P + 400]. */
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    assert(pick.status == GEOPHONE_PICK_REJECTED_NO_TRIGGER);
+    config.max_separation_samples = 600u;
+    assert(geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+
+    /* A weak S barely above the coda fails an unreachable SNR gate. */
+    synth_p_s_trace(trace, 1000u, 200u, 350u, 3.0f);
+    config = secondary_config();
+    config.minimum_snr = 1000.0f;
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    assert(pick.status == GEOPHONE_PICK_REJECTED_LOW_SNR);
+    assert(pick.arrival_sample_index > 200u);
+}
+
+
+static void test_secondary_pick_rejects_invalid_arguments(void)
+{
+    float trace[1000];
+    synth_p_s_trace(trace, 1000u, 200u, 350u, 3.0f);
+    geophone_secondary_pick_config_t config = secondary_config();
+    geophone_channel_pick_t pick;
+    assert(!geophone_event_pick_secondary_arrival(NULL, 1000u, 500u, 200u, &config, &pick));
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, NULL, &pick));
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, NULL));
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 1000u, &config, &pick));
+    config.lta_window_samples = config.sta_window_samples;
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    config = secondary_config();
+    config.max_separation_samples = config.min_separation_samples;
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    config = secondary_config();
+    trace[380] = NAN;
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 200u, &config, &pick));
+    /* A P pick too close to the end leaves no room for the windows. */
+    synth_p_s_trace(trace, 1000u, 200u, 350u, 3.0f);
+    assert(!geophone_event_pick_secondary_arrival(trace, 1000u, 500u, 995u, &config, &pick));
+}
+
+
 int main(void)
 {
     test_refine_arrival_ignores_isolated_early_spike();
@@ -674,6 +783,11 @@ int main(void)
     test_pick_channel_arrival_rejects_low_snr_gate();
     test_pick_channel_arrival_rejects_null_arguments();
     test_pick_uncertainty_saturates_instead_of_wrapping();
+
+    test_secondary_pick_finds_the_s_onset_after_p();
+    test_secondary_pick_never_triggers_on_the_p_arrival_itself();
+    test_secondary_pick_respects_the_search_window_and_snr();
+    test_secondary_pick_rejects_invalid_arguments();
 
     puts("geophone_events host tests passed");
     return 0;

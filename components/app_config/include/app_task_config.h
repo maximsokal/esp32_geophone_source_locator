@@ -132,3 +132,13 @@
  */
 #define APP_TASK_PRIORITY_POD_STATUS_BRIDGE 1
 #define APP_TASK_STACK_POD_STATUS_BRIDGE 4096
+
+/*
+ * "Calculate source" background job (localization_job): seconds of solver
+ * work per run, so it runs on the signal-processing core at the idle
+ * priority -- acquisition always preempts it, and IDLE1 (which yields to
+ * it) still runs every tick, feeding the task watchdog. Its 16 KiB stack
+ * (LOCALIZATION_JOB_STACK_BYTES) lives in PSRAM; every run reports the
+ * measured high-water mark.
+ */
+#define APP_TASK_PRIORITY_LOCALIZATION_JOB 0

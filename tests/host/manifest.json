@@ -584,6 +584,7 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/geophone_events/geophone_event_quality.c",
         "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
         "components/localization/tests/localization_event_bridge_test.c"
       ],
       "include_dirs": [
@@ -617,6 +618,7 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/geophone_events/geophone_event_quality.c",
         "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
         "tests/host/localization_pipeline_validation_test.c"
       ],
       "include_dirs": [
@@ -785,12 +787,165 @@
       "libraries": ["m"]
     },
     {
+      "name": "localization_vf_math",
+      "sources": [
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/tests/localization_vf_math_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_velocity_free"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_tdcas",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_tdcas.c",
+        "components/localization_velocity_free/tests/localization_tdcas_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_velocity_free"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_psafuvs",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_psafuvs.c",
+        "components/localization_velocity_free/tests/localization_psafuvs_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_velocity_free"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_suea",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_suea.c",
+        "components/localization_velocity_free/tests/localization_suea_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_velocity_free"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_robust",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_robust.c",
+        "components/localization_extended/tests/localization_robust_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_psp",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_psp.c",
+        "components/localization_extended/tests/localization_psp_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_xcorr_tdoa",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_robust.c",
+        "components/localization_extended/localization_xcorr_tdoa.c",
+        "components/localization_extended/tests/localization_xcorr_tdoa_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_eikonal",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_extended/tests/localization_eikonal_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_bayes",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_bayes.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_extended/tests/localization_bayes_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "localization_calculate_policy",
       "sources": [
         "components/localization_calculate/localization_calculate_policy.c",
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/scan_occupancy/scan_occupancy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_results/localization_run_record_json.c",
+        "components/localization_extended/localization_ext_fit.c",
         "components/localization_calculate/tests/localization_calculate_policy_test.c"
       ],
       "include_dirs": [
@@ -803,6 +958,64 @@
         "components/localization_energy_baseline/include",
         "components/localization_semblance/include",
         "components/localization_traveltime_inversion/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_results/include",
+        "components/geophone_events/include",
+        "components/object_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_job_state",
+      "sources": [
+        "components/localization_job/localization_job_state.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_job/tests/localization_job_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_calculate/include",
+        "components/localization_job/include",
+        "components/geophone_events/include"
+      ]
+    },
+    {
+      "name": "localization_calculate_scan_methods",
+      "sources": [
+        "components/localization_calculate/localization_calculate_policy.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_tdcas.c",
+        "components/localization_velocity_free/localization_psafuvs.c",
+        "components/localization_velocity_free/localization_suea.c",
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_extended/localization_bayes.c",
+        "components/localization_semblance/localization_semblance.c",
+        "components/localization_calculate/tests/localization_calculate_scan_methods_test.c"
+      ],
+      "include_dirs": [
+        "components/scan_occupancy/include",
+        "tests/host/stubs/object_store_profile",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_calculate/include",
+        "components/localization_comparison/include",
+        "components/localization_energy_baseline/include",
+        "components/localization_semblance/include",
+        "components/localization_traveltime_inversion/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
         "components/localization_results/include",
         "components/geophone_events/include",
         "components/object_store/include",
@@ -845,7 +1058,8 @@
       "include_dirs": [
         "components/seismic_dsp/tests/stubs",
         "components/seismic_dsp/include"
-      ]
+      ],
+      "libraries": ["m"]
     },
     {
       "name": "geophone_events",
@@ -856,6 +1070,7 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/geophone_events/geophone_event_quality.c",
         "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
         "components/geophone_events/tests/geophone_events_host_test.c"
       ],
       "include_dirs": [
@@ -1221,7 +1436,9 @@
         "components/object_format/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/object_store_profile"
-      ]
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
     },
     {
       "name": "seismic_recorder_session_cs_pairs",
@@ -1239,7 +1456,9 @@
         "components/object_format/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/object_store_profile"
-      ]
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
     },
     {
       "name": "seismic_recorder_waveform_raw",
@@ -1341,7 +1560,9 @@
       "include_dirs": [
         "tests/host/stubs/web_api_control",
         "components/web_server"
-      ]
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
     },
     {
       "name": "web_api_status_http",

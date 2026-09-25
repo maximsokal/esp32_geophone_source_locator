@@ -348,6 +348,7 @@ idf_component_register(
         app_events
         device_status
         localization_calculate
+        localization_job
         localization_results
         localization_run_store
         measurement_service

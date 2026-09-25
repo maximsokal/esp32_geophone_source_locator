@@ -28,11 +28,43 @@
  * knobs (max_iterations, convergence_m, damping) and the one field it
  * deliberately leaves zeroed (propagation_speed_mps).
  *
- * Scope: only the unconstrained (no 3D scan) path. A session-owned 3D
- * scan/occupancy/AprilTag-registration-constrained variant (ticket item 5)
- * is not implemented -- no occupancy artifact or AprilTag registration
- * exists anywhere in this repo yet to constrain against.
+ * Velocity-free methods (TDCAS, PSAFUVS, SUEA; components/
+ * localization_velocity_free) run beside them on the same picks: they
+ * estimate the event's own velocity instead of trusting
+ * propagation_speed_mps (SUEA takes it only as a prior with the caller's
+ * uncertainty). PSAFUVS additionally needs S picks (s_pick_enabled).
+ *
+ * Time: the extended methods (localization_extended) make a full run take
+ * seconds on the device, so it is meant to run on its own task
+ * (localization_job), not in an HTTP handler. config->deadline_us bounds
+ * it; every method's measured duration is reported in the summary.
+ *
+ * Scan constraint (MAX-147): when THIS session saved a scan occupancy whose
+ * registration matches its frozen geometry, constrained variants are
+ * persisted beside -- never fused into -- the unconstrained results:
+ * candidate filtering (traveltime, semblance, TDCAS, PSAFUVS), straight-ray
+ * void screening (TDCAS, PSAFUVS drop sensors/combinations whose ray
+ * crosses scan-verified FREE space) and SUEA's travel paths around the
+ * scanned empty areas (suea_scan_voids). UNKNOWN is never treated as empty.
  */
+
+
+/* One method's wall time in a run (the device measures its own budget). */
+#define LOCALIZATION_CALCULATE_MAX_TIMINGS 24U
+#define LOCALIZATION_CALCULATE_TIMING_NAME_SIZE 32U
+
+typedef struct
+{
+    char method_name[LOCALIZATION_CALCULATE_TIMING_NAME_SIZE];
+    uint32_t duration_ms;
+    /* The time budget was used up before this method started: it was not
+     * run, and its record says so. */
+    bool skipped_for_time;
+
+} localization_calculate_method_timing_t;
+
+/* Called as each method starts (e.g. to publish progress); must be quick. */
+typedef void (*localization_calculate_progress_fn)(const char *method_name, void *context);
 
 
 typedef struct
@@ -72,6 +104,23 @@ typedef struct
      * above the highest sensor. */
     double max_source_depth_m;
 
+    /* Optional (PSAFUVS): pick the S-wave onset after each accepted P pick.
+     * false leaves PSAFUVS persisted as not attempted, with that reason;
+     * when true every s_pick_config field must come from measured/reviewed
+     * values, exactly like pick_config (MAX-132). */
+    bool s_pick_enabled;
+    geophone_secondary_pick_config_t s_pick_config;
+
+    /* Optional time budget: an esp_timer_get_time() instant after which no
+     * further skippable method starts; 0 = none. A method already running
+     * finishes; the ones not started are persisted as unsolved with that
+     * reason, so a run always ends with a complete, honest set of records. */
+    int64_t deadline_us;
+
+    /* Optional progress hook (NULL = none). */
+    localization_calculate_progress_fn progress;
+    void *progress_context;
+
 } localization_calculate_config_t;
 
 
@@ -81,6 +130,12 @@ typedef struct
     size_t methods_attempted;
     size_t methods_solved;
     size_t methods_persisted;
+
+    /* Per-method wall time, in run order, and how many methods the time
+     * budget skipped. */
+    localization_calculate_method_timing_t timings[LOCALIZATION_CALCULATE_MAX_TIMINGS];
+    size_t timing_count;
+    size_t methods_skipped_for_time;
 
 } localization_calculate_summary_t;
 

@@ -26,10 +26,12 @@ def test_component_is_registered_in_cmake():
         "localization",
         "localization_comparison",
         "localization_energy_baseline",
+        "localization_extended",
         "localization_results",
         "localization_run_store",
         "localization_semblance",
         "localization_traveltime_inversion",
+        "localization_velocity_free",
         "object_store",
         "seismic_dsp",
         "seismic_recorder",
@@ -83,9 +85,9 @@ def test_every_individual_method_is_persisted_whether_solved_or_not():
     assert "localization_run_store_write(object_id, session_id, &records[i]);" in persist_loop
 
     # The joint fusion record is also always written, regardless of
-    # joint_record.solved.
-    joint_write_index = source.index("localization_run_store_write(object_id, session_id, &joint_record);")
-    solved_check_index = source.index("if (joint_record.solved)")
+    # joint_record->solved (it lives in the heap workspace).
+    joint_write_index = source.index("localization_run_store_write(object_id, session_id, joint_record);")
+    solved_check_index = source.index("if (joint_record->solved)")
     assert solved_check_index < joint_write_index
 
 
@@ -125,7 +127,7 @@ def test_pick_evidence_persistence_is_best_effort_not_gating():
     # MAX-148 slice 3: a pick-record write failure must never be checked /
     # propagated -- it is diagnostic context, not part of the run's own
     # solved/unsolved outcome or the recording-gate's admission promise.
-    write_index = source.index("localization_run_store_write_picks(object_id, session_id, &pick_record)")
+    write_index = source.index("localization_run_store_write_picks(object_id, session_id, pick_record)")
     call_line_start = source.rindex("\n", 0, write_index) + 1
     call_line_end = source.index("\n", write_index)
     call_line = source[call_line_start:call_line_end]
@@ -152,7 +154,211 @@ def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
     assert '"traveltime_scan_constrained"' in source
     assert '"semblance_scan_constrained"' in source
     # Fusion only ever sees the unconstrained records.
-    assert "comparison_methods, fused_record_count, &comparison_result" in source
+    assert "comparison_methods, fused_record_count, comparison_result" in source
     fused_index = source.index("const size_t fused_record_count = record_count;")
     constrained_index = source.index('"traveltime_scan_constrained"')
     assert fused_index < constrained_index
+
+
+def test_velocity_free_methods_run_on_the_same_picks_and_are_fused_once():
+    """TDCAS, PSAFUVS and SUEA are persisted as their own records before the
+    fused prefix ends; the policy puts them in the shared P-pick evidence
+    group so the joint fusion never counts the same picks twice."""
+    source = orchestrator_source()
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    for call in (
+        "localization_tdcas_solve(p_observations, p_observation_count, NULL, tdcas_result)",
+        "localization_psafuvs_solve(",
+        "localization_suea_locate(",
+    ):
+        assert source.index(call) < fused_index, call
+    for adapter in (
+        "localization_calculate_tdcas_to_run_record(",
+        "localization_calculate_psafuvs_to_run_record(",
+        "localization_calculate_suea_to_run_record(",
+    ):
+        assert source.index(adapter) < fused_index, adapter
+
+    policy = read("components/localization_calculate/localization_calculate_policy.c")
+    group_block = policy[policy.index("MAX-212: TDOA, traveltime inversion, the velocity-free methods"):]
+    group_block = group_block[:group_block.index("LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP")]
+    for name in ('"tdcas"', '"psafuvs"', '"suea"'):
+        assert name in group_block
+
+
+def test_velocity_free_scan_variants_are_constrained_and_never_fused():
+    source = orchestrator_source()
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    for name in ('"tdcas_scan_constrained"', '"psafuvs_scan_constrained"', '"suea_scan_voids"'):
+        assert source.index(name) > fused_index, name
+    # Straight-ray methods get both the FREE-air candidate filter and the
+    # void ray screening; SUEA gets the scan-classified grid.
+    assert ".clear = localization_calculate_scan_ray_clear," in source
+    assert "constrained_config.ray_filter.clear = localization_calculate_scan_ray_clear;" in source
+    assert "localization_suea_grid_classify(suea_grid, localization_calculate_scan_suea_cell, &occupancy);" in source
+
+
+def test_s_picks_are_explicit_caller_configuration():
+    """MAX-132: PSAFUVS needs S picks, and the S picker's windows/thresholds
+    come only from the caller; without them PSAFUVS is persisted as not
+    attempted with a reason."""
+    header = read("components/localization_calculate/include/localization_calculate.h")
+    assert "bool s_pick_enabled;" in header
+    assert "geophone_secondary_pick_config_t s_pick_config;" in header
+    source = orchestrator_source()
+    assert "config->s_pick_enabled" in source
+    assert "&config->s_pick_config" in source
+    assert "S-wave picking not configured" in source
+
+
+def test_suea_prior_uses_the_callers_velocity_and_uncertainty():
+    source = orchestrator_source()
+    assert ".prior_velocity_mps = config->propagation_speed_mps," in source
+    assert ".prior_velocity_sigma_mps = config->propagation_speed_uncertainty_mps," in source
+
+
+def test_run_state_lives_on_the_heap_not_the_https_stack():
+    """The orchestrator runs on the 8 KiB HTTPS task: the records and fusion
+    state are one heap workspace, allocated before the first write and freed
+    on the way out."""
+    source = orchestrator_source()
+    assert "localization_calculate_workspace_t *workspace = heap_caps_calloc(" in source
+    assert "localization_run_record_t *records = workspace->records;" in source
+    assert source.index("heap_caps_calloc(") < source.index("localization_run_store_write_picks(")
+    assert source.rstrip().endswith("heap_caps_free(workspace);\n    return first_write_err;\n}")
+
+
+def test_obstructed_sensor_masks_are_mapped_back_to_channels():
+    """TDCAS/PSAFUVS report obstructed sensors by OBSERVATION index; the
+    observation arrays skip channels without picks, so the run record's
+    channel masks must go through the explicit observation -> channel map."""
+    source = orchestrator_source()
+    assert "workspace->p_channel[p_observation_count] = ch;" in source
+    assert "workspace->ps_channel[ps_observation_count] = ch;" in source
+    assert "constrained_tdcas->sensor_mask_obstructed, workspace->p_channel, p_observation_count" in source
+    assert "constrained_psafuvs->sensor_mask_obstructed, workspace->ps_channel, ps_observation_count" in source
+    assert "~constrained_tdcas->sensor_mask_obstructed" not in source
+    assert "~constrained_psafuvs->sensor_mask_obstructed" not in source
+
+
+def test_extended_methods_run_on_the_same_picks_and_are_fused_once():
+    """Cross-correlation TDOA, the robust consensus, PSP, the Bayesian
+    posterior and eikonal location are persisted before the fused prefix
+    ends, and share the P-pick evidence group."""
+    source = orchestrator_source()
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    for call in (
+        "localization_xcorr_measure_pairs(",
+        "localization_xcorr_tdoa_locate(",
+        "localization_robust_solve(",
+        "localization_psp_solve(",
+        "localization_bayes_locate(",
+        "localization_eikonal_locate(",
+    ):
+        assert source.index(call) < fused_index, call
+    for adapter in (
+        "localization_calculate_xcorr_tdoa_to_run_record(",
+        "localization_calculate_robust_to_run_record(",
+        "localization_calculate_psp_to_run_record(",
+        "localization_calculate_bayes_to_run_record(",
+        "localization_calculate_eikonal_to_run_record(",
+    ):
+        assert source.index(adapter) < fused_index, adapter
+
+    policy = read("components/localization_calculate/localization_calculate_policy.c")
+    group_block = policy[policy.index("MAX-212: TDOA, traveltime inversion, the velocity-free methods"):]
+    group_block = group_block[:group_block.index("LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP")]
+    for name in ('"xcorr_tdoa"', '"robust_tdoa"', '"psp_joint"', '"eikonal_fmm"', '"bayesian"'):
+        assert name in group_block
+    for name in ('"eikonal_scan_voids"', '"bayesian_scan_voids"', '"semblance_eikonal_voids"'):
+        assert name not in group_block
+
+
+def test_eikonal_scan_variants_use_the_scan_voids_and_are_never_fused():
+    """The scan's voids enter as an impassable velocity model; the same
+    eikonal fields drive location, semblance focusing and the posterior,
+    each with the FREE-air candidate filter, all after the fused prefix."""
+    source = orchestrator_source()
+    fused_index = source.index("const size_t fused_record_count = record_count;")
+    for name in ('"eikonal_scan_voids"', '"semblance_eikonal_voids"', '"bayesian_scan_voids"'):
+        assert source.index(name) > fused_index, name
+    assign = source.index("localization_calculate_scan_eikonal_velocity")
+    assert assign > fused_index
+    assert ".sample_radius_m = eikonal_model_err == ESP_OK ? 0.5 * eikonal_model->cell_m : 0.0," in source
+    assert "eikonal_semblance_config.travel_time_model.travel_time = localization_eikonal_travel_time;" in source
+    assert "scan_config.travel_time_model.travel_time = localization_eikonal_travel_time;" in source
+    # Nothing leaks: fields after the scan block, the model at the end.
+    assert "localization_eikonal_fields_free(&workspace->eikonal_fields);" in source
+    assert "localization_eikonal_model_free(eikonal_model);" in source
+
+
+def test_extended_methods_take_the_callers_velocity_and_uncertainty():
+    """Robust / xcorr use the caller's velocity; PSP, eikonal and the
+    posterior take its uncertainty as their velocity prior (0 = fixed)."""
+    source = orchestrator_source()
+    assert ".p_velocity_sigma_mps = config->propagation_speed_uncertainty_mps," in source
+    assert ".velocity_sigma_mps = config->propagation_speed_uncertainty_mps," in source
+    assert ".velocity_scale_sigma = config->propagation_speed_uncertainty_mps / config->propagation_speed_mps," in source
+    assert "robust_config.propagation_speed_mps = config->propagation_speed_mps;" in source
+    assert ".likelihood = LOCALIZATION_BAYES_STUDENT_T," in source
+
+
+def test_extended_budgets_are_documented_constants():
+    source = orchestrator_source()
+    for define in (
+        "#define LOCALIZATION_CALCULATE_EIKONAL_MAX_NODES",
+        "#define LOCALIZATION_CALCULATE_BAYES_MAX_CELLS",
+        "#define LOCALIZATION_CALCULATE_BAYES_VELOCITY_NODES",
+        "#define LOCALIZATION_CALCULATE_SEED_LATTICE_POINTS",
+    ):
+        assert define in source
+    budget = source.index("#define LOCALIZATION_CALCULATE_EIKONAL_MAX_NODES")
+    assert "not physics" in source[max(0, budget - 300):budget]
+    assert "#define LOCALIZATION_CALCULATE_MAX_RECORDS 20U" in source
+
+
+def test_every_method_is_timed_and_the_heavy_ones_respect_the_deadline():
+    """Each method is bracketed by the time budget; skippable ones only run
+    when budget_begin allows, and every record gets budget_end (which marks
+    a refused method unsolved with the reason) before it is counted."""
+    source = orchestrator_source()
+    assert "config->deadline_us" in source
+    assert source.count("localization_calculate_budget_begin(") == 20
+    assert source.count("++record_count;") == source.count("localization_calculate_budget_end(&budget, &records[record_count]);")
+    for mandatory in ('"tdoa_gauss_newton", false', '"energy_baseline", false'):
+        assert mandatory in source
+    for skippable in (
+        "traveltime_inversion", "semblance", "tdcas", "psafuvs", "suea", "xcorr_tdoa", "robust_tdoa",
+        "psp_joint", "bayesian", "eikonal_fmm", "traveltime_scan_constrained", "semblance_scan_constrained",
+        "tdcas_scan_constrained", "psafuvs_scan_constrained", "suea_scan_voids", "eikonal_scan_voids",
+        "semblance_eikonal_voids", "bayesian_scan_voids",
+    ):
+        assert f'"{skippable}", true)' in source, skippable
+
+
+def test_calculate_source_never_runs_on_the_https_task():
+    """The HTTP handler only queues the job; the run happens on the
+    localization_job worker (16 KiB PSRAM stack, idle priority on the
+    signal-processing core), created before the web server starts."""
+    control = read("components/web_server/web_api_control.c")
+    assert "return localization_calculate_run(" not in control
+    assert "localization_calculate_summary_t summary;" not in control
+    assert "return localization_job_submit(object_id, session_id, &config, budget_ms, NULL);" in control
+    job = read("components/localization_job/localization_job.c")
+    assert "localization_calculate_run(" in job
+    assert "LOCALIZATION_JOB_STACK_BYTES," in job
+    assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in job
+    assert "APP_TASK_CORE_REALTIME" in job
+    assert "uxTaskGetStackHighWaterMark(NULL)" in job
+    header = read("components/localization_job/include/localization_job.h")
+    assert "#define LOCALIZATION_JOB_STACK_BYTES 16384U" in header
+    tasks = read("components/app_config/include/app_task_config.h")
+    assert "#define APP_TASK_PRIORITY_LOCALIZATION_JOB 0" in tasks
+    startup = read("main/app_startup.c")
+    assert startup.index("localization_job_init()") < startup.index("web_server_start()")
+    assert "localization_job" in read("main/CMakeLists.txt")
+    assert "localization_job" in read("components/web_server/CMakeLists.txt")
+    # Status shares the runs route: no extra HTTPS handler slot.
+    api = read("components/web_server/web_localization_api.c")
+    assert 'strcmp(value, "status") == 0' in api
+    assert "localization_job_status_json(&json)" in api

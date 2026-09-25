@@ -238,12 +238,39 @@ static void test_flat_array_with_height_noise_is_rejected(void)
 }
 
 
+static void test_positions_resolve_depth_is_order_independent(void)
+{
+    /* Four surface sensors with a few cm of barometric Z noise: flat. */
+    const localization_point3d_t flat[5] = {
+        { 0.0, 0.0, 0.00 }, { 5.0, 0.0, 0.03 }, { 0.0, 5.0, -0.02 }, { 5.0, 5.0, 0.05 }, { 2.5, 2.5, 0.01 },
+    };
+    assert(!localization_positions_resolve_depth(flat, 5U));
+
+    /* Real relief exists only among the last four: found whichever sensor
+     * is listed first (the TDOA solver's own check fixes the first one). */
+    const localization_point3d_t relief[5] = {
+        { 1.0, 1.0, 0.0 }, { 1.0, 1.0, 0.0 }, { 5.0, 0.0, 0.0 }, { 0.0, 5.0, 0.0 }, { 2.0, 2.0, 3.0 },
+    };
+    const localization_point3d_t reordered[5] = {
+        relief[4], relief[2], relief[3], relief[1], relief[0],
+    };
+    assert(localization_positions_resolve_depth(relief, 5U));
+    assert(localization_positions_resolve_depth(reordered, 5U));
+
+    /* Fewer than four points, non-finite input and NULL never resolve. */
+    assert(!localization_positions_resolve_depth(relief + 2, 3U));
+    const localization_point3d_t broken[4] = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, NAN } };
+    assert(!localization_positions_resolve_depth(broken, 4U));
+    assert(!localization_positions_resolve_depth(NULL, 4U));
+}
+
 int main(void)
 {
     test_synthetic_ground_truth();
     test_four_sensor_offset_noise_and_iteration_contracts();
     test_validation_and_geometry_contracts();
     test_flat_array_with_height_noise_is_rejected();
+    test_positions_resolve_depth_is_order_independent();
     puts("localization TDOA tests passed");
     return 0;
 }

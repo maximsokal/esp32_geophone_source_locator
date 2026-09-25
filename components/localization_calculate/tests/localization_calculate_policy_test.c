@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "localization_calculate_policy.h"
@@ -649,6 +650,474 @@ static void test_scan_candidate_filter_rejects_free_and_outside(void)
 }
 
 
+/* ---- Velocity-free methods (TDCAS, PSAFUVS, SUEA) ------------------------ */
+
+static void test_tdcas_adapter_reports_estimated_velocity_and_reasons(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_tdcas_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = LOCALIZATION_TDCAS_SOLVED;
+    result.position = (localization_point3d_t) { 1.0, 2.0, -1.5 };
+    result.velocity_mps = 236.5;
+    result.emission_time_us = 777;
+    result.rms_residual_us = 10.0;
+    localization_run_record_t record;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0x3FU, 0xC0U, 2U, 10.0, &record);
+    assert(record.solved);
+    assert(strcmp(record.method_name, "tdcas") == 0);
+    assert(record.kind == LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD);
+    assert(record.estimated_p_velocity_mps == 236.5);
+    assert(record.estimated_s_velocity_mps == 0.0);
+    assert(record.emission_time_us == 777);
+    assert(nearly_equal(record.confidence_score, exp(-0.5), 1e-12));
+    assert(record.channel_mask_used == 0x3FU && record.channel_mask_rejected == 0xC0U);
+    /* The caller's model stays on record: TDCAS simply did not use it. */
+    assert(record.propagation_speed_mps == 340.0);
+
+    /* The 4-pod hardware: the reason names the minimum and the count. */
+    result.status = LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS;
+    result.planar_layout = true;
+    result.sensors_used = 4U;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
+    assert(!record.solved);
+    assert(strstr(record.rejection_reason, "needs 5") != NULL);
+    assert(strstr(record.rejection_reason, "have 4") != NULL);
+    result.status = LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
+    assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
+    localization_calculate_tdcas_to_run_record(&context, NULL, 0xFU, 0U, 2U, 10.0, &record);
+    assert(!record.solved && record.rejection_reason[0] != '\0');
+}
+
+
+static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_psafuvs_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = LOCALIZATION_PSAFUVS_SOLVED;
+    result.position = (localization_point3d_t) { 0.5, 0.5, -1.0 };
+    result.p_velocity_mps = 320.0;
+    result.s_velocity_mps = 170.0;
+    result.rms_residual_us = 0.0;
+    result.iterations = 4U;
+    result.converged = true;
+    localization_run_record_t record;
+    localization_calculate_psafuvs_to_run_record(&context, &result, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved);
+    assert(strcmp(record.method_name, "psafuvs") == 0);
+    assert(record.estimated_p_velocity_mps == 320.0 && record.estimated_s_velocity_mps == 170.0);
+    assert(record.iterations == 4U && record.converged);
+    assert(nearly_equal(record.confidence_score, 1.0, 1e-12));
+
+    /* Not attempted: the caller's reason is kept verbatim. */
+    localization_calculate_psafuvs_to_run_record(
+        &context, NULL, "S-wave picking not configured", 0U, 0xFU, 1U, 20.0, &record
+    );
+    assert(!record.solved);
+    assert(strcmp(record.rejection_reason, "S-wave picking not configured") == 0);
+
+    const localization_psafuvs_status_t statuses[] = {
+        LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS, LOCALIZATION_PSAFUVS_DEGENERATE,
+        LOCALIZATION_PSAFUVS_NONPHYSICAL_VELOCITIES, LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED,
+        LOCALIZATION_PSAFUVS_NO_ALLOWED_CANDIDATE,
+    };
+    for (size_t i = 0U; i < sizeof(statuses) / sizeof(statuses[0]); ++i) {
+        result.status = statuses[i];
+        localization_calculate_psafuvs_to_run_record(&context, &result, NULL, 0xFU, 0U, 1U, 20.0, &record);
+        assert(!record.solved && record.rejection_reason[0] != '\0');
+        assert(record.estimated_p_velocity_mps == 0.0);
+    }
+}
+
+
+static void test_suea_adapter_and_redundancy(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_suea_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = LOCALIZATION_SUEA_SOLVED;
+    result.best_position = (localization_point3d_t) { 2.0, 1.0, -0.8 };
+    result.best_residual_rms_us = 20.0;
+    result.velocity_mps = 251.0;
+    localization_run_record_t record;
+    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "suea") == 0);
+    assert(record.estimated_p_velocity_mps == 251.0);
+    assert(nearly_equal(record.confidence_score, exp(-0.5), 1e-12));
+
+    result.status = LOCALIZATION_SUEA_INSUFFICIENT_PICKS;
+    result.pick_mask_unreachable = 0x2U;
+    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "empty space") != NULL);
+    result.status = LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE;
+    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
+    assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
+
+    /* Velocity-free redundancy: 4 P picks cannot verify 5 unknowns;
+     * 4 P + 4 S picks leave 2 degrees of freedom for PSAFUVS. */
+    assert(localization_calculate_velocity_free_degrees_of_freedom(4U, 5U) == -1);
+    assert(localization_calculate_velocity_free_degrees_of_freedom(8U, 6U) == 2);
+    assert(localization_calculate_velocity_free_degrees_of_freedom(0U, 5U) == -1);
+}
+
+
+static void test_velocity_free_methods_share_the_pick_evidence_group(void)
+{
+    const char *names[] = { "tdcas", "psafuvs", "suea" };
+    for (size_t i = 0U; i < 3U; ++i) {
+        localization_run_record_t record;
+        memset(&record, 0, sizeof(record));
+        snprintf(record.method_name, sizeof(record.method_name), "%s", names[i]);
+        record.solved = true;
+        record.confidence_score = 0.8;
+        localization_comparison_method_result_t method;
+        localization_calculate_run_record_to_comparison_method(&record, &method);
+        assert(method.evidence_group == LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP);
+        assert(method.quality == 0.8);
+    }
+}
+
+
+static void test_suea_grid_bounds_extend_the_search_box(void)
+{
+    localization_traveltime_search_bounds_t search = {
+        .min_corner = { -1.0, -2.0, -3.0 },
+        .max_corner = { 4.0, 5.0, 0.2 },
+        .step_m = 0.1,
+    };
+    localization_point3d_t lo, hi;
+    localization_calculate_suea_grid_bounds(&search, &lo, &hi);
+    assert(nearly_equal(lo.x_m, -1.1, 1e-12) && nearly_equal(lo.y_m, -2.1, 1e-12) && lo.z_m == -3.0);
+    assert(nearly_equal(hi.x_m, 4.1, 1e-12) && nearly_equal(hi.y_m, 5.1, 1e-12) && nearly_equal(hi.z_m, 0.3, 1e-12));
+    /* Planar stays one layer. */
+    search.min_corner.z_m = search.max_corner.z_m = 0.05;
+    localization_calculate_suea_grid_bounds(&search, &lo, &hi);
+    assert(lo.z_m == 0.05 && hi.z_m == 0.05);
+}
+
+
+static void test_scan_sectors_map_to_suea_cells_and_ray_screening(void)
+{
+    /* Same synthetic scan as the candidate filter test: voxel 1 m, FREE
+     * (2,0,0), OCCUPIED (0,0,0), envelope z <= 1, registration +1 m in x. */
+    int64_t free_keys[2] = { test_pack_key(2, 0, 0), test_pack_key(3, 0, 0) };
+    int64_t occupied_keys[1] = { test_pack_key(0, 0, 0) };
+    scan_occupancy_t occupancy;
+    memset(&occupancy, 0, sizeof(occupancy));
+    occupancy.voxel_size_m = 1.0;
+    occupancy.below_surface_m = 2.0;
+    occupancy.has_envelope = true;
+    occupancy.envelope_min[0] = -1.0; occupancy.envelope_min[1] = -1.0; occupancy.envelope_min[2] = -1.0;
+    occupancy.envelope_max[0] = 6.0; occupancy.envelope_max[1] = 4.0; occupancy.envelope_max[2] = 1.0;
+    occupancy.free_keys = free_keys;
+    occupancy.free_count = 2U;
+    occupancy.occupied_keys = occupied_keys;
+    occupancy.occupied_count = 1U;
+    occupancy.registration.present = true;
+    occupancy.registration.geometry_computed_at_ms = 42U;
+    const double shift[16] = { 1, 0, 0, 1,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1 };
+    memcpy(occupancy.registration.sensor_to_scan, shift, sizeof(shift));
+
+    /* FREE air (empty sector) blocks waves; OCCUPIED (filled) is solid;
+     * the unseen interior stays passable UNKNOWN, never empty. */
+    const localization_point3d_t free_air = { 1.5, 0.5, 0.5 };
+    const localization_point3d_t surface = { -0.5, 0.5, 0.5 };
+    const localization_point3d_t interior = { 1.5, 2.5, -1.5 };
+    const localization_point3d_t above_scan = { 1.5, 2.5, 3.0 };
+    const localization_point3d_t beside_scan = { 9.0, 0.5, 0.5 };
+    assert(localization_calculate_scan_suea_cell(&free_air, &occupancy) == LOCALIZATION_SUEA_CELL_EMPTY);
+    assert(localization_calculate_scan_suea_cell(&surface, &occupancy) == LOCALIZATION_SUEA_CELL_SOLID);
+    assert(localization_calculate_scan_suea_cell(&interior, &occupancy) == LOCALIZATION_SUEA_CELL_UNKNOWN);
+    assert(localization_calculate_scan_suea_cell(&above_scan, &occupancy) == LOCALIZATION_SUEA_CELL_EMPTY);
+    assert(localization_calculate_scan_suea_cell(&beside_scan, &occupancy) == LOCALIZATION_SUEA_CELL_UNKNOWN);
+    assert(localization_calculate_scan_suea_cell(&free_air, NULL) == LOCALIZATION_SUEA_CELL_UNKNOWN);
+
+    const localization_calculate_scan_ray_context_t ray = { .occupancy = &occupancy, .sensor_clearance_m = 0.5 };
+    /* Along y = 0.5, z = 0.5 the ray crosses the two FREE voxels (scan x
+     * in [2, 4)): obstructed. */
+    const localization_point3d_t sensor = { -0.5, 0.5, 0.5 };
+    const localization_point3d_t across_void = { 4.5, 0.5, 0.5 };
+    assert(!localization_calculate_scan_ray_clear(&sensor, &across_void, (void *)&ray));
+    /* Below the void: clear. */
+    const localization_point3d_t below_void = { 4.5, 0.5, -1.5 };
+    const localization_point3d_t sensor_low = { -0.5, 0.5, -1.5 };
+    assert(localization_calculate_scan_ray_clear(&sensor_low, &below_void, (void *)&ray));
+    /* A sensor sitting in FREE air at its own end is ignored (clearance):
+     * only the rest of the ray counts. */
+    const localization_point3d_t hovering = { 2.4, 0.5, 0.5 };
+    const localization_point3d_t down = { 2.4, 0.5, -1.8 };
+    assert(localization_calculate_scan_ray_clear(&hovering, &down, (void *)&ray));
+    /* No context: every ray is clear (no constraint without a scan). */
+    assert(localization_calculate_scan_ray_clear(&sensor, &across_void, NULL));
+}
+
+
+static void test_extended_methods_share_the_pick_evidence_group(void)
+{
+    const char *grouped[] = { "xcorr_tdoa", "robust_tdoa", "psp_joint", "eikonal_fmm", "bayesian" };
+    for (size_t i = 0U; i < 5U; ++i) {
+        localization_run_record_t record;
+        memset(&record, 0, sizeof(record));
+        snprintf(record.method_name, sizeof(record.method_name), "%s", grouped[i]);
+        record.solved = true;
+        record.confidence_score = 0.7;
+        localization_comparison_method_result_t method;
+        localization_calculate_run_record_to_comparison_method(&record, &method);
+        assert(method.evidence_group == LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP);
+        assert(method.quality == 0.7);
+    }
+    /* Scan variants are never fused, so they need no group. */
+    const char *scan_only[] = { "eikonal_scan_voids", "bayesian_scan_voids", "semblance_eikonal_voids" };
+    for (size_t i = 0U; i < 3U; ++i) {
+        localization_run_record_t record;
+        memset(&record, 0, sizeof(record));
+        snprintf(record.method_name, sizeof(record.method_name), "%s", scan_only[i]);
+        record.solved = true;
+        localization_comparison_method_result_t method;
+        localization_calculate_run_record_to_comparison_method(&record, &method);
+        assert(method.evidence_group == 0U);
+    }
+}
+
+
+static void test_xcorr_and_robust_adapters(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_run_record_t record;
+
+    localization_xcorr_tdoa_result_t xcorr;
+    memset(&xcorr, 0, sizeof(xcorr));
+    xcorr.status = LOCALIZATION_XCORR_TDOA_SOLVED;
+    xcorr.position = (localization_point3d_t) { 1.0, 2.0, -0.5 };
+    xcorr.rms_pair_residual_us = 20.0;
+    localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "xcorr_tdoa") == 0);
+    assert(record.source_position.y_m == 2.0 && record.rms_residual_us == 20.0);
+    assert(nearly_equal(record.confidence_score, exp(-0.5), 1e-12));
+
+    xcorr.status = LOCALIZATION_XCORR_TDOA_INSUFFICIENT_PAIRS;
+    xcorr.pairs_measured = 1U;
+    xcorr.pairs_total = 6U;
+    xcorr.channels_used = 2U;
+    localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0x3U, 0xCU, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "only 1 of 6 channel pairs") != NULL);
+    xcorr.status = LOCALIZATION_XCORR_TDOA_NO_ANCHOR;
+    localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0U, 0xFU, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "anchor") != NULL);
+
+    localization_robust_result_t robust;
+    memset(&robust, 0, sizeof(robust));
+    robust.status = LOCALIZATION_ROBUST_SOLVED;
+    robust.position = (localization_point3d_t) { 0.5, 0.5, -1.0 };
+    robust.rms_residual_us = 0.0;
+    robust.emission_time_us = 42;
+    localization_calculate_robust_to_run_record(&context, &robust, 0x7U, 0x8U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "robust_tdoa") == 0);
+    assert(record.confidence_score == 1.0 && record.emission_time_us == 42);
+    assert(record.channel_mask_used == 0x7U && record.channel_mask_rejected == 0x8U);
+    /* An inconsistency no pick can be blamed for is not a confirmation. */
+    robust.consensus_ambiguous = true;
+    localization_calculate_robust_to_run_record(&context, &robust, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.confidence_score == LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP);
+    robust.status = LOCALIZATION_ROBUST_INSUFFICIENT_OBSERVATIONS;
+    robust.planar = false;
+    robust.degrees_of_freedom = -1;
+    localization_calculate_robust_to_run_record(&context, &robust, 0x7U, 0x8U, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "needs 4 accepted P picks for a 3D search, have 3") != NULL);
+    localization_calculate_robust_to_run_record(&context, NULL, 0U, 0xFU, 1U, 20.0, &record);
+    assert(!record.solved && record.rejection_reason[0] != '\0');
+}
+
+
+static void test_psp_eikonal_and_bayes_adapters(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_run_record_t record;
+
+    localization_psp_result_t psp;
+    memset(&psp, 0, sizeof(psp));
+    psp.status = LOCALIZATION_PSP_SOLVED;
+    psp.position = (localization_point3d_t) { 1.0, 1.0, -1.0 };
+    psp.p_velocity_mps = 320.0;
+    psp.s_velocity_mps = 180.0;
+    psp.rms_p_residual_us = 20.0;
+    localization_calculate_psp_to_run_record(&context, &psp, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "psp_joint") == 0);
+    assert(record.estimated_p_velocity_mps == 320.0 && record.estimated_s_velocity_mps == 180.0);
+    psp.status = LOCALIZATION_PSP_UNDERDETERMINED;
+    localization_calculate_psp_to_run_record(&context, &psp, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "underdetermined") != NULL);
+    localization_calculate_psp_to_run_record(&context, NULL, "S-wave picking not configured", 0U, 0xFU, 1U, 20.0, &record);
+    assert(!record.solved && strcmp(record.rejection_reason, "S-wave picking not configured") == 0);
+
+    localization_eikonal_result_t eikonal;
+    memset(&eikonal, 0, sizeof(eikonal));
+    eikonal.status = LOCALIZATION_EIKONAL_SOLVED;
+    eikonal.position = (localization_point3d_t) { 2.0, 1.0, -0.6 };
+    eikonal.velocity_scale = 0.85;
+    eikonal.rms_residual_us = 10.0;
+    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_scan_voids", NULL, true,
+                                                 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "eikonal_scan_voids") == 0);
+    assert(nearly_equal(record.estimated_p_velocity_mps, 340.0 / 0.85, 1e-9));
+    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_fmm", NULL, false,
+                                                 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.estimated_p_velocity_mps == 0.0); /* the scale was fixed */
+    eikonal.status = LOCALIZATION_EIKONAL_NO_REACHABLE_CANDIDATE;
+    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_scan_voids", NULL, true,
+                                                 0xFU, 0U, 1U, 20.0, &record);
+    assert(!record.solved && strstr(record.rejection_reason, "around the voids") != NULL);
+    localization_calculate_eikonal_to_run_record(&context, NULL, "eikonal_scan_voids", "constraint not applied", true,
+                                                 0xFU, 0U, 1U, 20.0, &record);
+    assert(!record.solved && strcmp(record.rejection_reason, "constraint not applied") == 0);
+
+    localization_bayes_result_t bayes;
+    memset(&bayes, 0, sizeof(bayes));
+    bayes.status = LOCALIZATION_BAYES_SOLVED;
+    bayes.map_position = (localization_point3d_t) { 1.1, 1.6, -1.3 };
+    bayes.std_m = (localization_point3d_t) { 0.1, 0.1, 0.8 };
+    bayes.credible_level = 0.9;
+    bayes.credible_volume_m3 = 0.13;
+    bayes.credible_min = (localization_point3d_t) { 0.9, 1.4, -3.0 };
+    bayes.credible_max = (localization_point3d_t) { 1.3, 1.8, -0.1 };
+    bayes.velocity_mean_mps = 333.0;
+    bayes.rms_residual_us = 20.0;
+    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, true, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.solved && strcmp(record.method_name, "bayesian") == 0);
+    assert(record.source_position.z_m == -1.3);
+    assert(record.uncertainty.credible_level == 0.9 && record.uncertainty.std_m.z_m == 0.8);
+    assert(record.uncertainty.credible_volume_m3 == 0.13 && record.uncertainty.credible_min.z_m == -3.0);
+    assert(record.estimated_p_velocity_mps == 333.0);
+    /* The record serializes (the uncertainty passes validation). */
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"uncertainty\"") != NULL);
+    free(json);
+    bayes.status = LOCALIZATION_BAYES_INSUFFICIENT_PICKS;
+    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, true, 0x7U, 0x8U, 1U, 20.0, &record);
+    assert(!record.solved && record.uncertainty.credible_level == 0.0);
+}
+
+
+static void test_s_minus_p_sigma_grows_as_the_s_onset_weakens(void)
+{
+    /* Equally clean onsets: sqrt(2) x the pick sigma. */
+    assert(nearly_equal(localization_calculate_s_minus_p_sigma_us(20.0, 8.0, 8.0), 20.0 * sqrt(2.0), 1e-9));
+    /* A cleaner S than P never makes the interval better than the P pick. */
+    assert(nearly_equal(localization_calculate_s_minus_p_sigma_us(20.0, 4.0, 16.0), 20.0 * sqrt(2.0), 1e-9));
+    /* S four times weaker: sS = 4 sP. */
+    assert(nearly_equal(localization_calculate_s_minus_p_sigma_us(20.0, 16.0, 4.0), 20.0 * sqrt(17.0), 1e-9));
+    /* Capped at 10x, and an unknown S SNR takes the cap. */
+    assert(nearly_equal(localization_calculate_s_minus_p_sigma_us(20.0, 100.0, 1.0), 20.0 * sqrt(101.0), 1e-9));
+    assert(nearly_equal(localization_calculate_s_minus_p_sigma_us(20.0, 8.0, 0.0), 20.0 * sqrt(101.0), 1e-9));
+}
+
+
+static int64_t s_fake_now_us;
+static int64_t fake_clock(void)
+{
+    return s_fake_now_us;
+}
+
+static char s_progress_log[256];
+static void log_progress(const char *method, void *context)
+{
+    (void)context;
+    strncat(s_progress_log, method, sizeof(s_progress_log) - strlen(s_progress_log) - 2U);
+    strncat(s_progress_log, ",", sizeof(s_progress_log) - strlen(s_progress_log) - 1U);
+}
+
+
+static void test_time_budget_times_every_method_and_skips_after_the_deadline(void)
+{
+    localization_calculate_summary_t summary;
+    memset(&summary, 0, sizeof(summary));
+    s_progress_log[0] = '\0';
+    s_fake_now_us = 1000000;
+    localization_calculate_budget_t budget;
+    localization_calculate_budget_init(&budget, fake_clock, 1000000 + 5000000, log_progress, NULL, &summary);
+
+    /* Runs and is timed. */
+    localization_run_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.solved = true;
+    assert(localization_calculate_budget_begin(&budget, "tdcas", true));
+    s_fake_now_us += 1250000;
+    localization_calculate_budget_end(&budget, &record);
+    assert(record.solved);
+
+    /* Past the deadline a skippable method is refused and its record says so ... */
+    s_fake_now_us += 4000000;
+    record.solved = true;
+    record.confidence_score = 0.9;
+    assert(!localization_calculate_budget_begin(&budget, "bayesian", true));
+    localization_calculate_budget_end(&budget, &record);
+    assert(!record.solved && record.confidence_score == 0.0);
+    assert(strcmp(record.rejection_reason, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON) == 0);
+
+    /* ... while a mandatory (cheap) one still runs. */
+    record.solved = true;
+    assert(localization_calculate_budget_begin(&budget, "energy_baseline", false));
+    s_fake_now_us += 3000;
+    localization_calculate_budget_end(&budget, &record);
+    assert(record.solved);
+
+    assert(summary.timing_count == 3U && summary.methods_skipped_for_time == 1U);
+    assert(strcmp(summary.timings[0].method_name, "tdcas") == 0 && summary.timings[0].duration_ms == 1250U);
+    assert(summary.timings[1].skipped_for_time && summary.timings[1].duration_ms == 0U);
+    assert(!summary.timings[2].skipped_for_time && summary.timings[2].duration_ms == 3U);
+    /* Progress is published only for methods that start. */
+    assert(strcmp(s_progress_log, "tdcas,energy_baseline,") == 0);
+
+    /* No deadline: nothing is ever skipped; the timings list is bounded. */
+    memset(&summary, 0, sizeof(summary));
+    localization_calculate_budget_init(&budget, fake_clock, 0, NULL, NULL, &summary);
+    for (size_t i = 0U; i < LOCALIZATION_CALCULATE_MAX_TIMINGS + 3U; ++i) {
+        assert(localization_calculate_budget_begin(&budget, "semblance", true));
+        localization_calculate_budget_end(&budget, NULL);
+    }
+    assert(summary.timing_count == LOCALIZATION_CALCULATE_MAX_TIMINGS && summary.methods_skipped_for_time == 0U);
+}
+
+
+static void test_discretization_error(void)
+{
+    assert(nearly_equal(localization_calculate_discretization_error_us(0.1, 300.0), 0.1 / (300.0 * sqrt(6.0)) * 1e6, 1e-9));
+    assert(localization_calculate_discretization_error_us(0.0, 300.0) == 0.0);
+    assert(localization_calculate_discretization_error_us(0.1, 0.0) == 0.0);
+}
+
+
+static void test_bayes_adapter_carries_the_inflation(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_bayes_result_t bayes;
+    memset(&bayes, 0, sizeof(bayes));
+    bayes.status = LOCALIZATION_BAYES_SOLVED;
+    bayes.credible_level = 0.9;
+    bayes.sigma_inflation = 4.1;
+    localization_run_record_t record;
+    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, false, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.uncertainty.sigma_inflation == 4.1);
+    bayes.sigma_inflation = 0.0; /* not computed: never below 1 */
+    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, false, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.uncertainty.sigma_inflation == 1.0);
+}
+
+
+static void test_extended_bounds_copy_the_search_box(void)
+{
+    const localization_traveltime_search_bounds_t search = {
+        .min_corner = { -1.0, -2.0, -3.0 }, .max_corner = { 4.0, 5.0, 0.2 }, .step_m = 0.1,
+    };
+    const localization_extended_bounds_t bounds = localization_calculate_extended_bounds(&search);
+    assert(bounds.min_corner.y_m == -2.0 && bounds.max_corner.z_m == 0.2 && bounds.step_m == 0.1);
+    assert(localization_extended_bounds_valid(&bounds));
+}
+
+
 int main(void)
 {
     test_scan_candidate_filter_rejects_free_and_outside();
@@ -680,5 +1149,19 @@ int main(void)
     test_joint_adapter_not_found_is_unsolved();
     test_run_record_to_comparison_method_round_trips_solved();
     test_run_record_to_comparison_method_round_trips_unsolved();
+    test_tdcas_adapter_reports_estimated_velocity_and_reasons();
+    test_psafuvs_adapter_reports_both_velocities_and_reasons();
+    test_suea_adapter_and_redundancy();
+    test_velocity_free_methods_share_the_pick_evidence_group();
+    test_suea_grid_bounds_extend_the_search_box();
+    test_scan_sectors_map_to_suea_cells_and_ray_screening();
+    test_extended_methods_share_the_pick_evidence_group();
+    test_xcorr_and_robust_adapters();
+    test_psp_eikonal_and_bayes_adapters();
+    test_s_minus_p_sigma_grows_as_the_s_onset_weakens();
+    test_extended_bounds_copy_the_search_box();
+    test_discretization_error();
+    test_time_budget_times_every_method_and_skips_after_the_deadline();
+    test_bayes_adapter_carries_the_inflation();
     return 0;
 }

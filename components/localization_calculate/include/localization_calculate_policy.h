@@ -4,12 +4,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "localization_bayes.h"
+#include "localization_calculate.h"
 #include "localization_comparison.h"
+#include "localization_eikonal.h"
 #include "localization_energy_baseline.h"
 #include "localization_event_bridge.h"
+#include "localization_psafuvs.h"
+#include "localization_psp.h"
+#include "localization_robust.h"
 #include "localization_run_record.h"
 #include "localization_semblance.h"
+#include "localization_suea.h"
+#include "localization_tdcas.h"
 #include "localization_traveltime_inversion.h"
+#include "localization_xcorr_tdoa.h"
 #include "object_store.h"
 #include "scan_occupancy.h"
 
@@ -319,3 +328,283 @@ bool localization_calculate_scan_candidate_allowed(
     void *context
 );
 
+
+
+/* ---- Velocity-free methods: TDCAS, PSAFUVS, SUEA --------------------------
+ * Each adapter writes the method's own estimated velocity (P, and S for
+ * PSAFUVS) into estimated_*_velocity_mps and scores confidence from its
+ * residual exactly like TDOA / traveltime inversion. A NULL result means
+ * the method was not attempted; not_attempted_reason (PSAFUVS) must then
+ * say why. */
+
+void localization_calculate_tdcas_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_tdcas_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+void localization_calculate_psafuvs_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_psafuvs_result_t *result,
+    const char *not_attempted_reason,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+void localization_calculate_suea_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_suea_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/*
+ * SUEA grid box from the traveltime search box: one search step wider in x
+ * and y and one step higher, so the surface sensors (at the box top) and the
+ * rays that bend around empty areas near the box edge stay inside the grid.
+ * A planar search stays a single layer.
+ */
+void localization_calculate_suea_grid_bounds(
+    const localization_traveltime_search_bounds_t *search,
+    localization_point3d_t *min_out,
+    localization_point3d_t *max_out
+);
+
+/* Redundancy of a fit with `unknowns` parameters to `observations`
+ * independent arrivals: observations - unknowns (-1 when no observation).
+ * TDCAS: N P picks, 5 unknowns (x, y, z, t0, v). PSAFUVS: 2N arrivals,
+ * 6 unknowns (x, y, z, t0, vP, vS). */
+int32_t localization_calculate_velocity_free_degrees_of_freedom(
+    size_t observations,
+    size_t unknowns
+);
+
+
+/* ---- Scan occupancy -> velocity-free methods (MAX-147/162) ---------------
+ * Both callbacks take points in the SENSOR (localization) frame and map
+ * them through the occupancy's registration, which the caller has already
+ * checked with scan_occupancy_registration_usable(). */
+
+/*
+ * SUEA cell class of a sensor-frame point: scan-verified FREE air is
+ * EMPTY (a wave cannot cross it), OCCUPIED surface is SOLID, UNKNOWN stays
+ * UNKNOWN (passable, never assumed empty). OUTSIDE the scanned volume is
+ * EMPTY only above the envelope top (open air over the rubble) and
+ * UNKNOWN otherwise. `context` is a `const scan_occupancy_t *`.
+ */
+localization_suea_cell_t localization_calculate_scan_suea_cell(
+    const localization_point3d_t *point,
+    void *context
+);
+
+
+typedef struct
+{
+    const scan_occupancy_t *occupancy;
+
+    /* Samples closer than this to the sensor end are ignored: a pod lies
+     * ON the surface and registration puts it a few cm into the air as
+     * often as into the rubble. */
+    double sensor_clearance_m;
+
+} localization_calculate_scan_ray_context_t;
+
+/* Default sensor clearance: one and a half scan voxels. */
+#define LOCALIZATION_CALCULATE_SCAN_RAY_CLEARANCE_VOXELS 1.5
+
+/*
+ * Straight-ray clearance for TDCAS / PSAFUVS: false when the segment
+ * sensor -> candidate crosses scan-verified FREE space -- at least two
+ * consecutive samples at half-voxel spacing, so a single noisy voxel does
+ * not veto a ray a wave would simply pass. `context` is a
+ * `const localization_calculate_scan_ray_context_t *`.
+ */
+bool localization_calculate_scan_ray_clear(
+    const localization_point3d_t *sensor,
+    const localization_point3d_t *candidate,
+    void *context
+);
+
+
+/* ---- localization_extended: xcorr TDOA, robust, PSP, eikonal, Bayesian ----
+ * Same conventions as the adapters above: a NULL result means "not
+ * attempted" (a reason is then required where the signature takes one),
+ * confidence comes from the residual, the caller applies redundancy. */
+
+/* Their search box: the traveltime search box as-is. */
+localization_extended_bounds_t localization_calculate_extended_bounds(
+    const localization_traveltime_search_bounds_t *search
+);
+
+void localization_calculate_xcorr_tdoa_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_xcorr_tdoa_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/* Masks are channel masks (inliers used; outliers and missing picks
+ * rejected). An ambiguous consensus (an inconsistency no pick can be
+ * blamed for) caps the confidence like an unverified fit. */
+void localization_calculate_robust_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_robust_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+void localization_calculate_psp_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_psp_result_t *result,
+    const char *not_attempted_reason,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/* method_name: "eikonal_fmm" or "eikonal_scan_voids". The velocity the fit
+ * found (model velocity / slowness factor) is written only when
+ * velocity_estimated (the factor was not fixed). */
+void localization_calculate_eikonal_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_eikonal_result_t *result,
+    const char *method_name,
+    const char *not_attempted_reason,
+    bool velocity_estimated,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/* method_name: "bayesian" or "bayesian_scan_voids". The MAP is the
+ * position; the posterior region fills record_out->uncertainty; the
+ * posterior-mean velocity is written when velocity_estimated. */
+void localization_calculate_bayes_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_bayes_result_t *result,
+    const char *method_name,
+    const char *not_attempted_reason,
+    bool velocity_estimated,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/*
+ * Standard deviation of an S - P interval for PSP: the P pick's own
+ * sigma combined with the S pick's, which is the P sigma scaled by how
+ * much weaker the S onset is (timing error grows as SNR falls):
+ * sqrt(sP^2 + sS^2), sS = sP * max(1, p_snr / s_snr). A non-positive SNR
+ * gives 10 x sP for the S pick.
+ */
+double localization_calculate_s_minus_p_sigma_us(
+    double timing_uncertainty_us,
+    double p_snr,
+    double s_snr
+);
+
+/*
+ * Eikonal velocity of a lattice node from the scan: 0 (impassable) only
+ * when the node's whole cell is empty -- the node and the eight corners
+ * of the cube +-sample_radius_m around it (the four in-plane corners when
+ * `planar`) all classify EMPTY by localization_calculate_scan_suea_cell() --
+ * and the model velocity otherwise. Blocking every node that merely
+ * touches a void would widen it by half a cell on each side: a lattice
+ * wave detours around blocked nodes, so a 0.3 m trench at 0.1 m cells
+ * would act ~0.5 m wide. `context` is a
+ * `const localization_calculate_scan_velocity_context_t *`.
+ */
+typedef struct
+{
+    const scan_occupancy_t *occupancy;
+    double velocity_mps;
+    double sample_radius_m;         /* half the eikonal cell */
+    bool planar;
+
+} localization_calculate_scan_velocity_context_t;
+
+double localization_calculate_scan_eikonal_velocity(
+    const localization_point3d_t *point,
+    void *context
+);
+
+
+/*
+ * Travel-time error, in microseconds, of a void edge discretized at
+ * `cell_m`: a path bends at about two corners, each placed anywhere within
+ * one cell (uniform, sd cell / sqrt 12), so cell / (v sqrt 6). 0 for
+ * invalid input.
+ */
+double localization_calculate_discretization_error_us(double cell_m, double velocity_mps);
+
+
+/* ---- Time budget ------------------------------------------------------
+ * Each method is bracketed by budget_begin / budget_end. begin measures
+ * the start and, for a skippable method past the deadline, refuses it;
+ * end records the duration in the summary and, for a refused method,
+ * marks its record unsolved with the reason. The clock is injected so
+ * the policy is host-testable. */
+
+typedef int64_t (*localization_calculate_clock_fn)(void);
+
+typedef struct
+{
+    localization_calculate_clock_fn now_us;
+    int64_t deadline_us;            /* 0 = none */
+    localization_calculate_progress_fn progress;
+    void *progress_context;
+    localization_calculate_summary_t *summary;
+
+    const char *method;
+    int64_t started_us;
+    bool allowed;
+
+} localization_calculate_budget_t;
+
+#define LOCALIZATION_CALCULATE_TIME_BUDGET_REASON \
+    "not run: the calculation time budget was used up before this method"
+
+void localization_calculate_budget_init(
+    localization_calculate_budget_t *budget,
+    localization_calculate_clock_fn now_us,
+    int64_t deadline_us,
+    localization_calculate_progress_fn progress,
+    void *progress_context,
+    localization_calculate_summary_t *summary
+);
+
+/* true when the method may run (always, unless skippable and past the
+ * deadline). */
+bool localization_calculate_budget_begin(
+    localization_calculate_budget_t *budget,
+    const char *method_name,
+    bool skippable
+);
+
+/* record may be NULL (a step with no record of its own). */
+void localization_calculate_budget_end(
+    localization_calculate_budget_t *budget,
+    localization_run_record_t *record
+);

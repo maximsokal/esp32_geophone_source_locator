@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_http_server.h"
@@ -301,6 +302,22 @@ esp_err_t web_server_route_tracking_register(const char *uri, int method)
     return ESP_OK;
 }
 
+static unsigned s_job_status_calls;
+static const char *s_job_status_json =
+    "{\"state\":\"running\",\"job_id\":3,\"current_method\":\"eikonal_scan_voids\",\"elapsed_ms\":4200}";
+
+esp_err_t localization_job_status_json(char **json_out)
+{
+    s_job_status_calls++;
+    const size_t length = strlen(s_job_status_json) + 1U;
+    *json_out = malloc(length);
+    if (*json_out == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(*json_out, s_job_status_json, length);
+    return ESP_OK;
+}
+
 #define static
 #include "../../components/web_server/web_localization_api.c"
 #undef static
@@ -410,11 +427,35 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
     assert(s_picks_list_calls == 0U);
 }
 
+static void test_job_status_shares_the_runs_route(void)
+{
+    reset_fakes();
+    s_job_status_calls = 0U;
+    char response[512] = {0};
+    httpd_req_t request = make_request("job=status", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_job_status_calls == 1U);
+    assert(strcmp(response, s_job_status_json) == 0);
+    assert(request.cache_control != NULL && strcmp(request.cache_control, "no-store") == 0);
+    /* No session work happens for a status poll. */
+    assert(s_list_calls == 0U && s_geometry_calls == 0U && s_picks_list_calls == 0U);
+
+    /* Any other job value is an ordinary (incomplete) runs query. */
+    memset(response, 0, sizeof(response));
+    request = make_request("job=start", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_job_status_calls == 1U);
+}
+
 int main(void)
 {
     test_runs_listing_round_trips_persisted_records();
     test_runs_listing_reports_geometry_unavailable_without_failing();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
+    test_job_status_shares_the_runs_route();
     return 0;
 }
