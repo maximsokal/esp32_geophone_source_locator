@@ -4,8 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "localization_bayes.h"
 #include "localization_calculate_policy.h"
+#include "localization_eikonal.h"
 #include "localization_psafuvs.h"
+#include "localization_semblance.h"
 #include "localization_suea.h"
 #include "localization_tdcas.h"
 #include "scan_occupancy.h"
@@ -13,7 +16,9 @@
 /*
  * End to end: the empty (FREE) and filled (OCCUPIED) space the phone scan
  * sends to the ESP32 -> scan_occupancy_parse() -> the policy's scan bridges
- * -> TDCAS, PSAFUVS and SUEA. The bytes are tests/vectors/
+ * -> TDCAS, PSAFUVS, SUEA, and the eikonal travel times shared by eikonal
+ * location, eikonal-focused semblance and the Bayesian posterior. The
+ * bytes are tests/vectors/
  * scan_occupancy_void_scene_v1.bin, written by the WebUI encoder
  * (webui/tests/xr/occupancyVoidSceneVector.test.ts), so a format drift on
  * either side fails here.
@@ -330,6 +335,218 @@ static void test_suea_travels_around_scanned_voids(void)
 }
 
 
+/* The pipeline's eikonal model over the SUEA box, homogeneous or with the
+ * scan's voids impassable; fields for the seven pods. */
+static void eikonal_scene(
+    const scan_occupancy_t *occupancy,
+    localization_eikonal_model_t *model,
+    localization_eikonal_fields_t *fields
+)
+{
+    const localization_traveltime_search_bounds_t search = {
+        .min_corner = { 0.0, 0.0, -2.0 },
+        .max_corner = { 3.0, 3.0, -0.03 },
+        .step_m = 0.1,
+    };
+    localization_point3d_t lo, hi;
+    localization_calculate_suea_grid_bounds(&search, &lo, &hi);
+    assert(localization_eikonal_model_init(model, &lo, &hi, search.step_m, 40000U, VP) == ESP_OK);
+    if (occupancy != NULL) {
+        const localization_calculate_scan_velocity_context_t scan = { occupancy, VP, 0.5 * model->cell_m, false };
+        localization_eikonal_model_assign(model, localization_calculate_scan_eikonal_velocity, (void *)&scan);
+        assert(localization_eikonal_passable_count(model) < localization_eikonal_node_count(model));
+    }
+    assert(localization_eikonal_fields_compute(model, PODS, 7U, fields) == ESP_OK);
+}
+
+
+static void test_eikonal_travels_around_scanned_voids(void)
+{
+    scan_occupancy_t occupancy;
+    load_scene(&occupancy);
+    localization_eikonal_pick_t picks[7];
+    for (size_t i = 0U; i < 7U; ++i) {
+        picks[i].arrival_time_us = (int64_t)llround((EMISSION_S + true_path(PODS[i], SOURCE) / VP) * 1.0e6);
+        picks[i].weight = 1.0;
+    }
+    /* The scan's trench is impassable where a whole 0.1 m cell is empty;
+     * a node on its wall stays passable (the wall is not widened). */
+    const localization_calculate_scan_velocity_context_t scan = { &occupancy, VP, 0.05, false };
+    const localization_point3d_t trench = { 1.55, 1.55, -0.55 };
+    const localization_point3d_t wall = { 1.4, 1.55, -0.55 };
+    const localization_point3d_t interior = { 0.55, 0.55, -0.55 };
+    assert(localization_calculate_scan_eikonal_velocity(&trench, (void *)&scan) == 0.0);
+    assert(localization_calculate_scan_eikonal_velocity(&wall, (void *)&scan) == VP);
+    assert(localization_calculate_scan_eikonal_velocity(&interior, (void *)&scan) == VP);
+    const localization_calculate_scan_velocity_context_t point_only = { &occupancy, VP, 0.0, false };
+    assert(localization_calculate_scan_eikonal_velocity(&wall, (void *)&point_only) == 0.0);
+
+    localization_eikonal_locate_config_t config = {
+        .timing_uncertainty_us = 20.0,
+        .velocity_scale_sigma = 0.05,
+        .refine_divisor = 4U,
+    };
+    localization_eikonal_model_t straight_model;
+    localization_eikonal_fields_t straight_fields;
+    eikonal_scene(NULL, &straight_model, &straight_fields);
+    localization_eikonal_result_t straight;
+    assert(localization_eikonal_locate(&straight_model, &straight_fields, picks, 7U, &config, &straight) == ESP_OK);
+
+    localization_eikonal_model_t scan_model;
+    localization_eikonal_fields_t scan_fields;
+    eikonal_scene(&occupancy, &scan_model, &scan_fields);
+    config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+    config.candidate_filter.context = &occupancy;
+    localization_eikonal_result_t with_scan;
+    assert(localization_eikonal_locate(&scan_model, &scan_fields, picks, 7U, &config, &with_scan) == ESP_OK);
+    assert(with_scan.status == LOCALIZATION_EIKONAL_SOLVED);
+    assert(with_scan.pick_mask_unreachable == 0U && with_scan.pick_mask_rejected == 0U);
+    assert(localization_calculate_scan_candidate_allowed(&with_scan.position, &occupancy));
+
+    const double before = distance(straight.position, SOURCE);
+    const double after = distance(with_scan.position, SOURCE);
+    printf("[SCAN->ESP32] eikonal: straight rays error=%.3f m (rms %.0f us), scan voids error=%.3f m (rms %.0f us)\n",
+           before, straight.rms_residual_us, after, with_scan.rms_residual_us);
+    assert(after < 0.2);
+    assert(after < 0.5 * before);
+    assert(with_scan.rms_residual_us < 0.5 * straight.rms_residual_us);
+
+    localization_eikonal_fields_free(&straight_fields);
+    localization_eikonal_model_free(&straight_model);
+    localization_eikonal_fields_free(&scan_fields);
+    localization_eikonal_model_free(&scan_model);
+    scan_occupancy_free(&occupancy);
+}
+
+
+static void test_bayesian_region_with_scanned_voids(void)
+{
+    scan_occupancy_t occupancy;
+    load_scene(&occupancy);
+    localization_bayes_pick_t picks[7];
+    for (size_t i = 0U; i < 7U; ++i) {
+        picks[i].sensor_position = PODS[i];
+        picks[i].arrival_time_us = (int64_t)llround((EMISSION_S + true_path(PODS[i], SOURCE) / VP) * 1.0e6);
+        picks[i].weight = 1.0;
+    }
+    const localization_extended_bounds_t bounds = localization_calculate_extended_bounds(
+        &(localization_traveltime_search_bounds_t) { { 0.0, 0.0, -2.0 }, { 3.0, 3.0, -0.03 }, 0.1 }
+    );
+    /* The pipeline's settings: Student-t, velocity +-10 m/s, budgets. */
+    localization_bayes_config_t config = {
+        .velocity_mps = VP,
+        .velocity_sigma_mps = 10.0,
+        .timing_uncertainty_us = 60.0,
+        .likelihood = LOCALIZATION_BAYES_STUDENT_T,
+        .velocity_nodes = 5U,
+        .max_cells = 8000U,
+        .refine_divisor = 4U,
+    };
+    localization_bayes_result_t straight;
+    assert(localization_bayes_locate(picks, 7U, &bounds, &config, &straight) == ESP_OK);
+
+    localization_eikonal_model_t model;
+    localization_eikonal_fields_t fields;
+    eikonal_scene(&occupancy, &model, &fields);
+    localization_eikonal_travel_time_context_t times = { &model, &fields };
+    config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+    config.candidate_filter.context = &occupancy;
+    config.travel_time_model.travel_time = localization_eikonal_travel_time;
+    config.travel_time_model.context = &times;
+    localization_bayes_result_t with_scan;
+    assert(localization_bayes_locate(picks, 7U, &bounds, &config, &with_scan) == ESP_OK);
+    assert(with_scan.status == LOCALIZATION_BAYES_SOLVED);
+
+    const double before = distance(straight.map_position, SOURCE);
+    const double after = distance(with_scan.map_position, SOURCE);
+    printf("[SCAN->ESP32] Bayesian: straight MAP error=%.3f m, scan voids MAP error=%.3f m, "
+           "sd (%.2f, %.2f, %.2f) m, 90%% volume %.4f m^3\n",
+           before, after, with_scan.std_m.x_m, with_scan.std_m.y_m, with_scan.std_m.z_m,
+           with_scan.credible_volume_m3);
+    assert(after < 0.2 && after < 0.5 * before);
+    /* The truth lies in the 90% region (within the lattice's own cell). */
+    assert(SOURCE.x_m >= with_scan.credible_min.x_m - with_scan.cell_m && SOURCE.x_m <= with_scan.credible_max.x_m + with_scan.cell_m);
+    assert(SOURCE.y_m >= with_scan.credible_min.y_m - with_scan.cell_m && SOURCE.y_m <= with_scan.credible_max.y_m + with_scan.cell_m);
+    assert(SOURCE.z_m >= with_scan.credible_min.z_m - with_scan.cell_m && SOURCE.z_m <= with_scan.credible_max.z_m + with_scan.cell_m);
+
+    /* ... and the record carries the region. */
+    const localization_calculate_run_context_t context = {
+        .object_id = "OBJ_0001", .session_id = "S000001", .computed_at_ms = 5U,
+        .geometry_computed_at_ms = GEOMETRY_VERSION, .dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D,
+        .propagation_model_name = "tap", .propagation_speed_mps = VP, .propagation_speed_uncertainty_mps = 10.0,
+    };
+    localization_run_record_t record;
+    localization_calculate_bayes_to_run_record(&context, &with_scan, "bayesian_scan_voids", NULL, true,
+                                               0x7FU, 0U, 1U, 60.0, &record);
+    assert(record.solved && strcmp(record.method_name, "bayesian_scan_voids") == 0);
+    assert(record.uncertainty.credible_level == 0.9 && record.uncertainty.credible_volume_m3 > 0.0);
+    assert(record.estimated_p_velocity_mps > 0.0);
+
+    localization_eikonal_fields_free(&fields);
+    localization_eikonal_model_free(&model);
+    scan_occupancy_free(&occupancy);
+}
+
+
+/* Records of a zero-phase wavelet arriving along the true paths. */
+#define SEMBLANCE_RATE_HZ 2000U
+#define SEMBLANCE_SAMPLES 2400U
+static float s_records[7][SEMBLANCE_SAMPLES];
+
+static void test_semblance_focuses_with_eikonal_times(void)
+{
+    scan_occupancy_t occupancy;
+    load_scene(&occupancy);
+    localization_semblance_channel_t channels[7];
+    size_t reference = SIZE_MAX;
+    for (size_t i = 0U; i < 7U; ++i) {
+        const double arrival_s = 0.1 + true_path(PODS[i], SOURCE) / VP;
+        for (size_t n = 0U; n < SEMBLANCE_SAMPLES; ++n) {
+            const double a = 3.141592653589793 * 60.0 * ((double)n / SEMBLANCE_RATE_HZ - arrival_s);
+            s_records[i][n] = (float)((1.0 - 2.0 * a * a) * exp(-a * a));
+        }
+        const size_t index = (size_t)llround(arrival_s * SEMBLANCE_RATE_HZ);
+        reference = index < reference ? index : reference;
+        channels[i] = (localization_semblance_channel_t) {
+            .samples = s_records[i], .sample_count = SEMBLANCE_SAMPLES,
+            .sample_rate_hz = SEMBLANCE_RATE_HZ, .sensor_position = PODS[i],
+        };
+    }
+    const localization_semblance_search_bounds_t bounds = { { 0.0, 0.0, -2.0 }, { 3.0, 3.0, -0.03 }, 0.1 };
+    localization_semblance_config_t config = {
+        .propagation_speed_mps = VP,
+        .reference_sample_index = reference,
+        .window_half_span_samples = 8U,
+        .refine_divisor = 4U,
+    };
+    config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+    config.candidate_filter.context = &occupancy;
+    localization_semblance_result_t straight;
+    assert(localization_semblance_search(channels, 7U, &bounds, &config, &straight) == ESP_OK);
+
+    localization_eikonal_model_t model;
+    localization_eikonal_fields_t fields;
+    eikonal_scene(&occupancy, &model, &fields);
+    localization_eikonal_travel_time_context_t times = { &model, &fields };
+    config.travel_time_model.travel_time = localization_eikonal_travel_time;
+    config.travel_time_model.context = &times;
+    localization_semblance_result_t focused;
+    assert(localization_semblance_search(channels, 7U, &bounds, &config, &focused) == ESP_OK);
+    assert(focused.found);
+    const double before = distance(straight.best_position, SOURCE);
+    const double after = distance(focused.best_position, SOURCE);
+    printf("[SCAN->ESP32] semblance: straight rays error=%.3f m (semblance %.2f), eikonal times error=%.3f m (semblance %.2f)\n",
+           before, straight.best_semblance, after, focused.best_semblance);
+    assert(focused.best_semblance > straight.best_semblance);
+    assert(after < 0.25);
+    assert(after <= before);
+
+    localization_eikonal_fields_free(&fields);
+    localization_eikonal_model_free(&model);
+    scan_occupancy_free(&occupancy);
+}
+
+
 static void test_stale_registration_never_constrains(void)
 {
     /* Same bytes, but the session geometry was recomputed afterwards: the
@@ -345,10 +562,14 @@ static void test_stale_registration_never_constrains(void)
 
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
     test_scan_sectors_arrive_intact_and_registered();
     test_tdcas_with_scan_voids();
     test_psafuvs_with_scan_voids();
     test_suea_travels_around_scanned_voids();
+    test_eikonal_travels_around_scanned_voids();
+    test_bayesian_region_with_scanned_voids();
+    test_semblance_focuses_with_eikonal_times();
     test_stale_registration_never_constrains();
     printf("localization scan->ESP32 method tests passed\n");
     return 0;

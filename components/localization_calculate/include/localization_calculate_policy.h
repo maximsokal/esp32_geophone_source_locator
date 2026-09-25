@@ -4,15 +4,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "localization_bayes.h"
 #include "localization_comparison.h"
+#include "localization_eikonal.h"
 #include "localization_energy_baseline.h"
 #include "localization_event_bridge.h"
 #include "localization_psafuvs.h"
+#include "localization_psp.h"
+#include "localization_robust.h"
 #include "localization_run_record.h"
 #include "localization_semblance.h"
 #include "localization_suea.h"
 #include "localization_tdcas.h"
 #include "localization_traveltime_inversion.h"
+#include "localization_xcorr_tdoa.h"
 #include "object_store.h"
 #include "scan_occupancy.h"
 
@@ -426,5 +431,120 @@ typedef struct
 bool localization_calculate_scan_ray_clear(
     const localization_point3d_t *sensor,
     const localization_point3d_t *candidate,
+    void *context
+);
+
+
+/* ---- localization_extended: xcorr TDOA, robust, PSP, eikonal, Bayesian ----
+ * Same conventions as the adapters above: a NULL result means "not
+ * attempted" (a reason is then required where the signature takes one),
+ * confidence comes from the residual, the caller applies redundancy. */
+
+/* Their search box: the traveltime search box as-is. */
+localization_extended_bounds_t localization_calculate_extended_bounds(
+    const localization_traveltime_search_bounds_t *search
+);
+
+void localization_calculate_xcorr_tdoa_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_xcorr_tdoa_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/* Masks are channel masks (inliers used; outliers and missing picks
+ * rejected). An ambiguous consensus (an inconsistency no pick can be
+ * blamed for) caps the confidence like an unverified fit. */
+void localization_calculate_robust_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_robust_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+void localization_calculate_psp_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_psp_result_t *result,
+    const char *not_attempted_reason,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/* method_name: "eikonal_fmm" or "eikonal_scan_voids". The velocity the fit
+ * found (model velocity / slowness factor) is written only when
+ * velocity_estimated (the factor was not fixed). */
+void localization_calculate_eikonal_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_eikonal_result_t *result,
+    const char *method_name,
+    const char *not_attempted_reason,
+    bool velocity_estimated,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/* method_name: "bayesian" or "bayesian_scan_voids". The MAP is the
+ * position; the posterior region fills record_out->uncertainty; the
+ * posterior-mean velocity is written when velocity_estimated. */
+void localization_calculate_bayes_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_bayes_result_t *result,
+    const char *method_name,
+    const char *not_attempted_reason,
+    bool velocity_estimated,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+);
+
+/*
+ * Standard deviation of an S - P interval for PSP: the P pick's own
+ * sigma combined with the S pick's, which is the P sigma scaled by how
+ * much weaker the S onset is (timing error grows as SNR falls):
+ * sqrt(sP^2 + sS^2), sS = sP * max(1, p_snr / s_snr). A non-positive SNR
+ * gives 10 x sP for the S pick.
+ */
+double localization_calculate_s_minus_p_sigma_us(
+    double timing_uncertainty_us,
+    double p_snr,
+    double s_snr
+);
+
+/*
+ * Eikonal velocity of a lattice node from the scan: 0 (impassable) only
+ * when the node's whole cell is empty -- the node and the eight corners
+ * of the cube +-sample_radius_m around it (the four in-plane corners when
+ * `planar`) all classify EMPTY by localization_calculate_scan_suea_cell() --
+ * and the model velocity otherwise. Blocking every node that merely
+ * touches a void would widen it by half a cell on each side: a lattice
+ * wave detours around blocked nodes, so a 0.3 m trench at 0.1 m cells
+ * would act ~0.5 m wide. `context` is a
+ * `const localization_calculate_scan_velocity_context_t *`.
+ */
+typedef struct
+{
+    const scan_occupancy_t *occupancy;
+    double velocity_mps;
+    double sample_radius_m;         /* half the eikonal cell */
+    bool planar;
+
+} localization_calculate_scan_velocity_context_t;
+
+double localization_calculate_scan_eikonal_velocity(
+    const localization_point3d_t *point,
     void *context
 );

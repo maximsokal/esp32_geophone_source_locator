@@ -80,7 +80,7 @@ static inline bool localization_ray_admitted(
 
 /*
  * Optional travel-time model replacing distance / propagation_speed for the
- * backends that accept one (semblance, Bayesian): the first-arrival travel
+ * grid-search backends that accept one: the first-arrival travel
  * time, in seconds, from `candidate` to sensor `sensor_index` at the
  * backend's reference velocity (e.g. an eikonal field computed through a
  * scan's voids). False when that sensor cannot be reached from the

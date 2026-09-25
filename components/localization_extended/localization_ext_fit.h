@@ -9,10 +9,12 @@
  * Private numerical core of localization_extended: a search lattice over a
  * localization_extended_bounds_t, a small SPD solver and a row-callback
  * Levenberg-Marquardt. Allocation-free; stack use is bounded by
- * EXT_MAX_PARAMS.
+ * EXT_MAX_PARAMS (the largest fit is PSP's x, y, z, t0, p, q), which keeps
+ * the frames small enough for the 8 KiB HTTPS task that runs "Calculate
+ * source".
  */
 
-#define EXT_MAX_PARAMS 8U
+#define EXT_MAX_PARAMS 6U
 
 /* Default lattice budget: a larger requested lattice gets a proportionally
  * larger step (by the smallest integer factor that fits). */

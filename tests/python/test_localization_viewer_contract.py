@@ -132,7 +132,7 @@ def test_run_store_provides_a_pick_record_write_and_list_analog():
 
 def test_orchestrator_persists_pick_evidence_before_any_method_record():
     source = orchestrator_source()
-    pick_write_index = source.index("localization_run_store_write_picks(object_id, session_id, &pick_record)")
+    pick_write_index = source.index("localization_run_store_write_picks(object_id, session_id, pick_record)")
     first_method_write_index = source.index("localization_run_store_write(object_id, session_id, &records[i]);")
     assert pick_write_index < first_method_write_index
 

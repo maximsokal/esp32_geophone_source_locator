@@ -1,6 +1,7 @@
 #include "localization_xcorr_tdoa.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "localization_ext_fit.h"
@@ -365,8 +366,10 @@ static void pair_project(double *params, void *context)
 }
 
 
-/* Least-squares network adjustment: per-channel times tau (tau of the
- * first used channel fixed at 0) from the used pairs. */
+/* Least-squares network adjustment: per-channel times tau with
+ * d_ij = tau_j - tau_i over the used pairs, by Gauss-Seidel sweeps (each
+ * tau becomes the weighted mean its pairs imply) -- no matrix, so no stack
+ * for one. The first used channel is held at 0. */
 static void network_adjust(
     const localization_xcorr_pair_t *pairs,
     size_t pair_count,
@@ -376,65 +379,58 @@ static void network_adjust(
     localization_xcorr_tdoa_result_t *result
 )
 {
-    size_t index_of[LOCALIZATION_EXTENDED_MAX_SENSORS];
+    double tau[LOCALIZATION_EXTENDED_MAX_SENSORS] = { 0 };
     size_t reference = LOCALIZATION_EXTENDED_MAX_SENSORS;
-    size_t unknowns = 0U;
-    for (size_t c = 0U; c < channel_count; ++c) {
-        index_of[c] = SIZE_MAX;
-        if ((used_channels & (1U << c)) == 0U) {
-            continue;
-        }
-        if (reference == LOCALIZATION_EXTENDED_MAX_SENSORS) {
+    for (size_t c = 0U; c < channel_count && reference == LOCALIZATION_EXTENDED_MAX_SENSORS; ++c) {
+        if ((used_channels & (1U << c)) != 0U) {
             reference = c;
-        } else {
-            index_of[c] = unknowns++;
         }
     }
-    if (unknowns == 0U) {
+    if (reference == LOCALIZATION_EXTENDED_MAX_SENSORS) {
         return;
     }
-    double a[EXT_MAX_PARAMS * EXT_MAX_PARAMS];
-    double b[EXT_MAX_PARAMS];
-    double tau[EXT_MAX_PARAMS];
-    memset(a, 0, sizeof(a));
-    memset(b, 0, sizeof(b));
-    for (size_t k = 0U; k < pair_count; ++k) {
-        if (!(weight[k] > 0.0)) {
-            continue;
+    for (int sweep = 0; sweep < 200; ++sweep) {
+        double change = 0.0;
+        for (size_t c = 0U; c < channel_count; ++c) {
+            if (c == reference || (used_channels & (1U << c)) == 0U) {
+                continue;
+            }
+            double sum = 0.0;
+            double norm = 0.0;
+            for (size_t k = 0U; k < pair_count; ++k) {
+                if (!(weight[k] > 0.0)) {
+                    continue;
+                }
+                const double w = weight[k] / (pairs[k].sigma_s * pairs[k].sigma_s);
+                if (pairs[k].second == c) {
+                    sum += w * (tau[pairs[k].first] + pairs[k].delay_s);
+                    norm += w;
+                } else if (pairs[k].first == c) {
+                    sum += w * (tau[pairs[k].second] - pairs[k].delay_s);
+                    norm += w;
+                }
+            }
+            if (norm > 0.0) {
+                const double updated = sum / norm;
+                change = fmax(change, fabs(updated - tau[c]));
+                tau[c] = updated;
+            }
         }
-        const double w = weight[k] / (pairs[k].sigma_s * pairs[k].sigma_s);
-        const size_t i = index_of[pairs[k].first];
-        const size_t j = index_of[pairs[k].second];
-        /* d = tau_j - tau_i */
-        if (j != SIZE_MAX) {
-            a[j * unknowns + j] += w;
-            b[j] += w * pairs[k].delay_s;
-        }
-        if (i != SIZE_MAX) {
-            a[i * unknowns + i] += w;
-            b[i] -= w * pairs[k].delay_s;
-        }
-        if (i != SIZE_MAX && j != SIZE_MAX) {
-            a[i * unknowns + j] -= w;
-            a[j * unknowns + i] -= w;
+        if (change < 1.0e-12) {
+            break;
         }
     }
-    if (!ext_solve_spd(a, b, unknowns, tau)) {
-        return;
-    }
-    double time_of[LOCALIZATION_EXTENDED_MAX_SENSORS] = { 0 };
     double earliest = 0.0;
     for (size_t c = 0U; c < channel_count; ++c) {
-        if (index_of[c] != SIZE_MAX) {
-            time_of[c] = tau[index_of[c]];
-            earliest = fmin(earliest, time_of[c]);
+        if ((used_channels & (1U << c)) != 0U) {
+            earliest = fmin(earliest, tau[c]);
         }
     }
     double sum = 0.0;
     size_t used = 0U;
     for (size_t k = 0U; k < pair_count; ++k) {
         if (weight[k] > 0.0) {
-            const double r = pairs[k].delay_s - (time_of[pairs[k].second] - time_of[pairs[k].first]);
+            const double r = pairs[k].delay_s - (tau[pairs[k].second] - tau[pairs[k].first]);
             sum += r * r;
             ++used;
         }
@@ -442,13 +438,18 @@ static void network_adjust(
     result->closure_rms_us = used > 0U ? sqrt(sum / (double)used) * 1.0e6 : 0.0;
     for (size_t c = 0U; c < channel_count; ++c) {
         if ((used_channels & (1U << c)) != 0U) {
-            result->relative_delay_us[c] = (time_of[c] - earliest) * 1.0e6;
+            result->relative_delay_us[c] = (tau[c] - earliest) * 1.0e6;
         }
     }
 }
 
 
-esp_err_t localization_xcorr_tdoa_locate(
+/* The pair weights live on the heap (pair_problem_t): they would
+ * otherwise sit on the 8 KiB HTTPS task's stack under
+ * Levenberg-Marquardt's frame. */
+static esp_err_t locate_with(
+    pair_problem_t *problem,
+    double *final_weight,
     const localization_xcorr_channel_t *channels,
     size_t channel_count,
     const localization_xcorr_pair_t *pairs,
@@ -497,16 +498,15 @@ esp_err_t localization_xcorr_tdoa_locate(
         return ESP_OK;
     }
 
-    pair_problem_t problem;
-    memset(&problem, 0, sizeof(problem));
-    problem.channels = channels;
-    problem.pairs = pairs;
-    problem.pair_count = pair_count;
-    problem.slowness = 1.0 / config->propagation_speed_mps;
-    problem.planar = result->planar;
-    problem.bounds = bounds;
+    memset(problem, 0, sizeof(*problem));
+    problem->channels = channels;
+    problem->pairs = pairs;
+    problem->pair_count = pair_count;
+    problem->slowness = 1.0 / config->propagation_speed_mps;
+    problem->planar = result->planar;
+    problem->bounds = bounds;
     for (size_t k = 0U; k < pair_count; ++k) {
-        problem.weight[k] = 1.0;
+        problem->weight[k] = 1.0;
     }
 
     /* Seed: the admitted lattice point with the least weighted pair misfit. */
@@ -527,7 +527,7 @@ esp_err_t localization_xcorr_tdoa_locate(
         }
         double cost = 0.0;
         for (size_t k = 0U; k < pair_count; ++k) {
-            const double u = pair_residual_s(&problem, k, point) / pairs[k].sigma_s;
+            const double u = pair_residual_s(problem, k, point) / pairs[k].sigma_s;
             /* Seed with the robust loss too: one cycle-skipped pair must
              * not pick the basin. */
             cost += localization_extended_robust_rho(LOCALIZATION_EXTENDED_LOSS_HUBER, u, LOCALIZATION_EXTENDED_HUBER_K);
@@ -550,18 +550,18 @@ esp_err_t localization_xcorr_tdoa_locate(
     double params[3] = { position.x_m, position.y_m, position.z_m };
     for (size_t round = 0U; round < XCORR_IRLS_ROUNDS; ++round) {
         double change = 0.0;
-        const localization_point3d_t current = pair_position(&problem, params);
+        const localization_point3d_t current = pair_position(problem, params);
         for (size_t k = 0U; k < pair_count; ++k) {
-            const double u = pair_residual_s(&problem, k, current) / pairs[k].sigma_s;
+            const double u = pair_residual_s(problem, k, current) / pairs[k].sigma_s;
             double w = localization_extended_robust_weight(loss, u, k_tuning);
             w = w < 1.0e-6 ? 1.0e-6 : w;
-            change = fmax(change, fabs(w - problem.weight[k]));
-            problem.weight[k] = w;
+            change = fmax(change, fabs(w - problem->weight[k]));
+            problem->weight[k] = w;
         }
         double trial[3] = { params[0], params[1], params[2] };
         ext_lm_result_t lm;
-        if (ext_lm(spatial, pair_count, pair_row, pair_project, &problem, scale, 1.0e-7, 60U, trial, &lm)) {
-            const localization_point3d_t refined = pair_position(&problem, trial);
+        if (ext_lm(spatial, pair_count, pair_row, pair_project, problem, scale, 1.0e-7, 60U, trial, &lm)) {
+            const localization_point3d_t refined = pair_position(problem, trial);
             if (localization_candidate_admitted(&config->candidate_filter, &refined)) {
                 memcpy(params, trial, sizeof(params));
             }
@@ -570,15 +570,14 @@ esp_err_t localization_xcorr_tdoa_locate(
             break;
         }
     }
-    position = pair_position(&problem, params);
+    position = pair_position(problem, params);
 
     /* Pairs the fit cannot explain are reported and left out of the
      * closure / statistics. */
-    double final_weight[LOCALIZATION_XCORR_MAX_PAIRS];
     double sum = 0.0;
     uint32_t used_channels = 0U;
     for (size_t k = 0U; k < pair_count; ++k) {
-        const double r = pair_residual_s(&problem, k, position);
+        const double r = pair_residual_s(problem, k, position);
         if (fabs(r / pairs[k].sigma_s) > XCORR_OUTLIER_SIGMA) {
             result->pair_outlier_mask |= 1U << k;
             final_weight[k] = 0.0;
@@ -599,15 +598,37 @@ esp_err_t localization_xcorr_tdoa_locate(
     result->position = position;
     result->degrees_of_freedom = (int32_t)result->channels_used - 1 - (int32_t)spatial;
     for (size_t k = 0U; k < pair_count; ++k) {
-        problem.weight[k] = final_weight[k];
+        problem->weight[k] = final_weight[k];
     }
-    result->normal_rcond = ext_normal_rcond(spatial, pair_count, pair_row, &problem, params);
+    result->normal_rcond = ext_normal_rcond(spatial, pair_count, pair_row, problem, params);
     result->status = result->channels_used < spatial + 1U
         ? LOCALIZATION_XCORR_TDOA_INSUFFICIENT_PAIRS
         : (result->normal_rcond < EXT_UNDERDETERMINED_RCOND
             ? LOCALIZATION_XCORR_TDOA_UNDERDETERMINED
             : LOCALIZATION_XCORR_TDOA_SOLVED);
     return ESP_OK;
+}
+
+
+esp_err_t localization_xcorr_tdoa_locate(
+    const localization_xcorr_channel_t *channels,
+    size_t channel_count,
+    const localization_xcorr_pair_t *pairs,
+    size_t pair_count,
+    const localization_extended_bounds_t *bounds,
+    const localization_xcorr_tdoa_config_t *config,
+    localization_xcorr_tdoa_result_t *result
+)
+{
+    pair_problem_t *problem = malloc(sizeof(*problem));
+    double *final_weight = malloc(LOCALIZATION_XCORR_MAX_PAIRS * sizeof(double));
+    esp_err_t err = ESP_ERR_NO_MEM;
+    if (problem != NULL && final_weight != NULL) {
+        err = locate_with(problem, final_weight, channels, channel_count, pairs, pair_count, bounds, config, result);
+    }
+    free(problem);
+    free(final_weight);
+    return err;
 }
 
 
@@ -622,19 +643,22 @@ esp_err_t localization_xcorr_tdoa_solve(
     if (result == NULL || !localization_extended_bounds_valid(bounds)) {
         return ESP_ERR_INVALID_ARG;
     }
-    localization_xcorr_pair_t pairs[LOCALIZATION_XCORR_MAX_PAIRS];
+    localization_xcorr_pair_t *pairs = malloc(LOCALIZATION_XCORR_MAX_PAIRS * sizeof(*pairs));
+    if (pairs == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     size_t pair_count = 0U;
     size_t total = 0U;
-    const esp_err_t err = localization_xcorr_measure_pairs(channels, channel_count, config, pairs, &pair_count, &total);
+    esp_err_t err = localization_xcorr_measure_pairs(channels, channel_count, config, pairs, &pair_count, &total);
     if (err == ESP_ERR_NOT_FOUND) {
         memset(result, 0, sizeof(*result));
         result->status = LOCALIZATION_XCORR_TDOA_NO_ANCHOR;
         result->planar = localization_extended_bounds_planar(bounds);
         result->pairs_total = total;
-        return ESP_OK;
+        err = ESP_OK;
+    } else if (err == ESP_OK) {
+        err = localization_xcorr_tdoa_locate(channels, channel_count, pairs, pair_count, bounds, config, result);
     }
-    if (err != ESP_OK) {
-        return err;
-    }
-    return localization_xcorr_tdoa_locate(channels, channel_count, pairs, pair_count, bounds, config, result);
+    free(pairs);
+    return err;
 }

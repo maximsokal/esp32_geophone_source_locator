@@ -345,7 +345,10 @@ static esp_err_t evaluate_lattice(
 }
 
 
-esp_err_t localization_bayes_locate(
+/* The problem (picks, quadrature) lives on the heap, off the 8 KiB HTTPS
+ * task's stack. */
+static esp_err_t locate_with(
+    bayes_problem_t *problem,
     const localization_bayes_pick_t *picks,
     size_t pick_count,
     const localization_extended_bounds_t *bounds,
@@ -371,13 +374,12 @@ esp_err_t localization_bayes_locate(
     result->planar = localization_extended_bounds_planar(bounds);
     result->credible_level = config->credible_level > 0.0 ? config->credible_level : BAYES_DEFAULT_LEVEL;
 
-    bayes_problem_t problem;
-    memset(&problem, 0, sizeof(problem));
-    problem.picks = picks;
-    problem.count = pick_count;
-    problem.config = config;
-    problem.sigma_s = config->timing_uncertainty_us * 1.0e-6;
-    problem.nu = config->student_nu > 0.0 ? config->student_nu : BAYES_DEFAULT_NU;
+    memset(problem, 0, sizeof(*problem));
+    problem->picks = picks;
+    problem->count = pick_count;
+    problem->config = config;
+    problem->sigma_s = config->timing_uncertainty_us * 1.0e-6;
+    problem->nu = config->student_nu > 0.0 ? config->student_nu : BAYES_DEFAULT_NU;
     int64_t earliest = INT64_MAX;
     for (size_t i = 0U; i < pick_count; ++i) {
         if (!(picks[i].weight >= 0.0) || !isfinite(picks[i].weight)) {
@@ -396,8 +398,8 @@ esp_err_t localization_bayes_locate(
     }
     for (size_t i = 0U; i < pick_count; ++i) {
         if (picks[i].weight > 0.0) {
-            problem.weight[i] = picks[i].weight;
-            problem.arrival_s[i] = (double)(picks[i].arrival_time_us - earliest) * 1.0e-6;
+            problem->weight[i] = picks[i].weight;
+            problem->arrival_s[i] = (double)(picks[i].arrival_time_us - earliest) * 1.0e-6;
         }
     }
 
@@ -411,9 +413,9 @@ esp_err_t localization_bayes_locate(
         const double x = (k < 0 ? -1.0 : 1.0) * GH_X[half][a];
         const double v = config->velocity_mps + sqrt(2.0) * config->velocity_sigma_mps * x;
         if (v > 0.0) {
-            problem.velocity[problem.node_count] = v;
-            problem.log_node_weight[problem.node_count] = log(GH_W[half][a] / sqrt(3.141592653589793));
-            ++problem.node_count;
+            problem->velocity[problem->node_count] = v;
+            problem->log_node_weight[problem->node_count] = log(GH_W[half][a] / sqrt(3.141592653589793));
+            ++problem->node_count;
         }
     }
 
@@ -435,10 +437,10 @@ esp_err_t localization_bayes_locate(
     size_t map_index = 0U;
     size_t evaluated = 0U;
     bool have_level = false;
-    const double sigma = problem.sigma_s;
+    const double sigma = problem->sigma_s;
     double slowest = 1.0 / config->velocity_mps;
-    for (size_t k = 0U; k < problem.node_count; ++k) {
-        slowest = fmax(slowest, 1.0 / problem.velocity[k]);
+    for (size_t k = 0U; k < problem->node_count; ++k) {
+        slowest = fmax(slowest, 1.0 / problem->velocity[k]);
     }
     for (size_t level = 0U; level < BAYES_MAX_LEVELS; ++level) {
         ext_lattice_t candidate;
@@ -448,13 +450,13 @@ esp_err_t localization_bayes_locate(
         if (have_level && !(candidate.step_m < lattice.step_m)) {
             break; /* the budget allows no finer lattice */
         }
-        problem.sigma_s = fmax(sigma, 0.5 * candidate.step_m * slowest);
+        problem->sigma_s = fmax(sigma, 0.5 * candidate.step_m * slowest);
         localization_bayes_result_t level_result = *result;
         level_result.cells_evaluated = 0U;
         localization_point3d_t support_min = level_bounds.min_corner;
         localization_point3d_t support_max = level_bounds.max_corner;
         size_t level_map = 0U;
-        const esp_err_t err = evaluate_lattice(&problem, &candidate, &level_result, &level_map, &support_min, &support_max);
+        const esp_err_t err = evaluate_lattice(problem, &candidate, &level_result, &level_map, &support_min, &support_max);
         if (err != ESP_OK) {
             return err;
         }
@@ -468,11 +470,11 @@ esp_err_t localization_bayes_locate(
             break;
         }
         *result = level_result;
-        result->timing_uncertainty_used_us = problem.sigma_s * 1.0e6;
+        result->timing_uncertainty_used_us = problem->sigma_s * 1.0e6;
         lattice = candidate;
         map_index = level_map;
         have_level = true;
-        if (problem.sigma_s <= sigma && result->credible_cells >= BAYES_RESOLVED_CELLS) {
+        if (problem->sigma_s <= sigma && result->credible_cells >= BAYES_RESOLVED_CELLS) {
             break;
         }
         const double margin = candidate.step_m;
@@ -492,7 +494,7 @@ esp_err_t localization_bayes_locate(
 
     /* MAP refined on a finer local lattice (continuous log posterior). */
     localization_point3d_t best = ext_lattice_point(&lattice, map_index);
-    double best_lp = log_posterior(&problem, &best, NULL, NULL);
+    double best_lp = log_posterior(problem, &best, NULL, NULL);
     {
         const localization_point3d_t centre = best;
         const double step = lattice.step_m / (double)config->refine_divisor;
@@ -506,7 +508,7 @@ esp_err_t localization_bayes_locate(
                         centre.y_m + (double)dy * step,
                         centre.z_m + (double)dz * step,
                     });
-                    const double lp = log_posterior(&problem, &point, NULL, NULL);
+                    const double lp = log_posterior(problem, &point, NULL, NULL);
                     ++result->cells_evaluated;
                     if (lp > best_lp) {
                         best_lp = lp;
@@ -520,13 +522,13 @@ esp_err_t localization_bayes_locate(
 
     /* Origin time and residuals at the MAP, posterior-mean velocity. */
     double reference[LOCALIZATION_EXTENDED_MAX_SENSORS];
-    if (reference_times(&problem, &best, reference)) {
+    if (reference_times(problem, &best, reference)) {
         double t0 = 0.0;
-        (void)log_likelihood(&problem, reference, config->velocity_mps / result->velocity_mean_mps, &t0);
+        (void)log_likelihood(problem, reference, config->velocity_mps / result->velocity_mean_mps, &t0);
         double sum = 0.0;
         for (size_t i = 0U; i < pick_count; ++i) {
-            if (problem.weight[i] > 0.0) {
-                const double r = problem.arrival_s[i] - t0 - reference[i] * config->velocity_mps / result->velocity_mean_mps;
+            if (problem->weight[i] > 0.0) {
+                const double r = problem->arrival_s[i] - t0 - reference[i] * config->velocity_mps / result->velocity_mean_mps;
                 sum += r * r;
             }
         }
@@ -535,4 +537,21 @@ esp_err_t localization_bayes_locate(
     }
     result->status = LOCALIZATION_BAYES_SOLVED;
     return ESP_OK;
+}
+
+esp_err_t localization_bayes_locate(
+    const localization_bayes_pick_t *picks,
+    size_t pick_count,
+    const localization_extended_bounds_t *bounds,
+    const localization_bayes_config_t *config,
+    localization_bayes_result_t *result
+)
+{
+    bayes_problem_t *problem = malloc(sizeof(*problem));
+    if (problem == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    const esp_err_t err = locate_with(problem, picks, pick_count, bounds, config, result);
+    free(problem);
+    return err;
 }
