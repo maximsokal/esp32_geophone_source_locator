@@ -143,9 +143,11 @@ static void test_standard_deviations_are_calibrated(void)
     const localization_extended_bounds_t plane = { { -0.5, -0.5, 0.0 }, { 3.5, 3.0, 0.0 }, 0.05 };
     localization_bayes_config_t config = config_for(0.0);
     config.timing_uncertainty_us = 200.0;
+    config.inflate_on_misfit = true; /* must stay rare when the sigma is right */
     uint32_t state = 99U;
     size_t covered = 0U;
     size_t boxed = 0U;
+    size_t inflated = 0U;
     const size_t trials = 60U;
     for (size_t trial = 0U; trial < trials; ++trial) {
         localization_bayes_pick_t picks[4];
@@ -160,11 +162,14 @@ static void test_standard_deviations_are_calibrated(void)
             ++covered;
         }
         boxed += inside_box(&result, source, 0.0) ? 1U : 0U;
+        inflated += result.sigma_inflation > 1.0 ? 1U : 0U;
+        assert(result.chi_square_dof == 1);
     }
     const double coverage = (double)covered / (double)trials;
     const double box_coverage = (double)boxed / (double)trials;
-    printf("  calibration over %zu events: 2-sd coverage %.2f (nominal 0.90), 90%% region box %.2f\n",
-           trials, coverage, box_coverage);
+    printf("  calibration over %zu events: 2-sd coverage %.2f (nominal 0.90), 90%% region box %.2f, inflated %zu\n",
+           trials, coverage, box_coverage, inflated);
+    assert(inflated <= trials / 10U);
     assert(coverage >= 0.78 && coverage <= 1.0);
     assert(box_coverage >= 0.85);
 }
@@ -264,26 +269,89 @@ static void test_eikonal_travel_time_model(void)
     localization_eikonal_travel_time_context_t context = { &model, &fields };
 
     const localization_extended_bounds_t plane = { { 0.0, 0.0, 0.0 }, { 4.0, 3.0, 0.0 }, 0.05 };
-    /* The sigma must cover the forward model's own error too (a 0.1 m
-     * eikonal lattice against a 0.025 m truth: ~1% of the travel time),
-     * or the region is honest about the picks but not about the model. */
+    /* Picks good to 50 us, but a 0.1 m eikonal lattice against a 0.025 m
+     * truth is only good to ~1% of the travel time. */
     localization_bayes_config_t config = config_for(0.0);
-    config.timing_uncertainty_us = 150.0;
+    config.timing_uncertainty_us = 50.0;
     localization_bayes_result_t straight;
     assert(localization_bayes_locate(picks, 5U, &plane, &config, &straight) == ESP_OK);
     config.travel_time_model.travel_time = localization_eikonal_travel_time;
     config.travel_time_model.context = &context;
-    localization_bayes_result_t eikonal;
-    assert(localization_bayes_locate(picks, 5U, &plane, &config, &eikonal) == ESP_OK);
-    printf("  wall between source and 2 sensors: straight MAP %.3f m, eikonal MAP %.3f m (90%% area %.3f m^2)\n",
-           ext_test_distance(straight.map_position, source), ext_test_distance(eikonal.map_position, source),
-           eikonal.credible_area_m2);
-    assert(eikonal.status == LOCALIZATION_BAYES_SOLVED);
-    assert(ext_test_distance(eikonal.map_position, source) < 0.1);
-    assert(ext_test_distance(straight.map_position, source) > 3.0 * ext_test_distance(eikonal.map_position, source));
-    assert(inside_box(&eikonal, source, eikonal.cell_m));
+
+    /* Pick sigma alone: honest about the picks, overconfident about the
+     * model -- the truth falls outside the region. */
+    localization_bayes_result_t picks_only;
+    assert(localization_bayes_locate(picks, 5U, &plane, &config, &picks_only) == ESP_OK);
+
+    /* With the model's own error: the lattice's ~1% (the measured FMM
+     * error) plus a floor for a void edge moved by up to a cell at each of
+     * two corners, cell / (v sqrt 6). */
+    config.model_error_relative = 0.01;
+    config.model_error_floor_us = 0.1 / (V_MPS * sqrt(6.0)) * 1.0e6;
+    localization_bayes_result_t with_model;
+    assert(localization_bayes_locate(picks, 5U, &plane, &config, &with_model) == ESP_OK);
+
+    /* No model error given, but the misfit check widens the region. */
+    config.model_error_relative = 0.0;
+    config.model_error_floor_us = 0.0;
+    config.inflate_on_misfit = true;
+    localization_bayes_result_t inflated;
+    assert(localization_bayes_locate(picks, 5U, &plane, &config, &inflated) == ESP_OK);
+
+    printf("  wall, eikonal times: straight MAP %.3f m; region %.4f m^2 (picks only, truth %s) -> "
+           "%.4f m^2 (+ model error, truth %s); misfit chi2 %.1f/%d -> sigma x%.1f, %.4f m^2 (truth %s)\n",
+           ext_test_distance(straight.map_position, source), picks_only.credible_area_m2,
+           inside_box(&picks_only, source, picks_only.cell_m) ? "inside" : "OUTSIDE",
+           with_model.credible_area_m2, inside_box(&with_model, source, with_model.cell_m) ? "inside" : "OUTSIDE",
+           inflated.chi_square, inflated.chi_square_dof, inflated.sigma_inflation, inflated.credible_area_m2,
+           inside_box(&inflated, source, inflated.cell_m) ? "inside" : "OUTSIDE");
+    assert(with_model.status == LOCALIZATION_BAYES_SOLVED);
+    assert(ext_test_distance(with_model.map_position, source) < 0.1);
+    assert(ext_test_distance(straight.map_position, source) > 3.0 * ext_test_distance(with_model.map_position, source));
+    assert(!inside_box(&picks_only, source, picks_only.cell_m));
+    assert(inside_box(&with_model, source, with_model.cell_m));
+    assert(with_model.credible_area_m2 > picks_only.credible_area_m2);
+    assert(picks_only.sigma_inflation == 1.0);             /* the check was off */
+    assert(inflated.chi_square_dof == 2);                  /* 5 picks - x, y, t0 */
+    assert(inflated.chi_square > 2.0 + 3.0 * sqrt(4.0));
+    assert(inflated.sigma_inflation > 1.0);
+    assert(fabs(inflated.sigma_inflation - sqrt(inflated.chi_square / 2.0)) < 1e-9);
+    assert(inside_box(&inflated, source, inflated.cell_m));
     localization_eikonal_fields_free(&fields);
     localization_eikonal_model_free(&model);
+}
+
+
+static void test_model_error_widens_the_region_consistently(void)
+{
+    /* A relative model error makes each sigma depend on the candidate's
+     * travel times; the likelihood keeps its normalization terms, so the
+     * posterior stays a proper density: wider, and still consistent with
+     * the truth (within its own sd), not pushed towards large sigmas. */
+    uint32_t state = 3U;
+    localization_bayes_pick_t picks[6];
+    make_picks(EXT_TEST_SENSORS_3D, 6U, SOURCE, V_MPS, SIGMA_US, &state, picks);
+    const localization_extended_bounds_t bounds = ext_test_bounds_3d();
+    localization_bayes_config_t config = config_for(0.0);
+    config.model_error_relative = 0.05;
+    config.model_error_floor_us = 30.0;
+    localization_bayes_result_t result;
+    assert(localization_bayes_locate(picks, 6U, &bounds, &config, &result) == ESP_OK);
+    printf("  model error 5%% + 30 us: MAP off by %.3f m, sd (%.2f, %.2f, %.2f) m\n",
+           ext_test_distance(result.map_position, SOURCE), result.std_m.x_m, result.std_m.y_m, result.std_m.z_m);
+    assert(fabs(result.mean_position.x_m - SOURCE.x_m) <= 2.0 * result.std_m.x_m);
+    assert(fabs(result.mean_position.y_m - SOURCE.y_m) <= 2.0 * result.std_m.y_m);
+    assert(fabs(result.mean_position.z_m - SOURCE.z_m) <= 2.0 * result.std_m.z_m);
+    assert(inside_box(&result, SOURCE, result.cell_m));
+    assert(result.chi_square_dof == 2 && result.sigma_inflation == 1.0);
+    /* ... and the region is wider than with an exact model. */
+    localization_bayes_config_t exact = config_for(0.0);
+    localization_bayes_result_t tight;
+    assert(localization_bayes_locate(picks, 6U, &bounds, &exact, &tight) == ESP_OK);
+    assert(result.credible_volume_m3 > tight.credible_volume_m3);
+
+    config.model_error_relative = -0.1;
+    assert(localization_bayes_locate(picks, 6U, &bounds, &config, &result) == ESP_ERR_INVALID_ARG);
 }
 
 
@@ -322,6 +390,7 @@ int main(void)
     test_student_t_resists_a_wrong_pick();
     test_prior_support_from_a_filter();
     test_eikonal_travel_time_model();
+    test_model_error_widens_the_region_consistently();
     test_invalid_input();
     printf("localization Bayesian tests passed\n");
     return 0;

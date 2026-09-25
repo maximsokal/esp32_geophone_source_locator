@@ -100,6 +100,7 @@ static bool uncertainty_valid(const localization_run_uncertainty_t *u)
         isfinite(u->credible_volume_m3) && u->credible_volume_m3 >= 0.0 &&
         isfinite(u->credible_area_m2) && u->credible_area_m2 >= 0.0 &&
         point_finite(&u->credible_min) && point_finite(&u->credible_max) &&
+        isfinite(u->sigma_inflation) && (u->sigma_inflation == 0.0 || u->sigma_inflation >= 1.0) &&
         u->credible_min.x_m <= u->credible_max.x_m &&
         u->credible_min.y_m <= u->credible_max.y_m &&
         u->credible_min.z_m <= u->credible_max.z_m;
@@ -253,7 +254,10 @@ esp_err_t localization_run_record_to_json(
                 cJSON_AddNumberToObject(uncertainty, "credible_volume_m3", u->credible_volume_m3) != NULL &&
                 cJSON_AddNumberToObject(uncertainty, "credible_area_m2", u->credible_area_m2) != NULL &&
                 add_point(uncertainty, "credible_min", &u->credible_min) &&
-                add_point(uncertainty, "credible_max", &u->credible_max);
+                add_point(uncertainty, "credible_max", &u->credible_max) &&
+                cJSON_AddNumberToObject(
+                    uncertainty, "sigma_inflation", u->sigma_inflation >= 1.0 ? u->sigma_inflation : 1.0
+                ) != NULL;
         }
     }
 
@@ -506,7 +510,12 @@ esp_err_t localization_run_record_from_json(
                 read_number(uncertainty, "credible_area_m2", &u->credible_area_m2) &&
                 read_point(uncertainty, "credible_min", &u->credible_min) &&
                 read_point(uncertainty, "credible_max", &u->credible_max) &&
-                u->credible_level > 0.0 && uncertainty_valid(u);
+                u->credible_level > 0.0;
+            /* Optional inside the object (records before it existed). */
+            if (ok && !read_number(uncertainty, "sigma_inflation", &u->sigma_inflation)) {
+                u->sigma_inflation = 1.0;
+            }
+            ok = ok && uncertainty_valid(u);
             if (!ok) {
                 cJSON_Delete(root);
                 return ESP_ERR_INVALID_RESPONSE;

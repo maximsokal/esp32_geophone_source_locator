@@ -432,15 +432,17 @@ static void test_bayesian_region_with_scanned_voids(void)
     const localization_extended_bounds_t bounds = localization_calculate_extended_bounds(
         &(localization_traveltime_search_bounds_t) { { 0.0, 0.0, -2.0 }, { 3.0, 3.0, -0.03 }, 0.1 }
     );
-    /* The pipeline's settings: Student-t, velocity +-10 m/s, budgets. */
+    /* The pipeline's settings: Student-t, velocity +-10 m/s, a 20 us pick
+     * sigma, the misfit check, budgets. */
     localization_bayes_config_t config = {
         .velocity_mps = VP,
         .velocity_sigma_mps = 10.0,
-        .timing_uncertainty_us = 60.0,
+        .timing_uncertainty_us = 20.0,
         .likelihood = LOCALIZATION_BAYES_STUDENT_T,
         .velocity_nodes = 5U,
         .max_cells = 8000U,
         .refine_divisor = 4U,
+        .inflate_on_misfit = true,
     };
     localization_bayes_result_t straight;
     assert(localization_bayes_locate(picks, 7U, &bounds, &config, &straight) == ESP_OK);
@@ -453,6 +455,11 @@ static void test_bayesian_region_with_scanned_voids(void)
     config.candidate_filter.context = &occupancy;
     config.travel_time_model.travel_time = localization_eikonal_travel_time;
     config.travel_time_model.context = &times;
+    /* ... plus the eikonal model's own error, as in the pipeline. */
+    config.model_error_relative = 0.015;
+    config.model_error_floor_us = localization_calculate_discretization_error_us(
+        fmax(model.cell_m, occupancy.voxel_size_m), VP
+    );
     localization_bayes_result_t with_scan;
     assert(localization_bayes_locate(picks, 7U, &bounds, &config, &with_scan) == ESP_OK);
     assert(with_scan.status == LOCALIZATION_BAYES_SOLVED);
@@ -460,9 +467,13 @@ static void test_bayesian_region_with_scanned_voids(void)
     const double before = distance(straight.map_position, SOURCE);
     const double after = distance(with_scan.map_position, SOURCE);
     printf("[SCAN->ESP32] Bayesian: straight MAP error=%.3f m, scan voids MAP error=%.3f m, "
-           "sd (%.2f, %.2f, %.2f) m, 90%% volume %.4f m^3\n",
+           "sd (%.2f, %.2f, %.2f) m, 90%% volume %.4f m^3, chi2 %.1f/%d, sigma x%.1f; straight chi2 %.1f -> x%.1f\n",
            before, after, with_scan.std_m.x_m, with_scan.std_m.y_m, with_scan.std_m.z_m,
-           with_scan.credible_volume_m3);
+           with_scan.credible_volume_m3, with_scan.chi_square, with_scan.chi_square_dof, with_scan.sigma_inflation,
+           straight.chi_square, straight.sigma_inflation);
+    /* Straight rays cannot explain the far pods: the check widens that
+     * region instead of reporting false confidence. */
+    assert(straight.sigma_inflation > 1.0);
     assert(after < 0.2 && after < 0.5 * before);
     /* The truth lies in the 90% region (within the lattice's own cell). */
     assert(SOURCE.x_m >= with_scan.credible_min.x_m - with_scan.cell_m && SOURCE.x_m <= with_scan.credible_max.x_m + with_scan.cell_m);

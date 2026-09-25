@@ -1015,6 +1015,31 @@ static void test_s_minus_p_sigma_grows_as_the_s_onset_weakens(void)
 }
 
 
+static void test_discretization_error(void)
+{
+    assert(nearly_equal(localization_calculate_discretization_error_us(0.1, 300.0), 0.1 / (300.0 * sqrt(6.0)) * 1e6, 1e-9));
+    assert(localization_calculate_discretization_error_us(0.0, 300.0) == 0.0);
+    assert(localization_calculate_discretization_error_us(0.1, 0.0) == 0.0);
+}
+
+
+static void test_bayes_adapter_carries_the_inflation(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_bayes_result_t bayes;
+    memset(&bayes, 0, sizeof(bayes));
+    bayes.status = LOCALIZATION_BAYES_SOLVED;
+    bayes.credible_level = 0.9;
+    bayes.sigma_inflation = 4.1;
+    localization_run_record_t record;
+    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, false, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.uncertainty.sigma_inflation == 4.1);
+    bayes.sigma_inflation = 0.0; /* not computed: never below 1 */
+    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, false, 0xFU, 0U, 1U, 20.0, &record);
+    assert(record.uncertainty.sigma_inflation == 1.0);
+}
+
+
 static void test_extended_bounds_copy_the_search_box(void)
 {
     const localization_traveltime_search_bounds_t search = {
@@ -1068,5 +1093,7 @@ int main(void)
     test_psp_eikonal_and_bayes_adapters();
     test_s_minus_p_sigma_grows_as_the_s_onset_weakens();
     test_extended_bounds_copy_the_search_box();
+    test_discretization_error();
+    test_bayes_adapter_carries_the_inflation();
     return 0;
 }
