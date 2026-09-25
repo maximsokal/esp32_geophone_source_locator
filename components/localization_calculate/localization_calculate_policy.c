@@ -358,15 +358,22 @@ void localization_calculate_run_record_to_comparison_method(
     if (record->solved) {
         method_out->position = record->source_position;
         method_out->quality = record->confidence_score;
-        /* MAX-212: TDOA, traveltime inversion and the velocity-free
-         * methods all fit the same P picks -- correlated, not independent,
-         * evidence (PSAFUVS adds S picks but shares the P picks). */
+        /* MAX-212: TDOA, traveltime inversion, the velocity-free methods
+         * and the extended ones all fit the same P arrivals -- correlated,
+         * not independent, evidence (PSAFUVS / PSP add S picks but share
+         * the P picks; the cross-correlation delays are the same onsets
+         * measured from the waveforms). */
         if (
             strcmp(record->method_name, "tdoa_gauss_newton") == 0 ||
             strcmp(record->method_name, "traveltime_inversion") == 0 ||
             strcmp(record->method_name, "tdcas") == 0 ||
             strcmp(record->method_name, "psafuvs") == 0 ||
-            strcmp(record->method_name, "suea") == 0
+            strcmp(record->method_name, "suea") == 0 ||
+            strcmp(record->method_name, "xcorr_tdoa") == 0 ||
+            strcmp(record->method_name, "robust_tdoa") == 0 ||
+            strcmp(record->method_name, "psp_joint") == 0 ||
+            strcmp(record->method_name, "eikonal_fmm") == 0 ||
+            strcmp(record->method_name, "bayesian") == 0
         ) {
             method_out->evidence_group = LOCALIZATION_CALCULATE_PICK_EVIDENCE_GROUP;
         }
@@ -909,4 +916,314 @@ bool localization_calculate_scan_ray_clear(
         }
     }
     return true;
+}
+
+
+/* ---- localization_extended ------------------------------------------ */
+
+localization_extended_bounds_t localization_calculate_extended_bounds(
+    const localization_traveltime_search_bounds_t *search
+)
+{
+    localization_extended_bounds_t bounds;
+    memset(&bounds, 0, sizeof(bounds));
+    if (search != NULL) {
+        bounds.min_corner = search->min_corner;
+        bounds.max_corner = search->max_corner;
+        bounds.step_m = search->step_m;
+    }
+    return bounds;
+}
+
+
+static void set_reason(localization_run_record_t *record, const char *reason)
+{
+    record->solved = false;
+    snprintf(record->rejection_reason, sizeof(record->rejection_reason), "%s", reason);
+}
+
+
+void localization_calculate_xcorr_tdoa_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_xcorr_tdoa_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "xcorr_tdoa",
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+    if (result == NULL || result->status != LOCALIZATION_XCORR_TDOA_SOLVED) {
+        if (result != NULL && result->status == LOCALIZATION_XCORR_TDOA_INSUFFICIENT_PAIRS) {
+            record_out->solved = false;
+            snprintf(
+                record_out->rejection_reason, sizeof(record_out->rejection_reason),
+                "only %u of %u channel pairs correlate (>= %.1f) across %u channels: too few for a %s fit",
+                (unsigned)result->pairs_measured, (unsigned)result->pairs_total,
+                LOCALIZATION_CALCULATE_XCORR_MIN_CORRELATION, (unsigned)result->channels_used,
+                result->planar ? "planar" : "3D"
+            );
+            return;
+        }
+        set_reason(
+            record_out,
+            result == NULL
+                ? "cross-correlation TDOA was not attempted"
+                : result->status == LOCALIZATION_XCORR_TDOA_NO_ANCHOR
+                    ? "no accepted arrival pick to anchor the correlation windows"
+                    : result->status == LOCALIZATION_XCORR_TDOA_NO_ALLOWED_CANDIDATE
+                        ? "scan occupancy excluded every candidate"
+                        : "pair delays do not determine the source (underdetermined geometry)"
+        );
+        return;
+    }
+    record_out->solved = true;
+    record_out->source_position = result->position;
+    record_out->rms_residual_us = result->rms_pair_residual_us;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_pair_residual_us, timing_uncertainty_us
+    );
+}
+
+
+void localization_calculate_robust_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_robust_result_t *result,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "robust_tdoa",
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+    if (result == NULL || result->status != LOCALIZATION_ROBUST_SOLVED) {
+        if (result != NULL && result->status == LOCALIZATION_ROBUST_INSUFFICIENT_OBSERVATIONS) {
+            record_out->solved = false;
+            snprintf(
+                record_out->rejection_reason, sizeof(record_out->rejection_reason),
+                "robust fit needs %u accepted P picks for a %s search, have %u",
+                result->planar ? 3U : 4U, result->planar ? "planar" : "3D",
+                (unsigned)(result->degrees_of_freedom + (result->planar ? 3 : 4))
+            );
+            return;
+        }
+        set_reason(
+            record_out,
+            result == NULL
+                ? "robust fit was not attempted"
+                : "scan occupancy excluded every candidate"
+        );
+        return;
+    }
+    record_out->solved = true;
+    record_out->source_position = result->position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->rms_residual_us;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_residual_us, timing_uncertainty_us
+    );
+    if (result->consensus_ambiguous && record_out->confidence_score > LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP) {
+        record_out->confidence_score = LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP;
+    }
+}
+
+
+void localization_calculate_psp_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_psp_result_t *result,
+    const char *not_attempted_reason,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "psp_joint",
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+    if (result == NULL || result->status != LOCALIZATION_PSP_SOLVED) {
+        const char *reason = not_attempted_reason != NULL && not_attempted_reason[0] != '\0'
+            ? not_attempted_reason
+            : "joint P-TDOA + P-S fit was not attempted";
+        if (result != NULL) {
+            switch (result->status) {
+                case LOCALIZATION_PSP_INSUFFICIENT_OBSERVATIONS:
+                    reason = "too few P picks and S-P intervals for the joint fit's unknowns";
+                    break;
+                case LOCALIZATION_PSP_NO_ALLOWED_CANDIDATE:
+                    reason = "scan occupancy excluded every candidate";
+                    break;
+                case LOCALIZATION_PSP_NONPHYSICAL_VELOCITIES:
+                    reason = "no candidate gives physical velocities (vS < vP)";
+                    break;
+                case LOCALIZATION_PSP_UNDERDETERMINED:
+                    reason = "underdetermined: depth trades against vP (set a vP uncertainty or add an off-plane pod)";
+                    break;
+                case LOCALIZATION_PSP_NO_S_PICK:
+                default:
+                    break;
+            }
+        }
+        set_reason(record_out, reason);
+        return;
+    }
+    record_out->solved = true;
+    record_out->source_position = result->position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->rms_p_residual_us;
+    record_out->estimated_p_velocity_mps = result->p_velocity_mps;
+    record_out->estimated_s_velocity_mps = result->s_velocity_mps;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_p_residual_us, timing_uncertainty_us
+    );
+}
+
+
+void localization_calculate_eikonal_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_eikonal_result_t *result,
+    const char *method_name,
+    const char *not_attempted_reason,
+    bool velocity_estimated,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, method_name,
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+    if (result == NULL || result->status != LOCALIZATION_EIKONAL_SOLVED) {
+        const char *reason = not_attempted_reason != NULL && not_attempted_reason[0] != '\0'
+            ? not_attempted_reason
+            : "eikonal location was not attempted";
+        if (result != NULL) {
+            reason = result->status == LOCALIZATION_EIKONAL_INSUFFICIENT_PICKS
+                ? "too few picked sensors are reachable in the velocity model"
+                : result->status == LOCALIZATION_EIKONAL_NO_REACHABLE_CANDIDATE
+                    ? "no candidate reaches every picked sensor around the voids"
+                    : "scan occupancy excluded every candidate";
+        }
+        set_reason(record_out, reason);
+        return;
+    }
+    record_out->solved = true;
+    record_out->source_position = result->position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->rms_residual_us;
+    if (velocity_estimated && result->velocity_scale > 0.0 && context->propagation_speed_mps > 0.0) {
+        record_out->estimated_p_velocity_mps = context->propagation_speed_mps / result->velocity_scale;
+    }
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_residual_us, timing_uncertainty_us
+    );
+}
+
+
+void localization_calculate_bayes_to_run_record(
+    const localization_calculate_run_context_t *context,
+    const localization_bayes_result_t *result,
+    const char *method_name,
+    const char *not_attempted_reason,
+    bool velocity_estimated,
+    uint32_t channel_mask_used,
+    uint32_t channel_mask_rejected,
+    uint32_t method_version,
+    double timing_uncertainty_us,
+    localization_run_record_t *record_out
+)
+{
+    fill_common_fields(
+        context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, method_name,
+        method_version, channel_mask_used, channel_mask_rejected, record_out
+    );
+    if (result == NULL || result->status != LOCALIZATION_BAYES_SOLVED) {
+        const char *reason = not_attempted_reason != NULL && not_attempted_reason[0] != '\0'
+            ? not_attempted_reason
+            : "Bayesian location was not attempted";
+        if (result != NULL) {
+            reason = result->status == LOCALIZATION_BAYES_INSUFFICIENT_PICKS
+                ? "too few accepted P picks for the posterior"
+                : result->status == LOCALIZATION_BAYES_NO_REACHABLE_CANDIDATE
+                    ? "no candidate reaches every picked sensor around the voids"
+                    : "scan occupancy excluded every candidate";
+        }
+        set_reason(record_out, reason);
+        return;
+    }
+    record_out->solved = true;
+    record_out->source_position = result->map_position;
+    record_out->emission_time_us = result->emission_time_us;
+    record_out->rms_residual_us = result->rms_residual_us;
+    if (velocity_estimated) {
+        record_out->estimated_p_velocity_mps = result->velocity_mean_mps;
+    }
+    record_out->uncertainty.std_m = result->std_m;
+    record_out->uncertainty.credible_level = result->credible_level;
+    record_out->uncertainty.credible_volume_m3 = result->credible_volume_m3;
+    record_out->uncertainty.credible_area_m2 = result->credible_area_m2;
+    record_out->uncertainty.credible_min = result->credible_min;
+    record_out->uncertainty.credible_max = result->credible_max;
+    record_out->confidence_score = localization_calculate_quality_from_residual_us(
+        result->rms_residual_us, timing_uncertainty_us
+    );
+}
+
+
+double localization_calculate_s_minus_p_sigma_us(
+    double timing_uncertainty_us,
+    double p_snr,
+    double s_snr
+)
+{
+    double ratio = 10.0;
+    if (s_snr > 0.0 && isfinite(s_snr)) {
+        ratio = p_snr > 0.0 && isfinite(p_snr) ? p_snr / s_snr : 1.0;
+        ratio = ratio < 1.0 ? 1.0 : (ratio > 10.0 ? 10.0 : ratio);
+    }
+    const double s_sigma = timing_uncertainty_us * ratio;
+    return sqrt(timing_uncertainty_us * timing_uncertainty_us + s_sigma * s_sigma);
+}
+
+
+double localization_calculate_scan_eikonal_velocity(
+    const localization_point3d_t *point,
+    void *context
+)
+{
+    const localization_calculate_scan_velocity_context_t *scan =
+        (const localization_calculate_scan_velocity_context_t *)context;
+    if (scan == NULL || point == NULL) {
+        return 0.0;
+    }
+    void *occupancy = (void *)scan->occupancy;
+    if (localization_calculate_scan_suea_cell(point, occupancy) != LOCALIZATION_SUEA_CELL_EMPTY) {
+        return scan->velocity_mps;
+    }
+    const double r = scan->sample_radius_m > 0.0 ? scan->sample_radius_m : 0.0;
+    const unsigned corners = scan->planar ? 4U : 8U;
+    for (unsigned corner = 0U; r > 0.0 && corner < corners; ++corner) {
+        const localization_point3d_t sample = {
+            point->x_m + ((corner & 1U) != 0U ? r : -r),
+            point->y_m + ((corner & 2U) != 0U ? r : -r),
+            point->z_m + (scan->planar ? 0.0 : ((corner & 4U) != 0U ? r : -r)),
+        };
+        if (localization_calculate_scan_suea_cell(&sample, occupancy) != LOCALIZATION_SUEA_CELL_EMPTY) {
+            return scan->velocity_mps;
+        }
+    }
+    return 0.0;
 }

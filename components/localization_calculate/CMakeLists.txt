@@ -11,6 +11,7 @@ idf_component_register(
         localization
         localization_comparison
         localization_energy_baseline
+        localization_extended
         localization_results
         localization_run_store
         localization_semblance

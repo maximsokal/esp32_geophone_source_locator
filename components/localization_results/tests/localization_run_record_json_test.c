@@ -336,6 +336,63 @@ static void test_estimated_velocities_round_trip_and_stay_optional(void)
 }
 
 
+static void test_uncertainty_round_trips_and_stays_optional(void)
+{
+    /* A Bayesian run reports its posterior region. */
+    localization_run_record_t record = solved_record();
+    snprintf(record.method_name, sizeof(record.method_name), "bayesian");
+    record.uncertainty.std_m = (localization_point3d_t) { 0.25, 0.5, 1.5 };
+    record.uncertainty.credible_level = 0.9;
+    record.uncertainty.credible_volume_m3 = 0.75;
+    record.uncertainty.credible_min = (localization_point3d_t) { 1.0, 2.0, -3.0 };
+    record.uncertainty.credible_max = (localization_point3d_t) { 1.5, 2.5, -0.5 };
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strlen(json) < 2048U); /* LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE */
+    assert(strstr(json, "\"uncertainty\":{\"std_m\":{\"x_m\":0.25,\"y_m\":0.5,\"z_m\":1.5}") != NULL);
+    assert(strstr(json, "\"credible_level\":0.9") != NULL);
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(memcmp(&parsed.uncertainty, &record.uncertainty, sizeof(record.uncertainty)) == 0);
+    free(json);
+
+    /* Every other method omits it; old records parse as "not computed". */
+    record = solved_record();
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"uncertainty\"") == NULL);
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.uncertainty.credible_level == 0.0);
+    free(json);
+
+    /* An unsolved record never carries it. */
+    record = rejected_record();
+    record.uncertainty.credible_level = 0.9;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"uncertainty\"") == NULL);
+    free(json);
+
+    /* Inconsistent regions are refused on write and on read. */
+    record = solved_record();
+    record.uncertainty.credible_level = 1.0;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+    record.uncertainty.credible_level = 0.9;
+    record.uncertainty.credible_min.x_m = 2.0; /* min > max */
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+    record.uncertainty.credible_min.x_m = 0.0;
+    record.uncertainty.std_m.z_m = -1.0;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+
+    record = solved_record();
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    char broken[2048];
+    const char *tail = strrchr(json, '}');
+    const size_t head = (size_t)(tail - json);
+    snprintf(broken, sizeof(broken), "%.*s,\"uncertainty\":{\"credible_level\":0.9}}", (int)head, json);
+    assert(localization_run_record_from_json(broken, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(json);
+}
+
+
 int main(void)
 {
     test_solved_record_round_trips();
@@ -347,6 +404,7 @@ int main(void)
     test_confidence_score_round_trips();
     test_degrees_of_freedom_round_trips_and_defaults();
     test_estimated_velocities_round_trip_and_stay_optional();
+    test_uncertainty_round_trips_and_stays_optional();
     test_negative_confidence_score_is_rejected();
     test_future_schema_version_is_not_found();
     test_malformed_json_is_invalid_response();

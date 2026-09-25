@@ -383,7 +383,6 @@ esp_err_t localization_robust_solve(
         uint32_t best_inliers = 0U;
         localization_point3d_t best_position = lattice.origin;
         uint32_t masks_seen[70];
-        size_t counts_seen[70];
         size_t seen = 0U;
 
         for (uint32_t subset = 0U; subset <= all; ++subset) {
@@ -412,9 +411,7 @@ esp_err_t localization_robust_solve(
                 }
             }
             if (seen < 70U) {
-                masks_seen[seen] = inliers;
-                counts_seen[seen] = popcount(inliers);
-                ++seen;
+                masks_seen[seen++] = inliers;
             }
             if (score < best_score) {
                 best_score = score;
@@ -427,7 +424,7 @@ esp_err_t localization_robust_solve(
          * members means the data cannot say which pick is wrong. */
         const size_t best_count = popcount(best_inliers);
         for (size_t s = 0U; s < seen; ++s) {
-            if (counts_seen[s] >= best_count && masks_seen[s] != best_inliers) {
+            if (popcount(masks_seen[s]) >= best_count && masks_seen[s] != best_inliers) {
                 result->consensus_ambiguous = true;
             }
         }

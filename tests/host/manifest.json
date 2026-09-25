@@ -944,6 +944,8 @@
         "components/geophone_events/geophone_event_cross_correlation.c",
         "components/scan_occupancy/scan_occupancy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_results/localization_run_record_json.c",
+        "components/localization_extended/localization_ext_fit.c",
         "components/localization_calculate/tests/localization_calculate_policy_test.c"
       ],
       "include_dirs": [
@@ -957,6 +959,8 @@
         "components/localization_semblance/include",
         "components/localization_traveltime_inversion/include",
         "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
         "components/localization_results/include",
         "components/geophone_events/include",
         "components/object_store/include",
@@ -978,6 +982,10 @@
         "components/localization_velocity_free/localization_tdcas.c",
         "components/localization_velocity_free/localization_psafuvs.c",
         "components/localization_velocity_free/localization_suea.c",
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_extended/localization_bayes.c",
+        "components/localization_semblance/localization_semblance.c",
         "components/localization_calculate/tests/localization_calculate_scan_methods_test.c"
       ],
       "include_dirs": [
@@ -991,6 +999,7 @@
         "components/localization_semblance/include",
         "components/localization_traveltime_inversion/include",
         "components/localization_velocity_free/include",
+        "components/localization_extended/include",
         "components/localization_results/include",
         "components/geophone_events/include",
         "components/object_store/include",

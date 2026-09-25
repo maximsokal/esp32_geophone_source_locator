@@ -54,6 +54,25 @@ typedef enum
 } localization_run_kind_t;
 
 
+/*
+ * Position uncertainty of a run that has one (the Bayesian methods): the
+ * posterior's per-axis standard deviations and the smallest region
+ * holding credible_level of the probability -- its volume (3D search) or
+ * area (planar search) and bounding box. credible_level == 0 means "not
+ * computed" (every other method, or a record written before the field).
+ */
+typedef struct
+{
+    localization_point3d_t std_m;
+    double credible_level;
+    double credible_volume_m3;
+    double credible_area_m2;
+    localization_point3d_t credible_min;
+    localization_point3d_t credible_max;
+
+} localization_run_uncertainty_t;
+
+
 typedef struct
 {
     uint32_t schema_version;
@@ -123,6 +142,9 @@ typedef struct
      */
     double estimated_p_velocity_mps;
     double estimated_s_velocity_mps;
+
+    /* Optional; serialized only for a solved run with credible_level > 0. */
+    localization_run_uncertainty_t uncertainty;
 
     /* Valid only when solved is true. emission_time_us/iterations/
      * converged are meaningful only for the iterative Gauss-Newton TDOA

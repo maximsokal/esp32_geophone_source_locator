@@ -416,6 +416,37 @@ static void test_calibration_hits_map_a_slow_zone(void)
 }
 
 
+static double air_above_surface(const localization_point3d_t *p, void *context)
+{
+    (void)context;
+    return p->z_m > -0.05 ? 0.0 : V_MPS; /* the scan says: air from 5 cm below the pods up */
+}
+
+
+static void test_sensor_on_a_surface_next_to_air(void)
+{
+    /* A pod sits on the surface, so its own node can classify as air;
+     * the field must still start from it (the first cell is not tested). */
+    const localization_point3d_t min = { 0.0, 0.0, -1.0 };
+    const localization_point3d_t max = { 2.0, 2.0, 0.3 };
+    localization_eikonal_model_t model;
+    assert(localization_eikonal_model_init(&model, &min, &max, 0.1, 0U, V_MPS) == ESP_OK);
+    localization_eikonal_model_assign(&model, air_above_surface, NULL);
+    const localization_point3d_t pod = { 1.0, 1.0, 0.0 };
+    float *times = malloc(localization_eikonal_node_count(&model) * sizeof(float));
+    assert(localization_eikonal_travel_times(&model, &pod, times) == ESP_OK);
+    const localization_point3d_t buried = { 1.3, 0.6, -0.7 };
+    const double t = localization_eikonal_time_at(&model, times, &buried);
+    assert(isfinite(t));
+    assert(fabs(t - ext_test_distance(pod, buried) / V_MPS) / t < 0.05);
+    /* Air is never crossed: a point in it is reached only from the rock. */
+    const localization_point3d_t in_air = { 1.5, 1.5, 0.2 };
+    assert(isinf(localization_eikonal_time_at(&model, times, &in_air)));
+    free(times);
+    localization_eikonal_model_free(&model);
+}
+
+
 static void test_invalid_model_input(void)
 {
     localization_eikonal_model_t model;
@@ -440,6 +471,7 @@ int main(void)
     test_location_through_scan_voids();
     test_free_velocity_scale_and_robust_pick();
     test_calibration_hits_map_a_slow_zone();
+    test_sensor_on_a_surface_next_to_air();
     test_invalid_model_input();
     printf("localization eikonal tests passed\n");
     return 0;

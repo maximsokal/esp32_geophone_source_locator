@@ -353,7 +353,9 @@ static bool fractional_index(
 /* Straight-ray time from fractional index (fx, fy, fz) to a node: the
  * length times the mean slowness sampled along the segment (nearest node,
  * quarter-cell steps). INFINITY when the segment touches an impassable
- * node -- the marching then finds the way around. */
+ * node -- the marching then finds the way around. Samples within one cell
+ * of the source are not tested: a sensor on a surface sits next to void
+ * (air) by definition, and its own nearest node may be one. */
 static double line_of_sight_time(
     const localization_eikonal_model_t *model,
     double fx,
@@ -365,10 +367,18 @@ static double line_of_sight_time(
     double distance_cells
 )
 {
+    const size_t node = ix + model->nx * (iy + model->ny * iz);
+    if (distance_cells <= 1.0) {
+        return distance_cells * model->cell_m * (double)model->slowness_s_per_m[node];
+    }
     const size_t steps = (size_t)ceil(distance_cells * 4.0) + 1U;
     double sum = 0.0;
+    size_t samples = 0U;
     for (size_t k = 0U; k <= steps; ++k) {
         const double a = (double)k / (double)steps;
+        if (a * distance_cells < 1.0) {
+            continue;
+        }
         const long jx = lround(fx + a * ((double)ix - fx));
         const long jy = lround(fy + a * ((double)iy - fy));
         const long jz = model->nz > 1U ? lround(fz + a * ((double)iz - fz)) : 0;
@@ -380,8 +390,9 @@ static double line_of_sight_time(
             return INFINITY;
         }
         sum += (double)slowness;
+        ++samples;
     }
-    return distance_cells * model->cell_m * sum / (double)(steps + 1U);
+    return samples > 0U ? distance_cells * model->cell_m * sum / (double)samples : INFINITY;
 }
 
 

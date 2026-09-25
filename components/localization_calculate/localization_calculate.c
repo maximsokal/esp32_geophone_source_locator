@@ -6,12 +6,17 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "localization_bayes.h"
 #include "localization_calculate_policy.h"
+#include "localization_eikonal.h"
 #include "localization_event_run_record.h"
 #include "localization_psafuvs.h"
+#include "localization_psp.h"
+#include "localization_robust.h"
 #include "localization_run_store.h"
 #include "localization_suea.h"
 #include "localization_tdcas.h"
+#include "localization_xcorr_tdoa.h"
 #include "seismic_dsp.h"
 #include "scan_occupancy.h"
 #include "seismic_recorder.h"
@@ -39,9 +44,17 @@
 #define LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK \
     ((1U << OBJECT_STORE_POD_COUNT) - 1U)
 
-/* Seven unconstrained methods (fused) plus up to five scan-constrained
+/* Twelve unconstrained methods (fused) plus up to eight scan-constrained
  * variants (persisted for comparison, never fused). */
-#define LOCALIZATION_CALCULATE_MAX_RECORDS 12U
+#define LOCALIZATION_CALCULATE_MAX_RECORDS 20U
+
+/* Budgets of the extended methods on the device (a numerical search
+ * strategy, not physics): eikonal lattice nodes, Bayesian cells per level,
+ * velocity quadrature nodes, and the seeding lattices. */
+#define LOCALIZATION_CALCULATE_EIKONAL_MAX_NODES 40000U
+#define LOCALIZATION_CALCULATE_BAYES_MAX_CELLS 8000U
+#define LOCALIZATION_CALCULATE_BAYES_VELOCITY_NODES 5U
+#define LOCALIZATION_CALCULATE_SEED_LATTICE_POINTS 6000U
 
 /* Unknowns of the velocity-free fits: TDCAS (x, y, z, t0, v) over N P
  * picks; PSAFUVS (x, y, z, t0, vP, vS) over 2N P and S picks. */
@@ -75,6 +88,35 @@ typedef struct
     localization_psafuvs_result_t scan_psafuvs;
     localization_suea_result_t scan_suea;
     localization_suea_grid_t suea_grid;
+
+    /* S picks by channel (for PSAFUVS and PSP). */
+    bool s_valid[OBJECT_STORE_POD_COUNT];
+    int64_t s_arrival_us[OBJECT_STORE_POD_COUNT];
+    float s_snr[OBJECT_STORE_POD_COUNT];
+
+    /* localization_extended. Participant index -> channel for the methods
+     * that take every participating pod (xcorr, eikonal, Bayesian). */
+    size_t participant_channel[OBJECT_STORE_POD_COUNT];
+    localization_point3d_t eikonal_sensors[OBJECT_STORE_POD_COUNT];
+    localization_xcorr_channel_t xcorr_channels[OBJECT_STORE_POD_COUNT];
+    localization_xcorr_pair_t xcorr_pairs[LOCALIZATION_XCORR_MAX_PAIRS];
+    localization_xcorr_tdoa_result_t xcorr;
+    localization_robust_result_t robust;
+    localization_psp_observation_t psp_observations[OBJECT_STORE_POD_COUNT];
+    localization_psp_result_t psp;
+    localization_bayes_pick_t bayes_picks[OBJECT_STORE_POD_COUNT];
+    localization_bayes_result_t bayes;
+    localization_bayes_result_t scan_bayes;
+    localization_eikonal_pick_t eikonal_picks[OBJECT_STORE_POD_COUNT];
+    localization_eikonal_model_t eikonal_model;
+    localization_eikonal_fields_t eikonal_fields;
+    localization_eikonal_result_t eikonal;
+    localization_eikonal_result_t scan_eikonal;
+    localization_eikonal_travel_time_context_t eikonal_times;
+
+    /* Kept here, not on the stack, for the same reason. */
+    localization_pick_record_t pick_record;
+    localization_run_record_t joint_record;
 
 } localization_calculate_workspace_t;
 
@@ -307,6 +349,7 @@ esp_err_t localization_calculate_run(
     /* --- MAX-209: cross-channel physical consistency + xcorr refinement --- */
 
     const uint32_t sample_rate_hz = session_summary.sample_rate_hz;
+    size_t max_lag_samples = 0U;
     double max_sensor_distance_m = 0.0;
     for (size_t a = 0U; a < OBJECT_STORE_POD_COUNT; ++a) {
         for (size_t b = a + 1U; geometry.pods[a].computed && b < OBJECT_STORE_POD_COUNT; ++b) {
@@ -367,7 +410,7 @@ esp_err_t localization_calculate_run(
             config->propagation_speed_mps > config->propagation_speed_uncertainty_mps
             ? config->propagation_speed_mps - config->propagation_speed_uncertainty_mps
             : config->propagation_speed_mps;
-        const size_t max_lag_samples =
+        max_lag_samples =
             (size_t)ceil(max_sensor_distance_m / v_min * (double)sample_rate_hz) + 2U;
 
         for (size_t ch = 0U; reference_channel < OBJECT_STORE_POD_COUNT && ch < OBJECT_STORE_POD_COUNT; ++ch) {
@@ -427,21 +470,21 @@ esp_err_t localization_calculate_run(
      * part of the recording-gate's admission promise, so a persistence
      * failure here must never abort the whole calculate_source invocation.
      */
-    localization_pick_record_t pick_record;
-    memset(&pick_record, 0, sizeof(pick_record));
-    snprintf(pick_record.object_id, sizeof(pick_record.object_id), "%s", object_id);
-    snprintf(pick_record.session_id, sizeof(pick_record.session_id), "%s", session_id);
-    pick_record.computed_at_ms = computed_at_ms;
+    localization_pick_record_t *pick_record = &workspace->pick_record;
+    snprintf(pick_record->object_id, sizeof(pick_record->object_id), "%s", object_id);
+    snprintf(pick_record->session_id, sizeof(pick_record->session_id), "%s", session_id);
+    pick_record->computed_at_ms = computed_at_ms;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
-        pick_record.channels[ch].participating = geometry.pods[ch].computed;
-        pick_record.channels[ch].pick = event_channels[ch].pick;
+        pick_record->channels[ch].participating = geometry.pods[ch].computed;
+        pick_record->channels[ch].pick = event_channels[ch].pick;
     }
-    (void)localization_run_store_write_picks(object_id, session_id, &pick_record);
+    (void)localization_run_store_write_picks(object_id, session_id, pick_record);
 
     localization_point3d_t participant_positions[OBJECT_STORE_POD_COUNT];
     size_t participant_position_count = 0U;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         if (geometry.pods[ch].computed) {
+            workspace->participant_channel[participant_position_count] = ch;
             participant_positions[participant_position_count++] = event_channels[ch].sensor_position;
         }
     }
@@ -717,6 +760,9 @@ esp_err_t localization_calculate_run(
         if (s_arrival_us <= traveltime_picks[ch].observation.arrival_time_us) {
             continue;
         }
+        workspace->s_valid[ch] = true;
+        workspace->s_arrival_us[ch] = s_arrival_us;
+        workspace->s_snr[ch] = s_pick.snr;
         ps_observations[ps_observation_count].sensor_position = event_channels[ch].sensor_position;
         ps_observations[ps_observation_count].p_arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
         ps_observations[ps_observation_count].s_arrival_time_us = s_arrival_us;
@@ -796,6 +842,227 @@ esp_err_t localization_calculate_run(
             suea_result->picks_used_count,
             dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
         )
+    );
+    ++record_count;
+
+    /* --- localization_extended ---------------------------------------------
+     * Same P arrivals again, used five more ways: waveform pair delays,
+     * a robust consensus, P + S-P jointly, eikonal travel times and a
+     * posterior region. All share the pick evidence group. */
+
+    const localization_extended_bounds_t extended_bounds =
+        localization_calculate_extended_bounds(&traveltime_bounds);
+    const bool planar = dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D;
+    const size_t participants = participant_position_count;
+
+    /* Cross-correlation TDOA over every participating pod's waveform. */
+    localization_xcorr_tdoa_result_t *xcorr_result = &workspace->xcorr;
+    esp_err_t xcorr_err = ESP_ERR_INVALID_STATE;
+    for (size_t i = 0U; i < participants; ++i) {
+        const size_t ch = workspace->participant_channel[i];
+        localization_xcorr_channel_t *channel = &workspace->xcorr_channels[i];
+        channel->samples = channel_samples[ch];
+        channel->sample_count = frame_count;
+        channel->sample_rate_hz = sample_rate_hz;
+        channel->sensor_position = event_channels[ch].sensor_position;
+        channel->pick_valid = event_channels[ch].pick.status == GEOPHONE_PICK_ACCEPTED;
+        channel->pick_sample = channel->pick_valid
+            ? localization_calculate_pick_sample_position(&event_channels[ch].pick)
+            : 0.0;
+    }
+    const localization_xcorr_tdoa_config_t xcorr_config = {
+        .propagation_speed_mps = config->propagation_speed_mps,
+        .timing_uncertainty_us = config->timing_uncertainty_us,
+        .window_samples = config->pick_config.snr_signal_window_samples > 4U
+            ? config->pick_config.snr_signal_window_samples : 4U,
+        .max_lag_samples = max_lag_samples > 0U ? max_lag_samples : 1U,
+        .min_correlation = LOCALIZATION_CALCULATE_XCORR_MIN_CORRELATION,
+        .max_lattice_points = LOCALIZATION_CALCULATE_SEED_LATTICE_POINTS,
+    };
+    if (participants >= 2U && any_accepted) {
+        size_t pair_count = 0U;
+        xcorr_err = localization_xcorr_measure_pairs(
+            workspace->xcorr_channels, participants, &xcorr_config,
+            workspace->xcorr_pairs, &pair_count, NULL
+        );
+        if (xcorr_err == ESP_OK) {
+            xcorr_err = localization_xcorr_tdoa_locate(
+                workspace->xcorr_channels, participants, workspace->xcorr_pairs, pair_count,
+                &extended_bounds, &xcorr_config, xcorr_result
+            );
+        }
+        summary_out->methods_attempted++;
+    }
+    const uint32_t xcorr_channels_used = observation_mask_to_channels(
+        xcorr_err == ESP_OK ? xcorr_result->channel_mask_used : 0U, workspace->participant_channel, participants
+    );
+    localization_calculate_xcorr_tdoa_to_run_record(
+        &context, xcorr_err == ESP_OK ? xcorr_result : NULL,
+        xcorr_channels_used, all_channel_mask & ~xcorr_channels_used,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    if (xcorr_err != ESP_OK) {
+        snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason), "%s",
+                 any_accepted ? "cross-correlation TDOA input rejected"
+                              : "no accepted arrival pick to anchor the correlation windows");
+    }
+    localization_calculate_apply_redundancy(
+        &records[record_count],
+        localization_calculate_degrees_of_freedom(xcorr_result->channels_used, planar)
+    );
+    ++record_count;
+
+    /* Robust M-estimator + minimal-subset consensus on the P picks. */
+    localization_robust_result_t *robust_result = &workspace->robust;
+    esp_err_t robust_err = ESP_ERR_INVALID_STATE;
+    if (p_observation_count > 0U) {
+        localization_robust_config_t robust_config = localization_robust_default_config();
+        robust_config.propagation_speed_mps = config->propagation_speed_mps;
+        robust_config.timing_uncertainty_us = config->timing_uncertainty_us;
+        robust_config.max_lattice_points = LOCALIZATION_CALCULATE_SEED_LATTICE_POINTS;
+        robust_err = localization_robust_solve(
+            p_observations, p_observation_count, &extended_bounds, &robust_config, robust_result
+        );
+        summary_out->methods_attempted++;
+    }
+    const uint32_t robust_outliers = observation_mask_to_channels(
+        robust_err == ESP_OK ? robust_result->outlier_mask : 0U, workspace->p_channel, p_observation_count
+    );
+    localization_calculate_robust_to_run_record(
+        &context, robust_err == ESP_OK ? robust_result : NULL,
+        traveltime_used_mask & ~robust_outliers, traveltime_rejected_mask | robust_outliers,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count], robust_err == ESP_OK ? robust_result->degrees_of_freedom : -1
+    );
+    ++record_count;
+
+    /* PSP: P picks everywhere, S-P where an S pick exists, each S weighted
+     * by how clean its onset is relative to the P onset. */
+    localization_psp_result_t *psp_result = &workspace->psp;
+    esp_err_t psp_err = ESP_ERR_INVALID_STATE;
+    size_t psp_s_count = 0U;
+    for (size_t i = 0U; i < p_observation_count; ++i) {
+        const size_t ch = workspace->p_channel[i];
+        localization_psp_observation_t *o = &workspace->psp_observations[i];
+        o->sensor_position = p_observations[i].sensor_position;
+        o->p_arrival_time_us = p_observations[i].arrival_time_us;
+        o->s_valid = workspace->s_valid[ch];
+        o->s_arrival_time_us = workspace->s_arrival_us[ch];
+        o->s_minus_p_sigma_us = localization_calculate_s_minus_p_sigma_us(
+            config->timing_uncertainty_us, event_channels[ch].pick.snr, workspace->s_snr[ch]
+        );
+        psp_s_count += o->s_valid ? 1U : 0U;
+    }
+    if (psp_s_count > 0U) {
+        const localization_psp_config_t psp_config = {
+            .timing_uncertainty_us = config->timing_uncertainty_us,
+            .p_velocity_mps = config->propagation_speed_mps,
+            .p_velocity_sigma_mps = config->propagation_speed_uncertainty_mps,
+            .max_lattice_points = LOCALIZATION_CALCULATE_SEED_LATTICE_POINTS,
+        };
+        psp_err = localization_psp_solve(
+            workspace->psp_observations, p_observation_count, &extended_bounds, &psp_config, psp_result
+        );
+        summary_out->methods_attempted++;
+    }
+    localization_calculate_psp_to_run_record(
+        &context, psp_err == ESP_OK ? psp_result : NULL, psafuvs_not_attempted,
+        traveltime_used_mask, traveltime_rejected_mask,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    if (psp_err == ESP_OK) {
+        localization_calculate_apply_redundancy(&records[record_count], psp_result->degrees_of_freedom);
+    }
+    ++record_count;
+
+    /* Participant-indexed picks for the eikonal and Bayesian methods (a pod
+     * without an accepted pick has weight 0). */
+    for (size_t i = 0U; i < participants; ++i) {
+        const size_t ch = workspace->participant_channel[i];
+        workspace->eikonal_sensors[i] = event_channels[ch].sensor_position;
+        if (planar) {
+            workspace->eikonal_sensors[i].z_m = traveltime_bounds.min_corner.z_m;
+        }
+        workspace->eikonal_picks[i].arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
+        workspace->eikonal_picks[i].weight = traveltime_picks[ch].weight;
+        workspace->bayes_picks[i].sensor_position = event_channels[ch].sensor_position;
+        workspace->bayes_picks[i].arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
+        workspace->bayes_picks[i].weight = traveltime_picks[ch].weight;
+    }
+
+    /* Bayesian posterior, straight rays. Student-t: a wrong pick widens
+     * the region instead of moving it. */
+    const bool velocity_uncertain = config->propagation_speed_uncertainty_mps > 0.0;
+    localization_bayes_config_t bayes_config = {
+        .velocity_mps = config->propagation_speed_mps,
+        .velocity_sigma_mps = config->propagation_speed_uncertainty_mps,
+        .timing_uncertainty_us = config->timing_uncertainty_us,
+        .likelihood = LOCALIZATION_BAYES_STUDENT_T,
+        .velocity_nodes = LOCALIZATION_CALCULATE_BAYES_VELOCITY_NODES,
+        .max_cells = LOCALIZATION_CALCULATE_BAYES_MAX_CELLS,
+        .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+    };
+    localization_bayes_result_t *bayes_result = &workspace->bayes;
+    esp_err_t bayes_err = ESP_ERR_INVALID_STATE;
+    if (p_observation_count > 0U) {
+        bayes_err = localization_bayes_locate(
+            workspace->bayes_picks, participants, &extended_bounds, &bayes_config, bayes_result
+        );
+        summary_out->methods_attempted++;
+    }
+    localization_calculate_bayes_to_run_record(
+        &context, bayes_err == ESP_OK ? bayes_result : NULL, "bayesian",
+        "no accepted arrival pick", velocity_uncertain,
+        traveltime_used_mask, traveltime_rejected_mask,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count], localization_calculate_degrees_of_freedom(bayes_result->picks_used, planar)
+    );
+    ++record_count;
+
+    /* Eikonal travel times in the (homogeneous, without a scan) model over
+     * the SUEA box; the scan variant below makes its voids impassable. */
+    localization_eikonal_model_t *eikonal_model = &workspace->eikonal_model;
+    const esp_err_t eikonal_model_err = localization_eikonal_model_init(
+        eikonal_model, &suea_min, &suea_max, traveltime_bounds.step_m,
+        LOCALIZATION_CALCULATE_EIKONAL_MAX_NODES, config->propagation_speed_mps
+    );
+    const localization_eikonal_locate_config_t eikonal_config = {
+        .timing_uncertainty_us = config->timing_uncertainty_us,
+        .velocity_scale_sigma = config->propagation_speed_uncertainty_mps / config->propagation_speed_mps,
+        .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+    };
+    localization_eikonal_result_t *eikonal_result = &workspace->eikonal;
+    esp_err_t eikonal_err = eikonal_model_err;
+    if (eikonal_model_err == ESP_OK && p_observation_count > 0U) {
+        eikonal_err = localization_eikonal_fields_compute(
+            eikonal_model, workspace->eikonal_sensors, participants, &workspace->eikonal_fields
+        );
+        if (eikonal_err == ESP_OK) {
+            eikonal_err = localization_eikonal_locate(
+                eikonal_model, &workspace->eikonal_fields, workspace->eikonal_picks, participants,
+                &eikonal_config, eikonal_result
+            );
+            localization_eikonal_fields_free(&workspace->eikonal_fields);
+        }
+        summary_out->methods_attempted++;
+    }
+    localization_calculate_eikonal_to_run_record(
+        &context, eikonal_err == ESP_OK ? eikonal_result : NULL, "eikonal_fmm",
+        p_observation_count > 0U ? "eikonal model could not be built" : "no accepted arrival pick",
+        velocity_uncertain, traveltime_used_mask, traveltime_rejected_mask,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+        &records[record_count]
+    );
+    localization_calculate_apply_redundancy(
+        &records[record_count], localization_calculate_degrees_of_freedom(eikonal_result->picks_used, planar)
     );
     ++record_count;
 
@@ -1025,12 +1292,143 @@ esp_err_t localization_calculate_run(
         }
         ++record_count;
 
+        /* Eikonal travel times around the scan's voids (FREE air is
+         * impassable), used three ways: location, semblance focusing with
+         * those times, and the Bayesian posterior. */
+        const localization_calculate_scan_velocity_context_t scan_velocity = {
+            .occupancy = &occupancy,
+            .velocity_mps = config->propagation_speed_mps,
+            .sample_radius_m = eikonal_model_err == ESP_OK ? 0.5 * eikonal_model->cell_m : 0.0,
+            .planar = planar,
+        };
+        bool scan_fields_ready = false;
+        if (usable && eikonal_model_err == ESP_OK && p_observation_count > 0U) {
+            localization_eikonal_model_assign(
+                eikonal_model, localization_calculate_scan_eikonal_velocity, (void *)&scan_velocity
+            );
+            scan_fields_ready = localization_eikonal_fields_compute(
+                eikonal_model, workspace->eikonal_sensors, participants, &workspace->eikonal_fields
+            ) == ESP_OK;
+        }
+        workspace->eikonal_times.model = eikonal_model;
+        workspace->eikonal_times.fields = &workspace->eikonal_fields;
+        const char *scan_fields_reason = !usable
+            ? not_applied_reason
+            : (p_observation_count == 0U
+                ? "no accepted arrival pick"
+                : "eikonal fields around the scan voids could not be computed");
+
+        localization_eikonal_result_t *scan_eikonal = &workspace->scan_eikonal;
+        esp_err_t scan_eikonal_err = ESP_ERR_INVALID_STATE;
+        if (scan_fields_ready) {
+            localization_eikonal_locate_config_t scan_config = eikonal_config;
+            scan_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            scan_config.candidate_filter.context = &occupancy;
+            scan_eikonal_err = localization_eikonal_locate(
+                eikonal_model, &workspace->eikonal_fields, workspace->eikonal_picks, participants,
+                &scan_config, scan_eikonal
+            );
+            summary_out->methods_attempted++;
+        }
+        const uint32_t eikonal_unreachable = observation_mask_to_channels(
+            scan_eikonal_err == ESP_OK ? (scan_eikonal->pick_mask_unreachable | scan_eikonal->pick_mask_rejected) : 0U,
+            workspace->participant_channel, participants
+        );
+        localization_calculate_eikonal_to_run_record(
+            &context, scan_eikonal_err == ESP_OK ? scan_eikonal : NULL, "eikonal_scan_voids",
+            scan_fields_reason, velocity_uncertain,
+            traveltime_used_mask & ~eikonal_unreachable, traveltime_rejected_mask | eikonal_unreachable,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+            &records[record_count]
+        );
+        localization_calculate_apply_redundancy(
+            &records[record_count], localization_calculate_degrees_of_freedom(scan_eikonal->picks_used, planar)
+        );
+        ++record_count;
+
+        /* Semblance focused with the eikonal times (channel index =
+         * participant index = field index). */
+        localization_semblance_result_t eikonal_semblance;
+        memset(&eikonal_semblance, 0, sizeof(eikonal_semblance));
+        esp_err_t eikonal_semblance_err = ESP_ERR_INVALID_STATE;
+        if (scan_fields_ready && semblance_attempted) {
+            localization_semblance_channel_t semblance_channels[OBJECT_STORE_POD_COUNT];
+            for (size_t i = 0U; i < participants; ++i) {
+                const size_t ch = workspace->participant_channel[i];
+                semblance_channels[i].samples = channel_samples[ch];
+                semblance_channels[i].sample_count = frame_count;
+                semblance_channels[i].sample_rate_hz = session_summary.sample_rate_hz;
+                semblance_channels[i].sensor_position = event_channels[ch].sensor_position;
+            }
+            localization_semblance_config_t eikonal_semblance_config = {
+                .propagation_speed_mps = config->propagation_speed_mps,
+                .reference_sample_index = reference_sample_index,
+                .window_half_span_samples = config->semblance_window_half_span_samples,
+                .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+            };
+            eikonal_semblance_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            eikonal_semblance_config.candidate_filter.context = &occupancy;
+            eikonal_semblance_config.travel_time_model.travel_time = localization_eikonal_travel_time;
+            eikonal_semblance_config.travel_time_model.context = &workspace->eikonal_times;
+            eikonal_semblance_err = localization_semblance_search(
+                semblance_channels, participants, &semblance_bounds,
+                &eikonal_semblance_config, &eikonal_semblance
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_semblance_to_run_record(
+            &context,
+            (scan_fields_ready && semblance_attempted && eikonal_semblance_err == ESP_OK && eikonal_semblance.found)
+                ? &eikonal_semblance : NULL,
+            !scan_fields_ready
+                ? scan_fields_reason
+                : (semblance_attempted
+                    ? "no candidate reaches every pod around the voids, or the search failed"
+                    : "no accepted arrival pick to anchor the search window"),
+            all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
+        );
+        snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
+                 "%s", "semblance_eikonal_voids");
+        ++record_count;
+
+        /* Bayesian posterior with the eikonal times and the scan's free
+         * air as zero prior. */
+        localization_bayes_result_t *scan_bayes = &workspace->scan_bayes;
+        esp_err_t scan_bayes_err = ESP_ERR_INVALID_STATE;
+        if (scan_fields_ready) {
+            localization_bayes_config_t scan_config = bayes_config;
+            scan_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
+            scan_config.candidate_filter.context = &occupancy;
+            scan_config.travel_time_model.travel_time = localization_eikonal_travel_time;
+            scan_config.travel_time_model.context = &workspace->eikonal_times;
+            scan_bayes_err = localization_bayes_locate(
+                workspace->bayes_picks, participants, &extended_bounds, &scan_config, scan_bayes
+            );
+            summary_out->methods_attempted++;
+        }
+        localization_calculate_bayes_to_run_record(
+            &context, scan_bayes_err == ESP_OK ? scan_bayes : NULL, "bayesian_scan_voids",
+            scan_fields_reason, velocity_uncertain,
+            traveltime_used_mask, traveltime_rejected_mask,
+            LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
+            &records[record_count]
+        );
+        localization_calculate_apply_redundancy(
+            &records[record_count], localization_calculate_degrees_of_freedom(scan_bayes->picks_used, planar)
+        );
+        ++record_count;
+        localization_eikonal_fields_free(&workspace->eikonal_fields);
+
         if (occupancy_err == ESP_OK) {
             scan_occupancy_free(&occupancy);
         }
     }
     if (suea_grid_err == ESP_OK) {
         localization_suea_grid_free(suea_grid);
+    }
+    if (eikonal_model_err == ESP_OK) {
+        localization_eikonal_model_free(eikonal_model);
     }
 
     free_channel_buffers(channel_samples);
@@ -1065,17 +1463,17 @@ esp_err_t localization_calculate_run(
         comparison_methods, fused_record_count, comparison_result
     );
 
-    localization_run_record_t joint_record;
+    localization_run_record_t *joint_record = &workspace->joint_record;
     localization_calculate_joint_to_run_record(
         &context, comparison_err == ESP_OK ? comparison_result : NULL,
         all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
-        LOCALIZATION_CALCULATE_METHOD_VERSION, &joint_record
+        LOCALIZATION_CALCULATE_METHOD_VERSION, joint_record
     );
-    if (joint_record.solved) {
+    if (joint_record->solved) {
         summary_out->methods_solved++;
     }
 
-    const esp_err_t joint_write_err = localization_run_store_write(object_id, session_id, &joint_record);
+    const esp_err_t joint_write_err = localization_run_store_write(object_id, session_id, joint_record);
     if (joint_write_err == ESP_OK) {
         summary_out->methods_persisted++;
     } else if (first_write_err == ESP_OK) {
