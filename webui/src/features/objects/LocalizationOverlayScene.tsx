@@ -84,6 +84,25 @@ export default function LocalizationOverlayScene({ model }: Props) {
           </group>
         );
       })}
+
+      {/* Credible regions of Bayesian runs (selected one vivid). */}
+      {model.sectors.filter((sector) => sector.credibleBox !== null).map((sector) => {
+        const box = sector.credibleBox!;
+        const selected = sector.emphasis === 'selected';
+        // Sensor-frame (x, y, z) sizes map to three.js (x, z, y).
+        const size: [number, number, number] = [
+          Math.max(box.size.x_m, 0.02), Math.max(box.size.z_m, 0.02), Math.max(box.size.y_m, 0.02),
+        ];
+        return (
+          <lineSegments
+            key={`region-${sector.method}`}
+            position={toThree(box.center.x_m, box.center.y_m, box.center.z_m)}
+          >
+            <edgesGeometry args={[new THREE.BoxGeometry(size[0], size[1], size[2])]} />
+            <lineBasicMaterial color={sector.color} transparent opacity={selected ? 0.9 : 0.25} />
+          </lineSegments>
+        );
+      })}
     </Canvas>
   );
 }

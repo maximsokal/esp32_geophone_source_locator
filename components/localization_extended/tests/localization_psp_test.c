@@ -71,10 +71,15 @@ static localization_psp_config_t prior_config(double sigma_mps)
 
 static void test_four_flat_pods_need_a_velocity_prior(void)
 {
-    /* Four coplanar sensors with BOTH velocities unknown: the S-P
-     * intervals fix only distance ratios, and the P picks then only fix
-     * p/q -- a one-parameter family (depth against velocity) fits exactly.
-     * The solver must say so rather than return one arbitrary member. */
+    /* Four coplanar sensors with BOTH velocities unknown. Four points in a
+     * plane have one affine dependency sum a_i (s_i, 1) = 0, so
+     * sum a_i |x - s_i|^2 = sum a_i |s_i|^2 for EVERY source x; the S-P
+     * intervals give the distances only up to the scale q, and that
+     * identity is what pins q -- unless its right-hand side is zero, which
+     * is exactly when the four sensors lie on one circle. A rectangle (the
+     * British flag theorem) is such a layout: depth then trades against
+     * velocity along a whole family of exact fits. The solver must say so
+     * rather than return one arbitrary member. */
     uint32_t state = 4U;
     localization_psp_observation_t observations[4];
     make(EXT_TEST_SENSORS_FLAT, 4U, SOURCE, 0.0, &state, observations);
@@ -83,15 +88,28 @@ static void test_four_flat_pods_need_a_velocity_prior(void)
     localization_psp_config_t config = free_config();
     localization_psp_result_t result;
     assert(localization_psp_solve(observations, 4U, &bounds, &config, &result) == ESP_OK);
-    printf("  4 flat pods, vP free: rcond %.1e -> underdetermined\n", result.normal_rcond);
+    printf("  4 flat pods on a rectangle, vP free: rcond %.1e -> underdetermined\n", result.normal_rcond);
     assert(result.status == LOCALIZATION_PSP_UNDERDETERMINED);
     assert(result.degrees_of_freedom == 2); /* counting rows is not enough */
 
-    /* The caller's calibrated vP as a prior (+-5 m/s) resolves it: depth
-     * and vS come out of the S-P intervals. */
+    /* The same four pods off a circle: velocity-free and exact. */
+    static const localization_point3d_t irregular[4] = {
+        { 0.0, 0.0, 0.0 }, { 3.0, 0.3, 0.0 }, { 0.4, 2.5, 0.0 }, { 2.6, 2.9, 0.0 },
+    };
+    localization_psp_observation_t off_circle[4];
+    make(irregular, 4U, SOURCE, 0.0, &state, off_circle);
+    assert(localization_psp_solve(off_circle, 4U, &bounds, &config, &result) == ESP_OK);
+    printf("  4 flat pods off a circle, vP free: rcond %.1e, error %.4f m\n",
+           result.normal_rcond, ext_test_distance(result.position, SOURCE));
+    assert(result.status == LOCALIZATION_PSP_SOLVED);
+    assert(ext_test_distance(result.position, SOURCE) < 0.01);
+    assert(fabs(result.p_velocity_mps - VP) < 1.0 && fabs(result.s_velocity_mps - VS) < 1.0);
+
+    /* On the rectangle, the caller's calibrated vP as a prior (+-5 m/s)
+     * resolves it: depth and vS come out of the S-P intervals. */
     config = prior_config(5.0);
     assert(localization_psp_solve(observations, 4U, &bounds, &config, &result) == ESP_OK);
-    printf("  4 flat pods, vP prior: rcond %.1e, error %.4f m, vS %.1f m/s\n",
+    printf("  4 flat pods on a rectangle, vP prior: rcond %.1e, error %.4f m, vS %.1f m/s\n",
            result.normal_rcond, ext_test_distance(result.position, SOURCE), result.s_velocity_mps);
     assert(result.status == LOCALIZATION_PSP_SOLVED);
     assert(!result.planar);

@@ -214,7 +214,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
                 <tr key={s.method}>
                   <td>{s.method}{s.kind === 'joint_fusion' ? ' (joint)' : ''}{s.emphasis === 'selected' ? ' ★' : ''}</td>
                   <td>{fmt(s.position.x_m)} / {fmt(s.position.y_m)} / {fmt(s.position.z_m)}</td>
-                  <td>{fmt(s.radiusM)} m{s.radiusSource === 'nominal' ? ' (nominal)' : ''}</td>
+                  <td>{fmt(s.radiusM)} m{s.radiusSource === 'nominal' ? ' (nominal)' : s.radiusSource === 'posterior' ? ' (2 sd)' : ''}</td>
                   <td>{fmt(s.confidence)}</td>
                   <td>{s.rmsResidualUs === null ? '—' : `${fmt(s.rmsResidualUs, 0)} µs`}</td>
                   <td>{s.degreesOfFreedom ?? '—'}</td>

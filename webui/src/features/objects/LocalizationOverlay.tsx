@@ -5,6 +5,7 @@ import {
   buildLocalizationOverlay,
   overlappingSectors,
   selectOverlayMethod,
+  uncertaintyText,
 } from '../../domain/localizationOverlay';
 
 const LocalizationOverlayScene = lazy(() => import('./LocalizationOverlayScene'));
@@ -14,6 +15,15 @@ interface Props {
   geometry: LocalizationSessionGeometry | null;
   /** Tests render without WebGL. */
   renderScene?: boolean;
+}
+
+/** The latest run of a method's posterior summary, or a dash. */
+function uncertaintyCell(runs: LocalizationRun[], method: string): string {
+  const latest = runs
+    .filter((run) => run.method_name === method)
+    .reduce<LocalizationRun | null>((best, run) => (best === null || run.computed_at_ms > best.computed_at_ms ? run : best), null);
+  const text = latest === null ? '' : uncertaintyText(latest);
+  return text === '' ? '—' : text;
 }
 
 function formatPosition(x: number, y: number, z: number): string {
@@ -58,28 +68,30 @@ export default function LocalizationOverlay({ runs, geometry, renderScene = true
       )}
       <p className="overlay-note">
         Sensor frame of this recording (MAIN at the origin, metres). The object scan is not drawn under the sectors until it is registered to this frame (AprilTag registration, MAX-145).
-        Sector radius = RMS time residual × propagation speed; “nominal” means the method reported no residual.
+        Sector radius = RMS time residual × propagation speed; for Bayesian runs twice the largest posterior standard
+        deviation, with the credible region drawn as a box; “nominal” means the method reported neither.
       </p>
 
       <table className="overlay-table">
         <thead>
-          <tr><th>Method</th><th>Source (x, y, z)</th><th>Radius</th><th>Confidence</th><th>Residual</th><th>Dim.</th></tr>
+          <tr><th>Method</th><th>Source (x, y, z)</th><th>Radius</th><th>Confidence</th><th>Residual</th><th>Uncertainty</th><th>Dim.</th></tr>
         </thead>
         <tbody>
           {model.sectors.map((sector) => (
             <tr key={sector.method} className={sector.emphasis === 'selected' ? 'selected' : 'dim'}>
               <td><span className="method-swatch" style={{ background: sector.color }} />{sector.method}</td>
               <td>{formatPosition(sector.position.x_m, sector.position.y_m, sector.position.z_m)}</td>
-              <td>{sector.radiusM.toFixed(2)} m{sector.radiusSource === 'nominal' ? ' (nominal)' : ''}</td>
+              <td>{sector.radiusM.toFixed(2)} m{sector.radiusSource === 'nominal' ? ' (nominal)' : sector.radiusSource === 'posterior' ? ' (2 sd)' : ''}</td>
               <td>{sector.confidence.toFixed(2)}</td>
               <td>{sector.rmsResidualUs === null ? '—' : `${sector.rmsResidualUs.toFixed(0)} µs`}</td>
+              <td>{uncertaintyCell(runs, sector.method)}</td>
               <td>{sector.dimensionality}</td>
             </tr>
           ))}
           {model.unavailable.map((entry) => (
             <tr key={`unavailable-${entry.method}`} className="unavailable">
               <td>{entry.method}</td>
-              <td colSpan={5}>unavailable: {entry.reason}</td>
+              <td colSpan={6}>unavailable: {entry.reason}</td>
             </tr>
           ))}
         </tbody>

@@ -65,10 +65,11 @@ typedef enum
     LOCALIZATION_PSP_NO_S_PICK,
     LOCALIZATION_PSP_NO_ALLOWED_CANDIDATE,
     LOCALIZATION_PSP_NONPHYSICAL_VELOCITIES,
-    /* The data admit a family of equally good solutions (e.g. four
-     * coplanar sensors with vP free: depth trades against velocity); the
-     * best-fitting member is still reported in position, but it is not a
-     * location. A vP prior or a fifth, off-plane sensor resolves it. */
+    /* The data admit a family of equally good solutions -- e.g. four
+     * coplanar sensors on one circle (a rectangle, an isosceles trapezoid)
+     * with vP free: depth trades against velocity. The best-fitting member
+     * is still reported in position, but it is not a location. A vP prior,
+     * a layout off the circle or a fifth sensor resolves it. */
     LOCALIZATION_PSP_UNDERDETERMINED
 
 } localization_psp_status_t;

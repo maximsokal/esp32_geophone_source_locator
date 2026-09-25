@@ -1067,7 +1067,7 @@ void localization_calculate_psp_to_run_record(
                     reason = "no candidate gives physical velocities (vS < vP)";
                     break;
                 case LOCALIZATION_PSP_UNDERDETERMINED:
-                    reason = "underdetermined: depth trades against vP (set a vP uncertainty or add an off-plane pod)";
+                    reason = "underdetermined: pods on one circle, depth trades against vP (set a vP uncertainty or move a pod)";
                     break;
                 case LOCALIZATION_PSP_NO_S_PICK:
                 default:
