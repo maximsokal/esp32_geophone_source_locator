@@ -100,7 +100,7 @@ static bool budgeted_step(
 }
 
 
-static void compute_semblance_at(
+static bool compute_semblance_at(
     localization_point3d_t candidate,
     const localization_semblance_channel_t *channels,
     size_t channel_count,
@@ -124,12 +124,27 @@ static void compute_semblance_at(
     long shift_samples[LOCALIZATION_SEMBLANCE_MAX_CHANNELS];
     long min_shift = LONG_MAX;
     for (size_t ch = 0u; ch < channel_count; ++ch) {
-        const double dx = candidate.x_m - channels[ch].sensor_position.x_m;
-        const double dy = candidate.y_m - channels[ch].sensor_position.y_m;
-        const double dz = candidate.z_m - channels[ch].sensor_position.z_m;
-        const double distance = sqrt(dx * dx + dy * dy + dz * dz);
-        const double predicted_delay_s =
-            distance / config->propagation_speed_mps;
+        double predicted_delay_s = 0.0;
+        if (config->travel_time_model.travel_time != NULL) {
+            /* A travel-time model (e.g. an eikonal field around scan voids)
+             * replaces the straight ray; an unreachable sensor makes the
+             * candidate unscorable rather than silently straight-rayed. */
+            if (
+                !config->travel_time_model.travel_time(
+                    ch, &candidate, &predicted_delay_s, config->travel_time_model.context
+                ) ||
+                !isfinite(predicted_delay_s)
+            ) {
+                *out_semblance = 0.0;
+                return false;
+            }
+        } else {
+            const double dx = candidate.x_m - channels[ch].sensor_position.x_m;
+            const double dy = candidate.y_m - channels[ch].sensor_position.y_m;
+            const double dz = candidate.z_m - channels[ch].sensor_position.z_m;
+            const double distance = sqrt(dx * dx + dy * dy + dz * dz);
+            predicted_delay_s = distance / config->propagation_speed_mps;
+        }
         shift_samples[ch] = (long)llround(
             predicted_delay_s * (double)channels[ch].sample_rate_hz
         );
@@ -166,6 +181,7 @@ static void compute_semblance_at(
         sum_squares_all > 0.0
         ? sum_stack_squares / ((double)channel_count * sum_squares_all)
         : 0.0;
+    return true;
 }
 
 
@@ -210,9 +226,11 @@ static esp_err_t search_grid(
                     continue;
                 }
                 double semblance = 0.0;
-                compute_semblance_at(
-                    candidate, channels, channel_count, config, stack, &semblance
-                );
+                if (!compute_semblance_at(
+                        candidate, channels, channel_count, config, stack, &semblance
+                    )) {
+                    continue;
+                }
 
                 result->candidates_searched += 1u;
                 if (semblance > result->best_semblance) {

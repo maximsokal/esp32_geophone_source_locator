@@ -849,6 +849,95 @@
       "libraries": ["m"]
     },
     {
+      "name": "localization_robust",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_robust.c",
+        "components/localization_extended/tests/localization_robust_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_psp",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_psp.c",
+        "components/localization_extended/tests/localization_psp_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_xcorr_tdoa",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_robust.c",
+        "components/localization_extended/localization_xcorr_tdoa.c",
+        "components/localization_extended/tests/localization_xcorr_tdoa_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_eikonal",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_extended/tests/localization_eikonal_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_bayes",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_bayes.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_extended/tests/localization_bayes_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_extended/tests"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "localization_calculate_policy",
       "sources": [
         "components/localization_calculate/localization_calculate_policy.c",

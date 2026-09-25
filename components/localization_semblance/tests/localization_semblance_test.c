@@ -759,6 +759,82 @@ static void test_rejects_invalid_config_and_null_arguments(void)
 }
 
 
+/* A travel-time model standing in for an eikonal field: channel 3's
+ * wave detours around a void (+2 ms over its straight ray). */
+static const double s_detour_s = 0.002;
+
+static bool detour_travel_time(
+    size_t sensor_index,
+    const localization_point3d_t *candidate,
+    double *travel_time_s,
+    void *context
+)
+{
+    (void)context;
+    if (candidate->x_m < 0.5) {
+        return false; /* this part of the volume is a sealed void */
+    }
+    const localization_point3d_t sensor = s_sensors_planar[sensor_index];
+    *travel_time_s = position_error_m(*candidate, sensor) / s_speed_mps + (sensor_index == 3u ? s_detour_s : 0.0);
+    return true;
+}
+
+
+static void test_travel_time_model_replaces_straight_rays(void)
+{
+    synthetic_recording_t recording;
+    memset(&recording, 0, sizeof(recording));
+    recording.channel_count = 4u;
+    const size_t emission_index = (size_t)llround(s_emission_s * (double)s_sample_rate_hz);
+    size_t reference_sample_index = SIZE_MAX;
+    for (size_t ch = 0u; ch < 4u; ++ch) {
+        double t = 0.0;
+        assert(detour_travel_time(ch, &s_source_planar, &t, NULL));
+        const size_t arrival = emission_index + (size_t)llround(t * (double)s_sample_rate_hz);
+        reference_sample_index = arrival < reference_sample_index ? arrival : reference_sample_index;
+        recording.buffers[ch] = build_channel(s_buffer_len, arrival, s_pulse_width, 1.0f, 0.02f, (uint32_t)ch);
+        recording.channels[ch] = (localization_semblance_channel_t) {
+            .samples = recording.buffers[ch],
+            .sample_count = s_buffer_len,
+            .sample_rate_hz = s_sample_rate_hz,
+            .sensor_position = s_sensors_planar[ch]
+        };
+    }
+    const localization_semblance_search_bounds_t bounds = {
+        .min_corner = { 0.0, 0.0, 0.0 },
+        .max_corner = { 4.0, 4.0, 0.0 },
+        .step_m = 0.25
+    };
+    localization_semblance_config_t config = {
+        .propagation_speed_mps = s_speed_mps,
+        .reference_sample_index = reference_sample_index,
+        .window_half_span_samples = 15u,
+        .refine_divisor = 5u
+    };
+    localization_semblance_result_t straight;
+    assert(localization_semblance_search(recording.channels, 4u, &bounds, &config, &straight) == ESP_OK);
+    config.travel_time_model.travel_time = detour_travel_time;
+    localization_semblance_result_t modelled;
+    assert(localization_semblance_search(recording.channels, 4u, &bounds, &config, &modelled) == ESP_OK);
+    const double straight_error = position_error_m(straight.best_position, s_source_planar);
+    const double modelled_error = position_error_m(modelled.best_position, s_source_planar);
+    printf("[semblance] detour on one channel: straight rays %.3f m (semblance %.2f), "
+           "travel-time model %.3f m (semblance %.2f)\n",
+           straight_error, straight.best_semblance, modelled_error, modelled.best_semblance);
+    assert(modelled.found);
+    /* Straight rays can align only three of the four channels: the stack
+     * loses a quarter of its coherence (and the position drifts); the
+     * model restores both. */
+    assert(modelled_error < 0.05 && modelled_error < straight_error);
+    assert(modelled.best_semblance > 0.9);
+    assert(modelled.best_semblance > straight.best_semblance + 0.15);
+    /* Unreachable candidates (the sealed void) are never scored. */
+    assert(modelled.best_position.x_m >= 0.5);
+    assert(modelled.candidates_searched < straight.candidates_searched);
+    free_recording(&recording);
+}
+
+
 int main(void)
 {
     test_planar_search_recovers_known_source_with_high_semblance();
@@ -770,6 +846,7 @@ int main(void)
     test_rejects_too_few_channels();
     test_rejects_mismatched_sample_rate();
     test_rejects_invalid_config_and_null_arguments();
+    test_travel_time_model_replaces_straight_rays();
     puts("localization semblance tests passed");
     return 0;
 }
