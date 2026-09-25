@@ -5,6 +5,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import LocalizationOverlay from '../../src/features/objects/LocalizationOverlay';
 import type { LocalizationRun } from '../../src/api/deviceApi';
 
+/** The rendered <input .../> tag for one radio value, regardless of React's SSR attribute order. */
+function radioTag(html: string, value: string): string {
+  const match = html.match(new RegExp(`<input[^>]*value="${value}"[^>]*/>`));
+  if (match === null) throw new Error(`no radio input for value="${value}" in: ${html}`);
+  return match[0];
+}
+
 /* MAX-161: the comparison table + selector (scene disabled: no WebGL in tests). */
 
 function run(method: string, overrides: Partial<LocalizationRun> = {}): LocalizationRun {
@@ -45,5 +52,64 @@ describe('LocalizationOverlay view', () => {
 
   it('renders nothing without runs', () => {
     expect(renderToStaticMarkup(createElement(LocalizationOverlay, { runs: [], geometry: null, renderScene: false }))).toBe('');
+  });
+});
+
+/* MAX-148: the unconstrained/scan-constrained toggle. */
+describe('LocalizationOverlay unconstrained/scan-constrained toggle', () => {
+  it('is disabled with an explanation when the session has no scan', () => {
+    const html = renderToStaticMarkup(createElement(LocalizationOverlay, {
+      runs: [run('gauss_newton_tdoa')],
+      geometry: null,
+      hasScan: false,
+      renderScene: false,
+    }));
+    expect(html).toContain('<fieldset class="overlay-variant-toggle" disabled="">');
+    expect(radioTag(html, 'unconstrained')).toContain('disabled=""');
+    expect(radioTag(html, 'unconstrained')).toContain('checked=""');
+    expect(radioTag(html, 'scan_constrained')).toContain('disabled=""');
+    expect(html).toContain('This session has no 3D scan');
+  });
+
+  it('is disabled with a different explanation when a scan exists but no constrained results have been computed', () => {
+    const html = renderToStaticMarkup(createElement(LocalizationOverlay, {
+      runs: [run('gauss_newton_tdoa')],
+      geometry: null,
+      hasScan: true,
+      renderScene: false,
+    }));
+    expect(html).toContain('<fieldset class="overlay-variant-toggle" disabled="">');
+    expect(html).toContain('No scan-constrained localization results');
+  });
+
+  it('is disabled with a "checking" explanation while scan presence is unknown (hasScan omitted)', () => {
+    const html = renderToStaticMarkup(createElement(LocalizationOverlay, {
+      runs: [run('gauss_newton_tdoa')],
+      geometry: null,
+      renderScene: false,
+    }));
+    expect(html).toContain('<fieldset class="overlay-variant-toggle" disabled="">');
+    expect(html).toContain('Checking whether this session has a 3D scan');
+  });
+
+  it('is enabled once a scan exists and a scan-constrained result is on record, and the default view filters the table to unconstrained', () => {
+    const html = renderToStaticMarkup(createElement(LocalizationOverlay, {
+      runs: [
+        run('gauss_newton_tdoa', { source_position: { x_m: 1, y_m: 1, z_m: 0 } }),
+        run('traveltime_scan_constrained', { source_position: { x_m: 1.1, y_m: 1.1, z_m: 0 } }),
+      ],
+      geometry: null,
+      hasScan: true,
+      renderScene: false,
+    }));
+    expect(html).toContain('<fieldset class="overlay-variant-toggle">');
+    expect(html).not.toContain('<fieldset class="overlay-variant-toggle" disabled="">');
+    expect(radioTag(html, 'unconstrained')).toContain('checked=""');
+    expect(radioTag(html, 'unconstrained')).not.toContain('disabled=""');
+    expect(radioTag(html, 'scan_constrained')).not.toContain('checked=""');
+    expect(radioTag(html, 'scan_constrained')).not.toContain('disabled=""');
+    /* Default view is unconstrained: only the unconstrained method appears in the table/selector. */
+    expect(html).toContain('>gauss_newton_tdoa<');
+    expect(html).not.toContain('traveltime_scan_constrained');
   });
 });

@@ -21,6 +21,14 @@ import type {
 
 export type OverlayEmphasis = 'selected' | 'dim';
 
+/**
+ * MAX-148: unconstrained is the plain TDOA/traveltime/etc. solve; scan
+ * constrained is the MAX-147 variant that folds in the registered scan's
+ * FREE/OCCUPIED occupancy. The backend distinguishes them purely by
+ * method_name suffix (see isConstrainedMethod) -- there is no separate flag.
+ */
+export type ResultVariant = 'unconstrained' | 'scan_constrained';
+
 export interface OverlaySector {
   method: string;
   kind: LocalizationRun['kind'];
@@ -42,6 +50,7 @@ export interface OverlaySector {
   computedAtMs: number;
   color: string;
   emphasis: OverlayEmphasis;
+  variant: ResultVariant;
 }
 
 export interface OverlayCredibleBox {
@@ -56,6 +65,7 @@ export interface OverlayUnavailable {
   method: string;
   reason: string;
   computedAtMs: number;
+  variant: ResultVariant;
 }
 
 export interface OverlaySensor {
@@ -103,6 +113,73 @@ const FALLBACK_COLORS = ['#fb7185', '#facc15', '#60a5fa', '#4ade80'];
 
 export function methodColor(method: string, index: number): string {
   return METHOD_COLORS[method] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+}
+
+/*
+ * MAX-147 landed the scan-occupancy-constrained variants as their own
+ * method_name, always the unconstrained base name plus one of these two
+ * suffixes (see localization_calculate.c): "_scan_constrained" for the
+ * fitted methods (traveltime, semblance, TDCAS, PSAFUVS) and a "_voids"
+ * suffix ("_scan_voids" or "semblance_eikonal_voids") for the methods whose
+ * scan use is routing around voids rather than a constrained fit (SUEA,
+ * eikonal, the joint semblance/eikonal method, Bayesian). There is no
+ * separate backend flag -- the name IS the contract.
+ */
+const CONSTRAINED_SUFFIXES = ['_scan_constrained', '_voids'];
+
+export function isConstrainedMethod(methodName: string): boolean {
+  return CONSTRAINED_SUFFIXES.some((suffix) => methodName.endsWith(suffix));
+}
+
+export function resultVariant(methodName: string): ResultVariant {
+  return isConstrainedMethod(methodName) ? 'scan_constrained' : 'unconstrained';
+}
+
+/** True when a sector's Z is not a solved coordinate (MAX-147/148: 3-REMOTE planar fits report a nominal Z, never a real one). */
+export function isPlanarSector(sector: Pick<OverlaySector, 'dimensionality'>): boolean {
+  return sector.dimensionality === 'planar_2d';
+}
+
+export function dimensionalityLabel(dimensionality: LocalizationRun['dimensionality']): string {
+  switch (dimensionality) {
+    case 'planar_2d': return '2D';
+    case 'capable_3d': return '3D';
+    default: return 'insufficient';
+  }
+}
+
+export interface ToggleAvailability {
+  available: boolean;
+  /** Why the toggle is disabled; null when available. */
+  reason: string | null;
+}
+
+/**
+ * MAX-148: the unconstrained/scan-constrained toggle. `hasScan` is null
+ * while its presence is still being fetched -- disabled either way, but
+ * with a distinct explanation from "no scan at all".
+ */
+export function toggleAvailability(runs: LocalizationRun[], hasScan: boolean | null): ToggleAvailability {
+  if (hasScan === null) return { available: false, reason: 'Checking whether this session has a 3D scan…' };
+  if (!hasScan) return { available: false, reason: 'This session has no 3D scan, so no scan-constrained results can exist.' };
+  const hasConstrained = runs.some((run) => isConstrainedMethod(run.method_name));
+  if (!hasConstrained) return { available: false, reason: 'No scan-constrained localization results have been computed for this session yet.' };
+  return { available: true, reason: null };
+}
+
+/** Keep only one variant's sectors/unavailable entries; re-derives the default selection and emphasis, never coordinates. */
+export function filterOverlayByVariant(model: LocalizationOverlayModel, variant: ResultVariant): LocalizationOverlayModel {
+  const sectors = model.sectors.filter((sector) => sector.variant === variant);
+  const unavailable = model.unavailable.filter((entry) => entry.variant === variant);
+  const selected = sectors.some((sector) => sector.method === model.selectedMethod)
+    ? model.selectedMethod
+    : sectors[0]?.method ?? null;
+  return {
+    ...model,
+    sectors: sectors.map((sector) => ({ ...sector, emphasis: sector.method === selected ? 'selected' : 'dim' })),
+    unavailable,
+    selectedMethod: selected,
+  };
 }
 
 function latestPerMethod(runs: LocalizationRun[]): LocalizationRun[] {
@@ -200,6 +277,7 @@ export function buildLocalizationOverlay(
           ? run.rejection_reason
           : run.solved ? 'no source position reported' : 'not solved',
         computedAtMs: run.computed_at_ms,
+        variant: resultVariant(run.method_name),
       });
       return;
     }
@@ -218,6 +296,7 @@ export function buildLocalizationOverlay(
       computedAtMs: run.computed_at_ms,
       color: methodColor(run.method_name, index),
       emphasis: 'dim',
+      variant: resultVariant(run.method_name),
     });
   });
 
