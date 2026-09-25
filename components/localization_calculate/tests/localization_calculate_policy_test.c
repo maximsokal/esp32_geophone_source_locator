@@ -1015,6 +1015,73 @@ static void test_s_minus_p_sigma_grows_as_the_s_onset_weakens(void)
 }
 
 
+static int64_t s_fake_now_us;
+static int64_t fake_clock(void)
+{
+    return s_fake_now_us;
+}
+
+static char s_progress_log[256];
+static void log_progress(const char *method, void *context)
+{
+    (void)context;
+    strncat(s_progress_log, method, sizeof(s_progress_log) - strlen(s_progress_log) - 2U);
+    strncat(s_progress_log, ",", sizeof(s_progress_log) - strlen(s_progress_log) - 1U);
+}
+
+
+static void test_time_budget_times_every_method_and_skips_after_the_deadline(void)
+{
+    localization_calculate_summary_t summary;
+    memset(&summary, 0, sizeof(summary));
+    s_progress_log[0] = '\0';
+    s_fake_now_us = 1000000;
+    localization_calculate_budget_t budget;
+    localization_calculate_budget_init(&budget, fake_clock, 1000000 + 5000000, log_progress, NULL, &summary);
+
+    /* Runs and is timed. */
+    localization_run_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.solved = true;
+    assert(localization_calculate_budget_begin(&budget, "tdcas", true));
+    s_fake_now_us += 1250000;
+    localization_calculate_budget_end(&budget, &record);
+    assert(record.solved);
+
+    /* Past the deadline a skippable method is refused and its record says so ... */
+    s_fake_now_us += 4000000;
+    record.solved = true;
+    record.confidence_score = 0.9;
+    assert(!localization_calculate_budget_begin(&budget, "bayesian", true));
+    localization_calculate_budget_end(&budget, &record);
+    assert(!record.solved && record.confidence_score == 0.0);
+    assert(strcmp(record.rejection_reason, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON) == 0);
+
+    /* ... while a mandatory (cheap) one still runs. */
+    record.solved = true;
+    assert(localization_calculate_budget_begin(&budget, "energy_baseline", false));
+    s_fake_now_us += 3000;
+    localization_calculate_budget_end(&budget, &record);
+    assert(record.solved);
+
+    assert(summary.timing_count == 3U && summary.methods_skipped_for_time == 1U);
+    assert(strcmp(summary.timings[0].method_name, "tdcas") == 0 && summary.timings[0].duration_ms == 1250U);
+    assert(summary.timings[1].skipped_for_time && summary.timings[1].duration_ms == 0U);
+    assert(!summary.timings[2].skipped_for_time && summary.timings[2].duration_ms == 3U);
+    /* Progress is published only for methods that start. */
+    assert(strcmp(s_progress_log, "tdcas,energy_baseline,") == 0);
+
+    /* No deadline: nothing is ever skipped; the timings list is bounded. */
+    memset(&summary, 0, sizeof(summary));
+    localization_calculate_budget_init(&budget, fake_clock, 0, NULL, NULL, &summary);
+    for (size_t i = 0U; i < LOCALIZATION_CALCULATE_MAX_TIMINGS + 3U; ++i) {
+        assert(localization_calculate_budget_begin(&budget, "semblance", true));
+        localization_calculate_budget_end(&budget, NULL);
+    }
+    assert(summary.timing_count == LOCALIZATION_CALCULATE_MAX_TIMINGS && summary.methods_skipped_for_time == 0U);
+}
+
+
 static void test_discretization_error(void)
 {
     assert(nearly_equal(localization_calculate_discretization_error_us(0.1, 300.0), 0.1 / (300.0 * sqrt(6.0)) * 1e6, 1e-9));
@@ -1094,6 +1161,7 @@ int main(void)
     test_s_minus_p_sigma_grows_as_the_s_onset_weakens();
     test_extended_bounds_copy_the_search_box();
     test_discretization_error();
+    test_time_budget_times_every_method_and_skips_after_the_deadline();
     test_bayes_adapter_carries_the_inflation();
     return 0;
 }

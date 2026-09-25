@@ -7,6 +7,7 @@ idf_component_register(
         "include"
 
     REQUIRES
+        esp_timer
         geophone_events
         localization
         localization_comparison

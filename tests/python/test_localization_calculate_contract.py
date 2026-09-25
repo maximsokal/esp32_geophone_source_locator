@@ -315,3 +315,22 @@ def test_extended_budgets_are_documented_constants():
     budget = source.index("#define LOCALIZATION_CALCULATE_EIKONAL_MAX_NODES")
     assert "not physics" in source[max(0, budget - 300):budget]
     assert "#define LOCALIZATION_CALCULATE_MAX_RECORDS 20U" in source
+
+
+def test_every_method_is_timed_and_the_heavy_ones_respect_the_deadline():
+    """Each method is bracketed by the time budget; skippable ones only run
+    when budget_begin allows, and every record gets budget_end (which marks
+    a refused method unsolved with the reason) before it is counted."""
+    source = orchestrator_source()
+    assert "config->deadline_us" in source
+    assert source.count("localization_calculate_budget_begin(") == 20
+    assert source.count("++record_count;") == source.count("localization_calculate_budget_end(&budget, &records[record_count]);")
+    for mandatory in ('"tdoa_gauss_newton", false', '"energy_baseline", false'):
+        assert mandatory in source
+    for skippable in (
+        "traveltime_inversion", "semblance", "tdcas", "psafuvs", "suea", "xcorr_tdoa", "robust_tdoa",
+        "psp_joint", "bayesian", "eikonal_fmm", "traveltime_scan_constrained", "semblance_scan_constrained",
+        "tdcas_scan_constrained", "psafuvs_scan_constrained", "suea_scan_voids", "eikonal_scan_voids",
+        "semblance_eikonal_voids", "bayesian_scan_voids",
+    ):
+        assert f'"{skippable}", true)' in source, skippable
