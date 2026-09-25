@@ -3,7 +3,7 @@ import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-import type { LocalizationOverlayModel } from '../../domain/localizationOverlay';
+import { isPlanarSector, type LocalizationOverlayModel } from '../../domain/localizationOverlay';
 
 /*
  * MAX-161: 3D scene for the method comparison. Sensor frame, metres:
@@ -62,10 +62,20 @@ export default function LocalizationOverlayScene({ model }: Props) {
 
       {model.sectors.map((sector) => {
         const selected = sector.emphasis === 'selected';
+        const planar = isPlanarSector(sector);
+        /*
+         * MAX-148: a 3-REMOTE / planar_2d run never solved its own height --
+         * the backend reports a nominal Z (mean sensor Z) only so the record
+         * has a position at all. Drawing it as a sphere at that Z would read
+         * as a solved 3D point; a flat disc (thin cylinder, three.js Y axis
+         * already matches "up") marks it as a 2D result instead.
+         */
         return (
           <group key={sector.method} position={toThree(sector.position.x_m, sector.position.y_m, sector.position.z_m)}>
             <mesh>
-              <sphereGeometry args={[sector.radiusM, 32, 16]} />
+              {planar
+                ? <cylinderGeometry args={[sector.radiusM, sector.radiusM, 0.02, 32]} />
+                : <sphereGeometry args={[sector.radiusM, 32, 16]} />}
               <meshStandardMaterial
                 color={sector.color}
                 transparent
@@ -76,6 +86,12 @@ export default function LocalizationOverlayScene({ model }: Props) {
                 side={THREE.DoubleSide}
               />
             </mesh>
+            {planar && (
+              <mesh rotation={[Math.PI / 2, 0, 0]}>
+                <ringGeometry args={[sector.radiusM * 0.97, sector.radiusM, 48]} />
+                <meshBasicMaterial color={sector.color} transparent opacity={selected ? 0.9 : 0.3} side={THREE.DoubleSide} />
+              </mesh>
+            )}
             {/* Centre marker keeps overlapping sectors distinguishable. */}
             <mesh>
               <sphereGeometry args={[Math.min(0.06, sector.radiusM / 3), 12, 8]} />

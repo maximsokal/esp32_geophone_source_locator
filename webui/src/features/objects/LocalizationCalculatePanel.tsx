@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchLocalizationJob, fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
+import { fetchLocalizationJob, fetchLocalizationRuns, fetchScanInfo, sendControl } from '../../api/deviceApi';
 import LocalizationJobReport from './LocalizationJobReport';
 import LocalizationOverlay from './LocalizationOverlay';
 import {
@@ -241,6 +241,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
   const [picks, setPicks] = useState<LocalizationPickRecord[] | null>(null);
   const [geometryError, setGeometryError] = useState<string | null>(null);
+  /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
+  const [hasScan, setHasScan] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,6 +250,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     setCsPairs(null);
     setPicks(null);
     setGeometryError(null);
+    setHasScan(null);
     fetchLocalizationRuns(objectId, sessionId)
       .then((listing) => {
         if (cancelled) return;
@@ -260,6 +263,10 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         if (cancelled) return;
         setGeometryError(reason instanceof Error ? reason.message : String(reason));
       });
+    fetchScanInfo(objectId, sessionId)
+      .then((info) => { if (!cancelled) setHasScan(info.present); })
+      /* Best-effort: an unreachable scan-info endpoint just keeps the toggle disabled, never blocks the panel. */
+      .catch(() => { if (!cancelled) setHasScan(false); });
     return () => { cancelled = true; };
   }, [objectId, sessionId]);
 
@@ -557,7 +564,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       {job !== null && <LocalizationJobReport status={job} />}
 
       {runs !== null && runs.length > 0 && (
-        <LocalizationOverlay runs={runs} geometry={geometry} />
+        <LocalizationOverlay runs={runs} geometry={geometry} hasScan={hasScan} />
       )}
 
       {runs !== null && (
