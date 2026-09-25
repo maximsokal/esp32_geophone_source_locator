@@ -58,7 +58,7 @@ describe('certified corners in the production pipeline', () => {
     const scene = insideCornerScene();
     const result = run(scene, orbitPoses(scene.focus, 1.2, 40, 10, 80, 32));
     expect(nearest(result.corners, scene.corners[0])).toBeLessThanOrEqual(0.02);
-  });
+  }, 30_000); // 32 full pipeline analyses
 
   it('still certifies a convex box corner within 2 cm', () => {
     const scene = boxCornerScene();

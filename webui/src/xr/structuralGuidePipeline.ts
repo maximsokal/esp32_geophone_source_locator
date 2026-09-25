@@ -52,6 +52,15 @@ function pointDistance(
  * free-space gate) can be exercised end to end in tests. The worker only
  * forwards messages.
  */
+/*
+ * Readiness can dip for a single keyframe while a scan grows (measured on a
+ * harness ridge: S 1 -> 0.44 -> 1 -> 0.56 -> 1 when one face's components
+ * momentarily fail to pair). Without hysteresis every dip returned no edges
+ * and tracked edges blinked off. Within a session the map only grows, so a
+ * real loss below a quarter means reset or heavy eviction: release there.
+ */
+const STRUCTURAL_ACTIVE_RELEASE_PROGRESS = 0.25;
+
 export class StructuralGuidePipeline {
   private readonly tracker = new StructuralGuideTracker();
   private readonly threePlaneCornerTracker = new CertifiedStructuralCornerTracker();
@@ -60,8 +69,10 @@ export class StructuralGuidePipeline {
   private analysisSequence = 0;
   private lastThreePlaneCorners: readonly StructuralCornerCandidate[] = [];
   private lastEndpointCorners: readonly StructuralCornerCandidate[] = [];
+  private structuralActive = false;
 
   reset(): void {
+    this.structuralActive = false;
     this.tracker.reset();
     this.threePlaneCornerTracker.reset();
     this.endpointTracker.reset();
@@ -112,7 +123,9 @@ export class StructuralGuidePipeline {
     // A small/narrow/sparsely supported measured component is useful scan evidence,
     // but not yet large enough to justify plane intersections or certified corners.
     // Keep tracker history intact and let a later keyframe re-probe after scan growth.
-    if (!structuralReadiness.ready) {
+    this.structuralActive = structuralReadiness.ready ||
+      (this.structuralActive && structuralReadiness.progress >= STRUCTURAL_ACTIVE_RELEASE_PROGRESS);
+    if (!this.structuralActive) {
       const result = {
         corners: [],
         edges: [],

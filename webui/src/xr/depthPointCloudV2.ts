@@ -129,6 +129,12 @@ export interface DepthFusionResult {
   edgeSupersampleProbes: number;
   /** Extra center probes issued only around physically measured complex surface cells. */
   featureSupersampleProbes: number;
+  /**
+   * Base samples that landed in a SETTLED cell (ready and flat / gently bent)
+   * and were dropped right after unprojection, before the expensive
+   * neighbourhood, normal, association and fusion work.
+   */
+  settledSkippedSamples: number;
 }
 
 interface RepresentativePoint {
@@ -258,6 +264,17 @@ const CELL_TARGET_BASELINE_METERS = 0.22;
  * own CELL_READY_MIN_PROMOTED multi-view points; a corner cell with one face
  * seen from a single viewpoint is not ready.
  */
+/*
+ * Power budget: once a coverage cell is ready (every face has multi-view
+ * support) and flat or only gently bent, more samples there only re-confirm
+ * what is known -- the point set is already at its plateau. Such a SETTLED
+ * cell (additionally: every surfel in it promoted with >= 3 independent views)
+ * keeps 1 of SETTLED_SAMPLE_STRIDE base samples on the full path, enough
+ * to keep polishing and to notice change (new geometry raises the cell's
+ * complexity and unsettles it); the rest are dropped after unprojection.
+ */
+const SETTLED_MAX_COMPLEXITY = 0.15;
+const SETTLED_SAMPLE_STRIDE = 4;
 const CELL_FACE_FAMILY_DOT = Math.cos((24 * Math.PI) / 180);
 const CELL_FACE_MIN_NORMAL_CONFIDENCE = 0.35;
 const CELL_FACE_MIN_MEMBERS = 2;
@@ -662,6 +679,18 @@ export class DepthPointCloudAccumulator {
     // separate retention path below still requires multi-view maturity. Cache at
     // most one clustering pass per touched cell to bound CPU work.
     const featureScoreCache = new Map<string, number>();
+    const settledCache = new Map<string, boolean>();
+    let settledSkippedSamples = 0;
+    const settled = (key: string): boolean => {
+      let value = settledCache.get(key);
+      if (value === undefined) {
+        const cell = this.coverageCells.get(key);
+        value = cell !== undefined && this.cellHasNothingLeftToLearn(cell) && this.cellQuality(cell).ready &&
+          this.cellFeatureComplexity(cell) < SETTLED_MAX_COMPLEXITY;
+        settledCache.set(key, value);
+      }
+      return value;
+    };
     const featureProbeCountsByCell = new Map<string, number>();
 
     const featureScoreForProject = (project: ProjectPoint): number => {
@@ -678,16 +707,23 @@ export class DepthPointCloudAccumulator {
       return score;
     };
 
-    const integrateAt = (u: number, v: number, allowAdaptiveExpansion: boolean): LocalQuality | null => {
+    const integrateAt = (u: number, v: number, allowAdaptiveExpansion: boolean, sampleIndex = -1): LocalQuality | null => {
       if (u <= SAMPLE_MARGIN || u >= 1 - SAMPLE_MARGIN || v <= SAMPLE_MARGIN || v >= 1 - SAMPLE_MARGIN) return null;
       const depthMeters = depth.getDepthInMeters(u, v);
       if (!finite(depthMeters) || depthMeters < MIN_DEPTH_METERS || depthMeters > this.maxDepthMeters) return null;
+      const project = unprojectProjectPoint(u, v, depthMeters, p00, p11, p20, p21, worldFromView);
+      if (project === null) return null;
+      if (
+        sampleIndex >= 0 &&
+        (sampleIndex + this.sampleEpoch) % SETTLED_SAMPLE_STRIDE !== 0 &&
+        settled(cellKey(project[0], project[1], project[2], COVERAGE_CELL_METERS))
+      ) {
+        settledSkippedSamples += 1;
+        return null;
+      }
       const neighbourhood = readSurfaceNeighbourhood(depth, u, v, depthMeters, p00, p11);
       const local = neighbourhood.quality;
       if (!local.accepted) { this.discardedSampleCount += 1; return local; }
-
-      const project = unprojectProjectPoint(u, v, depthMeters, p00, p11, p20, p21, worldFromView);
-      if (project === null) return local;
       const normalEstimate = estimateSurfaceNormal(
         depth, u, v, depthMeters, neighbourhood, p00, p11, p20, p21, worldFromView,
         context.cameraProjectPosition,
@@ -765,7 +801,7 @@ export class DepthPointCloudAccumulator {
 
     for (let index = 0; index < BASE_DEPTH_SAMPLES_PER_FRAME; index += 1) {
       const [u, v] = lowDiscrepancySample2D(index, SAMPLE_MARGIN, phase);
-      integrateAt(u, v, true);
+      integrateAt(u, v, true, index);
     }
 
     if (
@@ -783,6 +819,7 @@ export class DepthPointCloudAccumulator {
       rejectedResiduals: this.residualRejectedSamples - residualBefore,
       edgeSupersampleProbes,
       featureSupersampleProbes,
+      settledSkippedSamples,
     };
   }
 
@@ -1313,6 +1350,20 @@ export class DepthPointCloudAccumulator {
     return ready;
   }
 
+  /**
+   * Every surfel in the cell is promoted, has a measured orientation and
+   * TARGET_INDEPENDENT_VIEWS independent views: further samples can only
+   * re-confirm it. Slowly maturing surfels (occluded concave vertices, grazing
+   * faces) keep the cell on the full sampling path until they are done.
+   */
+  private cellHasNothingLeftToLearn(cell: CoverageCell): boolean {
+    if (cell.representatives.size === 0) return false;
+    for (const point of cell.representatives.values()) {
+      if (!point.promoted || !point.normalKnown || point.independentViews < TARGET_INDEPENDENT_VIEWS) return false;
+    }
+    return true;
+  }
+
   /** Diagnostic: readiness of the coverage cell containing a project point (null if no cell). */
   coverageCellReadyAt(point: ProjectPoint): boolean | null {
     const cell = this.coverageCells.get(cellKey(point[0], point[1], point[2], COVERAGE_CELL_METERS));
@@ -1491,6 +1542,7 @@ export class DepthPointCloudAccumulator {
       rejectedResiduals: 0,
       edgeSupersampleProbes: 0,
       featureSupersampleProbes: 0,
+      settledSkippedSamples: 0,
     };
   }
 }
