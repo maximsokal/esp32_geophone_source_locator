@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "geophone_events.h"
@@ -886,18 +885,51 @@ static void test_snr_gate_accepts_strong_rejects_weak_on_colored_background(void
 }
 
 
-/* Two channels sharing the exact same brown-noise realization (as if both
- * geophones sit in the same ambient field) plus the same triangular event,
- * delayed by a known 15 samples on channel_b. Cross-correlation recovers
- * that delay (within +/-1 sample -- insert_triangle_pulse() overwrites the
- * background under the event rather than adding to it, which slightly
- * perturbs the correlation peak versus a noise-free pulse) even though the
- * "noise" is heavily autocorrelated in time (unlike flat white noise),
- * because the delay estimate comes from where the *shared* signal (noise +
- * event) lines up best, not from the event's amplitude alone. Actual
- * observed: delay_samples=14, delay_refined_samples~=14.34, peak
- * correlation~=0.91. */
-static void test_cross_correlate_recovers_delay_on_shared_colored_noise(void)
+/* MAX-134 review follow-up: root-cause isolation for the delay bias below.
+ *
+ * geophone_event_cross_correlate() normalizes by a single energy_a/energy_b
+ * product computed once over the *whole* buffer (not per-lag), so when two
+ * channels share one noise realization, the noise's own cross-correlation
+ * competes with the event's cross-correlation for the argmax lag. The noise
+ * is identical on both channels at zero relative shift, so its correlation
+ * is largest at lag 0; whether that beats the event's (narrower, weaker)
+ * peak at the true lag depends on how strongly autocorrelated the shared
+ * noise is and how large it is relative to the event. Isolated by swapping
+ * only the background, everything else (seed 999, triangle event, half
+ * width 20, amplitude 1.0, true delay 15, max_lag_samples 50) held fixed:
+ *
+ *   background            | delay_samples | delay_refined_samples | corr
+ *   ---------------------- | -------------- | ---------------------- | -----
+ *   none (all zero)        | 15             | 15.000000              | 1.000
+ *   white noise, amp 0.05  | 15             | 15.005269              | 0.986
+ *   brown noise, amp 0.005 | 15             | 14.993245              | 0.999
+ *   brown noise, amp 0.05  | 14             | 14.339530              | 0.914
+ *   brown noise, amp 0.20  | 0              | 0.145240               | 0.896
+ *
+ * The zero-noise case reproduces the true delay exactly (15 / 15.000000 /
+ * 1.000), which rules out a sign or off-by-one convention bug in the
+ * correlator or its parabolic refinement -- both are correct. White noise
+ * (amplitude equal to the biased brown-noise case) recovers the delay
+ * within 0.01 samples, consistent with MAX-209's "within 0.1 sample on
+ * white noise" claim, because white noise has ~zero autocorrelation at
+ * nonzero lag: it adds floor but no structured pull toward any lag. Brown
+ * noise, by contrast, is a slow, long-range-correlated process (that is
+ * the whole point of using it here instead of white noise): its own
+ * cross-correlation stays large over many lags around 0, so as its
+ * amplitude approaches the event's, it visibly drags the argmax toward
+ * lag 0 (0.05 amplitude: -0.66 sample bias; 0.20 amplitude: total
+ * capture, the "event" peak disappears entirely).
+ *
+ * This is a real physical effect, not a defect: two geophones close enough
+ * to share ambient/mains-coupled low-frequency noise will have that noise
+ * pull a naive cross-correlation pick toward zero lag exactly like this.
+ * Nothing here calls for a production fix (the caller already gets
+ * peak_correlation back and can be more suspicious of picks that don't
+ * clear a healthy correlation floor); this test pins the bias down as a
+ * known, quantified property instead of leaving it undocumented. The
+ * companion test right below is the noise-free control that shows the
+ * correlator itself is exact. */
+static void test_cross_correlate_shows_zero_lag_bias_from_shared_colored_noise(void)
 {
     float background[1000];
     synth_brown_noise(background, 1000u, 999u, 0.05f, 0.95f);
@@ -916,9 +948,40 @@ static void test_cross_correlate_recovers_delay_on_shared_colored_noise(void)
 
     assert(geophone_event_cross_correlate(channel_a, channel_b, 1000u, &config, &result));
     assert(result.found);
-    assert(labs((long)result.delay_samples - (long)known_delay) <= 1);
-    assert(fabs(result.delay_refined_samples - (double)known_delay) < 1.0);
+    /* The bias is deterministic and reproduced exactly above: pin it down
+     * tightly instead of a wide tolerance that would hide a regression in
+     * either direction (more or less biased). */
+    assert(result.delay_samples == known_delay - 1);
+    assert(fabs(result.delay_refined_samples - 14.339530) < 0.05);
     assert(result.peak_correlation > 0.9f);
+}
+
+
+/* Noise-free control for the test above: the same event geometry (true
+ * delay 15, triangle half width 20, amplitude 1.0) with an all-zero
+ * background. This isolates the correlator/refinement algorithm itself
+ * from the shared-colored-noise bias: delay_samples and
+ * delay_refined_samples land on the true delay exactly (peak_correlation
+ * == 1.0), confirming the bias documented above comes from the shared
+ * background, not from a sign/off-by-one convention or a windowing defect
+ * in geophone_event_cross_correlate(). */
+static void test_cross_correlate_recovers_exact_delay_without_noise(void)
+{
+    float channel_a[1000] = { 0 };
+    float channel_b[1000] = { 0 };
+
+    const int32_t known_delay = 15;
+    insert_triangle_pulse(channel_a, 1000u, 200u, 20u, 1.0f);
+    insert_triangle_pulse(channel_b, 1000u, 200u + (size_t)known_delay, 20u, 1.0f);
+
+    const geophone_cross_correlation_config_t config = { .max_lag_samples = 50u };
+    geophone_cross_correlation_result_t result;
+
+    assert(geophone_event_cross_correlate(channel_a, channel_b, 1000u, &config, &result));
+    assert(result.found);
+    assert(result.delay_samples == known_delay);
+    assert(fabs(result.delay_refined_samples - (double)known_delay) < 0.1);
+    assert(result.peak_correlation > 0.999f);
 }
 
 
@@ -1115,7 +1178,8 @@ int main(void)
     test_band_limited_noise_alone_never_triggers_sta_lta();
     test_colored_noise_impulse_detected_within_tolerance();
     test_snr_gate_accepts_strong_rejects_weak_on_colored_background();
-    test_cross_correlate_recovers_delay_on_shared_colored_noise();
+    test_cross_correlate_shows_zero_lag_bias_from_shared_colored_noise();
+    test_cross_correlate_recovers_exact_delay_without_noise();
     test_colored_noise_boundary_event_at_start_is_never_found();
     test_colored_noise_boundary_event_at_end_is_found();
 
