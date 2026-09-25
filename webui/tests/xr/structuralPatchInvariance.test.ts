@@ -121,7 +121,7 @@ describe('corners are invariant to rigid placement', () => {
     // 200 placements resolve a 2 % miss rate; a corner search that only accepts
     // the lowest-index patch as hub misses ~5 % here and must fail.
     expect(misses.length, misses.join('\n')).toBeLessThanOrEqual(4);
-  });
+  }, 30_000); // 200 full detections; under a parallel suite this exceeds the 5 s default.
 
   it('negative control: a dense cylinder (r = 0.5 m) yields no corners and no edges at any orientation', () => {
     const placement = rng(0xc11);

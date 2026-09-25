@@ -52,20 +52,7 @@ describe('feature-aware structural surface clustering', () => {
     expect(dominantAxes).toEqual([0, 1, 2]);
   });
 
-  it('merges opposite normal signs into one physical surface family', () => {
-    const result = clusterStructuralSurfaceFamilies(snapshot(
-      [
-        [0.010, 0.010, 0.010],
-        [0.012, 0.011, 0.010],
-      ],
-      [
-        [1, 0, 0],
-        [-1, 0, 0],
-      ],
-    ));
-    expect(result.pointCount).toBe(1);
-    expect(Math.abs(result.normals[0])).toBeGreaterThan(0.98);
-  });
+  // MAX-260: opposite normal signs are now separate oriented surfaces; see signedNormals.test.ts.
 
   it('does not admit a fourth conflicting manifold into one tiny cell', () => {
     const result = clusterStructuralSurfaceFamilies(snapshot(

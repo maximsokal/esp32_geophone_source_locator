@@ -169,7 +169,8 @@ export function clusterStructuralSurfaceFamilies(
       source.normals[offset + 2],
     );
     if (rawNormal === null) continue;
-    const normal = canonical(rawNormal);
+    // MAX-260: keep the observation-side sign (see structuralGuide.ts).
+    const normal = rawNormal;
     const baseCellKey = cellKey(position, baseCellSize);
     const sample: SourceSample = {
       index,
@@ -213,7 +214,7 @@ export function clusterStructuralSurfaceFamilies(
     let best: Family | null = null;
     let bestDot = familyNormalDot;
     for (const family of families) {
-      const similarity = Math.abs(dot(family.referenceNormal, sample.normal));
+      const similarity = dot(family.referenceNormal, sample.normal);
       if (similarity >= bestDot) { best = family; bestDot = similarity; }
     }
 
@@ -254,7 +255,7 @@ export function clusterStructuralSurfaceFamilies(
     best.normalWeighted[2] += aligned[2] * sample.confidence;
     best.members += 1;
     const updated = normalize(best.normalWeighted[0], best.normalWeighted[1], best.normalWeighted[2]);
-    if (updated !== null) best.referenceNormal = canonical(updated);
+    if (updated !== null) best.referenceNormal = updated;
   }
 
   const families = [...cells.entries()]

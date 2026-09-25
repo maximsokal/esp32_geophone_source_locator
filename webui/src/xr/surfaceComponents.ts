@@ -134,6 +134,9 @@ function canonical(normal: SurfaceComponentNormal): SurfaceComponentNormal {
   return normal[axis] < 0 ? [-normal[0], -normal[1], -normal[2]] : normal;
 }
 
+function signedDot(a: SurfaceComponentNormal, b: SurfaceComponentNormal): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
 function absDot(a: SurfaceComponentNormal, b: SurfaceComponentNormal): number {
   return Math.abs(clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1, 1));
 }
@@ -403,7 +406,8 @@ function buildNodeAdjacency(
           for (const neighbour of neighbours) {
             if (neighbour.id <= current.id) continue;
             const neighbourNormal = nodeNormal(neighbour);
-            if (neighbourNormal === null || absDot(currentNormal, neighbourNormal) < COMPONENT_NORMAL_DOT) continue;
+            // MAX-260: signed -- opposite-facing surfaces are different faces.
+            if (neighbourNormal === null || signedDot(currentNormal, neighbourNormal) < COMPONENT_NORMAL_DOT) continue;
             if (!nodeSupportsConnect(current, neighbour, input, voxelSizeMeters, connectionCellSizeMeters)) continue;
             adjacency[current.id].push(neighbour.id);
             adjacency[neighbour.id].push(current.id);
@@ -644,7 +648,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
       Number(input.normals[offset + 2]),
     );
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || rawNormal === null) continue;
-    const normal = canonical(rawNormal);
+    const normal = rawNormal;
     const gx = grid(x, connectionCellSizeMeters);
     const gy = grid(y, connectionCellSizeMeters);
     const gz = grid(z, connectionCellSizeMeters);
@@ -673,7 +677,7 @@ export function analyzeSurfaceComponents(input: SurfaceComponentInput): SurfaceC
       for (const node of provisional) {
         const reference = nodeNormal(node);
         if (reference === null) continue;
-        const similarity = absDot(reference, sample.normal);
+        const similarity = signedDot(reference, sample.normal);
         if (similarity >= bestDot) { best = node; bestDot = similarity; }
       }
       if (best === null) {

@@ -1210,10 +1210,11 @@ export class DepthPointCloudAccumulator {
           // Both stored surfel normals and fresh normal estimates are normalized.
           // Compare their absolute dot product directly instead of allocating
           // temporary vectors, re-normalizing twice and evaluating acos().
-          const absDot = Math.abs(
-            point.normalX * normal[0] + point.normalY * normal[1] + point.normalZ * normal[2],
-          );
-          if (absDot < NORMAL_COMPATIBILITY_ABS_DOT) continue;
+          // MAX-260: signed. Both normals face their observing cameras, so the
+          // two faces of a knife edge (or two sides of a thin sheet) are
+          // different surfaces even though their sign-less angle is small.
+          const signedDot = point.normalX * normal[0] + point.normalY * normal[1] + point.normalZ * normal[2];
+          if (signedDot < NORMAL_COMPATIBILITY_ABS_DOT) continue;
         }
         best = point;
         bestDistanceSquared = distanceSquared;

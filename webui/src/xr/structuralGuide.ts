@@ -197,6 +197,13 @@ function addScaled(p: ProjectPoint, v: ProjectVector, scale: number): ProjectPoi
 function lerpPoint(a: ProjectPoint, b: ProjectPoint, t: number): ProjectPoint {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
+/*
+ * MAX-260: normals keep their observation side. The accumulator orients every
+ * surfel toward the cameras that saw it (MAX-253), so the two faces of a knife
+ * edge have nearly OPPOSITE normals while their sign-less angle is tiny; any
+ * sign-less family or face gate would merge them. A surface seen from both
+ * sides becomes two oriented surfaces, which never form an edge (parallel).
+ */
 function canonicalNormal(normal: ProjectVector): ProjectVector {
   const abs = [Math.abs(normal[0]), Math.abs(normal[1]), Math.abs(normal[2])];
   let axis = 0;
@@ -272,7 +279,6 @@ function weightedPlaneFit(points: readonly WeightedPoint[], extraWeights?: reado
   const eigen = symmetricEigen3([xx * invWeight, xy * invWeight, xz * invWeight, yy * invWeight, yz * invWeight, zz * invWeight]);
   let normal = eigen.vectors[0]; const inputNormal = normalize([normalX, normalY, normalZ]);
   if (inputNormal !== null && dot(normal, inputNormal) < 0) normal = [-normal[0], -normal[1], -normal[2]];
-  normal = canonicalNormal(normal);
   let squaredResidual = 0; let residualWeight = 0; let normalAgreement = 0;
   for (let index = 0; index < points.length; index += 1) {
     const sample = points[index]; const weight = sample.confidence * (extraWeights?.[index] ?? 1);
@@ -370,7 +376,7 @@ function indexStructuralPoints(input: StructuralGuideInput): StructuralPointInde
     const ix = cellCoord(x, PATCH_CELL_METERS); const iy = cellCoord(y, PATCH_CELL_METERS); const iz = cellCoord(z, PATCH_CELL_METERS);
     const key = cellKeyFromCoords(ix, iy, iz);
     const cell = cells.get(key) ?? { points: [], ix, iy, iz };
-    cell.points.push({ point: [x, y, z], inputNormal: canonicalNormal(normalized), confidence }); cells.set(key, cell);
+    cell.points.push({ point: [x, y, z], inputNormal: normalized, confidence }); cells.set(key, cell);
   }
   return cells;
 }
@@ -386,7 +392,7 @@ function buildPlanePatches(input: StructuralGuideInput, cells: StructuralPointIn
       let best: PatchFamily | null = null; let bestDot = PATCH_FAMILY_DOT;
       for (const family of families) {
         const mean = normalize([family.nx, family.ny, family.nz]); if (mean === null) continue;
-        const similarity = Math.abs(dot(mean, sample.inputNormal));
+        const similarity = dot(mean, sample.inputNormal);
         if (similarity >= bestDot) { best = family; bestDot = similarity; }
       }
       const w = sample.confidence;
@@ -408,7 +414,7 @@ function buildPlanePatches(input: StructuralGuideInput, cells: StructuralPointIn
         const neighbour = cells.get(cellKeyFromCoords(cell.ix + dx, cell.iy + dy, cell.iz + dz)); if (neighbour === undefined) continue;
         for (const sample of neighbour.points) {
           if (distance(sample.point, seed) > PATCH_SUPPORT_RADIUS_METERS) continue;
-          if (Math.abs(dot(seedNormal, sample.inputNormal)) < PATCH_SUPPORT_NORMAL_DOT) continue;
+          if (dot(seedNormal, sample.inputNormal) < PATCH_SUPPORT_NORMAL_DOT) continue;
           const offsetFromPlane = dot(seedNormal, [sample.point[0] - seed[0], sample.point[1] - seed[1], sample.point[2] - seed[2]]);
           if (Math.abs(offsetFromPlane) > PATCH_SUPPORT_PLANE_METERS) continue;
           support.push(sample);
@@ -480,7 +486,7 @@ function gatherFacePoints(index: StructuralPointIndex, patch: PlanePatch): FaceP
   for (let dx = -reach; dx <= reach; dx += 1) for (let dy = -reach; dy <= reach; dy += 1) for (let dz = -reach; dz <= reach; dz += 1) {
     const cell = index.get(cellKeyFromCoords(cx + dx, cy + dy, cz + dz)); if (cell === undefined) continue;
     for (const sample of cell.points) {
-      if (Math.abs(dot(patch.normal, sample.inputNormal)) < LINE_SUPPORT_NORMAL_DOT) continue;
+      if (dot(patch.normal, sample.inputNormal) < LINE_SUPPORT_NORMAL_DOT) continue;
       if (Math.abs(dot(patch.normal, sample.point) - patch.d) > planeGate) continue;
       if (distance(sample.point, patch.center) > FACE_POINT_RADIUS_METERS) continue;
       points.push(sample.point);
