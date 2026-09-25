@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "localization_bayes.h"
+#include "localization_calculate.h"
 #include "localization_comparison.h"
 #include "localization_eikonal.h"
 #include "localization_energy_baseline.h"
@@ -557,3 +558,53 @@ double localization_calculate_scan_eikonal_velocity(
  * invalid input.
  */
 double localization_calculate_discretization_error_us(double cell_m, double velocity_mps);
+
+
+/* ---- Time budget ------------------------------------------------------
+ * Each method is bracketed by budget_begin / budget_end. begin measures
+ * the start and, for a skippable method past the deadline, refuses it;
+ * end records the duration in the summary and, for a refused method,
+ * marks its record unsolved with the reason. The clock is injected so
+ * the policy is host-testable. */
+
+typedef int64_t (*localization_calculate_clock_fn)(void);
+
+typedef struct
+{
+    localization_calculate_clock_fn now_us;
+    int64_t deadline_us;            /* 0 = none */
+    localization_calculate_progress_fn progress;
+    void *progress_context;
+    localization_calculate_summary_t *summary;
+
+    const char *method;
+    int64_t started_us;
+    bool allowed;
+
+} localization_calculate_budget_t;
+
+#define LOCALIZATION_CALCULATE_TIME_BUDGET_REASON \
+    "not run: the calculation time budget was used up before this method"
+
+void localization_calculate_budget_init(
+    localization_calculate_budget_t *budget,
+    localization_calculate_clock_fn now_us,
+    int64_t deadline_us,
+    localization_calculate_progress_fn progress,
+    void *progress_context,
+    localization_calculate_summary_t *summary
+);
+
+/* true when the method may run (always, unless skippable and past the
+ * deadline). */
+bool localization_calculate_budget_begin(
+    localization_calculate_budget_t *budget,
+    const char *method_name,
+    bool skippable
+);
+
+/* record may be NULL (a step with no record of its own). */
+void localization_calculate_budget_end(
+    localization_calculate_budget_t *budget,
+    localization_run_record_t *record
+);

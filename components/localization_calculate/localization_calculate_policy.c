@@ -1237,3 +1237,67 @@ double localization_calculate_discretization_error_us(double cell_m, double velo
     }
     return cell_m / (velocity_mps * sqrt(6.0)) * 1.0e6;
 }
+
+
+void localization_calculate_budget_init(
+    localization_calculate_budget_t *budget,
+    localization_calculate_clock_fn now_us,
+    int64_t deadline_us,
+    localization_calculate_progress_fn progress,
+    void *progress_context,
+    localization_calculate_summary_t *summary
+)
+{
+    memset(budget, 0, sizeof(*budget));
+    budget->now_us = now_us;
+    budget->deadline_us = deadline_us;
+    budget->progress = progress;
+    budget->progress_context = progress_context;
+    budget->summary = summary;
+}
+
+
+bool localization_calculate_budget_begin(
+    localization_calculate_budget_t *budget,
+    const char *method_name,
+    bool skippable
+)
+{
+    budget->method = method_name;
+    budget->started_us = budget->now_us != NULL ? budget->now_us() : 0;
+    budget->allowed = !skippable || budget->deadline_us <= 0 || budget->started_us < budget->deadline_us;
+    if (budget->allowed && budget->progress != NULL) {
+        budget->progress(method_name, budget->progress_context);
+    }
+    return budget->allowed;
+}
+
+
+void localization_calculate_budget_end(
+    localization_calculate_budget_t *budget,
+    localization_run_record_t *record
+)
+{
+    const int64_t ended = budget->now_us != NULL ? budget->now_us() : budget->started_us;
+    localization_calculate_summary_t *summary = budget->summary;
+    if (summary != NULL && summary->timing_count < LOCALIZATION_CALCULATE_MAX_TIMINGS) {
+        localization_calculate_method_timing_t *timing = &summary->timings[summary->timing_count++];
+        snprintf(timing->method_name, sizeof(timing->method_name), "%s",
+                 budget->method != NULL ? budget->method : "");
+        const int64_t elapsed_ms = (ended - budget->started_us) / 1000;
+        timing->duration_ms = elapsed_ms > 0 ? (uint32_t)elapsed_ms : 0U;
+        timing->skipped_for_time = !budget->allowed;
+    }
+    if (!budget->allowed) {
+        if (summary != NULL) {
+            summary->methods_skipped_for_time++;
+        }
+        if (record != NULL) {
+            record->solved = false;
+            record->confidence_score = 0.0;
+            snprintf(record->rejection_reason, sizeof(record->rejection_reason), "%s",
+                     LOCALIZATION_CALCULATE_TIME_BUDGET_REASON);
+        }
+    }
+    budget->method = NULL;
+}
