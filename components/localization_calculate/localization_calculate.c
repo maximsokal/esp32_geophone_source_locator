@@ -1089,7 +1089,20 @@ esp_err_t localization_calculate_run(
         .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
     };
     localization_eikonal_result_t *eikonal_result = &workspace->eikonal;
-    esp_err_t eikonal_err = eikonal_model_err;
+    /*
+     * MAX-168 host-test finding: this must NOT default to eikonal_model_err.
+     * LOCALIZATION_EIKONAL_SOLVED == 0, the same value workspace->eikonal
+     * (heap_caps_calloc'd, never written when the if-block below does not
+     * run -- e.g. zero accepted picks) is already zeroed to. Pre-seeding
+     * eikonal_err with a successful model_init result let a never-run
+     * location fall through as "solved" with a fabricated (0, 0, 0)
+     * position whenever the model built fine but there were no picks to
+     * locate from. Defaulting to an explicit failure here (like every
+     * other method's own not-yet-attempted default) closes that gap; a
+     * genuine model_init failure still reaches the record as NULL exactly
+     * as before, via the `if` condition's own eikonal_model_err check.
+     */
+    esp_err_t eikonal_err = ESP_ERR_INVALID_STATE;
     method_allowed = localization_calculate_budget_begin(&budget, "eikonal_fmm", true);
     if (eikonal_model_err == ESP_OK && p_observation_count > 0U && method_allowed) {
         eikonal_err = localization_eikonal_fields_compute(
