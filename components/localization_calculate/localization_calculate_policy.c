@@ -1177,6 +1177,7 @@ void localization_calculate_bayes_to_run_record(
     record_out->uncertainty.credible_area_m2 = result->credible_area_m2;
     record_out->uncertainty.credible_min = result->credible_min;
     record_out->uncertainty.credible_max = result->credible_max;
+    record_out->uncertainty.sigma_inflation = result->sigma_inflation >= 1.0 ? result->sigma_inflation : 1.0;
     record_out->confidence_score = localization_calculate_quality_from_residual_us(
         result->rms_residual_us, timing_uncertainty_us
     );
@@ -1226,4 +1227,13 @@ double localization_calculate_scan_eikonal_velocity(
         }
     }
     return 0.0;
+}
+
+
+double localization_calculate_discretization_error_us(double cell_m, double velocity_mps)
+{
+    if (!(cell_m > 0.0) || !isfinite(cell_m) || !(velocity_mps > 0.0) || !isfinite(velocity_mps)) {
+        return 0.0;
+    }
+    return cell_m / (velocity_mps * sqrt(6.0)) * 1.0e6;
 }

@@ -70,6 +70,11 @@ typedef struct
     localization_point3d_t credible_min;
     localization_point3d_t credible_max;
 
+    /* >= 1: the factor every sigma was scaled by because the fit's chi^2
+     * showed them too small (1 = the configured sigmas explained the data;
+     * absent in older records, read as 1). */
+    double sigma_inflation;
+
 } localization_run_uncertainty_t;
 
 

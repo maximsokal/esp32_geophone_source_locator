@@ -56,6 +56,14 @@
 #define LOCALIZATION_CALCULATE_BAYES_VELOCITY_NODES 5U
 #define LOCALIZATION_CALCULATE_SEED_LATTICE_POINTS 6000U
 
+/* Forward-model error of the eikonal travel times, fed to the Bayesian
+ * posterior so its region covers the model as well as the picks: the
+ * fast-marching scheme's own error (host tests: <= 1.43 % of the travel
+ * time in a homogeneous medium, 5-cell exact source ball) and a floor for
+ * a void edge discretized at the lattice or scan cell, which can move a
+ * path at each of ~two corners by up to one cell: cell / (v sqrt 6). */
+#define LOCALIZATION_CALCULATE_EIKONAL_RELATIVE_ERROR 0.015
+
 /* Unknowns of the velocity-free fits: TDCAS (x, y, z, t0, v) over N P
  * picks; PSAFUVS (x, y, z, t0, vP, vS) over 2N P and S picks. */
 #define LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS 5U
@@ -1006,6 +1014,9 @@ esp_err_t localization_calculate_run(
         .velocity_nodes = LOCALIZATION_CALCULATE_BAYES_VELOCITY_NODES,
         .max_cells = LOCALIZATION_CALCULATE_BAYES_MAX_CELLS,
         .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+        /* Straight rays through rubble have no known model error: the
+         * misfit check widens the region when the data say so. */
+        .inflate_on_misfit = true,
     };
     localization_bayes_result_t *bayes_result = &workspace->bayes;
     esp_err_t bayes_err = ESP_ERR_INVALID_STATE;
@@ -1398,6 +1409,10 @@ esp_err_t localization_calculate_run(
         esp_err_t scan_bayes_err = ESP_ERR_INVALID_STATE;
         if (scan_fields_ready) {
             localization_bayes_config_t scan_config = bayes_config;
+            scan_config.model_error_relative = LOCALIZATION_CALCULATE_EIKONAL_RELATIVE_ERROR;
+            scan_config.model_error_floor_us = localization_calculate_discretization_error_us(
+                fmax(eikonal_model->cell_m, occupancy.voxel_size_m), config->propagation_speed_mps
+            );
             scan_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
             scan_config.candidate_filter.context = &occupancy;
             scan_config.travel_time_model.travel_time = localization_eikonal_travel_time;

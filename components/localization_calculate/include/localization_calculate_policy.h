@@ -548,3 +548,12 @@ double localization_calculate_scan_eikonal_velocity(
     const localization_point3d_t *point,
     void *context
 );
+
+
+/*
+ * Travel-time error, in microseconds, of a void edge discretized at
+ * `cell_m`: a path bends at about two corners, each placed anywhere within
+ * one cell (uniform, sd cell / sqrt 12), so cell / (v sqrt 6). 0 for
+ * invalid input.
+ */
+double localization_calculate_discretization_error_us(double cell_m, double velocity_mps);

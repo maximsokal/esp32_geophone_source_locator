@@ -68,6 +68,22 @@ typedef struct
     size_t max_cells;               /* 0: 40000 */
     uint32_t refine_divisor;        /* >= 2 */
 
+    /*
+     * The forward model's own error, added in quadrature to every pick's
+     * sigma: model_error_relative x the candidate's travel time (e.g. the
+     * eikonal lattice's ~1%) plus model_error_floor_us (e.g. how far a void
+     * discretized at the lattice cell can move a path). 0 = the model is
+     * exact. Without it a region can be honest about the picks but too
+     * narrow for a coarse model.
+     */
+    double model_error_relative;
+    double model_error_floor_us;
+
+    /* When the MAP fit's chi^2 exceeds its mean + 3 sd, scale every sigma
+     * by sqrt(chi^2 / dof) (the Birge ratio) and recompute: the data then
+     * say the sigmas were too small, and the region widens accordingly. */
+    bool inflate_on_misfit;
+
     localization_candidate_filter_t candidate_filter;
     localization_travel_time_model_t travel_time_model;
 
@@ -114,6 +130,14 @@ typedef struct
      * or larger (a wider, conservative region) when the cell budget ran
      * out before the lattice matched the posterior's width. */
     double timing_uncertainty_used_us;
+
+    /* Posterior predictive check at the MAP: chi^2 with the configured
+     * sigmas (pick + model), its degrees of freedom (picks - spatial
+     * unknowns - t0), and the factor every sigma was scaled by (1 = none;
+     * > 1 when inflate_on_misfit found the fit implausible). */
+    double chi_square;
+    int chi_square_dof;
+    double sigma_inflation;
 
 } localization_bayes_result_t;
 

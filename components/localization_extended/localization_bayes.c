@@ -44,7 +44,10 @@ typedef struct
     const localization_bayes_config_t *config;
     double arrival_s[LOCALIZATION_EXTENDED_MAX_SENSORS];
     double weight[LOCALIZATION_EXTENDED_MAX_SENSORS];
-    double sigma_s;
+    double sigma_s;                 /* pick sigma (tempered per level) */
+    double model_relative;          /* model error as a fraction of the travel time */
+    double model_floor_s;           /* model error floor */
+    double inflation;               /* >= 1: every sigma scaled after a misfit check */
     double nu;
     size_t node_count;
     double velocity[BAYES_MAX_NODES];
@@ -78,18 +81,41 @@ static bool reference_times(const bayes_problem_t *problem, const localization_p
 }
 
 
+/* One pick's total standard deviation at a candidate: its pick sigma
+ * (weight = precision multiplier) combined with the forward model's own
+ * error -- a fraction of the travel time plus a floor -- all scaled by the
+ * misfit inflation. */
+static double pick_sigma(const bayes_problem_t *problem, size_t i, double travel_s)
+{
+    const double pick = problem->sigma_s * problem->sigma_s / problem->weight[i];
+    const double relative = problem->model_relative * travel_s;
+    return problem->inflation *
+        sqrt(pick + relative * relative + problem->model_floor_s * problem->model_floor_s);
+}
+
+
 /* Log-likelihood at one velocity (times scaled from the reference), with
- * the origin time integrated out (Gaussian) or profiled (Student-t). */
+ * the origin time integrated out (Gaussian) or profiled (Student-t).
+ * Because the model error makes each sigma depend on the candidate's
+ * travel times, the normalization terms (-sum log sigma_i, and the t0
+ * integral's -1/2 log sum sigma_i^-2) are kept: dropping them would favour
+ * candidates far from every sensor, whose larger sigmas shrink chi^2. */
 static double log_likelihood(const bayes_problem_t *problem, const double *reference, double scale, double *t0_out)
 {
     double r[LOCALIZATION_EXTENDED_MAX_SENSORS];
+    double inv_var[LOCALIZATION_EXTENDED_MAX_SENSORS];
     double sum = 0.0;
     double weight_sum = 0.0;
+    double log_sigma_sum = 0.0;
     for (size_t i = 0U; i < problem->count; ++i) {
         if (problem->weight[i] > 0.0) {
-            r[i] = problem->arrival_s[i] - scale * reference[i];
-            sum += problem->weight[i] * r[i];
-            weight_sum += problem->weight[i];
+            const double travel = scale * reference[i];
+            const double sigma = pick_sigma(problem, i, travel);
+            r[i] = problem->arrival_s[i] - travel;
+            inv_var[i] = 1.0 / (sigma * sigma);
+            sum += inv_var[i] * r[i];
+            weight_sum += inv_var[i];
+            log_sigma_sum += log(sigma);
         }
     }
     double t0 = sum / weight_sum;
@@ -99,18 +125,18 @@ static double log_likelihood(const bayes_problem_t *problem, const double *refer
             double den = 0.0;
             for (size_t i = 0U; i < problem->count; ++i) {
                 if (problem->weight[i] > 0.0) {
-                    const double u2 = problem->weight[i] * (r[i] - t0) * (r[i] - t0) / (problem->sigma_s * problem->sigma_s);
-                    const double w = problem->weight[i] * (problem->nu + 1.0) / (problem->nu + u2);
+                    const double u2 = (r[i] - t0) * (r[i] - t0) * inv_var[i];
+                    const double w = inv_var[i] * (problem->nu + 1.0) / (problem->nu + u2);
                     num += w * r[i];
                     den += w;
                 }
             }
             t0 = num / den;
         }
-        double log_l = 0.0;
+        double log_l = -log_sigma_sum;
         for (size_t i = 0U; i < problem->count; ++i) {
             if (problem->weight[i] > 0.0) {
-                const double u2 = problem->weight[i] * (r[i] - t0) * (r[i] - t0) / (problem->sigma_s * problem->sigma_s);
+                const double u2 = (r[i] - t0) * (r[i] - t0) * inv_var[i];
                 log_l -= 0.5 * (problem->nu + 1.0) * log1p(u2 / problem->nu);
             }
         }
@@ -120,11 +146,11 @@ static double log_likelihood(const bayes_problem_t *problem, const double *refer
     double chi = 0.0;
     for (size_t i = 0U; i < problem->count; ++i) {
         if (problem->weight[i] > 0.0) {
-            chi += problem->weight[i] * (r[i] - t0) * (r[i] - t0);
+            chi += (r[i] - t0) * (r[i] - t0) * inv_var[i];
         }
     }
     *t0_out = t0;
-    return -0.5 * chi / (problem->sigma_s * problem->sigma_s);
+    return -log_sigma_sum - 0.5 * log(weight_sum) - 0.5 * chi;
 }
 
 
@@ -345,80 +371,54 @@ static esp_err_t evaluate_lattice(
 }
 
 
-/* The problem (picks, quadrature) lives on the heap, off the 8 KiB HTTPS
- * task's stack. */
-static esp_err_t locate_with(
+/* chi^2 of the MAP fit (Gaussian, t0 profiled) with the untempered,
+ * uninflated sigmas. */
+static double map_chi_square(bayes_problem_t *problem, const localization_point3d_t *map, double scale)
+{
+    double reference[LOCALIZATION_EXTENDED_MAX_SENSORS];
+    if (!reference_times(problem, map, reference)) {
+        return INFINITY;
+    }
+    const double inflation = problem->inflation;
+    problem->inflation = 1.0;
+    double r[LOCALIZATION_EXTENDED_MAX_SENSORS];
+    double inv_var[LOCALIZATION_EXTENDED_MAX_SENSORS];
+    double sum = 0.0;
+    double weight_sum = 0.0;
+    for (size_t i = 0U; i < problem->count; ++i) {
+        if (problem->weight[i] > 0.0) {
+            const double travel = scale * reference[i];
+            const double sigma = pick_sigma(problem, i, travel);
+            r[i] = problem->arrival_s[i] - travel;
+            inv_var[i] = 1.0 / (sigma * sigma);
+            sum += inv_var[i] * r[i];
+            weight_sum += inv_var[i];
+        }
+    }
+    problem->inflation = inflation;
+    const double t0 = sum / weight_sum;
+    double chi = 0.0;
+    for (size_t i = 0U; i < problem->count; ++i) {
+        if (problem->weight[i] > 0.0) {
+            chi += (r[i] - t0) * (r[i] - t0) * inv_var[i];
+        }
+    }
+    return chi;
+}
+
+
+/* Multi-level posterior, MAP refinement and the MAP's origin time and
+ * residuals, with problem's current sigmas (sigma_s untempered on entry). */
+static esp_err_t solve_levels(
     bayes_problem_t *problem,
-    const localization_bayes_pick_t *picks,
-    size_t pick_count,
     const localization_extended_bounds_t *bounds,
     const localization_bayes_config_t *config,
-    localization_bayes_result_t *result
+    localization_bayes_result_t *result,
+    int64_t earliest
 )
 {
-    if (
-        picks == NULL || bounds == NULL || config == NULL || result == NULL ||
-        pick_count == 0U || pick_count > LOCALIZATION_EXTENDED_MAX_SENSORS ||
-        !localization_extended_bounds_valid(bounds) ||
-        !(config->velocity_mps > 0.0) || !isfinite(config->velocity_mps) ||
-        !(config->velocity_sigma_mps >= 0.0) || !isfinite(config->velocity_sigma_mps) ||
-        !(config->timing_uncertainty_us > 0.0) || !isfinite(config->timing_uncertainty_us) ||
-        config->credible_level < 0.0 || config->credible_level >= 1.0 ||
-        config->velocity_nodes > BAYES_MAX_NODES ||
-        (config->velocity_nodes != 0U && (config->velocity_nodes % 2U) == 0U) ||
-        config->refine_divisor < 2U
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    memset(result, 0, sizeof(*result));
-    result->planar = localization_extended_bounds_planar(bounds);
-    result->credible_level = config->credible_level > 0.0 ? config->credible_level : BAYES_DEFAULT_LEVEL;
-
-    memset(problem, 0, sizeof(*problem));
-    problem->picks = picks;
-    problem->count = pick_count;
-    problem->config = config;
-    problem->sigma_s = config->timing_uncertainty_us * 1.0e-6;
-    problem->nu = config->student_nu > 0.0 ? config->student_nu : BAYES_DEFAULT_NU;
-    int64_t earliest = INT64_MAX;
-    for (size_t i = 0U; i < pick_count; ++i) {
-        if (!(picks[i].weight >= 0.0) || !isfinite(picks[i].weight)) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        if (picks[i].weight > 0.0) {
-            earliest = picks[i].arrival_time_us < earliest ? picks[i].arrival_time_us : earliest;
-            result->pick_mask_used |= 1U << i;
-            ++result->picks_used;
-        }
-    }
-    const size_t spatial = result->planar ? 2U : 3U;
-    if (result->picks_used < spatial + 1U) {
-        result->status = LOCALIZATION_BAYES_INSUFFICIENT_PICKS;
-        return ESP_OK;
-    }
-    for (size_t i = 0U; i < pick_count; ++i) {
-        if (picks[i].weight > 0.0) {
-            problem->weight[i] = picks[i].weight;
-            problem->arrival_s[i] = (double)(picks[i].arrival_time_us - earliest) * 1.0e-6;
-        }
-    }
-
-    /* Velocity quadrature: nodes of N(v, sigma), positive ones only. */
-    const size_t requested = config->velocity_sigma_mps > 0.0
-        ? (config->velocity_nodes > 0U ? config->velocity_nodes : BAYES_DEFAULT_NODES)
-        : 1U;
-    const size_t half = requested / 2U;
-    for (long k = -(long)half; k <= (long)half; ++k) {
-        const size_t a = (size_t)labs(k);
-        const double x = (k < 0 ? -1.0 : 1.0) * GH_X[half][a];
-        const double v = config->velocity_mps + sqrt(2.0) * config->velocity_sigma_mps * x;
-        if (v > 0.0) {
-            problem->velocity[problem->node_count] = v;
-            problem->log_node_weight[problem->node_count] = log(GH_W[half][a] / sqrt(3.141592653589793));
-            ++problem->node_count;
-        }
-    }
-
+    const localization_bayes_result_t base = *result;
+    *result = base;
     /*
      * Multi-level evaluation. A pick-time posterior is often far narrower
      * than any affordable lattice (a 20 us pick at 300 m/s is 6 mm) and
@@ -526,7 +526,7 @@ static esp_err_t locate_with(
         double t0 = 0.0;
         (void)log_likelihood(problem, reference, config->velocity_mps / result->velocity_mean_mps, &t0);
         double sum = 0.0;
-        for (size_t i = 0U; i < pick_count; ++i) {
+        for (size_t i = 0U; i < problem->count; ++i) {
             if (problem->weight[i] > 0.0) {
                 const double r = problem->arrival_s[i] - t0 - reference[i] * config->velocity_mps / result->velocity_mean_mps;
                 sum += r * r;
@@ -536,6 +536,121 @@ static esp_err_t locate_with(
         result->rms_residual_us = sqrt(sum / (double)result->picks_used) * 1.0e6;
     }
     result->status = LOCALIZATION_BAYES_SOLVED;
+    return ESP_OK;
+}
+
+
+/* The problem (picks, quadrature) lives on the heap, off the 8 KiB HTTPS
+ * task's stack. */
+static esp_err_t locate_with(
+    bayes_problem_t *problem,
+    const localization_bayes_pick_t *picks,
+    size_t pick_count,
+    const localization_extended_bounds_t *bounds,
+    const localization_bayes_config_t *config,
+    localization_bayes_result_t *result
+)
+{
+    if (
+        picks == NULL || bounds == NULL || config == NULL || result == NULL ||
+        pick_count == 0U || pick_count > LOCALIZATION_EXTENDED_MAX_SENSORS ||
+        !localization_extended_bounds_valid(bounds) ||
+        !(config->velocity_mps > 0.0) || !isfinite(config->velocity_mps) ||
+        !(config->velocity_sigma_mps >= 0.0) || !isfinite(config->velocity_sigma_mps) ||
+        !(config->timing_uncertainty_us > 0.0) || !isfinite(config->timing_uncertainty_us) ||
+        config->credible_level < 0.0 || config->credible_level >= 1.0 ||
+        config->velocity_nodes > BAYES_MAX_NODES ||
+        (config->velocity_nodes != 0U && (config->velocity_nodes % 2U) == 0U) ||
+        config->refine_divisor < 2U ||
+        !(config->model_error_relative >= 0.0) || !isfinite(config->model_error_relative) ||
+        !(config->model_error_floor_us >= 0.0) || !isfinite(config->model_error_floor_us)
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(result, 0, sizeof(*result));
+    result->planar = localization_extended_bounds_planar(bounds);
+    result->credible_level = config->credible_level > 0.0 ? config->credible_level : BAYES_DEFAULT_LEVEL;
+
+    memset(problem, 0, sizeof(*problem));
+    problem->picks = picks;
+    problem->count = pick_count;
+    problem->config = config;
+    problem->sigma_s = config->timing_uncertainty_us * 1.0e-6;
+    problem->nu = config->student_nu > 0.0 ? config->student_nu : BAYES_DEFAULT_NU;
+    int64_t earliest = INT64_MAX;
+    for (size_t i = 0U; i < pick_count; ++i) {
+        if (!(picks[i].weight >= 0.0) || !isfinite(picks[i].weight)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (picks[i].weight > 0.0) {
+            earliest = picks[i].arrival_time_us < earliest ? picks[i].arrival_time_us : earliest;
+            result->pick_mask_used |= 1U << i;
+            ++result->picks_used;
+        }
+    }
+    const size_t spatial = result->planar ? 2U : 3U;
+    if (result->picks_used < spatial + 1U) {
+        result->status = LOCALIZATION_BAYES_INSUFFICIENT_PICKS;
+        return ESP_OK;
+    }
+    for (size_t i = 0U; i < pick_count; ++i) {
+        if (picks[i].weight > 0.0) {
+            problem->weight[i] = picks[i].weight;
+            problem->arrival_s[i] = (double)(picks[i].arrival_time_us - earliest) * 1.0e-6;
+        }
+    }
+
+    /* Velocity quadrature: nodes of N(v, sigma), positive ones only. */
+    const size_t requested = config->velocity_sigma_mps > 0.0
+        ? (config->velocity_nodes > 0U ? config->velocity_nodes : BAYES_DEFAULT_NODES)
+        : 1U;
+    const size_t half = requested / 2U;
+    for (long k = -(long)half; k <= (long)half; ++k) {
+        const size_t a = (size_t)labs(k);
+        const double x = (k < 0 ? -1.0 : 1.0) * GH_X[half][a];
+        const double v = config->velocity_mps + sqrt(2.0) * config->velocity_sigma_mps * x;
+        if (v > 0.0) {
+            problem->velocity[problem->node_count] = v;
+            problem->log_node_weight[problem->node_count] = log(GH_W[half][a] / sqrt(3.141592653589793));
+            ++problem->node_count;
+        }
+    }
+
+    problem->model_relative = config->model_error_relative;
+    problem->model_floor_s = config->model_error_floor_us * 1.0e-6;
+    problem->inflation = 1.0;
+    esp_err_t err = solve_levels(problem, bounds, config, result, earliest);
+    if (err != ESP_OK || result->status != LOCALIZATION_BAYES_SOLVED) {
+        return err;
+    }
+
+    /* Posterior predictive check: chi^2 of the MAP fit with the untempered
+     * sigmas. Beyond its mean + 3 sd the sigmas (pick + model) do not
+     * explain the data, and a region built on them would be too narrow;
+     * every sigma is then scaled by sqrt(chi^2 / dof) (the Birge ratio)
+     * and the posterior recomputed -- the region only ever widens. */
+    const int dof = (int)result->picks_used - (int)spatial - 1;
+    problem->sigma_s = config->timing_uncertainty_us * 1.0e-6;
+    result->chi_square = map_chi_square(problem, &result->map_position, config->velocity_mps / result->velocity_mean_mps);
+    result->chi_square_dof = dof;
+    result->sigma_inflation = 1.0;
+    if (
+        config->inflate_on_misfit && dof >= 1 && isfinite(result->chi_square) &&
+        result->chi_square > (double)dof + 3.0 * sqrt(2.0 * (double)dof)
+    ) {
+        const double chi_square = result->chi_square;
+        const size_t evaluated = result->cells_evaluated;
+        problem->inflation = sqrt(chi_square / (double)dof);
+        problem->sigma_s = config->timing_uncertainty_us * 1.0e-6;
+        err = solve_levels(problem, bounds, config, result, earliest);
+        if (err != ESP_OK) {
+            return err;
+        }
+        result->chi_square = chi_square;
+        result->chi_square_dof = dof;
+        result->sigma_inflation = problem->inflation;
+        result->cells_evaluated += evaluated;
+    }
     return ESP_OK;
 }
 
