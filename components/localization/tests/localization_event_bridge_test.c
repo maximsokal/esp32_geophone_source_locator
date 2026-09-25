@@ -340,13 +340,12 @@ static void test_solver_non_convergence_is_still_reported_as_solved(void)
 }
 
 
-static void test_subsample_offset_shifts_the_converted_arrival_time(void)
+static void build_channels_with_channel1_shift(
+    localization_event_channel_input_t channels[4],
+    size_t channel1_sample_index,
+    float channel1_subsample_offset
+)
 {
-    /* arrival_subsample_offset (MAX-209's cross-correlation refinement)
-     * must be folded into the microsecond conversion alongside the whole
-     * sample index, not ignored -- otherwise sub-sample timing refinement
-     * would be silently thrown away by this bridge. */
-    localization_event_channel_input_t channels[4];
     for (size_t i = 0u; i < 4u; ++i) {
         channels[i] = (localization_event_channel_input_t) {
             .pick = accepted_pick(s_sample_indices[i]),
@@ -354,31 +353,123 @@ static void test_subsample_offset_shifts_the_converted_arrival_time(void)
             .sensor_position = s_sensors[i]
         };
     }
+    channels[1].pick.arrival_sample_index = channel1_sample_index;
+    channels[1].pick.arrival_subsample_offset = channel1_subsample_offset;
+}
 
+
+static void assert_positions_equal(
+    const localization_result_t *a,
+    const localization_result_t *b,
+    double epsilon
+)
+{
+    assert(a->converged && b->converged);
+    assert_near(a->source_position.x_m, b->source_position.x_m, epsilon);
+    assert_near(a->source_position.y_m, b->source_position.y_m, epsilon);
+    assert_near(a->source_position.z_m, b->source_position.z_m, epsilon);
+}
+
+
+static void test_subsample_offset_is_folded_into_the_converted_arrival_time(void)
+{
+    /* arrival_subsample_offset (MAX-209's cross-correlation refinement)
+     * must be folded into the bridge's microsecond conversion
+     * ((sample_index + subsample_offset) * 1e6 / sample_rate_hz, then
+     * llround()'d) exactly the same as an equivalent whole-sample shift
+     * would be -- not ignored, and not off by a rounding error. At this
+     * test's 1 MHz sample rate, 1 sample == 1 us exactly, so every case
+     * below has an exact, analytically predictable equivalent whole-sample
+     * index to compare against (tolerance 1e-6 m, i.e. bit-for-bit modulo
+     * floating-point solver noise). Only channel 1 is perturbed: shifting
+     * every channel by the same amount would cancel out in the TDOA
+     * differences and prove nothing. */
     const localization_config_t config = test_config();
-    localization_event_result_t baseline;
-    assert(localization_event_solve(channels, 4u, &config, NULL, &baseline) == ESP_OK);
-    assert(baseline.status == LOCALIZATION_EVENT_SOLVED);
 
-    /* Shift only one channel's arrival via arrival_subsample_offset (a
-     * uniform shift across every channel would cancel out in the TDOA
-     * differences and prove nothing). With exactly 4 observations feeding
-     * TDOA's 4 unknowns (x, y, z, emission time) the system is exactly
-     * determined, so the solver re-fits perfectly around the perturbation
-     * either way -- the residual stays near zero regardless, and only the
-     * solved position itself reveals whether the offset was actually
-     * consumed instead of silently dropped. */
-    channels[1].pick.arrival_subsample_offset = 50.0f;
+    /* --- A whole-sample offset must equal an equivalent index shift ---- */
+    /* offset=+50.0, index=X  <=>  offset=0, index=X+50 (both convert to
+     * exactly X+50 us: 50.0 has no fractional part, so llround() cannot
+     * introduce any rounding difference between the two forms). */
+    {
+        localization_event_channel_input_t via_offset[4];
+        build_channels_with_channel1_shift(via_offset, s_sample_indices[1], 50.0f);
+        localization_event_channel_input_t via_index[4];
+        build_channels_with_channel1_shift(via_index, s_sample_indices[1] + 50u, 0.0f);
 
-    localization_event_result_t shifted;
-    assert(localization_event_solve(channels, 4u, &config, NULL, &shifted) == ESP_OK);
-    assert(shifted.status == LOCALIZATION_EVENT_SOLVED);
-    assert(shifted.solver_result.converged);
+        localization_event_result_t result_offset;
+        localization_event_result_t result_index;
+        assert(localization_event_solve(via_offset, 4u, &config, NULL, &result_offset) == ESP_OK);
+        assert(localization_event_solve(via_index, 4u, &config, NULL, &result_index) == ESP_OK);
+        assert(result_offset.status == LOCALIZATION_EVENT_SOLVED);
+        assert(result_index.status == LOCALIZATION_EVENT_SOLVED);
+        assert_positions_equal(&result_offset.solver_result, &result_index.solver_result, 1.0e-6);
 
-    const double dx = fabs(shifted.solver_result.source_position.x_m - baseline.solver_result.source_position.x_m);
-    const double dy = fabs(shifted.solver_result.source_position.y_m - baseline.solver_result.source_position.y_m);
-    const double dz = fabs(shifted.solver_result.source_position.z_m - baseline.solver_result.source_position.z_m);
-    assert(dx > 1.0e-6 || dy > 1.0e-6 || dz > 1.0e-6);
+        /* And it must actually differ from the unshifted baseline -- proving
+         * the offset was consumed, not silently dropped to zero. */
+        localization_event_channel_input_t baseline_channels[4];
+        build_channels_with_channel1_shift(baseline_channels, s_sample_indices[1], 0.0f);
+        localization_event_result_t baseline;
+        assert(localization_event_solve(baseline_channels, 4u, &config, NULL, &baseline) == ESP_OK);
+        assert(baseline.status == LOCALIZATION_EVENT_SOLVED);
+        const double dx = fabs(result_offset.solver_result.source_position.x_m - baseline.solver_result.source_position.x_m);
+        const double dy = fabs(result_offset.solver_result.source_position.y_m - baseline.solver_result.source_position.y_m);
+        const double dz = fabs(result_offset.solver_result.source_position.z_m - baseline.solver_result.source_position.z_m);
+        assert(dx > 1.0e-6 || dy > 1.0e-6 || dz > 1.0e-6);
+    }
+
+    /* --- Positive fractional offset: llround() rounds half away from ---- */
+    /* zero, so index=X, offset=+0.5 gives (X+0.5) us, which rounds UP to
+     * exactly X+1 us -- the same as index=X+1, offset=0. */
+    {
+        localization_event_channel_input_t via_offset[4];
+        build_channels_with_channel1_shift(via_offset, s_sample_indices[1], 0.5f);
+        localization_event_channel_input_t via_index[4];
+        build_channels_with_channel1_shift(via_index, s_sample_indices[1] + 1u, 0.0f);
+
+        localization_event_result_t result_offset;
+        localization_event_result_t result_index;
+        assert(localization_event_solve(via_offset, 4u, &config, NULL, &result_offset) == ESP_OK);
+        assert(localization_event_solve(via_index, 4u, &config, NULL, &result_index) == ESP_OK);
+        assert(result_offset.status == LOCALIZATION_EVENT_SOLVED);
+        assert(result_index.status == LOCALIZATION_EVENT_SOLVED);
+        assert_positions_equal(&result_offset.solver_result, &result_index.solver_result, 1.0e-6);
+    }
+
+    /* --- Negative fractional offset: index=X, offset=-0.5 gives -------- */
+    /* (X-0.5) us. That is also an exact tie for llround(), and ties round
+     * away from zero -- for this positive value that means rounding UP,
+     * back to X, not down to X-1. So this must equal the plain, unshifted
+     * baseline (index=X, offset=0), not index=X-1. This is the bridge's
+     * real, if slightly surprising, rounding behavior and is worth pinning
+     * down explicitly rather than assuming symmetry with the +0.5 case. */
+    {
+        localization_event_channel_input_t via_offset[4];
+        build_channels_with_channel1_shift(via_offset, s_sample_indices[1], -0.5f);
+        localization_event_channel_input_t via_baseline[4];
+        build_channels_with_channel1_shift(via_baseline, s_sample_indices[1], 0.0f);
+        localization_event_channel_input_t via_index_minus_one[4];
+        build_channels_with_channel1_shift(via_index_minus_one, s_sample_indices[1] - 1u, 0.0f);
+
+        localization_event_result_t result_offset;
+        localization_event_result_t result_baseline;
+        localization_event_result_t result_index_minus_one;
+        assert(localization_event_solve(via_offset, 4u, &config, NULL, &result_offset) == ESP_OK);
+        assert(localization_event_solve(via_baseline, 4u, &config, NULL, &result_baseline) == ESP_OK);
+        assert(localization_event_solve(via_index_minus_one, 4u, &config, NULL, &result_index_minus_one) == ESP_OK);
+        assert(result_offset.status == LOCALIZATION_EVENT_SOLVED);
+        assert(result_baseline.status == LOCALIZATION_EVENT_SOLVED);
+        assert(result_index_minus_one.status == LOCALIZATION_EVENT_SOLVED);
+
+        assert_positions_equal(&result_offset.solver_result, &result_baseline.solver_result, 1.0e-6);
+
+        /* Confirm it genuinely differs from the X-1 case, i.e. this isn't a
+         * vacuous pass because every nearby whole-sample solve looks the
+         * same at this geometry's sensitivity. */
+        const double dx = fabs(result_offset.solver_result.source_position.x_m - result_index_minus_one.solver_result.source_position.x_m);
+        const double dy = fabs(result_offset.solver_result.source_position.y_m - result_index_minus_one.solver_result.source_position.y_m);
+        const double dz = fabs(result_offset.solver_result.source_position.z_m - result_index_minus_one.solver_result.source_position.z_m);
+        assert(dx > 1.0e-6 || dy > 1.0e-6 || dz > 1.0e-6);
+    }
 }
 
 
@@ -395,7 +486,7 @@ int main(void)
     test_non_finite_propagation_speed_is_solver_rejected();
     test_non_finite_sensor_position_is_solver_rejected();
     test_solver_non_convergence_is_still_reported_as_solved();
-    test_subsample_offset_shifts_the_converted_arrival_time();
+    test_subsample_offset_is_folded_into_the_converted_arrival_time();
     puts("localization event bridge tests passed");
     return 0;
 }
