@@ -359,6 +359,7 @@ static void test_insufficient_dimensionality_writes_nothing(void)
         assert(g_geometry_read_calls == 1U);
         assert(g_raw_read_calls == 0U); /* geometry gate fails before raw is ever read */
         assert(g_write_call_count == 0U);
+        assert(g_pick_write_calls == 0U);
         assert(g_recorded_count == 0U);
     }
     free_fixture_frames();
@@ -518,6 +519,7 @@ static void test_read_failures_propagate_with_no_partial_writes(void)
     assert(g_geometry_read_calls == 1U);
     assert(g_raw_read_calls == 1U);
     assert(g_write_call_count == 0U);
+    assert(g_pick_write_calls == 0U);
     assert(g_recorded_count == 0U);
 
     reset_fakes();
@@ -530,6 +532,7 @@ static void test_read_failures_propagate_with_no_partial_writes(void)
     assert(g_geometry_read_calls == 1U);
     assert(g_raw_read_calls == 0U); /* geometry is read and checked before raw samples at all */
     assert(g_write_call_count == 0U);
+    assert(g_pick_write_calls == 0U);
     assert(g_recorded_count == 0U);
 
     puts("  raw-read and geometry-read failures propagate, zero writes -- OK");
