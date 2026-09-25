@@ -92,6 +92,12 @@ typedef struct
     /* MAX-147: candidates the filter rejects are never scored. */
     localization_candidate_filter_t candidate_filter;
 
+    /* Optional: per-channel travel times (sensor index = channel index)
+     * replacing distance / propagation_speed_mps, e.g. eikonal fields
+     * around a scan's voids. Candidates it cannot reach from every channel
+     * are not scored. Zero-initialized keeps straight rays. */
+    localization_travel_time_model_t travel_time_model;
+
 } localization_semblance_config_t;
 
 

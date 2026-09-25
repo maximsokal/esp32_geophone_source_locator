@@ -78,6 +78,30 @@ static inline bool localization_ray_admitted(
 }
 
 
+/*
+ * Optional travel-time model replacing distance / propagation_speed for the
+ * backends that accept one (semblance, Bayesian): the first-arrival travel
+ * time, in seconds, from `candidate` to sensor `sensor_index` at the
+ * backend's reference velocity (e.g. an eikonal field computed through a
+ * scan's voids). False when that sensor cannot be reached from the
+ * candidate. A zero-initialized model (travel_time == NULL) keeps straight
+ * rays.
+ */
+typedef bool (*localization_travel_time_fn)(
+    size_t sensor_index,
+    const localization_point3d_t *candidate,
+    double *travel_time_s,
+    void *context
+);
+
+typedef struct
+{
+    localization_travel_time_fn travel_time;
+    void *context;
+
+} localization_travel_time_model_t;
+
+
 typedef struct
 {
     localization_point3d_t sensor_position;
