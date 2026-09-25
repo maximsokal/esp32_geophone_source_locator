@@ -378,6 +378,19 @@ export interface LocalizationRunPosition {
   z_m: number;
 }
 
+/** Posterior region of a Bayesian run (sensor frame, metres). */
+export interface LocalizationRunUncertainty {
+  /** Per-axis posterior standard deviations. */
+  std_m: LocalizationRunPosition;
+  /** Probability held by the credible region, e.g. 0.9. */
+  credible_level: number;
+  /** Region size: volume for a 3D search, area for a planar one (the other is 0). */
+  credible_volume_m3: number;
+  credible_area_m2: number;
+  credible_min: LocalizationRunPosition;
+  credible_max: LocalizationRunPosition;
+}
+
 export interface LocalizationRun {
   schema_version: number;
   object_id: string;
@@ -396,9 +409,11 @@ export interface LocalizationRun {
   confidence_score: number;
   /** MAX-212: redundancy of a pick-based fit; 0 = exactly determined (unverified), -1/absent = n/a. */
   degrees_of_freedom?: number;
-  /** Velocity-free methods (TDCAS, PSAFUVS, SUEA): the event's own estimated P (or single-phase) and S velocities; absent = not estimated. */
+  /** Methods that estimate the event's own velocities (TDCAS, PSAFUVS, SUEA, PSP; eikonal and Bayesian when the speed is uncertain): P (or single-phase) and S; absent = not estimated. */
   estimated_p_velocity_mps?: number;
   estimated_s_velocity_mps?: number;
+  /** Bayesian methods: the posterior's spread and credible region; absent = not computed. */
+  uncertainty?: LocalizationRunUncertainty;
   solved: boolean;
   source_position?: LocalizationRunPosition;
   emission_time_us?: number;

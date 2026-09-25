@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchLocalizationRuns, sendControl } from '../../api/deviceApi';
 import LocalizationOverlay from './LocalizationOverlay';
+import { uncertaintyText } from '../../domain/localizationOverlay';
 import type {
   LocalizationPickRecord,
   LocalizationRun,
@@ -170,7 +171,7 @@ export function sWavePickSettings(fields: SWavePickFields): SWavePickSettings {
   };
 }
 
-/** Velocities a velocity-free method (TDCAS, PSAFUVS, SUEA) estimated for this event. */
+/** Velocities a method (TDCAS, PSAFUVS, SUEA, PSP, eikonal, Bayesian) estimated for this event. */
 export function estimatedVelocityText(run: Pick<LocalizationRun, 'estimated_p_velocity_mps' | 'estimated_s_velocity_mps'>): string {
   const p = run.estimated_p_velocity_mps;
   const s = run.estimated_s_velocity_mps;
@@ -325,8 +326,10 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       </div>
       <p>
         Runs every localization backend (TDOA, traveltime inversion, semblance, energy baseline, the
-        velocity-free TDCAS / PSAFUVS / SUEA, joint fusion) against this session's frozen geometry and raw
-        samples; with a registered 3D scan, scan-constrained variants also use its empty and filled space.
+        velocity-free TDCAS / PSAFUVS / SUEA, waveform cross-correlation TDOA, a robust outlier-rejecting
+        fit, joint P-TDOA + P–S, eikonal travel times, a Bayesian posterior region, joint fusion) against
+        this session's frozen geometry and raw samples; with a registered 3D scan, scan variants also use its
+        empty and filled space (eikonal waves go around its voids).
         Every value below must come from this object's own measured/reviewed calibration -- nothing here is
         a guessed default.
       </p>
@@ -474,7 +477,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       </details>
 
       <details className="settings-details">
-        <summary>S-wave picking for PSAFUVS (optional: all fields or none)</summary>
+        <summary>S-wave picking for PSAFUVS and PSP (optional: all fields or none)</summary>
         <div className="cable-grid">
           <label title="The S onset is searched from this many samples after the P pick.">
             <span>Min P→S separation (samples)</span>
@@ -535,6 +538,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
                     ? `confidence ${run.confidence_score.toFixed(2)}` +
                       (run.degrees_of_freedom === 0 ? ' · unverified (no redundant picks)' : '') +
                       estimatedVelocityText(run) +
+                      (uncertaintyText(run) === '' ? '' : ` · ${uncertaintyText(run)}`) +
                       (run.method_name === 'energy_baseline' ? ' · diagnostic only, not fused' : '')
                     : run.rejection_reason}
                 </small>

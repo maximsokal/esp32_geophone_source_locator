@@ -308,6 +308,34 @@ static void test_inconsistent_arrivals_are_not_solved(void)
 }
 
 
+static void test_four_pods_on_one_circle_are_degenerate(void)
+{
+    /* With four coplanar sensors the affine identity
+     * sum a_i |x - s_i|^2 = sum a_i |s_i|^2 is what fixes the scale K;
+     * its right-hand side vanishes exactly for concyclic sensors (a
+     * rectangle -- the British flag theorem -- or an isosceles trapezoid),
+     * and then every K fits: the solver must not return a location. */
+    static const localization_point3d_t rectangle[4] = {
+        { 0.0, 0.0, 0.0 }, { 3.0, 0.0, 0.0 }, { 0.0, 2.5, 0.0 }, { 3.0, 2.5, 0.0 },
+    };
+    static const localization_point3d_t trapezoid[4] = {
+        { 0.0, 0.0, 0.0 }, { 3.0, 0.0, 0.0 }, { 0.6, 2.5, 0.0 }, { 2.4, 2.5, 0.0 },
+    };
+    const localization_point3d_t source = { 1.1, 1.6, -1.3 };
+    localization_psafuvs_observation_t observations[4];
+    localization_psafuvs_config_t config = localization_psafuvs_default_config();
+    localization_psafuvs_result_t result;
+
+    make_observations(rectangle, 4U, source, 0.02, 320.0, 180.0, observations);
+    assert(localization_psafuvs_solve(observations, 4U, &config, &result) == ESP_OK);
+    assert(result.status != LOCALIZATION_PSAFUVS_SOLVED);
+    make_observations(trapezoid, 4U, source, 0.02, 320.0, 180.0, observations);
+    assert(localization_psafuvs_solve(observations, 4U, &config, &result) == ESP_OK);
+    assert(result.status != LOCALIZATION_PSAFUVS_SOLVED);
+    /* FOUR_PODS is off any circle: solved (test above). */
+}
+
+
 int main(void)
 {
     test_four_flat_geophones_locate_buried_source();
@@ -318,6 +346,7 @@ int main(void)
     test_scan_void_ray_filter_drops_detoured_sensor();
     test_candidate_filter_and_invalid_input();
     test_inconsistent_arrivals_are_not_solved();
+    test_four_pods_on_one_circle_are_degenerate();
     printf("localization PSAFUVS tests passed\n");
     return 0;
 }

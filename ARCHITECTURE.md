@@ -841,7 +841,7 @@ Keeping arrival picking and geometry solving separate allows both stages to be b
 | Method | Input | Minimum sensors | Scan use |
 | --- | --- | --- | --- |
 | TDCAS (IEEE Access 2017) | P picks | 6 (5 on a planar surface array) | straight rays crossing scan FREE space drop the sensor |
-| PSAFUVS (IJDSN 2013) | P + S picks | 5 (4 on a planar surface array) | same ray screening; candidate filter |
+| PSAFUVS (IJDSN 2013) | P + S picks | 5 (4 on a planar surface array, not on one circle) | same ray screening; candidate filter |
 | SUEA (IJMST 2022) | P picks (+ optional velocity prior) | 3 | travel paths go *around* empty cells |
 
 - TDCAS solves every 6-sensor (planar: 5-sensor) combination analytically and fuses them with a logistic-PDF maximum-likelihood fit. The current 4-pod hardware cannot satisfy it; its run record says so.
@@ -859,6 +859,28 @@ phone scan (WebXR) -> FREE / OCCUPIED voxels (UNKNOWN implicit)
 ```
 
 `tests/vectors/scan_occupancy_void_scene_v1.bin` is written by the WebUI encoder and consumed by `localization_calculate_scan_methods_test.c`, so the whole path is tested across both languages. SUEA accuracy is bounded by the grid (0.1 m cells by default).
+
+### Extended methods: waveform delays, robust fits, P-S, eikonal, posterior
+
+`components/localization_extended` adds five more locators; "Calculate source" runs all of them on the same P arrivals (one evidence group in the fusion) and persists each record:
+
+| Record | Method | What it adds | Current 4 pods |
+| --- | --- | --- | --- |
+| `xcorr_tdoa` | every channel pair cross-correlated (band-limited sub-sample peak); pair-network closure; robust fit to all N(N-1)/2 delays | delays from whole waveforms, not onset picks; a cycle-skipped pair is flagged by the closure | yes (6 pairs) |
+| `robust_tdoa` | Huber / Tukey IRLS seeded by an exhaustive minimal-subset consensus (MSAC) | a wrong pick (reflection, noise trigger) is dropped, not averaged in | detects an inconsistency but cannot name the pick (reported as ambiguous) |
+| `psp_joint` | P-TDOA + S-P jointly, each S-P interval weighted by the S/P onset SNR | range from S-P, direction from P; a doubtful S pick gets a small say | yes with the caller's vP uncertainty as prior; velocity-free only if the pods are not on one circle |
+| `eikonal_fmm` / `eikonal_scan_voids` | second-order fast marching in a velocity grid; scan voids impassable | first arrivals around voids and through heterogeneous material | yes |
+| `bayesian` / `bayesian_scan_voids` | grid posterior, origin time and velocity marginalized, Student-t likelihood | MAP + per-axis sd + 90% credible region (`uncertainty` in the run record) | yes; the region is tall in depth under a flat array, as it should be |
+
+`semblance_eikonal_voids` is the existing semblance focusing with the eikonal times instead of straight rays.
+
+Scan voids enter the eikonal model as zero velocity. A lattice node is blocked only when its whole cell is empty: blocking every node that touches a void widens it by half a cell on each side, and the discrete wave then detours around a trench ~0.2 m wider than scanned.
+
+Calibration hits (`localization_eikonal_calibrate()`): hammer hits at known positions give measured-minus-modelled times, spread back along their rays (SIRT), smoothed and clamped; the result is a velocity map (slow, loosened zones come out slow), kept only while the misfit falls. It is a library call with host tests; the WebUI flow to record calibration hits is not built yet.
+
+Four coplanar sensors on one circle (a rectangle, an isosceles trapezoid) make every velocity-free fit degenerate: the affine identity that fixes the distance scale, sum a_i |x - s_i|^2 = sum a_i |s_i|^2, has a zero right-hand side exactly for concyclic points. PSP then reports `underdetermined`, PSAFUVS `degenerate`; a vP prior or moving one pod off the circle resolves it.
+
+Budgets on the device (numerical strategy, not physics): 40000 eikonal nodes, 8000 posterior cells per zoom level with 5 velocity nodes, 6000 seeding lattice points. Run records per "Calculate source": 20 + joint; the run store keeps 128 per session. The extended solvers keep their bulk on the heap; the deepest new call chain measures ~6.2 KiB on the 8 KiB HTTPS task (host `-fstack-usage`; not yet measured on the S3, nor the wall time).
 
 ## Web component convention
 
