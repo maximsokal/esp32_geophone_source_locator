@@ -9,6 +9,7 @@
 #include "measurement_service.h"
 #include "seismic_acquisition.h"
 #include "localization_calculate.h"
+#include "localization_job.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -347,14 +348,26 @@ static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id
         );
     }
 
-    localization_calculate_summary_t summary;
-    return localization_calculate_run(
-        object_id,
-        session_id,
-        &config,
-        (uint64_t)(esp_timer_get_time() / 1000),
-        &summary
-    );
+    /* Optional: the run's time budget in seconds (methods not started by
+     * then are persisted as skipped); absent = LOCALIZATION_JOB_DEFAULT_BUDGET_MS. */
+    uint32_t budget_ms = 0U;
+    cJSON *budget = cJSON_GetObjectItemCaseSensitive(root, "time_budget_s");
+    if (budget != NULL) {
+        if (
+            !cJSON_IsNumber(budget) || !isfinite(budget->valuedouble) ||
+            budget->valuedouble * 1000.0 < (double)LOCALIZATION_JOB_MIN_BUDGET_MS ||
+            budget->valuedouble * 1000.0 > (double)LOCALIZATION_JOB_MAX_BUDGET_MS
+        ) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        budget_ms = (uint32_t)(budget->valuedouble * 1000.0);
+    }
+
+    /* The run takes seconds and several KiB of stack: it is handed to the
+     * localization_job worker, never run on this HTTPS task. The WebUI
+     * polls /api/localization/runs?job=status. A second request while one
+     * runs is refused (409), not queued. */
+    return localization_job_submit(object_id, session_id, &config, budget_ms, NULL);
 }
 
 static esp_err_t web_control_measurement_start(const char *object_id)

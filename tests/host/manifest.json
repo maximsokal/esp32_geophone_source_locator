@@ -971,6 +971,22 @@
       ]
     },
     {
+      "name": "localization_job_state",
+      "sources": [
+        "components/localization_job/localization_job_state.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_job/tests/localization_job_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_calculate/include",
+        "components/localization_job/include",
+        "components/geophone_events/include"
+      ]
+    },
+    {
       "name": "localization_calculate_scan_methods",
       "sources": [
         "components/localization_calculate/localization_calculate_policy.c",

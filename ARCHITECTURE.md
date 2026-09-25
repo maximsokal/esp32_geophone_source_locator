@@ -880,7 +880,24 @@ Calibration hits (`localization_eikonal_calibrate()`): hammer hits at known posi
 
 Four coplanar sensors on one circle (a rectangle, an isosceles trapezoid) make every velocity-free fit degenerate: the affine identity that fixes the distance scale, sum a_i |x - s_i|^2 = sum a_i |s_i|^2, has a zero right-hand side exactly for concyclic points. PSP then reports `underdetermined`, PSAFUVS `degenerate`; a vP prior or moving one pod off the circle resolves it.
 
-Budgets on the device (numerical strategy, not physics): 40000 eikonal nodes, 8000 posterior cells per zoom level with 5 velocity nodes, 6000 seeding lattice points. Run records per "Calculate source": 20 + joint; the run store keeps 128 per session. The extended solvers keep their bulk on the heap; the deepest new call chain measures ~6.2 KiB on the 8 KiB HTTPS task (host `-fstack-usage`; not yet measured on the S3, nor the wall time).
+Budgets on the device (numerical strategy, not physics): 40000 eikonal nodes, 8000 posterior cells per zoom level with 5 velocity nodes, 6000 seeding lattice points. Run records per "Calculate source": 20 + joint; the run store keeps 128 per session.
+
+Posterior regions cover the model as well as the picks. Each pick's sigma adds, in quadrature, the forward model's own error: for `bayesian_scan_voids` 1.5 % of the travel time (the measured fast-marching bound) plus cell / (v sqrt 6) for a void edge discretized at the eikonal or scan cell. Both Bayesian runs then check the MAP fit: when chi^2 exceeds its mean + 3 sd, every sigma is scaled by the Birge ratio sqrt(chi^2 / dof) and the posterior recomputed, so a region only ever widens (`uncertainty.sigma_inflation` in the run record; the WebUI says "widened x N"). With correctly stated sigmas the check stayed off in 60/60 Monte Carlo events; straight rays past the scanned trench trigger it (x21) instead of reporting a falsely tight region.
+
+### "Calculate source" as a background job
+
+A full run takes seconds and several KiB of stack, so it never runs in an HTTP handler (8 KiB HTTPS task, 12 s WebUI timeout):
+
+```text
+WebUI --POST /api/control {calculate_source, time_budget_s?}--> localization_job_submit()   (returns at once; 409 while one runs)
+localization_job worker: core 1, idle priority, 16 KiB PSRAM stack --> localization_calculate_run(deadline, progress)
+WebUI --GET /api/localization/runs?job=status (1 s)--> state, method running, elapsed / budget,
+      every method's measured ms, worker stack high-water mark --> then GET the runs
+```
+
+- Time budget (default 60 s, 1-600 s): methods not started by the deadline are persisted unsolved with "not run: the calculation time budget was used up"; TDOA and the energy baseline (cheap) always run.
+- Time and stack are measured on the device on every run and shown in the WebUI ("Measured on the device") and the log (`STACK_HWM`); a high-water mark below 4 KiB free is flagged. Host `-fstack-usage`: orchestrator 3.8 KiB, deepest new chain ~6.2 KiB; the 16 KiB worker stack leaves room for Xtensa windowed-ABI frames.
+- Idle priority on the signal-processing core: acquisition always preempts it, and IDLE1 still runs every tick, so the task watchdog is fed however long a run takes.
 
 ## Web component convention
 

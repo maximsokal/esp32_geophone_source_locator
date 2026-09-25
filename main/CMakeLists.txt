@@ -39,6 +39,7 @@ idf_component_register(
         seismic_acquisition
         seismic_recorder
         localization
+        localization_job
         wifi_manager
         web_server
         ui
