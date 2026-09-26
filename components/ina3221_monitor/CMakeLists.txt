@@ -20,5 +20,6 @@ idf_component_register(
         device_status
         freertos
         log
+        main_barometer
         sensor_bus
 )

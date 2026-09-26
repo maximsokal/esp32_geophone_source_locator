@@ -14,6 +14,7 @@
 #include "ina3221_soc.h"
 #include "app_events.h"
 #include "ina3221_policy.h"
+#include "main_barometer.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -577,8 +578,15 @@ static void ina3221_monitor_worker(
     bool hardware_available =
         false;
 
+    main_barometer_t main_barometer;
+    main_barometer_init(&main_barometer);
+
     if (!stop_before_start) {
         while (true) {
+            (void)main_barometer_poll(
+                &main_barometer,
+                (uint64_t)(esp_timer_get_time() / INT64_C(1000)));
+
             if (!driver.ready) {
                 const esp_err_t open_err =
                     ina3221_driver_open(
@@ -736,6 +744,7 @@ static void ina3221_monitor_worker(
         }
     }
 
+    main_barometer_close(&main_barometer);
     ina3221_driver_close(
         &driver
     );

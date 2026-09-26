@@ -1,0 +1,464 @@
+#include "main_barometer.h"
+
+#include <stddef.h>
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "nrf_baro_altitude.h"
+
+#ifndef CONFIG_MAIN_BAROMETER_BMP280_ADDRESS
+#define CONFIG_MAIN_BAROMETER_BMP280_ADDRESS 0x77
+#endif
+
+#define BMP280_ADDRESS_76 0x76U
+#define BMP280_ADDRESS_77 0x77U
+#define BMP280_REG_CHIP_ID 0xD0U
+#define BMP280_REG_CALIB 0x88U
+#define BMP280_REG_CONFIG 0xF5U
+#define BMP280_REG_CTRL_MEAS 0xF4U
+#define BMP280_REG_DATA 0xF7U
+#define BMP280_CHIP_ID 0x58U
+#define BMP280_CONFIG_FILTER_X16_STANDBY_62_5_MS 0x30U
+#define BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL 0x57U
+#define BMP280_PRESSURE_MIN_PA 30000U
+#define BMP280_PRESSURE_MAX_PA 110000U
+#define BMP280_POLL_PERIOD_MS 200U
+
+#define AHT20_ADDRESS 0x38U
+#define AHT20_STATUS_CALIBRATED 0x08U
+#define AHT20_STATUS_BUSY 0x80U
+#define AHT20_CMD_INITIALIZE 0xBEU
+#define AHT20_CMD_MEASURE 0xACU
+#define AHT20_INIT_DELAY_MS 10U
+#define AHT20_BUSY_POLL_MS 2U
+#define AHT20_TIMEOUT_MS 100U
+#define AHT20_POLL_PERIOD_MS 1000U
+
+static esp_err_t main_barometer_classify_error(uint8_t address, esp_err_t err)
+{
+    return err == ESP_OK ? ESP_OK : sensor_bus_classify_transfer_error(address, err);
+}
+
+static esp_err_t main_barometer_read_regs(
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    uint8_t reg,
+    uint8_t *data,
+    size_t length)
+{
+    return main_barometer_classify_error(
+        address, i2c_bus_read_bytes(device, reg, length, data));
+}
+
+static esp_err_t main_barometer_write_reg(
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    uint8_t reg,
+    uint8_t value)
+{
+    return main_barometer_classify_error(
+        address, i2c_bus_write_bytes(device, reg, 1U, &value));
+}
+
+static uint16_t main_barometer_le_u16(const uint8_t *data)
+{
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8U);
+}
+
+static int16_t main_barometer_le_i16(const uint8_t *data)
+{
+    return (int16_t)main_barometer_le_u16(data);
+}
+
+static void main_barometer_parse_calibration(
+    main_barometer_bmp280_calibration_t *calibration,
+    const uint8_t bytes[24])
+{
+    calibration->dig_t1 = main_barometer_le_u16(&bytes[0]);
+    calibration->dig_t2 = main_barometer_le_i16(&bytes[2]);
+    calibration->dig_t3 = main_barometer_le_i16(&bytes[4]);
+    calibration->dig_p1 = main_barometer_le_u16(&bytes[6]);
+    calibration->dig_p2 = main_barometer_le_i16(&bytes[8]);
+    calibration->dig_p3 = main_barometer_le_i16(&bytes[10]);
+    calibration->dig_p4 = main_barometer_le_i16(&bytes[12]);
+    calibration->dig_p5 = main_barometer_le_i16(&bytes[14]);
+    calibration->dig_p6 = main_barometer_le_i16(&bytes[16]);
+    calibration->dig_p7 = main_barometer_le_i16(&bytes[18]);
+    calibration->dig_p8 = main_barometer_le_i16(&bytes[20]);
+    calibration->dig_p9 = main_barometer_le_i16(&bytes[22]);
+}
+
+bool main_barometer_bmp280_compensate(
+    uint32_t raw_pressure,
+    uint32_t raw_temperature,
+    const main_barometer_bmp280_calibration_t *calibration,
+    uint32_t *pressure_pa,
+    int32_t *temperature_mc)
+{
+    if (calibration == NULL || pressure_pa == NULL || temperature_mc == NULL ||
+        raw_pressure > 0xFFFFFU || raw_temperature > 0xFFFFFU ||
+        calibration->dig_p1 == 0U) {
+        return false;
+    }
+
+    const int32_t adc_t = (int32_t)raw_temperature;
+    int32_t var1_t =
+        (((adc_t >> 3) - ((int32_t)calibration->dig_t1 << 1)) *
+         (int32_t)calibration->dig_t2) >> 11;
+    int32_t var2_t =
+        (((((adc_t >> 4) - (int32_t)calibration->dig_t1) *
+           ((adc_t >> 4) - (int32_t)calibration->dig_t1)) >> 12) *
+         (int32_t)calibration->dig_t3) >> 14;
+    const int32_t t_fine = var1_t + var2_t;
+    int32_t temp_centi_c = (t_fine * 5 + 128) >> 8;
+    if (temp_centi_c < -4000) {
+        temp_centi_c = -4000;
+    } else if (temp_centi_c > 8500) {
+        temp_centi_c = 8500;
+    }
+
+    int64_t var1_p = (int64_t)t_fine - INT64_C(128000);
+    int64_t var2_p = var1_p * var1_p * calibration->dig_p6;
+    var2_p += (var1_p * calibration->dig_p5) * INT64_C(131072);
+    var2_p += (int64_t)calibration->dig_p4 * INT64_C(34359738368);
+    var1_p = (var1_p * var1_p * calibration->dig_p3) / INT64_C(256) +
+             var1_p * calibration->dig_p2 * INT64_C(4096);
+    var1_p = ((INT64_C(140737488355328) + var1_p) * calibration->dig_p1) /
+             INT64_C(8589934592);
+    if (var1_p == 0) {
+        return false;
+    }
+
+    int64_t pressure_q24_8 = INT64_C(1048576) - raw_pressure;
+    pressure_q24_8 =
+        (((pressure_q24_8 * INT64_C(2147483648)) - var2_p) * INT64_C(3125)) /
+        var1_p;
+    var1_p = ((int64_t)calibration->dig_p9 * (pressure_q24_8 >> 13) *
+              (pressure_q24_8 >> 13)) >> 25;
+    var2_p = ((int64_t)calibration->dig_p8 * pressure_q24_8) >> 19;
+    pressure_q24_8 =
+        ((pressure_q24_8 + var1_p + var2_p) >> 8) +
+        ((int64_t)calibration->dig_p7 << 4);
+    int64_t pressure = (pressure_q24_8 + 128) / 256;
+    if (pressure < BMP280_PRESSURE_MIN_PA || pressure > BMP280_PRESSURE_MAX_PA) {
+        return false;
+    }
+
+    *pressure_pa = (uint32_t)pressure;
+    *temperature_mc = temp_centi_c * 10;
+    return true;
+}
+
+static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
+{
+#if CONFIG_MAIN_BAROMETER_BMP280_ADDRESS == 0x76
+    const uint8_t addresses[2] = {BMP280_ADDRESS_76, BMP280_ADDRESS_77};
+#elif CONFIG_MAIN_BAROMETER_BMP280_ADDRESS == 0x77
+    const uint8_t addresses[2] = {BMP280_ADDRESS_77, BMP280_ADDRESS_76};
+#else
+#error "CONFIG_MAIN_BAROMETER_BMP280_ADDRESS must be 0x76 or 0x77"
+#endif
+
+    esp_err_t last_error = ESP_ERR_NOT_FOUND;
+    for (size_t i = 0U; i < 2U; ++i) {
+        i2c_bus_device_handle_t candidate = i2c_bus_device_create(
+            barometer->handles.bus, addresses[i], SENSOR_BUS_I2C_SPEED_HZ);
+        if (candidate == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+
+        uint8_t chip_id = 0U;
+        esp_err_t err = main_barometer_read_regs(
+            candidate, addresses[i], BMP280_REG_CHIP_ID, &chip_id, 1U);
+        if (err == ESP_OK && chip_id == BMP280_CHIP_ID) {
+            uint8_t calibration_bytes[24] = {0};
+            err = main_barometer_read_regs(
+                candidate, addresses[i], BMP280_REG_CALIB,
+                calibration_bytes, sizeof(calibration_bytes));
+            if (err == ESP_OK) {
+                main_barometer_parse_calibration(
+                    &barometer->calibration, calibration_bytes);
+                if (barometer->calibration.dig_p1 == 0U) {
+                    err = ESP_ERR_INVALID_RESPONSE;
+                }
+            }
+            if (err == ESP_OK) {
+                /* T x2, P x16, normal mode; IIR x16 and 62.5 ms standby. */
+                err = main_barometer_write_reg(
+                    candidate, addresses[i], BMP280_REG_CONFIG,
+                    BMP280_CONFIG_FILTER_X16_STANDBY_62_5_MS);
+            }
+            if (err == ESP_OK) {
+                err = main_barometer_write_reg(
+                    candidate, addresses[i], BMP280_REG_CTRL_MEAS,
+                    BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL);
+            }
+            if (err == ESP_OK) {
+                barometer->bmp280 = candidate;
+                barometer->reading.bmp280_address = addresses[i];
+                barometer->reading.bmp280_present = true;
+                barometer->bmp280_initialized = true;
+                return ESP_OK;
+            }
+        } else if (err == ESP_OK) {
+            err = ESP_ERR_INVALID_RESPONSE;
+        }
+
+        if (err != ESP_ERR_NOT_FOUND) {
+            last_error = err;
+        }
+        (void)i2c_bus_device_delete(&candidate);
+    }
+
+    barometer->reading.bmp280_present = false;
+    barometer->reading.bmp280_valid = false;
+    return last_error;
+}
+
+uint8_t main_barometer_aht20_crc8(const uint8_t *data, uint8_t length)
+{
+    if (data == NULL) {
+        return 0U;
+    }
+    uint8_t crc = 0xFFU;
+    for (uint8_t i = 0U; i < length; ++i) {
+        crc ^= data[i];
+        for (uint8_t bit = 0U; bit < 8U; ++bit) {
+            crc = (crc & 0x80U) != 0U
+                ? (uint8_t)((crc << 1U) ^ 0x31U)
+                : (uint8_t)(crc << 1U);
+        }
+    }
+    return crc;
+}
+
+static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
+{
+    if (barometer->aht20 == NULL) {
+        barometer->aht20 = i2c_bus_device_create(
+            barometer->handles.bus, AHT20_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ);
+        if (barometer->aht20 == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    uint8_t status = 0U;
+    esp_err_t err = main_barometer_classify_error(
+        AHT20_ADDRESS,
+        i2c_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
+    if (err != ESP_OK) {
+        return err;
+    }
+    barometer->reading.aht20_present = true;
+
+    if ((status & AHT20_STATUS_CALIBRATED) == 0U) {
+        const uint8_t initialize[3] = {AHT20_CMD_INITIALIZE, 0x08U, 0x00U};
+        err = main_barometer_classify_error(
+            AHT20_ADDRESS,
+            i2c_bus_write_bytes(
+                barometer->aht20, NULL_I2C_MEM_ADDR,
+                sizeof(initialize), initialize));
+        if (err != ESP_OK) {
+            return err;
+        }
+        vTaskDelay(pdMS_TO_TICKS(AHT20_INIT_DELAY_MS));
+        err = main_barometer_classify_error(
+            AHT20_ADDRESS,
+            i2c_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
+        if (err != ESP_OK) {
+            return err;
+        }
+        if ((status & AHT20_STATUS_CALIBRATED) == 0U) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    barometer->aht20_initialized = true;
+    return ESP_OK;
+}
+
+static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
+{
+    if (!barometer->aht20_initialized) {
+        const esp_err_t init_err = main_barometer_init_aht20(barometer);
+        if (init_err != ESP_OK) {
+            barometer->reading.aht20_valid = false;
+            return init_err;
+        }
+    }
+
+    const uint8_t trigger[3] = {AHT20_CMD_MEASURE, 0x33U, 0x00U};
+    esp_err_t err = main_barometer_classify_error(
+        AHT20_ADDRESS,
+        i2c_bus_write_bytes(
+            barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(trigger), trigger));
+    if (err != ESP_OK) {
+        barometer->reading.aht20_valid = false;
+        return err;
+    }
+
+    uint8_t data[7] = {0};
+    uint32_t waited_ms = 0U;
+    do {
+        vTaskDelay(pdMS_TO_TICKS(AHT20_BUSY_POLL_MS));
+        waited_ms += AHT20_BUSY_POLL_MS;
+        err = main_barometer_classify_error(
+            AHT20_ADDRESS,
+            i2c_bus_read_bytes(
+                barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(data), data));
+        if (err != ESP_OK) {
+            barometer->reading.aht20_valid = false;
+            return err;
+        }
+        if ((data[0] & AHT20_STATUS_BUSY) == 0U) {
+            break;
+        }
+    } while (waited_ms < AHT20_TIMEOUT_MS);
+
+    if ((data[0] & AHT20_STATUS_BUSY) != 0U) {
+        barometer->reading.aht20_valid = false;
+        return ESP_ERR_TIMEOUT;
+    }
+    if (main_barometer_aht20_crc8(data, 6U) != data[6]) {
+        barometer->reading.aht20_valid = false;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint32_t raw_humidity =
+        ((uint32_t)data[1] << 12U) | ((uint32_t)data[2] << 4U) |
+        ((uint32_t)data[3] >> 4U);
+    const uint32_t raw_temperature =
+        (((uint32_t)data[3] & 0x0FU) << 16U) | ((uint32_t)data[4] << 8U) |
+        (uint32_t)data[5];
+    barometer->reading.humidity_mpct =
+        (uint32_t)(((uint64_t)raw_humidity * UINT64_C(100000) + 524288U) /
+                   UINT64_C(1048576));
+    barometer->reading.aht20_temperature_mc =
+        (int32_t)(((uint64_t)raw_temperature * UINT64_C(200000) + 524288U) /
+                  UINT64_C(1048576)) - 50000;
+    barometer->reading.aht20_valid = true;
+    return ESP_OK;
+}
+
+void main_barometer_init(main_barometer_t *barometer)
+{
+    if (barometer == NULL) {
+        return;
+    }
+    memset(barometer, 0, sizeof(*barometer));
+    (void)nrf_ema_filter_init(
+        &barometer->altitude_filter, 1000U, -2000000.0, 10000000.0);
+}
+
+static esp_err_t main_barometer_read_bmp280(
+    main_barometer_t *barometer,
+    uint64_t now_ms)
+{
+    uint8_t bytes[6] = {0};
+    esp_err_t err = main_barometer_read_regs(
+        barometer->bmp280, barometer->reading.bmp280_address,
+        BMP280_REG_DATA, bytes, sizeof(bytes));
+    if (err != ESP_OK) {
+        barometer->reading.bmp280_valid = false;
+        return err;
+    }
+
+    const uint32_t raw_pressure =
+        ((uint32_t)bytes[0] << 12U) | ((uint32_t)bytes[1] << 4U) |
+        ((uint32_t)bytes[2] >> 4U);
+    const uint32_t raw_temperature =
+        ((uint32_t)bytes[3] << 12U) | ((uint32_t)bytes[4] << 4U) |
+        ((uint32_t)bytes[5] >> 4U);
+    uint32_t pressure_pa = 0U;
+    int32_t temperature_mc = 0;
+    if (raw_pressure == 0x80000U || raw_temperature == 0x80000U ||
+        !main_barometer_bmp280_compensate(
+            raw_pressure, raw_temperature, &barometer->calibration,
+            &pressure_pa, &temperature_mc)) {
+        barometer->reading.bmp280_valid = false;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    double filtered_altitude_mm = 0.0;
+    const int32_t altitude_mm = nrf_baro_pressure_to_altitude_mm(pressure_pa);
+    if (nrf_ema_filter_update(
+            &barometer->altitude_filter, altitude_mm,
+            now_ms, &filtered_altitude_mm) !=
+        NRF_EMA_FILTER_UPDATED) {
+        barometer->reading.bmp280_valid = false;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    barometer->reading.pressure_pa = pressure_pa;
+    barometer->reading.temperature_mc = temperature_mc;
+    barometer->reading.filtered_altitude_mm =
+        (int32_t)(filtered_altitude_mm >= 0.0
+                      ? filtered_altitude_mm + 0.5
+                      : filtered_altitude_mm - 0.5);
+    barometer->reading.bmp280_valid = true;
+    return ESP_OK;
+}
+
+esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
+{
+    if (barometer == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (barometer->handles.bus == NULL) {
+        const esp_err_t bus_err = sensor_bus_get_handles(&barometer->handles);
+        if (bus_err != ESP_OK) {
+            return bus_err;
+        }
+    }
+
+    esp_err_t result = ESP_OK;
+    if (now_ms >= barometer->next_bmp280_poll_ms) {
+        barometer->next_bmp280_poll_ms = now_ms + BMP280_POLL_PERIOD_MS;
+        if (!barometer->bmp280_initialized) {
+            result = main_barometer_init_bmp280(barometer);
+        }
+        const esp_err_t bmp_err = barometer->bmp280_initialized
+            ? main_barometer_read_bmp280(barometer, now_ms)
+            : result;
+        if (result == ESP_OK) {
+            result = bmp_err;
+        }
+    }
+
+    if (!barometer->aht20_attempted ||
+        (now_ms >= barometer->last_aht20_attempt_ms &&
+         now_ms - barometer->last_aht20_attempt_ms >= AHT20_POLL_PERIOD_MS)) {
+        barometer->aht20_attempted = true;
+        barometer->last_aht20_attempt_ms = now_ms;
+        const esp_err_t aht_err = main_barometer_read_aht20(barometer);
+        if (result == ESP_OK) {
+            result = aht_err;
+        }
+    }
+    return result;
+}
+
+void main_barometer_close(main_barometer_t *barometer)
+{
+    if (barometer == NULL) {
+        return;
+    }
+    if (barometer->bmp280 != NULL) {
+        (void)i2c_bus_device_delete(&barometer->bmp280);
+    }
+    if (barometer->aht20 != NULL) {
+        (void)i2c_bus_device_delete(&barometer->aht20);
+    }
+    memset(&barometer->handles, 0, sizeof(barometer->handles));
+    barometer->bmp280_initialized = false;
+    barometer->aht20_initialized = false;
+}
+
+void main_barometer_get_reading(
+    const main_barometer_t *barometer,
+    main_barometer_reading_t *reading)
+{
+    if (barometer != NULL && reading != NULL) {
+        *reading = barometer->reading;
+    }
+}

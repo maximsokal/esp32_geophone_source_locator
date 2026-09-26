@@ -439,6 +439,22 @@
       "libraries": ["m"]
     },
     {
+      "name": "main_barometer",
+      "sources": [
+        "components/main_barometer/main_barometer.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "nRF54L15/src/nrf_ema_filter.c",
+        "tests/host/main_barometer_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/sensor_bus",
+        "components/main_barometer/include",
+        "components/sensor_bus/include",
+        "nRF54L15/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "keypad",
       "sources": [
         "components/keypad/keypad.c",
