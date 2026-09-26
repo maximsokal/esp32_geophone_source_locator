@@ -1097,13 +1097,13 @@
         "tests/host/web_localization_runs_http_test.c"
       ],
       "include_dirs": [
+        "components/seismic_recorder/include",
         "tests/host/stubs/web_api_control",
         "tests/host/stubs/object_store_profile",
         "components/localization/include",
         "components/localization_results/include",
         "components/localization_run_store/include",
         "components/geophone_events/include",
-        "components/seismic_recorder/include",
         "components/seismic_buffer/include",
         "components/web_server"
       ],
@@ -1501,6 +1501,24 @@
       ],
       "defines": ["_POSIX_C_SOURCE=200809L"],
       "libraries": ["m"]
+    },
+    {
+      "name": "seismic_recorder_geometry_participation",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/tests/seismic_recorder_geometry_participation_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_buffer/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
     },
     {
       "name": "seismic_recorder_session_cs_pairs",

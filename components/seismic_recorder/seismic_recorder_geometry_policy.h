@@ -9,6 +9,7 @@
 #include "nrf_geometry_solver.h"
 #include "nrf_topology.h"
 #include "object_store.h"
+#include "seismic_recorder.h"
 
 
 /*
@@ -112,6 +113,14 @@ void seismic_recorder_geometry_apply_solution(
 bool seismic_recorder_geometry_all_assigned_pods_computed(
     const nrf_topology_snapshot_t *topology,
     const object_store_geometry_t *geometry
+);
+
+
+/* Build the frozen REMOTE participation and position-source snapshot. */
+esp_err_t seismic_recorder_geometry_build_participation(
+    const nrf_topology_snapshot_t *topology,
+    const object_store_geometry_t *geometry,
+    seismic_recorder_session_participation_t *participation
 );
 
 

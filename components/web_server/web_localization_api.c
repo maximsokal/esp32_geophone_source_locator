@@ -144,6 +144,10 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     const bool geometry_available =
         seismic_recorder_read_session_geometry(object_id, session_id, &geometry) == ESP_OK;
 
+    seismic_recorder_session_participation_t participation;
+    const bool participation_available =
+        seismic_recorder_read_session_participation(object_id, session_id, &participation) == ESP_OK;
+
     object_store_cs_pairs_t cs_pairs;
     const bool cs_pairs_available =
         seismic_recorder_read_session_cs_pairs(object_id, session_id, &cs_pairs) == ESP_OK;
@@ -194,14 +198,55 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             );
             web_json_writer_printf(
                 &writer,
-                "\"computed_at_ms\":%" PRIu64 "}",
+                "\"computed_at_ms\":%" PRIu64,
                 geometry.pods[pod].computed_at_ms
             );
         } else {
             web_json_writer_printf(
-                &writer, "{\"pod\":%u,\"computed\":false,\"leveled\":false}", (unsigned)(pod + 1U)
+                &writer, "{\"pod\":%u,\"computed\":false,\"leveled\":false", (unsigned)(pod + 1U)
             );
         }
+
+        if (participation_available) {
+            static const char hex[] = "0123456789abcdef";
+            const seismic_recorder_pod_participation_t *pod_participation =
+                &participation.pods[pod];
+            const size_t hardware_id_length =
+                pod_participation->hardware_id_length > SEISMIC_RECORDER_HARDWARE_ID_MAX
+                    ? SEISMIC_RECORDER_HARDWARE_ID_MAX
+                    : pod_participation->hardware_id_length;
+            char hardware_id[SEISMIC_RECORDER_HARDWARE_ID_MAX * 2U + 1U];
+            for (size_t byte = 0U; byte < hardware_id_length; ++byte) {
+                hardware_id[byte * 2U] = hex[pod_participation->hardware_id[byte] >> 4U];
+                hardware_id[byte * 2U + 1U] = hex[pod_participation->hardware_id[byte] & 0x0FU];
+            }
+            hardware_id[hardware_id_length * 2U] = '\0';
+
+            web_json_writer_printf(
+                &writer,
+                ",\"assigned\":%s,\"node_id\":",
+                pod_participation->assigned ? "true" : "false"
+            );
+            if (pod_participation->node_id_known) {
+                web_json_writer_printf(&writer, "%u", (unsigned)pod_participation->node_id);
+            } else {
+                web_json_writer_write(&writer, "null");
+            }
+            web_json_writer_write(&writer, ",\"hardware_id\":");
+            if (hardware_id_length > 0U) {
+                web_json_writer_printf(&writer, "\"%s\"", hardware_id);
+            } else {
+                web_json_writer_write(&writer, "null");
+            }
+            web_json_writer_printf(
+                &writer,
+                ",\"position_source\":\"%s\"",
+                pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+                    ? "channel_sounding"
+                    : "none"
+            );
+        }
+        web_json_writer_write(&writer, "}");
     }
     web_json_writer_write(&writer, "]},");
 

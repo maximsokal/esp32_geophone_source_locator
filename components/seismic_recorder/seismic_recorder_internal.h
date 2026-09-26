@@ -35,6 +35,8 @@
 #define SEISMIC_RECORDER_IDLE_DELAY_MS         10
 #define SEISMIC_RECORDER_METADATA_BUFFER_SIZE  2048
 #define SEISMIC_RECORDER_BINARY_VERSION        1U
+#define SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V1 1U
+#define SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V2 2U
 
 
 typedef struct
@@ -176,7 +178,8 @@ esp_err_t seismic_recorder_fs_delete_session(
 esp_err_t seismic_recorder_json_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
-    const char *status
+    const char *status,
+    const seismic_recorder_session_participation_t *participation
 );
 
 
@@ -191,4 +194,10 @@ esp_err_t seismic_recorder_json_read_summary_known_present(
     const char *object_id,
     const char *session_id,
     seismic_recorder_session_summary_t *summary
+);
+
+
+esp_err_t seismic_recorder_json_parse_participation_text(
+    const char *json,
+    seismic_recorder_session_participation_t *participation
 );

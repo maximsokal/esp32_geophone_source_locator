@@ -18,6 +18,9 @@ static char s_list_object_id[OBJECT_STORE_ID_SIZE];
 static char s_list_session_id[LOCALIZATION_RUN_SESSION_ID_SIZE];
 static unsigned s_geometry_calls;
 static esp_err_t s_geometry_result;
+static unsigned s_participation_calls;
+static esp_err_t s_participation_result;
+static seismic_recorder_session_participation_t s_participation;
 static unsigned s_cs_pairs_calls;
 static esp_err_t s_cs_pairs_result;
 static unsigned s_picks_list_calls;
@@ -31,6 +34,21 @@ static void reset_fakes(void)
     memset(s_list_session_id, 0, sizeof(s_list_session_id));
     s_geometry_calls = 0U;
     s_geometry_result = ESP_OK;
+    s_participation_calls = 0U;
+    s_participation_result = ESP_OK;
+    memset(&s_participation, 0, sizeof(s_participation));
+    s_participation.pods[0] = (seismic_recorder_pod_participation_t) {
+        .assigned = true,
+        .node_id_known = true,
+        .node_id = 42U,
+        .hardware_id_length = 3U,
+        .hardware_id = {0x01U, 0xABU, 0xFFU},
+        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+    };
+    s_participation.pods[1] = (seismic_recorder_pod_participation_t) {
+        .assigned = true,
+        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_NONE,
+    };
     s_cs_pairs_calls = 0U;
     s_cs_pairs_result = ESP_OK;
     s_picks_list_calls = 0U;
@@ -66,6 +84,24 @@ esp_err_t seismic_recorder_read_session_geometry(
     geometry->pods[1].computed_at_ms = 222ULL;
     /* pods 2 and 3 stay not-computed, matching a session with only 3
      * participating REMOTEs. */
+    return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_read_session_participation(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    (void)object_id;
+    (void)session_id;
+    assert(participation != NULL);
+    ++s_participation_calls;
+    if (s_participation_result != ESP_OK) {
+        return s_participation_result;
+    }
+    *participation = s_participation;
     return ESP_OK;
 }
 
@@ -355,6 +391,9 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "\"pod\":1,\"computed\":true,\"leveled\":true") != NULL);
     assert(strstr(response, "\"x_mm\":300,\"y_mm\":-150") != NULL);
     assert(strstr(response, "\"pod\":3,\"computed\":false,\"leveled\":false") != NULL);
+    assert(s_participation_calls == 1U);
+    assert(strstr(response, "\"assigned\":true,\"node_id\":42,\"hardware_id\":\"01abff\",\"position_source\":\"channel_sounding\"") != NULL);
+    assert(strstr(response, "\"assigned\":true,\"node_id\":null,\"hardware_id\":null,\"position_source\":\"none\"") != NULL);
     /* geometry must appear before runs, matching the documented response shape. */
     assert(strstr(response, "\"geometry\":") < strstr(response, "\"runs\":["));
 
@@ -388,12 +427,32 @@ static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
     assert(web_localization_runs_handler(&request) == ESP_OK);
     assert(request.response_status == NULL);
     assert(s_geometry_calls == 1U);
+    assert(s_participation_calls == 1U);
     assert(strstr(response, "\"geometry\":{\"available\":false") != NULL);
     assert(s_cs_pairs_calls == 1U);
     assert(strstr(response, "\"cs_pairs\":{\"available\":false,\"pairs\":[]}") != NULL);
     assert(s_picks_list_calls == 1U);
     assert(strstr(response, "\"picks\":[]") != NULL);
     assert(strstr(response, "\"runs\":[") != NULL);
+}
+
+
+static void test_participation_read_failure_keeps_geometry_response(void)
+{
+    reset_fakes();
+    s_participation_result = ESP_ERR_INVALID_RESPONSE;
+    char response[4096] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_geometry_calls == 1U && s_participation_calls == 1U);
+    assert(strstr(response, "\"geometry\":{\"available\":true") != NULL);
+    assert(strstr(response, "\"x_mm\":300,\"y_mm\":-150") != NULL);
+    assert(strstr(response, "\"assigned\"") == NULL);
+    assert(strstr(response, "\"node_id\"") == NULL);
+    assert(strstr(response, "\"hardware_id\"") == NULL);
+    assert(strstr(response, "\"position_source\"") == NULL);
 }
 
 static void test_runs_listing_requires_both_query_parameters(void)
@@ -525,6 +584,7 @@ int main(void)
 {
     test_runs_listing_round_trips_persisted_records();
     test_runs_listing_reports_geometry_unavailable_without_failing();
+    test_participation_read_failure_keeps_geometry_response();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     test_runs_listing_surfaces_invalid_arg_as_422();
