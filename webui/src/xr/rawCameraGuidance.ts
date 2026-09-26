@@ -13,7 +13,6 @@ export interface XrCameraLike {
   width: number;
   height: number;
 }
-
 export interface XrCameraViewLike {
   camera?: XrCameraLike | null;
   projectionMatrix?: ArrayLike<number>;
@@ -35,8 +34,8 @@ interface CameraReadbackMetadata {
   worldFromView?: Float32Array;
 }
 
-const TARGET_WIDTH = 256;
-const TARGET_HEIGHT = 144;
+export const RAW_CAMERA_GUIDANCE_WIDTH = 256;
+export const RAW_CAMERA_GUIDANCE_HEIGHT = 144;
 
 function compileShader(
   gl: WebGLRenderingContext | WebGL2RenderingContext,
@@ -111,13 +110,15 @@ function captureMetadata(view: XrCameraViewLike, capturedAtMs: number): CameraRe
 function buildGuidance(
   pixels: Uint8Array,
   metadata: CameraReadbackMetadata,
+  width: number,
+  height: number,
 ): RgbDepthGuidanceFrame {
   const guidance = buildRgbDepthGuidanceFrame(
     pixels,
-    TARGET_WIDTH,
-    TARGET_HEIGHT,
-    TARGET_WIDTH,
-    TARGET_HEIGHT,
+    width,
+    height,
+    width,
+    height,
     'bottom-left',
     metadata.capturedAtMs,
   );
@@ -140,10 +141,22 @@ export class RawCameraGuidanceCapture {
   private readonly samplerLocation: WebGLUniformLocation;
   private readonly vertexArray: WebGLVertexArrayObject | null;
   private readonly asyncReadback: NonBlockingRgbaReadback<CameraReadbackMetadata> | null;
-  private readonly pixels = new Uint8Array(TARGET_WIDTH * TARGET_HEIGHT * 4);
+  private readonly width: number;
+  private readonly height: number;
+  private readonly pixels: Uint8Array;
   private disposed = false;
 
-  constructor(private readonly gl: WebGLRenderingContext | WebGL2RenderingContext) {
+  constructor(
+    private readonly gl: WebGLRenderingContext | WebGL2RenderingContext,
+    width = RAW_CAMERA_GUIDANCE_WIDTH,
+    height = RAW_CAMERA_GUIDANCE_HEIGHT,
+  ) {
+    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+      throw new Error('Raw-camera guidance dimensions must be positive integers.');
+    }
+    this.width = width;
+    this.height = height;
+    this.pixels = new Uint8Array(width * height * 4);
     const framebuffer = gl.createFramebuffer();
     const texture = gl.createTexture();
     const buffer = gl.createBuffer();
@@ -194,7 +207,7 @@ export class RawCameraGuidanceCapture {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA, TARGET_WIDTH, TARGET_HEIGHT, 0,
+        gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0,
         gl.RGBA, gl.UNSIGNED_BYTE, null,
       );
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
@@ -232,7 +245,7 @@ export class RawCameraGuidanceCapture {
     // implementations still retain the WebGL1-style synchronous fallback.
     let asyncReadback: NonBlockingRgbaReadback<CameraReadbackMetadata> | null = null;
     if (gl2 !== null) {
-      try { asyncReadback = new NonBlockingRgbaReadback(gl2, TARGET_WIDTH, TARGET_HEIGHT, 3); }
+      try { asyncReadback = new NonBlockingRgbaReadback(gl2, width, height, 3); }
       catch { asyncReadback = null; }
     }
     this.asyncReadback = asyncReadback;
@@ -249,7 +262,7 @@ export class RawCameraGuidanceCapture {
   pollReady(): RgbDepthGuidanceFrame | null {
     if (this.disposed || this.asyncReadback === null) return null;
     const ready = this.asyncReadback.poll();
-    return ready === null ? null : buildGuidance(ready.pixels, ready.metadata);
+    return ready === null ? null : buildGuidance(ready.pixels, ready.metadata, this.width, this.height);
   }
 
   capture(
@@ -272,7 +285,7 @@ export class RawCameraGuidanceCapture {
       const ready = this.asyncReadback?.poll() ?? null;
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-      gl.viewport(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+      gl.viewport(0, 0, this.width, this.height);
       gl.useProgram(this.program);
       if (gl2 !== null && this.vertexArray !== null) {
         gl2.bindVertexArray(this.vertexArray);
@@ -290,11 +303,11 @@ export class RawCameraGuidanceCapture {
         // Advisory RGB may be dropped when all PBOs are still in flight. Never
         // block physical depth fusion just to obtain a visual guidance frame.
         this.asyncReadback.enqueue(metadata);
-        return ready === null ? null : buildGuidance(ready.pixels, ready.metadata);
+        return ready === null ? null : buildGuidance(ready.pixels, ready.metadata, this.width, this.height);
       }
 
-      gl.readPixels(0, 0, TARGET_WIDTH, TARGET_HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
-      return buildGuidance(this.pixels, metadata);
+      gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
+      return buildGuidance(this.pixels, metadata, this.width, this.height);
     } finally {
       restoreWebGlState(gl, this.positionLocation, previous);
     }
@@ -312,6 +325,3 @@ export class RawCameraGuidanceCapture {
     this.gl.deleteBuffer(this.vertexBuffer);
   }
 }
-
-export const RAW_CAMERA_GUIDANCE_WIDTH = TARGET_WIDTH;
-export const RAW_CAMERA_GUIDANCE_HEIGHT = TARGET_HEIGHT;

@@ -4,6 +4,7 @@ import type {
   LocalizationRunPosition,
   ScanArtifactInfo,
 } from '../api/deviceApi';
+import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 
 /**
  * MAX-169: what one saved recording carries, from that recording's own
@@ -41,8 +42,10 @@ export interface RecordingEvidence {
   scan: ScanState;
   scanBytes: number;
   occupancy: ScanState;
-  /** Scan <-> sensor registration (AprilTag/ArUco) does not exist yet (MAX-145). */
-  scanRegistered: false;
+  /** True only when this recording has a validated scan-to-sensor registration. */
+  scanRegistered: boolean;
+  registrationTier: RegistrationArtifact['tier'];
+  registrationReason: string | null;
   localization: LocalizationState;
   solvedMethods: string[];
   failedMethods: string[];
@@ -72,6 +75,7 @@ export function buildRecordingEvidence(
   listing: LocalizationRunListing | null,
   scan: ScanArtifactInfo | null,
   occupancy: ScanArtifactInfo | null,
+  registration: RegistrationArtifact | null = null,
 ): RecordingEvidence {
   const geometry = listing?.geometry;
   const computed = geometry?.available === true
@@ -110,7 +114,9 @@ export function buildRecordingEvidence(
     scan: scanState(scan),
     scanBytes: scan?.present ? scan.bytes : 0,
     occupancy: scanState(occupancy),
-    scanRegistered: false,
+    scanRegistered: registration?.valid === true,
+    registrationTier: registration?.valid === true ? registration.tier : null,
+    registrationReason: registration?.valid === false ? registration.reason : null,
     localization,
     solvedMethods: solved,
     failedMethods: failed,

@@ -307,6 +307,7 @@ idf_component_register(
     SRCS
         "web_server.c"
         "web_server_lifecycle_policy.c"
+        "web_mdns_retry_policy.c"
         "web_route_capacity.c"
         "web_server_prepare.c"
         "web_server_routes.c"

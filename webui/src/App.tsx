@@ -4,11 +4,14 @@ import './scan.css';
 
 import {
   deleteObjectScanArtifact,
+  fetchScanInfo,
   loadObjectScanArtifact,
   saveObjectScanArtifact,
   saveSessionOccupancyArtifact,
 } from './api/deviceApi';
 import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
+import { toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
+import { ScanPersistenceController, type ScanPersistenceState } from './xr/scanPersistence';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
 import { clientDiagnostics } from './data/clientDiagnostics';
@@ -127,6 +130,30 @@ function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null): str
   }
 }
 
+function occupancyStatusLabel(persistence: ScanPersistenceState | null): string {
+  let occupancyLabel = 'OCCUPANCY STATUS CHECKING';
+  if (persistence?.scan === 'saved') {
+    switch (persistence.occupancy) {
+      case 'pending': occupancyLabel = 'OCCUPANCY PENDING'; break;
+      case 'saving': occupancyLabel = 'OCCUPANCY SAVING'; break;
+      case 'ready': occupancyLabel = 'LOCALIZATION DATA READY'; break;
+      case 'failed': occupancyLabel = 'OCCUPANCY FAILED · LOCALIZATION NOT READY'; break;
+      case 'unavailable': occupancyLabel = 'OCCUPANCY UNAVAILABLE · LOCALIZATION NOT READY'; break;
+    }
+  }
+  return occupancyLabel;
+}
+
+function persistedScanStorageLabel(
+  phase: ScanStoragePhase,
+  objectId: string | null,
+  persistence: ScanPersistenceState | null,
+): string {
+  const scanLabel = scanStorageLabel(phase, objectId);
+  if (phase !== 'saved' && phase !== 'loaded') return scanLabel;
+  return `${scanLabel} · ${occupancyStatusLabel(persistence)}`;
+}
+
 export default function App({ objectId, sessionId }: AppProps) {
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
@@ -136,6 +163,7 @@ export default function App({ objectId, sessionId }: AppProps) {
     objectId === null || sessionId === null ? 'unbound' : 'loading',
   );
   const [scanStorageError, setScanStorageError] = useState<string | null>(null);
+  const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
   const [viewCommand, setViewCommand] = useState<ViewCommand>({
@@ -143,8 +171,24 @@ export default function App({ objectId, sessionId }: AppProps) {
     sequence: 0,
   });
   const storageGeneration = useRef(0);
+  const registrationForSession = useRef<{ objectId: string; sessionId: string; artifact: RegistrationArtifact } | null>(null);
+  const onRegistrationChange = useCallback((artifact: RegistrationArtifact | null): void => {
+    registrationForSession.current = artifact === null || objectId === null || sessionId === null
+      ? null
+      : { objectId, sessionId, artifact };
+  }, [objectId, sessionId]);
+  useEffect(() => { registrationForSession.current = null; }, [objectId, sessionId]);
   const scanIntent = useRef<ScanStartIntent>('fresh');
   const continuationBase = useRef<ScanPointCloudSnapshot | null>(null);
+  const scanPersistenceController = useRef<ScanPersistenceController | null>(null);
+  if (scanPersistenceController.current === null) {
+    scanPersistenceController.current = new ScanPersistenceController({
+      saveScan: saveObjectScanArtifact,
+      saveOccupancy: saveSessionOccupancyArtifact,
+      fetchInfo: fetchScanInfo,
+    }, setScanPersistence);
+  }
+  const persistenceController = scanPersistenceController.current;
 
   useEffect(() => {
     let cancelled = false;
@@ -205,6 +249,7 @@ export default function App({ objectId, sessionId }: AppProps) {
   /* Restore the object-owned scan every time the scanner feature is opened. */
   useEffect(() => {
     const generation = ++storageGeneration.current;
+    persistenceController.reset();
     scanIntent.current = 'fresh';
     continuationBase.current = null;
     setScanSnapshot(null);
@@ -224,8 +269,11 @@ export default function App({ objectId, sessionId }: AppProps) {
           setScanStoragePhase('none');
           clientDiagnostics.info('SCAN_RESULT_NOT_SAVED', { objectId, sessionId });
           void clientDiagnostics.flush();
+          void persistenceController.reconcile(objectId, sessionId, null);
           return;
         }
+
+        void persistenceController.reconcile(objectId, sessionId, artifact);
 
         try {
           const restored = decodeScanArtifact(artifact);
@@ -257,13 +305,14 @@ export default function App({ objectId, sessionId }: AppProps) {
         const message = reason instanceof Error ? reason.message : String(reason);
         setScanStorageError(message);
         setScanStoragePhase('error');
+        void persistenceController.reconcile(objectId, sessionId, null);
         clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
         void clientDiagnostics.flush();
       },
     );
 
     return () => { cancelled = true; };
-  }, [objectId, sessionId, selectMode]);
+  }, [objectId, sessionId, persistenceController, selectMode]);
 
   const handleScanIntent = useCallback((intent: ScanStartIntent): boolean => {
     setScanStorageError(null);
@@ -392,9 +441,27 @@ export default function App({ objectId, sessionId }: AppProps) {
 
     const generation = ++storageGeneration.current;
     setScanStoragePhase('saving');
-    void saveObjectScanArtifact(objectId, sessionId, artifact).then(
-      (result) => {
+    void persistenceController.save(
+      objectId,
+      sessionId,
+      artifact,
+      () => {
+        const registration = registrationForSession.current;
+        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === sessionId
+          ? toOccupancyRegistration(registration.artifact)
+          : null;
+        return buildSessionOccupancyArtifact(snapshot, artifact, Date.now(), occupancyRegistration);
+      },
+    ).then((state) => {
         if (generation !== storageGeneration.current) return;
+        if (state?.scan !== 'saved') {
+          const message = state?.scanError ?? 'The scan upload was not confirmed.';
+          setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
+          setScanStoragePhase('error');
+          clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'transport', error: message });
+          void clientDiagnostics.flush();
+          return;
+        }
         setScanStoragePhase('saved');
         setScanStorageError(null);
         scanIntent.current = 'fresh';
@@ -402,46 +469,38 @@ export default function App({ objectId, sessionId }: AppProps) {
         clientDiagnostics.info('SCAN_RESULT_SAVED', {
           objectId,
           sessionId,
-          bytes: result.bytes ?? artifact.byteLength,
+          bytes: artifact.byteLength,
           stablePoints: snapshot.pointCount,
           manualPoints: snapshot.manualControlPoints.length,
           operatorEdges: snapshot.operatorEdges.length,
         });
         void clientDiagnostics.flush();
-
-        // MAX-162: the compact occupancy for ESP32-side localization, bound
-        // to exactly this saved scan by its CRC. Best-effort: the scan itself
-        // is already safely stored. No sensor<->scan registration exists yet
-        // (MAX-145), so the ESP32 keeps the constraint disabled (fail closed).
-        try {
-          const occupancy = buildSessionOccupancyArtifact(snapshot, artifact, Date.now());
-          void saveSessionOccupancyArtifact(objectId, sessionId, occupancy).then(
-            () => clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId, bytes: occupancy.byteLength }),
-            (reason) => clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {
-              objectId, sessionId, error: reason instanceof Error ? reason.message : String(reason),
-            }),
-          );
-        }
-        catch (reason) {
+        if (state.occupancy === 'ready') {
+          clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId });
+        } else if (state.occupancy === 'failed' || state.occupancy === 'unavailable') {
           clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {
-            objectId, sessionId, stage: 'encode', error: reason instanceof Error ? reason.message : String(reason),
+            objectId, sessionId, error: state.occupancyError,
           });
+          void clientDiagnostics.flush();
         }
-      },
-      (reason) => {
-        if (generation !== storageGeneration.current) return;
-        const message = reason instanceof Error ? reason.message : String(reason);
-        setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
-        setScanStoragePhase('error');
-        clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'transport', error: message });
-        void clientDiagnostics.flush();
-      },
-    );
-  }, [objectId, sessionId, selectMode]);
+    });
+  }, [objectId, sessionId, persistenceController, selectMode]);
+
+  const retryOccupancy = useCallback((): void => {
+    if (objectId === null || sessionId === null) return;
+    const generation = storageGeneration.current;
+    void persistenceController.retry(objectId, sessionId).then((state) => {
+      if (generation !== storageGeneration.current || state === null) return;
+      const event = state.occupancy === 'ready' ? 'SCAN_OCCUPANCY_SAVED' : 'SCAN_OCCUPANCY_SAVE_FAILED';
+      clientDiagnostics.info(event, { objectId, sessionId, error: state.occupancyError });
+      void clientDiagnostics.flush();
+    });
+  }, [objectId, sessionId, persistenceController]);
 
   const deleteSavedScan = useCallback((): void => {
     scanIntent.current = 'fresh';
     continuationBase.current = null;
+    persistenceController.reset();
     if (objectId === null || sessionId === null) {
       setScanSnapshot(null);
       setScanStoragePhase('unbound');
@@ -467,7 +526,7 @@ export default function App({ objectId, sessionId }: AppProps) {
         void clientDiagnostics.flush();
       },
     );
-  }, [objectId, sessionId]);
+  }, [objectId, sessionId, persistenceController]);
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
   const httpsReady = xrCapabilities?.secureContext === true;
@@ -486,6 +545,7 @@ export default function App({ objectId, sessionId }: AppProps) {
   };
   const storageGood = scanStoragePhase === 'saved' || scanStoragePhase === 'loaded';
   const storageBusy = scanStoragePhase === 'loading' || scanStoragePhase === 'saving' || scanStoragePhase === 'deleting';
+  const localizationDataReady = scanPersistence?.scan === 'saved' && scanPersistence.occupancy === 'ready';
 
   return (
     <main className="app-shell">
@@ -513,8 +573,8 @@ export default function App({ objectId, sessionId }: AppProps) {
             <span className={`badge ${hasMeasuredScan ? 'good' : 'warning'}`}>
               {hasMeasuredScan ? 'VOLUME READY' : 'READY'}
             </span>
-            <span className={`badge ${storageGood ? 'good' : scanStoragePhase === 'error' ? 'warning' : ''}`}>
-              {scanStorageLabel(scanStoragePhase, objectId)}
+            <span className={`badge ${storageGood && localizationDataReady ? 'good' : storageGood || scanStoragePhase === 'error' ? 'warning' : ''}`}>
+              {persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence)}
             </span>
           </div>
         </header>
@@ -559,6 +619,8 @@ export default function App({ objectId, sessionId }: AppProps) {
       )}
 
       <XrRuntimePanel
+        objectId={objectId}
+        sessionId={sessionId}
         savedScanAvailable={storageGood && hasMeasuredScan}
         savedScanBusy={storageBusy}
         onScanIntent={handleScanIntent}
@@ -566,6 +628,7 @@ export default function App({ objectId, sessionId }: AppProps) {
         onSessionActiveChange={setXrSessionActive}
         onPointCloudReady={handleScanReady}
         onCapabilitiesChange={setXrCapabilities}
+        onRegistrationChange={onRegistrationChange}
       />
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
@@ -591,7 +654,8 @@ export default function App({ objectId, sessionId }: AppProps) {
             <section className="panel-card">
               <div className="panel-title">SEARCH VOLUME</div>
               <dl className="status-list scan-result-primary">
-                <div><dt>SD persistence</dt><dd>{scanStorageLabel(scanStoragePhase, objectId)}</dd></div>
+                <div><dt>SD persistence</dt><dd>{persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence)}</dd></div>
+                <div><dt>Localization occupancy</dt><dd>{scanPersistence?.scan === 'saved' ? occupancyStatusLabel(scanPersistence) : 'OCCUPANCY STATUS CHECKING'}</dd></div>
                 <div><dt>Stable boundary points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
                 <div><dt>Tentative boundary points</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
                 <div><dt>Manual corner pins</dt><dd>{scanSnapshot.manualControlPoints.length.toLocaleString()}</dd></div>
@@ -614,6 +678,19 @@ export default function App({ objectId, sessionId }: AppProps) {
                   </>
                 )}
               </dl>
+
+              {scanPersistence?.scan === 'saved' &&
+                (scanPersistence.occupancy === 'failed' || scanPersistence.occupancy === 'unavailable') && (
+                <p className="scan-volume-note" role="status">
+                  {scanPersistence.occupancyError ?? 'Localization data is not ready until occupancy is saved.'}
+                </p>
+              )}
+
+              {persistenceController.retryAvailable && (
+                <button type="button" className="scan-clear-button" disabled={scanPersistence?.occupancy === 'saving'} onClick={retryOccupancy}>
+                  Retry occupancy save
+                </button>
+              )}
 
               {scanSnapshot.occupancyBridgeRescanComponentCount > 0 && (
                 <p className="scan-volume-note">

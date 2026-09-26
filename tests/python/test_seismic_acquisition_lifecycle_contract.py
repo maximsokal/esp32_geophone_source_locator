@@ -86,16 +86,20 @@ def test_measurements_screen_entry_starts_acquisition():
     )
 
 
-def test_web_measurement_start_ensures_acquisition_before_queuing():
+def test_web_measurement_start_checks_acquisition_before_queuing():
+    """Architecture guard only; runtime failure behavior is covered by the
+    web_api_control_http host test against the real handler."""
     source = WEB_CONTROL.read_text(encoding="utf-8")
     helper = _between(
         source,
         "static esp_err_t web_control_measurement_start",
         "static esp_err_t web_control_acquisition_stop",
     )
-    assert helper.index("seismic_acquisition_start()") < helper.index(
-        "measurement_service_start_object_async(object_id)"
-    )
+    acquisition_start = helper.index("seismic_acquisition_start()")
+    acquisition_failure = helper.index("if (acquisition_err != ESP_OK)")
+    failure_return = helper.index("return acquisition_err;", acquisition_failure)
+    async_start = helper.index("measurement_service_start_object_async(object_id)")
+    assert acquisition_start < acquisition_failure < failure_return < async_start
 
 
 def test_web_stop_keeps_measurement_guard_before_serialized_acquisition_stop():

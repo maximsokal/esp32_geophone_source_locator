@@ -108,9 +108,21 @@
       ]
     },
     {
+      "name": "wifi_manager_reconnect_policy",
+      "sources": [
+        "components/wifi_manager/wifi_manager_reconnect_policy.c",
+        "tests/host/wifi_manager_reconnect_policy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_events",
+        "components/wifi_manager"
+      ]
+    },
+    {
       "name": "wifi_manager_events_runtime",
       "sources": [
         "components/wifi_manager/wifi_manager_event_policy.c",
+        "components/wifi_manager/wifi_manager_reconnect_policy.c",
         "components/wifi_manager/wifi_manager_runtime.c",
         "components/wifi_manager/wifi_manager_runtime_format.c",
         "components/wifi_manager/wifi_manager_status.c",
@@ -1619,6 +1631,16 @@
       "sources": [
         "components/web_server/web_server_lifecycle_policy.c",
         "components/web_server/tests/web_server_lifecycle_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "web_mdns_retry_policy",
+      "sources": [
+        "components/web_server/web_mdns_retry_policy.c",
+        "components/web_server/tests/web_mdns_retry_policy_test.c"
       ],
       "include_dirs": [
         "components/web_server"

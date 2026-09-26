@@ -5,12 +5,14 @@
 #include "app_events.h"
 #include "wifi_manager_event_policy.h"
 #include "wifi_manager_platform.h"
+#include "wifi_manager_reconnect_policy.h"
 #include "wifi_manager_runtime.h"
 
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 
 #include "freertos/FreeRTOS.h"
@@ -27,6 +29,12 @@ typedef struct
     bool has_ip;
     bool disconnect_reported;
     uint32_t generation;
+    wifi_err_reason_t last_reason;
+    uint32_t retry_count;
+    uint32_t same_reason_streak;
+    uint32_t next_delay_ms;
+    uint32_t retry_generation;
+    bool retry_pending;
 
 } wifi_manager_sta_event_state_t;
 
@@ -43,6 +51,15 @@ static portMUX_TYPE s_state_lock =
     portMUX_INITIALIZER_UNLOCKED;
 
 static wifi_manager_sta_event_state_t s_state;
+static esp_timer_handle_t s_reconnect_timer;
+
+
+static void wifi_manager_sta_stop_reconnect_timer(bool was_pending)
+{
+    if (was_pending && s_reconnect_timer != NULL) {
+        (void)esp_timer_stop(s_reconnect_timer);
+    }
+}
 
 
 static wifi_manager_sta_admission_t wifi_manager_sta_admission_snapshot(void)
@@ -76,6 +93,110 @@ static bool wifi_manager_sta_admission_still_matches(
     );
     portEXIT_CRITICAL(&s_state_lock);
     return accepted;
+}
+
+
+static void wifi_manager_sta_reconnect_timer_callback(void *context)
+{
+    (void)context;
+    wifi_manager_sta_admission_t started = {0};
+    bool pending = false;
+
+    portENTER_CRITICAL(&s_state_lock);
+    pending = s_state.retry_pending;
+    started.enabled = s_state.connect_enabled;
+    started.generation = s_state.retry_generation;
+    if (pending) {
+        s_state.retry_pending = false;
+        s_state.next_delay_ms = 0U;
+    }
+    pending = pending && started.enabled &&
+        started.generation == s_state.generation;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    if (!pending || !wifi_manager_sta_admission_still_matches(&started)) {
+        return;
+    }
+
+    (void)esp_wifi_connect();
+}
+
+
+static void wifi_manager_sta_request_reconnect(
+    const wifi_manager_sta_admission_t *started,
+    const wifi_manager_reconnect_decision_t *decision
+)
+{
+    if (started == NULL || decision == NULL) {
+        return;
+    }
+
+    bool accepted = false;
+    bool was_pending = false;
+    portENTER_CRITICAL(&s_state_lock);
+    accepted = decision->generation == s_state.generation &&
+        wifi_manager_event_epoch_matches(
+            started->enabled,
+            started->generation,
+            s_state.connect_enabled,
+            s_state.generation
+        );
+    if (accepted) {
+        was_pending = s_state.retry_pending;
+        s_state.retry_generation = decision->generation;
+        s_state.retry_pending = decision->delay_ms > 0U;
+        s_state.next_delay_ms = decision->delay_ms;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+
+    if (!accepted) {
+        return;
+    }
+
+    wifi_manager_sta_stop_reconnect_timer(was_pending);
+    if (decision->delay_ms == 0U) {
+        if (wifi_manager_sta_admission_still_matches(started)) {
+            (void)esp_wifi_connect();
+        }
+        return;
+    }
+
+    const uint64_t delay_us = (uint64_t)decision->delay_ms * 1000U;
+    const esp_err_t err = s_reconnect_timer == NULL
+        ? ESP_ERR_INVALID_STATE
+        : esp_timer_start_once(s_reconnect_timer, delay_us);
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Reconnect timer unavailable; connecting immediately: %s",
+            esp_err_to_name(err)
+        );
+
+        portENTER_CRITICAL(&s_state_lock);
+        accepted = s_state.retry_pending &&
+            s_state.retry_generation == decision->generation &&
+            s_state.generation == decision->generation;
+        if (accepted) {
+            s_state.retry_pending = false;
+            s_state.next_delay_ms = 0U;
+        }
+        portEXIT_CRITICAL(&s_state_lock);
+
+        if (accepted && wifi_manager_sta_admission_still_matches(started)) {
+            (void)esp_wifi_connect();
+        }
+        return;
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    accepted = s_state.retry_pending &&
+        s_state.retry_generation == decision->generation &&
+        s_state.connect_enabled &&
+        s_state.generation == decision->generation;
+    portEXIT_CRITICAL(&s_state_lock);
+    if (!accepted) {
+        (void)esp_timer_stop(s_reconnect_timer);
+    }
 }
 
 
@@ -175,7 +296,7 @@ static void wifi_manager_sta_handle_start(void)
 }
 
 
-static void wifi_manager_sta_handle_disconnect(void)
+static void wifi_manager_sta_handle_disconnect(wifi_err_reason_t reason)
 {
     const wifi_manager_sta_admission_t started =
         wifi_manager_sta_admission_snapshot();
@@ -191,6 +312,8 @@ static void wifi_manager_sta_handle_disconnect(void)
     bool was_connected = false;
     bool report_disconnect = false;
     bool accepted = false;
+    uint32_t retry_count = 0U;
+    wifi_manager_reconnect_decision_t decision = {0};
 
     portENTER_CRITICAL(&s_state_lock);
     accepted = wifi_manager_sta_disconnect_observation_accept(
@@ -205,6 +328,26 @@ static void wifi_manager_sta_handle_disconnect(void)
         report_disconnect = !s_state.disconnect_reported;
         s_state.has_ip = false;
         s_state.disconnect_reported = true;
+        if (s_state.retry_count < UINT32_MAX) {
+            ++s_state.retry_count;
+        }
+        if (s_state.same_reason_streak > 0U &&
+            s_state.last_reason == reason) {
+            if (s_state.same_reason_streak < UINT32_MAX) {
+                ++s_state.same_reason_streak;
+            }
+        }
+        else {
+            s_state.same_reason_streak = 1U;
+        }
+        s_state.last_reason = reason;
+        retry_count = s_state.retry_count;
+        decision = wifi_manager_reconnect_policy_decide(
+            reason,
+            s_state.retry_count,
+            s_state.same_reason_streak,
+            started.generation
+        );
         /* All STA runtime-IP mutations are serialized by the event-state
          * lock first, including reset(), so a retired handler cannot race a
          * newer epoch into restoring old runtime identity. */
@@ -225,7 +368,10 @@ static void wifi_manager_sta_handle_disconnect(void)
     if (report_disconnect) {
         ESP_LOGW(
             TAG,
-            "Station disconnected; reconnecting"
+            "Station disconnected (reason=%d retry=%u delay=%u ms)",
+            (int)reason,
+            (unsigned)retry_count,
+            (unsigned)decision.delay_ms
         );
     }
 
@@ -236,9 +382,7 @@ static void wifi_manager_sta_handle_disconnect(void)
         );
     }
 
-    if (wifi_manager_sta_admission_still_matches(&started)) {
-        (void)esp_wifi_connect();
-    }
+    wifi_manager_sta_request_reconnect(&started, &decision);
 }
 
 
@@ -251,7 +395,6 @@ static void wifi_manager_sta_on_wifi_event(
 {
     (void)context;
     (void)event_base;
-    (void)event_data;
 
     if (event_id == WIFI_EVENT_STA_START) {
         wifi_manager_sta_handle_start();
@@ -259,7 +402,10 @@ static void wifi_manager_sta_on_wifi_event(
     }
 
     if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        wifi_manager_sta_handle_disconnect();
+        const wifi_err_reason_t reason = event_data == NULL
+            ? WIFI_REASON_UNSPECIFIED
+            : ((const wifi_event_sta_disconnected_t *)event_data)->reason;
+        wifi_manager_sta_handle_disconnect(reason);
     }
 }
 
@@ -293,6 +439,7 @@ static void wifi_manager_sta_on_ip_event(
         wifi_manager_sta_live_ip(&live_ip);
 
     bool accepted = false;
+    bool retry_was_pending = false;
     portENTER_CRITICAL(&s_state_lock);
     accepted = wifi_manager_sta_ip_observation_accept(
         started.enabled,
@@ -305,11 +452,18 @@ static void wifi_manager_sta_on_ip_event(
     if (accepted) {
         s_state.has_ip = true;
         s_state.disconnect_reported = false;
+        s_state.retry_count = 0U;
+        s_state.same_reason_streak = 0U;
+        retry_was_pending = s_state.retry_pending;
+        s_state.retry_pending = false;
+        s_state.next_delay_ms = 0U;
         /* Publish the current netif IP, never event_data from the queued
          * historical GOT_IP callback. */
         wifi_manager_runtime_set_sta_ip(&live_ip);
     }
     portEXIT_CRITICAL(&s_state_lock);
+
+    wifi_manager_sta_stop_reconnect_timer(retry_was_pending);
 
     if (!accepted) {
         ESP_LOGI(
@@ -344,8 +498,18 @@ esp_err_t wifi_manager_sta_events_init(void)
         return ESP_OK;
     }
 
-    esp_err_t err =
-        esp_event_handler_register(
+    const esp_timer_create_args_t timer_args = {
+        .callback = wifi_manager_sta_reconnect_timer_callback,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "sta_reconnect"
+    };
+    esp_err_t err = esp_timer_create(&timer_args, &s_reconnect_timer);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = esp_event_handler_register(
             WIFI_EVENT,
             ESP_EVENT_ANY_ID,
             wifi_manager_sta_on_wifi_event,
@@ -353,6 +517,8 @@ esp_err_t wifi_manager_sta_events_init(void)
         );
 
     if (err != ESP_OK) {
+        (void)esp_timer_delete(s_reconnect_timer);
+        s_reconnect_timer = NULL;
         return err;
     }
 
@@ -370,6 +536,8 @@ esp_err_t wifi_manager_sta_events_init(void)
             ESP_EVENT_ANY_ID,
             wifi_manager_sta_on_wifi_event
         );
+        (void)esp_timer_delete(s_reconnect_timer);
+        s_reconnect_timer = NULL;
         return err;
     }
 
@@ -385,17 +553,43 @@ void wifi_manager_sta_events_set_connect_enabled(
     bool enabled
 )
 {
+    bool was_pending = false;
     portENTER_CRITICAL(&s_state_lock);
     ++s_state.generation;
     s_state.connect_enabled = enabled;
     s_state.has_ip = false;
     s_state.disconnect_reported = false;
+    was_pending = s_state.retry_pending;
+    s_state.retry_pending = false;
+    s_state.next_delay_ms = 0U;
     wifi_manager_runtime_clear_sta_ip();
     portEXIT_CRITICAL(&s_state_lock);
+
+    wifi_manager_sta_stop_reconnect_timer(was_pending);
 }
 
 
 void wifi_manager_sta_events_reset(void)
 {
     wifi_manager_sta_events_set_connect_enabled(false);
+}
+
+
+void wifi_manager_sta_events_get_reconnect_status(
+    int32_t *last_reason,
+    uint32_t *retry_count,
+    uint32_t *next_delay_ms
+)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    if (last_reason != NULL) {
+        *last_reason = (int32_t)s_state.last_reason;
+    }
+    if (retry_count != NULL) {
+        *retry_count = s_state.retry_count;
+    }
+    if (next_delay_ms != NULL) {
+        *next_delay_ms = s_state.next_delay_ms;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
 }

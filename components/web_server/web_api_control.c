@@ -99,11 +99,12 @@ static esp_err_t web_control_read_body(
     return ESP_OK;
 }
 
-static esp_err_t web_control_send_result(
+static esp_err_t web_control_send_result_with_error_class(
     httpd_req_t *request,
     const char *action,
     esp_err_t result,
-    const char *object_id
+    const char *object_id,
+    const char *error_class
 )
 {
     cJSON *root = cJSON_CreateObject();
@@ -113,6 +114,7 @@ static esp_err_t web_control_send_result(
     cJSON_AddStringToObject(root, "action", action == NULL ? "UNKNOWN" : action);
     if (object_id != NULL) cJSON_AddStringToObject(root, "object_id", object_id);
     if (result != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(result));
+    if (error_class != NULL) cJSON_AddStringToObject(root, "error_class", error_class);
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -120,7 +122,10 @@ static esp_err_t web_control_send_result(
 
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    if (result == ESP_ERR_INVALID_ARG || result == ESP_ERR_INVALID_SIZE || result == ESP_ERR_NOT_SUPPORTED) {
+    if (error_class != NULL) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+    }
+    else if (result == ESP_ERR_INVALID_ARG || result == ESP_ERR_INVALID_SIZE || result == ESP_ERR_NOT_SUPPORTED) {
         httpd_resp_set_status(request, "400 Bad Request");
     }
     else if (result == ESP_ERR_NOT_FOUND) {
@@ -136,6 +141,16 @@ static esp_err_t web_control_send_result(
     const esp_err_t send_result = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
     cJSON_free(json);
     return send_result;
+}
+
+static esp_err_t web_control_send_result(
+    httpd_req_t *request,
+    const char *action,
+    esp_err_t result,
+    const char *object_id
+)
+{
+    return web_control_send_result_with_error_class(request, action, result, object_id, NULL);
 }
 
 
@@ -370,27 +385,26 @@ static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id
     return localization_job_submit(object_id, session_id, &config, budget_ms, NULL);
 }
 
-static esp_err_t web_control_measurement_start(const char *object_id)
+static esp_err_t web_control_measurement_start(
+    const char *object_id,
+    const char **error_class_out
+)
 {
     if (object_id == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    /*
-     * The AD7606 no longer auto-starts at boot (it now starts on local
-     * Measurements-screen entry or this explicit request). A Web-only
-     * client that never touches the local UI must still be able to start a
-     * recording, so ensure acquisition is up before queuing the measurement
-     * start. Idempotent and non-fatal: measurement_service_start_object_async()
-     * still runs and reports its own error if the source stays unavailable.
-     */
+    /* Acquisition must be ready before the asynchronous measurement start is
+     * queued; otherwise that queue can create a recording with no source. */
     const esp_err_t acquisition_err = seismic_acquisition_start();
     if (acquisition_err != ESP_OK) {
+        if (error_class_out != NULL) *error_class_out = "acquisition_unavailable";
         ESP_LOGW(
             TAG,
             "Seismic acquisition unavailable for Web measurement start: %s",
             esp_err_to_name(acquisition_err)
         );
+        return acquisition_err;
     }
 
     return measurement_service_start_object_async(object_id);
@@ -421,10 +435,12 @@ static esp_err_t web_control_acquisition_stop(void)
 static esp_err_t web_control_process(
     cJSON *root,
     const char *action,
-    char object_id_out[OBJECT_STORE_ID_SIZE]
+    char object_id_out[OBJECT_STORE_ID_SIZE],
+    const char **error_class_out
 )
 {
     object_id_out[0] = '\0';
+    if (error_class_out != NULL) *error_class_out = NULL;
 
     if (strcmp(action, "create_object") == 0) {
         const char *name = web_control_string(root, "name");
@@ -526,7 +542,7 @@ static esp_err_t web_control_process(
         strcmp(action, "recording_start") == 0 ||
         strcmp(action, "measurement_start") == 0
     ) {
-        return web_control_measurement_start(object_id);
+        return web_control_measurement_start(object_id, error_class_out);
     }
     if (
         strcmp(action, "recording_stop") == 0 ||
@@ -614,12 +630,13 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     }
 
     char object_id[OBJECT_STORE_ID_SIZE];
+    const char *error_class = NULL;
     const bool object_storage_mutation =
         web_control_is_object_storage_mutation(action_copy);
     const bool object_storage_allowed =
         !object_storage_mutation || web_control_object_storage_is_idle();
     if (object_storage_allowed) {
-        err = web_control_process(root, action_copy, object_id);
+        err = web_control_process(root, action_copy, object_id, &error_class);
     }
     else {
         object_id[0] = '\0';
@@ -654,11 +671,12 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     }
 
     ESP_LOGI(TAG, "%s -> %s", action_copy, esp_err_to_name(err));
-    return web_control_send_result(
+    return web_control_send_result_with_error_class(
         request,
-        action_copy,
+        error_class != NULL ? "measurement_start" : action_copy,
         err,
-        object_id[0] == '\0' ? NULL : object_id
+        object_id[0] == '\0' ? NULL : object_id,
+        error_class
     );
 }
 

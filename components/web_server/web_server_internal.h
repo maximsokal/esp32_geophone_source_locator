@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "cJSON.h"
 #include "device_status.h"
@@ -53,6 +54,12 @@ esp_err_t web_server_unregister_uri_handler(
     httpd_handle_t server,
     const char *uri,
     int method
+);
+
+void web_server_mdns_runtime_status(
+    bool *ready_out,
+    uint32_t *retry_count_out,
+    uint32_t *next_retry_delay_ms_out
 );
 
 #define WEB_JSON_WRITER_BUFFER_SIZE  768

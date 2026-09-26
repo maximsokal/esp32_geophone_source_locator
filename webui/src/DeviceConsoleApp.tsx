@@ -10,6 +10,7 @@ import type {
 import DeviceDashboard from './features/dashboard/DeviceDashboard';
 import ObjectsFeature from './features/objects/ObjectsFeature';
 import { applyConfirmedObjectMutation } from './features/objects/objectMutation';
+import { runAfterControlConfirmation } from './features/objects/controlConfirmation';
 import {
   reconcileObjectSelection,
   type ObjectSelectionMode,
@@ -208,7 +209,7 @@ export default function DeviceConsoleApp() {
 
     setBusy(true);
     try {
-      const result = await sendControl(action, payload);
+      return await runAfterControlConfirmation(sendControl(action, payload), async (result) => {
       const currentStore = objectsRef.current;
       const projectedStore = applyConfirmedObjectMutation(currentStore, action, payload, result);
       if (projectedStore !== currentStore) {
@@ -273,6 +274,7 @@ export default function DeviceConsoleApp() {
       }
 
       return true;
+      });
     }
     catch (reason) {
       const message = errorMessage(reason);

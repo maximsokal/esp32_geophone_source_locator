@@ -39,6 +39,7 @@ import {
   type XrWebGlBindingConstructorLike,
   type XrWebGlBindingLike,
 } from './rawCameraGuidance';
+import type { TagCameraFrame } from './fiducial/tagDetectorClient';
 import { detectVisualLines } from './visualLineEvidence';
 import {
   addVisualEvidenceFrame,
@@ -212,6 +213,7 @@ interface WakeLockSentinelLike extends EventTarget { released:boolean; release()
 interface WakeLockLike { request(type:'screen'):Promise<WakeLockSentinelLike>; }
 type NavigatorWithWakeLock=Navigator&{wakeLock?:WakeLockLike};
 type RuntimeListener=(state:WebXrRuntimeState)=>void;
+type TagFrameListener=(frame:TagCameraFrame)=>void;
 type DepthConfiguration = NegotiatedXrDepthCapability & { enabled:boolean; };
 
 const DEPTH_SAMPLE_INTERVAL_MS=140;
@@ -219,6 +221,9 @@ const COVERAGE_GPU_UPLOAD_INTERVAL_MS=550;
 const LIGHT_ESTIMATE_INTERVAL_MS=500;
 const CLIENT_TELEMETRY_INTERVAL_MS=5000;
 const RGB_CAPTURE_INTERVAL_MS=520;
+const TAG_CAPTURE_INTERVAL_MS=330;
+const TAG_CAPTURE_WIDTH=960;
+const TAG_CAPTURE_HEIGHT=540;
 const VISUAL_EVIDENCE_INTERVAL_MS=760;
 const PLANE_GUIDANCE_INTERVAL_MS=350;
 
@@ -288,6 +293,8 @@ export class WebXrRuntime{
   private session:XrSessionLike|null=null;private referenceSpace:XrReferenceSpaceLike|null=null;private gl:XrCompatibleGl|null=null;
   private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
+  private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
+  private tagFrameListeners=new Set<TagFrameListener>();
   private lightProbe:XrLightProbeLike|null=null;private wakeLock:WakeLockSentinelLike|null=null;
   private explicitStopRequested=false;private scanPaused=false;private frameCount=0;private lastUiUpdateMs=0;
   private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
@@ -309,6 +316,13 @@ export class WebXrRuntime{
 
   constructor(){document.addEventListener('visibilitychange',this.handleDocumentVisibilityChange);}
   subscribe(listener:RuntimeListener):()=>void{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);}
+  subscribeTagFrames(listener:TagFrameListener):()=>void{this.tagFrameListeners.add(listener);return()=>this.tagFrameListeners.delete(listener);}
+  setTagCaptureEnabled(enabled:boolean):string|null{
+    if(!enabled){this.tagCaptureEnabled=false;this.tagCameraCapture?.dispose();this.tagCameraCapture=null;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;return null;}
+    if(this.state.phase!=='running'||this.gl===null||this.cameraBinding===null)return'XR camera capture is unavailable for this session.';
+    try{this.tagCameraCapture??=new RawCameraGuidanceCapture(this.gl, TAG_CAPTURE_WIDTH, TAG_CAPTURE_HEIGHT);this.tagCaptureEnabled=true;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;return null;}
+    catch(error){this.tagCameraCapture?.dispose();this.tagCameraCapture=null;return`High-resolution tag capture unavailable: ${errorText(error)}`;}
+  }
   getState():WebXrRuntimeState{return this.state;}
   getPointCloudSnapshot():ScanPointCloudSnapshot{return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};}
   getLastManualPointId():number|null{return this.manualPoints.lastId;}
@@ -398,7 +412,7 @@ export class WebXrRuntime{
   }
 
   private cleanupRuntime():void{
-    document.documentElement.classList.remove('xr-session-active');this.coverageRenderer?.dispose();this.coverageRenderer=null;this.cameraCapture?.dispose();this.cameraCapture=null;this.cameraBinding=null;
+    document.documentElement.classList.remove('xr-session-active');this.coverageRenderer?.dispose();this.coverageRenderer=null;this.cameraCapture?.dispose();this.cameraCapture=null;this.tagCameraCapture?.dispose();this.tagCameraCapture=null;this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
     setLatestRgbGuidance(null);resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();releaseWebGlContext(this.gl);this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
     this.scanPaused=false;this.depthEnabled=false;this.depthSensingPausedByApp=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
   }
@@ -466,6 +480,22 @@ export class WebXrRuntime{
     catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_CAPTURE_FAILED',error);}
   }
 
+  private acceptTagFrame(frame:ReturnType<RawCameraGuidanceCapture['pollReady']>):void{
+    if(frame?.rgba===undefined||frame.projectionMatrix===undefined||frame.worldFromView===undefined)return;
+    const value:TagCameraFrame={width:frame.width,height:frame.height,rgba:frame.rgba,capturedAtMs:frame.capturedAtMs,projectionMatrix:frame.projectionMatrix,worldFromView:frame.worldFromView};
+    for(const listener of this.tagFrameListeners)listener(value);
+  }
+
+  private captureTagGuidance(time:number,view:XrViewLike):void{
+    if(!this.tagCaptureEnabled)return;
+    const capture=this.tagCameraCapture;if(capture===null)return;
+    try{this.acceptTagFrame(capture.pollReady());}catch(error){clientDiagnostics.warn('XR_TAG_CAMERA_READBACK_FAILED',error);}
+    if(this.cameraBinding===null||view.camera==null||time-this.lastTagCaptureMs<TAG_CAPTURE_INTERVAL_MS)return;
+    this.lastTagCaptureMs=time;
+    try{this.acceptTagFrame(capture.capture(this.cameraBinding,view,time));}
+    catch(error){clientDiagnostics.warn('XR_TAG_CAMERA_CAPTURE_FAILED',error);}
+  }
+
   private captureNativePlaneGuidance(time:number,frame:XrFrameLike,referenceSpace:XrReferenceSpaceLike):void{
     if(time-this.lastPlaneGuidanceMs<PLANE_GUIDANCE_INTERVAL_MS)return;
     this.lastPlaneGuidanceMs=time;
@@ -512,7 +542,7 @@ export class WebXrRuntime{
     this.captureNativePlaneGuidance(time,frame,referenceSpace);
     gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     const pose=frame.getViewerPose(referenceSpace);
-    if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);}
+    if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
     this.frameCount+=1;this.updateLightEstimate(time,frame);
     if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);this.coverageRenderer?.render(layer,pose.views);}
     this.performanceProfiler.record('frameWork',performance.now()-frameWorkStarted);this.reportClientTelemetry(time);

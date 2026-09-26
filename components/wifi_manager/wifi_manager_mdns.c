@@ -1,5 +1,7 @@
 #include "wifi_manager_mdns.h"
 
+#include <stdatomic.h>
+
 #include "app_config.h"
 
 #include "esp_log.h"
@@ -10,13 +12,12 @@ static const char *TAG =
     "WIFI_MDNS";
 
 
-static bool s_ready =
-    false;
+static atomic_bool s_ready;
 
 
 esp_err_t wifi_manager_mdns_init(void)
 {
-    if (s_ready) {
+    if (atomic_load_explicit(&s_ready, memory_order_acquire)) {
         return ESP_OK;
     }
 
@@ -62,8 +63,7 @@ esp_err_t wifi_manager_mdns_init(void)
         return err;
     }
 
-    s_ready =
-        true;
+    atomic_store_explicit(&s_ready, true, memory_order_release);
 
     ESP_LOGI(
         TAG,
@@ -77,12 +77,12 @@ esp_err_t wifi_manager_mdns_init(void)
 
 void wifi_manager_mdns_stop(void)
 {
-    if (!s_ready) {
+    if (!atomic_load_explicit(&s_ready, memory_order_acquire)) {
         return;
     }
 
     mdns_free();
-    s_ready = false;
+    atomic_store_explicit(&s_ready, false, memory_order_release);
 
     ESP_LOGI(
         TAG,
@@ -93,5 +93,5 @@ void wifi_manager_mdns_stop(void)
 
 bool wifi_manager_mdns_is_ready(void)
 {
-    return s_ready;
+    return atomic_load_explicit(&s_ready, memory_order_acquire);
 }
