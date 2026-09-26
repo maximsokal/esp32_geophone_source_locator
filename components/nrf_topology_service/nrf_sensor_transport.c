@@ -400,3 +400,83 @@ done:
     }
     return err;
 }
+
+esp_err_t nrf_sensor_transport_capture_height_reference(
+    nrf_sensor_transport_controller_t *controller,
+    const nrf_sensor_transport_io_t *io,
+    const nrf_topology_snapshot_t *topology,
+    uint8_t channel,
+    uint16_t generation,
+    bool *request_topology_reconcile)
+{
+    nrf_upstream_status_t status;
+    nrf_upstream_height_reference_t request;
+    const nrf_topology_node_snapshot_t *remote;
+    bool selected = false;
+    esp_err_t err;
+
+    if (controller == NULL || io == NULL || topology == NULL ||
+        request_topology_reconcile == NULL || channel >= NRF_TOPOLOGY_REMOTE_COUNT ||
+        generation == 0U || io->mux_select == NULL || io->mux_close == NULL ||
+        io->read_status == NULL || io->write_height_reference == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *request_topology_reconcile = false;
+    remote = &topology->remotes[channel];
+    if (!topology->tca_available || topology->tca_fault ||
+        remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
+        (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED &&
+         topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
+        *request_topology_reconcile = topology->tca_fault ||
+            remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (io->abort_requested != NULL && io->abort_requested(io->context)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = io->mux_select(io->context, channel);
+    if (err != ESP_OK) {
+        *request_topology_reconcile = true;
+        const esp_err_t close_err = io->mux_close(io->context);
+        return close_err != ESP_OK ? close_err : err;
+    }
+    selected = true;
+
+    if (topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        memset(&status, 0, sizeof(status));
+        err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
+        if (err != ESP_OK || !status_matches_node(&status, &topology->main, NRF_UPSTREAM_ROLE_MAIN)) {
+            *request_topology_reconcile = true;
+            err = err == ESP_OK ? ESP_ERR_INVALID_RESPONSE : err;
+            goto done;
+        }
+    }
+
+    memset(&status, 0, sizeof(status));
+    err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_REMOTE, &status);
+    if (err != ESP_OK || !status_matches_node(&status, remote, NRF_UPSTREAM_ROLE_REMOTE)) {
+        *request_topology_reconcile = true;
+        err = err == ESP_OK ? ESP_ERR_INVALID_RESPONSE : err;
+        goto done;
+    }
+
+    request.action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE;
+    request.request_id = next_request_id(controller);
+    request.generation = generation;
+    err = io->write_height_reference(io->context, &request);
+    if (err != ESP_OK) {
+        *request_topology_reconcile = true;
+    }
+
+done:
+    if (selected) {
+        const esp_err_t close_err = io->mux_close(io->context);
+        if (close_err != ESP_OK) {
+            *request_topology_reconcile = true;
+            return close_err;
+        }
+    }
+    return err;
+}

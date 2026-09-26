@@ -193,6 +193,12 @@ export interface PodGeophone extends ValidValue {
   snr_db: number;
 }
 
+export interface PodHeightReference {
+  state: 'not_established' | 'valid' | 'rejected_moving' | 'sensor_invalid';
+  generation: number;
+  relative_z_mm: number;
+}
+
 export interface DevicePod {
   id: number;
   state: string;
@@ -202,6 +208,7 @@ export interface DevicePod {
   imu: PodImu;
   geophone: PodGeophone;
   position: PodPosition;
+  height_reference?: PodHeightReference;
 }
 
 export interface DeviceSystemStatus {

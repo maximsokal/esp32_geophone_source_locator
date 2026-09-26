@@ -530,9 +530,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     ).then((state) => {
         if (generation !== storageGeneration.current) return;
         if (state?.scan !== 'saved') {
-          const message = state?.scan === 'blocked_recording'
-            ? SCAN_STORAGE_BLOCKED_MESSAGE
-            : state?.scanError ?? 'The scan upload was not confirmed.';
+          const message = state?.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE;
           setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
           setScanStoragePhase('error');
           clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'transport', error: message });
@@ -574,7 +572,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         scanIntent.current = 'fresh';
         continuationBase.current = null;
       } else if (state.scan === 'blocked_recording') {
-        setScanStorageError(SCAN_STORAGE_BLOCKED_MESSAGE);
+        setScanStorageError(state.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE);
       } else if (state.scan === 'error') {
         setScanStorageError(state.scanError);
       }

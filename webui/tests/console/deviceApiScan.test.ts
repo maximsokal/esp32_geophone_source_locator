@@ -78,10 +78,12 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
     await expect(loadObjectScanArtifact('OBJ_0008', 'S000004')).rejects.toBeInstanceOf(ScanStorageBlockedRecordingError);
   });
 
-  it('serializes scan upload ahead of a status poll to avoid a second ESP TLS request', async () => {
+  it('keeps a status poll queued behind bulk scan upload without aborting it', async () => {
     let resolveSave!: (response: Response) => void;
-    const fetchMock = vi.fn((url: string) => {
+    let saveSignal!: AbortSignal;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       if (url.includes('scan=save')) {
+        saveSignal = init?.signal as AbortSignal;
         return new Promise<Response>((resolve) => { resolveSave = resolve; });
       }
       return Promise.resolve(jsonResponse({ system: { state: 'NOT_READY' } }));
@@ -92,11 +94,13 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
     const status = fetchDeviceStatus(false);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(saveSignal.aborted).toBe(false);
     resolveSave(jsonResponse({ ok: true, action: 'scan_save', object_id: 'OBJ_0008', bytes: 3 }));
     await save;
     await status;
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1][0]).toBe('/api/status');
+    expect(saveSignal.aborted).toBe(false);
   });
 });

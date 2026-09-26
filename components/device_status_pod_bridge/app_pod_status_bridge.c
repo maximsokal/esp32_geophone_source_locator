@@ -95,6 +95,37 @@ static void publish_channel_barometer(uint8_t channel)
 }
 
 
+static void publish_channel_height_reference(uint8_t channel)
+{
+    nrf_remote_sensor_cache_t cache;
+    const esp_err_t err = nrf_topology_service_get_sensor_snapshot(channel, &cache);
+    device_height_reference_state_t state = DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED;
+    uint16_t generation = 0U;
+    int32_t relative_z_mm = 0;
+
+    if (err == ESP_OK) {
+        switch (cache.sensor.reference_state) {
+            case NRF_UPSTREAM_REFERENCE_VALID:
+                state = DEVICE_HEIGHT_REFERENCE_VALID;
+                relative_z_mm = cache.sensor.relative_z_mm;
+                break;
+            case NRF_UPSTREAM_REFERENCE_REJECTED_MOVING:
+                state = DEVICE_HEIGHT_REFERENCE_REJECTED_MOVING;
+                break;
+            case NRF_UPSTREAM_REFERENCE_SENSOR_INVALID:
+                state = DEVICE_HEIGHT_REFERENCE_SENSOR_INVALID;
+                break;
+            case NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED:
+            default:
+                break;
+        }
+        generation = cache.sensor.reference_generation;
+    }
+
+    (void)device_status_set_pod_height_reference(channel, state, generation, relative_z_mm);
+}
+
+
 /*
  * Fetches the currently active object's frozen Channel-Sounding-derived
  * geometry (MAX-118) at most once per cycle -- every pod shares the same
@@ -137,6 +168,7 @@ static void publish_cycle(void)
         channel < DEVICE_STATUS_POD_COUNT;
         ++channel
     ) {
+        publish_channel_height_reference(channel);
         publish_channel_barometer(channel);
         publish_channel_local_position(channel, has_profile, &profile);
     }

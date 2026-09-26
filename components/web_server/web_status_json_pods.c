@@ -64,6 +64,38 @@ static bool web_status_json_add_barometer(
 }
 
 
+static const char *web_status_json_height_reference_state_name(
+    device_height_reference_state_t state)
+{
+    switch (state) {
+        case DEVICE_HEIGHT_REFERENCE_VALID: return "valid";
+        case DEVICE_HEIGHT_REFERENCE_REJECTED_MOVING: return "rejected_moving";
+        case DEVICE_HEIGHT_REFERENCE_SENSOR_INVALID: return "sensor_invalid";
+        case DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED:
+        default: return "not_established";
+    }
+}
+
+
+static bool web_status_json_add_height_reference(
+    cJSON *pod_object,
+    const device_height_reference_status_t *height_reference)
+{
+    cJSON *object = cJSON_AddObjectToObject(pod_object, "height_reference");
+    if (object == NULL) {
+        return false;
+    }
+
+    return
+        cJSON_AddStringToObject(
+            object,
+            "state",
+            web_status_json_height_reference_state_name(height_reference->state)) != NULL &&
+        cJSON_AddNumberToObject(object, "generation", height_reference->generation) != NULL &&
+        cJSON_AddNumberToObject(object, "relative_z_mm", height_reference->relative_z_mm) != NULL;
+}
+
+
 static bool web_status_json_add_environment(
     cJSON *pod_object,
     const device_pod_environment_status_t *environment
@@ -265,6 +297,15 @@ bool web_status_json_add_pods(
             !web_status_json_add_barometer(
                 pod_object,
                 &pod->barometer
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            !web_status_json_add_height_reference(
+                pod_object,
+                &pod->height_reference
             )
         ) {
             return false;

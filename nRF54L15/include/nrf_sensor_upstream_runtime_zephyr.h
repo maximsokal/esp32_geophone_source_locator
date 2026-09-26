@@ -21,6 +21,9 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
 int nrf_sensor_upstream_runtime_zephyr_request_refresh(
     const nrf_upstream_sensor_refresh_t *request);
 
+int nrf_sensor_upstream_runtime_zephyr_request_height_reference(
+    const nrf_upstream_height_reference_t *request);
+
 bool nrf_sensor_upstream_runtime_zephyr_get_snapshot(
     nrf_upstream_sensor_snapshot_t *snapshot);
 

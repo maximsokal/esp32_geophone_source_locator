@@ -1,10 +1,11 @@
-import type { ControlResult, ScanArtifactInfo } from '../api/deviceApi';
+import { BulkTransferPreemptedError, type ControlResult, type ScanArtifactInfo } from '../api/deviceApi';
 import { occupancyFrameIdForScan } from './occupancySolverArtifact';
 
 export type ScanSaveState = 'saving' | 'saved' | 'error' | 'blocked_recording';
 export type OccupancySaveState = 'pending' | 'saving' | 'ready' | 'failed' | 'unavailable';
 
 export const SCAN_STORAGE_BLOCKED_MESSAGE = 'Recording in progress — scan storage is paused';
+export const SCAN_STORAGE_PREEMPTED_MESSAGE = 'Scan save paused for a critical control action. Retry to save it.';
 
 export interface ScanPersistenceState {
   scan: ScanSaveState;
@@ -18,6 +19,7 @@ export type ScanPersistenceEvent =
   | { type: 'scan-saved' }
   | { type: 'scan-failed'; error: string }
   | { type: 'scan-blocked-recording' }
+  | { type: 'scan-preempted' }
   | { type: 'occupancy-saving' }
   | { type: 'occupancy-ready' }
   | { type: 'occupancy-failed'; error: string }
@@ -62,6 +64,9 @@ export function transitionScanPersistence(
   }
   if (event.type === 'scan-blocked-recording' && state?.scan === 'saving') {
     return { scan: 'blocked_recording', occupancy: 'pending', scanError: SCAN_STORAGE_BLOCKED_MESSAGE, occupancyError: null };
+  }
+  if (event.type === 'scan-preempted' && state?.scan === 'saving') {
+    return { scan: 'blocked_recording', occupancy: 'pending', scanError: SCAN_STORAGE_PREEMPTED_MESSAGE, occupancyError: null };
   }
   if (event.type === 'occupancy-saving' && state?.scan === 'saved' && (state.occupancy === 'pending' || state.occupancy === 'failed')) {
     return { ...state, occupancy: 'saving', occupancyError: null };
@@ -171,6 +176,10 @@ export class ScanPersistenceController {
       if (epoch !== this.epoch) return this.state;
       if (isBlockedRecording(reason)) {
         this.dispatch(epoch, { type: 'scan-blocked-recording' });
+        return this.state;
+      }
+      if (reason instanceof BulkTransferPreemptedError) {
+        this.dispatch(epoch, { type: 'scan-preempted' });
         return this.state;
       }
       this.pendingScan = null;

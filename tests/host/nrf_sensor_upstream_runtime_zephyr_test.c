@@ -8,9 +8,11 @@
 
 #include <zephyr/kernel.h>
 
+#include "nrf_blue_led.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
+#include "nrf_verticality_state.h"
 #include "nrf_watchdog_zephyr.h"
 
 static unsigned s_thread_create_calls;
@@ -23,6 +25,27 @@ static bool s_fail_next_queue_put;
 /* MAX-244 */
 static unsigned s_sensor_worker_checkins;
 static k_timeout_t s_max_worker_wait = K_NO_WAIT;
+static int64_t s_test_uptime_ms = 1234;
+static unsigned s_blue_led_init_calls;
+static unsigned s_blue_led_update_calls;
+static nrf_verticality_state_t s_blue_led_state = NRF_VERTICALITY_FAULT;
+static nrf_blue_led_action_t s_blue_led_action = NRF_BLUE_LED_OFF;
+
+int nrf_blue_led_zephyr_init(void)
+{
+    ++s_blue_led_init_calls;
+    return 0;
+}
+
+void nrf_blue_led_zephyr_update(
+    nrf_verticality_state_t state,
+    uint64_t uptime_ms)
+{
+    (void)uptime_ms;
+    ++s_blue_led_update_calls;
+    s_blue_led_state = state;
+    s_blue_led_action = nrf_blue_led_policy(state);
+}
 
 void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
 {
@@ -31,6 +54,10 @@ void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
 }
 static bool s_exit_worker_when_empty;
 static bool s_include_env;
+static bool s_force_stationary;
+static bool s_force_moving;
+static bool s_change_pressure;
+static uint32_t s_fake_pressure_pa;
 static jmp_buf s_worker_exit;
 static void (*s_worker_entry)(void *, void *, void *);
 
@@ -104,7 +131,7 @@ k_tid_t k_thread_create(
 
 int64_t k_uptime_get(void)
 {
-    return 1234;
+    return s_test_uptime_ms;
 }
 
 void nrf_node_state_init(nrf_node_state_t *state)
@@ -147,6 +174,12 @@ static int fake_read_imu(void *context, nrf_imu_sample_t *sample)
     (void)context;
     ++s_imu_read_calls;
     memset(sample, 0, sizeof(*sample));
+    if (s_force_moving) {
+        sample->gyro_mdps[0] = 120000;
+    } else if (!s_force_stationary && s_refresh_calls >= 2U) {
+        sample->accel_mg[0] = 300;
+        sample->gyro_mdps[0] = 30000;
+    }
     sample->accel_mg[2] = 1000;
     return 0;
 }
@@ -180,7 +213,9 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
     if (s_include_env) {
         runtime->core.snapshot.valid_mask |= NRF_SENSOR_VALID_ENV;
         runtime->core.snapshot.env.temperature_milli_c = 21500;
-        runtime->core.snapshot.env.pressure_pa = 101205U;
+        runtime->core.snapshot.env.pressure_pa = s_change_pressure
+            ? s_fake_pressure_pa
+            : (s_refresh_calls >= 3U ? 101085U : 101205U);
         runtime->core.snapshot.env.humidity_milli_percent = 50300U;
     }
     return fake_read_imu(NULL, &runtime->core.snapshot.imu) == 0
@@ -202,6 +237,39 @@ static nrf_upstream_assign_t make_assign(void)
     assign.node_id = 2U;
     assign.mux_channel = 1U;
     return assign;
+}
+
+static void run_worker_until_empty(void)
+{
+    s_exit_worker_when_empty = true;
+    if (setjmp(s_worker_exit) == 0) {
+        s_worker_entry(NULL, NULL, NULL);
+        assert(false);
+    }
+    s_exit_worker_when_empty = false;
+}
+
+static void process_refresh_request(uint32_t request_id)
+{
+    nrf_upstream_sensor_refresh_t request = {.request_id = request_id};
+    s_test_uptime_ms += 100;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
+    run_worker_until_empty();
+}
+
+static void process_height_reference_request(
+    uint8_t action,
+    uint32_t request_id,
+    uint16_t generation)
+{
+    nrf_upstream_height_reference_t request = {
+        .action = action,
+        .request_id = request_id,
+        .generation = generation,
+    };
+    s_test_uptime_ms += 100;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&request) == 0);
+    run_worker_until_empty();
 }
 
 int main(void)
@@ -232,6 +300,8 @@ int main(void)
 
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_NOT_READY);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(snapshot.reference_generation == 0U && snapshot.relative_z_mm == 0);
 
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == -EAGAIN);
     assert(s_queue_put_calls == 0U);
@@ -279,6 +349,8 @@ int main(void)
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.request_id == 0U);
     assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(snapshot.reference_generation == 0U && snapshot.relative_z_mm == 0);
 
     /*
      * The fake refresh only marks IMU valid (no ENV), so altitude_mm must
@@ -290,7 +362,11 @@ int main(void)
     assert(snapshot.altitude_mm == 0);
     assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
     assert(orientation.state == NRF_ORIENTATION_STATE_ACCEPTED);
-    assert(snapshot.orientation_state == (uint8_t)orientation.state);
+    assert(snapshot.orientation_state == nrf_verticality_state_to_orientation_wire(
+               NRF_VERTICALITY_STABILIZING));
+    assert(s_blue_led_init_calls == 1U && s_blue_led_update_calls >= 3U);
+    assert(s_blue_led_state == NRF_VERTICALITY_STABILIZING);
+    assert(s_blue_led_action == NRF_BLUE_LED_BLINK_2HZ);
     assert(snapshot.orientation_blink_class == (uint8_t)orientation.blink_class);
     assert(snapshot.orientation_tilt_sin2_ppm == orientation.tilt_sin2_ppm);
 
@@ -301,6 +377,7 @@ int main(void)
     /* A later aggregate refresh with a valid ENV sample must carry the
      * nRF-computed altitude alongside the legacy pressure/humidity fields. */
     s_include_env = true;
+    s_test_uptime_ms += 100;
     s_exit_worker_when_empty = true;
     if (setjmp(s_worker_exit) == 0) {
         s_worker_entry(NULL, NULL, NULL);
@@ -315,15 +392,117 @@ int main(void)
     assert((snapshot.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U);
     assert(snapshot.pressure_pa == 101205U);
     assert(snapshot.altitude_mm == 10000);
+    assert(snapshot.relative_z_mm == 0);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(snapshot.accel_mg[0] == 100);
+    assert(snapshot.gyro_mdps[0] == 10000);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
+    assert(orientation.filtered_accel_mg[0] == snapshot.accel_mg[0]);
+    assert(orientation.filtered_accel_mg[2] == snapshot.accel_mg[2]);
+    assert(snapshot.orientation_state == nrf_verticality_state_to_orientation_wire(
+               NRF_VERTICALITY_STABILIZING));
+    assert(s_blue_led_state == NRF_VERTICALITY_STABILIZING);
+    assert(snapshot.orientation_state ==
+           nrf_verticality_state_to_orientation_wire(s_blue_led_state));
+    assert(s_blue_led_action == nrf_blue_led_policy(s_blue_led_state));
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_ENV_READY);
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE);
+    assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_FILTERED);
+
+    /* Subsequent samples use dt/(tau+dt): IMU tau=200ms, altitude tau=1s. */
+    request.request_id = 21U;
+    s_test_uptime_ms += 100;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
+    s_exit_worker_when_empty = true;
+    if (setjmp(s_worker_exit) == 0) {
+        s_worker_entry(NULL, NULL, NULL);
+        assert(false);
+    }
+    s_exit_worker_when_empty = false;
+    assert(s_refresh_calls == 3U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == request.request_id);
+    assert(snapshot.pressure_pa == 101085U);
+    assert(snapshot.altitude_mm == 10909);
+    assert(snapshot.accel_mg[0] == 167);
+    assert(snapshot.gyro_mdps[0] == 16667);
+
+    /* Stable worker samples satisfy the verticality dwell before capture. */
+    s_force_stationary = true;
+    for (uint32_t i = 0U; i < 12U; ++i) {
+        process_refresh_request(30U + i);
+    }
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+
+    {
+        nrf_upstream_height_reference_t capture = {
+            .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE,
+            .request_id = 42U,
+            .generation = 42U,
+        };
+        const unsigned refreshes_before = s_refresh_calls;
+        const unsigned imu_reads_before = s_imu_read_calls;
+        s_test_uptime_ms += 100;
+        assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&capture) == 0);
+        assert(s_refresh_calls == refreshes_before && s_imu_read_calls == imu_reads_before);
+        run_worker_until_empty();
+        assert(s_refresh_calls == refreshes_before + 1U);
+        assert(s_imu_read_calls == imu_reads_before + 1U);
+    }
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    assert(snapshot.reference_generation == 42U);
+    assert(snapshot.relative_z_mm == 0);
+    {
+        const int32_t captured_altitude_mm = snapshot.altitude_mm;
+        s_change_pressure = true;
+        s_fake_pressure_pa = 100000U;
+        process_refresh_request(43U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+        assert(snapshot.reference_generation == 42U);
+        assert(snapshot.altitude_mm != captured_altitude_mm);
+        assert(snapshot.relative_z_mm == snapshot.altitude_mm - captured_altitude_mm);
+        assert(snapshot.relative_z_mm != 0);
+    }
+
+    s_force_stationary = false;
+    s_force_moving = true;
+    process_height_reference_request(
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 44U, 43U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING);
+    assert(snapshot.reference_generation == 42U);
+    assert(snapshot.relative_z_mm == 0);
+
+    s_force_moving = false;
+    s_force_stationary = true;
+    s_include_env = false;
+    process_height_reference_request(
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 45U, 44U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(snapshot.reference_generation == 42U);
+    assert(snapshot.relative_z_mm == 0);
+
+    process_height_reference_request(
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR, 46U, 45U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(snapshot.reference_generation == 45U);
+    assert(snapshot.relative_z_mm == 0);
 
     /* Same assignment is idempotent; a conflicting active identity is rejected. */
-    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
-    assert(s_queue_put_calls == 3U);
-    conflicting.node_id = 3U;
-    conflicting.mux_channel = 2U;
-    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&conflicting) == -EALREADY);
-    assert(s_queue_put_calls == 3U);
+    {
+        const unsigned queue_calls_before = s_queue_put_calls;
+        assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+        assert(s_queue_put_calls == queue_calls_before);
+        conflicting.node_id = 3U;
+        conflicting.mux_channel = 2U;
+        assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&conflicting) == -EALREADY);
+        assert(s_queue_put_calls == queue_calls_before);
+    }
     return 0;
 }

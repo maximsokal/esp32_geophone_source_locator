@@ -34,6 +34,13 @@ export class ScanStorageBlockedRecordingError extends Error {
   }
 }
 
+export class BulkTransferPreemptedError extends Error {
+  constructor() {
+    super('Bulk transfer paused for a critical control action. Retry when ready.');
+    this.name = 'BulkTransferPreemptedError';
+  }
+}
+
 function recordingBlocked(body: unknown, status: number): boolean {
   return status === 409 && typeof body === 'object' && body !== null &&
     'busy_reason' in body && (body as { busy_reason?: unknown }).busy_reason === 'recording_active';
@@ -55,9 +62,39 @@ function blockedControlResult(body: unknown): ControlResult {
 const statusRequests = new Map<string, Promise<DeviceStatus>>();
 let extendedStatusRequest: Promise<DeviceStatus> | null = null;
 let seismicRequest: Promise<SeismicSnapshot> | null = null;
-let apiRequestActive = false;
 let pendingApiRequests = 0;
-const apiRequestQueue: Array<() => void> = [];
+
+type ApiRequestLane = 'critical' | 'normal' | 'bulk';
+
+interface ApiRequestContext {
+  controller: AbortController;
+  preempted: boolean;
+  timedOut: boolean;
+}
+
+interface QueuedApiRequest {
+  lane: ApiRequestLane;
+  operation: (context: ApiRequestContext) => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  context?: ApiRequestContext;
+}
+
+const apiRequestQueues: Record<ApiRequestLane, QueuedApiRequest[]> = {
+  critical: [],
+  normal: [],
+  bulk: [],
+};
+let activeApiRequest: QueuedApiRequest | null = null;
+
+/* Keep safety and calibration controls out of the bulk transfer lane. */
+const CRITICAL_CONTROL_ACTIONS = new Set([
+  'measurement_start',
+  'measurement_stop',
+  'acquisition_start',
+  'acquisition_stop',
+  'calibrate_heights',
+]);
 
 function errorText(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -76,12 +113,15 @@ function responseError(body: unknown, response: Response): string {
 
 async function performJsonRequest<T>(
   url: string,
+  context: ApiRequestContext,
   init: RequestInit = {},
   timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
 ): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = globalThis.setTimeout(() => {
+    context.timedOut = true;
+    context.controller.abort();
+  }, timeoutMs);
 
   try {
     let response: Response;
@@ -91,7 +131,7 @@ async function performJsonRequest<T>(
         cache: 'no-store',
         credentials: 'same-origin',
         ...init,
-        signal: controller.signal,
+        signal: context.controller.signal,
         headers: {
           Accept: 'application/json',
           ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -101,7 +141,7 @@ async function performJsonRequest<T>(
       text = await response.text();
     }
     catch (reason) {
-      if (controller.signal.aborted) {
+      if (context.timedOut) {
         throw new Error(`ESP API timeout (${method} ${url}, ${timeoutMs} ms)`);
       }
       throw new Error(`ESP API network error (${method} ${url}): ${errorText(reason)}`);
@@ -129,7 +169,52 @@ async function performJsonRequest<T>(
   }
 }
 
-function queuedApiRequest<T>(operation: () => Promise<T>): Promise<T> {
+function nextApiRequest(): QueuedApiRequest | undefined {
+  return apiRequestQueues.critical.shift()
+    ?? apiRequestQueues.normal.shift()
+    ?? apiRequestQueues.bulk.shift();
+}
+
+function startNextApiRequest(): void {
+  if (activeApiRequest !== null) return;
+  const request = nextApiRequest();
+  if (request === undefined) return;
+
+  const context: ApiRequestContext = {
+    controller: new AbortController(),
+    preempted: false,
+    timedOut: false,
+  };
+  request.context = context;
+  activeApiRequest = request;
+
+  const finish = (fulfilled: boolean, value: unknown): void => {
+    pendingApiRequests = Math.max(0, pendingApiRequests - 1);
+    activeApiRequest = null;
+    if (context.preempted) {
+      request.reject(new BulkTransferPreemptedError());
+    } else if (fulfilled) {
+      request.resolve(value);
+    } else {
+      request.reject(value);
+    }
+    startNextApiRequest();
+  };
+
+  try {
+    void request.operation(context).then(
+      (value) => finish(true, value),
+      (reason) => finish(false, reason),
+    );
+  } catch (reason) {
+    finish(false, reason);
+  }
+}
+
+function queuedApiRequest<T>(
+  operation: (context: ApiRequestContext) => Promise<T>,
+  lane: ApiRequestLane = 'normal',
+): Promise<T> {
   /*
    * ESP-IDF's HTTPS server executes application handlers serially. Opening a
    * second fetch while the first request is doing an SD write only starts a
@@ -139,32 +224,22 @@ function queuedApiRequest<T>(operation: () => Promise<T>): Promise<T> {
   pendingApiRequests += 1;
 
   return new Promise<T>((resolve, reject) => {
-    const start = (): void => {
-      apiRequestActive = true;
-      void operation().then(
-        (value) => {
-          finish();
-          resolve(value);
-        },
-        (reason) => {
-          finish();
-          reject(reason);
-        },
-      );
+    const request: QueuedApiRequest = {
+      lane,
+      operation,
+      resolve: (value) => resolve(value as T),
+      reject,
     };
+    apiRequestQueues[lane].push(request);
 
-    const finish = (): void => {
-      pendingApiRequests = Math.max(0, pendingApiRequests - 1);
-      const next = apiRequestQueue.shift();
-      if (next === undefined) {
-        apiRequestActive = false;
-        return;
-      }
-      next();
-    };
-
-    if (apiRequestActive) apiRequestQueue.push(start);
-    else start();
+    const active = activeApiRequest;
+    const context = active?.context;
+    if (lane === 'critical' && active?.lane === 'bulk' && context !== undefined &&
+        !context.timedOut && !context.controller.signal.aborted) {
+      context.preempted = true;
+      context.controller.abort();
+    }
+    startNextApiRequest();
   });
 }
 
@@ -172,8 +247,9 @@ function jsonRequest<T>(
   url: string,
   init: RequestInit = {},
   timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
+  lane: ApiRequestLane = 'normal',
 ): Promise<T> {
-  return queuedApiRequest(() => performJsonRequest<T>(url, init, timeoutMs));
+  return queuedApiRequest((context) => performJsonRequest<T>(url, context, init, timeoutMs), lane);
 }
 
 type ScanStoreKind = 'scan' | 'occupancy' | 'registration';
@@ -184,10 +260,18 @@ function scanControlUrl(action: 'save' | 'load' | 'delete' | 'info', objectId: s
   return `/api/control?${query.toString()}`;
 }
 
-async function performScanSave(objectId: string, sessionId: string, artifact: Uint8Array, kind: ScanStoreKind = 'scan'): Promise<ControlResult> {
+async function performScanSave(
+  objectId: string,
+  sessionId: string,
+  artifact: Uint8Array,
+  context: ApiRequestContext,
+  kind: ScanStoreKind = 'scan',
+): Promise<ControlResult> {
   const url = scanControlUrl('save', objectId, sessionId, kind);
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => {
+    context.timedOut = true;
+    context.controller.abort();
+  }, DEVICE_API_SCAN_TIMEOUT_MS);
   try {
     let response: Response;
     let text: string;
@@ -197,7 +281,7 @@ async function performScanSave(objectId: string, sessionId: string, artifact: Ui
         method: 'POST',
         cache: 'no-store',
         credentials: 'same-origin',
-        signal: controller.signal,
+        signal: context.controller.signal,
         headers: {
           Accept: 'application/json',
           'Content-Type': kind === 'registration' ? 'application/json; charset=utf-8' : 'application/octet-stream',
@@ -207,7 +291,7 @@ async function performScanSave(objectId: string, sessionId: string, artifact: Ui
       text = await response.text();
     }
     catch (reason) {
-      if (controller.signal.aborted) throw new Error(`ESP scan save timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
+      if (context.timedOut) throw new Error(`ESP scan save timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
       throw new Error(`ESP scan save network error: ${errorText(reason)}`);
     }
 
@@ -223,10 +307,17 @@ async function performScanSave(objectId: string, sessionId: string, artifact: Ui
   }
 }
 
-async function performScanLoad(objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): Promise<Uint8Array | null> {
+async function performScanLoad(
+  objectId: string,
+  sessionId: string,
+  context: ApiRequestContext,
+  kind: ScanStoreKind = 'scan',
+): Promise<Uint8Array | null> {
   const url = scanControlUrl('load', objectId, sessionId, kind);
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => {
+    context.timedOut = true;
+    context.controller.abort();
+  }, DEVICE_API_SCAN_TIMEOUT_MS);
   try {
     let response: Response;
     try {
@@ -234,12 +325,12 @@ async function performScanLoad(objectId: string, sessionId: string, kind: ScanSt
         method: 'POST',
         cache: 'no-store',
         credentials: 'same-origin',
-        signal: controller.signal,
+        signal: context.controller.signal,
         headers: { Accept: 'application/octet-stream' },
       });
     }
     catch (reason) {
-      if (controller.signal.aborted) throw new Error(`ESP scan load timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
+      if (context.timedOut) throw new Error(`ESP scan load timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
       throw new Error(`ESP scan load network error: ${errorText(reason)}`);
     }
 
@@ -307,11 +398,11 @@ export function sendControl(
   return jsonRequest<ControlResult>('/api/control', {
     method: 'POST',
     body: JSON.stringify({ action, ...payload }),
-  }, DEVICE_API_CONTROL_TIMEOUT_MS);
+  }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal');
 }
 
 export function saveObjectScanArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
-  return queuedApiRequest(() => performScanSave(objectId, sessionId, artifact));
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context), 'bulk');
 }
 
 /**
@@ -319,30 +410,31 @@ export function saveObjectScanArtifact(objectId: string, sessionId: string, arti
  * session's saved scan, stored beside it (deleted together with the scan).
  */
 export function saveSessionOccupancyArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
-  return queuedApiRequest(() => performScanSave(objectId, sessionId, artifact, 'occupancy'));
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'occupancy'), 'bulk');
 }
 
 export function saveSessionRegistration(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
-  return queuedApiRequest(() => performScanSave(objectId, sessionId, new TextEncoder().encode(json), 'registration'));
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'registration'), 'bulk');
 }
 
 export function loadSessionRegistration(objectId: string, sessionId: string): Promise<string | null> {
-  return queuedApiRequest(async () => {
-    const bytes = await performScanLoad(objectId, sessionId, 'registration');
+  return queuedApiRequest(async (context) => {
+    const bytes = await performScanLoad(objectId, sessionId, context, 'registration');
     return bytes === null ? null : new TextDecoder().decode(bytes);
-  });
+  }, 'bulk');
 }
 
 export function deleteSessionRegistration(objectId: string, sessionId: string): Promise<ControlResult> {
-  return queuedApiRequest(() => jsonRequest<ControlResult>(
+  return queuedApiRequest((context) => performJsonRequest<ControlResult>(
     scanControlUrl('delete', objectId, sessionId, 'registration'),
+    context,
     { method: 'POST' },
     DEVICE_API_EXTENDED_TIMEOUT_MS,
-  ));
+  ), 'bulk');
 }
 
 export function loadObjectScanArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
-  return queuedApiRequest(() => performScanLoad(objectId, sessionId));
+  return queuedApiRequest((context) => performScanLoad(objectId, sessionId, context), 'bulk');
 }
 
 export interface ScanArtifactInfo {
@@ -372,7 +464,7 @@ export async function fetchScanInfo(objectId: string, sessionId: string, kind: S
 export function deleteObjectScanArtifact(objectId: string, sessionId: string): Promise<ControlResult> {
   return jsonRequest<ControlResult>(scanControlUrl('delete', objectId, sessionId), {
     method: 'POST',
-  }, DEVICE_API_SCAN_TIMEOUT_MS);
+  }, DEVICE_API_SCAN_TIMEOUT_MS, 'bulk');
 }
 
 export function fetchSeismic(points = 180): Promise<SeismicSnapshot> {
@@ -425,6 +517,7 @@ export function fetchSavedSeismicSession(
     `/api/seismic/session?${query.toString()}`,
     {},
     DEVICE_API_EXTENDED_TIMEOUT_MS,
+    'bulk',
   ).then(normalizeSavedSeismicSnapshot);
 }
 

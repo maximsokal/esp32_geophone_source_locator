@@ -1,13 +1,7 @@
 #pragma once
 
-#include <stdarg.h>
+void test_log_record(char level, const char *tag, const char *format, ...);
 
-static inline void test_log(const char *tag, const char *format, ...)
-{
-    (void)tag;
-    (void)format;
-}
-
-#define ESP_LOGI(...) test_log(__VA_ARGS__)
-#define ESP_LOGW(...) test_log(__VA_ARGS__)
-#define ESP_LOGE(...) test_log(__VA_ARGS__)
+#define ESP_LOGI(tag, ...) test_log_record('I', tag, __VA_ARGS__)
+#define ESP_LOGW(tag, ...) test_log_record('W', tag, __VA_ARGS__)
+#define ESP_LOGE(tag, ...) test_log_record('E', tag, __VA_ARGS__)

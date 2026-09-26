@@ -292,6 +292,19 @@ static void fill_status(void)
         pod->capabilities.global_position = true;
     }
 
+    g_status.pods[0].height_reference.state = DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED;
+    g_status.pods[0].height_reference.generation = 0U;
+    g_status.pods[0].height_reference.relative_z_mm = 0;
+    g_status.pods[1].height_reference.state = DEVICE_HEIGHT_REFERENCE_VALID;
+    g_status.pods[1].height_reference.generation = 27U;
+    g_status.pods[1].height_reference.relative_z_mm = 1500;
+    g_status.pods[2].height_reference.state = DEVICE_HEIGHT_REFERENCE_REJECTED_MOVING;
+    g_status.pods[2].height_reference.generation = 27U;
+    g_status.pods[2].height_reference.relative_z_mm = 0;
+    g_status.pods[3].height_reference.state = DEVICE_HEIGHT_REFERENCE_SENSOR_INVALID;
+    g_status.pods[3].height_reference.generation = 28U;
+    g_status.pods[3].height_reference.relative_z_mm = 0;
+
     device_pod_status_t *pod = &g_status.pods[0];
     pod->barometer.valid = true;
     pod->barometer.pressure_pa = 100111.0f;
@@ -473,6 +486,18 @@ static void test_full_builder_and_pods(void)
     assert_number_near(number_item(object_item(pod, "geophone"), "snr_db"), 12.0);
     assert_number_near(number_item(object_item(pod, "position"), "latitude"), 50.4501);
     assert(bool_item(object_item(pod, "position"), "altitude_valid"));
+
+    static const char *const reference_states[] = {
+        "not_established", "valid", "rejected_moving", "sensor_invalid",
+    };
+    static const double reference_generations[] = {0.0, 27.0, 27.0, 28.0};
+    static const double relative_z_mm[] = {0.0, 1500.0, 0.0, 0.0};
+    for (size_t index = 0U; index < DEVICE_STATUS_POD_COUNT; ++index) {
+        cJSON *height_reference = object_item(cJSON_GetArrayItem(pods, (int)index), "height_reference");
+        assert(strcmp(string_item(height_reference, "state"), reference_states[index]) == 0);
+        assert_number_near(number_item(height_reference, "generation"), reference_generations[index]);
+        assert_number_near(number_item(height_reference, "relative_z_mm"), relative_z_mm[index]);
+    }
 
     assert(g_recording_called);
     cJSON_Delete(root);

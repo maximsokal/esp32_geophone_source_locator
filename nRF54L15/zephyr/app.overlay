@@ -1,3 +1,21 @@
+/* Default is active-high; confirm the installed LED polarity with HIL. */
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/
+{
+    aliases {
+        blue-led = &blue_led;
+    };
+
+    leds {
+        compatible = "gpio-leds";
+        blue_led: led_1 {
+            gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+            label = "REMOTE blue LED";
+        };
+    };
+};
+
 /*
  * Project-level corrections for the plain Seeed Studio XIAO nRF54L15.
  *

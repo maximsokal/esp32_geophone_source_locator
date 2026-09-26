@@ -51,6 +51,7 @@ typedef struct {
     nrf_topology_snapshot_t snapshot;
     nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
     nrf_cs_authority_t authority;
+    nrf_cs_cycle_snapshot_t cs_cycle_snapshot;
     nrf_cs_platform_context_t cs_context;
     nrf_cs_authority_ops_t cs_ops;
 } nrf_topology_worker_state_t;
@@ -64,6 +65,10 @@ static bool s_snapshot_valid = false;
 static bool s_sensor_cache_valid = false;
 static uint8_t s_sensor_pending_mask = 0U;
 static uint8_t s_sensor_inflight_mask = 0U;
+static bool s_height_reference_pending = false;
+static uint8_t s_height_reference_pending_mask = 0U;
+static uint16_t s_height_reference_pending_generation = 0U;
+static uint16_t s_height_reference_generation = 0U;
 static nrf_topology_snapshot_t s_snapshot;
 static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static bool s_cs_request_pending = false;
@@ -71,6 +76,49 @@ static bool s_cs_snapshot_valid = false;
 static nrf_cs_policy_t s_cs_requested_policy;
 static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
 static nrf_topology_worker_state_t s_worker_state;
+static nrf_topology_service_stack_stats_t s_stack_stats;
+
+static void service_record_stack_hwm(
+    nrf_topology_stack_stats_phase_t phase,
+    const char *stage,
+    uint32_t free_bytes)
+{
+    const uint8_t phase_bit = (uint8_t)(1U << phase);
+    bool first_sample;
+    bool new_minimum;
+    bool crossed_warning_margin;
+
+    portENTER_CRITICAL(&s_state_lock);
+    first_sample = (s_stack_stats.sampled_phase_mask & phase_bit) == 0U;
+    new_minimum = first_sample || free_bytes < s_stack_stats.phase_minimum_free_bytes[phase];
+    crossed_warning_margin = free_bytes < NRF_TOPOLOGY_STACK_MARGIN_BYTES &&
+        (first_sample || s_stack_stats.phase_minimum_free_bytes[phase] >= NRF_TOPOLOGY_STACK_MARGIN_BYTES);
+    if (new_minimum) {
+        s_stack_stats.phase_minimum_free_bytes[phase] = free_bytes;
+    }
+    if (s_stack_stats.sampled_phase_mask == 0U || free_bytes < s_stack_stats.minimum_free_bytes) {
+        s_stack_stats.minimum_free_bytes = free_bytes;
+    }
+    s_stack_stats.sampled_phase_mask |= phase_bit;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    if (new_minimum) {
+        if (crossed_warning_margin) {
+            ESP_LOGW(TAG, "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
+                     stage, (unsigned)free_bytes, (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
+        } else {
+            ESP_LOGI(TAG, "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
+                     stage, (unsigned)free_bytes, (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
+        }
+    }
+}
+
+static void service_record_current_stack_hwm(
+    nrf_topology_stack_stats_phase_t phase,
+    const char *stage)
+{
+    service_record_stack_hwm(phase, stage, (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+}
 
 static bool service_stop_requested(void)
 {
@@ -98,6 +146,9 @@ static void service_clear_current_task(void)
     portENTER_CRITICAL(&s_state_lock);
     s_task = NULL;
     s_sensor_inflight_mask = 0U;
+    s_height_reference_pending = false;
+    s_height_reference_pending_mask = 0U;
+    s_height_reference_pending_generation = 0U;
     portEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -192,7 +243,8 @@ static bool service_has_immediate_work(void)
 {
     bool pending;
     portENTER_CRITICAL(&s_state_lock);
-    pending = s_topology_refresh_requested || s_sensor_pending_mask != 0U || s_cs_request_pending;
+    pending = s_topology_refresh_requested || s_sensor_pending_mask != 0U ||
+        s_height_reference_pending || s_cs_request_pending;
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
 }
@@ -251,6 +303,7 @@ static esp_err_t platform_normalize_transfer_error(
     };
     nrf_topology_bus_recovery_outcome_t outcome = NRF_TOPOLOGY_BUS_NOT_CHECKED;
     const esp_err_t result = nrf_topology_bus_recover_after_error(err, &ops, &outcome);
+    service_record_current_stack_hwm(NRF_TOPOLOGY_STACK_PHASE_ERROR_RECOVERY, "error-recovery");
     if (outcome == NRF_TOPOLOGY_BUS_STUCK) {
         ESP_LOGE(TAG, "I2C0 line stuck after %s; a target holds the bus (reset/power-cycle it)",
                  esp_err_to_name(err));
@@ -346,6 +399,28 @@ static esp_err_t platform_write_sensor_refresh(
     return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
 
+static esp_err_t platform_write_height_reference(
+    void *context,
+    const nrf_upstream_height_reference_t *request)
+{
+    nrf_topology_platform_t *platform = context;
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH];
+    esp_err_t err;
+
+    if (platform == NULL || request == NULL || platform->remote_device == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (nrf_upstream_protocol_encode_height_reference(request, frame) != NRF_UPSTREAM_RESULT_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = i2c_bus_write_bytes(
+        platform->remote_device,
+        NULL_I2C_MEM_ADDR,
+        sizeof(frame),
+        frame);
+    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
+}
+
 static esp_err_t platform_read_remote_snapshot(
     void *context,
     nrf_upstream_status_t *status,
@@ -366,7 +441,12 @@ static esp_err_t platform_read_remote_snapshot(
     if (err != ESP_OK) {
         return platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
     }
-    return nrf_upstream_protocol_decode_remote_snapshot(frame, sizeof(frame), status, sensor) == NRF_UPSTREAM_RESULT_OK
+    const size_t frame_length = (size_t)frame[32] | ((size_t)frame[33] << 8U);
+    if (frame_length != NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH &&
+        frame_length != NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return nrf_upstream_protocol_decode_remote_snapshot(frame, frame_length, status, sensor) == NRF_UPSTREAM_RESULT_OK
         ? ESP_OK
         : ESP_ERR_INVALID_RESPONSE;
 }
@@ -627,6 +707,7 @@ static void service_process_sensor_mask(
         .mux_faulted = platform_mux_faulted,
         .read_status = platform_read_status,
         .write_sensor_refresh = platform_write_sensor_refresh,
+        .write_height_reference = platform_write_height_reference,
         .read_remote_snapshot = platform_read_remote_snapshot,
         .sleep_ms = platform_sleep_ms,
         .now_ms = platform_now_ms,
@@ -680,6 +761,14 @@ static void service_process_sensor_mask(
         service_requeue_inflight_mask(mask);
     }
 }
+
+static bool service_take_height_reference_request(uint8_t *mask, uint16_t *generation);
+static void service_process_height_reference_mask(
+    nrf_topology_platform_t *platform,
+    nrf_sensor_transport_controller_t *sensor_controller,
+    const nrf_topology_snapshot_t *snapshot,
+    uint8_t mask,
+    uint16_t generation);
 
 static bool cs_node_present(const nrf_topology_snapshot_t *snapshot, nrf_cs_node_id_t node)
 {
@@ -761,22 +850,23 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
 
 static uint64_t cs_now_ms(void *context){return platform_now_ms(((nrf_cs_platform_context_t *)context)->platform);}
 
-static void cs_publish(const nrf_cs_authority_t *authority, bool active, int result)
+static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int result)
 {
-    nrf_cs_cycle_snapshot_t snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
-    snapshot.active = active;
-    snapshot.complete = !active && nrf_cs_scheduler_is_complete(&authority->scheduler);
-    snapshot.result = result;
-    snapshot.cycle_id = authority->scheduler.cycle_id;
-    snapshot.membership_generation = authority->scheduler.membership_generation;
-    snapshot.pair_count = nrf_cs_authority_pair_count(authority);
-    for (size_t i = 0U; i < snapshot.pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
+    nrf_cs_cycle_snapshot_t *snapshot = &worker->cs_cycle_snapshot;
+    const nrf_cs_authority_t *authority = &worker->authority;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->active = active;
+    snapshot->complete = !active && nrf_cs_scheduler_is_complete(&authority->scheduler);
+    snapshot->result = result;
+    snapshot->cycle_id = authority->scheduler.cycle_id;
+    snapshot->membership_generation = authority->scheduler.membership_generation;
+    snapshot->pair_count = nrf_cs_authority_pair_count(authority);
+    for (size_t i = 0U; i < snapshot->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
         const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(authority, i);
-        if (pair != NULL) snapshot.pairs[i] = *pair;
+        if (pair != NULL) snapshot->pairs[i] = *pair;
     }
     portENTER_CRITICAL(&s_state_lock);
-    s_cs_cycle_snapshot = snapshot;
+    s_cs_cycle_snapshot = *snapshot;
     s_cs_snapshot_valid = true;
     portEXIT_CRITICAL(&s_state_lock);
 }
@@ -796,26 +886,6 @@ static void cs_sync_disconnects(nrf_cs_authority_t *authority, const nrf_topolog
     for (size_t i = 0U; i < authority->scheduler.node_count; ++i) {
         const nrf_cs_node_id_t node = authority->scheduler.nodes[i];
         if (!cs_node_present(snapshot, node)) (void)nrf_cs_authority_disconnect(authority, node);
-    }
-}
-
-static void service_log_stack_hwm(const char *stage)
-{
-    const UBaseType_t free_bytes = uxTaskGetStackHighWaterMark(NULL);
-    if (free_bytes < NRF_TOPOLOGY_STACK_MARGIN_BYTES) {
-        ESP_LOGW(
-            TAG,
-            "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
-            stage,
-            (unsigned)free_bytes,
-            (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
-    } else {
-        ESP_LOGI(
-            TAG,
-            "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
-            stage,
-            (unsigned)free_bytes,
-            (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
     }
 }
 
@@ -879,9 +949,17 @@ static void service_worker(void *context)
                 worker->cache);
             last_reconcile_tick = xTaskGetTickCount();
             first_reconcile = false;
+            const uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
             if (was_first_reconcile) {
-                service_log_stack_hwm(reconciled ? "post-first-reconcile" : "post-first-reconcile-error");
+                service_record_stack_hwm(
+                    NRF_TOPOLOGY_STACK_PHASE_FIRST_RECONCILE,
+                    reconciled ? "first-reconcile" : "first-reconcile-error",
+                    free_bytes);
             }
+            service_record_stack_hwm(
+                NRF_TOPOLOGY_STACK_PHASE_RECONCILE,
+                reconciled ? "reconcile" : "reconcile-error",
+                free_bytes);
             if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
                 cs_sync_disconnects(&worker->authority, &worker->snapshot);
             }
@@ -913,14 +991,18 @@ static void service_worker(void *context)
                 }
             }
             if (!cs_initialized || start_result < 0) {
+                memset(&worker->cs_cycle_snapshot, 0, sizeof(worker->cs_cycle_snapshot));
                 portENTER_CRITICAL(&s_state_lock);
                 memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
                 s_cs_cycle_snapshot.result = start_result;
                 s_cs_snapshot_valid = true;
                 portEXIT_CRITICAL(&s_state_lock);
             } else {
-                cs_publish(&worker->authority, true, start_result);
+                cs_publish(worker, true, start_result);
             }
+            service_record_current_stack_hwm(
+                NRF_TOPOLOGY_STACK_PHASE_CS_CYCLE_START,
+                start_result < 0 ? "cs-cycle-start-error" : "cs-cycle-start");
         }
 
         if (service_stop_requested()) {
@@ -929,6 +1011,19 @@ static void service_worker(void *context)
 
         if (!cs_initialized || !nrf_cs_authority_is_active(&worker->authority) ||
             !worker->authority.command_active) {
+            uint8_t height_reference_mask = 0U;
+            uint16_t height_reference_generation = 0U;
+            if (service_take_height_reference_request(
+                    &height_reference_mask,
+                    &height_reference_generation)) {
+                service_process_height_reference_mask(
+                    &worker->platform,
+                    &worker->sensor_controller,
+                    &worker->snapshot,
+                    height_reference_mask,
+                    height_reference_generation);
+            }
+
             const uint8_t sensor_mask = service_take_sensor_mask();
             if (sensor_mask != 0U) {
                 service_process_sensor_mask(
@@ -939,6 +1034,9 @@ static void service_worker(void *context)
                     sensor_mask,
                     last_reconcile_tick,
                     reconcile_period_ticks);
+                service_record_current_stack_hwm(
+                    NRF_TOPOLOGY_STACK_PHASE_SENSOR_REFRESH,
+                    "sensor-refresh");
             }
         }
 
@@ -948,7 +1046,10 @@ static void service_worker(void *context)
 
         if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
             const nrf_cs_authority_result_t cs_result = nrf_cs_authority_pump(&worker->authority);
-            cs_publish(&worker->authority, nrf_cs_authority_is_active(&worker->authority), cs_result);
+            cs_publish(worker, nrf_cs_authority_is_active(&worker->authority), cs_result);
+            service_record_current_stack_hwm(
+                NRF_TOPOLOGY_STACK_PHASE_CS_PUMP_PUBLISH,
+                "cs-pump-publish");
         }
 
         TickType_t wait_ticks = 0U;
@@ -988,12 +1089,16 @@ esp_err_t nrf_topology_service_start(void)
     s_topology_refresh_requested = false;
     s_sensor_pending_mask = 0U;
     s_sensor_inflight_mask = 0U;
+    s_height_reference_pending = false;
+    s_height_reference_pending_mask = 0U;
+    s_height_reference_pending_generation = 0U;
     s_cs_request_pending = false;
     s_cs_snapshot_valid = false;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
     memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
+    memset(&s_stack_stats, 0, sizeof(s_stack_stats));
     memset(&s_worker_state, 0, sizeof(s_worker_state));
     portEXIT_CRITICAL(&s_state_lock);
 
@@ -1050,6 +1155,9 @@ void nrf_topology_service_stop(void)
     s_topology_refresh_requested = false;
     s_sensor_pending_mask = 0U;
     s_sensor_inflight_mask = 0U;
+    s_height_reference_pending = false;
+    s_height_reference_pending_mask = 0U;
+    s_height_reference_pending_generation = 0U;
     s_cs_request_pending = false;
     s_cs_snapshot_valid = false;
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
@@ -1154,6 +1262,47 @@ esp_err_t nrf_topology_service_request_all_sensor_refresh(void)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask)
+{
+    TaskHandle_t task;
+    uint8_t mask = 0U;
+
+    if (requested_channel_mask == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *requested_channel_mask = 0U;
+
+    portENTER_CRITICAL(&s_state_lock);
+    task = s_task;
+    if (task == NULL || !s_snapshot_valid || s_height_reference_pending) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            mask |= (uint8_t)(1U << channel);
+        }
+    }
+    if (mask == 0U) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Allocated generations use 1..65535 and wrap to 1; zero is never allocated. */
+    ++s_height_reference_generation;
+    if (s_height_reference_generation == 0U) {
+        ++s_height_reference_generation;
+    }
+    s_height_reference_pending = true;
+    s_height_reference_pending_mask = mask;
+    s_height_reference_pending_generation = s_height_reference_generation;
+    *requested_channel_mask = mask;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    (void)xTaskNotifyGive(task);
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_get_sensor_snapshot(
     uint8_t channel,
     nrf_remote_sensor_cache_t *snapshot)
@@ -1206,6 +1355,13 @@ esp_err_t nrf_topology_service_get_leveling_nodes(
 }
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+void nrf_topology_service_test_set_height_reference_generation(uint16_t generation)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_height_reference_generation = generation;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
 esp_err_t nrf_topology_service_test_publish_state(
     bool topology_valid,
     const nrf_topology_snapshot_t *topology,
@@ -1258,4 +1414,74 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     if(snapshot==NULL)return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&s_state_lock); valid=s_cs_snapshot_valid; if(valid)*snapshot=s_cs_cycle_snapshot; portEXIT_CRITICAL(&s_state_lock);
     return valid?ESP_OK:ESP_ERR_INVALID_STATE;
+}
+
+static bool service_take_height_reference_request(uint8_t *mask, uint16_t *generation)
+{
+    bool pending;
+    portENTER_CRITICAL(&s_state_lock);
+    pending = s_height_reference_pending;
+    if (pending) {
+        *mask = s_height_reference_pending_mask;
+        *generation = s_height_reference_pending_generation;
+        s_height_reference_pending = false;
+        s_height_reference_pending_mask = 0U;
+        s_height_reference_pending_generation = 0U;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return pending;
+}
+
+static void service_process_height_reference_mask(
+    nrf_topology_platform_t *platform,
+    nrf_sensor_transport_controller_t *sensor_controller,
+    const nrf_topology_snapshot_t *snapshot,
+    uint8_t mask,
+    uint16_t generation)
+{
+    const nrf_sensor_transport_io_t io = {
+        .context = platform,
+        .mux_select = platform_mux_select,
+        .mux_close = platform_mux_close,
+        .mux_faulted = platform_mux_faulted,
+        .read_status = platform_read_status,
+        .write_sensor_refresh = platform_write_sensor_refresh,
+        .write_height_reference = platform_write_height_reference,
+        .read_remote_snapshot = platform_read_remote_snapshot,
+        .sleep_ms = platform_sleep_ms,
+        .now_ms = platform_now_ms,
+        .abort_requested = platform_abort_requested,
+    };
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if ((mask & (uint8_t)(1U << channel)) == 0U) {
+            continue;
+        }
+        bool request_reconcile = false;
+        const esp_err_t err = nrf_sensor_transport_capture_height_reference(
+            sensor_controller,
+            &io,
+            snapshot,
+            channel,
+            generation,
+            &request_reconcile);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Height reference CAPTURE failed channel=%u generation=%u: %s",
+                     (unsigned)channel, (unsigned)generation, esp_err_to_name(err));
+        }
+        if (request_reconcile) {
+            service_request_topology_refresh_from_worker();
+        }
+    }
+}
+
+esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_t *stats)
+{
+    if (stats == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    *stats = s_stack_stats;
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
 }

@@ -29,6 +29,7 @@ typedef struct {
     bool (*mux_faulted)(void *context);
     esp_err_t (*read_status)(void *context, uint8_t address, nrf_upstream_status_t *status);
     esp_err_t (*write_sensor_refresh)(void *context, const nrf_upstream_sensor_refresh_t *request);
+    esp_err_t (*write_height_reference)(void *context, const nrf_upstream_height_reference_t *request);
     esp_err_t (*read_remote_snapshot)(void *context, nrf_upstream_status_t *status, nrf_upstream_sensor_snapshot_t *sensor);
     void (*sleep_ms)(void *context, uint32_t delay_ms);
     uint64_t (*now_ms)(void *context);
@@ -49,4 +50,12 @@ esp_err_t nrf_sensor_transport_refresh_channel(
     const nrf_topology_snapshot_t *topology,
     uint8_t channel,
     nrf_remote_sensor_cache_t *cache,
+    bool *request_topology_reconcile);
+
+esp_err_t nrf_sensor_transport_capture_height_reference(
+    nrf_sensor_transport_controller_t *controller,
+    const nrf_sensor_transport_io_t *io,
+    const nrf_topology_snapshot_t *topology,
+    uint8_t channel,
+    uint16_t generation,
     bool *request_topology_reconcile);

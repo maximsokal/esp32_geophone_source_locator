@@ -13,7 +13,9 @@ extern "C" {
 #define NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH 24U
 #define NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH 28U
 #define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U
-#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 112U
+#define NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH 16U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH 112U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 120U
 
 #define NRF_UPSTREAM_ADDRESS_DISCOVERY 0x30U
 #define NRF_UPSTREAM_ADDRESS_MAIN      0x31U
@@ -29,11 +31,24 @@ extern "C" {
 #define NRF_UPSTREAM_SENSOR_FLAG_IMU_READY         0x02U
 #define NRF_UPSTREAM_SENSOR_FLAG_ENV_READY         0x04U
 #define NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE  0x08U
-#define NRF_UPSTREAM_SENSOR_FLAG_MASK              0x0FU
+#define NRF_UPSTREAM_SENSOR_FLAG_FILTERED          0x10U
+#define NRF_UPSTREAM_SENSOR_FLAG_MASK              0x1FU
 
 #define NRF_UPSTREAM_SENSOR_VALID_IMU 0x01U
 #define NRF_UPSTREAM_SENSOR_VALID_ENV 0x02U
 #define NRF_UPSTREAM_SENSOR_VALID_MASK 0x03U
+
+typedef enum {
+    NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED = 0,
+    NRF_UPSTREAM_REFERENCE_VALID = 1,
+    NRF_UPSTREAM_REFERENCE_REJECTED_MOVING = 2,
+    NRF_UPSTREAM_REFERENCE_SENSOR_INVALID = 3,
+} nrf_upstream_reference_state_t;
+
+typedef enum {
+    NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE = 1,
+    NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR = 2,
+} nrf_upstream_height_reference_action_t;
 
 /*
  * Numeric range mirrors nrf_orientation_state_t/nrf_orientation_blink_class_t
@@ -50,6 +65,7 @@ extern "C" {
 typedef enum {
     NRF_UPSTREAM_MESSAGE_ASSIGN = 0x01,
     NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH = 0x02,
+    NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE = 0x05,
     NRF_UPSTREAM_MESSAGE_STATUS = 0x80,
 } nrf_upstream_message_type_t;
 
@@ -122,6 +138,12 @@ typedef struct {
 } nrf_upstream_sensor_refresh_t;
 
 typedef struct {
+    uint8_t action;
+    uint32_t request_id;
+    uint16_t generation;
+} nrf_upstream_height_reference_t;
+
+typedef struct {
     uint32_t request_id;
     uint32_t sequence;
     uint32_t valid_mask;
@@ -146,6 +168,9 @@ typedef struct {
     uint8_t orientation_state;
     uint8_t orientation_blink_class;
     uint32_t orientation_tilt_sin2_ppm;
+    int32_t relative_z_mm;
+    uint8_t reference_state;
+    uint16_t reference_generation;
 } nrf_upstream_sensor_snapshot_t;
 
 uint16_t nrf_upstream_protocol_crc16_ccitt_false(const uint8_t *data, size_t length);
@@ -179,6 +204,15 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
     const uint8_t *frame,
     size_t length,
     nrf_upstream_sensor_refresh_t *request);
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_height_reference(
+    const nrf_upstream_height_reference_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH]);
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_height_reference(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_height_reference_t *request);
 
 nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
     const nrf_upstream_status_t *status,
