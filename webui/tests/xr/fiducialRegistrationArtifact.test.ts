@@ -1,0 +1,76 @@
+import { describe, expect, it } from 'vitest';
+import {
+  decodeRegistrationArtifact,
+  DEFAULT_MAIN_TAG_SIZE_M,
+  DEFAULT_REMOTE_TAG_SIZE_M,
+  defaultRegistrationTagSizes,
+  encodeRegistrationArtifact,
+  toOccupancyRegistration,
+  type RegistrationArtifact,
+} from '../../src/xr/fiducial/registrationArtifact';
+
+function artifact(): RegistrationArtifact {
+  return {
+    schema: 1,
+    source: 'apriltag',
+    family: 'tag36h11',
+    geometry_computed_at_ms: 1234,
+    created_at_ms: 5678,
+    tag_size_m: defaultRegistrationTagSizes(),
+    bindings: [0, 1, 2, 3].map((tag_id) => ({
+      tag_id,
+      node: ['MAIN', 'G1', 'G2', 'G3'][tag_id] as 'MAIN' | 'G1' | 'G2' | 'G3',
+      observation_count: 6,
+      inlier_count: 5,
+      position_scan_m: [tag_id * 0.1, 1, -0.2],
+      spread_m: 0.002,
+    })),
+    sensor_to_scan: [1, 0, 0, 0.2, 0, 1, 0, -0.3, 0, 0, 1, 0.1, 0, 0, 0, 1],
+    mirrored: false,
+    residual_rms_m: 0.01,
+    threshold_m: 0.05,
+    per_node: [0, 1, 2, 3].map((tagId) => ({ node: ['MAIN', 'G1', 'G2', 'G3'][tagId] as 'MAIN' | 'G1' | 'G2' | 'G3', tagId, residualM: 0.005, status: 'anchored' as const })),
+    tier: 'minimum',
+    valid: true,
+    reason: null,
+  };
+}
+
+function encodeRaw(value: RegistrationArtifact): string { return JSON.stringify(value); }
+
+describe('registration-v1.json artifact', () => {
+  it('round-trips strict JSON fields and exports documented configurable defaults', () => {
+    expect(DEFAULT_MAIN_TAG_SIZE_M).toBe(0.032);
+    expect(DEFAULT_REMOTE_TAG_SIZE_M).toBe(0.032);
+    expect(defaultRegistrationTagSizes(0.04, 0.03)).toEqual({ '0': 0.04, '1': 0.03, '2': 0.03, '3': 0.03, '4': 0.03 });
+    const value = artifact();
+    expect(decodeRegistrationArtifact(encodeRegistrationArtifact(value))).toEqual(value);
+  });
+
+  it('rejects each unsupported schema, type, number, matrix, timestamp, and tag binding', () => {
+    const base = artifact();
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, schema: 2 } as RegistrationArtifact))).toThrow(/schema/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, family: 'tag25h9' } as RegistrationArtifact))).toThrow(/family/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, source: 'aruco' } as RegistrationArtifact))).toThrow(/source/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, sensor_to_scan: Array(15).fill(0) } as RegistrationArtifact))).toThrow(/16-value/);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, valid: true, sensor_to_scan: null }))).toThrow(/valid artifact/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, bindings: [{ ...base.bindings[0], tag_id: 5 }] }))).toThrow(/tag id/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, bindings: [base.bindings[0], base.bindings[0]] }))).toThrow(/duplicate/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, geometry_computed_at_ms: 0 }))).toThrow(/greater than zero/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, created_at_ms: Number.NaN }))).toThrow(/created_at_ms/i);
+    const overflowing = encodeRegistrationArtifact(base).replace('"residual_rms_m":0.01', '"residual_rms_m":1e999');
+    expect(() => decodeRegistrationArtifact(overflowing)).toThrow(/finite/i);
+  });
+
+  it('returns null for invalid artifacts and exactly adapts valid ones to the occupancy contract', () => {
+    const invalid = { ...artifact(), sensor_to_scan: null, tier: null, valid: false, reason: 'missing_main', per_node: artifact().per_node.map((item) => ({ ...item, status: 'visual_only' as const })) };
+    expect(toOccupancyRegistration(invalid)).toBeNull();
+    const value = artifact();
+    expect(toOccupancyRegistration(value)).toEqual({
+      source: 'apriltag',
+      geometry_computed_at_ms: 1234,
+      sensor_to_scan: value.sensor_to_scan,
+      residual_m: 0.01,
+    });
+  });
+});

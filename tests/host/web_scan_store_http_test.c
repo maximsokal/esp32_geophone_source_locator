@@ -30,6 +30,7 @@
 static unsigned s_storage_begin_calls;
 static unsigned s_storage_end_calls;
 static unsigned s_priority_changes;
+static seismic_recorder_snapshot_t s_recorder_snapshot;
 
 static void make_directory(const char *path)
 {
@@ -54,9 +55,27 @@ static void remove_layout(void)
         STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.tmp";
     const char *backup_path =
         STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.bak";
+    const char *registration_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    const char *registration_temp_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.tmp";
+    const char *registration_backup_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.bak";
+    const char *occupancy_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
+    const char *occupancy_temp_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
+    const char *occupancy_backup_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.bak";
     (void)remove(final_path);
     (void)remove(temp_path);
     (void)remove(backup_path);
+    (void)remove(registration_path);
+    (void)remove(registration_temp_path);
+    (void)remove(registration_backup_path);
+    (void)remove(occupancy_path);
+    (void)remove(occupancy_temp_path);
+    (void)remove(occupancy_backup_path);
 #ifdef _WIN32
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001");
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
@@ -72,6 +91,7 @@ static void remove_layout(void)
     (void)rmdir(STORAGE_MANAGER_ROOT_PATH);
     (void)rmdir(STORAGE_MANAGER_MOUNT_POINT);
 #endif
+    memset(&s_recorder_snapshot, 0, sizeof(s_recorder_snapshot));
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -118,6 +138,13 @@ esp_err_t seismic_recorder_list_sessions(
     memset(sessions, 0, sizeof(*sessions));
     (void)snprintf(sessions[0].session_id, sizeof(sessions[0].session_id), "S000001");
     *session_count = 1U;
+    return ESP_OK;
+}
+
+esp_err_t seismic_recorder_get_snapshot(seismic_recorder_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    *snapshot = s_recorder_snapshot;
     return ESP_OK;
 }
 
@@ -447,10 +474,132 @@ static void test_occupancy_kind_is_stored_beside_the_scan(void)
     remove_layout();
 }
 
+static void test_registration_round_trip_bounds_and_session_validation(void)
+{
+    make_layout();
+    const unsigned char registration[] = "{\"schema\":1,\"source\":\"apriltag\"}";
+    const char *registration_kind = "kind=registration&";
+    char query[160];
+    char response[512] = {0};
+    (void)snprintf(query, sizeof(query), "scan=save&%sobject_id=OBJ_0001&session_id=S000001", registration_kind);
+    assert(save_kind(query, registration, sizeof(registration) - 1U));
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t load = make_request(
+        "scan=load&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    bool handled = false;
+    assert(web_scan_store_try_handle(&load, &handled) == ESP_OK && handled);
+    assert(load.content_type != NULL && strcmp(load.content_type, "application/json; charset=utf-8") == 0);
+    assert(load.response_length == sizeof(registration) - 1U);
+    assert(memcmp(response, registration, sizeof(registration) - 1U) == 0);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t info = make_request(
+        "scan=info&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(strstr(response, "\"bytes\":32") != NULL);
+
+    static const unsigned char oversized[16385] = {0U};
+    memset(response, 0, sizeof(response));
+    httpd_req_t too_large = make_request(
+        "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", oversized, sizeof(oversized), response, sizeof(response));
+    assert(web_scan_store_try_handle(&too_large, &handled) == ESP_OK && handled);
+    assert(too_large.response_status != NULL && strcmp(too_large.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+
+    const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    FILE *oversized_file = fopen(registration_path, "wb");
+    assert(oversized_file != NULL);
+    assert(fwrite(oversized, 1U, sizeof(oversized), oversized_file) == sizeof(oversized));
+    assert(fclose(oversized_file) == 0);
+    memset(response, 0, sizeof(response));
+    httpd_req_t oversized_load = make_request(
+        "scan=load&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&oversized_load, &handled) == ESP_OK && handled);
+    assert(oversized_load.response_status != NULL && strcmp(oversized_load.response_status, "400 Bad Request") == 0);
+    memset(response, 0, sizeof(response));
+    httpd_req_t oversized_info = make_request(
+        "scan=info&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&oversized_info, &handled) == ESP_OK && handled);
+    assert(oversized_info.response_status != NULL && strcmp(oversized_info.response_status, "400 Bad Request") == 0);
+    assert(remove(registration_path) == 0);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t missing = make_request(
+        "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000002", registration, sizeof(registration) - 1U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&missing, &handled) == ESP_OK && handled);
+    assert(missing.response_status != NULL && strcmp(missing.response_status, "404 Not Found") == 0);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t delete = make_request(
+        "scan=delete&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&delete, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    memset(response, 0, sizeof(response));
+    info = make_request("scan=info&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
+    assert(strstr(response, "ESP_ERR_NOT_FOUND") != NULL);
+    remove_layout();
+}
+
+static void test_registration_recording_guard_is_session_scoped(void)
+{
+    make_layout();
+    const unsigned char registration[] = "{\"valid\":true}";
+    char response[512] = {0};
+    const char *query = "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001";
+    assert(save_kind(query, registration, sizeof(registration) - 1U));
+
+    s_recorder_snapshot.running = true;
+    (void)snprintf(s_recorder_snapshot.object_id, sizeof(s_recorder_snapshot.object_id), "OBJ_0001");
+    (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000001");
+    httpd_req_t save = make_request(query, registration, sizeof(registration) - 1U, response, sizeof(response));
+    bool handled = false;
+    assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
+    assert(save.response_status != NULL && strcmp(save.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "this session is recording") != NULL);
+
+    static const unsigned char oversized[16385] = {0U};
+    memset(response, 0, sizeof(response));
+    httpd_req_t oversized_save = make_request(query, oversized, sizeof(oversized), response, sizeof(response));
+    assert(web_scan_store_try_handle(&oversized_save, &handled) == ESP_OK && handled);
+    assert(oversized_save.response_status != NULL && strcmp(oversized_save.response_status, "409 Conflict") == 0);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t remove = make_request(
+        "scan=delete&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&remove, &handled) == ESP_OK && handled);
+    assert(remove.response_status != NULL && strcmp(remove.response_status, "409 Conflict") == 0);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t load = make_request(
+        "scan=load&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&load, &handled) == ESP_OK && handled);
+    assert(load.response_status == NULL);
+    assert(load.response_length == sizeof(registration) - 1U);
+
+    memset(response, 0, sizeof(response));
+    httpd_req_t info = make_request(
+        "scan=info&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+
+    (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000002");
+    memset(response, 0, sizeof(response));
+    save = make_request(query, registration, sizeof(registration) - 1U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
+    assert(save.response_status == NULL && strstr(response, "\"ok\":true") != NULL);
+    s_recorder_snapshot.running = false;
+    remove_layout();
+}
+
 int main(void)
 {
     test_scan_save_and_chunked_load_round_trip();
     test_scan_rejects_unknown_session_before_file_access();
     test_occupancy_kind_is_stored_beside_the_scan();
+    test_registration_round_trip_bounds_and_session_validation();
+    test_registration_recording_guard_is_session_scoped();
     return 0;
 }

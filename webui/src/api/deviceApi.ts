@@ -141,7 +141,7 @@ function jsonRequest<T>(
   return queuedApiRequest(() => performJsonRequest<T>(url, init, timeoutMs));
 }
 
-type ScanStoreKind = 'scan' | 'occupancy';
+type ScanStoreKind = 'scan' | 'occupancy' | 'registration';
 
 function scanControlUrl(action: 'save' | 'load' | 'delete' | 'info', objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): string {
   const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
@@ -165,7 +165,7 @@ async function performScanSave(objectId: string, sessionId: string, artifact: Ui
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
-          'Content-Type': 'application/octet-stream',
+          'Content-Type': kind === 'registration' ? 'application/json; charset=utf-8' : 'application/octet-stream',
         },
         body,
       });
@@ -189,8 +189,8 @@ async function performScanSave(objectId: string, sessionId: string, artifact: Ui
   }
 }
 
-async function performScanLoad(objectId: string, sessionId: string): Promise<Uint8Array | null> {
-  const url = scanControlUrl('load', objectId, sessionId);
+async function performScanLoad(objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): Promise<Uint8Array | null> {
+  const url = scanControlUrl('load', objectId, sessionId, kind);
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), DEVICE_API_SCAN_TIMEOUT_MS);
   try {
@@ -284,6 +284,25 @@ export function saveObjectScanArtifact(objectId: string, sessionId: string, arti
  */
 export function saveSessionOccupancyArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
   return queuedApiRequest(() => performScanSave(objectId, sessionId, artifact, 'occupancy'));
+}
+
+export function saveSessionRegistration(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
+  return queuedApiRequest(() => performScanSave(objectId, sessionId, new TextEncoder().encode(json), 'registration'));
+}
+
+export function loadSessionRegistration(objectId: string, sessionId: string): Promise<string | null> {
+  return queuedApiRequest(async () => {
+    const bytes = await performScanLoad(objectId, sessionId, 'registration');
+    return bytes === null ? null : new TextDecoder().decode(bytes);
+  });
+}
+
+export function deleteSessionRegistration(objectId: string, sessionId: string): Promise<ControlResult> {
+  return queuedApiRequest(() => jsonRequest<ControlResult>(
+    scanControlUrl('delete', objectId, sessionId, 'registration'),
+    { method: 'POST' },
+    DEVICE_API_EXTENDED_TIMEOUT_MS,
+  ));
 }
 
 export function loadObjectScanArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
