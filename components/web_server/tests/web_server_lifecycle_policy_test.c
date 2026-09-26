@@ -303,9 +303,9 @@ int main(void)
     assert(!web_lifecycle_small_body_timeout_retry_allowed());
 
     const web_lifecycle_action_t connected[] = {
-        WEB_LIFECYCLE_ACTION_MDNS_START,
         WEB_LIFECYCLE_ACTION_HTTP_STOP,
         WEB_LIFECYCLE_ACTION_HTTPS_START,
+        WEB_LIFECYCLE_ACTION_MDNS_START,
     };
     const web_lifecycle_action_t setup_ap[] = {
         WEB_LIFECYCLE_ACTION_MDNS_STOP,

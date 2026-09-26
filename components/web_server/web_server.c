@@ -27,6 +27,7 @@
 #include "measurement_service.h"
 #include "object_service.h"
 #include "object_store.h"
+#include "web_mdns_retry_policy.h"
 #include "web_server_lifecycle_policy.h"
 #include "web_server_internal.h"
 #include "web_route_capacity.h"
@@ -38,6 +39,11 @@
 #define WEB_LIFECYCLE_QUIESCE_TIMEOUT_MS 10000U
 
 static const char *TAG = "WEB_SERVER";
+
+typedef struct {
+    web_lifecycle_state_t state;
+    uint32_t generation;
+} web_lifecycle_command_t;
 
 static httpd_handle_t s_http_server = NULL;
 static httpd_handle_t s_https_server = NULL;
@@ -61,6 +67,8 @@ static bool s_measurement_hooks_registered = false;
 static bool s_object_observer_registered = false;
 static unsigned s_https_clients = 0;
 static unsigned s_peer_fatal_alerts = 0;
+static uint32_t s_lifecycle_generation = 0U;
+static web_mdns_retry_policy_t s_mdns_retry_policy;
 
 void web_status_json_objects_object_event(
     const object_service_event_t *event,
@@ -120,6 +128,26 @@ static void web_server_mode_transition_complete(
     esp_err_t cleanup_result
 );
 
+static uint32_t web_server_lifecycle_next_generation_locked(void)
+{
+    const uint32_t next_generation = s_lifecycle_generation + 1U;
+    return next_generation == 0U ? 1U : next_generation;
+}
+
+static BaseType_t web_server_lifecycle_queue_state_locked(web_lifecycle_state_t state)
+{
+    if (s_lifecycle_queue == NULL) return pdFALSE;
+
+    const uint32_t generation = web_server_lifecycle_next_generation_locked();
+    const web_lifecycle_command_t command = { .state = state, .generation = generation };
+    const BaseType_t queued = xQueueOverwrite(s_lifecycle_queue, &command);
+    if (queued == pdTRUE) {
+        s_lifecycle_generation = generation;
+        web_mdns_retry_policy_cancel(&s_mdns_retry_policy, generation);
+    }
+    return queued;
+}
+
 
 static esp_err_t web_server_lifecycle_reconcile_deferred_locked(void)
 {
@@ -136,11 +164,9 @@ static esp_err_t web_server_lifecycle_reconcile_deferred_locked(void)
         return ESP_OK;
     }
 
-    const BaseType_t queued =
-        xQueueOverwrite(
-            s_lifecycle_queue,
-            &s_lifecycle_deferred_state
-        );
+    const BaseType_t queued = web_server_lifecycle_queue_state_locked(
+        s_lifecycle_deferred_state
+    );
     if (queued != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
@@ -165,11 +191,9 @@ static esp_err_t web_server_lifecycle_reconcile_failed_transition_locked(void)
         return ESP_OK;
     }
 
-    const BaseType_t queued =
-        xQueueOverwrite(
-            s_lifecycle_queue,
-            &s_lifecycle_rollback_state
-        );
+    const BaseType_t queued = web_server_lifecycle_queue_state_locked(
+        s_lifecycle_rollback_state
+    );
     if (queued != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
@@ -203,8 +227,7 @@ static esp_err_t web_server_lifecycle_set_desired_state_locked(
         return ESP_ERR_INVALID_STATE;
     }
 
-    const BaseType_t result =
-        xQueueOverwrite(s_lifecycle_queue, &desired_state);
+    const BaseType_t result = web_server_lifecycle_queue_state_locked(desired_state);
 
     if (result == pdTRUE) {
         s_lifecycle_stable_state = desired_state;
@@ -368,10 +391,9 @@ static esp_err_t web_server_lifecycle_quiesce(void *context)
      * stopping that server here would wait on the caller being serviced.
      * The subsequent connected-state plan stops HTTP after the transition.
      */
-    const web_lifecycle_state_t desired_state =
-        WEB_LIFECYCLE_STATE_QUIESCED;
-    const BaseType_t queued =
-        xQueueOverwrite(s_lifecycle_queue, &desired_state);
+    const BaseType_t queued = web_server_lifecycle_queue_state_locked(
+        WEB_LIFECYCLE_STATE_QUIESCED
+    );
     if (queued != pdTRUE) {
         s_lifecycle_quiesce_pending = false;
         s_lifecycle_transition_active = false;
@@ -789,8 +811,153 @@ static esp_err_t web_server_http_stop_internal(void)
     return ESP_OK;
 }
 
+static uint64_t web_server_lifecycle_now_ms(void)
+{
+    return (uint64_t)(esp_timer_get_time() / 1000LL);
+}
+
+static void web_server_mdns_retry_record_result(uint32_t generation, esp_err_t result)
+{
+    uint32_t next_delay_ms = 0U;
+    uint32_t retry_count = 0U;
+    bool stop_stale_mdns = false;
+
+    if (
+        s_lifecycle_lock == NULL ||
+        xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) != pdTRUE
+    ) {
+        return;
+    }
+
+    const bool current_connected_generation =
+        s_lifecycle_generation == generation &&
+        s_lifecycle_stable_state == WEB_LIFECYCLE_STATE_STA_CONNECTED &&
+        !s_lifecycle_transition_active &&
+        !s_lifecycle_quiesce_pending &&
+        !s_lifecycle_stop_requested;
+    if (current_connected_generation) {
+        if (result == ESP_OK) {
+            web_mdns_retry_policy_reset_success(&s_mdns_retry_policy, generation);
+        }
+        else {
+            next_delay_ms = web_mdns_retry_policy_schedule_failure(
+                &s_mdns_retry_policy,
+                generation,
+                web_server_lifecycle_now_ms()
+            );
+            retry_count = s_mdns_retry_policy.retry_count;
+        }
+    }
+    else if (
+        result == ESP_OK &&
+        s_lifecycle_stable_state != WEB_LIFECYCLE_STATE_STA_CONNECTED
+    ) {
+        stop_stale_mdns = true;
+    }
+
+    (void)xSemaphoreGive(s_lifecycle_lock);
+
+    if (stop_stale_mdns) wifi_manager_mdns_stop();
+    if (next_delay_ms > 0U) {
+        ESP_LOGW(TAG, "mDNS retry %u scheduled in %u ms", (unsigned)retry_count, (unsigned)next_delay_ms);
+    }
+}
+
+static bool web_server_mdns_retry_wait(uint32_t *generation_out, uint32_t *delay_ms_out)
+{
+    if (generation_out == NULL || delay_ms_out == NULL || s_lifecycle_lock == NULL) return false;
+    *generation_out = 0U;
+    *delay_ms_out = 0U;
+
+    if (xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) != pdTRUE) return false;
+    const uint32_t generation = s_lifecycle_generation;
+    const bool pending =
+        s_lifecycle_stable_state == WEB_LIFECYCLE_STATE_STA_CONNECTED &&
+        !s_lifecycle_transition_active &&
+        !s_lifecycle_quiesce_pending &&
+        !s_lifecycle_stop_requested &&
+        web_mdns_retry_policy_pending(&s_mdns_retry_policy, generation);
+    if (pending) {
+        *generation_out = generation;
+        *delay_ms_out = web_mdns_retry_policy_next_delay_ms(
+            &s_mdns_retry_policy,
+            generation,
+            web_server_lifecycle_now_ms()
+        );
+    }
+    (void)xSemaphoreGive(s_lifecycle_lock);
+    return pending;
+}
+
+static void web_server_lifecycle_retry_mdns(uint32_t generation)
+{
+    if (s_lifecycle_lock == NULL || xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) != pdTRUE) return;
+    const bool due =
+        s_lifecycle_generation == generation &&
+        s_lifecycle_stable_state == WEB_LIFECYCLE_STATE_STA_CONNECTED &&
+        !s_lifecycle_transition_active &&
+        !s_lifecycle_quiesce_pending &&
+        !s_lifecycle_stop_requested &&
+        web_mdns_retry_policy_due(
+            &s_mdns_retry_policy,
+            generation,
+            web_server_lifecycle_now_ms()
+        );
+    (void)xSemaphoreGive(s_lifecycle_lock);
+    if (!due) return;
+
+    if (
+        s_https_server == NULL ||
+        web_lifecycle_effective_network_state(
+            WEB_LIFECYCLE_STATE_STA_CONNECTED,
+            wifi_manager_is_radio_state_uncertain()
+        ) != WEB_LIFECYCLE_STATE_STA_CONNECTED
+    ) {
+        if (xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) == pdTRUE) {
+            if (s_lifecycle_generation == generation) {
+                web_mdns_retry_policy_cancel(&s_mdns_retry_policy, generation);
+            }
+            (void)xSemaphoreGive(s_lifecycle_lock);
+        }
+        return;
+    }
+
+    const esp_err_t result = wifi_manager_mdns_is_ready()
+        ? ESP_OK
+        : wifi_manager_mdns_init();
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS retry failed: %s", esp_err_to_name(result));
+    }
+    web_server_mdns_retry_record_result(generation, result);
+}
+
+void web_server_mdns_runtime_status(
+    bool *ready_out,
+    uint32_t *retry_count_out,
+    uint32_t *next_retry_delay_ms_out
+)
+{
+    if (ready_out != NULL) *ready_out = wifi_manager_mdns_is_ready();
+    if (retry_count_out != NULL) *retry_count_out = 0U;
+    if (next_retry_delay_ms_out != NULL) *next_retry_delay_ms_out = 0U;
+    if (s_lifecycle_lock == NULL || xSemaphoreTake(s_lifecycle_lock, portMAX_DELAY) != pdTRUE) return;
+
+    if (s_mdns_retry_policy.generation == s_lifecycle_generation) {
+        if (retry_count_out != NULL) *retry_count_out = s_mdns_retry_policy.retry_count;
+        if (next_retry_delay_ms_out != NULL) {
+            *next_retry_delay_ms_out = web_mdns_retry_policy_next_delay_ms(
+                &s_mdns_retry_policy,
+                s_lifecycle_generation,
+                web_server_lifecycle_now_ms()
+            );
+        }
+    }
+    (void)xSemaphoreGive(s_lifecycle_lock);
+}
+
 static esp_err_t web_server_lifecycle_apply_state(
-    web_lifecycle_state_t desired_state
+    web_lifecycle_state_t desired_state,
+    uint32_t generation
 )
 {
     web_lifecycle_action_t actions[WEB_LIFECYCLE_ACTIONS_MAX];
@@ -814,10 +981,17 @@ static esp_err_t web_server_lifecycle_apply_state(
 
     esp_err_t first_error = ESP_OK;
     bool http_stop_failed = false;
+    bool https_start_failed = false;
     for (size_t i = 0U; i < action_count; ++i) {
         switch (actions[i]) {
         case WEB_LIFECYCLE_ACTION_MDNS_START: {
+            if (desired_state == WEB_LIFECYCLE_STATE_STA_CONNECTED && https_start_failed) {
+                wifi_manager_mdns_stop();
+                ESP_LOGW(TAG, "Skipping mDNS because HTTPS did not start");
+                break;
+            }
             const esp_err_t mdns_err = wifi_manager_mdns_init();
+            web_server_mdns_retry_record_result(generation, mdns_err);
             if (mdns_err != ESP_OK) {
                 ESP_LOGW(TAG, "mDNS unavailable: %s", esp_err_to_name(mdns_err));
                 if (first_error == ESP_OK) first_error = mdns_err;
@@ -867,12 +1041,16 @@ static esp_err_t web_server_lifecycle_apply_state(
         case WEB_LIFECYCLE_ACTION_HTTPS_START: {
             if (desired_state == WEB_LIFECYCLE_STATE_STA_CONNECTED && http_stop_failed) {
                 ESP_LOGW(TAG, "Skipping HTTPS start because HTTP bootstrap did not stop");
+                https_start_failed = true;
                 break;
             }
             const esp_err_t err = web_server_https_start_internal();
-            if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
-                ESP_LOGE(TAG, "HTTPS start for STA failed: %s", esp_err_to_name(err));
-                if (first_error == ESP_OK) first_error = err;
+            if (err != ESP_OK) {
+                https_start_failed = true;
+                if (err != ESP_ERR_NOT_FOUND) {
+                    ESP_LOGE(TAG, "HTTPS start for STA failed: %s", esp_err_to_name(err));
+                    if (first_error == ESP_OK) first_error = err;
+                }
             }
             break;
         }
@@ -911,21 +1089,30 @@ static void web_server_lifecycle_task(void *argument)
     (void)argument;
 
     for (;;) {
-        web_lifecycle_state_t desired_state;
-        if (
-            xQueueReceive(
-                s_lifecycle_queue,
-                &desired_state,
-                portMAX_DELAY
-            ) != pdTRUE
-        ) {
-            continue;
+        web_lifecycle_command_t command;
+        uint32_t retry_generation = 0U;
+        uint32_t retry_delay_ms = 0U;
+        const bool retry_pending = web_server_mdns_retry_wait(
+            &retry_generation,
+            &retry_delay_ms
+        );
+        TickType_t receive_timeout = portMAX_DELAY;
+        if (retry_pending) {
+            receive_timeout = pdMS_TO_TICKS(retry_delay_ms);
+            if (retry_delay_ms > 0U && receive_timeout == 0U) receive_timeout = 1U;
         }
 
-        const esp_err_t apply_err =
-            web_server_lifecycle_apply_state(desired_state);
-        if (desired_state == WEB_LIFECYCLE_STATE_QUIESCED) {
-            web_server_lifecycle_ack_quiesce(apply_err);
+        if (xQueueReceive(s_lifecycle_queue, &command, receive_timeout) == pdTRUE) {
+            const esp_err_t apply_err = web_server_lifecycle_apply_state(
+                command.state,
+                command.generation
+            );
+            if (command.state == WEB_LIFECYCLE_STATE_QUIESCED) {
+                web_server_lifecycle_ack_quiesce(apply_err);
+            }
+        }
+        else if (retry_pending) {
+            web_server_lifecycle_retry_mdns(retry_generation);
         }
     }
 }
@@ -952,7 +1139,9 @@ static esp_err_t web_server_lifecycle_start(void)
     s_lifecycle_quiesce_callers = 0U;
     s_lifecycle_quiesce_result = ESP_FAIL;
 
-    s_lifecycle_queue = xQueueCreate(1U, sizeof(web_lifecycle_state_t));
+    s_lifecycle_generation = 0U;
+    web_mdns_retry_policy_cancel(&s_mdns_retry_policy, s_lifecycle_generation);
+    s_lifecycle_queue = xQueueCreate(1U, sizeof(web_lifecycle_command_t));
     s_lifecycle_lock = xSemaphoreCreateMutex();
     if (s_lifecycle_queue == NULL || s_lifecycle_lock == NULL) {
         if (s_lifecycle_queue != NULL) vQueueDelete(s_lifecycle_queue);
@@ -999,9 +1188,7 @@ static void web_server_lifecycle_stop(void)
     QueueHandle_t queue = s_lifecycle_queue;
     if (queue != NULL && s_lifecycle_task != NULL) {
         s_lifecycle_stop_requested = true;
-        const web_lifecycle_state_t desired_state =
-            WEB_LIFECYCLE_STATE_STOPPED;
-        if (xQueueOverwrite(queue, &desired_state) != pdTRUE) {
+        if (web_server_lifecycle_queue_state_locked(WEB_LIFECYCLE_STATE_STOPPED) != pdTRUE) {
             ESP_LOGW(TAG, "Failed to queue web lifecycle stop");
         }
     }

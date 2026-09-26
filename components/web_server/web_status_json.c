@@ -419,6 +419,22 @@ static bool web_status_json_add_runtime(cJSON *root)
         return false;
     }
 
+    bool mdns_ready = false;
+    uint32_t mdns_retry_count = 0U;
+    uint32_t mdns_next_retry_delay_ms = 0U;
+    web_server_mdns_runtime_status(
+        &mdns_ready,
+        &mdns_retry_count,
+        &mdns_next_retry_delay_ms
+    );
+    if (
+        cJSON_AddBoolToObject(runtime, "mdns_ready", mdns_ready) == NULL ||
+        cJSON_AddNumberToObject(runtime, "mdns_retry_count", (double)mdns_retry_count) == NULL ||
+        cJSON_AddNumberToObject(runtime, "mdns_next_retry_delay_ms", (double)mdns_next_retry_delay_ms) == NULL
+    ) {
+        return false;
+    }
+
     cJSON *tasks = cJSON_AddObjectToObject(runtime, "tasks");
     if (tasks == NULL) return false;
 

@@ -100,9 +100,9 @@ size_t web_lifecycle_state_actions(
 )
 {
     static const web_lifecycle_action_t sta_connected[] = {
-        WEB_LIFECYCLE_ACTION_MDNS_START,
         WEB_LIFECYCLE_ACTION_HTTP_STOP,
         WEB_LIFECYCLE_ACTION_HTTPS_START,
+        WEB_LIFECYCLE_ACTION_MDNS_START,
     };
     static const web_lifecycle_action_t setup_ap[] = {
         WEB_LIFECYCLE_ACTION_MDNS_STOP,

@@ -28,6 +28,9 @@ static esp_err_t g_acquisition_error;
 static esp_err_t g_acquisition_snapshot_result;
 static seismic_acquisition_snapshot_t g_acquisition_snapshot;
 static runtime_observability_snapshot_t g_runtime_snapshot;
+static bool g_mdns_ready;
+static uint32_t g_mdns_retry_count;
+static uint32_t g_mdns_next_retry_delay_ms;
 
 static void reset_fakes(void)
 {
@@ -47,6 +50,9 @@ static void reset_fakes(void)
     g_acquisition_snapshot_result = ESP_OK;
     memset(&g_acquisition_snapshot, 0, sizeof(g_acquisition_snapshot));
     memset(&g_runtime_snapshot, 0, sizeof(g_runtime_snapshot));
+    g_mdns_ready = false;
+    g_mdns_retry_count = 0U;
+    g_mdns_next_retry_delay_ms = 0U;
 }
 
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
@@ -142,6 +148,17 @@ void runtime_observability_get_snapshot(runtime_observability_snapshot_t *snapsh
 {
     assert(snapshot != NULL);
     *snapshot = g_runtime_snapshot;
+}
+
+void web_server_mdns_runtime_status(
+    bool *ready_out,
+    uint32_t *retry_count_out,
+    uint32_t *next_retry_delay_ms_out
+)
+{
+    if (ready_out != NULL) *ready_out = g_mdns_ready;
+    if (retry_count_out != NULL) *retry_count_out = g_mdns_retry_count;
+    if (next_retry_delay_ms_out != NULL) *next_retry_delay_ms_out = g_mdns_next_retry_delay_ms;
 }
 
 const char *runtime_observability_task_name(runtime_observability_task_t task)
@@ -384,6 +401,9 @@ static void test_full_builder_and_pods(void)
 {
     reset_fakes();
     fill_status();
+    g_mdns_ready = true;
+    g_mdns_retry_count = 2U;
+    g_mdns_next_retry_delay_ms = 5000U;
     cJSON *root = build_json(false, NULL);
 
     assert(!bool_item(root, "storage_busy"));
@@ -438,6 +458,9 @@ static void test_full_builder_and_pods(void)
 
     cJSON *runtime = object_item(root, "runtime");
     assert_number_near(number_item(runtime, "now_ms"), 4567.0);
+    assert(bool_item(runtime, "mdns_ready"));
+    assert_number_near(number_item(runtime, "mdns_retry_count"), 2.0);
+    assert_number_near(number_item(runtime, "mdns_next_retry_delay_ms"), 5000.0);
     cJSON *runtime_acquisition = object_item(object_item(runtime, "tasks"), "acquisition");
     assert(bool_item(runtime_acquisition, "observed"));
     assert_number_near(number_item(runtime_acquisition, "progress"), 22.0);
