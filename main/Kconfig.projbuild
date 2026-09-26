@@ -156,6 +156,11 @@ menu "Battery states and low-battery shutdown"
         range 3800 4350
         default 4100
 
+    config POWER_BATTERY_FULL_EXIT_MV
+        int "USB battery full state clears at/below, mV"
+        range 3800 4350
+        default 4050
+
     config POWER_BATTERY_CAPACITY_MAH
         int "Usable pack capacity for coulomb counting, mAh (0 = unknown)"
         range 0 20000

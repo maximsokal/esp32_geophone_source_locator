@@ -172,11 +172,12 @@ static void ina3221_monitor_load_power_ux(void)
     s_ux_config.critical_enter_v = (float)CONFIG_POWER_BATTERY_CRITICAL_ENTER_MV / 1000.0f;
     s_ux_config.critical_exit_v = (float)CONFIG_POWER_BATTERY_CRITICAL_EXIT_MV / 1000.0f;
     s_ux_config.full_v = (float)CONFIG_POWER_BATTERY_FULL_MV / 1000.0f;
+    s_ux_config.full_exit_v = (float)CONFIG_POWER_BATTERY_FULL_EXIT_MV / 1000.0f;
     grace_ms = (uint32_t)CONFIG_POWER_LOW_BATTERY_GRACE_S * 1000U;
 #endif
     if (!ina3221_power_ux_config_valid(&s_ux_config)) {
         ESP_LOGE(TAG, "Configured battery thresholds are inconsistent "
-                      "(critical < low, enter < exit); using the built-in defaults");
+                      "(critical < low, enter < exit, full exit < full); using the built-in defaults");
         ina3221_power_ux_default_config(&s_ux_config);
     }
     ina3221_power_ux_reset(&s_ux);
@@ -198,6 +199,7 @@ static void ina3221_monitor_apply_power_state(
     bool telemetry_valid
 )
 {
+    const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
     const ina3221_power_ux_input_t input = {
         .source = source_state,
         .telemetry_valid = telemetry_valid,
@@ -206,7 +208,7 @@ static void ina3221_monitor_apply_power_state(
     };
     const ina3221_power_ux_state_t previous = s_ux.state;
     const ina3221_power_ux_state_t state =
-        ina3221_power_ux_update(&s_ux, &s_ux_config, &input);
+        ina3221_power_ux_update(&s_ux, &s_ux_config, &input, now_ms);
     if (state != previous) {
         ESP_LOGI(
             TAG,
@@ -216,8 +218,6 @@ static void ina3221_monitor_apply_power_state(
             (double)input.battery_voltage_v
         );
     }
-
-    const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
     const ina3221_low_battery_action_t action =
         ina3221_low_battery_update(&s_low_battery, state, now_ms);
     const uint32_t shutdown_in_s =
@@ -257,8 +257,7 @@ static void ina3221_monitor_apply_power_state(
 
     (void)device_status_set_power_state(
         (device_power_state_t)state,
-        state == INA3221_POWER_UX_USB_BATTERY_READY &&
-            input.battery_voltage_v >= s_ux_config.full_v,
+        s_ux.battery_full,
         (device_low_battery_phase_t)s_low_battery.phase,
         shutdown_in_s
     );
@@ -407,6 +406,10 @@ static device_power_source_t ina3221_monitor_device_source(
 
 static void ina3221_monitor_publish_invalid(void)
 {
+    const ina3221_soc_input_t invalid_soc = { 0 };
+    ina3221_soc_update(&s_soc, &s_soc_config, &invalid_soc, esp_timer_get_time() / 1000);
+    (void)device_status_set_battery_soc_quality(DEVICE_BATTERY_SOC_INVALID);
+
     (void)device_status_set_power(
         0.0f,
         0.0f,
@@ -437,6 +440,8 @@ static void ina3221_monitor_publish_invalid(void)
         false,
         DEVICE_POWER_SOURCE_UNKNOWN
     );
+
+    ina3221_monitor_apply_power_state(INA3221_POWER_STATE_UNKNOWN, NULL, false);
 }
 
 
@@ -761,7 +766,11 @@ static void ina3221_monitor_worker(
 
             ina3221_monitor_apply_overcurrent(channels);
 
-            ina3221_monitor_apply_power_state(stable_state, &decision, true);
+            ina3221_monitor_apply_power_state(
+                stable_state,
+                &decision,
+                channels[INA3221_POLICY_BATTERY_INDEX].valid
+            );
 
             sample_count++;
 

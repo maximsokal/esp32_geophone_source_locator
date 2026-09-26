@@ -7,11 +7,35 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "ina3221_driver.h"
-#include "ina3221_policy.h"
 #include "device_status.h"
 
 #include "../../components/ina3221_monitor/ina3221_monitor.c"
+
+void main_barometer_init(main_barometer_t *barometer)
+{
+    memset(barometer, 0, sizeof(*barometer));
+}
+
+esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
+{
+    (void)barometer;
+    (void)now_ms;
+    return ESP_OK;
+}
+
+void main_barometer_close(main_barometer_t *barometer)
+{
+    (void)barometer;
+}
+
+void main_barometer_get_reading(
+    const main_barometer_t *barometer,
+    main_barometer_reading_t *reading
+)
+{
+    (void)barometer;
+    memset(reading, 0, sizeof(*reading));
+}
 
 static int s_task_token;
 static TaskFunction_t s_worker_entry;
@@ -83,6 +107,12 @@ static device_battery_soc_quality_t s_status_soc_quality;
 esp_err_t device_status_set_battery_soc_quality(device_battery_soc_quality_t quality)
 {
     s_status_soc_quality = quality;
+    return ESP_OK;
+}
+
+esp_err_t device_status_set_main(const device_main_status_t *main_status)
+{
+    assert(main_status != NULL);
     return ESP_OK;
 }
 
@@ -454,6 +484,7 @@ static void reset_fakes(void)
     s_status_power_state = DEVICE_POWER_STATE_UNKNOWN;
     s_status_low_battery = DEVICE_LOW_BATTERY_NORMAL;
     s_status_shutdown_in_s = 0U;
+    s_status_soc_quality = DEVICE_BATTERY_SOC_INVALID;
     s_alert_count = 0U;
     ina3221_monitor_set_critical_battery_handler(NULL);
     s_stop_after_waits = 0U;
@@ -641,6 +672,7 @@ static void test_read_failure_invalidates_and_closes_driver(void)
     assert(s_set_channel_calls == 3U);
     assert(s_all_channels_invalid);
     assert(s_set_battery_calls == 1U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_UNKNOWN);
     assert(s_notify_take_calls == 1U);
     assert(s_delete_calls == 1U);
     assert(s_task == NULL);
@@ -773,6 +805,35 @@ static void plug_usb(void)
     s_fake_source_state = INA3221_POWER_STATE_USB_CHARGING;
 }
 
+static void fail_next_power_read(void)
+{
+    s_read_result = ESP_FAIL;
+}
+
+static void test_read_failure_clears_last_power_state(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.90f;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_wait_hook = fail_next_power_read;
+    s_wait_hook_at = 1U;
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls == 2U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_UNKNOWN);
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_NORMAL);
+    assert(s_critical_handler_calls == 0U);
+    assert(s_alert_count == 0U);
+    assert(!s_last_battery_percent_valid);
+    assert(!s_last_battery_present);
+    assert(s_last_source == DEVICE_POWER_SOURCE_UNKNOWN);
+    assert(s_status_soc_quality == DEVICE_BATTERY_SOC_INVALID);
+    assert_lock_balanced();
+}
+
 static void test_critical_battery_requests_shutdown_after_grace(void)
 {
     reset_fakes();
@@ -844,6 +905,7 @@ int main(void)
     test_worker_publishes_normal_sample_and_cleans_up();
     test_open_failure_publishes_invalid_and_stops_on_notification();
     test_read_failure_invalidates_and_closes_driver();
+    test_read_failure_clears_last_power_state();
     test_fast_sampling_request_without_running_task_stores_deadline_only();
     test_fast_sampling_wakes_worker_and_uses_fast_period();
     test_limits_are_programmed_after_open();

@@ -351,6 +351,7 @@
     {
       "name": "ina3221_power_ux",
       "sources": [
+        "components/ina3221_monitor/ina3221_policy.c",
         "components/ina3221_monitor/ina3221_power_ux.c",
         "components/ina3221_monitor/tests/ina3221_power_ux_test.c"
       ],
@@ -397,6 +398,22 @@
       ],
       "include_dirs": [
         "components/ina3221_monitor"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "ina3221_monitor_lifecycle",
+      "sources": [
+        "components/ina3221_monitor/ina3221_limits.c",
+        "components/ina3221_monitor/ina3221_low_battery.c",
+        "components/ina3221_monitor/ina3221_power_ux.c",
+        "components/ina3221_monitor/ina3221_soc.c",
+        "tests/host/ina3221_monitor_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ina3221_monitor",
+        "components/ina3221_monitor",
+        "components/ina3221_monitor/include"
       ],
       "libraries": ["m"]
     },

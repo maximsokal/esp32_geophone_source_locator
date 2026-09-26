@@ -56,7 +56,9 @@ void ui_power_badge_from_status(
     }
 
     char percent_text[UI_POWER_BADGE_TEXT_MAX];
-    const int percent = clamp_percent(power->battery_percent_estimate);
+    const bool percent_valid = power->battery_percent_valid &&
+        isfinite(power->battery_percent_estimate);
+    const int percent = percent_valid ? clamp_percent(power->battery_percent_estimate) : 0;
     snprintf(percent_text, sizeof(percent_text), "%d%%", percent);
 
     /* The low-battery reaction outranks every other state. */
@@ -77,19 +79,19 @@ void ui_power_badge_from_status(
             return;
         case DEVICE_POWER_STATE_USB_CHARGING:
             set(badge, UI_POWER_ICON_CHARGE, UI_POWER_SEVERITY_GOOD,
-                power->battery_percent_valid ? percent_text : "CHG");
+                percent_valid ? percent_text : "CHG");
             return;
         case DEVICE_POWER_STATE_USB_BATTERY_READY:
             if (power->battery_full) {
                 set(badge, UI_POWER_ICON_BATTERY_FULL, UI_POWER_SEVERITY_GOOD, "FULL");
             } else {
                 set(badge, UI_POWER_ICON_USB, UI_POWER_SEVERITY_NORMAL,
-                    power->battery_percent_valid ? percent_text : "USB");
+                    percent_valid ? percent_text : "USB");
             }
             return;
         case DEVICE_POWER_STATE_BATTERY:
             set(badge, battery_icon(percent), UI_POWER_SEVERITY_NORMAL,
-                power->battery_percent_valid ? percent_text : "BAT");
+                percent_valid ? percent_text : "BAT");
             return;
         case DEVICE_POWER_STATE_BATTERY_LOW:
             set(badge, UI_POWER_ICON_BATTERY_1, UI_POWER_SEVERITY_WARNING, "LOW");

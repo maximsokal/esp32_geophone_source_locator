@@ -88,7 +88,15 @@ const char *device_status_battery_soc_quality_name(device_battery_soc_quality_t 
 
 const char *device_status_power_state_name(device_power_state_t state)
 {
-    return state == DEVICE_POWER_STATE_BATTERY_CRITICAL ? "BATTERY_CRITICAL" : "OTHER";
+    switch (state) {
+        case DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY: return "USB_ONLY_NO_BATTERY";
+        case DEVICE_POWER_STATE_USB_CHARGING: return "USB_CHARGING";
+        case DEVICE_POWER_STATE_USB_BATTERY_READY: return "USB_BATTERY_READY";
+        case DEVICE_POWER_STATE_BATTERY: return "BATTERY";
+        case DEVICE_POWER_STATE_BATTERY_LOW: return "BATTERY_LOW";
+        case DEVICE_POWER_STATE_BATTERY_CRITICAL: return "BATTERY_CRITICAL";
+        case DEVICE_POWER_STATE_UNKNOWN: default: return "UNKNOWN";
+    }
 }
 
 const char *device_status_low_battery_name(device_low_battery_phase_t phase)
@@ -441,6 +449,8 @@ static void test_full_builder_and_pods(void)
     assert(bool_item(power, "valid"));
     assert(strcmp(string_item(power, "source"), "USB") == 0);
     assert_number_near(number_item(power, "power_w"), 9.375);
+    assert(bool_item(power, "battery_percent_valid"));
+    assert_number_near(number_item(power, "battery_percent_estimate"), 64.0);
     assert(cJSON_GetArraySize(object_item(power, "channels")) == 3);
     assert(strcmp(string_item(power, "state"), "BATTERY_CRITICAL") == 0);
     assert(strcmp(string_item(power, "low_battery"), "grace") == 0);
@@ -526,6 +536,50 @@ static void test_full_builder_and_pods(void)
     cJSON_Delete(root);
 }
 
+static void test_invalid_battery_percentage_is_not_serialized_as_zero(void)
+{
+    reset_fakes();
+    fill_status();
+    g_status.power.battery_percent_valid = false;
+    g_status.power.battery_percent_estimate = 0.0f;
+    cJSON *root = build_json(false, NULL);
+    cJSON *power = object_item(root, "power");
+    assert(!bool_item(power, "battery_percent_valid"));
+    assert(cJSON_IsNull(object_item(power, "battery_percent_estimate")));
+    cJSON_Delete(root);
+
+    g_status.power.battery_percent_valid = true;
+    g_status.power.battery_percent_estimate = NAN;
+    root = build_json(false, NULL);
+    power = object_item(root, "power");
+    assert(cJSON_IsNull(object_item(power, "battery_percent_estimate")));
+    cJSON_Delete(root);
+}
+
+static void test_power_json_state_strings_remain_stable(void)
+{
+    static const struct {
+        device_power_state_t state;
+        const char *name;
+    } states[] = {
+        { DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY, "USB_ONLY_NO_BATTERY" },
+        { DEVICE_POWER_STATE_USB_CHARGING, "USB_CHARGING" },
+        { DEVICE_POWER_STATE_USB_BATTERY_READY, "USB_BATTERY_READY" },
+        { DEVICE_POWER_STATE_BATTERY, "BATTERY" },
+        { DEVICE_POWER_STATE_BATTERY_LOW, "BATTERY_LOW" },
+        { DEVICE_POWER_STATE_BATTERY_CRITICAL, "BATTERY_CRITICAL" },
+        { DEVICE_POWER_STATE_UNKNOWN, "UNKNOWN" },
+    };
+    for (size_t i = 0U; i < sizeof(states) / sizeof(states[0]); ++i) {
+        reset_fakes();
+        fill_status();
+        g_status.power.state = states[i].state;
+        cJSON *root = build_json(false, NULL);
+        assert(strcmp(string_item(object_item(root, "power"), "state"), states[i].name) == 0);
+        cJSON_Delete(root);
+    }
+}
+
 static void test_main_status_omits_aht_humidity_when_absent(void)
 {
     reset_fakes();
@@ -602,6 +656,8 @@ static void test_extended_cache_and_errors(void)
 int main(void)
 {
     test_full_builder_and_pods();
+    test_invalid_battery_percentage_is_not_serialized_as_zero();
+    test_power_json_state_strings_remain_stable();
     test_main_status_omits_aht_humidity_when_absent();
     test_policy_fault_and_snapshot_fallback();
     test_extended_cache_and_errors();

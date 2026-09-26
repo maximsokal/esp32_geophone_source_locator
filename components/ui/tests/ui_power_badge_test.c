@@ -40,7 +40,7 @@ static void test_battery_levels(void)
     p.battery_percent_estimate = 140.0f;
     assert(strcmp(badge_of(&p).text, "100%") == 0);
     p.battery_percent_estimate = NAN;
-    assert(strcmp(badge_of(&p).text, "0%") == 0);
+    assert(strcmp(badge_of(&p).text, "BAT") == 0);
     p.battery_percent_valid = false;
     assert(strcmp(badge_of(&p).text, "BAT") == 0);
 }
@@ -54,6 +54,8 @@ static void test_usb_states(void)
     p = power_with(DEVICE_POWER_STATE_USB_CHARGING, 55.0f);
     b = badge_of(&p);
     assert(b.icon == UI_POWER_ICON_CHARGE && strcmp(b.text, "55%") == 0 && b.severity == UI_POWER_SEVERITY_GOOD);
+    p.battery_percent_valid = false;
+    assert(strcmp(badge_of(&p).text, "CHG") == 0);
 
     p = power_with(DEVICE_POWER_STATE_USB_BATTERY_READY, 98.0f);
     p.battery_full = true;
@@ -62,6 +64,8 @@ static void test_usb_states(void)
     p.battery_full = false;
     b = badge_of(&p);
     assert(b.icon == UI_POWER_ICON_USB && strcmp(b.text, "98%") == 0);
+    p.battery_percent_valid = false;
+    assert(strcmp(badge_of(&p).text, "USB") == 0);
 }
 
 static void test_low_battery_alerts_outrank_everything(void)

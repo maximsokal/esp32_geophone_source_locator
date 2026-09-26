@@ -1,5 +1,6 @@
 #include "web_server_internal.h"
 
+#include <math.h>
 #include <stddef.h>
 
 #include "esp_timer.h"
@@ -94,7 +95,11 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
     cJSON_AddBoolToObject(object, "battery_percent_valid", power->battery_percent_valid);
     cJSON_AddNumberToObject(object, "battery_voltage_v", power->battery_voltage_v);
     cJSON_AddNumberToObject(object, "battery_current_a", power->battery_current_a);
-    cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate);
+    const bool battery_percent_added = power->battery_percent_valid &&
+        isfinite(power->battery_percent_estimate)
+        ? cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate) != NULL
+        : cJSON_AddNullToObject(object, "battery_percent_estimate") != NULL;
+    if (!battery_percent_added) return false;
     cJSON_AddBoolToObject(object, "usb_present", power->usb_present);
     cJSON_AddBoolToObject(object, "charging", power->charging);
     /* MAX-180/183: user-facing state and the low-battery reaction. */
