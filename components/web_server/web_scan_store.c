@@ -26,6 +26,7 @@
 #define WEB_SCAN_PATH_SIZE        192U
 #define WEB_SCAN_IO_BUFFER_SIZE   4096U
 #define WEB_SCAN_MAX_BYTES        (8U * 1024U * 1024U)
+#define WEB_REGISTRATION_MAX_BYTES 16384U
 #define WEB_SCAN_RECV_TIMEOUTS    5U
 
 static const char *TAG = "WEB_SCAN_STORE";
@@ -53,6 +54,12 @@ static const web_scan_kind_t WEB_SCAN_KIND_OCCUPANCY = {
     .file_name = "occupancy-v1.bin",
     .max_bytes = 1024U * 1024U,
     .label = "scan occupancy",
+};
+
+static const web_scan_kind_t WEB_SCAN_KIND_REGISTRATION = {
+    .file_name = "registration-v1.json",
+    .max_bytes = WEB_REGISTRATION_MAX_BYTES,
+    .label = "AprilTag registration",
 };
 
 
@@ -236,6 +243,22 @@ static esp_err_t web_scan_verify_session(const char *object_id, const char *sess
     return ESP_ERR_NOT_FOUND;
 }
 
+static bool web_scan_registration_session_is_recording(const char *object_id, const char *session_id)
+{
+    seismic_recorder_snapshot_t snapshot;
+    if (seismic_recorder_get_snapshot(&snapshot) != ESP_OK || !snapshot.running) return false;
+    return strcmp(snapshot.object_id, object_id) == 0 && strcmp(snapshot.session_id, session_id) == 0;
+}
+
+static esp_err_t web_scan_send_registration_conflict(httpd_req_t *request)
+{
+    static const char body[] = "{\"ok\":false,\"error\":\"registration cannot be modified while this session is recording\"}";
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_status(request, "409 Conflict");
+    return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+}
+
 
 /* storage_manager_operation_begin() must be held by the caller. */
 static esp_err_t web_scan_recover_file(
@@ -384,13 +407,18 @@ static void web_scan_remove_temp_best_effort(const char *temp_path)
 
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
-    if (request->content_len <= 0 || (size_t)request->content_len > kind->max_bytes) {
+    const bool invalid_size = request->content_len <= 0 || (size_t)request->content_len > kind->max_bytes;
+    if (invalid_size && kind != &WEB_SCAN_KIND_REGISTRATION) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
     }
 
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
+    if (kind == &WEB_SCAN_KIND_REGISTRATION && web_scan_registration_session_is_recording(object_id, session_id)) {
+        return web_scan_send_registration_conflict(request);
+    }
+    if (invalid_size) return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
@@ -501,6 +529,7 @@ static esp_err_t web_scan_open_for_stream(
     const char *final_path,
     const char *temp_path,
     const char *backup_path,
+    const web_scan_kind_t *kind,
     FILE **file_out,
     size_t *size_out
 )
@@ -523,7 +552,8 @@ static esp_err_t web_scan_open_for_stream(
     long file_size = 0L;
     if (err == ESP_OK) {
         file_size = ftell(file);
-        if (file_size <= 0 || (unsigned long)file_size > WEB_SCAN_MAX_BYTES) {
+        const size_t load_limit = kind == &WEB_SCAN_KIND_REGISTRATION ? kind->max_bytes : WEB_SCAN_MAX_BYTES;
+        if (file_size <= 0 || (unsigned long)file_size > load_limit) {
             err = ESP_ERR_INVALID_SIZE;
         }
     }
@@ -585,6 +615,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
         final_path,
         temp_path,
         backup_path,
+        kind,
         &file,
         &size
     );
@@ -605,7 +636,9 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
 
     char size_header[24];
     (void)snprintf(size_header, sizeof(size_header), "%u", (unsigned)size);
-    httpd_resp_set_type(request, "application/octet-stream");
+    httpd_resp_set_type(request, kind == &WEB_SCAN_KIND_REGISTRATION
+        ? "application/json; charset=utf-8"
+        : "application/octet-stream");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     httpd_resp_set_hdr(request, "X-Geo-Scan-Bytes", size_header);
 
@@ -677,6 +710,9 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
+    if (kind == &WEB_SCAN_KIND_REGISTRATION && web_scan_registration_session_is_recording(object_id, session_id)) {
+        return web_scan_send_registration_conflict(request);
+    }
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
@@ -721,7 +757,7 @@ static esp_err_t web_scan_info(httpd_req_t *request, const char *object_id, cons
 
     FILE *file = NULL;
     size_t size = 0U;
-    err = web_scan_open_for_stream(final_path, temp_path, backup_path, &file, &size);
+    err = web_scan_open_for_stream(final_path, temp_path, backup_path, kind, &file, &size);
     if (err == ESP_OK) {
         err = web_scan_close_reader(&file);
     }
@@ -759,6 +795,8 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
     if (err == ESP_OK) {
         if (strcmp(kind_value, "occupancy") == 0) {
             kind = &WEB_SCAN_KIND_OCCUPANCY;
+        } else if (strcmp(kind_value, "registration") == 0) {
+            kind = &WEB_SCAN_KIND_REGISTRATION;
         } else if (strcmp(kind_value, "scan") != 0) {
             return web_scan_send_json(request, "scan", object_id, session_id, ESP_ERR_INVALID_ARG, 0U);
         }
