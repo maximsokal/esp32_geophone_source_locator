@@ -199,6 +199,21 @@ export interface PodHeightReference {
   relative_z_mm: number;
 }
 
+export interface MainHeightReference {
+  state: 'not_established' | 'valid' | 'rejected_unstable' | 'sensor_invalid';
+  generation: number;
+  relative_z_mm: number;
+}
+
+export interface DeviceMainStatus {
+  height_reference?: MainHeightReference;
+  pressure_pa?: number;
+  temperature_mc?: number;
+  humidity_mpct?: number;
+  sensor_present?: { bmp280: boolean; aht20: boolean };
+  sensor_valid?: { bmp280: boolean; aht20: boolean };
+}
+
 export interface DevicePod {
   id: number;
   state: string;
@@ -307,6 +322,7 @@ export interface DeviceStatus {
   };
   environment: ValidValue & { temperature_c: number; humidity_percent: number; pressure_pa: number };
   mux: ValidValue & { active_channel: number; active_pod: number };
+  main?: DeviceMainStatus;
   pods: DevicePod[];
   acquisition: DeviceAcquisitionStatus;
   recording?: RecordingState;

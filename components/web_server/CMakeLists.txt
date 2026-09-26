@@ -352,6 +352,7 @@ idf_component_register(
         localization_job
         localization_results
         localization_run_store
+        main_barometer
         measurement_service
         nrf_topology_service
         object_store

@@ -1,6 +1,7 @@
 #include "main_barometer.h"
 
 #include <stddef.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -34,6 +35,11 @@
 #define AHT20_BUSY_POLL_MS 2U
 #define AHT20_TIMEOUT_MS 100U
 #define AHT20_POLL_PERIOD_MS 1000U
+#define MAIN_HEIGHT_REFERENCE_WINDOW_MS 2000U
+/* A 2 Pa filtered-pressure range is about 167 mm on the shared 12 Pa/m model. */
+#define MAIN_HEIGHT_REFERENCE_MAX_PRESSURE_RANGE_PA 2.0
+
+static _Atomic uint16_t s_height_reference_request_generation;
 
 static esp_err_t main_barometer_classify_error(uint8_t address, esp_err_t err)
 {
@@ -348,6 +354,82 @@ void main_barometer_init(main_barometer_t *barometer)
     memset(barometer, 0, sizeof(*barometer));
     (void)nrf_ema_filter_init(
         &barometer->altitude_filter, 1000U, -2000000.0, 10000000.0);
+    (void)nrf_ema_filter_init(
+        &barometer->pressure_filter, 1000U, BMP280_PRESSURE_MIN_PA,
+        BMP280_PRESSURE_MAX_PA);
+}
+
+esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
+{
+    if (generation == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    atomic_store_explicit(
+        &s_height_reference_request_generation, generation, memory_order_release);
+    return ESP_OK;
+}
+
+static void main_barometer_height_reference_sensor_invalid(
+    main_barometer_t *barometer)
+{
+    if (barometer->reading.height_reference_generation == 0U ||
+        (!barometer->height_reference_capture_active &&
+         barometer->reading.height_reference_state != MAIN_BAROMETER_REFERENCE_VALID)) {
+        return;
+    }
+    barometer->height_reference_capture_active = false;
+    barometer->height_reference_has_sample = false;
+    barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_SENSOR_INVALID;
+    barometer->reading.relative_z_mm = 0;
+}
+
+static void main_barometer_height_reference_update(
+    main_barometer_t *barometer,
+    uint64_t now_ms)
+{
+    if (!barometer->height_reference_capture_active) {
+        if (barometer->reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID) {
+            barometer->reading.relative_z_mm =
+                barometer->reading.filtered_altitude_mm -
+                barometer->height_reference_altitude_mm;
+        }
+        return;
+    }
+
+    const double pressure_pa = barometer->reading.filtered_pressure_pa;
+    if (!barometer->height_reference_has_sample) {
+        barometer->height_reference_capture_started_ms = now_ms;
+        barometer->height_reference_min_pressure_pa = pressure_pa;
+        barometer->height_reference_max_pressure_pa = pressure_pa;
+        barometer->height_reference_has_sample = true;
+        return;
+    }
+
+    if (pressure_pa < barometer->height_reference_min_pressure_pa) {
+        barometer->height_reference_min_pressure_pa = pressure_pa;
+    }
+    if (pressure_pa > barometer->height_reference_max_pressure_pa) {
+        barometer->height_reference_max_pressure_pa = pressure_pa;
+    }
+    if (now_ms < barometer->height_reference_capture_started_ms ||
+        now_ms - barometer->height_reference_capture_started_ms <
+            MAIN_HEIGHT_REFERENCE_WINDOW_MS) {
+        return;
+    }
+
+    barometer->height_reference_capture_active = false;
+    if (barometer->height_reference_max_pressure_pa -
+            barometer->height_reference_min_pressure_pa <=
+        MAIN_HEIGHT_REFERENCE_MAX_PRESSURE_RANGE_PA) {
+        barometer->height_reference_altitude_mm =
+            barometer->reading.filtered_altitude_mm;
+        barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_VALID;
+        barometer->reading.relative_z_mm = 0;
+    } else {
+        barometer->reading.height_reference_state =
+            MAIN_BAROMETER_REFERENCE_REJECTED_UNSTABLE;
+        barometer->reading.relative_z_mm = 0;
+    }
 }
 
 static esp_err_t main_barometer_read_bmp280(
@@ -380,8 +462,12 @@ static esp_err_t main_barometer_read_bmp280(
     }
 
     double filtered_altitude_mm = 0.0;
+    double filtered_pressure_pa = 0.0;
     const int32_t altitude_mm = nrf_baro_pressure_to_altitude_mm(pressure_pa);
     if (nrf_ema_filter_update(
+            &barometer->pressure_filter, pressure_pa,
+            now_ms, &filtered_pressure_pa) != NRF_EMA_FILTER_UPDATED ||
+        nrf_ema_filter_update(
             &barometer->altitude_filter, altitude_mm,
             now_ms, &filtered_altitude_mm) !=
         NRF_EMA_FILTER_UPDATED) {
@@ -391,6 +477,7 @@ static esp_err_t main_barometer_read_bmp280(
 
     barometer->reading.pressure_pa = pressure_pa;
     barometer->reading.temperature_mc = temperature_mc;
+    barometer->reading.filtered_pressure_pa = filtered_pressure_pa;
     barometer->reading.filtered_altitude_mm =
         (int32_t)(filtered_altitude_mm >= 0.0
                       ? filtered_altitude_mm + 0.5
@@ -404,9 +491,20 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
     if (barometer == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    const uint16_t requested_generation = atomic_exchange_explicit(
+        &s_height_reference_request_generation, 0U, memory_order_acq_rel);
+    if (requested_generation != 0U) {
+        barometer->reading.height_reference_generation = requested_generation;
+        barometer->reading.height_reference_state =
+            MAIN_BAROMETER_REFERENCE_NOT_ESTABLISHED;
+        barometer->reading.relative_z_mm = 0;
+        barometer->height_reference_capture_active = true;
+        barometer->height_reference_has_sample = false;
+    }
     if (barometer->handles.bus == NULL) {
         const esp_err_t bus_err = sensor_bus_get_handles(&barometer->handles);
         if (bus_err != ESP_OK) {
+            main_barometer_height_reference_sensor_invalid(barometer);
             return bus_err;
         }
     }
@@ -420,6 +518,11 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         const esp_err_t bmp_err = barometer->bmp280_initialized
             ? main_barometer_read_bmp280(barometer, now_ms)
             : result;
+        if (bmp_err == ESP_OK) {
+            main_barometer_height_reference_update(barometer, now_ms);
+        } else {
+            main_barometer_height_reference_sensor_invalid(barometer);
+        }
         if (result == ESP_OK) {
             result = bmp_err;
         }

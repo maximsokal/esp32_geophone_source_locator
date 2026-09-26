@@ -51,7 +51,9 @@ esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot);
 esp_err_t nrf_topology_service_request_sensor_refresh(uint8_t channel);
 esp_err_t nrf_topology_service_request_all_sensor_refresh(void);
 /* Queues CAPTURE for all assigned REMOTEs; generations use 1..65535 and wrap to 1 (zero is never allocated). */
-esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask);
+esp_err_t nrf_topology_service_request_height_reference_capture(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation);
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot);
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary);
 /* MAX-114: per-node levelling state of every assigned REMOTE. */

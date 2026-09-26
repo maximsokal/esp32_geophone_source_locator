@@ -183,6 +183,36 @@ typedef struct
 
 } device_height_reference_status_t;
 
+typedef enum
+{
+    DEVICE_MAIN_HEIGHT_REFERENCE_NOT_ESTABLISHED = 0,
+    DEVICE_MAIN_HEIGHT_REFERENCE_VALID,
+    DEVICE_MAIN_HEIGHT_REFERENCE_REJECTED_UNSTABLE,
+    DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID
+
+} device_main_height_reference_state_t;
+
+typedef struct
+{
+    device_main_height_reference_state_t state;
+    uint16_t generation;
+    int32_t relative_z_mm;
+
+} device_main_height_reference_status_t;
+
+typedef struct
+{
+    bool bmp280_present;
+    bool bmp280_valid;
+    bool aht20_present;
+    bool aht20_valid;
+    uint32_t pressure_pa;
+    int32_t temperature_mc;
+    uint32_t humidity_mpct;
+    device_main_height_reference_status_t height_reference;
+
+} device_main_status_t;
+
 
 typedef struct
 {
@@ -286,6 +316,8 @@ typedef struct
 
     device_mux_status_t mux;
 
+    device_main_status_t main;
+
     device_pod_status_t
         pods[DEVICE_STATUS_POD_COUNT];
 
@@ -360,6 +392,9 @@ esp_err_t device_status_set_environment(
     float pressure_pa,
     bool valid
 );
+
+/* Publish MAIN's directly connected BMP280/AHT20 diagnostics and reference. */
+esp_err_t device_status_set_main(const device_main_status_t *main_status);
 
 
 /*

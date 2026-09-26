@@ -39,6 +39,14 @@ static void put_le16(uint8_t *destination, uint16_t value)
     destination[1] = (uint8_t)(value >> 8U);
 }
 
+static void set_bmp_raw_pressure(uint8_t address, uint32_t raw_pressure)
+{
+    uint8_t *data = &s_fake.registers[address][REG_DATA];
+    data[0] = (uint8_t)(raw_pressure >> 12U);
+    data[1] = (uint8_t)(raw_pressure >> 4U);
+    data[2] = (uint8_t)(raw_pressure << 4U);
+}
+
 static void setup_bmp280(uint8_t address, uint8_t chip_id)
 {
     static const main_barometer_bmp280_calibration_t calibration = {
@@ -66,9 +74,7 @@ static void setup_bmp280(uint8_t address, uint8_t chip_id)
     const uint32_t raw_pressure = 415148U;
     const uint32_t raw_temperature = 519888U;
     uint8_t *data = &s_fake.registers[address][REG_DATA];
-    data[0] = (uint8_t)(raw_pressure >> 12U);
-    data[1] = (uint8_t)(raw_pressure >> 4U);
-    data[2] = (uint8_t)(raw_pressure << 4U);
+    set_bmp_raw_pressure(address, raw_pressure);
     data[3] = (uint8_t)(raw_temperature >> 12U);
     data[4] = (uint8_t)(raw_temperature >> 4U);
     data[5] = (uint8_t)(raw_temperature << 4U);
@@ -323,6 +329,69 @@ static void test_aht20_busy_timeout_and_transfer_error_classification(void)
     main_barometer_close(&barometer);
 }
 
+static void test_main_height_reference_stable_unstable_and_relative(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(91U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    (void)main_barometer_poll(&barometer, 1000U);
+    (void)main_barometer_poll(&barometer, 2000U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    assert(barometer.reading.height_reference_generation == 91U);
+    assert(barometer.reading.relative_z_mm == 0);
+
+    const int32_t reference_altitude_mm = barometer.reading.filtered_altitude_mm;
+    set_bmp_raw_pressure(0x77U, 414000U);
+    (void)main_barometer_poll(&barometer, 2200U);
+    assert(barometer.reading.relative_z_mm ==
+           barometer.reading.filtered_altitude_mm - reference_altitude_mm);
+    main_barometer_close(&barometer);
+
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(92U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    set_bmp_raw_pressure(0x77U, 418000U);
+    (void)main_barometer_poll(&barometer, 1000U);
+    (void)main_barometer_poll(&barometer, 2000U);
+    assert(barometer.reading.height_reference_state ==
+           MAIN_BAROMETER_REFERENCE_REJECTED_UNSTABLE);
+    assert(barometer.reading.height_reference_generation == 92U);
+    assert(barometer.reading.relative_z_mm == 0);
+    main_barometer_close(&barometer);
+}
+
+static void test_main_height_reference_sensor_invalid_and_generation_validation(void)
+{
+    main_barometer_t barometer;
+    assert(main_barometer_request_height_reference_capture(0U) == ESP_ERR_INVALID_ARG);
+
+    reset_fake();
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(93U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    assert(barometer.reading.height_reference_state ==
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    assert(barometer.reading.height_reference_generation == 93U);
+    main_barometer_close(&barometer);
+
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    s_fake.timeout_bmp_data = true;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(94U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    assert(barometer.reading.height_reference_state ==
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    assert(barometer.reading.bmp280_present);
+    assert(!barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
 int main(void)
 {
     test_bmp280_compensation_datasheet_vector();
@@ -330,5 +399,7 @@ int main(void)
     test_bmp280_rejects_wrong_chip_id();
     test_aht20_crc_and_conversion();
     test_aht20_busy_timeout_and_transfer_error_classification();
+    test_main_height_reference_stable_unstable_and_relative();
+    test_main_height_reference_sensor_invalid_and_generation_validation();
     return 0;
 }

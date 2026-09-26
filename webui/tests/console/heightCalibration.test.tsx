@@ -8,7 +8,7 @@ import {
   saveObjectScanArtifact,
   sendControl,
 } from '../../src/api/deviceApi';
-import type { DevicePod, PodHeightReference } from '../../src/domain/device';
+import type { DeviceMainStatus, DevicePod, PodHeightReference } from '../../src/domain/device';
 import SensorsFeature from '../../src/features/sensors/SensorsFeature';
 import LevelingCard from '../../src/features/sensors/LevelingCard';
 
@@ -30,9 +30,9 @@ function findButton(node: ReactNode): ReactElement | null {
   return findButton(element.props.children);
 }
 
-function renderCard(pods: DevicePod[]): string {
+function renderCard(pods: DevicePod[], main?: DeviceMainStatus): string {
   return renderToStaticMarkup(createElement(LevelingCard, {
-    gate: undefined, pods, onCalibrateHeights: async () => true,
+    gate: undefined, main, pods, onCalibrateHeights: async () => true,
   }));
 }
 
@@ -70,6 +70,24 @@ describe('height calibration UI (MAX-282)', () => {
     expect(mismatch).toContain('Height references have different generations.');
     expect(olderFirmware).toContain('Not reported by firmware');
     expect(olderFirmware).not.toContain('ESP API');
+  });
+
+  it('shows MAIN beside the REMOTEs and treats absent MAIN fields as older firmware', () => {
+    const current = renderCard(
+      [pod(1, { state: 'valid', generation: 6, relative_z_mm: -80 })],
+      { height_reference: { state: 'valid', generation: 6, relative_z_mm: 0 } },
+    );
+    const unstable = renderCard([], {
+      height_reference: { state: 'rejected_unstable', generation: 7, relative_z_mm: 0 },
+    });
+    const olderFirmware = renderCard([pod(1)]);
+
+    expect(current).toContain('<td>MAIN</td>');
+    expect(current).toContain('0.0 mm');
+    expect(current).toContain('-80.0 mm');
+    expect(unstable).toContain('Rejected: pressure was unstable');
+    expect(olderFirmware).toContain('<td>MAIN</td>');
+    expect(olderFirmware).toContain('Not reported by firmware');
   });
 
   it('routes height calibration through the critical lane', async () => {

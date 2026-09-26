@@ -653,14 +653,16 @@ static nrf_topology_snapshot_t s_unplug_snapshot;
 static nrf_topology_snapshot_t s_rejoin_snapshot;
 static esp_err_t s_height_request_result;
 static uint8_t s_height_requested_mask;
+static uint16_t s_height_requested_generation;
 
 static void request_height_calibration_from_handler(void)
 {
     const unsigned writes_before = s_height_reference_writes;
     s_height_requested_mask = 0U;
+    s_height_requested_generation = 0U;
     s_in_height_calibration_handler = true;
     s_height_request_result = nrf_topology_service_request_height_reference_capture(
-        &s_height_requested_mask);
+        &s_height_requested_mask, &s_height_requested_generation);
     assert(s_height_reference_writes == writes_before);
     s_in_height_calibration_handler = false;
     assert(s_height_request_result == ESP_OK);
@@ -670,9 +672,10 @@ static void request_height_calibration_with_no_remotes(void)
 {
     const unsigned writes_before = s_height_reference_writes;
     s_height_requested_mask = 0U;
+    s_height_requested_generation = 0U;
     s_in_height_calibration_handler = true;
     s_height_request_result = nrf_topology_service_request_height_reference_capture(
-        &s_height_requested_mask);
+        &s_height_requested_mask, &s_height_requested_generation);
     assert(s_height_reference_writes == writes_before);
     s_in_height_calibration_handler = false;
     assert(s_height_request_result == ESP_ERR_NOT_FOUND);
@@ -682,6 +685,7 @@ static void request_height_calibration_with_no_remotes(void)
 static void assert_height_capture_counts_and_generation_65535(void)
 {
     assert(s_height_requested_mask == ((uint8_t)(1U << 2U) | (uint8_t)(1U << 5U)));
+    assert(s_height_requested_generation == UINT16_MAX);
     assert(s_height_reference_writes == 2U);
     assert(s_nodes[1].height_reference_captures == 1U);
     assert(s_nodes[2].height_reference_captures == 1U);
@@ -691,6 +695,7 @@ static void assert_height_capture_counts_and_generation_65535(void)
 
 static void assert_height_capture_generation_1(void)
 {
+    assert(s_height_requested_generation == 1U);
     assert(s_height_reference_writes == 4U);
     assert(s_nodes[1].height_reference_captures == 2U);
     assert(s_nodes[2].height_reference_captures == 2U);
@@ -700,6 +705,7 @@ static void assert_height_capture_generation_1(void)
 
 static void assert_height_capture_generation_2(void)
 {
+    assert(s_height_requested_generation == 2U);
     assert(s_height_reference_writes == 6U);
     assert(s_nodes[1].height_reference_captures == 3U);
     assert(s_nodes[2].height_reference_captures == 3U);
@@ -1158,10 +1164,13 @@ static void test_api_guards_when_stopped(void)
 {
     nrf_topology_snapshot_t snapshot;
     uint8_t height_mask = UINT8_MAX;
+    uint16_t height_generation = UINT16_MAX;
     assert(nrf_topology_service_request_refresh() == ESP_ERR_INVALID_STATE);
     assert(nrf_topology_service_request_sensor_refresh(NRF_TOPOLOGY_REMOTE_COUNT) == ESP_ERR_INVALID_ARG);
-    assert(nrf_topology_service_request_height_reference_capture(&height_mask) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_request_height_reference_capture(
+        &height_mask, &height_generation) == ESP_ERR_INVALID_STATE);
     assert(height_mask == 0U);
+    assert(height_generation == 0U);
     assert(nrf_topology_service_get_snapshot(NULL) == ESP_ERR_INVALID_ARG);
     (void)snapshot;
     /* stop() on a stopped service returns immediately. */

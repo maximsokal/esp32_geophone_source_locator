@@ -1,8 +1,9 @@
-import type { DevicePod, PodHeightReference, RecordingGateStatus } from '../../domain/device';
+import type { DeviceMainStatus, DevicePod, MainHeightReference, PodHeightReference, RecordingGateStatus } from '../../domain/device';
 
 interface Props {
   gate: RecordingGateStatus | undefined;
   pods: DevicePod[];
+  main?: DeviceMainStatus;
   onCalibrateHeights: () => Promise<boolean>;
 }
 
@@ -21,13 +22,24 @@ const HEIGHT_REFERENCE_LABEL: Record<PodHeightReference['state'], string> = {
   sensor_invalid: 'Unavailable: sensor invalid',
 };
 
+const MAIN_HEIGHT_REFERENCE_LABEL: Record<MainHeightReference['state'], string> = {
+  not_established: 'Not established',
+  valid: 'Valid',
+  rejected_unstable: 'Rejected: pressure was unstable',
+  sensor_invalid: 'Unavailable: sensor invalid',
+};
+
 /**
  * MAX-114: per-node levelling behind the recording gate, so the operator
  * sees which geophone blocks Record and by how much it is tilted.
  */
-export default function LevelingCard({ gate, pods, onCalibrateHeights }: Props) {
+export default function LevelingCard({ gate, pods, main, onCalibrateHeights }: Props) {
   const nodes = gate?.nodes ?? [];
-  const generations = new Set(pods.flatMap((pod) => pod.height_reference === undefined ? [] : [pod.height_reference.generation]));
+  const mainReference = main?.height_reference;
+  const generations = new Set([
+    ...pods.flatMap((pod) => pod.height_reference === undefined ? [] : [pod.height_reference.generation]),
+    ...(mainReference === undefined ? [] : [mainReference.generation]),
+  ]);
   return (
     <article className="console-card wide-card">
       <div className="card-heading">
@@ -43,10 +55,19 @@ export default function LevelingCard({ gate, pods, onCalibrateHeights }: Props) 
       {gate?.available && gate.reason !== undefined && gate.reason !== '' && <p>{gate.reason}</p>}
       {gate !== undefined && !gate.available && <p>Topology not available{gate.error ? `: ${gate.error}` : ''}.</p>}
       {generations.size > 1 && <p role="status">Height references have different generations.</p>}
-      {pods.length > 0 && (
+      {(pods.length > 0 || main !== undefined) && (
         <table className="leveling-table">
           <thead><tr><th>Node</th><th>Height reference</th><th>Relative Z</th></tr></thead>
           <tbody>
+            <tr>
+              <td>MAIN</td>
+              <td>{mainReference === undefined
+                ? 'Not reported by firmware'
+                : MAIN_HEIGHT_REFERENCE_LABEL[mainReference.state]}</td>
+              <td>{mainReference?.state === 'valid'
+                ? `${mainReference.relative_z_mm.toFixed(1)} mm`
+                : 'вЂ”'}</td>
+            </tr>
             {pods.map((pod, index) => (
               <tr key={pod.id}>
                 <td>Pod {index + 1}</td>
