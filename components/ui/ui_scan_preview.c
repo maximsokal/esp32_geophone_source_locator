@@ -367,7 +367,7 @@ static void show_ready_locked(void)
     if (s_info_label == NULL) return;
     char text[80];
     if (s_state.has_preview) {
-        snprintf(text, sizeof(text), "VOXELS %u  COARSEN %u%s%s", s_state.preview.voxel_count,
+        snprintf(text, sizeof(text), "VOXELS %" PRIu32 "  COARSEN %" PRIu16 "%s%s", s_state.preview.voxel_count,
                  s_state.preview.coarsening_steps,
                  s_state.fallback_reason[0] != '\0' ? "  " : "",
                  s_state.fallback_reason);
