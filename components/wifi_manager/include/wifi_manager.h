@@ -2,8 +2,15 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
+
+typedef struct {
+    int32_t last_reason;
+    uint32_t retry_count;
+    uint32_t next_delay_ms;
+} wifi_manager_reconnect_status_t;
 
 
 esp_err_t wifi_manager_init(void);
@@ -28,6 +35,11 @@ bool wifi_manager_network_events_suppressed(void);
 
 /* True only when the runtime owns a currently accepted STA IPv4 address. */
 bool wifi_manager_sta_has_ip(void);
+
+/* Snapshot of the latest STA reconnect reason and pending backoff. */
+esp_err_t wifi_manager_get_reconnect_status(
+    wifi_manager_reconnect_status_t *status
+);
 
 
 typedef esp_err_t (*wifi_manager_radio_stop_prepare_callback_t)(void *context);

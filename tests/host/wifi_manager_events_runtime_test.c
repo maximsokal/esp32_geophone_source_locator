@@ -8,6 +8,7 @@
 #include "app_events.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "wifi_manager.h"
 #include "wifi_manager_internal.h"
@@ -23,6 +24,13 @@ typedef struct
     esp_event_handler_t handler;
     void *context;
 } registered_handler_t;
+
+struct esp_timer {
+    esp_timer_create_args_t args;
+    uint64_t timeout_us;
+    bool created;
+    bool active;
+};
 
 static registered_handler_t s_handlers[8];
 static size_t s_handler_count;
@@ -45,6 +53,7 @@ static unsigned s_sta_disconnected_events;
 static unsigned s_setup_ready_events;
 static unsigned s_setup_disconnected_events;
 static app_event_type_t s_last_event;
+static struct esp_timer s_reconnect_timer;
 
 void wifi_manager_internal_get_state(wifi_manager_internal_state_t *state)
 {
@@ -72,6 +81,57 @@ static void reset_observations(void)
     wifi_manager_setup_events_reset();
     wifi_manager_runtime_clear_setup_client();
     wifi_manager_runtime_clear_sta_ip();
+}
+
+esp_err_t esp_timer_create(
+    const esp_timer_create_args_t *create_args,
+    esp_timer_handle_t *out_handle
+)
+{
+    assert(create_args != NULL);
+    assert(create_args->callback != NULL);
+    assert(out_handle != NULL);
+    s_reconnect_timer.args = *create_args;
+    s_reconnect_timer.timeout_us = 0U;
+    s_reconnect_timer.created = true;
+    s_reconnect_timer.active = false;
+    *out_handle = &s_reconnect_timer;
+    return ESP_OK;
+}
+
+esp_err_t esp_timer_start_once(
+    esp_timer_handle_t timer,
+    uint64_t timeout_us
+)
+{
+    assert(timer == &s_reconnect_timer);
+    assert(timer->created);
+    assert(timeout_us > 0U);
+    timer->timeout_us = timeout_us;
+    timer->active = true;
+    return ESP_OK;
+}
+
+esp_err_t esp_timer_stop(esp_timer_handle_t timer)
+{
+    assert(timer == &s_reconnect_timer);
+    timer->active = false;
+    return ESP_OK;
+}
+
+esp_err_t esp_timer_delete(esp_timer_handle_t timer)
+{
+    assert(timer == &s_reconnect_timer);
+    timer->created = false;
+    timer->active = false;
+    return ESP_OK;
+}
+
+void esp_timer_test_fire(void)
+{
+    assert(s_reconnect_timer.created);
+    s_reconnect_timer.active = false;
+    s_reconnect_timer.args.callback(s_reconnect_timer.args.arg);
 }
 
 esp_err_t esp_event_handler_register(
@@ -267,9 +327,80 @@ static void test_sta_start_ip_disconnect_reconnect(void)
     assert(s_sta_disconnected_events == 1U);
     assert(s_connect_calls == 2U);
     assert(wifi_manager_runtime_sta_ip_string(ip_text, sizeof(ip_text)) == ESP_ERR_NOT_FOUND);
+    wifi_manager_reconnect_status_t reconnect_status = {0};
+    assert(wifi_manager_get_reconnect_status(&reconnect_status) == ESP_OK);
+    assert(reconnect_status.last_reason == WIFI_REASON_UNSPECIFIED);
+    assert(reconnect_status.retry_count == 1U);
+    assert(reconnect_status.next_delay_ms == 0U);
 
-    dispatch(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, NULL);
+    const wifi_event_sta_disconnected_t transient = {
+        .reason = WIFI_REASON_BEACON_TIMEOUT
+    };
+    dispatch(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, (void *)&transient);
     assert(s_sta_disconnected_events == 1U);
+    assert(s_connect_calls == 2U);
+    assert(s_reconnect_timer.active);
+    assert(s_reconnect_timer.timeout_us == 500000U);
+    assert(wifi_manager_get_reconnect_status(&reconnect_status) == ESP_OK);
+    assert(reconnect_status.retry_count == 2U);
+    assert(reconnect_status.next_delay_ms == 500U);
+
+    esp_timer_test_fire();
+    assert(s_connect_calls == 3U);
+    assert(!s_reconnect_timer.active);
+    assert(wifi_manager_get_reconnect_status(&reconnect_status) == ESP_OK);
+    assert(reconnect_status.next_delay_ms == 0U);
+
+    const wifi_event_sta_disconnected_t authentication_failure = {
+        .reason = WIFI_REASON_AUTH_FAIL
+    };
+    dispatch(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_DISCONNECTED,
+        (void *)&authentication_failure
+    );
+    assert(s_connect_calls == 3U);
+    assert(s_reconnect_timer.active);
+    assert(s_reconnect_timer.timeout_us == 30000000U);
+    assert(wifi_manager_get_reconnect_status(&reconnect_status) == ESP_OK);
+    assert(reconnect_status.last_reason == WIFI_REASON_AUTH_FAIL);
+    assert(reconnect_status.retry_count == 3U);
+    assert(reconnect_status.next_delay_ms == 30000U);
+
+    s_sta_association_result = ESP_OK;
+    s_live_ip.addr = 0x04030201U;
+    dispatch(IP_EVENT, IP_EVENT_STA_GOT_IP, NULL);
+    assert(!s_reconnect_timer.active);
+    assert(wifi_manager_get_reconnect_status(&reconnect_status) == ESP_OK);
+    assert(reconnect_status.retry_count == 0U);
+    assert(reconnect_status.next_delay_ms == 0U);
+
+    s_sta_association_result = ESP_ERR_WIFI_NOT_CONNECT;
+    dispatch(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_DISCONNECTED,
+        (void *)&authentication_failure
+    );
+    assert(s_reconnect_timer.active);
+    assert(s_reconnect_timer.timeout_us == 30000000U);
+    wifi_manager_sta_events_set_connect_enabled(true);
+    assert(!s_reconnect_timer.active);
+    esp_timer_test_fire();
+    assert(s_connect_calls == 3U);
+
+    dispatch(
+        WIFI_EVENT,
+        WIFI_EVENT_STA_DISCONNECTED,
+        (void *)&authentication_failure
+    );
+    assert(s_reconnect_timer.active);
+    assert(s_reconnect_timer.timeout_us == 60000000U);
+    assert(wifi_manager_get_reconnect_status(&reconnect_status) == ESP_OK);
+    assert(reconnect_status.retry_count == 2U);
+    assert(reconnect_status.next_delay_ms == 60000U);
+    wifi_manager_sta_events_set_connect_enabled(false);
+    assert(!s_reconnect_timer.active);
+    esp_timer_test_fire();
     assert(s_connect_calls == 3U);
 }
 
