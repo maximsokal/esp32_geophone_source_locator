@@ -21,6 +21,10 @@ static localization_calculate_config_t s_last_calculate_config;
 static char s_last_calculate_session_id[32];
 static esp_err_t s_calculate_result;
 static uint32_t s_last_budget_ms;
+static esp_err_t s_acquisition_start_result;
+static unsigned s_acquisition_start_calls;
+static esp_err_t s_measurement_start_result;
+static unsigned s_measurement_start_calls;
 
 static void reset_fakes(void)
 {
@@ -33,6 +37,10 @@ static void reset_fakes(void)
     memset(s_last_calculate_session_id, 0, sizeof(s_last_calculate_session_id));
     s_calculate_result = ESP_OK;
     s_last_budget_ms = 12345U;
+    s_acquisition_start_result = ESP_OK;
+    s_acquisition_start_calls = 0U;
+    s_measurement_start_result = ESP_OK;
+    s_measurement_start_calls = 0U;
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -64,7 +72,8 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
 esp_err_t measurement_service_start_object_async(const char *object_id)
 {
     (void)object_id;
-    return ESP_OK;
+    s_measurement_start_calls++;
+    return s_measurement_start_result;
 }
 
 esp_err_t measurement_service_stop_async(void)
@@ -74,7 +83,8 @@ esp_err_t measurement_service_stop_async(void)
 
 esp_err_t seismic_acquisition_start(void)
 {
-    return ESP_OK;
+    s_acquisition_start_calls++;
+    return s_acquisition_start_result;
 }
 
 void seismic_acquisition_stop(void)
@@ -311,6 +321,74 @@ static httpd_req_t make_request(const char *body, char *response, size_t respons
         .response_body = response,
         .response_capacity = response_capacity,
     };
+}
+
+static void test_measurement_start_rejects_acquisition_failures(void)
+{
+    static const struct {
+        esp_err_t result;
+        const char *error_name;
+    } failures[] = {
+        {ESP_ERR_INVALID_STATE, "ESP_ERR_INVALID_STATE"},
+        {ESP_ERR_TIMEOUT, "ESP_ERR_TIMEOUT"},
+        {ESP_ERR_NOT_FOUND, "ESP_ERR_NOT_FOUND"},
+    };
+    static const char *const body =
+        "{\"action\":\"measurement_start\",\"object_id\":\"OBJ_0001\"}";
+
+    for (size_t i = 0U; i < sizeof(failures) / sizeof(failures[0]); ++i) {
+        reset_fakes();
+        s_acquisition_start_result = failures[i].result;
+        char response[512] = {0};
+        httpd_req_t request = make_request(body, response, sizeof(response));
+
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL);
+        assert(strcmp(request.response_status, "503 Service Unavailable") == 0);
+        assert(strstr(response, "\"ok\":false") != NULL);
+        assert(strstr(response, "\"action\":\"measurement_start\"") != NULL);
+        assert(strstr(response, "\"error_class\":\"acquisition_unavailable\"") != NULL);
+        char error_field[96];
+        (void)snprintf(error_field, sizeof(error_field), "\"error\":\"%s\"", failures[i].error_name);
+        assert(strstr(response, error_field) != NULL);
+        assert(s_acquisition_start_calls == 1U);
+        assert(s_measurement_start_calls == 0U);
+    }
+}
+
+static void test_measurement_start_success_stays_async(void)
+{
+    reset_fakes();
+    static const char *const body =
+        "{\"action\":\"measurement_start\",\"object_id\":\"OBJ_0001\"}";
+    char response[512] = {0};
+    httpd_req_t request = make_request(body, response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(strstr(response, "\"action\":\"measurement_start\"") != NULL);
+    assert(s_acquisition_start_calls == 1U);
+    assert(s_measurement_start_calls == 1U);
+}
+
+static void test_measurement_start_async_failure_keeps_existing_mapping(void)
+{
+    reset_fakes();
+    s_measurement_start_result = ESP_ERR_INVALID_STATE;
+    static const char *const body =
+        "{\"action\":\"measurement_start\",\"object_id\":\"OBJ_0001\"}";
+    char response[512] = {0};
+    httpd_req_t request = make_request(body, response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "\"ok\":false") != NULL);
+    assert(strstr(response, "\"error\":\"ESP_ERR_INVALID_STATE\"") != NULL);
+    assert(strstr(response, "error_class") == NULL);
+    assert(s_acquisition_start_calls == 1U);
+    assert(s_measurement_start_calls == 1U);
 }
 
 static void test_phone_location_handler_round_trip(void)
@@ -592,6 +670,9 @@ static void test_calculate_source_action_surfaces_solver_failure(void)
 
 int main(void)
 {
+    test_measurement_start_rejects_acquisition_failures();
+    test_measurement_start_success_stays_async();
+    test_measurement_start_async_failure_keeps_existing_mapping();
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
     test_calculate_source_action_submits_a_background_job();
