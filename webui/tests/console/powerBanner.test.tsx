@@ -21,6 +21,9 @@ describe('PowerBanner', () => {
   it('announces the running safe shutdown', () => {
     expect(powerBannerText(withPower({ state: 'BATTERY_CRITICAL', low_battery: 'shutdown' })))
       .toContain('shutting down safely');
+    expect(renderToStaticMarkup(createElement(PowerBanner, {
+      status: withPower({ state: 'BATTERY_CRITICAL', low_battery: 'shutdown' }),
+    }))).toContain('role="alert"');
   });
 
   it('warns on a low battery', () => {
@@ -28,36 +31,42 @@ describe('PowerBanner', () => {
     expect(powerBannerText(withPower({ state: 'BATTERY_LOW' }))).toBe('Battery low: connect USB power soon.');
   });
 
-  it('maps every stable JSON state to its WebUI text and appropriate live region', () => {
-    const mappings: Array<[string, Record<string, unknown>, string, string]> = [
-      ['USB_ONLY_NO_BATTERY', {}, 'USB power connected; no battery detected.', 'status'],
-      ['USB_CHARGING', { battery_percent_valid: true, battery_percent_estimate: 61 }, 'Battery charging (61%).', 'status'],
-      ['USB_BATTERY_READY', { battery_full: true }, 'Battery fully charged.', 'status'],
-      ['USB_BATTERY_READY', { battery_full: false }, 'USB power connected; battery idle.', 'status'],
-      ['BATTERY', { battery_percent_valid: true, battery_percent_estimate: 48 }, 'Running on battery (48%).', 'status'],
-      ['BATTERY_LOW', {}, 'Battery low: connect USB power soon.', 'alert'],
-      ['BATTERY_CRITICAL', {}, 'Battery critical: connect USB power now.', 'alert'],
-      ['UNKNOWN', {}, 'Battery status unavailable.', 'status'],
+  it('shows LOW, CRITICAL, shutdown countdown, and unknown telemetry', () => {
+    const mappings: Array<[Record<string, unknown>, string, string]> = [
+      [{ valid: true, state: 'BATTERY_LOW', low_battery: 'normal' }, 'Battery low: connect USB power soon.', 'alert'],
+      [{ valid: true, state: 'BATTERY_CRITICAL', low_battery: 'normal' }, 'Battery critical: connect USB power now.', 'alert'],
+      [{ valid: true, state: 'BATTERY_LOW', low_battery: 'warning' }, 'Battery low: connect USB power soon.', 'alert'],
+      [{ valid: true, state: 'BATTERY_CRITICAL', low_battery: 'grace', shutdown_in_s: 7 }, 'Battery critical: connect USB power within 7 s or the device shuts down.', 'alert'],
+      [{ valid: true, state: 'BATTERY_CRITICAL', low_battery: 'shutdown' }, 'Battery critical: the device is shutting down safely (recording finalised, SD flushed).', 'alert'],
+      [{ valid: true, state: 'UNKNOWN', low_battery: 'normal' }, 'Battery status unavailable.', 'status'],
+      [{ valid: false, state: 'BATTERY', low_battery: 'normal' }, 'Battery status unavailable.', 'status'],
+      [{ valid: true, low_battery: 'normal' }, 'Battery status unavailable.', 'status'],
     ];
-    for (const [state, details, text, role] of mappings) {
-      const status = withPower({ valid: true, state, low_battery: 'normal', ...details });
+    for (const [power, text, role] of mappings) {
+      const status = withPower(power);
       expect(powerBannerText(status)).toBe(text);
       expect(renderToStaticMarkup(createElement(PowerBanner, { status }))).toContain(`role="${role}"`);
     }
   });
 
-  it('never renders invalid or nonfinite SoC as a percentage', () => {
-    expect(powerBannerText(withPower({ valid: true, state: 'BATTERY', battery_percent_valid: false, battery_percent_estimate: 0 })))
-      .toBe('Running on battery.');
-    expect(powerBannerText(withPower({ valid: true, state: 'BATTERY', battery_percent_valid: true, battery_percent_estimate: Number.NaN })))
-      .toBe('Running on battery.');
-    expect(powerBannerText(withPower({ valid: false, state: 'USB_BATTERY_READY', battery_full: true })))
-      .toBe('Battery status unavailable.');
+  it('hides normal battery, charging, charged, and USB-only states', () => {
+    const states: Array<[string, Record<string, unknown>]> = [
+      ['BATTERY', { battery_percent_valid: true, battery_percent_estimate: 48 }],
+      ['USB_CHARGING', { battery_percent_valid: true, battery_percent_estimate: 61 }],
+      ['USB_BATTERY_READY', { battery_full: true }],
+      ['USB_BATTERY_READY', { battery_full: false }],
+      ['USB_ONLY_NO_BATTERY', {}],
+    ];
+    for (const [state, details] of states) {
+      const status = withPower({ valid: true, state, low_battery: 'normal', ...details });
+      expect(powerBannerText(status)).toBeNull();
+      expect(renderToStaticMarkup(createElement(PowerBanner, { status }))).toBe('');
+    }
   });
 
   it('does not render a banner when no status object exists', () => {
     expect(powerBannerText(null)).toBeNull();
-    expect(powerBannerText(withPower(undefined))).toBeNull();
+    expect(powerBannerText(withPower(undefined))).toBe('Battery status unavailable.');
     expect(renderToStaticMarkup(createElement(PowerBanner, { status: null }))).toBe('');
   });
 });
