@@ -30,8 +30,8 @@ void ui_render_system_locked(void)
     ui_context_t *context = ui_context();
 
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "SYSTEM",
-        "LEFT BACK   LIVE SYSTEM STATUS"
+        ui_tr(UI_I18N_KEY_SYSTEM_TITLE),
+        ui_tr(UI_I18N_KEY_SYSTEM_LANGUAGE_FOOTER)
     );
 
     if (screen == NULL) {
@@ -39,7 +39,7 @@ void ui_render_system_locked(void)
     }
 
     const esp_app_desc_t *app = esp_app_get_description();
-    lv_obj_t *card = ui_create_card_locked(screen, 10, 42, 300, 158);
+    lv_obj_t *card = ui_create_card_locked(screen, 10, 38, 300, 176);
 
     if (card == NULL) {
         return;
@@ -54,7 +54,7 @@ void ui_render_system_locked(void)
         app != NULL ? app->version : "--"
     );
     (void)ui_create_label_locked(
-        card, 10, 10, 284, text, UI_COLOR_ACCENT
+        card, 10, 8, 284, text, UI_COLOR_ACCENT
     );
 
     snprintf(
@@ -64,7 +64,7 @@ void ui_render_system_locked(void)
         esp_get_idf_version()
     );
     (void)ui_create_label_locked(
-        card, 10, 32, 284, text, UI_COLOR_TEXT
+        card, 10, 27, 284, text, UI_COLOR_TEXT
     );
 
     snprintf(
@@ -76,13 +76,13 @@ void ui_render_system_locked(void)
         LVGL_VERSION_PATCH
     );
     (void)ui_create_label_locked(
-        card, 10, 54, 284, text, UI_COLOR_GOOD
+        card, 10, 46, 284, text, UI_COLOR_GOOD
     );
 
     context->system_heap = ui_create_label_locked(
         card,
         10,
-        76,
+        65,
         284,
         "HEAP     -- KB internal free",
         UI_COLOR_TEXT
@@ -91,7 +91,7 @@ void ui_render_system_locked(void)
     context->system_psram = ui_create_label_locked(
         card,
         10,
-        98,
+        84,
         284,
         "PSRAM    -- KB free",
         UI_COLOR_TEXT
@@ -100,7 +100,7 @@ void ui_render_system_locked(void)
     context->system_uptime = ui_create_label_locked(
         card,
         10,
-        120,
+        103,
         284,
         "UPTIME   -- s",
         UI_COLOR_MUTED
@@ -109,10 +109,20 @@ void ui_render_system_locked(void)
     (void)ui_create_label_locked(
         card,
         10,
-        140,
+        122,
         284,
         "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
         UI_COLOR_MUTED
+    );
+
+    (void)ui_create_row_locked(
+        card,
+        140,
+        ui_tr(context->system_language_selection == UI_LOCALE_UK
+            ? UI_I18N_KEY_SYSTEM_LANGUAGE_UKRAINIAN
+            : UI_I18N_KEY_SYSTEM_LANGUAGE_ENGLISH),
+        true,
+        true
     );
 
     ui_system_refresh_locked();
@@ -169,4 +179,41 @@ void ui_system_refresh_locked(void)
         context->system_uptime,
         text
     );
+}
+
+
+void ui_system_handle_key_locked(keypad_key_t key)
+{
+    ui_context_t *context = ui_context();
+    if (key == KEYPAD_KEY_LEFT) {
+        ui_screen_open_locked(UI_SCREEN_HOME);
+        return;
+    }
+
+    if (key == KEYPAD_KEY_UP || key == KEYPAD_KEY_DOWN) {
+        const ui_locale_t selection =
+            key == KEYPAD_KEY_UP ? UI_LOCALE_EN : UI_LOCALE_UK;
+        if (context->system_language_selection == selection) {
+            return;
+        }
+        context->system_language_selection = selection;
+        ui_render_system_locked();
+        return;
+    }
+
+    if (key != KEYPAD_KEY_OK && key != KEYPAD_KEY_RIGHT) {
+        return;
+    }
+
+    const ui_locale_t locale = context->system_language_selection;
+    if (locale == ui_i18n_get_locale()) {
+        return;
+    }
+
+    ui_i18n_set_locale(locale);
+    if (ui_event_dispatcher_queue_locale_save(locale) != ESP_OK) {
+        ui_i18n_set_locale(UI_LOCALE_EN);
+        context->system_language_selection = UI_LOCALE_EN;
+    }
+    ui_render_system_locked();
 }

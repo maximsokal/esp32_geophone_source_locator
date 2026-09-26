@@ -7,6 +7,7 @@
 #include "ui_event_policy.h"
 
 #include "runtime_observability.h"
+#include "ui_i18n_nvs.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -19,6 +20,10 @@
 static const char *TAG =
     "UI_EVENT";
 
+ESP_EVENT_DEFINE_BASE(UI_I18N_STORE_EVENT);
+
+#define UI_I18N_STORE_LOCALE 0
+
 
 #define UI_EVENT_PENDING_CAPACITY         24U
 #define UI_EVENT_PENDING_DISPATCH_BATCH    8U
@@ -29,6 +34,8 @@ static bool s_running =
 
 static bool s_registered =
     false;
+
+static atomic_bool s_locale_write_failed;
 
 static uint64_t s_handled_events =
     0U;
@@ -99,6 +106,19 @@ static ui_event_ingress_result_t ui_event_ingress_begin(
 }
 
 
+static bool ui_event_callback_begin(void)
+{
+    bool accepted = false;
+    portENTER_CRITICAL(&s_pending_lock);
+    if (s_running) {
+        ++s_handler_in_flight;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&s_pending_lock);
+    return accepted;
+}
+
+
 static void ui_event_ingress_end(void)
 {
     portENTER_CRITICAL(&s_pending_lock);
@@ -144,7 +164,24 @@ static void ui_event_handler(
 )
 {
     (void)context;
-    (void)event_base;
+
+    if (event_base == UI_I18N_STORE_EVENT) {
+        if (!ui_event_callback_begin()) {
+            return;
+        }
+
+        const bool saved =
+            event_id == UI_I18N_STORE_LOCALE &&
+            event_data != NULL &&
+            ui_i18n_nvs_save_locale((ui_locale_t)*(const uint8_t *)event_data);
+        if (!saved) {
+            atomic_store_explicit(&s_locale_write_failed, true, memory_order_release);
+            (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+        }
+
+        ui_event_ingress_end();
+        return;
+    }
 
     const int32_t event_value =
         event_data != NULL
@@ -178,6 +215,15 @@ static void ui_event_handler(
 
 void ui_event_dispatcher_dispatch_pending_locked(void)
 {
+    if (atomic_exchange_explicit(&s_locale_write_failed, false, memory_order_acq_rel)) {
+        ui_i18n_set_locale(UI_LOCALE_EN);
+        ui_context_t *context = ui_context();
+        context->system_language_selection = UI_LOCALE_EN;
+        if (context->screen == UI_SCREEN_SYSTEM) {
+            ui_render_system_locked();
+        }
+    }
+
     for (size_t i = 0U; i < UI_EVENT_PENDING_DISPATCH_BATCH; ++i) {
         ui_pending_event_t event = {0};
         bool have_event = false;
@@ -301,6 +347,7 @@ esp_err_t ui_event_dispatcher_start(void)
         0U;
     s_dropped_closed_keypad =
         0U;
+    atomic_store_explicit(&s_locale_write_failed, false, memory_order_release);
 
     portENTER_CRITICAL(&s_pending_lock);
     s_running = true;
@@ -326,6 +373,30 @@ esp_err_t ui_event_dispatcher_start(void)
         s_pending_tail = 0U;
         s_pending_count = 0U;
         portEXIT_CRITICAL(&s_pending_lock);
+        return err;
+    }
+
+    err = esp_event_handler_register_with(
+        loop,
+        UI_I18N_STORE_EVENT,
+        ESP_EVENT_ANY_ID,
+        ui_event_handler,
+        NULL
+    );
+    if (err != ESP_OK) {
+        (void)esp_event_handler_unregister_with(
+            loop,
+            APP_EVENT,
+            ESP_EVENT_ANY_ID,
+            ui_event_handler
+        );
+        portENTER_CRITICAL(&s_pending_lock);
+        s_running = false;
+        s_pending_head = 0U;
+        s_pending_tail = 0U;
+        s_pending_count = 0U;
+        portEXIT_CRITICAL(&s_pending_lock);
+        ui_event_wait_for_ingress_idle();
         return err;
     }
 
@@ -364,6 +435,12 @@ void ui_event_dispatcher_stop(void)
             ESP_EVENT_ANY_ID,
             ui_event_handler
         );
+        (void)esp_event_handler_unregister_with(
+            loop,
+            UI_I18N_STORE_EVENT,
+            ESP_EVENT_ANY_ID,
+            ui_event_handler
+        );
     }
 
     ui_event_wait_for_ingress_idle();
@@ -374,5 +451,28 @@ void ui_event_dispatcher_stop(void)
     ESP_LOGI(
         TAG,
         "Application event subscriber stopped"
+    );
+}
+
+
+esp_err_t ui_event_dispatcher_queue_locale_save(ui_locale_t locale)
+{
+    if (locale != UI_LOCALE_EN && locale != UI_LOCALE_UK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_event_loop_handle_t loop = app_events_get_loop();
+    if (loop == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint8_t value = (uint8_t)locale;
+    return esp_event_post_to(
+        loop,
+        UI_I18N_STORE_EVENT,
+        UI_I18N_STORE_LOCALE,
+        &value,
+        sizeof(value),
+        0
     );
 }

@@ -1891,5 +1891,16 @@
         "components/seismic_buffer/include"
       ]
     }
+,
+    {
+      "name": "ui_i18n_locale_store",
+      "sources": [
+        "components/ui_i18n/ui_i18n_locale_store.c",
+        "tests/host/ui_i18n_locale_store_test.c"
+      ],
+      "include_dirs": [
+        "components/ui_i18n/include"
+      ]
+    }
   ]
 }

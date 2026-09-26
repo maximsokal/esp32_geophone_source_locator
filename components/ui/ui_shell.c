@@ -1,5 +1,6 @@
 #include "ui_internal.h"
 #include "ui_power_badge.h"
+#include "ui_fonts.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -68,6 +69,7 @@ lv_obj_t *ui_create_label_locked(
     }
 
     lv_label_set_text(label, text != NULL ? text : "");
+    lv_obj_set_style_text_font(label, &ui_font_montserrat_14, 0);
     lv_obj_set_pos(label, x, y);
 
     if (width > 0) {

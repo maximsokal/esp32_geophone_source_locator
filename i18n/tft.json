@@ -16,6 +16,26 @@
       "en": "STORAGE / SD CARD",
       "uk": "",
       "max_len": 17
+    },
+    "system.title": {
+      "en": "SYSTEM",
+      "uk": "СИСТЕМА",
+      "max_len": 7
+    },
+    "system.language_english": {
+      "en": "LANGUAGE: ENGLISH",
+      "uk": "МОВА: АНГЛІЙСЬКА",
+      "max_len": 17
+    },
+    "system.language_ukrainian": {
+      "en": "LANGUAGE: UKRAINIAN",
+      "uk": "МОВА: УКРАЇНСЬКА",
+      "max_len": 19
+    },
+    "system.language_footer": {
+      "en": "UP/DN SELECT  OK APPLY  LEFT BACK",
+      "uk": "UP/DN ВИБІР  OK ЗБЕРЕГТИ  LEFT НАЗАД",
+      "max_len": 39
     }
   }
 }

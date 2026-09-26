@@ -5,6 +5,7 @@
 #include "esp_lvgl_port.h"
 
 #include "storage_manager.h"
+#include "ui_fonts.h"
 
 
 #define UI_STORAGE_COLOR_TEXT     0xF3F7FB
@@ -42,6 +43,7 @@ static lv_obj_t *ui_storage_label(
         label,
         text
     );
+    lv_obj_set_style_text_font(label, &ui_font_montserrat_14, 0);
 
     lv_obj_set_style_text_color(
         label,

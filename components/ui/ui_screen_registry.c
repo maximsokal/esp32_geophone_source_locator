@@ -103,7 +103,7 @@ static void ui_screen_open_wifi(void)
 
 static void ui_screen_open_system(void)
 {
-    ui_context()->selected = 0;
+    ui_context()->system_language_selection = ui_i18n_get_locale();
     ui_set_notice_locked(NULL);
     ui_render_system_locked();
 }
@@ -206,7 +206,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
         .home_label = "SYSTEM",
         .open = ui_screen_open_system,
         .render = ui_render_system_locked,
-        .handle_key = ui_screen_handle_back_key,
+        .handle_key = ui_system_handle_key_locked,
         .refresh = ui_system_refresh_locked,
     },
 

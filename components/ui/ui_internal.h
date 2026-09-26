@@ -16,6 +16,7 @@
 #include "seismic_buffer.h"
 #include "storage_service.h"
 #include "ui_theme.h"
+#include "ui_i18n.h"
 
 
 typedef enum
@@ -108,6 +109,7 @@ typedef struct
     lv_obj_t *system_heap;
     lv_obj_t *system_psram;
     lv_obj_t *system_uptime;
+    ui_locale_t system_language_selection;
 
     ui_objects_mode_t objects_mode;
     size_t object_action;
@@ -240,6 +242,8 @@ void ui_render_storage_locked(void);
 void ui_render_wifi_locked(void);
 void ui_render_system_locked(void);
 void ui_system_refresh_locked(void);
+void ui_system_handle_key_locked(keypad_key_t key);
+void ui_system_handle_key_locked(keypad_key_t key);
 void ui_scan_preview_open_locked(const char *object_id, const char *session_id);
 void ui_scan_preview_screen_open_locked(void);
 void ui_scan_preview_close_locked(void);
@@ -288,6 +292,7 @@ esp_err_t ui_event_dispatcher_start(void);
 void ui_event_dispatcher_stop(void);
 /* Caller is the LVGL timer task and already holds the LVGL port lock. */
 void ui_event_dispatcher_dispatch_pending_locked(void);
+esp_err_t ui_event_dispatcher_queue_locale_save(ui_locale_t locale);
 
 
 /* Async service callbacks. */
