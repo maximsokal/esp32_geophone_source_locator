@@ -164,7 +164,23 @@ typedef enum
 {
     SEISMIC_RECORDER_POSITION_SOURCE_NONE = 0,
     SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+    SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO,
 } seismic_recorder_position_source_t;
+
+typedef enum
+{
+    SEISMIC_RECORDER_GEOMETRY_Z_PLANAR = 0,
+    SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+} seismic_recorder_geometry_z_policy_t;
+
+#define SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE 40U
+
+typedef struct
+{
+    bool available;
+    seismic_recorder_geometry_z_policy_t effective_policy;
+    char fallback_reason[SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE];
+} seismic_recorder_geometry_z_provenance_t;
 
 
 typedef struct
@@ -181,6 +197,7 @@ typedef struct
 typedef struct
 {
     seismic_recorder_pod_participation_t pods[OBJECT_STORE_POD_COUNT];
+    seismic_recorder_geometry_z_provenance_t z_provenance;
 } seismic_recorder_session_participation_t;
 
 

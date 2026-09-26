@@ -19,6 +19,8 @@ typedef struct
     int scl_driven_low;
     int rising_edges;
     int64_t now_us;
+    unsigned log_calls;
+    char last_log[128];
 
     /* MAX-248 address probe: result per 7-bit address (default ESP_OK is
      * overridden by probe_default when probe_configured is false). */
@@ -36,3 +38,4 @@ typedef struct
 extern fake_lines_t g_fake_lines;
 
 void fake_lines_reset(void);
+void fake_sensor_bus_log(const char *tag, const char *format, ...);

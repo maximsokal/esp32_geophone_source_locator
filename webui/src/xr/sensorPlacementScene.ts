@@ -4,7 +4,7 @@ import { webXrLocalFloorToProject } from './scanViewportScene';
 
 export type SensorPlacementNode = 'MAIN' | 'G1' | 'G2' | 'G3' | 'G4';
 export type SensorPlacementStatus = 'anchored' | 'cs_projected' | 'visual_only' | 'cs_unregistered';
-export type SensorPlacementSource = 'channel_sounding' | 'apriltag';
+export type SensorPlacementSource = 'channel_sounding' | 'channel_sounding_baro' | 'apriltag';
 export type SensorPlacementPosition = readonly [number, number, number];
 
 export interface SensorPlacementMarker {
@@ -68,7 +68,9 @@ function readCsPosition(pod: LocalizationSessionPodGeometry, node: SensorPlaceme
 
   return {
     positionM,
-    source: pod.position_source === 'channel_sounding' ? 'channel_sounding' : null,
+    source: pod.position_source === 'channel_sounding_baro'
+      ? 'channel_sounding_baro'
+      : pod.position_source === 'channel_sounding' ? 'channel_sounding' : null,
     uncertaintyM: metricM(pod.uncertainty_mm, true),
     residualM: metricM(pod.residual_mm),
   };

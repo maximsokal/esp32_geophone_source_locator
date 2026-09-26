@@ -581,7 +581,7 @@ export interface LocalizationSessionPodGeometry {
   assigned?: boolean;
   node_id?: number | null;
   hardware_id?: string | null;
-  position_source?: 'none' | 'channel_sounding';
+  position_source?: 'none' | 'channel_sounding' | 'channel_sounding_baro';
   x_mm?: number;
   y_mm?: number;
   z_mm?: number;
@@ -594,6 +594,8 @@ export interface LocalizationSessionPodGeometry {
 
 export interface LocalizationSessionGeometry {
   available: boolean;
+  z_policy_effective?: 'planar' | 'barometric_relative';
+  z_fallback_reason?: string;
   pods: LocalizationSessionPodGeometry[];
 }
 

@@ -51,6 +51,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        device_status
         nrf_geometry_solver
         nrf_topology_service
         object_store

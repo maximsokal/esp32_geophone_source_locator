@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "nrf_bme280.h"
+#include "nrf_baro_altitude.h"
 
 #define TEST_REG_CHIP_ID 0xD0U
 #define TEST_REG_RESET 0xE0U
@@ -368,19 +369,28 @@ static void test_read_propagates_transfer_failure_without_stale_output(void)
 static void test_pressure_to_altitude_mm_linear_approximation(void)
 {
     /* Sea level reference -> zero altitude. */
-    assert(nrf_bme280_pressure_to_altitude_mm(101325U) == 0);
+    assert(nrf_baro_pressure_to_altitude_mm(101325U) == 0);
 
     /* Lower pressure (higher up) -> positive altitude; higher pressure
      * (lower down) -> negative altitude. 12 Pa/m, so a 120 Pa drop is
      * exactly 10 m = 10000 mm. */
-    assert(nrf_bme280_pressure_to_altitude_mm(101325U - 120U) == 10000);
-    assert(nrf_bme280_pressure_to_altitude_mm(101325U + 120U) == -10000);
+    assert(nrf_baro_pressure_to_altitude_mm(101325U - 120U) == 10000);
+    assert(nrf_baro_pressure_to_altitude_mm(101325U + 120U) == -10000);
 
     /* The lowest representable pressure remains finite in the fixed-point
      * calculation; the highest representable pressure exercises the negative
      * saturation guard. */
-    assert(nrf_bme280_pressure_to_altitude_mm(0U) == 8443750);
-    assert(nrf_bme280_pressure_to_altitude_mm(UINT32_MAX) == INT32_MIN);
+    assert(nrf_baro_pressure_to_altitude_mm(0U) == 8443750);
+    assert(nrf_baro_pressure_to_altitude_mm(UINT32_MAX) == INT32_MIN);
+
+    /* Regression against the REMOTE implementation before extraction. */
+    for (uint32_t pressure_pa = 30000U; pressure_pa <= 120000U; ++pressure_pa) {
+        const int64_t old_altitude_mm =
+            ((INT64_C(101325) - (int64_t)pressure_pa) * INT64_C(1000)) /
+            INT64_C(12);
+        assert(nrf_baro_pressure_to_altitude_mm(pressure_pa) ==
+               (int32_t)old_altitude_mm);
+    }
 }
 
 int main(void)

@@ -24,63 +24,31 @@ typedef struct
     /* The REMOTE's sensor snapshot was valid and topology-current at read
      * time. Only such a REMOTE is handed to the solver at all. */
     bool sensor_valid;
-    /* ABSOLUTE barometric altitude exactly as nrf_bme280_pressure_to_
-     * altitude_mm() reports it: referenced to a fixed 101325 Pa sea-level
-     * pressure (hundreds of meters away from 0 at a real site). Never a
-     * solver z -- seismic_recorder_geometry_build_inputs() converts it into
-     * a relative height, or ignores it, per the selected Z policy. */
-    int32_t barometric_altitude_mm;
+    bool height_reference_valid;
+    uint16_t height_reference_generation;
+    int32_t relative_z_mm;
     bool leveled;
 } seismic_recorder_geometry_channel_status_t;
 
 
-/*
- * How per-node relative height (nrf_geometry_node_input_t.z_mm, "relative
- * altitude, 0 for MAIN, already subtracted") is derived (MAX-204).
- *
- * PLANAR: every node at z == 0. The default: BME280 absolute accuracy is
- * about +-1 hPa between separate units (~+-8 m of apparent height), so raw
- * barometric differences between different REMOTE boards are not a usable
- * height without per-device offset calibration. For a practically flat
- * deployment the error of ignoring a real height difference dz on a slant
- * CS distance d is only d - sqrt(d^2 - dz^2) (e.g. 0.1 m for dz = 1 m at
- * d = 5 m), far smaller than an uncalibrated barometric offset.
- *
- * BAROMETRIC_RELATIVE: z_i = barometric_altitude_i - median over every valid
- * REMOTE in this same read. MAIN reports no barometric data, so it is
- * placed on that same median reference plane (z == 0). Only differences
- * taken at the same moment are used, so weather drift cancels; per-device
- * offsets do NOT cancel -- use only with calibrated units.
- */
-typedef enum
+typedef struct
 {
-    SEISMIC_RECORDER_GEOMETRY_Z_PLANAR = 0,
-    SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
-} seismic_recorder_geometry_z_policy_t;
+    bool valid;
+    uint16_t generation;
+    int32_t relative_z_mm;
+} seismic_recorder_geometry_main_reference_t;
 
 
-/*
- * Build the geometry solver's node list from the current topology snapshot
- * and per-channel sensor status. MAIN is always included at z_mm == 0 (the
- * fixed-origin convention). Every REMOTE z_mm is RELATIVE, derived per
- * `z_policy` (see seismic_recorder_geometry_z_policy_t) -- never the raw
- * absolute barometric altitude, which would otherwise put REMOTEs tens to
- * hundreds of meters above MAIN and collapse every MAIN-to-REMOTE horizontal
- * projection to zero (MAX-204). A REMOTE that is ASSIGNED but whose sensor
- * snapshot is not currently valid is left out of the input set entirely
- * (and therefore reported unsolved by the solver) rather than guessed at.
- *
- * Returns ESP_ERR_INVALID_STATE if MAIN itself is not ASSIGNED (the solver
- * always requires a MAIN node) and ESP_ERR_INVALID_ARG if more nodes would
- * be produced than `max_inputs` holds or `z_policy` is unknown.
- */
+/* Build solver inputs with a single generation-checked relative height policy. */
 esp_err_t seismic_recorder_geometry_build_inputs(
     const nrf_topology_snapshot_t *topology,
     const seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT],
+    const seismic_recorder_geometry_main_reference_t *main_reference,
     seismic_recorder_geometry_z_policy_t z_policy,
     nrf_geometry_node_input_t *inputs,
     size_t max_inputs,
-    size_t *input_count
+    size_t *input_count,
+    seismic_recorder_geometry_z_provenance_t *provenance
 );
 
 
@@ -120,6 +88,7 @@ bool seismic_recorder_geometry_all_assigned_pods_computed(
 esp_err_t seismic_recorder_geometry_build_participation(
     const nrf_topology_snapshot_t *topology,
     const object_store_geometry_t *geometry,
+    const seismic_recorder_geometry_z_provenance_t *provenance,
     seismic_recorder_session_participation_t *participation
 );
 

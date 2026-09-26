@@ -1262,15 +1262,18 @@ esp_err_t nrf_topology_service_request_all_sensor_refresh(void)
     return ESP_OK;
 }
 
-esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask)
+esp_err_t nrf_topology_service_request_height_reference_capture(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation)
 {
     TaskHandle_t task;
     uint8_t mask = 0U;
 
-    if (requested_channel_mask == NULL) {
+    if (requested_channel_mask == NULL || requested_generation == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     *requested_channel_mask = 0U;
+    *requested_generation = 0U;
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
@@ -1297,6 +1300,7 @@ esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *request
     s_height_reference_pending_mask = mask;
     s_height_reference_pending_generation = s_height_reference_generation;
     *requested_channel_mask = mask;
+    *requested_generation = s_height_reference_generation;
     portEXIT_CRITICAL(&s_state_lock);
 
     (void)xTaskNotifyGive(task);

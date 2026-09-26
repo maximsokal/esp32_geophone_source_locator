@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "device_status.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -53,10 +54,11 @@
 #define SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR    3U
 #define SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS     (15000U * SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR)
 
-/* MAX-204: uncalibrated BME280 units disagree by up to ~+-8 m of apparent
- * height, so the frozen layout is planar until per-device barometric offset
- * calibration exists (see seismic_recorder_geometry_z_policy_t). */
+#if defined(CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE)
+#define SEISMIC_RECORDER_GEOMETRY_Z_POLICY SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+#else
 #define SEISMIC_RECORDER_GEOMETRY_Z_POLICY SEISMIC_RECORDER_GEOMETRY_Z_PLANAR
+#endif
 
 
 static const char *TAG = "SEISMIC_RECORDER";
@@ -1174,20 +1176,36 @@ static esp_err_t seismic_recorder_prepare_geometry(
             continue;
         }
         channels[channel].sensor_valid = true;
-        channels[channel].barometric_altitude_mm = cache.sensor.altitude_mm;
+        channels[channel].height_reference_valid =
+            cache.sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID;
+        channels[channel].height_reference_generation = cache.sensor.reference_generation;
+        channels[channel].relative_z_mm = cache.sensor.relative_z_mm;
         channels[channel].leveled =
             cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
     }
 
+    device_status_snapshot_t device_status = {0};
+    seismic_recorder_geometry_main_reference_t main_reference = {0};
+    if (device_status_get_snapshot(&device_status) == ESP_OK) {
+        main_reference.valid =
+            device_status.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+        main_reference.generation = device_status.main.height_reference.generation;
+        main_reference.relative_z_mm = device_status.main.height_reference.relative_z_mm;
+    }
+
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t input_count = 0U;
+    seismic_recorder_geometry_z_provenance_t z_provenance = {0};
     err = seismic_recorder_geometry_build_inputs(
-        &topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_POLICY,
-        inputs, NRF_GEOMETRY_MAX_NODES, &input_count
+        &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_POLICY,
+        inputs, NRF_GEOMETRY_MAX_NODES, &input_count, &z_provenance
     );
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "START rejected: could not build geometry inputs err=%s", esp_err_to_name(err));
         return err;
+    }
+    if (z_provenance.fallback_reason[0] != '\0') {
+        ESP_LOGW(TAG, "barometric-relative Z fell back to planar: %s", z_provenance.fallback_reason);
     }
 
     nrf_geometry_solution_t solution;
@@ -1234,6 +1252,7 @@ static esp_err_t seismic_recorder_prepare_geometry(
     err = seismic_recorder_geometry_build_participation(
         &topology,
         &geometry,
+        &z_provenance,
         participation
     );
     if (err != ESP_OK) {

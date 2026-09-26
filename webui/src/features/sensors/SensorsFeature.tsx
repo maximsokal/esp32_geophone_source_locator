@@ -87,7 +87,7 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
         </dl>
       </article>
 
-      <LevelingCard gate={status?.recording_gate} pods={pods} onCalibrateHeights={onCalibrateHeights} />
+      <LevelingCard gate={status?.recording_gate} main={status?.main} pods={pods} onCalibrateHeights={onCalibrateHeights} />
 
       <div className="pod-grid">
         {[0, 1, 2, 3].map((index) => {

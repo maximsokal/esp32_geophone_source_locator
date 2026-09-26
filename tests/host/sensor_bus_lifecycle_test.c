@@ -83,6 +83,14 @@ esp_err_t i2c_bus_read_byte(i2c_bus_device_handle_t device, uint8_t mem_address,
     return ESP_FAIL;
 }
 
+esp_err_t i2c_bus_write_byte(i2c_bus_device_handle_t device, uint8_t mem_address, uint8_t data)
+{
+    (void)device;
+    (void)mem_address;
+    (void)data;
+    return ESP_FAIL;
+}
+
 esp_err_t i2c_bus_device_delete(i2c_bus_device_handle_t *device)
 {
     ++s_device_delete_calls;

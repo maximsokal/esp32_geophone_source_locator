@@ -11,6 +11,7 @@
 #include "seismic_acquisition.h"
 #include "localization_calculate.h"
 #include "localization_job.h"
+#include "main_barometer.h"
 #include "nrf_topology_service.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -233,13 +234,16 @@ static esp_err_t web_control_calibrate_heights(httpd_req_t *request)
     }
 
     uint8_t channel_mask = 0U;
-    err = nrf_topology_service_request_height_reference_capture(&channel_mask);
+    uint16_t generation = 0U;
+    err = nrf_topology_service_request_height_reference_capture(
+        &channel_mask, &generation);
     if (err == ESP_ERR_NOT_FOUND) {
         return web_control_send_height_calibration_result(request, 0U, "no_remotes", NULL);
     }
     if (err != ESP_OK) {
         return web_control_send_result(request, "calibrate_heights", err, NULL);
     }
+    (void)main_barometer_request_height_reference_capture(generation);
     return web_control_send_height_calibration_result(request, channel_mask, NULL, NULL);
 }
 

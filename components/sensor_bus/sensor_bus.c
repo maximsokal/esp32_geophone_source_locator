@@ -4,12 +4,17 @@
 
 #include <string.h>
 
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
 #define SENSOR_BUS_I2C_PORT I2C_NUM_0
 #define SENSOR_BUS_TCA9548A_ADDR_MIN 0x70U
 #define SENSOR_BUS_TCA9548A_ADDR_MAX 0x77U
+#define SENSOR_BUS_BMP280_ADDR_MIN 0x76U
+#define SENSOR_BUS_BMP280_ADDR_MAX 0x77U
+
+static const char *TAG = "sensor_bus";
 
 static i2c_bus_handle_t s_bus = NULL;
 static i2c_bus_device_handle_t s_ina3221 = NULL;
@@ -172,6 +177,55 @@ static esp_err_t sensor_bus_classify_locked(uint8_t address, esp_err_t transfer_
     return probe_err == ESP_OK ? transfer_err : probe_err;
 }
 
+/* Caller holds s_lock. Confirm the writable TCA control register and leave
+ * the mux in exactly the state it had before discovery. */
+static bool sensor_bus_verify_tca_candidate_locked(
+    i2c_bus_device_handle_t device,
+    uint8_t address
+)
+{
+    uint8_t original_mask = 0U;
+    esp_err_t err = i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, &original_mask);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "TCA9548A candidate 0x%02X rejected: initial control read failed (%d)",
+                 address, (int)err);
+        return false;
+    }
+
+    const uint8_t test_mask = (uint8_t)(original_mask ^ 0x01U);
+    err = i2c_bus_write_byte(device, NULL_I2C_MEM_ADDR, test_mask);
+    bool valid = err == ESP_OK;
+    const char *reason = "control write failed";
+    if (valid) {
+        uint8_t readback = 0U;
+        err = i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, &readback);
+        if (err != ESP_OK) {
+            valid = false;
+            reason = "control readback failed";
+        } else if (readback != test_mask) {
+            valid = false;
+            reason = "control readback mismatch";
+        }
+    }
+
+    const esp_err_t restore_err = i2c_bus_write_byte(
+        device, NULL_I2C_MEM_ADDR, original_mask);
+    uint8_t restored_mask = 0U;
+    const esp_err_t restore_read_err = restore_err == ESP_OK
+        ? i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, &restored_mask)
+        : restore_err;
+    if (restore_read_err != ESP_OK || restored_mask != original_mask) {
+        valid = false;
+        reason = "control restore failed";
+    }
+
+    if (!valid) {
+        ESP_LOGW(TAG, "TCA9548A candidate 0x%02X rejected: %s (%d)",
+                 address, reason, (int)err);
+    }
+    return valid;
+}
+
 /* Caller must already hold s_lock. */
 static esp_err_t sensor_bus_init_locked(void)
 {
@@ -283,6 +337,12 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
     for (uint8_t candidate_address = SENSOR_BUS_TCA9548A_ADDR_MIN;
          candidate_address <= SENSOR_BUS_TCA9548A_ADDR_MAX;
          ++candidate_address) {
+        /* BMP280 shares the main bus and may occupy either address. */
+        if (candidate_address >= SENSOR_BUS_BMP280_ADDR_MIN &&
+            candidate_address <= SENSOR_BUS_BMP280_ADDR_MAX) {
+            continue;
+        }
+
         i2c_bus_device_handle_t candidate = i2c_bus_device_create(
             s_bus, candidate_address, SENSOR_BUS_I2C_SPEED_HZ);
         if (candidate == NULL) {
@@ -290,15 +350,15 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
             goto fail;
         }
 
-        uint8_t control = 0U;
         /* MAX-248: a NACK is ESP_ERR_NOT_FOUND after classification,
          * whatever code the backend used for it. */
+        uint8_t response = 0U;
         const esp_err_t probe_err = sensor_bus_classify_locked(
             candidate_address,
-            i2c_bus_read_byte(candidate, NULL_I2C_MEM_ADDR, &control));
-        (void)control;
+            i2c_bus_read_byte(candidate, NULL_I2C_MEM_ADDR, &response));
 
-        if (probe_err == ESP_OK) {
+        if (probe_err == ESP_OK &&
+            sensor_bus_verify_tca_candidate_locked(candidate, candidate_address)) {
             if (found != NULL) {
                 const esp_err_t candidate_delete_err = i2c_bus_device_delete(&candidate);
                 const esp_err_t found_delete_err = i2c_bus_device_delete(&found);
@@ -321,7 +381,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
             err = delete_err;
             goto fail;
         }
-        if (probe_err != ESP_ERR_NOT_FOUND) {
+        if (probe_err != ESP_ERR_NOT_FOUND && probe_err != ESP_OK) {
             err = probe_err;
             goto fail;
         }

@@ -7,6 +7,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "runtime_observability.h"
+#include "device_status.h"
 #include "seismic_recorder.h"
 #include "seismic_acquisition.h"
 #include "seismic_recorder_internal.h"
@@ -21,6 +22,7 @@ static nrf_topology_snapshot_t fake_topology;
 static nrf_topology_leveling_summary_t fake_leveling;
 static nrf_cs_cycle_snapshot_t fake_cycle;
 static nrf_remote_sensor_cache_t fake_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
+static device_status_snapshot_t fake_device_status;
 static object_store_geometry_t last_geometry;
 static bool last_geometry_set;
 static object_store_cs_pairs_t last_cs_pairs;
@@ -106,6 +108,7 @@ esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy) {
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot) { *snapshot = fake_cycle; return ESP_OK; }
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot) { *snapshot = fake_topology; return ESP_OK; }
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
+esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot) { if (snapshot == NULL) return ESP_ERR_INVALID_ARG; *snapshot = fake_device_status; return ESP_OK; }
 
 esp_err_t seismic_recorder_fs_create_session(const char *object_id, uint32_t rate, uint8_t channels, char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE], FILE **file) { (void)object_id; (void)rate; (void)channels; snprintf(session_id, SEISMIC_RECORDER_SESSION_ID_SIZE, "S000001"); fake_file = tmpfile(); *file = fake_file; return fake_file != NULL ? ESP_OK : ESP_FAIL; }
 esp_err_t seismic_buffer_copy_latest(seismic_frame_t *frames, size_t max_frames, size_t *count, seismic_buffer_info_t *info) { (void)frames; (void)max_frames; *count = 0U; memset(info, 0, sizeof(*info)); info->total_frames = 0U; return ESP_OK; }
@@ -186,7 +189,7 @@ int main(void)
     assert(!last_cs_pairs_set);
     assert(metadata_write_calls == 0U);
 
-    /* Three assigned, leveled, altitude-reporting REMOTE pods on channels
+    /* Three assigned, leveled, same-generation reference REMOTE pods on channels
      * 0-2, plus MAIN -- the MAX-165 minimum ("exactly 3 = allowed, planar/2D
      * only") rather than MAX-118's older, now-superseded 1-REMOTE minimum.
      * Reuses the exact mirror-disambiguation 3-4-5-triangle mesh from
@@ -220,10 +223,15 @@ int main(void)
     fake_leveling.accepted_count = 3U;
 
     memset(fake_sensor_cache, 0, sizeof(fake_sensor_cache));
+    memset(&fake_device_status, 0, sizeof(fake_device_status));
+    fake_device_status.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    fake_device_status.main.height_reference.generation = 7U;
     for (uint8_t channel = 0U; channel < 3U; ++channel) {
         fake_sensor_cache[channel].response_valid = true;
         fake_sensor_cache[channel].topology_current = true;
         fake_sensor_cache[channel].sensor.altitude_mm = 0;
+        fake_sensor_cache[channel].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+        fake_sensor_cache[channel].sensor.reference_generation = 7U;
         fake_sensor_cache[channel].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
     }
 
@@ -266,15 +274,18 @@ int main(void)
     assert(start_participation.pods[0].node_id == 1U);
     assert(start_participation.pods[0].hardware_id_length == 2U);
     assert(start_participation.pods[0].hardware_id[0] == 0xA0U && start_participation.pods[0].hardware_id[1] == 0x10U);
-    assert(start_participation.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(start_participation.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
     assert(start_participation.pods[1].assigned && start_participation.pods[1].node_id_known);
     assert(start_participation.pods[1].node_id == 2U && start_participation.pods[1].hardware_id_length == 2U);
     assert(start_participation.pods[1].hardware_id[0] == 0xA1U && start_participation.pods[1].hardware_id[1] == 0x11U);
-    assert(start_participation.pods[1].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(start_participation.pods[1].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
     assert(start_participation.pods[2].assigned && start_participation.pods[2].node_id_known);
     assert(start_participation.pods[2].node_id == 3U && start_participation.pods[2].hardware_id_length == 2U);
     assert(start_participation.pods[2].hardware_id[0] == 0xA2U && start_participation.pods[2].hardware_id[1] == 0x12U);
-    assert(start_participation.pods[2].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(start_participation.pods[2].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
+    assert(start_participation.z_provenance.available);
+    assert(start_participation.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
+    assert(start_participation.z_provenance.fallback_reason[0] == '\0');
     assert(!start_participation.pods[3].assigned && !start_participation.pods[3].node_id_known);
     assert(start_participation.pods[3].hardware_id_length == 0U);
     assert(start_participation.pods[3].position_source == SEISMIC_RECORDER_POSITION_SOURCE_NONE);

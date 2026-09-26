@@ -40,8 +40,11 @@ static unsigned s_scan_store_calls;
 static int s_measurement_state;
 static esp_err_t s_height_capture_result;
 static uint8_t s_height_capture_channel_mask;
+static uint16_t s_height_capture_generation;
 static unsigned s_height_capture_calls;
 static unsigned s_height_capture_wire_sends;
+static uint16_t s_main_capture_generation;
+static unsigned s_main_capture_calls;
 static fake_admission_mutex_t *s_admission_mutex;
 
 static void reset_fakes(void)
@@ -65,8 +68,11 @@ static void reset_fakes(void)
     s_measurement_state = MEASUREMENT_SERVICE_LIVE;
     s_height_capture_result = ESP_OK;
     s_height_capture_channel_mask = 0U;
+    s_height_capture_generation = 42U;
     s_height_capture_calls = 0U;
     s_height_capture_wire_sends = 0U;
+    s_main_capture_generation = 0U;
+    s_main_capture_calls = 0U;
     storage_bulk_admission_exit_protected();
 }
 
@@ -124,14 +130,25 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
     return ESP_OK;
 }
 
-esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask)
+esp_err_t nrf_topology_service_request_height_reference_capture(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation)
 {
     assert(requested_channel_mask != NULL);
+    assert(requested_generation != NULL);
     ++s_height_capture_calls;
     if (s_height_capture_result == ESP_OK) {
         *requested_channel_mask = s_height_capture_channel_mask;
+        *requested_generation = s_height_capture_generation;
     }
     return s_height_capture_result;
+}
+
+esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
+{
+    s_main_capture_calls++;
+    s_main_capture_generation = generation;
+    return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
 esp_err_t measurement_service_start_object_async(const char *object_id)
@@ -547,6 +564,7 @@ static void test_calibrate_heights_rejects_active_measurements(void)
         assert(strcmp(response, "{\"ok\":false,\"busy_reason\":\"recording_active\"}") == 0);
         assert(s_height_capture_calls == 0U);
         assert(s_height_capture_wire_sends == 0U);
+        assert(s_main_capture_calls == 0U);
     }
 }
 
@@ -562,6 +580,7 @@ static void test_calibrate_heights_rejects_no_remotes(void)
     assert(strcmp(response, "{\"ok\":false,\"error\":\"no_remotes\"}") == 0);
     assert(s_height_capture_calls == 1U);
     assert(s_height_capture_wire_sends == 0U);
+    assert(s_main_capture_calls == 0U);
 }
 
 static void test_calibrate_heights_queues_channel_mask_without_bus_io(void)
@@ -578,6 +597,8 @@ static void test_calibrate_heights_queues_channel_mask_without_bus_io(void)
         "{\"ok\":true,\"action\":\"calibrate_heights\",\"requested_channels\":[0,1,3]}") == 0);
     assert(s_height_capture_calls == 1U);
     assert(s_height_capture_wire_sends == 0U);
+    assert(s_main_capture_calls == 1U);
+    assert(s_main_capture_generation == s_height_capture_generation);
 }
 
 static void test_phone_location_handler_round_trip(void)

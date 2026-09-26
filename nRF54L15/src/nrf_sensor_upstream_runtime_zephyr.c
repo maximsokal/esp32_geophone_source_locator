@@ -11,6 +11,7 @@
 #include "nrf_bme280.h"
 #include "nrf_blue_led.h"
 #include "nrf_ema_filter.h"
+#include "nrf_baro_altitude.h"
 #include "nrf_height_reference.h"
 #include "nrf_verticality_state.h"
 #include "nrf_node_state.h"
@@ -453,7 +454,7 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
     }
     if (did_refresh &&
         (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U) {
-        const int32_t altitude_mm = nrf_bme280_pressure_to_altitude_mm(
+        const int32_t altitude_mm = nrf_baro_pressure_to_altitude_mm(
             s_runtime.core.snapshot.env.pressure_pa);
         if (!filter_altitude_sample(altitude_mm, completion_uptime_ms)) {
             s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_ENV;

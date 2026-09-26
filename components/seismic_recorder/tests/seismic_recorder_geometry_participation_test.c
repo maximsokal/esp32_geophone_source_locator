@@ -4,6 +4,23 @@
 #include "seismic_recorder_geometry_policy.h"
 
 
+static esp_err_t build_participation(
+    const nrf_topology_snapshot_t *topology,
+    const object_store_geometry_t *geometry,
+    seismic_recorder_geometry_z_policy_t policy,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    const seismic_recorder_geometry_z_provenance_t provenance = {
+        .available = true,
+        .effective_policy = policy,
+    };
+    return seismic_recorder_geometry_build_participation(
+        topology, geometry, &provenance, participation
+    );
+}
+
+
 static void assert_empty_participation(const seismic_recorder_session_participation_t *participation)
 {
     for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
@@ -25,7 +42,7 @@ static void test_no_remotes_and_all_assigned(void)
     object_store_geometry_t geometry = {0};
     seismic_recorder_session_participation_t participation;
 
-    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &participation) == ESP_OK);
+    assert(build_participation(&topology, &geometry, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, &participation) == ESP_OK);
     assert_empty_participation(&participation);
 
     for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
@@ -38,7 +55,7 @@ static void test_no_remotes_and_all_assigned(void)
         geometry.pods[i].computed = true;
     }
 
-    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &participation) == ESP_OK);
+    assert(build_participation(&topology, &geometry, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, &participation) == ESP_OK);
     for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
         assert(participation.pods[i].assigned && participation.pods[i].node_id_known);
         assert(participation.pods[i].node_id == 10U + i);
@@ -46,6 +63,10 @@ static void test_no_remotes_and_all_assigned(void)
         assert(participation.pods[i].hardware_id[0] == i * 16U);
         assert(participation.pods[i].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
     }
+
+    assert(build_participation(&topology, &geometry, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE, &participation) == ESP_OK);
+    assert(participation.z_provenance.available);
+    assert(participation.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
 }
 
 
@@ -72,7 +93,7 @@ static void test_gaps_unassigned_states_and_uncomputed_positions(void)
     topology.remotes[3].hardware_id[0] = 0xA4U;
     geometry.pods[0].computed = true;
 
-    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &participation) == ESP_OK);
+    assert(build_participation(&topology, &geometry, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, &participation) == ESP_OK);
     assert(participation.pods[0].assigned && participation.pods[0].node_id_known);
     assert(participation.pods[0].node_id == 21U && participation.pods[0].hardware_id[0] == 0xA1U);
     assert(participation.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
@@ -97,7 +118,7 @@ static void test_gaps_unassigned_states_and_uncomputed_positions(void)
         topology.remotes[0].hardware_id_length = 1U;
         topology.remotes[0].hardware_id[0] = 0x90U;
         memset(&geometry, 0, sizeof(geometry));
-        assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &participation) == ESP_OK);
+        assert(build_participation(&topology, &geometry, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, &participation) == ESP_OK);
         assert(!participation.pods[0].assigned && !participation.pods[0].node_id_known);
         assert(participation.pods[0].node_id == 0U && participation.pods[0].hardware_id_length == 0U);
         assert(participation.pods[0].hardware_id[0] == 0U);
@@ -117,7 +138,7 @@ static void test_hardware_id_length_is_clamped(void)
         topology.remotes[0].hardware_id[i] = (uint8_t)(0xD0U + i);
     }
 
-    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &participation) == ESP_OK);
+    assert(build_participation(&topology, &geometry, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, &participation) == ESP_OK);
     assert(participation.pods[0].hardware_id_length == NRF_UPSTREAM_PROTOCOL_HW_ID_MAX);
     assert(memcmp(
         participation.pods[0].hardware_id,
@@ -132,9 +153,11 @@ static void test_null_arguments_are_rejected(void)
     nrf_topology_snapshot_t topology = {0};
     object_store_geometry_t geometry = {0};
     seismic_recorder_session_participation_t participation;
-    assert(seismic_recorder_geometry_build_participation(NULL, &geometry, &participation) == ESP_ERR_INVALID_ARG);
-    assert(seismic_recorder_geometry_build_participation(&topology, NULL, &participation) == ESP_ERR_INVALID_ARG);
-    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, NULL) == ESP_ERR_INVALID_ARG);
+    const seismic_recorder_geometry_z_provenance_t provenance = {0};
+    assert(seismic_recorder_geometry_build_participation(NULL, &geometry, &provenance, &participation) == ESP_ERR_INVALID_ARG);
+    assert(seismic_recorder_geometry_build_participation(&topology, NULL, &provenance, &participation) == ESP_ERR_INVALID_ARG);
+    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, NULL, &participation) == ESP_ERR_INVALID_ARG);
+    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &provenance, NULL) == ESP_ERR_INVALID_ARG);
 }
 
 

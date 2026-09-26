@@ -138,21 +138,21 @@ def test_one_firmware_starts_idle_sensor_worker_before_upstream_bootstrap():
     cmake = read("nRF54L15/zephyr/CMakeLists.txt")
     assert "../src/nrf_sensor_session.c" in cmake
     assert "../src/nrf_sensor_upstream_runtime_zephyr.c" in cmake
-    assert "../src/nrf_bme280_altitude.c" in cmake
+    assert "../src/nrf_baro_altitude.c" in cmake
 
 
 def test_altitude_payload_path_is_pure_and_covered_by_host_and_target_builds():
-    altitude = read("nRF54L15/src/nrf_bme280_altitude.c")
+    altitude = read("nRF54L15/src/nrf_baro_altitude.c")
     runtime = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
     cmake = read("nRF54L15/zephyr/CMakeLists.txt")
     manifest = read("tests/host/manifest.d/coverage-nrf.json")
 
-    assert "nrf_bme280_pressure_to_altitude_mm" in altitude
+    assert "nrf_baro_pressure_to_altitude_mm" in altitude
     assert "pow(" not in altitude
     assert "math.h" not in altitude
-    assert "nrf_bme280_pressure_to_altitude_mm(snapshot->env.pressure_pa)" in runtime
-    assert "../src/nrf_bme280_altitude.c" in cmake
-    assert manifest.count("nRF54L15/src/nrf_bme280_altitude.c") == 2
+    assert "nrf_baro_pressure_to_altitude_mm(\n            s_runtime.core.snapshot.env.pressure_pa)" in runtime
+    assert "../src/nrf_baro_altitude.c" in cmake
+    assert manifest.count("nRF54L15/src/nrf_baro_altitude.c") == 3
 
 
 def test_private_i2c_topology_is_preserved_with_max51_bluetooth_enabled():

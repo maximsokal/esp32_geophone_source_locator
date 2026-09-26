@@ -1,0 +1,6 @@
+config MAIN_BAROMETER_BMP280_ADDRESS
+    hex "Preferred MAIN BMP280 I2C address"
+    range 0x76 0x77
+    default 0x77
+    help
+        The driver probes both 0x76 and 0x77 and tries this address first.

@@ -177,13 +177,15 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     };
 
     seismic_recorder_session_participation_t participation = {0};
+    participation.z_provenance.available = true;
+    participation.z_provenance.effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE;
     participation.pods[0] = (seismic_recorder_pod_participation_t) {
         .assigned = true,
         .node_id_known = true,
         .node_id = 31U,
         .hardware_id_length = 3U,
         .hardware_id = {0x01U, 0xABU, 0xFFU},
-        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO,
     };
     participation.pods[1] = (seismic_recorder_pod_participation_t) {
         .assigned = true,
@@ -196,7 +198,7 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     };
     participation.pods[3] = (seismic_recorder_pod_participation_t) {
         .assigned = true,
-        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO,
     };
 
     seismic_recorder_snapshot_t snapshot = {0};
@@ -208,6 +210,9 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
 
     assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "recording", &participation) == ESP_OK);
     assert(strstr(s_persisted_json, "\"schema_version\":2") != NULL);
+    assert(strstr(s_persisted_json, "\"z_policy_effective\":\"barometric_relative\"") != NULL);
+    assert(strstr(s_persisted_json, "\"z_fallback_reason\":\"\"") != NULL);
+    assert(strstr(s_persisted_json, "\"position_source\":\"channel_sounding_baro\"") != NULL);
     assert(strstr(s_persisted_json, "\"hardware_id\":\"01abff\"") != NULL);
     assert(strstr(s_persisted_json, "\"node_id\":null") != NULL);
     assert(strstr(s_persisted_json, "\"hardware_id\":null") != NULL);
@@ -218,7 +223,7 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     assert(readback.pods[0].node_id == 31U);
     assert(readback.pods[0].hardware_id_length == 3U);
     assert(memcmp(readback.pods[0].hardware_id, participation.pods[0].hardware_id, 3U) == 0);
-    assert(readback.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(readback.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
     assert(readback.pods[1].assigned && readback.pods[1].node_id_known && readback.pods[1].node_id == 32U);
     assert(readback.pods[1].hardware_id_length == 0U);
     assert(readback.pods[1].position_source == SEISMIC_RECORDER_POSITION_SOURCE_NONE);
@@ -227,7 +232,10 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     assert(readback.pods[2].position_source == SEISMIC_RECORDER_POSITION_SOURCE_NONE);
     assert(readback.pods[3].assigned && !readback.pods[3].node_id_known);
     assert(readback.pods[3].hardware_id_length == 0U);
-    assert(readback.pods[3].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(readback.pods[3].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
+    assert(readback.z_provenance.available);
+    assert(readback.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
+    assert(readback.z_provenance.fallback_reason[0] == '\0');
 
     object_store_geometry_t geometry;
     assert(seismic_recorder_read_session_geometry("OBJ_0001", "S000001", &geometry) == ESP_OK);
@@ -239,14 +247,29 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     assert(geometry.pods[3].computed && !geometry.pods[3].leveled);
     assert(geometry.pods[3].x_mm == -10 && geometry.pods[3].y_mm == 20 && geometry.pods[3].z_mm == -30);
 
-    /* Recovery-style rewrites pass NULL; the real writer must retain the v2
-     * participation read from the existing session file. */
+    /* A planar fallback is explicit v2 evidence, and recovery-style rewrites
+     * pass NULL while retaining that evidence from the existing session. */
+    participation.z_provenance.effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+    snprintf(participation.z_provenance.fallback_reason,
+        sizeof(participation.z_provenance.fallback_reason), "reference_generation_mismatch");
+    participation.pods[0].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+    participation.pods[3].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+    assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "complete", &participation) == ESP_OK);
+    assert(strstr(s_persisted_json, "\"z_policy_effective\":\"planar\"") != NULL);
+    assert(strstr(s_persisted_json, "\"z_fallback_reason\":\"reference_generation_mismatch\"") != NULL);
+    assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &readback) == ESP_OK);
+    assert(readback.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_PLANAR);
+    assert(strcmp(readback.z_provenance.fallback_reason, "reference_generation_mismatch") == 0);
+    assert(readback.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+
     profile.geometry.pods[0].x_mm = 999;
     assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "complete", NULL) == ESP_OK);
     assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &readback) == ESP_OK);
     assert(readback.pods[0].assigned && readback.pods[0].node_id == 31U);
     assert(readback.pods[0].hardware_id_length == 3U && readback.pods[0].hardware_id[1] == 0xABU);
     assert(readback.pods[3].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(readback.z_provenance.available);
+    assert(strcmp(readback.z_provenance.fallback_reason, "reference_generation_mismatch") == 0);
 }
 
 
@@ -269,6 +292,7 @@ static void test_v1_participation_defaults(void)
     assert(participation.pods[2].assigned && !participation.pods[2].node_id_known);
     assert(participation.pods[2].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
     assert(!participation.pods[3].assigned && !participation.pods[3].node_id_known);
+    assert(!participation.z_provenance.available);
 }
 
 
@@ -298,6 +322,7 @@ static void assert_v2_bad_pod_is_skipped(const char *bad_pod)
     assert(participation.pods[1].node_id == 7U && participation.pods[1].hardware_id_length == 2U);
     assert(participation.pods[1].hardware_id[0] == 0xA0U && participation.pods[1].hardware_id[1] == 0xFFU);
     assert(participation.pods[1].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(!participation.z_provenance.available);
 }
 
 

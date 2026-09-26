@@ -127,11 +127,16 @@ describe('ScanPointCloudViewport', () => {
     expect(details).toContain('<dt>Residual</dt><dd>0.004 m</dd>');
     expect(details).toContain('<dt>Tag ID</dt><dd>1</dd>');
 
+    const barometricDetails = render(scanViewForMode('quality'), snapshot(), 'perspective', {
+      sensorMarkers: [{ ...marker, source: 'channel_sounding_baro' }], selectedSensorNode: 'G1',
+    });
+    expect(barometricDetails).toContain('<dt>Source</dt><dd>Channel Sounding + barometric Z</dd>');
+
     const sensorGeometry: LocalizationSessionGeometry = {
       available: true,
       pods: [
         { pod: 0, node_id: 0, computed: true, assigned: true, leveled: true, position_source: 'none', x_mm: 0, y_mm: 0, z_mm: 0 },
-        { pod: 1, node_id: 1, computed: true, assigned: true, leveled: true, position_source: 'channel_sounding', x_mm: 1000, y_mm: 0, z_mm: 200 },
+        { pod: 1, node_id: 1, computed: true, assigned: true, leveled: true, position_source: 'channel_sounding_baro', x_mm: 1000, y_mm: 0, z_mm: 200 },
       ],
     };
     const invalidRegistration: RegistrationArtifact = {

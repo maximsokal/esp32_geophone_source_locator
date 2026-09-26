@@ -142,6 +142,47 @@ static bool web_status_json_add_environment(cJSON *root, const device_environmen
     return true;
 }
 
+static const char *web_status_main_height_reference_state_name(
+    device_main_height_reference_state_t state)
+{
+    switch (state) {
+        case DEVICE_MAIN_HEIGHT_REFERENCE_VALID: return "valid";
+        case DEVICE_MAIN_HEIGHT_REFERENCE_REJECTED_UNSTABLE: return "rejected_unstable";
+        case DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID: return "sensor_invalid";
+        case DEVICE_MAIN_HEIGHT_REFERENCE_NOT_ESTABLISHED:
+        default: return "not_established";
+    }
+}
+
+static bool web_status_json_add_main(cJSON *root, const device_main_status_t *main_status)
+{
+    cJSON *object = cJSON_AddObjectToObject(root, "main");
+    if (object == NULL) return false;
+
+    cJSON *height_reference = cJSON_AddObjectToObject(object, "height_reference");
+    cJSON *sensor_present = cJSON_AddObjectToObject(object, "sensor_present");
+    cJSON *sensor_valid = cJSON_AddObjectToObject(object, "sensor_valid");
+    if (height_reference == NULL || sensor_present == NULL || sensor_valid == NULL) return false;
+
+    if (cJSON_AddStringToObject(
+            height_reference, "state",
+            web_status_main_height_reference_state_name(main_status->height_reference.state)) == NULL ||
+        cJSON_AddNumberToObject(
+            height_reference, "generation", main_status->height_reference.generation) == NULL ||
+        cJSON_AddNumberToObject(
+            height_reference, "relative_z_mm", main_status->height_reference.relative_z_mm) == NULL ||
+        cJSON_AddNumberToObject(object, "pressure_pa", main_status->pressure_pa) == NULL ||
+        cJSON_AddNumberToObject(object, "temperature_mc", main_status->temperature_mc) == NULL ||
+        cJSON_AddBoolToObject(sensor_present, "bmp280", main_status->bmp280_present) == NULL ||
+        cJSON_AddBoolToObject(sensor_present, "aht20", main_status->aht20_present) == NULL ||
+        cJSON_AddBoolToObject(sensor_valid, "bmp280", main_status->bmp280_valid) == NULL ||
+        cJSON_AddBoolToObject(sensor_valid, "aht20", main_status->aht20_valid) == NULL) {
+        return false;
+    }
+    return !main_status->aht20_present ||
+        cJSON_AddNumberToObject(object, "humidity_mpct", main_status->humidity_mpct) != NULL;
+}
+
 static bool web_status_json_add_mux(cJSON *root, const device_mux_status_t *mux)
 {
     cJSON *object = cJSON_AddObjectToObject(root, "mux");
@@ -505,6 +546,7 @@ esp_err_t web_status_json_build_extended(
         ) &&
         web_status_json_add_power(root, &status.power) &&
         web_status_json_add_environment(root, &status.environment) &&
+        web_status_json_add_main(root, &status.main) &&
         web_status_json_add_mux(root, &status.mux) &&
         web_status_json_add_pods(root, &status) &&
         web_status_json_add_acquisition(

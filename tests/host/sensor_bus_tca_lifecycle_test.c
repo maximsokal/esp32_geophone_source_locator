@@ -44,6 +44,9 @@ static int s_bus_token;
 static fake_device_t s_devices[64];
 static size_t s_device_count;
 static bool s_present[128];
+static bool s_tca_present[128];
+static bool s_tca_readback_failure[128];
+static uint8_t s_tca_control[128];
 static esp_err_t s_probe_error[128];
 static uint8_t s_delete_order[64];
 static size_t s_delete_count;
@@ -55,6 +58,9 @@ static void fake_reset(void)
     (void)sensor_bus_deinit();
     memset(s_devices, 0, sizeof(s_devices));
     memset(s_present, 0, sizeof(s_present));
+    memset(s_tca_present, 0, sizeof(s_tca_present));
+    memset(s_tca_readback_failure, 0, sizeof(s_tca_readback_failure));
+    memset(s_tca_control, 0, sizeof(s_tca_control));
     memset(s_delete_order, 0, sizeof(s_delete_order));
     for (size_t i = 0; i < 128U; ++i) {
         s_probe_error[i] = ESP_FAIL;
@@ -78,6 +84,12 @@ static void idf55_nack_everywhere(void)
         g_fake_lines.probe_result[i] = ESP_ERR_NOT_FOUND;
     }
     g_fake_lines.probe_configured = true;
+}
+
+static void fake_add_tca(uint8_t address)
+{
+    s_present[address] = true;
+    s_tca_present[address] = true;
 }
 
 i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *config)
@@ -140,10 +152,29 @@ esp_err_t i2c_bus_read_byte(
     assert(data != NULL);
 
     if (s_present[fake->address]) {
-        *data = 0U;
+        *data = s_tca_present[fake->address]
+            ? s_tca_control[fake->address]
+            : 0U;
         return ESP_OK;
     }
     return s_probe_error[fake->address];
+}
+
+esp_err_t i2c_bus_write_byte(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    uint8_t data
+)
+{
+    fake_device_t *fake = device;
+    assert(fake != NULL);
+    assert(fake->active);
+    assert(mem_address == NULL_I2C_MEM_ADDR);
+    if (s_tca_present[fake->address] &&
+        !(s_tca_readback_failure[fake->address] && data == 0x01U)) {
+        s_tca_control[fake->address] = data;
+    }
+    return ESP_OK;
 }
 
 static void test_absent_tca_is_nonfatal(void)
@@ -157,8 +188,8 @@ static void test_absent_tca_is_nonfatal(void)
     assert(tca == NULL);
     assert(address == NULL_I2C_DEV_ADDR);
     assert(s_bus_create_calls == 1U);
-    assert(s_device_count == 9U); /* INA3221 + exactly eight TCA candidates. */
-    assert(s_delete_count == 8U);
+    assert(s_device_count == 7U); /* INA3221 + six non-BMP TCA candidates. */
+    assert(s_delete_count == 6U);
 
     sensor_bus_handles_t handles;
     assert(sensor_bus_get_handles(&handles) == ESP_OK);
@@ -173,7 +204,7 @@ static void test_absent_tca_is_nonfatal(void)
 static void test_single_tca_is_cached_and_owned(void)
 {
     fake_reset();
-    s_present[0x73U] = true;
+    fake_add_tca(0x73U);
 
     i2c_bus_device_handle_t first = NULL;
     uint8_t first_address = 0U;
@@ -197,8 +228,8 @@ static void test_single_tca_is_cached_and_owned(void)
 static void test_multiple_tca_candidates_are_rejected_and_cleaned(void)
 {
     fake_reset();
-    s_present[0x71U] = true;
-    s_present[0x74U] = true;
+    fake_add_tca(0x71U);
+    fake_add_tca(0x74U);
 
     i2c_bus_device_handle_t tca = NULL;
     assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_INVALID_STATE);
@@ -226,7 +257,7 @@ static void test_idf55_nack_means_absent_not_fault(void)
     i2c_bus_device_handle_t tca = NULL;
     assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_NOT_FOUND);
     assert(tca == NULL);
-    assert(g_fake_lines.probe_calls == 8);
+    assert(g_fake_lines.probe_calls == 6);
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
@@ -234,14 +265,14 @@ static void test_idf55_single_tca_is_found_among_nacks(void)
 {
     fake_reset();
     idf55_nack_everywhere();
-    s_present[0x75U] = true;
+    fake_add_tca(0x75U);
     i2c_bus_device_handle_t tca = NULL;
     uint8_t address = 0U;
     assert(sensor_bus_get_tca9548a(&tca, &address) == ESP_OK);
     assert(tca != NULL);
     assert(address == 0x75U);
     /* The ACKing TCA itself needs no probe. */
-    assert(g_fake_lines.probe_calls == 7);
+    assert(g_fake_lines.probe_calls == 5);
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
@@ -290,6 +321,59 @@ static void test_classify_transfer_error(void)
     assert(sensor_bus_classify_transfer_error(0x30U, ESP_ERR_INVALID_STATE) == ESP_ERR_INVALID_STATE);
 }
 
+static bool scan_created_address(uint8_t address)
+{
+    for (size_t i = 0; i < s_device_count; ++i) {
+        if (s_devices[i].address == address) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_tca_and_bmp280_at_77_are_distinguished(void)
+{
+    fake_reset();
+    fake_add_tca(0x70U);
+    s_present[0x77U] = true; /* BMP280 ACKs, but is never a mux candidate. */
+
+    i2c_bus_device_handle_t tca = NULL;
+    uint8_t address = NULL_I2C_DEV_ADDR;
+    assert(sensor_bus_get_tca9548a(&tca, &address) == ESP_OK);
+    assert(tca != NULL && address == 0x70U);
+    assert(!scan_created_address(0x77U));
+    assert(s_tca_control[0x70U] == 0U); /* original control state restored */
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_bmp280_addresses_without_tca_are_absent(void)
+{
+    for (uint8_t address = 0x76U; address <= 0x77U; ++address) {
+        fake_reset();
+        s_present[address] = true;
+        i2c_bus_device_handle_t tca = NULL;
+        assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_NOT_FOUND);
+        assert(tca == NULL);
+        assert(!scan_created_address(address));
+        assert(sensor_bus_deinit() == ESP_OK);
+    }
+}
+
+static void test_tca_with_bad_readback_is_logged_and_rejected(void)
+{
+    fake_reset();
+    fake_add_tca(0x72U);
+    s_tca_readback_failure[0x72U] = true;
+
+    i2c_bus_device_handle_t tca = NULL;
+    assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_NOT_FOUND);
+    assert(tca == NULL);
+    assert(s_tca_control[0x72U] == 0U);
+    assert(g_fake_lines.log_calls == 1U);
+    assert(strstr(g_fake_lines.last_log, "control readback mismatch") != NULL);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 int main(void)
 {
     assert(sensor_bus_lock_init() == ESP_OK);
@@ -303,5 +387,8 @@ int main(void)
     test_idf55_present_but_failing_is_a_fault();
     test_idf55_probe_timeout_is_a_fault();
     test_classify_transfer_error();
+    test_tca_and_bmp280_at_77_are_distinguished();
+    test_bmp280_addresses_without_tca_are_absent();
+    test_tca_with_bad_readback_is_logged_and_rejected();
     return 0;
 }

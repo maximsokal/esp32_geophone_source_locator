@@ -273,6 +273,29 @@ esp_err_t device_status_set_environment(
 }
 
 
+esp_err_t device_status_set_main(const device_main_status_t *main_status)
+{
+    if (main_status == NULL ||
+        (unsigned)main_status->height_reference.state >
+            (unsigned)DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID ||
+        (main_status->height_reference.state != DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
+         main_status->height_reference.relative_z_mm != 0) ||
+        (main_status->bmp280_valid && !main_status->bmp280_present) ||
+        (main_status->aht20_valid && !main_status->aht20_present)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    device_status_snapshot_t *status;
+    const esp_err_t err = device_status_internal_lock(&status);
+    if (err != ESP_OK) {
+        return err;
+    }
+    status->main = *main_status;
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_mux(
     int active_channel,
     int active_pod,
