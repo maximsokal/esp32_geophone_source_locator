@@ -1,0 +1,11 @@
+choice GEOLOCATOR_GEOMETRY_Z_POLICY
+    prompt "Recorded sensor geometry Z policy"
+    default GEOLOCATOR_GEOMETRY_Z_POLICY_PLANAR
+
+config GEOLOCATOR_GEOMETRY_Z_POLICY_PLANAR
+    bool "Planar"
+
+config GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE
+    bool "Barometric relative"
+
+endchoice

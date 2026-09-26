@@ -33,7 +33,7 @@ export interface FrameSummary {
 }
 
 export const SENSOR_AXIS_CONVENTION =
-  'Sensor frame: MAIN at the origin, +X towards the first placed REMOTE, +Z up (relative barometric altitude), mirror side arbitrary, heading unknown.';
+  'Sensor frame: MAIN at the origin, +X towards the first placed REMOTE, +Z up (REMOTE relZ minus MAIN relZ when valid references share a generation), mirror side arbitrary, heading unknown.';
 
 export function describeFrames(location: ObjectLocation | undefined, scanAvailable: boolean): FrameSummary {
   const gpsValid = location !== undefined && location.valid &&

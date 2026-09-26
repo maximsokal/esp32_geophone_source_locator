@@ -237,7 +237,8 @@ export function ScanPointCloudViewport({
       const node = nodeForId(pod?.node_id);
       if (pod === undefined || node === null || pod.computed !== true || pod.assigned === false ||
           ![pod.x_mm, pod.y_mm, pod.z_mm].every((value) => value !== undefined && Number.isFinite(value)) ||
-          (node !== 'MAIN' && pod.position_source !== 'channel_sounding')) return [];
+          (node !== 'MAIN' && pod.position_source !== 'channel_sounding' &&
+            pod.position_source !== 'channel_sounding_baro')) return [];
       return [{
         id: node,
         label: node,
@@ -342,7 +343,9 @@ export function ScanPointCloudViewport({
     {selectedMarker !== null && <section className="scan-sensor-details" aria-label="Selected sensor marker details" data-sensor-status={selectedMarker.status}>
       <h3>{selectedMarker.node} · {selectedMarker.status.replace('_', ' ')}</h3>
       <dl>
-        <div><dt>Source</dt><dd>{selectedMarker.source ?? '—'}</dd></div>
+        <div><dt>Source</dt><dd>{selectedMarker.source === 'channel_sounding_baro'
+          ? 'Channel Sounding + barometric Z'
+          : selectedMarker.source === 'channel_sounding' ? 'Channel Sounding' : selectedMarker.source ?? '—'}</dd></div>
         <div><dt>Uncertainty</dt><dd>{selectedMarker.uncertaintyM === null ? '—' : `${selectedMarker.uncertaintyM.toFixed(3)} m`}</dd></div>
         <div><dt>Residual</dt><dd>{selectedMarker.residualM === null ? '—' : `${selectedMarker.residualM.toFixed(3)} m`}</dd></div>
         <div><dt>Tag ID</dt><dd>{selectedMarker.tagId ?? '—'}</dd></div>

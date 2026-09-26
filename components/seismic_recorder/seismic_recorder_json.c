@@ -16,6 +16,8 @@ static const char *TAG = "SEISMIC_RECORDER_JSON";
 static seismic_recorder_recovery_request_callback_t s_recovery_request_callback = NULL;
 static void *s_recovery_request_context = NULL;
 
+static bool seismic_recorder_json_z_fallback_reason_known(const char *reason);
+
 
 esp_err_t seismic_recorder_set_recovery_request_callback(
     seismic_recorder_recovery_request_callback_t callback,
@@ -215,6 +217,27 @@ static bool seismic_recorder_json_add_geometry(
         return false;
     }
 
+    if (participation->z_provenance.available) {
+        const char *effective_policy =
+            participation->z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_PLANAR
+                ? "planar"
+                : participation->z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+                    ? "barometric_relative"
+                    : NULL;
+        if (effective_policy == NULL ||
+            strnlen(participation->z_provenance.fallback_reason,
+                SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE) >= SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE ||
+            !seismic_recorder_json_z_fallback_reason_known(
+                participation->z_provenance.fallback_reason) ||
+            (participation->z_provenance.effective_policy ==
+                SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE &&
+                participation->z_provenance.fallback_reason[0] != '\0') ||
+            cJSON_AddStringToObject(object, "z_policy_effective", effective_policy) == NULL ||
+            cJSON_AddStringToObject(object, "z_fallback_reason", participation->z_provenance.fallback_reason) == NULL) {
+            return false;
+        }
+    }
+
     cJSON *pods = cJSON_AddArrayToObject(object, "pods");
     if (pods == NULL) {
         return false;
@@ -289,10 +312,13 @@ static bool seismic_recorder_json_add_geometry(
         const char *position_source =
             pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
                 ? "channel_sounding"
-                : "none";
+                : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
+                    ? "channel_sounding_baro"
+                    : "none";
         if (
             pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_NONE &&
-            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING &&
+            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
         ) {
             return false;
         }
@@ -819,12 +845,25 @@ static bool seismic_recorder_json_participation_pod_v2(
         parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_NONE;
     } else if (strcmp(position_source->valuestring, "channel_sounding") == 0) {
         parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+    } else if (strcmp(position_source->valuestring, "channel_sounding_baro") == 0) {
+        parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO;
     } else {
         return false;
     }
 
     *pod = parsed;
     return true;
+}
+
+
+static bool seismic_recorder_json_z_fallback_reason_known(const char *reason)
+{
+    return reason != NULL && (
+        reason[0] == '\0' ||
+        strcmp(reason, "main_reference_invalid") == 0 ||
+        strcmp(reason, "remote_reference_invalid") == 0 ||
+        strcmp(reason, "reference_generation_mismatch") == 0
+    );
 }
 
 
@@ -840,6 +879,30 @@ static void seismic_recorder_json_parse_participation(
     const cJSON *pods = cJSON_IsObject(geometry_node)
         ? cJSON_GetObjectItemCaseSensitive(geometry_node, "pods")
         : NULL;
+
+    const cJSON *effective_policy = cJSON_IsObject(geometry_node)
+        ? cJSON_GetObjectItemCaseSensitive(geometry_node, "z_policy_effective")
+        : NULL;
+    const cJSON *fallback_reason = cJSON_IsObject(geometry_node)
+        ? cJSON_GetObjectItemCaseSensitive(geometry_node, "z_fallback_reason")
+        : NULL;
+    const bool planar_policy = cJSON_IsString(effective_policy) && effective_policy->valuestring != NULL &&
+        strcmp(effective_policy->valuestring, "planar") == 0;
+    const bool barometric_policy = cJSON_IsString(effective_policy) && effective_policy->valuestring != NULL &&
+        strcmp(effective_policy->valuestring, "barometric_relative") == 0;
+    if (cJSON_IsString(effective_policy) && effective_policy->valuestring != NULL &&
+        cJSON_IsString(fallback_reason) && fallback_reason->valuestring != NULL &&
+        strnlen(fallback_reason->valuestring, SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE) <
+            SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE &&
+        seismic_recorder_json_z_fallback_reason_known(fallback_reason->valuestring) &&
+        (planar_policy || (barometric_policy && fallback_reason->valuestring[0] == '\0'))) {
+        participation->z_provenance.available = true;
+        participation->z_provenance.effective_policy = barometric_policy
+            ? SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+            : SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+        memcpy(participation->z_provenance.fallback_reason, fallback_reason->valuestring,
+            strlen(fallback_reason->valuestring) + 1U);
+    }
 
     if (version == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V1) {
         for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {

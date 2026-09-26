@@ -16,6 +16,27 @@ static void set_assigned(
 }
 
 
+static esp_err_t build_inputs_default(
+    const nrf_topology_snapshot_t *topology,
+    const seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT],
+    seismic_recorder_geometry_z_policy_t policy,
+    nrf_geometry_node_input_t *inputs,
+    size_t max_inputs,
+    size_t *count
+)
+{
+    const seismic_recorder_geometry_main_reference_t main_reference = {
+        .valid = true,
+        .generation = 1U,
+        .relative_z_mm = 0,
+    };
+    seismic_recorder_geometry_z_provenance_t provenance;
+    return seismic_recorder_geometry_build_inputs(
+        topology, channels, &main_reference, policy, inputs, max_inputs, count, &provenance
+    );
+}
+
+
 static void test_build_inputs_requires_main(void)
 {
     nrf_topology_snapshot_t topology;
@@ -26,13 +47,13 @@ static void test_build_inputs_requires_main(void)
     size_t count = 0U;
 
     assert(
-        seismic_recorder_geometry_build_inputs(&topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, inputs, NRF_GEOMETRY_MAX_NODES, &count) ==
+        build_inputs_default(&topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, inputs, NRF_GEOMETRY_MAX_NODES, &count) ==
         ESP_ERR_INVALID_STATE
     );
 }
 
 
-static void test_build_inputs_skips_unassigned_and_invalid_altitude(void)
+static void test_build_inputs_skips_unassigned_and_invalid_sensor_snapshot(void)
 {
     nrf_topology_snapshot_t topology;
     memset(&topology, 0, sizeof(topology));
@@ -45,7 +66,9 @@ static void test_build_inputs_skips_unassigned_and_invalid_altitude(void)
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
     memset(channels, 0, sizeof(channels));
     channels[0].sensor_valid = true;
-    channels[0].barometric_altitude_mm = 1500;
+    channels[0].height_reference_valid = true;
+    channels[0].height_reference_generation = 1U;
+    channels[0].relative_z_mm = 0;
     channels[0].leveled = true;
     /* channel 1 is ASSIGNED but its sensor snapshot is not valid -- must be excluded. */
     channels[1].sensor_valid = false;
@@ -53,14 +76,14 @@ static void test_build_inputs_skips_unassigned_and_invalid_altitude(void)
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t count = 0U;
     assert(
-        seismic_recorder_geometry_build_inputs(
+        build_inputs_default(
             &topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
             inputs, NRF_GEOMETRY_MAX_NODES, &count
         ) == ESP_OK
     );
     assert(count == 2U);
     assert(inputs[0].node_id == 0U && inputs[0].z_mm == 0);
-    /* The only valid REMOTE is its own median reference: relative z == 0. */
+    /* The valid REMOTE has the same reference-relative Z as MAIN. */
     assert(inputs[1].node_id == 1U && inputs[1].z_mm == 0);
 }
 
@@ -75,14 +98,15 @@ static void test_build_inputs_rejects_overflow(void)
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         set_assigned(&topology, channel, (uint8_t)(channel + 1U));
         channels[channel].sensor_valid = true;
-        channels[channel].barometric_altitude_mm = 0;
+        channels[channel].height_reference_valid = true;
+        channels[channel].height_reference_generation = 1U;
     }
 
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t count = 0U;
     /* 1 MAIN + 8 REMOTEs overflows a 5-node buffer. */
     assert(
-        seismic_recorder_geometry_build_inputs(&topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, inputs, NRF_GEOMETRY_MAX_NODES, &count) ==
+        build_inputs_default(&topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR, inputs, NRF_GEOMETRY_MAX_NODES, &count) ==
         ESP_ERR_INVALID_ARG
     );
 }
@@ -135,9 +159,7 @@ static void test_apply_solution_maps_pods_and_skips_unsolved(void)
 }
 
 
-/* MAX-204 regression: realistic site pressure (~1000 hPa) makes the raw
- * sea-level-referenced altitude ~110 m. It must never reach the solver as z. */
-static void setup_three_remotes_at_110m(
+static void setup_three_remotes_with_relative_references(
     nrf_topology_snapshot_t *topology,
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT]
 )
@@ -146,25 +168,27 @@ static void setup_three_remotes_at_110m(
     topology->main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
     topology->main.node_id = 0U;
     memset(channels, 0, sizeof(*channels) * NRF_TOPOLOGY_REMOTE_COUNT);
-    const int32_t altitudes[3] = { 110417, 110917, 109917 };
+    const int32_t relative_z_mm[3] = { 100, 600, -400 };
     for (uint8_t channel = 0U; channel < 3U; ++channel) {
         set_assigned(topology, channel, (uint8_t)(channel + 1U));
         channels[channel].sensor_valid = true;
-        channels[channel].barometric_altitude_mm = altitudes[channel];
+        channels[channel].height_reference_valid = true;
+        channels[channel].height_reference_generation = 7U;
+        channels[channel].relative_z_mm = relative_z_mm[channel];
     }
 }
 
 
-static void test_planar_policy_ignores_absolute_barometric_altitude(void)
+static void test_planar_policy_keeps_all_nodes_at_zero_z(void)
 {
     nrf_topology_snapshot_t topology;
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
-    setup_three_remotes_at_110m(&topology, channels);
+    setup_three_remotes_with_relative_references(&topology, channels);
 
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t count = 0U;
     assert(
-        seismic_recorder_geometry_build_inputs(
+        build_inputs_default(
             &topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR,
             inputs, NRF_GEOMETRY_MAX_NODES, &count
         ) == ESP_OK
@@ -176,25 +200,84 @@ static void test_planar_policy_ignores_absolute_barometric_altitude(void)
 }
 
 
-static void test_barometric_relative_policy_subtracts_median(void)
+static void test_barometric_relative_policy_subtracts_main_reference(void)
 {
     nrf_topology_snapshot_t topology;
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
-    setup_three_remotes_at_110m(&topology, channels);
+    setup_three_remotes_with_relative_references(&topology, channels);
+    const seismic_recorder_geometry_main_reference_t main_reference = {
+        .valid = true, .generation = 7U, .relative_z_mm = 100,
+    };
+    seismic_recorder_geometry_z_provenance_t provenance;
 
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t count = 0U;
     assert(
         seismic_recorder_geometry_build_inputs(
-            &topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
-            inputs, NRF_GEOMETRY_MAX_NODES, &count
+            &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+            inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance
         ) == ESP_OK
     );
     assert(count == 4U);
-    assert(inputs[0].z_mm == 0);      /* MAIN on the median reference plane */
-    assert(inputs[1].z_mm == 0);      /* 110417 is the median */
+    assert(provenance.available);
+    assert(provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
+    assert(provenance.fallback_reason[0] == '\0');
+    assert(inputs[0].z_mm == 0);
+    assert(inputs[1].z_mm == 0);
     assert(inputs[2].z_mm == 500);
     assert(inputs[3].z_mm == -500);
+    for (size_t i = 0U; i < count; ++i) {
+        assert(inputs[i].z_mm > -10000 && inputs[i].z_mm < 10000);
+    }
+}
+
+
+static void assert_planar_fallback(
+    seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT],
+    seismic_recorder_geometry_main_reference_t main_reference,
+    const char *expected_reason
+)
+{
+    nrf_topology_snapshot_t topology = {0};
+    topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    topology.main.node_id = 0U;
+    for (uint8_t channel = 0U; channel < 3U; ++channel) {
+        set_assigned(&topology, channel, (uint8_t)(channel + 1U));
+    }
+    nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
+    size_t count = 0U;
+    seismic_recorder_geometry_z_provenance_t provenance;
+    assert(seismic_recorder_geometry_build_inputs(
+        &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+        inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance
+    ) == ESP_OK);
+    assert(provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_PLANAR);
+    assert(strcmp(provenance.fallback_reason, expected_reason) == 0);
+    for (size_t i = 0U; i < count; ++i) assert(inputs[i].z_mm == 0);
+}
+
+
+static void test_invalid_references_fall_back_for_whole_recording(void)
+{
+    seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT] = {0};
+    nrf_topology_snapshot_t topology;
+    setup_three_remotes_with_relative_references(&topology, channels);
+    assert_planar_fallback(channels, (seismic_recorder_geometry_main_reference_t){0}, "main_reference_invalid");
+
+    setup_three_remotes_with_relative_references(&topology, channels);
+    seismic_recorder_geometry_main_reference_t main_reference = {
+        .valid = true, .generation = 7U, .relative_z_mm = 0,
+    };
+    channels[1].height_reference_valid = false;
+    assert_planar_fallback(channels, main_reference, "remote_reference_invalid");
+
+    setup_three_remotes_with_relative_references(&topology, channels);
+    channels[1].height_reference_generation = 0U;
+    assert_planar_fallback(channels, main_reference, "remote_reference_invalid");
+
+    setup_three_remotes_with_relative_references(&topology, channels);
+    channels[2].height_reference_generation = 8U;
+    assert_planar_fallback(channels, main_reference, "reference_generation_mismatch");
 }
 
 
@@ -202,12 +285,12 @@ static void test_unknown_z_policy_is_rejected(void)
 {
     nrf_topology_snapshot_t topology;
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
-    setup_three_remotes_at_110m(&topology, channels);
+    setup_three_remotes_with_relative_references(&topology, channels);
 
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t count = 0U;
     assert(
-        seismic_recorder_geometry_build_inputs(
+        build_inputs_default(
             &topology, channels, (seismic_recorder_geometry_z_policy_t)99,
             inputs, NRF_GEOMETRY_MAX_NODES, &count
         ) == ESP_ERR_INVALID_ARG
@@ -221,12 +304,12 @@ static void test_realistic_altitude_does_not_collapse_layout(void)
 {
     nrf_topology_snapshot_t topology;
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
-    setup_three_remotes_at_110m(&topology, channels);
+    setup_three_remotes_with_relative_references(&topology, channels);
 
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t count = 0U;
     assert(
-        seismic_recorder_geometry_build_inputs(
+        build_inputs_default(
             &topology, channels, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR,
             inputs, NRF_GEOMETRY_MAX_NODES, &count
         ) == ESP_OK
@@ -300,11 +383,12 @@ static void test_solution_consistency_gate_and_residual_mapping(void)
 int main(void)
 {
     test_build_inputs_requires_main();
-    test_build_inputs_skips_unassigned_and_invalid_altitude();
+    test_build_inputs_skips_unassigned_and_invalid_sensor_snapshot();
     test_build_inputs_rejects_overflow();
     test_apply_solution_maps_pods_and_skips_unsolved();
-    test_planar_policy_ignores_absolute_barometric_altitude();
-    test_barometric_relative_policy_subtracts_median();
+    test_planar_policy_keeps_all_nodes_at_zero_z();
+    test_barometric_relative_policy_subtracts_main_reference();
+    test_invalid_references_fall_back_for_whole_recording();
     test_unknown_z_policy_is_rejected();
     test_realistic_altitude_does_not_collapse_layout();
     test_solution_consistency_gate_and_residual_mapping();

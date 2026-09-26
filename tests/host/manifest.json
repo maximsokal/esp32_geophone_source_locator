@@ -1492,6 +1492,7 @@
         "components/storage_manager/include",
         "components/app_config/include",
         "components/seismic_buffer/include",
+        "components/device_status/include",
         "components/nrf_geometry_solver/include",
         "components/nrf_topology_service/include",
         "components/nrf_cs_authority/include",
@@ -1499,6 +1500,7 @@
         "components/localization/include",
         "nRF54L15/include"
       ],
+      "defines": ["CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1"],
       "libraries": [
         "m"
       ]

@@ -32,10 +32,12 @@
       ],
       "include_dirs": [
         "components/seismic_recorder",
+        "components/seismic_recorder/include",
         "components/nrf_geometry_solver/include",
         "components/nrf_topology_service/include",
         "components/object_store/include",
         "components/object_format/include",
+        "components/seismic_buffer/include",
         "nRF54L15/include",
         "tests/host/stubs/seismic_recorder_start"
       ],

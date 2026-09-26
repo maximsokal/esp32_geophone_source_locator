@@ -8,29 +8,6 @@
 #endif
 
 
-/* Median of a small (<= NRF_TOPOLOGY_REMOTE_COUNT) set, sorted in place.
- * Even counts average the two middle values in 64-bit so the sum of two
- * large int32 altitudes cannot overflow. */
-static int32_t median_altitude_mm(int32_t *values, size_t count)
-{
-    for (size_t i = 1U; i < count; ++i) {
-        const int32_t key = values[i];
-        size_t j = i;
-        while (j > 0U && values[j - 1U] > key) {
-            values[j] = values[j - 1U];
-            --j;
-        }
-        values[j] = key;
-    }
-
-    if ((count % 2U) == 1U) {
-        return values[count / 2U];
-    }
-    const int64_t sum = (int64_t)values[count / 2U - 1U] + (int64_t)values[count / 2U];
-    return (int32_t)(sum / 2);
-}
-
-
 static int32_t saturate_i32(int64_t value)
 {
     if (value > (int64_t)INT32_MAX) {
@@ -46,13 +23,16 @@ static int32_t saturate_i32(int64_t value)
 esp_err_t seismic_recorder_geometry_build_inputs(
     const nrf_topology_snapshot_t *topology,
     const seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT],
+    const seismic_recorder_geometry_main_reference_t *main_reference,
     seismic_recorder_geometry_z_policy_t z_policy,
     nrf_geometry_node_input_t *inputs,
     size_t max_inputs,
-    size_t *input_count
+    size_t *input_count,
+    seismic_recorder_geometry_z_provenance_t *provenance
 )
 {
-    if (topology == NULL || channels == NULL || inputs == NULL || input_count == NULL) {
+    if (topology == NULL || channels == NULL || inputs == NULL || input_count == NULL ||
+        provenance == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -71,22 +51,30 @@ esp_err_t seismic_recorder_geometry_build_inputs(
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Reference plane for BAROMETRIC_RELATIVE: median over every REMOTE that
-     * will actually be handed to the solver, read at the same moment. */
-    int32_t reference_altitude_mm = 0;
+    memset(provenance, 0, sizeof(*provenance));
+    provenance->available = true;
+    provenance->effective_policy = z_policy;
     if (z_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE) {
-        int32_t altitudes[NRF_TOPOLOGY_REMOTE_COUNT];
-        size_t altitude_count = 0U;
-        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-            if (
-                topology->remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED &&
-                channels[channel].sensor_valid
-            ) {
-                altitudes[altitude_count++] = channels[channel].barometric_altitude_mm;
+        if (main_reference == NULL || !main_reference->valid || main_reference->generation == 0U) {
+            provenance->effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+            strcpy(provenance->fallback_reason, "main_reference_invalid");
+        } else {
+            for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+                if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+                    continue;
+                }
+                if (!channels[channel].height_reference_valid ||
+                    channels[channel].height_reference_generation == 0U) {
+                    provenance->effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+                    strcpy(provenance->fallback_reason, "remote_reference_invalid");
+                    break;
+                }
+                if (channels[channel].height_reference_generation != main_reference->generation) {
+                    provenance->effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+                    strcpy(provenance->fallback_reason, "reference_generation_mismatch");
+                    break;
+                }
             }
-        }
-        if (altitude_count > 0U) {
-            reference_altitude_mm = median_altitude_mm(altitudes, altitude_count);
         }
     }
 
@@ -107,10 +95,10 @@ esp_err_t seismic_recorder_geometry_build_inputs(
         }
         inputs[count].node_id = topology->remotes[channel].node_id;
         inputs[count].z_mm =
-            z_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+            provenance->effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
             ? saturate_i32(
-                  (int64_t)channels[channel].barometric_altitude_mm -
-                  (int64_t)reference_altitude_mm
+                  (int64_t)channels[channel].relative_z_mm -
+                  (int64_t)main_reference->relative_z_mm
               )
             : 0;
         ++count;
@@ -203,20 +191,24 @@ bool seismic_recorder_geometry_all_assigned_pods_computed(
 esp_err_t seismic_recorder_geometry_build_participation(
     const nrf_topology_snapshot_t *topology,
     const object_store_geometry_t *geometry,
+    const seismic_recorder_geometry_z_provenance_t *provenance,
     seismic_recorder_session_participation_t *participation
 )
 {
-    if (topology == NULL || geometry == NULL || participation == NULL) {
+    if (topology == NULL || geometry == NULL || provenance == NULL || participation == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
     memset(participation, 0, sizeof(*participation));
+    participation->z_provenance = *provenance;
     for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
         const nrf_topology_node_snapshot_t *remote = &topology->remotes[i];
         seismic_recorder_pod_participation_t *pod = &participation->pods[i];
         pod->assigned = remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
         pod->position_source = geometry->pods[i].computed
-            ? SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+            ? provenance->effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+                ? SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
+                : SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
             : SEISMIC_RECORDER_POSITION_SOURCE_NONE;
 
         if (!pod->assigned) {

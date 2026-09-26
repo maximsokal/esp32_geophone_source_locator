@@ -131,6 +131,13 @@ describe('sensor placement scene', () => {
     markerViewport.forEach((value, axis) => expect(Math.abs(value - pointViewport[axis])).toBeLessThanOrEqual(1e-9));
   });
 
+  it('preserves barometric Channel Sounding provenance for sensor placement', () => {
+    const marker = buildSensorPlacementScene(
+      geometry([pod(1, { position_source: 'channel_sounding_baro' })]), null,
+    ).markers.find((item) => item.node === 'G1')!;
+    expect(marker).toMatchObject({ status: 'cs_unregistered', source: 'channel_sounding_baro' });
+  });
+
   it('reports missing, partial, unassigned, uncomputed and non-finite geometry', () => {
     expect(buildSensorPlacementScene(null, null).markers).toEqual([]);
     expect(buildSensorPlacementScene(null, null).skipped).toEqual(NODES.map((node) => ({ node, reason: 'missing_geometry' })));

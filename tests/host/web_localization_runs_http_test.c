@@ -43,12 +43,14 @@ static void reset_fakes(void)
         .node_id = 42U,
         .hardware_id_length = 3U,
         .hardware_id = {0x01U, 0xABU, 0xFFU},
-        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO,
     };
     s_participation.pods[1] = (seismic_recorder_pod_participation_t) {
         .assigned = true,
-        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_NONE,
+        .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO,
     };
+    s_participation.z_provenance.available = true;
+    s_participation.z_provenance.effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE;
     s_cs_pairs_calls = 0U;
     s_cs_pairs_result = ESP_OK;
     s_picks_list_calls = 0U;
@@ -388,12 +390,13 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "no coherent candidate") != NULL);
     assert(s_geometry_calls == 1U);
     assert(strstr(response, "\"geometry\":{\"available\":true") != NULL);
+    assert(strstr(response, "\"z_policy_effective\":\"barometric_relative\",\"z_fallback_reason\":\"\"") != NULL);
     assert(strstr(response, "\"pod\":1,\"computed\":true,\"leveled\":true") != NULL);
     assert(strstr(response, "\"x_mm\":300,\"y_mm\":-150") != NULL);
     assert(strstr(response, "\"pod\":3,\"computed\":false,\"leveled\":false") != NULL);
     assert(s_participation_calls == 1U);
-    assert(strstr(response, "\"assigned\":true,\"node_id\":42,\"hardware_id\":\"01abff\",\"position_source\":\"channel_sounding\"") != NULL);
-    assert(strstr(response, "\"assigned\":true,\"node_id\":null,\"hardware_id\":null,\"position_source\":\"none\"") != NULL);
+    assert(strstr(response, "\"assigned\":true,\"node_id\":42,\"hardware_id\":\"01abff\",\"position_source\":\"channel_sounding_baro\"") != NULL);
+    assert(strstr(response, "\"assigned\":true,\"node_id\":null,\"hardware_id\":null,\"position_source\":\"channel_sounding_baro\"") != NULL);
     /* geometry must appear before runs, matching the documented response shape. */
     assert(strstr(response, "\"geometry\":") < strstr(response, "\"runs\":["));
 
@@ -453,6 +456,21 @@ static void test_participation_read_failure_keeps_geometry_response(void)
     assert(strstr(response, "\"node_id\"") == NULL);
     assert(strstr(response, "\"hardware_id\"") == NULL);
     assert(strstr(response, "\"position_source\"") == NULL);
+}
+
+static void test_runs_listing_includes_planar_fallback_reason(void)
+{
+    reset_fakes();
+    s_participation.z_provenance.effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+    snprintf(s_participation.z_provenance.fallback_reason,
+        sizeof(s_participation.z_provenance.fallback_reason), "reference_generation_mismatch");
+    s_participation.pods[0].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+    s_participation.pods[1].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+    char response[4096] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response,
+        "\"z_policy_effective\":\"planar\",\"z_fallback_reason\":\"reference_generation_mismatch\"") != NULL);
 }
 
 static void test_runs_listing_requires_both_query_parameters(void)
@@ -585,6 +603,7 @@ int main(void)
     test_runs_listing_round_trips_persisted_records();
     test_runs_listing_reports_geometry_unavailable_without_failing();
     test_participation_read_failure_keeps_geometry_response();
+    test_runs_listing_includes_planar_fallback_reason();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     test_runs_listing_surfaces_invalid_arg_as_422();

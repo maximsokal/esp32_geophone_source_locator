@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "localization_job.h"
 #include "localization_pick_record.h"
@@ -9,6 +10,20 @@
 #include "localization_run_store.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+
+static const char *web_localization_z_fallback_reason(const char *reason)
+{
+    static const char *const reasons[] = {
+        "",
+        "main_reference_invalid",
+        "remote_reference_invalid",
+        "reference_generation_mismatch",
+    };
+    for (size_t i = 0U; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
+        if (reason != NULL && strcmp(reason, reasons[i]) == 0) return reasons[i];
+    }
+    return NULL;
+}
 
 /*
  * MAX-168: read-only listing of every localization run already persisted
@@ -165,8 +180,28 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     );
 
     web_json_writer_printf(
-        &writer, "\"geometry\":{\"available\":%s,\"pods\":[", geometry_available ? "true" : "false"
+        &writer, "\"geometry\":{\"available\":%s", geometry_available ? "true" : "false"
     );
+    if (participation_available && participation.z_provenance.available) {
+        const char *policy =
+            participation.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_PLANAR
+                ? "planar"
+                : participation.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+                    ? "barometric_relative"
+                    : NULL;
+        const char *reason = web_localization_z_fallback_reason(
+            participation.z_provenance.fallback_reason
+        );
+        if (policy != NULL && reason != NULL) {
+            web_json_writer_printf(
+                &writer,
+                ",\"z_policy_effective\":\"%s\",\"z_fallback_reason\":\"%s\"",
+                policy,
+                reason
+            );
+        }
+    }
+    web_json_writer_write(&writer, ",\"pods\":[");
     for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
         if (pod > 0U) {
             web_json_writer_write(&writer, ",");
@@ -243,7 +278,9 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
                 ",\"position_source\":\"%s\"",
                 pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
                     ? "channel_sounding"
-                    : "none"
+                    : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
+                        ? "channel_sounding_baro"
+                        : "none"
             );
         }
         web_json_writer_write(&writer, "}");
