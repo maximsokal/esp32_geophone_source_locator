@@ -5,13 +5,14 @@ interface Props {
   status: DeviceStatus | null;
   object: ObjectProfile | null;
   error: string | null;
+  onCalibrateHeights: () => Promise<boolean>;
 }
 
 function measured(valid: boolean, text: string): string {
   return valid ? text : 'unavailable';
 }
 
-export default function SensorsFeature({ status, object, error }: Props) {
+export default function SensorsFeature({ status, object, error, onCalibrateHeights }: Props) {
   const pods = status?.pods ?? [];
   const acquisition = status?.acquisition;
   const serial = acquisition?.serial;
@@ -86,7 +87,7 @@ export default function SensorsFeature({ status, object, error }: Props) {
         </dl>
       </article>
 
-      <LevelingCard gate={status?.recording_gate} />
+      <LevelingCard gate={status?.recording_gate} pods={pods} onCalibrateHeights={onCalibrateHeights} />
 
       <div className="pod-grid">
         {[0, 1, 2, 3].map((index) => {

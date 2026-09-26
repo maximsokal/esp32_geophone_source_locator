@@ -28,7 +28,9 @@ function statusWith(overrides: {
 }
 
 function render(status: DeviceStatus): string {
-  return renderToStaticMarkup(createElement(SensorsFeature, { status, object: null, error: null }));
+  return renderToStaticMarkup(createElement(SensorsFeature, {
+    status, object: null, error: null, onCalibrateHeights: async () => true,
+  }));
 }
 
 const channel = (name: string, id: number, overcurrent: string, latched: boolean, current: number) => ({

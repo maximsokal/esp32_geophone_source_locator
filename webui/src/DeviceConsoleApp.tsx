@@ -398,7 +398,12 @@ export default function DeviceConsoleApp() {
       )}
 
       {screen === 'sensors' && (
-        <SensorsFeature status={status} object={selectedObject} error={linkError} />
+        <SensorsFeature
+          status={status}
+          object={selectedObject}
+          error={pageError}
+          onCalibrateHeights={() => runControl('calibrate_heights')}
+        />
       )}
     </main>
   );

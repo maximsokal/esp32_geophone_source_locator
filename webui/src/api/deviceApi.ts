@@ -93,6 +93,7 @@ const CRITICAL_CONTROL_ACTIONS = new Set([
   'measurement_stop',
   'acquisition_start',
   'acquisition_stop',
+  'calibrate_heights',
 ]);
 
 function errorText(reason: unknown): string {

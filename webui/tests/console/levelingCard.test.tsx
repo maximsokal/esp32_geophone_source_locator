@@ -21,7 +21,7 @@ describe('LevelingCard', () => {
         { channel: 5, node_id: 6, state: 'no_data' },
       ],
     };
-    const html = renderToStaticMarkup(createElement(LevelingCard, { gate }));
+    const html = renderToStaticMarkup(createElement(LevelingCard, { gate, pods: [], onCalibrateHeights: async () => true }));
     expect(html).toContain('1/3 LEVEL');
     expect(html).toContain('Level every connected geophone');
     expect(html).toContain('TILTED');
@@ -33,10 +33,18 @@ describe('LevelingCard', () => {
     expect(html).toContain('<td>6</td>');
   });
 
-  it('explains an unavailable topology and renders nothing without data', () => {
-    const html = renderToStaticMarkup(createElement(LevelingCard, { gate: { available: false, error: 'ESP_ERR_INVALID_STATE' } }));
+  it('explains an unavailable topology and keeps calibration available without gate data', () => {
+    const html = renderToStaticMarkup(createElement(LevelingCard, {
+      gate: { available: false, error: 'ESP_ERR_INVALID_STATE' },
+      pods: [],
+      onCalibrateHeights: async () => true,
+    }));
     expect(html).toContain('UNAVAILABLE');
     expect(html).toContain('ESP_ERR_INVALID_STATE');
-    expect(renderToStaticMarkup(createElement(LevelingCard, { gate: undefined }))).toBe('');
+    expect(renderToStaticMarkup(createElement(LevelingCard, {
+      gate: undefined,
+      pods: [],
+      onCalibrateHeights: async () => true,
+    }))).toContain('Calibrate heights');
   });
 });
