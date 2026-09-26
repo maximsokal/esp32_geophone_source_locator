@@ -20,6 +20,36 @@ export interface ControlResult {
   bytes?: number;
   error_class?: string;
   error?: string;
+  outcome?: 'blocked_recording';
+  busy_reason?: 'recording_active' | string;
+}
+
+export class ScanStorageBlockedRecordingError extends Error {
+  readonly outcome = 'blocked_recording' as const;
+  readonly busy_reason = 'recording_active' as const;
+
+  constructor() {
+    super('Recording in progress — scan storage is paused');
+    this.name = 'ScanStorageBlockedRecordingError';
+  }
+}
+
+function recordingBlocked(body: unknown, status: number): boolean {
+  return status === 409 && typeof body === 'object' && body !== null &&
+    'busy_reason' in body && (body as { busy_reason?: unknown }).busy_reason === 'recording_active';
+}
+
+function parsedResponseBody(text: string): unknown {
+  if (text.length === 0) return null;
+  try { return JSON.parse(text) as unknown; }
+  catch { return text; }
+}
+
+function blockedControlResult(body: unknown): ControlResult {
+  const action = typeof body === 'object' && body !== null && 'action' in body
+    ? String((body as { action: unknown }).action)
+    : 'scan_save';
+  return { ok: false, action, outcome: 'blocked_recording', busy_reason: 'recording_active' };
 }
 
 const statusRequests = new Map<string, Promise<DeviceStatus>>();
@@ -88,6 +118,7 @@ async function performJsonRequest<T>(
     }
 
     if (!response.ok) {
+      if (recordingBlocked(body, response.status)) throw new ScanStorageBlockedRecordingError();
       throw new Error(`ESP API ${response.status} ${method} ${url}: ${responseError(body, response)}`);
     }
 
@@ -180,12 +211,11 @@ async function performScanSave(objectId: string, sessionId: string, artifact: Ui
       throw new Error(`ESP scan save network error: ${errorText(reason)}`);
     }
 
-    let body: unknown = null;
-    if (text.length > 0) {
-      try { body = JSON.parse(text); }
-      catch { body = text; }
+    const body = parsedResponseBody(text);
+    if (!response.ok) {
+      if (recordingBlocked(body, response.status)) return blockedControlResult(body);
+      throw new Error(`ESP scan save ${response.status}: ${responseError(body, response)}`);
     }
-    if (!response.ok) throw new Error(`ESP scan save ${response.status}: ${responseError(body, response)}`);
     return body as ControlResult;
   }
   finally {
@@ -216,7 +246,9 @@ async function performScanLoad(objectId: string, sessionId: string, kind: ScanSt
     if (response.status === 404) return null;
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`ESP scan load ${response.status}: ${responseError(text, response)}`);
+      const body = parsedResponseBody(text);
+      if (recordingBlocked(body, response.status)) throw new ScanStorageBlockedRecordingError();
+      throw new Error(`ESP scan load ${response.status}: ${responseError(body, response)}`);
     }
     return new Uint8Array(await response.arrayBuffer());
   }

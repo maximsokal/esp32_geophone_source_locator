@@ -86,6 +86,6 @@ describe('3D scan artifact', () => {
     const corrupted = encoded.slice();
     corrupted[corrupted.length - 1] ^= 0x01;
     expect(() => decodeScanArtifact(corrupted)).toThrow(/checksum/i);
-    expect(() => decodeScanArtifact(encoded.slice(0, encoded.length - 3))).toThrow(/length/i);
+    expect(() => decodeScanArtifact(encoded.slice(0, encoded.length - 3))).toThrow(/checksum/i);
   });
 });

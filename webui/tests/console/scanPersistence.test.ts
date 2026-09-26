@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { loadObjectScanArtifact } from '../../src/api/deviceApi';
 import type { ControlResult, ScanArtifactInfo } from '../../src/api/deviceApi';
+import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
+import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import {
   ScanPersistenceController,
+  SCAN_STORAGE_BLOCKED_MESSAGE,
   transitionScanPersistence,
   type ScanPersistencePorts,
   type ScanPersistenceState,
@@ -55,10 +59,13 @@ describe('scan persistence transitions', () => {
 interface TestServer {
   baseUrl: string;
   files: Map<string, Uint8Array>;
+  scanSaveAttempts: number;
   scanUploadCount: number;
   occupancyUploads: Uint8Array[];
   acceptOccupancy: boolean;
   dropOccupancyConnection: boolean;
+  recordingBusy: boolean;
+  truncateScanLoad: boolean;
   close(): Promise<void>;
   ports: ScanPersistencePorts;
 }
@@ -76,10 +83,13 @@ async function startControlServer(): Promise<TestServer> {
   const { createServer, request: httpRequest } = await import('node:http');
   const files = new Map<string, Uint8Array>();
   const serverState = {
+    scanSaveAttempts: 0,
     scanUploadCount: 0,
     occupancyUploads: [] as Uint8Array[],
     acceptOccupancy: false,
     dropOccupancyConnection: false,
+    recordingBusy: false,
+    truncateScanLoad: false,
   };
   const server = createServer((request, response) => {
     void (async () => {
@@ -101,6 +111,11 @@ async function startControlServer(): Promise<TestServer> {
         return;
       }
       if (action === 'save' && kind === 'scan') {
+        serverState.scanSaveAttempts += 1;
+        if (serverState.recordingBusy) {
+          json(409, { ok: false, action: 'scan_save', busy_reason: 'recording_active' });
+          return;
+        }
         serverState.scanUploadCount += 1;
         files.set(key, body);
         json(200, { ok: true, action: 'scan_save', bytes: body.byteLength });
@@ -125,6 +140,16 @@ async function startControlServer(): Promise<TestServer> {
         const saved = files.get(key);
         if (saved === undefined) json(404, { ok: false, error: 'ESP_ERR_NOT_FOUND' });
         else json(200, { ok: true, bytes: saved.byteLength });
+        return;
+      }
+      if (action === 'load' && kind === 'scan') {
+        const saved = files.get(key);
+        if (saved === undefined) json(404, { ok: false, error: 'ESP_ERR_NOT_FOUND' });
+        else {
+          const bytes = serverState.truncateScanLoad ? saved.slice(0, -1) : saved;
+          response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.byteLength });
+          response.end(Buffer.from(bytes));
+        }
         return;
       }
       json(400, { ok: false, error: 'unsupported request' });
@@ -158,6 +183,9 @@ async function startControlServer(): Promise<TestServer> {
   const upload = async (objectId: string, sessionId: string, bytes: Uint8Array, kind: 'scan' | 'occupancy'): Promise<ControlResult> => {
     const response = await post(controlUrl(objectId, sessionId, 'save', kind), bytes);
     const value = JSON.parse(response.text) as ControlResult;
+    if (response.status === 409 && value.busy_reason === 'recording_active') {
+      return { ...value, outcome: 'blocked_recording' };
+    }
     if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}: ${value.error ?? 'save failed'}`);
     return value;
   };
@@ -165,12 +193,17 @@ async function startControlServer(): Promise<TestServer> {
   return {
     baseUrl,
     files,
+    get scanSaveAttempts() { return serverState.scanSaveAttempts; },
     get scanUploadCount() { return serverState.scanUploadCount; },
     get occupancyUploads() { return serverState.occupancyUploads; },
     get acceptOccupancy() { return serverState.acceptOccupancy; },
     set acceptOccupancy(value: boolean) { serverState.acceptOccupancy = value; },
     get dropOccupancyConnection() { return serverState.dropOccupancyConnection; },
     set dropOccupancyConnection(value: boolean) { serverState.dropOccupancyConnection = value; },
+    get recordingBusy() { return serverState.recordingBusy; },
+    set recordingBusy(value: boolean) { serverState.recordingBusy = value; },
+    get truncateScanLoad() { return serverState.truncateScanLoad; },
+    set truncateScanLoad(value: boolean) { serverState.truncateScanLoad = value; },
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
     ports: {
       saveScan: (objectId, sessionId, bytes) => upload(objectId, sessionId, bytes, 'scan'),
@@ -192,6 +225,7 @@ const occupancyBytes = new Uint8Array([0x47, 0x4f, 0x43, 0x43, 5, 4, 3, 2]);
 describe('scan persistence over real HTTP sockets', () => {
   let server: TestServer | null = null;
   afterEach(async () => {
+    vi.unstubAllGlobals();
     if (server !== null) await server.close();
     server = null;
   });
@@ -223,6 +257,52 @@ describe('scan persistence over real HTTP sockets', () => {
     expect(state).toMatchObject({ scan: 'saved', occupancy: 'failed' });
     expect(server.files.get('OBJ_0001/S000002/scan')).toEqual(scanBytes);
     expect(server.files.has('OBJ_0001/S000002/occupancy')).toBe(false);
+  });
+
+  it('keeps bytes after a recording 409 and retries one successful scan upload', async () => {
+    server = await startControlServer();
+    server.recordingBusy = true;
+    const originalBytes = scanBytes.slice();
+    const controller = new ScanPersistenceController(server.ports);
+
+    const blocked = await controller.save('OBJ_0001', 'S000004', originalBytes, () => occupancyBytes);
+    expect(blocked).toMatchObject({ scan: 'blocked_recording', scanError: SCAN_STORAGE_BLOCKED_MESSAGE });
+    expect(controller.retryAvailable).toBe(true);
+    expect(server.scanSaveAttempts).toBe(1);
+    expect(server.scanUploadCount).toBe(0);
+    originalBytes.fill(0);
+
+    server.recordingBusy = false;
+    server.acceptOccupancy = true;
+    const retried = await controller.retry('OBJ_0001', 'S000004');
+
+    expect(retried).toMatchObject({ scan: 'saved', occupancy: 'ready' });
+    expect(server.scanSaveAttempts).toBe(2);
+    expect(server.scanUploadCount).toBe(1);
+    expect(server.files.get('OBJ_0001/S000004/scan')).toEqual(scanBytes);
+  });
+
+  it('rejects a truncated scan loaded from a real HTTP response with its CRC', async () => {
+    server = await startControlServer();
+    const artifact = encodeScanArtifact({
+      positions: new Float32Array([0, 0, 0]), confidence: new Float32Array([1]), normals: new Float32Array([0, 1, 0]),
+      pointCount: 1, tentativePositions: new Float32Array(0), tentativeConfidence: new Float32Array(0), tentativePointCount: 0,
+      tsdfPointCount: 0,
+      freeAirPositions: new Float32Array(0), occupiedSurfacePositions: new Float32Array(0), unknownCandidatePositions: new Float32Array(0),
+      tsdfPositions: new Float32Array(0), tsdfNormals: new Float32Array(0), tsdfConfidence: new Float32Array(0),
+      tsdfResidualMeters: new Float32Array(0), tsdfNormalConfidence: new Float32Array(0), tsdfCoverageConfidence: new Float32Array(0),
+      tsdfCoverageReady: new Uint8Array(0),
+    } as ScanPointCloudSnapshot);
+    server.files.set('OBJ_0001/S000005/scan', artifact);
+    server.truncateScanLoad = true;
+    const nativeFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      nativeFetch(new URL(String(input), server!.baseUrl), init));
+
+    const downloaded = await loadObjectScanArtifact('OBJ_0001', 'S000005');
+
+    expect(downloaded).not.toBeNull();
+    expect(() => decodeScanArtifact(downloaded!)).toThrow(/checksum/i);
   });
 
   it('reconciles a missing occupancy as retryable only with matching bytes in memory', async () => {

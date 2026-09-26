@@ -321,7 +321,7 @@ export default function DeviceConsoleApp() {
       <div className="scanner-feature-shell">
         <button className="console-floating-back" onClick={() => setScreen('objects')}>← Object</button>
         <Suspense fallback={<main className="console-loading">Loading WebXR scanner…</main>}>
-          <XrScannerFeature objectId={scannerObjectId} sessionId={scannerSessionId} />
+          <XrScannerFeature objectId={scannerObjectId} sessionId={scannerSessionId} status={status} />
         </Suspense>
       </div>
     );

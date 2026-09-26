@@ -194,11 +194,14 @@ export function decodeScanArtifact(source: ArrayBuffer | Uint8Array): ScanPointC
   const headerLength = view.getUint32(8, true);
   const payloadLength = view.getUint32(12, true);
   const expectedCrc = view.getUint32(16, true);
-  if (headerLength === 0 || FIXED_HEADER_BYTES + headerLength + payloadLength !== bytes.byteLength) {
+  if (headerLength === 0) {
     throw new Error('3D scan artifact length table is inconsistent.');
   }
   if (crc32(bytes, FIXED_HEADER_BYTES) !== expectedCrc) {
     throw new Error('3D scan artifact checksum mismatch; saved scan is incomplete or corrupted.');
+  }
+  if (FIXED_HEADER_BYTES + headerLength + payloadLength !== bytes.byteLength) {
+    throw new Error('3D scan artifact length table is inconsistent.');
   }
 
   const header = parseHeader(bytes, headerLength);
