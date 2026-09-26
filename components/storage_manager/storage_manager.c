@@ -168,6 +168,13 @@ static esp_err_t storage_manager_create_mutex(void)
 esp_err_t storage_manager_init(void)
 {
     esp_err_t err =
+        storage_bulk_admission_initialize();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
         storage_manager_create_mutex();
 
     if (err != ESP_OK) {

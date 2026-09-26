@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "object_store.h"
+#include "storage_bulk_admission.h"
 #include "measurement_service.h"
 #include "seismic_acquisition.h"
 #include "localization_calculate.h"
@@ -175,6 +176,39 @@ static bool web_control_scan_lease_options(
 }
 
 
+static bool web_control_scan_uses_bulk_admission(httpd_req_t *request)
+{
+    const size_t query_length = httpd_req_get_url_query_len(request);
+    if (query_length == 0U || query_length >= WEB_CONTROL_SCAN_QUERY_SIZE) return false;
+
+    char query[WEB_CONTROL_SCAN_QUERY_SIZE];
+    if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) return false;
+
+    char kind[16];
+    const esp_err_t err = httpd_query_key_value(query, "kind", kind, sizeof(kind));
+    return err == ESP_ERR_NOT_FOUND ||
+        (err == ESP_OK && (strcmp(kind, "scan") == 0 || strcmp(kind, "occupancy") == 0));
+}
+
+
+typedef struct
+{
+    const char *object_id;
+    object_store_lease_t *lease;
+    bool invoked;
+
+} web_control_scan_lease_context_t;
+
+
+static esp_err_t web_control_scan_acquire_lease(void *context)
+{
+    web_control_scan_lease_context_t *lease = context;
+    if (lease == NULL) return ESP_ERR_INVALID_ARG;
+    lease->invoked = true;
+    return object_store_lease_acquire(lease->object_id, lease->lease);
+}
+
+
 static esp_err_t web_control_scan_try_handle(
     httpd_req_t *request,
     bool *handled
@@ -187,7 +221,24 @@ static esp_err_t web_control_scan_try_handle(
     }
 
     object_store_lease_t lease = {0};
-    esp_err_t err = object_store_lease_acquire(object_id, &lease);
+    esp_err_t err;
+    if (web_control_scan_uses_bulk_admission(request)) {
+        web_control_scan_lease_context_t lease_context = {
+            .object_id = object_id,
+            .lease = &lease,
+            .invoked = false,
+        };
+        err = storage_bulk_admission_run_chunk(
+            web_control_scan_acquire_lease,
+            &lease_context
+        );
+        if (err == ESP_ERR_INVALID_STATE && !lease_context.invoked) {
+            return web_scan_store_try_handle(request, handled);
+        }
+    }
+    else {
+        err = object_store_lease_acquire(object_id, &lease);
+    }
     if (err != ESP_OK) {
         *handled = true;
         char action_name[32];

@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "measurement_service.h"
+#include "storage_bulk_admission.h"
+#include "storage_manager_internal.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -21,6 +23,9 @@ typedef struct {
 typedef struct {
     UBaseType_t count;
 } fake_semaphore_t;
+
+static SemaphoreHandle_t s_mutex;
+static measurement_service_snapshot_t s_snapshot;
 
 static fake_queue_t *last_queue;
 static esp_err_t fake_object_error;
@@ -46,6 +51,10 @@ static unsigned fake_start_object_calls;
 static char fake_start_object_last_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
 static unsigned fake_start_release_calls;
 static bool fake_start_release_saw_starting;
+static unsigned s_bulk_admission_enter_calls;
+static unsigned s_bulk_admission_exit_calls;
+static bool s_starting_state_observed;
+static bool s_starting_observed_without_admission;
 
 QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 {
@@ -123,6 +132,12 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t handle)
         return pdFALSE;
     }
     semaphore->count++;
+    if (handle == s_mutex && s_snapshot.state == MEASUREMENT_SERVICE_STARTING) {
+        s_starting_state_observed = true;
+        if (!storage_bulk_admission_is_protected()) {
+            s_starting_observed_without_admission = true;
+        }
+    }
     return pdTRUE;
 }
 
@@ -294,7 +309,25 @@ esp_err_t seismic_recorder_delete_session(const char *object_id, const char *ses
     return fake_recorder_delete_error;
 }
 
+static esp_err_t test_storage_bulk_admission_enter_protected(void)
+{
+    ++s_bulk_admission_enter_calls;
+    return storage_bulk_admission_enter_protected();
+}
+
+
+static void test_storage_bulk_admission_exit_protected(void)
+{
+    ++s_bulk_admission_exit_calls;
+    storage_bulk_admission_exit_protected();
+}
+
+
+#define storage_bulk_admission_enter_protected test_storage_bulk_admission_enter_protected
+#define storage_bulk_admission_exit_protected test_storage_bulk_admission_exit_protected
 #include "../measurement_service.c"
+#undef storage_bulk_admission_exit_protected
+#undef storage_bulk_admission_enter_protected
 
 static void fake_try_worker_transition_during_busy_read(void)
 {
@@ -337,6 +370,10 @@ static void reset_fakes(void)
     fake_start_object_last_id[0] = '\0';
     fake_start_release_calls = 0U;
     fake_start_release_saw_starting = false;
+    s_bulk_admission_enter_calls = 0U;
+    s_bulk_admission_exit_calls = 0U;
+    s_starting_state_observed = false;
+    s_starting_observed_without_admission = false;
 }
 
 
@@ -390,6 +427,7 @@ static void fake_start_reservation_release(void *user_context)
 
 static void start_service(void)
 {
+    storage_bulk_admission_exit_protected();
     reset_fakes();
     assert(measurement_service_init() == ESP_OK);
     /* The fake scheduler does not run the worker task. */
@@ -399,6 +437,7 @@ static void start_service(void)
 static void stop_service(void)
 {
     measurement_service_shutdown();
+    assert(!storage_bulk_admission_is_protected());
     last_queue = NULL;
 }
 
@@ -438,6 +477,11 @@ static void test_initial_and_no_active_object(void)
     assert(current.state == MEASUREMENT_SERVICE_ERROR);
     assert(current.last_error == ESP_ERR_NOT_FOUND);
     assert(fake_recorder_start_calls == 0U);
+    assert(s_bulk_admission_enter_calls == 1U);
+    assert(s_bulk_admission_exit_calls == 1U);
+    assert(s_starting_state_observed);
+    assert(!s_starting_observed_without_admission);
+    assert(!storage_bulk_admission_is_protected());
     stop_service();
 }
 
@@ -448,6 +492,11 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     assert(measurement_service_is_busy());
     assert(measurement_service_start_async() == ESP_ERR_INVALID_STATE);
     run_pending_command();
+    assert(s_starting_state_observed);
+    assert(!s_starting_observed_without_admission);
+    assert(s_bulk_admission_enter_calls == 1U);
+    assert(s_bulk_admission_exit_calls == 0U);
+    assert(storage_bulk_admission_is_protected());
     measurement_service_snapshot_t current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_RECORDING);
     assert(strcmp(current.session_id, "S000001") == 0);
@@ -477,6 +526,8 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_REVIEW);
     assert(current.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
+    assert(s_bulk_admission_exit_calls == 1U);
+    assert(!storage_bulk_admission_is_protected());
 
     assert(measurement_service_keep_async() == ESP_OK);
     run_pending_command();
@@ -501,6 +552,8 @@ static void test_start_stop_keep_delete_and_repeated_start(void)
     assert(fake_recorder_delete_calls == 1U);
     assert(s_snapshot.object_id[0] == '\0');
     assert(s_snapshot.object_name[0] == '\0');
+    assert(s_bulk_admission_enter_calls == 2U);
+    assert(s_bulk_admission_exit_calls == 2U);
     stop_service();
 }
 
@@ -514,6 +567,9 @@ static void test_retry_start_after_error_keeps_gate_until_worker_runs(void)
     measurement_service_snapshot_t current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_ERROR);
     assert(!current.busy);
+    assert(s_bulk_admission_enter_calls == 1U);
+    assert(s_bulk_admission_exit_calls == 1U);
+    assert(!storage_bulk_admission_is_protected());
 
     /* The accepted retry still reports the previous ERROR until the worker
      * dequeues it; the submit gate marks that stale state as in flight. */
@@ -698,6 +754,11 @@ static void test_error_owner_projection_semantics(void)
     run_pending_command();
     assert(s_snapshot.state == MEASUREMENT_SERVICE_ERROR);
     assert(strcmp(s_snapshot.object_id, "OBJ_0001") == 0);
+    assert(s_bulk_admission_enter_calls == 1U);
+    assert(s_bulk_admission_exit_calls == 1U);
+    measurement_service_set_error(ESP_FAIL);
+    assert(s_bulk_admission_exit_calls == 1U);
+    assert(!storage_bulk_admission_is_protected());
     set_fake_active_object("OBJ_0002", "Later active");
     current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_ERROR);
@@ -944,11 +1005,14 @@ static void test_delayed_stop_error_blocks_restart_until_cleanup(void)
     measurement_service_process_stop_poll();
     assert(snapshot().state == MEASUREMENT_SERVICE_ERROR);
     assert(snapshot().last_error == ESP_FAIL);
+    assert(s_bulk_admission_exit_calls == 1U);
+    assert(!storage_bulk_admission_is_protected());
     stop_service();
 }
 
 int main(void)
 {
+    assert(storage_bulk_admission_initialize() == ESP_OK);
     test_initial_and_no_active_object();
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();

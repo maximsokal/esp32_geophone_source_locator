@@ -5,6 +5,7 @@
 
 #include "app_task_config.h"
 #include "object_format.h"
+#include "storage_bulk_admission.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -64,6 +65,7 @@ static SemaphoreHandle_t s_mutex = NULL;
 static TaskHandle_t s_task = NULL;
 static measurement_service_snapshot_t s_snapshot;
 static bool s_initialized = false;
+static bool s_bulk_admission_held = false;
 
 /*
  * Hook pointers are shared by lifecycle/Web tasks and the measurement worker.
@@ -217,6 +219,23 @@ static void measurement_service_clear_session_identity_locked(void)
 }
 
 
+static void measurement_service_release_bulk_admission(void)
+{
+    bool release = false;
+
+    measurement_service_lock();
+    if (s_bulk_admission_held) {
+        s_bulk_admission_held = false;
+        release = true;
+    }
+    measurement_service_unlock();
+
+    if (release) {
+        storage_bulk_admission_exit_protected();
+    }
+}
+
+
 static void measurement_service_set_error(
     esp_err_t error
 )
@@ -225,6 +244,7 @@ static void measurement_service_set_error(
     s_snapshot.state = MEASUREMENT_SERVICE_ERROR;
     s_snapshot.last_error = error;
     measurement_service_unlock();
+    measurement_service_release_bulk_admission();
 }
 
 
@@ -268,6 +288,17 @@ static void measurement_service_process_start(
 )
 {
     measurement_service_lock();
+    const esp_err_t admission_err =
+        storage_bulk_admission_enter_protected();
+    if (admission_err != ESP_OK) {
+        measurement_service_unlock();
+        measurement_service_release_start_object_command(command);
+        measurement_service_set_error(admission_err);
+        measurement_service_release_start_reservation();
+        return;
+    }
+
+    s_bulk_admission_held = true;
     s_snapshot.state = MEASUREMENT_SERVICE_STARTING;
     s_snapshot.last_error = ESP_OK;
     s_snapshot.stop_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
@@ -504,6 +535,7 @@ static void measurement_service_process_stop_poll(void)
         measurement_service_unlock();
 
         if (became_terminal_error) {
+            measurement_service_release_bulk_admission();
             measurement_service_notify_terminal_error(
                 &recorder,
                 recorder_error
@@ -543,6 +575,7 @@ static void measurement_service_process_stop_poll(void)
         }
         measurement_service_unlock();
         if (became_terminal_error) {
+            measurement_service_release_bulk_admission();
             measurement_service_notify_terminal_error(
                 &recorder,
                 ESP_ERR_INVALID_STATE
@@ -568,6 +601,7 @@ static void measurement_service_process_stop_poll(void)
         }
         measurement_service_unlock();
         if (became_terminal_error) {
+            measurement_service_release_bulk_admission();
             measurement_service_notify_terminal_error(
                 &recorder,
                 terminal_error
@@ -591,6 +625,8 @@ static void measurement_service_process_stop_poll(void)
     if (!became_review) {
         return;
     }
+
+    measurement_service_release_bulk_admission();
 
     measurement_service_notify_storage_refresh();
 
@@ -662,6 +698,7 @@ static void measurement_service_process_delete(void)
         s_snapshot.state = MEASUREMENT_SERVICE_REVIEW;
         s_snapshot.last_error = err;
         measurement_service_unlock();
+        measurement_service_release_bulk_admission();
         return;
     }
 
@@ -1014,6 +1051,7 @@ esp_err_t measurement_service_init(void)
     s_start_reservation_callback = NULL;
     s_start_reservation_context = NULL;
     s_start_reservation_hook_owned = false;
+    s_bulk_admission_held = false;
     s_snapshot.initialized = true;
     s_snapshot.state = MEASUREMENT_SERVICE_LIVE;
     s_snapshot.last_error = ESP_OK;
@@ -1086,6 +1124,7 @@ void measurement_service_shutdown(void)
     }
 
     measurement_service_release_start_reservation();
+    measurement_service_release_bulk_admission();
 
     if (s_mutex != NULL) {
         vSemaphoreDelete(s_mutex);
@@ -1108,6 +1147,7 @@ void measurement_service_shutdown(void)
     s_start_reservation_callback = NULL;
     s_start_reservation_context = NULL;
     s_start_reservation_hook_owned = false;
+    s_bulk_admission_held = false;
     s_initialized = false;
 
     ESP_LOGI(TAG, "Shutdown complete");

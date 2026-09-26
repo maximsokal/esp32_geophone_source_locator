@@ -75,6 +75,24 @@ SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void)
     return (SemaphoreHandle_t)1;
 }
 
+SemaphoreHandle_t xSemaphoreCreateMutex(void)
+{
+    return (SemaphoreHandle_t)2;
+}
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, unsigned long timeout)
+{
+    (void)timeout;
+    assert(semaphore == (SemaphoreHandle_t)2);
+    return pdTRUE;
+}
+
+BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
+{
+    assert(semaphore == (SemaphoreHandle_t)2);
+    return pdTRUE;
+}
+
 BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, unsigned long timeout)
 {
     (void)semaphore;

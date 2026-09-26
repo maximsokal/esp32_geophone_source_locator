@@ -1159,6 +1159,7 @@
       "sources": [
         "components/measurement_service/tests/measurement_service_worker_contract_test.c",
         "components/object_format/object_format.c",
+        "components/storage_manager/storage_bulk_admission.c",
         "tests/host/stubs/runtime_observability/noop.c"
       ],
       "include_dirs": [
@@ -1170,7 +1171,9 @@
         "components/object_store/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/runtime_observability",
-        "components/runtime_observability/include"
+        "components/runtime_observability/include",
+        "components/storage_manager",
+        "components/storage_manager/include"
       ]
     },
     {
@@ -1572,8 +1575,24 @@
       ]
     },
     {
+      "name": "storage_bulk_admission",
+      "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
+        "tests/host/storage_bulk_admission_test.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/tests/stubs",
+        "components/storage_manager",
+        "components/storage_manager/include"
+      ],
+      "libraries": [
+        "pthread"
+      ]
+    },
+    {
       "name": "storage_manager",
       "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
         "components/storage_manager/tests/storage_manager_dma_contract_test.c"
       ],
       "include_dirs": [
@@ -1660,11 +1679,15 @@
     {
       "name": "web_api_control_http",
       "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "tests/host/web_api_control_http_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/web_api_control",
+        "components/measurement_service/tests/stubs",
+        "components/storage_manager",
+        "components/storage_manager/include",
         "components/web_server"
       ],
       "defines": ["_POSIX_C_SOURCE=200809L"],
@@ -1684,11 +1707,14 @@
     {
       "name": "web_scan_store_http",
       "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
         "tests/host/web_scan_store_http_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/web_scan_store",
         "tests/host/stubs/web_api_control",
+        "components/storage_manager",
+        "components/storage_manager/include",
         "components/app_config/include",
         "components/object_format/include",
         "components/web_server"
