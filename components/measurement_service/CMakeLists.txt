@@ -11,6 +11,7 @@ idf_component_register(
         object_service
         seismic_recorder
         runtime_observability
+        storage_manager
         freertos
         heap
         log

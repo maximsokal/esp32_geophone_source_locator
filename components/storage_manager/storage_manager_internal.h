@@ -36,3 +36,6 @@ esp_err_t storage_manager_sidecar_path(
 esp_err_t storage_manager_recover_backup_locked(
     const char *path
 );
+
+
+esp_err_t storage_bulk_admission_initialize(void);

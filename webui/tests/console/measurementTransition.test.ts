@@ -7,6 +7,7 @@ import {
   measurementOwnsRecorder,
   measurementTransitionErrorMessage,
   measurementTransitionNeedsSessionRefresh,
+  scannerStorageActionsDisabled,
   waitForStorageCacheIdle,
   waitForMeasurementTransition,
 } from '../../src/features/objects/measurementTransition';
@@ -111,6 +112,14 @@ describe('measurement transition polling', () => {
     expect(measurementOwnsRecorder(status('STOPPING'))).toBe(true);
     expect(measurementOwnsRecorder(status('REVIEW'))).toBe(false);
     expect(measurementControlLocked(status('LIVE', true))).toBe(true);
+  });
+
+  it('disables scanner storage actions from the active measurement status', () => {
+    expect(scannerStorageActionsDisabled(status('STARTING'))).toBe(true);
+    expect(scannerStorageActionsDisabled(status('RECORDING'))).toBe(true);
+    expect(scannerStorageActionsDisabled(status('STOPPING'))).toBe(true);
+    expect(scannerStorageActionsDisabled(status('REVIEW'))).toBe(false);
+    expect(scannerStorageActionsDisabled(null)).toBe(false);
   });
 
   it('does not refresh the stop result until STOPPING becomes REVIEW', async () => {

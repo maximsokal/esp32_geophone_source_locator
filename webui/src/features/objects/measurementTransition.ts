@@ -55,6 +55,10 @@ export function measurementOwnsRecorder(status: DeviceStatus): boolean {
   return status.measurement === undefined && status.recording?.running === true;
 }
 
+export function scannerStorageActionsDisabled(status: DeviceStatus | null): boolean {
+  return status !== null && measurementOwnsRecorder(status);
+}
+
 export function measurementControlLocked(status: DeviceStatus): boolean {
   return measurementOwnsRecorder(status) || status.measurement?.busy === true;
 }

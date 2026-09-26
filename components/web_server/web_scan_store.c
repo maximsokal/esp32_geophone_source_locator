@@ -20,6 +20,7 @@
 #include "object_format.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "storage_bulk_admission.h"
 #include "storage_manager.h"
 
 #define WEB_SCAN_QUERY_SIZE       160U
@@ -28,6 +29,7 @@
 #define WEB_SCAN_MAX_BYTES        (8U * 1024U * 1024U)
 #define WEB_REGISTRATION_MAX_BYTES 16384U
 #define WEB_SCAN_RECV_TIMEOUTS    5U
+#define WEB_SCAN_DRAIN_BUFFER_SIZE 256U
 
 static const char *TAG = "WEB_SCAN_STORE";
 /*
@@ -265,6 +267,69 @@ static esp_err_t web_scan_send_registration_conflict(httpd_req_t *request)
 }
 
 
+static bool web_scan_kind_uses_bulk_admission(const web_scan_kind_t *kind)
+{
+    return kind == &WEB_SCAN_KIND_SCAN || kind == &WEB_SCAN_KIND_OCCUPANCY;
+}
+
+
+static esp_err_t web_scan_send_recording_busy(
+    httpd_req_t *request,
+    const char *action
+)
+{
+    char body[112];
+    const int written = snprintf(
+        body,
+        sizeof(body),
+        "{\"ok\":false,\"action\":\"%s\",\"busy_reason\":\"recording_active\"}",
+        action
+    );
+    if (written <= 0 || (size_t)written >= sizeof(body)) return ESP_ERR_INVALID_SIZE;
+
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_status(request, "409 Conflict");
+    return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+}
+
+
+/* Keep a rejected scan upload from leaving unread bytes on a reusable socket. */
+static void web_scan_drain_request_body(
+    httpd_req_t *request,
+    size_t already_received,
+    size_t max_bytes
+)
+{
+    if (
+        request == NULL || request->content_len <= 0 ||
+        (unsigned long)request->content_len > max_bytes
+    ) {
+        return;
+    }
+
+    size_t remaining = (size_t)request->content_len;
+    if (already_received >= remaining) return;
+    remaining -= already_received;
+
+    unsigned char buffer[WEB_SCAN_DRAIN_BUFFER_SIZE];
+    unsigned timeout_count = 0U;
+    while (remaining > 0U) {
+        const size_t request_size = remaining < sizeof(buffer)
+            ? remaining
+            : sizeof(buffer);
+        const int received = httpd_req_recv(request, buffer, request_size);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeout_count >= WEB_SCAN_RECV_TIMEOUTS) return;
+            continue;
+        }
+        if (received <= 0) return;
+        timeout_count = 0U;
+        remaining -= (size_t)received;
+    }
+}
+
+
 /* storage_manager_operation_begin() must be held by the caller. */
 static esp_err_t web_scan_recover_file(
     const char *final_path,
@@ -310,18 +375,31 @@ static esp_err_t web_scan_open_temp(
 }
 
 
-static esp_err_t web_scan_write_chunk(
-    FILE *file,
-    const unsigned char *buffer,
-    size_t size
-)
+typedef struct
 {
-    if (file == NULL || buffer == NULL || size == 0U) return ESP_ERR_INVALID_ARG;
+    FILE *file;
+    const unsigned char *buffer;
+    size_t size;
+    bool invoked;
+
+} web_scan_write_chunk_context_t;
+
+
+static esp_err_t web_scan_write_chunk(void *context)
+{
+    web_scan_write_chunk_context_t *chunk = context;
+    if (chunk == NULL) return ESP_ERR_INVALID_ARG;
+    chunk->invoked = true;
+    if (chunk->file == NULL || chunk->buffer == NULL || chunk->size == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) return err;
 
-    if (fwrite(buffer, 1U, size, file) != size) err = ESP_FAIL;
+    if (fwrite(chunk->buffer, 1U, chunk->size, chunk->file) != chunk->size) {
+        err = ESP_FAIL;
+    }
 
     storage_manager_operation_end();
     return err;
@@ -412,6 +490,14 @@ static void web_scan_remove_temp_best_effort(const char *temp_path)
 
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
+    if (
+        web_scan_kind_uses_bulk_admission(kind) &&
+        storage_bulk_admission_is_protected()
+    ) {
+        web_scan_drain_request_body(request, 0U, kind->max_bytes);
+        return web_scan_send_recording_busy(request, "scan_save");
+    }
+
     if (!web_scan_kind_size_valid(kind, request->content_len)) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
     }
@@ -439,7 +525,9 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     const web_scan_priority_guard_t priority_guard = web_scan_priority_enter();
     FILE *file = NULL;
     size_t received_total = 0U;
+    size_t request_bytes_received = 0U;
     unsigned timeout_count = 0U;
+    bool admission_rejected = false;
 
     err = web_scan_open_temp(temp_path, &file);
     if (err == ESP_OK) {
@@ -471,6 +559,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
                 err = ESP_FAIL;
                 break;
             }
+            request_bytes_received += (size_t)received;
 
             /* The latch may become true while recv() is blocked. Never write
              * even the final received chunk after the shutdown boundary. */
@@ -480,7 +569,21 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
             }
 
             timeout_count = 0U;
-            err = web_scan_write_chunk(file, buffer, (size_t)received);
+            web_scan_write_chunk_context_t chunk = {
+                .file = file,
+                .buffer = buffer,
+                .size = (size_t)received,
+                .invoked = false,
+            };
+            err = web_scan_kind_uses_bulk_admission(kind)
+                ? storage_bulk_admission_run_chunk(
+                    web_scan_write_chunk,
+                    &chunk
+                )
+                : web_scan_write_chunk(&chunk);
+            if (err == ESP_ERR_INVALID_STATE && !chunk.invoked) {
+                admission_rejected = true;
+            }
             if (err != ESP_OK) break;
             received_total += (size_t)received;
         }
@@ -504,6 +607,10 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     web_scan_priority_leave(priority_guard);
     free(buffer);
 
+    if (admission_rejected) {
+        web_scan_drain_request_body(request, request_bytes_received, kind->max_bytes);
+    }
+
     const uint32_t elapsed_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
     if (err == ESP_OK) {
         ESP_LOGI(
@@ -524,7 +631,9 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
             esp_err_to_name(err)
         );
     }
-    return web_scan_send_json(request, "scan_save", object_id, session_id, err, received_total);
+    return admission_rejected
+        ? web_scan_send_recording_busy(request, "scan_save")
+        : web_scan_send_json(request, "scan_save", object_id, session_id, err, received_total);
 }
 
 
@@ -576,24 +685,38 @@ static esp_err_t web_scan_open_for_stream(
 }
 
 
-static esp_err_t web_scan_read_chunk(
-    FILE *file,
-    unsigned char *buffer,
-    size_t capacity,
-    size_t *read_out
-)
+typedef struct
 {
-    if (file == NULL || buffer == NULL || capacity == 0U || read_out == NULL) {
+    FILE *file;
+    unsigned char *buffer;
+    size_t capacity;
+    size_t *read_out;
+
+} web_scan_read_chunk_context_t;
+
+
+static esp_err_t web_scan_read_chunk(void *context)
+{
+    web_scan_read_chunk_context_t *chunk = context;
+    if (
+        chunk == NULL || chunk->file == NULL || chunk->buffer == NULL ||
+        chunk->capacity == 0U || chunk->read_out == NULL
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
-    *read_out = 0U;
+    *chunk->read_out = 0U;
 
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) return err;
 
-    const size_t count = fread(buffer, 1U, capacity, file);
-    if (ferror(file) != 0) err = ESP_FAIL;
-    *read_out = count;
+    const size_t count = fread(
+        chunk->buffer,
+        1U,
+        chunk->capacity,
+        chunk->file
+    );
+    if (ferror(chunk->file) != 0) err = ESP_FAIL;
+    *chunk->read_out = count;
 
     storage_manager_operation_end();
     return err;
@@ -602,6 +725,13 @@ static esp_err_t web_scan_read_chunk(
 
 static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
+    if (
+        web_scan_kind_uses_bulk_admission(kind) &&
+        storage_bulk_admission_is_protected()
+    ) {
+        return web_scan_send_recording_busy(request, "scan_load");
+    }
+
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
@@ -652,12 +782,18 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
             : WEB_SCAN_IO_BUFFER_SIZE;
         size_t read_count = 0U;
 
-        err = web_scan_read_chunk(
-            file,
-            buffer,
-            request_size,
-            &read_count
-        );
+        web_scan_read_chunk_context_t chunk = {
+            .file = file,
+            .buffer = buffer,
+            .capacity = request_size,
+            .read_out = &read_count,
+        };
+        err = web_scan_kind_uses_bulk_admission(kind)
+            ? storage_bulk_admission_run_chunk(
+                web_scan_read_chunk,
+                &chunk
+            )
+            : web_scan_read_chunk(&chunk);
         if (err != ESP_OK || read_count == 0U) {
             if (err == ESP_OK) err = ESP_FAIL;
             break;
@@ -709,6 +845,13 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
 
 static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
+    if (
+        web_scan_kind_uses_bulk_admission(kind) &&
+        storage_bulk_admission_is_protected()
+    ) {
+        return web_scan_send_recording_busy(request, "scan_delete");
+    }
+
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);

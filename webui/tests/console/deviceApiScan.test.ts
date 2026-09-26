@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchDeviceStatus,
   loadObjectScanArtifact,
+  ScanStorageBlockedRecordingError,
   saveObjectScanArtifact,
 } from '../../src/api/deviceApi';
 
@@ -57,6 +58,24 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
   it('treats only HTTP 404 as no saved scan', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'ESP_ERR_NOT_FOUND' }, 404)));
     await expect(loadObjectScanArtifact('OBJ_0010', 'S000002')).resolves.toBeNull();
+  });
+
+  it('returns a distinct blocked_recording outcome for scan-save 409 responses', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      ok: false, action: 'scan_save', busy_reason: 'recording_active',
+    }, 409)));
+
+    await expect(saveObjectScanArtifact('OBJ_0008', 'S000003', new Uint8Array([1, 2, 3]))).resolves.toMatchObject({
+      ok: false, outcome: 'blocked_recording', busy_reason: 'recording_active',
+    });
+  });
+
+  it('classifies a scan-load 409 as blocked_recording', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      ok: false, action: 'scan_load', busy_reason: 'recording_active',
+    }, 409)));
+
+    await expect(loadObjectScanArtifact('OBJ_0008', 'S000004')).rejects.toBeInstanceOf(ScanStorageBlockedRecordingError);
   });
 
   it('serializes scan upload ahead of a status poll to avoid a second ESP TLS request', async () => {

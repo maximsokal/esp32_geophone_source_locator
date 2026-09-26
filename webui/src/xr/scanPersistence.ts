@@ -1,8 +1,10 @@
 import type { ControlResult, ScanArtifactInfo } from '../api/deviceApi';
 import { occupancyFrameIdForScan } from './occupancySolverArtifact';
 
-export type ScanSaveState = 'saving' | 'saved' | 'error';
+export type ScanSaveState = 'saving' | 'saved' | 'error' | 'blocked_recording';
 export type OccupancySaveState = 'pending' | 'saving' | 'ready' | 'failed' | 'unavailable';
+
+export const SCAN_STORAGE_BLOCKED_MESSAGE = 'Recording in progress — scan storage is paused';
 
 export interface ScanPersistenceState {
   scan: ScanSaveState;
@@ -15,6 +17,7 @@ export type ScanPersistenceEvent =
   | { type: 'scan-saving' }
   | { type: 'scan-saved' }
   | { type: 'scan-failed'; error: string }
+  | { type: 'scan-blocked-recording' }
   | { type: 'occupancy-saving' }
   | { type: 'occupancy-ready' }
   | { type: 'occupancy-failed'; error: string }
@@ -57,6 +60,9 @@ export function transitionScanPersistence(
   if (event.type === 'scan-failed' && state?.scan === 'saving') {
     return { scan: 'error', occupancy: 'unavailable', scanError: event.error, occupancyError: null };
   }
+  if (event.type === 'scan-blocked-recording' && state?.scan === 'saving') {
+    return { scan: 'blocked_recording', occupancy: 'pending', scanError: SCAN_STORAGE_BLOCKED_MESSAGE, occupancyError: null };
+  }
   if (event.type === 'occupancy-saving' && state?.scan === 'saved' && (state.occupancy === 'pending' || state.occupancy === 'failed')) {
     return { ...state, occupancy: 'saving', occupancyError: null };
   }
@@ -85,6 +91,13 @@ interface PendingOccupancy {
   bytes: Uint8Array;
 }
 
+interface PendingScan {
+  objectId: string;
+  sessionId: string;
+  bytes: Uint8Array;
+  buildOccupancy: () => Uint8Array;
+}
+
 function errorText(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
@@ -93,10 +106,17 @@ function requireAccepted(result: ControlResult): void {
   if (result?.ok !== true) throw new Error(result?.error ?? 'ESP scan save was not accepted.');
 }
 
+function isBlockedRecording(value: unknown): boolean {
+  return typeof value === 'object' && value !== null &&
+    'outcome' in value && (value as { outcome?: unknown }).outcome === 'blocked_recording' &&
+    'busy_reason' in value && (value as { busy_reason?: unknown }).busy_reason === 'recording_active';
+}
+
 /** Keeps one retry payload in memory, keyed to the exact saved session scan CRC. */
 export class ScanPersistenceController {
   private state: ScanPersistenceState | null = null;
   private pendingOccupancy: PendingOccupancy | null = null;
+  private pendingScan: PendingScan | null = null;
   private epoch = 0;
 
   constructor(
@@ -107,12 +127,14 @@ export class ScanPersistenceController {
   get currentState(): ScanPersistenceState | null { return this.state; }
 
   get retryAvailable(): boolean {
-    return this.state?.scan === 'saved' && this.state.occupancy === 'failed' && this.pendingOccupancy !== null;
+    return (this.state?.scan === 'blocked_recording' && this.pendingScan !== null) ||
+      (this.state?.scan === 'saved' && this.state.occupancy === 'failed' && this.pendingOccupancy !== null);
   }
 
   reset(): void {
     this.epoch += 1;
     this.pendingOccupancy = null;
+    this.pendingScan = null;
     this.state = null;
     this.onState(null);
   }
@@ -122,25 +144,49 @@ export class ScanPersistenceController {
     sessionId: string,
     scanBytes: Uint8Array,
     buildOccupancy: () => Uint8Array,
+    blockedByRecording = false,
   ): Promise<ScanPersistenceState | null> {
     const epoch = ++this.epoch;
     this.pendingOccupancy = null;
+    const pending: PendingScan = { objectId, sessionId, bytes: scanBytes.slice(), buildOccupancy };
+    this.pendingScan = pending;
     this.dispatch(epoch, { type: 'scan-saving' });
+    if (blockedByRecording) {
+      this.dispatch(epoch, { type: 'scan-blocked-recording' });
+      return this.state;
+    }
+    return this.uploadScan(epoch, pending);
+  }
+
+  private async uploadScan(epoch: number, pending: PendingScan): Promise<ScanPersistenceState | null> {
     try {
-      requireAccepted(await this.ports.saveScan(objectId, sessionId, scanBytes));
+      const result = await this.ports.saveScan(pending.objectId, pending.sessionId, pending.bytes);
+      if (epoch !== this.epoch) return this.state;
+      if (isBlockedRecording(result)) {
+        this.dispatch(epoch, { type: 'scan-blocked-recording' });
+        return this.state;
+      }
+      requireAccepted(result);
     } catch (reason) {
+      if (epoch !== this.epoch) return this.state;
+      if (isBlockedRecording(reason)) {
+        this.dispatch(epoch, { type: 'scan-blocked-recording' });
+        return this.state;
+      }
+      this.pendingScan = null;
       this.dispatch(epoch, { type: 'scan-failed', error: errorText(reason) });
       return this.state;
     }
     if (epoch !== this.epoch) return this.state;
+    this.pendingScan = null;
     this.dispatch(epoch, { type: 'scan-saved' });
 
     try {
       this.pendingOccupancy = {
-        objectId,
-        sessionId,
-        scanFrameId: occupancyFrameIdForScan(scanBytes),
-        bytes: buildOccupancy().slice(),
+        objectId: pending.objectId,
+        sessionId: pending.sessionId,
+        scanFrameId: occupancyFrameIdForScan(pending.bytes),
+        bytes: pending.buildOccupancy().slice(),
       };
     } catch (reason) {
       this.dispatch(epoch, { type: 'occupancy-unavailable', error: `Occupancy could not be prepared: ${errorText(reason)}` });
@@ -151,6 +197,12 @@ export class ScanPersistenceController {
 
   async retry(objectId: string, sessionId: string): Promise<ScanPersistenceState | null> {
     const epoch = ++this.epoch;
+    const pendingScan = this.pendingScan;
+    if (this.state?.scan === 'blocked_recording' && pendingScan !== null &&
+        pendingScan.objectId === objectId && pendingScan.sessionId === sessionId) {
+      this.dispatch(epoch, { type: 'scan-saving' });
+      return this.uploadScan(epoch, pendingScan);
+    }
     const pending = this.pendingOccupancy;
     if (this.state?.scan !== 'saved' || this.state.occupancy !== 'failed' || pending === null ||
         pending.objectId !== objectId || pending.sessionId !== sessionId) {

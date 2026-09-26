@@ -3,14 +3,22 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
 #include "esp_http_server.h"
+#include "freertos/semphr.h"
 #include "localization_calculate.h"
 #include "measurement_service.h"
 #include "object_store.h"
+#include "storage_bulk_admission.h"
+#include "storage_manager_internal.h"
 #include "web_server_internal.h"
+
+typedef struct {
+    bool locked;
+} fake_admission_mutex_t;
 
 static object_store_location_t s_saved_location;
 static unsigned s_location_calls;
@@ -25,6 +33,10 @@ static esp_err_t s_acquisition_start_result;
 static unsigned s_acquisition_start_calls;
 static esp_err_t s_measurement_start_result;
 static unsigned s_measurement_start_calls;
+static unsigned s_lease_acquire_calls;
+static unsigned s_lease_release_calls;
+static unsigned s_scan_store_calls;
+static fake_admission_mutex_t *s_admission_mutex;
 
 static void reset_fakes(void)
 {
@@ -41,6 +53,37 @@ static void reset_fakes(void)
     s_acquisition_start_calls = 0U;
     s_measurement_start_result = ESP_OK;
     s_measurement_start_calls = 0U;
+    s_lease_acquire_calls = 0U;
+    s_lease_release_calls = 0U;
+    s_scan_store_calls = 0U;
+    storage_bulk_admission_exit_protected();
+}
+
+
+SemaphoreHandle_t xSemaphoreCreateMutex(void)
+{
+    s_admission_mutex = calloc(1U, sizeof(*s_admission_mutex));
+    return s_admission_mutex;
+}
+
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t timeout)
+{
+    (void)timeout;
+    fake_admission_mutex_t *mutex = semaphore;
+    assert(mutex != NULL && mutex == s_admission_mutex);
+    if (mutex->locked) return pdFALSE;
+    mutex->locked = true;
+    return pdTRUE;
+}
+
+
+BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
+{
+    fake_admission_mutex_t *mutex = semaphore;
+    assert(mutex != NULL && mutex == s_admission_mutex && mutex->locked);
+    mutex->locked = false;
+    return pdTRUE;
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -152,6 +195,7 @@ esp_err_t object_store_set_cable_default(size_t pod_index, float length_m)
 esp_err_t object_store_lease_acquire(const char *object_id, object_store_lease_t *lease)
 {
     (void)object_id;
+    ++s_lease_acquire_calls;
     if (lease != NULL) lease->token_id = 1U;
     return ESP_OK;
 }
@@ -159,6 +203,7 @@ esp_err_t object_store_lease_acquire(const char *object_id, object_store_lease_t
 esp_err_t object_store_lease_release(object_store_lease_t *lease)
 {
     (void)lease;
+    ++s_lease_release_calls;
     return ESP_OK;
 }
 
@@ -195,7 +240,8 @@ bool object_format_id_is_valid(const char *object_id)
 esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
 {
     (void)request;
-    if (handled != NULL) *handled = false;
+    ++s_scan_store_calls;
+    if (handled != NULL) *handled = request != NULL && request->query != NULL;
     return ESP_OK;
 }
 
@@ -252,10 +298,27 @@ esp_err_t httpd_req_get_url_query_str(httpd_req_t *request, char *buffer, size_t
 
 esp_err_t httpd_query_key_value(const char *query, const char *key, char *value, size_t value_size)
 {
-    (void)query;
-    (void)key;
-    (void)value;
-    (void)value_size;
+    if (query == NULL || key == NULL || value == NULL || value_size == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const size_t key_length = strlen(key);
+    const char *cursor = query;
+    while (*cursor != '\0') {
+        const char *end = strchr(cursor, '&');
+        const char *equals = strchr(cursor, '=');
+        if (equals != NULL && (end == NULL || equals < end)) {
+            if ((size_t)(equals - cursor) == key_length && strncmp(cursor, key, key_length) == 0) {
+                const char *start = equals + 1;
+                const size_t length = end == NULL ? strlen(start) : (size_t)(end - start);
+                if (length == 0U || length >= value_size) return ESP_ERR_INVALID_SIZE;
+                memcpy(value, start, length);
+                value[length] = '\0';
+                return ESP_OK;
+            }
+        }
+        if (end == NULL) break;
+        cursor = end + 1;
+    }
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -321,6 +384,57 @@ static httpd_req_t make_request(const char *body, char *response, size_t respons
         .response_body = response,
         .response_capacity = response_capacity,
     };
+}
+
+
+static httpd_req_t make_scan_request(
+    const char *query,
+    char *response,
+    size_t response_capacity
+)
+{
+    return (httpd_req_t){
+        .uri = "/api/control",
+        .query = query,
+        .content_len = 0,
+        .response_body = response,
+        .response_capacity = response_capacity,
+    };
+}
+
+
+static void test_scan_recording_gate_precedes_object_lease(void)
+{
+    reset_fakes();
+    assert(storage_bulk_admission_enter_protected() == ESP_OK);
+
+    const char *queries[] = {
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        "scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+    };
+    for (size_t index = 0U; index < sizeof(queries) / sizeof(queries[0]); ++index) {
+        char response[256] = {0};
+        httpd_req_t request = make_scan_request(queries[index], response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_scan_store_calls == index + 1U);
+        assert(s_lease_acquire_calls == 0U);
+        assert(s_lease_release_calls == 0U);
+    }
+
+    /* Registration remains on its existing lease path during global admission. */
+    {
+        char response[256] = {0};
+        httpd_req_t request = make_scan_request(
+            "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001",
+            response,
+            sizeof(response)
+        );
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_lease_acquire_calls == 1U);
+        assert(s_lease_release_calls == 1U);
+    }
+
+    storage_bulk_admission_exit_protected();
 }
 
 static void test_measurement_start_rejects_acquisition_failures(void)
@@ -670,6 +784,8 @@ static void test_calculate_source_action_surfaces_solver_failure(void)
 
 int main(void)
 {
+    assert(storage_bulk_admission_initialize() == ESP_OK);
+    test_scan_recording_gate_precedes_object_lease();
     test_measurement_start_rejects_acquisition_failures();
     test_measurement_start_success_stays_async();
     test_measurement_start_async_failure_keeps_existing_mapping();

@@ -15,24 +15,47 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#include <sys/stat.h>
 
 #include "app_task_config.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "object_format.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "storage_bulk_admission.h"
+#include "storage_manager_internal.h"
 #include "storage_manager.h"
 #include "web_server_internal.h"
+
+typedef struct {
+    bool locked;
+} fake_mutex_t;
 
 static unsigned s_storage_begin_calls;
 static unsigned s_storage_end_calls;
 static unsigned s_priority_changes;
 static size_t s_chunked_response_bytes;
+static unsigned s_session_list_calls;
+static unsigned s_recv_calls;
+static unsigned s_enter_after_recv_call;
+static unsigned s_send_chunk_calls;
+static unsigned s_enter_after_send_chunk;
+static unsigned s_fail_fwrite_call;
+static unsigned s_fwrite_calls;
+static bool s_chunked_response_terminated;
 static seismic_recorder_snapshot_t s_recorder_snapshot;
+
+size_t web_scan_store_test_fwrite(
+    const void *buffer,
+    size_t size,
+    size_t count,
+    FILE *file
+);
 
 static void make_directory(const char *path)
 {
@@ -96,6 +119,65 @@ static void remove_layout(void)
     memset(&s_recorder_snapshot, 0, sizeof(s_recorder_snapshot));
 }
 
+
+static bool path_exists(const char *path)
+{
+    struct stat info;
+    return stat(path, &info) == 0;
+}
+
+
+static void write_bytes(const char *path, const unsigned char *bytes, size_t length)
+{
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(bytes, 1U, length, file) == length);
+    assert(fclose(file) == 0);
+}
+
+
+size_t web_scan_store_test_fwrite(
+    const void *buffer,
+    size_t size,
+    size_t count,
+    FILE *file
+)
+{
+    ++s_fwrite_calls;
+    if (s_fail_fwrite_call != 0U && s_fwrite_calls == s_fail_fwrite_call) {
+        return 0U;
+    }
+    return fwrite(buffer, size, count, file);
+}
+
+
+SemaphoreHandle_t xSemaphoreCreateMutex(void)
+{
+    fake_mutex_t *mutex = calloc(1U, sizeof(*mutex));
+    assert(mutex != NULL);
+    return mutex;
+}
+
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t timeout)
+{
+    fake_mutex_t *mutex = semaphore;
+    assert(mutex != NULL);
+    assert(timeout == portMAX_DELAY);
+    if (mutex->locked) return pdFALSE;
+    mutex->locked = true;
+    return pdTRUE;
+}
+
+
+BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
+{
+    fake_mutex_t *mutex = semaphore;
+    assert(mutex != NULL && mutex->locked);
+    mutex->locked = false;
+    return pdTRUE;
+}
+
 bool power_control_is_shutdown_requested(void)
 {
     return false;
@@ -129,6 +211,7 @@ esp_err_t seismic_recorder_list_sessions(
     size_t *session_count
 )
 {
+    ++s_session_list_calls;
     if (
         object_id == NULL ||
         sessions == NULL ||
@@ -234,12 +317,17 @@ esp_err_t httpd_query_key_value(
 int httpd_req_recv(httpd_req_t *request, void *buffer, size_t length)
 {
     if (request == NULL || buffer == NULL || request->body == NULL) return ESP_FAIL;
+    ++s_recv_calls;
     const size_t total = (size_t)request->content_len;
     if (request->body_offset >= total) return 0;
     const size_t remaining = total - request->body_offset;
     const size_t copied = remaining < length ? remaining : length;
     memcpy(buffer, request->body + request->body_offset, copied);
     request->body_offset += copied;
+    if (s_enter_after_recv_call != 0U && s_recv_calls == s_enter_after_recv_call) {
+        s_enter_after_recv_call = 0U;
+        assert(storage_bulk_admission_enter_protected() == ESP_OK);
+    }
     return (int)copied;
 }
 
@@ -283,12 +371,20 @@ esp_err_t httpd_resp_send(httpd_req_t *request, const char *buffer, ssize_t leng
 
 esp_err_t httpd_resp_send_chunk(httpd_req_t *request, const char *buffer, ssize_t length)
 {
-    if (buffer == NULL && length == 0) return ESP_OK;
+    if (buffer == NULL && length == 0) {
+        s_chunked_response_terminated = true;
+        return ESP_OK;
+    }
     assert(request != NULL && buffer != NULL && length > 0);
     assert(request->response_length + (size_t)length <= request->response_capacity);
     memcpy(request->response_body + request->response_length, buffer, (size_t)length);
     request->response_length += (size_t)length;
     s_chunked_response_bytes += (size_t)length;
+    ++s_send_chunk_calls;
+    if (s_enter_after_send_chunk != 0U && s_send_chunk_calls == s_enter_after_send_chunk) {
+        s_enter_after_send_chunk = 0U;
+        assert(storage_bulk_admission_enter_protected() == ESP_OK);
+    }
     return ESP_OK;
 }
 
@@ -305,7 +401,9 @@ bool object_format_id_is_valid(const char *object_id)
 }
 
 #define static
+#define fwrite web_scan_store_test_fwrite
 #include "../../components/web_server/web_scan_store.c"
+#undef fwrite
 #undef static
 
 static httpd_req_t make_request(
@@ -745,6 +843,8 @@ static void test_registration_recording_guard_is_session_scoped(void)
     const char *query = "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001";
     assert(save_kind(query, registration, sizeof(registration) - 1U));
 
+    assert(storage_bulk_admission_enter_protected() == ESP_OK);
+
     s_recorder_snapshot.running = true;
     (void)snprintf(s_recorder_snapshot.object_id, sizeof(s_recorder_snapshot.object_id), "OBJ_0001");
     (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000001");
@@ -753,6 +853,7 @@ static void test_registration_recording_guard_is_session_scoped(void)
     assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
     assert(save.response_status != NULL && strcmp(save.response_status, "409 Conflict") == 0);
     assert(strstr(response, "this session is recording") != NULL);
+    assert(strstr(response, "busy_reason") == NULL);
 
     static const unsigned char oversized[16385] = {0U};
     memset(response, 0, sizeof(response));
@@ -785,17 +886,340 @@ static void test_registration_recording_guard_is_session_scoped(void)
     assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
     assert(save.response_status == NULL && strstr(response, "\"ok\":true") != NULL);
     s_recorder_snapshot.running = false;
+    storage_bulk_admission_exit_protected();
+    remove_layout();
+}
+
+
+static void assert_recording_busy(
+    const char *query,
+    const unsigned char *body,
+    size_t body_length,
+    const char *action
+)
+{
+    char response[512] = {0};
+    httpd_req_t request = make_request(query, body, body_length, response, sizeof(response));
+    bool handled = false;
+    const unsigned before_session_checks = s_session_list_calls;
+
+    s_storage_begin_calls = 0U;
+    s_storage_end_calls = 0U;
+    s_recv_calls = 0U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
+    assert(handled);
+    assert(request.response_status != NULL);
+    assert(strcmp(request.response_status, "409 Conflict") == 0);
+    char expected[128];
+    const int written = snprintf(
+        expected,
+        sizeof(expected),
+        "{\"ok\":false,\"action\":\"%s\",\"busy_reason\":\"recording_active\"}",
+        action
+    );
+    assert(written > 0 && (size_t)written < sizeof(expected));
+    assert(strcmp(response, expected) == 0);
+    assert(request.body_offset == body_length);
+    assert(s_session_list_calls == before_session_checks);
+    assert(s_storage_begin_calls == 0U);
+    assert(s_storage_end_calls == 0U);
+}
+
+
+static void test_recording_admission_truth_table(void)
+{
+    make_layout();
+    const unsigned char prior_scan[] = {1U, 3U, 5U};
+    const unsigned char prior_occupancy[] = {2U, 4U, 6U};
+    const unsigned char registration[] = "{\"valid\":true}";
+    const unsigned char save_body[] = {9U, 8U};
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *scan_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.tmp";
+    const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
+    const char *occupancy_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
+    const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+
+    write_bytes(scan_path, prior_scan, sizeof(prior_scan));
+    write_bytes(occupancy_path, prior_occupancy, sizeof(prior_occupancy));
+    write_bytes(registration_path, registration, sizeof(registration) - 1U);
+    s_session_list_calls = 0U;
+    assert(storage_bulk_admission_enter_protected() == ESP_OK);
+
+    const struct {
+        const char *kind;
+        const char *file;
+        const char *temp;
+    } kinds[] = {
+        {"scan", scan_path, scan_temp},
+        {"occupancy", occupancy_path, occupancy_temp},
+    };
+    const struct {
+        const char *verb;
+        const char *action;
+    } verbs[] = {
+        {"save", "scan_save"},
+        {"load", "scan_load"},
+        {"delete", "scan_delete"},
+    };
+
+    for (size_t kind_index = 0U; kind_index < sizeof(kinds) / sizeof(kinds[0]); ++kind_index) {
+        assert(path_exists(kinds[kind_index].file));
+        assert(!path_exists(kinds[kind_index].temp));
+        for (size_t verb_index = 0U; verb_index < sizeof(verbs) / sizeof(verbs[0]); ++verb_index) {
+            char query[160];
+            const int written = snprintf(
+                query,
+                sizeof(query),
+                "scan=%s&kind=%s&object_id=OBJ_0001&session_id=S000001",
+                verbs[verb_index].verb,
+                kinds[kind_index].kind
+            );
+            assert(written > 0 && (size_t)written < sizeof(query));
+            assert_recording_busy(
+                query,
+                strcmp(verbs[verb_index].verb, "save") == 0 ? save_body : NULL,
+                strcmp(verbs[verb_index].verb, "save") == 0 ? sizeof(save_body) : 0U,
+                verbs[verb_index].action
+            );
+            assert(path_exists(kinds[kind_index].file));
+            assert(!path_exists(kinds[kind_index].temp));
+        }
+    }
+
+    /* Repeating a rejected request stays before session listing and SD access. */
+    assert_recording_busy(
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        save_body,
+        sizeof(save_body),
+        "scan_save"
+    );
+
+    /* info stays readable while admission is protected. */
+    for (size_t kind_index = 0U; kind_index < sizeof(kinds) / sizeof(kinds[0]); ++kind_index) {
+        char response[512] = {0};
+        char query[160];
+        const int written = snprintf(
+            query,
+            sizeof(query),
+            "scan=info&kind=%s&object_id=OBJ_0001&session_id=S000001",
+            kinds[kind_index].kind
+        );
+        assert(written > 0 && (size_t)written < sizeof(query));
+        httpd_req_t request = make_request(query, NULL, 0U, response, sizeof(response));
+        bool handled = false;
+        const unsigned before_session_checks = s_session_list_calls;
+        s_storage_begin_calls = 0U;
+        s_storage_end_calls = 0U;
+        assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+        assert(request.response_status == NULL);
+        assert(strstr(response, "\"ok\":true") != NULL);
+        assert(s_session_list_calls == before_session_checks + 1U);
+        assert(s_storage_begin_calls > 0U);
+        assert(s_storage_begin_calls == s_storage_end_calls);
+    }
+
+    /* Registration remains governed by the existing session-scoped guard. */
+    memset(&s_recorder_snapshot, 0, sizeof(s_recorder_snapshot));
+    s_recorder_snapshot.running = true;
+    (void)snprintf(s_recorder_snapshot.object_id, sizeof(s_recorder_snapshot.object_id), "OBJ_0001");
+    (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000001");
+    {
+        char response[512] = {0};
+        httpd_req_t request = make_request(
+            "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001",
+            registration,
+            sizeof(registration) - 1U,
+            response,
+            sizeof(response)
+        );
+        bool handled = false;
+        assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+        assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+        assert(strstr(response, "this session is recording") != NULL);
+        assert(strstr(response, "busy_reason") == NULL);
+    }
+    {
+        char response[512] = {0};
+        httpd_req_t request = make_request(
+            "scan=load&kind=registration&object_id=OBJ_0001&session_id=S000001",
+            NULL,
+            0U,
+            response,
+            sizeof(response)
+        );
+        bool handled = false;
+        assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+        assert(request.response_status == NULL);
+        assert(request.response_length == sizeof(registration) - 1U);
+        assert(memcmp(response, registration, sizeof(registration) - 1U) == 0);
+    }
+
+    storage_bulk_admission_exit_protected();
+    {
+        char response[512] = {0};
+        httpd_req_t request = make_request(
+            "scan=save&object_id=OBJ_0001&session_id=S000001",
+            save_body,
+            sizeof(save_body),
+            response,
+            sizeof(response)
+        );
+        bool handled = false;
+        assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+        assert(request.response_status == NULL);
+        assert(strstr(response, "\"ok\":true") != NULL);
+        assert(s_storage_begin_calls == s_storage_end_calls);
+    }
+
+    remove_layout();
+}
+
+
+static void test_mid_transfer_admission_aborts_save_and_preserves_final(void)
+{
+    make_layout();
+    const char *final_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *temp_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.tmp";
+    static const unsigned char prior[] = {0x11U, 0x22U, 0x33U, 0x44U};
+    const size_t body_length = 2U * WEB_SCAN_IO_BUFFER_SIZE + 17U;
+    unsigned char *body = malloc(body_length);
+    assert(body != NULL);
+    memset(body, 0xa5, body_length);
+    write_bytes(final_path, prior, sizeof(prior));
+
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        body,
+        body_length,
+        response,
+        sizeof(response)
+    );
+    bool handled = false;
+    s_storage_begin_calls = 0U;
+    s_storage_end_calls = 0U;
+    s_recv_calls = 0U;
+    s_enter_after_recv_call = 2U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strcmp(response, "{\"ok\":false,\"action\":\"scan_save\",\"busy_reason\":\"recording_active\"}") == 0);
+    assert(request.body_offset == body_length);
+    assert(!path_exists(temp_path));
+    assert(storage_bulk_admission_is_protected());
+    assert(s_storage_begin_calls == s_storage_end_calls);
+
+    FILE *final_file = fopen(final_path, "rb");
+    assert(final_file != NULL);
+    unsigned char actual[sizeof(prior)];
+    assert(fread(actual, 1U, sizeof(actual), final_file) == sizeof(actual));
+    assert(fgetc(final_file) == EOF);
+    assert(fclose(final_file) == 0);
+    assert(memcmp(actual, prior, sizeof(prior)) == 0);
+
+    storage_bulk_admission_exit_protected();
+    free(body);
+    remove_layout();
+}
+
+
+static void test_mid_stream_admission_aborts_load(void)
+{
+    make_layout();
+    const char *final_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const size_t file_size = 2U * WEB_SCAN_IO_BUFFER_SIZE + 19U;
+    unsigned char *file_bytes = malloc(file_size);
+    char *response = malloc(file_size);
+    assert(file_bytes != NULL && response != NULL);
+    for (size_t i = 0U; i < file_size; ++i) file_bytes[i] = (unsigned char)(i & 0xffU);
+    write_bytes(final_path, file_bytes, file_size);
+
+    httpd_req_t request = make_request(
+        "scan=load&object_id=OBJ_0001&session_id=S000001",
+        NULL,
+        0U,
+        response,
+        file_size
+    );
+    bool handled = false;
+    s_storage_begin_calls = 0U;
+    s_storage_end_calls = 0U;
+    s_chunked_response_bytes = 0U;
+    s_send_chunk_calls = 0U;
+    s_enter_after_send_chunk = 1U;
+    s_chunked_response_terminated = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_ERR_INVALID_STATE && handled);
+    assert(request.response_status == NULL);
+    assert(request.response_length == WEB_SCAN_IO_BUFFER_SIZE);
+    assert(s_chunked_response_bytes == WEB_SCAN_IO_BUFFER_SIZE);
+    assert(memcmp(response, file_bytes, WEB_SCAN_IO_BUFFER_SIZE) == 0);
+    assert(!s_chunked_response_terminated);
+    assert(storage_bulk_admission_is_protected());
+    assert(s_storage_begin_calls == s_storage_end_calls);
+
+    storage_bulk_admission_exit_protected();
+    free(response);
+    free(file_bytes);
+    remove_layout();
+}
+
+
+static void test_write_failure_removes_temp_and_balances_storage_guard(void)
+{
+    make_layout();
+    const char *final_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *temp_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.tmp";
+    static const unsigned char prior[] = {0x91U, 0x92U, 0x93U};
+    const size_t body_length = 2U * WEB_SCAN_IO_BUFFER_SIZE + 3U;
+    unsigned char *body = malloc(body_length);
+    assert(body != NULL);
+    memset(body, 0x5a, body_length);
+    write_bytes(final_path, prior, sizeof(prior));
+
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        body,
+        body_length,
+        response,
+        sizeof(response)
+    );
+    bool handled = false;
+    s_storage_begin_calls = 0U;
+    s_storage_end_calls = 0U;
+    s_recv_calls = 0U;
+    s_fwrite_calls = 0U;
+    s_fail_fwrite_call = 2U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    s_fail_fwrite_call = 0U;
+    assert(strstr(response, "ESP_ERR") != NULL);
+    assert(!path_exists(temp_path));
+    assert(s_storage_begin_calls == s_storage_end_calls);
+
+    FILE *final_file = fopen(final_path, "rb");
+    assert(final_file != NULL);
+    unsigned char actual[sizeof(prior)];
+    assert(fread(actual, 1U, sizeof(actual), final_file) == sizeof(actual));
+    assert(fgetc(final_file) == EOF);
+    assert(fclose(final_file) == 0);
+    assert(memcmp(actual, prior, sizeof(prior)) == 0);
+
+    free(body);
     remove_layout();
 }
 
 int main(void)
 {
+    assert(storage_bulk_admission_initialize() == ESP_OK);
     test_kind_size_validation_boundaries();
     test_scan_and_occupancy_size_limits();
     test_scan_save_and_chunked_load_round_trip();
     test_scan_rejects_unknown_session_before_file_access();
     test_occupancy_kind_is_stored_beside_the_scan();
     test_registration_round_trip_bounds_and_session_validation();
+    test_recording_admission_truth_table();
+    test_mid_transfer_admission_aborts_save_and_preserves_final();
+    test_mid_stream_admission_aborts_load();
+    test_write_failure_removes_temp_and_balances_storage_guard();
     test_registration_recording_guard_is_session_scoped();
     return 0;
 }
