@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { registerSensorToScan, svd3, type FusedRegistrationTag, type RegistrationPodGeometry, type Vector3 } from '../../src/xr/fiducial/rigidRegistration';
 
 const SENSOR_POINTS: Vector3[] = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1]];
+const NEAR_PLANAR_IDEAL_POINTS: Vector3[] = [[0, 0, 0], [1.5, 0, 0], [0, 1.5, 0], [-1.5, 0, 0], [0, -1.5, 0]];
+const NEAR_PLANAR_SENSOR_POINTS: Vector3[] = [[0, 0, 0], [1.5, 0, 0.02], [0, 1.5, -0.02], [-1.5, 0, 0.02], [0, -1.5, -0.02]];
 type Transform = { rotation: number[]; translation: Vector3 };
 
 function apply(transform: Transform, point: Vector3): [number, number, number] {
@@ -9,8 +11,8 @@ function apply(transform: Transform, point: Vector3): [number, number, number] {
   return [r[0] * point[0] + r[1] * point[1] + r[2] * point[2] + t[0], r[3] * point[0] + r[4] * point[1] + r[5] * point[2] + t[1], r[6] * point[0] + r[7] * point[1] + r[8] * point[2] + t[2]];
 }
 
-function tagsFor(transform: Transform, missing: readonly number[] = [], outlierTag?: number): FusedRegistrationTag[] {
-  return SENSOR_POINTS.flatMap((sensor, tagId) => {
+function tagsFor(transform: Transform, missing: readonly number[] = [], outlierTag?: number, points: readonly Vector3[] = SENSOR_POINTS): FusedRegistrationTag[] {
+  return points.flatMap((sensor, tagId) => {
     if (missing.includes(tagId)) return [];
     const position = apply(transform, sensor);
     if (outlierTag === tagId) position[0] += 0.5;
@@ -18,8 +20,8 @@ function tagsFor(transform: Transform, missing: readonly number[] = [], outlierT
   });
 }
 
-function geometry(options: { collinear?: boolean; computed?: boolean; assigned?: boolean; uncertaintyMm?: number } = {}): { pods: RegistrationPodGeometry[] } {
-  const points = options.collinear ? [[1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]] : SENSOR_POINTS.slice(1);
+function geometry(options: { collinear?: boolean; computed?: boolean; assigned?: boolean; uncertaintyMm?: number; points?: readonly Vector3[] } = {}): { pods: RegistrationPodGeometry[] } {
+  const points = options.collinear ? [[1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]] : options.points ?? SENSOR_POINTS.slice(1);
   return { pods: points.map((p, index) => ({
     pod: index,
     computed: options.computed ?? true,
@@ -33,6 +35,26 @@ function geometry(options: { collinear?: boolean; computed?: boolean; assigned?:
 
 function close(actual: number, expected: number, tolerance = 1e-9): void {
   expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tolerance);
+}
+
+function gravityYaw(yawDeg: number, reflected = false, translation: Vector3 = [0.2, 0.3, -0.1]): Transform {
+  const angle = yawDeg * Math.PI / 180; const c = Math.cos(angle); const s = Math.sin(angle);
+  return {
+    rotation: reflected ? [-c, -s, 0, 0, 0, 1, s, -c, 0] : [c, -s, 0, 0, 0, 1, -s, -c, 0],
+    translation,
+  };
+}
+
+function rmsTransformError(matrix: readonly number[], truth: Transform, points: readonly Vector3[]): number {
+  const estimate: Transform = {
+    rotation: [matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9], matrix[10]],
+    translation: [matrix[3], matrix[7], matrix[11]],
+  };
+  const squared = points.reduce((sum, point) => {
+    const actual = apply(estimate, point); const expected = apply(truth, point);
+    return sum + actual.reduce((pointSum, value, axis) => pointSum + (value - expected[axis]) ** 2, 0);
+  }, 0);
+  return Math.sqrt(squared / points.length);
 }
 
 function firmwareUsable(matrix: readonly number[]): boolean {
@@ -65,8 +87,7 @@ describe('fiducial rigid registration', () => {
   });
 
   it('recovers proper and reflected transforms from volumetric points to sub-nanometre residuals', () => {
-    const angle = 37 * Math.PI / 180;
-    const proper: Transform = { rotation: [Math.cos(angle), -Math.sin(angle), 0, Math.sin(angle), Math.cos(angle), 0, 0, 0, 1], translation: [0.2, -0.3, 0.1] };
+    const proper = gravityYaw(37, false, [0.2, -0.3, 0.1]);
     const properResult = registerSensorToScan({ tags: tagsFor(proper), geometry: geometry({ assigned: true }), geometryComputedAtMs: 1234 });
     expect(properResult.valid).toBe(true);
     expect(properResult.reason).toBeNull();
@@ -82,50 +103,125 @@ describe('fiducial rigid registration', () => {
     expect(properResult.sensorToScan[11]).toBeCloseTo(0.1, 12);
     expect(properResult.sensorToScan.slice(12)).toEqual([0, 0, 0, 1]);
 
-    const reflection: Transform = { rotation: [-1, 0, 0, 0, 1, 0, 0, 0, 1], translation: [0.1, 0.2, -0.05] };
+    const reflection = gravityYaw(0, true, [0.1, 0.2, -0.05]);
     const reflectedResult = registerSensorToScan({ tags: tagsFor(reflection), geometry: geometry({ assigned: true }), geometryComputedAtMs: 1234 });
     expect(reflectedResult.valid).toBe(true);
     expect(reflectedResult.mirrored).toBe(true);
     expect(reflectedResult.rmsResidualM).toBeLessThanOrEqual(1e-9);
   });
 
-  it('uses scan gravity to choose the coplanar solution that maps sensor +Z toward scan +Y', () => {
-    const gravityAligned: Transform = { rotation: [1, 0, 0, 0, 0, 1, 0, -1, 0], translation: [0.1, 0.2, 0.3] };
-    const result = registerSensorToScan({ tags: tagsFor(gravityAligned).filter((tag) => tag.tagId < 4), geometry: geometry({ assigned: true }), geometryComputedAtMs: 1234 });
+  it('uses gravity to select the proper near-planar fit with realistic sensor-side z noise', () => {
+    const truth = gravityYaw(23);
+    const result = registerSensorToScan({
+      tags: tagsFor(truth, [], undefined, NEAR_PLANAR_IDEAL_POINTS),
+      geometry: geometry({ assigned: true, points: NEAR_PLANAR_SENSOR_POINTS.slice(1) }),
+      geometryComputedAtMs: 1234,
+    });
     expect(result.valid).toBe(true);
-    expect(result.rmsResidualM).toBeLessThanOrEqual(1e-9);
     expect(result.mirrored).toBe(false);
-    expect(result.sensorToScan?.[6], JSON.stringify(result)).toBeCloseTo(1, 9);
+    expect(result.sensorToScan).not.toBeNull();
+    expect(result.sensorToScan?.[6]).toBeGreaterThan(Math.cos(30 * Math.PI / 180));
+    expect(rmsTransformError(result.sensorToScan!, truth, NEAR_PLANAR_IDEAL_POINTS)).toBeLessThan(0.01);
+  });
+
+  it('uses gravity to select a mirrored near-planar fit when the sensor frame is reflected', () => {
+    const truth = gravityYaw(23, true);
+    const result = registerSensorToScan({
+      tags: tagsFor(truth, [], undefined, NEAR_PLANAR_IDEAL_POINTS),
+      geometry: geometry({ assigned: true, points: NEAR_PLANAR_SENSOR_POINTS.slice(1) }),
+      geometryComputedAtMs: 1234,
+    });
+    expect(result.valid).toBe(true);
+    expect(result.mirrored).toBe(true);
+    expect(result.sensorToScan).not.toBeNull();
+    expect(result.sensorToScan?.[6]).toBeGreaterThan(Math.cos(30 * Math.PI / 180));
+    expect(rmsTransformError(result.sensorToScan!, truth, NEAR_PLANAR_IDEAL_POINTS)).toBeLessThan(0.01);
+  });
+
+  it('chooses an upright fit even when the exact upside-down fit has lower residual', () => {
+    const upsideDown: Transform = { rotation: [1, 0, 0, 0, 0, -1, 0, 1, 0], translation: [0.2, 0.3, -0.1] };
+    // Exact tags from this 180-degree fit give the upside-down candidate essentially zero RMS.
+    // The near-planar measurements leave an upright alternate, which gravity must prefer.
+    const tags = tagsFor(upsideDown, [], undefined, NEAR_PLANAR_SENSOR_POINTS);
+    const upsideDownRms = Math.sqrt(tags.reduce((sum, tag) => {
+      const fitted = apply(upsideDown, NEAR_PLANAR_SENSOR_POINTS[tag.tagId]);
+      return sum + tag.positionScan.reduce((pointSum, value, axis) => pointSum + (value - fitted[axis]) ** 2, 0);
+    }, 0) / tags.length);
+    const result = registerSensorToScan({
+      tags,
+      geometry: geometry({ assigned: true, points: NEAR_PLANAR_SENSOR_POINTS.slice(1) }),
+      geometryComputedAtMs: 1234,
+    });
+    expect(upsideDownRms).toBeLessThan(1e-9);
+    expect(result.sensorToScan).not.toBeNull();
+    expect(result.sensorToScan?.[6]).toBeGreaterThan(Math.cos(30 * Math.PI / 180));
+    expect(result.mirrored).toBe(true);
+    expect(result.rmsResidualM).toBeGreaterThan(upsideDownRms + 1e-6);
+  });
+
+  it('rejects a 180-degree gravity mismatch with no transform', () => {
+    const upsideDown: Transform = { rotation: [1, 0, 0, 0, 0, -1, 0, 1, 0], translation: [0.2, 0.3, -0.1] };
+    const points: Vector3[] = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 2]];
+    const result = registerSensorToScan({
+      tags: tagsFor(upsideDown, [], undefined, points),
+      geometry: geometry({ assigned: true, points: points.slice(1) }),
+      geometryComputedAtMs: 1234,
+    });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('gravity_inconsistent');
+    expect(result.sensorToScan).toBeNull();
+  });
+
+  it('enforces the default gravity tilt boundary and accepts a wider custom limit', () => {
+    const tilted = (tiltDeg: number): Transform => {
+      const angle = tiltDeg * Math.PI / 180; const c = Math.cos(angle); const s = Math.sin(angle);
+      return { rotation: [c, 0, -s, s, 0, c, 0, -1, 0], translation: [0.2, 0.3, -0.1] };
+    };
+    const register = (truth: Transform, maxTiltDeg?: number) => registerSensorToScan({
+      tags: tagsFor(truth), geometry: geometry({ assigned: true }), geometryComputedAtMs: 1234, maxTiltDeg,
+    });
+    const accepted25 = register(tilted(25));
+    expect(accepted25.valid).toBe(true);
+    expect(accepted25.sensorToScan?.[6]).toBeGreaterThan(Math.cos(30 * Math.PI / 180));
+
+    const rejected35 = register(tilted(35));
+    expect(rejected35.reason).toBe('gravity_inconsistent');
+    expect(rejected35.sensorToScan).toBeNull();
+
+    const accepted35 = register(tilted(35), 40);
+    expect(accepted35.valid).toBe(true);
+    expect(accepted35.sensorToScan?.[6]).toBeGreaterThan(Math.cos(40 * Math.PI / 180));
   });
 
   it('rejects collinear layouts, bad residuals, missing MAIN, and insufficient remotes without a transform', () => {
-    const identity: Transform = { rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1], translation: [0, 0, 0] };
-    const collinear = registerSensorToScan({ tags: tagsFor(identity), geometry: geometry({ collinear: true }), geometryComputedAtMs: 1234 });
+    const gravityAligned = gravityYaw(0, false, [0, 0, 0]);
+    const collinear = registerSensorToScan({ tags: tagsFor(gravityAligned), geometry: geometry({ collinear: true }), geometryComputedAtMs: 1234 });
     expect(collinear.reason).toBe('collinear');
     expect(collinear.sensorToScan).toBeNull();
 
-    const outlier = registerSensorToScan({ tags: tagsFor(identity, [], 4), geometry: geometry(), geometryComputedAtMs: 1234 });
+    const outlier = registerSensorToScan({ tags: tagsFor(gravityAligned, [], 4), geometry: geometry(), geometryComputedAtMs: 1234 });
     expect(outlier.reason).toBe('residual_too_high');
     expect(outlier.valid).toBe(false);
     expect(outlier.rmsResidualM).toBeGreaterThan(0.05);
+    expect(outlier.sensorToScan).not.toBeNull();
     expect(outlier.perNode.find((node) => node.tagId === 4)?.status).toBe('provisional');
 
-    const noMain = registerSensorToScan({ tags: tagsFor(identity, [0]), geometry: geometry(), geometryComputedAtMs: 1234 });
+    const noMain = registerSensorToScan({ tags: tagsFor(gravityAligned, [0]), geometry: geometry(), geometryComputedAtMs: 1234 });
     expect(noMain.reason).toBe('missing_main');
     expect(noMain.sensorToScan).toBeNull();
 
-    const few = registerSensorToScan({ tags: tagsFor(identity, [3, 4]), geometry: geometry(), geometryComputedAtMs: 1234 });
+    const few = registerSensorToScan({ tags: tagsFor(gravityAligned, [3, 4]), geometry: geometry(), geometryComputedAtMs: 1234 });
     expect(few.reason).toBe('too_few_remotes');
     expect(few.sensorToScan).toBeNull();
     expect(few.perNode.every((node) => node.status === 'visual_only')).toBe(true);
 
-    const noGeometry = registerSensorToScan({ tags: tagsFor(identity), geometry: geometry({ computed: false }), geometryComputedAtMs: 1234 });
+    const noGeometry = registerSensorToScan({ tags: tagsFor(gravityAligned), geometry: geometry({ computed: false }), geometryComputedAtMs: 1234 });
     expect(noGeometry.reason).toBe('no_geometry');
     expect(noGeometry.sensorToScan).toBeNull();
   });
 
   it('sets minimum/full tiers and takes the greater of the uncertainty threshold and floor', () => {
-    const translated: Transform = { rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1], translation: [0.2, -0.3, 0.1] };
+    const translated = gravityYaw(0, false, [0.2, -0.3, 0.1]);
     const minimum = registerSensorToScan({ tags: tagsFor(translated, [4]), geometry: geometry({ assigned: true }), geometryComputedAtMs: 1234 });
     expect(minimum.valid).toBe(true);
     expect(minimum.tier).toBe('minimum');

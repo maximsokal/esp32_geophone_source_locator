@@ -159,14 +159,18 @@ function tagMap(tags: readonly FusedRegistrationTag[] | FusedTagsById): Map<numb
 
 /**
  * Fits scan = R * sensor + t. Sensor positions are converted from millimetres
- * to metres. Coplanarity is defined by lambda_min <= 1e-6 * lambda_max for
- * centered sensor-position covariance; collinearity uses 1e-9 of the maximum.
+ * to metres. The chosen proper/reflected fit must map sensor +Z toward scan +Y
+ * within maxTiltDeg (default 30 degrees because the nodes are leveled and XR
+ * gravity aligns the scan frame); collinearity uses 1e-9 of the maximum
+ * centered sensor-position covariance eigenvalue.
  */
 export function registerSensorToScan(input: {
   tags: readonly FusedRegistrationTag[] | FusedTagsById;
   geometry: { pods: readonly RegistrationPodGeometry[]; available?: boolean };
   geometryComputedAtMs: number;
   thresholdFloorM?: number;
+  /** Maximum angle between sensor +Z and scan +Y; defaults to 30 degrees. */
+  maxTiltDeg?: number;
 }): SensorToScanRegistration {
   const tags = tagMap(input.tags);
   const pods = new Map(input.geometry.pods.map((pod) => [pod.pod, pod]));
@@ -200,15 +204,12 @@ export function registerSensorToScan(input: {
 
   const spread = svd3(centeredCovariance(correspondences.map((point) => point.sensor))).singularValues;
   if (spread[0] <= 1e-12 || spread[1] <= Math.max(1e-12, spread[0] * 1e-9)) return noTransform('collinear');
-  const coplanar = spread[2] <= Math.max(1e-12, spread[0] * 1e-6);
   const proper = fitCandidate(correspondences, 1);
-  const mirrored = fitCandidate(correspondences, -1);
-  let best = proper.rms <= mirrored.rms ? proper : mirrored;
-  if (coplanar && Math.abs(proper.rms - mirrored.rms) <= Math.max(1e-8, Math.max(proper.rms, mirrored.rms) * 1e-8)) {
-    // The sensor frame mirror is ambiguous on a plane; use scan +Y gravity.
-    const properGravity = proper.rotation[5]; const mirroredGravity = mirrored.rotation[5];
-    if ((mirroredGravity >= 0 && properGravity < 0) || (mirroredGravity >= 0 && properGravity >= 0 && mirroredGravity > properGravity)) best = mirrored;
-  }
+  const reflected = fitCandidate(correspondences, -1);
+  const minimumGravityDot = Math.cos((input.maxTiltDeg ?? 30) * Math.PI / 180);
+  const admissible = [proper, reflected].filter((candidate) => candidate.rotation[5] >= minimumGravityDot);
+  if (admissible.length === 0) return noTransform('gravity_inconsistent');
+  const best = admissible.reduce((lowerRms, candidate) => candidate.rms < lowerRms.rms ? candidate : lowerRms);
   const determinant = determinant3(best.rotation);
   const matrix = [
     ...best.rotation.slice(0, 3), best.translation[0],
