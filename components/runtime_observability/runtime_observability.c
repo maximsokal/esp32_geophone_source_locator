@@ -70,6 +70,31 @@ void runtime_observability_get_snapshot(
 }
 
 
+void runtime_observability_get_heap_snapshot(
+    runtime_observability_heap_snapshot_t *snapshot
+)
+{
+    if (snapshot == NULL) {
+        return;
+    }
+
+#ifdef ESP_PLATFORM
+    const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const uint32_t dma_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
+    *snapshot = (runtime_observability_heap_snapshot_t) {
+        .free_internal = heap_caps_get_free_size(internal_caps),
+        .largest_internal_block = heap_caps_get_largest_free_block(internal_caps),
+        .free_dma = heap_caps_get_free_size(dma_caps),
+        .largest_dma_block = heap_caps_get_largest_free_block(dma_caps),
+        .free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        .min_free_internal_since_boot = heap_caps_get_minimum_free_size(internal_caps),
+    };
+#else
+    *snapshot = (runtime_observability_heap_snapshot_t) { 0 };
+#endif
+}
+
+
 const char *runtime_observability_task_name(
     runtime_observability_task_t task
 )

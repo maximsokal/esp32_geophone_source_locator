@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "sdkconfig.h"
 #include "app_config.h"
@@ -65,8 +66,12 @@ static esp_err_t s_lifecycle_quiesce_result = ESP_FAIL;
 static bool s_event_handlers_registered = false;
 static bool s_measurement_hooks_registered = false;
 static bool s_object_observer_registered = false;
-static unsigned s_https_clients = 0;
-static unsigned s_peer_fatal_alerts = 0;
+static portMUX_TYPE s_https_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_https_clients = 0U;
+static uint32_t s_https_max_clients = 0U;
+static uint32_t s_https_handshake_failures = 0U;
+static uint32_t s_peer_fatal_alerts = 0U;
+static int32_t s_https_last_error_esp_err = 0;
 static uint32_t s_lifecycle_generation = 0U;
 static web_mdns_retry_policy_t s_mdns_retry_policy;
 
@@ -82,18 +87,38 @@ extern const unsigned char prvtkey_pem_start[] asm("_binary_prvtkey_pem_start");
 extern const unsigned char prvtkey_pem_end[] asm("_binary_prvtkey_pem_end");
 #endif
 
+void web_server_https_runtime_status(
+    uint32_t *clients_out,
+    uint32_t *max_clients_out,
+    uint32_t *handshake_failures_out,
+    uint32_t *fatal_alerts_out,
+    int32_t *last_error_esp_err_out
+)
+{
+    portENTER_CRITICAL(&s_https_stats_lock);
+    if (clients_out != NULL) *clients_out = s_https_clients;
+    if (max_clients_out != NULL) *max_clients_out = s_https_max_clients;
+    if (handshake_failures_out != NULL) *handshake_failures_out = s_https_handshake_failures;
+    if (fatal_alerts_out != NULL) *fatal_alerts_out = s_peer_fatal_alerts;
+    if (last_error_esp_err_out != NULL) *last_error_esp_err_out = s_https_last_error_esp_err;
+    portEXIT_CRITICAL(&s_https_stats_lock);
+}
+
 static void web_server_log_tls_heap(const char *stage)
 {
     const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t clients = 0U;
+    uint32_t fatal_alerts = 0U;
+    web_server_https_runtime_status(&clients, NULL, NULL, &fatal_alerts, NULL);
     ESP_LOGI(
         TAG,
         "TLS_HEAP %s clients=%u free=%u largest=%u peer_alerts=%u",
         stage,
-        s_https_clients,
+        (unsigned)clients,
         (unsigned)free_internal,
         (unsigned)largest_internal,
-        s_peer_fatal_alerts
+        (unsigned)fatal_alerts
     );
 }
 
@@ -682,7 +707,9 @@ static esp_err_t web_server_https_start_internal(void)
         return ESP_ERR_NOT_FOUND;
     }
 
-    s_peer_fatal_alerts = 0;
+    portENTER_CRITICAL(&s_https_stats_lock);
+    s_peer_fatal_alerts = 0U;
+    portEXIT_CRITICAL(&s_https_stats_lock);
     runtime_observability_request_snapshot("before-https");
     web_server_log_tls_heap("before_start");
     ESP_LOGI(
@@ -741,7 +768,9 @@ static esp_err_t web_server_https_start_internal(void)
 static esp_err_t web_server_https_stop_internal(void)
 {
     if (s_https_server == NULL) {
-        s_https_clients = 0;
+        portENTER_CRITICAL(&s_https_stats_lock);
+        s_https_clients = 0U;
+        portEXIT_CRITICAL(&s_https_stats_lock);
         return ESP_OK;
     }
 
@@ -753,8 +782,10 @@ static esp_err_t web_server_https_stop_internal(void)
     }
 
     s_https_server = NULL;
-    s_https_clients = 0;
-    s_peer_fatal_alerts = 0;
+    portENTER_CRITICAL(&s_https_stats_lock);
+    s_https_clients = 0U;
+    s_peer_fatal_alerts = 0U;
+    portEXIT_CRITICAL(&s_https_stats_lock);
     ESP_LOGI(TAG, "HTTPS server stopped");
     return ESP_OK;
 }
@@ -1281,12 +1312,17 @@ static void web_server_https_event_handler(
     }
 
     if (event_id == HTTPS_SERVER_EVENT_ON_CONNECTED) {
-        ++s_https_clients;
+        uint32_t clients;
+        portENTER_CRITICAL(&s_https_stats_lock);
+        if (s_https_clients < UINT32_MAX) ++s_https_clients;
+        if (s_https_clients > s_https_max_clients) s_https_max_clients = s_https_clients;
+        clients = s_https_clients;
+        portEXIT_CRITICAL(&s_https_stats_lock);
         ESP_LOGI(
             TAG,
             "WEB_TIMING stage=tls_connected ts_us=%lld clients=%u",
             (long long)esp_timer_get_time(),
-            s_https_clients
+            (unsigned)clients
         );
         web_server_log_tls_heap("client_connected");
         runtime_observability_request_snapshot("tls-connected");
@@ -1294,7 +1330,9 @@ static void web_server_https_event_handler(
     }
 
     if (event_id == HTTPS_SERVER_EVENT_DISCONNECTED) {
-        if (s_https_clients > 0) --s_https_clients;
+        portENTER_CRITICAL(&s_https_stats_lock);
+        if (s_https_clients > 0U) --s_https_clients;
+        portEXIT_CRITICAL(&s_https_stats_lock);
         web_server_log_tls_heap("client_disconnected");
         runtime_observability_request_snapshot("tls-disconnected");
         return;
@@ -1304,13 +1342,24 @@ static void web_server_https_event_handler(
         const esp_https_server_last_error_t *last_error =
             (const esp_https_server_last_error_t *)event_data;
 
-        if ((unsigned)last_error->esp_tls_error_code == WEB_TLS_FATAL_ALERT_CODE) {
-            ++s_peer_fatal_alerts;
+        const bool peer_fatal_alert =
+            (unsigned)last_error->esp_tls_error_code == WEB_TLS_FATAL_ALERT_CODE;
+        uint32_t clients;
+        uint32_t fatal_alerts;
+        portENTER_CRITICAL(&s_https_stats_lock);
+        if (s_https_handshake_failures < UINT32_MAX) ++s_https_handshake_failures;
+        s_https_last_error_esp_err = (int32_t)last_error->last_error;
+        if (peer_fatal_alert && s_peer_fatal_alerts < UINT32_MAX) ++s_peer_fatal_alerts;
+        clients = s_https_clients;
+        fatal_alerts = s_peer_fatal_alerts;
+        portEXIT_CRITICAL(&s_https_stats_lock);
+
+        if (peer_fatal_alert) {
             ESP_LOGW(
                 TAG,
                 "TLS peer fatal alert (-0x7780): browser rejected/aborted handshake; verify GeoLocator Root CA trust on this client (alerts=%u clients=%u)",
-                s_peer_fatal_alerts,
-                s_https_clients
+                (unsigned)fatal_alerts,
+                (unsigned)clients
             );
             return;
         }
@@ -1321,7 +1370,7 @@ static void web_server_https_event_handler(
             esp_err_to_name(last_error->last_error),
             last_error->esp_tls_error_code,
             last_error->esp_tls_flags,
-            s_https_clients
+            (unsigned)clients
         );
     }
 }

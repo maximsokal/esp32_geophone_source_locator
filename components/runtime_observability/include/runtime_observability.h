@@ -34,6 +34,16 @@ typedef struct
 
 } runtime_observability_snapshot_t;
 
+typedef struct
+{
+    size_t free_internal;
+    size_t largest_internal_block;
+    size_t free_dma;
+    size_t largest_dma_block;
+    size_t free_psram;
+    size_t min_free_internal_since_boot;
+} runtime_observability_heap_snapshot_t;
+
 
 /*
  * Record one completed service point in a task's existing loop. This update
@@ -49,6 +59,11 @@ void runtime_observability_beat(
 
 void runtime_observability_get_snapshot(
     runtime_observability_snapshot_t *snapshot
+);
+
+/* Cheap heap-capability counters for the status endpoint; never allocates. */
+void runtime_observability_get_heap_snapshot(
+    runtime_observability_heap_snapshot_t *snapshot
 );
 
 
