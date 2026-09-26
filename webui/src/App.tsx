@@ -10,10 +10,12 @@ import {
   loadSessionRegistration,
   saveObjectScanArtifact,
   saveSessionOccupancyArtifact,
+  saveSessionPreviewArtifact,
 } from './api/deviceApi';
 import type { LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
 import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
+import { buildVoxelPreviewArtifact } from './xr/voxelPreview';
 import { decodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
 import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, type ScanPersistenceState } from './xr/scanPersistence';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
@@ -151,6 +153,17 @@ function occupancyStatusLabel(persistence: ScanPersistenceState | null): string 
   return occupancyLabel;
 }
 
+function previewStatusLabel(persistence: ScanPersistenceState | null): string {
+  if (persistence?.scan !== 'saved') return 'PREVIEW STATUS CHECKING';
+  switch (persistence.preview) {
+    case 'pending': return 'PREVIEW PENDING';
+    case 'saving': return 'PREVIEW SAVING';
+    case 'ready': return 'VOXEL PREVIEW READY';
+    case 'failed': return 'PREVIEW SAVE FAILED';
+    case 'unavailable': return 'PREVIEW UNAVAILABLE';
+  }
+}
+
 function persistedScanStorageLabel(
   phase: ScanStoragePhase,
   objectId: string | null,
@@ -205,6 +218,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     scanPersistenceController.current = new ScanPersistenceController({
       saveScan: saveObjectScanArtifact,
       saveOccupancy: saveSessionOccupancyArtifact,
+      savePreview: saveSessionPreviewArtifact,
       fetchInfo: fetchScanInfo,
     }, setScanPersistence);
   }
@@ -526,6 +540,13 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           : null;
         return buildSessionOccupancyArtifact(snapshot, artifact, Date.now(), occupancyRegistration);
       },
+      (occupancyArtifact) => {
+        const registration = registrationForSession.current;
+        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === sessionId
+          ? toOccupancyRegistration(registration.artifact)
+          : null;
+        return buildVoxelPreviewArtifact(snapshot, artifact, { occupancyArtifact, registration: occupancyRegistration });
+      },
       storageActionsDisabled,
     ).then((state) => {
         if (generation !== storageGeneration.current) return;
@@ -558,6 +579,14 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           });
           void clientDiagnostics.flush();
         }
+        if (state.preview === 'ready') {
+          clientDiagnostics.info('SCAN_VOXEL_PREVIEW_SAVED', { objectId, sessionId });
+        } else if (state.preview === 'failed' || state.preview === 'unavailable') {
+          clientDiagnostics.warn('SCAN_VOXEL_PREVIEW_SAVE_FAILED', {
+            objectId, sessionId, error: state.previewError,
+          });
+          void clientDiagnostics.flush();
+        }
     });
   }, [objectId, sessionId, persistenceController, selectMode, storageActionsDisabled]);
 
@@ -578,8 +607,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       }
       const event = state.scan === 'blocked_recording' || state.scan === 'error'
         ? 'SCAN_RESULT_SAVE_FAILED'
-        : state.occupancy === 'ready' ? 'SCAN_OCCUPANCY_SAVED' : 'SCAN_OCCUPANCY_SAVE_FAILED';
-      clientDiagnostics.info(event, { objectId, sessionId, error: state.occupancyError });
+        : state.occupancy === 'ready' ? 'SCAN_OCCUPANCY_SAVED'
+          : state.preview === 'ready' ? 'SCAN_VOXEL_PREVIEW_SAVED'
+            : state.preview === 'failed' || state.preview === 'unavailable' ? 'SCAN_VOXEL_PREVIEW_SAVE_FAILED'
+              : 'SCAN_OCCUPANCY_SAVE_FAILED';
+      clientDiagnostics.info(event, { objectId, sessionId, occupancyError: state.occupancyError, previewError: state.previewError });
       void clientDiagnostics.flush();
     });
   }, [objectId, sessionId, persistenceController, storageActionsDisabled]);
@@ -754,6 +786,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
               <dl className="status-list scan-result-primary">
                 <div><dt>SD persistence</dt><dd>{persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence)}</dd></div>
                 <div><dt>Localization occupancy</dt><dd>{scanPersistence?.scan === 'saved' ? occupancyStatusLabel(scanPersistence) : 'OCCUPANCY STATUS CHECKING'}</dd></div>
+                <div><dt>ESP32 voxel preview</dt><dd>{previewStatusLabel(scanPersistence)}</dd></div>
                 <div><dt>Stable boundary points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
                 <div><dt>Tentative boundary points</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
                 <div><dt>Manual corner pins</dt><dd>{scanSnapshot.manualControlPoints.length.toLocaleString()}</dd></div>
@@ -784,9 +817,16 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 </p>
               )}
 
+              {scanPersistence?.scan === 'saved' &&
+                (scanPersistence.preview === 'failed' || scanPersistence.preview === 'unavailable') && (
+                <p className="scan-volume-note" role="status">
+                  {scanPersistence.previewError ?? 'The ESP32 voxel preview is not ready.'}
+                </p>
+              )}
+
               {persistenceController.retryAvailable && (
-                <button type="button" className="scan-clear-button" disabled={storageActionsDisabled || scanPersistence?.scan === 'saving' || scanPersistence?.occupancy === 'saving'} onClick={retryPersistence}>
-                  {scanPersistence?.scan === 'blocked_recording' ? 'Retry scan save' : 'Retry occupancy save'}
+                <button type="button" className="scan-clear-button" disabled={storageActionsDisabled || scanPersistence?.scan === 'saving' || scanPersistence?.occupancy === 'saving' || scanPersistence?.preview === 'saving'} onClick={retryPersistence}>
+                  {scanPersistence?.scan === 'blocked_recording' ? 'Retry scan save' : scanPersistence?.occupancy === 'failed' ? 'Retry occupancy save' : 'Retry preview save'}
                 </button>
               )}
 

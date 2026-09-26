@@ -77,10 +77,10 @@ void ina3221_soc_update(
     const ina3221_soc_input_t *input,
     int64_t now_ms);
 
-/* 0..100; from the tracked charge when tracking, else the voltage curve. */
+/* 0..100; NaN while the estimate is invalid or has no valid sample. */
 float ina3221_soc_percent(const ina3221_soc_t *soc, const ina3221_soc_config_t *config);
 
 const char *ina3221_soc_quality_name(ina3221_soc_quality_t quality);
 
-/* The 1S Li-ion open-circuit curve used for anchoring (0..100 %). */
+/* The 1S Li-ion open-circuit curve used for anchoring; NaN for non-finite voltage. */
 float ina3221_soc_voltage_percent(float voltage_v);

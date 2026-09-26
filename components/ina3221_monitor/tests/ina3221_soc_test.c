@@ -26,10 +26,41 @@ static void setup(float capacity)
 
 static void test_curve(void)
 {
+    static const struct { float voltage_v; float percent; } knots[] = {
+        { 3.00f, 0.0f }, { 3.30f, 2.0f }, { 3.50f, 7.0f },
+        { 3.60f, 15.0f }, { 3.70f, 35.0f }, { 3.80f, 55.0f },
+        { 3.90f, 70.0f }, { 4.00f, 80.0f }, { 4.10f, 90.0f },
+        { 4.20f, 100.0f },
+    };
     assert(ina3221_soc_voltage_percent(2.9f) == 0.0f);
     assert(ina3221_soc_voltage_percent(4.3f) == 100.0f);
     assert(near(ina3221_soc_voltage_percent(3.75f), 45.0f, 0.01f));
-    assert(ina3221_soc_voltage_percent(NAN) == 0.0f);
+    assert(isnan(ina3221_soc_voltage_percent(NAN)));
+    for (size_t i = 0U; i < sizeof(knots) / sizeof(knots[0]); ++i) {
+        assert(near(ina3221_soc_voltage_percent(knots[i].voltage_v), knots[i].percent, 0.001f));
+        if (i == 0U) {
+            assert(ina3221_soc_voltage_percent(knots[i].voltage_v - 0.001f) == 0.0f);
+            const float slope = (knots[i + 1U].percent - knots[i].percent) /
+                (knots[i + 1U].voltage_v - knots[i].voltage_v);
+            assert(near(ina3221_soc_voltage_percent(knots[i].voltage_v + 0.001f),
+                        knots[i].percent + slope * 0.001f, 0.001f));
+        } else if (i + 1U == sizeof(knots) / sizeof(knots[0])) {
+            const float slope = (knots[i].percent - knots[i - 1U].percent) /
+                (knots[i].voltage_v - knots[i - 1U].voltage_v);
+            assert(near(ina3221_soc_voltage_percent(knots[i].voltage_v - 0.001f),
+                        knots[i].percent - slope * 0.001f, 0.001f));
+            assert(ina3221_soc_voltage_percent(knots[i].voltage_v + 0.001f) == 100.0f);
+        } else {
+            const float lower_slope = (knots[i].percent - knots[i - 1U].percent) /
+                (knots[i].voltage_v - knots[i - 1U].voltage_v);
+            const float upper_slope = (knots[i + 1U].percent - knots[i].percent) /
+                (knots[i + 1U].voltage_v - knots[i].voltage_v);
+            assert(near(ina3221_soc_voltage_percent(knots[i].voltage_v - 0.001f),
+                        knots[i].percent - lower_slope * 0.001f, 0.001f));
+            assert(near(ina3221_soc_voltage_percent(knots[i].voltage_v + 0.001f),
+                        knots[i].percent + upper_slope * 0.001f, 0.001f));
+        }
+    }
 }
 
 static void test_unknown_capacity_stays_voltage_only(void)
@@ -114,6 +145,58 @@ static void test_gap_is_not_integrated_as_zero_current(void)
     assert(soc.quality == INA3221_SOC_VOLTAGE_ONLY);
 }
 
+static void test_zero_time_huge_gap_and_reboot_do_not_integrate_stale_current(void)
+{
+    setup(3000.0f);
+    ina3221_soc_t soc;
+    ina3221_soc_reset(&soc);
+    const ina3221_soc_input_t rest = sample(3.80f, 0.0f);
+    ina3221_soc_update(&soc, &cfg, &rest, 0);
+
+    const ina3221_soc_input_t discharge = sample(3.70f, 1.0f);
+    ina3221_soc_update(&soc, &cfg, &discharge, 1000);
+    const float after_one_second = soc.charge_mah;
+    ina3221_soc_input_t duplicate = sample(3.70f, 50.0f);
+    ina3221_soc_update(&soc, &cfg, &duplicate, 1000);
+    assert(near(soc.charge_mah, after_one_second, 0.001f));
+
+    const ina3221_soc_input_t long_gap = sample(3.70f, 50.0f);
+    ina3221_soc_update(&soc, &cfg, &long_gap, 100000);
+    assert(soc.quality == INA3221_SOC_VOLTAGE_ONLY);
+    assert(near(soc.charge_mah, after_one_second, 0.001f));
+
+    /* The runtime estimator is reconstructed after reboot; no off-time current is inferred. */
+    ina3221_soc_reset(&soc);
+    ina3221_soc_update(&soc, &cfg, &discharge, 0);
+    assert(soc.quality == INA3221_SOC_VOLTAGE_ONLY);
+    assert(soc.charge_mah == 0.0f);
+    assert(near(ina3221_soc_percent(&soc, &cfg), ina3221_soc_voltage_percent(3.70f), 0.001f));
+}
+
+static void test_invalid_sample_breaks_tracking_and_hides_percent(void)
+{
+    setup(3000.0f);
+    ina3221_soc_t soc;
+    ina3221_soc_reset(&soc);
+    const ina3221_soc_input_t rest = sample(3.80f, 0.0f);
+    ina3221_soc_update(&soc, &cfg, &rest, 0);
+    const ina3221_soc_input_t discharge = sample(3.70f, 1.0f);
+    ina3221_soc_update(&soc, &cfg, &discharge, 1000);
+    const float charge_before_gap = soc.charge_mah;
+
+    const ina3221_soc_input_t invalid = { .valid = false };
+    ina3221_soc_update(&soc, &cfg, &invalid, 2000);
+    assert(soc.quality == INA3221_SOC_INVALID);
+    assert(isnan(ina3221_soc_percent(&soc, &cfg)));
+
+    /* Even a short hole cannot make the next sample integrate across it. */
+    const ina3221_soc_input_t recovered = sample(3.70f, 50.0f);
+    ina3221_soc_update(&soc, &cfg, &recovered, 3000);
+    assert(soc.quality == INA3221_SOC_VOLTAGE_ONLY);
+    assert(near(soc.charge_mah, charge_before_gap, 0.001f));
+    assert(near(ina3221_soc_percent(&soc, &cfg), ina3221_soc_voltage_percent(3.70f), 0.001f));
+}
+
 static void test_full_anchor_and_clamps(void)
 {
     setup(3000.0f);
@@ -170,7 +253,7 @@ static void test_names_and_guards(void)
     assert(strcmp(ina3221_soc_quality_name(INA3221_SOC_INVALID), "INVALID") == 0);
     ina3221_soc_t soc;
     ina3221_soc_reset(&soc);
-    assert(ina3221_soc_percent(&soc, &cfg) == 0.0f);
+    assert(isnan(ina3221_soc_percent(&soc, &cfg)));
     ina3221_soc_update(NULL, &cfg, NULL, 0);
 }
 
@@ -181,6 +264,8 @@ int main(void)
     test_bootstrap_only_at_rest();
     test_discharge_and_charge_integration_with_irregular_intervals();
     test_gap_is_not_integrated_as_zero_current();
+    test_zero_time_huge_gap_and_reboot_do_not_integrate_stale_current();
+    test_invalid_sample_breaks_tracking_and_hides_percent();
     test_full_anchor_and_clamps();
     test_long_rest_reanchors_drift();
     test_names_and_guards();

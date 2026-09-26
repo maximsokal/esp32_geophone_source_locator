@@ -92,6 +92,12 @@ static void remove_layout(void)
         STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
     const char *occupancy_backup_path =
         STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.bak";
+    const char *preview_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin";
+    const char *preview_temp_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin.tmp";
+    const char *preview_backup_path =
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin.bak";
     (void)remove(final_path);
     (void)remove(temp_path);
     (void)remove(backup_path);
@@ -101,6 +107,9 @@ static void remove_layout(void)
     (void)remove(occupancy_path);
     (void)remove(occupancy_temp_path);
     (void)remove(occupancy_backup_path);
+    (void)remove(preview_path);
+    (void)remove(preview_temp_path);
+    (void)remove(preview_backup_path);
 #ifdef _WIN32
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001");
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
@@ -542,6 +551,7 @@ static void test_kind_size_validation_boundaries(void)
     } cases[] = {
         {&WEB_SCAN_KIND_SCAN, 8U * 1024U * 1024U},
         {&WEB_SCAN_KIND_OCCUPANCY, 1024U * 1024U},
+        {&WEB_SCAN_KIND_PREVIEW, 65536U},
         {&WEB_SCAN_KIND_REGISTRATION, 16384U},
     };
 
@@ -583,6 +593,31 @@ static void test_scan_and_occupancy_size_limits(void)
         "scan=save&object_id=OBJ_0001&session_id=S000001",
         body,
         scan_limit + 1U,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+    assert(request.body_offset == 0U);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001",
+        body,
+        WEB_SCAN_KIND_PREVIEW.max_bytes,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(request.body_offset == WEB_SCAN_KIND_PREVIEW.max_bytes);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001",
+        body,
+        WEB_SCAN_KIND_PREVIEW.max_bytes + 1U,
         response,
         sizeof(response)
     );
@@ -706,20 +741,24 @@ static void test_scan_and_occupancy_size_limits(void)
     remove_layout();
 }
 
-/* MAX-162: the compact occupancy artifact lives next to the scan in the same
- * session directory, is stored/loaded independently via kind=occupancy, and
- * is deleted together with the scan it was derived from. */
+/* The compact occupancy and preview artifacts live beside the scan, have
+ * independent kind routes, and are deleted with the source scan. */
 static void test_occupancy_kind_is_stored_beside_the_scan(void)
 {
     make_layout();
     const unsigned char scan[] = {1U, 2U, 3U};
     const unsigned char occupancy[] = {'G', 'O', 'C', 'C', 9U};
+    const unsigned char preview[] = {'G', 'X', 'P', 'R', 'V', '1', 1U};
     assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
     assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, sizeof(occupancy)));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, sizeof(preview)));
 
     char response[512] = {0};
     assert(load_kind("scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001", response, sizeof(response)) == sizeof(occupancy));
     assert(memcmp(response, occupancy, sizeof(occupancy)) == 0);
+    memset(response, 0, sizeof(response));
+    assert(load_kind("scan=load&kind=preview&object_id=OBJ_0001&session_id=S000001", response, sizeof(response)) == sizeof(preview));
+    assert(memcmp(response, preview, sizeof(preview)) == 0);
     memset(response, 0, sizeof(response));
     assert(load_kind("scan=load&object_id=OBJ_0001&session_id=S000001", response, sizeof(response)) == sizeof(scan));
     assert(memcmp(response, scan, sizeof(scan)) == 0);
@@ -740,9 +779,14 @@ static void test_occupancy_kind_is_stored_beside_the_scan(void)
             "scan=info&kind=occupancy&object_id=OBJ_0001&session_id=S000001", NULL, 0U, info, sizeof(info));
         assert(web_scan_store_try_handle(&info_request, &info_handled) == ESP_OK);
         assert(strstr(info, "\"bytes\":5") != NULL);
+        memset(info, 0, sizeof(info));
+        info_request = make_request(
+            "scan=info&kind=preview&object_id=OBJ_0001&session_id=S000001", NULL, 0U, info, sizeof(info));
+        assert(web_scan_store_try_handle(&info_request, &info_handled) == ESP_OK);
+        assert(strstr(info, "\"bytes\":7") != NULL);
     }
 
-    /* Deleting the scan also removes the occupancy derived from it. */
+    /* Deleting the scan also removes its occupancy and preview derivatives. */
     assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
     {
         char info[512] = {0};
@@ -760,6 +804,16 @@ static void test_occupancy_kind_is_stored_beside_the_scan(void)
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
     assert(request.response_status != NULL);
     assert(strcmp(request.response_status, "404 Not Found") == 0);
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=load&kind=preview&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "404 Not Found") == 0);
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=info&kind=preview&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(strstr(response, "ESP_ERR_NOT_FOUND") != NULL);
 
     /* Unknown kinds are rejected; oversized occupancy is refused. */
     assert(!save_kind("scan=save&kind=bogus&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
@@ -931,16 +985,20 @@ static void test_recording_admission_truth_table(void)
     make_layout();
     const unsigned char prior_scan[] = {1U, 3U, 5U};
     const unsigned char prior_occupancy[] = {2U, 4U, 6U};
+    const unsigned char prior_preview[] = {7U, 8U, 9U};
     const unsigned char registration[] = "{\"valid\":true}";
     const unsigned char save_body[] = {9U, 8U};
     const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
     const char *scan_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.tmp";
     const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
     const char *occupancy_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
+    const char *preview_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin";
+    const char *preview_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin.tmp";
     const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
 
     write_bytes(scan_path, prior_scan, sizeof(prior_scan));
     write_bytes(occupancy_path, prior_occupancy, sizeof(prior_occupancy));
+    write_bytes(preview_path, prior_preview, sizeof(prior_preview));
     write_bytes(registration_path, registration, sizeof(registration) - 1U);
     s_session_list_calls = 0U;
     assert(storage_bulk_admission_enter_protected() == ESP_OK);
@@ -952,6 +1010,7 @@ static void test_recording_admission_truth_table(void)
     } kinds[] = {
         {"scan", scan_path, scan_temp},
         {"occupancy", occupancy_path, occupancy_temp},
+        {"preview", preview_path, preview_temp},
     };
     const struct {
         const char *verb;
@@ -1122,6 +1181,53 @@ static void test_mid_transfer_admission_aborts_save_and_preserves_final(void)
 }
 
 
+static void test_mid_transfer_preview_admission_abort_preserves_final(void)
+{
+    make_layout();
+    const char *final_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin";
+    const char *temp_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin.tmp";
+    static const unsigned char prior[] = {0x31U, 0x42U, 0x53U};
+    const size_t body_length = 2U * WEB_SCAN_IO_BUFFER_SIZE + 17U;
+    unsigned char *body = malloc(body_length);
+    assert(body != NULL);
+    memset(body, 0xc3, body_length);
+    write_bytes(final_path, prior, sizeof(prior));
+
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001",
+        body,
+        body_length,
+        response,
+        sizeof(response)
+    );
+    bool handled = false;
+    s_storage_begin_calls = 0U;
+    s_storage_end_calls = 0U;
+    s_recv_calls = 0U;
+    s_enter_after_recv_call = 2U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strcmp(response, "{\"ok\":false,\"action\":\"scan_save\",\"busy_reason\":\"recording_active\"}") == 0);
+    assert(request.body_offset == body_length);
+    assert(!path_exists(temp_path));
+    assert(storage_bulk_admission_is_protected());
+    assert(s_storage_begin_calls == s_storage_end_calls);
+
+    FILE *final_file = fopen(final_path, "rb");
+    assert(final_file != NULL);
+    unsigned char actual[sizeof(prior)];
+    assert(fread(actual, 1U, sizeof(actual), final_file) == sizeof(actual));
+    assert(fgetc(final_file) == EOF);
+    assert(fclose(final_file) == 0);
+    assert(memcmp(actual, prior, sizeof(prior)) == 0);
+
+    storage_bulk_admission_exit_protected();
+    free(body);
+    remove_layout();
+}
+
+
 static void test_mid_stream_admission_aborts_load(void)
 {
     make_layout();
@@ -1218,6 +1324,7 @@ int main(void)
     test_registration_round_trip_bounds_and_session_validation();
     test_recording_admission_truth_table();
     test_mid_transfer_admission_aborts_save_and_preserves_final();
+    test_mid_transfer_preview_admission_abort_preserves_final();
     test_mid_stream_admission_aborts_load();
     test_write_failure_removes_temp_and_balances_storage_guard();
     test_registration_recording_guard_is_session_scoped();

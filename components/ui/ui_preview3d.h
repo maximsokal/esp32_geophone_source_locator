@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "scan_occupancy.h"
+#include "scan_preview.h"
 
 /*
  * MAX-187: bounded software 3D preview of a recording zone for the
@@ -32,6 +33,9 @@ typedef enum
     UI_PREVIEW3D_PX_MAIN,
     UI_PREVIEW3D_PX_SOURCE,
     UI_PREVIEW3D_PX_SOURCE_SELECTED,
+    UI_PREVIEW3D_PX_VOXEL_TOP,
+    UI_PREVIEW3D_PX_VOXEL_SIDE,
+    UI_PREVIEW3D_PX_VOXEL_FRONT,
     UI_PREVIEW3D_PX_COUNT
 } ui_preview3d_pixel_t;
 
@@ -95,6 +99,16 @@ typedef struct
     ui_preview3d_source_t sources[UI_PREVIEW3D_MAX_SOURCES];
     size_t source_count;
 
+    /* preview-v1 data; the caller owns these arrays and the draw-order scratch. */
+    const uint32_t *voxel_indices;
+    const uint8_t *voxel_face_masks;
+    uint32_t voxel_count;
+    uint16_t voxel_dimensions[3];
+    ui_preview3d_vec3_t voxel_origin;
+    float voxel_size_m;
+    uint32_t *voxel_order;
+    size_t voxel_order_capacity;
+
     bool registered;
     double sensor_to_scan[16];   /* row-major 4x4, valid when registered */
 } ui_preview3d_scene_t;
@@ -107,14 +121,17 @@ typedef struct
     bool overlay_suppressed_unregistered;
     bool empty;
     uint32_t points_drawn;
+    uint32_t voxels_drawn;
+    uint32_t faces_drawn;
     uint32_t lines_drawn;
     uint32_t primitives_clipped;
 } ui_preview3d_stats_t;
 
 void ui_preview3d_view_preset(ui_preview3d_view_t *view, ui_preview3d_preset_t preset);
 
-/* LEFT/RIGHT yaw 15 deg, UP/DOWN pitch 10 deg (clamped 0..90), OK cycles
- * TOP -> SIDE -> ISO -> TOP. Returns true when the view changed. */
+/* RIGHT adds 15 deg of yaw (wrapped to [0, 360)); UP/DOWN change pitch by
+ * 10 deg (clamped to 0..90); OK cycles TOP -> SIDE -> ISO -> TOP. LEFT is
+ * screen Back and is not a view key. Returns true when the view changed. */
 bool ui_preview3d_view_apply_key(ui_preview3d_view_t *view, ui_preview3d_key_t key);
 
 /* Decimates occupied voxels (voxel centres) into the scene's bounded point
@@ -124,6 +141,14 @@ void ui_preview3d_scene_set_occupancy(
     ui_preview3d_scene_t *scene,
     const scan_occupancy_t *occupancy,
     uint64_t geometry_computed_at_ms);
+
+/* Uses preview registration only when it is bound to the session geometry. */
+void ui_preview3d_scene_set_voxel_preview(
+    ui_preview3d_scene_t *scene,
+    const scan_preview_t *preview,
+    uint64_t geometry_computed_at_ms,
+    uint32_t *draw_order,
+    size_t draw_order_capacity);
 
 /* Projects a point (already in the render frame) to pixel coordinates. */
 void ui_preview3d_project(

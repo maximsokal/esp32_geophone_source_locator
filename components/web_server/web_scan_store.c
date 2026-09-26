@@ -28,6 +28,7 @@
 #define WEB_SCAN_IO_BUFFER_SIZE   4096U
 #define WEB_SCAN_MAX_BYTES        (8U * 1024U * 1024U)
 #define WEB_REGISTRATION_MAX_BYTES 16384U
+#define WEB_SCAN_PREVIEW_MAX_BYTES 65536U
 #define WEB_SCAN_RECV_TIMEOUTS    5U
 #define WEB_SCAN_DRAIN_BUFFER_SIZE 256U
 
@@ -35,8 +36,9 @@ static const char *TAG = "WEB_SCAN_STORE";
 /*
  * MAX-162: the same session directory also holds the compact FREE/OCCUPIED
  * occupancy artifact derived from that scan (components/scan_occupancy),
- * selected with `kind=occupancy`. It uses the identical crash-safe
- * temp/backup replace path, with its own, much smaller size bound.
+ * selected with `kind=occupancy`, and a bounded surface-voxel display preview
+ * selected with `kind=preview`. Both use the same crash-safe temp/backup
+ * replace path and bulk admission gate as the scan.
  */
 typedef struct
 {
@@ -56,6 +58,12 @@ static const web_scan_kind_t WEB_SCAN_KIND_OCCUPANCY = {
     .file_name = "occupancy-v1.bin",
     .max_bytes = 1024U * 1024U,
     .label = "scan occupancy",
+};
+
+static const web_scan_kind_t WEB_SCAN_KIND_PREVIEW = {
+    .file_name = "preview-v1.bin",
+    .max_bytes = WEB_SCAN_PREVIEW_MAX_BYTES,
+    .label = "voxel scan preview",
 };
 
 static const web_scan_kind_t WEB_SCAN_KIND_REGISTRATION = {
@@ -269,7 +277,7 @@ static esp_err_t web_scan_send_registration_conflict(httpd_req_t *request)
 
 static bool web_scan_kind_uses_bulk_admission(const web_scan_kind_t *kind)
 {
-    return kind == &WEB_SCAN_KIND_SCAN || kind == &WEB_SCAN_KIND_OCCUPANCY;
+    return kind == &WEB_SCAN_KIND_SCAN || kind == &WEB_SCAN_KIND_OCCUPANCY || kind == &WEB_SCAN_KIND_PREVIEW;
 }
 
 
@@ -869,13 +877,19 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
     if (remove(temp_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
     if (remove(backup_path) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
     if (err == ESP_OK && kind == &WEB_SCAN_KIND_SCAN) {
-        /* The occupancy artifact is derived from this scan: deleting the
-         * scan must never leave a stale occupancy constraint behind. */
+        /* Both derivatives are tied to the scan CRC: never leave either
+         * occupancy constraints or a display preview behind as stale data. */
         char occ_final[WEB_SCAN_PATH_SIZE], occ_temp[WEB_SCAN_PATH_SIZE], occ_backup[WEB_SCAN_PATH_SIZE];
         if (web_scan_paths(object_id, session_id, &WEB_SCAN_KIND_OCCUPANCY, occ_final, occ_temp, occ_backup) == ESP_OK) {
             if (remove(occ_final) != 0 && errno != ENOENT) err = ESP_FAIL;
             if (remove(occ_temp) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
             if (remove(occ_backup) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
+        }
+        char preview_final[WEB_SCAN_PATH_SIZE], preview_temp[WEB_SCAN_PATH_SIZE], preview_backup[WEB_SCAN_PATH_SIZE];
+        if (web_scan_paths(object_id, session_id, &WEB_SCAN_KIND_PREVIEW, preview_final, preview_temp, preview_backup) == ESP_OK) {
+            if (remove(preview_final) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
+            if (remove(preview_temp) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
+            if (remove(preview_backup) != 0 && errno != ENOENT && err == ESP_OK) err = ESP_FAIL;
         }
     }
     storage_manager_operation_end();
@@ -940,6 +954,8 @@ esp_err_t web_scan_store_try_handle(httpd_req_t *request, bool *handled)
     if (err == ESP_OK) {
         if (strcmp(kind_value, "occupancy") == 0) {
             kind = &WEB_SCAN_KIND_OCCUPANCY;
+        } else if (strcmp(kind_value, "preview") == 0) {
+            kind = &WEB_SCAN_KIND_PREVIEW;
         } else if (strcmp(kind_value, "registration") == 0) {
             kind = &WEB_SCAN_KIND_REGISTRATION;
         } else if (strcmp(kind_value, "scan") != 0) {

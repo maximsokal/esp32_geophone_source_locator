@@ -109,6 +109,12 @@ static void ui_screen_open_system(void)
 }
 
 
+static void ui_screen_open_scan_preview(void)
+{
+    ui_scan_preview_screen_open_locked();
+}
+
+
 static void ui_screen_handle_home_key(
     keypad_key_t key
 )
@@ -203,6 +209,15 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
         .handle_key = ui_screen_handle_back_key,
         .refresh = ui_system_refresh_locked,
     },
+
+    [UI_SCREEN_SCAN_PREVIEW] = {
+        .name = "3D PREVIEW",
+        .home_label = NULL,
+        .open = ui_screen_open_scan_preview,
+        .render = ui_scan_preview_render_locked,
+        .handle_key = ui_scan_preview_handle_key_locked,
+        .refresh = NULL,
+    },
 };
 
 
@@ -284,8 +299,11 @@ void ui_screen_open_locked(
         return;
     }
 
+    const bool leaving_preview = ui_context()->screen == UI_SCREEN_SCAN_PREVIEW && screen != UI_SCREEN_SCAN_PREVIEW;
+    if (leaving_preview) ui_scan_preview_close_locked();
     ui_context()->screen = screen;
     driver->open();
+    if (leaving_preview) ui_scan_preview_release_locked();
 }
 
 

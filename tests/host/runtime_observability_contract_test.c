@@ -16,6 +16,15 @@ int64_t esp_timer_get_time(void)
 
 int main(void)
 {
+    runtime_observability_heap_snapshot_t heap = { 1U, 1U, 1U, 1U, 1U, 1U };
+    runtime_observability_get_heap_snapshot(&heap);
+    assert(heap.free_internal == 0U);
+    assert(heap.largest_internal_block == 0U);
+    assert(heap.free_dma == 0U);
+    assert(heap.largest_dma_block == 0U);
+    assert(heap.free_psram == 0U);
+    assert(heap.min_free_internal_since_boot == 0U);
+
     runtime_observability_snapshot_t before = {0};
     runtime_observability_snapshot_t after = {0};
 

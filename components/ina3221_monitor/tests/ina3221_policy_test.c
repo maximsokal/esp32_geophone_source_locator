@@ -264,6 +264,23 @@ static void test_power_state_policy(void)
     );
 }
 
+static void test_current_deadband_boundaries(void)
+{
+    ina3221_channel_sample_t channels[INA3221_POLICY_CHANNEL_COUNT] = {
+        channel(3.80f, 0.0f, -0.030f, true),
+        channel(5.00f, 0.0f, 0.20f, true),
+        channel(5.00f, 0.0f, 0.00f, true),
+    };
+
+    assert(ina3221_policy_classify_instant(channels) == INA3221_POWER_STATE_USB_CHARGING);
+    channels[0].current_a = -0.029f;
+    assert(ina3221_policy_classify_instant(channels) == INA3221_POWER_STATE_USB);
+    channels[0].current_a = 0.029f;
+    assert(ina3221_policy_classify_instant(channels) == INA3221_POWER_STATE_USB);
+    channels[0].current_a = 0.030f;
+    assert(ina3221_policy_classify_instant(channels) == INA3221_POWER_STATE_BATTERY);
+}
+
 
 static void test_hysteresis(void)
 {
@@ -358,6 +375,7 @@ int main(void)
     test_battery_source_voltage_and_percent();
     test_physical_channel_polarity();
     test_power_state_policy();
+    test_current_deadband_boundaries();
     test_hysteresis();
     test_decision_fields();
 

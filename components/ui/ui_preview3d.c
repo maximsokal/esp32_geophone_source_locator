@@ -1,6 +1,7 @@
 #include "ui_preview3d.h"
 
 #include <math.h>
+#include <limits.h>
 #include <string.h>
 
 #define PREVIEW_PI 3.14159265358979f
@@ -42,10 +43,10 @@ void ui_preview3d_view_preset(ui_preview3d_view_t *view, ui_preview3d_preset_t p
 
 static float wrap_yaw(float yaw)
 {
-    while (yaw >= 180.0f) {
+    while (yaw >= 360.0f) {
         yaw -= 360.0f;
     }
-    while (yaw < -180.0f) {
+    while (yaw < 0.0f) {
         yaw += 360.0f;
     }
     return yaw;
@@ -60,8 +61,9 @@ bool ui_preview3d_view_apply_key(ui_preview3d_view_t *view, ui_preview3d_key_t k
     }
     switch (key) {
     case UI_PREVIEW3D_KEY_LEFT:
+        return false;
     case UI_PREVIEW3D_KEY_RIGHT:
-        view->yaw_deg = wrap_yaw(view->yaw_deg + (key == UI_PREVIEW3D_KEY_LEFT ? -YAW_STEP_DEG : YAW_STEP_DEG));
+        view->yaw_deg = wrap_yaw(view->yaw_deg + YAW_STEP_DEG);
         view->preset = UI_PREVIEW3D_PRESET_FREE;
         return true;
     case UI_PREVIEW3D_KEY_UP:
@@ -100,6 +102,9 @@ void ui_preview3d_scene_set_occupancy(
     scene->point_count = 0;
     scene->points_available = 0;
     scene->registered = false;
+    scene->voxel_indices = NULL;
+    scene->voxel_face_masks = NULL;
+    scene->voxel_count = 0U;
     if (occupancy == NULL || occupancy->occupied_keys == NULL || !(occupancy->voxel_size_m > 0.0)) {
         return;
     }
@@ -123,6 +128,36 @@ void ui_preview3d_scene_set_occupancy(
     if (scan_occupancy_registration_usable(occupancy, geometry_computed_at_ms)) {
         scene->registered = true;
         memcpy(scene->sensor_to_scan, occupancy->registration.sensor_to_scan, sizeof(scene->sensor_to_scan));
+    }
+}
+
+void ui_preview3d_scene_set_voxel_preview(
+    ui_preview3d_scene_t *scene,
+    const scan_preview_t *preview,
+    uint64_t geometry_computed_at_ms,
+    uint32_t *draw_order,
+    size_t draw_order_capacity)
+{
+    if (scene == NULL) return;
+    scene->point_count = 0U;
+    scene->points_available = 0U;
+    scene->registered = false;
+    scene->voxel_indices = NULL;
+    scene->voxel_face_masks = NULL;
+    scene->voxel_count = 0U;
+    scene->voxel_order = draw_order;
+    scene->voxel_order_capacity = draw_order_capacity;
+    if (preview == NULL || preview->voxel_count == 0U || preview->indices == NULL || preview->face_masks == NULL) return;
+
+    scene->voxel_indices = preview->indices;
+    scene->voxel_face_masks = preview->face_masks;
+    scene->voxel_count = preview->voxel_count;
+    memcpy(scene->voxel_dimensions, preview->dimensions, sizeof(scene->voxel_dimensions));
+    scene->voxel_origin = (ui_preview3d_vec3_t){preview->origin[0], preview->origin[1], preview->origin[2]};
+    scene->voxel_size_m = preview->voxel_size_m;
+    if (preview->registration_usable && preview->geometry_computed_at_ms == geometry_computed_at_ms) {
+        scene->registered = true;
+        for (size_t i = 0U; i < 16U; ++i) scene->sensor_to_scan[i] = preview->sensor_to_scan[i];
     }
 }
 
@@ -255,8 +290,7 @@ bool ui_preview3d_draw_line(uint8_t *pixels, int width, int height,
 static bool draw_circle(uint8_t *pixels, int width, int height, float cx, float cy, float r, uint8_t colour)
 {
     int x, y, err;
-    const int icx = (int)lroundf(cx);
-    const int icy = (int)lroundf(cy);
+    int icx, icy;
     int ir;
 
     if (!isfinite(cx) || !isfinite(cy) || !isfinite(r)) {
@@ -265,6 +299,9 @@ static bool draw_circle(uint8_t *pixels, int width, int height, float cx, float 
     if (r > (float)(width + height) * 4.0f) {
         r = (float)(width + height) * 4.0f;
     }
+    if (cx + r < 0.0f || cy + r < 0.0f || cx - r >= (float)width || cy - r >= (float)height) return false;
+    icx = (int)lroundf(cx);
+    icy = (int)lroundf(cy);
     ir = (int)lroundf(r);
     if (icx + ir < 0 || icy + ir < 0 || icx - ir >= width || icy - ir >= height) {
         return false;
@@ -291,6 +328,13 @@ static bool draw_circle(uint8_t *pixels, int width, int height, float cx, float 
         }
     }
     return true;
+}
+
+static bool plot_projected_point(uint8_t *pixels, int width, int height, float x, float y, uint8_t colour)
+{
+    if (!isfinite(x) || !isfinite(y) || x < (float)INT_MIN + 1.0f || x > (float)INT_MAX - 1.0f ||
+        y < (float)INT_MIN + 1.0f || y > (float)INT_MAX - 1.0f) return false;
+    return ui_preview3d_plot(pixels, width, height, (int)lroundf(x), (int)lroundf(y), colour);
 }
 
 static ui_preview3d_vec3_t sensor_to_render(const ui_preview3d_scene_t *scene, const ui_preview3d_vec3_t *p, bool to_scan)
@@ -330,6 +374,211 @@ static void bounds_add(bounds_t *b, const ui_preview3d_vec3_t *p, float pad)
     b->min.z = fminf(b->min.z, p->z - pad); b->max.z = fmaxf(b->max.z, p->z + pad);
 }
 
+static const float s_face_corners[6][4][3] = {
+    {{ 1, -1, -1}, { 1,  1, -1}, { 1,  1,  1}, { 1, -1,  1}},
+    {{-1,  1, -1}, {-1, -1, -1}, {-1, -1,  1}, {-1,  1,  1}},
+    {{ 1,  1, -1}, {-1,  1, -1}, {-1,  1,  1}, { 1,  1,  1}},
+    {{-1, -1, -1}, { 1, -1, -1}, { 1, -1,  1}, {-1, -1,  1}},
+    {{-1, -1,  1}, { 1, -1,  1}, { 1,  1,  1}, {-1,  1,  1}},
+    {{-1,  1, -1}, { 1,  1, -1}, { 1, -1, -1}, {-1, -1, -1}},
+};
+
+static const uint8_t s_face_colours[6] = {
+    UI_PREVIEW3D_PX_VOXEL_SIDE, UI_PREVIEW3D_PX_VOXEL_SIDE,
+    UI_PREVIEW3D_PX_VOXEL_FRONT, UI_PREVIEW3D_PX_VOXEL_FRONT,
+    UI_PREVIEW3D_PX_VOXEL_TOP, UI_PREVIEW3D_PX_VOXEL_SIDE,
+};
+
+static bool voxel_position(const ui_preview3d_scene_t *scene, uint32_t index, ui_preview3d_vec3_t *position)
+{
+    const uint64_t plane = (uint64_t)scene->voxel_dimensions[0] * scene->voxel_dimensions[1];
+    const uint32_t x = index % scene->voxel_dimensions[0];
+    const uint32_t y = (uint32_t)(((uint64_t)index / scene->voxel_dimensions[0]) % scene->voxel_dimensions[1]);
+    const uint32_t z = (uint32_t)((uint64_t)index / plane);
+    const float half = scene->voxel_size_m * 0.5f;
+    position->x = scene->voxel_origin.x + ((float)x + 0.5f) * scene->voxel_size_m;
+    position->y = scene->voxel_origin.y + ((float)y + 0.5f) * scene->voxel_size_m;
+    position->z = scene->voxel_origin.z + ((float)z + 0.5f) * scene->voxel_size_m;
+    return isfinite(position->x) && isfinite(position->y) && isfinite(position->z) && isfinite(half);
+}
+
+static bool voxel_scene_valid(const ui_preview3d_scene_t *scene)
+{
+    if (scene->voxel_indices == NULL || scene->voxel_face_masks == NULL || scene->voxel_count > SCAN_PREVIEW_MAX_VOXELS ||
+        !(scene->voxel_size_m > 0.0f) || !isfinite(scene->voxel_size_m) ||
+        !isfinite(scene->voxel_origin.x) || !isfinite(scene->voxel_origin.y) || !isfinite(scene->voxel_origin.z)) return false;
+    for (size_t axis = 0U; axis < 3U; ++axis) if (scene->voxel_dimensions[axis] == 0U) return false;
+    const uint64_t volume = (uint64_t)scene->voxel_dimensions[0] * scene->voxel_dimensions[1] * scene->voxel_dimensions[2];
+    if (volume > (UINT64_C(1) << 32U) || scene->voxel_count > volume) return false;
+    for (uint32_t i = 0U; i < scene->voxel_count; ++i) {
+        const uint8_t mask = scene->voxel_face_masks[i];
+        if ((uint64_t)scene->voxel_indices[i] >= volume || mask == 0U || (mask & 0xc0U) != 0U) return false;
+    }
+    return true;
+}
+
+static bool fill_quad(uint8_t *pixels, int width, int height, const float x[4], const float y[4], uint8_t colour, bool *clipped)
+{
+    double min_y = y[0], max_y = y[0];
+    bool any = false;
+    *clipped = false;
+    for (size_t i = 0U; i < 4U; ++i) {
+        if (!isfinite(x[i]) || !isfinite(y[i])) return false;
+        min_y = fmin(min_y, y[i]);
+        max_y = fmax(max_y, y[i]);
+        if (x[i] < 0.0f || x[i] > (float)(width - 1) || y[i] < 0.0f || y[i] > (float)(height - 1)) *clipped = true;
+    }
+    if (max_y < 0.5 || min_y > (double)height - 0.5) return false;
+    const int y_start = (int)ceil(fmin((double)(height - 1), fmax(0.0, min_y - 0.5)));
+    const int y_end = (int)floor(fmin((double)(height - 1), max_y - 0.5));
+    for (int row = y_start; row <= y_end; ++row) {
+        const double scan_y = (double)row + 0.5;
+        double left = INFINITY;
+        double right = -INFINITY;
+        for (size_t edge = 0U; edge < 4U; ++edge) {
+            const size_t next = (edge + 1U) & 3U;
+            const double y0 = y[edge], y1 = y[next];
+            if ((y0 <= scan_y && y1 > scan_y) || (y1 <= scan_y && y0 > scan_y)) {
+                const double cross_x = x[edge] + (scan_y - y0) * ((double)x[next] - x[edge]) / (y1 - y0);
+                left = fmin(left, cross_x);
+                right = fmax(right, cross_x);
+            }
+        }
+        if (left <= right) {
+            if (right < 0.5 || left > (double)width - 0.5) continue;
+            const int x_start = (int)ceil(fmin((double)(width - 1), fmax(0.0, left - 0.5)));
+            const int x_end = (int)floor(fmin((double)(width - 1), right - 0.5));
+            for (int column = x_start; column <= x_end; ++column) {
+                pixels[(size_t)row * (size_t)width + (size_t)column] = colour;
+                any = true;
+            }
+        }
+    }
+    return any;
+}
+
+static float voxel_depth(uint32_t index, const ui_preview3d_scene_t *scene, const float coefficients[3])
+{
+    const uint64_t plane = (uint64_t)scene->voxel_dimensions[0] * scene->voxel_dimensions[1];
+    const float x = (float)(index % scene->voxel_dimensions[0]) * scene->voxel_size_m;
+    const float y = (float)(((uint64_t)index / scene->voxel_dimensions[0]) % scene->voxel_dimensions[1]) * scene->voxel_size_m;
+    const float z = (float)((uint64_t)index / plane) * scene->voxel_size_m;
+    return x * coefficients[0] + y * coefficients[1] + z * coefficients[2];
+}
+
+static bool depth_after(uint32_t left, uint32_t right, const ui_preview3d_scene_t *scene, const float coefficients[3])
+{
+    const uint32_t left_index = scene->voxel_indices[left];
+    const uint32_t right_index = scene->voxel_indices[right];
+    const float left_depth = voxel_depth(left_index, scene, coefficients);
+    const float right_depth = voxel_depth(right_index, scene, coefficients);
+    return left_depth > right_depth || (left_depth == right_depth && left_index > right_index);
+}
+
+static void sift_voxel_heap(uint32_t *order, size_t root, size_t count, const ui_preview3d_scene_t *scene, const float coefficients[3])
+{
+    for (;;) {
+        const size_t left = root * 2U + 1U;
+        if (left >= count) return;
+        size_t largest = left;
+        const size_t right = left + 1U;
+        if (right < count && depth_after(order[right], order[left], scene, coefficients)) largest = right;
+        if (!depth_after(order[largest], order[root], scene, coefficients)) return;
+        const uint32_t swap = order[root];
+        order[root] = order[largest];
+        order[largest] = swap;
+        root = largest;
+    }
+}
+
+static void sort_voxel_order(uint32_t *order, size_t count, const ui_preview3d_scene_t *scene, const ui_preview3d_view_t *view, float coefficients[3])
+{
+    const float yaw = view->yaw_deg * DEG_TO_RAD;
+    const float pitch = view->pitch_deg * DEG_TO_RAD;
+    coefficients[0] = -sinf(yaw) * cosf(pitch);
+    coefficients[1] = cosf(yaw) * cosf(pitch);
+    coefficients[2] = -sinf(pitch);
+    for (size_t i = 0U; i < count; ++i) order[i] = (uint32_t)i;
+    for (size_t start = count / 2U; start > 0U;) sift_voxel_heap(order, --start, count, scene, coefficients);
+    for (size_t end = count; end > 1U;) {
+        const uint32_t swap = order[0];
+        order[0] = order[--end];
+        order[end] = swap;
+        sift_voxel_heap(order, 0U, end, scene, coefficients);
+    }
+}
+
+static bool draw_voxel_face(
+    const ui_preview3d_scene_t *scene,
+    const ui_preview3d_view_t *view,
+    const ui_preview3d_vec3_t *centre,
+    float scale,
+    int width,
+    int height,
+    uint8_t *pixels,
+    uint32_t index,
+    unsigned face,
+    bool *clipped)
+{
+    ui_preview3d_vec3_t voxel;
+    float x[4], y[4];
+    if (!voxel_position(scene, index, &voxel)) return false;
+    const float half = scene->voxel_size_m * 0.5f;
+    for (size_t corner = 0U; corner < 4U; ++corner) {
+        const ui_preview3d_vec3_t point = {
+            voxel.x + s_face_corners[face][corner][0] * half,
+            voxel.y + s_face_corners[face][corner][1] * half,
+            voxel.z + s_face_corners[face][corner][2] * half,
+        };
+        ui_preview3d_project(view, centre, scale, width, height, &point, &x[corner], &y[corner]);
+    }
+    return fill_quad(pixels, width, height, x, y, s_face_colours[face], clipped);
+}
+
+static void draw_voxel_scene(
+    const ui_preview3d_scene_t *scene,
+    const ui_preview3d_view_t *view,
+    const ui_preview3d_vec3_t *centre,
+    float scale,
+    int width,
+    int height,
+    uint8_t *pixels,
+    ui_preview3d_stats_t *stats)
+{
+    float depth_coefficients[3];
+    const float yaw = view->yaw_deg * DEG_TO_RAD;
+    const float pitch = view->pitch_deg * DEG_TO_RAD;
+    const float camera_direction[3] = {sinf(yaw) * cosf(pitch), -cosf(yaw) * cosf(pitch), sinf(pitch)};
+    if (!voxel_scene_valid(scene) || scene->voxel_order == NULL || scene->voxel_order_capacity < scene->voxel_count) {
+        stats->empty = true;
+        return;
+    }
+    sort_voxel_order(scene->voxel_order, scene->voxel_count, scene, view, depth_coefficients);
+    for (size_t item = scene->voxel_count; item > 0U; --item) {
+        const uint32_t source = scene->voxel_order[item - 1U];
+        const uint32_t index = scene->voxel_indices[source];
+        const uint8_t faces = scene->voxel_face_masks[source];
+        bool voxel_drawn = false;
+        for (unsigned face = 0U; face < 6U; ++face) {
+            const float normal_dot =
+                (face == 0U ? camera_direction[0] : face == 1U ? -camera_direction[0] :
+                 face == 2U ? camera_direction[1] : face == 3U ? -camera_direction[1] :
+                 face == 4U ? camera_direction[2] : -camera_direction[2]);
+            if ((faces & (1U << face)) == 0U || normal_dot <= 0.0001f) continue;
+            bool clipped = false;
+            if (draw_voxel_face(scene, view, centre, scale, width, height, pixels, index, face, &clipped)) {
+                stats->faces_drawn++;
+                voxel_drawn = true;
+                if (clipped) stats->primitives_clipped++;
+            } else {
+                stats->primitives_clipped++;
+            }
+        }
+        if (voxel_drawn) stats->voxels_drawn++;
+    }
+    stats->drew_scan = stats->voxels_drawn > 0U;
+}
+
 void ui_preview3d_render(
     const ui_preview3d_scene_t *scene,
     const ui_preview3d_view_t *view,
@@ -346,6 +595,7 @@ void ui_preview3d_render(
     bool any_sensor = false;
     bool draw_scan;
     bool draw_sensors;
+    bool voxel_mode;
     ui_preview3d_vec3_t centre;
     float radius;
     float scale;
@@ -354,7 +604,8 @@ void ui_preview3d_render(
         stats = &local;
     }
     memset(stats, 0, sizeof(*stats));
-    if (pixels == NULL || width <= 0 || height <= 0) {
+    if (pixels == NULL || width <= 0 || height <= 0 || width > INT_MAX / 16 || height > INT_MAX / 16 ||
+        (size_t)width > SIZE_MAX / (size_t)height) {
         stats->empty = true;
         return;
     }
@@ -363,6 +614,7 @@ void ui_preview3d_render(
         stats->empty = true;
         return;
     }
+    voxel_mode = scene->voxel_count > 0U;
     for (size_t i = 0; i < UI_PREVIEW3D_MAX_SENSORS; ++i) {
         any_sensor = any_sensor || scene->sensor_valid[i];
     }
@@ -370,7 +622,7 @@ void ui_preview3d_render(
 
     switch (layer) {
     case UI_PREVIEW3D_LAYER_SCAN:
-        draw_scan = scene->point_count > 0U;
+        draw_scan = voxel_mode || scene->point_count > 0U;
         draw_sensors = draw_scan ? scene->registered && any_sensor : false;
         break;
     case UI_PREVIEW3D_LAYER_SENSORS:
@@ -379,11 +631,16 @@ void ui_preview3d_render(
         break;
     case UI_PREVIEW3D_LAYER_AUTO:
     default:
-        draw_scan = scene->point_count > 0U;
+        draw_scan = voxel_mode || scene->point_count > 0U;
         draw_sensors = any_sensor && (!draw_scan || scene->registered);
         break;
     }
     stats->overlay_suppressed_unregistered = draw_scan && any_sensor && !scene->registered;
+
+    if (draw_scan && voxel_mode && (!voxel_scene_valid(scene) || scene->voxel_order == NULL || scene->voxel_order_capacity < scene->voxel_count)) {
+        stats->empty = true;
+        return;
+    }
 
     /* Sensors go to the scan frame only when both layers share the picture. */
     for (size_t i = 0; i < UI_PREVIEW3D_MAX_SENSORS; ++i) {
@@ -394,8 +651,15 @@ void ui_preview3d_render(
     }
 
     if (draw_scan) {
-        for (size_t i = 0; i < scene->point_count; ++i) {
-            bounds_add(&bounds, &scene->points[i], 0.0f);
+        if (voxel_mode) {
+            for (uint32_t i = 0U; i < scene->voxel_count; ++i) {
+                ui_preview3d_vec3_t voxel;
+                if (voxel_position(scene, scene->voxel_indices[i], &voxel)) bounds_add(&bounds, &voxel, scene->voxel_size_m * 0.5f);
+            }
+        } else {
+            for (size_t i = 0; i < scene->point_count; ++i) {
+                bounds_add(&bounds, &scene->points[i], 0.0f);
+            }
         }
     }
     if (draw_sensors) {
@@ -417,10 +681,9 @@ void ui_preview3d_render(
     centre.x = 0.5f * (bounds.min.x + bounds.max.x);
     centre.y = 0.5f * (bounds.min.y + bounds.max.y);
     centre.z = 0.5f * (bounds.min.z + bounds.max.z);
-    radius = 0.5f * sqrtf(
-        (bounds.max.x - bounds.min.x) * (bounds.max.x - bounds.min.x) +
-        (bounds.max.y - bounds.min.y) * (bounds.max.y - bounds.min.y) +
-        (bounds.max.z - bounds.min.z) * (bounds.max.z - bounds.min.z));
+    radius = 0.5f * hypotf(
+        hypotf(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y),
+        bounds.max.z - bounds.min.z);
     if (radius < MIN_RADIUS_M) {
         radius = MIN_RADIUS_M;
     }
@@ -428,16 +691,20 @@ void ui_preview3d_render(
             (float)(width < height ? width : height) / radius;
 
     if (draw_scan) {
-        for (size_t i = 0; i < scene->point_count; ++i) {
-            float x, y;
-            ui_preview3d_project(view, &centre, scale, width, height, &scene->points[i], &x, &y);
-            if (ui_preview3d_plot(pixels, width, height, (int)lroundf(x), (int)lroundf(y), UI_PREVIEW3D_PX_SCAN)) {
-                stats->points_drawn++;
-            } else {
-                stats->primitives_clipped++;
+        if (voxel_mode) {
+            draw_voxel_scene(scene, view, &centre, scale, width, height, pixels, stats);
+        } else {
+            for (size_t i = 0; i < scene->point_count; ++i) {
+                float x, y;
+                ui_preview3d_project(view, &centre, scale, width, height, &scene->points[i], &x, &y);
+                if (plot_projected_point(pixels, width, height, x, y, UI_PREVIEW3D_PX_SCAN)) {
+                    stats->points_drawn++;
+                } else {
+                    stats->primitives_clipped++;
+                }
             }
+            stats->drew_scan = true;
         }
-        stats->drew_scan = true;
     }
     if (!draw_sensors) {
         return;
@@ -478,9 +745,13 @@ void ui_preview3d_render(
             continue;
         }
         ui_preview3d_project(view, &centre, scale, width, height, &sensors[i], &x, &y);
-        for (int dy = -SENSOR_MARKER_HALF; dy <= SENSOR_MARKER_HALF; ++dy) {
-            for (int dx = -SENSOR_MARKER_HALF; dx <= SENSOR_MARKER_HALF; ++dx) {
-                (void)ui_preview3d_plot(pixels, width, height, (int)lroundf(x) + dx, (int)lroundf(y) + dy, colour);
+        if (isfinite(x) && isfinite(y) && x >= (float)INT_MIN + SENSOR_MARKER_HALF && x <= (float)INT_MAX - SENSOR_MARKER_HALF &&
+            y >= (float)INT_MIN + SENSOR_MARKER_HALF && y <= (float)INT_MAX - SENSOR_MARKER_HALF) {
+            const int marker_x = (int)lroundf(x), marker_y = (int)lroundf(y);
+            for (int dy = -SENSOR_MARKER_HALF; dy <= SENSOR_MARKER_HALF; ++dy) {
+                for (int dx = -SENSOR_MARKER_HALF; dx <= SENSOR_MARKER_HALF; ++dx) {
+                    (void)ui_preview3d_plot(pixels, width, height, marker_x + dx, marker_y + dy, colour);
+                }
             }
         }
     }

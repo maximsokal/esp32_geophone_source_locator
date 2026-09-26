@@ -1,5 +1,6 @@
 #include "web_server_internal.h"
 
+#include <math.h>
 #include <stddef.h>
 
 #include "esp_timer.h"
@@ -7,6 +8,14 @@
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "web_status_policy.h"
+
+void web_server_https_runtime_status(
+    uint32_t *clients_out,
+    uint32_t *max_clients_out,
+    uint32_t *handshake_failures_out,
+    uint32_t *fatal_alerts_out,
+    int32_t *last_error_esp_err_out
+);
 
 static size_t web_status_ready_pods(
     const device_status_snapshot_t *status,
@@ -94,7 +103,11 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
     cJSON_AddBoolToObject(object, "battery_percent_valid", power->battery_percent_valid);
     cJSON_AddNumberToObject(object, "battery_voltage_v", power->battery_voltage_v);
     cJSON_AddNumberToObject(object, "battery_current_a", power->battery_current_a);
-    cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate);
+    const bool battery_percent_added = power->battery_percent_valid &&
+        isfinite(power->battery_percent_estimate)
+        ? cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate) != NULL
+        : cJSON_AddNullToObject(object, "battery_percent_estimate") != NULL;
+    if (!battery_percent_added) return false;
     cJSON_AddBoolToObject(object, "usb_present", power->usb_present);
     cJSON_AddBoolToObject(object, "charging", power->charging);
     /* MAX-180/183: user-facing state and the low-battery reaction. */
@@ -453,10 +466,25 @@ static bool web_status_json_add_runtime(cJSON *root)
 {
     runtime_observability_snapshot_t snapshot;
     runtime_observability_get_snapshot(&snapshot);
+    runtime_observability_heap_snapshot_t heap_snapshot;
+    runtime_observability_get_heap_snapshot(&heap_snapshot);
 
     cJSON *runtime = cJSON_AddObjectToObject(root, "runtime");
     if (runtime == NULL) return false;
     if (cJSON_AddNumberToObject(runtime, "now_ms", (double)snapshot.now_ms) == NULL) {
+        return false;
+    }
+
+    cJSON *heap = cJSON_AddObjectToObject(runtime, "heap");
+    if (
+        heap == NULL ||
+        cJSON_AddNumberToObject(heap, "free_internal", (double)heap_snapshot.free_internal) == NULL ||
+        cJSON_AddNumberToObject(heap, "largest_internal_block", (double)heap_snapshot.largest_internal_block) == NULL ||
+        cJSON_AddNumberToObject(heap, "free_dma", (double)heap_snapshot.free_dma) == NULL ||
+        cJSON_AddNumberToObject(heap, "largest_dma_block", (double)heap_snapshot.largest_dma_block) == NULL ||
+        cJSON_AddNumberToObject(heap, "free_psram", (double)heap_snapshot.free_psram) == NULL ||
+        cJSON_AddNumberToObject(heap, "min_free_internal_since_boot", (double)heap_snapshot.min_free_internal_since_boot) == NULL
+    ) {
         return false;
     }
 
@@ -468,10 +496,38 @@ static bool web_status_json_add_runtime(cJSON *root)
         &mdns_retry_count,
         &mdns_next_retry_delay_ms
     );
+    cJSON *mdns = cJSON_AddObjectToObject(runtime, "mdns");
     if (
+        mdns == NULL ||
+        cJSON_AddBoolToObject(mdns, "ready", mdns_ready) == NULL ||
+        cJSON_AddNumberToObject(mdns, "retry_count", (double)mdns_retry_count) == NULL ||
         cJSON_AddBoolToObject(runtime, "mdns_ready", mdns_ready) == NULL ||
         cJSON_AddNumberToObject(runtime, "mdns_retry_count", (double)mdns_retry_count) == NULL ||
         cJSON_AddNumberToObject(runtime, "mdns_next_retry_delay_ms", (double)mdns_next_retry_delay_ms) == NULL
+    ) {
+        return false;
+    }
+
+    uint32_t https_clients = 0U;
+    uint32_t https_max_clients = 0U;
+    uint32_t https_handshake_failures = 0U;
+    uint32_t https_fatal_alerts = 0U;
+    int32_t https_last_error_esp_err = 0;
+    web_server_https_runtime_status(
+        &https_clients,
+        &https_max_clients,
+        &https_handshake_failures,
+        &https_fatal_alerts,
+        &https_last_error_esp_err
+    );
+    cJSON *https = cJSON_AddObjectToObject(runtime, "https");
+    if (
+        https == NULL ||
+        cJSON_AddNumberToObject(https, "clients", (double)https_clients) == NULL ||
+        cJSON_AddNumberToObject(https, "max_clients", (double)https_max_clients) == NULL ||
+        cJSON_AddNumberToObject(https, "handshake_failures", (double)https_handshake_failures) == NULL ||
+        cJSON_AddNumberToObject(https, "fatal_alerts", (double)https_fatal_alerts) == NULL ||
+        cJSON_AddNumberToObject(https, "last_error_esp_err", (double)https_last_error_esp_err) == NULL
     ) {
         return false;
     }

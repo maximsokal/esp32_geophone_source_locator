@@ -970,28 +970,22 @@ void ui_measurements_refresh_locked(void)
             break;
 
         case MEASUREMENT_SERVICE_REVIEW:
-            if (context->measurement_action == 0U) {
-                snprintf(
-                    text,
-                    sizeof(text),
-                    "> SAVE     DELETE   S:%" PRIu64 " D:%" PRIu64,
-                    measurement.samples_written,
-                    measurement.dropped_frames
-                );
-            }
-            else {
-                snprintf(
-                    text,
-                    sizeof(text),
-                    "SAVE     > DELETE   S:%" PRIu64 " D:%" PRIu64,
-                    measurement.samples_written,
-                    measurement.dropped_frames
-                );
-            }
+            snprintf(
+                text,
+                sizeof(text),
+                "%s S:%" PRIu64 " D:%" PRIu64,
+                context->measurement_action == 0U ? "> SAVE   DELETE   3D" :
+                context->measurement_action == 1U ? "SAVE   > DELETE   3D" :
+                                                    "SAVE    DELETE   >3D",
+                measurement.samples_written,
+                measurement.dropped_frames
+            );
             action_color =
                 context->measurement_action == 0U
                     ? UI_COLOR_GOOD
-                    : UI_COLOR_WARNING;
+                    : context->measurement_action == 1U
+                        ? UI_COLOR_WARNING
+                        : UI_COLOR_ACCENT;
             break;
 
         case MEASUREMENT_SERVICE_ERROR:
@@ -1154,10 +1148,7 @@ void ui_handle_measurements_key_locked(
         snapshot.state == MEASUREMENT_SERVICE_REVIEW &&
         (key == KEYPAD_KEY_UP || key == KEYPAD_KEY_DOWN)
     ) {
-        context->measurement_action =
-            context->measurement_action == 0U
-                ? 1U
-                : 0U;
+        context->measurement_action = (context->measurement_action + 1U) % 3U;
         ui_measurements_refresh_locked();
         return;
     }
@@ -1203,13 +1194,20 @@ void ui_handle_measurements_key_locked(
                         : "SAVE FAILED"
                 );
             }
-            else {
+            else if (context->measurement_action == 1U) {
                 err = measurement_service_delete_async();
                 ui_set_notice_locked(
                     err == ESP_OK
                         ? "DELETING SESSION..."
                         : "DELETE FAILED"
                 );
+            }
+            else if (snapshot.object_id[0] != '\0' && snapshot.session_id[0] != '\0') {
+                ui_scan_preview_open_locked(snapshot.object_id, snapshot.session_id);
+                return;
+            }
+            else {
+                ui_set_notice_locked("NO SAVED SESSION TO PREVIEW");
             }
             break;
 

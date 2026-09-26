@@ -28,9 +28,15 @@ static esp_err_t g_acquisition_error;
 static esp_err_t g_acquisition_snapshot_result;
 static seismic_acquisition_snapshot_t g_acquisition_snapshot;
 static runtime_observability_snapshot_t g_runtime_snapshot;
+static runtime_observability_heap_snapshot_t g_heap_snapshot;
 static bool g_mdns_ready;
 static uint32_t g_mdns_retry_count;
 static uint32_t g_mdns_next_retry_delay_ms;
+static uint32_t g_https_clients;
+static uint32_t g_https_max_clients;
+static uint32_t g_https_handshake_failures;
+static uint32_t g_https_fatal_alerts;
+static int32_t g_https_last_error_esp_err;
 
 static void reset_fakes(void)
 {
@@ -50,9 +56,15 @@ static void reset_fakes(void)
     g_acquisition_snapshot_result = ESP_OK;
     memset(&g_acquisition_snapshot, 0, sizeof(g_acquisition_snapshot));
     memset(&g_runtime_snapshot, 0, sizeof(g_runtime_snapshot));
+    memset(&g_heap_snapshot, 0, sizeof(g_heap_snapshot));
     g_mdns_ready = false;
     g_mdns_retry_count = 0U;
     g_mdns_next_retry_delay_ms = 0U;
+    g_https_clients = 0U;
+    g_https_max_clients = 0U;
+    g_https_handshake_failures = 0U;
+    g_https_fatal_alerts = 0U;
+    g_https_last_error_esp_err = 0;
 }
 
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
@@ -88,7 +100,15 @@ const char *device_status_battery_soc_quality_name(device_battery_soc_quality_t 
 
 const char *device_status_power_state_name(device_power_state_t state)
 {
-    return state == DEVICE_POWER_STATE_BATTERY_CRITICAL ? "BATTERY_CRITICAL" : "OTHER";
+    switch (state) {
+        case DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY: return "USB_ONLY_NO_BATTERY";
+        case DEVICE_POWER_STATE_USB_CHARGING: return "USB_CHARGING";
+        case DEVICE_POWER_STATE_USB_BATTERY_READY: return "USB_BATTERY_READY";
+        case DEVICE_POWER_STATE_BATTERY: return "BATTERY";
+        case DEVICE_POWER_STATE_BATTERY_LOW: return "BATTERY_LOW";
+        case DEVICE_POWER_STATE_BATTERY_CRITICAL: return "BATTERY_CRITICAL";
+        case DEVICE_POWER_STATE_UNKNOWN: default: return "UNKNOWN";
+    }
 }
 
 const char *device_status_low_battery_name(device_low_battery_phase_t phase)
@@ -150,6 +170,12 @@ void runtime_observability_get_snapshot(runtime_observability_snapshot_t *snapsh
     *snapshot = g_runtime_snapshot;
 }
 
+void runtime_observability_get_heap_snapshot(runtime_observability_heap_snapshot_t *snapshot)
+{
+    assert(snapshot != NULL);
+    *snapshot = g_heap_snapshot;
+}
+
 void web_server_mdns_runtime_status(
     bool *ready_out,
     uint32_t *retry_count_out,
@@ -159,6 +185,21 @@ void web_server_mdns_runtime_status(
     if (ready_out != NULL) *ready_out = g_mdns_ready;
     if (retry_count_out != NULL) *retry_count_out = g_mdns_retry_count;
     if (next_retry_delay_ms_out != NULL) *next_retry_delay_ms_out = g_mdns_next_retry_delay_ms;
+}
+
+void web_server_https_runtime_status(
+    uint32_t *clients_out,
+    uint32_t *max_clients_out,
+    uint32_t *handshake_failures_out,
+    uint32_t *fatal_alerts_out,
+    int32_t *last_error_esp_err_out
+)
+{
+    if (clients_out != NULL) *clients_out = g_https_clients;
+    if (max_clients_out != NULL) *max_clients_out = g_https_max_clients;
+    if (handshake_failures_out != NULL) *handshake_failures_out = g_https_handshake_failures;
+    if (fatal_alerts_out != NULL) *fatal_alerts_out = g_https_fatal_alerts;
+    if (last_error_esp_err_out != NULL) *last_error_esp_err_out = g_https_last_error_esp_err;
 }
 
 const char *runtime_observability_task_name(runtime_observability_task_t task)
@@ -441,6 +482,8 @@ static void test_full_builder_and_pods(void)
     assert(bool_item(power, "valid"));
     assert(strcmp(string_item(power, "source"), "USB") == 0);
     assert_number_near(number_item(power, "power_w"), 9.375);
+    assert(bool_item(power, "battery_percent_valid"));
+    assert_number_near(number_item(power, "battery_percent_estimate"), 64.0);
     assert(cJSON_GetArraySize(object_item(power, "channels")) == 3);
     assert(strcmp(string_item(power, "state"), "BATTERY_CRITICAL") == 0);
     assert(strcmp(string_item(power, "low_battery"), "grace") == 0);
@@ -481,9 +524,25 @@ static void test_full_builder_and_pods(void)
 
     cJSON *runtime = object_item(root, "runtime");
     assert_number_near(number_item(runtime, "now_ms"), 4567.0);
+    cJSON *heap = object_item(runtime, "heap");
+    assert_number_near(number_item(heap, "free_internal"), 0.0);
+    assert_number_near(number_item(heap, "largest_internal_block"), 0.0);
+    assert_number_near(number_item(heap, "free_dma"), 0.0);
+    assert_number_near(number_item(heap, "largest_dma_block"), 0.0);
+    assert_number_near(number_item(heap, "free_psram"), 0.0);
+    assert_number_near(number_item(heap, "min_free_internal_since_boot"), 0.0);
+    cJSON *mdns = object_item(runtime, "mdns");
+    assert(bool_item(mdns, "ready"));
+    assert_number_near(number_item(mdns, "retry_count"), 2.0);
     assert(bool_item(runtime, "mdns_ready"));
     assert_number_near(number_item(runtime, "mdns_retry_count"), 2.0);
     assert_number_near(number_item(runtime, "mdns_next_retry_delay_ms"), 5000.0);
+    cJSON *https = object_item(runtime, "https");
+    assert_number_near(number_item(https, "clients"), 0.0);
+    assert_number_near(number_item(https, "max_clients"), 0.0);
+    assert_number_near(number_item(https, "handshake_failures"), 0.0);
+    assert_number_near(number_item(https, "fatal_alerts"), 0.0);
+    assert_number_near(number_item(https, "last_error_esp_err"), 0.0);
     cJSON *runtime_acquisition = object_item(object_item(runtime, "tasks"), "acquisition");
     assert(bool_item(runtime_acquisition, "observed"));
     assert_number_near(number_item(runtime_acquisition, "progress"), 22.0);
@@ -526,6 +585,50 @@ static void test_full_builder_and_pods(void)
     cJSON_Delete(root);
 }
 
+static void test_invalid_battery_percentage_is_not_serialized_as_zero(void)
+{
+    reset_fakes();
+    fill_status();
+    g_status.power.battery_percent_valid = false;
+    g_status.power.battery_percent_estimate = 0.0f;
+    cJSON *root = build_json(false, NULL);
+    cJSON *power = object_item(root, "power");
+    assert(!bool_item(power, "battery_percent_valid"));
+    assert(cJSON_IsNull(object_item(power, "battery_percent_estimate")));
+    cJSON_Delete(root);
+
+    g_status.power.battery_percent_valid = true;
+    g_status.power.battery_percent_estimate = NAN;
+    root = build_json(false, NULL);
+    power = object_item(root, "power");
+    assert(cJSON_IsNull(object_item(power, "battery_percent_estimate")));
+    cJSON_Delete(root);
+}
+
+static void test_power_json_state_strings_remain_stable(void)
+{
+    static const struct {
+        device_power_state_t state;
+        const char *name;
+    } states[] = {
+        { DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY, "USB_ONLY_NO_BATTERY" },
+        { DEVICE_POWER_STATE_USB_CHARGING, "USB_CHARGING" },
+        { DEVICE_POWER_STATE_USB_BATTERY_READY, "USB_BATTERY_READY" },
+        { DEVICE_POWER_STATE_BATTERY, "BATTERY" },
+        { DEVICE_POWER_STATE_BATTERY_LOW, "BATTERY_LOW" },
+        { DEVICE_POWER_STATE_BATTERY_CRITICAL, "BATTERY_CRITICAL" },
+        { DEVICE_POWER_STATE_UNKNOWN, "UNKNOWN" },
+    };
+    for (size_t i = 0U; i < sizeof(states) / sizeof(states[0]); ++i) {
+        reset_fakes();
+        fill_status();
+        g_status.power.state = states[i].state;
+        cJSON *root = build_json(false, NULL);
+        assert(strcmp(string_item(object_item(root, "power"), "state"), states[i].name) == 0);
+        cJSON_Delete(root);
+    }
+}
+
 static void test_main_status_omits_aht_humidity_when_absent(void)
 {
     reset_fakes();
@@ -536,6 +639,47 @@ static void test_main_status_omits_aht_humidity_when_absent(void)
     cJSON *main = object_item(root, "main");
     assert(cJSON_GetObjectItemCaseSensitive(main, "humidity_mpct") == NULL);
     assert(!bool_item(object_item(main, "sensor_present"), "aht20"));
+    cJSON_Delete(root);
+}
+
+static void test_runtime_metrics_accept_zero_and_max_values(void)
+{
+    reset_fakes();
+    fill_status();
+    g_heap_snapshot = (runtime_observability_heap_snapshot_t) {
+        .free_internal = SIZE_MAX,
+        .largest_internal_block = SIZE_MAX,
+        .free_dma = SIZE_MAX,
+        .largest_dma_block = SIZE_MAX,
+        .free_psram = SIZE_MAX,
+        .min_free_internal_since_boot = SIZE_MAX,
+    };
+    g_mdns_ready = false;
+    g_mdns_retry_count = UINT32_MAX;
+    g_https_clients = UINT32_MAX;
+    g_https_max_clients = UINT32_MAX;
+    g_https_handshake_failures = UINT32_MAX;
+    g_https_fatal_alerts = UINT32_MAX;
+    g_https_last_error_esp_err = INT32_MAX;
+
+    cJSON *root = build_json(false, NULL);
+    cJSON *runtime = object_item(root, "runtime");
+    cJSON *heap = object_item(runtime, "heap");
+    assert(number_item(heap, "free_internal") == (double)SIZE_MAX);
+    assert(number_item(heap, "largest_internal_block") == (double)SIZE_MAX);
+    assert(number_item(heap, "free_dma") == (double)SIZE_MAX);
+    assert(number_item(heap, "largest_dma_block") == (double)SIZE_MAX);
+    assert(number_item(heap, "free_psram") == (double)SIZE_MAX);
+    assert(number_item(heap, "min_free_internal_since_boot") == (double)SIZE_MAX);
+    cJSON *mdns = object_item(runtime, "mdns");
+    assert(!bool_item(mdns, "ready"));
+    assert(number_item(mdns, "retry_count") == (double)UINT32_MAX);
+    cJSON *https = object_item(runtime, "https");
+    assert(number_item(https, "clients") == (double)UINT32_MAX);
+    assert(number_item(https, "max_clients") == (double)UINT32_MAX);
+    assert(number_item(https, "handshake_failures") == (double)UINT32_MAX);
+    assert(number_item(https, "fatal_alerts") == (double)UINT32_MAX);
+    assert(number_item(https, "last_error_esp_err") == (double)INT32_MAX);
     cJSON_Delete(root);
 }
 
@@ -597,11 +741,14 @@ static void test_extended_cache_and_errors(void)
     g_objects_result = ESP_ERR_INVALID_STATE;
     assert(web_status_json_build_extended(&json, true, NULL) == ESP_ERR_INVALID_STATE);
     assert(json == NULL);
+    test_runtime_metrics_accept_zero_and_max_values();
 }
 
 int main(void)
 {
     test_full_builder_and_pods();
+    test_invalid_battery_percentage_is_not_serialized_as_zero();
+    test_power_json_state_strings_remain_stable();
     test_main_status_omits_aht_humidity_when_absent();
     test_policy_fault_and_snapshot_fallback();
     test_extended_cache_and_errors();

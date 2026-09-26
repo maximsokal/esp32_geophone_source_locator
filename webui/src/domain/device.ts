@@ -311,8 +311,15 @@ export interface DeviceStatus {
     current_a: number;
     power_w: number;
     channels?: DevicePowerChannel[];
-    /** MAX-180: USB_ONLY_NO_BATTERY | USB_CHARGING | USB_BATTERY_READY | BATTERY | BATTERY_LOW | BATTERY_CRITICAL | UNKNOWN. */
-    state?: string;
+    /** Stable /api/status enum strings for the user-facing power state. */
+    state?: DevicePowerState;
+    battery_present?: boolean;
+    battery_percent_valid?: boolean;
+    battery_percent_estimate?: number | null;
+    battery_voltage_v?: number;
+    battery_current_a?: number;
+    usb_present?: boolean;
+    charging?: boolean;
     battery_full?: boolean;
     /** MAX-183: normal | warning | grace | shutdown. */
     low_battery?: string;
@@ -331,6 +338,15 @@ export interface DeviceStatus {
   object_store?: ObjectStoreState;
   recording_sessions?: RecordingSessionCollection;
 }
+
+export type DevicePowerState =
+  | 'USB_ONLY_NO_BATTERY'
+  | 'USB_CHARGING'
+  | 'USB_BATTERY_READY'
+  | 'BATTERY'
+  | 'BATTERY_LOW'
+  | 'BATTERY_CRITICAL'
+  | 'UNKNOWN';
 
 export interface SeismicChannel {
   id: number;

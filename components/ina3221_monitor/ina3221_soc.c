@@ -30,7 +30,10 @@ static const soc_curve_point_t k_curve[] = {
 float ina3221_soc_voltage_percent(float voltage_v)
 {
     const size_t count = sizeof(k_curve) / sizeof(k_curve[0]);
-    if (!isfinite(voltage_v) || voltage_v <= k_curve[0].voltage_v) {
+    if (!isfinite(voltage_v)) {
+        return NAN;
+    }
+    if (voltage_v <= k_curve[0].voltage_v) {
         return 0.0f;
     }
     if (voltage_v >= k_curve[count - 1U].voltage_v) {
@@ -99,11 +102,9 @@ void ina3221_soc_update(
         return;
     }
     if (!input->valid || !isfinite(input->voltage_v) || !isfinite(input->current_a)) {
-        /* No evidence: keep the old estimate but do not integrate across
-         * this hole -- the next valid sample sees a gap. */
-        if (soc->quality == INA3221_SOC_INVALID || !soc->have_sample) {
-            soc->quality = INA3221_SOC_INVALID;
-        }
+        /* Drop the estimate's validity and never integrate across a hole. */
+        soc->quality = INA3221_SOC_INVALID;
+        soc->have_sample = false;
         soc->rest_since_ms = -1;
         return;
     }
@@ -158,8 +159,8 @@ void ina3221_soc_update(
 
 float ina3221_soc_percent(const ina3221_soc_t *soc, const ina3221_soc_config_t *config)
 {
-    if (soc == NULL || config == NULL || soc->quality == INA3221_SOC_INVALID) {
-        return 0.0f;
+    if (soc == NULL || config == NULL || soc->quality == INA3221_SOC_INVALID || !soc->have_sample) {
+        return NAN;
     }
     if (tracking(soc) && config->capacity_mah > 0.0f) {
         return 100.0f * soc->charge_mah / config->capacity_mah;

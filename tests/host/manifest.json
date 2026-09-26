@@ -351,6 +351,7 @@
     {
       "name": "ina3221_power_ux",
       "sources": [
+        "components/ina3221_monitor/ina3221_policy.c",
         "components/ina3221_monitor/ina3221_power_ux.c",
         "components/ina3221_monitor/tests/ina3221_power_ux_test.c"
       ],
@@ -363,6 +364,7 @@
       "name": "ui_preview3d",
       "sources": [
         "components/ui/ui_preview3d.c",
+        "components/scan_preview/scan_preview.c",
         "components/scan_occupancy/scan_occupancy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/ui/tests/ui_preview3d_test.c"
@@ -371,6 +373,7 @@
         "tests/host/stubs/scan_occupancy",
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include",
+        "components/scan_preview/include",
         "components/ui",
         "components/ui/tests"
       ],
@@ -397,6 +400,22 @@
       ],
       "include_dirs": [
         "components/ina3221_monitor"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "ina3221_monitor_lifecycle",
+      "sources": [
+        "components/ina3221_monitor/ina3221_limits.c",
+        "components/ina3221_monitor/ina3221_low_battery.c",
+        "components/ina3221_monitor/ina3221_power_ux.c",
+        "components/ina3221_monitor/ina3221_soc.c",
+        "tests/host/ina3221_monitor_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ina3221_monitor",
+        "components/ina3221_monitor",
+        "components/ina3221_monitor/include"
       ],
       "libraries": ["m"]
     },
@@ -1738,6 +1757,34 @@
         "components/object_format/include",
         "components/web_server"
       ]
+    },
+    {
+      "name": "scan_preview",
+      "sources": [
+        "components/scan_preview/scan_preview.c",
+        "components/scan_preview/tests/scan_preview_test.c"
+      ],
+      "include_dirs": [
+        "components/scan_preview/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "scan_preview_state",
+      "sources": [
+        "components/scan_preview/scan_preview.c",
+        "components/scan_preview/scan_preview_state.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/scan_preview/tests/scan_preview_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/scan_occupancy",
+        "tests/host/stubs/object_store_profile",
+        "components/scan_occupancy/include",
+        "components/scan_preview/include"
+      ],
+      "libraries": ["m"]
     },
     {
       "name": "web_status_cache_arbitration",
