@@ -163,17 +163,14 @@ Remote external LED wiring is:
 | `P1.07 / D3` | RED |
 
 The main-enclosure board has none of these four external LEDs. The production
-firmware starts the upstream bootstrap path and REMOTE sensor worker
-infrastructure, while the onboard `led0` alias remains only a simple
-board/toolchain heartbeat. The orientation estimator exposes semantic
-`UNAVAILABLE`, `MOVING`, `ACCEPTED`, and graded `OUTSIDE` states, but does not
-bind them to D0 until the installed BMI160 reference axis and external LED
-active polarity/series-resistor wiring are physically documented.
+firmware keeps onboard `led0` as a board/toolchain heartbeat and drives the
+REMOTE blue LED on D0 from the sensor worker. The default GPIO polarity is
+active-high; confirm the installed LED polarity and series-resistor wiring
+with HIL before treating the physical indication as verified.
 
-BLUE is intended to be steady for `ACCEPTED` and to blink progressively faster
-for graded stable `OUTSIDE` states once the physical backend is HIL-validated.
-GREEN/YELLOW/RED logger-status latch semantics remain the separate contract in
-`ARCHITECTURE.md`; this estimator does not invent those fault-to-LED policies.
+BLUE is steady for `ACCEPTED`, blinks at 2 Hz for `STABILIZING` or `TILTED`, and
+is off for `FAULT`. GREEN/YELLOW/RED logger-status latch semantics remain the
+separate contract in `ARCHITECTURE.md`.
 
 ## Supported Windows production interface
 

@@ -32,6 +32,9 @@ target_sources(app PRIVATE
     ../src/nrf_remote_sensor_runtime.c
     ../src/nrf_remote_sensor_runtime_zephyr.c
     ../src/nrf_orientation.c
+    ../src/nrf_verticality_state.c
+    ../src/nrf_blue_led.c
+    ../src/nrf_blue_led_zephyr.c
     ../src/nrf_upstream_protocol.c
     ../src/nrf_sensor_session.c
     ../src/nrf_sensor_upstream_runtime_zephyr.c

@@ -8,9 +8,11 @@
 
 #include <zephyr/kernel.h>
 
+#include "nrf_blue_led.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
+#include "nrf_verticality_state.h"
 #include "nrf_watchdog_zephyr.h"
 
 static unsigned s_thread_create_calls;
@@ -24,6 +26,26 @@ static bool s_fail_next_queue_put;
 static unsigned s_sensor_worker_checkins;
 static k_timeout_t s_max_worker_wait = K_NO_WAIT;
 static int64_t s_test_uptime_ms = 1234;
+static unsigned s_blue_led_init_calls;
+static unsigned s_blue_led_update_calls;
+static nrf_verticality_state_t s_blue_led_state = NRF_VERTICALITY_FAULT;
+static nrf_blue_led_action_t s_blue_led_action = NRF_BLUE_LED_OFF;
+
+int nrf_blue_led_zephyr_init(void)
+{
+    ++s_blue_led_init_calls;
+    return 0;
+}
+
+void nrf_blue_led_zephyr_update(
+    nrf_verticality_state_t state,
+    uint64_t uptime_ms)
+{
+    (void)uptime_ms;
+    ++s_blue_led_update_calls;
+    s_blue_led_state = state;
+    s_blue_led_action = nrf_blue_led_policy(state);
+}
 
 void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
 {
@@ -297,7 +319,11 @@ int main(void)
     assert(snapshot.altitude_mm == 0);
     assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
     assert(orientation.state == NRF_ORIENTATION_STATE_ACCEPTED);
-    assert(snapshot.orientation_state == (uint8_t)orientation.state);
+    assert(snapshot.orientation_state == nrf_verticality_state_to_orientation_wire(
+               NRF_VERTICALITY_STABILIZING));
+    assert(s_blue_led_init_calls == 1U && s_blue_led_update_calls >= 3U);
+    assert(s_blue_led_state == NRF_VERTICALITY_STABILIZING);
+    assert(s_blue_led_action == NRF_BLUE_LED_BLINK_2HZ);
     assert(snapshot.orientation_blink_class == (uint8_t)orientation.blink_class);
     assert(snapshot.orientation_tilt_sin2_ppm == orientation.tilt_sin2_ppm);
 
@@ -328,6 +354,12 @@ int main(void)
     assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
     assert(orientation.filtered_accel_mg[0] == snapshot.accel_mg[0]);
     assert(orientation.filtered_accel_mg[2] == snapshot.accel_mg[2]);
+    assert(snapshot.orientation_state == nrf_verticality_state_to_orientation_wire(
+               NRF_VERTICALITY_STABILIZING));
+    assert(s_blue_led_state == NRF_VERTICALITY_STABILIZING);
+    assert(snapshot.orientation_state ==
+           nrf_verticality_state_to_orientation_wire(s_blue_led_state));
+    assert(s_blue_led_action == nrf_blue_led_policy(s_blue_led_state));
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_ENV_READY);
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE);
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_FILTERED);

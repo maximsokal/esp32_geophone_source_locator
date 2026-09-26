@@ -9,7 +9,9 @@
 #include <zephyr/kernel.h>
 
 #include "nrf_bme280.h"
+#include "nrf_blue_led.h"
 #include "nrf_ema_filter.h"
+#include "nrf_verticality_state.h"
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
@@ -53,6 +55,8 @@ static nrf_remote_sensor_runtime_zephyr_t s_runtime;
 static nrf_node_state_t s_worker_node_state;
 static nrf_orientation_config_t s_orientation_config;
 static nrf_orientation_estimator_t s_orientation_estimator;
+static nrf_verticality_config_t s_verticality_config;
+static nrf_verticality_estimator_t s_verticality_estimator;
 static struct {
     nrf_ema_filter_t accel[3];
     nrf_ema_filter_t gyro[3];
@@ -275,7 +279,8 @@ static void copy_runtime_payload(
         k_spinlock_key_t key = k_spin_lock(&s_orientation_lock);
         nrf_orientation_estimator_get(&s_orientation_estimator, &orientation);
         k_spin_unlock(&s_orientation_lock, key);
-        wire->orientation_state = (uint8_t)orientation.state;
+        wire->orientation_state = nrf_verticality_state_to_orientation_wire(
+            s_verticality_estimator.state);
         wire->orientation_blink_class = (uint8_t)orientation.blink_class;
         wire->orientation_tilt_sin2_ppm = orientation.tilt_sin2_ppm;
     }
@@ -311,6 +316,10 @@ static void orientation_reset(void)
     s_next_orientation_due_ms = 0U;
     imu_filters_reset();
     altitude_filter_reset();
+    nrf_verticality_state_reset(&s_verticality_estimator);
+    nrf_blue_led_zephyr_update(
+        NRF_VERTICALITY_FAULT,
+        runtime_uptime_ms());
 }
 
 static void orientation_feed_sample(
@@ -319,6 +328,7 @@ static void orientation_feed_sample(
     uint64_t sample_uptime_ms)
 {
     nrf_imu_sample_t empty = {0};
+    nrf_orientation_output_t orientation;
     k_spinlock_key_t key;
 
     if (sample == NULL) {
@@ -329,7 +339,20 @@ static void orientation_feed_sample(
         &s_orientation_estimator,
         sample,
         sample_valid);
+    nrf_orientation_estimator_get(&s_orientation_estimator, &orientation);
     k_spin_unlock(&s_orientation_lock, key);
+    (void)nrf_verticality_state_update(
+        &s_verticality_estimator,
+        sample_valid,
+        orientation.sample_valid,
+        orientation.tilt_sin2_ppm,
+        s_imu_filters.gyro_motion.initialized
+            ? rounded_i32(s_imu_filters.gyro_motion.value)
+            : 0U,
+        sample_uptime_ms);
+    nrf_blue_led_zephyr_update(
+        s_verticality_estimator.state,
+        sample_uptime_ms);
     orientation_advance_deadline(sample_uptime_ms);
 }
 
@@ -540,6 +563,11 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
     (void)arg2;
     (void)arg3;
 
+    (void)nrf_blue_led_zephyr_init();
+    nrf_blue_led_zephyr_update(
+        NRF_VERTICALITY_FAULT,
+        runtime_uptime_ms());
+
     while (true) {
         /* MAX-244: check in every iteration and never block longer than
          * the heartbeat period, so an idle (non-REMOTE) worker stays
@@ -596,9 +624,13 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
         nrf_orientation_default_config(&s_orientation_config);
     }
     s_orientation_config.ema_shift = 0U;
+    nrf_verticality_default_config(&s_verticality_config);
     if (!nrf_orientation_estimator_init(
             &s_orientation_estimator,
-            &s_orientation_config)) {
+            &s_orientation_config) ||
+        !nrf_verticality_state_init(
+            &s_verticality_estimator,
+            &s_verticality_config)) {
         return -EINVAL;
     }
 
