@@ -23,6 +23,7 @@ static bool s_fail_next_queue_put;
 /* MAX-244 */
 static unsigned s_sensor_worker_checkins;
 static k_timeout_t s_max_worker_wait = K_NO_WAIT;
+static int64_t s_test_uptime_ms = 1234;
 
 void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
 {
@@ -104,7 +105,7 @@ k_tid_t k_thread_create(
 
 int64_t k_uptime_get(void)
 {
-    return 1234;
+    return s_test_uptime_ms;
 }
 
 void nrf_node_state_init(nrf_node_state_t *state)
@@ -147,6 +148,10 @@ static int fake_read_imu(void *context, nrf_imu_sample_t *sample)
     (void)context;
     ++s_imu_read_calls;
     memset(sample, 0, sizeof(*sample));
+    if (s_refresh_calls >= 2U) {
+        sample->accel_mg[0] = 300;
+        sample->gyro_mdps[0] = 30000;
+    }
     sample->accel_mg[2] = 1000;
     return 0;
 }
@@ -180,7 +185,9 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
     if (s_include_env) {
         runtime->core.snapshot.valid_mask |= NRF_SENSOR_VALID_ENV;
         runtime->core.snapshot.env.temperature_milli_c = 21500;
-        runtime->core.snapshot.env.pressure_pa = 101205U;
+        runtime->core.snapshot.env.pressure_pa = s_refresh_calls >= 3U
+            ? 101085U
+            : 101205U;
         runtime->core.snapshot.env.humidity_milli_percent = 50300U;
     }
     return fake_read_imu(NULL, &runtime->core.snapshot.imu) == 0
@@ -301,6 +308,7 @@ int main(void)
     /* A later aggregate refresh with a valid ENV sample must carry the
      * nRF-computed altitude alongside the legacy pressure/humidity fields. */
     s_include_env = true;
+    s_test_uptime_ms += 100;
     s_exit_worker_when_empty = true;
     if (setjmp(s_worker_exit) == 0) {
         s_worker_entry(NULL, NULL, NULL);
@@ -315,15 +323,39 @@ int main(void)
     assert((snapshot.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U);
     assert(snapshot.pressure_pa == 101205U);
     assert(snapshot.altitude_mm == 10000);
+    assert(snapshot.accel_mg[0] == 100);
+    assert(snapshot.gyro_mdps[0] == 10000);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
+    assert(orientation.filtered_accel_mg[0] == snapshot.accel_mg[0]);
+    assert(orientation.filtered_accel_mg[2] == snapshot.accel_mg[2]);
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_ENV_READY);
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE);
+    assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_FILTERED);
+
+    /* Subsequent samples use dt/(tau+dt): IMU tau=200ms, altitude tau=1s. */
+    request.request_id = 21U;
+    s_test_uptime_ms += 100;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
+    s_exit_worker_when_empty = true;
+    if (setjmp(s_worker_exit) == 0) {
+        s_worker_entry(NULL, NULL, NULL);
+        assert(false);
+    }
+    s_exit_worker_when_empty = false;
+    assert(s_refresh_calls == 3U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == request.request_id);
+    assert(snapshot.pressure_pa == 101085U);
+    assert(snapshot.altitude_mm == 10909);
+    assert(snapshot.accel_mg[0] == 167);
+    assert(snapshot.gyro_mdps[0] == 16667);
 
     /* Same assignment is idempotent; a conflicting active identity is rejected. */
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
-    assert(s_queue_put_calls == 3U);
+    assert(s_queue_put_calls == 4U);
     conflicting.node_id = 3U;
     conflicting.mux_channel = 2U;
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&conflicting) == -EALREADY);
-    assert(s_queue_put_calls == 3U);
+    assert(s_queue_put_calls == 4U);
     return 0;
 }

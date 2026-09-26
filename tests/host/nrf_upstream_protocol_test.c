@@ -54,7 +54,8 @@ static nrf_upstream_sensor_snapshot_t make_sensor_snapshot(void)
     sensor.flags = NRF_UPSTREAM_SENSOR_FLAG_PREPARE_ATTEMPTED |
                    NRF_UPSTREAM_SENSOR_FLAG_IMU_READY |
                    NRF_UPSTREAM_SENSOR_FLAG_ENV_READY |
-                   NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE;
+                   NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE |
+                   NRF_UPSTREAM_SENSOR_FLAG_FILTERED;
     sensor.accel_mg[0] = -1001;
     sensor.accel_mg[1] = 2;
     sensor.accel_mg[2] = 1003;

@@ -58,8 +58,13 @@
     },
     {
       "name": "nrf_sensor_upstream_runtime_zephyr",
-      "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_sensor_session.c", "nRF54L15/src/nrf_orientation.c", "nRF54L15/src/nrf_bme280_altitude.c", "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c", "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"],
+      "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_sensor_session.c", "nRF54L15/src/nrf_orientation.c", "nRF54L15/src/nrf_ema_filter.c", "nRF54L15/src/nrf_bme280_altitude.c", "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c", "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"],
       "include_dirs": ["tests/host/stubs/nrf_sensor_upstream_runtime_zephyr", "nRF54L15/include"]
+    },
+    {
+      "name": "nrf_ema_filter",
+      "sources": ["nRF54L15/src/nrf_ema_filter.c", "nRF54L15/src/nrf_orientation.c", "tests/host/nrf_ema_filter_test.c"],
+      "include_dirs": ["nRF54L15/include"]
     },
     {
       "name": "nrf_bootstrap",

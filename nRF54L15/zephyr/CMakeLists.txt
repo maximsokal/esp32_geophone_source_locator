@@ -28,6 +28,7 @@ target_sources(app PRIVATE
     ../src/nrf_bme280_zephyr.c
     ../src/nrf_bme280_altitude.c
     ../src/nrf_sensor_snapshot.c
+    ../src/nrf_ema_filter.c
     ../src/nrf_remote_sensor_runtime.c
     ../src/nrf_remote_sensor_runtime_zephyr.c
     ../src/nrf_orientation.c

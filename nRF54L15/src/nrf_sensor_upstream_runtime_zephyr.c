@@ -2,12 +2,14 @@
 
 #include <errno.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
 
 #include "nrf_bme280.h"
+#include "nrf_ema_filter.h"
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
@@ -18,6 +20,12 @@
 #define NRF_SENSOR_WORKER_PRIORITY K_PRIO_PREEMPT(10)
 /* MAX-244: longest idle wait, well below NRF_WATCHDOG_MAX_SILENCE_MS. */
 #define NRF_SENSOR_WORKER_HEARTBEAT_MS 1000U
+#define NRF_SENSOR_ACCEL_RANGE_MG 2000.0
+#define NRF_SENSOR_GYRO_RANGE_MDPS 250000.0
+#define NRF_SENSOR_ALTITUDE_MIN_MM (-500000.0)
+#define NRF_SENSOR_ALTITUDE_MAX_MM 6000000.0
+#define NRF_SENSOR_FILTER_TAU_MS 200U
+#define NRF_ALTITUDE_FILTER_TAU_MS 1000U
 
 typedef enum {
     NRF_SENSOR_EVENT_ACTIVATE = 1,
@@ -45,10 +53,130 @@ static nrf_remote_sensor_runtime_zephyr_t s_runtime;
 static nrf_node_state_t s_worker_node_state;
 static nrf_orientation_config_t s_orientation_config;
 static nrf_orientation_estimator_t s_orientation_estimator;
+static struct {
+    nrf_ema_filter_t accel[3];
+    nrf_ema_filter_t gyro[3];
+    nrf_ema_filter_t gyro_motion;
+} s_imu_filters;
+static nrf_ema_filter_t s_altitude_filter;
+static double s_filtered_altitude_mm;
+static bool s_altitude_filter_initialized;
 static uint64_t s_next_orientation_due_ms;
 static bool s_orientation_config_set;
 static bool s_started;
 static bool s_activation_queued;
+
+static void imu_filters_reset(void)
+{
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        nrf_ema_filter_reset(&s_imu_filters.accel[axis]);
+        nrf_ema_filter_reset(&s_imu_filters.gyro[axis]);
+    }
+    nrf_ema_filter_reset(&s_imu_filters.gyro_motion);
+}
+
+static void altitude_filter_reset(void)
+{
+    nrf_ema_filter_reset(&s_altitude_filter);
+    s_filtered_altitude_mm = 0.0;
+    s_altitude_filter_initialized = false;
+}
+
+static int32_t rounded_i32(double value)
+{
+    return (int32_t)(value >= 0.0 ? value + 0.5 : -(-value + 0.5));
+}
+
+static uint32_t gyro_peak_mdps(const nrf_imu_sample_t *sample)
+{
+    uint32_t peak = 0U;
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        const int64_t value = sample->gyro_mdps[axis];
+        const uint32_t magnitude = (uint32_t)(value < 0 ? -value : value);
+        if (magnitude > peak) {
+            peak = magnitude;
+        }
+    }
+    return peak;
+}
+
+static bool filter_imu_sample(
+    const nrf_imu_sample_t *sample,
+    uint64_t timestamp_ms,
+    nrf_imu_sample_t *filtered)
+{
+    nrf_imu_sample_t output = *sample;
+    double value;
+
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        if (sample->accel_mg[axis] < -NRF_SENSOR_ACCEL_RANGE_MG ||
+            sample->accel_mg[axis] > NRF_SENSOR_ACCEL_RANGE_MG ||
+            sample->gyro_mdps[axis] < -NRF_SENSOR_GYRO_RANGE_MDPS ||
+            sample->gyro_mdps[axis] > NRF_SENSOR_GYRO_RANGE_MDPS) {
+            imu_filters_reset();
+            return false;
+        }
+    }
+    if (s_imu_filters.accel[0].initialized &&
+        timestamp_ms <= s_imu_filters.accel[0].timestamp_ms) {
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            output.accel_mg[axis] = rounded_i32(s_imu_filters.accel[axis].value);
+            output.gyro_mdps[axis] = rounded_i32(s_imu_filters.gyro[axis].value);
+        }
+        *filtered = output;
+        return true;
+    }
+
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        if (nrf_ema_filter_update(
+                &s_imu_filters.accel[axis],
+                (double)sample->accel_mg[axis],
+                timestamp_ms,
+                &value) != NRF_EMA_FILTER_UPDATED) {
+            imu_filters_reset();
+            return false;
+        }
+        output.accel_mg[axis] = rounded_i32(value);
+        if (nrf_ema_filter_update(
+                &s_imu_filters.gyro[axis],
+                (double)sample->gyro_mdps[axis],
+                timestamp_ms,
+                &value) != NRF_EMA_FILTER_UPDATED) {
+            imu_filters_reset();
+            return false;
+        }
+        output.gyro_mdps[axis] = rounded_i32(value);
+    }
+    if (nrf_ema_filter_update(
+            &s_imu_filters.gyro_motion,
+            (double)gyro_peak_mdps(sample),
+            timestamp_ms,
+            &value) != NRF_EMA_FILTER_UPDATED) {
+        imu_filters_reset();
+        return false;
+    }
+    *filtered = output;
+    return true;
+}
+
+static bool filter_altitude_sample(int32_t altitude_mm, uint64_t timestamp_ms)
+{
+    double filtered_value;
+    const nrf_ema_filter_result_t result = nrf_ema_filter_update(
+        &s_altitude_filter,
+        (double)altitude_mm,
+        timestamp_ms,
+        &filtered_value);
+    if (result == NRF_EMA_FILTER_INVALID_SAMPLE) {
+        altitude_filter_reset();
+        return false;
+    }
+    if (result == NRF_EMA_FILTER_UPDATED) {
+        s_filtered_altitude_mm = filtered_value;
+        s_altitude_filter_initialized = true;
+    }
+    return s_altitude_filter_initialized;
+}
 
 static uint64_t runtime_uptime_ms(void)
 {
@@ -130,11 +258,11 @@ static void copy_runtime_payload(
         wire->env_temperature_milli_c = snapshot->env.temperature_milli_c;
         wire->pressure_pa = snapshot->env.pressure_pa;
         wire->humidity_milli_percent = snapshot->env.humidity_milli_percent;
-        wire->altitude_mm =
-            nrf_bme280_pressure_to_altitude_mm(snapshot->env.pressure_pa);
+        wire->altitude_mm = rounded_i32(s_filtered_altitude_mm);
     }
     if (wire->valid_mask != 0U) {
         wire->flags |= NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE;
+        wire->flags |= NRF_UPSTREAM_SENSOR_FLAG_FILTERED;
     }
 
     /*
@@ -181,6 +309,8 @@ static void orientation_reset(void)
         &s_orientation_config);
     k_spin_unlock(&s_orientation_lock, key);
     s_next_orientation_due_ms = 0U;
+    imu_filters_reset();
+    altitude_filter_reset();
 }
 
 static void orientation_feed_sample(
@@ -247,6 +377,7 @@ static bool orientation_due(uint64_t now)
 static void orientation_periodic_read(void)
 {
     nrf_imu_sample_t sample;
+    nrf_imu_sample_t filtered_sample;
     int result;
     uint64_t completion_uptime_ms;
 
@@ -255,17 +386,49 @@ static void orientation_periodic_read(void)
         s_runtime.core.sources.imu_context,
         &sample);
     completion_uptime_ms = runtime_uptime_ms();
+    if (result == 0) {
+        result = filter_imu_sample(&sample, completion_uptime_ms, &filtered_sample)
+            ? 0
+            : -1;
+    }
     orientation_feed_sample(
-        &sample,
+        result == 0 ? &filtered_sample : NULL,
         result == 0,
         completion_uptime_ms);
 }
 
 static void orientation_consume_aggregate_refresh(bool did_refresh)
 {
-    const bool imu_valid = did_refresh &&
+    bool imu_valid = did_refresh &&
         (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U;
     const uint64_t completion_uptime_ms = runtime_uptime_ms();
+
+    if (imu_valid) {
+        nrf_imu_sample_t filtered;
+        imu_valid = filter_imu_sample(
+            &s_runtime.core.snapshot.imu,
+            completion_uptime_ms,
+            &filtered);
+        if (imu_valid) {
+            s_runtime.core.snapshot.imu = filtered;
+        }
+    }
+    if (!imu_valid) {
+        s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_IMU;
+        s_runtime.core.snapshot.fault_mask |= NRF_SENSOR_VALID_IMU;
+        imu_filters_reset();
+    }
+    if (did_refresh &&
+        (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U) {
+        const int32_t altitude_mm = nrf_bme280_pressure_to_altitude_mm(
+            s_runtime.core.snapshot.env.pressure_pa);
+        if (!filter_altitude_sample(altitude_mm, completion_uptime_ms)) {
+            s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_ENV;
+            s_runtime.core.snapshot.fault_mask |= NRF_SENSOR_VALID_ENV;
+        }
+    } else {
+        altitude_filter_reset();
+    }
 
     orientation_feed_sample(
         &s_runtime.core.snapshot.imu,
@@ -417,6 +580,7 @@ int nrf_sensor_upstream_runtime_zephyr_configure_orientation(
         return -EBUSY;
     }
     s_orientation_config = *config;
+    s_orientation_config.ema_shift = 0U;
     s_orientation_config_set = true;
     k_spin_unlock(&s_orientation_lock, key);
     return 0;
@@ -431,6 +595,7 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
     if (!s_orientation_config_set) {
         nrf_orientation_default_config(&s_orientation_config);
     }
+    s_orientation_config.ema_shift = 0U;
     if (!nrf_orientation_estimator_init(
             &s_orientation_estimator,
             &s_orientation_config)) {
@@ -439,6 +604,32 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
 
     nrf_sensor_session_init(&s_session);
     nrf_remote_sensor_runtime_zephyr_init(&s_runtime);
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        if (!nrf_ema_filter_init(
+                &s_imu_filters.accel[axis],
+                NRF_SENSOR_FILTER_TAU_MS,
+                -NRF_SENSOR_ACCEL_RANGE_MG,
+                NRF_SENSOR_ACCEL_RANGE_MG) ||
+            !nrf_ema_filter_init(
+                &s_imu_filters.gyro[axis],
+                NRF_SENSOR_FILTER_TAU_MS,
+                -NRF_SENSOR_GYRO_RANGE_MDPS,
+                NRF_SENSOR_GYRO_RANGE_MDPS)) {
+            return -EINVAL;
+        }
+    }
+    if (!nrf_ema_filter_init(
+            &s_imu_filters.gyro_motion,
+            NRF_SENSOR_FILTER_TAU_MS,
+            0.0,
+            NRF_SENSOR_GYRO_RANGE_MDPS) ||
+        !nrf_ema_filter_init(
+            &s_altitude_filter,
+            NRF_ALTITUDE_FILTER_TAU_MS,
+            NRF_SENSOR_ALTITUDE_MIN_MM,
+            NRF_SENSOR_ALTITUDE_MAX_MM)) {
+        return -EINVAL;
+    }
     nrf_node_state_init(&s_worker_node_state);
     k_msgq_purge(&s_sensor_queue);
     s_next_orientation_due_ms = 0U;
