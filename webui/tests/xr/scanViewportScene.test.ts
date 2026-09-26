@@ -21,6 +21,7 @@ import {
   type ScanLayerDataType,
   type ScanSceneSource,
 } from '../../src/xr/scanViewportScene';
+import type { SensorPlacementMarker } from '../../src/xr/sensorPlacementScene';
 
 /*
  * The 3D result viewport: which scanned data types (stable/tentative
@@ -147,6 +148,25 @@ describe('scan viewport layers per data type and mode', () => {
     expect(plan.map((layer) => layer.dataType)).not.toContain('operator-pins');
     const noMesh = scanLayerPlan(prepareScanScene(source()), displayForScanMode('mesh'), new Float32Array(0), true);
     expect(noMesh.map((layer) => layer.dataType)).not.toContain('surface-mesh');
+  });
+
+  it('adds the sensor marker layer only when markers have scan-frame positions', () => {
+    const prepared = prepareScanScene(source());
+    const marker: SensorPlacementMarker = {
+      node: 'G1', status: 'anchored', source: 'apriltag', positionScanM: [1, 2, 3],
+      uncertaintyM: 0.04, residualM: 0.01, tagId: 1, details: 'registered',
+    };
+    const withMarker = scanLayerPlan(prepared, displayForScanMode('quality'), MESH, false, [marker]);
+    const layer = withMarker.find((item) => item.kind === 'sensor-markers');
+    expect(layer).toMatchObject({ dataType: 'sensor-markers', renderOrder: 60 });
+    expect(layer?.kind === 'sensor-markers' ? layer.markers[0].positionViewport : null)
+      .toEqual(toViewport(1, 2, 3, prepared.centerX, prepared.centerY, prepared.centerZ));
+
+    const unregistered = { ...marker, status: 'cs_unregistered' as const, positionScanM: null };
+    const withoutPosition = scanLayerPlan(prepared, displayForScanMode('quality'), MESH, false, [unregistered]);
+    expect(withoutPosition.map((item) => item.dataType)).not.toContain('sensor-markers');
+    expect(scanLayerPlan(prepared, displayForScanMode('quality'), MESH, false).map((item) => item.dataType))
+      .not.toContain('sensor-markers');
   });
 });
 

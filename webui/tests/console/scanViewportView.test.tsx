@@ -3,6 +3,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ScanPointCloudViewport } from '../../src/components/ScanPointCloudViewport';
+import type { LocalizationSessionGeometry } from '../../src/api/deviceApi';
+import type { RegistrationArtifact } from '../../src/xr/fiducial/registrationArtifact';
+import type { SensorPlacementMarker, SensorPlacementNode } from '../../src/xr/sensorPlacementScene';
 import {
   displayFingerprint,
   scanModeLabel,
@@ -42,12 +45,23 @@ function snapshot(overrides: Partial<ScanPointCloudSnapshot> = {}): ScanPointClo
   } as ScanPointCloudSnapshot;
 }
 
-function render(view: ScanViewState, snap = snapshot(), preset: 'perspective' | 'top' | 'front' = 'perspective'): string {
+function render(
+  view: ScanViewState,
+  snap = snapshot(),
+  preset: 'perspective' | 'top' | 'front' = 'perspective',
+  sensorProps: {
+    sensorMarkers?: readonly SensorPlacementMarker[];
+    selectedSensorNode?: SensorPlacementNode | null;
+    sensorGeometry?: LocalizationSessionGeometry | null;
+    registrationArtifact?: RegistrationArtifact | null;
+  } = {},
+): string {
   return renderToStaticMarkup(createElement(ScanPointCloudViewport, {
     snapshot: snap,
     viewCommand: { preset, sequence: 0 },
     display: view.display,
     mode: view.mode,
+    ...sensorProps,
   }));
 }
 
@@ -96,5 +110,39 @@ describe('ScanPointCloudViewport', () => {
       expect(html).toContain('aria-label="Measured WebXR rescue search volume"');
       expect(html).toContain('1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height');
     }
+  });
+
+  it('shows selected sensor details and the unregistered CS geometry inset caption', () => {
+    const marker: SensorPlacementMarker = {
+      node: 'G1', status: 'anchored', source: 'apriltag', positionScanM: [0.5, 0.2, 0.1],
+      uncertaintyM: 0.012, residualM: 0.004, tagId: 1, details: 'Registered channel-sounding geometry.',
+    };
+    const details = render(scanViewForMode('quality'), snapshot(), 'perspective', {
+      sensorMarkers: [marker], selectedSensorNode: 'G1',
+    });
+    expect(details).toContain('aria-label="Selected sensor marker details"');
+    expect(details).toContain('G1 · anchored');
+    expect(details).toContain('<dt>Source</dt><dd>apriltag</dd>');
+    expect(details).toContain('<dt>Uncertainty</dt><dd>0.012 m</dd>');
+    expect(details).toContain('<dt>Residual</dt><dd>0.004 m</dd>');
+    expect(details).toContain('<dt>Tag ID</dt><dd>1</dd>');
+
+    const sensorGeometry: LocalizationSessionGeometry = {
+      available: true,
+      pods: [
+        { pod: 0, node_id: 0, computed: true, assigned: true, leveled: true, position_source: 'none', x_mm: 0, y_mm: 0, z_mm: 0 },
+        { pod: 1, node_id: 1, computed: true, assigned: true, leveled: true, position_source: 'channel_sounding', x_mm: 1000, y_mm: 0, z_mm: 200 },
+      ],
+    };
+    const invalidRegistration: RegistrationArtifact = {
+      schema: 1, source: 'apriltag', family: 'tag36h11', geometry_computed_at_ms: 1, created_at_ms: 1,
+      tag_size_m: { '0': 0.032, '1': 0.032, '2': 0.032, '3': 0.032, '4': 0.032 },
+      bindings: [], sensor_to_scan: null, mirrored: false, residual_rms_m: 0, threshold_m: 0.01,
+      per_node: [], tier: null, valid: false, reason: 'missing_main',
+    };
+    const inset = render(scanViewForMode('quality'), snapshot(), 'perspective', {
+      sensorGeometry, registrationArtifact: invalidRegistration,
+    });
+    expect(inset).toContain('CS geometry — not registered to the scan');
   });
 });

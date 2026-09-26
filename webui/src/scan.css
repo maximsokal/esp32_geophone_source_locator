@@ -339,6 +339,30 @@
 .scan-dimension-overlay { top: 84px; color: #e2e8f0; border-color: rgba(148, 163, 184, 0.45); }
 .scan-mesh-overlay { top: 120px; color: #99f6e4; border-color: rgba(45, 212, 191, 0.45); }
 
+.scan-sensor-details,
+.scan-sensor-inset {
+  position: absolute;
+  z-index: 25;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 10px;
+  color: #e2e8f0;
+  background: rgba(8, 16, 29, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.scan-sensor-details { top: 160px; right: 12px; width: min(260px, calc(100% - 24px)); padding: 11px; }
+.scan-sensor-details h3 { margin: 0 0 8px; color: #f8fafc; font-size: 0.82rem; text-transform: capitalize; }
+.scan-sensor-details dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 0.7rem; }
+.scan-sensor-details dl div { display: contents; }
+.scan-sensor-details dt { color: #94a3b8; }
+.scan-sensor-details dd { margin: 0; text-align: right; font-family: "Cascadia Mono", Consolas, monospace; }
+.scan-sensor-details p { margin: 8px 0 0; color: #cbd5e1; font-size: 0.66rem; line-height: 1.4; }
+.scan-sensor-inset { right: 12px; bottom: 12px; width: min(250px, calc(100% - 24px)); overflow: hidden; }
+.scan-sensor-inset-caption { padding: 7px 9px; color: #fef08a; font-size: 0.65rem; font-weight: 800; }
+.scan-sensor-inset .viewport-shell { min-height: 160px; border: 0; border-radius: 0; }
+.scan-sensor-inset .viewport-shell canvas { min-height: 160px; }
+.scan-sensor-inset .axis-note { display: none; }
+
 .scan-result-panel .status-list dt { font-size: 0.75rem; }
 .scan-result-panel .status-list dd { font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 0.75rem; }
 .scan-result-primary { margin-bottom: 6px; }
@@ -368,6 +392,9 @@
   .scan-mode-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scan-source-badge, .scan-mode-overlay, .scan-dimension-overlay, .scan-mesh-overlay { max-width: calc(100% - 24px); white-space: normal; }
   .scan-webgl-canvas { min-height: 56vh; }
+  .scan-sensor-inset { width: min(190px, calc(50% - 18px)); }
+  .scan-sensor-inset .viewport-shell, .scan-sensor-inset .viewport-shell canvas { min-height: 125px; }
+  .scan-sensor-details { top: 156px; width: min(230px, calc(50% - 18px)); }
 }
 
 /* MAX-146: BLE RSSI node hints (rough, auxiliary). */

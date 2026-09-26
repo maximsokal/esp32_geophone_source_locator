@@ -1,5 +1,6 @@
 import type { ScanDisplayOptions } from './scanDisplayModes';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
+import type { SensorPlacementMarker } from './sensorPlacementScene';
 
 /**
  * Pure scene preparation for ScanPointCloudViewport: which scanned data
@@ -42,6 +43,11 @@ export const STABLE_CONFIDENCE = 0.72;
 
 export function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+/** WebXR local-floor (Y up) to the scan's project frame (Z up). */
+export function webXrLocalFloorToProject(x: number, y: number, z: number): Vec3Tuple {
+  return [x, -z, y];
 }
 
 /**
@@ -133,7 +139,8 @@ export type ScanLayerDataType =
   | 'stable-surface'
   | 'operator-edges'
   | 'operator-pins'
-  | 'scan-bounds';
+  | 'scan-bounds'
+  | 'sensor-markers';
 
 export type ScanQualityBand = 'weak' | 'improving' | 'stable';
 
@@ -141,7 +148,7 @@ interface LayerBase {
   id: string;
   dataType: ScanLayerDataType;
   /** The display toggle that controls this layer. */
-  toggle: keyof ScanDisplayOptions;
+  toggle?: keyof ScanDisplayOptions;
   renderOrder: number;
 }
 
@@ -173,7 +180,12 @@ export interface PinLayerSpec extends LayerBase {
   pins: ReadonlyArray<Vec3Tuple>;
 }
 
-export type ScanLayerSpec = PointLayerSpec | MeshLayerSpec | LineLayerSpec | PinLayerSpec;
+export interface SensorMarkerLayerSpec extends LayerBase {
+  kind: 'sensor-markers';
+  markers: ReadonlyArray<{ marker: SensorPlacementMarker; positionViewport: Vec3Tuple }>;
+}
+
+export type ScanLayerSpec = PointLayerSpec | MeshLayerSpec | LineLayerSpec | PinLayerSpec | SensorMarkerLayerSpec;
 
 export const SCAN_LAYER_COLORS = {
   unknownSpace: '#f59e0b',
@@ -223,6 +235,7 @@ export function scanLayerPlan(
   display: ScanDisplayOptions,
   meshPositions: Float32Array,
   wireframe: boolean,
+  sensorMarkers: readonly SensorPlacementMarker[] = [],
 ): ScanLayerSpec[] {
   const voxelPointSize = clamp(prepared.extent * 0.010, 0.018, 0.055);
   const layers: ScanLayerSpec[] = [];
@@ -244,7 +257,14 @@ export function scanLayerPlan(
   if (display.dimensions) {
     layers.push({ kind: 'lines', id: 'scan-bounds', dataType: 'scan-bounds', toggle: 'dimensions', positions: prepared.boundsLines, color: SCAN_LAYER_COLORS.bounds, opacity: 0.78, renderOrder: 20 });
   }
-  return layers.filter((layer) => (layer.kind === 'pins' ? layer.pins.length : layer.positions.length) > 0);
+  const placedMarkers = sensorMarkers.flatMap((marker) => marker.positionScanM === null ? [] : [{
+    marker,
+    positionViewport: toViewport(...marker.positionScanM, prepared.centerX, prepared.centerY, prepared.centerZ),
+  }]);
+  if (placedMarkers.length > 0) layers.push({ kind: 'sensor-markers', id: 'sensor-markers', dataType: 'sensor-markers', renderOrder: 60, markers: placedMarkers });
+  return layers.filter((layer) => layer.kind === 'pins'
+    ? layer.pins.length > 0
+    : layer.kind === 'sensor-markers' ? layer.markers.length > 0 : layer.positions.length > 0);
 }
 
 /* ---- Camera --------------------------------------------------------------- */

@@ -28,6 +28,7 @@ import {
 } from './manualControlPoints';
 import { previewManualPlacementFromStableSurface } from './manualPlacementPreview';
 import { optionalMonocularPrior } from './monocularPriorRuntime';
+import { webXrLocalFloorToProject } from './scanViewportScene';
 import { OperatorEdgeStore, type OperatorEdge } from './operatorEdges';
 import {
   projectProjectPointToNormalized as projectProjectPointToScreen,
@@ -258,7 +259,7 @@ function depthGeometry(depth:CpuDepthInformationLike,fallbackView:XrViewLike):De
   if(depth.projectionMatrix!==undefined&&depth.projectionMatrix.length>=16&&depth.transform!==undefined&&depth.transform.matrix.length>=16)return{projectionMatrix:depth.projectionMatrix,transform:depth.transform};
   return fallbackView;
 }
-function projectCameraPosition(pose:XrViewerPoseLike):readonly[number,number,number]{const p=pose.transform.position;return[p.x,-p.z,p.y];}
+function projectCameraPosition(pose:XrViewerPoseLike):readonly[number,number,number]{const p=pose.transform.position;return webXrLocalFloorToProject(p.x,p.y,p.z);}
 
 export function composeCoverageRenderSnapshot(coverage:LiveCoverageSnapshot,manualReferencePositions:Float32Array):CoverageRenderSnapshot{
   const coverageCount=Math.min(coverage.pointCount,Math.floor(coverage.positions.length/3),coverage.confidence.length);

@@ -1,17 +1,20 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 
 import './scan.css';
 
 import {
   deleteObjectScanArtifact,
+  fetchLocalizationRuns,
   fetchScanInfo,
   loadObjectScanArtifact,
+  loadSessionRegistration,
   saveObjectScanArtifact,
   saveSessionOccupancyArtifact,
 } from './api/deviceApi';
+import type { LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
 import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
-import { toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
+import { decodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
 import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, type ScanPersistenceState } from './xr/scanPersistence';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
@@ -23,6 +26,7 @@ import {
   type DeviceComputeProfile,
 } from './xr/deviceComputeProfile';
 import { decodeScanArtifact, encodeScanArtifact } from './xr/scanArtifact';
+import { buildSensorPlacementScene } from './xr/sensorPlacementScene';
 import { registerAndMergeScanContinuation } from './xr/scanContinuation';
 import {
   displayForScanMode,
@@ -168,6 +172,8 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   );
   const [scanStorageError, setScanStorageError] = useState<string | null>(null);
   const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
+  const [localizationGeometry, setLocalizationGeometry] = useState<LocalizationSessionGeometry | null>(null);
+  const [registrationArtifact, setRegistrationArtifact] = useState<RegistrationArtifact | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
   const [viewCommand, setViewCommand] = useState<ViewCommand>({
@@ -176,13 +182,22 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   });
   const storageGeneration = useRef(0);
   const scanLoadSession = useRef<string | null>(null);
+  const sessionEvidenceLoad = useRef<string | null>(null);
   const registrationForSession = useRef<{ objectId: string; sessionId: string; artifact: RegistrationArtifact } | null>(null);
   const onRegistrationChange = useCallback((artifact: RegistrationArtifact | null): void => {
-    registrationForSession.current = artifact === null || objectId === null || sessionId === null
-      ? null
-      : { objectId, sessionId, artifact };
+    if (artifact === null || objectId === null || sessionId === null) {
+      registrationForSession.current = null;
+      setRegistrationArtifact(null);
+      return;
+    }
+    registrationForSession.current = { objectId, sessionId, artifact };
+    setRegistrationArtifact(artifact);
   }, [objectId, sessionId]);
-  useEffect(() => { registrationForSession.current = null; }, [objectId, sessionId]);
+  useEffect(() => {
+    registrationForSession.current = null;
+    setLocalizationGeometry(null);
+    setRegistrationArtifact(null);
+  }, [objectId, sessionId]);
   const scanIntent = useRef<ScanStartIntent>('fresh');
   const continuationBase = useRef<ScanPointCloudSnapshot | null>(null);
   const scanPersistenceController = useRef<ScanPersistenceController | null>(null);
@@ -256,10 +271,13 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     storageGeneration.current += 1;
     persistenceController.reset();
     scanLoadSession.current = null;
+    sessionEvidenceLoad.current = null;
     scanIntent.current = 'fresh';
     continuationBase.current = null;
     setScanSnapshot(null);
     setScanStorageError(null);
+    setLocalizationGeometry(null);
+    setRegistrationArtifact(null);
 
     if (objectId === null || sessionId === null) {
       setScanStoragePhase('unbound');
@@ -273,9 +291,47 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   useEffect(() => {
     if (objectId === null || sessionId === null || storageActionsDisabled) return undefined;
     const key = `${objectId}/${sessionId}`;
-    if (scanLoadSession.current === key) return undefined;
+    const shouldLoadScan = scanLoadSession.current !== key;
+    const shouldLoadEvidence = sessionEvidenceLoad.current !== key;
+    if (!shouldLoadScan && !shouldLoadEvidence) return undefined;
     const generation = storageGeneration.current;
     let cancelled = false;
+    if (shouldLoadEvidence) {
+      void Promise.all([
+        fetchLocalizationRuns(objectId, sessionId).then(
+          (listing) => ({ ok: true as const, geometry: listing.geometry }),
+          (reason: unknown) => ({ ok: false as const, reason }),
+        ),
+        loadSessionRegistration(objectId, sessionId).then(
+          (json) => ({ ok: true as const, json }),
+          (reason: unknown) => ({ ok: false as const, reason }),
+        ),
+      ]).then(([geometryResult, registrationResult]) => {
+        if (cancelled || generation !== storageGeneration.current) return;
+        sessionEvidenceLoad.current = key;
+        if (geometryResult.ok) setLocalizationGeometry(geometryResult.geometry);
+        else {
+          const message = geometryResult.reason instanceof Error ? geometryResult.reason.message : String(geometryResult.reason);
+          setLocalizationGeometry(null);
+          clientDiagnostics.warn('SENSOR_GEOMETRY_RESTORE_FAILED', { objectId, sessionId, error: message });
+        }
+        if (!registrationResult.ok) {
+          const message = registrationResult.reason instanceof Error ? registrationResult.reason.message : String(registrationResult.reason);
+          setRegistrationArtifact(null);
+          clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: message });
+        } else if (registrationResult.json === null) setRegistrationArtifact(null);
+        else {
+          try { setRegistrationArtifact(decodeRegistrationArtifact(registrationResult.json)); }
+          catch (reason) {
+            const message = reason instanceof Error ? reason.message : String(reason);
+            setRegistrationArtifact(null);
+            clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: message });
+          }
+        }
+        void clientDiagnostics.flush();
+      });
+    }
+    if (!shouldLoadScan) return () => { cancelled = true; };
     void loadObjectScanArtifact(objectId, sessionId).then(
       (artifact) => {
         if (cancelled || generation !== storageGeneration.current) return;
@@ -563,6 +619,10 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   }, [objectId, sessionId, persistenceController, storageActionsDisabled]);
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
+  const sensorPlacementScene = useMemo(
+    () => buildSensorPlacementScene(localizationGeometry, registrationArtifact),
+    [localizationGeometry, registrationArtifact],
+  );
   const httpsReady = xrCapabilities?.secureContext === true;
   const webXrReady = xrCapabilities?.immersiveAr === true;
   const extent = extentFromBounds(scanSnapshot?.bounds ?? null);
@@ -683,6 +743,9 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 viewCommand={viewCommand}
                 display={display}
                 mode={scanMode}
+                sensorMarkers={sensorPlacementScene.markers}
+                sensorGeometry={localizationGeometry}
+                registrationArtifact={registrationArtifact}
               />
             </Suspense>
           </ResultViewportErrorBoundary>
