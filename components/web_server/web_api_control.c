@@ -11,6 +11,7 @@
 #include "seismic_acquisition.h"
 #include "localization_calculate.h"
 #include "localization_job.h"
+#include "nrf_topology_service.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -152,6 +153,94 @@ static esp_err_t web_control_send_result(
 )
 {
     return web_control_send_result_with_error_class(request, action, result, object_id, NULL);
+}
+
+static esp_err_t web_control_send_height_calibration_result(
+    httpd_req_t *request,
+    uint8_t channel_mask,
+    const char *error,
+    const char *busy_reason)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) return ESP_ERR_NO_MEM;
+    if (cJSON_AddBoolToObject(root, "ok", error == NULL && busy_reason == NULL) == NULL) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+    if (busy_reason != NULL) {
+        if (cJSON_AddStringToObject(root, "busy_reason", busy_reason) == NULL) {
+            cJSON_Delete(root);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    else if (error != NULL) {
+        if (cJSON_AddStringToObject(root, "error", error) == NULL) {
+            cJSON_Delete(root);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    else {
+        if (cJSON_AddStringToObject(root, "action", "calibrate_heights") == NULL) {
+            cJSON_Delete(root);
+            return ESP_ERR_NO_MEM;
+        }
+        cJSON *channels = cJSON_AddArrayToObject(root, "requested_channels");
+        if (channels == NULL) {
+            cJSON_Delete(root);
+            return ESP_ERR_NO_MEM;
+        }
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if ((channel_mask & (uint8_t)(1U << channel)) != 0U) {
+                cJSON *item = cJSON_CreateNumber((double)channel);
+                if (item == NULL || !cJSON_AddItemToArray(channels, item)) {
+                    cJSON_Delete(item);
+                    cJSON_Delete(root);
+                    return ESP_ERR_NO_MEM;
+                }
+            }
+        }
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) return ESP_ERR_NO_MEM;
+
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (error != NULL || busy_reason != NULL) {
+        httpd_resp_set_status(request, "409 Conflict");
+    }
+    const esp_err_t send_result = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(json);
+    return send_result;
+}
+
+static esp_err_t web_control_calibrate_heights(httpd_req_t *request)
+{
+    measurement_service_snapshot_t measurement;
+    esp_err_t err = measurement_service_get_snapshot(&measurement);
+    if (err != ESP_OK) {
+        return web_control_send_result(request, "calibrate_heights", err, NULL);
+    }
+    if (measurement.state == MEASUREMENT_SERVICE_STARTING ||
+        measurement.state == MEASUREMENT_SERVICE_RECORDING ||
+        measurement.state == MEASUREMENT_SERVICE_STOPPING) {
+        return web_control_send_height_calibration_result(
+            request,
+            0U,
+            NULL,
+            "recording_active");
+    }
+
+    uint8_t channel_mask = 0U;
+    err = nrf_topology_service_request_height_reference_capture(&channel_mask);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return web_control_send_height_calibration_result(request, 0U, "no_remotes", NULL);
+    }
+    if (err != ESP_OK) {
+        return web_control_send_result(request, "calibrate_heights", err, NULL);
+    }
+    return web_control_send_height_calibration_result(request, channel_mask, NULL, NULL);
 }
 
 
@@ -678,6 +767,11 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
             ESP_ERR_INVALID_STATE,
             NULL
         );
+    }
+
+    if (strcmp(action_copy, "calibrate_heights") == 0) {
+        cJSON_Delete(root);
+        return web_control_calibrate_heights(request);
     }
 
     char object_id[OBJECT_STORE_ID_SIZE];

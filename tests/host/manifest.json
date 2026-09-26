@@ -315,6 +315,7 @@
         "components/app_config/include",
         "nRF54L15/include"
       ],
+      "defines": ["NRF_TOPOLOGY_SERVICE_TEST_HARNESS"],
       "libraries": ["m"]
     },
     {

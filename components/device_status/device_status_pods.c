@@ -109,6 +109,36 @@ esp_err_t device_status_set_pod_barometer(
 }
 
 
+esp_err_t device_status_set_pod_height_reference(
+    size_t pod_index,
+    device_height_reference_state_t state,
+    uint16_t generation,
+    int32_t relative_z_mm)
+{
+    esp_err_t err = device_status_validate_pod(pod_index);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if ((unsigned)state > (unsigned)DEVICE_HEIGHT_REFERENCE_SENSOR_INVALID ||
+        (state != DEVICE_HEIGHT_REFERENCE_VALID && relative_z_mm != 0)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    device_status_snapshot_t *status;
+    err = device_status_internal_lock(&status);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    status->pods[pod_index].height_reference.state = state;
+    status->pods[pod_index].height_reference.generation = generation;
+    status->pods[pod_index].height_reference.relative_z_mm = relative_z_mm;
+
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_pod_imu(
     size_t pod_index,
     float roll_deg,

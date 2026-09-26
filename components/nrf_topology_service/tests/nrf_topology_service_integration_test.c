@@ -57,6 +57,13 @@ typedef struct {
     nrf_node_state_t node_state;
     nrf_bootstrap_t bootstrap;
     uint32_t sensor_request_id;
+    uint8_t snapshot_version;
+    uint8_t snapshot_result;
+    int32_t relative_z_mm;
+    uint8_t reference_state;
+    uint16_t reference_generation;
+    unsigned height_reference_captures;
+    uint16_t captured_generation[8];
     nrf_cs_control_request_t cs_request;
     nrf_cs_control_request_t cs_status_request;
     bool cs_request_valid;
@@ -102,6 +109,9 @@ static size_t s_stack_hwm_sequence_pos;
 static unsigned s_stack_hwm_warning_logs;
 static char s_long_error_name[512];
 static bool s_long_error_was_logged;
+static bool s_in_height_calibration_handler;
+static unsigned s_height_reference_writes;
+static nrf_upstream_height_reference_t s_height_reference_requests[32];
 
 static void reset_world(void);
 static void run_service(void);
@@ -154,6 +164,8 @@ static void node_boot(sim_node_t *node, uint8_t channel, uint8_t id)
 {
     memset(node, 0, sizeof(*node));
     node->present = true;
+    node->snapshot_version = 2U;
+    node->snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_NO_DATA;
     node->channel = channel;
     node->address = NRF_UPSTREAM_ADDRESS_DISCOVERY;
     node->hardware_id[0] = 0xA0U;
@@ -351,8 +363,26 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         nrf_upstream_sensor_snapshot_t sensor;
         memset(&sensor, 0, sizeof(sensor));
         sensor.request_id = node->sensor_request_id;
-        sensor.result = NRF_UPSTREAM_SENSOR_RESULT_NO_DATA;
+        sensor.result = node->snapshot_result;
+        sensor.valid_mask = node->snapshot_result == NRF_UPSTREAM_SENSOR_RESULT_OK
+            ? NRF_UPSTREAM_SENSOR_VALID_MASK
+            : 0U;
+        sensor.flags = sensor.valid_mask != 0U
+            ? NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE
+            : 0U;
+        sensor.relative_z_mm = node->relative_z_mm;
+        sensor.reference_state = node->reference_state;
+        sensor.reference_generation = node->reference_generation;
         assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, data) == NRF_UPSTREAM_RESULT_OK);
+        if (node->snapshot_version == 1U) {
+            data[30] = 1U;
+            data[32] = (uint8_t)NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH;
+            data[33] = 0U;
+            const uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(data, 110U);
+            data[110] = (uint8_t)crc;
+            data[111] = (uint8_t)(crc >> 8U);
+            memset(&data[112], 0xFF, data_len - 112U);
+        }
         return ESP_OK;
     }
     assert(false);
@@ -378,6 +408,20 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         assert(nrf_upstream_protocol_decode_sensor_refresh(data, data_len, &request) == NRF_UPSTREAM_RESULT_OK);
         node->sensor_request_id = request.request_id;
         ++node->sensor_refreshes;
+        return ESP_OK;
+    }
+    if (data_len == NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH) {
+        nrf_upstream_height_reference_t request;
+        assert(!s_in_height_calibration_handler);
+        assert(node->node_state.role == NRF_NODE_ROLE_REMOTE);
+        assert(nrf_upstream_protocol_decode_height_reference(data, data_len, &request) == NRF_UPSTREAM_RESULT_OK);
+        assert(request.action == NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE);
+        assert(node->height_reference_captures <
+               sizeof(node->captured_generation) / sizeof(node->captured_generation[0]));
+        node->captured_generation[node->height_reference_captures++] = request.generation;
+        assert(s_height_reference_writes <
+               sizeof(s_height_reference_requests) / sizeof(s_height_reference_requests[0]));
+        s_height_reference_requests[s_height_reference_writes++] = request;
         return ESP_OK;
     }
     if (data_len == NRF_CS_CONTROL_EXECUTE_LENGTH) {
@@ -607,6 +651,103 @@ static nrf_cs_cycle_snapshot_t s_seen_cs;
 static nrf_cs_cycle_snapshot_t s_first_cs;
 static nrf_topology_snapshot_t s_unplug_snapshot;
 static nrf_topology_snapshot_t s_rejoin_snapshot;
+static esp_err_t s_height_request_result;
+static uint8_t s_height_requested_mask;
+
+static void request_height_calibration_from_handler(void)
+{
+    const unsigned writes_before = s_height_reference_writes;
+    s_height_requested_mask = 0U;
+    s_in_height_calibration_handler = true;
+    s_height_request_result = nrf_topology_service_request_height_reference_capture(
+        &s_height_requested_mask);
+    assert(s_height_reference_writes == writes_before);
+    s_in_height_calibration_handler = false;
+    assert(s_height_request_result == ESP_OK);
+}
+
+static void request_height_calibration_with_no_remotes(void)
+{
+    const unsigned writes_before = s_height_reference_writes;
+    s_height_requested_mask = 0U;
+    s_in_height_calibration_handler = true;
+    s_height_request_result = nrf_topology_service_request_height_reference_capture(
+        &s_height_requested_mask);
+    assert(s_height_reference_writes == writes_before);
+    s_in_height_calibration_handler = false;
+    assert(s_height_request_result == ESP_ERR_NOT_FOUND);
+    assert(s_height_requested_mask == 0U);
+}
+
+static void assert_height_capture_counts_and_generation_65535(void)
+{
+    assert(s_height_requested_mask == ((uint8_t)(1U << 2U) | (uint8_t)(1U << 5U)));
+    assert(s_height_reference_writes == 2U);
+    assert(s_nodes[1].height_reference_captures == 1U);
+    assert(s_nodes[2].height_reference_captures == 1U);
+    assert(s_nodes[1].captured_generation[0] == UINT16_MAX);
+    assert(s_nodes[2].captured_generation[0] == UINT16_MAX);
+}
+
+static void assert_height_capture_generation_1(void)
+{
+    assert(s_height_reference_writes == 4U);
+    assert(s_nodes[1].height_reference_captures == 2U);
+    assert(s_nodes[2].height_reference_captures == 2U);
+    assert(s_nodes[1].captured_generation[1] == 1U);
+    assert(s_nodes[2].captured_generation[1] == 1U);
+}
+
+static void assert_height_capture_generation_2(void)
+{
+    assert(s_height_reference_writes == 6U);
+    assert(s_nodes[1].height_reference_captures == 3U);
+    assert(s_nodes[2].height_reference_captures == 3U);
+    assert(s_nodes[1].captured_generation[2] == 2U);
+    assert(s_nodes[2].captured_generation[2] == 2U);
+    for (unsigned index = 0U; index < s_height_reference_writes; ++index) {
+        assert(s_height_reference_requests[index].request_id != 0U);
+        assert(s_height_reference_requests[index].action == NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE);
+    }
+}
+
+static void test_height_calibration_worker_queue_and_generation_wrap(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    node_boot(&s_nodes[2], 5U, 0x33U);
+    nrf_topology_service_test_set_height_reference_generation((uint16_t)(UINT16_MAX - 1U));
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_height_calibration_from_handler);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_height_capture_counts_and_generation_65535);
+    script(EV_ACTION, 0U, request_height_calibration_from_handler);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_height_capture_generation_1);
+    script(EV_ACTION, 0U, request_height_calibration_from_handler);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_height_capture_generation_2);
+    script(EV_STOP, 0U, NULL);
+
+    run_service();
+    assert(s_height_request_result == ESP_OK);
+    assert(s_height_requested_mask == ((uint8_t)(1U << 2U) | (uint8_t)(1U << 5U)));
+    assert(s_height_reference_writes == 6U);
+}
+
+static void test_height_calibration_without_remotes(void)
+{
+    reset_world();
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_height_calibration_with_no_remotes);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_height_reference_writes == 0U);
+}
 
 static void capture_cs(void)
 {
@@ -837,6 +978,7 @@ static void reset_world(void)
 {
     memset(s_nodes, 0, sizeof(s_nodes));
     memset(s_devices, 0, sizeof(s_devices));
+    memset(s_height_reference_requests, 0, sizeof(s_height_reference_requests));
     s_tca_present = false;
     s_tca_control = 0U;
     s_tca_writes = 0U;
@@ -851,6 +993,10 @@ static void reset_world(void)
     s_malformed_cs_results_remaining = 0U;
     s_malformed_cs_results_seen = 0U;
     s_cs_execute_count = 0U;
+    s_in_height_calibration_handler = false;
+    s_height_reference_writes = 0U;
+    s_height_request_result = ESP_ERR_INVALID_STATE;
+    s_height_requested_mask = 0U;
     s_stack_hwm_default = 2048U;
     s_stack_hwm_sequence_count = 0U;
     s_stack_hwm_sequence_pos = 0U;
@@ -926,6 +1072,35 @@ static void test_full_topology_is_assigned_one_hot(void)
     assert(s_tca_writes >= 2U * NRF_TOPOLOGY_REMOTE_COUNT);
 }
 
+static void test_remote_snapshot_v1_and_v2_cache_read_path(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    node_boot(&s_nodes[2], 5U, 0x33U);
+    s_nodes[1].snapshot_version = 1U;
+    s_nodes[1].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+    s_nodes[2].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+    s_nodes[2].relative_z_mm = -2467;
+    s_nodes[2].reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+    s_nodes[2].reference_generation = 91U;
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_seen_cache[2].response_valid);
+    assert(s_seen_cache[2].sensor.relative_z_mm == 0);
+    assert(s_seen_cache[2].sensor.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(s_seen_cache[2].sensor.reference_generation == 0U);
+    assert(s_seen_cache[5].response_valid);
+    assert(s_seen_cache[5].sensor.relative_z_mm == -2467);
+    assert(s_seen_cache[5].sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    assert(s_seen_cache[5].sensor.reference_generation == 91U);
+}
+
 static void test_without_tca_only_main_is_managed(void)
 {
     reset_world();
@@ -982,8 +1157,11 @@ static void test_unplug_and_replug_between_reconciles(void)
 static void test_api_guards_when_stopped(void)
 {
     nrf_topology_snapshot_t snapshot;
+    uint8_t height_mask = UINT8_MAX;
     assert(nrf_topology_service_request_refresh() == ESP_ERR_INVALID_STATE);
     assert(nrf_topology_service_request_sensor_refresh(NRF_TOPOLOGY_REMOTE_COUNT) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_request_height_reference_capture(&height_mask) == ESP_ERR_INVALID_STATE);
+    assert(height_mask == 0U);
     assert(nrf_topology_service_get_snapshot(NULL) == ESP_ERR_INVALID_ARG);
     (void)snapshot;
     /* stop() on a stopped service returns immediately. */
@@ -995,6 +1173,9 @@ int main(void)
     test_api_guards_when_stopped();
     test_lifecycle_failures_mid_reconcile_and_repeated_restart();
     test_full_topology_is_assigned_one_hot();
+    test_remote_snapshot_v1_and_v2_cache_read_path();
+    test_height_calibration_worker_queue_and_generation_wrap();
+    test_height_calibration_without_remotes();
     test_without_tca_only_main_is_managed();
     test_unplug_and_replug_between_reconciles();
     test_stack_phase_tracking_and_cs_cycle_path();

@@ -65,6 +65,10 @@ static bool s_snapshot_valid = false;
 static bool s_sensor_cache_valid = false;
 static uint8_t s_sensor_pending_mask = 0U;
 static uint8_t s_sensor_inflight_mask = 0U;
+static bool s_height_reference_pending = false;
+static uint8_t s_height_reference_pending_mask = 0U;
+static uint16_t s_height_reference_pending_generation = 0U;
+static uint16_t s_height_reference_generation = 0U;
 static nrf_topology_snapshot_t s_snapshot;
 static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static bool s_cs_request_pending = false;
@@ -142,6 +146,9 @@ static void service_clear_current_task(void)
     portENTER_CRITICAL(&s_state_lock);
     s_task = NULL;
     s_sensor_inflight_mask = 0U;
+    s_height_reference_pending = false;
+    s_height_reference_pending_mask = 0U;
+    s_height_reference_pending_generation = 0U;
     portEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -236,7 +243,8 @@ static bool service_has_immediate_work(void)
 {
     bool pending;
     portENTER_CRITICAL(&s_state_lock);
-    pending = s_topology_refresh_requested || s_sensor_pending_mask != 0U || s_cs_request_pending;
+    pending = s_topology_refresh_requested || s_sensor_pending_mask != 0U ||
+        s_height_reference_pending || s_cs_request_pending;
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
 }
@@ -391,6 +399,28 @@ static esp_err_t platform_write_sensor_refresh(
     return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
 
+static esp_err_t platform_write_height_reference(
+    void *context,
+    const nrf_upstream_height_reference_t *request)
+{
+    nrf_topology_platform_t *platform = context;
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH];
+    esp_err_t err;
+
+    if (platform == NULL || request == NULL || platform->remote_device == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (nrf_upstream_protocol_encode_height_reference(request, frame) != NRF_UPSTREAM_RESULT_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = i2c_bus_write_bytes(
+        platform->remote_device,
+        NULL_I2C_MEM_ADDR,
+        sizeof(frame),
+        frame);
+    return err == ESP_OK ? ESP_OK : platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
+}
+
 static esp_err_t platform_read_remote_snapshot(
     void *context,
     nrf_upstream_status_t *status,
@@ -411,7 +441,12 @@ static esp_err_t platform_read_remote_snapshot(
     if (err != ESP_OK) {
         return platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
     }
-    return nrf_upstream_protocol_decode_remote_snapshot(frame, sizeof(frame), status, sensor) == NRF_UPSTREAM_RESULT_OK
+    const size_t frame_length = (size_t)frame[32] | ((size_t)frame[33] << 8U);
+    if (frame_length != NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH &&
+        frame_length != NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return nrf_upstream_protocol_decode_remote_snapshot(frame, frame_length, status, sensor) == NRF_UPSTREAM_RESULT_OK
         ? ESP_OK
         : ESP_ERR_INVALID_RESPONSE;
 }
@@ -672,6 +707,7 @@ static void service_process_sensor_mask(
         .mux_faulted = platform_mux_faulted,
         .read_status = platform_read_status,
         .write_sensor_refresh = platform_write_sensor_refresh,
+        .write_height_reference = platform_write_height_reference,
         .read_remote_snapshot = platform_read_remote_snapshot,
         .sleep_ms = platform_sleep_ms,
         .now_ms = platform_now_ms,
@@ -725,6 +761,14 @@ static void service_process_sensor_mask(
         service_requeue_inflight_mask(mask);
     }
 }
+
+static bool service_take_height_reference_request(uint8_t *mask, uint16_t *generation);
+static void service_process_height_reference_mask(
+    nrf_topology_platform_t *platform,
+    nrf_sensor_transport_controller_t *sensor_controller,
+    const nrf_topology_snapshot_t *snapshot,
+    uint8_t mask,
+    uint16_t generation);
 
 static bool cs_node_present(const nrf_topology_snapshot_t *snapshot, nrf_cs_node_id_t node)
 {
@@ -967,6 +1011,19 @@ static void service_worker(void *context)
 
         if (!cs_initialized || !nrf_cs_authority_is_active(&worker->authority) ||
             !worker->authority.command_active) {
+            uint8_t height_reference_mask = 0U;
+            uint16_t height_reference_generation = 0U;
+            if (service_take_height_reference_request(
+                    &height_reference_mask,
+                    &height_reference_generation)) {
+                service_process_height_reference_mask(
+                    &worker->platform,
+                    &worker->sensor_controller,
+                    &worker->snapshot,
+                    height_reference_mask,
+                    height_reference_generation);
+            }
+
             const uint8_t sensor_mask = service_take_sensor_mask();
             if (sensor_mask != 0U) {
                 service_process_sensor_mask(
@@ -1032,6 +1089,9 @@ esp_err_t nrf_topology_service_start(void)
     s_topology_refresh_requested = false;
     s_sensor_pending_mask = 0U;
     s_sensor_inflight_mask = 0U;
+    s_height_reference_pending = false;
+    s_height_reference_pending_mask = 0U;
+    s_height_reference_pending_generation = 0U;
     s_cs_request_pending = false;
     s_cs_snapshot_valid = false;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
@@ -1095,6 +1155,9 @@ void nrf_topology_service_stop(void)
     s_topology_refresh_requested = false;
     s_sensor_pending_mask = 0U;
     s_sensor_inflight_mask = 0U;
+    s_height_reference_pending = false;
+    s_height_reference_pending_mask = 0U;
+    s_height_reference_pending_generation = 0U;
     s_cs_request_pending = false;
     s_cs_snapshot_valid = false;
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
@@ -1199,6 +1262,47 @@ esp_err_t nrf_topology_service_request_all_sensor_refresh(void)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask)
+{
+    TaskHandle_t task;
+    uint8_t mask = 0U;
+
+    if (requested_channel_mask == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *requested_channel_mask = 0U;
+
+    portENTER_CRITICAL(&s_state_lock);
+    task = s_task;
+    if (task == NULL || !s_snapshot_valid || s_height_reference_pending) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            mask |= (uint8_t)(1U << channel);
+        }
+    }
+    if (mask == 0U) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Allocated generations use 1..65535 and wrap to 1; zero is never allocated. */
+    ++s_height_reference_generation;
+    if (s_height_reference_generation == 0U) {
+        ++s_height_reference_generation;
+    }
+    s_height_reference_pending = true;
+    s_height_reference_pending_mask = mask;
+    s_height_reference_pending_generation = s_height_reference_generation;
+    *requested_channel_mask = mask;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    (void)xTaskNotifyGive(task);
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_get_sensor_snapshot(
     uint8_t channel,
     nrf_remote_sensor_cache_t *snapshot)
@@ -1251,6 +1355,13 @@ esp_err_t nrf_topology_service_get_leveling_nodes(
 }
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+void nrf_topology_service_test_set_height_reference_generation(uint16_t generation)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_height_reference_generation = generation;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
 esp_err_t nrf_topology_service_test_publish_state(
     bool topology_valid,
     const nrf_topology_snapshot_t *topology,
@@ -1303,6 +1414,65 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     if(snapshot==NULL)return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&s_state_lock); valid=s_cs_snapshot_valid; if(valid)*snapshot=s_cs_cycle_snapshot; portEXIT_CRITICAL(&s_state_lock);
     return valid?ESP_OK:ESP_ERR_INVALID_STATE;
+}
+
+static bool service_take_height_reference_request(uint8_t *mask, uint16_t *generation)
+{
+    bool pending;
+    portENTER_CRITICAL(&s_state_lock);
+    pending = s_height_reference_pending;
+    if (pending) {
+        *mask = s_height_reference_pending_mask;
+        *generation = s_height_reference_pending_generation;
+        s_height_reference_pending = false;
+        s_height_reference_pending_mask = 0U;
+        s_height_reference_pending_generation = 0U;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return pending;
+}
+
+static void service_process_height_reference_mask(
+    nrf_topology_platform_t *platform,
+    nrf_sensor_transport_controller_t *sensor_controller,
+    const nrf_topology_snapshot_t *snapshot,
+    uint8_t mask,
+    uint16_t generation)
+{
+    const nrf_sensor_transport_io_t io = {
+        .context = platform,
+        .mux_select = platform_mux_select,
+        .mux_close = platform_mux_close,
+        .mux_faulted = platform_mux_faulted,
+        .read_status = platform_read_status,
+        .write_sensor_refresh = platform_write_sensor_refresh,
+        .write_height_reference = platform_write_height_reference,
+        .read_remote_snapshot = platform_read_remote_snapshot,
+        .sleep_ms = platform_sleep_ms,
+        .now_ms = platform_now_ms,
+        .abort_requested = platform_abort_requested,
+    };
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if ((mask & (uint8_t)(1U << channel)) == 0U) {
+            continue;
+        }
+        bool request_reconcile = false;
+        const esp_err_t err = nrf_sensor_transport_capture_height_reference(
+            sensor_controller,
+            &io,
+            snapshot,
+            channel,
+            generation,
+            &request_reconcile);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Height reference CAPTURE failed channel=%u generation=%u: %s",
+                     (unsigned)channel, (unsigned)generation, esp_err_to_name(err));
+        }
+        if (request_reconcile) {
+            service_request_topology_refresh_from_worker();
+        }
+    }
 }
 
 esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_t *stats)

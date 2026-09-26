@@ -166,6 +166,23 @@ typedef struct
 
 } device_barometer_status_t;
 
+typedef enum
+{
+    DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED = 0,
+    DEVICE_HEIGHT_REFERENCE_VALID,
+    DEVICE_HEIGHT_REFERENCE_REJECTED_MOVING,
+    DEVICE_HEIGHT_REFERENCE_SENSOR_INVALID
+
+} device_height_reference_state_t;
+
+typedef struct
+{
+    device_height_reference_state_t state;
+    uint16_t generation;
+    int32_t relative_z_mm;
+
+} device_height_reference_status_t;
+
 
 typedef struct
 {
@@ -238,6 +255,7 @@ typedef struct
 
     device_pod_capabilities_t capabilities;
     device_barometer_status_t barometer;
+    device_height_reference_status_t height_reference;
     device_pod_environment_status_t environment;
     device_imu_status_t imu;
     device_geophone_status_t geophone;
@@ -388,6 +406,15 @@ esp_err_t device_status_set_pod_barometer(
     float relative_altitude_cm,
     float reference_pressure_pa,
     bool valid
+);
+
+
+/* Publish the REMOTE's calibrated relative height-reference state. */
+esp_err_t device_status_set_pod_height_reference(
+    size_t pod_index,
+    device_height_reference_state_t state,
+    uint16_t generation,
+    int32_t relative_z_mm
 );
 
 

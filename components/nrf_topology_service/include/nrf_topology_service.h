@@ -50,6 +50,8 @@ esp_err_t nrf_topology_service_request_refresh(void);
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot);
 esp_err_t nrf_topology_service_request_sensor_refresh(uint8_t channel);
 esp_err_t nrf_topology_service_request_all_sensor_refresh(void);
+/* Queues CAPTURE for all assigned REMOTEs; generations use 1..65535 and wrap to 1 (zero is never allocated). */
+esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask);
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot);
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary);
 /* MAX-114: per-node levelling state of every assigned REMOTE. */
@@ -59,6 +61,7 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot);
 esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_t *stats);
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+void nrf_topology_service_test_set_height_reference_generation(uint16_t generation);
 /* Test-only state injection; never enabled by production builds. */
 esp_err_t nrf_topology_service_test_publish_state(
     bool topology_valid,

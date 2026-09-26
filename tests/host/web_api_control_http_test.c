@@ -11,6 +11,7 @@
 #include "freertos/semphr.h"
 #include "localization_calculate.h"
 #include "measurement_service.h"
+#include "nrf_topology_service.h"
 #include "object_store.h"
 #include "storage_bulk_admission.h"
 #include "storage_manager_internal.h"
@@ -36,6 +37,11 @@ static unsigned s_measurement_start_calls;
 static unsigned s_lease_acquire_calls;
 static unsigned s_lease_release_calls;
 static unsigned s_scan_store_calls;
+static int s_measurement_state;
+static esp_err_t s_height_capture_result;
+static uint8_t s_height_capture_channel_mask;
+static unsigned s_height_capture_calls;
+static unsigned s_height_capture_wire_sends;
 static fake_admission_mutex_t *s_admission_mutex;
 
 static void reset_fakes(void)
@@ -56,6 +62,11 @@ static void reset_fakes(void)
     s_lease_acquire_calls = 0U;
     s_lease_release_calls = 0U;
     s_scan_store_calls = 0U;
+    s_measurement_state = MEASUREMENT_SERVICE_LIVE;
+    s_height_capture_result = ESP_OK;
+    s_height_capture_channel_mask = 0U;
+    s_height_capture_calls = 0U;
+    s_height_capture_wire_sends = 0U;
     storage_bulk_admission_exit_protected();
 }
 
@@ -109,7 +120,18 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
 {
     if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
     memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->state = s_measurement_state;
     return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_request_height_reference_capture(uint8_t *requested_channel_mask)
+{
+    assert(requested_channel_mask != NULL);
+    ++s_height_capture_calls;
+    if (s_height_capture_result == ESP_OK) {
+        *requested_channel_mask = s_height_capture_channel_mask;
+    }
+    return s_height_capture_result;
 }
 
 esp_err_t measurement_service_start_object_async(const char *object_id)
@@ -505,6 +527,59 @@ static void test_measurement_start_async_failure_keeps_existing_mapping(void)
     assert(s_measurement_start_calls == 1U);
 }
 
+static void test_calibrate_heights_rejects_active_measurements(void)
+{
+    static const int active_states[] = {
+        MEASUREMENT_SERVICE_STARTING,
+        MEASUREMENT_SERVICE_RECORDING,
+        MEASUREMENT_SERVICE_STOPPING,
+    };
+    static const char *const body = "{\"action\":\"calibrate_heights\"}";
+
+    for (size_t index = 0U; index < sizeof(active_states) / sizeof(active_states[0]); ++index) {
+        reset_fakes();
+        s_measurement_state = active_states[index];
+        char response[256] = {0};
+        httpd_req_t request = make_request(body, response, sizeof(response));
+
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(strcmp(request.response_status, "409 Conflict") == 0);
+        assert(strcmp(response, "{\"ok\":false,\"busy_reason\":\"recording_active\"}") == 0);
+        assert(s_height_capture_calls == 0U);
+        assert(s_height_capture_wire_sends == 0U);
+    }
+}
+
+static void test_calibrate_heights_rejects_no_remotes(void)
+{
+    reset_fakes();
+    s_height_capture_result = ESP_ERR_NOT_FOUND;
+    char response[256] = {0};
+    httpd_req_t request = make_request("{\"action\":\"calibrate_heights\"}", response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strcmp(response, "{\"ok\":false,\"error\":\"no_remotes\"}") == 0);
+    assert(s_height_capture_calls == 1U);
+    assert(s_height_capture_wire_sends == 0U);
+}
+
+static void test_calibrate_heights_queues_channel_mask_without_bus_io(void)
+{
+    reset_fakes();
+    s_height_capture_channel_mask = (uint8_t)((1U << 0U) | (1U << 1U) | (1U << 3U));
+    char response[256] = {0};
+    httpd_req_t request = make_request("{\"action\":\"calibrate_heights\"}", response, sizeof(response));
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strcmp(
+        response,
+        "{\"ok\":true,\"action\":\"calibrate_heights\",\"requested_channels\":[0,1,3]}") == 0);
+    assert(s_height_capture_calls == 1U);
+    assert(s_height_capture_wire_sends == 0U);
+}
+
 static void test_phone_location_handler_round_trip(void)
 {
     reset_fakes();
@@ -789,6 +864,9 @@ int main(void)
     test_measurement_start_rejects_acquisition_failures();
     test_measurement_start_success_stays_async();
     test_measurement_start_async_failure_keeps_existing_mapping();
+    test_calibrate_heights_rejects_active_measurements();
+    test_calibrate_heights_rejects_no_remotes();
+    test_calibrate_heights_queues_channel_mask_without_bus_io();
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
     test_calculate_source_action_submits_a_background_job();
