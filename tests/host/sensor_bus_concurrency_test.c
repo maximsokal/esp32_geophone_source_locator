@@ -139,6 +139,7 @@ static atomic_int s_active;
 static int s_bus_token;
 static int s_ina3221_token;
 static int s_candidate_tokens[8]; /* one per 0x70..0x77 candidate address */
+static uint8_t s_tca_control;
 #define TCA_RESPONDING_ADDRESS 0x70U
 
 static void canary_enter(void)
@@ -202,12 +203,22 @@ esp_err_t i2c_bus_read_byte(i2c_bus_device_handle_t device, uint8_t mem_address,
     canary_enter();
     const bool responds = device == &s_candidate_tokens[0]; /* only 0x70 */
     if (data != NULL) {
-        *data = 0U;
+        *data = responds ? s_tca_control : 0U;
     }
     canary_exit();
     /* Only the first discovery candidate (0x70) responds, so discovery
      * always resolves deterministically to one device. */
     return responds ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t i2c_bus_write_byte(i2c_bus_device_handle_t device, uint8_t mem_address, uint8_t data)
+{
+    (void)mem_address;
+    canary_enter();
+    assert(device == &s_candidate_tokens[0]);
+    s_tca_control = data;
+    canary_exit();
+    return ESP_OK;
 }
 
 

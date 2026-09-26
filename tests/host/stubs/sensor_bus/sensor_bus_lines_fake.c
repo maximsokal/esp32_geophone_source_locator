@@ -2,6 +2,8 @@
 #include "sensor_bus_lines.h"
 
 #include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 fake_lines_t g_fake_lines;
@@ -116,4 +118,14 @@ void sensor_bus_lines_delay_us(uint32_t us)
 int64_t sensor_bus_lines_now_us(void)
 {
     return g_fake_lines.now_us;
+}
+
+void fake_sensor_bus_log(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    ++g_fake_lines.log_calls;
+    va_list args;
+    va_start(args, format);
+    (void)vsnprintf(g_fake_lines.last_log, sizeof(g_fake_lines.last_log), format, args);
+    va_end(args);
 }
