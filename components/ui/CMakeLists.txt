@@ -38,6 +38,7 @@ idf_component_register(
         measurement_service
         runtime_observability
         scan_occupancy
+        scan_preview
         storage_service
         storage_manager
         seismic_acquisition
