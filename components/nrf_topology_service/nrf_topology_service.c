@@ -51,6 +51,7 @@ typedef struct {
     nrf_topology_snapshot_t snapshot;
     nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
     nrf_cs_authority_t authority;
+    nrf_cs_cycle_snapshot_t cs_cycle_snapshot;
     nrf_cs_platform_context_t cs_context;
     nrf_cs_authority_ops_t cs_ops;
 } nrf_topology_worker_state_t;
@@ -71,6 +72,49 @@ static bool s_cs_snapshot_valid = false;
 static nrf_cs_policy_t s_cs_requested_policy;
 static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
 static nrf_topology_worker_state_t s_worker_state;
+static nrf_topology_service_stack_stats_t s_stack_stats;
+
+static void service_record_stack_hwm(
+    nrf_topology_stack_stats_phase_t phase,
+    const char *stage,
+    uint32_t free_bytes)
+{
+    const uint8_t phase_bit = (uint8_t)(1U << phase);
+    bool first_sample;
+    bool new_minimum;
+    bool crossed_warning_margin;
+
+    portENTER_CRITICAL(&s_state_lock);
+    first_sample = (s_stack_stats.sampled_phase_mask & phase_bit) == 0U;
+    new_minimum = first_sample || free_bytes < s_stack_stats.phase_minimum_free_bytes[phase];
+    crossed_warning_margin = free_bytes < NRF_TOPOLOGY_STACK_MARGIN_BYTES &&
+        (first_sample || s_stack_stats.phase_minimum_free_bytes[phase] >= NRF_TOPOLOGY_STACK_MARGIN_BYTES);
+    if (new_minimum) {
+        s_stack_stats.phase_minimum_free_bytes[phase] = free_bytes;
+    }
+    if (s_stack_stats.sampled_phase_mask == 0U || free_bytes < s_stack_stats.minimum_free_bytes) {
+        s_stack_stats.minimum_free_bytes = free_bytes;
+    }
+    s_stack_stats.sampled_phase_mask |= phase_bit;
+    portEXIT_CRITICAL(&s_state_lock);
+
+    if (new_minimum) {
+        if (crossed_warning_margin) {
+            ESP_LOGW(TAG, "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
+                     stage, (unsigned)free_bytes, (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
+        } else {
+            ESP_LOGI(TAG, "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
+                     stage, (unsigned)free_bytes, (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
+        }
+    }
+}
+
+static void service_record_current_stack_hwm(
+    nrf_topology_stack_stats_phase_t phase,
+    const char *stage)
+{
+    service_record_stack_hwm(phase, stage, (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+}
 
 static bool service_stop_requested(void)
 {
@@ -251,6 +295,7 @@ static esp_err_t platform_normalize_transfer_error(
     };
     nrf_topology_bus_recovery_outcome_t outcome = NRF_TOPOLOGY_BUS_NOT_CHECKED;
     const esp_err_t result = nrf_topology_bus_recover_after_error(err, &ops, &outcome);
+    service_record_current_stack_hwm(NRF_TOPOLOGY_STACK_PHASE_ERROR_RECOVERY, "error-recovery");
     if (outcome == NRF_TOPOLOGY_BUS_STUCK) {
         ESP_LOGE(TAG, "I2C0 line stuck after %s; a target holds the bus (reset/power-cycle it)",
                  esp_err_to_name(err));
@@ -761,22 +806,23 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
 
 static uint64_t cs_now_ms(void *context){return platform_now_ms(((nrf_cs_platform_context_t *)context)->platform);}
 
-static void cs_publish(const nrf_cs_authority_t *authority, bool active, int result)
+static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int result)
 {
-    nrf_cs_cycle_snapshot_t snapshot;
-    memset(&snapshot, 0, sizeof(snapshot));
-    snapshot.active = active;
-    snapshot.complete = !active && nrf_cs_scheduler_is_complete(&authority->scheduler);
-    snapshot.result = result;
-    snapshot.cycle_id = authority->scheduler.cycle_id;
-    snapshot.membership_generation = authority->scheduler.membership_generation;
-    snapshot.pair_count = nrf_cs_authority_pair_count(authority);
-    for (size_t i = 0U; i < snapshot.pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
+    nrf_cs_cycle_snapshot_t *snapshot = &worker->cs_cycle_snapshot;
+    const nrf_cs_authority_t *authority = &worker->authority;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->active = active;
+    snapshot->complete = !active && nrf_cs_scheduler_is_complete(&authority->scheduler);
+    snapshot->result = result;
+    snapshot->cycle_id = authority->scheduler.cycle_id;
+    snapshot->membership_generation = authority->scheduler.membership_generation;
+    snapshot->pair_count = nrf_cs_authority_pair_count(authority);
+    for (size_t i = 0U; i < snapshot->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
         const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(authority, i);
-        if (pair != NULL) snapshot.pairs[i] = *pair;
+        if (pair != NULL) snapshot->pairs[i] = *pair;
     }
     portENTER_CRITICAL(&s_state_lock);
-    s_cs_cycle_snapshot = snapshot;
+    s_cs_cycle_snapshot = *snapshot;
     s_cs_snapshot_valid = true;
     portEXIT_CRITICAL(&s_state_lock);
 }
@@ -796,26 +842,6 @@ static void cs_sync_disconnects(nrf_cs_authority_t *authority, const nrf_topolog
     for (size_t i = 0U; i < authority->scheduler.node_count; ++i) {
         const nrf_cs_node_id_t node = authority->scheduler.nodes[i];
         if (!cs_node_present(snapshot, node)) (void)nrf_cs_authority_disconnect(authority, node);
-    }
-}
-
-static void service_log_stack_hwm(const char *stage)
-{
-    const UBaseType_t free_bytes = uxTaskGetStackHighWaterMark(NULL);
-    if (free_bytes < NRF_TOPOLOGY_STACK_MARGIN_BYTES) {
-        ESP_LOGW(
-            TAG,
-            "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
-            stage,
-            (unsigned)free_bytes,
-            (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
-    } else {
-        ESP_LOGI(
-            TAG,
-            "STACK_HWM task=nrf_topology stage=%s free=%u margin=%u",
-            stage,
-            (unsigned)free_bytes,
-            (unsigned)NRF_TOPOLOGY_STACK_MARGIN_BYTES);
     }
 }
 
@@ -879,9 +905,17 @@ static void service_worker(void *context)
                 worker->cache);
             last_reconcile_tick = xTaskGetTickCount();
             first_reconcile = false;
+            const uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
             if (was_first_reconcile) {
-                service_log_stack_hwm(reconciled ? "post-first-reconcile" : "post-first-reconcile-error");
+                service_record_stack_hwm(
+                    NRF_TOPOLOGY_STACK_PHASE_FIRST_RECONCILE,
+                    reconciled ? "first-reconcile" : "first-reconcile-error",
+                    free_bytes);
             }
+            service_record_stack_hwm(
+                NRF_TOPOLOGY_STACK_PHASE_RECONCILE,
+                reconciled ? "reconcile" : "reconcile-error",
+                free_bytes);
             if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
                 cs_sync_disconnects(&worker->authority, &worker->snapshot);
             }
@@ -913,14 +947,18 @@ static void service_worker(void *context)
                 }
             }
             if (!cs_initialized || start_result < 0) {
+                memset(&worker->cs_cycle_snapshot, 0, sizeof(worker->cs_cycle_snapshot));
                 portENTER_CRITICAL(&s_state_lock);
                 memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
                 s_cs_cycle_snapshot.result = start_result;
                 s_cs_snapshot_valid = true;
                 portEXIT_CRITICAL(&s_state_lock);
             } else {
-                cs_publish(&worker->authority, true, start_result);
+                cs_publish(worker, true, start_result);
             }
+            service_record_current_stack_hwm(
+                NRF_TOPOLOGY_STACK_PHASE_CS_CYCLE_START,
+                start_result < 0 ? "cs-cycle-start-error" : "cs-cycle-start");
         }
 
         if (service_stop_requested()) {
@@ -939,6 +977,9 @@ static void service_worker(void *context)
                     sensor_mask,
                     last_reconcile_tick,
                     reconcile_period_ticks);
+                service_record_current_stack_hwm(
+                    NRF_TOPOLOGY_STACK_PHASE_SENSOR_REFRESH,
+                    "sensor-refresh");
             }
         }
 
@@ -948,7 +989,10 @@ static void service_worker(void *context)
 
         if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
             const nrf_cs_authority_result_t cs_result = nrf_cs_authority_pump(&worker->authority);
-            cs_publish(&worker->authority, nrf_cs_authority_is_active(&worker->authority), cs_result);
+            cs_publish(worker, nrf_cs_authority_is_active(&worker->authority), cs_result);
+            service_record_current_stack_hwm(
+                NRF_TOPOLOGY_STACK_PHASE_CS_PUMP_PUBLISH,
+                "cs-pump-publish");
         }
 
         TickType_t wait_ticks = 0U;
@@ -994,6 +1038,7 @@ esp_err_t nrf_topology_service_start(void)
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
     memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
+    memset(&s_stack_stats, 0, sizeof(s_stack_stats));
     memset(&s_worker_state, 0, sizeof(s_worker_state));
     portEXIT_CRITICAL(&s_state_lock);
 
@@ -1258,4 +1303,15 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     if(snapshot==NULL)return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&s_state_lock); valid=s_cs_snapshot_valid; if(valid)*snapshot=s_cs_cycle_snapshot; portEXIT_CRITICAL(&s_state_lock);
     return valid?ESP_OK:ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_t *stats)
+{
+    if (stats == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    *stats = s_stack_stats;
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
 }
