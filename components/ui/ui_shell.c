@@ -8,6 +8,18 @@
 #include "wifi_manager.h"
 
 
+static const char *ui_boot_stage_text(const char *stage)
+{
+    if (stage == NULL) return ui_tr(UI_I18N_KEY_BOOT_STAGE_STARTING);
+    if (strcmp(stage, "STARTING...") == 0) return ui_tr(UI_I18N_KEY_BOOT_STAGE_STARTING);
+    if (strcmp(stage, "STORAGE...") == 0) return ui_tr(UI_I18N_KEY_BOOT_STAGE_STORAGE);
+    if (strcmp(stage, "ACTIVE OBJECT...") == 0) return ui_tr(UI_I18N_KEY_BOOT_STAGE_ACTIVE_OBJECT);
+    if (strcmp(stage, "OBJECT STORE...") == 0) return ui_tr(UI_I18N_KEY_BOOT_STAGE_OBJECT_STORE);
+    if (strcmp(stage, "NETWORK + UI...") == 0) return ui_tr(UI_I18N_KEY_BOOT_STAGE_NETWORK);
+    return stage;
+}
+
+
 static void ui_set_label_text_if_changed(
     lv_obj_t *label,
     const char *text
@@ -151,16 +163,16 @@ lv_obj_t *ui_create_screen_base_locked(
     );
 
     context->header_source = ui_create_label_locked(
-        header, 124, 9, 76, "ADC --", UI_COLOR_ACCENT
+        header, 124, 9, 76, ui_tr(UI_I18N_KEY_HEADER_ADC_IDLE), UI_COLOR_ACCENT
     );
 
     /* MAX-182: power badge on every screen (icon + about 6 characters). */
     context->header_power = ui_create_label_locked(
-        header, 200, 9, 58, "--", UI_COLOR_MUTED
+        header, 200, 9, 58, ui_tr(UI_I18N_KEY_HEADER_POWER_EMPTY), UI_COLOR_MUTED
     );
 
     context->header_wifi = ui_create_label_locked(
-        header, 258, 9, 56, "NET --", UI_COLOR_MUTED
+        header, 258, 9, 56, ui_tr(UI_I18N_KEY_HEADER_NETWORK_OFFLINE), UI_COLOR_MUTED
     );
 
     if (context->header_wifi != NULL) {
@@ -354,7 +366,8 @@ static void ui_refresh_power_badge_locked(ui_context_t *context)
     }
     char text[UI_POWER_BADGE_TEXT_MAX + 8];
     const char *symbol = ui_power_icon_symbol(badge.icon);
-    snprintf(text, sizeof(text), "%s%s%s", symbol, symbol[0] != '\0' ? " " : "", badge.text);
+    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_HEADER_POWER_FORMAT),
+             symbol, symbol[0] != '\0' ? " " : "", badge.text);
     ui_set_label_text_if_changed(context->header_power, text);
     ui_set_label_color_if_changed(context->header_power, ui_power_severity_color(badge.severity));
 }
@@ -378,7 +391,7 @@ void ui_refresh_header_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "%s %s",
+            ui_tr(UI_I18N_KEY_HEADER_SOURCE_FORMAT),
             acquisition.source_name != NULL
                 ? acquisition.source_name
                 : "ADC",
@@ -391,7 +404,7 @@ void ui_refresh_header_locked(void)
             acquisition.running ? UI_COLOR_GOOD : UI_COLOR_WARNING
         );
     } else {
-        ui_set_label_text_if_changed(context->header_source, "ADC --");
+        ui_set_label_text_if_changed(context->header_source, ui_tr(UI_I18N_KEY_HEADER_ADC_IDLE));
         ui_set_label_color_if_changed(
             context->header_source,
             UI_COLOR_MUTED
@@ -403,7 +416,7 @@ void ui_refresh_header_locked(void)
     char ip[24] = {0};
 
     if (wifi_manager_is_setup_mode()) {
-        ui_set_label_text_if_changed(context->header_wifi, "SETUP");
+        ui_set_label_text_if_changed(context->header_wifi, ui_tr(UI_I18N_KEY_HEADER_NETWORK_SETUP));
         ui_set_label_color_if_changed(
             context->header_wifi,
             UI_COLOR_WARNING
@@ -412,13 +425,13 @@ void ui_refresh_header_locked(void)
         wifi_manager_sta_ip_string(ip, sizeof(ip)) == ESP_OK &&
         ip[0] != '\0'
     ) {
-        ui_set_label_text_if_changed(context->header_wifi, "NET OK");
+        ui_set_label_text_if_changed(context->header_wifi, ui_tr(UI_I18N_KEY_HEADER_NETWORK_READY));
         ui_set_label_color_if_changed(
             context->header_wifi,
             UI_COLOR_GOOD
         );
     } else {
-        ui_set_label_text_if_changed(context->header_wifi, "NET --");
+        ui_set_label_text_if_changed(context->header_wifi, ui_tr(UI_I18N_KEY_HEADER_NETWORK_OFFLINE));
         ui_set_label_color_if_changed(
             context->header_wifi,
             UI_COLOR_MUTED
@@ -430,8 +443,8 @@ void ui_refresh_header_locked(void)
 void ui_render_boot_locked(const char *stage)
 {
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "GEOPHONE LOCATOR",
-        "ESP32-S3  |  INITIALIZING"
+        ui_tr(UI_I18N_KEY_BOOT_TITLE),
+        ui_tr(UI_I18N_KEY_BOOT_FOOTER)
     );
 
     if (screen == NULL) {
@@ -448,7 +461,7 @@ void ui_render_boot_locked(const char *stage)
         18,
         18,
         248,
-        "SYSTEM STARTUP",
+        ui_tr(UI_I18N_KEY_BOOT_STARTUP),
         UI_COLOR_ACCENT
     );
 
@@ -457,7 +470,7 @@ void ui_render_boot_locked(const char *stage)
         18,
         51,
         248,
-        stage,
+        ui_boot_stage_text(stage),
         UI_COLOR_TEXT
     );
 

@@ -13,7 +13,7 @@
  * This avoids format-truncation warnings without silently shortening names.
  */
 #define UI_OBJECTS_TEXT_SIZE \
-    (OBJECT_FORMAT_ID_SIZE + OBJECT_FORMAT_NAME_SIZE + sizeof("ACTIVE    [ACTIVE]"))
+    (OBJECT_FORMAT_ID_SIZE + OBJECT_FORMAT_NAME_SIZE + sizeof("  [АКТИВНИЙ]"))
 
 
 static void ui_objects_render_notice(lv_obj_t *screen)
@@ -53,7 +53,7 @@ static void ui_objects_render_menu(lv_obj_t *screen)
         snprintf(
             text,
             sizeof(text),
-            "ACTIVE  %s  %s",
+            ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE),
             active.id,
             active.name
         );
@@ -72,15 +72,15 @@ static void ui_objects_render_menu(lv_obj_t *screen)
             10,
             12,
             280,
-            "ACTIVE  NONE",
+            ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE_NONE),
             UI_COLOR_MUTED
         );
     }
 
-    static const char *actions[3] = {
-        "NEW OBJECT",
-        "SET ACTIVE OBJECT",
-        "DELETE OBJECT",
+    static const ui_i18n_key_t actions[3] = {
+        UI_I18N_KEY_OBJECTS_NEW,
+        UI_I18N_KEY_OBJECTS_SET_ACTIVE,
+        UI_I18N_KEY_OBJECTS_DELETE,
     };
 
     const bool have_objects =
@@ -95,7 +95,7 @@ static void ui_objects_render_menu(lv_obj_t *screen)
         (void)ui_create_row_locked(
             screen,
             92 + (int)(i * 34U),
-            actions[i],
+            ui_tr(actions[i]),
             i == context->object_action,
             enabled
         );
@@ -111,8 +111,8 @@ static void ui_objects_render_list(lv_obj_t *screen)
 
     const char *caption =
         context->objects_mode == UI_OBJECTS_SELECT_ACTIVE
-            ? "SELECT OBJECT TO ACTIVATE"
-            : "SELECT OBJECT TO DELETE";
+            ? ui_tr(UI_I18N_KEY_OBJECTS_SELECT_ACTIVATE)
+            : ui_tr(UI_I18N_KEY_OBJECTS_SELECT_DELETE);
 
     (void)ui_create_label_locked(
         screen,
@@ -129,7 +129,7 @@ static void ui_objects_render_list(lv_obj_t *screen)
             12,
             84,
             296,
-            "NO OBJECTS",
+            ui_tr(UI_I18N_KEY_OBJECTS_NONE),
             UI_COLOR_WARNING
         );
         ui_objects_render_notice(screen);
@@ -150,11 +150,11 @@ static void ui_objects_render_list(lv_obj_t *screen)
         snprintf(
             text,
             sizeof(text),
-            "%s  %s%s",
+            ui_tr(UI_I18N_KEY_OBJECTS_LIST_ENTRY),
             context->objects[index].id,
             context->objects[index].name,
             context->objects[index].active
-                ? "  [ACTIVE]"
+                ? ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE_MARKER)
                 : ""
         );
 
@@ -188,7 +188,7 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
         14,
         14,
         260,
-        "DELETE OBJECT?",
+        ui_tr(UI_I18N_KEY_OBJECTS_CONFIRM_DELETE),
         UI_COLOR_ERROR
     );
 
@@ -200,7 +200,7 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
         snprintf(
             text,
             sizeof(text),
-            "%s  %s",
+            ui_tr(UI_I18N_KEY_OBJECTS_NAME_PAIR),
             context->objects[context->object_index].id,
             context->objects[context->object_index].name
         );
@@ -220,7 +220,7 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
         14,
         75,
         260,
-        "OK/RIGHT CONFIRM   LEFT CANCEL",
+        ui_tr(UI_I18N_KEY_OBJECTS_CONFIRM_FOOTER),
         UI_COLOR_WARNING
     );
 
@@ -352,10 +352,10 @@ void ui_render_objects_locked(void)
     ui_context_t *context = ui_context();
 
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "OBJECTS",
+        ui_tr(UI_I18N_KEY_MENU_OBJECTS),
         context->objects_mode == UI_OBJECTS_MENU
-            ? "UP/DOWN NAV   OK SELECT   LEFT BACK"
-            : "UP/DOWN NAV   OK SELECT   LEFT CANCEL"
+            ? ui_tr(UI_I18N_KEY_SHARED_FOOTER_BACK)
+            : ui_tr(UI_I18N_KEY_SHARED_FOOTER_CANCEL)
     );
 
     if (screen == NULL) {
@@ -415,7 +415,7 @@ void ui_object_service_event(
             snprintf(
                 notice,
                 sizeof(notice),
-                "CREATED %s",
+                ui_tr(UI_I18N_KEY_OBJECTS_CREATED),
                 event->object.id
             );
             ui_set_notice_locked(notice);
@@ -448,7 +448,7 @@ void ui_object_service_event(
             ui_set_notice_locked(
                 context->object_count > 0
                     ? NULL
-                    : "NO OBJECTS"
+                    : ui_tr(UI_I18N_KEY_OBJECTS_NONE)
             );
             break;
 
@@ -461,7 +461,7 @@ void ui_object_service_event(
             snprintf(
                 notice,
                 sizeof(notice),
-                "ACTIVE %s",
+                ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE_DONE),
                 event->object_id
             );
             ui_set_notice_locked(notice);
@@ -477,7 +477,7 @@ void ui_object_service_event(
             snprintf(
                 notice,
                 sizeof(notice),
-                "DELETED %s",
+                ui_tr(UI_I18N_KEY_OBJECTS_DELETED),
                 event->object_id
             );
             ui_set_notice_locked(notice);
@@ -489,14 +489,14 @@ void ui_object_service_event(
             context->object_count = 0;
             context->object_index = 0;
             context->objects_mode = UI_OBJECTS_MENU;
-            ui_set_notice_locked("OBJECT LIST FAILED");
+            ui_set_notice_locked(ui_tr(UI_I18N_KEY_OBJECTS_LIST_FAILED));
             break;
 
         case OBJECT_SERVICE_EVENT_CREATE_FAILED:
         case OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED:
         case OBJECT_SERVICE_EVENT_DELETE_FAILED:
         default:
-            ui_set_notice_locked("OBJECT OPERATION FAILED");
+            ui_set_notice_locked(ui_tr(UI_I18N_KEY_OBJECTS_OPERATION_FAILED));
             context->objects_mode = UI_OBJECTS_MENU;
             break;
     }

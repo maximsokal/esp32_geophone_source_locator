@@ -50,8 +50,8 @@ void ui_render_system_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "FW      %s",
-        app != NULL ? app->version : "--"
+        ui_tr(UI_I18N_KEY_SYSTEM_FIRMWARE),
+        app != NULL ? app->version : ui_tr(UI_I18N_KEY_SHARED_EMPTY)
     );
     (void)ui_create_label_locked(
         card, 10, 8, 284, text, UI_COLOR_ACCENT
@@ -60,7 +60,7 @@ void ui_render_system_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "ESP-IDF  %s",
+        ui_tr(UI_I18N_KEY_SYSTEM_IDF_VERSION),
         esp_get_idf_version()
     );
     (void)ui_create_label_locked(
@@ -70,7 +70,7 @@ void ui_render_system_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "LVGL     %d.%d.%d + esp_lvgl_port",
+        ui_tr(UI_I18N_KEY_SYSTEM_LVGL_VERSION),
         LVGL_VERSION_MAJOR,
         LVGL_VERSION_MINOR,
         LVGL_VERSION_PATCH
@@ -84,7 +84,7 @@ void ui_render_system_locked(void)
         10,
         65,
         284,
-        "HEAP     -- KB internal free",
+        ui_tr(UI_I18N_KEY_SYSTEM_HEAP_EMPTY),
         UI_COLOR_TEXT
     );
 
@@ -93,7 +93,7 @@ void ui_render_system_locked(void)
         10,
         84,
         284,
-        "PSRAM    -- KB free",
+        ui_tr(UI_I18N_KEY_SYSTEM_PSRAM_EMPTY),
         UI_COLOR_TEXT
     );
 
@@ -102,7 +102,7 @@ void ui_render_system_locked(void)
         10,
         103,
         284,
-        "UPTIME   -- s",
+        ui_tr(UI_I18N_KEY_SYSTEM_UPTIME_EMPTY),
         UI_COLOR_MUTED
     );
 
@@ -111,7 +111,7 @@ void ui_render_system_locked(void)
         10,
         122,
         284,
-        "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
+        ui_tr(UI_I18N_KEY_SYSTEM_CORES),
         UI_COLOR_MUTED
     );
 
@@ -146,7 +146,7 @@ void ui_system_refresh_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "HEAP     %lu KB internal free",
+        ui_tr(UI_I18N_KEY_SYSTEM_HEAP),
         (unsigned long)(
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U
         )
@@ -159,7 +159,7 @@ void ui_system_refresh_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "PSRAM    %lu KB free",
+        ui_tr(UI_I18N_KEY_SYSTEM_PSRAM),
         (unsigned long)(
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U
         )
@@ -172,7 +172,7 @@ void ui_system_refresh_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "UPTIME   %lld s",
+        ui_tr(UI_I18N_KEY_SYSTEM_UPTIME),
         (long long)(esp_timer_get_time() / 1000000LL)
     );
     ui_system_label_set_if_changed(

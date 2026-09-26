@@ -98,7 +98,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             280,
-            "STEP 3/4  SETTINGS SAVED",
+            ui_tr(UI_I18N_KEY_WIFI_STEP3_SAVED),
             UI_COLOR_GOOD
         );
 
@@ -107,7 +107,7 @@ static void ui_wifi_render_setup_card(
             10,
             29,
             280,
-            "ENABLE PHONE HOTSPOT",
+            ui_tr(UI_I18N_KEY_WIFI_ENABLE_HOTSPOT),
             UI_COLOR_TEXT
         );
 
@@ -116,7 +116,7 @@ static void ui_wifi_render_setup_card(
             10,
             49,
             280,
-            "NEXT: HTTPS VERIFY QR",
+            ui_tr(UI_I18N_KEY_WIFI_NEXT_VERIFY),
             UI_COLOR_MUTED
         );
 
@@ -129,14 +129,14 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             200,
-            "STEP 1/4  CONNECT PHONE",
+            ui_tr(UI_I18N_KEY_WIFI_STEP1_CONNECT),
             UI_COLOR_WARNING
         );
 
         snprintf(
             text,
             sizeof(text),
-            "AP  %s",
+            ui_tr(UI_I18N_KEY_WIFI_AP_SSID),
             APP_WIFI_AP_SSID
         );
 
@@ -154,7 +154,7 @@ static void ui_wifi_render_setup_card(
             10,
             49,
             200,
-            "SCAN WI-FI QR",
+            ui_tr(UI_I18N_KEY_WIFI_SCAN_JOIN),
             UI_COLOR_MUTED
         );
 
@@ -168,7 +168,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             200,
-            "STEP 2/4  INSTALL ROOT CA",
+            ui_tr(UI_I18N_KEY_WIFI_STEP2_INSTALL),
             UI_COLOR_WARNING
         );
 
@@ -177,7 +177,7 @@ static void ui_wifi_render_setup_card(
             10,
             29,
             200,
-            "DOWNLOAD PUBLIC CA",
+            ui_tr(UI_I18N_KEY_WIFI_DOWNLOAD_CA),
             UI_COLOR_TEXT
         );
 
@@ -203,7 +203,7 @@ static void ui_wifi_render_setup_card(
             10,
             8,
             200,
-            "STEP 2/4  CA DOWNLOADED",
+            ui_tr(UI_I18N_KEY_WIFI_STEP2_DOWNLOADED),
             UI_COLOR_ACCENT
         );
 
@@ -212,7 +212,7 @@ static void ui_wifi_render_setup_card(
             10,
             29,
             200,
-            "INSTALL CA IN ANDROID",
+            ui_tr(UI_I18N_KEY_WIFI_INSTALL_ANDROID),
             UI_COLOR_TEXT
         );
 
@@ -221,7 +221,7 @@ static void ui_wifi_render_setup_card(
             10,
             49,
             200,
-            "RETURN + TAP CONTINUE",
+            ui_tr(UI_I18N_KEY_WIFI_RETURN_CONTINUE),
             UI_COLOR_MUTED
         );
 
@@ -238,8 +238,8 @@ static void ui_wifi_render_setup_card(
         8,
         200,
         context->wifi_setup_page_opened
-            ? "STEP 3/4  SETUP PAGE OPEN"
-            : "STEP 3/4  CONFIGURE HOTSPOT",
+            ? ui_tr(UI_I18N_KEY_WIFI_STEP3_PAGE_OPEN)
+            : ui_tr(UI_I18N_KEY_WIFI_STEP3_CONFIGURE),
         context->wifi_setup_page_opened
             ? UI_COLOR_GOOD
             : UI_COLOR_ACCENT
@@ -250,7 +250,7 @@ static void ui_wifi_render_setup_card(
         10,
         29,
         200,
-        "ROOT CA CONFIRMED",
+        ui_tr(UI_I18N_KEY_WIFI_ROOT_CA_CONFIRMED),
         UI_COLOR_GOOD
     );
 
@@ -309,8 +309,8 @@ static void ui_wifi_render_sta_card(
             8,
             280,
             ready
-                ? "STEP 4/4  HTTPS / WEBXR VERIFIED"
-                : "STEP 4/4  VERIFY INCOMPLETE",
+                ? ui_tr(UI_I18N_KEY_WIFI_STEP4_VERIFIED)
+                : ui_tr(UI_I18N_KEY_WIFI_STEP4_INCOMPLETE),
             ready
                 ? UI_COLOR_GOOD
                 : UI_COLOR_WARNING
@@ -321,7 +321,7 @@ static void ui_wifi_render_sta_card(
         snprintf(
             result,
             sizeof(result),
-            "SEC %s  CAM %s  XR %s  AR %s",
+            ui_tr(UI_I18N_KEY_WIFI_VERIFY_CODES),
             (mask & APP_TLS_VERIFY_SECURE_CONTEXT) ? "OK" : "--",
             (mask & APP_TLS_VERIFY_CAMERA) ? "OK" : "--",
             (mask & APP_TLS_VERIFY_XR_API) ? "OK" : "--",
@@ -342,7 +342,7 @@ static void ui_wifi_render_sta_card(
             10,
             49,
             280,
-            "PHONE REPORT RECEIVED",
+            ui_tr(UI_I18N_KEY_WIFI_PHONE_REPORT),
             UI_COLOR_MUTED
         );
 
@@ -355,7 +355,7 @@ static void ui_wifi_render_sta_card(
             10,
             8,
             200,
-            "STEP 4/4  VERIFY HTTPS",
+            ui_tr(UI_I18N_KEY_WIFI_VERIFY_HTTPS),
             UI_COLOR_WARNING
         );
 
@@ -364,7 +364,7 @@ static void ui_wifi_render_sta_card(
             10,
             29,
             200,
-            "SCAN QR ON PHONE",
+            ui_tr(UI_I18N_KEY_WIFI_SCAN_PHONE),
             UI_COLOR_TEXT
         );
 
@@ -373,7 +373,7 @@ static void ui_wifi_render_sta_card(
             10,
             49,
             200,
-            "CAMERA + WEBXR TEST",
+            ui_tr(UI_I18N_KEY_WIFI_CAMERA_WEBXR),
             UI_COLOR_MUTED
         );
 
@@ -402,16 +402,17 @@ static void ui_wifi_render_sta_card(
 
     char text[96];
 
+    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_MODE), "STATION");
     (void)ui_create_label_locked(
         card,
         10,
         8,
         280,
-        "MODE  STATION",
+        text,
         UI_COLOR_ACCENT
     );
 
-    snprintf(text, sizeof(text), "SSID  %s", ssid);
+    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_SSID), ssid);
     (void)ui_create_label_locked(
         card,
         10,
@@ -421,7 +422,7 @@ static void ui_wifi_render_sta_card(
         UI_COLOR_TEXT
     );
 
-    snprintf(text, sizeof(text), "IP    %s", ip);
+    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_IP), ip);
     (void)ui_create_label_locked(
         card,
         10,
@@ -445,10 +446,10 @@ void ui_render_wifi_locked(void)
     const char *footer =
         context->notice[0] != '\0'
             ? context->notice
-            : "UP/DOWN NAV   OK SELECT   LEFT BACK";
+            : ui_tr(UI_I18N_KEY_SHARED_FOOTER_BACK);
 
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "WI-FI / WEB",
+        ui_tr(UI_I18N_KEY_WIFI_TITLE),
         footer
     );
 
@@ -472,14 +473,14 @@ void ui_render_wifi_locked(void)
         char ip[24] = {0};
 
         if (!has_saved_network) {
-            snprintf(ssid, sizeof(ssid), "--");
+            snprintf(ssid, sizeof(ssid), "%s", ui_tr(UI_I18N_KEY_SHARED_EMPTY));
         }
 
         if (
             wifi_manager_sta_ip_string(ip, sizeof(ip)) != ESP_OK ||
             ip[0] == '\0'
         ) {
-            snprintf(ip, sizeof(ip), "--");
+            snprintf(ip, sizeof(ip), "%s", ui_tr(UI_I18N_KEY_SHARED_EMPTY));
         }
 
         ui_wifi_render_sta_card(
@@ -489,14 +490,14 @@ void ui_render_wifi_locked(void)
         );
     }
 
-    const char *actions[3] = {
+    const ui_i18n_key_t actions[3] = {
         context->wifi_confirm == UI_WIFI_CONFIRM_SETUP
-            ? "CONFIRM ENTER SETUP"
-            : "ENTER SETUP MODE",
-        "CONNECT SAVED NETWORK",
+            ? UI_I18N_KEY_WIFI_SETUP_CONFIRM
+            : UI_I18N_KEY_WIFI_SETUP_ENTER,
+        UI_I18N_KEY_WIFI_CONNECT_SAVED,
         context->wifi_confirm == UI_WIFI_CONFIRM_FORGET
-            ? "CONFIRM FORGET NETWORK"
-            : "FORGET SAVED NETWORK",
+            ? UI_I18N_KEY_WIFI_FORGET_CONFIRM
+            : UI_I18N_KEY_WIFI_FORGET,
     };
 
     const bool enabled[3] = {
@@ -509,7 +510,7 @@ void ui_render_wifi_locked(void)
         (void)ui_create_row_locked(
             screen,
             118 + (int)(i * 32U),
-            actions[i],
+            ui_tr(actions[i]),
             i == context->wifi_action,
             enabled[i]
         );

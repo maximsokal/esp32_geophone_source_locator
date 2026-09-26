@@ -1,11 +1,20 @@
 #include "ui_internal.h"
 
+#include <string.h>
+
 
 void ui_render_boot_error_locked(const char *message)
 {
+    const char *display_message = message;
+    if (message != NULL && strcmp(message, "MOUNT FAILED") == 0) {
+        display_message = ui_tr(UI_I18N_KEY_BOOT_MOUNT_FAILED);
+    } else if (message != NULL && strcmp(message, "WRITE TEST FAILED") == 0) {
+        display_message = ui_tr(UI_I18N_KEY_BOOT_WRITE_TEST_FAILED);
+    }
+
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "BOOT ERROR",
-        "PRESS POWER TO SHUT DOWN"
+        ui_tr(UI_I18N_KEY_BOOT_ERROR_TITLE),
+        ui_tr(UI_I18N_KEY_BOOT_ERROR_FOOTER)
     );
 
     if (screen == NULL) {
@@ -25,7 +34,7 @@ void ui_render_boot_error_locked(const char *message)
         14,
         14,
         260,
-        "SD CARD / STORAGE FAILURE",
+        ui_tr(UI_I18N_KEY_BOOT_STORAGE_FAILURE),
         UI_COLOR_ERROR
     );
 
@@ -34,7 +43,7 @@ void ui_render_boot_error_locked(const char *message)
         14,
         46,
         260,
-        message,
+        display_message,
         UI_COLOR_TEXT
     );
 
@@ -43,7 +52,7 @@ void ui_render_boot_error_locked(const char *message)
         14,
         76,
         260,
-        "SD SPI CEILING 20 MHz",
+        ui_tr(UI_I18N_KEY_BOOT_SD_LIMIT),
         UI_COLOR_WARNING
     );
 
@@ -52,7 +61,7 @@ void ui_render_boot_error_locked(const char *message)
         14,
         98,
         260,
-        "CHECK CARD, CS AND WIRING",
+        ui_tr(UI_I18N_KEY_BOOT_CHECK_WIRING),
         UI_COLOR_TEXT
     );
 }

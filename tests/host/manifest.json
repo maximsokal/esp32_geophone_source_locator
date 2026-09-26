@@ -383,11 +383,14 @@
       "name": "ui_power_badge",
       "sources": [
         "components/ui/ui_power_badge.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
         "components/ui/tests/ui_power_badge_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/device_status",
         "components/device_status/include",
+        "components/ui_i18n/include",
         "components/ui"
       ],
       "libraries": ["m"]
@@ -1890,8 +1893,7 @@
         "components/ui/tests/stubs",
         "components/seismic_buffer/include"
       ]
-    }
-,
+    },
     {
       "name": "ui_i18n_locale_store",
       "sources": [

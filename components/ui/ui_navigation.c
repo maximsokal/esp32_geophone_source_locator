@@ -82,7 +82,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
-                "PHONE CONNECTED - SCAN ROOT CA QR"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_PHONE_READY)
             );
             break;
 
@@ -94,18 +94,18 @@ void ui_dispatch_app_event_locked(
 
             if (context->wifi_credentials_saved) {
                 ui_set_notice_locked(
-                    "SETUP LINK CLOSED - SWITCHING TO WI-FI"
+                    ui_tr(UI_I18N_KEY_WIFI_NOTICE_LINK_CLOSED)
                 );
             } else if (
                 context->wifi_ca_downloaded &&
                 !context->wifi_ca_install_confirmed
             ) {
                 ui_set_notice_locked(
-                    "INSTALL CA, RECONNECT, THEN CONFIRM"
+                    ui_tr(UI_I18N_KEY_WIFI_NOTICE_INSTALL_RECONNECT)
                 );
             } else {
                 ui_set_notice_locked(
-                    "PHONE DISCONNECTED - SCAN WI-FI QR"
+                    ui_tr(UI_I18N_KEY_WIFI_NOTICE_PHONE_DISCONNECTED)
                 );
             }
             break;
@@ -114,14 +114,14 @@ void ui_dispatch_app_event_locked(
             context->wifi_setup_page_opened = true;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
-                "SETUP PAGE OPEN - ENTER HOTSPOT DATA"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_SETUP_OPEN)
             );
             break;
 
         case APP_EVENT_WIFI_CREDENTIALS_SAVED:
             context->wifi_credentials_saved = true;
             ui_set_notice_locked(
-                "SAVED - ENABLE HOTSPOT, CONNECTING..."
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_SAVED)
             );
             break;
 
@@ -139,7 +139,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_verify_nonce = 0;
             context->wifi_verify_result_mask = 0;
             ui_set_notice_locked(
-                "CONNECTING TO SAVED WI-FI..."
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_CONNECTING)
             );
             break;
 
@@ -153,7 +153,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_setup_page_opened = false;
             context->wifi_credentials_saved = false;
             ui_set_notice_locked(
-                "WI-FI CONNECTED - STARTING HTTPS"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_CONNECTED)
             );
             break;
 
@@ -171,7 +171,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_verify_nonce = 0;
             context->wifi_verify_result_mask = 0;
             ui_set_notice_locked(
-                "WI-FI DISCONNECTED - RETRYING"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_DISCONNECTED)
             );
             break;
 
@@ -179,7 +179,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_ca_downloaded = true;
             context->wifi_ca_install_confirmed = false;
             ui_set_notice_locked(
-                "CA DOWNLOADED - INSTALL IT, THEN CONTINUE"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_CA_DOWNLOADED)
             );
             break;
 
@@ -187,7 +187,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_ca_downloaded = true;
             context->wifi_ca_install_confirmed = true;
             ui_set_notice_locked(
-                "CA CONFIRMED - SCAN HOTSPOT SETUP QR"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_CA_CONFIRMED)
             );
             break;
 
@@ -197,7 +197,7 @@ void ui_dispatch_app_event_locked(
             context->wifi_verify_nonce = (uint32_t)event_value;
             context->wifi_verify_result_mask = 0;
             ui_set_notice_locked(
-                "HTTPS READY - SCAN VERIFY QR ON PHONE"
+                ui_tr(UI_I18N_KEY_WIFI_NOTICE_HTTPS_READY)
             );
             break;
 
@@ -211,11 +211,11 @@ void ui_dispatch_app_event_locked(
                 APP_TLS_VERIFY_REQUIRED_MASK
             ) {
                 ui_set_notice_locked(
-                    "HTTPS/CAMERA/WEBXR VERIFIED"
+                    ui_tr(UI_I18N_KEY_WIFI_NOTICE_VERIFIED)
                 );
             } else {
                 ui_set_notice_locked(
-                    "VERIFY INCOMPLETE - CHECK PHONE RESULTS"
+                    ui_tr(UI_I18N_KEY_WIFI_NOTICE_VERIFY_INCOMPLETE)
                 );
             }
             break;
@@ -225,16 +225,16 @@ void ui_dispatch_app_event_locked(
              * the notice adds the instruction where a screen has room. */
             switch (event_value) {
                 case APP_POWER_ALERT_LOW:
-                    ui_set_notice_locked("LOW BATTERY - CONNECT USB SOON");
+                    ui_set_notice_locked(ui_tr(UI_I18N_KEY_POWER_ALERT_LOW));
                     break;
                 case APP_POWER_ALERT_CRITICAL_GRACE:
-                    ui_set_notice_locked("LOW BATTERY - CONNECT USB - SHUTTING DOWN");
+                    ui_set_notice_locked(ui_tr(UI_I18N_KEY_POWER_ALERT_CRITICAL));
                     break;
                 case APP_POWER_ALERT_CANCELLED:
-                    ui_set_notice_locked("USB CONNECTED - SHUTDOWN CANCELLED");
+                    ui_set_notice_locked(ui_tr(UI_I18N_KEY_POWER_ALERT_CANCELLED));
                     break;
                 case APP_POWER_ALERT_SHUTDOWN:
-                    ui_set_notice_locked("LOW BATTERY - SHUTTING DOWN");
+                    ui_set_notice_locked(ui_tr(UI_I18N_KEY_POWER_ALERT_SHUTDOWN));
                     break;
                 default:
                     return;
@@ -252,7 +252,7 @@ void ui_dispatch_app_event_locked(
                 context->object_count = 0U;
                 context->object_index = 0U;
                 context->objects_mode = UI_OBJECTS_MENU;
-                ui_set_notice_locked("CHECKING STORAGE...");
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_CHECKING_STORAGE));
                 ui_render_objects_locked();
             }
             return;
@@ -273,8 +273,8 @@ void ui_dispatch_app_event_locked(
             if (context->screen == UI_SCREEN_OBJECTS) {
                 ui_set_notice_locked(
                     context->storage_recovery_failed
-                        ? "RECOVERY FAILED - REOPEN OBJECTS"
-                        : "RECOVERY COMPLETE - REOPEN OBJECTS"
+                        ? ui_tr(UI_I18N_KEY_STORAGE_RECOVERY_FAILED)
+                        : ui_tr(UI_I18N_KEY_STORAGE_RECOVERY_COMPLETE)
                 );
                 ui_render_objects_locked();
             }

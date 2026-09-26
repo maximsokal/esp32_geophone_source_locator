@@ -108,7 +108,7 @@ void ui_handle_wifi_key_locked(
                     UI_WIFI_CONFIRM_SETUP;
 
                 ui_set_notice_locked(
-                    "PRESS OK AGAIN: ENTER SETUP"
+                    ui_tr(UI_I18N_KEY_WIFI_ASK_SETUP)
                 );
 
                 ui_render_wifi_locked();
@@ -161,7 +161,7 @@ void ui_handle_wifi_key_locked(
                     UI_WIFI_CONFIRM_FORGET;
 
                 ui_set_notice_locked(
-                    "PRESS OK AGAIN: FORGET NETWORK"
+                    ui_tr(UI_I18N_KEY_WIFI_ASK_FORGET)
                 );
 
                 ui_render_wifi_locked();
@@ -181,8 +181,8 @@ void ui_handle_wifi_key_locked(
 
         ui_set_notice_locked(
             err == ESP_OK
-                ? "WI-FI COMMAND ACCEPTED"
-                : "WI-FI COMMAND FAILED"
+                ? ui_tr(UI_I18N_KEY_WIFI_COMMAND_OK)
+                : ui_tr(UI_I18N_KEY_WIFI_COMMAND_FAILED)
         );
 
         ui_render_wifi_locked();

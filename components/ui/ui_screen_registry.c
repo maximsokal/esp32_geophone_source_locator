@@ -31,7 +31,7 @@ static void ui_screen_open_objects(void)
     context->objects_loaded = false;
 
     if (context->storage_recovery_active) {
-        ui_set_notice_locked("CHECKING STORAGE...");
+        ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_CHECKING_STORAGE));
         ui_render_objects_locked();
         return;
     }
@@ -40,8 +40,8 @@ static void ui_screen_open_objects(void)
 
     ui_set_notice_locked(
         err == ESP_OK
-            ? "LOADING OBJECTS..."
-            : "OBJECT LIST FAILED"
+            ? ui_tr(UI_I18N_KEY_OBJECTS_LOADING)
+            : ui_tr(UI_I18N_KEY_OBJECTS_LIST_FAILED)
     );
 
     ui_render_objects_locked();
@@ -158,7 +158,7 @@ static void ui_screen_handle_back_key(
 static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
     [UI_SCREEN_HOME] = {
         .name = "HOME",
-        .home_label = NULL,
+        .home_label = UI_I18N_KEY_COUNT,
         .open = ui_screen_open_home,
         .render = ui_render_home_locked,
         .handle_key = ui_screen_handle_home_key,
@@ -167,7 +167,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 
     [UI_SCREEN_OBJECTS] = {
         .name = "OBJECTS",
-        .home_label = "OBJECTS",
+        .home_label = UI_I18N_KEY_MENU_OBJECTS,
         .open = ui_screen_open_objects,
         .render = ui_render_objects_locked,
         .handle_key = ui_handle_objects_key_locked,
@@ -176,7 +176,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 
     [UI_SCREEN_MEASUREMENTS] = {
         .name = "MEASUREMENTS",
-        .home_label = "MEASUREMENTS / AD7606",
+        .home_label = UI_I18N_KEY_MENU_MEASUREMENTS,
         .open = ui_screen_open_measurements,
         .render = ui_render_measurements_locked,
         .handle_key = ui_handle_measurements_key_locked,
@@ -185,7 +185,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 
     [UI_SCREEN_STORAGE] = {
         .name = "STORAGE",
-        .home_label = "STORAGE / SD CARD",
+        .home_label = UI_I18N_KEY_MENU_STORAGE,
         .open = ui_screen_open_storage,
         .render = ui_render_storage_locked,
         .handle_key = ui_handle_storage_key_locked,
@@ -194,7 +194,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 
     [UI_SCREEN_WIFI] = {
         .name = "WI-FI / WEB",
-        .home_label = "WI-FI / WEB",
+        .home_label = UI_I18N_KEY_WIFI_TITLE,
         .open = ui_screen_open_wifi,
         .render = ui_render_wifi_locked,
         .handle_key = ui_handle_wifi_key_locked,
@@ -203,7 +203,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 
     [UI_SCREEN_SYSTEM] = {
         .name = "SYSTEM",
-        .home_label = "SYSTEM",
+        .home_label = UI_I18N_KEY_SYSTEM_TITLE,
         .open = ui_screen_open_system,
         .render = ui_render_system_locked,
         .handle_key = ui_system_handle_key_locked,
@@ -212,7 +212,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
 
     [UI_SCREEN_SCAN_PREVIEW] = {
         .name = "3D PREVIEW",
-        .home_label = NULL,
+        .home_label = UI_I18N_KEY_COUNT,
         .open = ui_screen_open_scan_preview,
         .render = ui_scan_preview_render_locked,
         .handle_key = ui_scan_preview_handle_key_locked,
@@ -277,12 +277,12 @@ const char *ui_screen_home_label(
 
     if (
         driver == NULL ||
-        driver->home_label == NULL
+        driver->home_label >= UI_I18N_KEY_COUNT
     ) {
-        return "--";
+        return ui_tr(UI_I18N_KEY_SHARED_EMPTY);
     }
 
-    return driver->home_label;
+    return ui_tr(driver->home_label);
 }
 
 

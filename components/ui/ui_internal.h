@@ -57,7 +57,7 @@ typedef enum
 typedef struct
 {
     const char *name;
-    const char *home_label;
+    ui_i18n_key_t home_label;
 
     void (*open)(void);
     void (*render)(void);
@@ -139,7 +139,7 @@ typedef struct
     bool storage_recovery_active;
     bool storage_recovery_failed;
 
-    char notice[80];
+    char notice[128];
 
 } ui_context_t;
 

@@ -89,8 +89,8 @@ void ui_render_storage_locked(void)
 
     lv_obj_t *screen =
         ui_create_screen_base_locked(
-            "STORAGE",
-            "UP/DOWN NAV   OK SELECT   LEFT BACK"
+            ui_tr(UI_I18N_KEY_STORAGE_TITLE),
+            ui_tr(UI_I18N_KEY_SHARED_FOOTER_BACK)
         );
 
     if (screen == NULL) {
@@ -120,7 +120,7 @@ void ui_render_storage_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "%s  %s  %.2f GB",
+            ui_tr(UI_I18N_KEY_STORAGE_SUMMARY),
             context->storage_info.name,
             context->storage_info.type,
             total_gb
@@ -138,7 +138,7 @@ void ui_render_storage_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "FREE %.2f GB   SPI %.2f MHz",
+            ui_tr(UI_I18N_KEY_STORAGE_SPACE),
             free_gb,
             (double)context->storage_info.speed_khz /
                 1000.0
@@ -158,7 +158,7 @@ void ui_render_storage_locked(void)
             10,
             56,
             280,
-            "SD RUNTIME CEILING 20 MHz",
+            ui_tr(UI_I18N_KEY_STORAGE_RUNTIME_LIMIT),
             UI_STORAGE_COLOR_MUTED
         );
     } else {
@@ -167,7 +167,7 @@ void ui_render_storage_locked(void)
             10,
             24,
             280,
-            "SD INFORMATION NOT LOADED",
+            ui_tr(UI_I18N_KEY_STORAGE_NOT_LOADED),
             UI_STORAGE_COLOR_MUTED
         );
     }
@@ -175,7 +175,7 @@ void ui_render_storage_locked(void)
     ui_create_row_locked(
         screen,
         132,
-        "REFRESH SD INFO",
+        ui_tr(UI_I18N_KEY_STORAGE_REFRESH),
         context->storage_action == 0,
         true
     );
@@ -184,8 +184,8 @@ void ui_render_storage_locked(void)
         screen,
         166,
         context->storage_erase_confirm
-            ? "CONFIRM ERASE DATA"
-            : "ERASE DEVICE DATA",
+            ? ui_tr(UI_I18N_KEY_STORAGE_CONFIRM_ERASE)
+            : ui_tr(UI_I18N_KEY_STORAGE_ERASE_DEVICE),
         context->storage_action == 1,
         storage_ready
     );
@@ -242,13 +242,13 @@ void ui_storage_service_event(
                 false;
 
             ui_set_notice_locked(
-                "DATA ERASE COMPLETE - REFRESH INFO"
+                ui_tr(UI_I18N_KEY_STORAGE_ERASE_COMPLETE)
             );
             break;
 
         case STORAGE_SERVICE_EVENT_INFO_FAILED:
             ui_set_notice_locked(
-                "SD INFO FAILED"
+                ui_tr(UI_I18N_KEY_STORAGE_INFO_FAILED)
             );
             break;
 
@@ -258,7 +258,7 @@ void ui_storage_service_event(
                 false;
 
             ui_set_notice_locked(
-                "DATA ERASE FAILED"
+                ui_tr(UI_I18N_KEY_STORAGE_ERASE_FAILED)
             );
             break;
     }

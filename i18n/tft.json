@@ -4,18 +4,178 @@
   "entries": {
     "menu.objects": {
       "en": "OBJECTS",
-      "uk": "",
+      "uk": "ОБ’ЄКТИ",
       "max_len": 7
     },
     "menu.measurements": {
       "en": "MEASUREMENTS / AD7606",
-      "uk": "",
+      "uk": "ВИМІРЮВАННЯ / AD7606",
       "max_len": 21
     },
     "menu.storage": {
       "en": "STORAGE / SD CARD",
-      "uk": "",
+      "uk": "СХОВИЩЕ / SD CARD",
       "max_len": 17
+    },
+    "home.title": {
+      "en": "MAIN",
+      "uk": "MAIN",
+      "max_len": 4
+    },
+    "home.checking_storage": {
+      "en": "CHECKING STORAGE...",
+      "uk": "ПЕРЕВІРКА СХОВИЩА...",
+      "max_len": 20
+    },
+    "home.storage_incomplete": {
+      "en": "STORAGE CHECK INCOMPLETE",
+      "uk": "ПЕРЕВІРКУ СХОВИЩА НЕ ЗАВЕРШЕНО",
+      "max_len": 30
+    },
+    "home.navigation": {
+      "en": "UP/DOWN NAV   OK/RIGHT OPEN",
+      "uk": "UP/DOWN НАВ   OK/RIGHT ВІДКРИТИ",
+      "max_len": 31
+    },
+    "shared.empty": {
+      "en": "--",
+      "uk": "--",
+      "max_len": 2
+    },
+    "shared.checking_storage": {
+      "en": "CHECKING STORAGE...",
+      "uk": "ПЕРЕВІРКА СХОВИЩА...",
+      "max_len": 20
+    },
+    "shared.measure_service_unavailable": {
+      "en": "MEASUREMENT SERVICE UNAVAILABLE",
+      "uk": "СЛУЖБА ВИМІРЮВАНЬ НЕДОСТУПНА",
+      "max_len": 31
+    },
+    "shared.measure_operation_busy": {
+      "en": "MEASUREMENT OPERATION IN PROGRESS",
+      "uk": "ТРИВАЄ ДІЯ ВИМІРЮВАННЯ",
+      "max_len": 33
+    },
+    "shared.footer_back": {
+      "en": "UP/DOWN NAV   OK SELECT   LEFT BACK",
+      "uk": "UP/DOWN НАВ   OK ВИБІР   LEFT НАЗАД",
+      "max_len": 35
+    },
+    "shared.footer_cancel": {
+      "en": "UP/DOWN NAV   OK SELECT   LEFT CANCEL",
+      "uk": "UP/DOWN НАВ   OK ВИБІР   LEFT СКАСУВАТИ",
+      "max_len": 39
+    },
+    "boot.title": {
+      "en": "GEOPHONE LOCATOR",
+      "uk": "ГЕОФОННИЙ ЛОКАТОР",
+      "max_len": 17
+    },
+    "boot.footer": {
+      "en": "ESP32-S3  |  INITIALIZING",
+      "uk": "ESP32-S3  |  ЗАПУСК",
+      "max_len": 25
+    },
+    "boot.startup": {
+      "en": "SYSTEM STARTUP",
+      "uk": "ЗАПУСК СИСТЕМИ",
+      "max_len": 14
+    },
+    "boot.error_title": {
+      "en": "BOOT ERROR",
+      "uk": "ПОМИЛКА ЗАПУСКУ",
+      "max_len": 15
+    },
+    "boot.error_footer": {
+      "en": "PRESS POWER TO SHUT DOWN",
+      "uk": "НАТИСНІТЬ ЖИВЛЕННЯ ДЛЯ ВИМКНЕННЯ",
+      "max_len": 32
+    },
+    "boot.storage_failure": {
+      "en": "SD CARD / STORAGE FAILURE",
+      "uk": "ЗБІЙ SD-КАРТИ / СХОВИЩА",
+      "max_len": 25
+    },
+    "boot.sd_limit": {
+      "en": "SD SPI CEILING 20 MHz",
+      "uk": "ЛІМІТ SD 20 MHz",
+      "max_len": 21
+    },
+    "boot.check_wiring": {
+      "en": "CHECK CARD, CS AND WIRING",
+      "uk": "ПЕРЕВІРТЕ КАРТУ, CS І ДРОТИ",
+      "max_len": 27
+    },
+    "boot.mount_failed": {
+      "en": "MOUNT FAILED",
+      "uk": "НЕ ВДАЛОСЯ ЗМОНТУВАТИ",
+      "max_len": 21
+    },
+    "boot.write_test_failed": {
+      "en": "WRITE TEST FAILED",
+      "uk": "ТЕСТ ЗАПИСУ НЕ ПРОЙШОВ",
+      "max_len": 22
+    },
+    "boot.stage_starting": {
+      "en": "STARTING...",
+      "uk": "ЗАПУСК...",
+      "max_len": 11
+    },
+    "boot.stage_storage": {
+      "en": "STORAGE...",
+      "uk": "СХОВИЩЕ...",
+      "max_len": 10
+    },
+    "boot.stage_active_object": {
+      "en": "ACTIVE OBJECT...",
+      "uk": "АКТИВНИЙ ОБ’ЄКТ...",
+      "max_len": 18
+    },
+    "boot.stage_object_store": {
+      "en": "OBJECT STORE...",
+      "uk": "СХОВИЩЕ ОБ’ЄКТІВ...",
+      "max_len": 19
+    },
+    "boot.stage_network": {
+      "en": "NETWORK + UI...",
+      "uk": "МЕРЕЖА + UI...",
+      "max_len": 15
+    },
+    "header.adc_idle": {
+      "en": "ADC --",
+      "uk": "ADC --",
+      "max_len": 6
+    },
+    "header.power_empty": {
+      "en": "--",
+      "uk": "--",
+      "max_len": 2
+    },
+    "header.network_offline": {
+      "en": "NET --",
+      "uk": "Wi-Fi --",
+      "max_len": 8
+    },
+    "header.network_setup": {
+      "en": "SETUP",
+      "uk": "НАЛАШТ.",
+      "max_len": 7
+    },
+    "header.network_ready": {
+      "en": "NET OK",
+      "uk": "Wi-Fi OK",
+      "max_len": 8
+    },
+    "header.source_format": {
+      "en": "%s %s",
+      "uk": "%s %s",
+      "max_len": 5
+    },
+    "header.power_format": {
+      "en": "%s%s%s",
+      "uk": "%s%s%s",
+      "max_len": 6
     },
     "system.title": {
       "en": "SYSTEM",
@@ -35,7 +195,947 @@
     "system.language_footer": {
       "en": "UP/DN SELECT  OK APPLY  LEFT BACK",
       "uk": "UP/DN ВИБІР  OK ЗБЕРЕГТИ  LEFT НАЗАД",
+      "max_len": 36
+    },
+    "system.firmware": {
+      "en": "FW      %s",
+      "uk": "ПЗ      %s",
+      "max_len": 10
+    },
+    "system.idf_version": {
+      "en": "ESP-IDF  %s",
+      "uk": "ESP-IDF  %s",
+      "max_len": 11
+    },
+    "system.lvgl_version": {
+      "en": "LVGL     %d.%d.%d + esp_lvgl_port",
+      "uk": "LVGL     %d.%d.%d + esp_lvgl_port",
+      "max_len": 33
+    },
+    "system.heap_empty": {
+      "en": "HEAP     -- KB internal free",
+      "uk": "ВНУТР. КУЧА -- KB вільно",
+      "max_len": 28
+    },
+    "system.psram_empty": {
+      "en": "PSRAM    -- KB free",
+      "uk": "PSRAM    -- KB вільно",
+      "max_len": 21
+    },
+    "system.uptime_empty": {
+      "en": "UPTIME   -- s",
+      "uk": "ЧАС      -- с",
+      "max_len": 13
+    },
+    "system.cores": {
+      "en": "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
+      "uk": "CORE0 СЕРВІСИ/LVGL   CORE1 ЗБІР ДАНИХ",
       "max_len": 39
+    },
+    "system.heap": {
+      "en": "HEAP     %lu KB internal free",
+      "uk": "ВНУТР. КУЧА %lu KB вільно",
+      "max_len": 29
+    },
+    "system.psram": {
+      "en": "PSRAM    %lu KB free",
+      "uk": "PSRAM    %lu KB вільно",
+      "max_len": 22
+    },
+    "system.uptime": {
+      "en": "UPTIME   %lld s",
+      "uk": "ЧАС      %lld с",
+      "max_len": 15
+    },
+    "objects.active": {
+      "en": "ACTIVE  %s  %s",
+      "uk": "АКТИВНИЙ  %s  %s",
+      "max_len": 16
+    },
+    "objects.active_none": {
+      "en": "ACTIVE  NONE",
+      "uk": "АКТИВНИЙ: НЕМАЄ",
+      "max_len": 15
+    },
+    "objects.new": {
+      "en": "NEW OBJECT",
+      "uk": "НОВИЙ ОБ’ЄКТ",
+      "max_len": 12
+    },
+    "objects.set_active": {
+      "en": "SET ACTIVE OBJECT",
+      "uk": "ЗРОБИТИ АКТИВНИМ",
+      "max_len": 17
+    },
+    "objects.delete": {
+      "en": "DELETE OBJECT",
+      "uk": "ВИДАЛИТИ ОБ’ЄКТ",
+      "max_len": 15
+    },
+    "objects.select_activate": {
+      "en": "SELECT OBJECT TO ACTIVATE",
+      "uk": "ОБЕРІТЬ ОБ’ЄКТ ДЛЯ АКТИВАЦІЇ",
+      "max_len": 28
+    },
+    "objects.select_delete": {
+      "en": "SELECT OBJECT TO DELETE",
+      "uk": "ОБЕРІТЬ ОБ’ЄКТ ДЛЯ ВИДАЛЕННЯ",
+      "max_len": 28
+    },
+    "objects.none": {
+      "en": "NO OBJECTS",
+      "uk": "НЕМАЄ ОБ’ЄКТІВ",
+      "max_len": 14
+    },
+    "objects.active_marker": {
+      "en": "[ACTIVE]",
+      "uk": "[АКТИВНИЙ]",
+      "max_len": 10
+    },
+    "objects.list_entry": {
+      "en": "%s  %s%s",
+      "uk": "%s  %s%s",
+      "max_len": 8
+    },
+    "objects.name_pair": {
+      "en": "%s  %s",
+      "uk": "%s  %s",
+      "max_len": 6
+    },
+    "objects.confirm_delete": {
+      "en": "DELETE OBJECT?",
+      "uk": "ВИДАЛИТИ ОБ’ЄКТ?",
+      "max_len": 16
+    },
+    "objects.confirm_footer": {
+      "en": "OK/RIGHT CONFIRM   LEFT CANCEL",
+      "uk": "OK/RIGHT ПІДТВЕРДИТИ   LEFT СКАСУВАТИ",
+      "max_len": 37
+    },
+    "objects.created": {
+      "en": "CREATED %s",
+      "uk": "СТВОРЕНО %s",
+      "max_len": 11
+    },
+    "objects.active_done": {
+      "en": "ACTIVE %s",
+      "uk": "АКТИВНИЙ %s",
+      "max_len": 11
+    },
+    "objects.deleted": {
+      "en": "DELETED %s",
+      "uk": "ВИДАЛЕНО %s",
+      "max_len": 11
+    },
+    "objects.list_failed": {
+      "en": "OBJECT LIST FAILED",
+      "uk": "НЕ ВДАЛОСЯ ЗЧИТАТИ ОБ’ЄКТИ",
+      "max_len": 26
+    },
+    "objects.operation_failed": {
+      "en": "OBJECT OPERATION FAILED",
+      "uk": "ДІЯ З ОБ’ЄКТОМ НЕ ВДАЛАСЯ",
+      "max_len": 25
+    },
+    "objects.creating": {
+      "en": "CREATING OBJECT...",
+      "uk": "СТВОРЕННЯ ОБ’ЄКТА...",
+      "max_len": 20
+    },
+    "objects.service_busy": {
+      "en": "OBJECT SERVICE BUSY/FAILED",
+      "uk": "СЛУЖБА ОБ’ЄКТІВ ЗАЙНЯТА / ЗБІЙ",
+      "max_len": 30
+    },
+    "objects.deleting": {
+      "en": "DELETING...",
+      "uk": "ВИДАЛЕННЯ...",
+      "max_len": 12
+    },
+    "objects.delete_start_failed": {
+      "en": "DELETE FAILED TO START",
+      "uk": "НЕ ВДАЛОСЯ ПОЧАТИ ВИДАЛЕННЯ",
+      "max_len": 27
+    },
+    "objects.setting_active": {
+      "en": "SETTING ACTIVE...",
+      "uk": "АКТИВАЦІЯ ОБ’ЄКТА...",
+      "max_len": 20
+    },
+    "objects.set_active_start_failed": {
+      "en": "SET ACTIVE FAILED TO START",
+      "uk": "НЕ ВДАЛОСЯ ПОЧАТИ АКТИВАЦІЮ",
+      "max_len": 27
+    },
+    "storage.title": {
+      "en": "STORAGE",
+      "uk": "СХОВИЩЕ",
+      "max_len": 7
+    },
+    "storage.summary": {
+      "en": "%s  %s  %.2f GB",
+      "uk": "%s  %s  %.2f GB",
+      "max_len": 15
+    },
+    "storage.space": {
+      "en": "FREE %.2f GB   SPI %.2f MHz",
+      "uk": "ВІЛЬНО %.2f GB   SPI %.2f MHz",
+      "max_len": 29
+    },
+    "storage.runtime_limit": {
+      "en": "SD RUNTIME CEILING 20 MHz",
+      "uk": "ЛІМІТ SD ПІД ЧАС РОБОТИ 20 MHz",
+      "max_len": 30
+    },
+    "storage.not_loaded": {
+      "en": "SD INFORMATION NOT LOADED",
+      "uk": "ДАНІ SD НЕ ЗАВАНТАЖЕНО",
+      "max_len": 25
+    },
+    "storage.refresh": {
+      "en": "REFRESH SD INFO",
+      "uk": "ОНОВИТИ ДАНІ SD",
+      "max_len": 15
+    },
+    "storage.confirm_erase": {
+      "en": "CONFIRM ERASE DATA",
+      "uk": "ПІДТВЕРДИТИ СТИРАННЯ ДАНИХ",
+      "max_len": 26
+    },
+    "storage.erase_device": {
+      "en": "ERASE DEVICE DATA",
+      "uk": "СТЕРТИ ДАНІ ПРИСТРОЮ",
+      "max_len": 20
+    },
+    "storage.erase_complete": {
+      "en": "DATA ERASE COMPLETE - REFRESH INFO",
+      "uk": "ДАНІ СТЕРТО. ОНОВІТЬ ІНФОРМАЦІЮ",
+      "max_len": 34
+    },
+    "storage.info_failed": {
+      "en": "SD INFO FAILED",
+      "uk": "НЕ ВДАЛОСЯ ПРОЧИТАТИ SD",
+      "max_len": 23
+    },
+    "storage.erase_failed": {
+      "en": "DATA ERASE FAILED",
+      "uk": "НЕ ВДАЛОСЯ СТЕРТИ ДАНІ",
+      "max_len": 22
+    },
+    "storage.refreshing": {
+      "en": "REFRESHING SD INFO...",
+      "uk": "ОНОВЛЕННЯ ДАНИХ SD...",
+      "max_len": 21
+    },
+    "storage.service_busy": {
+      "en": "STORAGE SERVICE BUSY/FAILED",
+      "uk": "СЛУЖБА СХОВИЩА ЗАЙНЯТА / ЗБІЙ",
+      "max_len": 29
+    },
+    "storage.confirm_prompt": {
+      "en": "PRESS OK AGAIN TO ERASE DATA",
+      "uk": "НАТИСНІТЬ OK ЩЕ РАЗ, ЩОБ СТЕРТИ ДАНІ",
+      "max_len": 36
+    },
+    "storage.erasing": {
+      "en": "ERASING DATA...",
+      "uk": "СТИРАННЯ ДАНИХ...",
+      "max_len": 17
+    },
+    "storage.recovery_failed": {
+      "en": "RECOVERY FAILED - REOPEN OBJECTS",
+      "uk": "???? ? ????? ????????? ???????",
+      "max_len": 36
+    },
+    "storage.recovery_complete": {
+      "en": "RECOVERY COMPLETE - REOPEN OBJECTS",
+      "uk": "?????? ? ????? ????????? ???????",
+      "max_len": 36
+    },
+    "wifi.title": {
+      "en": "WI-FI / WEB",
+      "uk": "Wi-Fi / ВЕБ",
+      "max_len": 11
+    },
+    "wifi.step3_saved": {
+      "en": "STEP 3/4  SETTINGS SAVED",
+      "uk": "КРОК 3/4  НАЛАШТУВАННЯ ЗБЕРЕЖЕНО",
+      "max_len": 32
+    },
+    "wifi.enable_hotspot": {
+      "en": "ENABLE PHONE HOTSPOT",
+      "uk": "УВІМКНІТЬ ТОЧКУ ДОСТУПУ ТЕЛЕФОНА",
+      "max_len": 32
+    },
+    "wifi.next_verify": {
+      "en": "NEXT: HTTPS VERIFY QR",
+      "uk": "ДАЛІ: QR ДЛЯ ПЕРЕВІРКИ HTTPS",
+      "max_len": 28
+    },
+    "wifi.step1_connect": {
+      "en": "STEP 1/4  CONNECT PHONE",
+      "uk": "КРОК 1/4  ПІДКЛЮЧІТЬ ТЕЛЕФОН",
+      "max_len": 28
+    },
+    "wifi.ap_ssid": {
+      "en": "AP  %s",
+      "uk": "AP  %s",
+      "max_len": 6
+    },
+    "wifi.scan_join": {
+      "en": "SCAN WI-FI QR",
+      "uk": "СКАНУЙТЕ QR WI-FI",
+      "max_len": 17
+    },
+    "wifi.step2_install": {
+      "en": "STEP 2/4  INSTALL ROOT CA",
+      "uk": "КРОК 2/4  ВСТАНОВІТЬ ROOT CA",
+      "max_len": 28
+    },
+    "wifi.download_ca": {
+      "en": "DOWNLOAD PUBLIC CA",
+      "uk": "ЗАВАНТАЖТЕ ПУБЛІЧНИЙ CA",
+      "max_len": 23
+    },
+    "wifi.step2_downloaded": {
+      "en": "STEP 2/4  CA DOWNLOADED",
+      "uk": "КРОК 2/4  CA ЗАВАНТАЖЕНО",
+      "max_len": 24
+    },
+    "wifi.install_android": {
+      "en": "INSTALL CA IN ANDROID",
+      "uk": "ВСТАНОВІТЬ CA В ANDROID",
+      "max_len": 23
+    },
+    "wifi.return_continue": {
+      "en": "RETURN + TAP CONTINUE",
+      "uk": "ПОВЕРНІТЬСЯ Й НАТИСНІТЬ ДАЛІ",
+      "max_len": 28
+    },
+    "wifi.step3_page_open": {
+      "en": "STEP 3/4  SETUP PAGE OPEN",
+      "uk": "КРОК 3/4  СТОРІНКУ ВІДКРИТО",
+      "max_len": 27
+    },
+    "wifi.step3_configure": {
+      "en": "STEP 3/4  CONFIGURE HOTSPOT",
+      "uk": "КРОК 3/4  НАЛАШТУЙТЕ HOTSPOT",
+      "max_len": 28
+    },
+    "wifi.root_ca_confirmed": {
+      "en": "ROOT CA CONFIRMED",
+      "uk": "ROOT CA ПІДТВЕРДЖЕНО",
+      "max_len": 20
+    },
+    "wifi.step4_verified": {
+      "en": "STEP 4/4  HTTPS / WEBXR VERIFIED",
+      "uk": "КРОК 4/4  HTTPS / WEBXR ПЕРЕВІРЕНО",
+      "max_len": 34
+    },
+    "wifi.step4_incomplete": {
+      "en": "STEP 4/4  VERIFY INCOMPLETE",
+      "uk": "КРОК 4/4  ПЕРЕВІРКУ НЕ ЗАВЕРШЕНО",
+      "max_len": 32
+    },
+    "wifi.verify_codes": {
+      "en": "SEC %s  CAM %s  XR %s  AR %s",
+      "uk": "SEC %s  CAM %s  XR %s  AR %s",
+      "max_len": 28
+    },
+    "wifi.phone_report": {
+      "en": "PHONE REPORT RECEIVED",
+      "uk": "ЗВІТ З ТЕЛЕФОНА ОТРИМАНО",
+      "max_len": 24
+    },
+    "wifi.verify_https": {
+      "en": "STEP 4/4  VERIFY HTTPS",
+      "uk": "КРОК 4/4  ПЕРЕВІРТЕ HTTPS",
+      "max_len": 25
+    },
+    "wifi.scan_phone": {
+      "en": "SCAN QR ON PHONE",
+      "uk": "СКАНУЙТЕ QR ТЕЛЕФОНОМ",
+      "max_len": 21
+    },
+    "wifi.camera_webxr": {
+      "en": "CAMERA + WEBXR TEST",
+      "uk": "ТЕСТ КАМЕРИ + WEBXR",
+      "max_len": 19
+    },
+    "wifi.mode": {
+      "en": "MODE  %s",
+      "uk": "РЕЖИМ  %s",
+      "max_len": 9
+    },
+    "wifi.ssid": {
+      "en": "SSID  %s",
+      "uk": "SSID  %s",
+      "max_len": 8
+    },
+    "wifi.ip": {
+      "en": "IP    %s",
+      "uk": "IP    %s",
+      "max_len": 8
+    },
+    "wifi.setup_confirm": {
+      "en": "CONFIRM ENTER SETUP",
+      "uk": "ПІДТВЕРДИТИ НАЛАШТУВАННЯ",
+      "max_len": 24
+    },
+    "wifi.setup_enter": {
+      "en": "ENTER SETUP MODE",
+      "uk": "УВІЙТИ В РЕЖИМ НАЛАШТУВАННЯ",
+      "max_len": 27
+    },
+    "wifi.connect_saved": {
+      "en": "CONNECT SAVED NETWORK",
+      "uk": "ПІДКЛЮЧИТИСЯ ДО ЗБЕРЕЖЕНОЇ МЕРЕЖІ",
+      "max_len": 33
+    },
+    "wifi.forget_confirm": {
+      "en": "CONFIRM FORGET NETWORK",
+      "uk": "ПІДТВЕРДИТИ ЗАБУВАННЯ МЕРЕЖІ",
+      "max_len": 28
+    },
+    "wifi.forget": {
+      "en": "FORGET SAVED NETWORK",
+      "uk": "ЗАБУТИ ЗБЕРЕЖЕНУ МЕРЕЖУ",
+      "max_len": 23
+    },
+    "wifi.ask_setup": {
+      "en": "PRESS OK AGAIN: ENTER SETUP",
+      "uk": "НАТИСНІТЬ OK ЩЕ РАЗ: НАЛАШТУВАТИ",
+      "max_len": 32
+    },
+    "wifi.ask_forget": {
+      "en": "PRESS OK AGAIN: FORGET NETWORK",
+      "uk": "НАТИСНІТЬ OK ЩЕ РАЗ: ЗАБУТИ МЕРЕЖУ",
+      "max_len": 34
+    },
+    "wifi.command_ok": {
+      "en": "WI-FI COMMAND ACCEPTED",
+      "uk": "КОМАНДУ WI-FI ПРИЙНЯТО",
+      "max_len": 22
+    },
+    "wifi.command_failed": {
+      "en": "WI-FI COMMAND FAILED",
+      "uk": "КОМАНДА WI-FI НЕ ВДАЛАСЯ",
+      "max_len": 24
+    },
+    "wifi.notice_phone_ready": {
+      "en": "PHONE CONNECTED - SCAN ROOT CA QR",
+      "uk": "ТЕЛЕФОН ПІДКЛЮЧЕНО — СКАНУЙТЕ QR ROOT CA",
+      "max_len": 40
+    },
+    "wifi.notice_link_closed": {
+      "en": "SETUP LINK CLOSED - SWITCHING TO WI-FI",
+      "uk": "ПОСИЛАННЯ ЗАКРИТО — ПЕРЕХІД НА WI-FI",
+      "max_len": 38
+    },
+    "wifi.notice_install_reconnect": {
+      "en": "INSTALL CA, RECONNECT, THEN CONFIRM",
+      "uk": "ВСТАНОВІТЬ CA, ПІДКЛЮЧІТЬСЯ Й ПІДТВЕРДЬТЕ",
+      "max_len": 41
+    },
+    "wifi.notice_phone_disconnected": {
+      "en": "PHONE DISCONNECTED - SCAN WI-FI QR",
+      "uk": "ТЕЛЕФОН ВІД’ЄДНАНО — СКАНУЙТЕ QR WI-FI",
+      "max_len": 38
+    },
+    "wifi.notice_setup_open": {
+      "en": "SETUP PAGE OPEN - ENTER HOTSPOT DATA",
+      "uk": "СТОРІНКУ ВІДКРИТО — ВВЕДІТЬ ДАНІ ТОЧКИ ДОСТУПУ",
+      "max_len": 46
+    },
+    "wifi.notice_saved": {
+      "en": "SAVED - ENABLE HOTSPOT, CONNECTING...",
+      "uk": "ЗБЕРЕЖЕНО — УВІМКНІТЬ ТОЧКУ ДОСТУПУ",
+      "max_len": 37
+    },
+    "wifi.notice_connecting": {
+      "en": "CONNECTING TO SAVED WI-FI...",
+      "uk": "ПІДКЛЮЧЕННЯ ДО ЗБЕРЕЖЕНОЇ МЕРЕЖІ WI-FI...",
+      "max_len": 41
+    },
+    "wifi.notice_connected": {
+      "en": "WI-FI CONNECTED - STARTING HTTPS",
+      "uk": "WI-FI ПІДКЛЮЧЕНО — ЗАПУСК HTTPS",
+      "max_len": 32
+    },
+    "wifi.notice_disconnected": {
+      "en": "WI-FI DISCONNECTED - RETRYING",
+      "uk": "WI-FI ВІД’ЄДНАНО — ПОВТОРНА СПРОБА",
+      "max_len": 34
+    },
+    "wifi.notice_ca_downloaded": {
+      "en": "CA DOWNLOADED - INSTALL IT, THEN CONTINUE",
+      "uk": "CA ЗАВАНТАЖЕНО — ВСТАНОВІТЬ І ПРОДОВЖТЕ",
+      "max_len": 41
+    },
+    "wifi.notice_ca_confirmed": {
+      "en": "CA CONFIRMED - SCAN HOTSPOT SETUP QR",
+      "uk": "CA ПІДТВЕРДЖЕНО — СКАНУЙТЕ QR НАЛАШТУВАННЯ",
+      "max_len": 42
+    },
+    "wifi.notice_https_ready": {
+      "en": "HTTPS READY - SCAN VERIFY QR ON PHONE",
+      "uk": "HTTPS ГОТОВЕ — СКАНУЙТЕ QR ПЕРЕВІРКИ",
+      "max_len": 37
+    },
+    "wifi.notice_verified": {
+      "en": "HTTPS/CAMERA/WEBXR VERIFIED",
+      "uk": "HTTPS/КАМЕРА/WEBXR ПЕРЕВІРЕНО",
+      "max_len": 29
+    },
+    "wifi.notice_verify_incomplete": {
+      "en": "VERIFY INCOMPLETE - CHECK PHONE RESULTS",
+      "uk": "ПЕРЕВІРКУ НЕ ЗАВЕРШЕНО — ПЕРЕВІРТЕ ТЕЛЕФОН",
+      "max_len": 42
+    },
+    "power.percent": {
+      "en": "%d%%",
+      "uk": "%d%%",
+      "max_len": 4
+    },
+    "power.off": {
+      "en": "OFF",
+      "uk": "ВИМК.",
+      "max_len": 5
+    },
+    "power.usb": {
+      "en": "USB",
+      "uk": "USB",
+      "max_len": 3
+    },
+    "power.charging": {
+      "en": "CHG",
+      "uk": "ЗАРЯД",
+      "max_len": 5
+    },
+    "power.full": {
+      "en": "FULL",
+      "uk": "ПОВНА",
+      "max_len": 5
+    },
+    "power.battery": {
+      "en": "BAT",
+      "uk": "АКБ",
+      "max_len": 3
+    },
+    "power.critical": {
+      "en": "CRIT",
+      "uk": "КРИТ.",
+      "max_len": 5
+    },
+    "power.grace": {
+      "en": "USB %us",
+      "uk": "USB %uс",
+      "max_len": 7
+    },
+    "power.alert_low": {
+      "en": "LOW BATTERY - CONNECT USB SOON",
+      "uk": "НИЗЬКИЙ ЗАРЯД — ПІДКЛЮЧІТЬ USB",
+      "max_len": 30
+    },
+    "power.alert_critical": {
+      "en": "LOW BATTERY - CONNECT USB - SHUTTING DOWN",
+      "uk": "НИЗЬКИЙ ЗАРЯД — USB АБО ВИМКНЕННЯ",
+      "max_len": 41
+    },
+    "power.alert_cancelled": {
+      "en": "USB CONNECTED - SHUTDOWN CANCELLED",
+      "uk": "USB ПІДКЛЮЧЕНО — ВИМКНЕННЯ СКАСОВАНО",
+      "max_len": 36
+    },
+    "power.alert_shutdown": {
+      "en": "LOW BATTERY - SHUTTING DOWN",
+      "uk": "НИЗЬКИЙ ЗАРЯД — ВИМКНЕННЯ",
+      "max_len": 27
+    },
+    "measurement.title": {
+      "en": "MEASUREMENTS",
+      "uk": "ВИМІРЮВАННЯ",
+      "max_len": 12
+    },
+    "measurement.footer": {
+      "en": "LEFT BACK   OK ACTION   UP/DOWN SELECT",
+      "uk": "LEFT НАЗАД   OK ДІЯ   UP/DOWN ВИБІР",
+      "max_len": 38
+    },
+    "measurement.channel_empty": {
+      "en": "CH%u  --",
+      "uk": "CH%u  --",
+      "max_len": 8
+    },
+    "measurement.channel_invalid": {
+      "en": "CH%u INVALID %s",
+      "uk": "CH%u ЗБІЙ %s",
+      "max_len": 15
+    },
+    "measurement.channel_digital": {
+      "en": "CH%u DATA? DIGITAL",
+      "uk": "CH%u ЦИФР. ЗАВАДА",
+      "max_len": 18
+    },
+    "measurement.channel_serial": {
+      "en": "CH%u SERIAL? %s",
+      "uk": "CH%u SERIAL? %s",
+      "max_len": 15
+    },
+    "measurement.channel_value": {
+      "en": "CH%u %+6.2fmV %s",
+      "uk": "CH%u %+6.2fмВ %s",
+      "max_len": 16
+    },
+    "measurement.channel_flat": {
+      "en": "FLAT",
+      "uk": "СТАЛИЙ",
+      "max_len": 6
+    },
+    "measurement.channel_variable": {
+      "en": "VAR",
+      "uk": "ЗМІННИЙ",
+      "max_len": 7
+    },
+    "measurement.state_live": {
+      "en": "LIVE",
+      "uk": "НАЖИВО",
+      "max_len": 6
+    },
+    "measurement.state_starting": {
+      "en": "STARTING",
+      "uk": "ЗАПУСК",
+      "max_len": 8
+    },
+    "measurement.state_recording": {
+      "en": "REC",
+      "uk": "ЗАПИС",
+      "max_len": 5
+    },
+    "measurement.state_stopping": {
+      "en": "STOPPING",
+      "uk": "ЗУПИНКА",
+      "max_len": 8
+    },
+    "measurement.state_complete": {
+      "en": "STOPPED",
+      "uk": "ЗАВЕРШЕНО",
+      "max_len": 9
+    },
+    "measurement.state_deleting": {
+      "en": "DELETING",
+      "uk": "ВИДАЛЕННЯ",
+      "max_len": 9
+    },
+    "measurement.state_error": {
+      "en": "ERROR",
+      "uk": "ПОМИЛКА",
+      "max_len": 7
+    },
+    "measurement.summary_live": {
+      "en": "LIVE --",
+      "uk": "НАЖИВО --",
+      "max_len": 9
+    },
+    "measurement.summary_object": {
+      "en": "OBJECT --",
+      "uk": "ОБ’ЄКТ --",
+      "max_len": 9
+    },
+    "measurement.health_start": {
+      "en": "OK START",
+      "uk": "OK ПОЧАТИ",
+      "max_len": 9
+    },
+    "measurement.graphs_off": {
+      "en": "TFT GRAPHS OFF  ADC+SD ON",
+      "uk": "ГРАФІКИ TFT ВИМК.  ADC+SD УВІМК.",
+      "max_len": 32
+    },
+    "measurement.recording": {
+      "en": "REC %s  %lus  %luHz",
+      "uk": "ЗАПИС %s  %luс  %luГц",
+      "max_len": 21
+    },
+    "measurement.stopped": {
+      "en": "STOPPED %s  %lus",
+      "uk": "ЗАВЕРШЕНО %s  %luс",
+      "max_len": 18
+    },
+    "measurement.idle_summary": {
+      "en": "%s  %luHz  CH1-CH4",
+      "uk": "%s  %luГц  CH1-CH4",
+      "max_len": 18
+    },
+    "measurement.object_format": {
+      "en": "OBJECT %s  [%s]",
+      "uk": "ОБ’ЄКТ %s  [%s]",
+      "max_len": 15
+    },
+    "measurement.object_resolving": {
+      "en": "RESOLVING OBJECT...",
+      "uk": "ПОШУК ОБ’ЄКТА...",
+      "max_len": 19
+    },
+    "measurement.object_none": {
+      "en": "NO ACTIVE OBJECT",
+      "uk": "НЕМАЄ АКТИВНОГО ОБ’ЄКТА",
+      "max_len": 23
+    },
+    "measurement.select_object": {
+      "en": "SELECT ACTIVE OBJECT FIRST",
+      "uk": "СПОЧАТКУ ОБЕРІТЬ АКТИВНИЙ ОБ’ЄКТ",
+      "max_len": 32
+    },
+    "measurement.action_save": {
+      "en": "> SAVE   DELETE   3D",
+      "uk": "> ЗБЕРЕГТИ   ВИДАЛИТИ   3D",
+      "max_len": 26
+    },
+    "measurement.action_delete": {
+      "en": "SAVE   > DELETE   3D",
+      "uk": "ЗБЕРЕГТИ   > ВИДАЛИТИ   3D",
+      "max_len": 26
+    },
+    "measurement.action_preview": {
+      "en": "SAVE    DELETE   >3D",
+      "uk": "ЗБЕРЕГТИ   ВИДАЛИТИ   >3D",
+      "max_len": 25
+    },
+    "measurement.error_retry": {
+      "en": "ERROR %s   OK RETRY",
+      "uk": "ПОМИЛКА %s   OK ПОВТОРИТИ",
+      "max_len": 25
+    },
+    "measurement.wait_leaving": {
+      "en": "PLEASE WAIT - LEAVING...",
+      "uk": "ЗАЧЕКАЙТЕ — ВИХІД...",
+      "max_len": 24
+    },
+    "measurement.wait": {
+      "en": "PLEASE WAIT...",
+      "uk": "ЗАЧЕКАЙТЕ...",
+      "max_len": 14
+    },
+    "measurement.transport_fault": {
+      "en": "ADC INVALID TRANSPORT  %s",
+      "uk": "ADC ЗБІЙ ПЕРЕДАЧІ  %s",
+      "max_len": 25
+    },
+    "measurement.digital_fault": {
+      "en": "ADC DATA? DIGITAL  %s",
+      "uk": "ADC ЦИФР. ЗАВАДА  %s",
+      "max_len": 21
+    },
+    "measurement.serial_fault": {
+      "en": "ADC SERIAL?  %s",
+      "uk": "ADC SERIAL?  %s",
+      "max_len": 15
+    },
+    "measurement.graphs_status": {
+      "en": "TFT GRAPHS OFF  %s",
+      "uk": "ГРАФІКИ TFT ВИМК.  %s",
+      "max_len": 21
+    },
+    "measurement.stopping_leaving": {
+      "en": "STOPPING AND LEAVING...",
+      "uk": "ЗУПИНКА ПЕРЕД ВИХОДОМ...",
+      "max_len": 24
+    },
+    "measurement.stop_failed": {
+      "en": "STOP FAILED",
+      "uk": "НЕ ВДАЛОСЯ ЗУПИНИТИ",
+      "max_len": 19
+    },
+    "measurement.leave_failed": {
+      "en": "FAILED TO LEAVE MEASUREMENT",
+      "uk": "НЕ ВДАЛОСЯ ЗАВЕРШИТИ ВИМІРЮВАННЯ",
+      "max_len": 32
+    },
+    "measurement.leaving_after_operation": {
+      "en": "LEAVING WHEN OPERATION FINISHES...",
+      "uk": "ВИХІД ПІСЛЯ ЗАВЕРШЕННЯ ДІЇ...",
+      "max_len": 34
+    },
+    "measurement.keep_failed": {
+      "en": "FAILED TO KEEP SESSION",
+      "uk": "НЕ ВДАЛОСЯ ЗБЕРЕГТИ СЕАНС",
+      "max_len": 25
+    },
+    "measurement.starting_recording": {
+      "en": "STARTING RECORDING...",
+      "uk": "ПОЧАТОК ЗАПИСУ...",
+      "max_len": 21
+    },
+    "measurement.start_failed": {
+      "en": "START FAILED",
+      "uk": "НЕ ВДАЛОСЯ ПОЧАТИ",
+      "max_len": 17
+    },
+    "measurement.stopping_recording": {
+      "en": "STOPPING RECORDING...",
+      "uk": "ЗУПИНКА ЗАПИСУ...",
+      "max_len": 21
+    },
+    "measurement.session_saved": {
+      "en": "SESSION SAVED",
+      "uk": "СЕАНС ЗБЕРЕЖЕНО",
+      "max_len": 15
+    },
+    "measurement.save_failed": {
+      "en": "SAVE FAILED",
+      "uk": "НЕ ВДАЛОСЯ ЗБЕРЕГТИ",
+      "max_len": 19
+    },
+    "measurement.deleting_session": {
+      "en": "DELETING SESSION...",
+      "uk": "ВИДАЛЕННЯ СЕАНСУ...",
+      "max_len": 19
+    },
+    "measurement.delete_failed": {
+      "en": "DELETE FAILED",
+      "uk": "НЕ ВДАЛОСЯ ВИДАЛИТИ",
+      "max_len": 19
+    },
+    "measurement.no_session_preview": {
+      "en": "NO SAVED SESSION TO PREVIEW",
+      "uk": "НЕМАЄ ЗБЕРЕЖЕНОГО СЕАНСУ ДЛЯ 3D ОГЛЯДУ",
+      "max_len": 38
+    },
+    "scan.title": {
+      "en": "3D PREVIEW",
+      "uk": "3D ОГЛЯД",
+      "max_len": 10
+    },
+    "scan.footer": {
+      "en": "LEFT BACK RIGHT YAW UP/DN PITCH OK VIEW",
+      "uk": "LEFT НАЗАД RIGHT ОБЕРТ UP/DN НАХИЛ OK ОГЛЯД",
+      "max_len": 43
+    },
+    "scan.loading": {
+      "en": "LOADING...",
+      "uk": "ЗАВАНТАЖЕННЯ...",
+      "max_len": 15
+    },
+    "scan.no_3d_scan": {
+      "en": "NO 3D SCAN",
+      "uk": "НЕМАЄ 3D-СКАНУ",
+      "max_len": 14
+    },
+    "scan.no_preview": {
+      "en": "NO PREVIEW",
+      "uk": "НЕМАЄ ОГЛЯДУ",
+      "max_len": 12
+    },
+    "scan.voxels": {
+      "en": "VOXELS %u  COARSEN %u%s%s",
+      "uk": "ВОКСЕЛІ %u  СПРОЩЕННЯ %u%s%s",
+      "max_len": 28
+    },
+    "scan.occupancy": {
+      "en": "OCCUPANCY %u  %s",
+      "uk": "ЗАПОВНЕННЯ %u  %s",
+      "max_len": 17
+    },
+    "scan.reason_preview_unavailable": {
+      "en": "preview unavailable",
+      "uk": "3D ОГЛЯД НЕДОСТУПНИЙ",
+      "max_len": 20
+    },
+    "scan.reason_invalid_session": {
+      "en": "invalid session id",
+      "uk": "НЕКОРЕКТНИЙ СЕАНС",
+      "max_len": 18
+    },
+    "scan.reason_recording_active": {
+      "en": "recording active",
+      "uk": "ТРИВАЄ ЗАПИС",
+      "max_len": 16
+    },
+    "scan.reason_scan_missing": {
+      "en": "scan missing",
+      "uk": "СКАН НЕ ЗНАЙДЕНО",
+      "max_len": 16
+    },
+    "scan.reason_scan_unreadable": {
+      "en": "scan unreadable",
+      "uk": "НЕ ВДАЛОСЯ ПРОЧИТАТИ СКАН",
+      "max_len": 25
+    },
+    "scan.reason_preview_memory": {
+      "en": "preview memory",
+      "uk": "НЕДОСТАТНЬО ПАМ’ЯТІ ДЛЯ 3D ОГЛЯДУ",
+      "max_len": 33
+    },
+    "scan.reason_stale_crc": {
+      "en": "stale scan CRC",
+      "uk": "СКАН CRC ЗАСТАРІВ",
+      "max_len": 17
+    },
+    "scan.reason_invalid_preview": {
+      "en": "invalid preview",
+      "uk": "НЕКОРЕКТНИЙ ОГЛЯД",
+      "max_len": 17
+    },
+    "scan.reason_preview_missing": {
+      "en": "preview missing",
+      "uk": "ОГЛЯД НЕ ЗНАЙДЕНО",
+      "max_len": 17
+    },
+    "scan.reason_preview_unreadable": {
+      "en": "preview unreadable",
+      "uk": "НЕ ВДАЛОСЯ ПРОЧИТАТИ ОГЛЯД",
+      "max_len": 26
+    },
+    "scan.reason_no_data": {
+      "en": "no preview or occupancy",
+      "uk": "НЕМАЄ ОГЛЯДУ АБО ЗАПОВНЕННЯ",
+      "max_len": 27
+    },
+    "scan.reason_no_valid_data": {
+      "en": "no valid preview or occupancy",
+      "uk": "НЕМАЄ КОРЕКТНОГО ОГЛЯДУ АБО ЗАПОВНЕННЯ",
+      "max_len": 38
+    },
+    "scan.reason_screen_memory": {
+      "en": "screen allocation failed",
+      "uk": "НЕ ВДАЛОСЯ СТВОРИТИ ЕКРАН",
+      "max_len": 25
+    },
+    "scan.reason_canvas_memory": {
+      "en": "canvas memory unavailable",
+      "uk": "ПАМ’ЯТІ ДЛЯ ПОЛОТНА НЕДОСТАТНЬО",
+      "max_len": 31
+    },
+    "scan.reason_loader": {
+      "en": "loader unavailable",
+      "uk": "ЗАВАНТАЖУВАЧ НЕДОСТУПНИЙ",
+      "max_len": 24
+    },
+    "objects.loading": {
+      "en": "LOADING OBJECTS...",
+      "uk": "ЗАВАНТАЖЕННЯ ОБ’ЄКТІВ...",
+      "max_len": 24
+    },
+    "measurement.unknown": {
+      "en": "UNKNOWN",
+      "uk": "НЕВІДОМО",
+      "max_len": 8
+    },
+    "measurement.recording_status": {
+      "en": "OK STOP   S:%llu   DROP:%llu",
+      "uk": "OK ЗУПИНИТИ   S:%llu   ВТРАТИ:%llu",
+      "max_len": 34
+    },
+    "measurement.review_counts": {
+      "en": "%s S:%llu D:%llu",
+      "uk": "%s S:%llu ВТР:%llu",
+      "max_len": 18
+    },
+    "power_badge.low": {
+      "en": "LOW",
+      "uk": "НИЗЬК.",
+      "max_len": 6
     }
   }
 }
