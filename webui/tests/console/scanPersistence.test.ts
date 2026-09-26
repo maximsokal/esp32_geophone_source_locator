@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadObjectScanArtifact } from '../../src/api/deviceApi';
+import { loadObjectScanArtifact, saveObjectScanArtifact, sendControl } from '../../src/api/deviceApi';
 import type { ControlResult, ScanArtifactInfo } from '../../src/api/deviceApi';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import {
   ScanPersistenceController,
   SCAN_STORAGE_BLOCKED_MESSAGE,
+  SCAN_STORAGE_PREEMPTED_MESSAGE,
   transitionScanPersistence,
   type ScanPersistencePorts,
   type ScanPersistenceState,
@@ -320,5 +321,48 @@ describe('scan persistence over real HTTP sockets', () => {
     server.acceptOccupancy = true;
     await withMemory.retry('OBJ_0001', 'S000003');
     await expect(noMemory.reconcile('OBJ_0001', 'S000003', scanBytes)).resolves.toMatchObject({ scan: 'saved', occupancy: 'ready' });
+  });
+});
+
+describe('scan persistence after bulk preemption', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('keeps scan bytes retryable when a critical control preempts the upload', async () => {
+    const uploads: Uint8Array[] = [];
+    let firstSignal!: AbortSignal;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes('scan=save')) {
+        uploads.push(new Uint8Array(init?.body as ArrayBuffer));
+        if (uploads.length === 1) {
+          firstSignal = init?.signal as AbortSignal;
+          return new Promise<Response>((_resolve, reject) => {
+            firstSignal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          });
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, action: 'scan_save' }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, action: 'measurement_stop' }), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const ports: ScanPersistencePorts = {
+      saveScan: saveObjectScanArtifact,
+      saveOccupancy: async () => ({ ok: true, action: 'scan_save' }),
+      fetchInfo: async () => ({ present: true, bytes: scanBytes.byteLength }),
+    };
+    const controller = new ScanPersistenceController(ports);
+
+    const saving = controller.save('OBJ_0001', 'S000006', scanBytes, () => occupancyBytes);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const stopping = sendControl('measurement_stop');
+    expect(firstSignal.aborted).toBe(true);
+    const [paused] = await Promise.all([saving, stopping]);
+
+    expect(paused).toMatchObject({ scan: 'blocked_recording', scanError: SCAN_STORAGE_PREEMPTED_MESSAGE });
+    expect(controller.retryAvailable).toBe(true);
+    expect(uploads[0]).toEqual(scanBytes);
+
+    const retried = await controller.retry('OBJ_0001', 'S000006');
+    expect(retried).toMatchObject({ scan: 'saved', occupancy: 'ready' });
+    expect(uploads).toEqual([scanBytes, scanBytes]);
   });
 });

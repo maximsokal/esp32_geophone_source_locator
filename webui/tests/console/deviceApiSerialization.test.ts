@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  BulkTransferPreemptedError,
   capturePhoneLocation,
   fetchDeviceStatus,
   fetchSavedSeismicSession,
   fetchSeismic,
+  saveObjectScanArtifact,
   sendControl,
 } from '../../src/api/deviceApi';
 import { polylinePoints } from '../../src/features/seismic/LiveSeismicPanel';
@@ -55,30 +57,36 @@ describe('serialized ESP API traffic', () => {
     );
   });
 
-  it('does not start a control POST while a status fetch is still in flight', async () => {
-    let resolveStatus!: (response: Response) => void;
-    const fetchMock = vi.fn((url: string) => {
-      if (url === '/api/status') {
-        return new Promise<Response>((resolve) => { resolveStatus = resolve; });
+  it('preempts bulk for a critical control and starts it before a queued status poll', async () => {
+    let bulkSignal!: AbortSignal;
+    const starts: string[] = [];
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      starts.push(url);
+      if (url.includes('scan=save')) {
+        bulkSignal = init?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          bulkSignal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
       }
-      return Promise.resolve(jsonResponse({ ok: true, action: 'activate_object' }));
+      if (url === '/api/control') return Promise.resolve(jsonResponse({ ok: true, action: 'measurement_stop' }));
+      return Promise.resolve(jsonResponse({ system: { state: 'NOT_READY' } }));
     });
     vi.stubGlobal('fetch', fetchMock);
 
+    const bulk = saveObjectScanArtifact('OBJ_0001', 'S000001', new Uint8Array([1, 2, 3]));
     const status = fetchDeviceStatus(false);
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const control = sendControl('measurement_stop');
 
-    const control = sendControl('activate_object', { object_id: 'OBJ_0001' });
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    resolveStatus(jsonResponse({ system: { state: 'NOT_READY' } }));
-    await status;
+    expect(bulkSignal.aborted).toBe(true);
+    await expect(bulk).rejects.toBeInstanceOf(BulkTransferPreemptedError);
     await control;
+    await status;
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/control');
+    expect(starts).toEqual([
+      '/api/control?scan=save&object_id=OBJ_0001&session_id=S000001',
+      '/api/control',
+      '/api/status',
+    ]);
   });
 
   it('coalesces live seismic requests while one sample fetch is pending', async () => {
