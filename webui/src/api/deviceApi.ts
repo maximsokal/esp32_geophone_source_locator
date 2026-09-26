@@ -252,7 +252,7 @@ function jsonRequest<T>(
   return queuedApiRequest((context) => performJsonRequest<T>(url, context, init, timeoutMs), lane);
 }
 
-type ScanStoreKind = 'scan' | 'occupancy' | 'registration';
+export type ScanStoreKind = 'scan' | 'occupancy' | 'preview' | 'registration';
 
 function scanControlUrl(action: 'save' | 'load' | 'delete' | 'info', objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): string {
   const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
@@ -413,6 +413,11 @@ export function saveSessionOccupancyArtifact(objectId: string, sessionId: string
   return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'occupancy'), 'bulk');
 }
 
+/** MAX-24/MAX-187: bounded surface-voxel preview for the ESP32 TFT. */
+export function saveSessionPreviewArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'preview'), 'bulk');
+}
+
 export function saveSessionRegistration(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
   return queuedApiRequest((context) => performScanSave(objectId, sessionId, new TextEncoder().encode(json), context, 'registration'), 'bulk');
 }
@@ -435,6 +440,10 @@ export function deleteSessionRegistration(objectId: string, sessionId: string): 
 
 export function loadObjectScanArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
   return queuedApiRequest((context) => performScanLoad(objectId, sessionId, context), 'bulk');
+}
+
+export function loadSessionPreviewArtifact(objectId: string, sessionId: string): Promise<Uint8Array | null> {
+  return queuedApiRequest((context) => performScanLoad(objectId, sessionId, context, 'preview'), 'bulk');
 }
 
 export interface ScanArtifactInfo {

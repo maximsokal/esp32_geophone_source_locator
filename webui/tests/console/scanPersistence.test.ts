@@ -14,7 +14,7 @@ import {
 } from '../../src/xr/scanPersistence';
 
 function serverState(scan: 'saving' | 'saved' | 'error' = 'saved', occupancy: ScanPersistenceState['occupancy'] = 'pending'): ScanPersistenceState {
-  return { scan, occupancy, scanError: null, occupancyError: null };
+  return { scan, occupancy, preview: 'pending', scanError: null, occupancyError: null, previewError: null };
 }
 
 describe('scan persistence transitions', () => {
@@ -23,7 +23,7 @@ describe('scan persistence transitions', () => {
     expect(saving).toEqual(serverState('saving'));
     expect(transitionScanPersistence(saving, { type: 'scan-saved' })).toEqual(serverState());
     expect(transitionScanPersistence(saving, { type: 'scan-failed', error: 'scan failed' })).toEqual({
-      scan: 'error', occupancy: 'unavailable', scanError: 'scan failed', occupancyError: null,
+      scan: 'error', occupancy: 'unavailable', preview: 'unavailable', scanError: 'scan failed', occupancyError: null, previewError: null,
     });
 
     const occupancySaving = transitionScanPersistence(serverState(), { type: 'occupancy-saving' });
@@ -41,7 +41,7 @@ describe('scan persistence transitions', () => {
       ...serverState('saved', 'unavailable'), occupancyError: 'rescan',
     });
     expect(transitionScanPersistence(null, { type: 'reconcile-error', error: 'network' })).toEqual({
-      ...serverState('saved', 'unavailable'), occupancyError: 'network',
+      ...serverState('saved', 'unavailable'), occupancyError: 'network', preview: 'unavailable', previewError: 'network',
     });
   });
 
@@ -63,7 +63,9 @@ interface TestServer {
   scanSaveAttempts: number;
   scanUploadCount: number;
   occupancyUploads: Uint8Array[];
+  previewUploads: Uint8Array[];
   acceptOccupancy: boolean;
+  failPreview: boolean;
   dropOccupancyConnection: boolean;
   recordingBusy: boolean;
   truncateScanLoad: boolean;
@@ -87,7 +89,9 @@ async function startControlServer(): Promise<TestServer> {
     scanSaveAttempts: 0,
     scanUploadCount: 0,
     occupancyUploads: [] as Uint8Array[],
+    previewUploads: [] as Uint8Array[],
     acceptOccupancy: false,
+    failPreview: false,
     dropOccupancyConnection: false,
     recordingBusy: false,
     truncateScanLoad: false,
@@ -137,6 +141,16 @@ async function startControlServer(): Promise<TestServer> {
         json(200, { ok: true, action: 'scan_save', bytes: body.byteLength });
         return;
       }
+      if (action === 'save' && kind === 'preview') {
+        serverState.previewUploads.push(body.slice());
+        if (serverState.failPreview) {
+          json(500, { ok: false, action: 'scan_save', error: 'preview write failed' });
+          return;
+        }
+        files.set(key, body);
+        json(200, { ok: true, action: 'scan_save', bytes: body.byteLength });
+        return;
+      }
       if (action === 'info') {
         const saved = files.get(key);
         if (saved === undefined) json(404, { ok: false, error: 'ESP_ERR_NOT_FOUND' });
@@ -173,15 +187,15 @@ async function startControlServer(): Promise<TestServer> {
     outgoing.on('error', reject);
     outgoing.end(Buffer.from(bytes));
   });
-  const controlUrl = (objectId: string, sessionId: string, action: 'save' | 'info', kind: 'scan' | 'occupancy') => {
+  const controlUrl = (objectId: string, sessionId: string, action: 'save' | 'info', kind: 'scan' | 'occupancy' | 'preview') => {
     const url = new URL('/api/control', baseUrl);
     url.searchParams.set('scan', action);
     url.searchParams.set('object_id', objectId);
     url.searchParams.set('session_id', sessionId);
-    if (kind === 'occupancy') url.searchParams.set('kind', kind);
+    if (kind !== 'scan') url.searchParams.set('kind', kind);
     return url;
   };
-  const upload = async (objectId: string, sessionId: string, bytes: Uint8Array, kind: 'scan' | 'occupancy'): Promise<ControlResult> => {
+  const upload = async (objectId: string, sessionId: string, bytes: Uint8Array, kind: 'scan' | 'occupancy' | 'preview'): Promise<ControlResult> => {
     const response = await post(controlUrl(objectId, sessionId, 'save', kind), bytes);
     const value = JSON.parse(response.text) as ControlResult;
     if (response.status === 409 && value.busy_reason === 'recording_active') {
@@ -197,8 +211,11 @@ async function startControlServer(): Promise<TestServer> {
     get scanSaveAttempts() { return serverState.scanSaveAttempts; },
     get scanUploadCount() { return serverState.scanUploadCount; },
     get occupancyUploads() { return serverState.occupancyUploads; },
+    get previewUploads() { return serverState.previewUploads; },
     get acceptOccupancy() { return serverState.acceptOccupancy; },
     set acceptOccupancy(value: boolean) { serverState.acceptOccupancy = value; },
+    get failPreview() { return serverState.failPreview; },
+    set failPreview(value: boolean) { serverState.failPreview = value; },
     get dropOccupancyConnection() { return serverState.dropOccupancyConnection; },
     set dropOccupancyConnection(value: boolean) { serverState.dropOccupancyConnection = value; },
     get recordingBusy() { return serverState.recordingBusy; },
@@ -209,6 +226,7 @@ async function startControlServer(): Promise<TestServer> {
     ports: {
       saveScan: (objectId, sessionId, bytes) => upload(objectId, sessionId, bytes, 'scan'),
       saveOccupancy: (objectId, sessionId, bytes) => upload(objectId, sessionId, bytes, 'occupancy'),
+      savePreview: (objectId, sessionId, bytes) => upload(objectId, sessionId, bytes, 'preview'),
       fetchInfo: async (objectId, sessionId, kind): Promise<ScanArtifactInfo> => {
         const response = await post(controlUrl(objectId, sessionId, 'info', kind));
         if (response.status === 404) return { present: false, bytes: 0 };
@@ -222,6 +240,7 @@ async function startControlServer(): Promise<TestServer> {
 
 const scanBytes = new Uint8Array([0x47, 0x58, 0x52, 0x31, 3, 2, 1]);
 const occupancyBytes = new Uint8Array([0x47, 0x4f, 0x43, 0x43, 5, 4, 3, 2]);
+const previewBytes = new Uint8Array([0x47, 0x58, 0x50, 0x52, 0x56, 0x31, 1, 0]);
 
 describe('scan persistence over real HTTP sockets', () => {
   let server: TestServer | null = null;
@@ -235,7 +254,7 @@ describe('scan persistence over real HTTP sockets', () => {
     server = await startControlServer();
     const controller = new ScanPersistenceController(server.ports);
 
-    const failed = await controller.save('OBJ_0001', 'S000001', scanBytes, () => occupancyBytes);
+    const failed = await controller.save('OBJ_0001', 'S000001', scanBytes, () => occupancyBytes, () => previewBytes);
     expect(failed).toMatchObject({ scan: 'saved', occupancy: 'failed' });
     expect(server.files.get('OBJ_0001/S000001/scan')).toEqual(scanBytes);
     expect(server.files.has('OBJ_0001/S000001/occupancy')).toBe(false);
@@ -254,10 +273,44 @@ describe('scan persistence over real HTTP sockets', () => {
     server.dropOccupancyConnection = true;
     const controller = new ScanPersistenceController(server.ports);
 
-    const state = await controller.save('OBJ_0001', 'S000002', scanBytes, () => occupancyBytes);
+    const state = await controller.save('OBJ_0001', 'S000002', scanBytes, () => occupancyBytes, () => previewBytes);
     expect(state).toMatchObject({ scan: 'saved', occupancy: 'failed' });
     expect(server.files.get('OBJ_0001/S000002/scan')).toEqual(scanBytes);
     expect(server.files.has('OBJ_0001/S000002/occupancy')).toBe(false);
+  });
+
+  it('preview failure leaves the saved scan and occupancy intact and retries only preview', async () => {
+    server = await startControlServer();
+    server.acceptOccupancy = true;
+    server.failPreview = true;
+    const controller = new ScanPersistenceController(server.ports);
+
+    const failed = await controller.save('OBJ_0001', 'S000007', scanBytes, () => occupancyBytes, () => previewBytes);
+    expect(failed).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'failed' });
+    expect(server.files.get('OBJ_0001/S000007/scan')).toEqual(scanBytes);
+    expect(server.files.get('OBJ_0001/S000007/occupancy')).toEqual(occupancyBytes);
+    expect(server.files.has('OBJ_0001/S000007/preview')).toBe(false);
+
+    server.failPreview = false;
+    const retried = await controller.retry('OBJ_0001', 'S000007');
+    expect(retried).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+    expect(server.scanUploadCount).toBe(1);
+    expect(server.occupancyUploads).toHaveLength(1);
+    expect(server.previewUploads).toHaveLength(2);
+    expect(server.previewUploads[0]).toEqual(previewBytes);
+    expect(server.previewUploads[1]).toEqual(previewBytes);
+  });
+
+  it('does not reuse a session A preview when retry is requested for session B', async () => {
+    server = await startControlServer();
+    server.acceptOccupancy = true;
+    server.failPreview = true;
+    const controller = new ScanPersistenceController(server.ports);
+    await controller.save('OBJ_0001', 'S000008', scanBytes, () => occupancyBytes, () => previewBytes);
+    await server.ports.saveScan('OBJ_0001', 'S000009', scanBytes);
+    await controller.retry('OBJ_0001', 'S000009');
+    expect(server.files.has('OBJ_0001/S000009/preview')).toBe(false);
+    expect(server.previewUploads).toHaveLength(1);
   });
 
   it('keeps bytes after a recording 409 and retries one successful scan upload', async () => {
@@ -266,7 +319,7 @@ describe('scan persistence over real HTTP sockets', () => {
     const originalBytes = scanBytes.slice();
     const controller = new ScanPersistenceController(server.ports);
 
-    const blocked = await controller.save('OBJ_0001', 'S000004', originalBytes, () => occupancyBytes);
+    const blocked = await controller.save('OBJ_0001', 'S000004', originalBytes, () => occupancyBytes, () => previewBytes);
     expect(blocked).toMatchObject({ scan: 'blocked_recording', scanError: SCAN_STORAGE_BLOCKED_MESSAGE });
     expect(controller.retryAvailable).toBe(true);
     expect(server.scanSaveAttempts).toBe(1);
@@ -315,7 +368,7 @@ describe('scan persistence over real HTTP sockets', () => {
     });
 
     const withMemory = new ScanPersistenceController(server.ports);
-    await withMemory.save('OBJ_0001', 'S000003', scanBytes, () => occupancyBytes);
+    await withMemory.save('OBJ_0001', 'S000003', scanBytes, () => occupancyBytes, () => previewBytes);
     await expect(withMemory.reconcile('OBJ_0001', 'S000003', scanBytes)).resolves.toMatchObject({ scan: 'saved', occupancy: 'failed' });
 
     server.acceptOccupancy = true;
@@ -347,11 +400,12 @@ describe('scan persistence after bulk preemption', () => {
     const ports: ScanPersistencePorts = {
       saveScan: saveObjectScanArtifact,
       saveOccupancy: async () => ({ ok: true, action: 'scan_save' }),
+      savePreview: async () => ({ ok: true, action: 'scan_save' }),
       fetchInfo: async () => ({ present: true, bytes: scanBytes.byteLength }),
     };
     const controller = new ScanPersistenceController(ports);
 
-    const saving = controller.save('OBJ_0001', 'S000006', scanBytes, () => occupancyBytes);
+    const saving = controller.save('OBJ_0001', 'S000006', scanBytes, () => occupancyBytes, () => previewBytes);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const stopping = sendControl('measurement_stop');
     expect(firstSignal.aborted).toBe(true);
