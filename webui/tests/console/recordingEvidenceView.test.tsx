@@ -29,7 +29,7 @@ describe('RecordingEvidenceView', () => {
     expect(html).toContain('2/3');
     expect(html).toContain('available (4 KiB, occupancy artifact saved), not registered to the sensors');
     expect(html).toContain('not calculated');
-    expect(html).toContain('MAX-145');
+    expect(html).toContain('<dt>AprilTag anchor</dt><dd>none</dd>');
     expect(html).toContain('0.03 m');
   });
 

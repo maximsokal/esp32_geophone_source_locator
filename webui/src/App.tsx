@@ -10,6 +10,7 @@ import {
   saveSessionOccupancyArtifact,
 } from './api/deviceApi';
 import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
+import { toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
 import { ScanPersistenceController, type ScanPersistenceState } from './xr/scanPersistence';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
@@ -170,6 +171,13 @@ export default function App({ objectId, sessionId }: AppProps) {
     sequence: 0,
   });
   const storageGeneration = useRef(0);
+  const registrationForSession = useRef<{ objectId: string; sessionId: string; artifact: RegistrationArtifact } | null>(null);
+  const onRegistrationChange = useCallback((artifact: RegistrationArtifact | null): void => {
+    registrationForSession.current = artifact === null || objectId === null || sessionId === null
+      ? null
+      : { objectId, sessionId, artifact };
+  }, [objectId, sessionId]);
+  useEffect(() => { registrationForSession.current = null; }, [objectId, sessionId]);
   const scanIntent = useRef<ScanStartIntent>('fresh');
   const continuationBase = useRef<ScanPointCloudSnapshot | null>(null);
   const scanPersistenceController = useRef<ScanPersistenceController | null>(null);
@@ -437,7 +445,13 @@ export default function App({ objectId, sessionId }: AppProps) {
       objectId,
       sessionId,
       artifact,
-      () => buildSessionOccupancyArtifact(snapshot, artifact, Date.now()),
+      () => {
+        const registration = registrationForSession.current;
+        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === sessionId
+          ? toOccupancyRegistration(registration.artifact)
+          : null;
+        return buildSessionOccupancyArtifact(snapshot, artifact, Date.now(), occupancyRegistration);
+      },
     ).then((state) => {
         if (generation !== storageGeneration.current) return;
         if (state?.scan !== 'saved') {
@@ -605,6 +619,8 @@ export default function App({ objectId, sessionId }: AppProps) {
       )}
 
       <XrRuntimePanel
+        objectId={objectId}
+        sessionId={sessionId}
         savedScanAvailable={storageGood && hasMeasuredScan}
         savedScanBusy={storageBusy}
         onScanIntent={handleScanIntent}
@@ -612,6 +628,7 @@ export default function App({ objectId, sessionId }: AppProps) {
         onSessionActiveChange={setXrSessionActive}
         onPointCloudReady={handleScanReady}
         onCapabilitiesChange={setXrCapabilities}
+        onRegistrationChange={onRegistrationChange}
       />
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (

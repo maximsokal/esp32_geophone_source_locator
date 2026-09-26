@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 
-import { fetchLocalizationRuns, fetchScanInfo } from '../../api/deviceApi';
+import { fetchLocalizationRuns, fetchScanInfo, loadSessionRegistration } from '../../api/deviceApi';
 import type { LocalizationRunListing, ScanArtifactInfo } from '../../api/deviceApi';
 import { buildRecordingEvidence } from '../../domain/recordingEvidence';
 import type { RecordingEvidence } from '../../domain/recordingEvidence';
+import { decodeRegistrationArtifact, type RegistrationArtifact } from '../../xr/fiducial/registrationArtifact';
 
 const POLICY_LABEL: Record<RecordingEvidence['policy'], string> = {
   unknown: 'unknown',
@@ -28,7 +29,12 @@ function scanLabel(evidence: RecordingEvidence): string {
   if (evidence.scan === 'absent') return 'absent';
   const size = `${(evidence.scanBytes / 1024).toFixed(0)} KiB`;
   const occupancy = evidence.occupancy === 'available' ? ', occupancy artifact saved' : ', no occupancy artifact';
-  return `available (${size}${occupancy}), not registered to the sensors`;
+  return `available (${size}${occupancy}), ${evidence.scanRegistered ? 'registered to the sensors' : 'not registered to the sensors'}`;
+}
+
+function anchorLabel(evidence: RecordingEvidence): string {
+  if (evidence.scanRegistered) return `valid ${evidence.registrationTier} tier`;
+  return evidence.registrationReason === null ? 'none' : `invalid: ${evidence.registrationReason.replaceAll('_', ' ')}`;
 }
 
 /** Pure view, rendered in tests without the network. */
@@ -44,7 +50,7 @@ export function RecordingEvidenceView({ evidence }: { evidence: RecordingEvidenc
       <div><dt>Positions</dt><dd>{evidence.positions.length === 0 ? '—' : evidence.positions.map((p) =>
         `${p.label} ${p.position.x_m.toFixed(1)}/${p.position.y_m.toFixed(1)}/${p.position.z_m.toFixed(1)}`).join(' · ')}</dd></div>
       <div><dt>3D scan</dt><dd>{scanLabel(evidence)}</dd></div>
-      <div><dt>AprilTag/ArUco anchor</dt><dd>not available yet (MAX-145)</dd></div>
+      <div><dt>AprilTag anchor</dt><dd>{anchorLabel(evidence)}</dd></div>
       <div><dt>Localization</dt><dd>{LOCALIZATION_LABEL[evidence.localization]}{evidence.solvedMethods.length > 0 ? `: ${evidence.solvedMethods.join(', ')}` : ''}{evidence.failedMethods.length > 0 ? ` · failed: ${evidence.failedMethods.join(', ')}` : ''}</dd></div>
     </dl>
   );
@@ -65,6 +71,7 @@ export default function RecordingEvidenceCard({ objectId, sessionId, refreshKey 
   const [listing, setListing] = useState<LocalizationRunListing | null>(null);
   const [scan, setScan] = useState<ScanArtifactInfo | null>(null);
   const [occupancy, setOccupancy] = useState<ScanArtifactInfo | null>(null);
+  const [registration, setRegistration] = useState<RegistrationArtifact | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -72,6 +79,7 @@ export default function RecordingEvidenceCard({ objectId, sessionId, refreshKey 
     setListing(null);
     setScan(null);
     setOccupancy(null);
+    setRegistration(null);
     setError(null);
     /* Sequential on purpose: the ESP serves one HTTPS request at a time. */
     void (async () => {
@@ -83,7 +91,10 @@ export default function RecordingEvidenceCard({ objectId, sessionId, refreshKey 
         if (cancelled) return;
         setScan(scanInfo);
         const occupancyInfo = await fetchScanInfo(objectId, sessionId, 'occupancy');
-        if (!cancelled) setOccupancy(occupancyInfo);
+        if (cancelled) return;
+        setOccupancy(occupancyInfo);
+        const registrationJson = await loadSessionRegistration(objectId, sessionId);
+        if (!cancelled) setRegistration(registrationJson === null ? null : decodeRegistrationArtifact(registrationJson));
       }
       catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -92,7 +103,7 @@ export default function RecordingEvidenceCard({ objectId, sessionId, refreshKey 
     return () => { cancelled = true; };
   }, [objectId, sessionId, refreshKey]);
 
-  const evidence = buildRecordingEvidence(listing, scan, occupancy);
+  const evidence = buildRecordingEvidence(listing, scan, occupancy, registration);
   return (
     <article className="console-card">
       <div className="card-heading">

@@ -8,6 +8,7 @@ import {
   rgbGuidanceMatchesView,
   surfaceFusionDepthInMeters,
 } from '../../src/xr/rgbDepthGuidance';
+import { RAW_CAMERA_GUIDANCE_HEIGHT, RAW_CAMERA_GUIDANCE_WIDTH } from '../../src/xr/rawCameraGuidance';
 
 function depthSampler(values: number[][]) {
   const height = values.length;
@@ -35,6 +36,10 @@ function transform(translationX = 0, yawRadians = 0): Float32Array {
 }
 
 describe('RGB-guided physical depth', () => {
+  it('keeps raw camera guidance capture defaults at 256x144', () => {
+    expect([RAW_CAMERA_GUIDANCE_WIDTH, RAW_CAMERA_GUIDANCE_HEIGHT]).toEqual([256, 144]);
+  });
+
   it('detects a strong visual edge and preserves its orientation', () => {
     const width = 9;
     const height = 7;

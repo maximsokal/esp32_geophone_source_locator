@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { LocalizationRun, LocalizationRunListing } from '../../src/api/deviceApi';
 import { UNDETERMINED_UNCERTAINTY_MM, buildRecordingEvidence } from '../../src/domain/recordingEvidence';
+import { defaultRegistrationTagSizes, type RegistrationArtifact } from '../../src/xr/fiducial/registrationArtifact';
 
 /* MAX-169: per-recording evidence from that recording's own frozen data. */
 
@@ -33,6 +34,16 @@ const pods = [
   { pod: 4, computed: false, leveled: false },
 ];
 
+function registration(valid: boolean): RegistrationArtifact {
+  return {
+    schema: 1, source: 'apriltag', family: 'tag36h11', geometry_computed_at_ms: 900, created_at_ms: 1000,
+    tag_size_m: defaultRegistrationTagSizes(), bindings: [],
+    sensor_to_scan: valid ? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] : null,
+    mirrored: false, residual_rms_m: 0, threshold_m: 0.05, per_node: [],
+    tier: valid ? 'minimum' : null, valid, reason: valid ? null : 'missing_main',
+  };
+}
+
 describe('recording evidence', () => {
   it('summarises the frozen geometry: participants, levelling, policy, quality', () => {
     const e = buildRecordingEvidence(listing(pods), { present: true, bytes: 2048 }, { present: false, bytes: 0 });
@@ -61,6 +72,12 @@ describe('recording evidence', () => {
     expect(calculated.failedMethods).toEqual(['b']);
     expect(calculated.lastCalculatedAtMs).toBe(3);
     expect(buildRecordingEvidence(listing(pods, [run('a', false)]), null, null).localization).toBe('failed');
+  });
+
+  it('derives scanRegistered from a valid artifact and retains invalid registration reasons', () => {
+    expect(buildRecordingEvidence(null, null, null, registration(true))).toMatchObject({ scanRegistered: true, registrationTier: 'minimum', registrationReason: null });
+    expect(buildRecordingEvidence(null, null, null, registration(false))).toMatchObject({ scanRegistered: false, registrationTier: null, registrationReason: 'missing_main' });
+    expect(buildRecordingEvidence(null, null, null).scanRegistered).toBe(false);
   });
 
   it('derives the policy from the number of computed REMOTEs', () => {
