@@ -1439,6 +1439,8 @@
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
@@ -1446,6 +1448,8 @@
       ],
       "include_dirs": [
         "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
         "components/seismic_recorder",
         "components/seismic_recorder/include",
         "components/seismic_acquisition/include",
