@@ -25,8 +25,10 @@ typedef struct {
 } fake_position_t;
 
 static fake_barometer_t s_barometers[DEVICE_STATUS_POD_COUNT];
+static device_height_reference_status_t s_height_references[DEVICE_STATUS_POD_COUNT];
 static fake_position_t s_positions[DEVICE_STATUS_POD_COUNT];
 static unsigned s_barometer_calls;
+static unsigned s_height_reference_calls;
 static unsigned s_position_calls;
 static bool s_active_available;
 static bool s_profile_available;
@@ -38,10 +40,12 @@ static esp_err_t s_sensor_errors[DEVICE_STATUS_POD_COUNT];
 static void reset_fakes(void)
 {
     memset(s_barometers, 0, sizeof(s_barometers));
+    memset(s_height_references, 0, sizeof(s_height_references));
     memset(s_positions, 0, sizeof(s_positions));
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     memset(s_sensor_errors, 0, sizeof(s_sensor_errors));
     s_barometer_calls = 0U;
+    s_height_reference_calls = 0U;
     s_position_calls = 0U;
     s_active_available = true;
     s_profile_available = true;
@@ -98,6 +102,23 @@ esp_err_t device_status_set_pod_barometer(
         relative_altitude_cm,
         reference_pressure_pa,
         valid,
+    };
+    return ESP_OK;
+}
+
+esp_err_t device_status_set_pod_height_reference(
+    size_t pod_index,
+    device_height_reference_state_t state,
+    uint16_t generation,
+    int32_t relative_z_mm
+)
+{
+    assert(pod_index < DEVICE_STATUS_POD_COUNT);
+    s_height_reference_calls++;
+    s_height_references[pod_index] = (device_height_reference_status_t){
+        state,
+        generation,
+        relative_z_mm,
     };
     return ESP_OK;
 }
@@ -178,11 +199,21 @@ static void test_cycle_publishes_fresh_sensor_and_frozen_geometry(void)
     configure_sensor(0U, true, true, true, 100000U, 1250);
     configure_sensor(1U, true, false, true, 100100U, 900);
     configure_sensor(2U, true, true, false, 100200U, -350);
-    s_sensor_errors[3] = ESP_FAIL;
+    configure_sensor(3U, true, false, true, 100300U, 0);
+    s_sensor_cache[0].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+    s_sensor_cache[0].sensor.reference_generation = 11U;
+    s_sensor_cache[0].sensor.relative_z_mm = 2600;
+    s_sensor_cache[1].sensor.reference_state = NRF_UPSTREAM_REFERENCE_REJECTED_MOVING;
+    s_sensor_cache[1].sensor.reference_generation = 12U;
+    s_sensor_cache[2].sensor.reference_state = NRF_UPSTREAM_REFERENCE_SENSOR_INVALID;
+    s_sensor_cache[2].sensor.reference_generation = 13U;
+    s_sensor_cache[3].sensor.reference_state = NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED;
+    s_sensor_cache[3].sensor.reference_generation = 14U;
 
     app_pod_status_bridge_publish_cycle();
 
     assert(s_barometer_calls == DEVICE_STATUS_POD_COUNT);
+    assert(s_height_reference_calls == DEVICE_STATUS_POD_COUNT);
     assert(s_position_calls == DEVICE_STATUS_POD_COUNT);
     assert(s_barometers[0].valid);
     assert(s_barometers[0].pressure_pa == 100000.0f);
@@ -190,6 +221,18 @@ static void test_cycle_publishes_fresh_sensor_and_frozen_geometry(void)
     assert(!s_barometers[1].valid);
     assert(!s_barometers[2].valid);
     assert(!s_barometers[3].valid);
+    assert(s_height_references[0].state == DEVICE_HEIGHT_REFERENCE_VALID);
+    assert(s_height_references[0].generation == 11U);
+    assert(s_height_references[0].relative_z_mm == 2600);
+    assert(s_height_references[1].state == DEVICE_HEIGHT_REFERENCE_REJECTED_MOVING);
+    assert(s_height_references[1].generation == 12U);
+    assert(s_height_references[1].relative_z_mm == 0);
+    assert(s_height_references[2].state == DEVICE_HEIGHT_REFERENCE_SENSOR_INVALID);
+    assert(s_height_references[2].generation == 13U);
+    assert(s_height_references[2].relative_z_mm == 0);
+    assert(s_height_references[3].state == DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED);
+    assert(s_height_references[3].generation == 14U);
+    assert(s_height_references[3].relative_z_mm == 0);
     assert(s_positions[0].valid);
     assert(s_positions[0].local_x_m == 1.25f);
     assert(s_positions[0].local_y_m == -0.5f);
@@ -207,11 +250,15 @@ static void test_cycle_invalidates_local_position_when_active_profile_disappears
     s_profile.geometry.pods[0].x_mm = 900;
     s_profile.geometry.pods[0].y_mm = 100;
     configure_sensor(0U, true, true, true, 99900U, 0);
+    s_sensor_errors[3] = ESP_FAIL;
     s_profile_available = false;
 
     app_pod_status_bridge_publish_cycle();
 
     assert(s_barometers[0].valid);
+    assert(s_height_references[3].state == DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED);
+    assert(s_height_references[3].generation == 0U);
+    assert(s_height_references[3].relative_z_mm == 0);
     for (size_t channel = 0U; channel < DEVICE_STATUS_POD_COUNT; ++channel) {
         assert(!s_positions[channel].valid);
         assert(s_positions[channel].local_x_m == 0.0f);

@@ -165,6 +165,7 @@
         "tests/host/app_pod_status_bridge_runtime_test.c"
       ],
       "include_dirs": [
+        "components/device_status/include",
         "tests/host/stubs/app_pod_status_bridge",
         "components/app_config/include",
         "components/device_status_pod_bridge/include",
