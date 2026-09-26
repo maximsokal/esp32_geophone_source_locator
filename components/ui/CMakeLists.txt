@@ -6,6 +6,7 @@ idf_component_register(
         "ui_shell.c"
         "ui_power_badge.c"
         "ui_preview3d.c"
+        "ui_scan_preview.c"
         "ui_screen_registry.c"
         "ui_navigation.c"
         "ui_boot_error.c"
@@ -36,9 +37,11 @@ idf_component_register(
         wifi_manager
         object_service
         measurement_service
+        localization_calculate
         runtime_observability
         scan_occupancy
         scan_preview
+        seismic_recorder
         storage_service
         storage_manager
         seismic_acquisition

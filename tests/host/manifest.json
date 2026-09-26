@@ -1770,6 +1770,23 @@
       "libraries": ["m"]
     },
     {
+      "name": "scan_preview_state",
+      "sources": [
+        "components/scan_preview/scan_preview.c",
+        "components/scan_preview/scan_preview_state.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/scan_preview/tests/scan_preview_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/scan_occupancy",
+        "tests/host/stubs/object_store_profile",
+        "components/scan_occupancy/include",
+        "components/scan_preview/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "web_status_cache_arbitration",
       "sources": [
         "components/web_server/web_status_cache_arbitration.c",

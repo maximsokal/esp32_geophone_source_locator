@@ -1,0 +1,641 @@
+#include "ui_internal.h"
+
+#include <errno.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#include "app_task_config.h"
+#include "display.h"
+#include "esp_heap_caps.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_lvgl_port.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "localization_calculate_policy.h"
+#include "scan_preview_state.h"
+#include "seismic_recorder.h"
+#include "storage_bulk_admission.h"
+#include "storage_manager.h"
+#include "ui_preview3d.h"
+
+#define PREVIEW_WIDTH 320U
+#define PREVIEW_HEIGHT 182U
+#define PREVIEW_IO_CHUNK 4096U
+#define PREVIEW_PATH_SIZE 224U
+#define SCAN_FILE_MAX_BYTES (8U * 1024U * 1024U)
+
+static const char *TAG = "UI_SCAN_PREVIEW";
+
+typedef struct
+{
+    uint32_t generation;
+    char object_id[SEISMIC_RECORDER_OBJECT_ID_SIZE];
+    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+} preview_request_t;
+
+typedef struct
+{
+    scan_preview_screen_status_t status;
+    scan_preview_t preview;
+    scan_occupancy_t occupancy;
+    object_store_geometry_t geometry;
+    uint64_t geometry_computed_at_ms;
+    uint32_t *draw_order;
+    char fallback_reason[40];
+} preview_result_t;
+
+typedef struct
+{
+    const char *path;
+    long size;
+} file_size_read_t;
+
+typedef struct
+{
+    const char *path;
+    size_t offset;
+    size_t requested;
+    uint8_t *buffer;
+} file_chunk_read_t;
+
+typedef struct
+{
+    const preview_request_t *request;
+    object_store_geometry_t *geometry;
+} geometry_read_t;
+
+static scan_preview_state_t s_state;
+static bool s_state_initialized;
+static atomic_uint s_active_generation;
+static portMUX_TYPE s_request_mux = portMUX_INITIALIZER_UNLOCKED;
+static preview_request_t s_pending_request;
+static bool s_request_pending;
+static TaskHandle_t s_worker_task;
+static lv_obj_t *s_canvas;
+static lv_obj_t *s_status_label;
+static lv_obj_t *s_info_label;
+static uint8_t *s_canvas_storage;
+static uint8_t *s_canvas_pixels;
+static uint32_t *s_draw_order;
+static ui_preview3d_view_t s_view;
+static char s_target_object_id[SEISMIC_RECORDER_OBJECT_ID_SIZE];
+static char s_target_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+static char s_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+static object_store_geometry_t s_geometry;
+static uint64_t s_geometry_computed_at_ms;
+
+static bool request_is_current(const preview_request_t *request)
+{
+    return request != NULL && atomic_load_explicit(&s_active_generation, memory_order_acquire) == request->generation;
+}
+
+static bool safe_id(const char *value, size_t capacity)
+{
+    if (value == NULL || value[0] == '\0') return false;
+    for (size_t i = 0U; i < capacity && value[i] != '\0'; ++i) {
+        const char c = value[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
+    }
+    return strnlen(value, capacity) < capacity;
+}
+
+static bool make_path(char path[PREVIEW_PATH_SIZE], const preview_request_t *request, const char *file_name)
+{
+    const int length = snprintf(path, PREVIEW_PATH_SIZE, "%s/%s/sessions/%s/%s",
+                                STORAGE_MANAGER_OBJECTS_PATH, request->object_id, request->session_id, file_name);
+    return length > 0 && (size_t)length < PREVIEW_PATH_SIZE;
+}
+
+static esp_err_t file_size_callback(void *context)
+{
+    file_size_read_t *read = context;
+    struct stat info;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    errno = 0;
+    if (stat(read->path, &info) != 0) err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    else if (info.st_size <= 0 || info.st_size > LONG_MAX || !S_ISREG(info.st_mode)) err = ESP_ERR_INVALID_SIZE;
+    else read->size = (long)info.st_size;
+    storage_manager_operation_end();
+    return err;
+}
+
+static esp_err_t file_chunk_callback(void *context)
+{
+    file_chunk_read_t *read = context;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    FILE *file = fopen(read->path, "rb");
+    if (file == NULL) {
+        err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    } else {
+        const bool seek_ok = read->offset <= (size_t)LONG_MAX && fseek(file, (long)read->offset, SEEK_SET) == 0;
+        const size_t count = seek_ok ? fread(read->buffer, 1U, read->requested, file) : 0U;
+        const bool read_ok = seek_ok && count == read->requested && !ferror(file);
+        (void)fclose(file);
+        err = read_ok ? ESP_OK : ESP_FAIL;
+    }
+    storage_manager_operation_end();
+    return err;
+}
+
+static esp_err_t storage_chunk(const preview_request_t *request, esp_err_t (*callback)(void *), void *context)
+{
+    if (!request_is_current(request) || storage_bulk_admission_is_protected()) return ESP_ERR_INVALID_STATE;
+    return storage_bulk_admission_run_chunk(callback, context);
+}
+
+static esp_err_t session_geometry_callback(void *context)
+{
+    geometry_read_t *read = context;
+    return seismic_recorder_read_session_geometry(
+        read->request->object_id,
+        read->request->session_id,
+        read->geometry
+    );
+}
+
+static esp_err_t read_file_size(const preview_request_t *request, const char *name, size_t maximum, size_t *size_out)
+{
+    char path[PREVIEW_PATH_SIZE];
+    if (!make_path(path, request, name)) return ESP_ERR_INVALID_SIZE;
+    file_size_read_t read = {.path = path, .size = 0L};
+    esp_err_t err = storage_chunk(request, file_size_callback, &read);
+    if (err != ESP_OK) return err;
+    if ((unsigned long)read.size > maximum) return ESP_ERR_INVALID_SIZE;
+    *size_out = (size_t)read.size;
+    return ESP_OK;
+}
+
+static esp_err_t read_file_chunks(const preview_request_t *request, const char *name, size_t size, uint8_t *buffer)
+{
+    char path[PREVIEW_PATH_SIZE];
+    if (!make_path(path, request, name)) return ESP_ERR_INVALID_SIZE;
+    for (size_t offset = 0U; offset < size; offset += PREVIEW_IO_CHUNK) {
+        if (!request_is_current(request)) return ESP_ERR_INVALID_STATE;
+        const size_t remaining = size - offset;
+        file_chunk_read_t read = {
+            .path = path,
+            .offset = offset,
+            .requested = remaining < PREVIEW_IO_CHUNK ? remaining : PREVIEW_IO_CHUNK,
+            .buffer = buffer + offset,
+        };
+        const esp_err_t err = storage_chunk(request, file_chunk_callback, &read);
+        if (err != ESP_OK) return err;
+        taskYIELD();
+    }
+    return ESP_OK;
+}
+
+static esp_err_t load_file(const preview_request_t *request, const char *name, size_t maximum, uint8_t **data_out, size_t *size_out)
+{
+    *data_out = NULL;
+    *size_out = 0U;
+    size_t size = 0U;
+    esp_err_t err = read_file_size(request, name, maximum, &size);
+    if (err != ESP_OK) return err;
+    uint8_t *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (data == NULL) return ESP_ERR_NO_MEM;
+    err = read_file_chunks(request, name, size, data);
+    if (err != ESP_OK) {
+        heap_caps_free(data);
+        return err;
+    }
+    *data_out = data;
+    *size_out = size;
+    return ESP_OK;
+}
+
+static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t length)
+{
+    for (size_t i = 0U; i < length; ++i) {
+        crc ^= data[i];
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            const uint32_t mask = (uint32_t)(-(int32_t)(crc & 1U));
+            crc = (crc >> 1U) ^ (0xEDB88320U & mask);
+        }
+    }
+    return crc;
+}
+
+static esp_err_t read_scan_crc(const preview_request_t *request, uint32_t *crc_out)
+{
+    char path[PREVIEW_PATH_SIZE];
+    if (!make_path(path, request, "scan-v1.bin")) return ESP_ERR_INVALID_SIZE;
+    file_size_read_t size_read = {.path = path, .size = 0L};
+    esp_err_t err = storage_chunk(request, file_size_callback, &size_read);
+    if (err != ESP_OK) return err;
+    if ((unsigned long)size_read.size > SCAN_FILE_MAX_BYTES) return ESP_ERR_INVALID_SIZE;
+
+    uint8_t buffer[PREVIEW_IO_CHUNK];
+    uint32_t crc = 0xFFFFFFFFU;
+    for (size_t offset = 0U; offset < (size_t)size_read.size; offset += sizeof(buffer)) {
+        if (!request_is_current(request)) return ESP_ERR_INVALID_STATE;
+        const size_t remaining = (size_t)size_read.size - offset;
+        file_chunk_read_t read = {
+            .path = path,
+            .offset = offset,
+            .requested = remaining < sizeof(buffer) ? remaining : sizeof(buffer),
+            .buffer = buffer,
+        };
+        err = storage_chunk(request, file_chunk_callback, &read);
+        if (err != ESP_OK) return err;
+        crc = crc32_update(crc, buffer, read.requested);
+        taskYIELD();
+    }
+    *crc_out = crc ^ 0xFFFFFFFFU;
+    return ESP_OK;
+}
+
+static void set_reason(preview_result_t *result, const char *reason)
+{
+    if (reason == NULL) reason = "preview unavailable";
+    (void)strncpy(result->fallback_reason, reason, sizeof(result->fallback_reason) - 1U);
+    result->fallback_reason[sizeof(result->fallback_reason) - 1U] = '\0';
+}
+
+static void load_session(const preview_request_t *request, preview_result_t *result)
+{
+    result->status = SCAN_PREVIEW_SCREEN_NO_PREVIEW;
+    if (!safe_id(request->object_id, sizeof(request->object_id)) || !safe_id(request->session_id, sizeof(request->session_id))) {
+        set_reason(result, "invalid session id");
+        return;
+    }
+    if (storage_bulk_admission_is_protected()) {
+        set_reason(result, "recording active");
+        return;
+    }
+
+    geometry_read_t geometry_read = {.request = request, .geometry = &result->geometry};
+    if (storage_chunk(request, session_geometry_callback, &geometry_read) == ESP_OK) {
+        result->geometry_computed_at_ms = localization_calculate_geometry_computed_at_ms(&result->geometry);
+    }
+
+    uint32_t scan_crc = 0U;
+    const esp_err_t scan_err = read_scan_crc(request, &scan_crc);
+    if (scan_err == ESP_ERR_NOT_FOUND) {
+        result->status = SCAN_PREVIEW_SCREEN_NO_3D_SCAN;
+        set_reason(result, "scan missing");
+        return;
+    }
+    if (scan_err != ESP_OK) {
+        set_reason(result, storage_bulk_admission_is_protected() ? "recording active" : "scan unreadable");
+    } else {
+        uint8_t *bytes = NULL;
+        size_t length = 0U;
+        const esp_err_t preview_file_err = load_file(request, "preview-v1.bin", SCAN_PREVIEW_MAX_BYTES, &bytes, &length);
+        if (preview_file_err == ESP_OK) {
+            const scan_preview_error_t parse_error = scan_preview_parse(bytes, length, NULL, &result->preview);
+            heap_caps_free(bytes);
+            if (parse_error == SCAN_PREVIEW_OK && result->preview.source_scan_crc32 == scan_crc && result->preview.voxel_count > 0U) {
+                const size_t order_bytes = (size_t)result->preview.voxel_count * sizeof(*result->draw_order);
+                result->draw_order = heap_caps_malloc(order_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (result->draw_order != NULL) {
+                    result->status = SCAN_PREVIEW_SCREEN_READY;
+                    return;
+                }
+                scan_preview_free(&result->preview);
+                set_reason(result, "preview memory");
+            } else {
+                const bool stale = parse_error == SCAN_PREVIEW_OK && result->preview.source_scan_crc32 != scan_crc;
+                scan_preview_free(&result->preview);
+                set_reason(result, stale ? "stale scan CRC" : "invalid preview");
+            }
+        } else {
+            set_reason(result, storage_bulk_admission_is_protected() ? "recording active" :
+                       preview_file_err == ESP_ERR_NOT_FOUND ? "preview missing" : "preview unreadable");
+        }
+    }
+
+    uint8_t *occupancy_bytes = NULL;
+    size_t occupancy_length = 0U;
+    const esp_err_t occupancy_file_err = load_file(request, "occupancy-v1.bin", SCAN_OCCUPANCY_MAX_BYTES,
+                                                    &occupancy_bytes, &occupancy_length);
+    if (occupancy_file_err == ESP_OK) {
+        const esp_err_t occupancy_err = scan_occupancy_parse(occupancy_bytes, occupancy_length, &result->occupancy);
+        heap_caps_free(occupancy_bytes);
+        if (occupancy_err == ESP_OK) {
+            result->status = SCAN_PREVIEW_SCREEN_READY;
+            return;
+        }
+    }
+    if (storage_bulk_admission_is_protected()) set_reason(result, "recording active");
+    else if (result->fallback_reason[0] == '\0') {
+        set_reason(result, occupancy_file_err == ESP_ERR_NOT_FOUND ? "no preview or occupancy" : "no valid preview or occupancy");
+    }
+}
+
+static void release_result(preview_result_t *result)
+{
+    scan_preview_free(&result->preview);
+    scan_occupancy_free(&result->occupancy);
+    if (result->draw_order != NULL) heap_caps_free(result->draw_order);
+    memset(result, 0, sizeof(*result));
+}
+
+static void refresh_now(uint64_t *flush_us_out)
+{
+    ui_context_t *context = ui_context();
+    const int64_t started = esp_timer_get_time();
+    if (s_canvas != NULL) lv_obj_invalidate(s_canvas);
+    if (context->display != NULL) lv_refr_now(context->display);
+    esp_lcd_panel_io_handle_t io = display_io_handle();
+    if (io != NULL) (void)esp_lcd_panel_io_tx_param(io, -1, NULL, 0U);
+    const int64_t elapsed = esp_timer_get_time() - started;
+    *flush_us_out = elapsed > 0 ? (uint64_t)elapsed : 0U;
+}
+
+static void show_status_locked(scan_preview_screen_status_t status, const char *reason)
+{
+    if (s_status_label == NULL) return;
+    const char *text = status == SCAN_PREVIEW_SCREEN_LOADING ? "LOADING..." :
+        status == SCAN_PREVIEW_SCREEN_NO_3D_SCAN ? "NO 3D SCAN" : "NO PREVIEW";
+    lv_label_set_text(s_status_label, text);
+    lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_info_label != NULL && reason != NULL && reason[0] != '\0') lv_label_set_text(s_info_label, reason);
+}
+
+static void show_ready_locked(void)
+{
+    if (s_status_label != NULL) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_info_label == NULL) return;
+    char text[80];
+    if (s_state.has_preview) {
+        snprintf(text, sizeof(text), "VOXELS %u  COARSEN %u%s%s", s_state.preview.voxel_count,
+                 s_state.preview.coarsening_steps,
+                 s_state.fallback_reason[0] != '\0' ? "  " : "",
+                 s_state.fallback_reason);
+    } else {
+        snprintf(text, sizeof(text), "OCCUPANCY %u  %s", (unsigned)s_state.occupancy.occupied_count, s_state.fallback_reason);
+    }
+    lv_label_set_text(s_info_label, text);
+}
+
+static void add_geometry_overlay(ui_preview3d_scene_t *scene)
+{
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT && i < UI_PREVIEW3D_MAX_SENSORS; ++i) {
+        const object_store_pod_geometry_t *pod = &s_geometry.pods[i];
+        if (!pod->computed) continue;
+        scene->sensor_valid[i] = true;
+        scene->sensors[i] = (ui_preview3d_vec3_t){
+            (float)pod->x_mm / 1000.0f,
+            (float)pod->y_mm / 1000.0f,
+            (float)pod->z_mm / 1000.0f,
+        };
+    }
+}
+
+static void render_ready_locked(void)
+{
+    const uint32_t generation = s_state.generation;
+    if (s_canvas_pixels == NULL || !scan_preview_state_render_begin(&s_state, generation)) return;
+    memset(s_canvas_pixels, UI_PREVIEW3D_PX_BACKGROUND, PREVIEW_WIDTH * PREVIEW_HEIGHT);
+    ui_preview3d_scene_t scene = {0};
+    if (s_state.has_preview) {
+        ui_preview3d_scene_set_voxel_preview(&scene, &s_state.preview, s_geometry_computed_at_ms,
+                                             s_draw_order, s_state.preview.voxel_count);
+    } else if (s_state.has_occupancy) {
+        ui_preview3d_scene_set_occupancy(&scene, &s_state.occupancy, s_geometry_computed_at_ms);
+    }
+    add_geometry_overlay(&scene);
+    ui_preview3d_stats_t stats;
+    const int64_t render_started = esp_timer_get_time();
+    ui_preview3d_render(&scene, &s_view, UI_PREVIEW3D_LAYER_AUTO, s_canvas_pixels,
+                        PREVIEW_WIDTH, PREVIEW_HEIGHT, &stats);
+    const int64_t render_elapsed = esp_timer_get_time() - render_started;
+    const uint64_t render_us = render_elapsed > 0 ? (uint64_t)render_elapsed : 0U;
+    show_ready_locked();
+    uint64_t flush_us = 0U;
+    refresh_now(&flush_us);
+    ESP_LOGI(TAG,
+             "PREVIEW_RENDER session=%s voxel_count=%u render_us=%" PRIu64 " flush_us=%" PRIu64 " fallback_reason=%s",
+             s_session_id,
+             s_state.has_preview ? s_state.preview.voxel_count : (uint32_t)s_state.occupancy.occupied_count,
+             render_us,
+             flush_us,
+             s_state.fallback_reason[0] != '\0' ? s_state.fallback_reason : "none");
+    (void)stats;
+    scan_preview_state_render_end(&s_state, generation);
+    taskYIELD();
+}
+
+static void render_current_locked(void)
+{
+    if (!s_state.open) return;
+    if (s_state.status == SCAN_PREVIEW_SCREEN_READY) {
+        render_ready_locked();
+        return;
+    }
+    show_status_locked(s_state.status, s_state.fallback_reason);
+    uint64_t flush_us = 0U;
+    refresh_now(&flush_us);
+    (void)flush_us;
+}
+
+static void accept_result_locked(const preview_request_t *request, preview_result_t *result)
+{
+    if (!request_is_current(request)) {
+        (void)scan_preview_state_complete(&s_state, request->generation, result->status,
+                                          &result->preview, &result->occupancy, result->fallback_reason);
+        if (result->draw_order != NULL) heap_caps_free(result->draw_order);
+        result->draw_order = NULL;
+        return;
+    }
+    if (ui_context()->screen != UI_SCREEN_SCAN_PREVIEW) {
+        release_result(result);
+        return;
+    }
+    s_geometry = result->geometry;
+    s_geometry_computed_at_ms = result->geometry_computed_at_ms;
+    const bool accepted = scan_preview_state_complete(&s_state, request->generation, result->status,
+                                                       &result->preview, &result->occupancy,
+                                                       result->fallback_reason);
+    if (!accepted) {
+        if (result->draw_order != NULL) heap_caps_free(result->draw_order);
+        result->draw_order = NULL;
+        return;
+    }
+    s_draw_order = result->draw_order;
+    result->draw_order = NULL;
+    render_current_locked();
+}
+
+static void preview_loader_task(void *argument)
+{
+    (void)argument;
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        for (;;) {
+            preview_request_t request;
+            bool have_request;
+            portENTER_CRITICAL(&s_request_mux);
+            have_request = s_request_pending;
+            request = s_pending_request;
+            s_request_pending = false;
+            portEXIT_CRITICAL(&s_request_mux);
+            if (!have_request) break;
+
+            preview_result_t result = {0};
+            load_session(&request, &result);
+            if (!request_is_current(&request)) {
+                release_result(&result);
+                continue;
+            }
+            if (!lvgl_port_lock(0)) {
+                release_result(&result);
+                continue;
+            }
+            accept_result_locked(&request, &result);
+            lvgl_port_unlock();
+            release_result(&result);
+        }
+    }
+}
+
+static void request_load(const preview_request_t *request)
+{
+    portENTER_CRITICAL(&s_request_mux);
+    s_pending_request = *request;
+    s_request_pending = true;
+    portEXIT_CRITICAL(&s_request_mux);
+    if (s_worker_task != NULL) xTaskNotifyGive(s_worker_task);
+}
+
+static void setup_palette(lv_obj_t *canvas)
+{
+    static const uint32_t colors[UI_PREVIEW3D_PX_COUNT] = {
+        UI_COLOR_BACKGROUND, UI_COLOR_TEXT, UI_COLOR_MUTED, UI_COLOR_GOOD,
+        UI_COLOR_ACCENT, UI_COLOR_WARNING, UI_COLOR_ERROR,
+        0xE6EEF8, 0x69B9D0, 0x4081A5,
+    };
+    for (uint8_t i = 0U; i < UI_PREVIEW3D_PX_COUNT; ++i) {
+        lv_canvas_set_palette(canvas, i, lv_color_to_32(lv_color_hex(colors[i]), LV_OPA_COVER));
+    }
+}
+
+void ui_scan_preview_open_locked(const char *object_id, const char *session_id)
+{
+    memset(s_target_object_id, 0, sizeof(s_target_object_id));
+    memset(s_target_session_id, 0, sizeof(s_target_session_id));
+    if (object_id != NULL) (void)strncpy(s_target_object_id, object_id, sizeof(s_target_object_id) - 1U);
+    if (session_id != NULL) (void)strncpy(s_target_session_id, session_id, sizeof(s_target_session_id) - 1U);
+    ui_screen_open_locked(UI_SCREEN_SCAN_PREVIEW);
+}
+
+void ui_scan_preview_screen_open_locked(void)
+{
+    if (!s_state_initialized) {
+        scan_preview_state_init(&s_state);
+        s_state_initialized = true;
+    }
+    const uint32_t generation = scan_preview_state_open(&s_state);
+    atomic_store_explicit(&s_active_generation, generation, memory_order_release);
+    s_session_id[0] = '\0';
+    (void)strncpy(s_session_id, s_target_session_id, sizeof(s_session_id) - 1U);
+    ui_preview3d_view_preset(&s_view, UI_PREVIEW3D_PRESET_ISO);
+
+    lv_obj_t *screen = ui_create_screen_base_locked("3D PREVIEW", "LEFT BACK RIGHT YAW UP/DN PITCH OK VIEW");
+    if (screen == NULL) {
+        (void)scan_preview_state_complete(&s_state, generation, SCAN_PREVIEW_SCREEN_NO_PREVIEW, NULL, NULL, "screen allocation failed");
+        return;
+    }
+    s_canvas = lv_canvas_create(screen);
+    if (s_canvas != NULL) {
+        lv_obj_set_pos(s_canvas, 0, 34);
+        lv_obj_set_size(s_canvas, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        s_canvas_storage = heap_caps_calloc(1U, LV_DRAW_BUF_SIZE(PREVIEW_WIDTH, PREVIEW_HEIGHT, LV_COLOR_FORMAT_I8),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_canvas_storage != NULL) {
+            lv_canvas_set_buffer(s_canvas, s_canvas_storage, PREVIEW_WIDTH, PREVIEW_HEIGHT, LV_COLOR_FORMAT_I8);
+            lv_obj_t *canvas_obj = s_canvas;
+            setup_palette(canvas_obj);
+            lv_draw_buf_t *draw_buffer = lv_canvas_get_draw_buf(canvas_obj);
+            s_canvas_pixels = draw_buffer != NULL ? lv_draw_buf_goto_xy(draw_buffer, 0U, 0U) : NULL;
+        }
+    }
+    s_status_label = ui_create_label_locked(screen, 10, 106, 300, "LOADING...", UI_COLOR_TEXT);
+    if (s_status_label != NULL) lv_obj_set_style_text_align(s_status_label, LV_TEXT_ALIGN_CENTER, 0);
+    s_info_label = ui_create_label_locked(screen, 8, 38, 304, "", UI_COLOR_TEXT);
+    if (s_info_label != NULL) {
+        lv_obj_set_style_bg_color(s_info_label, lv_color_hex(UI_COLOR_HEADER), 0);
+        lv_obj_set_style_bg_opa(s_info_label, LV_OPA_80, 0);
+        lv_obj_set_style_pad_hor(s_info_label, 3, 0);
+    }
+
+    preview_request_t request = {.generation = generation};
+    (void)strncpy(request.object_id, s_target_object_id, sizeof(request.object_id) - 1U);
+    (void)strncpy(request.session_id, s_target_session_id, sizeof(request.session_id) - 1U);
+    if (s_canvas_pixels == NULL) {
+        (void)scan_preview_state_complete(&s_state, generation, SCAN_PREVIEW_SCREEN_NO_PREVIEW, NULL, NULL, "canvas memory unavailable");
+        show_status_locked(s_state.status, s_state.fallback_reason);
+        return;
+    }
+    if (s_worker_task == NULL) {
+        const BaseType_t created = xTaskCreatePinnedToCore(
+            preview_loader_task,
+            "scan-preview",
+            APP_TASK_STACK_OBJECT_RECOVERY,
+            NULL,
+            APP_TASK_PRIORITY_OBJECT_RECOVERY,
+            &s_worker_task,
+            APP_TASK_CORE_SERVICES
+        );
+        if (created != pdPASS) {
+            (void)scan_preview_state_complete(&s_state, generation, SCAN_PREVIEW_SCREEN_NO_PREVIEW, NULL, NULL, "loader unavailable");
+            show_status_locked(s_state.status, s_state.fallback_reason);
+            return;
+        }
+    }
+    request_load(&request);
+}
+
+void ui_scan_preview_close_locked(void)
+{
+    if (!s_state_initialized) return;
+    scan_preview_state_close(&s_state);
+    atomic_store_explicit(&s_active_generation, s_state.generation, memory_order_release);
+}
+
+void ui_scan_preview_release_locked(void)
+{
+    if (s_canvas_storage != NULL) heap_caps_free(s_canvas_storage);
+    if (s_draw_order != NULL) heap_caps_free(s_draw_order);
+    s_canvas_storage = NULL;
+    s_canvas_pixels = NULL;
+    s_canvas = NULL;
+    s_status_label = NULL;
+    s_info_label = NULL;
+    s_draw_order = NULL;
+    s_session_id[0] = '\0';
+    memset(&s_geometry, 0, sizeof(s_geometry));
+    s_geometry_computed_at_ms = 0U;
+}
+
+void ui_scan_preview_render_locked(void)
+{
+    render_current_locked();
+}
+
+void ui_scan_preview_handle_key_locked(keypad_key_t key)
+{
+    if (key == KEYPAD_KEY_LEFT) {
+        ui_open_home_locked();
+        return;
+    }
+    if (s_state.status != SCAN_PREVIEW_SCREEN_READY) return;
+    ui_preview3d_key_t preview_key;
+    switch (key) {
+        case KEYPAD_KEY_UP: preview_key = UI_PREVIEW3D_KEY_UP; break;
+        case KEYPAD_KEY_DOWN: preview_key = UI_PREVIEW3D_KEY_DOWN; break;
+        case KEYPAD_KEY_RIGHT: preview_key = UI_PREVIEW3D_KEY_RIGHT; break;
+        case KEYPAD_KEY_OK: preview_key = UI_PREVIEW3D_KEY_OK; break;
+        default: return;
+    }
+    if (ui_preview3d_view_apply_key(&s_view, preview_key)) render_current_locked();
+}

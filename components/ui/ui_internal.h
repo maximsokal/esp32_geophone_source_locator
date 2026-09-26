@@ -26,11 +26,12 @@ typedef enum
     UI_SCREEN_STORAGE,
     UI_SCREEN_WIFI,
     UI_SCREEN_SYSTEM,
+    UI_SCREEN_SCAN_PREVIEW,
     UI_SCREEN_COUNT
 
 } ui_screen_t;
 
-#define UI_HOME_SCREEN_COUNT ((size_t)UI_SCREEN_COUNT - 1U)
+#define UI_HOME_SCREEN_COUNT 5U
 
 
 typedef enum
@@ -239,6 +240,12 @@ void ui_render_storage_locked(void);
 void ui_render_wifi_locked(void);
 void ui_render_system_locked(void);
 void ui_system_refresh_locked(void);
+void ui_scan_preview_open_locked(const char *object_id, const char *session_id);
+void ui_scan_preview_screen_open_locked(void);
+void ui_scan_preview_close_locked(void);
+void ui_scan_preview_release_locked(void);
+void ui_scan_preview_render_locked(void);
+void ui_scan_preview_handle_key_locked(keypad_key_t key);
 
 
 /* Navigation/input policy. */

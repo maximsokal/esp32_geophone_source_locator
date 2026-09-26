@@ -64,6 +64,8 @@ static void test_presets_and_keys(void)
     ui_preview3d_view_t v;
     ui_preview3d_view_preset(&v, UI_PREVIEW3D_PRESET_TOP);
     assert(v.pitch_deg == 90.0f && v.yaw_deg == 0.0f && v.zoom == 1.0f);
+    assert(!ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_LEFT));
+    assert(v.yaw_deg == 0.0f && v.pitch_deg == 90.0f); /* LEFT is Back, never yaw. */
     assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_OK) && v.preset == UI_PREVIEW3D_PRESET_SIDE && v.pitch_deg == 0.0f);
     assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_OK) && v.preset == UI_PREVIEW3D_PRESET_ISO);
     assert(fabsf(v.yaw_deg - 45.0f) < 1e-6f && fabsf(v.pitch_deg - 35.26f) < 1e-3f);
@@ -73,18 +75,25 @@ static void test_presets_and_keys(void)
     assert(!ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_UP));
     assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_DOWN) && v.pitch_deg == 80.0f);
     assert(v.preset == UI_PREVIEW3D_PRESET_FREE);
-    for (int i = 0; i < 20; ++i) {
-        (void)ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_DOWN);
+    for (int i = 0; i < 8; ++i) {
+        assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_DOWN));
     }
     assert(v.pitch_deg == 0.0f);
-
-    /* Yaw wraps into [-180, 180). */
-    ui_preview3d_view_preset(&v, UI_PREVIEW3D_PRESET_TOP);
-    for (int i = 0; i < 13; ++i) {
-        assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_RIGHT));
+    assert(!ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_DOWN));
+    for (int i = 0; i < 9; ++i) {
+        assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_UP));
     }
-    assert(fabsf(v.yaw_deg - (-165.0f)) < 1e-4f);
-    assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_LEFT) && fabsf(v.yaw_deg - 180.0f) > 1e-3f);
+    assert(v.pitch_deg == 90.0f);
+    assert(!ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_UP));
+
+    /* RIGHT advances yaw by 15 degrees and wraps after 24 presses. */
+    ui_preview3d_view_preset(&v, UI_PREVIEW3D_PRESET_TOP);
+    for (int i = 0; i < 24; ++i) {
+        assert(ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_RIGHT));
+        assert(fabsf(v.yaw_deg - (float)(((i + 1) * 15) % 360)) < 1e-4f);
+    }
+    assert(v.yaw_deg == 0.0f);
+    assert(!ui_preview3d_view_apply_key(&v, UI_PREVIEW3D_KEY_LEFT) && v.yaw_deg == 0.0f);
     assert(!ui_preview3d_view_apply_key(NULL, UI_PREVIEW3D_KEY_OK));
 }
 

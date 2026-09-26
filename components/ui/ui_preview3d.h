@@ -129,8 +129,9 @@ typedef struct
 
 void ui_preview3d_view_preset(ui_preview3d_view_t *view, ui_preview3d_preset_t preset);
 
-/* LEFT/RIGHT yaw 15 deg, UP/DOWN pitch 10 deg (clamped 0..90), OK cycles
- * TOP -> SIDE -> ISO -> TOP. Returns true when the view changed. */
+/* RIGHT adds 15 deg of yaw (wrapped to [0, 360)); UP/DOWN change pitch by
+ * 10 deg (clamped to 0..90); OK cycles TOP -> SIDE -> ISO -> TOP. LEFT is
+ * screen Back and is not a view key. Returns true when the view changed. */
 bool ui_preview3d_view_apply_key(ui_preview3d_view_t *view, ui_preview3d_key_t key);
 
 /* Decimates occupied voxels (voxel centres) into the scene's bounded point

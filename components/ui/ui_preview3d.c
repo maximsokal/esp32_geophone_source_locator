@@ -43,10 +43,10 @@ void ui_preview3d_view_preset(ui_preview3d_view_t *view, ui_preview3d_preset_t p
 
 static float wrap_yaw(float yaw)
 {
-    while (yaw >= 180.0f) {
+    while (yaw >= 360.0f) {
         yaw -= 360.0f;
     }
-    while (yaw < -180.0f) {
+    while (yaw < 0.0f) {
         yaw += 360.0f;
     }
     return yaw;
@@ -61,8 +61,9 @@ bool ui_preview3d_view_apply_key(ui_preview3d_view_t *view, ui_preview3d_key_t k
     }
     switch (key) {
     case UI_PREVIEW3D_KEY_LEFT:
+        return false;
     case UI_PREVIEW3D_KEY_RIGHT:
-        view->yaw_deg = wrap_yaw(view->yaw_deg + (key == UI_PREVIEW3D_KEY_LEFT ? -YAW_STEP_DEG : YAW_STEP_DEG));
+        view->yaw_deg = wrap_yaw(view->yaw_deg + YAW_STEP_DEG);
         view->preset = UI_PREVIEW3D_PRESET_FREE;
         return true;
     case UI_PREVIEW3D_KEY_UP:
