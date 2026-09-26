@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "namespace": "report",
+  "entries": {
+    "report.location": {
+      "en": "Location",
+      "uk": ""
+    },
+    "report.coordinate_frames": {
+      "en": "Coordinate frames",
+      "uk": ""
+    },
+    "report.qr": {
+      "en": "Report QR",
+      "uk": ""
+    }
+  }
+}

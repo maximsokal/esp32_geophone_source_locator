@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "namespace": "web",
+  "entries": {
+    "nav.home": {
+      "en": "Home",
+      "uk": ""
+    },
+    "nav.objects": {
+      "en": "Objects",
+      "uk": ""
+    },
+    "nav.sensors": {
+      "en": "Sensors",
+      "uk": ""
+    },
+    "sensors.power_fault": {
+      "en": "POWER FAULT: AD7606 +5 V {voltage} V — pins released to Hi-Z",
+      "uk": "",
+      "note": "The displayed rail voltage uses two decimal places."
+    }
+  }
+}

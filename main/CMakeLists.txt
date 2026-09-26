@@ -43,6 +43,7 @@ idf_component_register(
         wifi_manager
         web_server
         ui
+        ui_i18n
         freertos
         log
 )

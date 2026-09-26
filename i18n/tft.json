@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "namespace": "tft",
+  "entries": {
+    "menu.objects": {
+      "en": "OBJECTS",
+      "uk": "",
+      "max_len": 7
+    },
+    "menu.measurements": {
+      "en": "MEASUREMENTS / AD7606",
+      "uk": "",
+      "max_len": 21
+    },
+    "menu.storage": {
+      "en": "STORAGE / SD CARD",
+      "uk": "",
+      "max_len": 17
+    }
+  }
+}
