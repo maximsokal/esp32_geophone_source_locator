@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -28,6 +29,7 @@ static bool fake_terminal_present;
 static seismic_recorder_session_status_t fake_terminal_status;
 static unsigned fake_metadata_write_calls;
 static seismic_recorder_snapshot_t fake_last_metadata_snapshot;
+static seismic_recorder_session_participation_t fake_last_participation;
 static char fake_last_metadata_status[32];
 static unsigned fake_storage_begin_calls;
 static unsigned fake_storage_end_calls;
@@ -97,6 +99,7 @@ static void reset_fakes(void)
     fake_terminal_status = SEISMIC_RECORDER_SESSION_UNKNOWN;
     fake_metadata_write_calls = 0U;
     memset(&fake_last_metadata_snapshot, 0, sizeof(fake_last_metadata_snapshot));
+    memset(&fake_last_participation, 0, sizeof(fake_last_participation));
     fake_last_metadata_status[0] = '\0';
     fake_storage_begin_calls = 0U;
     fake_storage_end_calls = 0U;
@@ -210,14 +213,17 @@ esp_err_t seismic_recorder_json_read_summary_known_present(
 esp_err_t seismic_recorder_json_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
-    const char *status
+    const char *status,
+    const seismic_recorder_session_participation_t *participation
 )
 {
     assert(profile != NULL);
     assert(snapshot != NULL);
     assert(status != NULL);
+    assert(participation != NULL);
     ++fake_metadata_write_calls;
     fake_last_metadata_snapshot = *snapshot;
+    fake_last_participation = *participation;
     snprintf(fake_last_metadata_status, sizeof(fake_last_metadata_status), "%s", status);
     fake_terminal_present = true;
     fake_terminal_status = strcmp(status, "recovered_error") == 0
@@ -228,7 +234,34 @@ esp_err_t seismic_recorder_json_write_metadata(
     return ESP_OK;
 }
 
+static bool fail_recovery_candidate_malloc;
+
+static void *recovery_test_malloc(size_t size)
+{
+    if (fail_recovery_candidate_malloc) {
+        fail_recovery_candidate_malloc = false;
+        return NULL;
+    }
+    return malloc(size);
+}
+
+
+#define malloc recovery_test_malloc
 #include "../seismic_recorder_recovery.c"
+#undef malloc
+
+
+static size_t read_file_bytes(const char *path, unsigned char *buffer, size_t capacity)
+{
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    const size_t count = fread(buffer, 1U, capacity, file);
+    assert(ferror(file) == 0);
+    assert(fgetc(file) == EOF);
+    assert(ferror(file) == 0);
+    assert(fclose(file) == 0);
+    return count;
+}
 
 static void write_candidate(const char *file_name, const char *text)
 {
@@ -252,6 +285,55 @@ static const char *valid_recording_metadata(void)
 {
     return
         "{\"schema_version\":1,"
+        "\"object_id\":\"OBJ_0001\","
+        "\"session_id\":\"S000001\","
+        "\"status\":\"recording\","
+        "\"source\":\"AD7606\","
+        "\"sample_rate_hz\":500,"
+        "\"channel_count\":4}";
+}
+
+
+esp_err_t seismic_recorder_json_parse_participation_text(
+    const char *json,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    if (json == NULL || participation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(participation, 0, sizeof(*participation));
+    if (strstr(json, "\"schema_version\":2") != NULL) {
+        participation->pods[0] = (seismic_recorder_pod_participation_t) {
+            .assigned = true,
+            .node_id_known = true,
+            .node_id = 73U,
+            .hardware_id_length = 2U,
+            .hardware_id = {0xABU, 0xCDU},
+            .position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+        };
+    }
+    return ESP_OK;
+}
+
+
+static const char *valid_recording_metadata_v2(void)
+{
+    return
+        "{\"schema_version\":2,"
+        "\"object_id\":\"OBJ_0001\","
+        "\"session_id\":\"S000001\","
+        "\"status\":\"recording\","
+        "\"source\":\"AD7606\","
+        "\"sample_rate_hz\":500,"
+        "\"channel_count\":4}";
+}
+
+
+static const char *unsupported_recording_metadata_v3(void)
+{
+    return
+        "{\"schema_version\":3,"
         "\"object_id\":\"OBJ_0001\","
         "\"session_id\":\"S000001\","
         "\"status\":\"recording\","
@@ -365,6 +447,37 @@ static void test_partial_tail_salvage_and_idempotence(void)
     assert(recovered == 0U);
     assert(fake_metadata_write_calls == 1U);
     assert(samples_file_size() == expected);
+    reset_layout();
+}
+
+
+static void test_v2_metadata_is_recovered_and_v3_is_rejected(void)
+{
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata_v2());
+    write_raw(1U, 0U, RAW_HEADER_VALID);
+    assert_recovered(1U);
+    assert(fake_last_participation.pods[0].assigned);
+    assert(fake_last_participation.pods[0].node_id_known);
+    assert(fake_last_participation.pods[0].node_id == 73U);
+    assert(fake_last_participation.pods[0].hardware_id_length == 2U);
+    assert(fake_last_participation.pods[0].hardware_id[0] == 0xABU);
+    assert(fake_last_participation.pods[0].hardware_id[1] == 0xCDU);
+    assert(fake_last_participation.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    reset_layout();
+
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", unsupported_recording_metadata_v3());
+    write_raw(1U, 0U, RAW_HEADER_VALID);
+    const uint64_t original_size = samples_file_size();
+    size_t recovered = 99U;
+    assert(seismic_recorder_recover_object_sessions("OBJ_0001", NULL, NULL, &recovered) == ESP_OK);
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+    assert(samples_file_size() == original_size);
+    assert(fake_storage_begin_calls == fake_storage_end_calls);
     reset_layout();
 }
 
@@ -493,14 +606,73 @@ static void test_cooperative_stop_does_not_touch_session(void)
     reset_layout();
 }
 
+static void test_candidate_allocation_failure_leaves_files_untouched(void)
+{
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata());
+    write_raw(2U, 7U, RAW_HEADER_VALID);
+
+    char metadata_path[256];
+    char samples_path[256];
+    assert(snprintf(
+        metadata_path,
+        sizeof(metadata_path),
+        "%s/OBJ_0001/sessions/S000001/session.json",
+        STORAGE_MANAGER_OBJECTS_PATH
+    ) < (int)sizeof(metadata_path));
+    assert(snprintf(
+        samples_path,
+        sizeof(samples_path),
+        "%s/OBJ_0001/sessions/S000001/samples.bin",
+        STORAGE_MANAGER_OBJECTS_PATH
+    ) < (int)sizeof(samples_path));
+
+    unsigned char metadata_before[256];
+    unsigned char samples_before[128];
+    const size_t metadata_size = read_file_bytes(
+        metadata_path,
+        metadata_before,
+        sizeof(metadata_before)
+    );
+    const size_t samples_size = read_file_bytes(
+        samples_path,
+        samples_before,
+        sizeof(samples_before)
+    );
+    size_t recovered = 99U;
+    fail_recovery_candidate_malloc = true;
+    assert(
+        seismic_recorder_recover_object_sessions(
+            "OBJ_0001",
+            NULL,
+            NULL,
+            &recovered
+        ) == ESP_ERR_NO_MEM
+    );
+    assert(!fail_recovery_candidate_malloc);
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+
+    unsigned char metadata_after[sizeof(metadata_before)];
+    unsigned char samples_after[sizeof(samples_before)];
+    assert(read_file_bytes(metadata_path, metadata_after, sizeof(metadata_after)) == metadata_size);
+    assert(read_file_bytes(samples_path, samples_after, sizeof(samples_after)) == samples_size);
+    assert(memcmp(metadata_after, metadata_before, metadata_size) == 0);
+    assert(memcmp(samples_after, samples_before, samples_size) == 0);
+    reset_layout();
+}
+
 int main(void)
 {
     test_partial_tail_salvage_and_idempotence();
+    test_v2_metadata_is_recovered_and_v3_is_rejected();
     test_backup_and_temp_candidates();
     test_header_only_recovers_zero_frames();
     test_invalid_headers_fail_closed();
     test_live_and_existing_terminal_sessions_are_authoritative();
     test_cooperative_stop_does_not_touch_session();
+    test_candidate_allocation_failure_leaves_files_untouched();
     puts("seismic_recorder_recovery_test: PASS");
     return 0;
 }

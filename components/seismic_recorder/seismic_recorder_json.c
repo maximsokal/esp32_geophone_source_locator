@@ -11,8 +11,6 @@
 #include "storage_manager.h"
 
 
-#define SEISMIC_RECORDER_SESSION_SCHEMA_VERSION  1
-
 static const char *TAG = "SEISMIC_RECORDER_JSON";
 
 static seismic_recorder_recovery_request_callback_t s_recovery_request_callback = NULL;
@@ -73,6 +71,83 @@ static esp_err_t seismic_recorder_json_metadata_path(
 }
 
 
+static bool seismic_recorder_json_schema_version(
+    const cJSON *root,
+    uint32_t *version
+)
+{
+    const cJSON *schema = cJSON_GetObjectItemCaseSensitive(root, "schema_version");
+    if (!cJSON_IsNumber(schema) || !isfinite(schema->valuedouble)) {
+        return false;
+    }
+    if (
+        schema->valuedouble != SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V1 &&
+        schema->valuedouble != SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V2
+    ) {
+        return false;
+    }
+    if (version != NULL) {
+        *version = (uint32_t)schema->valuedouble;
+    }
+    return true;
+}
+
+
+static esp_err_t seismic_recorder_json_read_root(
+    const char *object_id,
+    const char *session_id,
+    cJSON **root_out,
+    uint32_t *version_out
+)
+{
+    if (object_id == NULL || session_id == NULL || root_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *root_out = NULL;
+
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = seismic_recorder_json_metadata_path(
+        object_id, session_id, path, SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (err != ESP_OK) {
+        free(path);
+        return err;
+    }
+
+    char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    if (buffer == NULL) {
+        free(path);
+        return ESP_ERR_NO_MEM;
+    }
+    err = storage_manager_read_text(path, buffer, SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    free(path);
+    if (err != ESP_OK) {
+        free(buffer);
+        return err;
+    }
+
+    cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
+    if (root == NULL) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    uint32_t version = 0U;
+    if (!seismic_recorder_json_schema_version(root, &version)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *root_out = root;
+    if (version_out != NULL) {
+        *version_out = version;
+    }
+    return ESP_OK;
+}
+
+
 static bool seismic_recorder_json_add_location(
     cJSON *root,
     const object_store_location_t *location
@@ -127,7 +202,8 @@ static bool seismic_recorder_json_add_cables(
  */
 static bool seismic_recorder_json_add_geometry(
     cJSON *root,
-    const object_store_geometry_t *geometry
+    const object_store_geometry_t *geometry,
+    const seismic_recorder_session_participation_t *participation
 )
 {
     cJSON *object = cJSON_AddObjectToObject(root, "geometry");
@@ -167,6 +243,60 @@ static bool seismic_recorder_json_add_geometry(
                 (double)pod->computed_at_ms
             ) == NULL
         ) {
+            return false;
+        }
+
+        const seismic_recorder_pod_participation_t *pod_participation =
+            &participation->pods[i];
+        if (
+            cJSON_AddBoolToObject(
+                pod_object,
+                "assigned",
+                pod_participation->assigned
+            ) == NULL
+        ) {
+            return false;
+        }
+        if (pod_participation->node_id_known) {
+            if (cJSON_AddNumberToObject(pod_object, "node_id", pod_participation->node_id) == NULL) {
+                return false;
+            }
+        } else if (cJSON_AddNullToObject(pod_object, "node_id") == NULL) {
+            return false;
+        }
+
+        if (pod_participation->hardware_id_length == 0U) {
+            if (cJSON_AddNullToObject(pod_object, "hardware_id") == NULL) {
+                return false;
+            }
+        } else {
+            static const char hex[] = "0123456789abcdef";
+            char hardware_id[SEISMIC_RECORDER_HARDWARE_ID_MAX * 2U + 1U];
+            const size_t hardware_id_length =
+                pod_participation->hardware_id_length > SEISMIC_RECORDER_HARDWARE_ID_MAX
+                    ? SEISMIC_RECORDER_HARDWARE_ID_MAX
+                    : pod_participation->hardware_id_length;
+            for (size_t byte = 0U; byte < hardware_id_length; ++byte) {
+                hardware_id[byte * 2U] = hex[pod_participation->hardware_id[byte] >> 4U];
+                hardware_id[byte * 2U + 1U] = hex[pod_participation->hardware_id[byte] & 0x0FU];
+            }
+            hardware_id[hardware_id_length * 2U] = '\0';
+            if (cJSON_AddStringToObject(pod_object, "hardware_id", hardware_id) == NULL) {
+                return false;
+            }
+        }
+
+        const char *position_source =
+            pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+                ? "channel_sounding"
+                : "none";
+        if (
+            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_NONE &&
+            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+        ) {
+            return false;
+        }
+        if (cJSON_AddStringToObject(pod_object, "position_source", position_source) == NULL) {
             return false;
         }
     }
@@ -260,7 +390,8 @@ static bool seismic_recorder_json_status_is_known(
 esp_err_t seismic_recorder_json_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
-    const char *status
+    const char *status,
+    const seismic_recorder_session_participation_t *participation
 )
 {
     if (
@@ -271,6 +402,19 @@ esp_err_t seismic_recorder_json_write_metadata(
         snapshot->session_id[0] == '\0'
     ) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    seismic_recorder_session_participation_t preserved_participation;
+    if (participation == NULL) {
+        const esp_err_t read_err = seismic_recorder_read_session_participation(
+            snapshot->object_id,
+            snapshot->session_id,
+            &preserved_participation
+        );
+        if (read_err != ESP_OK) {
+            return read_err;
+        }
+        participation = &preserved_participation;
     }
 
     const bool recovered = strcmp(status, "recovered_error") == 0;
@@ -285,7 +429,7 @@ esp_err_t seismic_recorder_json_write_metadata(
         cJSON_AddNumberToObject(
             root,
             "schema_version",
-            SEISMIC_RECORDER_SESSION_SCHEMA_VERSION
+            SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V2
         ) != NULL &&
         cJSON_AddStringToObject(root, "object_id", snapshot->object_id) != NULL &&
         cJSON_AddStringToObject(root, "object_name", profile->summary.name) != NULL &&
@@ -350,7 +494,7 @@ esp_err_t seismic_recorder_json_write_metadata(
         ok = seismic_recorder_json_add_cables(root, profile);
     }
     if (ok) {
-        ok = seismic_recorder_json_add_geometry(root, &profile->geometry);
+        ok = seismic_recorder_json_add_geometry(root, &profile->geometry, participation);
     }
     if (ok) {
         ok = seismic_recorder_json_add_cs_pairs(root, &profile->cs_pairs);
@@ -548,6 +692,200 @@ static bool seismic_recorder_json_read_cadence(
 }
 
 
+static void seismic_recorder_json_parse_geometry(
+    const cJSON *root,
+    object_store_geometry_t *geometry
+)
+{
+    const cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
+    if (!cJSON_IsObject(node)) {
+        return;
+    }
+
+    const cJSON *anchored = cJSON_GetObjectItemCaseSensitive(node, "anchored");
+    geometry->anchored = cJSON_IsTrue(anchored);
+
+    const cJSON *pods = cJSON_GetObjectItemCaseSensitive(node, "pods");
+    if (!cJSON_IsArray(pods)) {
+        return;
+    }
+
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        const cJSON *pod = cJSON_GetArrayItem(pods, (int)i);
+        if (!cJSON_IsObject(pod)) {
+            continue;
+        }
+        const cJSON *computed = cJSON_GetObjectItemCaseSensitive(pod, "computed");
+        if (!cJSON_IsTrue(computed)) {
+            continue;
+        }
+        const cJSON *leveled = cJSON_GetObjectItemCaseSensitive(pod, "leveled");
+        const cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
+        const cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
+        const cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
+        const cJSON *residual_mm = cJSON_GetObjectItemCaseSensitive(pod, "residual_mm");
+        const cJSON *uncertainty_mm = cJSON_GetObjectItemCaseSensitive(pod, "uncertainty_mm");
+        const cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
+        if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
+            continue;
+        }
+        geometry->pods[i].computed = true;
+        geometry->pods[i].leveled = cJSON_IsTrue(leveled);
+        geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
+        geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
+        geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
+        geometry->pods[i].residual_mm =
+            cJSON_IsNumber(residual_mm) && residual_mm->valuedouble >= 0.0 &&
+            residual_mm->valuedouble <= (double)INT32_MAX
+            ? (int32_t)residual_mm->valuedouble
+            : 0;
+        geometry->pods[i].uncertainty_mm =
+            cJSON_IsNumber(uncertainty_mm) && uncertainty_mm->valuedouble >= 0.0 &&
+            uncertainty_mm->valuedouble <= (double)INT32_MAX
+            ? (int32_t)uncertainty_mm->valuedouble
+            : 0;
+        geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
+            ? (uint64_t)computed_at->valuedouble
+            : 0U;
+    }
+}
+
+
+static int seismic_recorder_json_hex_nibble(char value)
+{
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+}
+
+
+static bool seismic_recorder_json_participation_pod_v2(
+    const cJSON *pod_json,
+    seismic_recorder_pod_participation_t *pod
+)
+{
+    if (!cJSON_IsObject(pod_json) || pod == NULL) {
+        return false;
+    }
+
+    const cJSON *assigned = cJSON_GetObjectItemCaseSensitive(pod_json, "assigned");
+    const cJSON *node_id = cJSON_GetObjectItemCaseSensitive(pod_json, "node_id");
+    const cJSON *hardware_id = cJSON_GetObjectItemCaseSensitive(pod_json, "hardware_id");
+    const cJSON *position_source = cJSON_GetObjectItemCaseSensitive(pod_json, "position_source");
+    if (
+        !cJSON_IsBool(assigned) ||
+        (!cJSON_IsNull(node_id) && !cJSON_IsNumber(node_id)) ||
+        (!cJSON_IsNull(hardware_id) && !cJSON_IsString(hardware_id)) ||
+        !cJSON_IsString(position_source) ||
+        position_source->valuestring == NULL
+    ) {
+        return false;
+    }
+
+    seismic_recorder_pod_participation_t parsed = {0};
+    parsed.assigned = cJSON_IsTrue(assigned);
+    if (cJSON_IsNumber(node_id)) {
+        if (
+            !isfinite(node_id->valuedouble) ||
+            node_id->valuedouble < 0.0 ||
+            node_id->valuedouble > UINT8_MAX ||
+            floor(node_id->valuedouble) != node_id->valuedouble
+        ) {
+            return false;
+        }
+        parsed.node_id_known = true;
+        parsed.node_id = (uint8_t)node_id->valuedouble;
+    }
+
+    if (cJSON_IsString(hardware_id)) {
+        const char *hex = hardware_id->valuestring;
+        const size_t hex_length = strlen(hex);
+        if (hex_length % 2U != 0U || hex_length / 2U > SEISMIC_RECORDER_HARDWARE_ID_MAX) {
+            return false;
+        }
+        parsed.hardware_id_length = (uint8_t)(hex_length / 2U);
+        for (size_t byte = 0U; byte < parsed.hardware_id_length; ++byte) {
+            const int high = seismic_recorder_json_hex_nibble(hex[byte * 2U]);
+            const int low = seismic_recorder_json_hex_nibble(hex[byte * 2U + 1U]);
+            if (high < 0 || low < 0) {
+                return false;
+            }
+            parsed.hardware_id[byte] = (uint8_t)((high << 4) | low);
+        }
+    }
+
+    if (strcmp(position_source->valuestring, "none") == 0) {
+        parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_NONE;
+    } else if (strcmp(position_source->valuestring, "channel_sounding") == 0) {
+        parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+    } else {
+        return false;
+    }
+
+    *pod = parsed;
+    return true;
+}
+
+
+static void seismic_recorder_json_parse_participation(
+    const cJSON *root,
+    uint32_t version,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    object_store_geometry_t geometry = {0};
+    seismic_recorder_json_parse_geometry(root, &geometry);
+    const cJSON *geometry_node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
+    const cJSON *pods = cJSON_IsObject(geometry_node)
+        ? cJSON_GetObjectItemCaseSensitive(geometry_node, "pods")
+        : NULL;
+
+    if (version == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V1) {
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            const bool computed = geometry.pods[i].computed;
+            participation->pods[i].assigned = computed;
+            participation->pods[i].position_source = computed
+                ? SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+                : SEISMIC_RECORDER_POSITION_SOURCE_NONE;
+        }
+    } else if (cJSON_IsArray(pods)) {
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            const cJSON *pod_json = cJSON_GetArrayItem(pods, (int)i);
+            (void)seismic_recorder_json_participation_pod_v2(
+                pod_json,
+                &participation->pods[i]
+            );
+        }
+    }
+}
+
+
+esp_err_t seismic_recorder_json_parse_participation_text(
+    const char *json,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    if (json == NULL || participation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(participation, 0, sizeof(*participation));
+
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    uint32_t version = 0U;
+    if (!seismic_recorder_json_schema_version(root, &version)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    seismic_recorder_json_parse_participation(root, version, participation);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+
 static esp_err_t seismic_recorder_json_read_summary_impl(
     const char *object_id,
     const char *session_id,
@@ -623,11 +961,7 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
             session_id
         );
 
-    const cJSON *schema = cJSON_GetObjectItemCaseSensitive(root, "schema_version");
-    valid = valid &&
-        cJSON_IsNumber(schema) &&
-        isfinite(schema->valuedouble) &&
-        schema->valuedouble == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION;
+    valid = valid && seismic_recorder_json_schema_version(root, NULL);
 
     const cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
     const bool complete =
@@ -796,96 +1130,39 @@ esp_err_t seismic_recorder_read_session_geometry(
     }
 
     memset(geometry, 0, sizeof(*geometry));
-
-    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
-    if (path == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    esp_err_t err = seismic_recorder_json_metadata_path(
-        object_id,
-        session_id,
-        path,
-        SEISMIC_RECORDER_PATH_SIZE
+    cJSON *root = NULL;
+    const esp_err_t err = seismic_recorder_json_read_root(
+        object_id, session_id, &root, NULL
     );
     if (err != ESP_OK) {
-        free(path);
         return err;
     }
+    seismic_recorder_json_parse_geometry(root, geometry);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
 
-    char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
-    if (buffer == NULL) {
-        free(path);
-        return ESP_ERR_NO_MEM;
+
+esp_err_t seismic_recorder_read_session_participation(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    if (object_id == NULL || session_id == NULL || participation == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
+    memset(participation, 0, sizeof(*participation));
 
-    err = storage_manager_read_text(path, buffer, SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
-    free(path);
+    cJSON *root = NULL;
+    uint32_t version = 0U;
+    const esp_err_t err = seismic_recorder_json_read_root(
+        object_id, session_id, &root, &version
+    );
     if (err != ESP_OK) {
-        free(buffer);
         return err;
     }
-
-    cJSON *root = cJSON_Parse(buffer);
-    free(buffer);
-    if (root == NULL) {
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-
-    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
-    if (!cJSON_IsObject(node)) {
-        cJSON_Delete(root);
-        return ESP_OK;
-    }
-
-    cJSON *anchored = cJSON_GetObjectItemCaseSensitive(node, "anchored");
-    geometry->anchored = cJSON_IsTrue(anchored);
-
-    cJSON *pods = cJSON_GetObjectItemCaseSensitive(node, "pods");
-    if (!cJSON_IsArray(pods)) {
-        cJSON_Delete(root);
-        return ESP_OK;
-    }
-
-    for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
-        cJSON *pod = cJSON_GetArrayItem(pods, (int)i);
-        if (!cJSON_IsObject(pod)) {
-            continue;
-        }
-        cJSON *computed = cJSON_GetObjectItemCaseSensitive(pod, "computed");
-        if (!cJSON_IsTrue(computed)) {
-            continue;
-        }
-        cJSON *leveled = cJSON_GetObjectItemCaseSensitive(pod, "leveled");
-        cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
-        cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
-        cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
-        cJSON *residual_mm = cJSON_GetObjectItemCaseSensitive(pod, "residual_mm");
-        cJSON *uncertainty_mm = cJSON_GetObjectItemCaseSensitive(pod, "uncertainty_mm");
-        cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
-        if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
-            continue;
-        }
-        geometry->pods[i].computed = true;
-        geometry->pods[i].leveled = cJSON_IsTrue(leveled);
-        geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
-        geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
-        geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
-        geometry->pods[i].residual_mm =
-            cJSON_IsNumber(residual_mm) && residual_mm->valuedouble >= 0.0 &&
-            residual_mm->valuedouble <= (double)INT32_MAX
-            ? (int32_t)residual_mm->valuedouble
-            : 0;
-        geometry->pods[i].uncertainty_mm =
-            cJSON_IsNumber(uncertainty_mm) && uncertainty_mm->valuedouble >= 0.0 &&
-            uncertainty_mm->valuedouble <= (double)INT32_MAX
-            ? (int32_t)uncertainty_mm->valuedouble
-            : 0;
-        geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
-            ? (uint64_t)computed_at->valuedouble
-            : 0U;
-    }
-
+    seismic_recorder_json_parse_participation(root, version, participation);
     cJSON_Delete(root);
     return ESP_OK;
 }

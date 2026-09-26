@@ -13,6 +13,7 @@
 #define SEISMIC_RECORDER_SESSION_ID_SIZE  16
 #define SEISMIC_RECORDER_SOURCE_NAME_SIZE 24
 #define SEISMIC_RECORDER_MAX_SESSIONS     32
+#define SEISMIC_RECORDER_HARDWARE_ID_MAX  8U
 
 
 typedef enum
@@ -157,6 +158,30 @@ typedef struct
     float max_uv[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT];
 
 } seismic_recorder_waveform_point_t;
+
+
+typedef enum
+{
+    SEISMIC_RECORDER_POSITION_SOURCE_NONE = 0,
+    SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
+} seismic_recorder_position_source_t;
+
+
+typedef struct
+{
+    bool assigned;
+    bool node_id_known;
+    uint8_t node_id;
+    uint8_t hardware_id_length;
+    uint8_t hardware_id[SEISMIC_RECORDER_HARDWARE_ID_MAX];
+    seismic_recorder_position_source_t position_source;
+} seismic_recorder_pod_participation_t;
+
+
+typedef struct
+{
+    seismic_recorder_pod_participation_t pods[OBJECT_STORE_POD_COUNT];
+} seismic_recorder_session_participation_t;
 
 
 typedef struct
@@ -307,6 +332,13 @@ esp_err_t seismic_recorder_read_session_geometry(
     const char *object_id,
     const char *session_id,
     object_store_geometry_t *geometry
+);
+
+
+esp_err_t seismic_recorder_read_session_participation(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_participation_t *participation
 );
 
 

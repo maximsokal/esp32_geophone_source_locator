@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 
@@ -26,8 +27,6 @@
 #endif
 
 
-#define SEISMIC_RECORDER_RECOVERY_SCHEMA_VERSION  1
-
 static const char *TAG = "SEISMIC_RECOVERY";
 
 
@@ -36,6 +35,7 @@ typedef struct
     char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
     uint32_t sample_rate_hz;
     uint8_t channel_count;
+    seismic_recorder_session_participation_t participation;
 
 } seismic_recorder_recovery_candidate_t;
 
@@ -212,10 +212,13 @@ static esp_err_t seismic_recorder_recovery_parse_candidate(
 
     uint32_t sample_rate_hz = 0U;
     uint32_t channel_count = 0U;
-    const bool valid =
+    bool valid =
         cJSON_IsNumber(schema) &&
         isfinite(schema->valuedouble) &&
-        schema->valuedouble == SEISMIC_RECORDER_RECOVERY_SCHEMA_VERSION &&
+        (
+            schema->valuedouble == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V1 ||
+            schema->valuedouble == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V2
+        ) &&
         cJSON_IsString(object) &&
         object->valuestring != NULL &&
         strcmp(object->valuestring, object_id) == 0 &&
@@ -240,6 +243,16 @@ static esp_err_t seismic_recorder_recovery_parse_candidate(
             &channel_count
         ) &&
         channel_count == SEISMIC_CHANNEL_COUNT;
+
+    if (
+        valid &&
+        seismic_recorder_json_parse_participation_text(
+            json,
+            &candidate->participation
+        ) != ESP_OK
+    ) {
+        valid = false;
+    }
 
     if (valid) {
         snprintf(
@@ -271,7 +284,10 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
     };
 
     char path[SEISMIC_RECORDER_PATH_SIZE];
-    char buffer[SEISMIC_RECORDER_METADATA_BUFFER_SIZE];
+    char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    if (buffer == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     bool saw_candidate_file = false;
 
     for (size_t index = 0U; index < sizeof(names) / sizeof(names[0]); ++index) {
@@ -282,13 +298,14 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
             sizeof(path)
         );
         if (err != ESP_OK) {
+            free(buffer);
             return err;
         }
 
         err = seismic_recorder_recovery_read_text_exact(
             path,
             buffer,
-            sizeof(buffer)
+            SEISMIC_RECORDER_METADATA_BUFFER_SIZE
         );
         if (err == ESP_ERR_NOT_FOUND) {
             continue;
@@ -306,10 +323,12 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
             candidate
         );
         if (err == ESP_OK) {
+            free(buffer);
             return ESP_OK;
         }
     }
 
+    free(buffer);
     return saw_candidate_file ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
 }
 
@@ -612,7 +631,8 @@ static esp_err_t seismic_recorder_recovery_one(
     err = seismic_recorder_json_write_metadata(
         profile,
         &snapshot,
-        "recovered_error"
+        "recovered_error",
+        &candidate.participation
     );
     if (err != ESP_OK) {
         return err;

@@ -210,6 +210,10 @@ static cJSON *parse_value(const char **cursor)
         *cursor += 5;
         return new_item(cJSON_False);
     }
+    if (strncmp(*cursor, "null", 4U) == 0) {
+        *cursor += 4;
+        return new_item(cJSON_NULL);
+    }
 
     char *end = NULL;
     const double number = strtod(*cursor, &end);
@@ -249,6 +253,11 @@ cJSON *cJSON_CreateNumber(double value)
         item->valueint = (int)value;
     }
     return item;
+}
+
+cJSON *cJSON_CreateNull(void)
+{
+    return new_item(cJSON_NULL);
 }
 
 static cJSON *create_named(cJSON *object, const char *name, cJSON *value)
@@ -292,6 +301,11 @@ cJSON *cJSON_AddStringToObject(cJSON *object, const char *name, const char *valu
     return create_named(object, name, item);
 }
 
+cJSON *cJSON_AddNullToObject(cJSON *object, const char *name)
+{
+    return create_named(object, name, cJSON_CreateNull());
+}
+
 bool cJSON_AddItemToArray(cJSON *array, cJSON *item)
 {
     return array != NULL && array->type == cJSON_Array && append_child(array, item);
@@ -330,6 +344,7 @@ bool cJSON_IsString(const cJSON *item) { return item != NULL && item->type == cJ
 bool cJSON_IsTrue(const cJSON *item) { return item != NULL && item->type == cJSON_True; }
 
 bool cJSON_IsBool(const cJSON *item) { return item != NULL && (item->type == cJSON_True || item->type == cJSON_False); }
+bool cJSON_IsNull(const cJSON *item) { return item != NULL && item->type == cJSON_NULL; }
 
 void cJSON_DeleteItemFromObjectCaseSensitive(cJSON *object, const char *name)
 {
@@ -407,6 +422,7 @@ static bool print_value(writer_t *writer, const cJSON *item)
     if (item->type == cJSON_String) return writer_append_string(writer, item->valuestring);
     if (item->type == cJSON_True) return writer_append(writer, "true");
     if (item->type == cJSON_False) return writer_append(writer, "false");
+    if (item->type == cJSON_NULL) return writer_append(writer, "null");
 
     char number[64];
     snprintf(number, sizeof(number), "%.17g", item->valuedouble);

@@ -69,6 +69,7 @@ static FILE *s_samples_file = NULL;
 static object_store_profile_t s_profile;
 static seismic_recorder_snapshot_t s_snapshot;
 static seismic_recorder_cadence_t s_cadence_start;
+static seismic_recorder_session_participation_t s_participation;
 
 /*
  * The worker copy buffer is PSRAM-backed and is reused for both acquisition
@@ -402,10 +403,12 @@ static void seismic_recorder_stop_step(void)
 
         case SEISMIC_RECORDER_STOP_STAGE_METADATA: {
             seismic_recorder_snapshot_t final_snapshot;
+            seismic_recorder_session_participation_t final_participation;
 
             seismic_recorder_lock();
             s_snapshot.recording_ms = seismic_recorder_elapsed_ms_locked();
             seismic_recorder_copy_snapshot_locked(&final_snapshot);
+            final_participation = s_participation;
             final_snapshot.running = false;
             final_snapshot.state =
                 final_snapshot.last_error == ESP_OK
@@ -423,7 +426,8 @@ static void seismic_recorder_stop_step(void)
                 seismic_recorder_json_write_metadata(
                     &s_profile,
                     &final_snapshot,
-                    status
+                    status,
+                    &final_participation
                 );
             if (metadata_err != ESP_OK) {
                 seismic_recorder_record_stop_error(
@@ -1020,6 +1024,7 @@ esp_err_t seismic_recorder_init(void)
     memset(&s_profile, 0, sizeof(s_profile));
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     memset(&s_cadence_start, 0, sizeof(s_cadence_start));
+    memset(&s_participation, 0, sizeof(s_participation));
     s_snapshot.initialized = true;
     s_snapshot.state = SEISMIC_RECORDER_IDLE;
     s_snapshot.last_error = ESP_OK;
@@ -1081,9 +1086,14 @@ esp_err_t seismic_recorder_init(void)
  * mapping logic and the documented MAIN-altitude-is-fixed-at-zero caveat.
  */
 static esp_err_t seismic_recorder_prepare_geometry(
-    const char *object_id
+    const char *object_id,
+    seismic_recorder_session_participation_t *participation
 )
 {
+    if (participation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     nrf_topology_leveling_summary_t leveling;
     esp_err_t err = nrf_topology_service_get_leveling_summary(&leveling);
     if (err != ESP_OK) {
@@ -1221,6 +1231,15 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return err;
     }
 
+    err = seismic_recorder_geometry_build_participation(
+        &topology,
+        &geometry,
+        participation
+    );
+    if (err != ESP_OK) {
+        return err;
+    }
+
     /*
      * MAX-148: persist the raw CS pair evidence behind this same solve,
      * best-effort -- a WebUI placement-confidence view is strictly less
@@ -1323,7 +1342,8 @@ esp_err_t seismic_recorder_start(
      * metadata with the object's stale pre-solve geometry (or none at all)
      * instead of the geometry this exact recording actually solved.
      */
-    err = seismic_recorder_prepare_geometry(object_id);
+    seismic_recorder_session_participation_t participation = {0};
+    err = seismic_recorder_prepare_geometry(object_id, &participation);
     if (err != ESP_OK) {
         free(profile);
         return err;
@@ -1393,7 +1413,8 @@ esp_err_t seismic_recorder_start(
     err = seismic_recorder_json_write_metadata(
         profile,
         &initial_snapshot,
-        "recording"
+        "recording",
+        &participation
     );
     if (err != ESP_OK) {
         free(profile);
@@ -1454,6 +1475,7 @@ esp_err_t seismic_recorder_start(
     s_snapshot = initial_snapshot;
     s_cadence_start = cadence_start;
     s_profile = *profile;
+    s_participation = participation;
     s_samples_file = file;
     s_ingest_cursor = buffer_info.total_frames;
     s_cursor = buffer_info.total_frames;

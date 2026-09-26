@@ -430,6 +430,10 @@ export interface LocalizationSessionPodGeometry {
   pod: number;
   computed: boolean;
   leveled: boolean;
+  assigned?: boolean;
+  node_id?: number | null;
+  hardware_id?: string | null;
+  position_source?: 'none' | 'channel_sounding';
   x_mm?: number;
   y_mm?: number;
   z_mm?: number;

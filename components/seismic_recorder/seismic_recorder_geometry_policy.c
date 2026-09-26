@@ -3,6 +3,11 @@
 #include <string.h>
 
 
+#if SEISMIC_RECORDER_HARDWARE_ID_MAX != NRF_UPSTREAM_PROTOCOL_HW_ID_MAX
+#error "seismic recorder hardware ID capacity must match the topology protocol"
+#endif
+
+
 /* Median of a small (<= NRF_TOPOLOGY_REMOTE_COUNT) set, sorted in place.
  * Even counts average the two middle values in 64-bit so the sum of two
  * large int32 altitudes cannot overflow. */
@@ -192,6 +197,42 @@ bool seismic_recorder_geometry_all_assigned_pods_computed(
     }
 
     return true;
+}
+
+
+esp_err_t seismic_recorder_geometry_build_participation(
+    const nrf_topology_snapshot_t *topology,
+    const object_store_geometry_t *geometry,
+    seismic_recorder_session_participation_t *participation
+)
+{
+    if (topology == NULL || geometry == NULL || participation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(participation, 0, sizeof(*participation));
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        const nrf_topology_node_snapshot_t *remote = &topology->remotes[i];
+        seismic_recorder_pod_participation_t *pod = &participation->pods[i];
+        pod->assigned = remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
+        pod->position_source = geometry->pods[i].computed
+            ? SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+            : SEISMIC_RECORDER_POSITION_SOURCE_NONE;
+
+        if (!pod->assigned) {
+            continue;
+        }
+
+        pod->node_id_known = true;
+        pod->node_id = remote->node_id;
+        pod->hardware_id_length = remote->hardware_id_length;
+        if (pod->hardware_id_length > SEISMIC_RECORDER_HARDWARE_ID_MAX) {
+            pod->hardware_id_length = SEISMIC_RECORDER_HARDWARE_ID_MAX;
+        }
+        memcpy(pod->hardware_id, remote->hardware_id, pod->hardware_id_length);
+    }
+
+    return ESP_OK;
 }
 
 

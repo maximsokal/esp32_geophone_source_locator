@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,8 +25,12 @@ static object_store_geometry_t last_geometry;
 static bool last_geometry_set;
 static object_store_cs_pairs_t last_cs_pairs;
 static bool last_cs_pairs_set;
-static object_store_profile_t last_written_profile;
-static bool last_written_profile_set;
+static char persisted_session_json[4096];
+static unsigned metadata_write_calls;
+static char last_metadata_status[24];
+static TaskFunction_t fake_recorder_task;
+static bool final_metadata_written;
+static jmp_buf worker_finished;
 
 typedef struct { unsigned held; } fake_mutex_t;
 typedef struct { EventBits_t bits; } fake_event_group_t;
@@ -39,12 +44,42 @@ EventBits_t xEventGroupSetBits(EventGroupHandle_t group, EventBits_t bits) { ((f
 EventBits_t xEventGroupClearBits(EventGroupHandle_t group, EventBits_t bits) { ((fake_event_group_t *)group)->bits &= ~bits; return ((fake_event_group_t *)group)->bits; }
 EventBits_t xEventGroupWaitBits(EventGroupHandle_t group, EventBits_t bits, BaseType_t clear_on_exit, BaseType_t wait_for_all, TickType_t timeout) { (void)clear_on_exit; (void)wait_for_all; (void)timeout; return ((fake_event_group_t *)group)->bits & bits; }
 void vEventGroupDelete(EventGroupHandle_t group) { free(group); }
-BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsigned stack_size, void *argument, unsigned priority, TaskHandle_t *task_handle, int core_id) { (void)task; (void)name; (void)stack_size; (void)argument; (void)priority; (void)core_id; *task_handle = (TaskHandle_t)1; return pdPASS; }
-void vTaskDelay(TickType_t ticks) { (void)ticks; }
+BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsigned stack_size, void *argument, unsigned priority, TaskHandle_t *task_handle, int core_id) { (void)name; (void)stack_size; (void)argument; (void)priority; (void)core_id; fake_recorder_task = task; *task_handle = (TaskHandle_t)1; return pdPASS; }
+void vTaskDelay(TickType_t ticks) { (void)ticks; if (final_metadata_written) longjmp(worker_finished, 1); }
 void runtime_observability_beat(runtime_observability_task_t task, uint64_t progress) { (void)task; (void)progress; }
 int64_t esp_timer_get_time(void) { return 1000000; }
 
 bool storage_manager_is_ready(void) { return true; }
+esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size) {
+    (void)path;
+    if (persisted_session_json[0] == '\0') return ESP_ERR_NOT_FOUND;
+    const size_t length = strlen(persisted_session_json) + 1U;
+    if (length > buffer_size) return ESP_ERR_INVALID_SIZE;
+    memcpy(buffer, persisted_session_json, length);
+    return ESP_OK;
+}
+esp_err_t storage_manager_read_text_known_present(const char *path, char *buffer, size_t buffer_size) {
+    return storage_manager_read_text(path, buffer, buffer_size);
+}
+esp_err_t storage_manager_atomic_write_text(const char *path, const char *text) {
+    (void)path;
+    if (text == NULL || strlen(text) + 1U > sizeof(persisted_session_json)) return ESP_ERR_INVALID_SIZE;
+    snprintf(persisted_session_json, sizeof(persisted_session_json), "%s", text);
+    ++metadata_write_calls;
+    const char *status = strstr(text, "\"status\":\"");
+    assert(status != NULL);
+    status += strlen("\"status\":\"");
+    const char *status_end = strchr(status, '"');
+    assert(status_end != NULL);
+    const size_t status_length = (size_t)(status_end - status);
+    assert(status_length < sizeof(last_metadata_status));
+    memcpy(last_metadata_status, status, status_length);
+    last_metadata_status[status_length] = '\0';
+    if (strcmp(last_metadata_status, "complete") == 0 || strcmp(last_metadata_status, "error") == 0) {
+        final_metadata_written = true;
+    }
+    return ESP_OK;
+}
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile) {
     (void)object_id;
     memset(profile, 0, sizeof(*profile));
@@ -73,7 +108,6 @@ esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot) {
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
 
 esp_err_t seismic_recorder_fs_create_session(const char *object_id, uint32_t rate, uint8_t channels, char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE], FILE **file) { (void)object_id; (void)rate; (void)channels; snprintf(session_id, SEISMIC_RECORDER_SESSION_ID_SIZE, "S000001"); fake_file = tmpfile(); *file = fake_file; return fake_file != NULL ? ESP_OK : ESP_FAIL; }
-esp_err_t seismic_recorder_json_write_metadata(const object_store_profile_t *profile, const seismic_recorder_snapshot_t *snapshot, const char *status) { (void)snapshot; (void)status; last_written_profile = *profile; last_written_profile_set = true; return ESP_OK; }
 esp_err_t seismic_buffer_copy_latest(seismic_frame_t *frames, size_t max_frames, size_t *count, seismic_buffer_info_t *info) { (void)frames; (void)max_frames; *count = 0U; memset(info, 0, sizeof(*info)); info->total_frames = 0U; return ESP_OK; }
 esp_err_t seismic_buffer_copy_since(uint64_t *cursor, seismic_frame_t *frames, size_t max_frames, size_t *count, uint64_t *dropped, seismic_buffer_info_t *info) { (void)cursor; (void)frames; (void)max_frames; (void)count; (void)dropped; (void)info; return ESP_ERR_TIMEOUT; }
 esp_err_t seismic_recorder_fs_close(FILE *file) { if (file != NULL) fclose(file); return ESP_OK; }
@@ -82,8 +116,10 @@ esp_err_t seismic_recorder_fs_write_frames(FILE *file, const seismic_frame_t *fr
 esp_err_t seismic_recorder_fs_flush(FILE *file, bool sync_to_media) { (void)file; (void)sync_to_media; return ESP_OK; }
 esp_err_t seismic_recorder_fs_sync(FILE *file) { (void)file; return ESP_OK; }
 esp_err_t seismic_recorder_fs_list_sessions(const char *object_id, seismic_recorder_session_summary_t *sessions, size_t max, size_t *count) { (void)object_id; (void)sessions; (void)max; *count = 0U; return ESP_OK; }
-esp_err_t seismic_recorder_json_read_summary(const char *object_id, const char *session_id, seismic_recorder_session_summary_t *summary) { (void)object_id; (void)session_id; (void)summary; return ESP_ERR_NOT_FOUND; }
-esp_err_t seismic_recorder_fs_build_session_path(const char *object_id, const char *session_id, char *path, size_t path_size) { (void)object_id; (void)session_id; (void)path; (void)path_size; return ESP_ERR_NOT_FOUND; }
+esp_err_t seismic_recorder_fs_build_session_path(const char *object_id, const char *session_id, char *path, size_t path_size) {
+    const int written = snprintf(path, path_size, "/objects/%s/sessions/%s", object_id, session_id);
+    return written < 0 || written >= (int)path_size ? ESP_ERR_INVALID_SIZE : ESP_OK;
+}
 esp_err_t seismic_recorder_waveform_read_file(FILE *file, uint64_t size, const seismic_recorder_session_summary_t *summary, uint64_t start, uint64_t count, size_t max_points, seismic_recorder_waveform_point_t *points, size_t capacity, seismic_recorder_waveform_info_t *info) { (void)file; (void)size; (void)summary; (void)start; (void)count; (void)max_points; (void)points; (void)capacity; (void)info; return ESP_ERR_NOT_FOUND; }
 
 int main(void)
@@ -132,7 +168,7 @@ int main(void)
     assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_NOT_FOUND);
     assert(!last_geometry_set);
     assert(!last_cs_pairs_set);
-    assert(!last_written_profile_set);
+    assert(metadata_write_calls == 0U);
 
     /* MAX-165: three assigned REMOTEs with only two accepted level reports
      * must be rejected as not-level before CS geometry is attempted. Keep the
@@ -148,7 +184,7 @@ int main(void)
     assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
     assert(!last_geometry_set);
     assert(!last_cs_pairs_set);
-    assert(!last_written_profile_set);
+    assert(metadata_write_calls == 0U);
 
     /* Three assigned, leveled, altitude-reporting REMOTE pods on channels
      * 0-2, plus MAIN -- the MAX-165 minimum ("exactly 3 = allowed, planar/2D
@@ -164,12 +200,21 @@ int main(void)
     fake_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
     fake_topology.remotes[0].node_id = 1U;
     fake_topology.remotes[0].mux_channel = 0U;
+    fake_topology.remotes[0].hardware_id_length = 2U;
+    fake_topology.remotes[0].hardware_id[0] = 0xA0U;
+    fake_topology.remotes[0].hardware_id[1] = 0x10U;
     fake_topology.remotes[1].state = NRF_TOPOLOGY_NODE_ASSIGNED;
     fake_topology.remotes[1].node_id = 2U;
     fake_topology.remotes[1].mux_channel = 1U;
+    fake_topology.remotes[1].hardware_id_length = 2U;
+    fake_topology.remotes[1].hardware_id[0] = 0xA1U;
+    fake_topology.remotes[1].hardware_id[1] = 0x11U;
     fake_topology.remotes[2].state = NRF_TOPOLOGY_NODE_ASSIGNED;
     fake_topology.remotes[2].node_id = 3U;
     fake_topology.remotes[2].mux_channel = 2U;
+    fake_topology.remotes[2].hardware_id_length = 2U;
+    fake_topology.remotes[2].hardware_id[0] = 0xA2U;
+    fake_topology.remotes[2].hardware_id[1] = 0x12U;
 
     fake_leveling.assigned_count = 3U;
     fake_leveling.accepted_count = 3U;
@@ -206,13 +251,33 @@ int main(void)
     /* The mirror-disambiguated point, not (150,200) again. */
     assert(abs(last_geometry.pods[2].x_mm - 150) <= 2 && abs(last_geometry.pods[2].y_mm - (-200)) <= 2);
 
-    /* MAX-166: the profile handed to seismic_recorder_json_write_metadata()
-     * (which freezes it into session.json) must reflect the geometry this
-     * same recording just solved, not a stale pre-solve fetch. */
-    assert(last_written_profile_set);
-    assert(last_written_profile.geometry.pods[0].computed);
-    assert(last_written_profile.geometry.pods[0].leveled);
-    assert(last_written_profile.geometry.pods[0].x_mm == 300);
+    /* MAX-166: session.json must freeze the geometry this recording solved,
+     * not a stale pre-solve fetch. */
+    object_store_geometry_t written_geometry;
+    const esp_err_t geometry_read_result = seismic_recorder_read_session_geometry("OBJ_0005", "S000001", &written_geometry);
+    assert(geometry_read_result == ESP_OK);
+    assert(written_geometry.pods[0].computed);
+    assert(written_geometry.pods[0].leveled);
+    assert(written_geometry.pods[0].x_mm == 300);
+    assert(metadata_write_calls == 1U && strcmp(last_metadata_status, "recording") == 0);
+    seismic_recorder_session_participation_t start_participation;
+    assert(seismic_recorder_read_session_participation("OBJ_0005", "S000001", &start_participation) == ESP_OK);
+    assert(start_participation.pods[0].assigned && start_participation.pods[0].node_id_known);
+    assert(start_participation.pods[0].node_id == 1U);
+    assert(start_participation.pods[0].hardware_id_length == 2U);
+    assert(start_participation.pods[0].hardware_id[0] == 0xA0U && start_participation.pods[0].hardware_id[1] == 0x10U);
+    assert(start_participation.pods[0].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(start_participation.pods[1].assigned && start_participation.pods[1].node_id_known);
+    assert(start_participation.pods[1].node_id == 2U && start_participation.pods[1].hardware_id_length == 2U);
+    assert(start_participation.pods[1].hardware_id[0] == 0xA1U && start_participation.pods[1].hardware_id[1] == 0x11U);
+    assert(start_participation.pods[1].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(start_participation.pods[2].assigned && start_participation.pods[2].node_id_known);
+    assert(start_participation.pods[2].node_id == 3U && start_participation.pods[2].hardware_id_length == 2U);
+    assert(start_participation.pods[2].hardware_id[0] == 0xA2U && start_participation.pods[2].hardware_id[1] == 0x12U);
+    assert(start_participation.pods[2].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+    assert(!start_participation.pods[3].assigned && !start_participation.pods[3].node_id_known);
+    assert(start_participation.pods[3].hardware_id_length == 0U);
+    assert(start_participation.pods[3].position_source == SEISMIC_RECORDER_POSITION_SOURCE_NONE);
 
     /* MAX-148: the same "solve first, persist after" ordering must hold for
      * the CS pair evidence behind that solve. */
@@ -221,8 +286,10 @@ int main(void)
     assert(last_cs_pairs.pairs[0].node_a == 0U && last_cs_pairs.pairs[0].node_b == 1U);
     assert(last_cs_pairs.pairs[0].valid);
     assert(last_cs_pairs.pairs[0].distance_mm == 300);
-    assert(last_written_profile.cs_pairs.pair_count == 6U);
-    assert(last_written_profile.cs_pairs.pairs[0].distance_mm == 300);
+    object_store_cs_pairs_t written_cs_pairs;
+    assert(seismic_recorder_read_session_cs_pairs("OBJ_0005", "S000001", &written_cs_pairs) == ESP_OK);
+    assert(written_cs_pairs.pair_count == 6U);
+    assert(written_cs_pairs.pairs[0].distance_mm == 300);
 
     seismic_recorder_snapshot_t snapshot;
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
@@ -243,5 +310,26 @@ int main(void)
     assert(snapshot.cadence.timer_ticks == 6U);
     assert(snapshot.cadence.conversion_attempts == 4U);
     assert(snapshot.cadence.collapsed_periods == 2U);
+
+    assert(fake_recorder_task != NULL);
+    final_metadata_written = false;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "recorder worker should finish the STOP metadata rewrite");
+    }
+    assert(final_metadata_written);
+    assert(metadata_write_calls == 2U && strcmp(last_metadata_status, "complete") == 0);
+    seismic_recorder_session_participation_t final_participation;
+    assert(seismic_recorder_read_session_participation("OBJ_0005", "S000001", &final_participation) == ESP_OK);
+    for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
+        assert(final_participation.pods[pod].assigned == start_participation.pods[pod].assigned);
+        assert(final_participation.pods[pod].node_id_known == start_participation.pods[pod].node_id_known);
+        assert(final_participation.pods[pod].node_id == start_participation.pods[pod].node_id);
+        assert(final_participation.pods[pod].hardware_id_length == start_participation.pods[pod].hardware_id_length);
+        assert(memcmp(final_participation.pods[pod].hardware_id, start_participation.pods[pod].hardware_id, sizeof(start_participation.pods[pod].hardware_id)) == 0);
+        assert(final_participation.pods[pod].position_source == start_participation.pods[pod].position_source);
+    }
+    assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
+    assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
     return 0;
 }

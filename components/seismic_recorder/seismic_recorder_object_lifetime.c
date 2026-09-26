@@ -85,13 +85,15 @@ esp_err_t seismic_recorder_start(const char *object_id)
 esp_err_t seismic_recorder_lifetime_write_metadata(
     const object_store_profile_t *profile,
     const seismic_recorder_snapshot_t *snapshot,
-    const char *status
+    const char *status,
+    const seismic_recorder_session_participation_t *participation
 )
 {
     const esp_err_t metadata_err = seismic_recorder_json_write_metadata(
         profile,
         snapshot,
-        status
+        status,
+        participation
     );
 
     /* The underlying writer synchronously dispatches the recovery-request
