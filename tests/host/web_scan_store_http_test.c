@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -30,6 +31,7 @@
 static unsigned s_storage_begin_calls;
 static unsigned s_storage_end_calls;
 static unsigned s_priority_changes;
+static size_t s_chunked_response_bytes;
 static seismic_recorder_snapshot_t s_recorder_snapshot;
 
 static void make_directory(const char *path)
@@ -286,6 +288,7 @@ esp_err_t httpd_resp_send_chunk(httpd_req_t *request, const char *buffer, ssize_
     assert(request->response_length + (size_t)length <= request->response_capacity);
     memcpy(request->response_body + request->response_length, buffer, (size_t)length);
     request->response_length += (size_t)length;
+    s_chunked_response_bytes += (size_t)length;
     return ESP_OK;
 }
 
@@ -405,6 +408,25 @@ static bool save_kind(const char *query, const unsigned char *body, size_t lengt
     return strstr(response, "\"ok\":true") != NULL;
 }
 
+static void write_sparse_file(const char *file_name, size_t size)
+{
+    char path[256];
+    const int written = snprintf(
+        path,
+        sizeof(path),
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
+        file_name
+    );
+    assert(written > 0 && (size_t)written < sizeof(path));
+    assert(size > 0U && size - 1U <= (size_t)LONG_MAX);
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fseek(file, (long)(size - 1U), SEEK_SET) == 0);
+    assert(fputc(0x5a, file) == 0x5a);
+    assert(fclose(file) == 0);
+}
+
 static size_t load_kind(const char *query, char *response, size_t capacity)
 {
     httpd_req_t request = make_request(query, NULL, 0U, response, capacity);
@@ -412,6 +434,178 @@ static size_t load_kind(const char *query, char *response, size_t capacity)
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
     assert(handled);
     return request.response_length;
+}
+
+static void test_kind_size_validation_boundaries(void)
+{
+    const struct {
+        const web_scan_kind_t *kind;
+        size_t limit;
+    } cases[] = {
+        {&WEB_SCAN_KIND_SCAN, 8U * 1024U * 1024U},
+        {&WEB_SCAN_KIND_OCCUPANCY, 1024U * 1024U},
+        {&WEB_SCAN_KIND_REGISTRATION, 16384U},
+    };
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        assert(cases[i].kind->max_bytes == cases[i].limit);
+        assert(!web_scan_kind_size_valid(cases[i].kind, 0L));
+        assert(web_scan_kind_size_valid(cases[i].kind, (long)cases[i].limit));
+        assert(!web_scan_kind_size_valid(cases[i].kind, (long)(cases[i].limit + 1U)));
+    }
+    assert(!web_scan_kind_size_valid(NULL, 1L));
+}
+
+static void test_scan_and_occupancy_size_limits(void)
+{
+    make_layout();
+    const size_t scan_limit = WEB_SCAN_KIND_SCAN.max_bytes;
+    const size_t occupancy_limit = WEB_SCAN_KIND_OCCUPANCY.max_bytes;
+    const size_t medium_scan_size = occupancy_limit + 1U;
+    unsigned char *body = malloc(scan_limit + 1U);
+    assert(body != NULL);
+    memset(body, 0xa5, scan_limit + 1U);
+
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        body,
+        scan_limit,
+        response,
+        sizeof(response)
+    );
+    bool handled = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(strstr(response, "\"bytes\":8388608") != NULL);
+    assert(request.body_offset == scan_limit);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        body,
+        scan_limit + 1U,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+    assert(request.body_offset == 0U);
+
+    /* A scan larger than the occupancy cap remains valid. */
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        body,
+        medium_scan_size,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(request.body_offset == medium_scan_size);
+
+    char *large_response = malloc(medium_scan_size);
+    assert(large_response != NULL);
+    memset(large_response, 0, medium_scan_size);
+    request = make_request(
+        "scan=load&object_id=OBJ_0001&session_id=S000001",
+        NULL,
+        0U,
+        large_response,
+        medium_scan_size
+    );
+    s_chunked_response_bytes = 0U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_length == medium_scan_size);
+    assert(s_chunked_response_bytes == medium_scan_size);
+    assert(memcmp(large_response, body, medium_scan_size) == 0);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        body,
+        occupancy_limit,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(request.body_offset == occupancy_limit);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        body,
+        occupancy_limit + 1U,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+    assert(request.body_offset == 0U);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=info&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        NULL,
+        0U,
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(strstr(response, "\"bytes\":1048576") != NULL);
+
+    memset(large_response, 0, occupancy_limit);
+    request = make_request(
+        "scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        NULL,
+        0U,
+        large_response,
+        occupancy_limit
+    );
+    s_chunked_response_bytes = 0U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_length == occupancy_limit);
+    assert(s_chunked_response_bytes == occupancy_limit);
+    assert(memcmp(large_response, body, occupancy_limit) == 0);
+
+    write_sparse_file("occupancy-v1.bin", occupancy_limit + 1U);
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=load&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        NULL,
+        0U,
+        response,
+        sizeof(response)
+    );
+    s_chunked_response_bytes = 0U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+    assert(s_chunked_response_bytes == 0U);
+
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=info&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        NULL,
+        0U,
+        response,
+        sizeof(response)
+    );
+    s_chunked_response_bytes = 0U;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+    assert(s_chunked_response_bytes == 0U);
+
+    free(large_response);
+    free(body);
+    remove_layout();
 }
 
 /* MAX-162: the compact occupancy artifact lives next to the scan in the same
@@ -564,7 +758,7 @@ static void test_registration_recording_guard_is_session_scoped(void)
     memset(response, 0, sizeof(response));
     httpd_req_t oversized_save = make_request(query, oversized, sizeof(oversized), response, sizeof(response));
     assert(web_scan_store_try_handle(&oversized_save, &handled) == ESP_OK && handled);
-    assert(oversized_save.response_status != NULL && strcmp(oversized_save.response_status, "409 Conflict") == 0);
+    assert(oversized_save.response_status != NULL && strcmp(oversized_save.response_status, "400 Bad Request") == 0);
 
     memset(response, 0, sizeof(response));
     httpd_req_t remove = make_request(
@@ -596,6 +790,8 @@ static void test_registration_recording_guard_is_session_scoped(void)
 
 int main(void)
 {
+    test_kind_size_validation_boundaries();
+    test_scan_and_occupancy_size_limits();
     test_scan_save_and_chunked_load_round_trip();
     test_scan_rejects_unknown_session_before_file_access();
     test_occupancy_kind_is_stored_beside_the_scan();

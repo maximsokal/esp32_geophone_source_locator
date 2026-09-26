@@ -62,6 +62,11 @@ static const web_scan_kind_t WEB_SCAN_KIND_REGISTRATION = {
     .label = "AprilTag registration",
 };
 
+static bool web_scan_kind_size_valid(const web_scan_kind_t *kind, long size)
+{
+    return kind != NULL && size > 0L && (unsigned long)size <= kind->max_bytes;
+}
+
 
 typedef struct
 {
@@ -407,8 +412,7 @@ static void web_scan_remove_temp_best_effort(const char *temp_path)
 
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
-    const bool invalid_size = request->content_len <= 0 || (size_t)request->content_len > kind->max_bytes;
-    if (invalid_size && kind != &WEB_SCAN_KIND_REGISTRATION) {
+    if (!web_scan_kind_size_valid(kind, request->content_len)) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
     }
 
@@ -418,7 +422,6 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     if (kind == &WEB_SCAN_KIND_REGISTRATION && web_scan_registration_session_is_recording(object_id, session_id)) {
         return web_scan_send_registration_conflict(request);
     }
-    if (invalid_size) return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
@@ -552,8 +555,7 @@ static esp_err_t web_scan_open_for_stream(
     long file_size = 0L;
     if (err == ESP_OK) {
         file_size = ftell(file);
-        const size_t load_limit = kind == &WEB_SCAN_KIND_REGISTRATION ? kind->max_bytes : WEB_SCAN_MAX_BYTES;
-        if (file_size <= 0 || (unsigned long)file_size > load_limit) {
+        if (!web_scan_kind_size_valid(kind, file_size)) {
             err = ESP_ERR_INVALID_SIZE;
         }
     }
