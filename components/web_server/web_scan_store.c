@@ -312,7 +312,7 @@ static void web_scan_drain_request_body(
     if (already_received >= remaining) return;
     remaining -= already_received;
 
-    unsigned char buffer[WEB_SCAN_DRAIN_BUFFER_SIZE];
+    char buffer[WEB_SCAN_DRAIN_BUFFER_SIZE];
     unsigned timeout_count = 0U;
     while (remaining > 0U) {
         const size_t request_size = remaining < sizeof(buffer)
