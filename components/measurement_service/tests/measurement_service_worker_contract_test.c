@@ -26,6 +26,7 @@ typedef struct {
 
 static SemaphoreHandle_t s_mutex;
 static measurement_service_snapshot_t s_snapshot;
+static bool s_measurement_mutex_held;
 
 static fake_queue_t *last_queue;
 static esp_err_t fake_object_error;
@@ -51,6 +52,7 @@ static unsigned fake_start_object_calls;
 static char fake_start_object_last_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
 static unsigned fake_start_release_calls;
 static bool fake_start_release_saw_starting;
+static esp_err_t fake_bulk_admission_enter_error;
 static unsigned s_bulk_admission_enter_calls;
 static unsigned s_bulk_admission_exit_calls;
 static bool s_starting_state_observed;
@@ -122,6 +124,9 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t timeout)
         return pdFALSE;
     }
     semaphore->count--;
+    if (handle == s_mutex) {
+        s_measurement_mutex_held = true;
+    }
     return pdTRUE;
 }
 
@@ -137,6 +142,9 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t handle)
         if (!storage_bulk_admission_is_protected()) {
             s_starting_observed_without_admission = true;
         }
+    }
+    if (handle == s_mutex) {
+        s_measurement_mutex_held = false;
     }
     return pdTRUE;
 }
@@ -312,6 +320,10 @@ esp_err_t seismic_recorder_delete_session(const char *object_id, const char *ses
 static esp_err_t test_storage_bulk_admission_enter_protected(void)
 {
     ++s_bulk_admission_enter_calls;
+    assert(!s_measurement_mutex_held);
+    if (fake_bulk_admission_enter_error != ESP_OK) {
+        return fake_bulk_admission_enter_error;
+    }
     return storage_bulk_admission_enter_protected();
 }
 
@@ -370,8 +382,10 @@ static void reset_fakes(void)
     fake_start_object_last_id[0] = '\0';
     fake_start_release_calls = 0U;
     fake_start_release_saw_starting = false;
+    fake_bulk_admission_enter_error = ESP_OK;
     s_bulk_admission_enter_calls = 0U;
     s_bulk_admission_exit_calls = 0U;
+    s_measurement_mutex_held = false;
     s_starting_state_observed = false;
     s_starting_observed_without_admission = false;
 }
@@ -890,6 +904,47 @@ static void test_start_guard_rejects_without_leaking_release(void)
     assert(fake_start_guard_calls == 1U);
     assert(fake_start_release_calls == 0U);
     assert(!measurement_service_is_busy());
+    assert(s_bulk_admission_enter_calls == 0U);
+    assert(s_bulk_admission_exit_calls == 0U);
+    assert(!storage_bulk_admission_is_protected());
+    stop_service();
+}
+
+static void test_admission_enter_failure_does_not_leak(void)
+{
+    start_service();
+    fake_bulk_admission_enter_error = ESP_ERR_INVALID_STATE;
+
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+
+    assert(snapshot().state == MEASUREMENT_SERVICE_ERROR);
+    assert(s_bulk_admission_enter_calls == 1U);
+    assert(s_bulk_admission_exit_calls == 0U);
+    assert(!s_starting_state_observed);
+    assert(!storage_bulk_admission_is_protected());
+    stop_service();
+}
+
+static void test_invalid_worker_start_releases_admission_once(void)
+{
+    start_service();
+    measurement_command_t command = {
+        .type = MEASUREMENT_COMMAND_START,
+    };
+    snprintf(command.object_id, sizeof(command.object_id), "OBJ_0002");
+
+    measurement_service_process_start(&command);
+
+    assert(snapshot().state == MEASUREMENT_SERVICE_ERROR);
+    assert(fake_recorder_start_calls == 0U);
+    assert(s_bulk_admission_enter_calls == 1U);
+    assert(s_bulk_admission_exit_calls == 1U);
+    assert(!s_starting_state_observed);
+    assert(!storage_bulk_admission_is_protected());
+
+    measurement_service_set_error(ESP_ERR_INVALID_STATE);
+    assert(s_bulk_admission_exit_calls == 1U);
     stop_service();
 }
 
@@ -1024,6 +1079,8 @@ int main(void)
     test_object_mutation_policy_table();
     test_acquisition_stop_cannot_bypass_recording_state();
     test_start_guard_rejects_without_leaking_release();
+    test_admission_enter_failure_does_not_leak();
+    test_invalid_worker_start_releases_admission_once();
     test_snapshot_state_and_busy_share_one_critical_section();
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();

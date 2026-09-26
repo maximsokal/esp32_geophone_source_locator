@@ -231,6 +231,7 @@ static void measurement_service_release_bulk_admission(void)
     measurement_service_unlock();
 
     if (release) {
+        /* Drop s_mutex before the potentially blocking admission exit. */
         storage_bulk_admission_exit_protected();
     }
 }
@@ -287,18 +288,32 @@ static void measurement_service_process_start(
     measurement_command_t *command
 )
 {
-    measurement_service_lock();
+    /* Lock order: admission is never acquired while s_mutex is held. */
     const esp_err_t admission_err =
         storage_bulk_admission_enter_protected();
     if (admission_err != ESP_OK) {
-        measurement_service_unlock();
         measurement_service_release_start_object_command(command);
         measurement_service_set_error(admission_err);
         measurement_service_release_start_reservation();
         return;
     }
 
+    const bool has_requested_object =
+        command != NULL && command->object_id[0] != '\0';
+
+    measurement_service_lock();
     s_bulk_admission_held = true;
+    if (
+        has_requested_object &&
+        command->start_object_callback == NULL
+    ) {
+        measurement_service_unlock();
+        measurement_service_release_start_object_command(command);
+        measurement_service_set_error(ESP_ERR_INVALID_STATE);
+        measurement_service_release_start_reservation();
+        return;
+    }
+
     s_snapshot.state = MEASUREMENT_SERVICE_STARTING;
     s_snapshot.last_error = ESP_OK;
     s_snapshot.stop_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
@@ -310,16 +325,7 @@ static void measurement_service_process_start(
     s_snapshot.recording_ms = 0U;
     measurement_service_unlock();
 
-    const bool has_requested_object =
-        command != NULL && command->object_id[0] != '\0';
     if (has_requested_object) {
-        if (command->start_object_callback == NULL) {
-            measurement_service_release_start_object_command(command);
-            measurement_service_set_error(ESP_ERR_INVALID_STATE);
-            measurement_service_release_start_reservation();
-            return;
-        }
-
         const esp_err_t select_err = command->start_object_callback(
             command->object_id,
             command->start_object_context
