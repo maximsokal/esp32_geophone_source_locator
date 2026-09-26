@@ -70,6 +70,9 @@ static nrf_upstream_sensor_snapshot_t make_sensor_snapshot(void)
     sensor.orientation_state = 2U; /* NRF_ORIENTATION_STATE_ACCEPTED */
     sensor.orientation_blink_class = 0U; /* NRF_ORIENTATION_BLINK_NONE */
     sensor.orientation_tilt_sin2_ppm = 12345U;
+    sensor.relative_z_mm = -5432;
+    sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+    sensor.reference_generation = 0x3412U;
     return sensor;
 }
 
@@ -87,7 +90,22 @@ static void refresh_sensor_request_crc(uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSO
     frame[11] = (uint8_t)(crc >> 8U);
 }
 
-static void refresh_remote_snapshot_crc(uint8_t frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH])
+static void refresh_height_reference_crc(
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH])
+{
+    uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 14U);
+    frame[14] = (uint8_t)(crc & 0xFFU);
+    frame[15] = (uint8_t)(crc >> 8U);
+}
+
+static void refresh_remote_snapshot_crc_v2(uint8_t frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH])
+{
+    uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 118U);
+    frame[118] = (uint8_t)(crc & 0xFFU);
+    frame[119] = (uint8_t)(crc >> 8U);
+}
+
+static void refresh_remote_snapshot_crc_v1(uint8_t frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH])
 {
     uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 110U);
     frame[110] = (uint8_t)(crc & 0xFFU);
@@ -227,6 +245,80 @@ static void test_sensor_refresh_layout_and_validation(void)
     assert(nrf_upstream_protocol_encode_sensor_refresh(&request, frame) == NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID);
 }
 
+static void test_height_reference_codec(void)
+{
+    static const uint16_t generations[] = {0U, UINT16_MAX};
+    static const uint8_t actions[] = {
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE,
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR,
+    };
+    nrf_upstream_height_reference_t request = {
+        .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE,
+        .request_id = 0x78563412U,
+        .generation = 0U,
+    };
+    nrf_upstream_height_reference_t decoded = {0};
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH];
+
+    for (size_t i = 0U; i < sizeof(generations) / sizeof(generations[0]); ++i) {
+        request.action = actions[i];
+        request.generation = generations[i];
+        assert(nrf_upstream_protocol_encode_height_reference(&request, frame) ==
+               NRF_UPSTREAM_RESULT_OK);
+        assert(frame[0] == 0x47U && frame[1] == 0x53U &&
+               frame[2] == 1U && frame[3] == NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE);
+        assert(frame[4] == 16U && frame[5] == 0U);
+        assert(frame[6] == request.action && frame[7] == 0U);
+        assert(frame[8] == 0x12U && frame[9] == 0x34U &&
+               frame[10] == 0x56U && frame[11] == 0x78U);
+        assert(frame[12] == (uint8_t)(request.generation & 0xFFU));
+        assert(frame[13] == (uint8_t)(request.generation >> 8U));
+        assert(((uint16_t)frame[14] | ((uint16_t)frame[15] << 8U)) ==
+               nrf_upstream_protocol_crc16_ccitt_false(frame, 14U));
+        assert(nrf_upstream_protocol_decode_height_reference(
+                   frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_OK);
+        assert(decoded.action == request.action);
+        assert(decoded.request_id == request.request_id);
+        assert(decoded.generation == request.generation);
+    }
+
+    request.action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE;
+    request.generation = 65535U;
+    assert(nrf_upstream_protocol_encode_height_reference(&request, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    frame[8] ^= 1U;
+    assert(nrf_upstream_protocol_decode_height_reference(
+               frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_BAD_CRC);
+
+    assert(nrf_upstream_protocol_encode_height_reference(&request, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    assert(nrf_upstream_protocol_decode_height_reference(
+               frame, sizeof(frame) - 1U, &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    frame[3] = 0x04U;
+    refresh_height_reference_crc(frame);
+    assert(nrf_upstream_protocol_decode_height_reference(
+               frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE);
+
+    assert(nrf_upstream_protocol_encode_height_reference(&request, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    frame[7] = 1U;
+    refresh_height_reference_crc(frame);
+    assert(nrf_upstream_protocol_decode_height_reference(
+               frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    assert(nrf_upstream_protocol_encode_height_reference(&request, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    frame[6] = 3U;
+    refresh_height_reference_crc(frame);
+    assert(nrf_upstream_protocol_decode_height_reference(
+               frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    request.request_id = 0U;
+    assert(nrf_upstream_protocol_encode_height_reference(&request, frame) ==
+           NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID);
+}
+
 static void test_remote_snapshot_prefix_and_roundtrip(void)
 {
     nrf_upstream_status_t status = make_remote_status();
@@ -240,8 +332,8 @@ static void test_remote_snapshot_prefix_and_roundtrip(void)
     assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) == NRF_UPSTREAM_RESULT_OK);
     assert(memcmp(frame, status_frame, sizeof(status_frame)) == 0);
     assert(frame[28] == 0x53U && frame[29] == 0x4EU);
-    assert(frame[30] == 1U && frame[31] == 1U);
-    assert(frame[32] == 112U && frame[33] == 0U);
+    assert(frame[30] == 2U && frame[31] == 1U);
+    assert(frame[32] == 120U && frame[33] == 0U);
     assert(frame[34] == 0x11U && frame[35] == 0x22U && frame[36] == 0x33U && frame[37] == 0x44U);
     assert(frame[50] == 0x01U && frame[57] == 0x08U);
     /* MAX-114 extension: signed altitude, state/blink enums and tilt metric
@@ -252,8 +344,13 @@ static void test_remote_snapshot_prefix_and_roundtrip(void)
     assert(frame[105] == NRF_ORIENTATION_BLINK_NONE);
     assert(frame[106] == 0x39U && frame[107] == 0x30U &&
            frame[108] == 0x00U && frame[109] == 0x00U);
-    assert(((uint16_t)frame[110] | ((uint16_t)frame[111] << 8U)) ==
-           nrf_upstream_protocol_crc16_ccitt_false(frame, 110U));
+    assert(frame[110] == 0xC8U && frame[111] == 0xEAU &&
+           frame[112] == 0xFFU && frame[113] == 0xFFU);
+    assert(frame[114] == NRF_UPSTREAM_REFERENCE_VALID);
+    assert(frame[115] == 0U);
+    assert(frame[116] == 0x12U && frame[117] == 0x34U);
+    assert(((uint16_t)frame[118] | ((uint16_t)frame[119] << 8U)) ==
+           nrf_upstream_protocol_crc16_ccitt_false(frame, 118U));
     assert(nrf_upstream_protocol_decode_status(frame, NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH, &decoded_status) == NRF_UPSTREAM_RESULT_OK);
     assert(memcmp(&status, &decoded_status, sizeof(status)) == 0);
     assert(nrf_upstream_protocol_decode_remote_snapshot(frame, sizeof(frame), &decoded_status, &decoded_sensor) == NRF_UPSTREAM_RESULT_OK);
@@ -298,7 +395,7 @@ static void test_remote_snapshot_corruption_and_validation(void)
     sensor = make_sensor_snapshot();
     assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) == NRF_UPSTREAM_RESULT_OK);
     frame[104] = NRF_UPSTREAM_ORIENTATION_STATE_MAX + 1U;
-    refresh_remote_snapshot_crc(frame);
+    refresh_remote_snapshot_crc_v2(frame);
     assert(nrf_upstream_protocol_decode_remote_snapshot(
                frame, sizeof(frame), &decoded_status, &decoded_sensor) ==
            NRF_UPSTREAM_RESULT_INVALID_FRAME);
@@ -307,11 +404,64 @@ static void test_remote_snapshot_corruption_and_validation(void)
     sensor = make_sensor_snapshot();
     assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) == NRF_UPSTREAM_RESULT_OK);
     frame[105] = NRF_UPSTREAM_ORIENTATION_BLINK_MAX + 1U;
-    refresh_remote_snapshot_crc(frame);
+    refresh_remote_snapshot_crc_v2(frame);
     assert(nrf_upstream_protocol_decode_remote_snapshot(
                frame, sizeof(frame), &decoded_status, &decoded_sensor) ==
            NRF_UPSTREAM_RESULT_INVALID_FRAME);
     assert(decoded_sensor.request_id == 0U && decoded_sensor.valid_mask == 0U);
+
+    sensor = make_sensor_snapshot();
+    sensor.reference_state = NRF_UPSTREAM_REFERENCE_SENSOR_INVALID + 1U;
+    assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) ==
+           NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    sensor = make_sensor_snapshot();
+    sensor.reference_state = NRF_UPSTREAM_REFERENCE_REJECTED_MOVING;
+    assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) ==
+           NRF_UPSTREAM_RESULT_INVALID_FRAME);
+}
+
+static void test_remote_snapshot_v1_compatibility_and_v2_rejections(void)
+{
+    nrf_upstream_status_t status = make_remote_status();
+    nrf_upstream_status_t decoded_status;
+    nrf_upstream_sensor_snapshot_t sensor = make_sensor_snapshot();
+    nrf_upstream_sensor_snapshot_t decoded_sensor;
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH];
+    uint8_t frame_v1[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH];
+
+    assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    memcpy(frame_v1, frame, 110U);
+    frame_v1[30] = 1U;
+    frame_v1[32] = (uint8_t)NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH;
+    frame_v1[33] = 0U;
+    refresh_remote_snapshot_crc_v1(frame_v1);
+    assert(nrf_upstream_protocol_decode_remote_snapshot(
+               frame_v1, sizeof(frame_v1), &decoded_status, &decoded_sensor) ==
+           NRF_UPSTREAM_RESULT_OK);
+    assert(decoded_sensor.request_id == sensor.request_id);
+    assert(decoded_sensor.altitude_mm == sensor.altitude_mm);
+    assert(decoded_sensor.relative_z_mm == 0);
+    assert(decoded_sensor.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(decoded_sensor.reference_generation == 0U);
+
+    assert(nrf_upstream_protocol_decode_remote_snapshot(
+               frame, sizeof(frame) - 1U, &decoded_status, &decoded_sensor) ==
+           NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    frame[30] = 3U;
+    refresh_remote_snapshot_crc_v2(frame);
+    assert(nrf_upstream_protocol_decode_remote_snapshot(
+               frame, sizeof(frame), &decoded_status, &decoded_sensor) ==
+           NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    frame[115] = 1U;
+    refresh_remote_snapshot_crc_v2(frame);
+    assert(nrf_upstream_protocol_decode_remote_snapshot(
+               frame, sizeof(frame), &decoded_status, &decoded_sensor) ==
+           NRF_UPSTREAM_RESULT_INVALID_FRAME);
 }
 
 static void test_orientation_wire_constants_match_estimator_enums(void)
@@ -351,8 +501,10 @@ int main(void)
     test_assign_field_validation();
     test_status_exact_layout();
     test_sensor_refresh_layout_and_validation();
+    test_height_reference_codec();
     test_remote_snapshot_prefix_and_roundtrip();
     test_remote_snapshot_corruption_and_validation();
+    test_remote_snapshot_v1_compatibility_and_v2_rejections();
     test_orientation_wire_constants_match_estimator_enums();
     test_role_address_contract();
     return 0;

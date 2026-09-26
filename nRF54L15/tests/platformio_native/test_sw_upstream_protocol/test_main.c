@@ -9,7 +9,7 @@
  * compiled into this native PlatformIO suite, not copied into the test. */
 #include "../../../src/nrf_upstream_protocol.c"
 
-static void test_remote_snapshot_is_112_bytes_and_round_trips(void)
+static void test_remote_snapshot_is_120_bytes_and_round_trips(void)
 {
     nrf_upstream_status_t status;
     nrf_upstream_sensor_snapshot_t sensor;
@@ -41,11 +41,15 @@ static void test_remote_snapshot_is_112_bytes_and_round_trips(void)
     sensor.altitude_mm = 10000;
     sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
     sensor.orientation_tilt_sin2_ppm = 12345U;
+    sensor.relative_z_mm = -1234;
+    sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+    sensor.reference_generation = 7U;
 
     TEST_ASSERT_EQUAL(
         NRF_UPSTREAM_RESULT_OK,
         nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame));
-    TEST_ASSERT_EQUAL_UINT16(112U, frame[4] | ((uint16_t)frame[5] << 8U));
+    TEST_ASSERT_EQUAL_UINT8(2U, frame[30]);
+    TEST_ASSERT_EQUAL_UINT16(120U, frame[32] | ((uint16_t)frame[33] << 8U));
     TEST_ASSERT_EQUAL(
         NRF_UPSTREAM_RESULT_OK,
         nrf_upstream_protocol_decode_remote_snapshot(
@@ -55,6 +59,10 @@ static void test_remote_snapshot_is_112_bytes_and_round_trips(void)
     TEST_ASSERT_EQUAL_UINT8(sensor.orientation_state, decoded_sensor.orientation_state);
     TEST_ASSERT_EQUAL_UINT32(
         sensor.orientation_tilt_sin2_ppm, decoded_sensor.orientation_tilt_sin2_ppm);
+    TEST_ASSERT_EQUAL_INT32(sensor.relative_z_mm, decoded_sensor.relative_z_mm);
+    TEST_ASSERT_EQUAL_UINT8(sensor.reference_state, decoded_sensor.reference_state);
+    TEST_ASSERT_EQUAL_UINT16(
+        sensor.reference_generation, decoded_sensor.reference_generation);
 }
 
 static void test_remote_snapshot_rejects_wrong_wire_length(void)
@@ -87,7 +95,7 @@ static void test_remote_snapshot_rejects_wrong_wire_length(void)
 int main(void)
 {
     UNITY_BEGIN();
-    RUN_TEST(test_remote_snapshot_is_112_bytes_and_round_trips);
+    RUN_TEST(test_remote_snapshot_is_120_bytes_and_round_trips);
     RUN_TEST(test_remote_snapshot_rejects_wrong_wire_length);
     return UNITY_END();
 }

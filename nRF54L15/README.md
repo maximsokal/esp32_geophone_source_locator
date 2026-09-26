@@ -103,10 +103,12 @@ extension, while `nrf_bootstrap_runtime_zephyr` owns the bounded
 callback-to-worker handoff and deferred re-addressing. The TWIS buffer is
 explicitly 128 bytes.
 
-REMOTE reads prepare a fixed 112-byte frame whose first 28 bytes are exactly
+REMOTE reads prepare a fixed 120-byte v2 frame whose first 28 bytes are exactly
 the legacy STATUS frame, so existing topology reads remain backward-compatible;
 the full extension carries request/sequence/validity/fault state, nRF
-completion uptime and BMI160/BME280 values with its own full-frame CRC. The
+completion uptime, BMI160/BME280 values, absolute altitude, and a versioned
+height-reference-relative Z value with its own full-frame CRC. The decoder
+continues to accept v1 112-byte frames. The
 ESP32 `nrf_topology_service` consumes this frame through a bounded
 select/identity-check/refresh/poll/close transaction and exposes only cached
 results/non-blocking refresh requests to callers. See
