@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -59,6 +60,21 @@ function registeredArtifact(): VoxelPreviewArtifact {
 }
 
 describe('voxel preview grid and preview-v1 format', () => {
+  it('decodes the shared golden vector used by the C parser test', () => {
+    const source = readFileSync(new URL('../../../components/scan_preview/tests/preview_v1_golden_bytes.inc', import.meta.url), 'utf8');
+    const bytes = Uint8Array.from([...source.matchAll(/0x([0-9a-f]{2})/gi)].map((match) => Number.parseInt(match[1], 16)));
+    const decoded = decodeVoxelPreviewArtifact(bytes);
+    expect(decoded).toMatchObject({
+      sourceScanCrc32: 0x12345678,
+      voxelSizeMeters: 0.5,
+      dimensions: [2, 2, 1],
+      voxelCount: 1,
+      coarseningSteps: 3,
+    });
+    expect([...decoded.indices]).toEqual([3]);
+    expect([...decoded.faceMasks]).toEqual([0x3f]);
+  });
+
   it('stores only the shell of a solid box', () => {
     const grid = buildVoxelPreviewGrid(snapshot(cube(3)), scanA);
     expect(grid.indices).toHaveLength(26);

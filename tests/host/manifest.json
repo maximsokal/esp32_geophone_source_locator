@@ -1740,6 +1740,17 @@
       ]
     },
     {
+      "name": "scan_preview",
+      "sources": [
+        "components/scan_preview/scan_preview.c",
+        "components/scan_preview/tests/scan_preview_test.c"
+      ],
+      "include_dirs": [
+        "components/scan_preview/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "web_status_cache_arbitration",
       "sources": [
         "components/web_server/web_status_cache_arbitration.c",
