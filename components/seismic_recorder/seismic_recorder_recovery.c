@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 
@@ -283,7 +284,10 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
     };
 
     char path[SEISMIC_RECORDER_PATH_SIZE];
-    char buffer[SEISMIC_RECORDER_METADATA_BUFFER_SIZE];
+    char *buffer = malloc(SEISMIC_RECORDER_METADATA_BUFFER_SIZE);
+    if (buffer == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     bool saw_candidate_file = false;
 
     for (size_t index = 0U; index < sizeof(names) / sizeof(names[0]); ++index) {
@@ -294,13 +298,14 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
             sizeof(path)
         );
         if (err != ESP_OK) {
+            free(buffer);
             return err;
         }
 
         err = seismic_recorder_recovery_read_text_exact(
             path,
             buffer,
-            sizeof(buffer)
+            SEISMIC_RECORDER_METADATA_BUFFER_SIZE
         );
         if (err == ESP_ERR_NOT_FOUND) {
             continue;
@@ -318,10 +323,12 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
             candidate
         );
         if (err == ESP_OK) {
+            free(buffer);
             return ESP_OK;
         }
     }
 
+    free(buffer);
     return saw_candidate_file ? ESP_ERR_INVALID_RESPONSE : ESP_ERR_NOT_FOUND;
 }
 

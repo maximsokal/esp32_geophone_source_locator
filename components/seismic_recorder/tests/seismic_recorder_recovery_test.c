@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -233,7 +234,34 @@ esp_err_t seismic_recorder_json_write_metadata(
     return ESP_OK;
 }
 
+static bool fail_recovery_candidate_malloc;
+
+static void *recovery_test_malloc(size_t size)
+{
+    if (fail_recovery_candidate_malloc) {
+        fail_recovery_candidate_malloc = false;
+        return NULL;
+    }
+    return malloc(size);
+}
+
+
+#define malloc recovery_test_malloc
 #include "../seismic_recorder_recovery.c"
+#undef malloc
+
+
+static size_t read_file_bytes(const char *path, unsigned char *buffer, size_t capacity)
+{
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    const size_t count = fread(buffer, 1U, capacity, file);
+    assert(ferror(file) == 0);
+    assert(fgetc(file) == EOF);
+    assert(ferror(file) == 0);
+    assert(fclose(file) == 0);
+    return count;
+}
 
 static void write_candidate(const char *file_name, const char *text)
 {
@@ -578,6 +606,63 @@ static void test_cooperative_stop_does_not_touch_session(void)
     reset_layout();
 }
 
+static void test_candidate_allocation_failure_leaves_files_untouched(void)
+{
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata());
+    write_raw(2U, 7U, RAW_HEADER_VALID);
+
+    char metadata_path[256];
+    char samples_path[256];
+    assert(snprintf(
+        metadata_path,
+        sizeof(metadata_path),
+        "%s/OBJ_0001/sessions/S000001/session.json",
+        STORAGE_MANAGER_OBJECTS_PATH
+    ) < (int)sizeof(metadata_path));
+    assert(snprintf(
+        samples_path,
+        sizeof(samples_path),
+        "%s/OBJ_0001/sessions/S000001/samples.bin",
+        STORAGE_MANAGER_OBJECTS_PATH
+    ) < (int)sizeof(samples_path));
+
+    unsigned char metadata_before[256];
+    unsigned char samples_before[128];
+    const size_t metadata_size = read_file_bytes(
+        metadata_path,
+        metadata_before,
+        sizeof(metadata_before)
+    );
+    const size_t samples_size = read_file_bytes(
+        samples_path,
+        samples_before,
+        sizeof(samples_before)
+    );
+    size_t recovered = 99U;
+    fail_recovery_candidate_malloc = true;
+    assert(
+        seismic_recorder_recover_object_sessions(
+            "OBJ_0001",
+            NULL,
+            NULL,
+            &recovered
+        ) == ESP_ERR_NO_MEM
+    );
+    assert(!fail_recovery_candidate_malloc);
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+
+    unsigned char metadata_after[sizeof(metadata_before)];
+    unsigned char samples_after[sizeof(samples_before)];
+    assert(read_file_bytes(metadata_path, metadata_after, sizeof(metadata_after)) == metadata_size);
+    assert(read_file_bytes(samples_path, samples_after, sizeof(samples_after)) == samples_size);
+    assert(memcmp(metadata_after, metadata_before, metadata_size) == 0);
+    assert(memcmp(samples_after, samples_before, samples_size) == 0);
+    reset_layout();
+}
+
 int main(void)
 {
     test_partial_tail_salvage_and_idempotence();
@@ -587,6 +672,7 @@ int main(void)
     test_invalid_headers_fail_closed();
     test_live_and_existing_terminal_sessions_are_authoritative();
     test_cooperative_stop_does_not_touch_session();
+    test_candidate_allocation_failure_leaves_files_untouched();
     puts("seismic_recorder_recovery_test: PASS");
     return 0;
 }
