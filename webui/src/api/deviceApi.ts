@@ -18,6 +18,7 @@ export interface ControlResult {
   action: string;
   object_id?: string;
   bytes?: number;
+  error_class?: string;
   error?: string;
 }
 
@@ -34,6 +35,9 @@ function errorText(reason: unknown): string {
 
 function responseError(body: unknown, response: Response): string {
   if (typeof body === 'object' && body !== null && 'error' in body) {
+    if ('error_class' in body && (body as { error_class?: unknown }).error_class === 'acquisition_unavailable') {
+      return `Acquisition unavailable: ${String((body as { error: unknown }).error)}`;
+    }
     return String((body as { error: unknown }).error);
   }
   if (typeof body === 'string' && body.trim().length > 0) return body.trim().slice(0, 240);
