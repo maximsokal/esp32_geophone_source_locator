@@ -830,6 +830,24 @@
     "scene.panel.main_device": { "en": "MAIN device", "uk": "Пристрій MAIN" },
     "scene.panel.remote_geophone": { "en": "REMOTE geophone", "uk": "Віддалений геофон" },
     "scene.panel.locked": { "en": "LOCKED", "uk": "ЗАФІКСОВАНО" },
-    "scene.panel.unlocked": { "en": "UNLOCKED", "uk": "НЕ ЗАФІКСОВАНО" }
+    "scene.panel.unlocked": { "en": "UNLOCKED", "uk": "НЕ ЗАФІКСОВАНО" },
+    "calc.provenance": { "en": "Geometry provenance", "uk": "Походження геометрії" },
+    "calc.provenance.solver": { "en": "Solver", "uk": "Розв’язувач" },
+    "calc.provenance.solver_version": { "en": "Solver version", "uk": "Версія розв’язувача" },
+    "calc.provenance.refined": { "en": "Refined", "uk": "Уточнено" },
+    "calc.provenance.refine_iterations": { "en": "Refinement iterations", "uk": "Ітерації уточнення" },
+    "calc.provenance.topology_generation": { "en": "Topology generation", "uk": "Покоління топології" },
+    "calc.provenance.cs_membership_generation": { "en": "CS membership generation", "uk": "Покоління складу CS" },
+    "calc.provenance.main_height_reference_generation": { "en": "MAIN height reference generation", "uk": "Покоління опорної висоти MAIN" },
+    "calc.provenance.setup_id": { "en": "Setup ID", "uk": "ID конфігурації" },
+    "calc.provenance.start_uptime_ms": { "en": "Start uptime (ms)", "uk": "Час роботи на початку (мс)" },
+    "calc.provenance.source_sample_uptime_ms": { "en": "Source sample uptime (ms)", "uk": "Час знімка джерела (мс)" },
+    "calc.provenance.esp_receipt_uptime_ms": { "en": "ESP receipt uptime (ms)", "uk": "Час отримання ESP (мс)" },
+    "calc.provenance.source_age_ms_at_start": { "en": "Source age at start (ms)", "uk": "Вік знімка на початку (мс)" },
+    "calc.provenance.height_reference_generation": { "en": "Height-reference generation", "uk": "Покоління опорної висоти" },
+    "calc.provenance.state": { "en": "CS pair state", "uk": "Стан пари CS" },
+    "calc.provenance.last_failure": { "en": "Last failure", "uk": "Остання помилка" },
+    "calc.provenance.provider_quality_flags": { "en": "Provider quality flags", "uk": "Прапорці якості постачальника" },
+    "calc.provenance.scheduler_quality_flags": { "en": "Scheduler quality flags", "uk": "Прапорці якості планувальника" }
   }
 }

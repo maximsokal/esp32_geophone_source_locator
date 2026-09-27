@@ -599,12 +599,29 @@ export interface LocalizationSessionPodGeometry {
   /** MAX-144: 1-sigma position uncertainty (mm); 0 = n/a, 2147483647 = undetermined. */
   uncertainty_mm?: number;
   computed_at_ms?: number;
+  source_sample_uptime_ms?: number;
+  esp_receipt_uptime_ms?: number;
+  source_age_ms_at_start?: number | null;
+  height_reference_generation?: number;
+}
+
+export interface LocalizationGeometryProvenance {
+  solver?: string;
+  solver_version?: string;
+  refined?: boolean;
+  refine_iterations?: number;
+  topology_generation?: number;
+  cs_membership_generation?: number;
+  main_height_reference_generation?: number;
+  setup_id?: string;
+  start_uptime_ms?: number;
 }
 
 export interface LocalizationSessionGeometry {
   available: boolean;
   z_policy_effective?: 'planar' | 'barometric_relative';
   z_fallback_reason?: string;
+  provenance?: LocalizationGeometryProvenance;
   pods: LocalizationSessionPodGeometry[];
 }
 
@@ -619,6 +636,10 @@ export interface LocalizationCsPair {
   /** MAX-206: robust spread of the accepted samples (mm) and outliers dropped. */
   spread_mm?: number;
   rejected_samples?: number;
+  state?: string;
+  last_failure?: string;
+  provider_quality_flags?: number;
+  scheduler_quality_flags?: number;
 }
 
 export interface LocalizationSessionCsPairs {
