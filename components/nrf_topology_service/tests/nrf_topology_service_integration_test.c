@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <setjmp.h>
 #include <stdbool.h>
@@ -20,6 +21,9 @@
 #include "nrf_upstream_protocol.h"
 #include "sensor_bus.h"
 #include "sensor_bus_lines.h"
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+#include "device_status.h"
+#endif
 
 /*
  * MAX-246 item 5: nrf_topology_service integration on a simulated wire.
@@ -121,6 +125,26 @@ static nrf_upstream_height_reference_t s_height_reference_requests[32];
 static bool s_in_imu_calibration_handler;
 static unsigned s_imu_calibration_writes;
 static nrf_upstream_imu_calibrate_t s_imu_calibration_requests[32];
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+static bool s_cs_hold_pending;
+static bool s_cs_use_pair_distances;
+static int32_t s_cs_pair_distances[NRF_CS_MAX_PAIRS];
+static int32_t s_cs_fail_pair_index = -1;
+static device_status_snapshot_t s_device_status;
+static nrf_topology_ranging_progress_t s_seen_ranging_progress;
+static nrf_topology_ranging_result_t s_seen_frozen_ranging_result;
+static int32_t s_last_uncertainty_mm[NRF_CS_MAX_NODES];
+static size_t s_ranging_capture_index;
+
+esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *snapshot = s_device_status;
+    return ESP_OK;
+}
+#endif
 
 static void reset_world(void);
 static void run_service(void);
@@ -338,6 +362,19 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         result.measurement.distance_mm = 1000 + result.step.pair_index;
         result.measurement.confidence = 900U;
         result.measurement.provider_quality_flags = 0U;
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+        if (s_cs_hold_pending) {
+            result.state = NRF_CS_CONTROL_STATE_RUNNING;
+            result.command_result = NRF_CS_CONTROL_RESULT_PENDING;
+        } else if (s_cs_fail_pair_index == (int32_t)result.step.pair_index) {
+            result.state = NRF_CS_CONTROL_STATE_FAILED;
+            result.command_result = NRF_CS_CONTROL_RESULT_INTERNAL_ERROR;
+            result.measurement.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
+            result.measurement.confidence = 0U;
+        } else if (s_cs_use_pair_distances) {
+            result.measurement.distance_mm = s_cs_pair_distances[result.step.pair_index];
+        }
+#endif
         assert(nrf_cs_control_encode_result(&result, frame) == 0);
         if (s_malformed_cs_results_remaining > 0U) {
             frame[42] ^= 0x01U;
@@ -880,6 +917,343 @@ static void request_cs_cycle(void)
     assert(nrf_topology_service_request_cs_cycle(&policy) == ESP_OK);
 }
 
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+static nrf_cs_policy_t ranging_test_policy(void)
+{
+    return (nrf_cs_policy_t) {
+        .pair_timeout_ms = 60000U,
+        .max_attempts = 1U,
+        .min_confidence = 500U,
+        .samples_per_pair = 1U,
+        .full_rotation = true,
+    };
+}
+
+static void prepare_ranging_nodes(size_t remote_count)
+{
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    for (size_t index = 0U; index < remote_count; ++index) {
+        node_boot(&s_nodes[index + 1U], (uint8_t)index, (uint8_t)(0x22U + index));
+        s_nodes[index + 1U].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+        s_nodes[index + 1U].reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+        s_nodes[index + 1U].reference_generation = 91U;
+    }
+    s_device_status.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    s_device_status.main.height_reference.generation = 91U;
+    s_device_status.main.height_reference.relative_z_mm = 0;
+}
+
+static void request_ranging_with_default_timeout(void)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    assert(nrf_topology_service_ranging_start(&policy, 0U) == ESP_OK);
+}
+
+static void request_ranging_for_test(void)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_OK);
+}
+
+static void request_full_ranging_for_test(void)
+{
+    request_ranging_for_test();
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.active && !s_seen_ranging_progress.complete);
+    assert(s_seen_ranging_progress.pairs_done == 0U);
+    assert(s_seen_ranging_progress.pairs_total == 12U);
+    assert(s_seen_ranging_progress.pair_count == 6U);
+    assert(s_seen_ranging_progress.pairs[0].node_a == 0U);
+    assert(s_seen_ranging_progress.pairs[0].node_b == 1U);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_PENDING);
+    assert(s_seen_ranging_progress.geometry.node_count == 4U);
+    assert(s_seen_ranging_progress.geometry.nodes[0].node_id == 0U);
+    assert(s_seen_ranging_progress.geometry.nodes[0].solved);
+    assert(s_seen_ranging_progress.geometry.nodes[0].uncertainty_mm == 0);
+    assert(s_seen_ranging_progress.geometry.nodes[1].node_id == 1U);
+    assert(!s_seen_ranging_progress.geometry.nodes[1].solved);
+    assert(s_seen_ranging_progress.geometry.nodes[1].uncertainty_mm == INT32_MAX);
+    assert(s_seen_ranging_progress.solution_residual_mm == INT32_MAX);
+}
+
+static void assert_ranging_rejects_missing_main(void)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_ERR_INVALID_STATE);
+}
+
+static void assert_ranging_first_direction_progress(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.active);
+    assert(!s_seen_ranging_progress.complete);
+    assert(s_seen_ranging_progress.pairs_done == 1U);
+    assert(s_seen_ranging_progress.pairs_total == 12U);
+    assert(s_seen_ranging_progress.pair_count == 6U);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_PENDING);
+    assert(s_seen_ranging_progress.geometry.node_count == 4U);
+    assert(s_seen_ranging_progress.geometry.nodes[0].solved);
+    assert(s_seen_ranging_progress.geometry.nodes[0].uncertainty_mm == 0);
+    assert(!s_seen_ranging_progress.geometry.nodes[1].solved);
+    assert(s_seen_ranging_progress.geometry.nodes[1].uncertainty_mm == INT32_MAX);
+    assert(s_seen_ranging_progress.solution_residual_mm == INT32_MAX);
+}
+
+static void assert_ranging_pair_zero_progress(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.active);
+    assert(s_seen_ranging_progress.pairs_done == 2U);
+    assert(s_seen_ranging_progress.pairs_total == 12U);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_VALID);
+    assert(s_seen_ranging_progress.geometry.node_count == 4U);
+    assert(s_seen_ranging_progress.main_height_reference_generation == 91U);
+    static const int32_t expected_uncertainty_mm[4] = {
+        0, 150, INT32_MAX, INT32_MAX,
+    };
+    for (size_t node = 0U; node < 4U; ++node) {
+        const int32_t uncertainty = s_seen_ranging_progress.geometry.nodes[node].uncertainty_mm;
+        assert(uncertainty == expected_uncertainty_mm[node]);
+        s_last_uncertainty_mm[node] = uncertainty;
+    }
+    s_ranging_capture_index = 0U;
+}
+
+static void assert_ranging_next_pair_progress(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    ++s_ranging_capture_index;
+    const size_t expected_done = 2U * (s_ranging_capture_index + 1U);
+    assert(s_seen_ranging_progress.pairs_done == expected_done);
+    assert(s_seen_ranging_progress.pairs_total == 12U);
+    assert(s_seen_ranging_progress.pair_count == 6U);
+    for (size_t pair = 0U; pair <= s_ranging_capture_index; ++pair) {
+        assert(s_seen_ranging_progress.pairs[pair].state == NRF_CS_PAIR_VALID);
+    }
+    for (size_t node = 0U; node < s_seen_ranging_progress.geometry.node_count; ++node) {
+        const int32_t uncertainty = s_seen_ranging_progress.geometry.nodes[node].uncertainty_mm;
+        assert(uncertainty <= s_last_uncertainty_mm[node]);
+        s_last_uncertainty_mm[node] = uncertainty;
+    }
+    static const int32_t expected_uncertainties[6][4] = {
+        {0, 150, INT32_MAX, INT32_MAX},
+        {0, 150, INT32_MAX, INT32_MAX},
+        {0, 150, INT32_MAX, INT32_MAX},
+        {0, 150, 335, INT32_MAX},
+        {0, 150, 335, INT32_MAX},
+        {0, 140, 254, 249},
+    };
+    for (size_t node = 0U; node < 4U; ++node) {
+        assert(s_seen_ranging_progress.geometry.nodes[node].uncertainty_mm ==
+            expected_uncertainties[s_ranging_capture_index][node]);
+    }
+}
+
+static void assert_ranging_success_frozen(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(!s_seen_ranging_progress.active);
+    assert(s_seen_ranging_progress.complete && s_seen_ranging_progress.success);
+    assert(s_seen_ranging_progress.failure_reason[0] == '\0');
+    assert(s_seen_ranging_progress.pairs_done == 12U);
+    assert(s_seen_ranging_progress.pairs_total == 12U);
+    assert(s_seen_ranging_progress.pair_count == 6U);
+    assert(s_seen_ranging_progress.solution_residual_mm == 0);
+    for (size_t pair = 0U; pair < 6U; ++pair) {
+        assert(s_seen_ranging_progress.pairs[pair].state == NRF_CS_PAIR_VALID);
+        assert(!s_seen_ranging_progress.pairs[pair].single_direction);
+        assert(s_seen_ranging_progress.pairs[pair].direction_disagreement_mm == 0);
+    }
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_OK);
+    assert(s_seen_frozen_ranging_result.available);
+    assert(!s_seen_frozen_ranging_result.invalidated);
+    assert(s_seen_frozen_ranging_result.membership_identity_valid);
+    assert(s_seen_frozen_ranging_result.membership_count == 4U);
+    assert(s_seen_frozen_ranging_result.membership[0].channel == 0U);
+    assert(s_seen_frozen_ranging_result.membership[0].node_id == 1U);
+    assert(s_seen_frozen_ranging_result.membership[3].channel == NRF_UPSTREAM_MUX_CHANNEL_NONE);
+    assert(s_seen_frozen_ranging_result.membership[3].node_id == 0U);
+    assert(s_seen_frozen_ranging_result.pair_count == 6U);
+    assert(s_seen_frozen_ranging_result.topology_generation == s_seen_ranging_progress.topology_generation);
+    assert(s_seen_frozen_ranging_result.membership_generation == s_seen_ranging_progress.membership_generation);
+    assert(s_seen_frozen_ranging_result.timestamp_ms >= s_seen_ranging_progress.started_at_ms);
+    assert(s_seen_frozen_ranging_result.geometry.node_count == 4U);
+
+    nrf_topology_snapshot_t same_membership;
+    nrf_topology_ranging_result_t reusable;
+    assert(nrf_topology_service_get_snapshot(&same_membership) == ESP_OK);
+    ++same_membership.generation;
+    const uint64_t frozen_at = s_seen_frozen_ranging_result.timestamp_ms;
+    assert(frozen_at > 0U);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &same_membership,
+        frozen_at + NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS - 1U,
+        NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_OK);
+    assert(reusable.available && !reusable.invalidated);
+    assert(reusable.topology_generation == s_seen_frozen_ranging_result.topology_generation);
+
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &same_membership,
+        frozen_at + NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &same_membership,
+        frozen_at + NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS + 1U,
+        NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &same_membership,
+        frozen_at - 1U,
+        NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+
+    nrf_topology_snapshot_t changed = same_membership;
+    changed.remotes[0].hardware_id[0] ^= 1U;
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &changed, frozen_at, NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+
+    changed = same_membership;
+    changed.remotes[4] = changed.remotes[0];
+    changed.remotes[4].mux_channel = 4U;
+    changed.remotes[0].state = NRF_TOPOLOGY_NODE_ABSENT;
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &changed, frozen_at, NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+
+    changed = same_membership;
+    changed.remotes[2].state = NRF_TOPOLOGY_NODE_ABSENT;
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &changed, frozen_at, NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+
+    assert(nrf_topology_service_invalidate_ranging() == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &same_membership, frozen_at, NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+        &reusable) == ESP_ERR_NOT_FOUND);
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_OK);
+    assert(s_seen_frozen_ranging_result.available && s_seen_frozen_ranging_result.invalidated);
+}
+
+static void assert_ranging_pair_failure(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "pair_failed:0-1") == 0);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_ERR_NOT_FOUND);
+}
+
+static void assert_ranging_geometry_failure(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "geometry_unsolved:2") == 0);
+    for (size_t pair = 0U; pair < s_seen_ranging_progress.pair_count; ++pair) {
+        assert(s_seen_ranging_progress.pairs[pair].state == NRF_CS_PAIR_VALID);
+    }
+}
+
+static void assert_ranging_default_timeout_still_active(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.active && !s_seen_ranging_progress.complete);
+    assert(s_seen_ranging_progress.pairs_total == 2U);
+}
+
+static void assert_ranging_default_timeout_result(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(!s_seen_ranging_progress.active);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "timeout") == 0);
+    assert(s_seen_ranging_progress.pairs_done == 2U);
+}
+
+static void test_ranging_full_rotation_progress_and_frozen_result(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_full_ranging_for_test);
+    script_waits(2U, 10U);
+    script(EV_ACTION, 0U, assert_ranging_first_direction_progress);
+    script_waits(2U, 10U);
+    script(EV_ACTION, 0U, assert_ranging_pair_zero_progress);
+    for (size_t pair = 1U; pair < 6U; ++pair) {
+        script_waits(4U, 10U);
+        script(EV_ACTION, 0U, assert_ranging_next_pair_progress);
+    }
+    script(EV_ACTION, 0U, assert_ranging_success_frozen);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_cs_execute_count == 12U);
+}
+
+static void test_ranging_failure_reasons(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_fail_pair_index = 0;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_ranging_for_test);
+    script_waits(20U, 10U);
+    script(EV_ACTION, 0U, assert_ranging_pair_failure);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 1000;
+    s_cs_pair_distances[1] = 1000;
+    s_cs_pair_distances[2] = 5000;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_ranging_for_test);
+    script_waits(12U, 10U);
+    script(EV_ACTION, 0U, assert_ranging_geometry_failure);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_ranging_default_timeout_is_30_seconds(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(1U);
+    s_cs_hold_pending = true;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_ranging_with_default_timeout);
+    script(EV_WAIT_MS, 29990U, NULL);
+    script(EV_ACTION, 0U, assert_ranging_default_timeout_still_active);
+    script(EV_WAIT_MS, 20U, NULL);
+    script(EV_ACTION, 0U, assert_ranging_default_timeout_result);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_ranging_requires_assigned_main(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[1], 0U, 0x22U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_ranging_rejects_missing_main);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_cs_execute_count == 0U);
+}
+#endif
+
 static void add_three_remotes_and_refresh(void)
 {
     node_boot(&s_nodes[2], 0U, 0x33U);
@@ -1107,6 +1481,17 @@ static void reset_world(void)
     s_height_reference_writes = 0U;
     s_in_imu_calibration_handler = false;
     s_imu_calibration_writes = 0U;
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    s_cs_hold_pending = false;
+    s_cs_use_pair_distances = false;
+    memset(s_cs_pair_distances, 0, sizeof(s_cs_pair_distances));
+    s_cs_fail_pair_index = -1;
+    memset(&s_device_status, 0, sizeof(s_device_status));
+    memset(&s_seen_ranging_progress, 0, sizeof(s_seen_ranging_progress));
+    memset(&s_seen_frozen_ranging_result, 0, sizeof(s_seen_frozen_ranging_result));
+    memset(s_last_uncertainty_mm, 0, sizeof(s_last_uncertainty_mm));
+    s_ranging_capture_index = 0U;
+#endif
     s_height_request_result = ESP_ERR_INVALID_STATE;
     s_height_requested_mask = 0U;
     s_imu_calibration_request_result = ESP_ERR_INVALID_STATE;
@@ -1272,6 +1657,14 @@ static void test_unplug_and_replug_between_reconciles(void)
 static void test_api_guards_when_stopped(void)
 {
     nrf_topology_snapshot_t snapshot;
+    nrf_cs_policy_t ranging_policy = {
+        .pair_timeout_ms = 100U,
+        .max_attempts = 1U,
+        .min_confidence = 500U,
+        .full_rotation = true,
+    };
+    nrf_topology_ranging_progress_t ranging_progress;
+    nrf_topology_ranging_result_t ranging_result;
     uint8_t height_mask = UINT8_MAX;
     uint16_t height_generation = UINT16_MAX;
     assert(nrf_topology_service_request_refresh() == ESP_ERR_INVALID_STATE);
@@ -1283,6 +1676,15 @@ static void test_api_guards_when_stopped(void)
     assert(height_mask == 0U);
     assert(height_generation == 0U);
     assert(nrf_topology_service_get_snapshot(NULL) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_ranging_start(NULL, 0U) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_ranging_start(&ranging_policy, 0U) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_ranging_get_progress(NULL) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_ranging_get_progress(&ranging_progress) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_get_frozen_ranging_result(NULL) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_get_frozen_ranging_result(&ranging_result) == ESP_ERR_NOT_FOUND);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        NULL, 0U, 0U, &ranging_result) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_invalidate_ranging() == ESP_OK);
     (void)snapshot;
     /* stop() on a stopped service returns immediately. */
     nrf_topology_service_stop();
@@ -1301,5 +1703,11 @@ int main(void)
     test_unplug_and_replug_between_reconciles();
     test_stack_phase_tracking_and_cs_cycle_path();
     test_error_recovery_stack_hwm_and_long_error_name();
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    test_ranging_full_rotation_progress_and_frozen_result();
+    test_ranging_failure_reasons();
+    test_ranging_default_timeout_is_30_seconds();
+    test_ranging_requires_assigned_main();
+#endif
     return 0;
 }

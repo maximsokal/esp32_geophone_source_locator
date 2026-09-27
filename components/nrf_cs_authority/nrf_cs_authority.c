@@ -162,6 +162,27 @@ nrf_cs_authority_result_t nrf_cs_authority_pump(nrf_cs_authority_t *authority)
     return complete_measurement(authority, &remote.measurement);
 }
 
+nrf_cs_authority_result_t nrf_cs_authority_abort_cycle(
+    nrf_cs_authority_t *authority,
+    nrf_cs_failure_reason_t reason)
+{
+    if (authority == NULL || reason < NRF_CS_FAILURE_TIMEOUT ||
+        reason > NRF_CS_FAILURE_DISCONNECTED) {
+        return NRF_CS_AUTHORITY_ERR_ARGUMENT;
+    }
+    if (!authority->cycle_active) {
+        return nrf_cs_scheduler_is_complete(&authority->scheduler)
+            ? NRF_CS_AUTHORITY_COMPLETE
+            : NRF_CS_AUTHORITY_ERR_STATE;
+    }
+    if (nrf_cs_scheduler_abort_cycle(&authority->scheduler, reason) != NRF_CS_OK) {
+        return NRF_CS_AUTHORITY_ERR_STATE;
+    }
+    clear_command(authority);
+    authority->cycle_active = false;
+    return NRF_CS_AUTHORITY_COMPLETE;
+}
+
 nrf_cs_authority_result_t nrf_cs_authority_disconnect(
     nrf_cs_authority_t *authority,
     nrf_cs_node_id_t node_id)

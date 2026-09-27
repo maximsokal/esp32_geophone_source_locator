@@ -40,6 +40,9 @@ typedef struct {
 nrf_cs_authority_result_t nrf_cs_authority_init(nrf_cs_authority_t *authority, const nrf_cs_policy_t *policy, const nrf_cs_authority_ops_t *ops, uint32_t request_seed);
 nrf_cs_authority_result_t nrf_cs_authority_start_cycle(nrf_cs_authority_t *authority, const nrf_cs_node_id_t *nodes, size_t node_count);
 nrf_cs_authority_result_t nrf_cs_authority_pump(nrf_cs_authority_t *authority);
+nrf_cs_authority_result_t nrf_cs_authority_abort_cycle(
+    nrf_cs_authority_t *authority,
+    nrf_cs_failure_reason_t reason);
 nrf_cs_authority_result_t nrf_cs_authority_disconnect(nrf_cs_authority_t *authority, nrf_cs_node_id_t node_id);
 bool nrf_cs_authority_is_active(const nrf_cs_authority_t *authority);
 size_t nrf_cs_authority_pair_count(const nrf_cs_authority_t *authority);

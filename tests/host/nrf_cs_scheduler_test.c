@@ -11,6 +11,7 @@ static nrf_cs_policy_t test_policy(uint8_t max_attempts)
     policy.max_attempts = max_attempts;
     policy.min_confidence = 600U;
     policy.samples_per_pair = 1U;
+    policy.full_rotation = false;
     return policy;
 }
 
@@ -410,6 +411,156 @@ static void test_samples_per_pair_is_bounded(void)
     assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_ERR_ARGUMENT);
 }
 
+static void test_full_rotation_has_both_orders_in_canonical_sequence(void)
+{
+    const nrf_cs_node_id_t nodes5[] = { 5U, 2U, 4U, 1U, 3U };
+    const nrf_cs_node_id_t *node_sets[] = {
+        (const nrf_cs_node_id_t[]){ 3U, 1U, 2U },
+        (const nrf_cs_node_id_t[]){ 4U, 1U, 3U, 2U },
+        nodes5,
+    };
+    const size_t counts[] = { 3U, 4U, 5U };
+
+    for (size_t case_index = 0U; case_index < 3U; ++case_index) {
+        nrf_cs_scheduler_t scheduler;
+        nrf_cs_policy_t policy = test_policy(1U);
+        const nrf_cs_node_id_t *nodes = node_sets[case_index];
+        const size_t node_count = counts[case_index];
+        unsigned initiators[NRF_CS_MAX_NODES] = { 0U };
+        size_t ordered_execution = 0U;
+        policy.full_rotation = true;
+
+        assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, node_count) == NRF_CS_OK);
+        assert(nrf_cs_scheduler_pair_count(&scheduler) == node_count * (node_count - 1U) / 2U);
+        assert(nrf_cs_scheduler_execution_count(&scheduler) == node_count * (node_count - 1U));
+        assert(nrf_cs_scheduler_execution_count(&scheduler) <= NRF_CS_MAX_EXECUTIONS);
+
+        for (size_t left = 1U; left <= node_count; ++left) {
+            for (size_t right = left + 1U; right <= node_count; ++right) {
+                nrf_cs_step_t step;
+                const nrf_cs_node_id_t a = (nrf_cs_node_id_t)left;
+                const nrf_cs_node_id_t b = (nrf_cs_node_id_t)right;
+                const nrf_cs_node_id_t expected_initiators[] = { a, b };
+                const nrf_cs_node_id_t expected_reflectors[] = { b, a };
+                for (size_t direction = 0U; direction < 2U; ++direction) {
+                    assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+                    assert(step.pair_index == ordered_execution / 2U);
+                    assert(step.initiator == expected_initiators[direction]);
+                    assert(step.reflector == expected_reflectors[direction]);
+                    ++initiators[step.initiator - 1U];
+                    ++ordered_execution;
+                    const nrf_cs_measurement_t measurement = success_measurement(1000, 900U);
+                    assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+                }
+            }
+        }
+
+        nrf_cs_step_t finished;
+        assert(nrf_cs_scheduler_next_step(&scheduler, &finished) == NRF_CS_CYCLE_COMPLETE);
+        assert(ordered_execution == node_count * (node_count - 1U));
+        assert(nrf_cs_scheduler_executions_done(&scheduler) == ordered_execution);
+        for (size_t node = 0U; node < node_count; ++node) {
+            assert(initiators[node] == node_count - 1U);
+        }
+    }
+}
+
+static void test_full_rotation_pair_combine_and_direction_failures(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(1U);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };
+    nrf_cs_step_t step;
+    nrf_cs_pair_result_t pair;
+
+    policy.full_rotation = true;
+    policy.samples_per_pair = 3U;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    const int32_t forward[] = { 1000, 1010, 990 };
+    const int32_t reverse[] = { 1200, 1210, 1190 };
+    for (size_t direction = 0U; direction < 2U; ++direction) {
+        const int32_t *distances = direction == 0U ? forward : reverse;
+        for (size_t sample = 0U; sample < 3U; ++sample) {
+            assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+            assert(step.pair_index == 0U);
+            const nrf_cs_measurement_t measurement = success_measurement(
+                distances[sample], direction == 0U ? 900U : 700U);
+            assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+        }
+    }
+    pair = *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    assert(pair.distance_mm == 1100);
+    assert(pair.confidence == 800U);
+    assert(pair.valid_samples == 6U);
+    assert(pair.direction_disagreement_mm == 200);
+    assert(pair.spread_mm == 215);
+    assert(!pair.single_direction);
+
+    policy.samples_per_pair = 1U;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+    nrf_cs_measurement_t measurement = success_measurement(1234, 900U);
+    assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+    measurement = failure_measurement(NRF_CS_OUTCOME_TIMEOUT);
+    assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    pair = *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    assert(pair.distance_mm == 1234);
+    assert(pair.valid_samples == 1U);
+    assert(pair.single_direction);
+    assert(pair.spread_mm == 0);
+    assert(pair.direction_disagreement_mm == 0);
+    assert((pair.scheduler_quality_flags & NRF_CS_QUALITY_PARTIAL) != 0U);
+
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    const nrf_cs_measurement_t timeout = failure_measurement(NRF_CS_OUTCOME_TIMEOUT);
+    for (size_t direction = 0U; direction < 2U; ++direction) {
+        assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+        assert(step.pair_index == 0U);
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &timeout) == NRF_CS_OK);
+    }
+    pair = *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    assert(pair.last_failure == NRF_CS_FAILURE_TIMEOUT);
+    assert(pair.valid_samples == 0U);
+    assert(!pair.single_direction);
+}
+
+static void test_abort_cycle_completes_pending_executions_with_timeout(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(1U);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };
+    nrf_cs_step_t step;
+    const nrf_cs_measurement_t timeout = failure_measurement(NRF_CS_OUTCOME_TIMEOUT);
+
+    policy.full_rotation = true;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+    assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &timeout) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_abort_cycle(&scheduler, NRF_CS_FAILURE_TIMEOUT) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_is_complete(&scheduler));
+    assert(nrf_cs_scheduler_executions_done(&scheduler) == 6U);
+    for (size_t i = 0U; i < nrf_cs_scheduler_pair_count(&scheduler); ++i) {
+        const nrf_cs_pair_result_t *pair = nrf_cs_scheduler_pair_at(&scheduler, i);
+        assert(pair != NULL);
+        if (i == 0U) {
+            assert(pair->state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+            assert(pair->last_failure == NRF_CS_FAILURE_TIMEOUT);
+        } else {
+            assert(pair->state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+            assert(pair->scheduler_quality_flags & NRF_CS_QUALITY_TIMEOUT);
+        }
+    }
+}
+
 
 int main(void)
 {
@@ -426,5 +577,8 @@ int main(void)
     test_main_identity_has_no_privileged_initiator_role();
     test_empty_and_single_node_cycles_complete_without_steps();
     test_invalid_inputs_are_rejected();
+    test_full_rotation_has_both_orders_in_canonical_sequence();
+    test_full_rotation_pair_combine_and_direction_failures();
+    test_abort_cycle_completes_pending_executions_with_timeout();
     return 0;
 }

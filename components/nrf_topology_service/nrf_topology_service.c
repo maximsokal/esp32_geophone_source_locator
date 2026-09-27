@@ -3,8 +3,17 @@
 #include "nrf_cs_authority.h"
 #include "nrf_cs_control_protocol.h"
 
+#if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+#define NRF_TOPOLOGY_HAS_RANGING_SOLVER 1
+#include "device_status.h"
+#include "nrf_geometry_solver.h"
+#else
+#define NRF_TOPOLOGY_HAS_RANGING_SOLVER 0
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -54,6 +63,14 @@ typedef struct {
     nrf_cs_cycle_snapshot_t cs_cycle_snapshot;
     nrf_cs_platform_context_t cs_context;
     nrf_cs_authority_ops_t cs_ops;
+    bool ranging_active;
+    uint64_t ranging_deadline_ms;
+    uint32_t ranging_topology_generation;
+    uint16_t ranging_processed_pairs_mask;
+    bool ranging_pair_failure_seen;
+    uint8_t ranging_failed_pair_a;
+    uint8_t ranging_failed_pair_b;
+    nrf_topology_ranging_progress_t ranging_progress;
 } nrf_topology_worker_state_t;
 
 static TaskHandle_t s_task = NULL;
@@ -75,9 +92,17 @@ static uint16_t s_imu_calibration_pending_generation = 0U;
 static nrf_topology_snapshot_t s_snapshot;
 static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static bool s_cs_request_pending = false;
+static bool s_cs_request_is_ranging = false;
+static uint32_t s_cs_requested_ranging_timeout_ms = 0U;
+static uint64_t s_cs_requested_ranging_started_ms = 0U;
 static bool s_cs_snapshot_valid = false;
 static nrf_cs_policy_t s_cs_requested_policy;
 static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
+static bool s_ranging_active = false;
+static bool s_ranging_progress_valid = false;
+static nrf_topology_ranging_progress_t s_ranging_progress;
+static bool s_frozen_ranging_result_valid = false;
+static nrf_topology_ranging_result_t s_frozen_ranging_result;
 static nrf_topology_worker_state_t s_worker_state;
 static nrf_topology_service_stack_stats_t s_stack_stats;
 
@@ -896,6 +921,8 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
     snapshot->result = result;
     snapshot->cycle_id = authority->scheduler.cycle_id;
     snapshot->membership_generation = authority->scheduler.membership_generation;
+    snapshot->executions_done = nrf_cs_scheduler_executions_done(&authority->scheduler);
+    snapshot->executions_total = nrf_cs_scheduler_execution_count(&authority->scheduler);
     snapshot->pair_count = nrf_cs_authority_pair_count(authority);
     for (size_t i = 0U; i < snapshot->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
         const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(authority, i);
@@ -907,12 +934,24 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
     portEXIT_CRITICAL(&s_state_lock);
 }
 
-static bool cs_take_request(nrf_cs_policy_t *policy)
+static bool cs_take_request(
+    nrf_cs_policy_t *policy,
+    bool *is_ranging,
+    uint32_t *ranging_timeout_ms,
+    uint64_t *ranging_started_at_ms)
 {
     bool pending;
     portENTER_CRITICAL(&s_state_lock);
     pending = s_cs_request_pending;
     if (pending) { *policy = s_cs_requested_policy; s_cs_request_pending = false; }
+    if (pending) {
+        *is_ranging = s_cs_request_is_ranging;
+        *ranging_timeout_ms = s_cs_requested_ranging_timeout_ms;
+        *ranging_started_at_ms = s_cs_requested_ranging_started_ms;
+        s_cs_request_is_ranging = false;
+        s_cs_requested_ranging_timeout_ms = 0U;
+        s_cs_requested_ranging_started_ms = 0U;
+    }
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
 }
@@ -923,6 +962,425 @@ static void cs_sync_disconnects(nrf_cs_authority_t *authority, const nrf_topolog
         const nrf_cs_node_id_t node = authority->scheduler.nodes[i];
         if (!cs_node_present(snapshot, node)) (void)nrf_cs_authority_disconnect(authority, node);
     }
+}
+
+static void service_ranging_publish_progress(nrf_topology_worker_state_t *worker)
+{
+    worker->ranging_progress.active = worker->ranging_active;
+    worker->ranging_progress.updated_at_ms = platform_now_ms(&worker->platform);
+    portENTER_CRITICAL(&s_state_lock);
+    s_ranging_progress = worker->ranging_progress;
+    s_ranging_progress_valid = true;
+    s_ranging_active = worker->ranging_active;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+static int32_t ranging_saturate_i32(int64_t value)
+{
+    if (value > INT32_MAX) return INT32_MAX;
+    if (value < INT32_MIN) return INT32_MIN;
+    return (int32_t)value;
+}
+
+static nrf_geometry_result_t service_ranging_solve(
+    nrf_topology_worker_state_t *worker,
+    nrf_topology_ranging_geometry_t *geometry,
+    int32_t *residual_mm,
+    uint16_t *main_height_reference_generation)
+{
+    nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
+    size_t input_count = 0U;
+    device_status_snapshot_t device_status = {0};
+    bool main_reference_valid = false;
+    bool has_valid_pair = false;
+    uint16_t main_reference_generation = 0U;
+    int32_t main_relative_z_mm = 0;
+    bool use_barometric_z = false;
+    nrf_geometry_solution_t solution = {0};
+
+    memset(geometry, 0, sizeof(*geometry));
+    *residual_mm = INT32_MAX;
+    *main_height_reference_generation = 0U;
+    if (worker->snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+        return NRF_GEOMETRY_ERR_NO_MAIN;
+    }
+
+    inputs[input_count++] = (nrf_geometry_node_input_t) {
+        .node_id = worker->snapshot.main.node_id,
+        .z_mm = 0,
+    };
+    if (device_status_get_snapshot(&device_status) == ESP_OK &&
+        device_status.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
+        device_status.main.height_reference.generation != 0U) {
+        main_reference_valid = true;
+        main_reference_generation = device_status.main.height_reference.generation;
+        main_relative_z_mm = device_status.main.height_reference.relative_z_mm;
+        use_barometric_z = true;
+    }
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (worker->snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+            continue;
+        }
+        const nrf_remote_sensor_cache_t *cache = &worker->cache[channel];
+        if (!main_reference_valid || !cache->response_valid || !cache->topology_current ||
+            cache->sensor.reference_state != NRF_UPSTREAM_REFERENCE_VALID ||
+            cache->sensor.reference_generation != main_reference_generation) {
+            use_barometric_z = false;
+        }
+    }
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (worker->snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+            continue;
+        }
+        if (input_count >= NRF_GEOMETRY_MAX_NODES) {
+            return NRF_GEOMETRY_ERR_ARGUMENT;
+        }
+        const nrf_remote_sensor_cache_t *cache = &worker->cache[channel];
+        const int32_t z_mm = use_barometric_z
+            ? ranging_saturate_i32(
+                  (int64_t)cache->sensor.relative_z_mm - main_relative_z_mm)
+            : 0;
+        inputs[input_count++] = (nrf_geometry_node_input_t) {
+            .node_id = worker->snapshot.remotes[channel].node_id,
+            .z_mm = z_mm,
+        };
+    }
+
+    const nrf_geometry_result_t result = nrf_geometry_solver_solve(
+        inputs,
+        input_count,
+        worker->cs_cycle_snapshot.pairs,
+        worker->cs_cycle_snapshot.pair_count,
+        &solution);
+    if (result != NRF_GEOMETRY_OK) {
+        return result;
+    }
+    for (size_t i = 0U; i < worker->cs_cycle_snapshot.pair_count; ++i) {
+        has_valid_pair = has_valid_pair ||
+            worker->cs_cycle_snapshot.pairs[i].state == NRF_CS_PAIR_VALID;
+    }
+
+    geometry->node_count = solution.node_count;
+    geometry->max_residual_mm = solution.max_residual_mm;
+    geometry->inconsistent_pair_count = solution.inconsistent_pair_count;
+    geometry->refined = solution.refined;
+    geometry->refine_iterations = solution.refine_iterations;
+    for (size_t i = 0U; i < solution.node_count; ++i) {
+        geometry->nodes[i] = (nrf_topology_ranging_node_t) {
+            .node_id = solution.nodes[i].node_id,
+            .solved = solution.nodes[i].solved,
+            .x_mm = solution.nodes[i].x_mm,
+            .y_mm = solution.nodes[i].y_mm,
+            .z_mm = solution.nodes[i].z_mm,
+            .residual_mm = solution.nodes[i].residual_mm,
+            .uncertainty_mm = solution.nodes[i].solved
+                ? solution.nodes[i].uncertainty_mm
+                : INT32_MAX,
+        };
+    }
+    *residual_mm = has_valid_pair ? solution.max_residual_mm : INT32_MAX;
+    *main_height_reference_generation = use_barometric_z
+        ? main_reference_generation
+        : 0U;
+    return NRF_GEOMETRY_OK;
+}
+#else
+static int service_ranging_solve(
+    nrf_topology_worker_state_t *worker,
+    nrf_topology_ranging_geometry_t *geometry,
+    int32_t *residual_mm,
+    uint16_t *main_height_reference_generation)
+{
+    (void)worker;
+    memset(geometry, 0, sizeof(*geometry));
+    *residual_mm = INT32_MAX;
+    *main_height_reference_generation = 0U;
+    return -1;
+}
+#endif
+
+static const nrf_topology_ranging_node_t *service_ranging_find_node(
+    const nrf_topology_ranging_geometry_t *geometry,
+    nrf_cs_node_id_t node_id)
+{
+    for (size_t i = 0U; i < geometry->node_count; ++i) {
+        if (geometry->nodes[i].node_id == node_id) {
+            return &geometry->nodes[i];
+        }
+    }
+    return NULL;
+}
+
+static bool service_ranging_geometry_solves_all_nodes(
+    const nrf_topology_worker_state_t *worker)
+{
+    size_t assigned_count = worker->snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED ? 1U : 0U;
+    if (worker->snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        const nrf_topology_ranging_node_t *main = service_ranging_find_node(
+            &worker->ranging_progress.geometry,
+            worker->snapshot.main.node_id);
+        if (main == NULL || !main->solved) return false;
+    }
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (worker->snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+            continue;
+        }
+        ++assigned_count;
+        const nrf_topology_ranging_node_t *remote = service_ranging_find_node(
+            &worker->ranging_progress.geometry,
+            worker->snapshot.remotes[channel].node_id);
+        if (remote == NULL || !remote->solved) return false;
+    }
+    return worker->ranging_progress.geometry.node_count == assigned_count;
+}
+
+static nrf_cs_node_id_t service_ranging_first_unsolved_node(
+    const nrf_topology_worker_state_t *worker)
+{
+    if (worker->snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        const nrf_topology_ranging_node_t *main = service_ranging_find_node(
+            &worker->ranging_progress.geometry,
+            worker->snapshot.main.node_id);
+        if (main == NULL || !main->solved) return worker->snapshot.main.node_id;
+    }
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (worker->snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            const nrf_topology_ranging_node_t *remote = service_ranging_find_node(
+                &worker->ranging_progress.geometry,
+                worker->snapshot.remotes[channel].node_id);
+            if (remote == NULL || !remote->solved) {
+                return worker->snapshot.remotes[channel].node_id;
+            }
+        }
+    }
+    return 0U;
+}
+
+static void service_ranging_copy_cycle(nrf_topology_worker_state_t *worker)
+{
+    nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
+    const nrf_cs_cycle_snapshot_t *cycle = &worker->cs_cycle_snapshot;
+    progress->pairs_done = cycle->executions_done;
+    progress->pairs_total = cycle->executions_total;
+    progress->pair_count = cycle->pair_count;
+    progress->membership_generation = cycle->membership_generation;
+    if (progress->pair_count > NRF_CS_MAX_PAIRS) {
+        progress->pair_count = NRF_CS_MAX_PAIRS;
+    }
+    memcpy(progress->pairs, cycle->pairs, progress->pair_count * sizeof(progress->pairs[0]));
+}
+
+static bool ranging_member_precedes(
+    const nrf_topology_ranging_member_identity_t *left,
+    const nrf_topology_ranging_member_identity_t *right)
+{
+    if (left->channel != right->channel) return left->channel < right->channel;
+    if (left->node_id != right->node_id) return left->node_id < right->node_id;
+    const size_t common_length = left->hardware_id_length < right->hardware_id_length
+        ? left->hardware_id_length
+        : right->hardware_id_length;
+    const int hardware_order = memcmp(left->hardware_id, right->hardware_id, common_length);
+    if (hardware_order != 0) return hardware_order < 0;
+    return left->hardware_id_length < right->hardware_id_length;
+}
+
+static bool service_ranging_capture_membership(
+    const nrf_topology_snapshot_t *topology,
+    nrf_topology_ranging_member_identity_t membership[NRF_CS_MAX_NODES],
+    size_t *membership_count)
+{
+    if (topology == NULL || membership == NULL || membership_count == NULL ||
+        topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+        return false;
+    }
+
+    size_t count = 0U;
+    const nrf_topology_node_snapshot_t *node = &topology->main;
+    if (node->hardware_id_length == 0U ||
+        node->hardware_id_length > NRF_UPSTREAM_PROTOCOL_HW_ID_MAX) {
+        return false;
+    }
+    membership[count++] = (nrf_topology_ranging_member_identity_t) {
+        .channel = NRF_UPSTREAM_MUX_CHANNEL_NONE,
+        .node_id = node->node_id,
+        .hardware_id_length = node->hardware_id_length,
+    };
+    memcpy(membership[0].hardware_id, node->hardware_id, node->hardware_id_length);
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        node = &topology->remotes[channel];
+        if (node->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        if (count >= NRF_CS_MAX_NODES || node->hardware_id_length == 0U ||
+            node->hardware_id_length > NRF_UPSTREAM_PROTOCOL_HW_ID_MAX) {
+            return false;
+        }
+        membership[count] = (nrf_topology_ranging_member_identity_t) {
+            .channel = channel,
+            .node_id = node->node_id,
+            .hardware_id_length = node->hardware_id_length,
+        };
+        memcpy(membership[count].hardware_id, node->hardware_id, node->hardware_id_length);
+        ++count;
+    }
+
+    for (size_t i = 1U; i < count; ++i) {
+        const nrf_topology_ranging_member_identity_t value = membership[i];
+        size_t j = i;
+        while (j > 0U && ranging_member_precedes(&value, &membership[j - 1U])) {
+            membership[j] = membership[j - 1U];
+            --j;
+        }
+        membership[j] = value;
+    }
+    *membership_count = count;
+    return true;
+}
+
+static bool service_ranging_membership_matches(
+    const nrf_topology_ranging_result_t *result,
+    const nrf_topology_snapshot_t *topology)
+{
+    nrf_topology_ranging_member_identity_t current[NRF_CS_MAX_NODES] = {0};
+    size_t current_count = 0U;
+    if (result == NULL || !result->membership_identity_valid ||
+        result->membership_count > NRF_CS_MAX_NODES ||
+        !service_ranging_capture_membership(topology, current, &current_count) ||
+        current_count != result->membership_count) {
+        return false;
+    }
+    return memcmp(
+        current,
+        result->membership,
+        current_count * sizeof(current[0])) == 0;
+}
+
+static void service_ranging_finish(
+    nrf_topology_worker_state_t *worker,
+    bool success,
+    const char *failure_reason,
+    uint64_t now_ms)
+{
+    nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
+    progress->active = false;
+    progress->complete = true;
+    progress->success = success;
+    progress->updated_at_ms = now_ms;
+    if (failure_reason != NULL) {
+        snprintf(progress->failure_reason, sizeof(progress->failure_reason), "%s", failure_reason);
+    } else {
+        progress->failure_reason[0] = '\0';
+    }
+    worker->ranging_active = false;
+
+    if (success) {
+        nrf_topology_ranging_result_t result = {0};
+        result.available = true;
+        result.pair_count = progress->pair_count;
+        memcpy(result.pairs, progress->pairs, result.pair_count * sizeof(result.pairs[0]));
+        result.geometry = progress->geometry;
+        result.topology_generation = progress->topology_generation;
+        result.membership_generation = progress->membership_generation;
+        result.main_height_reference_generation = progress->main_height_reference_generation;
+        result.timestamp_ms = now_ms;
+        result.membership_identity_valid = service_ranging_capture_membership(
+            &worker->snapshot,
+            result.membership,
+            &result.membership_count);
+        portENTER_CRITICAL(&s_state_lock);
+        s_frozen_ranging_result = result;
+        s_frozen_ranging_result_valid = true;
+        portEXIT_CRITICAL(&s_state_lock);
+    }
+    service_ranging_publish_progress(worker);
+}
+
+static void service_ranging_process(nrf_topology_worker_state_t *worker)
+{
+    nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
+    const uint64_t now_ms = platform_now_ms(&worker->platform);
+    if (!worker->ranging_active) {
+        return;
+    }
+
+    if (nrf_cs_authority_is_active(&worker->authority) && now_ms >= worker->ranging_deadline_ms) {
+        (void)nrf_cs_authority_abort_cycle(&worker->authority, NRF_CS_FAILURE_TIMEOUT);
+        cs_publish(worker, false, NRF_CS_AUTHORITY_COMPLETE);
+        service_ranging_copy_cycle(worker);
+        service_ranging_finish(worker, false, "timeout", now_ms);
+        return;
+    }
+
+    service_ranging_copy_cycle(worker);
+    progress->topology_generation = worker->ranging_topology_generation;
+    for (size_t i = 0U; i < progress->pair_count; ++i) {
+        const uint16_t bit = (uint16_t)(1U << i);
+        const nrf_cs_pair_result_t *pair = &progress->pairs[i];
+        if ((worker->ranging_processed_pairs_mask & bit) != 0U ||
+            pair->state == NRF_CS_PAIR_PENDING || pair->state == NRF_CS_PAIR_UNKNOWN) {
+            continue;
+        }
+        worker->ranging_processed_pairs_mask |= bit;
+        (void)service_ranging_solve(
+            worker,
+            &progress->geometry,
+            &progress->solution_residual_mm,
+            &progress->main_height_reference_generation);
+        if (pair->state != NRF_CS_PAIR_VALID && !worker->ranging_pair_failure_seen) {
+            worker->ranging_pair_failure_seen = true;
+            worker->ranging_failed_pair_a = pair->node_a;
+            worker->ranging_failed_pair_b = pair->node_b;
+        }
+    }
+    service_ranging_publish_progress(worker);
+
+    if (!nrf_cs_scheduler_is_complete(&worker->authority.scheduler)) {
+        return;
+    }
+
+    (void)service_ranging_solve(
+        worker,
+        &progress->geometry,
+        &progress->solution_residual_mm,
+        &progress->main_height_reference_generation);
+    service_ranging_copy_cycle(worker);
+    progress->topology_generation = worker->ranging_topology_generation;
+    if (service_ranging_geometry_solves_all_nodes(worker)) {
+        service_ranging_finish(worker, true, NULL, now_ms);
+    } else if (worker->ranging_pair_failure_seen) {
+        char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+        (void)snprintf(
+            reason,
+            sizeof(reason),
+            "pair_failed:%u-%u",
+            (unsigned)worker->ranging_failed_pair_a,
+            (unsigned)worker->ranging_failed_pair_b);
+        service_ranging_finish(worker, false, reason, now_ms);
+    } else {
+        char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+        (void)snprintf(
+            reason,
+            sizeof(reason),
+            "geometry_unsolved:%u",
+            (unsigned)service_ranging_first_unsolved_node(worker));
+        service_ranging_finish(worker, false, reason, now_ms);
+    }
+}
+
+static void service_ranging_fail_start(nrf_topology_worker_state_t *worker)
+{
+    worker->ranging_active = false;
+    worker->ranging_progress.active = false;
+    worker->ranging_progress.complete = true;
+    worker->ranging_progress.success = false;
+    snprintf(
+        worker->ranging_progress.failure_reason,
+        sizeof(worker->ranging_progress.failure_reason),
+        "geometry_unsolved:%u",
+        (unsigned)NRF_TOPOLOGY_MAIN_NODE_ID);
+    service_ranging_publish_progress(worker);
 }
 
 static void service_worker(void *context)
@@ -1006,7 +1464,14 @@ static void service_worker(void *context)
         }
 
         nrf_cs_policy_t requested_policy;
-        if (cs_take_request(&requested_policy)) {
+        bool ranging_request = false;
+        uint32_t ranging_timeout_ms = 0U;
+        uint64_t ranging_started_at_ms = 0U;
+        if (cs_take_request(
+                &requested_policy,
+                &ranging_request,
+                &ranging_timeout_ms,
+                &ranging_started_at_ms)) {
             nrf_cs_node_id_t nodes[NRF_CS_MAX_NODES];
             bool overflow = false;
             const size_t count = cs_collect_nodes(&worker->snapshot, nodes, &overflow);
@@ -1033,8 +1498,34 @@ static void service_worker(void *context)
                 s_cs_cycle_snapshot.result = start_result;
                 s_cs_snapshot_valid = true;
                 portEXIT_CRITICAL(&s_state_lock);
+                if (ranging_request) {
+                    portENTER_CRITICAL(&s_state_lock);
+                    worker->ranging_progress = s_ranging_progress;
+                    portEXIT_CRITICAL(&s_state_lock);
+                    service_ranging_fail_start(worker);
+                }
             } else {
                 cs_publish(worker, true, start_result);
+                if (ranging_request) {
+                    worker->ranging_active = true;
+                    worker->ranging_deadline_ms =
+                        ranging_started_at_ms + (uint64_t)ranging_timeout_ms;
+                    worker->ranging_topology_generation = worker->snapshot.generation;
+                    worker->ranging_processed_pairs_mask = 0U;
+                    worker->ranging_pair_failure_seen = false;
+                    memset(&worker->ranging_progress, 0, sizeof(worker->ranging_progress));
+                    worker->ranging_progress.active = true;
+                    worker->ranging_progress.started_at_ms = ranging_started_at_ms;
+                    worker->ranging_progress.topology_generation = worker->snapshot.generation;
+                    service_ranging_copy_cycle(worker);
+                    (void)service_ranging_solve(
+                        worker,
+                        &worker->ranging_progress.geometry,
+                        &worker->ranging_progress.solution_residual_mm,
+                        &worker->ranging_progress.main_height_reference_generation);
+                    service_ranging_publish_progress(worker);
+                    service_ranging_process(worker);
+                }
             }
             service_record_current_stack_hwm(
                 NRF_TOPOLOGY_STACK_PHASE_CS_CYCLE_START,
@@ -1096,6 +1587,7 @@ static void service_worker(void *context)
         if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
             const nrf_cs_authority_result_t cs_result = nrf_cs_authority_pump(&worker->authority);
             cs_publish(worker, nrf_cs_authority_is_active(&worker->authority), cs_result);
+            service_ranging_process(worker);
             service_record_current_stack_hwm(
                 NRF_TOPOLOGY_STACK_PHASE_CS_PUMP_PUBLISH,
                 "cs-pump-publish");
@@ -1113,6 +1605,17 @@ static void service_worker(void *context)
             }
         }
         (void)ulTaskNotifyTake(pdTRUE, wait_ticks);
+    }
+
+    if (worker->ranging_active) {
+        (void)nrf_cs_authority_abort_cycle(&worker->authority, NRF_CS_FAILURE_TIMEOUT);
+        cs_publish(worker, false, NRF_CS_AUTHORITY_COMPLETE);
+        service_ranging_copy_cycle(worker);
+        service_ranging_finish(
+            worker,
+            false,
+            "timeout",
+            platform_now_ms(&worker->platform));
     }
 
     platform_close(&worker->platform);
@@ -1145,11 +1648,19 @@ esp_err_t nrf_topology_service_start(void)
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
     s_cs_request_pending = false;
+    s_cs_request_is_ranging = false;
+    s_cs_requested_ranging_timeout_ms = 0U;
+    s_cs_requested_ranging_started_ms = 0U;
     s_cs_snapshot_valid = false;
+    s_ranging_active = false;
+    s_ranging_progress_valid = false;
+    s_frozen_ranging_result_valid = false;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
     memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    memset(&s_frozen_ranging_result, 0, sizeof(s_frozen_ranging_result));
     memset(&s_stack_stats, 0, sizeof(s_stack_stats));
     memset(&s_worker_state, 0, sizeof(s_worker_state));
     portEXIT_CRITICAL(&s_state_lock);
@@ -1214,7 +1725,11 @@ void nrf_topology_service_stop(void)
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
     s_cs_request_pending = false;
+    s_cs_request_is_ranging = false;
+    s_cs_requested_ranging_timeout_ms = 0U;
+    s_cs_requested_ranging_started_ms = 0U;
     s_cs_snapshot_valid = false;
+    s_ranging_active = false;
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
     memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
     portEXIT_CRITICAL(&s_state_lock);
@@ -1485,11 +2000,25 @@ esp_err_t nrf_topology_service_test_publish_state(
 
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
 {
-    TaskHandle_t task; bool available;
-    if(policy==NULL||policy->pair_timeout_ms==0U||policy->max_attempts==0U||policy->min_confidence>NRF_CS_CONFIDENCE_MAX||policy->samples_per_pair>NRF_CS_MAX_SAMPLES_PER_EXECUTION)return ESP_ERR_INVALID_ARG;
-    portENTER_CRITICAL(&s_state_lock); task=s_task; available=task!=NULL||s_starting;
-    if(available&&!s_cs_request_pending&&(!s_cs_snapshot_valid||!s_cs_cycle_snapshot.active)){s_cs_requested_policy=*policy;s_cs_request_pending=true;}
-    else if(available){portEXIT_CRITICAL(&s_state_lock);return ESP_ERR_INVALID_STATE;}
+    TaskHandle_t task;
+    bool available;
+    if (policy == NULL || policy->pair_timeout_ms == 0U || policy->max_attempts == 0U ||
+        policy->min_confidence > NRF_CS_CONFIDENCE_MAX ||
+        policy->samples_per_pair > NRF_CS_MAX_SAMPLES_PER_EXECUTION) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    task = s_task;
+    available = task != NULL || s_starting;
+    if (available && !s_ranging_active && !s_cs_request_pending &&
+        (!s_cs_snapshot_valid || !s_cs_cycle_snapshot.active)) {
+        s_cs_requested_policy = *policy;
+        s_cs_request_pending = true;
+        s_cs_request_is_ranging = false;
+    } else if (available) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     portEXIT_CRITICAL(&s_state_lock);
     if (!available) {
         return ESP_ERR_INVALID_STATE;
@@ -1506,6 +2035,172 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     if(snapshot==NULL)return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&s_state_lock); valid=s_cs_snapshot_valid; if(valid)*snapshot=s_cs_cycle_snapshot; portEXIT_CRITICAL(&s_state_lock);
     return valid?ESP_OK:ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_ranging_start(
+    const nrf_cs_policy_t *policy,
+    uint32_t timeout_ms)
+{
+    TaskHandle_t task;
+    nrf_cs_node_id_t nodes[NRF_CS_MAX_NODES];
+    size_t node_count = 0U;
+    const int64_t now_us = esp_timer_get_time();
+
+    if (policy == NULL || !policy->full_rotation || policy->pair_timeout_ms == 0U ||
+        policy->max_attempts == 0U || policy->min_confidence > NRF_CS_CONFIDENCE_MAX ||
+        policy->samples_per_pair > NRF_CS_MAX_SAMPLES_PER_EXECUTION) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (timeout_ms == 0U) {
+        timeout_ms = NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS;
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    task = s_task;
+    if (task == NULL || !s_snapshot_valid) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    ++node_count;
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        node_count += s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED ? 1U : 0U;
+    }
+    if (node_count < 2U) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (node_count > NRF_CS_MAX_NODES) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (s_ranging_active || s_cs_request_pending ||
+        (s_cs_snapshot_valid && s_cs_cycle_snapshot.active)) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    node_count = 0U;
+    nodes[node_count++] = s_snapshot.main.node_id;
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            nodes[node_count++] = s_snapshot.remotes[channel].node_id;
+        }
+    }
+    for (size_t i = 1U; i < node_count; ++i) {
+        const nrf_cs_node_id_t value = nodes[i];
+        size_t j = i;
+        while (j > 0U && nodes[j - 1U] > value) {
+            nodes[j] = nodes[j - 1U];
+            --j;
+        }
+        nodes[j] = value;
+    }
+
+    s_cs_requested_policy = *policy;
+    s_cs_request_pending = true;
+    s_cs_request_is_ranging = true;
+    s_cs_requested_ranging_timeout_ms = timeout_ms;
+    s_cs_requested_ranging_started_ms = now_us > 0 ? (uint64_t)now_us / 1000U : 0U;
+    s_ranging_active = true;
+    s_ranging_progress_valid = true;
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    s_ranging_progress.active = true;
+    s_ranging_progress.topology_generation = s_snapshot.generation;
+    s_ranging_progress.pairs_total = node_count * (node_count - 1U);
+    s_ranging_progress.started_at_ms = s_cs_requested_ranging_started_ms;
+    s_ranging_progress.updated_at_ms = s_cs_requested_ranging_started_ms;
+    s_ranging_progress.solution_residual_mm = INT32_MAX;
+    s_ranging_progress.pair_count = node_count * (node_count - 1U) / 2U;
+    s_ranging_progress.geometry.node_count = node_count;
+    for (size_t i = 0U; i < node_count; ++i) {
+        const bool is_main = nodes[i] == s_snapshot.main.node_id;
+        s_ranging_progress.geometry.nodes[i].node_id = nodes[i];
+        s_ranging_progress.geometry.nodes[i].solved = is_main;
+        s_ranging_progress.geometry.nodes[i].uncertainty_mm = is_main ? 0 : INT32_MAX;
+    }
+    size_t pair_index = 0U;
+    for (size_t left = 0U; left < node_count; ++left) {
+        for (size_t right = left + 1U; right < node_count; ++right) {
+            s_ranging_progress.pairs[pair_index].node_a = nodes[left];
+            s_ranging_progress.pairs[pair_index].node_b = nodes[right];
+            s_ranging_progress.pairs[pair_index].state = NRF_CS_PAIR_PENDING;
+            ++pair_index;
+        }
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+
+    (void)xTaskNotifyGive(task);
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_get_progress(
+    nrf_topology_ranging_progress_t *progress)
+{
+    if (progress == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    const bool valid = s_ranging_progress_valid;
+    if (valid) {
+        *progress = s_ranging_progress;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_get_frozen_ranging_result(
+    nrf_topology_ranging_result_t *result)
+{
+    if (result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    const bool valid = s_frozen_ranging_result_valid;
+    if (valid) {
+        *result = s_frozen_ranging_result;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
+    const nrf_topology_snapshot_t *current_topology,
+    uint64_t now_ms,
+    uint64_t max_age_ms,
+    nrf_topology_ranging_result_t *result)
+{
+    if (current_topology == NULL || result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (max_age_ms == 0U) {
+        max_age_ms = NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS;
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    const bool valid = s_frozen_ranging_result_valid &&
+        !s_frozen_ranging_result.invalidated &&
+        now_ms >= s_frozen_ranging_result.timestamp_ms &&
+        now_ms - s_frozen_ranging_result.timestamp_ms < max_age_ms &&
+        service_ranging_membership_matches(&s_frozen_ranging_result, current_topology);
+    if (valid) {
+        *result = s_frozen_ranging_result;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t nrf_topology_service_invalidate_ranging(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_frozen_ranging_result_valid) {
+        s_frozen_ranging_result.invalidated = true;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
 }
 
 static bool service_take_height_reference_request(uint8_t *mask, uint16_t *generation)

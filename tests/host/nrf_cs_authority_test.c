@@ -112,6 +112,57 @@ int main(void)
     }
 
     {
+        const nrf_cs_policy_t rotation_policy = {
+            .pair_timeout_ms = 100U,
+            .max_attempts = 1U,
+            .min_confidence = 500U,
+            .full_rotation = true,
+        };
+        memset(&transport, 0, sizeof(transport));
+        assert(nrf_cs_authority_init(&authority, &rotation_policy, &ops, 125U) == NRF_CS_AUTHORITY_OK);
+        assert(nrf_cs_authority_start_cycle(&authority, five_nodes, 5U) == NRF_CS_AUTHORITY_PROGRESS);
+        run_to_completion(&authority, &transport);
+        assert(transport.write_calls == 20U);
+        assert(transport.poll_calls == 20U);
+        assert(nrf_cs_scheduler_execution_count(&authority.scheduler) == 20U);
+        for (i = 1U; i <= 5U; ++i) {
+            assert(transport.unique_initiator_turns[i] == 4U);
+        }
+        for (i = 0U; i < 10U; ++i) {
+            const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(&authority, i);
+            assert(pair != NULL && pair->state == NRF_CS_PAIR_VALID);
+            assert(!pair->single_direction);
+            assert(pair->direction_disagreement_mm == 0);
+        }
+    }
+
+    {
+        const nrf_cs_policy_t timeout_policy = {
+            .pair_timeout_ms = 100U,
+            .max_attempts = 1U,
+            .min_confidence = 500U,
+            .full_rotation = true,
+        };
+        const nrf_cs_node_id_t three_nodes[] = {1U, 2U, 3U};
+        memset(&transport, 0, sizeof(transport));
+        assert(nrf_cs_authority_init(&authority, &timeout_policy, &ops, 175U) == NRF_CS_AUTHORITY_OK);
+        assert(nrf_cs_authority_abort_cycle(NULL, NRF_CS_FAILURE_TIMEOUT) == NRF_CS_AUTHORITY_ERR_ARGUMENT);
+        assert(nrf_cs_authority_abort_cycle(&authority, NRF_CS_FAILURE_NONE) == NRF_CS_AUTHORITY_ERR_ARGUMENT);
+        assert(nrf_cs_authority_start_cycle(&authority, three_nodes, 3U) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(authority.command_active);
+        assert(nrf_cs_authority_abort_cycle(&authority, NRF_CS_FAILURE_TIMEOUT) == NRF_CS_AUTHORITY_COMPLETE);
+        assert(!nrf_cs_authority_is_active(&authority));
+        assert(!authority.command_active);
+        assert(nrf_cs_scheduler_executions_done(&authority.scheduler) == 6U);
+        for (i = 0U; i < 3U; ++i) {
+            const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(&authority, i);
+            assert(pair != NULL && pair->state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+            assert(pair->last_failure == NRF_CS_FAILURE_TIMEOUT);
+        }
+    }
+
+    {
         const nrf_cs_node_id_t two_nodes[] = {1U, 2U};
         memset(&transport, 0, sizeof(transport));
         assert(nrf_cs_authority_init(&authority, &policy, &ops, 150U) == NRF_CS_AUTHORITY_OK);

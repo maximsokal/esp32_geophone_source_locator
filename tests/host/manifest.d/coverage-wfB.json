@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "web_status_json_ranging",
+      "sources": [
+        "components/web_server/web_status_json_ranging.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_status_json_ranging_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_topology_service",
+        "tests/host/stubs/object_store_profile",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "seismic_recorder_start_integration",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/seismic_recorder_start_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": ["CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1"],
+      "libraries": ["m"]
+    }
+  ]
+}

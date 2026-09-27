@@ -22,6 +22,9 @@ static FILE *fake_file;
 static nrf_topology_snapshot_t fake_topology;
 static nrf_topology_leveling_summary_t fake_leveling;
 static nrf_cs_cycle_snapshot_t fake_cycle;
+static nrf_topology_ranging_result_t fake_frozen_ranging;
+static bool fake_reusable_ranging_available;
+static unsigned fake_cs_cycle_requests;
 static nrf_remote_sensor_cache_t fake_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static device_status_snapshot_t fake_device_status;
 static object_store_geometry_t last_geometry;
@@ -106,9 +109,22 @@ esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
 
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary) { *summary = fake_leveling; return ESP_OK; }
-esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy) { (void)policy; return ESP_OK; }
+esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy) { (void)policy; ++fake_cs_cycle_requests; return ESP_OK; }
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot) { *snapshot = fake_cycle; return ESP_OK; }
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot) { *snapshot = fake_topology; return ESP_OK; }
+esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
+    const nrf_topology_snapshot_t *topology,
+    uint64_t now_ms,
+    uint64_t max_age_ms,
+    nrf_topology_ranging_result_t *result)
+{
+    assert(topology != NULL && result != NULL);
+    assert(now_ms == 1000U);
+    assert(max_age_ms == NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS);
+    if (!fake_reusable_ranging_available) return ESP_ERR_NOT_FOUND;
+    *result = fake_frozen_ranging;
+    return ESP_OK;
+}
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot) { if (snapshot == NULL) return ESP_ERR_INVALID_ARG; *snapshot = fake_device_status; return ESP_OK; }
 
@@ -307,6 +323,7 @@ int main(void)
     assert(start_participation.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
     assert(start_participation.z_provenance.fallback_reason[0] == '\0');
     assert(start_participation.geometry_provenance.available);
+    assert(strcmp(start_participation.geometry_provenance.ranging_source, "start_cycle") == 0);
     assert(strcmp(start_participation.geometry_provenance.solver, "nrf_geometry_solver") == 0);
     assert(strcmp(start_participation.geometry_provenance.solver_version, NRF_GEOMETRY_SOLVER_VERSION) == 0);
     assert(start_participation.geometry_provenance.topology_generation == 143U);
@@ -400,6 +417,7 @@ int main(void)
     assert(final_participation.geometry_provenance.topology_generation == 143U);
     assert(final_participation.geometry_provenance.cs_membership_generation == 52U);
     assert(final_participation.geometry_provenance.main_height_reference_generation == 7U);
+    assert(strcmp(final_participation.geometry_provenance.ranging_source, "start_cycle") == 0);
     assert(final_participation.pods[0].height_reference_generation == 7U);
     object_store_geometry_t final_geometry;
     assert(seismic_recorder_read_session_geometry("OBJ_0005", "S000001", &final_geometry) == ESP_OK);
@@ -408,6 +426,35 @@ int main(void)
     assert(seismic_recorder_read_session_cs_pairs("OBJ_0005", "S000001", &final_cs_pairs) == ESP_OK);
     assert(final_cs_pairs.pair_count == 6U);
     assert(final_cs_pairs.pairs[0].distance_mm == 300);
+    assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
+    assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
+
+    fake_frozen_ranging.available = true;
+    fake_frozen_ranging.pair_count = fake_cycle.pair_count;
+    memcpy(fake_frozen_ranging.pairs, fake_cycle.pairs, sizeof(fake_cycle.pairs));
+    fake_frozen_ranging.topology_generation = 143U;
+    fake_frozen_ranging.membership_generation = 52U;
+    fake_frozen_ranging.timestamp_ms = 999U;
+    fake_reusable_ranging_available = true;
+    const unsigned cycle_requests_before_reuse = fake_cs_cycle_requests;
+    assert(seismic_recorder_start("OBJ_0006") == ESP_OK);
+    assert(fake_cs_cycle_requests == cycle_requests_before_reuse);
+    seismic_recorder_session_participation_t reused_participation;
+    assert(seismic_recorder_read_session_participation("OBJ_0006", "S000001", &reused_participation) == ESP_OK);
+    assert(strcmp(reused_participation.geometry_provenance.ranging_source, "workflow_ranging") == 0);
+    assert(reused_participation.geometry_provenance.topology_generation == 143U);
+    assert(reused_participation.geometry_provenance.cs_membership_generation == 52U);
+    assert(strcmp(reused_participation.geometry_provenance.setup_id, "1000-143-52-703") == 0);
+    assert(seismic_recorder_read_session_cs_pairs("OBJ_0006", "S000001", &written_cs_pairs) == ESP_OK);
+    assert(written_cs_pairs.pair_count == 6U && written_cs_pairs.pairs[0].distance_mm == 300);
+
+    assert(seismic_recorder_stop() == ESP_OK);
+    final_metadata_written = false;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "reused-ranging recorder worker should finish the STOP metadata rewrite");
+    }
+    assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
     return 0;

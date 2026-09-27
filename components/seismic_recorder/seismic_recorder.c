@@ -1130,38 +1130,54 @@ static esp_err_t seismic_recorder_prepare_geometry(
         .min_confidence = SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE,
         .samples_per_pair = SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR,
     };
-    err = nrf_topology_service_request_cs_cycle(&policy);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "START rejected: could not request CS geometry cycle err=%s", esp_err_to_name(err));
-        return err;
-    }
-
+    nrf_topology_snapshot_t topology;
+    nrf_topology_ranging_result_t frozen_ranging = {0};
     nrf_cs_cycle_snapshot_t cycle;
     memset(&cycle, 0, sizeof(cycle));
-    uint32_t waited_ms = 0U;
-    for (;;) {
-        err = nrf_topology_service_get_cs_cycle(&cycle);
-        if (err == ESP_OK && !cycle.active) {
-            break;
+    bool reused_frozen_ranging = false;
+    if (nrf_topology_service_get_snapshot(&topology) == ESP_OK &&
+        nrf_topology_service_get_reusable_frozen_ranging_result(
+            &topology,
+            start_uptime_ms,
+            NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
+            &frozen_ranging) == ESP_OK) {
+        reused_frozen_ranging = true;
+        cycle.complete = true;
+        cycle.result = NRF_CS_AUTHORITY_COMPLETE;
+        cycle.membership_generation = frozen_ranging.membership_generation;
+        cycle.pair_count = frozen_ranging.pair_count;
+        memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
+    } else {
+        err = nrf_topology_service_request_cs_cycle(&policy);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "START rejected: could not request CS geometry cycle err=%s", esp_err_to_name(err));
+            return err;
         }
-        if (waited_ms >= SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS) {
-            ESP_LOGE(TAG, "START rejected: CS geometry cycle did not complete in time");
-            return ESP_ERR_TIMEOUT;
+
+        uint32_t waited_ms = 0U;
+        for (;;) {
+            err = nrf_topology_service_get_cs_cycle(&cycle);
+            if (err == ESP_OK && !cycle.active) {
+                break;
+            }
+            if (waited_ms >= SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS) {
+                ESP_LOGE(TAG, "START rejected: CS geometry cycle did not complete in time");
+                return ESP_ERR_TIMEOUT;
+            }
+            vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS));
+            waited_ms += SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS;
         }
-        vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS));
-        waited_ms += SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS;
-    }
 
-    if (cycle.result != NRF_CS_AUTHORITY_COMPLETE) {
-        ESP_LOGE(TAG, "START rejected: CS geometry cycle failed result=%d", cycle.result);
-        return ESP_ERR_INVALID_STATE;
-    }
+        if (cycle.result != NRF_CS_AUTHORITY_COMPLETE) {
+            ESP_LOGE(TAG, "START rejected: CS geometry cycle failed result=%d", cycle.result);
+            return ESP_ERR_INVALID_STATE;
+        }
 
-    nrf_topology_snapshot_t topology;
-    err = nrf_topology_service_get_snapshot(&topology);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "START rejected: topology snapshot unavailable err=%s", esp_err_to_name(err));
-        return err;
+        err = nrf_topology_service_get_snapshot(&topology);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "START rejected: topology snapshot unavailable err=%s", esp_err_to_name(err));
+            return err;
+        }
     }
 
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
@@ -1276,17 +1292,25 @@ static esp_err_t seismic_recorder_prepare_geometry(
     );
     solver_provenance->refined = solution.refined;
     solver_provenance->refine_iterations = solution.refine_iterations;
-    solver_provenance->topology_generation = topology.generation;
+    const uint32_t ranging_topology_generation = reused_frozen_ranging
+        ? frozen_ranging.topology_generation
+        : topology.generation;
+    solver_provenance->topology_generation = ranging_topology_generation;
     solver_provenance->cs_membership_generation = cycle.membership_generation;
     solver_provenance->main_height_reference_generation =
         main_reference.valid ? main_reference.generation : 0U;
+    snprintf(
+        solver_provenance->ranging_source,
+        sizeof(solver_provenance->ranging_source),
+        reused_frozen_ranging ? "workflow_ranging" : "start_cycle"
+    );
     solver_provenance->start_uptime_ms = start_uptime_ms;
     const int setup_id_length = snprintf(
         solver_provenance->setup_id,
         sizeof(solver_provenance->setup_id),
         "%" PRIu64 "-%" PRIu32 "-%" PRIu32 "-%u",
         computed_at_ms,
-        topology.generation,
+        ranging_topology_generation,
         cycle.membership_generation,
         (unsigned)solver_provenance->main_height_reference_generation
     );
