@@ -27,6 +27,7 @@ static object_store_geometry_t last_geometry;
 static bool last_geometry_set;
 static object_store_cs_pairs_t last_cs_pairs;
 static bool last_cs_pairs_set;
+static bool fail_cs_pairs_write;
 static char persisted_session_json[4096];
 static unsigned metadata_write_calls;
 static char last_metadata_status[24];
@@ -100,7 +101,7 @@ esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t
     return ESP_OK;
 }
 esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry) { (void)object_id; last_geometry = *geometry; last_geometry_set = true; return ESP_OK; }
-esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs) { (void)object_id; last_cs_pairs = *cs_pairs; last_cs_pairs_set = true; return ESP_OK; }
+esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs) { (void)object_id; if (fail_cs_pairs_write) return ESP_FAIL; last_cs_pairs = *cs_pairs; last_cs_pairs_set = true; return ESP_OK; }
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
 
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary) { *summary = fake_leveling; return ESP_OK; }
@@ -247,6 +248,16 @@ int main(void)
     fake_cycle.pairs[4] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[5] = (nrf_cs_pair_result_t){ .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 400 };
 
+    /* MAX-166 G1: the live object already has a different pair set, and its
+     * best-effort update fails. The session must still freeze this cycle. */
+    memset(&last_cs_pairs, 0, sizeof(last_cs_pairs));
+    last_cs_pairs.pair_count = 1U;
+    last_cs_pairs.pairs[0] = (object_store_cs_pair_t) {
+        .node_a = 0U, .node_b = 1U, .valid = true, .distance_mm = 7777,
+    };
+    last_cs_pairs_set = true;
+    fail_cs_pairs_write = true;
+
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
     assert(last_geometry_set);
@@ -293,13 +304,17 @@ int main(void)
     /* MAX-148: the same "solve first, persist after" ordering must hold for
      * the CS pair evidence behind that solve. */
     assert(last_cs_pairs_set);
-    assert(last_cs_pairs.pair_count == 6U);
-    assert(last_cs_pairs.pairs[0].node_a == 0U && last_cs_pairs.pairs[0].node_b == 1U);
-    assert(last_cs_pairs.pairs[0].valid);
-    assert(last_cs_pairs.pairs[0].distance_mm == 300);
+    assert(last_cs_pairs.pair_count == 1U);
+    assert(last_cs_pairs.pairs[0].distance_mm == 7777);
     object_store_cs_pairs_t written_cs_pairs;
     assert(seismic_recorder_read_session_cs_pairs("OBJ_0005", "S000001", &written_cs_pairs) == ESP_OK);
     assert(written_cs_pairs.pair_count == 6U);
+    for (size_t i = 0U; i < fake_cycle.pair_count; ++i) {
+        assert(written_cs_pairs.pairs[i].node_a == fake_cycle.pairs[i].node_a);
+        assert(written_cs_pairs.pairs[i].node_b == fake_cycle.pairs[i].node_b);
+        assert(written_cs_pairs.pairs[i].valid == (fake_cycle.pairs[i].state == NRF_CS_PAIR_VALID));
+        assert(written_cs_pairs.pairs[i].distance_mm == fake_cycle.pairs[i].distance_mm);
+    }
     assert(written_cs_pairs.pairs[0].distance_mm == 300);
 
     seismic_recorder_snapshot_t snapshot;

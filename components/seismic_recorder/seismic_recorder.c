@@ -1089,10 +1089,11 @@ esp_err_t seismic_recorder_init(void)
  */
 static esp_err_t seismic_recorder_prepare_geometry(
     const char *object_id,
-    seismic_recorder_session_participation_t *participation
+    seismic_recorder_session_participation_t *participation,
+    object_store_cs_pairs_t *session_cs_pairs
 )
 {
-    if (participation == NULL) {
+    if (participation == NULL || session_cs_pairs == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1266,9 +1267,10 @@ static esp_err_t seismic_recorder_prepare_geometry(
      * continues rather than rejecting START (unlike the geometry write
      * above, which the recording gate's own admission promise depends on).
      */
-    object_store_cs_pairs_t cs_pairs;
-    seismic_recorder_geometry_apply_cs_pairs(cycle.pairs, cycle.pair_count, &cs_pairs);
-    const esp_err_t cs_pairs_err = object_store_set_cs_pairs(object_id, &cs_pairs);
+    seismic_recorder_geometry_apply_cs_pairs(
+        cycle.pairs, cycle.pair_count, session_cs_pairs
+    );
+    const esp_err_t cs_pairs_err = object_store_set_cs_pairs(object_id, session_cs_pairs);
     if (cs_pairs_err != ESP_OK) {
         ESP_LOGW(TAG, "Could not persist CS pair evidence err=%s", esp_err_to_name(cs_pairs_err));
     }
@@ -1362,7 +1364,8 @@ esp_err_t seismic_recorder_start(
      * instead of the geometry this exact recording actually solved.
      */
     seismic_recorder_session_participation_t participation = {0};
-    err = seismic_recorder_prepare_geometry(object_id, &participation);
+    object_store_cs_pairs_t session_cs_pairs = {0};
+    err = seismic_recorder_prepare_geometry(object_id, &participation, &session_cs_pairs);
     if (err != ESP_OK) {
         free(profile);
         return err;
@@ -1373,7 +1376,9 @@ esp_err_t seismic_recorder_start(
         free(profile);
         return err;
     }
-
+    /* Freeze the completed cycle in the session copy even if the best-effort
+     * object-store write failed and the reloaded live profile is stale. */
+    profile->cs_pairs = session_cs_pairs;
     seismic_recorder_lock();
     if (s_starting || s_snapshot.running || s_samples_file != NULL) {
         ESP_LOGE(
