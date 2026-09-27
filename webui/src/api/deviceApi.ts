@@ -3,6 +3,7 @@ import {
   normalizeSeismicSnapshot,
   normalizeSavedSeismicSnapshot,
   type DeviceStatus,
+  type DeviceWorkflowStatus,
   type PhoneLocationInput,
   type SavedSeismicSnapshot,
   type SeismicSnapshot,
@@ -94,6 +95,7 @@ const CRITICAL_CONTROL_ACTIONS = new Set([
   'acquisition_start',
   'acquisition_stop',
   'calibrate_heights',
+  'workflow_command',
 ]);
 
 function errorText(reason: unknown): string {
@@ -116,6 +118,7 @@ async function performJsonRequest<T>(
   context: ApiRequestContext,
   init: RequestInit = {},
   timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
+  allowConflictResponse = false,
 ): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   const timeout = globalThis.setTimeout(() => {
@@ -157,7 +160,7 @@ async function performJsonRequest<T>(
       }
     }
 
-    if (!response.ok) {
+    if (!response.ok && !(allowConflictResponse && response.status === 409)) {
       if (recordingBlocked(body, response.status)) throw new ScanStorageBlockedRecordingError();
       throw new Error(`ESP API ${response.status} ${method} ${url}: ${responseError(body, response)}`);
     }
@@ -399,6 +402,39 @@ export function sendControl(
     method: 'POST',
     body: JSON.stringify({ action, ...payload }),
   }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal');
+}
+
+export type WorkflowCommandResult =
+  | { ok: true; workflow: DeviceWorkflowStatus }
+  | { ok: false; reason: 'stale' | 'not_allowed' }
+  | { ok: false; reason: 'error'; message: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function sendWorkflowCommand(command: string, generation: number): Promise<WorkflowCommandResult> {
+  const request = queuedApiRequest<WorkflowCommandResult>(async (context) => {
+    const body = await performJsonRequest<unknown>('/api/control', context, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'workflow_command', command, generation }),
+    }, DEVICE_API_CONTROL_TIMEOUT_MS, true);
+
+    if (isRecord(body) && body.ok === true && isRecord(body.workflow)) {
+      return { ok: true, workflow: body.workflow as unknown as DeviceWorkflowStatus };
+    }
+    if (isRecord(body) && body.ok === false &&
+        (body.reason === 'stale' || body.reason === 'not_allowed')) {
+      return { ok: false, reason: body.reason };
+    }
+    return { ok: false, reason: 'error', message: 'invalid_response' };
+  }, 'critical');
+
+  return request.catch((reason: unknown) => ({
+    ok: false as const,
+    reason: 'error' as const,
+    message: errorText(reason),
+  }));
 }
 
 export function saveObjectScanArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {

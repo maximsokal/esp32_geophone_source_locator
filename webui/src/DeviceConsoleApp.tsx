@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './console.css';
-import { capturePhoneLocation, fetchDeviceStatus, sendControl } from './api/deviceApi';
+import { capturePhoneLocation, fetchDeviceStatus, sendControl, sendWorkflowCommand } from './api/deviceApi';
 import type {
   DeviceStatus,
   ObjectStoreState,
@@ -24,10 +24,12 @@ import {
 import SensorsFeature from './features/sensors/SensorsFeature';
 import PowerBanner from './components/PowerBanner';
 import { useLocale, useT } from './i18n';
+import WorkflowPanel from './features/workflow/WorkflowPanel';
+import { workflowStatusPollDelay } from './features/workflow/workflowPolling';
 
 const XrScannerFeature = lazy(() => import('./App'));
 
-type Screen = 'dashboard' | 'objects' | 'sensors' | 'scanner';
+type Screen = 'dashboard' | 'objects' | 'sensors' | 'workflow' | 'scanner';
 
 const LOCAL_OBJECT_MUTATION_ACTIONS = new Set([
   'create_object',
@@ -162,16 +164,16 @@ export default function DeviceConsoleApp() {
       const ok = await refreshStatus();
       if (cancelled) return;
       failures = ok ? 0 : Math.min(failures + 1, 4);
-      const delay = ok ? 5000 : Math.min(30000, 5000 * (2 ** failures));
+      const delay = workflowStatusPollDelay(status?.workflow?.step, ok, failures);
       timer = window.setTimeout(() => void poll(), delay);
     };
 
-    timer = window.setTimeout(() => void poll(), 5000);
+    timer = window.setTimeout(() => void poll(), workflowStatusPollDelay(status?.workflow?.step, true, 0));
     return () => {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, status?.workflow?.step]);
 
   /* Populate Home/Objects from one extended request. */
   useEffect(() => {
@@ -345,6 +347,7 @@ export default function DeviceConsoleApp() {
           <button aria-pressed={screen === 'dashboard'} onClick={() => setScreen('dashboard')}>{t('nav.home')}</button>
           <button aria-pressed={screen === 'objects'} onClick={() => setScreen('objects')}>{t('nav.objects')}</button>
           <button aria-pressed={screen === 'sensors'} onClick={() => setScreen('sensors')}>{t('nav.sensors')}</button>
+          <button aria-pressed={screen === 'workflow'} onClick={() => setScreen('workflow')}>{t('workflow.nav')}</button>
         </nav>
         <div className="console-topbar-actions">
           <label className="locale-picker">
@@ -411,6 +414,7 @@ export default function DeviceConsoleApp() {
           onRecording={async (id, running) => {
             await runControl(running ? 'measurement_start' : 'measurement_stop', running ? { object_id: id } : {});
           }}
+          onStartWorkflow={(id) => { setSelectedId(id); setScreen('workflow'); }}
           onOpenScanner={(id, sessionId) => { setSelectedId(id); setScannerSessionId(sessionId); setScreen('scanner'); }}
         />
       )}
@@ -421,6 +425,19 @@ export default function DeviceConsoleApp() {
           object={selectedObject}
           error={pageError}
           onCalibrateHeights={() => runControl('calibrate_heights')}
+        />
+      )}
+
+      {screen === 'workflow' && (
+        <WorkflowPanel
+          status={status}
+          objectName={selectedObject?.name ?? null}
+          sendCommand={sendWorkflowCommand}
+          onRefreshStatus={refreshStatus}
+          onWorkflowUpdate={(workflow) => {
+            setStatus((current) => current === null ? current : { ...current, workflow });
+          }}
+          onOpenScanner={(id, sessionId) => { setSelectedId(id); setScannerSessionId(sessionId); setScreen('scanner'); }}
         />
       )}
     </main>

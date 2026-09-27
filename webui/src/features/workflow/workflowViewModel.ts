@@ -1,0 +1,211 @@
+import type {
+  DeviceRangingStatus,
+  DeviceStatus,
+  DeviceWorkflowStatus,
+  WorkflowCalibrationStatus,
+  WorkflowPlacementStatus,
+} from '../../domain/device';
+import { connectedPodCount } from '../../domain/device';
+import { formatNumber } from '../../i18n/format';
+import type { I18nKey, I18nLocale } from '../../i18n';
+
+export const WORKFLOW_UNKNOWN = '—';
+export const RANGING_UNKNOWN_UNCERTAINTY_MM = 2147483647;
+
+export function workflowNumberText(value: unknown, locale: I18nLocale = 'en'): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? formatNumber(locale, value)
+    : WORKFLOW_UNKNOWN;
+}
+
+export function rangingUncertaintyMm(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value !== RANGING_UNKNOWN_UNCERTAINTY_MM
+    ? value
+    : null;
+}
+
+export type WorkflowCalculationClass = 'none' | 'record_again' | 'move_sensors' | 'internal';
+
+export type WorkflowBodySection =
+  | { kind: 'object'; name: string }
+  | { kind: 'sensor_check'; connectedRemotes: number | null; messageKey: I18nKey | null }
+  | { kind: 'calib_prep' }
+  | { kind: 'calibration'; value: WorkflowCalibrationStatus }
+  | { kind: 'placement'; value: WorkflowPlacementStatus }
+  | { kind: 'ranging'; value: DeviceRangingStatus | null }
+  | { kind: 'record_ready' }
+  | { kind: 'recording'; value: DeviceStatus | null }
+  | { kind: 'stopped' }
+  | { kind: 'calculating'; progress: number | null }
+  | { kind: 'result'; success: boolean; calculationClass: WorkflowCalculationClass; reason: string | null }
+  | { kind: 'idle' }
+  | { kind: 'unknown' };
+
+export interface WorkflowViewAction {
+  command: string;
+  labelKey: I18nKey;
+  primary: boolean;
+  back: boolean;
+}
+
+export interface WorkflowViewModel {
+  titleKey: I18nKey;
+  sections: WorkflowBodySection[];
+  actions: WorkflowViewAction[];
+}
+
+const ACTION_ORDER = [
+  'START_MEASUREMENT',
+  'GO_CALIBRATION',
+  'SENSORS_PLACED',
+  'CALIBRATION_DONE',
+  'RETRY',
+  'PLACE_SENSORS',
+  'CALCULATE_POSITIONS',
+  'RANGING_DONE',
+  'CONFIRM',
+  'START_RECORDING',
+  'STOP_RECORDING',
+  'CALCULATE_SOURCES',
+  'DELETE_RECORDING',
+  'RECORD_AGAIN',
+  'MOVE_SENSORS',
+  'CALCULATION_DONE',
+  'BACK',
+];
+
+const ACTION_LABELS: Record<string, I18nKey> = {
+  START_MEASUREMENT: 'workflow.action.start_measurement',
+  GO_CALIBRATION: 'workflow.action.go_calibration',
+  SENSORS_PLACED: 'workflow.action.sensors_placed',
+  CALIBRATION_DONE: 'workflow.action.calibration_done',
+  RETRY: 'workflow.action.retry',
+  PLACE_SENSORS: 'workflow.action.place_sensors',
+  CALCULATE_POSITIONS: 'workflow.action.calculate_positions',
+  RANGING_DONE: 'workflow.action.ranging_done',
+  CONFIRM: 'workflow.action.confirm',
+  START_RECORDING: 'workflow.action.start_recording',
+  STOP_RECORDING: 'workflow.action.stop_recording',
+  CALCULATE_SOURCES: 'workflow.action.calculate_sources',
+  DELETE_RECORDING: 'workflow.action.delete_recording',
+  RECORD_AGAIN: 'workflow.action.record_again',
+  MOVE_SENSORS: 'workflow.action.move_sensors',
+  CALCULATION_DONE: 'workflow.action.calculation_done',
+  BACK: 'workflow.action.back',
+};
+
+const STEP_TITLES: Record<string, I18nKey> = {
+  IDLE: 'workflow.title.idle',
+  OBJECT: 'workflow.title.object',
+  SENSOR_CHECK: 'workflow.title.sensor_check',
+  CALIB_PREP: 'workflow.title.calib_prep',
+  CALIBRATING: 'workflow.title.calibrating',
+  CALIB_RESULT: 'workflow.title.calib_result',
+  PLACEMENT: 'workflow.title.placement',
+  RANGING: 'workflow.title.ranging',
+  RANGING_RESULT: 'workflow.title.ranging_result',
+  RECORD_READY: 'workflow.title.record_ready',
+  RECORDING: 'workflow.title.recording',
+  STOPPED: 'workflow.title.stopped',
+  CALCULATING: 'workflow.title.calculating',
+  RESULT: 'workflow.title.result',
+};
+
+export function normalizeWorkflowCalculationClass(value: string | null | undefined): WorkflowCalculationClass {
+  switch (value?.trim().toLowerCase()) {
+    case 'none': return 'none';
+    case 'record_again': return 'record_again';
+    case 'move_sensors': return 'move_sensors';
+    case 'internal': return 'internal';
+    default: return 'internal';
+  }
+}
+
+export function resultFailureKey(value: string | null | undefined): I18nKey {
+  switch (normalizeWorkflowCalculationClass(value)) {
+    case 'record_again': return 'workflow.result.failure.record_again';
+    case 'move_sensors': return 'workflow.result.failure.move_sensors';
+    case 'internal': return 'workflow.result.failure.internal';
+    case 'none': return 'workflow.result.success';
+  }
+}
+
+function connectedRemotes(status: DeviceStatus | null, workflow: DeviceWorkflowStatus): number | null {
+  if (status !== null && Array.isArray(status.pods)) return connectedPodCount(status);
+  const count = workflow.assigned_remotes;
+  return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
+function sensorMessageKey(count: number | null): I18nKey | null {
+  if (count === null) return null;
+  if (count < 3) return 'workflow.sensor_check.insufficient';
+  if (count === 3) return 'workflow.sensor_check.planar';
+  return 'workflow.sensor_check.spatial';
+}
+
+function workflowActions(allowed: readonly string[]): WorkflowViewAction[] {
+  const rank = new Map(ACTION_ORDER.map((command, index) => [command, index]));
+  const sorted = allowed
+    .map((command, originalIndex) => ({ command, originalIndex, canonical: command.toUpperCase() }))
+    .sort((a, b) => (rank.get(a.canonical) ?? ACTION_ORDER.length) - (rank.get(b.canonical) ?? ACTION_ORDER.length)
+      || a.canonical.localeCompare(b.canonical)
+      || a.originalIndex - b.originalIndex);
+  let primaryAssigned = false;
+  return sorted.map(({ command, canonical }) => {
+    const back = canonical === 'BACK';
+    const primary = !back && !primaryAssigned;
+    if (primary) primaryAssigned = true;
+    return {
+      command,
+      labelKey: ACTION_LABELS[canonical] ?? 'workflow.action.unknown',
+      primary,
+      back,
+    };
+  });
+}
+
+export function workflowViewModel(status: DeviceStatus | null, objectName: string | null = null): WorkflowViewModel {
+  const workflow = status?.workflow;
+  if (workflow === undefined) {
+    return { titleKey: 'workflow.title.unknown', sections: [{ kind: 'unknown' }], actions: [] };
+  }
+
+  const titleKey = STEP_TITLES[workflow.step] ?? 'workflow.title.unknown';
+  const sections: WorkflowBodySection[] = [];
+  switch (workflow.step) {
+    case 'IDLE': sections.push({ kind: 'idle' }); break;
+    case 'OBJECT': sections.push({ kind: 'object', name: objectName?.trim() || '—' }); break;
+    case 'SENSOR_CHECK': {
+      const count = connectedRemotes(status, workflow);
+      sections.push({ kind: 'sensor_check', connectedRemotes: count, messageKey: sensorMessageKey(count) });
+      break;
+    }
+    case 'CALIB_PREP': sections.push({ kind: 'calib_prep' }); break;
+    case 'CALIBRATING':
+    case 'CALIB_RESULT': sections.push({ kind: 'calibration', value: workflow.calibration }); break;
+    case 'PLACEMENT': sections.push({ kind: 'placement', value: workflow.placement }); break;
+    case 'RANGING':
+    case 'RANGING_RESULT': sections.push({ kind: 'ranging', value: status?.ranging ?? null }); break;
+    case 'RECORD_READY': sections.push({ kind: 'record_ready' }); break;
+    case 'RECORDING': sections.push({ kind: 'recording', value: status }); break;
+    case 'STOPPED': sections.push({ kind: 'stopped' }); break;
+    case 'CALCULATING': sections.push({ kind: 'calculating', progress: workflow.progress }); break;
+    case 'RESULT': {
+      const calculationClass = normalizeWorkflowCalculationClass(workflow.calculation_class);
+      sections.push({
+        kind: 'result',
+        success: calculationClass === 'none',
+        calculationClass,
+        reason: workflow.reason ?? null,
+      });
+      break;
+    }
+    default: sections.push({ kind: 'unknown' });
+  }
+
+  return {
+    titleKey,
+    sections,
+    actions: workflowActions(workflow.allowed_actions ?? []),
+  };
+}
