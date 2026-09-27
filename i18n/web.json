@@ -46,7 +46,7 @@
     "dashboard.waiting_status": { "en": "waiting for status", "uk": "очікування стану" },
     "dashboard.acquisition": { "en": "ACQUISITION", "uk": "ЗБІР ДАНИХ" },
     "dashboard.running": { "en": "RUNNING", "uk": "ПРАЦЮЄ" },
-    "dashboard.stopped": { "en": "STOPPED", "uk": "ЗУПИНЕНО" },
+    "dashboard.stopped": { "en": "STOPPED", "uk": "ЗАВЕРШЕНО" },
     "dashboard.not_verified": { "en": "NOT VERIFIED", "uk": "НЕ ПЕРЕВІРЕНО" },
     "dashboard.no_verified_source": { "en": "no verified source", "uk": "немає перевіреного джерела" },
     "dashboard.objects_metric": { "en": "OBJECTS", "uk": "ОБ’ЄКТИ" },
@@ -395,7 +395,7 @@
     "objects.recording_description": { "en": "Live acquisition stays independent from SD recording. Record drains the lock-free ring in bounded batches, so FAT/SD latency never slows the acquisition producer.", "uk": "Поточний збір даних не залежить від запису на SD. Запис зчитує кільцевий буфер пакетами обмеженого розміру, тому затримки FAT/SD не сповільнюють збір даних." },
     "objects.recording": { "en": "RECORDING", "uk": "ЗАПИС" },
     "objects.live": { "en": "LIVE", "uk": "ПОТОЧНИЙ" },
-    "objects.stopped": { "en": "STOPPED", "uk": "ЗУПИНЕНО" },
+    "objects.stopped": { "en": "STOPPED", "uk": "ЗАВЕРШЕНО" },
     "objects.session": { "en": "Session", "uk": "Сеанс запису" },
     "objects.elapsed": { "en": "Elapsed", "uk": "Минуло" },
     "objects.written": { "en": "Written", "uk": "Записано" },
@@ -848,6 +848,9 @@
     "calc.provenance.state": { "en": "CS pair state", "uk": "Стан пари CS" },
     "calc.provenance.last_failure": { "en": "Last failure", "uk": "Остання помилка" },
     "calc.provenance.provider_quality_flags": { "en": "Provider quality flags", "uk": "Прапорці якості постачальника" },
-    "calc.provenance.scheduler_quality_flags": { "en": "Scheduler quality flags", "uk": "Прапорці якості планувальника" }
+    "calc.provenance.scheduler_quality_flags": { "en": "Scheduler quality flags", "uk": "Прапорці якості планувальника" },
+    "power.critical_grace_unknown": { "en": "Battery critical: connect USB power as soon as possible or the device shuts down.", "uk": "Критичний заряд акумулятора: якомога швидше під’єднайте живлення USB, інакше пристрій вимкнеться." },
+    "objects.recording_review": { "en": "Review", "uk": "Перегляд запису" },
+    "evidence.localization.unverified": { "en": "unverified", "uk": "не перевірено" }
   }
 }

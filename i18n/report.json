@@ -99,6 +99,12 @@
     "report.recording_reference": { "en": "Recording reference", "uk": "Посилання на запис" },
     "report.qr_full_payload_note": { "en": "QR carries the selected result (object, recording, method, position, radius).", "uk": "QR-код містить вибраний результат (об’єкт, запис, метод, позицію та радіус)." },
     "report.qr_reference_note": { "en": "The full result does not fit one QR code (limit {bytes} bytes); this QR references the saved recording on the device instead.", "uk": "Повний результат не вміщується в один QR-код (ліміт — {bytes} байтів); цей QR-код посилається на запис, збережений на пристрої." },
-    "report.frame.definition": { "en": "definition", "uk": "визначення" }
+    "report.frame.definition": { "en": "definition", "uk": "визначення" },
+    "report.recording_review": { "en": "Review", "uk": "Перегляд запису" },
+    "report.session_status.complete": { "en": "Complete", "uk": "ЗАВЕРШЕНО" },
+    "report.session_status.incomplete": { "en": "Incomplete", "uk": "НЕЗАВЕРШЕНО" },
+    "report.session_status.error": { "en": "Error", "uk": "ПОМИЛКА" },
+    "report.session_status.recovered_error": { "en": "Recovered with error", "uk": "Відновлено з помилкою" },
+    "report.session_status.unknown": { "en": "Unknown status", "uk": "Невідомий стан" }
   }
 }

@@ -115,9 +115,11 @@ export interface MeasurementServiceStatus {
 
 export type RecordingSessionStatus =
   | 'complete'
+  | 'incomplete'
   | 'error'
   | 'recovered_error'
-  | 'unknown';
+  | 'unknown'
+  | (string & {});
 
 export interface RecordingSessionSummary {
   session_id: string;

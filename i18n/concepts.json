@@ -1,0 +1,202 @@
+[
+  {
+    "id": "recording",
+    "tft": "measurement.state_recording",
+    "web": "objects.acquisition_recording",
+    "report": null,
+    "same_uk": false,
+    "note": "TFT uses a short label; Web uses an active-acquisition phrase."
+  },
+  {
+    "id": "stopping",
+    "tft": "measurement.state_stopping",
+    "web": null,
+    "report": null,
+    "same_uk": false,
+    "note": "This recorder state is currently labeled on TFT only."
+  },
+  {
+    "id": "stopped",
+    "tft": "measurement.state_complete",
+    "web": "dashboard.stopped",
+    "report": "report.session_status.complete",
+    "same_uk": true,
+    "note": "Completed recording status uses the glossary term on all three surfaces."
+  },
+  {
+    "id": "review",
+    "tft": null,
+    "web": "objects.recording_review",
+    "report": "report.recording_review",
+    "same_uk": true,
+    "note": "TFT has no review-state label."
+  },
+  {
+    "id": "error",
+    "tft": "measurement.state_error",
+    "web": null,
+    "report": "report.session_status.error",
+    "same_uk": true,
+    "note": "The TFT and report error labels use the same Ukrainian term."
+  },
+  {
+    "id": "recording.incomplete",
+    "tft": null,
+    "web": null,
+    "report": "report.session_status.incomplete",
+    "same_uk": false,
+    "note": "Incomplete is a report session status."
+  },
+  {
+    "id": "recording.recovered_error",
+    "tft": null,
+    "web": null,
+    "report": "report.session_status.recovered_error",
+    "same_uk": false,
+    "note": "Recovered-error status is currently shown in reports only."
+  },
+  {
+    "id": "recording.unknown_status",
+    "tft": null,
+    "web": null,
+    "report": "report.session_status.unknown",
+    "same_uk": false,
+    "note": "The report uses this marker after preserving an unrecognized status value."
+  },
+  {
+    "id": "orientation.accepted",
+    "tft": null,
+    "web": "leveling.level",
+    "report": null,
+    "same_uk": false,
+    "note": "Orientation acceptance is currently labeled on Web only."
+  },
+  {
+    "id": "orientation.moving",
+    "tft": null,
+    "web": "leveling.moving",
+    "report": null,
+    "same_uk": false,
+    "note": "Orientation movement is currently labeled on Web only."
+  },
+  {
+    "id": "orientation.tilted",
+    "tft": null,
+    "web": "leveling.tilted",
+    "report": null,
+    "same_uk": false,
+    "note": "Tilt state is currently labeled on Web only."
+  },
+  {
+    "id": "orientation.fault",
+    "tft": null,
+    "web": "leveling.unavailable_sensor_invalid",
+    "report": null,
+    "same_uk": false,
+    "note": "Orientation sensor faults are currently labeled on Web only."
+  },
+  {
+    "id": "power.battery",
+    "tft": "power.battery",
+    "web": null,
+    "report": null,
+    "same_uk": false,
+    "note": "TFT uses the АКБ abbreviation; Web/report do not show normal battery state."
+  },
+  {
+    "id": "power.charging",
+    "tft": "power.charging",
+    "web": null,
+    "report": null,
+    "same_uk": false,
+    "note": "Charging is currently shown on TFT only."
+  },
+  {
+    "id": "power.full",
+    "tft": "power.full",
+    "web": null,
+    "report": null,
+    "same_uk": false,
+    "note": "Full charge is currently shown on TFT only."
+  },
+  {
+    "id": "power.low",
+    "tft": "power.alert_low",
+    "web": "web.power.low",
+    "report": null,
+    "same_uk": false,
+    "note": "TFT uses a compact warning; Web uses a full sentence."
+  },
+  {
+    "id": "power.critical",
+    "tft": "power.critical",
+    "web": "power.critical_now",
+    "report": null,
+    "same_uk": false,
+    "note": "TFT abbreviates the critical state; Web explains the required action."
+  },
+  {
+    "id": "power.unknown",
+    "tft": "measurement.unknown",
+    "web": "power.status_unavailable",
+    "report": null,
+    "same_uk": false,
+    "note": "TFT says unknown; Web reports unavailable power telemetry."
+  },
+  {
+    "id": "localization.solved",
+    "tft": null,
+    "web": "evidence.localization.calculated",
+    "report": null,
+    "same_uk": false,
+    "note": "Localization evidence state is currently summarized on Web only."
+  },
+  {
+    "id": "localization.unsolved",
+    "tft": null,
+    "web": "evidence.localization.failed",
+    "report": null,
+    "same_uk": false,
+    "note": "Localization evidence state is currently summarized on Web only."
+  },
+  {
+    "id": "localization.unverified",
+    "tft": null,
+    "web": "evidence.localization.unverified",
+    "report": null,
+    "same_uk": false,
+    "note": "Unverified localization state is currently represented in the Web vocabulary only."
+  },
+  {
+    "id": "constrained",
+    "tft": null,
+    "web": "overlay.scan_constrained",
+    "report": null,
+    "same_uk": false,
+    "note": "Scan-constrained localization is currently labeled on Web only."
+  },
+  {
+    "id": "unconstrained",
+    "tft": null,
+    "web": "overlay.unconstrained",
+    "report": null,
+    "same_uk": false,
+    "note": "Unconstrained localization is currently labeled on Web only."
+  },
+  {
+    "id": "unknown",
+    "tft": "measurement.unknown",
+    "web": "evidence.localization.unknown",
+    "report": "report.unknown",
+    "same_uk": true,
+    "note": "All three surfaces use the same Ukrainian term for unknown."
+  },
+  {
+    "id": "unavailable",
+    "tft": "scan.reason_preview_unavailable",
+    "web": "leveling.unavailable",
+    "report": "report.unavailable_reason",
+    "same_uk": false,
+    "note": "Each surface qualifies unavailable for its feature or reason."
+  }
+]

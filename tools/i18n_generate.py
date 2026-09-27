@@ -16,6 +16,7 @@ NAMESPACES = ("common", "web", "report", "tft")
 KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:[._][a-z0-9]+)*$")
 PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 ENTRY_FIELDS = {"en", "uk", "note", "max_len"}
+CONCEPT_FIELDS = {"id", "tft", "web", "report", "same_uk", "note"}
 
 
 class CatalogError(ValueError):
@@ -103,6 +104,63 @@ def load_catalogs(root: Path) -> tuple[dict[str, dict[str, Any]], int]:
             untranslated += ukrainian == ""
 
     return entries, untranslated
+
+
+def validate_concepts(root: Path, entries: dict[str, dict[str, Any]]) -> None:
+    path = root / "i18n" / "concepts.json"
+    try:
+        concepts = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CatalogError(f"{path}: cannot read concept map: {exc}") from exc
+    if not isinstance(concepts, list):
+        raise CatalogError(f"{path}: concept map must be a list")
+
+    seen: set[str] = set()
+    for concept in concepts:
+        if not isinstance(concept, dict):
+            raise CatalogError(f"{path}: concept entry must be an object")
+        unknown_fields = set(concept) - CONCEPT_FIELDS
+        if unknown_fields:
+            fields = ", ".join(sorted(unknown_fields))
+            raise CatalogError(f"{path}: unknown concept field(s): {fields}")
+        if set(concept) != CONCEPT_FIELDS:
+            fields = ", ".join(sorted(CONCEPT_FIELDS - set(concept)))
+            raise CatalogError(f"{path}: concept entry is missing field(s): {fields}")
+
+        concept_id = concept["id"]
+        if not isinstance(concept_id, str) or not concept_id.strip():
+            raise CatalogError(f"{path}: concept id must be a non-empty string")
+        if concept_id in seen:
+            raise CatalogError(f"{path}: duplicate concept id {concept_id!r}")
+        seen.add(concept_id)
+        if type(concept["same_uk"]) is not bool:
+            raise CatalogError(f"{path}: concept {concept_id!r} same_uk must be a boolean")
+        if not isinstance(concept["note"], str):
+            raise CatalogError(f"{path}: concept {concept_id!r} note must be a string")
+
+        ukrainian_values: list[tuple[str, str]] = []
+        for surface in ("tft", "web", "report"):
+            key = concept[surface]
+            if key is None:
+                continue
+            if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
+                raise CatalogError(f"{path}: concept {concept_id!r} {surface} must be a catalog key or null")
+            entry = entries.get(key)
+            if entry is None:
+                raise CatalogError(f"{path}: concept {concept_id!r} references missing {surface} key {key!r}")
+            if entry["namespace"] != surface:
+                raise CatalogError(
+                    f"{path}: concept {concept_id!r} key {key!r} belongs to {entry['namespace']}, not {surface}"
+                )
+            ukrainian_values.append((surface, entry["uk"]))
+
+        if not any(concept[surface] is not None for surface in ("tft", "web", "report")):
+            raise CatalogError(f"{path}: concept {concept_id!r} must reference at least one catalog key")
+        if not concept["same_uk"] and concept["tft"] is not None and not concept["note"].strip():
+            raise CatalogError(f"{path}: concept {concept_id!r} needs a note when TFT wording differs")
+        if concept["same_uk"] and len({value.casefold() for _, value in ukrainian_values}) > 1:
+            details = ", ".join(f"{surface}={value!r}" for surface, value in ukrainian_values)
+            raise CatalogError(f"{path}: concept {concept_id!r} same_uk values differ: {details}")
 
 
 def _ts_string(value: str) -> str:
@@ -230,6 +288,7 @@ def _render_firmware(entries: dict[str, dict[str, Any]]) -> tuple[str, str]:
 
 def generate_outputs(root: Path) -> tuple[dict[Path, str], int]:
     entries, untranslated = load_catalogs(root)
+    validate_concepts(root, entries)
     firmware_header, firmware_source = _render_firmware(entries)
     return (
         {
