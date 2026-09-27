@@ -17,6 +17,7 @@
 #include "measurement_service.h"
 #include "object_recovery.h"
 #include "object_service.h"
+#include "workflow_service.h"
 #include "object_store.h"
 #include "power_control.h"
 #include "seismic_acquisition.h"
@@ -397,6 +398,10 @@ static void app_startup_initialize_services(
 
     ESP_ERROR_CHECK(
         measurement_service_init()
+    );
+
+    ESP_ERROR_CHECK(
+        workflow_service_init()
     );
 
     /* "Calculate source" runs on its own worker (never on the HTTPS task);

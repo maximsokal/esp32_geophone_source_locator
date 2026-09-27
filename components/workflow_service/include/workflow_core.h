@@ -1,0 +1,134 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define WORKFLOW_REASON_MAX 64U
+#define WORKFLOW_PROGRESS_UNKNOWN (-1)
+
+typedef enum {
+    WORKFLOW_STEP_IDLE = 0,
+    WORKFLOW_STEP_OBJECT,
+    WORKFLOW_STEP_SENSOR_CHECK,
+    WORKFLOW_STEP_CALIB_PREP,
+    WORKFLOW_STEP_CALIBRATING,
+    WORKFLOW_STEP_CALIB_RESULT,
+    WORKFLOW_STEP_PLACEMENT,
+    WORKFLOW_STEP_RANGING,
+    WORKFLOW_STEP_RANGING_RESULT,
+    WORKFLOW_STEP_RECORD_READY,
+    WORKFLOW_STEP_RECORDING,
+    WORKFLOW_STEP_STOPPED,
+    WORKFLOW_STEP_CALCULATING,
+    WORKFLOW_STEP_RESULT,
+    WORKFLOW_STEP_COUNT
+} workflow_step_t;
+
+typedef enum {
+    WORKFLOW_COMMAND_START_MEASUREMENT = 0,
+    WORKFLOW_COMMAND_GO_CALIBRATION,
+    WORKFLOW_COMMAND_SENSORS_PLACED,
+    WORKFLOW_COMMAND_CALIBRATION_DONE,
+    WORKFLOW_COMMAND_RETRY,
+    WORKFLOW_COMMAND_PLACE_SENSORS,
+    WORKFLOW_COMMAND_CALCULATE_POSITIONS,
+    WORKFLOW_COMMAND_RANGING_DONE,
+    WORKFLOW_COMMAND_CONFIRM,
+    WORKFLOW_COMMAND_START_RECORDING,
+    WORKFLOW_COMMAND_STOP_RECORDING,
+    WORKFLOW_COMMAND_MOVE_SENSORS,
+    WORKFLOW_COMMAND_CALCULATE_SOURCES,
+    WORKFLOW_COMMAND_CALCULATION_DONE,
+    WORKFLOW_COMMAND_DELETE_RECORDING,
+    WORKFLOW_COMMAND_RECORD_AGAIN,
+    WORKFLOW_COMMAND_BACK,
+    WORKFLOW_COMMAND_COUNT
+} workflow_command_t;
+
+typedef enum {
+    WORKFLOW_SENSOR_INSUFFICIENT = 0,
+    WORKFLOW_SENSOR_PLANAR_2D,
+    WORKFLOW_SENSOR_CAPABLE_3D
+} workflow_sensor_sufficiency_t;
+
+typedef enum {
+    WORKFLOW_CALCULATION_CLASS_NONE = 0,
+    WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN,
+    WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS
+} workflow_calculation_class_t;
+
+typedef enum {
+    WORKFLOW_COMMAND_RESULT_OK = 0,
+    WORKFLOW_COMMAND_RESULT_NOT_ALLOWED,
+    WORKFLOW_COMMAND_RESULT_STALE,
+    WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT,
+    WORKFLOW_COMMAND_RESULT_UNAVAILABLE
+} workflow_command_result_t;
+
+#define WORKFLOW_ACTION(command) (UINT32_C(1) << (unsigned)(command))
+
+typedef struct {
+    bool has_generation;
+    uint32_t expected_generation;
+    bool has_ok;
+    bool ok;
+    const char *reason;
+    workflow_calculation_class_t calculation_class;
+} workflow_command_params_t;
+
+typedef struct {
+    workflow_step_t step;
+    uint32_t generation;
+    uint32_t allowed_actions;
+    workflow_sensor_sufficiency_t sensor_sufficiency;
+    uint8_t assigned_remotes;
+    char reason[WORKFLOW_REASON_MAX];
+    int progress;
+    workflow_calculation_class_t calculation_class;
+    workflow_command_t recommended_action;
+} workflow_snapshot_t;
+
+typedef struct {
+    workflow_step_t step;
+    uint32_t generation;
+    workflow_sensor_sufficiency_t sensor_sufficiency;
+    uint8_t assigned_remotes;
+    char reason[WORKFLOW_REASON_MAX];
+    int progress;
+    workflow_calculation_class_t calculation_class;
+    bool calibration_ok;
+    bool ranging_ok;
+} workflow_core_t;
+
+void workflow_core_init(workflow_core_t *core, bool active_object_present);
+void workflow_core_reset_object(workflow_core_t *core, bool active_object_present, bool force_generation);
+workflow_command_result_t workflow_core_apply(
+    workflow_core_t *core,
+    workflow_command_t command,
+    const workflow_command_params_t *params,
+    size_t assigned_remotes,
+    bool placement_ready
+);
+void workflow_core_reconcile(
+    workflow_core_t *core,
+    workflow_step_t step,
+    const char *reason
+);
+bool workflow_core_set_progress(workflow_core_t *core, int progress);
+void workflow_core_snapshot(
+    const workflow_core_t *core,
+    size_t assigned_remotes,
+    bool placement_ready,
+    workflow_snapshot_t *snapshot
+);
+
+const char *workflow_core_step_name(workflow_step_t step);
+const char *workflow_core_command_name(workflow_command_t command);
+const char *workflow_core_sufficiency_name(workflow_sensor_sufficiency_t sufficiency);
+const char *workflow_core_calculation_class_name(workflow_calculation_class_t calculation_class);
+bool workflow_core_command_from_name(const char *name, workflow_command_t *command);
+bool workflow_core_calculation_class_from_name(
+    const char *name,
+    workflow_calculation_class_t *calculation_class
+);

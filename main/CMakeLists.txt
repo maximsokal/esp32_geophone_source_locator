@@ -27,6 +27,7 @@ idf_component_register(
         object_store
         object_service
         measurement_service
+        workflow_service
         power_control
         keypad
         device_status

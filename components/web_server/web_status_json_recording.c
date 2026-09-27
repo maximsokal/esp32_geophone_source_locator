@@ -4,6 +4,7 @@
 #include "nrf_topology_service.h"
 #include "recording_gate.h"
 #include "seismic_recorder.h"
+#include "workflow_service.h"
 
 
 static const char *web_status_recording_state_name(
@@ -291,5 +292,58 @@ bool web_status_json_add_measurement(cJSON *root)
         ) != NULL;
     }
 
+    return true;
+}
+
+bool web_status_json_add_workflow(cJSON *root)
+{
+    if (root == NULL) return false;
+    workflow_snapshot_t snapshot;
+    if (workflow_service_get_snapshot(&snapshot) != ESP_OK) return false;
+
+    cJSON *workflow = cJSON_AddObjectToObject(root, "workflow");
+    cJSON *actions = workflow != NULL
+        ? cJSON_AddArrayToObject(workflow, "allowed_actions")
+        : NULL;
+    if (workflow == NULL || actions == NULL ||
+        cJSON_AddStringToObject(workflow, "step", workflow_core_step_name(snapshot.step)) == NULL ||
+        cJSON_AddNumberToObject(workflow, "generation", (double)snapshot.generation) == NULL ||
+        cJSON_AddStringToObject(
+            workflow,
+            "sensor_sufficiency",
+            workflow_core_sufficiency_name(snapshot.sensor_sufficiency)
+        ) == NULL ||
+        cJSON_AddNumberToObject(workflow, "assigned_remotes", snapshot.assigned_remotes) == NULL ||
+        cJSON_AddStringToObject(workflow, "reason", snapshot.reason) == NULL) {
+        return false;
+    }
+
+    if (snapshot.progress == WORKFLOW_PROGRESS_UNKNOWN) {
+        if (cJSON_AddNullToObject(workflow, "progress") == NULL) return false;
+    }
+    else if (cJSON_AddNumberToObject(workflow, "progress", snapshot.progress) == NULL) {
+        return false;
+    }
+
+    if (snapshot.recommended_action < WORKFLOW_COMMAND_COUNT &&
+        (snapshot.allowed_actions & WORKFLOW_ACTION(snapshot.recommended_action)) != 0U) {
+        cJSON *item = cJSON_CreateString(workflow_core_command_name(snapshot.recommended_action));
+        if (item == NULL || !cJSON_AddItemToArray(actions, item)) {
+            cJSON_Delete(item);
+            return false;
+        }
+    }
+    for (int i = 0; i < WORKFLOW_COMMAND_COUNT; ++i) {
+        const workflow_command_t command = (workflow_command_t)i;
+        if ((snapshot.allowed_actions & WORKFLOW_ACTION(command)) == 0U ||
+            command == snapshot.recommended_action) {
+            continue;
+        }
+        cJSON *item = cJSON_CreateString(workflow_core_command_name(command));
+        if (item == NULL || !cJSON_AddItemToArray(actions, item)) {
+            cJSON_Delete(item);
+            return false;
+        }
+    }
     return true;
 }

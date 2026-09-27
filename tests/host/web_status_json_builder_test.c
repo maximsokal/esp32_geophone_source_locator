@@ -20,6 +20,7 @@ static esp_err_t g_sessions_result;
 static bool g_objects_called;
 static bool g_sessions_called;
 static bool g_recording_called;
+static bool g_workflow_called;
 static int64_t g_now_us;
 
 static bool g_acquisition_running;
@@ -48,6 +49,7 @@ static void reset_fakes(void)
     g_objects_called = false;
     g_sessions_called = false;
     g_recording_called = false;
+    g_workflow_called = false;
     g_now_us = 1234567;
 
     g_acquisition_running = true;
@@ -250,6 +252,14 @@ bool web_status_json_add_recording_gate(cJSON *root)
 bool web_status_json_add_measurement(cJSON *root)
 {
     return cJSON_AddStringToObject(root, "measurement_marker", "measurement-added") != NULL;
+}
+
+bool web_status_json_add_workflow(cJSON *root)
+{
+    g_workflow_called = true;
+    cJSON *workflow = cJSON_AddObjectToObject(root, "workflow");
+    return workflow != NULL &&
+        cJSON_AddStringToObject(workflow, "step", "OBJECT") != NULL;
 }
 
 int64_t esp_timer_get_time(void)
@@ -599,6 +609,8 @@ static void test_full_builder_and_pods(void)
     }
 
     assert(g_recording_called);
+    assert(g_workflow_called);
+    assert(strcmp(string_item(object_item(root, "workflow"), "step"), "OBJECT") == 0);
     cJSON_Delete(root);
 }
 

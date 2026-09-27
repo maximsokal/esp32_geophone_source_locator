@@ -9,6 +9,8 @@
 #include "seismic_buffer.h"
 #include "web_status_policy.h"
 
+bool web_status_json_add_workflow(cJSON *root);
+
 void web_server_https_runtime_status(
     uint32_t *clients_out,
     uint32_t *max_clients_out,
@@ -692,7 +694,8 @@ esp_err_t web_status_json_build_extended(
         web_status_json_add_runtime(root) &&
         web_status_json_add_recording(root) &&
         web_status_json_add_recording_gate(root) &&
-        web_status_json_add_measurement(root);
+        web_status_json_add_measurement(root) &&
+        web_status_json_add_workflow(root);
 
     if (!base_ok) {
         cJSON_Delete(root);

@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "workflow_core",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "tests/host/workflow_core_test.c"
+      ],
+      "include_dirs": [
+        "components/workflow_service/include"
+      ]
+    },
+    {
+      "name": "workflow_service",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "components/workflow_service/workflow_service.c",
+        "tests/host/workflow_service_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include"
+      ],
+      "libraries": ["pthread"]
+    },
+    {
+      "name": "workflow_status_json",
+      "sources": [
+        "components/web_server/web_status_json_recording.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_status_recording_gate_host_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_recording_gate",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server/tests/stubs",
+        "components/web_server",
+        "components/recording_gate/include",
+        "components/localization/include"
+      ]
+    },
+    {
+      "name": "workflow_status_section",
+      "sources": [
+        "components/web_server/web_status_json.c",
+        "components/web_server/web_status_json_pods.c",
+        "components/web_server/web_status_policy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_status_json_builder_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_json",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server",
+        "components/device_status/include",
+        "components/runtime_observability/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "workflow_control_http",
+      "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/web_api_control_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_api_control",
+        "components/measurement_service/tests/stubs",
+        "components/storage_manager",
+        "components/storage_manager/include",
+        "components/web_server"
+      ],
+      "defines": ["_POSIX_C_SOURCE=200809L"],
+      "libraries": ["m"]
+    }
+  ]
+}
