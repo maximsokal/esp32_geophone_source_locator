@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "localization_config.h"
 #include "localization_job.h"
+#include "cJSON.h"
 #include "../localization_calculate/include/localization_calculate.h"
 #include "localization_pick_record.h"
 #include "localization_run_record.h"
@@ -149,6 +151,53 @@ static bool web_localization_job_status_requested(httpd_req_t *request)
         strcmp(value, "status") == 0;
 }
 
+static bool web_localization_settings_requested(
+    httpd_req_t *request,
+    char object_id[OBJECT_STORE_ID_SIZE]
+)
+{
+    char query[160];
+    char job[16];
+    return
+        web_localization_query_copy(request, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "job", job, sizeof(job)) == ESP_OK &&
+        strcmp(job, "settings") == 0 &&
+        httpd_query_key_value(query, "object_id", object_id, OBJECT_STORE_ID_SIZE) == ESP_OK;
+}
+
+static esp_err_t web_localization_settings_handler(httpd_req_t *request, const char *object_id)
+{
+    char *settings = NULL;
+    const esp_err_t read_err = object_store_get_calc_settings_json(object_id, &settings);
+    bool valid = false;
+    if (read_err == ESP_OK && settings != NULL) {
+        cJSON *root = cJSON_Parse(settings);
+        localization_calculate_config_t config;
+        uint32_t budget_ms = 0U;
+        valid = root != NULL && localization_config_from_json(root, &config, &budget_ms) == ESP_OK;
+        cJSON_Delete(root);
+    }
+
+    if (read_err != ESP_OK && read_err != ESP_ERR_NOT_FOUND) {
+        free(settings);
+        return httpd_resp_send_err(request, 500, "Calculation settings unavailable");
+    }
+    const char *settings_value = valid ? settings : "null";
+    const size_t body_size = strlen(settings_value) + sizeof("{\"ok\":true,\"settings\":}");
+    char *body = malloc(body_size);
+    if (body == NULL) {
+        free(settings);
+        return httpd_resp_send_err(request, 500, "Out of memory");
+    }
+    snprintf(body, body_size, "{\"ok\":true,\"settings\":%s}", settings_value);
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    const esp_err_t err = httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+    free(body);
+    free(settings);
+    return err;
+}
+
 static esp_err_t web_localization_job_status_handler(httpd_req_t *request)
 {
     char *json = NULL;
@@ -166,6 +215,11 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
 {
     if (web_localization_job_status_requested(request)) {
         return web_localization_job_status_handler(request);
+    }
+
+    char settings_object_id[OBJECT_STORE_ID_SIZE] = {0};
+    if (web_localization_settings_requested(request, settings_object_id)) {
+        return web_localization_settings_handler(request, settings_object_id);
     }
 
     char object_id[OBJECT_STORE_ID_SIZE] = {0};

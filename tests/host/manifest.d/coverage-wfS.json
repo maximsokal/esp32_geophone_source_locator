@@ -1,0 +1,42 @@
+{
+    "version":  1,
+    "tests":  [
+                  {
+                      "name":  "localization_config_golden",
+                      "sources":  [
+                                      "components/localization_job/localization_config.c",
+                                      "tests/host/stubs/object_store_profile/cJSON.c",
+                                      "components/localization_job/tests/localization_config_test.c"
+                                  ],
+                      "include_dirs":  [
+                                           "tests/host/stubs/localization_calculate_run",
+                                           "tests/host/stubs/object_store_profile",
+                                           "components/geophone_events/include",
+                                           "components/localization/include",
+                                           "components/localization_calculate/include",
+                                           "components/localization_job/include"
+                                       ],
+                      "libraries":  [
+                                        "m"
+                                    ]
+                  },
+                  {
+                      "name":  "object_store_artifacts",
+                      "sources":  [
+                                      "components/object_format/object_format.c",
+                                      "components/object_store/object_store_fs.c",
+                                      "components/object_store/object_store_artifacts.c",
+                                      "components/object_store/tests/object_store_artifacts_test.c"
+                                  ],
+                      "include_dirs":  [
+                                           "tests/host/stubs/object_store_calc_settings",
+                                           "components/object_format/include",
+                                           "components/object_store/include",
+                                           "components/object_store"
+                                       ],
+                      "defines":  [
+                                      "OBJECT_STORE_STAT_FN=object_store_fake_stat"
+                                  ]
+                  }
+              ]
+}

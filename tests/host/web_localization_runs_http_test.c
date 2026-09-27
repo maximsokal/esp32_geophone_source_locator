@@ -25,6 +25,8 @@ static unsigned s_cs_pairs_calls;
 static esp_err_t s_cs_pairs_result;
 static unsigned s_picks_list_calls;
 static esp_err_t s_picks_list_result;
+static esp_err_t s_calc_settings_result;
+static const char *s_calc_settings_json;
 
 static void reset_fakes(void)
 {
@@ -72,6 +74,28 @@ static void reset_fakes(void)
     s_cs_pairs_result = ESP_OK;
     s_picks_list_calls = 0U;
     s_picks_list_result = ESP_OK;
+    s_calc_settings_result = ESP_OK;
+    s_calc_settings_json =
+        "{\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":5,"
+        "\"propagation_model_name\":\"tap_calibrated\",\"timing_uncertainty_us\":2000,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,"
+        "\"refine_lookahead_samples\":10,\"refine_amplitude_fraction\":0.5,"
+        "\"snr_signal_window_samples\":50,\"minimum_snr\":2,"
+        "\"semblance_window_half_span_samples\":25}";
+}
+
+esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json_out)
+{
+    assert(object_id != NULL && json_out != NULL);
+    *json_out = NULL;
+    if (s_calc_settings_result != ESP_OK) return s_calc_settings_result;
+    if (s_calc_settings_json == NULL) return ESP_ERR_NOT_FOUND;
+    const size_t length = strlen(s_calc_settings_json) + 1U;
+    *json_out = malloc(length);
+    if (*json_out == NULL) return ESP_ERR_NO_MEM;
+    memcpy(*json_out, s_calc_settings_json, length);
+    return ESP_OK;
 }
 
 esp_err_t seismic_recorder_read_session_geometry(
@@ -665,6 +689,43 @@ static void test_job_status_shares_the_runs_route(void)
     assert(s_job_status_calls == 1U);
 }
 
+static void test_settings_read_returns_valid_json_or_null(void)
+{
+    reset_fakes();
+    char response[1024] = {0};
+    httpd_req_t request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "{\"ok\":true,\"settings\":{") == response);
+    assert(strstr(response, "\"propagation_speed_mps\":340") != NULL);
+    assert(request.content_type != NULL && strcmp(request.content_type, "application/json; charset=utf-8") == 0);
+    assert(request.cache_control != NULL && strcmp(request.cache_control, "no-store") == 0);
+    assert(s_list_calls == 0U);
+
+    s_calc_settings_json = NULL;
+    memset(response, 0, sizeof(response));
+    request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strcmp(response, "{\"ok\":true,\"settings\":null}") == 0);
+
+    s_calc_settings_json = "{";
+    memset(response, 0, sizeof(response));
+    request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strcmp(response, "{\"ok\":true,\"settings\":null}") == 0);
+
+    s_calc_settings_result = ESP_FAIL;
+    memset(response, 0, sizeof(response));
+    request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "500 Internal Server Error") == 0);
+
+    memset(response, 0, sizeof(response));
+    request = make_request("job=settings", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+}
+
 int main(void)
 {
     test_runs_listing_round_trips_persisted_records();
@@ -679,5 +740,6 @@ int main(void)
     test_runs_listing_surfaces_unexpected_errors_as_500();
     test_runs_listing_rejects_query_string_too_long();
     test_job_status_shares_the_runs_route();
+    test_settings_read_returns_valid_json_or_null();
     return 0;
 }

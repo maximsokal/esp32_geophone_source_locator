@@ -82,6 +82,8 @@ esp_err_t object_store_set_active(const char *object_id);
 esp_err_t object_store_delete(const char *object_id);
 esp_err_t object_store_rename(const char *object_id, const char *name);
 esp_err_t object_store_set_location(const char *object_id, const object_store_location_t *location);
+esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json);
+esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json_out);
 esp_err_t object_store_set_cable_length(const char *object_id, size_t pod_index, float length_m);
 esp_err_t object_store_set_cable_default(size_t pod_index, float length_m);
 esp_err_t object_store_lease_acquire(const char *object_id, object_store_lease_t *lease);

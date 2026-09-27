@@ -10,6 +10,7 @@
 #include "measurement_service.h"
 #include "seismic_acquisition.h"
 #include "localization_calculate.h"
+#include "localization_config.h"
 #include "localization_job.h"
 #include "main_barometer.h"
 #include "nrf_topology_service.h"
@@ -46,7 +47,8 @@ static bool web_control_is_object_storage_mutation(const char *action)
 {
     return
         web_control_requires_object_cache_refresh(action) ||
-        (action != NULL && strcmp(action, "activate_object") == 0);
+        (action != NULL && (strcmp(action, "activate_object") == 0 ||
+            strcmp(action, "save_calc_settings") == 0));
 }
 
 
@@ -489,146 +491,79 @@ static bool web_control_pod_index(double value, size_t *pod_index)
     return true;
 }
 
-static bool web_control_size(cJSON *root, const char *key, size_t *value)
-{
-    double raw = 0.0;
-    if (!web_control_number(root, key, &raw) || raw < 0.0 || floor(raw) != raw) {
-        return false;
-    }
-    *value = (size_t)raw;
-    return true;
-}
-
-/*
- * MAX-168: every physically-measured/method-tuning parameter (propagation
- * speed, timing uncertainty, pick-detection config) is required, explicit
- * caller input -- this handler invents none of it, only transports what the
- * WebUI form collected into localization_calculate_run()'s own config
- * struct, which independently re-validates the physical-parameter subset.
- */
 static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id)
 {
-    if (object_id == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
+    if (object_id == NULL) return ESP_ERR_INVALID_ARG;
     const char *session_id = web_control_string(root, "session_id");
-    if (session_id == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    double propagation_speed_mps = 0.0;
-    double propagation_speed_uncertainty_mps = 0.0;
-    double timing_uncertainty_us = 0.0;
-    double sta_lta_trigger_ratio = 0.0;
-    double refine_amplitude_fraction = 0.0;
-    double minimum_snr = 0.0;
-
+    if (session_id == NULL) return ESP_ERR_INVALID_ARG;
     localization_calculate_config_t config;
-    memset(&config, 0, sizeof(config));
-
-    if (
-        !web_control_number(root, "propagation_speed_mps", &propagation_speed_mps) ||
-        !web_control_number(root, "propagation_speed_uncertainty_mps", &propagation_speed_uncertainty_mps) ||
-        !web_control_number(root, "timing_uncertainty_us", &timing_uncertainty_us) ||
-        !web_control_size(root, "noise_window_samples", &config.pick_config.noise_window_samples) ||
-        !web_control_size(root, "sta_window_samples", &config.pick_config.sta_window_samples) ||
-        !web_control_size(root, "lta_window_samples", &config.pick_config.lta_window_samples) ||
-        !web_control_number(root, "sta_lta_trigger_ratio", &sta_lta_trigger_ratio) ||
-        !web_control_size(root, "refine_lookback_samples", &config.pick_config.refine_lookback_samples) ||
-        !web_control_size(root, "refine_lookahead_samples", &config.pick_config.refine_lookahead_samples) ||
-        !web_control_number(root, "refine_amplitude_fraction", &refine_amplitude_fraction) ||
-        !web_control_size(root, "snr_signal_window_samples", &config.pick_config.snr_signal_window_samples) ||
-        !web_control_number(root, "minimum_snr", &minimum_snr) ||
-        !web_control_size(root, "semblance_window_half_span_samples", &config.semblance_window_half_span_samples)
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    config.propagation_speed_mps = propagation_speed_mps;
-    config.propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
-    config.timing_uncertainty_us = timing_uncertainty_us;
-    config.pick_config.sta_lta_trigger_ratio = (float)sta_lta_trigger_ratio;
-    config.pick_config.refine_amplitude_fraction = (float)refine_amplitude_fraction;
-    config.pick_config.minimum_snr = (float)minimum_snr;
-
-    /* MAX-210: STA is the trailing sub-window of LTA, so STA/LTA can never
-     * exceed lta/sta. A threshold at or above that bound would silently
-     * never trigger on any channel -- reject it instead. */
-    if (
-        config.pick_config.sta_window_samples == 0U ||
-        config.pick_config.lta_window_samples <= config.pick_config.sta_window_samples ||
-        sta_lta_trigger_ratio >=
-            (double)config.pick_config.lta_window_samples /
-            (double)config.pick_config.sta_window_samples
-    ) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    /* Optional (MAX-211): absent means the geometry-derived default. When
-     * present it must be a positive finite depth in meters. */
-    cJSON *max_depth = cJSON_GetObjectItemCaseSensitive(root, "max_source_depth_m");
-    if (max_depth != NULL) {
-        if (!cJSON_IsNumber(max_depth) || !isfinite(max_depth->valuedouble) || max_depth->valuedouble <= 0.0) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        config.max_source_depth_m = max_depth->valuedouble;
-    }
-
-    /* Optional (PSAFUVS): S-wave picking. Present only as a complete set --
-     * the handler never fills in a missing window or threshold (MAX-132). */
-    if (cJSON_GetObjectItemCaseSensitive(root, "s_sta_window_samples") != NULL) {
-        double s_trigger_ratio = 0.0;
-        double s_minimum_snr = 0.0;
-        geophone_secondary_pick_config_t *s_pick = &config.s_pick_config;
-        if (
-            !web_control_size(root, "s_min_separation_samples", &s_pick->min_separation_samples) ||
-            !web_control_size(root, "s_max_separation_samples", &s_pick->max_separation_samples) ||
-            !web_control_size(root, "s_sta_window_samples", &s_pick->sta_window_samples) ||
-            !web_control_size(root, "s_lta_window_samples", &s_pick->lta_window_samples) ||
-            !web_control_number(root, "s_sta_lta_trigger_ratio", &s_trigger_ratio) ||
-            !web_control_number(root, "s_minimum_snr", &s_minimum_snr) ||
-            s_pick->sta_window_samples == 0U ||
-            s_pick->lta_window_samples <= s_pick->sta_window_samples ||
-            s_pick->max_separation_samples <= s_pick->min_separation_samples ||
-            !(s_trigger_ratio > 0.0) ||
-            s_trigger_ratio >= (double)s_pick->lta_window_samples / (double)s_pick->sta_window_samples ||
-            s_minimum_snr < 0.0
-        ) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        s_pick->sta_lta_trigger_ratio = (float)s_trigger_ratio;
-        s_pick->minimum_snr = (float)s_minimum_snr;
-        config.s_pick_enabled = true;
-    }
-
-    const char *model_name = web_control_string(root, "propagation_model_name");
-    if (model_name != NULL) {
-        snprintf(
-            config.propagation_model_name, sizeof(config.propagation_model_name), "%s", model_name
-        );
-    }
-
-    /* Optional: the run's time budget in seconds (methods not started by
-     * then are persisted as skipped); absent = LOCALIZATION_JOB_DEFAULT_BUDGET_MS. */
     uint32_t budget_ms = 0U;
-    cJSON *budget = cJSON_GetObjectItemCaseSensitive(root, "time_budget_s");
-    if (budget != NULL) {
-        if (
-            !cJSON_IsNumber(budget) || !isfinite(budget->valuedouble) ||
-            budget->valuedouble * 1000.0 < (double)LOCALIZATION_JOB_MIN_BUDGET_MS ||
-            budget->valuedouble * 1000.0 > (double)LOCALIZATION_JOB_MAX_BUDGET_MS
-        ) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        budget_ms = (uint32_t)(budget->valuedouble * 1000.0);
-    }
-
+    const esp_err_t parse_err = localization_config_from_json(root, &config, &budget_ms);
+    if (parse_err != ESP_OK) return parse_err;
     /* The run takes seconds and several KiB of stack: it is handed to the
      * localization_job worker, never run on this HTTPS task. The WebUI
      * polls /api/localization/runs?job=status. A second request while one
      * runs is refused (409), not queued. */
     return localization_job_submit(object_id, session_id, &config, budget_ms, NULL);
+}
+
+static esp_err_t web_control_save_calc_settings(cJSON *root, const char *object_id)
+{
+    static const char *const setting_fields[] = {
+        "propagation_speed_mps",
+        "propagation_speed_uncertainty_mps",
+        "timing_uncertainty_us",
+        "noise_window_samples",
+        "sta_window_samples",
+        "lta_window_samples",
+        "sta_lta_trigger_ratio",
+        "refine_lookback_samples",
+        "refine_lookahead_samples",
+        "refine_amplitude_fraction",
+        "snr_signal_window_samples",
+        "minimum_snr",
+        "semblance_window_half_span_samples",
+        "max_source_depth_m",
+        "s_min_separation_samples",
+        "s_max_separation_samples",
+        "s_sta_window_samples",
+        "s_lta_window_samples",
+        "s_sta_lta_trigger_ratio",
+        "s_minimum_snr",
+        "propagation_model_name",
+        "time_budget_s",
+    };
+    if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+    localization_calculate_config_t config;
+    uint32_t budget_ms = 0U;
+    const esp_err_t parse_err = localization_config_from_json(root, &config, &budget_ms);
+    if (parse_err != ESP_OK) return parse_err;
+    (void)config;
+    (void)budget_ms;
+
+    cJSON_DeleteItemFromObjectCaseSensitive(root, "action");
+    cJSON_DeleteItemFromObjectCaseSensitive(root, "object_id");
+    cJSON_DeleteItemFromObjectCaseSensitive(root, "session_id");
+    for (cJSON *item = root->child; item != NULL;) {
+        cJSON *next = item->next;
+        bool recognized = false;
+        for (size_t i = 0U; i < sizeof(setting_fields) / sizeof(setting_fields[0]); ++i) {
+            if (item->string != NULL && strcmp(item->string, setting_fields[i]) == 0) {
+                recognized = true;
+                break;
+            }
+        }
+        if (!recognized && item->string != NULL) {
+            cJSON_DeleteItemFromObjectCaseSensitive(root, item->string);
+        }
+        item = next;
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    if (json == NULL) return ESP_ERR_NO_MEM;
+    const esp_err_t err = object_store_set_calc_settings_json(object_id, json);
+    cJSON_free(json);
+    if (err == ESP_OK) (void)workflow_service_notify_calc_settings_saved(object_id);
+    return err;
 }
 
 static esp_err_t web_control_measurement_start(
@@ -815,6 +750,9 @@ static esp_err_t web_control_process(
     }
     if (strcmp(action, "calculate_source") == 0) {
         return web_control_calculate_source(root, object_id);
+    }
+    if (strcmp(action, "save_calc_settings") == 0) {
+        return web_control_save_calc_settings(root, object_id);
     }
 
     return ESP_ERR_NOT_SUPPORTED;

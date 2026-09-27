@@ -37,6 +37,9 @@ static localization_calculate_config_t s_last_calculate_config;
 static char s_last_calculate_session_id[32];
 static esp_err_t s_calculate_result;
 static uint32_t s_last_budget_ms;
+static unsigned s_calc_settings_save_calls;
+static char s_saved_calc_settings[2048];
+static unsigned s_calc_settings_notify_calls;
 static esp_err_t s_acquisition_start_result;
 static unsigned s_acquisition_start_calls;
 static esp_err_t s_measurement_start_result;
@@ -78,6 +81,9 @@ static void reset_fakes(void)
     memset(s_last_calculate_session_id, 0, sizeof(s_last_calculate_session_id));
     s_calculate_result = ESP_OK;
     s_last_budget_ms = 12345U;
+    s_calc_settings_save_calls = 0U;
+    s_saved_calc_settings[0] = '\0';
+    s_calc_settings_notify_calls = 0U;
     s_acquisition_start_result = ESP_OK;
     s_acquisition_start_calls = 0U;
     s_measurement_start_result = ESP_OK;
@@ -197,6 +203,13 @@ esp_err_t workflow_service_capture_height_references(
     return err;
 }
 
+esp_err_t workflow_service_notify_calc_settings_saved(const char *object_id)
+{
+    assert(object_id != NULL);
+    ++s_calc_settings_notify_calls;
+    return ESP_OK;
+}
+
 esp_err_t measurement_service_start_object_async(const char *object_id)
 {
     (void)object_id;
@@ -279,6 +292,14 @@ esp_err_t object_store_set_location(
     assert(object_id != NULL && location != NULL);
     s_saved_location = *location;
     s_location_calls++;
+    return ESP_OK;
+}
+
+esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json)
+{
+    assert(object_id != NULL && json != NULL);
+    ++s_calc_settings_save_calls;
+    (void)snprintf(s_saved_calc_settings, sizeof(s_saved_calc_settings), "%s", json);
     return ESP_OK;
 }
 
@@ -931,6 +952,51 @@ static void test_calculate_source_action_rejects_missing_session_id(void)
     assert(s_calculate_calls == 0U);
 }
 
+static void test_save_calc_settings_validates_and_persists_only_settings(void)
+{
+    static const char *const valid =
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"propagation_model_name\":\"tap_calibrated\",\"timing_uncertainty_us\":2000.0,"
+        "\"noise_window_samples\":50,\"sta_window_samples\":5,\"lta_window_samples\":50,"
+        "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,"
+        "\"refine_lookahead_samples\":10,\"refine_amplitude_fraction\":0.5,"
+        "\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
+        "\"semblance_window_half_span_samples\":25,\"time_budget_s\":45.5,"
+        "\"ignored_extension\":\"discard me\"}";
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(valid, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_calc_settings_save_calls == 1U);
+    assert(s_calc_settings_notify_calls == 1U);
+    assert(strstr(s_saved_calc_settings, "\"action\"") == NULL);
+    assert(strstr(s_saved_calc_settings, "\"object_id\"") == NULL);
+    assert(strstr(s_saved_calc_settings, "\"ignored_extension\"") == NULL);
+    assert(strstr(s_saved_calc_settings, "\"propagation_speed_mps\":340") != NULL);
+    assert(strstr(s_saved_calc_settings, "\"time_budget_s\":45.5") != NULL);
+
+    const char *saved_before_invalid = s_saved_calc_settings;
+    char saved_copy[sizeof(s_saved_calc_settings)];
+    (void)snprintf(saved_copy, sizeof(saved_copy), "%s", saved_before_invalid);
+    static const char *const invalid =
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\","
+        "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
+        "\"timing_uncertainty_us\":2000.0,\"noise_window_samples\":50,"
+        "\"sta_window_samples\":10,\"lta_window_samples\":50,\"sta_lta_trigger_ratio\":6.0,"
+        "\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,"
+        "\"minimum_snr\":2.0,\"semblance_window_half_span_samples\":25}";
+    memset(response, 0, sizeof(response));
+    request = make_request(invalid, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_calc_settings_save_calls == 1U);
+    assert(s_calc_settings_notify_calls == 1U);
+    assert(strcmp(s_saved_calc_settings, saved_copy) == 0);
+}
+
 static void test_calculate_source_time_budget(void)
 {
     static const char *const prefix =
@@ -1102,6 +1168,7 @@ int main(void)
     test_calculate_source_optional_s_wave_picking();
     test_calculate_source_rejects_unreachable_sta_lta_threshold();
     test_calculate_source_action_rejects_missing_session_id();
+    test_save_calc_settings_validates_and_persists_only_settings();
     test_calculate_source_action_surfaces_solver_failure();
     test_calculate_source_time_budget();
     test_workflow_command_success_and_conflict_responses();

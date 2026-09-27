@@ -17,6 +17,7 @@ idf_component_register(
         "object_store_profile.c"
         "object_store_profile_cache_policy.c"
         "object_store_responsive.c"
+        "object_store_artifacts.c"
 
     INCLUDE_DIRS
         "include"

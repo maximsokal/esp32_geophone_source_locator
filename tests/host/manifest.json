@@ -1142,6 +1142,7 @@
       "name": "web_localization_runs_http",
       "sources": [
         "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_job/localization_config.c",
         "components/localization_results/localization_run_record_json.c",
         "components/localization_results/localization_pick_record.c",
         "components/web_server/web_json_writer.c",
@@ -1149,8 +1150,11 @@
       ],
       "include_dirs": [
         "components/seismic_recorder/include",
+        "components/localization_calculate/include",
         "tests/host/stubs/web_api_control",
         "tests/host/stubs/object_store_profile",
+        "components/localization_job/include",
+        "components/geophone_events/include",
         "components/localization/include",
         "components/localization_results/include",
         "components/localization_run_store/include",
@@ -1721,6 +1725,7 @@
       "name": "web_api_control_http",
       "sources": [
         "components/storage_manager/storage_bulk_admission.c",
+        "components/localization_job/localization_config.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "tests/host/web_api_control_http_test.c"
       ],
@@ -1729,6 +1734,7 @@
         "components/measurement_service/tests/stubs",
         "components/storage_manager",
         "components/storage_manager/include",
+        "components/localization_job/include",
         "components/web_server"
       ],
       "defines": ["_POSIX_C_SOURCE=200809L"],

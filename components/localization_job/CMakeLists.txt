@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "localization_job_state.c"
         "localization_job.c"
+        "localization_config.c"
 
     INCLUDE_DIRS
         "include"
