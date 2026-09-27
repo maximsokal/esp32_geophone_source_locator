@@ -17,6 +17,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+esp_err_t web_scan_store_clear_staging(const char *object_id);
+
 #define WEB_CONTROL_MAX_BODY 1024U
 #define WEB_CONTROL_ACTION_SIZE 48U
 #define WEB_CONTROL_SCAN_QUERY_SIZE 160U
@@ -705,8 +707,19 @@ static esp_err_t web_control_process(
 
     if (strcmp(action, "activate_object") == 0) {
         if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+        object_store_summary_t previous_active = {0};
+        const bool had_previous_active = object_store_get_active(&previous_active) == ESP_OK;
         const esp_err_t err = object_store_set_active(object_id);
         if (err == ESP_OK) {
+            if (had_previous_active && strcmp(previous_active.id, object_id) != 0) {
+                /* Staging is object-scoped; clear the object being left and
+                 * preserve staging for the selected object's next recording. */
+                const esp_err_t staging_err = web_scan_store_clear_staging(previous_active.id);
+                if (staging_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Could not clear staging for previous object %s: %s",
+                             previous_active.id, esp_err_to_name(staging_err));
+                }
+            }
             snprintf(object_id_out, OBJECT_STORE_ID_SIZE, "%s", object_id);
         }
         return err;

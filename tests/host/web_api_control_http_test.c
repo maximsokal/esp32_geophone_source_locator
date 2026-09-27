@@ -26,6 +26,12 @@ static object_store_location_t s_saved_location;
 static unsigned s_location_calls;
 static unsigned s_cache_invalidations;
 static unsigned s_cache_refresh_requests;
+static char s_previous_active_id[OBJECT_STORE_ID_SIZE];
+static esp_err_t s_set_active_result;
+static char s_last_set_active_id[OBJECT_STORE_ID_SIZE];
+static unsigned s_set_active_calls;
+static unsigned s_clear_staging_calls;
+static char s_cleared_staging_id[OBJECT_STORE_ID_SIZE];
 static unsigned s_calculate_calls;
 static localization_calculate_config_t s_last_calculate_config;
 static char s_last_calculate_session_id[32];
@@ -61,6 +67,12 @@ static void reset_fakes(void)
     s_location_calls = 0U;
     s_cache_invalidations = 0U;
     s_cache_refresh_requests = 0U;
+    (void)snprintf(s_previous_active_id, sizeof(s_previous_active_id), "%s", "OBJ_0001");
+    s_set_active_result = ESP_OK;
+    s_last_set_active_id[0] = '\0';
+    s_set_active_calls = 0U;
+    s_clear_staging_calls = 0U;
+    s_cleared_staging_id[0] = '\0';
     s_calculate_calls = 0U;
     memset(&s_last_calculate_config, 0, sizeof(s_last_calculate_config));
     memset(s_last_calculate_session_id, 0, sizeof(s_last_calculate_session_id));
@@ -208,9 +220,29 @@ esp_err_t object_store_create_named(const char *name, object_store_summary_t *cr
     return ESP_OK;
 }
 
+esp_err_t object_store_get_active(object_store_summary_t *object)
+{
+    assert(object != NULL);
+    memset(object, 0, sizeof(*object));
+    object->active = true;
+    (void)snprintf(object->id, sizeof(object->id), "%s", s_previous_active_id);
+    return ESP_OK;
+}
+
 esp_err_t object_store_set_active(const char *object_id)
 {
-    (void)object_id;
+    assert(object_id != NULL);
+    ++s_set_active_calls;
+    (void)snprintf(s_last_set_active_id, sizeof(s_last_set_active_id), "%s", object_id);
+    return s_set_active_result;
+}
+
+esp_err_t web_scan_store_clear_staging(const char *object_id)
+{
+    assert(object_id != NULL);
+    assert(s_set_active_calls == 1U && s_set_active_result == ESP_OK);
+    ++s_clear_staging_calls;
+    (void)snprintf(s_cleared_staging_id, sizeof(s_cleared_staging_id), "%s", object_id);
     return ESP_OK;
 }
 
@@ -935,6 +967,40 @@ static void test_calculate_source_action_surfaces_solver_failure(void)
     assert(s_calculate_calls == 1U);
 }
 
+static void test_activate_object_clears_staging_for_previous_object(void)
+{
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"activate_object\",\"object_id\":\"OBJ_0002\"}",
+        response,
+        sizeof(response)
+    );
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_set_active_calls == 1U);
+    assert(strcmp(s_last_set_active_id, "OBJ_0002") == 0);
+    assert(s_clear_staging_calls == 1U);
+    assert(strcmp(s_cleared_staging_id, "OBJ_0001") == 0);
+}
+
+static void test_activate_object_does_not_clear_staging_when_activation_fails(void)
+{
+    reset_fakes();
+    s_set_active_result = ESP_FAIL;
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"activate_object\",\"object_id\":\"OBJ_0002\"}",
+        response,
+        sizeof(response)
+    );
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(s_set_active_calls == 1U);
+    assert(s_clear_staging_calls == 0U);
+}
+
 static void test_workflow_command_success_and_conflict_responses(void)
 {
     static const char *const success_body =
@@ -1017,6 +1083,8 @@ int main(void)
     test_calibrate_heights_queues_channel_mask_without_bus_io();
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
+    test_activate_object_clears_staging_for_previous_object();
+    test_activate_object_does_not_clear_staging_when_activation_fails();
     test_calculate_source_action_submits_a_background_job();
     test_calculate_source_optional_max_depth();
     test_calculate_source_optional_s_wave_picking();

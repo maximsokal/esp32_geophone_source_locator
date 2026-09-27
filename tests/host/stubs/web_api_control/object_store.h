@@ -77,6 +77,7 @@ typedef struct {
 } object_store_cs_pairs_t;
 
 esp_err_t object_store_create_named(const char *name, object_store_summary_t *created_object);
+esp_err_t object_store_get_active(object_store_summary_t *object);
 esp_err_t object_store_set_active(const char *object_id);
 esp_err_t object_store_delete(const char *object_id);
 esp_err_t object_store_rename(const char *object_id, const char *name);
