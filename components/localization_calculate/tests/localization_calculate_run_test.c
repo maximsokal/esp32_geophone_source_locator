@@ -428,6 +428,7 @@ static void test_four_pods_clean_event_solves_near_truth(void)
     build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
 
     localization_calculate_config_t config = default_test_config();
+    snprintf(config.material, sizeof(config.material), "concrete");
     localization_calculate_summary_t summary;
     const esp_err_t err = localization_calculate_run(
         "OBJ01", "S000003", &config, 44000ULL, &summary
@@ -440,6 +441,8 @@ static void test_four_pods_clean_event_solves_near_truth(void)
 
     for (size_t i = 0U; i < g_recorded_count; ++i) {
         assert(g_recorded[i].dimensionality == LOCALIZATION_DIMENSIONALITY_CAPABLE_3D);
+        assert(strcmp(g_recorded[i].propagation_model_name, "test-model") == 0);
+        assert(strcmp(g_recorded[i].material, "concrete") == 0);
         if (!g_recorded[i].solved) {
             localization_calculate_test_assert_rejection_class(
                 &g_recorded[i], g_recorded[i].failure_class

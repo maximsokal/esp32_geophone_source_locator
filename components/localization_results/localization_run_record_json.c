@@ -177,7 +177,8 @@ esp_err_t localization_run_record_to_json(
 
     if (
         !isfinite(record->propagation_speed_uncertainty_mps) ||
-        record->propagation_speed_uncertainty_mps < 0.0
+        record->propagation_speed_uncertainty_mps < 0.0 ||
+        strnlen(record->material, sizeof(record->material)) >= sizeof(record->material)
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -262,6 +263,10 @@ esp_err_t localization_run_record_to_json(
         cJSON_AddBoolToObject(root, "solved", record->solved) != NULL &&
         cJSON_AddStringToObject(root, "failure_class", failure_class) != NULL &&
         cJSON_AddBoolToObject(root, "uncertainty_too_high", record->uncertainty_too_high) != NULL;
+
+    if (ok && record->material[0] != '\0') {
+        ok = cJSON_AddStringToObject(root, "material", record->material) != NULL;
+    }
 
     if (ok && record->solved) {
         cJSON *position = cJSON_AddObjectToObject(root, "source_position");
@@ -477,6 +482,11 @@ esp_err_t localization_run_record_from_json(
         read_number(root, "confidence_score", &confidence_score) &&
         confidence_score >= 0.0 &&
         read_bool(root, "solved", &solved);
+
+    const cJSON *material_item = cJSON_GetObjectItemCaseSensitive(root, "material");
+    if (ok && material_item != NULL && !cJSON_IsNull(material_item)) {
+        ok = read_string(root, "material", record->material, sizeof(record->material));
+    }
 
     const cJSON *failure_class_item = cJSON_GetObjectItemCaseSensitive(root, "failure_class");
     if (failure_class_item != NULL) {

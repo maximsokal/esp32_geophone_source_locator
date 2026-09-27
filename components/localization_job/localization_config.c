@@ -103,6 +103,9 @@ esp_err_t localization_config_from_json(
     if (material != NULL) {
         if (!cJSON_IsString(material) || material->valuestring == NULL) return ESP_ERR_INVALID_ARG;
         material_id = material->valuestring;
+        const size_t material_length = strnlen(material_id, sizeof(config.material));
+        if (material_length >= sizeof(config.material)) return ESP_ERR_INVALID_ARG;
+        memcpy(config.material, material_id, material_length + 1U);
         if (strcmp(material_id, "custom") != 0) {
             preset = localization_material_preset_lookup(material_id);
             if (preset == NULL) return ESP_ERR_INVALID_ARG;

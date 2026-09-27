@@ -908,7 +908,8 @@ static void test_material_is_carried_into_run_provenance(void)
     workflow_test_settings_json = s_concrete_settings_json;
     (void)begin_calculation();
     assert(workflow_test_submitted_config.propagation_speed_mps == 4000.0);
-    assert(strcmp(workflow_test_submitted_config.propagation_model_name, "site-model@concrete") == 0);
+    assert(strcmp(workflow_test_submitted_config.propagation_model_name, "site-model") == 0);
+    assert(strcmp(workflow_test_submitted_config.material, "concrete") == 0);
     workflow_service_shutdown();
 }
 

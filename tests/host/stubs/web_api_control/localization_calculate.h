@@ -38,6 +38,7 @@ typedef struct
     double propagation_speed_mps;
     double propagation_speed_uncertainty_mps;
     char propagation_model_name[LOCALIZATION_CALCULATE_STUB_MODEL_NAME_SIZE];
+    char material[24];
     double timing_uncertainty_us;
     geophone_channel_pick_config_t pick_config;
     size_t semblance_window_half_span_samples;

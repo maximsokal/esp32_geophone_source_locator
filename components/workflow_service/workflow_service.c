@@ -239,10 +239,8 @@ static esp_err_t workflow_service_parse_calc_settings_locked(
     const esp_err_t err = localization_config_from_json(
         root, config, budget_ms_out);
     if (err == ESP_OK && material_out != NULL) {
-        const cJSON *material = cJSON_GetObjectItemCaseSensitive(root, "material");
         workflow_service_copy_string(material_out, WORKFLOW_CALC_MATERIAL_ID_SIZE,
-            cJSON_IsString(material) && material->valuestring != NULL
-                ? material->valuestring : "custom");
+            config->material[0] != '\0' ? config->material : "custom");
     }
     cJSON_Delete(root);
     return err;
@@ -1174,27 +1172,6 @@ static void workflow_service_calculation_done_locked(
     }
 }
 
-static void workflow_service_set_material_provenance(
-    localization_calculate_config_t *config,
-    const char *material_id
-)
-{
-    if (config == NULL || material_id == NULL || material_id[0] == '\0') return;
-    char annotated[sizeof(config->propagation_model_name)];
-    const size_t capacity = sizeof(annotated);
-    const size_t model_length = strnlen(config->propagation_model_name, capacity);
-    const size_t material_length = strlen(material_id);
-    const bool has_model = model_length > 0U;
-    if (material_length + (has_model ? 1U : 0U) >= capacity) return;
-    const size_t model_limit = capacity - material_length - (has_model ? 1U : 0U) - 1U;
-    const size_t kept_model_length = model_length < model_limit ? model_length : model_limit;
-    (void)snprintf(annotated, sizeof(annotated), "%.*s%s%s",
-        (int)kept_model_length, config->propagation_model_name,
-        has_model ? "@" : "", material_id);
-    (void)snprintf(config->propagation_model_name,
-        sizeof(config->propagation_model_name), "%s", annotated);
-}
-
 static void workflow_service_calculation_start_locked(void)
 {
     localization_job_status_t *status = &s_poll_scratch.job_status;
@@ -1210,13 +1187,12 @@ static void workflow_service_calculation_start_locked(void)
 
     char *json = NULL;
     uint32_t budget_ms = 0U;
-    char material_id[WORKFLOW_CALC_MATERIAL_ID_SIZE] = {0};
     esp_err_t err = s_active_object_id[0] == '\0'
         ? ESP_ERR_NOT_FOUND
         : object_store_get_calc_settings_json(s_active_object_id, &json);
     if (err == ESP_OK && json != NULL) {
         err = workflow_service_parse_calc_settings_locked(
-            json, &budget_ms, &s_poll_scratch.calculation_config, material_id);
+            json, &budget_ms, &s_poll_scratch.calculation_config, NULL);
     }
     free(json);
     if (err != ESP_OK) {
@@ -1225,9 +1201,6 @@ static void workflow_service_calculation_start_locked(void)
         return;
     }
 
-    /* Run records already persist propagation_model_name; include the material there. */
-    workflow_service_set_material_provenance(
-        &s_poll_scratch.calculation_config, material_id);
     uint32_t job_id = 0U;
     err = localization_job_submit(
         s_active_object_id,

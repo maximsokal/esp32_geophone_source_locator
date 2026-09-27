@@ -106,6 +106,9 @@ typedef struct
      * above (e.g. "tap-calibrated 2026-09-20"); may be empty. */
     char propagation_model_name[LOCALIZATION_PROPAGATION_MODEL_NAME_SIZE];
 
+    /* Optional selected material ID for run provenance; empty when unknown. */
+    char material[24];
+
     /* Required (> 0): assumed 1-sigma arrival-time pick noise in
      * microseconds, e.g. from MAX-142's empirical timing-jitter finding.
      * Feeds localization_traveltime_search() and this run's own

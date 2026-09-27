@@ -111,6 +111,8 @@ typedef struct
      * never a hidden default). uncertainty_mps is 0 when unknown, matching
      * localization_propagation_model_t's own "0 means unknown" convention. */
     char propagation_model_name[LOCALIZATION_PROPAGATION_MODEL_NAME_SIZE];
+    /* Optional selected material ID; empty when the material was not set. */
+    char material[24];
     double propagation_speed_mps;
     double propagation_speed_uncertainty_mps;
 

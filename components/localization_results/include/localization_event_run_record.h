@@ -32,6 +32,7 @@ esp_err_t localization_event_result_to_run_record(
     uint64_t geometry_computed_at_ms,
     uint32_t method_version,
     const char *propagation_model_name,
+    const char *material,
     double propagation_speed_mps,
     double propagation_speed_uncertainty_mps,
     double timing_uncertainty_us,

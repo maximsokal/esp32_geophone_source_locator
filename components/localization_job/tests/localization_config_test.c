@@ -63,6 +63,7 @@ static void test_standard_processing_is_valid_and_round_trips(void)
     assert(localization_config_from_json(root, &parsed, &parsed_budget) == ESP_OK);
     assert(parsed.propagation_speed_mps == 4000.0);
     assert(parsed.propagation_speed_uncertainty_mps == 500.0);
+    assert(strcmp(parsed.material, "concrete") == 0);
     assert(parsed.pick_config.sta_window_samples == 10U);
     assert(parsed.pick_config.lta_window_samples == 100U);
     assert(parsed_budget == LOCALIZATION_JOB_DEFAULT_BUDGET_MS);
@@ -89,7 +90,8 @@ static void test_full_settings_golden(void)
         "\"s_min_separation_samples\":120,\"s_max_separation_samples\":800,"
         "\"s_sta_window_samples\":30,\"s_lta_window_samples\":300,"
         "\"s_sta_lta_trigger_ratio\":4,\"s_minimum_snr\":3,"
-        "\"propagation_model_name\":\"tap-2026\",\"time_budget_s\":30}"
+        "\"propagation_model_name\":\"tap-2026\",\"material\":\"custom\","
+        "\"time_budget_s\":30}"
     );
     assert(root != NULL);
     localization_calculate_config_t config;
@@ -117,6 +119,7 @@ static void test_full_settings_golden(void)
     assert(config.s_pick_config.sta_lta_trigger_ratio == 4.0f);
     assert(config.s_pick_config.minimum_snr == 3.0f);
     assert(strcmp(config.propagation_model_name, "tap-2026") == 0);
+    assert(strcmp(config.material, "custom") == 0);
     assert(budget_ms == 30000U);
     cJSON_Delete(root);
 }
@@ -141,6 +144,7 @@ static void test_no_defaults_and_incomplete_s_rejected(void)
     assert(config.max_source_depth_m == 0.0);
     assert(!config.s_pick_enabled);
     assert(config.propagation_model_name[0] == '\0');
+    assert(config.material[0] == '\0');
     assert(budget_ms == 0U);
     cJSON_Delete(root);
 
