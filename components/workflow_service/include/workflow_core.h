@@ -6,6 +6,10 @@
 
 #define WORKFLOW_REASON_MAX 64U
 #define WORKFLOW_PROGRESS_UNKNOWN (-1)
+#define WORKFLOW_MAX_REMOTE_NODES 8U
+#define WORKFLOW_MAX_CALIBRATION_NODES (WORKFLOW_MAX_REMOTE_NODES + 1U)
+#define WORKFLOW_MAX_CALIBRATION_REASONS (WORKFLOW_MAX_REMOTE_NODES * 3U + 3U)
+#define WORKFLOW_CALIBRATION_REASON_MAX 40U
 
 typedef enum {
     WORKFLOW_STEP_IDLE = 0,
@@ -78,6 +82,33 @@ typedef struct {
 } workflow_command_params_t;
 
 typedef struct {
+    char node[8];
+    char height_state[24];
+    bool relative_z_mm_valid;
+    int32_t relative_z_mm;
+    char imu_state[24];
+    bool imu_values_valid;
+    int16_t gyro_bias_mdps[3];
+    int16_t gravity_ref_mg[3];
+    bool cs_pairs_ok;
+} workflow_calibration_node_t;
+
+typedef struct {
+    uint16_t generation;
+    char phase[16];
+    size_t per_node_count;
+    workflow_calibration_node_t per_node[WORKFLOW_MAX_CALIBRATION_NODES];
+    size_t pairs_done;
+    size_t pairs_total;
+    bool max_spread_valid;
+    int32_t max_spread_mm;
+    bool result_valid;
+    bool result_ok;
+    size_t reasons_count;
+    char reasons[WORKFLOW_MAX_CALIBRATION_REASONS][WORKFLOW_CALIBRATION_REASON_MAX];
+} workflow_calibration_snapshot_t;
+
+typedef struct {
     workflow_step_t step;
     uint32_t generation;
     uint32_t allowed_actions;
@@ -87,6 +118,7 @@ typedef struct {
     int progress;
     workflow_calculation_class_t calculation_class;
     workflow_command_t recommended_action;
+    workflow_calibration_snapshot_t calibration;
 } workflow_snapshot_t;
 
 typedef struct {

@@ -334,6 +334,95 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
     assert(g_workflow_snapshot_calls == calls_before_null);
 }
 
+static void test_workflow_calibration_json_serializes_values_and_nulls(void)
+{
+    g_workflow_snapshot = (workflow_snapshot_t){
+        .step = WORKFLOW_STEP_CALIBRATING,
+        .generation = 28U,
+        .progress = WORKFLOW_PROGRESS_UNKNOWN,
+        .calibration = {
+            .generation = 91U,
+            .phase = "running",
+            .per_node_count = 1U,
+            .per_node = {{
+                .node = "MAIN",
+                .height_state = "pending",
+                .imu_state = "not_applicable",
+                .cs_pairs_ok = false,
+            }},
+            .pairs_done = 0U,
+            .pairs_total = 3U,
+        },
+    };
+    g_workflow_snapshot_error = ESP_OK;
+    cJSON *root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+    const cJSON *calibration = item(item(root, "workflow"), "calibration");
+    assert_number(calibration, "generation", 91.0);
+    assert_string(calibration, "phase", "running");
+    assert(cJSON_IsNull(item(calibration, "result")));
+    assert(cJSON_GetArraySize(item(calibration, "reasons")) == 0);
+    const cJSON *cs = item(calibration, "cs");
+    assert_number(cs, "pairs_done", 0.0);
+    assert_number(cs, "pairs_total", 3.0);
+    assert(cJSON_IsNull(item(cs, "max_spread_mm")));
+    const cJSON *nodes = item(calibration, "per_node");
+    assert(cJSON_GetArraySize(nodes) == 1);
+    const cJSON *node = cJSON_GetArrayItem(nodes, 0);
+    assert_string(node, "node", "MAIN");
+    assert_bool(node, "cs_pairs_ok", false);
+    const cJSON *height = item(node, "height");
+    assert_string(height, "state", "pending");
+    assert(cJSON_IsNull(item(height, "relative_z_mm")));
+    const cJSON *imu = item(node, "imu");
+    assert_string(imu, "state", "not_applicable");
+    const cJSON *gyro = item(imu, "gyro_bias_mdps");
+    const cJSON *gravity = item(imu, "gravity_ref_mg");
+    assert(cJSON_GetArraySize(gyro) == 3 && cJSON_GetArraySize(gravity) == 3);
+    for (int i = 0; i < 3; ++i) {
+        assert(cJSON_IsNull(cJSON_GetArrayItem(gyro, i)));
+        assert(cJSON_IsNull(cJSON_GetArrayItem(gravity, i)));
+    }
+    cJSON_Delete(root);
+
+    workflow_calibration_node_t *source =
+        &g_workflow_snapshot.calibration.per_node[0];
+    (void)snprintf(source->height_state, sizeof(source->height_state), "%s", "valid");
+    source->relative_z_mm_valid = true;
+    source->relative_z_mm = -23;
+    (void)snprintf(source->imu_state, sizeof(source->imu_state), "%s", "calibrated");
+    source->imu_values_valid = true;
+    source->gyro_bias_mdps[0] = -11;
+    source->gyro_bias_mdps[1] = 22;
+    source->gyro_bias_mdps[2] = -33;
+    source->gravity_ref_mg[0] = 1;
+    source->gravity_ref_mg[1] = 2;
+    source->gravity_ref_mg[2] = 997;
+    source->cs_pairs_ok = true;
+    g_workflow_snapshot.calibration.max_spread_valid = true;
+    g_workflow_snapshot.calibration.max_spread_mm = 149;
+    g_workflow_snapshot.calibration.result_valid = true;
+    g_workflow_snapshot.calibration.result_ok = false;
+    g_workflow_snapshot.calibration.reasons_count = 1U;
+    (void)snprintf(g_workflow_snapshot.calibration.reasons[0],
+        WORKFLOW_CALIBRATION_REASON_MAX, "%s", "G1:height_rejected_moving");
+    root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+    calibration = item(item(root, "workflow"), "calibration");
+    assert(cJSON_IsBool(item(calibration, "result")) &&
+        !cJSON_IsTrue(item(calibration, "result")));
+    const cJSON *reason = cJSON_GetArrayItem(item(calibration, "reasons"), 0);
+    assert(cJSON_IsString(reason));
+    assert(strcmp(reason->valuestring, "G1:height_rejected_moving") == 0);
+    assert_number(item(calibration, "cs"), "max_spread_mm", 149.0);
+    node = cJSON_GetArrayItem(item(calibration, "per_node"), 0);
+    assert_bool(node, "cs_pairs_ok", true);
+    assert(item(item(node, "height"), "relative_z_mm")->valuedouble == -23.0);
+    assert(cJSON_GetArrayItem(item(item(node, "imu"), "gyro_bias_mdps"), 0)->valuedouble == -11.0);
+    assert(cJSON_GetArrayItem(item(item(node, "imu"), "gravity_ref_mg"), 2)->valuedouble == 997.0);
+    cJSON_Delete(root);
+}
+
 
 int main(void)
 {
@@ -345,6 +434,7 @@ int main(void)
     test_null_root_is_rejected_without_topology_access();
     test_per_node_leveling_is_serialized();
     test_workflow_json_orders_recommended_action_and_handles_unknown_progress();
+    test_workflow_calibration_json_serializes_values_and_nulls();
     puts("web status recording gate host tests passed");
     return 0;
 }

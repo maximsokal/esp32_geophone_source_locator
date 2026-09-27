@@ -131,6 +131,26 @@ export type WorkflowStep =
 
 export type WorkflowSensorSufficiency = 'INSUFFICIENT' | 'PLANAR_2D' | 'CAPABLE_3D';
 
+export interface WorkflowCalibrationNode {
+  node: string;
+  height: { state: string; relative_z_mm: number | null };
+  imu: {
+    state: string;
+    gyro_bias_mdps: (number | null)[];
+    gravity_ref_mg: (number | null)[];
+  };
+  cs_pairs_ok: boolean;
+}
+
+export interface WorkflowCalibrationStatus {
+  generation: number;
+  phase: string;
+  per_node: WorkflowCalibrationNode[];
+  cs: { pairs_done: number; pairs_total: number; max_spread_mm: number | null };
+  result: boolean | null;
+  reasons: string[];
+}
+
 export interface DeviceWorkflowStatus {
   step: WorkflowStep;
   generation: number;
@@ -139,6 +159,7 @@ export interface DeviceWorkflowStatus {
   assigned_remotes: number;
   reason: string;
   progress: number | null;
+  calibration: WorkflowCalibrationStatus;
 }
 
 export type RecordingSessionStatus =

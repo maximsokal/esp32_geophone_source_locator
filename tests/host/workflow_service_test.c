@@ -16,6 +16,8 @@
 #endif
 
 #include "freertos/semphr.h"
+#include "device_status.h"
+#include "main_barometer.h"
 #include "measurement_service.h"
 #include "nrf_topology_service.h"
 #include "object_service.h"
@@ -41,6 +43,7 @@ static object_service_summary_t s_object;
 static esp_err_t s_object_result;
 static nrf_topology_snapshot_t s_topology;
 static esp_err_t s_topology_result;
+static uint16_t s_height_generation;
 static bool s_placement_ready;
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void)
@@ -137,6 +140,64 @@ esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_request_height_reference_capture(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation)
+{
+    if (requested_channel_mask == NULL || requested_generation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t mask = 0U;
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        if (s_topology.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            mask |= (uint8_t)(1U << i);
+        }
+    }
+    if (mask == 0U) return ESP_ERR_NOT_FOUND;
+    ++s_height_generation;
+    if (s_height_generation == 0U) ++s_height_generation;
+    *requested_channel_mask = mask;
+    *requested_generation = s_height_generation;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_request_imu_calibration(uint16_t generation, uint8_t channel_mask)
+{
+    return generation != 0U && channel_mask != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t nrf_topology_service_get_sensor_snapshot(
+    uint8_t channel,
+    nrf_remote_sensor_cache_t *snapshot)
+{
+    (void)channel;
+    (void)snapshot;
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
+{
+    return policy != NULL ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
+{
+    (void)snapshot;
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
+{
+    return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    memset(snapshot, 0, sizeof(*snapshot));
+    return ESP_OK;
+}
+
 static bool placement_ready(void *context)
 {
     (void)context;
@@ -162,8 +223,10 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     memset(&s_topology, 0, sizeof(s_topology));
     for (size_t i = 0U; i < assigned && i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
         s_topology.remotes[i].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        s_topology.remotes[i].node_id = (uint8_t)(i + 1U);
     }
     s_topology_result = ESP_OK;
+    s_height_generation = 0U;
     s_placement_ready = false;
     assert(workflow_service_init() == ESP_OK);
 }

@@ -18,3 +18,7 @@ esp_err_t workflow_service_set_placement_ready_predicate(
     void *context
 );
 esp_err_t workflow_service_set_progress(int progress);
+esp_err_t workflow_service_capture_height_references(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation
+);

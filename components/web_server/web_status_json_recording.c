@@ -295,6 +295,104 @@ bool web_status_json_add_measurement(cJSON *root)
     return true;
 }
 
+static bool web_status_json_add_workflow_i16_array(
+    cJSON *root,
+    const char *name,
+    const int16_t values[3],
+    bool valid)
+{
+    cJSON *array = cJSON_AddArrayToObject(root, name);
+    if (array == NULL) return false;
+    for (size_t i = 0U; i < 3U; ++i) {
+        cJSON *value = valid
+            ? cJSON_CreateNumber((double)values[i])
+            : cJSON_CreateNull();
+        if (value == NULL || !cJSON_AddItemToArray(array, value)) {
+            cJSON_Delete(value);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool web_status_json_add_workflow_calibration(
+    cJSON *workflow,
+    const workflow_calibration_snapshot_t *calibration)
+{
+    cJSON *object = cJSON_AddObjectToObject(workflow, "calibration");
+    cJSON *nodes = object != NULL ? cJSON_AddArrayToObject(object, "per_node") : NULL;
+    cJSON *cs = object != NULL ? cJSON_AddObjectToObject(object, "cs") : NULL;
+    cJSON *reasons = object != NULL ? cJSON_AddArrayToObject(object, "reasons") : NULL;
+    if (object == NULL || nodes == NULL || cs == NULL || reasons == NULL ||
+        cJSON_AddNumberToObject(object, "generation", calibration->generation) == NULL ||
+        cJSON_AddStringToObject(object, "phase", calibration->phase) == NULL ||
+        cJSON_AddNumberToObject(cs, "pairs_done", (double)calibration->pairs_done) == NULL ||
+        cJSON_AddNumberToObject(cs, "pairs_total", (double)calibration->pairs_total) == NULL) {
+        return false;
+    }
+    if (calibration->max_spread_valid) {
+        if (cJSON_AddNumberToObject(
+                cs, "max_spread_mm", calibration->max_spread_mm) == NULL) {
+            return false;
+        }
+    } else if (cJSON_AddNullToObject(cs, "max_spread_mm") == NULL) {
+        return false;
+    }
+    if (calibration->result_valid) {
+        if (cJSON_AddBoolToObject(object, "result", calibration->result_ok) == NULL) {
+            return false;
+        }
+    } else if (cJSON_AddNullToObject(object, "result") == NULL) {
+        return false;
+    }
+
+    const size_t node_count = calibration->per_node_count < WORKFLOW_MAX_CALIBRATION_NODES
+        ? calibration->per_node_count
+        : WORKFLOW_MAX_CALIBRATION_NODES;
+    for (size_t i = 0U; i < node_count; ++i) {
+        const workflow_calibration_node_t *source = &calibration->per_node[i];
+        cJSON *node = cJSON_CreateObject();
+        cJSON *height = node != NULL ? cJSON_AddObjectToObject(node, "height") : NULL;
+        cJSON *imu = node != NULL ? cJSON_AddObjectToObject(node, "imu") : NULL;
+        if (node == NULL || height == NULL || imu == NULL ||
+            cJSON_AddStringToObject(node, "node", source->node) == NULL ||
+            cJSON_AddBoolToObject(node, "cs_pairs_ok", source->cs_pairs_ok) == NULL ||
+            cJSON_AddStringToObject(height, "state", source->height_state) == NULL ||
+            cJSON_AddStringToObject(imu, "state", source->imu_state) == NULL) {
+            cJSON_Delete(node);
+            return false;
+        }
+        if (source->relative_z_mm_valid) {
+            if (cJSON_AddNumberToObject(height, "relative_z_mm", source->relative_z_mm) == NULL) {
+                cJSON_Delete(node);
+                return false;
+            }
+        } else if (cJSON_AddNullToObject(height, "relative_z_mm") == NULL) {
+            cJSON_Delete(node);
+            return false;
+        }
+        if (!web_status_json_add_workflow_i16_array(
+                imu, "gyro_bias_mdps", source->gyro_bias_mdps, source->imu_values_valid) ||
+            !web_status_json_add_workflow_i16_array(
+                imu, "gravity_ref_mg", source->gravity_ref_mg, source->imu_values_valid) ||
+            !cJSON_AddItemToArray(nodes, node)) {
+            cJSON_Delete(node);
+            return false;
+        }
+    }
+    const size_t reason_count = calibration->reasons_count < WORKFLOW_MAX_CALIBRATION_REASONS
+        ? calibration->reasons_count
+        : WORKFLOW_MAX_CALIBRATION_REASONS;
+    for (size_t i = 0U; i < reason_count; ++i) {
+        cJSON *reason = cJSON_CreateString(calibration->reasons[i]);
+        if (reason == NULL || !cJSON_AddItemToArray(reasons, reason)) {
+            cJSON_Delete(reason);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool web_status_json_add_workflow(cJSON *root)
 {
     if (root == NULL) return false;
@@ -322,6 +420,10 @@ bool web_status_json_add_workflow(cJSON *root)
         if (cJSON_AddNullToObject(workflow, "progress") == NULL) return false;
     }
     else if (cJSON_AddNumberToObject(workflow, "progress", snapshot.progress) == NULL) {
+        return false;
+    }
+
+    if (!web_status_json_add_workflow_calibration(workflow, &snapshot.calibration)) {
         return false;
     }
 

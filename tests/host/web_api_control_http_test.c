@@ -185,6 +185,18 @@ esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
     return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
+esp_err_t workflow_service_capture_height_references(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation)
+{
+    const esp_err_t err = nrf_topology_service_request_height_reference_capture(
+        requested_channel_mask, requested_generation);
+    if (err == ESP_OK) {
+        (void)main_barometer_request_height_reference_capture(*requested_generation);
+    }
+    return err;
+}
+
 esp_err_t measurement_service_start_object_async(const char *object_id)
 {
     (void)object_id;
