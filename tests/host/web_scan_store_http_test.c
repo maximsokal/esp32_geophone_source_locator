@@ -110,9 +110,27 @@ static void remove_layout(void)
     (void)remove(preview_path);
     (void)remove(preview_temp_path);
     (void)remove(preview_backup_path);
+    static const char *const staged_names[] = {
+        "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+    };
+    static const char *const staged_suffixes[] = {"", ".tmp", ".bak"};
+    for (size_t i = 0U; i < sizeof(staged_names) / sizeof(staged_names[0]); ++i) {
+        for (size_t suffix = 0U; suffix < sizeof(staged_suffixes) / sizeof(staged_suffixes[0]); ++suffix) {
+            char path[256];
+            (void)snprintf(
+                path,
+                sizeof(path),
+                STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s%s",
+                staged_names[i],
+                staged_suffixes[suffix]
+            );
+            (void)remove(path);
+        }
+    }
 #ifdef _WIN32
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001");
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
+    (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging");
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
     (void)_rmdir(STORAGE_MANAGER_OBJECTS_PATH);
     (void)_rmdir(STORAGE_MANAGER_ROOT_PATH);
@@ -120,6 +138,7 @@ static void remove_layout(void)
 #else
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001");
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
+    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging");
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH);
     (void)rmdir(STORAGE_MANAGER_ROOT_PATH);
@@ -201,6 +220,16 @@ esp_err_t storage_manager_operation_begin(void)
 void storage_manager_operation_end(void)
 {
     s_storage_end_calls++;
+}
+
+esp_err_t storage_manager_create_directory(const char *path)
+{
+    if (path == NULL) return ESP_ERR_INVALID_ARG;
+    const esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    const bool created = mkdir(path, 0775) == 0 || errno == EEXIST;
+    storage_manager_operation_end();
+    return created ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t object_store_get_profile(
@@ -541,6 +570,189 @@ static size_t load_kind(const char *query, char *response, size_t capacity)
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK);
     assert(handled);
     return request.response_length;
+}
+
+static void stage_query(
+    char *query,
+    size_t query_size,
+    const char *action,
+    const char *kind
+)
+{
+    const int written = snprintf(
+        query,
+        query_size,
+        "scan=%s&kind=%s&object_id=OBJ_0001&session_id=staging",
+        action,
+        kind
+    );
+    assert(written > 0 && (size_t)written < query_size);
+}
+
+static void test_staging_round_trip_kinds_and_limits(void)
+{
+    make_layout();
+    const struct {
+        const char *name;
+        const web_scan_kind_t *kind;
+        unsigned char payload;
+    } cases[] = {
+        {"scan", &WEB_SCAN_KIND_SCAN, 0x11U},
+        {"occupancy", &WEB_SCAN_KIND_OCCUPANCY, 0x22U},
+        {"preview", &WEB_SCAN_KIND_PREVIEW, 0x33U},
+        {"registration", &WEB_SCAN_KIND_REGISTRATION, 0x44U},
+    };
+    const unsigned session_checks_before = s_session_list_calls;
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        char query[160], response[512] = {0};
+        stage_query(query, sizeof(query), "save", cases[i].name);
+        assert(save_kind(query, &cases[i].payload, sizeof(cases[i].payload)));
+
+        char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+        assert(web_scan_paths("OBJ_0001", "staging", cases[i].kind, final_path, temp_path, backup_path) == ESP_OK);
+        assert(path_exists(final_path));
+
+        stage_query(query, sizeof(query), "load", cases[i].name);
+        assert(load_kind(query, response, sizeof(response)) == sizeof(cases[i].payload));
+        assert((unsigned char)response[0] == cases[i].payload);
+
+        memset(response, 0, sizeof(response));
+        stage_query(query, sizeof(query), "info", cases[i].name);
+        httpd_req_t info = make_request(query, NULL, 0U, response, sizeof(response));
+        bool handled = false;
+        assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
+        assert(strstr(response, "\"ok\":true") != NULL);
+        assert(strstr(response, "\"bytes\":1") != NULL);
+
+        stage_query(query, sizeof(query), "delete", cases[i].name);
+        assert(save_kind(query, NULL, 0U));
+        assert(!path_exists(final_path));
+
+        memset(response, 0, sizeof(response));
+        stage_query(query, sizeof(query), "save", cases[i].name);
+        httpd_req_t oversized = make_request(
+            query,
+            &cases[i].payload,
+            cases[i].kind->max_bytes + 1U,
+            response,
+            sizeof(response)
+        );
+        assert(web_scan_store_try_handle(&oversized, &handled) == ESP_OK && handled);
+        assert(oversized.response_status != NULL && strcmp(oversized.response_status, "400 Bad Request") == 0);
+        assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
+        assert(oversized.body_offset == 0U);
+    }
+
+    assert(s_session_list_calls == session_checks_before);
+    remove_layout();
+}
+
+static void test_staging_accepts_only_reserved_literal_and_safe_object_ids(void)
+{
+    make_layout();
+    const unsigned char payload = 0x51U;
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "scan=save&object_id=OBJ_0001&session_id=stagingX",
+        &payload,
+        sizeof(payload),
+        response,
+        sizeof(response)
+    );
+    bool handled = false;
+    const unsigned calls_before_invalid_session = s_session_list_calls;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "404 Not Found") == 0);
+    assert(s_session_list_calls == calls_before_invalid_session + 1U);
+
+    memset(response, 0, sizeof(response));
+    s_storage_begin_calls = 0U;
+    s_storage_end_calls = 0U;
+    request = make_request(
+        "scan=save&object_id=../OBJ_0001&session_id=staging",
+        &payload,
+        sizeof(payload),
+        response,
+        sizeof(response)
+    );
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_storage_begin_calls == 0U);
+
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+    assert(web_scan_paths("../OBJ_0001", "staging", &WEB_SCAN_KIND_SCAN, final_path, temp_path, backup_path) == ESP_ERR_INVALID_ARG);
+    remove_layout();
+}
+
+static void test_staging_operations_return_409_while_protected(void)
+{
+    make_layout();
+    static const char *const kinds[] = {"scan", "occupancy", "preview", "registration"};
+    static const char *const actions[] = {"save", "load", "info", "delete"};
+    const unsigned char payload = 0x61U;
+    for (size_t kind_index = 0U; kind_index < sizeof(kinds) / sizeof(kinds[0]); ++kind_index) {
+        char query[160];
+        stage_query(query, sizeof(query), "save", kinds[kind_index]);
+        assert(save_kind(query, &payload, sizeof(payload)));
+    }
+
+    assert(storage_bulk_admission_enter_protected() == ESP_OK);
+    for (size_t kind_index = 0U; kind_index < sizeof(kinds) / sizeof(kinds[0]); ++kind_index) {
+        for (size_t action_index = 0U; action_index < sizeof(actions) / sizeof(actions[0]); ++action_index) {
+            char query[160], response[512] = {0};
+            stage_query(query, sizeof(query), actions[action_index], kinds[kind_index]);
+            const bool saving = strcmp(actions[action_index], "save") == 0;
+            httpd_req_t request = make_request(
+                query,
+                saving ? &payload : NULL,
+                saving ? sizeof(payload) : 0U,
+                response,
+                sizeof(response)
+            );
+            bool handled = false;
+            assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+            assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+            assert(strstr(response, "\"busy_reason\":\"recording_active\"") != NULL);
+        }
+    }
+    storage_bulk_admission_exit_protected();
+    remove_layout();
+}
+
+static void test_object_change_hook_clears_all_staged_files(void)
+{
+    make_layout();
+    static const char *const kinds[] = {"scan", "occupancy", "preview", "registration"};
+    const unsigned char payload = 0x71U;
+    for (size_t i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
+        char query[160];
+        stage_query(query, sizeof(query), "save", kinds[i]);
+        assert(save_kind(query, &payload, sizeof(payload)));
+    }
+
+    char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+    assert(web_scan_paths("OBJ_0001", "staging", &WEB_SCAN_KIND_SCAN, final_path, temp_path, backup_path) == ESP_OK);
+    write_bytes(temp_path, &payload, sizeof(payload));
+    write_bytes(backup_path, &payload, sizeof(payload));
+    assert(web_scan_store_clear_staging("../OBJ_0001") == ESP_ERR_INVALID_ARG);
+    assert(path_exists(final_path));
+    assert(web_scan_store_clear_staging("OBJ_0001") == ESP_OK);
+
+    const web_scan_kind_t *const artifact_kinds[] = {
+        &WEB_SCAN_KIND_SCAN,
+        &WEB_SCAN_KIND_OCCUPANCY,
+        &WEB_SCAN_KIND_PREVIEW,
+        &WEB_SCAN_KIND_REGISTRATION,
+    };
+    for (size_t i = 0U; i < sizeof(artifact_kinds) / sizeof(artifact_kinds[0]); ++i) {
+        assert(web_scan_paths("OBJ_0001", "staging", artifact_kinds[i], final_path, temp_path, backup_path) == ESP_OK);
+        assert(!path_exists(final_path));
+        assert(!path_exists(temp_path));
+        assert(!path_exists(backup_path));
+    }
+    assert(web_scan_store_clear_staging("OBJ_0001") == ESP_OK);
+    remove_layout();
 }
 
 static void test_kind_size_validation_boundaries(void)
@@ -1328,5 +1540,9 @@ int main(void)
     test_mid_stream_admission_aborts_load();
     test_write_failure_removes_temp_and_balances_storage_guard();
     test_registration_recording_guard_is_session_scoped();
+    test_staging_round_trip_kinds_and_limits();
+    test_staging_accepts_only_reserved_literal_and_safe_object_ids();
+    test_staging_operations_return_409_while_protected();
+    test_object_change_hook_clears_all_staged_files();
     return 0;
 }

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <io.h>
 #define fsync _commit
@@ -23,8 +24,24 @@
 #include "seismic_recorder_storage_preflight.h"
 #include "storage_manager.h"
 
+#if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
+#define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
+#endif
 
 static const char *TAG = "SEISMIC_RECORDER_FS";
+
+typedef struct
+{
+    const char *file_name;
+    unsigned mask;
+} seismic_recorder_staged_artifact_t;
+
+static const seismic_recorder_staged_artifact_t s_staged_artifacts[] = {
+    {.file_name = "scan-v1.bin", .mask = 1U << 0U},
+    {.file_name = "occupancy-v1.bin", .mask = 1U << 1U},
+    {.file_name = "preview-v1.bin", .mask = 1U << 2U},
+    {.file_name = "registration-v1.json", .mask = 1U << 3U},
+};
 
 
 typedef enum
@@ -318,6 +335,140 @@ static esp_err_t seismic_recorder_fs_next_session_id(
 }
 
 
+static unsigned seismic_recorder_fs_attach_staged_artifacts(
+    const char *object_id,
+    char *session_path,
+    size_t session_path_size
+)
+{
+    char staged_path[SEISMIC_RECORDER_PATH_SIZE];
+    const size_t session_path_length = strlen(session_path);
+    unsigned moved_mask = 0U;
+
+    /* Registration and preview keep their geometry_computed_at_ms bindings unchanged:
+     * they were staged before the geometry freeze and consumers compare them to this session. */
+    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
+        const seismic_recorder_staged_artifact_t *artifact = &s_staged_artifacts[i];
+        const int staged_written = snprintf(
+            staged_path,
+            sizeof(staged_path),
+            "%s/%s/staging/%s",
+            STORAGE_MANAGER_OBJECTS_PATH,
+            object_id,
+            artifact->file_name
+        );
+        if (staged_written <= 0 || (size_t)staged_written >= sizeof(staged_path)) {
+            ESP_LOGW(TAG, "Could not attach staged %s: path too long", artifact->file_name);
+            continue;
+        }
+
+        struct stat info;
+        if (stat(staged_path, &info) != 0) {
+            if (errno != ENOENT) {
+                ESP_LOGW(TAG, "Could not inspect staged %s: errno=%d", artifact->file_name, errno);
+            }
+            continue;
+        }
+        if (!S_ISREG(info.st_mode)) {
+            ESP_LOGW(TAG, "Could not attach staged %s: not a regular file", artifact->file_name);
+            continue;
+        }
+
+        const size_t file_name_length = strlen(artifact->file_name);
+        if (session_path_length + 1U + file_name_length >= session_path_size) {
+            ESP_LOGW(TAG, "Could not attach staged %s: path too long", artifact->file_name);
+            continue;
+        }
+        const int destination_written = snprintf(
+            session_path + session_path_length,
+            session_path_size - session_path_length,
+            "/%s",
+            artifact->file_name
+        );
+        if (
+            destination_written <= 0 ||
+            (size_t)destination_written >= session_path_size - session_path_length
+        ) {
+            session_path[session_path_length] = '\0';
+            ESP_LOGW(TAG, "Could not attach staged %s: path too long", artifact->file_name);
+            continue;
+        }
+
+        if (rename(staged_path, session_path) == 0) {
+            moved_mask |= artifact->mask;
+        }
+        else {
+            ESP_LOGW(TAG, "Could not attach staged %s: errno=%d; recording continues", artifact->file_name, errno);
+        }
+        session_path[session_path_length] = '\0';
+    }
+    return moved_mask;
+}
+
+
+static bool seismic_recorder_fs_restore_staged_artifacts(
+    const char *object_id,
+    const char *session_id,
+    char *session_path,
+    size_t session_path_size,
+    unsigned moved_mask
+)
+{
+    if (seismic_recorder_fs_build_session_path(
+            object_id,
+            session_id,
+            session_path,
+            session_path_size
+        ) != ESP_OK) {
+        return false;
+    }
+    if (moved_mask == 0U) return true;
+
+    char staged_path[SEISMIC_RECORDER_PATH_SIZE];
+    const size_t session_path_length = strlen(session_path);
+    bool restored = true;
+    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
+        const seismic_recorder_staged_artifact_t *artifact = &s_staged_artifacts[i];
+        if ((moved_mask & artifact->mask) == 0U) continue;
+
+        const int staged_written = snprintf(
+            staged_path,
+            sizeof(staged_path),
+            "%s/%s/staging/%s",
+            STORAGE_MANAGER_OBJECTS_PATH,
+            object_id,
+            artifact->file_name
+        );
+        const size_t file_name_length = strlen(artifact->file_name);
+        if (
+            staged_written <= 0 || (size_t)staged_written >= sizeof(staged_path) ||
+            session_path_length + 1U + file_name_length >= session_path_size
+        ) {
+            restored = false;
+            ESP_LOGW(TAG, "Could not restore staged %s after start failure", artifact->file_name);
+            continue;
+        }
+
+        const int destination_written = snprintf(
+            session_path + session_path_length,
+            session_path_size - session_path_length,
+            "/%s",
+            artifact->file_name
+        );
+        if (
+            destination_written <= 0 ||
+            (size_t)destination_written >= session_path_size - session_path_length ||
+            rename(session_path, staged_path) != 0
+        ) {
+            restored = false;
+            ESP_LOGW(TAG, "Could not restore staged %s after start failure: errno=%d", artifact->file_name, errno);
+        }
+        session_path[session_path_length] = '\0';
+    }
+    return restored;
+}
+
+
 esp_err_t seismic_recorder_fs_create_session(
     const char *object_id,
     uint32_t sample_rate_hz,
@@ -354,6 +505,7 @@ esp_err_t seismic_recorder_fs_create_session(
     }
 
     bool session_directory_created = false;
+    unsigned staged_artifact_mask = 0U;
 
     /*
      * The free-space query runs inside the same outer recursive storage
@@ -384,6 +536,15 @@ esp_err_t seismic_recorder_fs_create_session(
     if (err == ESP_OK) {
         err = storage_manager_create_directory_exclusive(path);
         session_directory_created = err == ESP_OK;
+    }
+
+    if (err == ESP_OK) {
+        /* START already holds storage_manager's operation guard; keep each rename atomic. */
+        staged_artifact_mask = seismic_recorder_fs_attach_staged_artifacts(
+            object_id,
+            path,
+            SEISMIC_RECORDER_PATH_SIZE
+        );
     }
 
     /* LOD is an acceleration index, never part of the authoritative session
@@ -447,14 +608,14 @@ esp_err_t seismic_recorder_fs_create_session(
             fclose(file);
         }
         if (session_directory_created) {
-            if (
-                seismic_recorder_fs_build_session_path(
-                    object_id,
-                    session_id,
-                    path,
-                    SEISMIC_RECORDER_PATH_SIZE
-                ) == ESP_OK
-            ) {
+            const bool artifacts_restored = seismic_recorder_fs_restore_staged_artifacts(
+                object_id,
+                session_id,
+                path,
+                SEISMIC_RECORDER_PATH_SIZE,
+                staged_artifact_mask
+            );
+            if (artifacts_restored) {
                 const esp_err_t cleanup_err =
                     storage_manager_remove_tree(path);
                 if (
@@ -468,6 +629,13 @@ esp_err_t seismic_recorder_fs_create_session(
                         esp_err_to_name(cleanup_err)
                     );
                 }
+            }
+            else {
+                ESP_LOGW(
+                    TAG,
+                    "Start failed and staged artifact rollback was incomplete; preserving session %s",
+                    session_id
+                );
             }
         }
     }

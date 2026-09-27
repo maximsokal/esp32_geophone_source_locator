@@ -17,7 +17,7 @@ import type { DeviceStatus } from './domain/device';
 import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
 import { buildVoxelPreviewArtifact } from './xr/voxelPreview';
 import { decodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
-import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, type ScanPersistenceState } from './xr/scanPersistence';
+import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type ScanPersistenceState } from './xr/scanPersistence';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
@@ -171,6 +171,7 @@ function persistedScanStorageLabel(
 export default function App({ objectId, sessionId, status }: AppProps) {
   const { locale } = useLocale();
   const t = useT();
+  const scanSessionId = scanPersistenceSessionId(sessionId);
   const storageActionsDisabled = scannerStorageActionsDisabled(status);
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
@@ -443,7 +444,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       else {
         setScanSnapshot(null);
       }
-      setScanStoragePhase(objectId === null || sessionId === null ? 'unbound' : 'scanning');
+      setScanStoragePhase(objectId === null ? 'unbound' : 'scanning');
       return;
     }
 
@@ -504,8 +505,8 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     });
     void clientDiagnostics.flush();
 
-    if (objectId === null || sessionId === null) {
-      setScanStorageError('No recording/session is open; the completed scan exists only in browser memory.');
+    if (objectId === null) {
+      setScanStorageError('No object is selected; the completed scan exists only in browser memory.');
       setScanStoragePhase('error');
       return;
     }
@@ -518,7 +519,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setScanStorageError(message);
       setScanStoragePhase('error');
-      clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'encode', error: message });
+      clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'encode', error: message });
       void clientDiagnostics.flush();
       return;
     }
@@ -527,18 +528,18 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     setScanStoragePhase('saving');
     void persistenceController.save(
       objectId,
-      sessionId,
+      scanSessionId,
       artifact,
       () => {
         const registration = registrationForSession.current;
-        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === sessionId
+        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === scanSessionId
           ? toOccupancyRegistration(registration.artifact)
           : null;
         return buildSessionOccupancyArtifact(snapshot, artifact, Date.now(), occupancyRegistration);
       },
       (occupancyArtifact) => {
         const registration = registrationForSession.current;
-        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === sessionId
+        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === scanSessionId
           ? toOccupancyRegistration(registration.artifact)
           : null;
         return buildVoxelPreviewArtifact(snapshot, artifact, { occupancyArtifact, registration: occupancyRegistration });
@@ -550,7 +551,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           const message = state?.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE;
           setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
           setScanStoragePhase('error');
-          clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId, stage: 'transport', error: message });
+          clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'transport', error: message });
           void clientDiagnostics.flush();
           return;
         }
@@ -560,7 +561,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         continuationBase.current = null;
         clientDiagnostics.info('SCAN_RESULT_SAVED', {
           objectId,
-          sessionId,
+          sessionId: scanSessionId,
           bytes: artifact.byteLength,
           stablePoints: snapshot.pointCount,
           manualPoints: snapshot.manualControlPoints.length,
@@ -568,28 +569,28 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         });
         void clientDiagnostics.flush();
         if (state.occupancy === 'ready') {
-          clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId });
+          clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId: scanSessionId });
         } else if (state.occupancy === 'failed' || state.occupancy === 'unavailable') {
           clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {
-            objectId, sessionId, error: state.occupancyError,
+            objectId, sessionId: scanSessionId, error: state.occupancyError,
           });
           void clientDiagnostics.flush();
         }
         if (state.preview === 'ready') {
-          clientDiagnostics.info('SCAN_VOXEL_PREVIEW_SAVED', { objectId, sessionId });
+          clientDiagnostics.info('SCAN_VOXEL_PREVIEW_SAVED', { objectId, sessionId: scanSessionId });
         } else if (state.preview === 'failed' || state.preview === 'unavailable') {
           clientDiagnostics.warn('SCAN_VOXEL_PREVIEW_SAVE_FAILED', {
-            objectId, sessionId, error: state.previewError,
+            objectId, sessionId: scanSessionId, error: state.previewError,
           });
           void clientDiagnostics.flush();
         }
     });
-  }, [objectId, sessionId, persistenceController, selectMode, storageActionsDisabled]);
+  }, [objectId, scanSessionId, persistenceController, selectMode, storageActionsDisabled]);
 
   const retryPersistence = useCallback((): void => {
-    if (storageActionsDisabled || objectId === null || sessionId === null) return;
+    if (storageActionsDisabled || objectId === null) return;
     const generation = storageGeneration.current;
-    void persistenceController.retry(objectId, sessionId).then((state) => {
+    void persistenceController.retry(objectId, scanSessionId).then((state) => {
       if (generation !== storageGeneration.current || state === null) return;
       if (state.scan === 'saved') {
         setScanStoragePhase('saved');
@@ -607,17 +608,17 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           : state.preview === 'ready' ? 'SCAN_VOXEL_PREVIEW_SAVED'
             : state.preview === 'failed' || state.preview === 'unavailable' ? 'SCAN_VOXEL_PREVIEW_SAVE_FAILED'
               : 'SCAN_OCCUPANCY_SAVE_FAILED';
-      clientDiagnostics.info(event, { objectId, sessionId, occupancyError: state.occupancyError, previewError: state.previewError });
+      clientDiagnostics.info(event, { objectId, sessionId: scanSessionId, occupancyError: state.occupancyError, previewError: state.previewError });
       void clientDiagnostics.flush();
     });
-  }, [objectId, sessionId, persistenceController, storageActionsDisabled]);
+  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled]);
 
   const deleteSavedScan = useCallback((): void => {
     if (storageActionsDisabled) return;
     scanIntent.current = 'fresh';
     continuationBase.current = null;
     persistenceController.reset();
-    if (objectId === null || sessionId === null) {
+    if (objectId === null) {
       setScanSnapshot(null);
       setScanStoragePhase('unbound');
       return;
@@ -625,12 +626,12 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     const generation = ++storageGeneration.current;
     setScanStoragePhase('deleting');
     setScanStorageError(null);
-    void deleteObjectScanArtifact(objectId, sessionId).then(
+    void deleteObjectScanArtifact(objectId, scanSessionId).then(
       () => {
         if (generation !== storageGeneration.current) return;
         setScanSnapshot(null);
         setScanStoragePhase('none');
-        clientDiagnostics.info('SCAN_RESULT_DELETED', { objectId, sessionId });
+        clientDiagnostics.info('SCAN_RESULT_DELETED', { objectId, sessionId: scanSessionId });
         void clientDiagnostics.flush();
       },
       (reason) => {
@@ -638,11 +639,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         const message = reason instanceof Error ? reason.message : String(reason);
         setScanStorageError(message);
         setScanStoragePhase('error');
-        clientDiagnostics.warn('SCAN_RESULT_DELETE_FAILED', { objectId, sessionId, error: message });
+        clientDiagnostics.warn('SCAN_RESULT_DELETE_FAILED', { objectId, sessionId: scanSessionId, error: message });
         void clientDiagnostics.flush();
       },
     );
-  }, [objectId, sessionId, persistenceController, storageActionsDisabled]);
+  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled]);
 
   const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
   const sensorPlacementScene = useMemo(

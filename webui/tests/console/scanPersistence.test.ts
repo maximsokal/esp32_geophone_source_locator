@@ -9,6 +9,7 @@ import {
   SCAN_STORAGE_BLOCKED_MESSAGE,
   SCAN_STORAGE_PREEMPTED_MESSAGE,
   transitionScanPersistence,
+  scanPersistenceSessionId,
   type ScanPersistencePorts,
   type ScanPersistenceState,
 } from '../../src/xr/scanPersistence';
@@ -266,6 +267,21 @@ describe('scan persistence over real HTTP sockets', () => {
     expect(server.occupancyUploads).toHaveLength(2);
     expect(server.occupancyUploads[0]).toEqual(occupancyBytes);
     expect(server.occupancyUploads[1]).toEqual(occupancyBytes);
+  });
+
+  it('saves a pre-recording scan under the reserved staging target', async () => {
+    server = await startControlServer();
+    server.acceptOccupancy = true;
+    const controller = new ScanPersistenceController(server.ports);
+    const sessionId = scanPersistenceSessionId(null);
+
+    expect(sessionId).toBe('staging');
+    const saved = await controller.save('OBJ_0001', sessionId, scanBytes, () => occupancyBytes, () => previewBytes);
+
+    expect(saved).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+    expect(server.files.get('OBJ_0001/staging/scan')).toEqual(scanBytes);
+    expect(server.files.get('OBJ_0001/staging/occupancy')).toEqual(occupancyBytes);
+    expect(server.files.get('OBJ_0001/staging/preview')).toEqual(previewBytes);
   });
 
   it('keeps the scan saved when the occupancy connection drops', async () => {

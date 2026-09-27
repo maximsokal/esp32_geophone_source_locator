@@ -121,6 +121,10 @@ export interface ScanPersistencePorts {
   fetchInfo(objectId: string, sessionId: string, kind: 'scan' | 'occupancy' | 'preview'): Promise<ScanArtifactInfo>;
 }
 
+export function scanPersistenceSessionId(sessionId: string | null): string {
+  return sessionId ?? 'staging';
+}
+
 interface PendingOccupancy {
   objectId: string;
   sessionId: string;

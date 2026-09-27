@@ -44,6 +44,8 @@ static size_t injected_short_write_count = SIZE_MAX;
 static bool injected_fflush_error;
 static bool injected_fsync_error;
 static bool injected_fclose_error;
+static char injected_rename_source[256];
+static int seismic_recorder_test_rename(const char *source, const char *destination);
 
 typedef enum
 {
@@ -131,6 +133,53 @@ static void make_layout(void)
     assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions") == 0);
 }
 
+static const char *const staged_artifact_names[] = {
+    "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+};
+
+static const char *const staged_artifact_contents[] = {
+    "scan", "occupancy", "preview", "registration",
+};
+
+static bool path_exists(const char *path)
+{
+    struct stat info;
+    return stat(path, &info) == 0;
+}
+
+static void write_staged_artifacts(void)
+{
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging") == 0);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        char path[256];
+        const int written = snprintf(
+            path,
+            sizeof(path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
+            staged_artifact_names[i]
+        );
+        assert(written > 0 && (size_t)written < sizeof(path));
+        FILE *file = fopen(path, "wb");
+        assert(file != NULL);
+        const size_t length = strlen(staged_artifact_contents[i]);
+        assert(fwrite(staged_artifact_contents[i], 1U, length, file) == length);
+        assert(fclose(file) == 0);
+    }
+}
+
+static void assert_file_contents(const char *path, const char *expected)
+{
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    char actual[32] = {0};
+    const size_t expected_length = strlen(expected);
+    assert(expected_length < sizeof(actual));
+    assert(fread(actual, 1U, sizeof(actual), file) == expected_length);
+    assert(fgetc(file) == EOF);
+    assert(fclose(file) == 0);
+    assert(memcmp(actual, expected, expected_length) == 0);
+}
+
 static void remove_layout(void)
 {
     char sessions_path[256];
@@ -152,6 +201,9 @@ static void remove_layout(void)
             char marker_path[256];
             char metadata_path[256];
             char backup_path[256];
+            static const char *const artifact_names[] = {
+                "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+            };
             (void)snprintf(session_path, sizeof(session_path), "%s/%s", sessions_path, entry->d_name);
             (void)snprintf(samples_path, sizeof(samples_path), "%s/samples.bin", session_path);
             (void)snprintf(marker_path, sizeof(marker_path), "%s/marker", session_path);
@@ -161,11 +213,25 @@ static void remove_layout(void)
             (void)remove(marker_path);
             (void)remove(metadata_path);
             (void)remove(backup_path);
+            for (size_t artifact_index = 0U; artifact_index < sizeof(artifact_names) / sizeof(artifact_names[0]); ++artifact_index) {
+                char artifact_path[256];
+                (void)snprintf(artifact_path, sizeof(artifact_path), "%s/%s", session_path, artifact_names[artifact_index]);
+                (void)remove(artifact_path);
+            }
             (void)rmdir(session_path);
         }
         (void)closedir(sessions);
     }
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
+    static const char *const staged_names[] = {
+        "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+    };
+    for (size_t i = 0U; i < sizeof(staged_names) / sizeof(staged_names[0]); ++i) {
+        char staged_path[256];
+        (void)snprintf(staged_path, sizeof(staged_path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s", staged_names[i]);
+        (void)remove(staged_path);
+    }
+    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging");
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH);
     (void)rmdir(STORAGE_MANAGER_ROOT_PATH);
@@ -314,6 +380,7 @@ static int recorder_test_fclose(FILE *stream)
 #define fsync recorder_test_fsync
 #endif
 #define fclose recorder_test_fclose
+#define rename seismic_recorder_test_rename
 #define opendir seismic_recorder_test_opendir
 #define readdir seismic_recorder_test_readdir
 #define closedir seismic_recorder_test_closedir
@@ -326,9 +393,20 @@ static int recorder_test_fclose(FILE *stream)
 #undef fsync
 #endif
 #undef fclose
+#undef rename
 #undef opendir
 #undef readdir
 #undef closedir
+
+static int seismic_recorder_test_rename(const char *source, const char *destination)
+{
+    if (injected_rename_source[0] != '\0' && strcmp(source, injected_rename_source) == 0) {
+        injected_rename_source[0] = '\0';
+        errno = EIO;
+        return -1;
+    }
+    return rename(source, destination);
+}
 
 static void test_invalid_arguments(void)
 {
@@ -617,6 +695,157 @@ static void test_session_id_increments(void)
 }
 
 
+static void test_staged_artifacts_attach_once_to_the_created_session(void)
+{
+    remove_layout();
+    make_layout();
+    write_staged_artifacts();
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    assert(strcmp(session, "S000001") == 0);
+    assert(file != NULL);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        char staged_path[256], session_path[256];
+        (void)snprintf(
+            staged_path,
+            sizeof(staged_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
+            staged_artifact_names[i]
+        );
+        (void)snprintf(
+            session_path,
+            sizeof(session_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
+            staged_artifact_names[i]
+        );
+        assert(!path_exists(staged_path));
+        assert_file_contents(session_path, staged_artifact_contents[i]);
+    }
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+
+    memset(session, 0, sizeof(session));
+    file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    assert(strcmp(session, "S000002") == 0);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        char session_path[256], staged_path[256];
+        (void)snprintf(
+            session_path,
+            sizeof(session_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/%s",
+            staged_artifact_names[i]
+        );
+        (void)snprintf(
+            staged_path,
+            sizeof(staged_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
+            staged_artifact_names[i]
+        );
+        assert(!path_exists(session_path));
+        assert(!path_exists(staged_path));
+    }
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    remove_layout();
+}
+
+
+static void test_missing_staging_is_a_noop(void)
+{
+    remove_layout();
+    make_layout();
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    assert(strcmp(session, "S000001") == 0);
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging"));
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    remove_layout();
+}
+
+
+static void test_one_staged_move_failure_does_not_fail_recording(void)
+{
+    remove_layout();
+    make_layout();
+    write_staged_artifacts();
+    (void)snprintf(
+        injected_rename_source,
+        sizeof(injected_rename_source),
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/preview-v1.bin"
+    );
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+    assert(strcmp(session, "S000001") == 0);
+    assert(file != NULL);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        char staged_path[256], session_path[256];
+        (void)snprintf(
+            staged_path,
+            sizeof(staged_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
+            staged_artifact_names[i]
+        );
+        (void)snprintf(
+            session_path,
+            sizeof(session_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
+            staged_artifact_names[i]
+        );
+        if (strcmp(staged_artifact_names[i], "preview-v1.bin") == 0) {
+            assert(path_exists(staged_path));
+            assert(!path_exists(session_path));
+            assert_file_contents(staged_path, staged_artifact_contents[i]);
+        }
+        else {
+            assert(!path_exists(staged_path));
+            assert_file_contents(session_path, staged_artifact_contents[i]);
+        }
+    }
+    assert(injected_rename_source[0] == '\0');
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    remove_layout();
+}
+
+
+static void test_failed_start_restores_staged_artifacts(void)
+{
+    remove_layout();
+    make_layout();
+    write_staged_artifacts();
+    injected_fflush_error = true;
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_FAIL);
+    injected_fflush_error = false;
+    assert(strcmp(session, "S000001") == 0);
+    assert(file == NULL);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        char staged_path[256], session_path[256];
+        (void)snprintf(
+            staged_path,
+            sizeof(staged_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
+            staged_artifact_names[i]
+        );
+        (void)snprintf(
+            session_path,
+            sizeof(session_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
+            staged_artifact_names[i]
+        );
+        assert_file_contents(staged_path, staged_artifact_contents[i]);
+        assert(!path_exists(session_path));
+    }
+    remove_layout();
+}
+
+
 static void test_create_session_aborts_on_session_scan_error(void)
 {
     remove_layout();
@@ -877,6 +1106,10 @@ int main(void)
     test_session_cleanup_after_post_mkdir_failure();
     test_writer_errors_are_propagated();
     test_session_id_increments();
+    test_staged_artifacts_attach_once_to_the_created_session();
+    test_missing_staging_is_a_noop();
+    test_one_staged_move_failure_does_not_fail_recording();
+    test_failed_start_restores_staged_artifacts();
     test_create_session_aborts_on_session_scan_error();
     test_listing_missing_and_malformed_metadata_is_safe();
     test_listing_propagates_directory_errors();

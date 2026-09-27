@@ -5,6 +5,9 @@ import {
   loadObjectScanArtifact,
   ScanStorageBlockedRecordingError,
   saveObjectScanArtifact,
+  saveSessionOccupancyArtifact,
+  saveSessionPreviewArtifact,
+  saveSessionRegistration,
 } from '../../src/api/deviceApi';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -38,6 +41,23 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
+  });
+
+  it('builds staging URLs for scan, occupancy, preview, and registration uploads', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ ok: true, bytes: 1 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await saveObjectScanArtifact('OBJ_0008', 'staging', new Uint8Array([1]));
+    await saveSessionOccupancyArtifact('OBJ_0008', 'staging', new Uint8Array([2]));
+    await saveSessionPreviewArtifact('OBJ_0008', 'staging', new Uint8Array([3]));
+    await saveSessionRegistration('OBJ_0008', 'staging', '{}');
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/control?scan=save&object_id=OBJ_0008&session_id=staging',
+      '/api/control?scan=save&object_id=OBJ_0008&session_id=staging&kind=occupancy',
+      '/api/control?scan=save&object_id=OBJ_0008&session_id=staging&kind=preview',
+      '/api/control?scan=save&object_id=OBJ_0008&session_id=staging&kind=registration',
+    ]);
   });
 
   it('round-trips loaded artifact bytes without JSON conversion', async () => {
