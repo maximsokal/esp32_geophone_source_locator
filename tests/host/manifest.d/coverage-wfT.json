@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "ui_workflow_model",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/ui/ui_workflow_model.c",
+        "components/ui/tests/ui_workflow_model_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}

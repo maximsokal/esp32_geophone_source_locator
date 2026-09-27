@@ -45,7 +45,7 @@ void ui_handle_objects_key_locked(
         if (key == KEYPAD_KEY_UP) {
             ui_move_index(
                 &context->object_action,
-                3,
+                4,
                 false
             );
 
@@ -53,7 +53,7 @@ void ui_handle_objects_key_locked(
         } else if (key == KEYPAD_KEY_DOWN) {
             ui_move_index(
                 &context->object_action,
-                3,
+                4,
                 true
             );
 
@@ -94,7 +94,9 @@ void ui_handle_objects_key_locked(
             context->objects_mode =
                 context->object_action == 1
                     ? UI_OBJECTS_SELECT_ACTIVE
-                    : UI_OBJECTS_SELECT_DELETE;
+                    : context->object_action == 2
+                        ? UI_OBJECTS_SELECT_DELETE
+                        : UI_OBJECTS_SELECT_WORKFLOW;
 
             context->object_index = 0;
             ui_set_notice_locked(NULL);
@@ -185,10 +187,30 @@ void ui_handle_objects_key_locked(
         key == KEYPAD_KEY_OK ||
         key == KEYPAD_KEY_RIGHT
     ) {
-        if (
-            context->object_index >=
-            context->object_count
-        ) {
+        if (context->object_index >= context->object_count) {
+            return;
+        }
+
+        if (context->objects_mode == UI_OBJECTS_SELECT_WORKFLOW) {
+            const object_service_summary_t *selected = &context->objects[context->object_index];
+            context->workflow_object_index = context->object_index;
+            if (selected->active) {
+                context->workflow_activation_pending = false;
+                ui_screen_open_locked(UI_SCREEN_WORKFLOW);
+                return;
+            }
+            if (!ui_objects_measurement_mutation_allowed_locked()) {
+                return;
+            }
+            context->workflow_activation_pending = true;
+            const esp_err_t err = object_service_set_active_async(selected->id);
+            if (err != ESP_OK) {
+                context->workflow_activation_pending = false;
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_OBJECTS_SET_ACTIVE_START_FAILED));
+            } else {
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_OBJECTS_SETTING_ACTIVE));
+            }
+            ui_render_objects_locked();
             return;
         }
 

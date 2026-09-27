@@ -16,7 +16,7 @@
     (OBJECT_FORMAT_ID_SIZE + OBJECT_FORMAT_NAME_SIZE + sizeof("  [АКТИВНИЙ]"))
 
 
-static void ui_objects_render_notice(lv_obj_t *screen)
+static void ui_objects_render_notice(lv_obj_t *screen, int y)
 {
     ui_context_t *context = ui_context();
 
@@ -27,7 +27,7 @@ static void ui_objects_render_notice(lv_obj_t *screen)
     (void)ui_create_label_locked(
         screen,
         12,
-        196,
+        y,
         296,
         context->notice,
         UI_COLOR_WARNING
@@ -41,7 +41,7 @@ static void ui_objects_render_menu(lv_obj_t *screen)
     object_service_summary_t active;
 
     lv_obj_t *active_card = ui_create_card_locked(
-        screen, 10, 42, 300, 42
+        screen, 10, 36, 300, 26
     );
 
     if (active_card == NULL) {
@@ -61,7 +61,7 @@ static void ui_objects_render_menu(lv_obj_t *screen)
         (void)ui_create_label_locked(
             active_card,
             10,
-            12,
+            6,
             280,
             text,
             UI_COLOR_ACCENT
@@ -70,38 +70,39 @@ static void ui_objects_render_menu(lv_obj_t *screen)
         (void)ui_create_label_locked(
             active_card,
             10,
-            12,
+            6,
             280,
             ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE_NONE),
             UI_COLOR_MUTED
         );
     }
 
-    static const ui_i18n_key_t actions[3] = {
+    static const ui_i18n_key_t actions[4] = {
         UI_I18N_KEY_OBJECTS_NEW,
         UI_I18N_KEY_OBJECTS_SET_ACTIVE,
         UI_I18N_KEY_OBJECTS_DELETE,
+        UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_MEASUREMENT,
     };
 
     const bool have_objects =
         context->objects_loaded &&
         context->object_count > 0;
 
-    for (size_t i = 0; i < 3; ++i) {
+    for (size_t i = 0; i < 4; ++i) {
         const bool enabled =
             i == 0 ||
             have_objects;
 
         (void)ui_create_row_locked(
             screen,
-            92 + (int)(i * 34U),
+            64 + (int)(i * 33U),
             ui_tr(actions[i]),
             i == context->object_action,
             enabled
         );
     }
 
-    ui_objects_render_notice(screen);
+    ui_objects_render_notice(screen, 197);
 }
 
 
@@ -109,9 +110,10 @@ static void ui_objects_render_list(lv_obj_t *screen)
 {
     ui_context_t *context = ui_context();
 
-    const char *caption =
-        context->objects_mode == UI_OBJECTS_SELECT_ACTIVE
-            ? ui_tr(UI_I18N_KEY_OBJECTS_SELECT_ACTIVATE)
+    const char *caption = context->objects_mode == UI_OBJECTS_SELECT_ACTIVE
+        ? ui_tr(UI_I18N_KEY_OBJECTS_SELECT_ACTIVATE)
+        : context->objects_mode == UI_OBJECTS_SELECT_WORKFLOW
+            ? ui_tr(UI_I18N_KEY_TFT_WORKFLOW_OBJECT_SELECT)
             : ui_tr(UI_I18N_KEY_OBJECTS_SELECT_DELETE);
 
     (void)ui_create_label_locked(
@@ -132,7 +134,7 @@ static void ui_objects_render_list(lv_obj_t *screen)
             ui_tr(UI_I18N_KEY_OBJECTS_NONE),
             UI_COLOR_WARNING
         );
-        ui_objects_render_notice(screen);
+        ui_objects_render_notice(screen, 196);
         return;
     }
 
@@ -167,7 +169,7 @@ static void ui_objects_render_list(lv_obj_t *screen)
         );
     }
 
-    ui_objects_render_notice(screen);
+    ui_objects_render_notice(screen, 196);
 }
 
 
@@ -224,7 +226,7 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
         UI_COLOR_WARNING
     );
 
-    ui_objects_render_notice(screen);
+    ui_objects_render_notice(screen, 196);
 }
 
 
@@ -365,6 +367,7 @@ void ui_render_objects_locked(void)
     switch (context->objects_mode) {
         case UI_OBJECTS_SELECT_ACTIVE:
         case UI_OBJECTS_SELECT_DELETE:
+        case UI_OBJECTS_SELECT_WORKFLOW:
             ui_objects_render_list(screen);
             break;
 
@@ -499,6 +502,20 @@ void ui_object_service_event(
             ui_set_notice_locked(ui_tr(UI_I18N_KEY_OBJECTS_OPERATION_FAILED));
             context->objects_mode = UI_OBJECTS_MENU;
             break;
+    }
+
+    if (context->workflow_activation_pending &&
+        context->workflow_object_index < context->object_count &&
+        strcmp(context->objects[context->workflow_object_index].id, event->object_id) == 0 &&
+        event->type == OBJECT_SERVICE_EVENT_SET_ACTIVE_DONE) {
+        context->workflow_activation_pending = false;
+        ui_screen_open_locked(UI_SCREEN_WORKFLOW);
+        lvgl_port_unlock();
+        return;
+    }
+
+    if (event->type == OBJECT_SERVICE_EVENT_SET_ACTIVE_FAILED && context->workflow_activation_pending) {
+        context->workflow_activation_pending = false;
     }
 
     if (context->screen == UI_SCREEN_OBJECTS) {
