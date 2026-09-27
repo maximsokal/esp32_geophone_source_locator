@@ -33,13 +33,18 @@
 #define PERIOD_US 2000LL /* 500 Hz */
 
 typedef enum { EV_TICK, EV_STOP } event_type_t;
-typedef struct { event_type_t type; uint32_t count; } event_t;
+typedef struct {
+    event_type_t type;
+    uint32_t count;
+    int64_t timestamp_adjustment_us;
+} event_t;
 
 static event_t s_script[64];
 static size_t s_script_len;
 static size_t s_script_pos;
 
 static int64_t s_now_us;
+static int64_t s_timestamp_adjustment_us;
 static int s_critical_depth;
 static bool s_in_worker;
 static bool s_stop_waiting;
@@ -95,6 +100,7 @@ static void reset_world(void)
     s_script_len = 0U;
     s_script_pos = 0U;
     s_now_us = 50000000LL;
+    s_timestamp_adjustment_us = 0;
     s_critical_depth = 0;
     s_in_worker = false;
     s_stop_waiting = false;
@@ -136,8 +142,23 @@ static void reset_world(void)
 static void script(event_type_t type, uint32_t count)
 {
     assert(s_script_len < sizeof(s_script) / sizeof(s_script[0]));
-    s_script[s_script_len].type = type;
-    s_script[s_script_len].count = count;
+    s_script[s_script_len] = (event_t) {
+        .type = type,
+        .count = count,
+        .timestamp_adjustment_us = 0,
+    };
+    ++s_script_len;
+}
+
+static void script_with_lateness(uint32_t count, int64_t lateness_us)
+{
+    assert(s_script_len < sizeof(s_script) / sizeof(s_script[0]));
+    s_script[s_script_len] = (event_t) {
+        .type = EV_TICK,
+        .count = count,
+        /* The fake driver retains its historical now-7 timestamp. */
+        .timestamp_adjustment_us = lateness_us + 7,
+    };
     ++s_script_len;
 }
 
@@ -252,10 +273,12 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     assert(s_in_worker);
     assert(s_script_pos < s_script_len); /* every test ends with STOP or self-stop */
     const event_t event = s_script[s_script_pos++];
+    s_timestamp_adjustment_us = event.timestamp_adjustment_us;
     if (event.type == EV_TICK) {
         s_now_us += PERIOD_US * (int64_t)event.count;
         return event.count;
     }
+    s_timestamp_adjustment_us = 0;
     if (setjmp(s_stop_return) == 0) {
         s_stop_waiting = true;
         ad7606_acquisition_stop();
@@ -344,7 +367,7 @@ esp_err_t ad7606_driver_read(ad7606_sample_t *sample)
     if (s_read_result != ESP_OK) {
         return s_read_result;
     }
-    sample->timestamp_us = s_now_us - 7;
+    sample->timestamp_us = s_now_us - 7 + s_timestamp_adjustment_us;
     for (unsigned c = 0U; c < AD7606_CHANNEL_COUNT; ++c) {
         sample->raw[c] = raw_for(s_reads, c);
     }
@@ -509,7 +532,7 @@ static void test_run_samples_then_stop_releases_everything(void)
 static void test_collapsed_periods_are_one_conversion(void)
 {
     reset_world();
-    script(EV_TICK, 4U); /* worker was late: 4 periods in one wake */
+    script_with_lateness(4U, 17); /* worker was late: 4 periods in one wake */
     script(EV_STOP, 0U);
     assert(ad7606_acquisition_start() == ESP_OK);
     assert(s_reads == 1U);
@@ -517,9 +540,84 @@ static void test_collapsed_periods_are_one_conversion(void)
     assert(status.timer_ticks == 4U);
     assert(status.conversion_attempts == 1U);
     assert(status.collapsed_periods == 3U);
+    assert(status.jitter.count == 1U);
+    assert(status.jitter.min_us == 17U);
+    assert(status.jitter.max_us == 17U);
+    assert(status.jitter.histogram_us[4] == 1U);
     /* Collapsed periods are scheduler lateness, not read failures. */
     assert(status.read_errors == 0U);
     assert(status.consecutive_failures == 0U);
+}
+
+static void test_successful_read_jitter_statistics(void)
+{
+    reset_world();
+    const int64_t lateness_us[] = { 0, 1, 3, 17, 1000, 40000 };
+    for (size_t i = 0U; i < sizeof(lateness_us) / sizeof(lateness_us[0]); ++i) {
+        script_with_lateness(1U, lateness_us[i]);
+    }
+    script(EV_STOP, 0U);
+
+    assert(ad7606_acquisition_start() == ESP_OK);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.jitter.count == 6U);
+    assert(status.jitter.early_count == 0U);
+    assert(status.jitter.min_us == 0U);
+    assert(status.jitter.max_us == 40000U);
+    assert(status.jitter.sum_us == 41021U);
+    assert(fabs((double)status.jitter.sum_us / (double)status.jitter.count - 41021.0 / 6.0) < 0.000001);
+    assert(status.jitter.period_us == (uint64_t)PERIOD_US);
+    const uint32_t expected[AD7606_ACQUISITION_JITTER_BUCKET_COUNT] = {
+        2U, 1U, 0U, 0U, 1U, 0U, 0U, 0U,
+        0U, 1U, 0U, 0U, 0U, 0U, 0U, 1U,
+    };
+    for (size_t bucket = 0U; bucket < AD7606_ACQUISITION_JITTER_BUCKET_COUNT; ++bucket) {
+        assert(status.jitter.histogram_us[bucket] == expected[bucket]);
+    }
+}
+
+static void test_jitter_bucket_boundaries_and_open_ended_bucket(void)
+{
+    reset_world();
+    script_with_lateness(1U, 1);
+    script_with_lateness(1U, 2);
+    script_with_lateness(1U, 3);
+    script_with_lateness(1U, 4);
+    script_with_lateness(1U, INT64_C(1) << 15);
+    script_with_lateness(1U, INT64_C(1) << 40);
+    script(EV_STOP, 0U);
+
+    assert(ad7606_acquisition_start() == ESP_OK);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.jitter.count == 6U);
+    assert(status.jitter.min_us == 1U);
+    assert(status.jitter.max_us == (UINT64_C(1) << 40));
+    assert(status.jitter.histogram_us[0] == 1U);
+    assert(status.jitter.histogram_us[1] == 2U);
+    assert(status.jitter.histogram_us[2] == 1U);
+    assert(status.jitter.histogram_us[15] == 2U);
+}
+
+static void test_negative_jitter_is_clamped_and_counted_early(void)
+{
+    reset_world();
+    script_with_lateness(1U, -5);
+    script(EV_STOP, 0U);
+
+    assert(ad7606_acquisition_start() == ESP_OK);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.jitter.count == 1U);
+    assert(status.jitter.early_count == 1U);
+    assert(status.jitter.min_us == 0U);
+    assert(status.jitter.max_us == 0U);
+    assert(status.jitter.sum_us == 0U);
+    assert(status.jitter.histogram_us[0] == 1U);
+}
+
+static void test_jitter_counter_saturation(void)
+{
+    assert(ad7606_acquisition_saturating_add_u32(UINT32_MAX - 1U, 1U) == UINT32_MAX);
+    assert(ad7606_acquisition_saturating_add_u32(UINT32_MAX, 1U) == UINT32_MAX);
 }
 
 static void test_low_rail_refuses_start_without_touching_the_adc(void)
@@ -645,19 +743,30 @@ static void test_startup_failures_clean_up(void)
 static void test_restart_resets_cadence_counters(void)
 {
     reset_world();
-    script(EV_TICK, 5U);
+    script_with_lateness(5U, 40000);
     script(EV_STOP, 0U);
     assert(ad7606_acquisition_start() == ESP_OK);
-    assert(status_now().collapsed_periods == 4U);
+    const ad7606_acquisition_status_t first_run = status_now();
+    assert(first_run.collapsed_periods == 4U);
+    assert(first_run.jitter.count == 1U);
+    assert(first_run.jitter.max_us == 40000U);
 
     reset_world();
-    script(EV_TICK, 1U);
+    script_with_lateness(1U, 3);
     script(EV_STOP, 0U);
     assert(ad7606_acquisition_start() == ESP_OK);
     const ad7606_acquisition_status_t status = status_now();
     assert(status.timer_ticks == 1U);
     assert(status.collapsed_periods == 0U);
     assert(status.samples == 1U);
+    assert(status.jitter.count == 1U);
+    assert(status.jitter.early_count == 0U);
+    assert(status.jitter.min_us == 3U);
+    assert(status.jitter.max_us == 3U);
+    assert(status.jitter.sum_us == 3U);
+    assert(status.jitter.histogram_us[1] == 1U);
+    assert(status.jitter.histogram_us[15] == 0U);
+    assert(status.jitter.period_us == (uint64_t)PERIOD_US);
 }
 
 static void test_restart_clears_a_latched_fault(void)
@@ -707,6 +816,10 @@ int main(void)
 {
     test_run_samples_then_stop_releases_everything();
     test_collapsed_periods_are_one_conversion();
+    test_successful_read_jitter_statistics();
+    test_jitter_bucket_boundaries_and_open_ended_bucket();
+    test_negative_jitter_is_clamped_and_counted_early();
+    test_jitter_counter_saturation();
     test_low_rail_refuses_start_without_touching_the_adc();
     test_unverified_rail_starts_with_warning();
     test_confirmed_rail_loss_stops_and_releases_the_adc();

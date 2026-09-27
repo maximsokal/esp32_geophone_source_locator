@@ -723,6 +723,10 @@ The frame timestamp therefore represents the real simultaneous conversion trigge
 
 The current periodic wake still uses `esp_timer` plus a task notification. That is suitable for the present bench stage. If later TDOA error budgeting shows that inter-sample scheduling jitter is material, the timing source must be upgraded to a hardware-timed CONVST path rather than merely changing where timestamps are read.
 
+### MAX-142 CONVST jitter measurement
+
+Instrumentation compares each successful CONVST timestamp with `t0_us + timer_ticks_total * period_us`. `t0_us` is read immediately after `esp_timer_start_periodic()` succeeds, so the first alarm is modeled at `t0_us + period_us`. ESP timer periodic alarms follow an absolute schedule; advancing by every expired tick, including collapsed notifications, avoids adding cumulative drift to the reference. Negative lateness is clamped to zero and counted as an early/model-mismatch sample. The fixed 16-bucket histogram reports a nearest-rank p99 upper bound, with the final bucket open-ended. This measures the existing path without changing how CONVST is scheduled. Any timing decision awaits HIL measurements.
+
 ## Seismic ring buffer
 
 `seismic_buffer` has one acquisition producer and potentially slow readers such as HTTP clients.

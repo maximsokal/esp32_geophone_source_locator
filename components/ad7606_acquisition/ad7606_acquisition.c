@@ -46,6 +46,9 @@ static esp_timer_handle_t s_timer =
 static volatile bool s_running =
     false;
 
+static int64_t s_jitter_t0_us;
+static uint64_t s_jitter_period_us;
+
 static portMUX_TYPE s_status_lock =
     portMUX_INITIALIZER_UNLOCKED;
 
@@ -233,6 +236,9 @@ static void ad7606_status_reset(void)
         sizeof(s_status)
     );
 
+    s_jitter_t0_us = 0;
+    s_jitter_period_us = 0U;
+
     s_status.serial_pattern =
         AD7606_SERIAL_PATTERN_UNKNOWN;
 
@@ -313,12 +319,12 @@ static void ad7606_status_set_running(
 }
 
 
-static void ad7606_status_record_timer_wake(
+static uint64_t ad7606_status_record_timer_wake(
     uint32_t notification_count
 )
 {
     if (notification_count == 0U) {
-        return;
+        return 0U;
     }
 
     portENTER_CRITICAL(
@@ -343,9 +349,46 @@ static void ad7606_status_record_timer_wake(
             ad7606_acquisition_collapsed_periods(notification_count)
         );
 
+    const uint64_t timer_ticks_total = s_status.timer_ticks;
+
     portEXIT_CRITICAL(
         &s_status_lock
     );
+
+    return timer_ticks_total;
+}
+
+
+static int64_t ad7606_jitter_scheduled_us(
+    uint64_t timer_ticks_total
+)
+{
+    if (s_jitter_t0_us < 0 || s_jitter_period_us == 0U) {
+        return INT64_MAX;
+    }
+
+    const uint64_t t0_us = (uint64_t)s_jitter_t0_us;
+    const uint64_t max_us = (uint64_t)INT64_MAX;
+    if (t0_us > max_us || timer_ticks_total > (max_us - t0_us) / s_jitter_period_us) {
+        return INT64_MAX;
+    }
+
+    return (int64_t)(t0_us + timer_ticks_total * s_jitter_period_us);
+}
+
+
+static unsigned ad7606_jitter_bucket(
+    uint64_t lateness_us
+)
+{
+    unsigned bucket = 0U;
+    while (
+        bucket + 1U < AD7606_ACQUISITION_JITTER_BUCKET_COUNT &&
+        lateness_us >= (UINT64_C(1) << (bucket + 1U))
+    ) {
+        ++bucket;
+    }
+    return bucket;
 }
 
 
@@ -375,12 +418,49 @@ static void ad7606_status_record_sample(
     const ad7606_sample_t *sample,
     const float latest_uv[AD7606_CHANNEL_COUNT],
     const ad7606_serial_diag_state_t *serial_diag,
-    int busy_level
+    int busy_level,
+    int64_t scheduled_us
 )
 {
+    const bool early = sample->timestamp_us < scheduled_us;
+    const uint64_t lateness_us = early
+        ? 0U
+        : (uint64_t)sample->timestamp_us - (uint64_t)scheduled_us;
+    const unsigned jitter_bucket = ad7606_jitter_bucket(lateness_us);
+
     portENTER_CRITICAL(
         &s_status_lock
     );
+
+    ad7606_acquisition_jitter_t *jitter = &s_status.jitter;
+    if (jitter->count == 0U) {
+        jitter->min_us = lateness_us;
+        jitter->max_us = lateness_us;
+    }
+    else {
+        if (lateness_us < jitter->min_us) {
+            jitter->min_us = lateness_us;
+        }
+        if (lateness_us > jitter->max_us) {
+            jitter->max_us = lateness_us;
+        }
+    }
+    jitter->count = ad7606_acquisition_saturating_add_u32(jitter->count, 1U);
+    if (early) {
+        jitter->early_count = ad7606_acquisition_saturating_add_u32(
+            jitter->early_count,
+            1U
+        );
+    }
+    jitter->sum_us = ad7606_acquisition_saturating_add_u64(
+        jitter->sum_us,
+        lateness_us
+    );
+    jitter->histogram_us[jitter_bucket] =
+        ad7606_acquisition_saturating_add_u32(
+            jitter->histogram_us[jitter_bucket],
+            1U
+        );
 
     if (
         s_status.latest_valid &&
@@ -724,6 +804,13 @@ static esp_err_t ad7606_worker_initialize(void)
         return err;
     }
 
+    /* esp_timer's periodic alarms use an absolute schedule; tick N is t0+N*period. */
+    s_jitter_t0_us = esp_timer_get_time();
+    s_jitter_period_us = period_us;
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.jitter.period_us = period_us;
+    portEXIT_CRITICAL(&s_status_lock);
+
     ad7606_status_set_running(
         true
     );
@@ -811,9 +898,11 @@ static void ad7606_worker(
             break;
         }
 
-        ad7606_status_record_timer_wake(
+        const uint64_t timer_ticks_total = ad7606_status_record_timer_wake(
             notification_count
         );
+        const int64_t scheduled_us =
+            ad7606_jitter_scheduled_us(timer_ticks_total);
 
 #if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
         {
@@ -935,7 +1024,8 @@ static void ad7606_worker(
             &sample,
             all_channels_uv,
             &s_serial_diag,
-            serial_observation.busy_level
+            serial_observation.busy_level,
+            scheduled_us
         );
 
         ad7606_serial_diag_log_frame(

@@ -278,6 +278,13 @@ static double number_item(const cJSON *object, const char *name)
     return item->valuedouble;
 }
 
+static double number_array_item(const cJSON *array, size_t index)
+{
+    cJSON *item = cJSON_GetArrayItem(array, (int)index);
+    assert(item != NULL && cJSON_IsNumber(item));
+    return item->valuedouble;
+}
+
 static bool bool_item(const cJSON *object, const char *name)
 {
     cJSON *item = object_item(object, name);
@@ -508,6 +515,16 @@ static void test_full_builder_and_pods(void)
     cJSON *cadence = object_item(acquisition, "cadence");
     assert(bool_item(cadence, "available"));
     assert_number_near(number_item(cadence, "collapsed_periods"), 2.0);
+    cJSON *jitter = object_item(cadence, "jitter");
+    assert_number_near(number_item(jitter, "count"), 0.0);
+    assert_number_near(number_item(jitter, "mean_us"), 0.0);
+    assert_number_near(number_item(jitter, "p99_us"), 0.0);
+    cJSON *histogram = object_item(jitter, "histogram_us");
+    assert(cJSON_IsArray(histogram));
+    assert(cJSON_GetArraySize(histogram) == 16);
+    for (size_t bucket = 0U; bucket < 16U; ++bucket) {
+        assert_number_near(number_array_item(histogram, bucket), 0.0);
+    }
     cJSON *serial = object_item(acquisition, "serial");
     assert(strcmp(string_item(serial, "quality"), "GOOD") == 0);
     assert_number_near(number_item(serial, "quality_bad_ratio"), 0.2);
@@ -661,8 +678,27 @@ static void test_runtime_metrics_accept_zero_and_max_values(void)
     g_https_handshake_failures = UINT32_MAX;
     g_https_fatal_alerts = UINT32_MAX;
     g_https_last_error_esp_err = INT32_MAX;
+    g_acquisition_snapshot.jitter.count = UINT32_MAX;
+    g_acquisition_snapshot.jitter.early_count = UINT32_MAX;
+    g_acquisition_snapshot.jitter.min_us = UINT64_MAX;
+    g_acquisition_snapshot.jitter.max_us = UINT64_MAX;
+    g_acquisition_snapshot.jitter.sum_us = UINT64_MAX;
+    g_acquisition_snapshot.jitter.histogram_us[15] = UINT32_MAX;
+    g_acquisition_snapshot.jitter.period_us = UINT64_MAX;
 
     cJSON *root = build_json(false, NULL);
+    cJSON *jitter = object_item(
+        object_item(object_item(root, "acquisition"), "cadence"),
+        "jitter"
+    );
+    assert(number_item(jitter, "count") == (double)UINT32_MAX);
+    assert(number_item(jitter, "early_count") == (double)UINT32_MAX);
+    assert(number_item(jitter, "min_us") == (double)UINT64_MAX);
+    assert(number_item(jitter, "max_us") == (double)UINT64_MAX);
+    assert(number_item(jitter, "mean_us") == (double)UINT64_MAX / (double)UINT32_MAX);
+    assert(number_item(jitter, "p99_us") == (double)UINT64_MAX);
+    assert(number_item(jitter, "period_us") == (double)UINT64_MAX);
+    assert(number_array_item(object_item(jitter, "histogram_us"), 15U) == (double)UINT32_MAX);
     cJSON *runtime = object_item(root, "runtime");
     cJSON *heap = object_item(runtime, "heap");
     assert(number_item(heap, "free_internal") == (double)SIZE_MAX);
@@ -707,6 +743,14 @@ static void test_policy_fault_and_snapshot_fallback(void)
     assert(strcmp(string_item(object_item(acquisition, "serial"), "power_gate"), "unknown") == 0);
     assert(!bool_item(object_item(acquisition, "serial"), "power_fault_latched"));
     assert(!bool_item(object_item(acquisition, "cadence"), "available"));
+    cJSON *jitter = object_item(object_item(acquisition, "cadence"), "jitter");
+    assert(number_item(jitter, "count") == 0.0);
+    assert(number_item(jitter, "mean_us") == 0.0);
+    assert(number_item(jitter, "p99_us") == 0.0);
+    assert(cJSON_GetArraySize(object_item(jitter, "histogram_us")) == 16);
+    for (size_t bucket = 0U; bucket < 16U; ++bucket) {
+        assert(number_array_item(object_item(jitter, "histogram_us"), bucket) == 0.0);
+    }
     cJSON_Delete(root);
 }
 
@@ -744,6 +788,49 @@ static void test_extended_cache_and_errors(void)
     test_runtime_metrics_accept_zero_and_max_values();
 }
 
+static void test_jitter_p99_nearest_rank_from_histogram(void)
+{
+    reset_fakes();
+    fill_status();
+    g_acquisition_snapshot.jitter.count = 100U;
+    g_acquisition_snapshot.jitter.sum_us = 1800U;
+    g_acquisition_snapshot.jitter.histogram_us[4] = 100U;
+    cJSON *root = build_json(false, NULL);
+    cJSON *jitter = object_item(
+        object_item(object_item(root, "acquisition"), "cadence"),
+        "jitter"
+    );
+    assert_number_near(number_item(jitter, "mean_us"), 18.0);
+    assert_number_near(number_item(jitter, "p99_us"), 32.0);
+    cJSON_Delete(root);
+
+    reset_fakes();
+    fill_status();
+    g_acquisition_snapshot.jitter.count = 100U;
+    g_acquisition_snapshot.jitter.histogram_us[0] = 99U;
+    g_acquisition_snapshot.jitter.histogram_us[15] = 1U;
+    root = build_json(false, NULL);
+    jitter = object_item(
+        object_item(object_item(root, "acquisition"), "cadence"),
+        "jitter"
+    );
+    /* Nearest-rank p99 is still in bucket 0; the final 1% is above it. */
+    assert_number_near(number_item(jitter, "p99_us"), 2.0);
+    cJSON_Delete(root);
+
+    reset_fakes();
+    fill_status();
+    root = build_json(false, NULL);
+    jitter = object_item(
+        object_item(object_item(root, "acquisition"), "cadence"),
+        "jitter"
+    );
+    assert_number_near(number_item(jitter, "mean_us"), 0.0);
+    assert_number_near(number_item(jitter, "p99_us"), 0.0);
+    cJSON_Delete(root);
+}
+
+
 int main(void)
 {
     test_full_builder_and_pods();
@@ -752,6 +839,7 @@ int main(void)
     test_main_status_omits_aht_humidity_when_absent();
     test_policy_fault_and_snapshot_fallback();
     test_extended_cache_and_errors();
+    test_jitter_p99_nearest_rank_from_histogram();
     puts("web_status_json_builder_test: PASS");
     return 0;
 }

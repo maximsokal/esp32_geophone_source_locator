@@ -282,6 +282,81 @@ static bool web_status_json_add_acquisition(
         return false;
     }
 
+    const seismic_acquisition_jitter_t *jitter_source = cadence_available
+        ? &source_snapshot->jitter
+        : NULL;
+    const uint32_t jitter_count = jitter_source != NULL
+        ? jitter_source->count
+        : 0U;
+    const uint64_t jitter_sum_us = jitter_source != NULL
+        ? jitter_source->sum_us
+        : 0U;
+    const double jitter_mean_us = jitter_count > 0U
+        ? (double)jitter_sum_us / (double)jitter_count
+        : 0.0;
+    uint64_t jitter_p99_us = 0U;
+    if (jitter_count > 0U) {
+        /* Nearest-rank p99; bucket 15 is open-ended, represented by UINT64_MAX. */
+        const uint64_t percentile_rank =
+            ((uint64_t)jitter_count * 99U + 99U) / 100U;
+        uint64_t cumulative = 0U;
+        for (size_t bucket = 0U; bucket < SEISMIC_ACQUISITION_JITTER_BUCKET_COUNT; ++bucket) {
+            cumulative += jitter_source->histogram_us[bucket];
+            if (cumulative >= percentile_rank) {
+                jitter_p99_us = bucket + 1U == SEISMIC_ACQUISITION_JITTER_BUCKET_COUNT
+                    ? UINT64_MAX
+                    : (UINT64_C(1) << (bucket + 1U));
+                break;
+            }
+        }
+    }
+
+    cJSON *jitter = cJSON_AddObjectToObject(cadence, "jitter");
+    if (jitter == NULL) return false;
+    if (
+        cJSON_AddNumberToObject(jitter, "count", jitter_count) == NULL ||
+        cJSON_AddNumberToObject(
+            jitter,
+            "early_count",
+            jitter_source != NULL ? (double)jitter_source->early_count : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            jitter,
+            "min_us",
+            jitter_source != NULL ? (double)jitter_source->min_us : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(
+            jitter,
+            "max_us",
+            jitter_source != NULL ? (double)jitter_source->max_us : 0.0
+        ) == NULL ||
+        cJSON_AddNumberToObject(jitter, "mean_us", jitter_mean_us) == NULL ||
+        cJSON_AddNumberToObject(jitter, "p99_us", (double)jitter_p99_us) == NULL ||
+        cJSON_AddNumberToObject(
+            jitter,
+            "period_us",
+            jitter_source != NULL ? (double)jitter_source->period_us : 0.0
+        ) == NULL
+    ) {
+        return false;
+    }
+
+    cJSON *histogram = cJSON_AddArrayToObject(jitter, "histogram_us");
+    if (histogram == NULL) return false;
+    for (size_t bucket = 0U; bucket < SEISMIC_ACQUISITION_JITTER_BUCKET_COUNT; ++bucket) {
+        const uint32_t bucket_count = jitter_source != NULL
+            ? jitter_source->histogram_us[bucket]
+            : 0U;
+        cJSON *value = cJSON_CreateNumber(bucket_count);
+        if (value == NULL) {
+            return false;
+        }
+        if (!cJSON_AddItemToArray(histogram, value)) {
+            cJSON_Delete(value);
+            return false;
+        }
+    }
+
     cJSON *serial = cJSON_AddObjectToObject(object, "serial");
     if (serial == NULL) return false;
 

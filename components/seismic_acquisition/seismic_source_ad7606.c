@@ -75,6 +75,15 @@ static esp_err_t seismic_source_ad7606_snapshot(
         status.last_successful_sample_interval_us;
     snapshot->max_successful_sample_interval_us =
         status.max_successful_sample_interval_us;
+    snapshot->jitter.count = status.jitter.count;
+    snapshot->jitter.early_count = status.jitter.early_count;
+    snapshot->jitter.min_us = status.jitter.min_us;
+    snapshot->jitter.max_us = status.jitter.max_us;
+    snapshot->jitter.sum_us = status.jitter.sum_us;
+    snapshot->jitter.period_us = status.jitter.period_us;
+    for (size_t bucket = 0; bucket < AD7606_ACQUISITION_JITTER_BUCKET_COUNT; ++bucket) {
+        snapshot->jitter.histogram_us[bucket] = status.jitter.histogram_us[bucket];
+    }
     snapshot->serial_suspicious = status.serial_suspicious;
     snapshot->serial_pattern = ad7606_serial_pattern_name(status.serial_pattern);
     snapshot->serial_quality = ad7606_serial_quality_name(status.serial_quality);
