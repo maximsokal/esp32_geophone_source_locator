@@ -575,6 +575,7 @@ export interface LocalizationRun {
   /** Bayesian methods: the posterior's spread and credible region; absent = not computed. */
   uncertainty?: LocalizationRunUncertainty;
   solved: boolean;
+  uncertainty_too_high?: boolean;
   source_position?: LocalizationRunPosition;
   emission_time_us?: number;
   rms_residual_us?: number;

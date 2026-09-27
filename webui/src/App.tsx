@@ -12,7 +12,7 @@ import {
   saveSessionOccupancyArtifact,
   saveSessionPreviewArtifact,
 } from './api/deviceApi';
-import type { LocalizationSessionGeometry } from './api/deviceApi';
+import type { LocalizationRunListing, LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
 import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
 import { buildVoxelPreviewArtifact } from './xr/voxelPreview';
@@ -183,6 +183,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   const [scanStorageError, setScanStorageError] = useState<string | null>(null);
   const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
   const [localizationGeometry, setLocalizationGeometry] = useState<LocalizationSessionGeometry | null>(null);
+  const [localizationRunListing, setLocalizationRunListing] = useState<LocalizationRunListing | null>(null);
   const [registrationArtifact, setRegistrationArtifact] = useState<RegistrationArtifact | null>(null);
   const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
   const [scanMode, setScanMode] = useState<ScanMode | null>('quality');
@@ -206,6 +207,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   useEffect(() => {
     registrationForSession.current = null;
     setLocalizationGeometry(null);
+    setLocalizationRunListing(null);
     setRegistrationArtifact(null);
   }, [objectId, sessionId]);
   const scanIntent = useRef<ScanStartIntent>('fresh');
@@ -288,6 +290,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     setScanSnapshot(null);
     setScanStorageError(null);
     setLocalizationGeometry(null);
+    setLocalizationRunListing(null);
     setRegistrationArtifact(null);
 
     if (objectId === null || sessionId === null) {
@@ -310,7 +313,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     if (shouldLoadEvidence) {
       void Promise.all([
         fetchLocalizationRuns(objectId, sessionId).then(
-          (listing) => ({ ok: true as const, geometry: listing.geometry }),
+          (listing) => ({ ok: true as const, listing }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
         loadSessionRegistration(objectId, sessionId).then(
@@ -320,10 +323,14 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       ]).then(([geometryResult, registrationResult]) => {
         if (cancelled || generation !== storageGeneration.current) return;
         sessionEvidenceLoad.current = key;
-        if (geometryResult.ok) setLocalizationGeometry(geometryResult.geometry);
+        if (geometryResult.ok) {
+          setLocalizationGeometry(geometryResult.listing.geometry);
+          setLocalizationRunListing(geometryResult.listing);
+        }
         else {
           const message = geometryResult.reason instanceof Error ? geometryResult.reason.message : String(geometryResult.reason);
           setLocalizationGeometry(null);
+          setLocalizationRunListing(null);
           clientDiagnostics.warn('SENSOR_GEOMETRY_RESTORE_FAILED', { objectId, sessionId, error: message });
         }
         if (!registrationResult.ok) {
@@ -773,6 +780,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 sensorMarkers={sensorPlacementScene.markers}
                 sensorGeometry={localizationGeometry}
                 registrationArtifact={registrationArtifact}
+                objectId={objectId}
+                sessionId={sessionId}
+                localizationRuns={localizationRunListing?.object_id === objectId && localizationRunListing.session_id === sessionId
+                  ? localizationRunListing.runs
+                  : []}
               />
             </Suspense>
           </ResultViewportErrorBoundary>

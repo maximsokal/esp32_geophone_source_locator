@@ -1,5 +1,6 @@
 #include "ui_preview3d.h"
 
+#include <float.h>
 #include <math.h>
 #include <limits.h>
 #include <string.h>
@@ -86,6 +87,217 @@ bool ui_preview3d_view_apply_key(ui_preview3d_view_t *view, ui_preview3d_key_t k
     default:
         return false;
     }
+}
+
+static bool source_candidate_valid(const ui_preview3d_source_candidate_t *candidate)
+{
+    return candidate != NULL && candidate->method_name != NULL && candidate->method_name[0] != '\0' &&
+        candidate->solved && isfinite(candidate->confidence_score) && candidate->confidence_score >= 0.0 &&
+        candidate->confidence_score <= 1.0 && isfinite(candidate->position.x) &&
+        isfinite(candidate->position.y) && isfinite(candidate->position.z);
+}
+
+static bool source_candidate_latest(
+    const ui_preview3d_source_candidate_t *candidates,
+    size_t candidate_count,
+    size_t index)
+{
+    if (candidates[index].method_name == NULL) return false;
+    const ui_preview3d_source_candidate_t *candidate = &candidates[index];
+    /* ponytail: O(n^2) over the run-store's 128-record cap; sort only if that cap grows. */
+    for (size_t other = 0U; other < candidate_count; ++other) {
+        if (other == index) continue;
+        const ui_preview3d_source_candidate_t *next = &candidates[other];
+        if (next->joint_fusion == candidate->joint_fusion && next->method_name != NULL &&
+            strcmp(next->method_name, candidate->method_name) == 0 &&
+            (next->computed_at_ms > candidate->computed_at_ms ||
+             (next->computed_at_ms == candidate->computed_at_ms && other > index))) return false;
+    }
+    return true;
+}
+
+static bool source_candidate_better(
+    const ui_preview3d_source_candidate_t *left,
+    const ui_preview3d_source_candidate_t *right)
+{
+    if (right == NULL) return true;
+    if (left->confidence_score != right->confidence_score) return left->confidence_score > right->confidence_score;
+    if (left->computed_at_ms != right->computed_at_ms) return left->computed_at_ms > right->computed_at_ms;
+    return strcmp(left->method_name, right->method_name) < 0;
+}
+
+static void copy_source_candidate(ui_preview3d_source_t *source, const ui_preview3d_source_candidate_t *candidate, bool primary)
+{
+    source->position = candidate->position;
+    source->radius_m = 0.0f;
+    source->selected = primary;
+    source->uncertainty_valid = candidate->uncertainty_valid &&
+        isfinite(candidate->horizontal_std_x_m) && candidate->horizontal_std_x_m > 0.0 &&
+        isfinite(candidate->horizontal_std_y_m) && candidate->horizontal_std_y_m > 0.0 &&
+        candidate->horizontal_std_x_m <= FLT_MAX && candidate->horizontal_std_y_m <= FLT_MAX;
+    source->horizontal_std_x_m = source->uncertainty_valid ? (float)candidate->horizontal_std_x_m : 0.0f;
+    source->horizontal_std_y_m = source->uncertainty_valid ? (float)candidate->horizontal_std_y_m : 0.0f;
+}
+
+size_t ui_preview3d_select_sources(
+    const ui_preview3d_source_candidate_t *candidates,
+    size_t candidate_count,
+    ui_preview3d_source_t *sources,
+    size_t source_capacity)
+{
+    size_t chosen[UI_PREVIEW3D_MAX_SOURCES];
+    size_t count = 0U;
+    size_t capacity = source_capacity < UI_PREVIEW3D_MAX_SOURCES ? source_capacity : UI_PREVIEW3D_MAX_SOURCES;
+    size_t primary = SIZE_MAX;
+    size_t solved_joint = SIZE_MAX;
+    size_t best_method = SIZE_MAX;
+
+    if (sources == NULL || capacity == 0U) return 0U;
+    memset(sources, 0, capacity * sizeof(*sources));
+    if (candidates == NULL || candidate_count == 0U) return 0U;
+
+    for (size_t i = 0U; i < candidate_count; ++i) {
+        if (!source_candidate_latest(candidates, candidate_count, i) || !source_candidate_valid(&candidates[i])) continue;
+        if (candidates[i].joint_fusion) {
+            if (!candidates[i].uncertainty_too_high &&
+                (solved_joint == SIZE_MAX || candidates[i].computed_at_ms > candidates[solved_joint].computed_at_ms ||
+                 (candidates[i].computed_at_ms == candidates[solved_joint].computed_at_ms &&
+                  source_candidate_better(&candidates[i], &candidates[solved_joint])))) {
+                solved_joint = i;
+            }
+        } else if (best_method == SIZE_MAX || source_candidate_better(&candidates[i], &candidates[best_method])) {
+            best_method = i;
+        }
+    }
+    primary = solved_joint != SIZE_MAX ? solved_joint : best_method;
+
+    if (primary != SIZE_MAX) {
+        chosen[count] = primary;
+        copy_source_candidate(&sources[count], &candidates[primary], true);
+        ++count;
+    }
+    while (count < capacity) {
+        size_t next = SIZE_MAX;
+        for (size_t i = 0U; i < candidate_count; ++i) {
+            bool already_chosen = false;
+            if (!source_candidate_latest(candidates, candidate_count, i) || !source_candidate_valid(&candidates[i])) continue;
+            for (size_t j = 0U; j < count; ++j) already_chosen = already_chosen || chosen[j] == i;
+            if (!already_chosen && (next == SIZE_MAX || source_candidate_better(&candidates[i], &candidates[next]))) next = i;
+        }
+        if (next == SIZE_MAX) break;
+        chosen[count] = next;
+        copy_source_candidate(&sources[count], &candidates[next], false);
+        ++count;
+    }
+    return count;
+}
+
+bool ui_preview3d_source_to_voxel_index(
+    const ui_preview3d_voxel_grid_t *grid,
+    const ui_preview3d_vec3_t *position,
+    uint32_t *index_out)
+{
+    if (grid == NULL || position == NULL || index_out == NULL ||
+        !(grid->voxel_size_m > 0.0f) || !isfinite(grid->voxel_size_m) ||
+        !isfinite(grid->origin.x) || !isfinite(grid->origin.y) || !isfinite(grid->origin.z) ||
+        !isfinite(position->x) || !isfinite(position->y) || !isfinite(position->z) ||
+        grid->dimensions[0] == 0U || grid->dimensions[1] == 0U || grid->dimensions[2] == 0U) return false;
+
+    const uint64_t volume = (uint64_t)grid->dimensions[0] * grid->dimensions[1] * grid->dimensions[2];
+    if (volume > (UINT64_C(1) << 32U)) return false;
+    const double coordinates[3] = {
+        floor(((double)position->x - grid->origin.x) / grid->voxel_size_m),
+        floor(((double)position->y - grid->origin.y) / grid->voxel_size_m),
+        floor(((double)position->z - grid->origin.z) / grid->voxel_size_m),
+    };
+    for (size_t axis = 0U; axis < 3U; ++axis) {
+        if (!isfinite(coordinates[axis]) || coordinates[axis] < 0.0 || coordinates[axis] >= grid->dimensions[axis]) return false;
+    }
+    const uint64_t index =
+        ((uint64_t)(uint32_t)coordinates[2] * grid->dimensions[1] + (uint32_t)coordinates[1]) * grid->dimensions[0] +
+        (uint32_t)coordinates[0];
+    if (index > UINT32_MAX) return false;
+    *index_out = (uint32_t)index;
+    return true;
+}
+
+size_t ui_preview3d_source_uncertainty_voxels(
+    const ui_preview3d_voxel_grid_t *grid,
+    const ui_preview3d_vec3_t *position,
+    float sigma_x_m,
+    float sigma_y_m,
+    bool uncertainty_valid,
+    uint32_t *indices,
+    size_t capacity)
+{
+    uint32_t source_index = 0U;
+    if (capacity == 0U || indices == NULL ||
+        !ui_preview3d_source_to_voxel_index(grid, position, &source_index)) return 0U;
+    if (!uncertainty_valid || !(sigma_x_m > 0.0f) || !(sigma_y_m > 0.0f) ||
+        !isfinite(sigma_x_m) || !isfinite(sigma_y_m)) {
+        indices[0] = source_index;
+        return 1U;
+    }
+
+    const uint32_t source_x = source_index % grid->dimensions[0];
+    const uint32_t source_y = (source_index / grid->dimensions[0]) % grid->dimensions[1];
+    const double source_xy[2] = {position->x, position->y};
+    const double origin_xy[2] = {grid->origin.x, grid->origin.y};
+    const double sigma_xy[2] = {sigma_x_m, sigma_y_m};
+    const uint32_t source_cell_xy[2] = {source_x, source_y};
+    const uint32_t dimensions_xy[2] = {grid->dimensions[0], grid->dimensions[1]};
+    uint32_t first[2], last[2];
+    for (size_t axis = 0U; axis < 2U; ++axis) {
+        const double minimum = ceil((source_xy[axis] - sigma_xy[axis] - origin_xy[axis]) /
+                                    grid->voxel_size_m - 0.5);
+        const double maximum = floor((source_xy[axis] + sigma_xy[axis] - origin_xy[axis]) /
+                                     grid->voxel_size_m - 0.5);
+        if (maximum < 0.0 || minimum >= dimensions_xy[axis]) return 0U;
+        first[axis] = minimum <= 0.0 ? 0U : (uint32_t)minimum;
+        last[axis] = maximum >= dimensions_xy[axis] - 1U ? dimensions_xy[axis] - 1U : (uint32_t)maximum;
+        if (first[axis] > last[axis]) return 0U;
+    }
+
+    const double source_cell_center_x = origin_xy[0] + (source_x + 0.5) * grid->voxel_size_m;
+    const double source_cell_center_y = origin_xy[1] + (source_y + 0.5) * grid->voxel_size_m;
+    const double source_dx = (source_cell_center_x - position->x) / sigma_x_m;
+    const double source_dy = (source_cell_center_y - position->y) / sigma_y_m;
+    if (source_dx * source_dx + source_dy * source_dy > 1.0) return 0U;
+
+    uint32_t max_radius = source_cell_xy[0] - first[0];
+    if (last[0] - source_cell_xy[0] > max_radius) max_radius = last[0] - source_cell_xy[0];
+    if (source_cell_xy[1] - first[1] > max_radius) max_radius = source_cell_xy[1] - first[1];
+    if (last[1] - source_cell_xy[1] > max_radius) max_radius = last[1] - source_cell_xy[1];
+
+    size_t count = 0U;
+    for (uint32_t radius = 0U; radius <= max_radius && count < capacity; ++radius) {
+        const uint32_t x_min = source_x > radius ? source_x - radius : 0U;
+        const uint32_t x_start = first[0] > x_min ? first[0] : x_min;
+        const uint32_t x_max = source_x + radius;
+        const uint32_t x_end = last[0] < x_max ? last[0] : x_max;
+        const uint32_t y_min = source_y > radius ? source_y - radius : 0U;
+        const uint32_t y_start = first[1] > y_min ? first[1] : y_min;
+        const uint32_t y_max = source_y + radius;
+        const uint32_t y_end = last[1] < y_max ? last[1] : y_max;
+        for (uint32_t y = y_start; y <= y_end && count < capacity; ++y) {
+            for (uint32_t x = x_start; x <= x_end && count < capacity; ++x) {
+                const uint32_t dx_cells = x > source_x ? x - source_x : source_x - x;
+                const uint32_t dy_cells = y > source_y ? y - source_y : source_y - y;
+                if ((dx_cells > dy_cells ? dx_cells : dy_cells) != radius) continue;
+                const double center_x = origin_xy[0] + (x + 0.5) * grid->voxel_size_m;
+                const double center_y = origin_xy[1] + (y + 0.5) * grid->voxel_size_m;
+                const double dx = (center_x - position->x) / sigma_x_m;
+                const double dy = (center_y - position->y) / sigma_y_m;
+                if (dx * dx + dy * dy <= 1.0) {
+                    const uint64_t index = ((uint64_t)(source_index / ((uint32_t)grid->dimensions[0] * grid->dimensions[1])) *
+                                            grid->dimensions[1] + y) * grid->dimensions[0] + x;
+                    if (index <= UINT32_MAX) indices[count++] = (uint32_t)index;
+                }
+            }
+        }
+        if (radius == UINT32_MAX) break;
+    }
+    return count;
 }
 
 void ui_preview3d_scene_set_occupancy(
@@ -518,6 +730,7 @@ static bool draw_voxel_face(
     uint8_t *pixels,
     uint32_t index,
     unsigned face,
+    uint8_t colour,
     bool *clipped)
 {
     ui_preview3d_vec3_t voxel;
@@ -532,7 +745,57 @@ static bool draw_voxel_face(
         };
         ui_preview3d_project(view, centre, scale, width, height, &point, &x[corner], &y[corner]);
     }
-    return fill_quad(pixels, width, height, x, y, s_face_colours[face], clipped);
+    return fill_quad(pixels, width, height, x, y, colour, clipped);
+}
+
+static bool voxel_index_present(const ui_preview3d_scene_t *scene, uint32_t index)
+{
+    for (uint32_t i = 0U; i < scene->voxel_count; ++i) {
+        if (scene->voxel_indices[i] == index) return true;
+    }
+    return false;
+}
+
+static bool voxel_index_in_list(const uint32_t *indices, size_t count, uint32_t index)
+{
+    for (size_t i = 0U; i < count; ++i) {
+        if (indices[i] == index) return true;
+    }
+    return false;
+}
+
+static bool draw_voxel_faces(
+    const ui_preview3d_scene_t *scene,
+    const ui_preview3d_view_t *view,
+    const ui_preview3d_vec3_t *centre,
+    float scale,
+    int width,
+    int height,
+    uint8_t *pixels,
+    uint32_t index,
+    uint8_t faces,
+    uint8_t colour,
+    const float camera_direction[3],
+    ui_preview3d_stats_t *stats)
+{
+    bool drawn = false;
+    for (unsigned face = 0U; face < 6U; ++face) {
+        const float normal_dot =
+            (face == 0U ? camera_direction[0] : face == 1U ? -camera_direction[0] :
+             face == 2U ? camera_direction[1] : face == 3U ? -camera_direction[1] :
+             face == 4U ? camera_direction[2] : -camera_direction[2]);
+        if ((faces & (1U << face)) == 0U || normal_dot <= 0.0001f) continue;
+        bool clipped = false;
+        if (draw_voxel_face(scene, view, centre, scale, width, height, pixels, index, face, colour, &clipped)) {
+            stats->faces_drawn++;
+            drawn = true;
+            if (clipped) stats->primitives_clipped++;
+        } else {
+            stats->primitives_clipped++;
+        }
+    }
+    if (drawn) stats->voxels_drawn++;
+    return drawn;
 }
 
 static void draw_voxel_scene(
@@ -543,6 +806,10 @@ static void draw_voxel_scene(
     int width,
     int height,
     uint8_t *pixels,
+    bool primary_voxel_valid,
+    uint32_t primary_voxel_index,
+    const uint32_t *uncertainty_voxel_indices,
+    size_t uncertainty_voxel_count,
     ui_preview3d_stats_t *stats)
 {
     float depth_coefficients[3];
@@ -558,6 +825,9 @@ static void draw_voxel_scene(
         const uint32_t source = scene->voxel_order[item - 1U];
         const uint32_t index = scene->voxel_indices[source];
         const uint8_t faces = scene->voxel_face_masks[source];
+        const bool primary = primary_voxel_valid && index == primary_voxel_index;
+        const bool uncertainty = !primary &&
+            voxel_index_in_list(uncertainty_voxel_indices, uncertainty_voxel_count, index);
         bool voxel_drawn = false;
         for (unsigned face = 0U; face < 6U; ++face) {
             const float normal_dot =
@@ -565,8 +835,11 @@ static void draw_voxel_scene(
                  face == 2U ? camera_direction[1] : face == 3U ? -camera_direction[1] :
                  face == 4U ? camera_direction[2] : -camera_direction[2]);
             if ((faces & (1U << face)) == 0U || normal_dot <= 0.0001f) continue;
+            const uint8_t colour = primary ? UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT :
+                uncertainty ? UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY : s_face_colours[face];
             bool clipped = false;
-            if (draw_voxel_face(scene, view, centre, scale, width, height, pixels, index, face, &clipped)) {
+            if (draw_voxel_face(scene, view, centre, scale, width, height, pixels,
+                                index, face, colour, &clipped)) {
                 stats->faces_drawn++;
                 voxel_drawn = true;
                 if (clipped) stats->primitives_clipped++;
@@ -575,6 +848,19 @@ static void draw_voxel_scene(
             }
         }
         if (voxel_drawn) stats->voxels_drawn++;
+    }
+    for (size_t i = 0U; i < uncertainty_voxel_count; ++i) {
+        const uint32_t index = uncertainty_voxel_indices[i];
+        if ((primary_voxel_valid && index == primary_voxel_index) || voxel_index_present(scene, index)) continue;
+        (void)draw_voxel_faces(scene, view, centre, scale, width, height, pixels, index,
+                               0x3fU, UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY, camera_direction, stats);
+    }
+    if (primary_voxel_valid) {
+        if (!voxel_index_present(scene, primary_voxel_index)) {
+            (void)draw_voxel_faces(scene, view, centre, scale, width, height, pixels,
+                                   primary_voxel_index, 0x3fU, UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT,
+                                   camera_direction, stats);
+        }
     }
     stats->drew_scan = stats->voxels_drawn > 0U;
 }
@@ -591,11 +877,16 @@ void ui_preview3d_render(
     ui_preview3d_stats_t local = {0};
     ui_preview3d_vec3_t sensors[UI_PREVIEW3D_MAX_SENSORS];
     ui_preview3d_vec3_t sources[UI_PREVIEW3D_MAX_SOURCES];
+    uint32_t uncertainty_voxel_indices[UI_PREVIEW3D_SOURCE_UNCERTAINTY_VOXEL_CAP];
+    size_t uncertainty_voxel_count = 0U;
+    bool source_at_edge[UI_PREVIEW3D_MAX_SOURCES] = {false};
     bounds_t bounds = {0};
     bool any_sensor = false;
     bool draw_scan;
     bool draw_sensors;
     bool voxel_mode;
+    bool primary_voxel_valid = false;
+    uint32_t primary_voxel_index = 0U;
     ui_preview3d_vec3_t centre;
     float radius;
     float scale;
@@ -636,6 +927,9 @@ void ui_preview3d_render(
         break;
     }
     stats->overlay_suppressed_unregistered = draw_scan && any_sensor && !scene->registered;
+    if (draw_scan && scene->source_count > 0U && !scene->registered) {
+        stats->source_reason = UI_PREVIEW3D_SOURCE_REASON_UNREGISTERED;
+    }
 
     if (draw_scan && voxel_mode && (!voxel_scene_valid(scene) || scene->voxel_order == NULL || scene->voxel_order_capacity < scene->voxel_count)) {
         stats->empty = true;
@@ -648,6 +942,41 @@ void ui_preview3d_render(
     }
     for (size_t i = 0; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
         sources[i] = sensor_to_render(scene, &scene->sources[i].position, draw_scan && draw_sensors);
+    }
+    if (draw_scan && draw_sensors && voxel_mode) {
+        const ui_preview3d_voxel_grid_t grid = {
+            .origin = scene->voxel_origin,
+            .dimensions = {scene->voxel_dimensions[0], scene->voxel_dimensions[1], scene->voxel_dimensions[2]},
+            .voxel_size_m = scene->voxel_size_m,
+        };
+        for (size_t i = 0U; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
+            uint32_t index = 0U;
+            if (ui_preview3d_source_to_voxel_index(&grid, &sources[i], &index)) {
+                if (scene->sources[i].selected) {
+                    primary_voxel_valid = true;
+                    primary_voxel_index = index;
+                    uncertainty_voxel_count = ui_preview3d_source_uncertainty_voxels(
+                        &grid, &sources[i], scene->sources[i].horizontal_std_x_m,
+                        scene->sources[i].horizontal_std_y_m, scene->sources[i].uncertainty_valid,
+                        uncertainty_voxel_indices, UI_PREVIEW3D_SOURCE_UNCERTAINTY_VOXEL_CAP);
+                }
+                continue;
+            }
+
+            source_at_edge[i] = true;
+            stats->source_reason = UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID;
+            const float position[3] = {sources[i].x, sources[i].y, sources[i].z};
+            float edge[3];
+            for (size_t axis = 0U; axis < 3U; ++axis) {
+                const double coordinate = floor(((double)position[axis] -
+                    (axis == 0U ? grid.origin.x : axis == 1U ? grid.origin.y : grid.origin.z)) / grid.voxel_size_m);
+                const int32_t cell = coordinate < 0.0 ? 0 :
+                    coordinate >= grid.dimensions[axis] ? (int32_t)grid.dimensions[axis] - 1 : (int32_t)coordinate;
+                const float origin = axis == 0U ? grid.origin.x : axis == 1U ? grid.origin.y : grid.origin.z;
+                edge[axis] = origin + ((float)cell + 0.5f) * grid.voxel_size_m;
+            }
+            sources[i] = (ui_preview3d_vec3_t){edge[0], edge[1], edge[2]};
+        }
     }
 
     if (draw_scan) {
@@ -672,6 +1001,17 @@ void ui_preview3d_render(
             bounds_add(&bounds, &sources[i], fmaxf(0.0f, scene->sources[i].radius_m));
         }
     }
+    if (voxel_mode && primary_voxel_valid) {
+        ui_preview3d_vec3_t voxel;
+        if (voxel_position(scene, primary_voxel_index, &voxel)) {
+            bounds_add(&bounds, &voxel, scene->voxel_size_m * 0.5f);
+        }
+        for (size_t i = 0U; i < uncertainty_voxel_count; ++i) {
+            if (voxel_position(scene, uncertainty_voxel_indices[i], &voxel)) {
+                bounds_add(&bounds, &voxel, scene->voxel_size_m * 0.5f);
+            }
+        }
+    }
     if (!bounds.any) {
         stats->empty = true;
         return;
@@ -692,7 +1032,9 @@ void ui_preview3d_render(
 
     if (draw_scan) {
         if (voxel_mode) {
-            draw_voxel_scene(scene, view, &centre, scale, width, height, pixels, stats);
+            draw_voxel_scene(scene, view, &centre, scale, width, height, pixels,
+                             primary_voxel_valid, primary_voxel_index,
+                             uncertainty_voxel_indices, uncertainty_voxel_count, stats);
         } else {
             for (size_t i = 0; i < scene->point_count; ++i) {
                 float x, y;
@@ -729,7 +1071,8 @@ void ui_preview3d_render(
     }
     for (size_t i = 0; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
         float x, y;
-        const uint8_t colour = scene->sources[i].selected ? UI_PREVIEW3D_PX_SOURCE_SELECTED : UI_PREVIEW3D_PX_SOURCE;
+        const uint8_t colour = source_at_edge[i] ? UI_PREVIEW3D_PX_SOURCE_OUTSIDE_GRID :
+            scene->sources[i].selected ? UI_PREVIEW3D_PX_SOURCE_SELECTED : UI_PREVIEW3D_PX_SOURCE;
         const float r = fmaxf(MIN_SOURCE_PIXELS, scene->sources[i].radius_m * scale);
         ui_preview3d_project(view, &centre, scale, width, height, &sources[i], &x, &y);
         if (draw_circle(pixels, width, height, x, y, r, colour)) {
