@@ -58,6 +58,12 @@ typedef struct {
     workflow_placement_history_t history[WORKFLOW_MAX_CALIBRATION_NODES];
 } workflow_placement_run_t;
 
+typedef struct {
+    bool active;
+    bool orphaned;
+    uint64_t started_at_ms;
+} workflow_ranging_run_t;
+
 static SemaphoreHandle_t s_mutex;
 static bool s_initialized;
 static bool s_recorder_reconciliation_armed;
@@ -68,6 +74,15 @@ static workflow_service_placement_ready_fn s_placement_ready_predicate;
 static void *s_placement_ready_context;
 static EXT_RAM_BSS_ATTR workflow_calibration_run_t s_calibration;
 static EXT_RAM_BSS_ATTR workflow_placement_run_t s_placement;
+static EXT_RAM_BSS_ATTR workflow_ranging_run_t s_ranging;
+
+static const nrf_cs_policy_t s_workflow_ranging_policy = {
+    .pair_timeout_ms = 500U,
+    .max_attempts = 3U,
+    .min_confidence = 500U,
+    .samples_per_pair = 3U,
+    .full_rotation = true,
+};
 
 static bool workflow_service_lock(void)
 {
@@ -536,6 +551,77 @@ static void workflow_service_calibration_cancel(void)
         "cancelled");
 }
 
+static void workflow_service_ranging_done(bool success, const char *reason)
+{
+    if (!success) (void)nrf_topology_service_invalidate_ranging();
+    const workflow_command_params_t params = {
+        .has_ok = true,
+        .ok = success,
+        .reason = reason,
+        .calculation_class = WORKFLOW_CALCULATION_CLASS_NONE,
+    };
+    (void)workflow_core_apply(
+        &s_core,
+        WORKFLOW_COMMAND_RANGING_DONE,
+        &params,
+        s_assigned_remotes,
+        workflow_service_placement_ready());
+}
+
+static void workflow_service_ranging_start(void)
+{
+    (void)nrf_topology_service_invalidate_ranging();
+    esp_err_t err = nrf_topology_service_ranging_start(
+        &s_workflow_ranging_policy,
+        NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS);
+    if (err == ESP_OK) {
+        nrf_topology_ranging_progress_t progress;
+        err = nrf_topology_service_ranging_get_progress(&progress);
+        if (err == ESP_OK) {
+            s_ranging = (workflow_ranging_run_t){
+                .active = true,
+                .started_at_ms = progress.started_at_ms,
+            };
+            return;
+        }
+        (void)nrf_topology_service_invalidate_ranging();
+    }
+
+    char reason[WORKFLOW_REASON_MAX];
+    (void)snprintf(reason, sizeof(reason), "start_failed:%s", esp_err_to_name(err));
+    workflow_service_ranging_done(false, reason);
+}
+
+static void workflow_service_step_changed(workflow_step_t previous, workflow_step_t next)
+{
+    if (previous == next) return;
+    if (previous == WORKFLOW_STEP_RANGING && next != WORKFLOW_STEP_RANGING && s_ranging.active) {
+        s_ranging.orphaned = true;
+    }
+    if (next == WORKFLOW_STEP_PLACEMENT) {
+        (void)nrf_topology_service_invalidate_ranging();
+    }
+    if (next == WORKFLOW_STEP_RANGING) workflow_service_ranging_start();
+}
+
+static void workflow_service_ranging_poll(void)
+{
+    if (!s_ranging.active) return;
+    nrf_topology_ranging_progress_t progress;
+    if (nrf_topology_service_ranging_get_progress(&progress) != ESP_OK ||
+        progress.started_at_ms != s_ranging.started_at_ms || !progress.complete) {
+        return;
+    }
+
+    const bool orphaned = s_ranging.orphaned || s_core.step != WORKFLOW_STEP_RANGING;
+    memset(&s_ranging, 0, sizeof(s_ranging));
+    if (orphaned) {
+        (void)nrf_topology_service_invalidate_ranging();
+        return;
+    }
+    workflow_service_ranging_done(progress.success, progress.failure_reason);
+}
+
 static void workflow_service_placement_clear_samples(
     workflow_placement_history_t *history)
 {
@@ -776,6 +862,7 @@ static esp_err_t workflow_service_active_object(
 
 static void workflow_service_reconcile_locked(void)
 {
+    const workflow_step_t previous_step = s_core.step;
     measurement_service_snapshot_t measurement;
     const esp_err_t measurement_err = measurement_service_get_snapshot(&measurement);
 
@@ -789,13 +876,20 @@ static void workflow_service_reconcile_locked(void)
     }
 
     s_assigned_remotes = workflow_service_assigned_remote_count();
-    if (measurement_err != ESP_OK) return;
+    if (measurement_err != ESP_OK) {
+        workflow_service_step_changed(previous_step, s_core.step);
+        return;
+    }
 
     if (measurement.state == MEASUREMENT_SERVICE_LIVE) {
         s_recorder_reconciliation_armed = true;
+        workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
-    if (!s_recorder_reconciliation_armed) return;
+    if (!s_recorder_reconciliation_armed) {
+        workflow_service_step_changed(previous_step, s_core.step);
+        return;
+    }
 
     if (measurement.state == MEASUREMENT_SERVICE_STARTING ||
         measurement.state == MEASUREMENT_SERVICE_RECORDING) {
@@ -809,6 +903,7 @@ static void workflow_service_reconcile_locked(void)
         (s_core.step == WORKFLOW_STEP_RECORDING || s_core.step == WORKFLOW_STEP_STOPPED)) {
         workflow_core_reconcile(&s_core, WORKFLOW_STEP_STOPPED, "recording_error");
     }
+    workflow_service_step_changed(previous_step, s_core.step);
 }
 
 esp_err_t workflow_service_init(void)
@@ -827,6 +922,7 @@ esp_err_t workflow_service_init(void)
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
     memset(&s_placement, 0, sizeof(s_placement));
+    memset(&s_ranging, 0, sizeof(s_ranging));
     workflow_service_copy_string(
         s_calibration.status.phase,
         sizeof(s_calibration.status.phase),
@@ -854,6 +950,7 @@ void workflow_service_shutdown(void)
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
     memset(&s_placement, 0, sizeof(s_placement));
+    memset(&s_ranging, 0, sizeof(s_ranging));
     memset(&s_core, 0, sizeof(s_core));
 }
 
@@ -862,6 +959,7 @@ esp_err_t workflow_service_poll(void)
     if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
     workflow_service_reconcile_locked();
     workflow_service_calibration_poll();
+    workflow_service_ranging_poll();
     workflow_service_placement_poll(true);
     workflow_service_unlock();
     return ESP_OK;
@@ -911,6 +1009,7 @@ workflow_command_result_t workflow_service_command(
 
     if (s_core.step != previous.step) {
         workflow_service_placement_poll(false);
+        workflow_service_step_changed(previous.step, s_core.step);
     }
 
     if (s_core.step == WORKFLOW_STEP_CALIBRATING &&

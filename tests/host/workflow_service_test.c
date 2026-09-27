@@ -48,6 +48,7 @@ static device_status_snapshot_t s_device;
 static uint16_t s_height_generation;
 static uint64_t s_now_ms;
 static bool s_placement_ready;
+static nrf_topology_ranging_progress_t s_ranging_progress;
 
 int64_t esp_timer_get_time(void)
 {
@@ -201,6 +202,29 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     return ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    if (policy == NULL) return ESP_ERR_INVALID_ARG;
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    s_ranging_progress.active = true;
+    s_ranging_progress.started_at_ms = s_now_ms;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_get_progress(
+    nrf_topology_ranging_progress_t *progress)
+{
+    if (progress == NULL) return ESP_ERR_INVALID_ARG;
+    *progress = s_ranging_progress;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_invalidate_ranging(void)
+{
+    return ESP_OK;
+}
+
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
 {
     return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
@@ -246,6 +270,7 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     s_height_generation = 0U;
     s_now_ms = 1000U;
     s_placement_ready = false;
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     assert(workflow_service_init() == ESP_OK);
 }
 

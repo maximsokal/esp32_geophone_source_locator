@@ -34,6 +34,37 @@ static unsigned s_cs_requests;
 static unsigned s_main_requests;
 static unsigned s_log_count;
 static char s_last_log[256];
+static nrf_topology_ranging_progress_t s_ranging_progress;
+static esp_err_t s_ranging_start_result;
+static esp_err_t s_ranging_progress_result;
+static nrf_cs_policy_t s_ranging_policy;
+static uint32_t s_ranging_timeout_ms;
+static unsigned s_ranging_start_calls;
+static unsigned s_ranging_progress_calls;
+static unsigned s_ranging_invalidate_calls;
+static unsigned s_ranging_call_count;
+static char s_ranging_calls[32];
+
+enum {
+    RANGING_CALL_INVALIDATE = 'I',
+    RANGING_CALL_START = 'S',
+    RANGING_CALL_PROGRESS = 'P',
+};
+
+static void ranging_call(char call)
+{
+    assert(s_ranging_call_count < sizeof(s_ranging_calls));
+    s_ranging_calls[s_ranging_call_count++] = call;
+}
+
+static void clear_ranging_calls(void)
+{
+    s_ranging_call_count = 0U;
+    s_ranging_start_calls = 0U;
+    s_ranging_progress_calls = 0U;
+    s_ranging_invalidate_calls = 0U;
+    memset(s_ranging_calls, 0, sizeof(s_ranging_calls));
+}
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
@@ -169,6 +200,39 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms)
+{
+    assert(policy != NULL);
+    ranging_call(RANGING_CALL_START);
+    ++s_ranging_start_calls;
+    s_ranging_policy = *policy;
+    s_ranging_timeout_ms = timeout_ms;
+    if (s_ranging_start_result == ESP_OK) {
+        memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+        s_ranging_progress.active = true;
+        s_ranging_progress.started_at_ms = s_now_ms;
+    }
+    return s_ranging_start_result;
+}
+
+esp_err_t nrf_topology_service_ranging_get_progress(
+    nrf_topology_ranging_progress_t *progress)
+{
+    assert(progress != NULL);
+    ranging_call(RANGING_CALL_PROGRESS);
+    ++s_ranging_progress_calls;
+    if (s_ranging_progress_result != ESP_OK) return s_ranging_progress_result;
+    *progress = s_ranging_progress;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_invalidate_ranging(void)
+{
+    ranging_call(RANGING_CALL_INVALIDATE);
+    ++s_ranging_invalidate_calls;
+    return ESP_OK;
+}
+
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
 {
     s_main_generation = generation;
@@ -215,6 +279,12 @@ static void reset_fakes(void)
     s_main_requests = 0U;
     s_log_count = 0U;
     s_last_log[0] = '\0';
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    memset(&s_ranging_policy, 0, sizeof(s_ranging_policy));
+    s_ranging_start_result = ESP_OK;
+    s_ranging_progress_result = ESP_OK;
+    s_ranging_timeout_ms = 0U;
+    clear_ranging_calls();
     assert(workflow_service_init() == ESP_OK);
 }
 
@@ -516,6 +586,203 @@ static workflow_snapshot_t get_workflow_snapshot(void)
     return snapshot;
 }
 
+static void enter_ready_placement(void)
+{
+    enter_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_placement_sample(1000U, heights, upright);
+    publish_placement_sample(1100U, heights, upright);
+    publish_placement_sample(1200U, heights, upright);
+    assert(get_workflow_snapshot().placement.all_stable);
+}
+
+static void start_ranging(void)
+{
+    clear_ranging_calls();
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
+}
+
+static void test_ranging_start_is_invalidated_and_nonblocking(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    assert(s_ranging_start_calls == 1U);
+    assert(s_ranging_progress_calls == 1U);
+    assert(s_ranging_call_count == 3U);
+    assert(s_ranging_calls[0] == RANGING_CALL_INVALIDATE);
+    assert(s_ranging_calls[1] == RANGING_CALL_START);
+    assert(s_ranging_calls[2] == RANGING_CALL_PROGRESS);
+    assert(s_ranging_policy.full_rotation);
+    assert(s_ranging_policy.pair_timeout_ms == 500U);
+    assert(s_ranging_policy.max_attempts == 3U);
+    assert(s_ranging_policy.min_confidence == 500U);
+    assert(s_ranging_policy.samples_per_pair == 3U);
+    assert(s_ranging_timeout_ms == NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
+    assert(s_ranging_progress_calls == 2U);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_success_and_confirm_preserve_frozen_result(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(s_ranging_invalidate_calls == 1U);
+    assert(command(WORKFLOW_COMMAND_CONFIRM) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(s_ranging_invalidate_calls == 1U);
+    workflow_service_shutdown();
+}
+
+static void assert_ranging_failure_reason(const char *reason)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = false;
+    (void)snprintf(
+        s_ranging_progress.failure_reason,
+        sizeof(s_ranging_progress.failure_reason),
+        "%s",
+        reason);
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(strcmp(snapshot.reason, reason) == 0);
+    assert(s_ranging_invalidate_calls == 2U);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_failure_reasons_propagate(void)
+{
+    assert_ranging_failure_reason("pair_failed:1-2");
+    assert_ranging_failure_reason("geometry_unsolved:3");
+    assert_ranging_failure_reason("timeout");
+}
+
+static void test_ranging_start_error_reports_failure(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    s_ranging_start_result = ESP_ERR_INVALID_STATE;
+    start_ranging();
+    const workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(strcmp(snapshot.reason, "start_failed:ESP_ERR_INVALID_STATE") == 0);
+    assert(s_ranging_start_calls == 1U);
+    assert(s_ranging_progress_calls == 0U);
+    assert(s_ranging_call_count == 3U);
+    assert(s_ranging_calls[0] == RANGING_CALL_INVALIDATE);
+    assert(s_ranging_calls[1] == RANGING_CALL_START);
+    assert(s_ranging_calls[2] == RANGING_CALL_INVALIDATE);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_retry_starts_a_new_run_and_ignores_stale_completion(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    const uint64_t previous_started_at_ms = s_ranging_progress.started_at_ms;
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = false;
+    (void)snprintf(
+        s_ranging_progress.failure_reason,
+        sizeof(s_ranging_progress.failure_reason),
+        "%s",
+        "timeout");
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+
+    s_now_ms += 100U;
+    clear_ranging_calls();
+    assert(command(WORKFLOW_COMMAND_RETRY) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_ranging_start_calls == 1U);
+    assert(s_ranging_progress_calls == 1U);
+    assert(s_ranging_call_count == 3U);
+    assert(s_ranging_calls[0] == RANGING_CALL_INVALIDATE);
+    assert(s_ranging_calls[1] == RANGING_CALL_START);
+    assert(s_ranging_calls[2] == RANGING_CALL_PROGRESS);
+    const uint64_t current_started_at_ms = s_ranging_progress.started_at_ms;
+    assert(current_started_at_ms != previous_started_at_ms);
+
+    s_ranging_progress.started_at_ms = previous_started_at_ms;
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
+
+    s_ranging_progress.started_at_ms = current_started_at_ms;
+    s_ranging_progress.complete = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_back_orphans_run_and_invalidates_late_result(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    const uint64_t started_at_ms = s_ranging_progress.started_at_ms;
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
+    assert(s_ranging_invalidate_calls == 2U);
+
+    s_ranging_progress.started_at_ms = started_at_ms;
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
+    assert(s_ranging_invalidate_calls == 3U);
+    workflow_service_shutdown();
+}
+
+static void test_placement_entry_invalidates_back_and_move_sensors(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = false;
+    (void)snprintf(
+        s_ranging_progress.failure_reason,
+        sizeof(s_ranging_progress.failure_reason),
+        "%s",
+        "timeout");
+    assert(workflow_service_poll() == ESP_OK);
+    clear_ranging_calls();
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
+    assert(s_ranging_invalidate_calls == 1U);
+    assert(s_ranging_call_count == 1U);
+    assert(s_ranging_calls[0] == RANGING_CALL_INVALIDATE);
+    workflow_service_shutdown();
+
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(command(WORKFLOW_COMMAND_CONFIRM) == WORKFLOW_COMMAND_RESULT_OK);
+    clear_ranging_calls();
+    assert(command(WORKFLOW_COMMAND_MOVE_SENSORS) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
+    assert(s_ranging_invalidate_calls == 1U);
+    assert(s_ranging_call_count == 1U);
+    assert(s_ranging_calls[0] == RANGING_CALL_INVALIDATE);
+    workflow_service_shutdown();
+}
+
 static void test_placement_sample_count_and_calculate_guard(void)
 {
     reset_fakes();
@@ -719,6 +986,13 @@ int main(void)
     test_calibration_timeout();
     test_calibration_back_cancels_pending_results();
     test_calibration_retry_changes_generation_and_ignores_stale_results();
+    test_ranging_start_is_invalidated_and_nonblocking();
+    test_ranging_success_and_confirm_preserve_frozen_result();
+    test_ranging_failure_reasons_propagate();
+    test_ranging_start_error_reports_failure();
+    test_ranging_retry_starts_a_new_run_and_ignores_stale_completion();
+    test_ranging_back_orphans_run_and_invalidates_late_result();
+    test_placement_entry_invalidates_back_and_move_sensors();
     test_placement_sample_count_and_calculate_guard();
     test_placement_height_range_50mm_boundary();
     test_placement_uses_inclusive_three_second_window();
