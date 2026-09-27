@@ -50,7 +50,8 @@ static uint32_t workflow_core_actions(
     bool placement_ready,
     bool calibration_ok,
     bool ranging_ok,
-    workflow_calculation_class_t calculation_class
+    workflow_calculation_class_t calculation_class,
+    bool calc_settings_ready
 )
 {
     uint32_t actions = 0U;
@@ -99,7 +100,7 @@ static uint32_t workflow_core_actions(
             ADD_ACTION(WORKFLOW_COMMAND_STOP_RECORDING);
             break;
         case WORKFLOW_STEP_STOPPED:
-            ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES);
+            if (calc_settings_ready) ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES);
             ADD_ACTION(WORKFLOW_COMMAND_DELETE_RECORDING);
             ADD_ACTION(WORKFLOW_COMMAND_RECORD_AGAIN);
             ADD_ACTION(WORKFLOW_COMMAND_MOVE_SENSORS);
@@ -149,6 +150,7 @@ void workflow_core_reset_object(
         core->calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
         core->calibration_ok = false;
         core->ranging_ok = false;
+        core->calc_settings_ready = false;
         workflow_core_set_reason(core, NULL);
         workflow_core_advance_generation(core);
     }
@@ -278,13 +280,20 @@ workflow_command_result_t workflow_core_apply(
             }
             break;
         case WORKFLOW_COMMAND_CALCULATE_SOURCES:
-            if (core->step == WORKFLOW_STEP_STOPPED) next = WORKFLOW_STEP_CALCULATING;
+            if (core->step == WORKFLOW_STEP_STOPPED) {
+                if (!core->calc_settings_ready) {
+                    workflow_core_set_reason(core, "calc_settings_invalid");
+                    return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+                }
+                next = WORKFLOW_STEP_CALCULATING;
+            }
             break;
         case WORKFLOW_COMMAND_CALCULATION_DONE:
             if (core->step == WORKFLOW_STEP_CALCULATING && params->has_ok) {
                 if (!params->ok &&
                     params->calculation_class != WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN &&
-                    params->calculation_class != WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS) {
+                    params->calculation_class != WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS &&
+                    params->calculation_class != WORKFLOW_CALCULATION_CLASS_INTERNAL) {
                     return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
                 }
                 next = WORKFLOW_STEP_RESULT;
@@ -354,6 +363,11 @@ bool workflow_core_set_progress(workflow_core_t *core, int progress)
     return true;
 }
 
+void workflow_core_set_calc_settings_ready(workflow_core_t *core, bool ready)
+{
+    if (core != NULL) core->calc_settings_ready = ready;
+}
+
 void workflow_core_snapshot(
     const workflow_core_t *core,
     size_t assigned_remotes,
@@ -362,6 +376,7 @@ void workflow_core_snapshot(
 )
 {
     if (core == NULL || snapshot == NULL) return;
+    memset(snapshot, 0, sizeof(*snapshot));
     snapshot->step = core->step;
     snapshot->generation = core->generation;
     snapshot->allowed_actions = 0U;
@@ -369,6 +384,7 @@ void workflow_core_snapshot(
     memcpy(snapshot->reason, core->reason, sizeof(snapshot->reason));
     snapshot->progress = core->progress;
     snapshot->calculation_class = core->calculation_class;
+    snapshot->calc_settings_ready = core->calc_settings_ready;
     snapshot->assigned_remotes = assigned_remotes > UINT8_MAX
         ? UINT8_MAX
         : (uint8_t)assigned_remotes;
@@ -379,7 +395,8 @@ void workflow_core_snapshot(
         placement_ready,
         core->calibration_ok,
         core->ranging_ok,
-        core->calculation_class
+        core->calculation_class,
+        core->calc_settings_ready
     );
     snapshot->recommended_action = WORKFLOW_COMMAND_COUNT;
     if (core->step == WORKFLOW_STEP_RESULT) {
@@ -429,6 +446,7 @@ const char *workflow_core_calculation_class_name(workflow_calculation_class_t ca
     switch (calculation_class) {
         case WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN: return "record_again";
         case WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS: return "move_sensors";
+        case WORKFLOW_CALCULATION_CLASS_INTERNAL: return "internal";
         case WORKFLOW_CALCULATION_CLASS_NONE:
         default: return "none";
     }
@@ -458,6 +476,10 @@ bool workflow_core_calculation_class_from_name(
     }
     if (strcmp(name, "move_sensors") == 0) {
         *calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS;
+        return true;
+    }
+    if (strcmp(name, "internal") == 0) {
+        *calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
         return true;
     }
     if (strcmp(name, "none") == 0) {

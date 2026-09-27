@@ -450,9 +450,22 @@ bool web_status_json_add_workflow(cJSON *root)
             workflow_core_sufficiency_name(snapshot.sensor_sufficiency)
         ) == NULL ||
         cJSON_AddNumberToObject(workflow, "assigned_remotes", snapshot.assigned_remotes) == NULL ||
-        cJSON_AddStringToObject(workflow, "reason", snapshot.reason) == NULL) {
+        cJSON_AddStringToObject(workflow, "reason", snapshot.reason) == NULL ||
+        cJSON_AddBoolToObject(workflow, "has_scan", snapshot.has_scan) == NULL ||
+        cJSON_AddBoolToObject(workflow, "calc_settings_ready", snapshot.calc_settings_ready) == NULL ||
+        cJSON_AddStringToObject(
+            workflow, "calculation_class",
+            workflow_core_calculation_class_name(snapshot.calculation_class)) == NULL) {
         return false;
     }
+
+    const bool object_id_added = snapshot.object_id[0] != '\0'
+        ? cJSON_AddStringToObject(workflow, "object_id", snapshot.object_id) != NULL
+        : cJSON_AddNullToObject(workflow, "object_id") != NULL;
+    const bool session_id_added = snapshot.session_id[0] != '\0'
+        ? cJSON_AddStringToObject(workflow, "session_id", snapshot.session_id) != NULL
+        : cJSON_AddNullToObject(workflow, "session_id") != NULL;
+    if (!object_id_added || !session_id_added) return false;
 
     if (snapshot.progress == WORKFLOW_PROGRESS_UNKNOWN) {
         if (cJSON_AddNullToObject(workflow, "progress") == NULL) return false;

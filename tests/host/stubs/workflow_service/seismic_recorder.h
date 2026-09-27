@@ -1,0 +1,3 @@
+#pragma once
+
+#define SEISMIC_RECORDER_SESSION_ID_SIZE 16U

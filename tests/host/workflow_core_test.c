@@ -65,6 +65,7 @@ static void test_exhaustive_transition_table(void)
             core.generation = 41U;
             core.calibration_ok = false;
             core.ranging_ok = false;
+            workflow_core_set_calc_settings_ready(&core, true);
             workflow_command_params_t params = {
                 .has_ok = true,
                 .ok = false,
@@ -89,6 +90,29 @@ static void test_exhaustive_transition_table(void)
             }
         }
     }
+}
+
+static void test_calculation_requires_saved_settings(void)
+{
+    workflow_core_t core;
+    workflow_core_init(&core, true);
+    core.step = WORKFLOW_STEP_STOPPED;
+    workflow_command_params_t params = {0};
+    workflow_snapshot_t snapshot;
+
+    workflow_core_snapshot(&core, 4U, false, &snapshot);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES)) == 0U);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_SOURCES, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(core.step == WORKFLOW_STEP_STOPPED);
+    assert(strcmp(core.reason, "calc_settings_invalid") == 0);
+
+    workflow_core_set_calc_settings_ready(&core, true);
+    workflow_core_snapshot(&core, 4U, false, &snapshot);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES)) != 0U);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_SOURCES, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_CALCULATING);
 }
 
 static void test_back_from_calibration_result_returns_to_prep(void)
@@ -333,6 +357,7 @@ static void test_success_and_failure_result_routes(void)
 int main(void)
 {
     test_exhaustive_transition_table();
+    test_calculation_requires_saved_settings();
     test_back_from_calibration_result_returns_to_prep();
     test_back_from_ranging_result_returns_to_placement();
     test_back_from_result_returns_to_stopped();

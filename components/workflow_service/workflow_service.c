@@ -1,23 +1,38 @@
 #include "workflow_service.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "app_task_config.h"
 #include "device_status.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "localization_config.h"
+#include "localization_job.h"
 #include "main_barometer.h"
 #include "measurement_service.h"
 #include "nrf_baro_altitude.h"
 #include "nrf_topology_service.h"
 #include "object_service.h"
+#include "object_store.h"
+#include "cJSON.h"
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
 #define WORKFLOW_CALIBRATION_CS_MAX_SPREAD_MM 150
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
+#define WORKFLOW_SERVICE_POLL_INITIAL_STACK_BYTES 4096U
+#define WORKFLOW_SERVICE_POLL_STACK_MARGIN_BYTES 1024U
+#define WORKFLOW_SERVICE_STATUS_REFRESH_MS 2000U
+#define WORKFLOW_SERVICE_POLL_TASK_PRIORITY 1U
+#define WORKFLOW_ASYNC_QUEUE_DEPTH 4U
 
 static const char *TAG = "WORKFLOW";
 
@@ -64,17 +79,54 @@ typedef struct {
     uint64_t started_at_ms;
 } workflow_ranging_run_t;
 
+typedef struct {
+    uint32_t seq;
+    workflow_command_t command;
+    bool has_generation;
+    uint32_t expected_generation;
+} workflow_async_command_t;
+
 static SemaphoreHandle_t s_mutex;
+static SemaphoreHandle_t s_async_enqueue_mutex;
+static QueueHandle_t s_async_queue;
+static TaskHandle_t s_poll_task;
+static uint32_t s_poll_task_stack_bytes;
+static bool s_poll_task_stack_sized;
 static bool s_initialized;
 static bool s_recorder_reconciliation_armed;
 static uint8_t s_assigned_remotes;
-static char s_active_object_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
+static char s_active_object_id[OBJECT_STORE_ID_SIZE];
+static char s_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+static uint32_t s_async_next_seq;
+static workflow_last_async_t s_last_async;
+static bool s_placement_ready;
+static bool s_has_scan;
+static bool s_scan_cache_valid;
+static uint64_t s_scan_cache_updated_ms;
+static workflow_step_t s_scan_cache_step;
+static char s_scan_cache_object_id[OBJECT_STORE_ID_SIZE];
+static char s_scan_cache_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+static bool s_calc_settings_ready;
+static bool s_calc_settings_cache_valid;
+static uint64_t s_calc_settings_cache_updated_ms;
+static char s_calc_settings_cache_object_id[OBJECT_STORE_ID_SIZE];
+static uint32_t s_calculation_job_id;
+static uint32_t s_orphaned_job_id;
 static workflow_core_t s_core;
 static workflow_service_placement_ready_fn s_placement_ready_predicate;
 static void *s_placement_ready_context;
 static EXT_RAM_BSS_ATTR workflow_calibration_run_t s_calibration;
 static EXT_RAM_BSS_ATTR workflow_placement_run_t s_placement;
 static EXT_RAM_BSS_ATTR workflow_ranging_run_t s_ranging;
+
+static workflow_command_result_t workflow_service_command_locked(
+    workflow_command_t command,
+    const workflow_command_params_t *params
+);
+static void workflow_service_process_async_locked(void);
+static void workflow_service_mark_calculation_orphaned_locked(void);
+static BaseType_t workflow_service_create_poll_task(uint32_t stack_bytes, TaskHandle_t *task_out);
+static void workflow_service_poll_task(void *argument);
 
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = 500U,
@@ -111,6 +163,91 @@ static uint64_t workflow_service_now_ms(void)
 {
     const int64_t now_us = esp_timer_get_time();
     return now_us > 0 ? (uint64_t)now_us / UINT64_C(1000) : 0U;
+}
+
+static bool workflow_service_step_has_session(workflow_step_t step)
+{
+    return step == WORKFLOW_STEP_RECORDING || step == WORKFLOW_STEP_STOPPED ||
+        step == WORKFLOW_STEP_CALCULATING || step == WORKFLOW_STEP_RESULT;
+}
+
+static void workflow_service_update_session_locked(
+    esp_err_t measurement_err,
+    const measurement_service_snapshot_t *measurement
+)
+{
+    if (!workflow_service_step_has_session(s_core.step)) {
+        if (s_session_id[0] != '\0') {
+            s_session_id[0] = '\0';
+            s_scan_cache_valid = false;
+            s_has_scan = false;
+        }
+        return;
+    }
+    if (measurement_err != ESP_OK || measurement == NULL ||
+        strcmp(measurement->object_id, s_active_object_id) != 0 ||
+        measurement->session_id[0] == '\0') {
+        return;
+    }
+    const bool recording = s_core.step == WORKFLOW_STEP_RECORDING &&
+        (measurement->state == MEASUREMENT_SERVICE_STARTING ||
+         measurement->state == MEASUREMENT_SERVICE_RECORDING);
+    const bool reviewing = s_core.step != WORKFLOW_STEP_RECORDING &&
+        measurement->state == MEASUREMENT_SERVICE_REVIEW;
+    if (recording || reviewing) {
+        if (strcmp(s_session_id, measurement->session_id) != 0) {
+            s_scan_cache_valid = false;
+            s_has_scan = false;
+        }
+        workflow_service_copy_string(s_session_id, sizeof(s_session_id), measurement->session_id);
+    }
+}
+
+static void workflow_service_refresh_presence_locked(void)
+{
+    const uint64_t now_ms = workflow_service_now_ms();
+    const bool identity_changed =
+        s_scan_cache_step != s_core.step ||
+        strcmp(s_scan_cache_object_id, s_active_object_id) != 0 ||
+        strcmp(s_scan_cache_session_id, s_session_id) != 0;
+    if (!s_scan_cache_valid || identity_changed ||
+        now_ms - s_scan_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
+        s_has_scan = false;
+        if (s_active_object_id[0] != '\0') {
+            bool present = false;
+            if (object_store_scan_present(s_active_object_id, s_session_id, &present) == ESP_OK) {
+                s_has_scan = present;
+            }
+        }
+        workflow_service_copy_string(s_scan_cache_object_id, sizeof(s_scan_cache_object_id), s_active_object_id);
+        workflow_service_copy_string(s_scan_cache_session_id, sizeof(s_scan_cache_session_id), s_session_id);
+        s_scan_cache_step = s_core.step;
+        s_scan_cache_updated_ms = now_ms;
+        s_scan_cache_valid = true;
+    }
+
+    const bool object_changed = strcmp(s_calc_settings_cache_object_id, s_active_object_id) != 0;
+    if (!s_calc_settings_cache_valid || object_changed ||
+        now_ms - s_calc_settings_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
+        s_calc_settings_ready = false;
+        if (s_active_object_id[0] != '\0') {
+            char *json = NULL;
+            if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
+                cJSON *root = cJSON_Parse(json);
+                localization_calculate_config_t config;
+                uint32_t budget_ms = 0U;
+                s_calc_settings_ready = root != NULL &&
+                    localization_config_from_json(root, &config, &budget_ms) == ESP_OK;
+                cJSON_Delete(root);
+                free(json);
+            }
+        }
+        workflow_core_set_calc_settings_ready(&s_core, s_calc_settings_ready);
+        workflow_service_copy_string(
+            s_calc_settings_cache_object_id, sizeof(s_calc_settings_cache_object_id), s_active_object_id);
+        s_calc_settings_cache_updated_ms = now_ms;
+        s_calc_settings_cache_valid = true;
+    }
 }
 
 static void workflow_service_calibration_add_reason(const char *reason)
@@ -871,22 +1008,33 @@ static void workflow_service_reconcile_locked(void)
     if (workflow_service_active_object(object_id, &active_object_present) == ESP_OK &&
         strcmp(object_id, s_active_object_id) != 0) {
         workflow_service_calibration_cancel();
+        if (s_core.step == WORKFLOW_STEP_CALCULATING) {
+            workflow_service_mark_calculation_orphaned_locked();
+        }
         (void)snprintf(s_active_object_id, sizeof(s_active_object_id), "%s", object_id);
+        s_session_id[0] = '\0';
+        s_has_scan = false;
+        s_calc_settings_ready = false;
+        s_scan_cache_valid = false;
+        s_calc_settings_cache_valid = false;
         workflow_core_reset_object(&s_core, active_object_present, true);
     }
 
     s_assigned_remotes = workflow_service_assigned_remote_count();
     if (measurement_err != ESP_OK) {
+        workflow_service_update_session_locked(measurement_err, NULL);
         workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
 
     if (measurement.state == MEASUREMENT_SERVICE_LIVE) {
         s_recorder_reconciliation_armed = true;
+        workflow_service_update_session_locked(measurement_err, &measurement);
         workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
     if (!s_recorder_reconciliation_armed) {
+        workflow_service_update_session_locked(measurement_err, &measurement);
         workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
@@ -903,7 +1051,133 @@ static void workflow_service_reconcile_locked(void)
         (s_core.step == WORKFLOW_STEP_RECORDING || s_core.step == WORKFLOW_STEP_STOPPED)) {
         workflow_core_reconcile(&s_core, WORKFLOW_STEP_STOPPED, "recording_error");
     }
+    workflow_service_update_session_locked(measurement_err, &measurement);
     workflow_service_step_changed(previous_step, s_core.step);
+}
+
+static void workflow_service_mark_calculation_orphaned_locked(void)
+{
+    if (s_calculation_job_id != 0U) s_orphaned_job_id = s_calculation_job_id;
+    s_calculation_job_id = 0U;
+}
+
+static void workflow_service_calculation_done_locked(
+    bool ok,
+    workflow_calculation_class_t calculation_class,
+    const char *reason
+)
+{
+    const workflow_step_t previous_step = s_core.step;
+    const workflow_command_params_t params = {
+        .has_ok = true,
+        .ok = ok,
+        .reason = reason,
+        .calculation_class = calculation_class,
+    };
+    if (workflow_core_apply(
+            &s_core, WORKFLOW_COMMAND_CALCULATION_DONE, &params,
+            s_assigned_remotes, s_placement_ready) == WORKFLOW_COMMAND_RESULT_OK) {
+        s_calculation_job_id = 0U;
+        workflow_service_step_changed(previous_step, s_core.step);
+    }
+}
+
+static void workflow_service_calculation_start_locked(void)
+{
+    localization_job_status_t status;
+    localization_job_get_status(&status);
+    if (status.state == LOCALIZATION_JOB_QUEUED || status.state == LOCALIZATION_JOB_RUNNING) {
+        workflow_service_calculation_done_locked(
+            false, WORKFLOW_CALCULATION_CLASS_INTERNAL, "busy");
+        return;
+    }
+    if (s_orphaned_job_id != 0U && status.job_id == s_orphaned_job_id) {
+        s_orphaned_job_id = 0U;
+    }
+
+    char *json = NULL;
+    localization_calculate_config_t config;
+    uint32_t budget_ms = 0U;
+    cJSON *root = NULL;
+    esp_err_t err = s_active_object_id[0] == '\0'
+        ? ESP_ERR_NOT_FOUND
+        : object_store_get_calc_settings_json(s_active_object_id, &json);
+    if (err == ESP_OK && json != NULL) {
+        root = cJSON_Parse(json);
+        err = root == NULL
+            ? ESP_ERR_INVALID_RESPONSE
+            : localization_config_from_json(root, &config, &budget_ms);
+    }
+    cJSON_Delete(root);
+    free(json);
+    if (err != ESP_OK) {
+        workflow_service_calculation_done_locked(
+            false, WORKFLOW_CALCULATION_CLASS_INTERNAL, "calc_settings_invalid");
+        return;
+    }
+
+    uint32_t job_id = 0U;
+    err = localization_job_submit(
+        s_active_object_id, s_session_id, &config, budget_ms, &job_id);
+    if (err != ESP_OK) {
+        char reason[WORKFLOW_REASON_MAX];
+        (void)snprintf(reason, sizeof(reason), "submit_failed:%s", esp_err_to_name(err));
+        workflow_service_calculation_done_locked(
+            false, WORKFLOW_CALCULATION_CLASS_INTERNAL, reason);
+        return;
+    }
+    s_calculation_job_id = job_id;
+    (void)workflow_core_set_progress(&s_core, 0);
+}
+
+static void workflow_service_calculation_poll_locked(void)
+{
+    if (s_calculation_job_id == 0U && s_orphaned_job_id == 0U) return;
+    localization_job_status_t status;
+    localization_job_get_status(&status);
+
+    if (s_orphaned_job_id != 0U && status.job_id == s_orphaned_job_id) {
+        if (status.state == LOCALIZATION_JOB_QUEUED || status.state == LOCALIZATION_JOB_RUNNING) return;
+        s_orphaned_job_id = 0U;
+    } else if (s_orphaned_job_id != 0U) {
+        s_orphaned_job_id = 0U;
+    }
+
+    if (s_calculation_job_id == 0U || s_core.step != WORKFLOW_STEP_CALCULATING ||
+        status.job_id != s_calculation_job_id ||
+        strcmp(status.object_id, s_active_object_id) != 0 ||
+        strcmp(status.session_id, s_session_id) != 0) {
+        return;
+    }
+    if (status.state == LOCALIZATION_JOB_QUEUED || status.state == LOCALIZATION_JOB_RUNNING) {
+        (void)workflow_core_set_progress(&s_core, (int)status.progress_percent);
+        return;
+    }
+    if (status.state != LOCALIZATION_JOB_SUCCEEDED && status.state != LOCALIZATION_JOB_FAILED) return;
+
+    const localization_recommendation_t *recommendation = &status.summary.recommendation;
+    const bool ok = status.state == LOCALIZATION_JOB_SUCCEEDED && recommendation->successful;
+    workflow_calculation_class_t calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+    const char *reason = recommendation->reason_summary;
+    if (!ok) {
+        switch (recommendation->action) {
+            case LOCALIZATION_RECOMMENDATION_RECORD_AGAIN:
+                calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+                break;
+            case LOCALIZATION_RECOMMENDATION_MOVE_SENSORS:
+                calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS;
+                break;
+            case LOCALIZATION_RECOMMENDATION_NONE:
+            default:
+                calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
+                break;
+        }
+        if (status.state == LOCALIZATION_JOB_FAILED && status.error != ESP_OK) {
+            reason = esp_err_to_name(status.error);
+        }
+        if (reason == NULL || reason[0] == '\0') reason = "calculation_failed";
+    }
+    workflow_service_calculation_done_locked(ok, calculation_class, reason);
 }
 
 esp_err_t workflow_service_init(void)
@@ -911,6 +1185,17 @@ esp_err_t workflow_service_init(void)
     if (s_initialized) return ESP_OK;
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) return ESP_ERR_NO_MEM;
+    s_async_enqueue_mutex = xSemaphoreCreateMutex();
+    s_async_queue = xQueueCreate(WORKFLOW_ASYNC_QUEUE_DEPTH, sizeof(workflow_async_command_t));
+    if (s_async_enqueue_mutex == NULL || s_async_queue == NULL) {
+        if (s_async_queue != NULL) vQueueDelete(s_async_queue);
+        if (s_async_enqueue_mutex != NULL) vSemaphoreDelete(s_async_enqueue_mutex);
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        s_async_enqueue_mutex = NULL;
+        s_async_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
 
     char object_id[OBJECT_SERVICE_OBJECT_ID_SIZE] = {0};
     bool active_object_present = false;
@@ -920,6 +1205,24 @@ esp_err_t workflow_service_init(void)
     s_assigned_remotes = workflow_service_assigned_remote_count();
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
+    s_session_id[0] = '\0';
+    memset(&s_last_async, 0, sizeof(s_last_async));
+    s_placement_ready = false;
+    s_has_scan = false;
+    s_scan_cache_valid = false;
+    s_scan_cache_updated_ms = 0U;
+    s_scan_cache_step = WORKFLOW_STEP_COUNT;
+    s_scan_cache_object_id[0] = '\0';
+    s_scan_cache_session_id[0] = '\0';
+    s_calc_settings_ready = false;
+    s_calc_settings_cache_valid = false;
+    s_calc_settings_cache_updated_ms = 0U;
+    s_calc_settings_cache_object_id[0] = '\0';
+    s_calculation_job_id = 0U;
+    s_orphaned_job_id = 0U;
+    s_poll_task_stack_bytes = WORKFLOW_SERVICE_POLL_INITIAL_STACK_BYTES;
+    s_poll_task_stack_sized = false;
+    s_poll_task = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
     memset(&s_placement, 0, sizeof(s_placement));
     memset(&s_ranging, 0, sizeof(s_ranging));
@@ -932,20 +1235,47 @@ esp_err_t workflow_service_init(void)
     s_recorder_reconciliation_armed =
         measurement_service_get_snapshot(&measurement) == ESP_OK &&
         measurement.state == MEASUREMENT_SERVICE_LIVE;
+    if (localization_job_init() != ESP_OK) {
+        workflow_service_shutdown();
+        return ESP_ERR_NO_MEM;
+    }
     s_initialized = true;
+    const BaseType_t task_created =
+        workflow_service_create_poll_task(s_poll_task_stack_bytes, &s_poll_task);
+    if (task_created != pdPASS) {
+        workflow_service_shutdown();
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
 void workflow_service_shutdown(void)
 {
+    s_initialized = false;
+    if (s_poll_task != NULL) {
+        vTaskDelete(s_poll_task);
+        s_poll_task = NULL;
+    }
+    if (s_async_queue != NULL) {
+        vQueueDelete(s_async_queue);
+        s_async_queue = NULL;
+    }
+    if (s_async_enqueue_mutex != NULL) {
+        vSemaphoreDelete(s_async_enqueue_mutex);
+        s_async_enqueue_mutex = NULL;
+    }
     if (s_mutex != NULL) {
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
     }
-    s_initialized = false;
     s_recorder_reconciliation_armed = false;
     s_assigned_remotes = 0U;
     s_active_object_id[0] = '\0';
+    s_session_id[0] = '\0';
+    s_calculation_job_id = 0U;
+    s_orphaned_job_id = 0U;
+    s_scan_cache_valid = false;
+    s_calc_settings_cache_valid = false;
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
@@ -954,13 +1284,38 @@ void workflow_service_shutdown(void)
     memset(&s_core, 0, sizeof(s_core));
 }
 
+static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
+{
+    workflow_core_snapshot(
+        &s_core, s_assigned_remotes, s_placement_ready, snapshot);
+    workflow_service_copy_string(snapshot->object_id, sizeof(snapshot->object_id), s_active_object_id);
+    workflow_service_copy_string(snapshot->session_id, sizeof(snapshot->session_id), s_session_id);
+    snapshot->has_scan = s_has_scan;
+    snapshot->calc_settings_ready = s_calc_settings_ready;
+    snapshot->last_async = s_last_async;
+    snapshot->calibration = s_calibration.status;
+    snapshot->placement = s_placement.status;
+}
+
+/*
+ * Poll waits indefinitely for the workflow mutex; measurement, object-service,
+ * topology/calibration/ranging, and localization-job getters may also wait on
+ * their service mutexes. Device-status reads are try-only. Presence refresh
+ * takes object-store/storage guards and touches SD (scan stat plus settings
+ * read/JSON parse) only on identity changes or at most every 2 s. The task is
+ * low priority and the LVGL path uses try_get_snapshot(), never this poll.
+ */
 esp_err_t workflow_service_poll(void)
 {
     if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
+    workflow_service_process_async_locked();
     workflow_service_reconcile_locked();
     workflow_service_calibration_poll();
     workflow_service_ranging_poll();
     workflow_service_placement_poll(true);
+    s_placement_ready = workflow_service_placement_ready();
+    workflow_service_refresh_presence_locked();
+    workflow_service_calculation_poll_locked();
     workflow_service_unlock();
     return ESP_OK;
 }
@@ -971,52 +1326,52 @@ esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
     const esp_err_t poll_err = workflow_service_poll();
     if (poll_err != ESP_OK) return poll_err;
     if (!workflow_service_lock()) return ESP_ERR_INVALID_STATE;
-
-    workflow_core_snapshot(
-        &s_core,
-        s_assigned_remotes,
-        workflow_service_placement_ready(),
-        snapshot
-    );
-    snapshot->calibration = s_calibration.status;
-    snapshot->placement = s_placement.status;
+    workflow_service_snapshot_locked(snapshot);
     workflow_service_unlock();
     return ESP_OK;
 }
 
-workflow_command_result_t workflow_service_command(
+esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out)
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized || s_mutex == NULL) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
+    workflow_service_snapshot_locked(out);
+    workflow_service_unlock();
+    return ESP_OK;
+}
+
+static workflow_command_result_t workflow_service_command_locked(
     workflow_command_t command,
     const workflow_command_params_t *params
 )
 {
-    if (params == NULL) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
-    if (!s_initialized || !workflow_service_lock()) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
     workflow_service_reconcile_locked();
     workflow_service_placement_poll(false);
+    s_placement_ready = workflow_service_placement_ready();
 
     const workflow_core_t previous = s_core;
+    char previous_session[SEISMIC_RECORDER_SESSION_ID_SIZE];
+    memcpy(previous_session, s_session_id, sizeof(previous_session));
     const workflow_command_result_t result = workflow_core_apply(
-        &s_core,
-        command,
-        params,
-        s_assigned_remotes,
-        workflow_service_placement_ready()
-    );
-    if (result != WORKFLOW_COMMAND_RESULT_OK) {
-        workflow_service_unlock();
-        return result;
-    }
+        &s_core, command, params, s_assigned_remotes, s_placement_ready);
+    if (result != WORKFLOW_COMMAND_RESULT_OK) return result;
 
     if (s_core.step != previous.step) {
         workflow_service_placement_poll(false);
         workflow_service_step_changed(previous.step, s_core.step);
+        if (!workflow_service_step_has_session(s_core.step)) {
+            workflow_service_update_session_locked(ESP_ERR_INVALID_STATE, NULL);
+        }
+    }
+    if (previous.step == WORKFLOW_STEP_CALCULATING && s_core.step != WORKFLOW_STEP_CALCULATING) {
+        workflow_service_mark_calculation_orphaned_locked();
     }
 
-    if (s_core.step == WORKFLOW_STEP_CALIBRATING &&
-        previous.step != WORKFLOW_STEP_CALIBRATING) {
+    if (s_core.step == WORKFLOW_STEP_CALIBRATING && previous.step != WORKFLOW_STEP_CALIBRATING) {
         if (workflow_service_calibration_start() != ESP_OK) {
             s_core = previous;
-            workflow_service_unlock();
+            memcpy(s_session_id, previous_session, sizeof(s_session_id));
             return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
         }
     } else if (previous.step == WORKFLOW_STEP_CALIBRATING &&
@@ -1026,23 +1381,86 @@ workflow_command_result_t workflow_service_command(
 
     esp_err_t measurement_err = ESP_OK;
     if (command == WORKFLOW_COMMAND_START_RECORDING) {
+        s_session_id[0] = '\0';
+        s_scan_cache_valid = false;
+        s_has_scan = false;
         measurement_err = measurement_service_start_async();
         if (measurement_err == ESP_OK) s_recorder_reconciliation_armed = true;
-    }
-    else if (command == WORKFLOW_COMMAND_STOP_RECORDING) {
+    } else if (command == WORKFLOW_COMMAND_STOP_RECORDING) {
         measurement_err = measurement_service_stop_async();
-    }
-    else if (command == WORKFLOW_COMMAND_DELETE_RECORDING) {
+    } else if (command == WORKFLOW_COMMAND_DELETE_RECORDING) {
         measurement_err = measurement_service_delete_async();
     }
     if (measurement_err != ESP_OK) {
         s_core = previous;
-        workflow_service_unlock();
+        memcpy(s_session_id, previous_session, sizeof(s_session_id));
         return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
     }
 
-    workflow_service_unlock();
+    if (command == WORKFLOW_COMMAND_CALCULATE_SOURCES && s_core.step == WORKFLOW_STEP_CALCULATING) {
+        workflow_service_calculation_start_locked();
+    }
     return WORKFLOW_COMMAND_RESULT_OK;
+}
+
+static void workflow_service_process_async_locked(void)
+{
+    workflow_async_command_t item;
+    while (xQueueReceive(s_async_queue, &item, 0U) == pdTRUE) {
+        const workflow_command_params_t params = {
+            .has_generation = item.has_generation,
+            .expected_generation = item.expected_generation,
+        };
+        s_last_async = (workflow_last_async_t){
+            .seq = item.seq,
+            .command = item.command,
+            .result = workflow_service_command_locked(item.command, &params),
+        };
+    }
+}
+
+workflow_command_result_t workflow_service_command(
+    workflow_command_t command,
+    const workflow_command_params_t *params
+)
+{
+    if (params == NULL) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    if (!s_initialized || !workflow_service_lock()) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
+    const workflow_command_result_t result = workflow_service_command_locked(command, params);
+    workflow_service_unlock();
+    return result;
+}
+
+esp_err_t workflow_service_command_async(
+    workflow_command_t command,
+    bool has_generation,
+    uint32_t expected_generation,
+    uint32_t *out_seq
+)
+{
+    if (command < 0 || command >= WORKFLOW_COMMAND_COUNT || out_seq == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || s_async_queue == NULL || s_async_enqueue_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
+    uint32_t seq = s_async_next_seq + 1U;
+    if (seq == 0U) seq = 1U;
+    const workflow_async_command_t item = {
+        .seq = seq,
+        .command = command,
+        .has_generation = has_generation,
+        .expected_generation = expected_generation,
+    };
+    if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
+        xSemaphoreGive(s_async_enqueue_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    s_async_next_seq = seq;
+    *out_seq = seq;
+    xSemaphoreGive(s_async_enqueue_mutex);
+    return ESP_OK;
 }
 
 esp_err_t workflow_service_set_placement_ready_predicate(
@@ -1053,6 +1471,7 @@ esp_err_t workflow_service_set_placement_ready_predicate(
     if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
     s_placement_ready_predicate = predicate;
     s_placement_ready_context = context;
+    s_placement_ready = workflow_service_placement_ready();
     workflow_service_unlock();
     return ESP_OK;
 }
@@ -1064,3 +1483,81 @@ esp_err_t workflow_service_set_progress(int progress)
     workflow_service_unlock();
     return updated ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
+
+esp_err_t workflow_service_notify_calc_settings_saved(const char *object_id)
+{
+    if (object_id == NULL || object_id[0] == '\0' || strlen(object_id) >= OBJECT_STORE_ID_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
+    if (strcmp(object_id, s_active_object_id) == 0) {
+        s_calc_settings_cache_valid = false;
+        s_calc_settings_ready = false;
+        workflow_core_set_calc_settings_ready(&s_core, false);
+    }
+    workflow_service_unlock();
+    return ESP_OK;
+}
+
+static BaseType_t workflow_service_create_poll_task(uint32_t stack_bytes, TaskHandle_t *task_out)
+{
+    return xTaskCreatePinnedToCoreWithCaps(
+        workflow_service_poll_task,
+        "workflow_poll",
+        stack_bytes,
+        NULL,
+        WORKFLOW_SERVICE_POLL_TASK_PRIORITY,
+        task_out,
+        APP_TASK_CORE_SERVICES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+}
+
+static void workflow_service_poll_task(void *argument)
+{
+    (void)argument;
+    uint32_t poll_count = 0U;
+    const uint32_t allocated_stack_bytes = s_poll_task_stack_bytes;
+    TickType_t last_wake = xTaskGetTickCount();
+    for (;;) {
+        if (!s_initialized) vTaskDelete(NULL);
+        (void)workflow_service_poll();
+        ++poll_count;
+        if (!s_poll_task_stack_sized && poll_count >= 10U) {
+            s_poll_task_stack_sized = true;
+            uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+            ESP_LOGI(TAG, "poll task STACK_HWM free=%u of %u bytes", (unsigned)free_bytes,
+                (unsigned)allocated_stack_bytes);
+            const uint32_t after_log_free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+            free_bytes = after_log_free_bytes < free_bytes ? after_log_free_bytes : free_bytes;
+            const uint32_t used_bytes = allocated_stack_bytes > free_bytes
+                ? allocated_stack_bytes - free_bytes
+                : 0U;
+            const uint32_t measured_stack_bytes = used_bytes + WORKFLOW_SERVICE_POLL_STACK_MARGIN_BYTES;
+            if (measured_stack_bytes != allocated_stack_bytes) {
+                TaskHandle_t replacement = NULL;
+                s_poll_task_stack_bytes = measured_stack_bytes;
+                if (workflow_service_create_poll_task(measured_stack_bytes, &replacement) == pdPASS) {
+                    s_poll_task = replacement;
+                    vTaskDelete(NULL);
+                }
+                s_poll_task_stack_bytes = allocated_stack_bytes;
+                ESP_LOGW(TAG, "poll task stack resize to %u bytes failed; keeping %u bytes",
+                    (unsigned)measured_stack_bytes, (unsigned)allocated_stack_bytes);
+            }
+        }
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS));
+    }
+}
+
+#if defined(WORKFLOW_SERVICE_TEST_HARNESS)
+void workflow_service_test_lock_mutex(void)
+{
+    if (s_mutex != NULL) (void)xSemaphoreTake(s_mutex, portMAX_DELAY);
+}
+
+void workflow_service_test_unlock_mutex(void)
+{
+    if (s_mutex != NULL) (void)xSemaphoreGive(s_mutex);
+}
+#endif

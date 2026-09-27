@@ -63,6 +63,17 @@ const char *workflow_core_command_name(workflow_command_t command)
     }
 }
 
+const char *workflow_core_calculation_class_name(workflow_calculation_class_t calculation_class)
+{
+    switch (calculation_class) {
+        case WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN: return "record_again";
+        case WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS: return "move_sensors";
+        case WORKFLOW_CALCULATION_CLASS_INTERNAL: return "internal";
+        case WORKFLOW_CALCULATION_CLASS_NONE:
+        default: return "none";
+    }
+}
+
 esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes)
 {
     if (g_nodes_error != ESP_OK) {
@@ -293,6 +304,10 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
         .reason = "geometry_degenerate",
         .progress = WORKFLOW_PROGRESS_UNKNOWN,
         .calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS,
+        .object_id = "OBJ_0001",
+        .session_id = "S000001",
+        .has_scan = true,
+        .calc_settings_ready = true,
         .recommended_action = WORKFLOW_COMMAND_MOVE_SENSORS,
     };
     g_workflow_snapshot_error = ESP_OK;
@@ -307,6 +322,11 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
     assert_number(workflow, "assigned_remotes", 4.0);
     assert_string(workflow, "reason", "geometry_degenerate");
     assert(cJSON_IsNull(item(workflow, "progress")));
+    assert_string(workflow, "object_id", "OBJ_0001");
+    assert_string(workflow, "session_id", "S000001");
+    assert_bool(workflow, "has_scan", true);
+    assert_bool(workflow, "calc_settings_ready", true);
+    assert_string(workflow, "calculation_class", "move_sensors");
     const cJSON *actions = item(workflow, "allowed_actions");
     assert(cJSON_GetArraySize(actions) == 3);
     assert(cJSON_IsString(cJSON_GetArrayItem(actions, 0)));
@@ -318,10 +338,31 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
 
     g_workflow_snapshot.progress = 64;
     g_workflow_snapshot.recommended_action = WORKFLOW_COMMAND_COUNT;
+    g_workflow_snapshot.object_id[0] = '\0';
+    g_workflow_snapshot.session_id[0] = '\0';
+    g_workflow_snapshot.has_scan = false;
+    g_workflow_snapshot.calc_settings_ready = false;
+    g_workflow_snapshot.calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
     root = cJSON_CreateObject();
     assert(web_status_json_add_workflow(root));
     workflow = item(root, "workflow");
     assert_number(workflow, "progress", 64.0);
+    assert(cJSON_IsNull(item(workflow, "object_id")));
+    assert(cJSON_IsNull(item(workflow, "session_id")));
+    assert_bool(workflow, "has_scan", false);
+    assert_bool(workflow, "calc_settings_ready", false);
+    assert_string(workflow, "calculation_class", "none");
+    cJSON_Delete(root);
+
+    g_workflow_snapshot.calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+    root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+    assert_string(item(root, "workflow"), "calculation_class", "record_again");
+    cJSON_Delete(root);
+    g_workflow_snapshot.calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
+    root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+    assert_string(item(root, "workflow"), "calculation_class", "internal");
     cJSON_Delete(root);
 
     g_workflow_snapshot_error = ESP_ERR_INVALID_STATE;
