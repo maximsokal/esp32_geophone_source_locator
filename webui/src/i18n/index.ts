@@ -1,9 +1,26 @@
-import { createContext, createElement, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 
-import { en, uk, type I18nKey } from './catalog.gen';
+import { en } from './catalog.en.gen';
+import type { I18nKey } from './catalog.keys.gen';
 
-export type { I18nKey } from './catalog.gen';
+export type { I18nKey } from './catalog.keys.gen';
 export type I18nLocale = 'en' | 'uk';
+
+let ukrainianCatalog: Record<I18nKey, string> | null = null;
+let ukrainianCatalogPromise: Promise<void> | null = null;
+
+export function loadUkrainianCatalog(): Promise<void> {
+  if (ukrainianCatalog !== null) return Promise.resolve();
+  if (ukrainianCatalogPromise === null) {
+    ukrainianCatalogPromise = import('./catalog.uk.gen').then(({ uk }) => {
+      ukrainianCatalog = uk;
+    }).catch((error: unknown) => {
+      ukrainianCatalogPromise = null;
+      throw error;
+    });
+  }
+  return ukrainianCatalogPromise;
+}
 
 const STORAGE_KEY = 'geolocator.locale';
 const STORAGE_SCHEMA = 1;
@@ -32,20 +49,77 @@ export function persistLocale(locale: I18nLocale): void {
 }
 
 interface LocaleContextValue {
+  /** Locale currently used to render every translated string and formatted value. */
   locale: I18nLocale;
+  /** Requested locale; remains UK while its lazy catalog is loading. */
+  selectedLocale: I18nLocale;
+  localeLoading: boolean;
+  localeLoadFailed: boolean;
   setLocale: (locale: I18nLocale) => void;
 }
 
-const LocaleContext = createContext<LocaleContextValue>({ locale: 'en', setLocale: () => undefined });
+const LocaleContext = createContext<LocaleContextValue>({
+  locale: 'en', selectedLocale: 'en', localeLoading: false, localeLoadFailed: false, setLocale: () => undefined,
+});
 
 export function LocaleProvider({ children, initialLocale }: { children?: ReactNode; initialLocale?: I18nLocale }) {
-  const [locale, setLocale] = useState<I18nLocale>(() => initialLocale ?? readSavedLocale());
+  const [selectedLocale, setSelectedLocale] = useState<I18nLocale>(() => initialLocale ?? readSavedLocale());
+  const selectedLocaleRef = useRef(selectedLocale);
+  const [locale, setActiveLocale] = useState<I18nLocale>(() =>
+    selectedLocale === 'uk' && ukrainianCatalog !== null ? 'uk' : 'en');
+  const [localeLoading, setLocaleLoading] = useState(() => selectedLocale === 'uk' && ukrainianCatalog === null);
+  const [localeLoadFailed, setLocaleLoadFailed] = useState(false);
 
   useEffect(() => {
-    persistLocale(locale);
-  }, [locale]);
+    persistLocale(selectedLocale);
+  }, [selectedLocale]);
 
-  return createElement(LocaleContext.Provider, { value: { locale, setLocale } }, children);
+  useEffect(() => {
+    if (selectedLocaleRef.current !== selectedLocale || selectedLocale === 'en') return;
+
+    if (ukrainianCatalog !== null) {
+      setActiveLocale('uk');
+      setLocaleLoading(false);
+      return;
+    }
+
+    let current = true;
+    setLocaleLoading(true);
+    void loadUkrainianCatalog().then(() => {
+      if (current && selectedLocaleRef.current === 'uk') {
+        setActiveLocale('uk');
+        setLocaleLoading(false);
+      }
+    }).catch(() => {
+      if (current && selectedLocaleRef.current === 'uk') {
+        setActiveLocale('en');
+        selectedLocaleRef.current = 'en';
+        setSelectedLocale('en');
+        setLocaleLoading(false);
+        setLocaleLoadFailed(true);
+      }
+    });
+    return () => { current = false; };
+  }, [selectedLocale]);
+
+  const setLocale = useCallback((next: I18nLocale) => {
+    selectedLocaleRef.current = next;
+    setSelectedLocale(next);
+    setLocaleLoadFailed(false);
+    if (next === 'en') {
+      setActiveLocale('en');
+      setLocaleLoading(false);
+    } else if (ukrainianCatalog !== null) {
+      setActiveLocale('uk');
+      setLocaleLoading(false);
+    } else {
+      setLocaleLoading(true);
+    }
+  }, []);
+
+  return createElement(LocaleContext.Provider, {
+    value: { locale, selectedLocale, localeLoading, localeLoadFailed, setLocale },
+  }, children);
 }
 
 export function useLocale(): LocaleContextValue {
@@ -68,7 +142,8 @@ export function translate(
   }
 
   const typedKey = key as I18nKey;
-  const template = locale === 'uk' && uk[typedKey] !== '' ? uk[typedKey] : en[typedKey];
+  const ukrainian = ukrainianCatalog?.[typedKey];
+  const template = locale === 'uk' && ukrainian !== undefined && ukrainian !== '' ? ukrainian : en[typedKey];
   return template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (placeholder, name: string) => {
     const value = params?.[name];
     return value === undefined ? placeholder : String(value);

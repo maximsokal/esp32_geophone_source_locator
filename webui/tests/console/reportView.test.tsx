@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { create as createFont } from 'fontkit';
@@ -9,8 +9,8 @@ import { openRecordingReport, renderReportDocument } from '../../src/features/re
 import { buildRecordingReport } from '../../src/domain/reportModel';
 import type { ObjectProfile, RecordingSessionSummary } from '../../src/domain/device';
 import type { LocalizationRun, LocalizationRunListing } from '../../src/api/deviceApi';
-import { LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
-import { uk } from '../../src/i18n/catalog.gen';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { uk } from '../../src/i18n/catalog.uk.gen';
 import { formatDate, formatNumber } from '../../src/i18n/format';
 
 const api = vi.hoisted(() => ({ fetchLocalizationRuns: vi.fn(), loadObjectScanArtifact: vi.fn() }));
@@ -20,6 +20,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.resetAllMocks();
 });
+beforeAll(async () => { await loadUkrainianCatalog(); });
 
 const location = {
   valid: true, latitude: 50.4501, longitude: 30.5234, accuracy_m: 4,

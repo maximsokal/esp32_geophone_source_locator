@@ -6,7 +6,7 @@ import type { ObjectProfile, RecordingSessionSummary } from '../../domain/device
 import { buildRecordingReport } from '../../domain/reportModel';
 import { decodeScanArtifact } from '../../xr/scanArtifact';
 import ReportView from './ReportView';
-import { LocaleProvider, translate, type I18nLocale } from '../../i18n';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../i18n';
 
 import latin400 from '@fontsource/montserrat/files/montserrat-latin-400-normal.woff2?inline';
 import latin700 from '@fontsource/montserrat/files/montserrat-latin-700-normal.woff2?inline';
@@ -68,6 +68,7 @@ export async function openRecordingReport(
     positions = null;
   }
 
+  if (locale === 'uk') await loadUkrainianCatalog();
   const report = buildRecordingReport(object, session, listing, positions, selectedMethod, Date.now());
   const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(ReportView, { report })));
   target.document.open();

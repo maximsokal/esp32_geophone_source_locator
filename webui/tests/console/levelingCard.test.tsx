@@ -4,13 +4,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import LevelingCard from '../../src/features/sensors/LevelingCard';
 import type { DevicePod, RecordingGateStatus } from '../../src/domain/device';
-import { LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 import { formatNumber } from '../../src/i18n/format';
 
 /* MAX-114: which geophone blocks recording, and by how much. */
 
 describe('LevelingCard', () => {
-  it.each(['en', 'uk'] as const)('lists each node with localized state and tilt in %s', (locale: I18nLocale) => {
+  it.each(['en', 'uk'] as const)('lists each node with localized state and tilt in %s', async (locale: I18nLocale) => {
+    if (locale === 'uk') await loadUkrainianCatalog();
     const gate: RecordingGateStatus = {
       available: true,
       assigned_count: 3,
@@ -38,7 +39,8 @@ describe('LevelingCard', () => {
     expect(html).toContain('<td>6</td>');
   });
 
-  it.each(['en', 'uk'] as const)('renders calibrated height labels in %s', (locale: I18nLocale) => {
+  it.each(['en', 'uk'] as const)('renders calibrated height labels in %s', async (locale: I18nLocale) => {
+    if (locale === 'uk') await loadUkrainianCatalog();
     const pods = [{ id: 1, state: 'CONNECTED', height_reference: { state: 'valid', generation: 2, relative_z_mm: 12.34 } }] as DevicePod[];
     const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(LevelingCard, {
       gate: undefined,

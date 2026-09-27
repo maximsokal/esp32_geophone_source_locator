@@ -53,7 +53,7 @@ function formatDuration(milliseconds: number | undefined): string {
 }
 
 export default function ObjectsFeature(props: Props) {
-  const { locale } = useLocale();
+  const { locale, selectedLocale } = useLocale();
   const t = useT();
   const { status, store, sessions, selectedId, busy, error } = props;
   const selected = store?.objects.find((object) => object.id === selectedId)
@@ -393,7 +393,7 @@ export default function ObjectsFeature(props: Props) {
                       className="secondary"
                       onClick={() => {
                         setReportError(null);
-                        const localeAtAdmission = locale;
+                        const localeAtAdmission = selectedLocale;
                         void import('../report/reportExport')
                           .then((module) => module.openRecordingReport(selected, openSession, null, localeAtAdmission))
                           .catch((reason: unknown) => setReportError(reason instanceof Error ? reason.message : String(reason)));

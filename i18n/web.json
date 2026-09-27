@@ -18,6 +18,14 @@
       "en": "Language",
       "uk": "Мова"
     },
+    "web.locale_loading": {
+      "en": "Loading Ukrainian…",
+      "uk": "Завантаження української…"
+    },
+    "web.locale_load_failed": {
+      "en": "Ukrainian translations unavailable. Showing English.",
+      "uk": "Українські переклади недоступні. Показано англійську."
+    },
     "device.connecting": { "en": "CONNECTING…", "uk": "З’ЄДНАННЯ…" },
     "device.esp_link": { "en": "ESP LINK", "uk": "ЗВ’ЯЗОК З ESP" },
     "device.api_error": { "en": "API ERROR", "uk": "ПОМИЛКА API" },

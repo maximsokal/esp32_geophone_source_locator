@@ -51,7 +51,7 @@ function transportFailure(message: string): boolean {
 }
 
 export default function DeviceConsoleApp() {
-  const { locale, setLocale } = useLocale();
+  const { locale, selectedLocale, localeLoading, localeLoadFailed, setLocale } = useLocale();
   const t = useT();
   const [screen, setScreen] = useState<Screen>('dashboard');
   const [status, setStatus] = useState<DeviceStatus | null>(null);
@@ -349,11 +349,17 @@ export default function DeviceConsoleApp() {
         <div className="console-topbar-actions">
           <label className="locale-picker">
             <span className="sr-only">{t('web.locale_label')}</span>
-            <select aria-label={t('web.locale_label')} value={locale} onChange={(event) => setLocale(event.target.value as 'en' | 'uk')}>
+            {/* The selector shows the requested locale; content stays EN until UK is ready. */}
+            <select aria-label={t('web.locale_label')} aria-busy={localeLoading} value={selectedLocale} onChange={(event) => setLocale(event.target.value as 'en' | 'uk')}>
               <option value="en">EN</option>
               <option value="uk">UK</option>
             </select>
           </label>
+          {(localeLoading || localeLoadFailed) && (
+            <small role="status" aria-live="polite">
+              {localeLoading ? t('web.locale_loading') : t('web.locale_load_failed')}
+            </small>
+          )}
           <div className={`device-dot ${apiOnline ? 'online' : 'offline'}`}>{apiLabel}</div>
         </div>
       </header>

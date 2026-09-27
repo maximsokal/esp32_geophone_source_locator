@@ -9,7 +9,7 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => {
 });
 
 import DeviceConsoleApp from '../../src/DeviceConsoleApp';
-import { LocaleProvider, translate, useLocale } from '../../src/i18n';
+import { loadUkrainianCatalog, LocaleProvider, translate, useLocale } from '../../src/i18n';
 import type { I18nLocale } from '../../src/i18n';
 import type { DeviceStatus } from '../../src/domain/device';
 
@@ -75,7 +75,10 @@ describe('presentation-only locale changes', () => {
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
     expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(false);
 
-    act(() => setLocale('uk'));
+    await act(async () => {
+      setLocale('uk');
+      await loadUkrainianCatalog();
+    });
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
     expect(api.sendControl).toHaveBeenCalledTimes(1);
     expect(renderer.root.findByProps({ 'aria-label': translate('uk', 'web.locale_label') }).props.value).toBe('uk');

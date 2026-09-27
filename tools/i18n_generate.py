@@ -130,16 +130,27 @@ def _c_string(value: str) -> str:
     return '"' + "".join(escaped) + '"'
 
 
-def _render_typescript(entries: dict[str, dict[str, Any]]) -> str:
+def _render_typescript_keys(entries: dict[str, dict[str, Any]]) -> str:
     keys = sorted(entries)
     lines = [
         "// generated — do not edit",
-        "export const en = {",
+        "export const i18nKeys = [",
     ]
-    lines.extend(f"  {_ts_string(key)}: {_ts_string(entries[key]['en'])}," for key in keys)
-    lines.extend(("} as const;", "", "export type I18nKey = keyof typeof en;", "", "export const uk: Record<I18nKey, string> = {"))
-    lines.extend(f"  {_ts_string(key)}: {_ts_string(entries[key]['uk'])}," for key in keys)
-    lines.extend(("} as const;", ""))
+    lines.extend(f"  {_ts_string(key)}," for key in keys)
+    lines.extend(("] as const;", "", "export type I18nKey = (typeof i18nKeys)[number];", ""))
+    return "\n".join(lines)
+
+
+def _render_typescript_locale(entries: dict[str, dict[str, Any]], locale: str) -> str:
+    keys = sorted(entries)
+    lines = [
+        "// generated — do not edit",
+        "import type { I18nKey } from './catalog.keys.gen';",
+        "",
+        f"export const {locale}: Record<I18nKey, string> = {{",
+    ]
+    lines.extend(f"  {_ts_string(key)}: {_ts_string(entries[key][locale])}," for key in keys)
+    lines.extend(("};", ""))
     return "\n".join(lines)
 
 
@@ -222,7 +233,9 @@ def generate_outputs(root: Path) -> tuple[dict[Path, str], int]:
     firmware_header, firmware_source = _render_firmware(entries)
     return (
         {
-            Path("webui/src/i18n/catalog.gen.ts"): _render_typescript(entries),
+            Path("webui/src/i18n/catalog.keys.gen.ts"): _render_typescript_keys(entries),
+            Path("webui/src/i18n/catalog.en.gen.ts"): _render_typescript_locale(entries, "en"),
+            Path("webui/src/i18n/catalog.uk.gen.ts"): _render_typescript_locale(entries, "uk"),
             Path("components/ui_i18n/include/ui_i18n_catalog.gen.h"): firmware_header,
             Path("components/ui_i18n/ui_i18n_catalog.gen.c"): firmware_source,
         },

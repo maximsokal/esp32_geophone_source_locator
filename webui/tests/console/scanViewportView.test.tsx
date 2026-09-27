@@ -16,7 +16,7 @@ import {
 } from '../../src/xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import { formatDistance, formatNumber } from '../../src/i18n/format';
-import { LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 
 /*
  * The measured 3D search-volume viewport as the operator sees it, rendered
@@ -79,7 +79,8 @@ describe('ScanPointCloudViewport', () => {
     expect(html).toContain(`${scanModeLabel(mode)} · ${displayFingerprint(view.display).toUpperCase()}`);
   });
 
-  it.each(['en', 'uk'] as const)('renders every source badge count with the %s formatter', (locale: I18nLocale) => {
+  it.each(['en', 'uk'] as const)('renders every source badge count with the %s formatter', async (locale: I18nLocale) => {
+    if (locale === 'uk') await loadUkrainianCatalog();
     const html = render(scanViewForMode('search-volume'), snapshot({
       pointCount: 4321, knownFreeVoxelCount: 900, unknownCandidateVoxelCount: 77,
     }), 'perspective', {}, locale);

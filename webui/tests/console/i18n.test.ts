@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 
-import { LocaleProvider, persistLocale, readSavedLocale, translate, useLocale, type I18nKey, type I18nLocale } from '../../src/i18n';
-import { en, uk } from '../../src/i18n/catalog.gen';
+import { loadUkrainianCatalog, LocaleProvider, persistLocale, readSavedLocale, translate, useLocale, type I18nKey, type I18nLocale } from '../../src/i18n';
+import { en } from '../../src/i18n/catalog.en.gen';
+import { uk } from '../../src/i18n/catalog.uk.gen';
 import { formatDate, formatDistance, formatNumber, formatPercent } from '../../src/i18n/format';
 import DeviceConsoleApp from '../../src/DeviceConsoleApp';
 import ObjectsFeature from '../../src/features/objects/ObjectsFeature';
@@ -15,6 +16,7 @@ const readCatalog = (url: URL): CatalogFile => JSON.parse(readFileSync(url, 'utf
 const hasLeakedKey = (html: string): boolean => /(?:^|\s)[a-z_]+\.[a-z_.]+(?=\s|$)/.test(html.replace(/<[^>]*>/g, ' '));
 
 afterEach(() => vi.unstubAllGlobals());
+beforeAll(async () => { await loadUkrainianCatalog(); });
 
 describe('i18n catalog translation', () => {
   it('falls back to English when the Ukrainian catalog entry is empty', () => {
