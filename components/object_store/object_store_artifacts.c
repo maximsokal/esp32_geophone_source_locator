@@ -16,6 +16,10 @@ int OBJECT_STORE_STAT_FN(const char *path, struct stat *info);
 #endif
 
 #define OBJECT_STORE_SCAN_NAME "scan-v1.bin"
+#define OBJECT_STORE_SESSION_ID_LENGTH 7U
+#define OBJECT_STORE_SCAN_PATH_SIZE \
+    (sizeof(STORAGE_MANAGER_OBJECTS_PATH) + OBJECT_STORE_ID_SIZE + \
+     OBJECT_STORE_SESSION_ID_LENGTH + sizeof("/sessions//" OBJECT_STORE_SCAN_NAME))
 
 #if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
@@ -23,8 +27,9 @@ int OBJECT_STORE_STAT_FN(const char *path, struct stat *info);
 
 static bool object_store_session_id_valid(const char *session_id)
 {
-    if (session_id == NULL || strlen(session_id) != 7U || session_id[0] != 'S') return false;
-    for (size_t i = 1U; i < 7U; ++i) {
+    if (session_id == NULL || strlen(session_id) != OBJECT_STORE_SESSION_ID_LENGTH ||
+        session_id[0] != 'S') return false;
+    for (size_t i = 1U; i < OBJECT_STORE_SESSION_ID_LENGTH; ++i) {
         if (session_id[i] < '0' || session_id[i] > '9') return false;
     }
     return true;
@@ -109,7 +114,7 @@ esp_err_t object_store_scan_present(
     if (!object_store_fs_object_exists(object_id)) {
         err = ESP_ERR_NOT_FOUND;
     } else {
-        char path[OBJECT_STORE_FS_PATH_SIZE];
+        char path[OBJECT_STORE_SCAN_PATH_SIZE];
         int written = staged
             ? snprintf(path, sizeof(path), "%s/%s/staging/%s", STORAGE_MANAGER_OBJECTS_PATH,
                 object_id, OBJECT_STORE_SCAN_NAME)

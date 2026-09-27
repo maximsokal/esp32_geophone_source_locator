@@ -25,6 +25,16 @@
 #include "workflow_service.h"
 #include "workflow_service_host_fakes.h"
 
+static const char s_deep_nested_settings_json[] =
+    "{\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":5,"
+    "\"timing_uncertainty_us\":2000,\"noise_window_samples\":50,"
+    "\"sta_window_samples\":5,\"lta_window_samples\":50,"
+    "\"sta_lta_trigger_ratio\":3.5,\"refine_lookback_samples\":10,"
+    "\"refine_lookahead_samples\":10,\"refine_amplitude_fraction\":0.5,"
+    "\"snr_signal_window_samples\":50,\"minimum_snr\":2,"
+    "\"semblance_window_half_span_samples\":25,"
+    "\"unknown\":{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":{\"g\":{\"h\":0}}}}}}}}}";
+
 typedef struct {
 #ifdef _WIN32
     SRWLOCK lock;
@@ -606,6 +616,35 @@ static void test_async_fifo_stale_generation_full_queue_and_monotonic_sequence(v
     workflow_service_shutdown();
 }
 
+static void test_async_rejects_internal_completion_commands(void)
+{
+    static const workflow_command_t internal_commands[] = {
+        WORKFLOW_COMMAND_CALIBRATION_DONE,
+        WORKFLOW_COMMAND_RANGING_DONE,
+        WORKFLOW_COMMAND_CALCULATION_DONE,
+    };
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    const workflow_snapshot_t before = try_snapshot();
+    uint32_t first_seq = 0U;
+    assert(workflow_service_command_async(WORKFLOW_COMMAND_BACK, false, 0U, &first_seq) == ESP_OK);
+    for (size_t i = 0U; i < sizeof(internal_commands) / sizeof(internal_commands[0]); ++i) {
+        uint32_t seq = UINT32_C(0x12345678);
+        assert(workflow_service_command_async(
+            internal_commands[i], false, 0U, &seq) == ESP_ERR_INVALID_ARG);
+        assert(seq == UINT32_C(0x12345678));
+    }
+
+    uint32_t next_seq = 0U;
+    assert(workflow_service_command_async(WORKFLOW_COMMAND_BACK, false, 0U, &next_seq) == ESP_OK);
+    uint32_t expected_seq = first_seq + 1U;
+    if (expected_seq == 0U) expected_seq = 1U;
+    assert(next_seq == expected_seq);
+    const workflow_snapshot_t after = try_snapshot();
+    assert(after.step == before.step && after.generation == before.generation);
+    assert(before.step == WORKFLOW_STEP_OBJECT);
+    workflow_service_shutdown();
+}
+
 static void test_periodic_poll_alone_advances_calibration_timeout(void)
 {
     reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
@@ -679,6 +718,12 @@ static void test_calc_settings_readiness_gates_calculate_and_save_invalidates_ca
     assert(!snapshot.calc_settings_ready);
     workflow_service_shutdown();
 
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_settings_json = s_deep_nested_settings_json;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(!try_snapshot().calc_settings_ready);
+    workflow_service_shutdown();
+
     enter_stopped();
     assert(workflow_service_notify_calc_settings_saved("object-a") == ESP_OK);
     assert(!try_snapshot().calc_settings_ready);
@@ -740,7 +785,7 @@ static void test_invalid_settings_at_submit_and_orphaned_job_completion(void)
 {
     enter_stopped();
     assert(try_snapshot().calc_settings_ready);
-    workflow_test_settings_json = "{";
+    workflow_test_settings_json = s_deep_nested_settings_json;
     (void)command(WORKFLOW_COMMAND_CALCULATE_SOURCES, false, false);
     workflow_snapshot_t snapshot = try_snapshot();
     assert(snapshot.step == WORKFLOW_STEP_RESULT);
@@ -786,6 +831,7 @@ int main(void)
     test_concurrent_commands_use_generation_as_a_single_winner_gate();
     test_try_snapshot_is_nonblocking_while_mutex_is_held();
     test_async_fifo_stale_generation_full_queue_and_monotonic_sequence();
+    test_async_rejects_internal_completion_commands();
     test_periodic_poll_alone_advances_calibration_timeout();
     test_scan_presence_and_settings_refresh_are_cached_for_two_seconds();
     test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache();

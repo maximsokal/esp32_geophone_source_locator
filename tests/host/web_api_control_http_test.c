@@ -1149,6 +1149,41 @@ static void test_workflow_command_rejects_unknown_name_before_dispatch(void)
     assert(strstr(response, "ESP_ERR_INVALID_ARG") != NULL);
 }
 
+static void test_workflow_command_rejects_internal_completion_commands(void)
+{
+    static const struct {
+        const char *name;
+        workflow_step_t step;
+    } cases[] = {
+        { "CALIBRATION_DONE", WORKFLOW_STEP_CALIBRATING },
+        { "RANGING_DONE", WORKFLOW_STEP_RANGING },
+        { "CALCULATION_DONE", WORKFLOW_STEP_CALCULATING },
+    };
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reset_fakes();
+        s_workflow_snapshot.step = cases[i].step;
+        char request_body[192];
+        (void)snprintf(request_body, sizeof(request_body),
+            "{\"action\":\"workflow_command\",\"command\":\"%s\",\"ok\":true}",
+            cases[i].name);
+        char response[512] = {0};
+        httpd_req_t request = make_request(request_body, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL &&
+            strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_workflow_command_calls == 0U);
+        assert(s_workflow_snapshot_calls == 0U);
+        assert(s_workflow_snapshot.step == cases[i].step);
+
+        cJSON *body = cJSON_Parse(response);
+        assert(body != NULL && !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "ok")));
+        assert(strcmp(cJSON_GetObjectItemCaseSensitive(body, "reason")->valuestring,
+            "internal_command") == 0);
+        cJSON_Delete(body);
+    }
+}
+
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
@@ -1173,5 +1208,6 @@ int main(void)
     test_calculate_source_time_budget();
     test_workflow_command_success_and_conflict_responses();
     test_workflow_command_rejects_unknown_name_before_dispatch();
+    test_workflow_command_rejects_internal_completion_commands();
     return 0;
 }

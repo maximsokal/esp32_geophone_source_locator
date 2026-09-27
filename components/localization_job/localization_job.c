@@ -163,9 +163,10 @@ void localization_job_get_status(localization_job_status_t *status_out)
         return;
     }
     if (s_mutex == NULL) {
-        localization_job_state_t idle;
-        localization_job_state_init(&idle, LOCALIZATION_JOB_STACK_BYTES);
-        *status_out = idle.status;
+        memset(status_out, 0, sizeof(*status_out));
+        status_out->state = LOCALIZATION_JOB_IDLE;
+        status_out->stack_size_bytes = LOCALIZATION_JOB_STACK_BYTES;
+        status_out->stack_margin_ok = true;
         return;
     }
     xSemaphoreTake(s_mutex, portMAX_DELAY);

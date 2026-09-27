@@ -272,11 +272,30 @@ static esp_err_t web_control_send_workflow_result(
     return send_result;
 }
 
-static workflow_command_result_t web_control_workflow_command(cJSON *root)
+static esp_err_t web_control_send_internal_workflow_command(httpd_req_t *request)
 {
+    static const char response[] = "{\"ok\":false,\"reason\":\"internal_command\"}";
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+}
+
+static workflow_command_result_t web_control_workflow_command(
+    cJSON *root,
+    bool *internal_command
+)
+{
+    *internal_command = false;
     workflow_command_t command;
     const char *command_name = web_control_string(root, "command");
     if (!workflow_core_command_from_name(command_name, &command)) {
+        return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+    if (command == WORKFLOW_COMMAND_CALIBRATION_DONE ||
+        command == WORKFLOW_COMMAND_RANGING_DONE ||
+        command == WORKFLOW_COMMAND_CALCULATION_DONE) {
+        *internal_command = true;
         return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
     }
 
@@ -825,8 +844,11 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
     }
 
     if (strcmp(action_copy, "workflow_command") == 0) {
-        const workflow_command_result_t result = web_control_workflow_command(root);
+        bool internal_command = false;
+        const workflow_command_result_t result =
+            web_control_workflow_command(root, &internal_command);
         cJSON_Delete(root);
+        if (internal_command) return web_control_send_internal_workflow_command(request);
         return web_control_send_workflow_result(request, result);
     }
 

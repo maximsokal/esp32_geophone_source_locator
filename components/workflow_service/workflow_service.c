@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "app_task_config.h"
@@ -28,12 +29,21 @@
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
 #define WORKFLOW_CALIBRATION_CS_MAX_SPREAD_MM 150
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
-#define WORKFLOW_SERVICE_POLL_INITIAL_STACK_BYTES 4096U
-#define WORKFLOW_SERVICE_POLL_STACK_MARGIN_BYTES 1024U
+#define WORKFLOW_SERVICE_POLL_STACK_BYTES 8192U
+#define WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH 8U
 #define WORKFLOW_SERVICE_STATUS_REFRESH_MS 2000U
 #define WORKFLOW_SERVICE_POLL_TASK_PRIORITY 1U
 #define WORKFLOW_ASYNC_QUEUE_DEPTH 4U
 
+/*
+ * 8 KiB is the fixed Xtensa budget for the deepest branch: poll task (48 B) ->
+ * poll (32 B) -> async dispatch (80 B) -> command (144 B) -> calculation start
+ * (112 B), then an SD settings read, cJSON parse (depth capped at 8), config
+ * parse, or job submit. Target-size locals above 256 B are in the 4,388 B
+ * PSRAM scratch: job status 1,272 B, device status 792 B, ranging progress
+ * 632 B, calibration-node copy 720 B, and CS cycle 428 B. workflow_snapshot_t
+ * is a caller-owned output (2,440 B), never a poll-task local.
+ */
 static const char *TAG = "WORKFLOW";
 
 typedef struct {
@@ -86,12 +96,23 @@ typedef struct {
     uint32_t expected_generation;
 } workflow_async_command_t;
 
+typedef struct {
+    device_status_snapshot_t device;
+    localization_job_status_t job_status;
+    localization_calculate_config_t calculation_config;
+    nrf_topology_snapshot_t topology;
+    nrf_cs_cycle_snapshot_t cs_cycle;
+    nrf_remote_sensor_cache_t remote_sensor;
+    nrf_topology_ranging_progress_t ranging_progress;
+    workflow_calibration_node_t old_calibration_nodes[WORKFLOW_MAX_CALIBRATION_NODES];
+} workflow_poll_scratch_t;
+
 static SemaphoreHandle_t s_mutex;
 static SemaphoreHandle_t s_async_enqueue_mutex;
 static QueueHandle_t s_async_queue;
 static TaskHandle_t s_poll_task;
-static uint32_t s_poll_task_stack_bytes;
-static bool s_poll_task_stack_sized;
+static atomic_bool s_poll_hwm_after_first_calculation;
+static bool s_poll_first_calculation_seen;
 static bool s_initialized;
 static bool s_recorder_reconciliation_armed;
 static uint8_t s_assigned_remotes;
@@ -118,6 +139,7 @@ static void *s_placement_ready_context;
 static EXT_RAM_BSS_ATTR workflow_calibration_run_t s_calibration;
 static EXT_RAM_BSS_ATTR workflow_placement_run_t s_placement;
 static EXT_RAM_BSS_ATTR workflow_ranging_run_t s_ranging;
+static EXT_RAM_BSS_ATTR workflow_poll_scratch_t s_poll_scratch;
 
 static workflow_command_result_t workflow_service_command_locked(
     workflow_command_t command,
@@ -125,7 +147,7 @@ static workflow_command_result_t workflow_service_command_locked(
 );
 static void workflow_service_process_async_locked(void);
 static void workflow_service_mark_calculation_orphaned_locked(void);
-static BaseType_t workflow_service_create_poll_task(uint32_t stack_bytes, TaskHandle_t *task_out);
+static BaseType_t workflow_service_create_poll_task(TaskHandle_t *task_out);
 static void workflow_service_poll_task(void *argument);
 
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
@@ -157,6 +179,49 @@ static void workflow_service_copy_string(char *target, size_t capacity, const ch
 {
     if (target == NULL || capacity == 0U) return;
     (void)snprintf(target, capacity, "%s", source != NULL ? source : "");
+}
+
+static bool workflow_service_calc_settings_depth_ok(const char *json)
+{
+    size_t depth = 0U;
+    bool in_string = false;
+    bool escaped = false;
+    if (json == NULL) return false;
+
+    for (const char *cursor = json; *cursor != '\0'; ++cursor) {
+        const char value = *cursor;
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (value == '\\') escaped = true;
+            else if (value == '"') in_string = false;
+            continue;
+        }
+        if (value == '"') {
+            in_string = true;
+        } else if (value == '{' || value == '[') {
+            if (++depth > WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH) return false;
+        } else if (value == '}' || value == ']') {
+            if (depth == 0U) return false;
+            --depth;
+        }
+    }
+    return !in_string && depth == 0U;
+}
+
+/* Called only while s_mutex is held; settings are a flat scalar schema. */
+static esp_err_t workflow_service_parse_calc_settings_locked(
+    const char *json,
+    uint32_t *budget_ms_out
+)
+{
+    if (json == NULL || budget_ms_out == NULL) return ESP_ERR_INVALID_ARG;
+    if (!workflow_service_calc_settings_depth_ok(json)) return ESP_ERR_INVALID_RESPONSE;
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
+    const esp_err_t err = localization_config_from_json(
+        root, &s_poll_scratch.calculation_config, budget_ms_out);
+    cJSON_Delete(root);
+    return err;
 }
 
 static uint64_t workflow_service_now_ms(void)
@@ -233,12 +298,9 @@ static void workflow_service_refresh_presence_locked(void)
         if (s_active_object_id[0] != '\0') {
             char *json = NULL;
             if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
-                cJSON *root = cJSON_Parse(json);
-                localization_calculate_config_t config;
                 uint32_t budget_ms = 0U;
-                s_calc_settings_ready = root != NULL &&
-                    localization_config_from_json(root, &config, &budget_ms) == ESP_OK;
-                cJSON_Delete(root);
+                s_calc_settings_ready = workflow_service_parse_calc_settings_locked(
+                    json, &budget_ms) == ESP_OK;
                 free(json);
             }
         }
@@ -335,8 +397,8 @@ static void workflow_service_calibration_start_name(
 
 static esp_err_t workflow_service_calibration_start(void)
 {
-    nrf_topology_snapshot_t topology;
-    esp_err_t err = nrf_topology_service_get_snapshot(&topology);
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    esp_err_t err = nrf_topology_service_get_snapshot(topology);
     if (err != ESP_OK) return err;
 
     uint8_t channel_mask = 0U;
@@ -349,13 +411,13 @@ static esp_err_t workflow_service_calibration_start(void)
     size_t remote_count = 0U;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         if ((channel_mask & (uint8_t)(1U << channel)) == 0U) continue;
-        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED ||
-            topology.remotes[channel].node_id == NRF_TOPOLOGY_MAIN_NODE_ID ||
+        if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED ||
+            topology->remotes[channel].node_id == NRF_TOPOLOGY_MAIN_NODE_ID ||
             remote_count >= WORKFLOW_MAX_REMOTE_NODES) {
             return ESP_ERR_INVALID_STATE;
         }
         channels[remote_count] = channel;
-        node_ids[remote_count] = topology.remotes[channel].node_id;
+        node_ids[remote_count] = topology->remotes[channel].node_id;
         ++remote_count;
     }
     if (remote_count == 0U) return ESP_ERR_NOT_FOUND;
@@ -363,9 +425,9 @@ static esp_err_t workflow_service_calibration_start(void)
     err = nrf_topology_service_request_imu_calibration(generation, channel_mask);
     if (err != ESP_OK) return err;
 
-    nrf_cs_cycle_snapshot_t previous_cycle;
+    nrf_cs_cycle_snapshot_t *previous_cycle = &s_poll_scratch.cs_cycle;
     const bool previous_cycle_valid =
-        nrf_topology_service_get_cs_cycle(&previous_cycle) == ESP_OK;
+        nrf_topology_service_get_cs_cycle(previous_cycle) == ESP_OK;
     const nrf_cs_policy_t policy = {
         .pair_timeout_ms = 500U,
         .max_attempts = 3U,
@@ -382,7 +444,7 @@ static esp_err_t workflow_service_calibration_start(void)
     memcpy(s_calibration.node_ids, node_ids, remote_count * sizeof(node_ids[0]));
     s_calibration.started_ms = workflow_service_now_ms();
     s_calibration.previous_cycle_valid = previous_cycle_valid;
-    if (previous_cycle_valid) s_calibration.previous_cycle_id = previous_cycle.cycle_id;
+    if (previous_cycle_valid) s_calibration.previous_cycle_id = previous_cycle->cycle_id;
     s_calibration.status.generation = generation;
     workflow_service_copy_string(
         s_calibration.status.phase,
@@ -403,16 +465,16 @@ static esp_err_t workflow_service_calibration_start(void)
 
 static void workflow_service_calibration_update_main_height(void)
 {
-    device_status_snapshot_t device;
-    if (device_status_try_get_snapshot(&device) != ESP_OK) return;
+    device_status_snapshot_t *device = &s_poll_scratch.device;
+    if (device_status_try_get_snapshot(device) != ESP_OK) return;
     workflow_calibration_node_t *node = &s_calibration.status.per_node[0];
-    if (device.main.height_reference.generation != s_calibration.status.generation) return;
+    if (device->main.height_reference.generation != s_calibration.status.generation) return;
 
-    switch (device.main.height_reference.state) {
+    switch (device->main.height_reference.state) {
         case DEVICE_MAIN_HEIGHT_REFERENCE_VALID:
             workflow_service_copy_string(node->height_state, sizeof(node->height_state), "valid");
             node->relative_z_mm_valid = true;
-            node->relative_z_mm = device.main.height_reference.relative_z_mm;
+            node->relative_z_mm = device->main.height_reference.relative_z_mm;
             break;
         case DEVICE_MAIN_HEIGHT_REFERENCE_REJECTED_UNSTABLE:
             workflow_service_copy_string(
@@ -516,31 +578,31 @@ static bool workflow_service_cs_pair_matches(
 
 static void workflow_service_calibration_update_cs(void)
 {
-    nrf_cs_cycle_snapshot_t cycle;
-    if (nrf_topology_service_get_cs_cycle(&cycle) != ESP_OK) return;
+    nrf_cs_cycle_snapshot_t *cycle = &s_poll_scratch.cs_cycle;
+    if (nrf_topology_service_get_cs_cycle(cycle) != ESP_OK) return;
     if (s_calibration.previous_cycle_valid &&
-        cycle.cycle_id == s_calibration.previous_cycle_id) {
+        cycle->cycle_id == s_calibration.previous_cycle_id) {
         return;
     }
     if (!s_calibration.cycle_seen) {
         s_calibration.cycle_seen = true;
-        s_calibration.cycle_id = cycle.cycle_id;
-    } else if (cycle.cycle_id != s_calibration.cycle_id) {
+        s_calibration.cycle_id = cycle->cycle_id;
+    } else if (cycle->cycle_id != s_calibration.cycle_id) {
         return;
     }
 
     for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
         workflow_calibration_node_t *node = &s_calibration.status.per_node[i + 1U];
         const nrf_cs_pair_result_t *matched = NULL;
-        const size_t pair_count = cycle.pair_count < NRF_CS_MAX_PAIRS
-            ? cycle.pair_count
+        const size_t pair_count = cycle->pair_count < NRF_CS_MAX_PAIRS
+            ? cycle->pair_count
             : NRF_CS_MAX_PAIRS;
         for (size_t pair_index = 0U; pair_index < pair_count; ++pair_index) {
             if (workflow_service_cs_pair_matches(
-                    &cycle.pairs[pair_index],
+                    &cycle->pairs[pair_index],
                     NRF_TOPOLOGY_MAIN_NODE_ID,
                     s_calibration.node_ids[i])) {
-                matched = &cycle.pairs[pair_index];
+                matched = &cycle->pairs[pair_index];
                 break;
             }
         }
@@ -558,7 +620,7 @@ static void workflow_service_calibration_update_cs(void)
                 workflow_service_calibration_add_reason("cs_spread_too_high");
             }
         } else if ((matched != NULL && matched->state != NRF_CS_PAIR_PENDING &&
-                    matched->state != NRF_CS_PAIR_UNKNOWN) || cycle.complete) {
+                    matched->state != NRF_CS_PAIR_UNKNOWN) || cycle->complete) {
             s_calibration.cs_pair_terminal[i] = true;
             node->cs_pairs_ok = false;
             const uint8_t first = NRF_TOPOLOGY_MAIN_NODE_ID < s_calibration.node_ids[i]
@@ -645,14 +707,14 @@ static void workflow_service_calibration_finish(bool ok)
 static void workflow_service_calibration_poll(void)
 {
     if (!s_calibration.active) return;
-    workflow_calibration_node_t old_nodes[WORKFLOW_MAX_CALIBRATION_NODES];
-    memcpy(old_nodes, s_calibration.status.per_node, sizeof(old_nodes));
+    workflow_calibration_node_t *old_nodes = s_poll_scratch.old_calibration_nodes;
+    memcpy(old_nodes, s_calibration.status.per_node, sizeof(s_poll_scratch.old_calibration_nodes));
 
     workflow_service_calibration_update_main_height();
     for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
-        nrf_remote_sensor_cache_t cache;
-        memset(&cache, 0, sizeof(cache));
-        workflow_service_calibration_update_remote(i, &cache);
+        nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
+        memset(cache, 0, sizeof(*cache));
+        workflow_service_calibration_update_remote(i, cache);
     }
     workflow_service_calibration_update_cs();
 
@@ -712,12 +774,12 @@ static void workflow_service_ranging_start(void)
         &s_workflow_ranging_policy,
         NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS);
     if (err == ESP_OK) {
-        nrf_topology_ranging_progress_t progress;
-        err = nrf_topology_service_ranging_get_progress(&progress);
+        nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
+        err = nrf_topology_service_ranging_get_progress(progress);
         if (err == ESP_OK) {
             s_ranging = (workflow_ranging_run_t){
                 .active = true,
-                .started_at_ms = progress.started_at_ms,
+                .started_at_ms = progress->started_at_ms,
             };
             return;
         }
@@ -744,9 +806,9 @@ static void workflow_service_step_changed(workflow_step_t previous, workflow_ste
 static void workflow_service_ranging_poll(void)
 {
     if (!s_ranging.active) return;
-    nrf_topology_ranging_progress_t progress;
-    if (nrf_topology_service_ranging_get_progress(&progress) != ESP_OK ||
-        progress.started_at_ms != s_ranging.started_at_ms || !progress.complete) {
+    nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
+    if (nrf_topology_service_ranging_get_progress(progress) != ESP_OK ||
+        progress->started_at_ms != s_ranging.started_at_ms || !progress->complete) {
         return;
     }
 
@@ -756,7 +818,7 @@ static void workflow_service_ranging_poll(void)
         (void)nrf_topology_service_invalidate_ranging();
         return;
     }
-    workflow_service_ranging_done(progress.success, progress.failure_reason);
+    workflow_service_ranging_done(progress->success, progress->failure_reason);
 }
 
 static void workflow_service_placement_clear_samples(
@@ -867,16 +929,16 @@ static void workflow_service_placement_poll(bool collect_samples)
     memset(status, 0, sizeof(*status));
     const uint64_t now_ms = workflow_service_now_ms();
     const bool in_placement = s_core.step == WORKFLOW_STEP_PLACEMENT;
-    device_status_snapshot_t device;
-    const bool device_valid = device_status_try_get_snapshot(&device) == ESP_OK;
+    device_status_snapshot_t *device = &s_poll_scratch.device;
+    const bool device_valid = device_status_try_get_snapshot(device) == ESP_OK;
     const bool main_reference_valid = device_valid &&
-        device.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
-        device.main.height_reference.generation != 0U;
-    const bool main_baro_valid = device_valid && device.main.bmp280_valid &&
-        device.main.pressure_pa > 0U;
+        device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
+        device->main.height_reference.generation != 0U;
+    const bool main_baro_valid = device_valid && device->main.bmp280_valid &&
+        device->main.pressure_pa > 0U;
     const bool main_height_valid = main_reference_valid && main_baro_valid;
     const uint16_t main_generation = main_reference_valid
-        ? device.main.height_reference.generation
+        ? device->main.height_reference.generation
         : 0U;
     const bool take_samples = in_placement && collect_samples;
 
@@ -894,7 +956,7 @@ static void workflow_service_placement_poll(bool collect_samples)
     main_node->altitude_asl_m_valid = main_baro_valid;
     if (main_baro_valid) {
         main_node->altitude_asl_m =
-            (double)nrf_baro_pressure_to_altitude_mm(device.main.pressure_pa) / 1000.0;
+            (double)nrf_baro_pressure_to_altitude_mm(device->main.pressure_pa) / 1000.0;
     }
     main_node->stable = workflow_service_placement_update_node(
         &s_placement.history[0],
@@ -907,44 +969,44 @@ static void workflow_service_placement_poll(bool collect_samples)
         now_ms,
         take_samples);
 
-    nrf_topology_snapshot_t topology;
-    const bool topology_valid = nrf_topology_service_get_snapshot(&topology) == ESP_OK;
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    const bool topology_valid = nrf_topology_service_get_snapshot(topology) == ESP_OK;
     bool assigned[NRF_TOPOLOGY_REMOTE_COUNT] = { false };
     bool all_stable = topology_valid && in_placement && main_node->stable;
     if (topology_valid) {
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-            const nrf_topology_node_snapshot_t *remote = &topology.remotes[channel];
+            const nrf_topology_node_snapshot_t *remote = &topology->remotes[channel];
             if (remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
             assigned[channel] = true;
             workflow_placement_node_t *node =
                 &status->per_node[status->per_node_count++];
             workflow_service_placement_set_name(node, remote->node_id);
 
-            nrf_remote_sensor_cache_t cache;
-            memset(&cache, 0, sizeof(cache));
+            nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
+            memset(cache, 0, sizeof(*cache));
             const bool cache_read =
-                nrf_topology_service_get_sensor_snapshot(channel, &cache) == ESP_OK;
-            const bool cache_current = cache_read && cache.identity_valid &&
-                cache.topology_current && cache.response_valid &&
-                cache.identity.node_id == remote->node_id &&
-                now_ms >= cache.esp_receipt_uptime_ms &&
-                now_ms - cache.esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_WINDOW_MS;
+                nrf_topology_service_get_sensor_snapshot(channel, cache) == ESP_OK;
+            const bool cache_current = cache_read && cache->identity_valid &&
+                cache->topology_current && cache->response_valid &&
+                cache->identity.node_id == remote->node_id &&
+                now_ms >= cache->esp_receipt_uptime_ms &&
+                now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_WINDOW_MS;
             const bool environment_valid = cache_current &&
-                (cache.sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
-                cache.sensor.pressure_pa > 0U;
+                (cache->sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
+                cache->sensor.pressure_pa > 0U;
             node->vertical = cache_current &&
-                cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+                cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
             node->height_rel_main_mm_valid = main_height_valid && environment_valid &&
-                cache.sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
-                cache.sensor.reference_generation == main_generation;
+                cache->sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
+                cache->sensor.reference_generation == main_generation;
             if (node->height_rel_main_mm_valid) {
                 node->height_rel_main_mm =
-                    (int64_t)cache.sensor.relative_z_mm -
-                    (int64_t)device.main.height_reference.relative_z_mm;
+                    (int64_t)cache->sensor.relative_z_mm -
+                    (int64_t)device->main.height_reference.relative_z_mm;
             }
             node->altitude_asl_m_valid = environment_valid;
             if (environment_valid) {
-                node->altitude_asl_m = (double)cache.sensor.altitude_mm / 1000.0;
+                node->altitude_asl_m = (double)cache->sensor.altitude_mm / 1000.0;
             }
             node->stable = workflow_service_placement_update_node(
                 &s_placement.history[(size_t)channel + 1U],
@@ -953,7 +1015,7 @@ static void workflow_service_placement_poll(bool collect_samples)
                 node->vertical,
                 node->height_rel_main_mm_valid,
                 node->height_rel_main_mm,
-                cache.esp_receipt_uptime_ms,
+                cache->esp_receipt_uptime_ms,
                 now_ms,
                 take_samples && cache_current);
             all_stable = all_stable && node->stable;
@@ -969,12 +1031,12 @@ static void workflow_service_placement_poll(bool collect_samples)
 
 static uint8_t workflow_service_assigned_remote_count(void)
 {
-    nrf_topology_snapshot_t topology;
-    if (nrf_topology_service_get_snapshot(&topology) != ESP_OK) return 0U;
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    if (nrf_topology_service_get_snapshot(topology) != ESP_OK) return 0U;
 
     size_t count = 0U;
     for (size_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
-        if (topology.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) ++count;
+        if (topology->remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) ++count;
     }
     return count > UINT8_MAX ? UINT8_MAX : (uint8_t)count;
 }
@@ -1084,31 +1146,25 @@ static void workflow_service_calculation_done_locked(
 
 static void workflow_service_calculation_start_locked(void)
 {
-    localization_job_status_t status;
-    localization_job_get_status(&status);
-    if (status.state == LOCALIZATION_JOB_QUEUED || status.state == LOCALIZATION_JOB_RUNNING) {
+    localization_job_status_t *status = &s_poll_scratch.job_status;
+    localization_job_get_status(status);
+    if (status->state == LOCALIZATION_JOB_QUEUED || status->state == LOCALIZATION_JOB_RUNNING) {
         workflow_service_calculation_done_locked(
             false, WORKFLOW_CALCULATION_CLASS_INTERNAL, "busy");
         return;
     }
-    if (s_orphaned_job_id != 0U && status.job_id == s_orphaned_job_id) {
+    if (s_orphaned_job_id != 0U && status->job_id == s_orphaned_job_id) {
         s_orphaned_job_id = 0U;
     }
 
     char *json = NULL;
-    localization_calculate_config_t config;
     uint32_t budget_ms = 0U;
-    cJSON *root = NULL;
     esp_err_t err = s_active_object_id[0] == '\0'
         ? ESP_ERR_NOT_FOUND
         : object_store_get_calc_settings_json(s_active_object_id, &json);
     if (err == ESP_OK && json != NULL) {
-        root = cJSON_Parse(json);
-        err = root == NULL
-            ? ESP_ERR_INVALID_RESPONSE
-            : localization_config_from_json(root, &config, &budget_ms);
+        err = workflow_service_parse_calc_settings_locked(json, &budget_ms);
     }
-    cJSON_Delete(root);
     free(json);
     if (err != ESP_OK) {
         workflow_service_calculation_done_locked(
@@ -1118,7 +1174,11 @@ static void workflow_service_calculation_start_locked(void)
 
     uint32_t job_id = 0U;
     err = localization_job_submit(
-        s_active_object_id, s_session_id, &config, budget_ms, &job_id);
+        s_active_object_id,
+        s_session_id,
+        &s_poll_scratch.calculation_config,
+        budget_ms,
+        &job_id);
     if (err != ESP_OK) {
         char reason[WORKFLOW_REASON_MAX];
         (void)snprintf(reason, sizeof(reason), "submit_failed:%s", esp_err_to_name(err));
@@ -1127,36 +1187,40 @@ static void workflow_service_calculation_start_locked(void)
         return;
     }
     s_calculation_job_id = job_id;
+    if (!s_poll_first_calculation_seen) {
+        s_poll_first_calculation_seen = true;
+        atomic_store_explicit(&s_poll_hwm_after_first_calculation, true, memory_order_release);
+    }
     (void)workflow_core_set_progress(&s_core, 0);
 }
 
 static void workflow_service_calculation_poll_locked(void)
 {
     if (s_calculation_job_id == 0U && s_orphaned_job_id == 0U) return;
-    localization_job_status_t status;
-    localization_job_get_status(&status);
+    localization_job_status_t *status = &s_poll_scratch.job_status;
+    localization_job_get_status(status);
 
-    if (s_orphaned_job_id != 0U && status.job_id == s_orphaned_job_id) {
-        if (status.state == LOCALIZATION_JOB_QUEUED || status.state == LOCALIZATION_JOB_RUNNING) return;
+    if (s_orphaned_job_id != 0U && status->job_id == s_orphaned_job_id) {
+        if (status->state == LOCALIZATION_JOB_QUEUED || status->state == LOCALIZATION_JOB_RUNNING) return;
         s_orphaned_job_id = 0U;
     } else if (s_orphaned_job_id != 0U) {
         s_orphaned_job_id = 0U;
     }
 
     if (s_calculation_job_id == 0U || s_core.step != WORKFLOW_STEP_CALCULATING ||
-        status.job_id != s_calculation_job_id ||
-        strcmp(status.object_id, s_active_object_id) != 0 ||
-        strcmp(status.session_id, s_session_id) != 0) {
+        status->job_id != s_calculation_job_id ||
+        strcmp(status->object_id, s_active_object_id) != 0 ||
+        strcmp(status->session_id, s_session_id) != 0) {
         return;
     }
-    if (status.state == LOCALIZATION_JOB_QUEUED || status.state == LOCALIZATION_JOB_RUNNING) {
-        (void)workflow_core_set_progress(&s_core, (int)status.progress_percent);
+    if (status->state == LOCALIZATION_JOB_QUEUED || status->state == LOCALIZATION_JOB_RUNNING) {
+        (void)workflow_core_set_progress(&s_core, (int)status->progress_percent);
         return;
     }
-    if (status.state != LOCALIZATION_JOB_SUCCEEDED && status.state != LOCALIZATION_JOB_FAILED) return;
+    if (status->state != LOCALIZATION_JOB_SUCCEEDED && status->state != LOCALIZATION_JOB_FAILED) return;
 
-    const localization_recommendation_t *recommendation = &status.summary.recommendation;
-    const bool ok = status.state == LOCALIZATION_JOB_SUCCEEDED && recommendation->successful;
+    const localization_recommendation_t *recommendation = &status->summary.recommendation;
+    const bool ok = status->state == LOCALIZATION_JOB_SUCCEEDED && recommendation->successful;
     workflow_calculation_class_t calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
     const char *reason = recommendation->reason_summary;
     if (!ok) {
@@ -1172,8 +1236,8 @@ static void workflow_service_calculation_poll_locked(void)
                 calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
                 break;
         }
-        if (status.state == LOCALIZATION_JOB_FAILED && status.error != ESP_OK) {
-            reason = esp_err_to_name(status.error);
+        if (status->state == LOCALIZATION_JOB_FAILED && status->error != ESP_OK) {
+            reason = esp_err_to_name(status->error);
         }
         if (reason == NULL || reason[0] == '\0') reason = "calculation_failed";
     }
@@ -1202,7 +1266,10 @@ esp_err_t workflow_service_init(void)
     (void)workflow_service_active_object(object_id, &active_object_present);
     (void)snprintf(s_active_object_id, sizeof(s_active_object_id), "%s", object_id);
     workflow_core_init(&s_core, active_object_present);
-    s_assigned_remotes = workflow_service_assigned_remote_count();
+    if (workflow_service_lock()) {
+        s_assigned_remotes = workflow_service_assigned_remote_count();
+        workflow_service_unlock();
+    }
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
     s_session_id[0] = '\0';
@@ -1220,8 +1287,8 @@ esp_err_t workflow_service_init(void)
     s_calc_settings_cache_object_id[0] = '\0';
     s_calculation_job_id = 0U;
     s_orphaned_job_id = 0U;
-    s_poll_task_stack_bytes = WORKFLOW_SERVICE_POLL_INITIAL_STACK_BYTES;
-    s_poll_task_stack_sized = false;
+    atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
+    s_poll_first_calculation_seen = false;
     s_poll_task = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
     memset(&s_placement, 0, sizeof(s_placement));
@@ -1240,8 +1307,7 @@ esp_err_t workflow_service_init(void)
         return ESP_ERR_NO_MEM;
     }
     s_initialized = true;
-    const BaseType_t task_created =
-        workflow_service_create_poll_task(s_poll_task_stack_bytes, &s_poll_task);
+    const BaseType_t task_created = workflow_service_create_poll_task(&s_poll_task);
     if (task_created != pdPASS) {
         workflow_service_shutdown();
         return ESP_ERR_NO_MEM;
@@ -1276,6 +1342,8 @@ void workflow_service_shutdown(void)
     s_orphaned_job_id = 0U;
     s_scan_cache_valid = false;
     s_calc_settings_cache_valid = false;
+    atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
+    s_poll_first_calculation_seen = false;
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
@@ -1441,6 +1509,11 @@ esp_err_t workflow_service_command_async(
     if (command < 0 || command >= WORKFLOW_COMMAND_COUNT || out_seq == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (command == WORKFLOW_COMMAND_CALIBRATION_DONE ||
+        command == WORKFLOW_COMMAND_RANGING_DONE ||
+        command == WORKFLOW_COMMAND_CALCULATION_DONE) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (!s_initialized || s_async_queue == NULL || s_async_enqueue_mutex == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1499,12 +1572,21 @@ esp_err_t workflow_service_notify_calc_settings_saved(const char *object_id)
     return ESP_OK;
 }
 
-static BaseType_t workflow_service_create_poll_task(uint32_t stack_bytes, TaskHandle_t *task_out)
+/*
+ * This call graph has no cache-disabling SPI-flash writes: settings and scan
+ * presence are SD reads; measurement *_async only queues commands (the START
+ * guard reserves RAM state, and workflow START supplies no object ID); topology
+ * requests and barometer/device snapshots only update or copy RAM; and
+ * localization_job_submit queues RAM state for its separate worker task.
+ * Object activation writes and NVS/partition/SPI-flash APIs are not reachable,
+ * so the fixed task stack can safely stay in PSRAM.
+ */
+static BaseType_t workflow_service_create_poll_task(TaskHandle_t *task_out)
 {
     return xTaskCreatePinnedToCoreWithCaps(
         workflow_service_poll_task,
         "workflow_poll",
-        stack_bytes,
+        WORKFLOW_SERVICE_POLL_STACK_BYTES,
         NULL,
         WORKFLOW_SERVICE_POLL_TASK_PRIORITY,
         task_out,
@@ -1513,38 +1595,29 @@ static BaseType_t workflow_service_create_poll_task(uint32_t stack_bytes, TaskHa
     );
 }
 
+static void workflow_service_log_poll_stack_hwm(const char *phase, uint32_t poll_count)
+{
+    const uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "poll task STACK_HWM phase=%s free=%u of %u bytes polls=%u",
+        phase,
+        (unsigned)free_bytes,
+        (unsigned)WORKFLOW_SERVICE_POLL_STACK_BYTES,
+        (unsigned)poll_count);
+}
+
 static void workflow_service_poll_task(void *argument)
 {
     (void)argument;
     uint32_t poll_count = 0U;
-    const uint32_t allocated_stack_bytes = s_poll_task_stack_bytes;
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
         if (!s_initialized) vTaskDelete(NULL);
         (void)workflow_service_poll();
         ++poll_count;
-        if (!s_poll_task_stack_sized && poll_count >= 10U) {
-            s_poll_task_stack_sized = true;
-            uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
-            ESP_LOGI(TAG, "poll task STACK_HWM free=%u of %u bytes", (unsigned)free_bytes,
-                (unsigned)allocated_stack_bytes);
-            const uint32_t after_log_free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
-            free_bytes = after_log_free_bytes < free_bytes ? after_log_free_bytes : free_bytes;
-            const uint32_t used_bytes = allocated_stack_bytes > free_bytes
-                ? allocated_stack_bytes - free_bytes
-                : 0U;
-            const uint32_t measured_stack_bytes = used_bytes + WORKFLOW_SERVICE_POLL_STACK_MARGIN_BYTES;
-            if (measured_stack_bytes != allocated_stack_bytes) {
-                TaskHandle_t replacement = NULL;
-                s_poll_task_stack_bytes = measured_stack_bytes;
-                if (workflow_service_create_poll_task(measured_stack_bytes, &replacement) == pdPASS) {
-                    s_poll_task = replacement;
-                    vTaskDelete(NULL);
-                }
-                s_poll_task_stack_bytes = allocated_stack_bytes;
-                ESP_LOGW(TAG, "poll task stack resize to %u bytes failed; keeping %u bytes",
-                    (unsigned)measured_stack_bytes, (unsigned)allocated_stack_bytes);
-            }
+        if (poll_count == 100U) workflow_service_log_poll_stack_hwm("after-100-polls", poll_count);
+        if (atomic_exchange_explicit(
+                &s_poll_hwm_after_first_calculation, false, memory_order_acq_rel)) {
+            workflow_service_log_poll_stack_hwm("after-first-calculation", poll_count);
         }
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS));
     }
