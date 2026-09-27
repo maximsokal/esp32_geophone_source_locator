@@ -24,6 +24,7 @@
 #include "tca9548a_mux_i2c_bus.h"
 
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 
@@ -100,9 +101,9 @@ static nrf_cs_policy_t s_cs_requested_policy;
 static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
 static bool s_ranging_active = false;
 static bool s_ranging_progress_valid = false;
-static nrf_topology_ranging_progress_t s_ranging_progress;
+static EXT_RAM_BSS_ATTR nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_frozen_ranging_result_valid = false;
-static nrf_topology_ranging_result_t s_frozen_ranging_result;
+static EXT_RAM_BSS_ATTR nrf_topology_ranging_result_t s_frozen_ranging_result;
 static nrf_topology_worker_state_t s_worker_state;
 static nrf_topology_service_stack_stats_t s_stack_stats;
 

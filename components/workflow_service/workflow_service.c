@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "device_status.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -65,8 +66,8 @@ static char s_active_object_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
 static workflow_core_t s_core;
 static workflow_service_placement_ready_fn s_placement_ready_predicate;
 static void *s_placement_ready_context;
-static workflow_calibration_run_t s_calibration;
-static workflow_placement_run_t s_placement;
+static EXT_RAM_BSS_ATTR workflow_calibration_run_t s_calibration;
+static EXT_RAM_BSS_ATTR workflow_placement_run_t s_placement;
 
 static bool workflow_service_lock(void)
 {
