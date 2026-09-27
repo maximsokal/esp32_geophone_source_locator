@@ -25,6 +25,28 @@ static const char *web_localization_z_fallback_reason(const char *reason)
     return NULL;
 }
 
+static const char *web_localization_cs_pair_state(const char *state)
+{
+    static const char *const states[] = {
+        "unknown", "pending", "valid", "missing", "retry_exhausted",
+    };
+    for (size_t i = 0U; i < sizeof(states) / sizeof(states[0]); ++i) {
+        if (state != NULL && strcmp(state, states[i]) == 0) return states[i];
+    }
+    return "unknown";
+}
+
+static const char *web_localization_cs_pair_failure(const char *failure)
+{
+    static const char *const failures[] = {
+        "unknown", "none", "timeout", "transport", "outlier", "disconnected",
+    };
+    for (size_t i = 0U; i < sizeof(failures) / sizeof(failures[0]); ++i) {
+        if (failure != NULL && strcmp(failure, failures[i]) == 0) return failures[i];
+    }
+    return "unknown";
+}
+
 /*
  * MAX-168: read-only listing of every localization run already persisted
  * for one session (by localization_calculate_run(), via /api/control's
@@ -201,6 +223,35 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             );
         }
     }
+    if (participation_available && participation.geometry_provenance.available) {
+        const seismic_recorder_geometry_provenance_t *provenance =
+            &participation.geometry_provenance;
+        web_json_writer_printf(
+            &writer,
+            ",\"provenance\":{\"solver\":\"%s\",\"solver_version\":\"%s\",",
+            provenance->solver,
+            provenance->solver_version
+        );
+        web_json_writer_printf(
+            &writer,
+            "\"refined\":%s,\"refine_iterations\":%u,\"topology_generation\":%" PRIu32 ",",
+            provenance->refined ? "true" : "false",
+            (unsigned)provenance->refine_iterations,
+            provenance->topology_generation
+        );
+        web_json_writer_printf(
+            &writer,
+            "\"cs_membership_generation\":%" PRIu32 ",\"main_height_reference_generation\":%u,",
+            provenance->cs_membership_generation,
+            (unsigned)provenance->main_height_reference_generation
+        );
+        web_json_writer_printf(&writer, "\"setup_id\":\"%s\",", provenance->setup_id);
+        web_json_writer_printf(
+            &writer,
+            "\"start_uptime_ms\":%" PRIu64 "}",
+            provenance->start_uptime_ms
+        );
+    }
     web_json_writer_write(&writer, ",\"pods\":[");
     for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
         if (pod > 0U) {
@@ -282,6 +333,24 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
                         ? "channel_sounding_baro"
                         : "none"
             );
+            web_json_writer_printf(
+                &writer,
+                ",\"source_sample_uptime_ms\":%" PRIu64 ","
+                "\"esp_receipt_uptime_ms\":%" PRIu64 ","
+                "\"height_reference_generation\":%u,\"source_age_ms_at_start\":",
+                pod_participation->source_sample_uptime_ms,
+                pod_participation->esp_receipt_uptime_ms,
+                (unsigned)pod_participation->height_reference_generation
+            );
+            if (pod_participation->source_age_at_start_known) {
+                web_json_writer_printf(
+                    &writer,
+                    "%" PRIu64,
+                    pod_participation->source_age_ms_at_start
+                );
+            } else {
+                web_json_writer_write(&writer, "null");
+            }
         }
         web_json_writer_write(&writer, "}");
     }
@@ -319,9 +388,22 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         );
         web_json_writer_printf(
             &writer,
-            "\"spread_mm\":%" PRId32 ",\"rejected_samples\":%u}",
+            "\"spread_mm\":%" PRId32 ",\"rejected_samples\":%u,",
             pair->spread_mm,
             (unsigned)pair->rejected_samples
+        );
+        /* Append scheduler state and provider/scheduler quality evidence. */
+        web_json_writer_printf(
+            &writer,
+            "\"state\":\"%s\",\"last_failure\":\"%s\",",
+            web_localization_cs_pair_state(pair->state),
+            web_localization_cs_pair_failure(pair->last_failure)
+        );
+        web_json_writer_printf(
+            &writer,
+            "\"provider_quality_flags\":%u,\"scheduler_quality_flags\":%u}",
+            (unsigned)pair->provider_quality_flags,
+            (unsigned)pair->scheduler_quality_flags
         );
     }
     web_json_writer_write(&writer, "]},");

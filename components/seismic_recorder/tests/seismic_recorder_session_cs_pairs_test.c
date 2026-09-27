@@ -73,7 +73,7 @@ static void set_session_json(const char *json)
 static void test_valid_cs_pairs_round_trip(void)
 {
     set_session_json(
-        "{\"cs_pairs\":{\"pairs\":["
+        "{\"schema_version\":1,\"cs_pairs\":{\"pairs\":["
         "{\"node_a\":0,\"node_b\":1,\"valid\":true,\"distance_mm\":3200,"
         "\"confidence\":950,\"attempts\":1,\"valid_samples\":12},"
         "{\"node_a\":0,\"node_b\":2,\"valid\":false,\"distance_mm\":0,"
@@ -92,6 +92,10 @@ static void test_valid_cs_pairs_round_trip(void)
     assert(cs_pairs.pairs[0].confidence == 950U);
     assert(cs_pairs.pairs[0].attempts == 1U);
     assert(cs_pairs.pairs[0].valid_samples == 12U);
+    assert(strcmp(cs_pairs.pairs[0].state, "unknown") == 0);
+    assert(strcmp(cs_pairs.pairs[0].last_failure, "unknown") == 0);
+    assert(cs_pairs.pairs[0].provider_quality_flags == 0U);
+    assert(cs_pairs.pairs[0].scheduler_quality_flags == 0U);
 
     assert(cs_pairs.pairs[1].node_a == 0U && cs_pairs.pairs[1].node_b == 2U);
     assert(!cs_pairs.pairs[1].valid);
@@ -114,10 +118,18 @@ static void test_missing_cs_pairs_key_defaults_to_empty(void)
 static void test_malformed_pair_entry_is_skipped_not_fatal(void)
 {
     set_session_json(
-        "{\"cs_pairs\":{\"pairs\":["
+        "{\"schema_version\":2,\"cs_pairs\":{\"pairs\":["
         "{\"node_a\":0,\"node_b\":1,\"valid\":true,\"distance_mm\":\"not-a-number\"},"
+        "{\"node_a\":0,\"node_b\":1,\"valid\":true,\"distance_mm\":100,"
+        "\"confidence\":700,\"attempts\":2,\"valid_samples\":8,\"state\":\"sideways\"},"
+        "{\"node_a\":0,\"node_b\":2,\"valid\":true,\"distance_mm\":100,"
+        "\"confidence\":700,\"attempts\":2,\"valid_samples\":8,\"last_failure\":\"bad\"},"
+        "{\"node_a\":0,\"node_b\":2,\"valid\":true,\"distance_mm\":100,"
+        "\"confidence\":700,\"attempts\":2,\"valid_samples\":8,\"provider_quality_flags\":65536},"
         "{\"node_a\":0,\"node_b\":3,\"valid\":true,\"distance_mm\":1500,"
-        "\"confidence\":700,\"attempts\":2,\"valid_samples\":8}"
+        "\"confidence\":700,\"attempts\":2,\"valid_samples\":8,\"state\":\"valid\","
+        "\"last_failure\":\"timeout\",\"provider_quality_flags\":12,"
+        "\"scheduler_quality_flags\":2}"
         "]}}"
     );
 
@@ -130,6 +142,10 @@ static void test_malformed_pair_entry_is_skipped_not_fatal(void)
     assert(cs_pairs.pair_count == 1U);
     assert(cs_pairs.pairs[0].node_a == 0U && cs_pairs.pairs[0].node_b == 3U);
     assert(cs_pairs.pairs[0].distance_mm == 1500);
+    assert(strcmp(cs_pairs.pairs[0].state, "valid") == 0);
+    assert(strcmp(cs_pairs.pairs[0].last_failure, "timeout") == 0);
+    assert(cs_pairs.pairs[0].provider_quality_flags == 12U);
+    assert(cs_pairs.pairs[0].scheduler_quality_flags == 2U);
 }
 
 

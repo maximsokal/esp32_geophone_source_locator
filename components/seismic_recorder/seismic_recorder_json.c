@@ -1,5 +1,6 @@
 #include "seismic_recorder_internal.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,29 @@ static seismic_recorder_recovery_request_callback_t s_recovery_request_callback 
 static void *s_recovery_request_context = NULL;
 
 static bool seismic_recorder_json_z_fallback_reason_known(const char *reason);
+
+static bool seismic_recorder_json_cs_pair_state_known(const char *state)
+{
+    return state != NULL && (
+        strcmp(state, "unknown") == 0 ||
+        strcmp(state, "pending") == 0 ||
+        strcmp(state, "valid") == 0 ||
+        strcmp(state, "missing") == 0 ||
+        strcmp(state, "retry_exhausted") == 0
+    );
+}
+
+static bool seismic_recorder_json_cs_pair_failure_known(const char *failure)
+{
+    return failure != NULL && (
+        strcmp(failure, "unknown") == 0 ||
+        strcmp(failure, "none") == 0 ||
+        strcmp(failure, "timeout") == 0 ||
+        strcmp(failure, "transport") == 0 ||
+        strcmp(failure, "outlier") == 0 ||
+        strcmp(failure, "disconnected") == 0
+    );
+}
 
 
 esp_err_t seismic_recorder_set_recovery_request_callback(
@@ -238,6 +262,40 @@ static bool seismic_recorder_json_add_geometry(
         }
     }
 
+    const seismic_recorder_geometry_provenance_t *solver =
+        &participation->geometry_provenance;
+    if (solver->available) {
+        if (
+            strnlen(solver->solver, sizeof(solver->solver)) >= sizeof(solver->solver) ||
+            strnlen(solver->solver_version, sizeof(solver->solver_version)) >= sizeof(solver->solver_version) ||
+            strnlen(solver->setup_id, sizeof(solver->setup_id)) >= sizeof(solver->setup_id) ||
+            strcmp(solver->solver, "nrf_geometry_solver") != 0 ||
+            solver->solver_version[0] == '\0' ||
+            solver->setup_id[0] == '\0'
+        ) {
+            return false;
+        }
+        cJSON *provenance = cJSON_AddObjectToObject(object, "provenance");
+        if (
+            provenance == NULL ||
+            cJSON_AddStringToObject(provenance, "solver", solver->solver) == NULL ||
+            cJSON_AddStringToObject(provenance, "solver_version", solver->solver_version) == NULL ||
+            cJSON_AddBoolToObject(provenance, "refined", solver->refined) == NULL ||
+            cJSON_AddNumberToObject(provenance, "refine_iterations", solver->refine_iterations) == NULL ||
+            cJSON_AddNumberToObject(provenance, "topology_generation", solver->topology_generation) == NULL ||
+            cJSON_AddNumberToObject(provenance, "cs_membership_generation", solver->cs_membership_generation) == NULL ||
+            cJSON_AddNumberToObject(
+                provenance,
+                "main_height_reference_generation",
+                solver->main_height_reference_generation
+            ) == NULL ||
+            cJSON_AddStringToObject(provenance, "setup_id", solver->setup_id) == NULL ||
+            cJSON_AddNumberToObject(provenance, "start_uptime_ms", (double)solver->start_uptime_ms) == NULL
+        ) {
+            return false;
+        }
+    }
+
     cJSON *pods = cJSON_AddArrayToObject(object, "pods");
     if (pods == NULL) {
         return false;
@@ -325,6 +383,36 @@ static bool seismic_recorder_json_add_geometry(
         if (cJSON_AddStringToObject(pod_object, "position_source", position_source) == NULL) {
             return false;
         }
+        if (
+            cJSON_AddNumberToObject(
+                pod_object,
+                "source_sample_uptime_ms",
+                (double)pod_participation->source_sample_uptime_ms
+            ) == NULL ||
+            cJSON_AddNumberToObject(
+                pod_object,
+                "esp_receipt_uptime_ms",
+                (double)pod_participation->esp_receipt_uptime_ms
+            ) == NULL ||
+            cJSON_AddNumberToObject(
+                pod_object,
+                "height_reference_generation",
+                pod_participation->height_reference_generation
+            ) == NULL
+        ) {
+            return false;
+        }
+        if (pod_participation->source_age_at_start_known) {
+            if (cJSON_AddNumberToObject(
+                pod_object,
+                "source_age_ms_at_start",
+                (double)pod_participation->source_age_ms_at_start
+            ) == NULL) {
+                return false;
+            }
+        } else if (cJSON_AddNullToObject(pod_object, "source_age_ms_at_start") == NULL) {
+            return false;
+        }
     }
 
     return true;
@@ -354,6 +442,20 @@ static bool seismic_recorder_json_add_cs_pairs(
 
     for (size_t i = 0; i < cs_pairs->pair_count && i < OBJECT_STORE_MAX_CS_PAIRS; ++i) {
         const object_store_cs_pair_t *pair = &cs_pairs->pairs[i];
+        if (
+            strnlen(pair->state, sizeof(pair->state)) >= sizeof(pair->state) ||
+            strnlen(pair->last_failure, sizeof(pair->last_failure)) >= sizeof(pair->last_failure)
+        ) {
+            return false;
+        }
+        const char *state = pair->state[0] == '\0' ? "unknown" : pair->state;
+        const char *last_failure = pair->last_failure[0] == '\0' ? "unknown" : pair->last_failure;
+        if (
+            !seismic_recorder_json_cs_pair_state_known(state) ||
+            !seismic_recorder_json_cs_pair_failure_known(last_failure)
+        ) {
+            return false;
+        }
 
         cJSON *pair_object = cJSON_CreateObject();
         if (pair_object == NULL) {
@@ -370,7 +472,11 @@ static bool seismic_recorder_json_add_cs_pairs(
             cJSON_AddNumberToObject(pair_object, "attempts", pair->attempts) == NULL ||
             cJSON_AddNumberToObject(pair_object, "valid_samples", pair->valid_samples) == NULL ||
             cJSON_AddNumberToObject(pair_object, "spread_mm", (double)pair->spread_mm) == NULL ||
-            cJSON_AddNumberToObject(pair_object, "rejected_samples", pair->rejected_samples) == NULL
+            cJSON_AddNumberToObject(pair_object, "rejected_samples", pair->rejected_samples) == NULL ||
+            cJSON_AddStringToObject(pair_object, "state", state) == NULL ||
+            cJSON_AddStringToObject(pair_object, "last_failure", last_failure) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "provider_quality_flags", pair->provider_quality_flags) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "scheduler_quality_flags", pair->scheduler_quality_flags) == NULL
         ) {
             return false;
         }
@@ -584,18 +690,10 @@ esp_err_t seismic_recorder_json_write_metadata(
 }
 
 
-static bool seismic_recorder_json_uint64(
-    const cJSON *root,
-    const char *name,
-    uint64_t *value
-)
+static bool seismic_recorder_json_number_uint64(const cJSON *item, uint64_t *value)
 {
-    if (value == NULL) {
-        return false;
-    }
-
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
     if (
+        value == NULL ||
         !cJSON_IsNumber(item) ||
         !isfinite(item->valuedouble) ||
         item->valuedouble < 0.0 ||
@@ -610,23 +708,93 @@ static bool seismic_recorder_json_uint64(
 }
 
 
+static bool seismic_recorder_json_uint64(
+    const cJSON *root,
+    const char *name,
+    uint64_t *value
+)
+{
+    return value != NULL && seismic_recorder_json_number_uint64(
+        cJSON_GetObjectItemCaseSensitive(root, name), value
+    );
+}
+
+
+static bool seismic_recorder_json_optional_uint64(
+    const cJSON *object,
+    const char *name,
+    uint64_t *value
+)
+{
+    if (object == NULL || name == NULL || value == NULL) {
+        return false;
+    }
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+    if (item == NULL) {
+        *value = 0U;
+        return true;
+    }
+    return seismic_recorder_json_number_uint64(item, value);
+}
+
+
+static bool seismic_recorder_json_number_uint16(const cJSON *item, uint16_t *value)
+{
+    uint64_t parsed = 0U;
+    if (
+        value == NULL ||
+        !seismic_recorder_json_number_uint64(item, &parsed) ||
+        parsed > UINT16_MAX
+    ) {
+        return false;
+    }
+    *value = (uint16_t)parsed;
+    return true;
+}
+
+
+static bool seismic_recorder_json_optional_uint16(
+    const cJSON *object,
+    const char *name,
+    uint16_t *value
+)
+{
+    if (object == NULL || name == NULL || value == NULL) {
+        return false;
+    }
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+    if (item == NULL) {
+        *value = 0U;
+        return true;
+    }
+    return seismic_recorder_json_number_uint16(item, value);
+}
+
+
+static bool seismic_recorder_json_number_uint32(const cJSON *item, uint32_t *value)
+{
+    uint64_t parsed = 0U;
+    if (
+        value == NULL ||
+        !seismic_recorder_json_number_uint64(item, &parsed) ||
+        parsed > UINT32_MAX
+    ) {
+        return false;
+    }
+    *value = (uint32_t)parsed;
+    return true;
+}
+
+
 static bool seismic_recorder_json_uint32(
     const cJSON *root,
     const char *name,
     uint32_t *value
 )
 {
-    uint64_t parsed = 0U;
-    if (
-        value == NULL ||
-        !seismic_recorder_json_uint64(root, name, &parsed) ||
-        parsed > UINT32_MAX
-    ) {
-        return false;
-    }
-
-    *value = (uint32_t)parsed;
-    return true;
+    return value != NULL && seismic_recorder_json_number_uint32(
+        cJSON_GetObjectItemCaseSensitive(root, name), value
+    );
 }
 
 
@@ -851,7 +1019,149 @@ static bool seismic_recorder_json_participation_pod_v2(
         return false;
     }
 
+    uint64_t source_sample_uptime_ms = 0U;
+    uint64_t esp_receipt_uptime_ms = 0U;
+    uint64_t source_age_ms_at_start = 0U;
+    uint16_t height_reference_generation = 0U;
+    const cJSON *source_age = cJSON_GetObjectItemCaseSensitive(
+        pod_json, "source_age_ms_at_start"
+    );
+    if (
+        !seismic_recorder_json_optional_uint64(
+            pod_json, "source_sample_uptime_ms", &source_sample_uptime_ms
+        ) ||
+        !seismic_recorder_json_optional_uint64(
+            pod_json, "esp_receipt_uptime_ms", &esp_receipt_uptime_ms
+        ) ||
+        !seismic_recorder_json_optional_uint16(
+            pod_json, "height_reference_generation", &height_reference_generation
+        )
+    ) {
+        return false;
+    }
+    if (source_age != NULL && !cJSON_IsNull(source_age)) {
+        if (!seismic_recorder_json_number_uint64(source_age, &source_age_ms_at_start)) {
+            return false;
+        }
+        parsed.source_age_at_start_known = true;
+        parsed.source_age_ms_at_start = source_age_ms_at_start;
+    }
+    parsed.source_sample_uptime_ms = source_sample_uptime_ms;
+    parsed.esp_receipt_uptime_ms = esp_receipt_uptime_ms;
+    parsed.height_reference_generation = height_reference_generation;
+
     *pod = parsed;
+    return true;
+}
+
+
+static bool seismic_recorder_json_parse_geometry_provenance(
+    const cJSON *root,
+    const object_store_geometry_t *geometry_data,
+    seismic_recorder_geometry_provenance_t *provenance
+)
+{
+    const cJSON *geometry = cJSON_GetObjectItemCaseSensitive(root, "geometry");
+    const cJSON *object = cJSON_IsObject(geometry)
+        ? cJSON_GetObjectItemCaseSensitive(geometry, "provenance")
+        : NULL;
+    if (object == NULL) {
+        return true;
+    }
+    if (!cJSON_IsObject(object) || provenance == NULL) {
+        return false;
+    }
+
+    const cJSON *solver = cJSON_GetObjectItemCaseSensitive(object, "solver");
+    const cJSON *solver_version = cJSON_GetObjectItemCaseSensitive(object, "solver_version");
+    const cJSON *refined = cJSON_GetObjectItemCaseSensitive(object, "refined");
+    const cJSON *setup_id = cJSON_GetObjectItemCaseSensitive(object, "setup_id");
+    uint16_t refine_iterations = 0U;
+    uint32_t topology_generation = 0U;
+    uint32_t cs_membership_generation = 0U;
+    uint16_t main_height_reference_generation = 0U;
+    uint64_t start_uptime_ms = 0U;
+    if (
+        !cJSON_IsString(solver) || solver->valuestring == NULL ||
+        strnlen(solver->valuestring, SEISMIC_RECORDER_SOLVER_NAME_SIZE) >=
+            SEISMIC_RECORDER_SOLVER_NAME_SIZE ||
+        strcmp(solver->valuestring, "nrf_geometry_solver") != 0 ||
+        !cJSON_IsString(solver_version) || solver_version->valuestring == NULL ||
+        solver_version->valuestring[0] == '\0' ||
+        strnlen(solver_version->valuestring, SEISMIC_RECORDER_SOLVER_VERSION_SIZE) >=
+            SEISMIC_RECORDER_SOLVER_VERSION_SIZE ||
+        !cJSON_IsBool(refined) ||
+        !seismic_recorder_json_number_uint16(
+            cJSON_GetObjectItemCaseSensitive(object, "refine_iterations"),
+            &refine_iterations
+        ) ||
+        refine_iterations > UINT8_MAX ||
+        !seismic_recorder_json_number_uint32(
+            cJSON_GetObjectItemCaseSensitive(object, "topology_generation"),
+            &topology_generation
+        ) ||
+        !seismic_recorder_json_number_uint32(
+            cJSON_GetObjectItemCaseSensitive(object, "cs_membership_generation"),
+            &cs_membership_generation
+        ) ||
+        !seismic_recorder_json_number_uint16(
+            cJSON_GetObjectItemCaseSensitive(object, "main_height_reference_generation"),
+            &main_height_reference_generation
+        ) ||
+        !cJSON_IsString(setup_id) || setup_id->valuestring == NULL ||
+        setup_id->valuestring[0] == '\0' ||
+        strnlen(setup_id->valuestring, SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE) >=
+            SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE ||
+        !seismic_recorder_json_uint64(object, "start_uptime_ms", &start_uptime_ms)
+    ) {
+        return false;
+    }
+
+    uint64_t computed_at_ms = 0U;
+    bool computed_at_found = false;
+    if (geometry_data != NULL) {
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            if (geometry_data->pods[i].computed) {
+                computed_at_ms = geometry_data->pods[i].computed_at_ms;
+                computed_at_found = true;
+                break;
+            }
+        }
+    }
+    char expected_setup_id[SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE];
+    const int expected_setup_id_length = snprintf(
+        expected_setup_id,
+        sizeof(expected_setup_id),
+        "%" PRIu64 "-%" PRIu32 "-%" PRIu32 "-%u",
+        computed_at_ms,
+        topology_generation,
+        cs_membership_generation,
+        (unsigned)main_height_reference_generation
+    );
+    if (
+        !computed_at_found || expected_setup_id_length < 0 ||
+        expected_setup_id_length >= (int)sizeof(expected_setup_id) ||
+        strcmp(setup_id->valuestring, expected_setup_id) != 0
+    ) {
+        return false;
+    }
+
+    memset(provenance, 0, sizeof(*provenance));
+    provenance->available = true;
+    snprintf(provenance->solver, sizeof(provenance->solver), "%s", solver->valuestring);
+    snprintf(
+        provenance->solver_version,
+        sizeof(provenance->solver_version),
+        "%s",
+        solver_version->valuestring
+    );
+    provenance->refined = cJSON_IsTrue(refined);
+    provenance->refine_iterations = (uint8_t)refine_iterations;
+    provenance->topology_generation = topology_generation;
+    provenance->cs_membership_generation = cs_membership_generation;
+    provenance->main_height_reference_generation = main_height_reference_generation;
+    snprintf(provenance->setup_id, sizeof(provenance->setup_id), "%s", setup_id->valuestring);
+    provenance->start_uptime_ms = start_uptime_ms;
     return true;
 }
 
@@ -919,6 +1229,15 @@ static void seismic_recorder_json_parse_participation(
                 pod_json,
                 &participation->pods[i]
             );
+        }
+    }
+
+    if (version == SEISMIC_RECORDER_SESSION_SCHEMA_VERSION_V2) {
+        seismic_recorder_geometry_provenance_t geometry_provenance = {0};
+        if (seismic_recorder_json_parse_geometry_provenance(
+            root, &geometry, &geometry_provenance
+        )) {
+            participation->geometry_provenance = geometry_provenance;
         }
     }
 }
@@ -1341,6 +1660,43 @@ esp_err_t seismic_recorder_read_session_cs_pairs(
             rejected_samples->valuedouble <= 255.0
             ? (uint8_t)rejected_samples->valuedouble
             : 0U;
+
+        const cJSON *state = cJSON_GetObjectItemCaseSensitive(pair, "state");
+        const cJSON *last_failure = cJSON_GetObjectItemCaseSensitive(pair, "last_failure");
+        const char *state_name = "unknown";
+        const char *failure_name = "unknown";
+        if (state != NULL) {
+            if (
+                !cJSON_IsString(state) || state->valuestring == NULL ||
+                !seismic_recorder_json_cs_pair_state_known(state->valuestring)
+            ) {
+                continue;
+            }
+            state_name = state->valuestring;
+        }
+        if (last_failure != NULL) {
+            if (
+                !cJSON_IsString(last_failure) || last_failure->valuestring == NULL ||
+                !seismic_recorder_json_cs_pair_failure_known(last_failure->valuestring)
+            ) {
+                continue;
+            }
+            failure_name = last_failure->valuestring;
+        }
+        if (
+            strnlen(state_name, sizeof(out->state)) >= sizeof(out->state) ||
+            strnlen(failure_name, sizeof(out->last_failure)) >= sizeof(out->last_failure) ||
+            !seismic_recorder_json_optional_uint16(
+                pair, "provider_quality_flags", &out->provider_quality_flags
+            ) ||
+            !seismic_recorder_json_optional_uint16(
+                pair, "scheduler_quality_flags", &out->scheduler_quality_flags
+            )
+        ) {
+            continue;
+        }
+        snprintf(out->state, sizeof(out->state), "%s", state_name);
+        snprintf(out->last_failure, sizeof(out->last_failure), "%s", failure_name);
         ++count;
     }
     cs_pairs->pair_count = count;

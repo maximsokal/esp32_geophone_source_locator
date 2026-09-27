@@ -81,6 +81,8 @@ typedef struct
  * unmodified -- never rescaled/reinterpreted here).
  */
 #define OBJECT_STORE_MAX_CS_PAIRS 10U
+#define OBJECT_STORE_CS_PAIR_STATE_SIZE 24U
+#define OBJECT_STORE_CS_PAIR_FAILURE_SIZE 16U
 
 typedef struct
 {
@@ -95,6 +97,12 @@ typedef struct
      * discarded as outliers; 0 when unknown (older records). */
     int32_t spread_mm;
     uint8_t rejected_samples;
+    /* MAX-166 session provenance. Empty in object.json written before the
+     * session JSON writer added these fields. */
+    char state[OBJECT_STORE_CS_PAIR_STATE_SIZE];
+    char last_failure[OBJECT_STORE_CS_PAIR_FAILURE_SIZE];
+    uint16_t provider_quality_flags;
+    uint16_t scheduler_quality_flags;
 } object_store_cs_pair_t;
 
 typedef struct

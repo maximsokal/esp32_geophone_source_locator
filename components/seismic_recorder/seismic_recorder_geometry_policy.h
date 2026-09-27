@@ -28,6 +28,8 @@ typedef struct
     uint16_t height_reference_generation;
     int32_t relative_z_mm;
     bool leveled;
+    uint64_t source_sample_uptime_ms;
+    uint64_t esp_receipt_uptime_ms;
 } seismic_recorder_geometry_channel_status_t;
 
 

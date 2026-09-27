@@ -52,6 +52,8 @@ typedef struct {
 } object_store_geometry_t;
 
 #define OBJECT_STORE_MAX_CS_PAIRS 10U
+#define OBJECT_STORE_CS_PAIR_STATE_SIZE 24U
+#define OBJECT_STORE_CS_PAIR_FAILURE_SIZE 16U
 
 typedef struct {
     uint8_t node_a;
@@ -63,6 +65,10 @@ typedef struct {
     uint8_t valid_samples;
     int32_t spread_mm;
     uint8_t rejected_samples;
+    char state[OBJECT_STORE_CS_PAIR_STATE_SIZE];
+    char last_failure[OBJECT_STORE_CS_PAIR_FAILURE_SIZE];
+    uint16_t provider_quality_flags;
+    uint16_t scheduler_quality_flags;
 } object_store_cs_pair_t;
 
 typedef struct {
