@@ -110,7 +110,6 @@ export function thinPoints(positions: Float32Array, maxPoints: number): Array<{ 
 export interface ReportQr {
   kind: 'full_payload' | 'reference';
   text: string;
-  note: string;
 }
 
 /**
@@ -137,14 +136,10 @@ export function reportQr(
     n: overlay.sectors.length,
   });
   if (new TextEncoder().encode(payload).length <= qrByteCapacity(10) && encodeQr(payload) !== null) {
-    return { kind: 'full_payload', text: payload, note: 'QR carries the selected result (object, recording, method, position, radius).' };
+    return { kind: 'full_payload', text: payload };
   }
   const reference = `geolocator:object=${object.id};session=${sessionId}`;
-  return {
-    kind: 'reference',
-    text: reference,
-    note: `The full result does not fit one QR code (limit ${qrByteCapacity(10)} bytes); this QR references the saved recording on the device instead.`,
-  };
+  return { kind: 'reference', text: reference };
 }
 
 /* ---- Report model ---- */

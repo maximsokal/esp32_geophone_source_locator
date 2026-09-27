@@ -84,7 +84,7 @@ describe('report model', () => {
     const long = { ...object, id: 'X'.repeat(300) };
     const fallback = reportQr(long, 'S000001', overlay);
     expect(fallback.kind).toBe('reference');
-    expect(fallback.note).toContain('does not fit');
+    expect(fallback.text).toBe(`geolocator:object=${long.id};session=S000001`);
   });
 
   it('assembles one recording without live data', () => {
