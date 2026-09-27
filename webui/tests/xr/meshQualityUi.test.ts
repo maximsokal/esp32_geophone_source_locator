@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { translate } from '../../src/i18n';
+import { formatNumber, formatPercent } from '../../src/i18n/format';
 import { describeMeshQuality } from '../../src/xr/meshQualityUi';
 import type { SparseTsdfMesh } from '../../src/xr/sparseTsdf';
 
@@ -97,9 +99,10 @@ describe('mesh quality UI status', () => {
     }));
     expect(result.severity).toBe('bad');
     expect(result.rescanRecommended).toBe(true);
-    expect(result.label).toContain(`MESH PARTIAL · ${(1415).toLocaleString()}△`);
-    expect(result.label).toContain('CHECK LIMITED');
-    expect(result.label).toContain('46% noise');
+    expect(result.label).toBe(translate('en', 'xr.mesh.partial_limited', {
+      count: formatNumber('en', 1415),
+      noise: formatPercent('en', 0.46),
+    }));
   });
 
   it('recommends rescan when a ready reconstruction unexpectedly produces no retained triangles', () => {

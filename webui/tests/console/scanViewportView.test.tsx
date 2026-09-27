@@ -15,6 +15,8 @@ import {
   type ScanViewState,
 } from '../../src/xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
+import { formatDistance, formatNumber } from '../../src/i18n/format';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 
 /*
  * The measured 3D search-volume viewport as the operator sees it, rendered
@@ -55,14 +57,15 @@ function render(
     sensorGeometry?: LocalizationSessionGeometry | null;
     registrationArtifact?: RegistrationArtifact | null;
   } = {},
+  locale: I18nLocale = 'en',
 ): string {
-  return renderToStaticMarkup(createElement(ScanPointCloudViewport, {
+  return renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(ScanPointCloudViewport, {
     snapshot: snap,
     viewCommand: { preset, sequence: 0 },
     display: view.display,
     mode: view.mode,
     ...sensorProps,
-  }));
+  })));
 }
 
 const MODES: ScanMode[] = ['quality', 'surface', 'search-volume', 'mesh'];
@@ -76,11 +79,12 @@ describe('ScanPointCloudViewport', () => {
     expect(html).toContain(`${scanModeLabel(mode)} · ${displayFingerprint(view.display).toUpperCase()}`);
   });
 
-  it('reports every scanned data type count in the source badge', () => {
+  it.each(['en', 'uk'] as const)('renders every source badge count with the %s formatter', async (locale: I18nLocale) => {
+    if (locale === 'uk') await loadUkrainianCatalog();
     const html = render(scanViewForMode('search-volume'), snapshot({
       pointCount: 4321, knownFreeVoxelCount: 900, unknownCandidateVoxelCount: 77,
-    }));
-    expect(html).toContain('SURFACE 4,321 · FREE 900 · UNKNOWN 77 · PINS 0 · EDGES 0');
+    }), 'perspective', {}, locale);
+    expect(html).toContain(`${translate(locale, 'scan.badge.surface')} ${formatNumber(locale, 4321)} · ${translate(locale, 'scan.badge.free')} ${formatNumber(locale, 900)} · ${translate(locale, 'scan.badge.unknown')} ${formatNumber(locale, 77)} · ${translate(locale, 'scan.badge.pins')} ${formatNumber(locale, 0)} · ${translate(locale, 'scan.badge.edges')} ${formatNumber(locale, 0)}`);
   });
 
   it('shows dimensions only while the dimensions layer is on', () => {
@@ -120,17 +124,17 @@ describe('ScanPointCloudViewport', () => {
     const details = render(scanViewForMode('quality'), snapshot(), 'perspective', {
       sensorMarkers: [marker], selectedSensorNode: 'G1',
     });
-    expect(details).toContain('aria-label="Selected sensor marker details"');
-    expect(details).toContain('G1 · anchored');
-    expect(details).toContain('<dt>Source</dt><dd>apriltag</dd>');
-    expect(details).toContain('<dt>Uncertainty</dt><dd>0.012 m</dd>');
-    expect(details).toContain('<dt>Residual</dt><dd>0.004 m</dd>');
-    expect(details).toContain('<dt>Tag ID</dt><dd>1</dd>');
+    expect(details).toContain(`aria-label="${translate('en', 'scan.selected_sensor_details')}"`);
+    expect(details).toContain(`G1 · ${translate('en', 'scan.marker_status.anchored')}`);
+    expect(details).toContain(`<dt>${translate('en', 'scan.source')}</dt><dd>${translate('en', 'scan.tag_apriltag')}</dd>`);
+    expect(details).toContain(`<dt>${translate('en', 'scan.uncertainty')}</dt><dd>${formatDistance('en', 0.012, 3)}</dd>`);
+    expect(details).toContain(`<dt>${translate('en', 'scan.residual')}</dt><dd>${formatDistance('en', 0.004, 3)}</dd>`);
+    expect(details).toContain(`<dt>${translate('en', 'scan.tag_id')}</dt><dd>1</dd>`);
 
     const barometricDetails = render(scanViewForMode('quality'), snapshot(), 'perspective', {
       sensorMarkers: [{ ...marker, source: 'channel_sounding_baro' }], selectedSensorNode: 'G1',
     });
-    expect(barometricDetails).toContain('<dt>Source</dt><dd>Channel Sounding + barometric Z</dd>');
+    expect(barometricDetails).toContain(`<dt>${translate('en', 'scan.source')}</dt><dd>${translate('en', 'scan.channel_sounding_baro')}</dd>`);
 
     const sensorGeometry: LocalizationSessionGeometry = {
       available: true,
@@ -148,6 +152,6 @@ describe('ScanPointCloudViewport', () => {
     const inset = render(scanViewForMode('quality'), snapshot(), 'perspective', {
       sensorGeometry, registrationArtifact: invalidRegistration,
     });
-    expect(inset).toContain('CS geometry — not registered to the scan');
+    expect(inset).toContain(translate('en', 'scan.unregistered_geometry'));
   });
 });

@@ -30,8 +30,8 @@ void ui_render_system_locked(void)
     ui_context_t *context = ui_context();
 
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "SYSTEM",
-        "LEFT BACK   LIVE SYSTEM STATUS"
+        ui_tr(UI_I18N_KEY_SYSTEM_TITLE),
+        ui_tr(UI_I18N_KEY_SYSTEM_LANGUAGE_FOOTER)
     );
 
     if (screen == NULL) {
@@ -39,7 +39,7 @@ void ui_render_system_locked(void)
     }
 
     const esp_app_desc_t *app = esp_app_get_description();
-    lv_obj_t *card = ui_create_card_locked(screen, 10, 42, 300, 158);
+    lv_obj_t *card = ui_create_card_locked(screen, 10, 38, 300, 176);
 
     if (card == NULL) {
         return;
@@ -50,69 +50,79 @@ void ui_render_system_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "FW      %s",
-        app != NULL ? app->version : "--"
+        ui_tr(UI_I18N_KEY_SYSTEM_FIRMWARE),
+        app != NULL ? app->version : ui_tr(UI_I18N_KEY_SHARED_EMPTY)
     );
     (void)ui_create_label_locked(
-        card, 10, 10, 284, text, UI_COLOR_ACCENT
+        card, 10, 8, 284, text, UI_COLOR_ACCENT
     );
 
     snprintf(
         text,
         sizeof(text),
-        "ESP-IDF  %s",
+        ui_tr(UI_I18N_KEY_SYSTEM_IDF_VERSION),
         esp_get_idf_version()
     );
     (void)ui_create_label_locked(
-        card, 10, 32, 284, text, UI_COLOR_TEXT
+        card, 10, 27, 284, text, UI_COLOR_TEXT
     );
 
     snprintf(
         text,
         sizeof(text),
-        "LVGL     %d.%d.%d + esp_lvgl_port",
+        ui_tr(UI_I18N_KEY_SYSTEM_LVGL_VERSION),
         LVGL_VERSION_MAJOR,
         LVGL_VERSION_MINOR,
         LVGL_VERSION_PATCH
     );
     (void)ui_create_label_locked(
-        card, 10, 54, 284, text, UI_COLOR_GOOD
+        card, 10, 46, 284, text, UI_COLOR_GOOD
     );
 
     context->system_heap = ui_create_label_locked(
         card,
         10,
-        76,
+        65,
         284,
-        "HEAP     -- KB internal free",
+        ui_tr(UI_I18N_KEY_SYSTEM_HEAP_EMPTY),
         UI_COLOR_TEXT
     );
 
     context->system_psram = ui_create_label_locked(
         card,
         10,
-        98,
+        84,
         284,
-        "PSRAM    -- KB free",
+        ui_tr(UI_I18N_KEY_SYSTEM_PSRAM_EMPTY),
         UI_COLOR_TEXT
     );
 
     context->system_uptime = ui_create_label_locked(
         card,
         10,
-        120,
+        103,
         284,
-        "UPTIME   -- s",
+        ui_tr(UI_I18N_KEY_SYSTEM_UPTIME_EMPTY),
         UI_COLOR_MUTED
     );
 
     (void)ui_create_label_locked(
         card,
         10,
-        140,
+        122,
         284,
-        "CORE0 SERVICES/LVGL   CORE1 ACQUISITION",
+        ui_tr(UI_I18N_KEY_SYSTEM_CORES),
         UI_COLOR_MUTED
+    );
+
+    (void)ui_create_row_locked(
+        card,
+        140,
+        ui_tr(context->system_language_selection == UI_LOCALE_UK
+            ? UI_I18N_KEY_SYSTEM_LANGUAGE_UKRAINIAN
+            : UI_I18N_KEY_SYSTEM_LANGUAGE_ENGLISH),
+        true,
+        true
     );
 
     ui_system_refresh_locked();
@@ -136,7 +146,7 @@ void ui_system_refresh_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "HEAP     %lu KB internal free",
+        ui_tr(UI_I18N_KEY_SYSTEM_HEAP),
         (unsigned long)(
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U
         )
@@ -149,7 +159,7 @@ void ui_system_refresh_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "PSRAM    %lu KB free",
+        ui_tr(UI_I18N_KEY_SYSTEM_PSRAM),
         (unsigned long)(
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U
         )
@@ -162,11 +172,48 @@ void ui_system_refresh_locked(void)
     snprintf(
         text,
         sizeof(text),
-        "UPTIME   %lld s",
+        ui_tr(UI_I18N_KEY_SYSTEM_UPTIME),
         (long long)(esp_timer_get_time() / 1000000LL)
     );
     ui_system_label_set_if_changed(
         context->system_uptime,
         text
     );
+}
+
+
+void ui_system_handle_key_locked(keypad_key_t key)
+{
+    ui_context_t *context = ui_context();
+    if (key == KEYPAD_KEY_LEFT) {
+        ui_screen_open_locked(UI_SCREEN_HOME);
+        return;
+    }
+
+    if (key == KEYPAD_KEY_UP || key == KEYPAD_KEY_DOWN) {
+        const ui_locale_t selection =
+            key == KEYPAD_KEY_UP ? UI_LOCALE_EN : UI_LOCALE_UK;
+        if (context->system_language_selection == selection) {
+            return;
+        }
+        context->system_language_selection = selection;
+        ui_render_system_locked();
+        return;
+    }
+
+    if (key != KEYPAD_KEY_OK && key != KEYPAD_KEY_RIGHT) {
+        return;
+    }
+
+    const ui_locale_t locale = context->system_language_selection;
+    if (locale == ui_i18n_get_locale()) {
+        return;
+    }
+
+    ui_i18n_set_locale(locale);
+    if (ui_event_dispatcher_queue_locale_save(locale) != ESP_OK) {
+        ui_i18n_set_locale(UI_LOCALE_EN);
+        context->system_language_selection = UI_LOCALE_EN;
+    }
+    ui_render_system_locked();
 }

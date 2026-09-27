@@ -38,6 +38,8 @@ import {
   type ScanMode,
 } from './xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot, WebXrCapabilities } from './xr/webxrRuntime';
+import { translate, useLocale, useT, type I18nLocale } from './i18n';
+import { formatDistance, formatNumber } from './i18n/format';
 
 const ScanPointCloudViewport = lazy(async () => {
   const module = await import('./components/ScanPointCloudViewport');
@@ -68,7 +70,7 @@ interface AppProps {
 }
 
 class ResultViewportErrorBoundary extends Component<
-  { children: ReactNode },
+  { children: ReactNode; formatFailure: (error: string) => string },
   { message: string | null }
 > {
   state: { message: string | null } = { message: null };
@@ -89,7 +91,7 @@ class ResultViewportErrorBoundary extends Component<
     if (this.state.message !== null) {
       return (
         <div className="viewport-shell scan-viewport" role="alert">
-          3D result renderer failed: {this.state.message}
+          {this.props.formatFailure(this.state.message)}
         </div>
       );
     }
@@ -97,8 +99,8 @@ class ResultViewportErrorBoundary extends Component<
   }
 }
 
-function formatMeters(value: number): string {
-  return `${value.toFixed(2)} m`;
+function formatMeters(value: number, locale: I18nLocale): string {
+  return formatDistance(locale, value, 2);
 }
 
 function extentFromBounds(
@@ -112,69 +114,63 @@ function extentFromBounds(
   ];
 }
 
-function computeProfileTitle(profile: DeviceComputeProfile): string {
+function computeProfileTitle(profile: DeviceComputeProfile, locale: I18nLocale): string {
+  const capability = (available: boolean) => translate(locale, available ? 'scan.compute.available' : 'scan.compute.unavailable');
   return [
-    `${profile.reportedLogicalProcessors} browser-reported logical processors`,
-    `${profile.liveWorkerBudget} heavy live XR worker slot(s)`,
-    `${profile.postScanWorkerBudget} post-scan worker slot(s)`,
-    `shared memory ${profile.sharedMemory ? 'available' : 'unavailable'}`,
-    `Wasm threads ${profile.wasmThreads ? 'available' : 'unavailable'}`,
-    `WebGPU ${profile.webGpu ? 'available' : 'unavailable'}`,
-    `tier ${profile.tier}`,
-  ].join(' · ');
+    translate(locale, 'scan.compute.logical_processors', { count: formatNumber(locale, profile.reportedLogicalProcessors) }),
+    translate(locale, 'scan.compute.live_workers', { count: formatNumber(locale, profile.liveWorkerBudget) }),
+    translate(locale, 'scan.compute.post_workers', { count: formatNumber(locale, profile.postScanWorkerBudget) }),
+    translate(locale, 'scan.compute.shared_memory', { state: capability(profile.sharedMemory) }),
+    translate(locale, 'scan.compute.wasm_threads', { state: capability(profile.wasmThreads) }),
+    translate(locale, 'scan.compute.webgpu', { state: capability(profile.webGpu) }),
+    translate(locale, 'scan.compute.tier', { tier: profile.tier }),
+  ].join(' | ');
 }
 
-function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null): string {
-  const objectLabel = objectId ?? 'NO OBJECT';
-  switch (phase) {
-    case 'loading': return `LOADING SAVED 3D · ${objectLabel}`;
-    case 'none': return `NO SAVED 3D SCAN · ${objectLabel}`;
-    case 'scanning': return `NEW SCAN IN MEMORY · ${objectLabel}`;
-    case 'saving': return `SAVING 3D TO SD · ${objectLabel}`;
-    case 'saved': return `3D SAVED TO SD · ${objectLabel}`;
-    case 'loaded': return `3D RESTORED FROM SD · ${objectLabel}`;
-    case 'deleting': return `DELETING SAVED 3D · ${objectLabel}`;
-    case 'error': return `3D STORAGE ERROR · ${objectLabel}`;
-    default: return '3D SCAN NOT BOUND TO AN OBJECT';
-  }
+function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null, locale: I18nLocale): string {
+  if (phase === 'unbound') return translate(locale, 'scan.storage.unbound');
+  const keys = {
+    loading: 'scan.storage.loading', none: 'scan.storage.none', scanning: 'scan.storage.scanning',
+    saving: 'scan.storage.saving', saved: 'scan.storage.saved', loaded: 'scan.storage.loaded',
+    deleting: 'scan.storage.deleting', error: 'scan.storage.error',
+  } as const;
+  return translate(locale, keys[phase], {
+    object: objectId ?? translate(locale, 'scan.storage.no_object'),
+  });
 }
 
-function occupancyStatusLabel(persistence: ScanPersistenceState | null): string {
-  let occupancyLabel = 'OCCUPANCY STATUS CHECKING';
-  if (persistence?.scan === 'saved') {
-    switch (persistence.occupancy) {
-      case 'pending': occupancyLabel = 'OCCUPANCY PENDING'; break;
-      case 'saving': occupancyLabel = 'OCCUPANCY SAVING'; break;
-      case 'ready': occupancyLabel = 'LOCALIZATION DATA READY'; break;
-      case 'failed': occupancyLabel = 'OCCUPANCY FAILED · LOCALIZATION NOT READY'; break;
-      case 'unavailable': occupancyLabel = 'OCCUPANCY UNAVAILABLE · LOCALIZATION NOT READY'; break;
-    }
-  }
-  return occupancyLabel;
+function occupancyStatusLabel(persistence: ScanPersistenceState | null, locale: I18nLocale): string {
+  if (persistence?.scan !== 'saved') return translate(locale, 'scan.occupancy.checking');
+  const keys = {
+    pending: 'scan.occupancy.pending', saving: 'scan.occupancy.saving', ready: 'scan.occupancy.ready',
+    failed: 'scan.occupancy.failed', unavailable: 'scan.occupancy.unavailable',
+  } as const;
+  return translate(locale, keys[persistence.occupancy]);
 }
 
-function previewStatusLabel(persistence: ScanPersistenceState | null): string {
-  if (persistence?.scan !== 'saved') return 'PREVIEW STATUS CHECKING';
-  switch (persistence.preview) {
-    case 'pending': return 'PREVIEW PENDING';
-    case 'saving': return 'PREVIEW SAVING';
-    case 'ready': return 'VOXEL PREVIEW READY';
-    case 'failed': return 'PREVIEW SAVE FAILED';
-    case 'unavailable': return 'PREVIEW UNAVAILABLE';
-  }
+function previewStatusLabel(persistence: ScanPersistenceState | null, locale: I18nLocale): string {
+  if (persistence?.scan !== 'saved') return translate(locale, 'scan.preview.checking');
+  const keys = {
+    pending: 'scan.preview.pending', saving: 'scan.preview.saving', ready: 'scan.preview.ready',
+    failed: 'scan.preview.failed', unavailable: 'scan.preview.unavailable',
+  } as const;
+  return translate(locale, keys[persistence.preview]);
 }
 
 function persistedScanStorageLabel(
   phase: ScanStoragePhase,
   objectId: string | null,
   persistence: ScanPersistenceState | null,
+  locale: I18nLocale,
 ): string {
-  const scanLabel = scanStorageLabel(phase, objectId);
+  const scanLabel = scanStorageLabel(phase, objectId, locale);
   if (phase !== 'saved' && phase !== 'loaded') return scanLabel;
-  return `${scanLabel} · ${occupancyStatusLabel(persistence)}`;
+  return `${scanLabel} | ${occupancyStatusLabel(persistence, locale)}`;
 }
 
 export default function App({ objectId, sessionId, status }: AppProps) {
+  const { locale } = useLocale();
+  const t = useT();
   const storageActionsDisabled = scannerStorageActionsDisabled(status);
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
@@ -676,8 +672,8 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       {!xrSessionActive && (
         <header className="app-header app-header-compact">
           <div>
-            <div className="eyebrow">ESP32 GEOLOCATOR</div>
-            <h1>3D search volume</h1>
+            <div className="eyebrow">{t('app.title')}</div>
+            <h1>{t('scan.search_volume_title')}</h1>
           </div>
           <div className="header-badges">
             <span className={`badge ${httpsReady ? 'good' : 'warning'}`}>
@@ -688,59 +684,59 @@ export default function App({ objectId, sessionId, status }: AppProps) {
             </span>
             <span
               className={`badge ${computeProfile !== null && computeProfile.liveWorkerBudget > 0 ? 'good' : 'warning'}`}
-              title={computeProfile === null ? 'Compute capability negotiation in progress' : computeProfileTitle(computeProfile)}
+              title={computeProfile === null ? t('scan.compute.negotiating') : computeProfileTitle(computeProfile, locale)}
             >
               {computeProfile === null
                 ? 'CPU …'
                 : `CPU ${computeProfile.reportedLogicalProcessors} · W${computeProfile.liveWorkerBudget}`}
             </span>
             <span className={`badge ${hasMeasuredScan ? 'good' : 'warning'}`}>
-              {hasMeasuredScan ? 'VOLUME READY' : 'READY'}
+              {hasMeasuredScan ? t('scan.volume.ready') : t('scan.ready')}
             </span>
             <span className={`badge ${storageGood && localizationDataReady ? 'good' : storageGood || scanStoragePhase === 'error' ? 'warning' : ''}`}>
-              {persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence)}
+              {persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence, locale)}
             </span>
           </div>
         </header>
       )}
 
       {!xrSessionActive && scanStorageError !== null && (
-        <div className="xr-runtime-error" role="alert">{scanStorageError}</div>
+        <div className="xr-runtime-error" role="alert">{scanStorageError === SCAN_STORAGE_BLOCKED_MESSAGE ? t('scan.storage.paused') : scanStorageError}</div>
       )}
       {storageActionsDisabled && (
-        <div className="xr-runtime-warning" role="status">{SCAN_STORAGE_BLOCKED_MESSAGE}</div>
+        <div className="xr-runtime-warning" role="status">{t('scan.storage.paused')}</div>
       )}
 
       {!xrSessionActive && hasMeasuredScan && (
-        <section className="toolbar toolbar-compact scan-toolbar" aria-label="3D search-volume controls">
-          <div className="scan-mode-controls" aria-label="Scan result modes">
-            <button type="button" aria-pressed={scanMode === 'quality'} onClick={() => selectMode('quality')}>Quality map</button>
-            <button type="button" aria-pressed={scanMode === 'surface'} onClick={() => selectMode('surface')}>Stable surface</button>
-            <button type="button" aria-pressed={scanMode === 'search-volume'} onClick={() => selectMode('search-volume')}>Search volume</button>
-            <button type="button" aria-pressed={scanMode === 'mesh'} onClick={() => selectMode('mesh')}>Surface mesh</button>
+        <section className="toolbar toolbar-compact scan-toolbar" aria-label={t('scan.controls.label')}>
+          <div className="scan-mode-controls" aria-label={t('scan.controls.modes')}>
+            <button type="button" aria-pressed={scanMode === 'quality'} onClick={() => selectMode('quality')}>{t('scan.mode.quality')}</button>
+            <button type="button" aria-pressed={scanMode === 'surface'} onClick={() => selectMode('surface')}>{t('scan.mode.surface')}</button>
+            <button type="button" aria-pressed={scanMode === 'search-volume'} onClick={() => selectMode('search-volume')}>{t('scan.mode.search_volume')}</button>
+            <button type="button" aria-pressed={scanMode === 'mesh'} onClick={() => selectMode('mesh')}>{t('scan.mode.mesh')}</button>
           </div>
 
-          <div className="scan-quality-summary" aria-label="Quality band counts">
-            <span><i className="coverage-dot coverage-low" />weak <strong>{qualityBands.weak.toLocaleString()}</strong></span>
-            <span><i className="coverage-dot coverage-mid" />improving <strong>{qualityBands.improving.toLocaleString()}</strong></span>
-            <span><i className="coverage-dot coverage-high" />stable <strong>{qualityBands.stable.toLocaleString()}</strong></span>
-            <span>operator pins <strong>{scanSnapshot?.manualControlPoints.length.toLocaleString() ?? '0'}</strong></span>
-            <span>edges <strong>{scanSnapshot?.operatorEdges.length.toLocaleString() ?? '0'}</strong></span>
+          <div className="scan-quality-summary" aria-label={t('scan.controls.quality_bands')}>
+            <span><i className="coverage-dot coverage-low" />{t('scan.quality.weak')} <strong>{formatNumber(locale, qualityBands.weak)}</strong></span>
+            <span><i className="coverage-dot coverage-mid" />{t('scan.quality.improving')} <strong>{formatNumber(locale, qualityBands.improving)}</strong></span>
+            <span><i className="coverage-dot coverage-high" />{t('scan.quality.stable')} <strong>{formatNumber(locale, qualityBands.stable)}</strong></span>
+            <span>{t('scan.operator_pins')} <strong>{formatNumber(locale, scanSnapshot?.manualControlPoints.length ?? 0)}</strong></span>
+            <span>{t('scan.operator_edges')} <strong>{formatNumber(locale, scanSnapshot?.operatorEdges.length ?? 0)}</strong></span>
           </div>
 
           <div className="scan-toolbar-group">
             <button type="button" onClick={() => requestView('perspective')}>3D</button>
-            <button type="button" onClick={() => requestView('top')}>Top</button>
-            <button type="button" onClick={() => requestView('front')}>Front</button>
+            <button type="button" onClick={() => requestView('top')}>{t('scan.view.top')}</button>
+            <button type="button" onClick={() => requestView('front')}>{t('scan.view.front')}</button>
           </div>
-          <div className="scan-toolbar-group scan-layer-controls" aria-label="Reconstruction layers">
-            <button type="button" aria-pressed={display.goodPoints} onClick={() => toggleDisplay('goodPoints')}>Stable surfels</button>
-            <button type="button" aria-pressed={display.badPoints} onClick={() => toggleDisplay('badPoints')}>Tentative surfels</button>
-            <button type="button" aria-pressed={display.mesh} onClick={() => toggleDisplay('mesh')}>Mesh</button>
-            <button type="button" aria-pressed={display.freeAir} onClick={() => toggleDisplay('freeAir')}>Verified free</button>
-            <button type="button" aria-pressed={display.unknownSpace} onClick={() => toggleDisplay('unknownSpace')}>Unknown candidate</button>
-            <button type="button" aria-pressed={display.manualPoints} onClick={() => toggleDisplay('manualPoints')}>Operator geometry</button>
-            <button type="button" aria-pressed={display.dimensions} onClick={() => toggleDisplay('dimensions')}>Dimensions</button>
+          <div className="scan-toolbar-group scan-layer-controls" aria-label={t('scan.controls.layers')}>
+            <button type="button" aria-pressed={display.goodPoints} onClick={() => toggleDisplay('goodPoints')}>{t('scan.layer.stable')}</button>
+            <button type="button" aria-pressed={display.badPoints} onClick={() => toggleDisplay('badPoints')}>{t('scan.layer.tentative')}</button>
+            <button type="button" aria-pressed={display.mesh} onClick={() => toggleDisplay('mesh')}>{t('scan.layer.mesh')}</button>
+            <button type="button" aria-pressed={display.freeAir} onClick={() => toggleDisplay('freeAir')}>{t('scan.layer.free')}</button>
+            <button type="button" aria-pressed={display.unknownSpace} onClick={() => toggleDisplay('unknownSpace')}>{t('scan.layer.unknown')}</button>
+            <button type="button" aria-pressed={display.manualPoints} onClick={() => toggleDisplay('manualPoints')}>{t('scan.layer.pins')}</button>
+            <button type="button" aria-pressed={display.dimensions} onClick={() => toggleDisplay('dimensions')}>{t('scan.layer.dimensions')}</button>
           </div>
         </section>
       )}
@@ -760,11 +756,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
         <section className="workspace">
-          <ResultViewportErrorBoundary key={`${objectId ?? 'none'}-${scanSnapshot.depthFrameCount}-${scanSnapshot.pointCount}`}>
+          <ResultViewportErrorBoundary key={`${objectId ?? 'none'}-${scanSnapshot.depthFrameCount}-${scanSnapshot.pointCount}`} formatFailure={(error) => t('scan.renderer.failed', { error })}>
             <Suspense
               fallback={
                 <div className="viewport-shell scan-viewport" role="status" aria-live="polite">
-                  Loading 3D result renderer…
+                  {t('scan.loading_renderer')}
                 </div>
               }
             >
@@ -782,30 +778,30 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
           <aside className="side-panel scan-result-panel">
             <section className="panel-card">
-              <div className="panel-title">SEARCH VOLUME</div>
+              <div className="panel-title">{t('scan.search_volume_title')}</div>
               <dl className="status-list scan-result-primary">
-                <div><dt>SD persistence</dt><dd>{persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence)}</dd></div>
-                <div><dt>Localization occupancy</dt><dd>{scanPersistence?.scan === 'saved' ? occupancyStatusLabel(scanPersistence) : 'OCCUPANCY STATUS CHECKING'}</dd></div>
-                <div><dt>ESP32 voxel preview</dt><dd>{previewStatusLabel(scanPersistence)}</dd></div>
-                <div><dt>Stable boundary points</dt><dd>{scanSnapshot.pointCount.toLocaleString()}</dd></div>
-                <div><dt>Tentative boundary points</dt><dd>{scanSnapshot.tentativePointCount.toLocaleString()}</dd></div>
-                <div><dt>Manual corner pins</dt><dd>{scanSnapshot.manualControlPoints.length.toLocaleString()}</dd></div>
-                <div><dt>Confirmed structural edges</dt><dd>{scanSnapshot.operatorEdges.length.toLocaleString()}</dd></div>
-                <div><dt>Known free air voxels</dt><dd>{scanSnapshot.knownFreeVoxelCount.toLocaleString()}</dd></div>
-                <div><dt>Observed surface voxels</dt><dd>{scanSnapshot.occupiedSurfaceVoxelCount.toLocaleString()}</dd></div>
-                <div><dt>Unknown / candidate voxels</dt><dd>{scanSnapshot.unknownCandidateVoxelCount.toLocaleString()}</dd></div>
+                <div><dt>{t('scan.volume.sd_persistence')}</dt><dd>{persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence, locale)}</dd></div>
+                <div><dt>{t('scan.volume.occupancy')}</dt><dd>{occupancyStatusLabel(scanPersistence, locale)}</dd></div>
+                <div><dt>{t('scan.volume.preview')}</dt><dd>{previewStatusLabel(scanPersistence, locale)}</dd></div>
+                <div><dt>{t('scan.volume.stable_points')}</dt><dd>{formatNumber(locale, scanSnapshot.pointCount)}</dd></div>
+                <div><dt>{t('scan.volume.tentative_points')}</dt><dd>{formatNumber(locale, scanSnapshot.tentativePointCount)}</dd></div>
+                <div><dt>{t('scan.volume.manual_pins')}</dt><dd>{formatNumber(locale, scanSnapshot.manualControlPoints.length)}</dd></div>
+                <div><dt>{t('scan.volume.confirmed_edges')}</dt><dd>{formatNumber(locale, scanSnapshot.operatorEdges.length)}</dd></div>
+                <div><dt>{t('scan.volume.free_voxels')}</dt><dd>{formatNumber(locale, scanSnapshot.knownFreeVoxelCount)}</dd></div>
+                <div><dt>{t('scan.volume.surface_voxels')}</dt><dd>{formatNumber(locale, scanSnapshot.occupiedSurfaceVoxelCount)}</dd></div>
+                <div><dt>{t('scan.volume.unknown_voxels')}</dt><dd>{formatNumber(locale, scanSnapshot.unknownCandidateVoxelCount)}</dd></div>
                 {scanSnapshot.occupancyCellsSaturated === true && (
-                  <div><dt>Occupancy map full</dt><dd>{(scanSnapshot.occupancyDroppedCellUpdates ?? 0).toLocaleString()} updates dropped — areas scanned late stay UNKNOWN</dd></div>
+                  <div><dt>{t('scan.volume.occupancy_full')}</dt><dd>{t('scan.volume.updates_dropped', { count: formatNumber(locale, scanSnapshot.occupancyDroppedCellUpdates ?? 0) })}</dd></div>
                 )}
                 {scanSnapshot.occupancyBridgeRescanComponentCount > 0 && (
-                  <div><dt>Rescan bridge islands</dt><dd>{scanSnapshot.occupancyBridgeRescanComponentCount.toLocaleString()}</dd></div>
+                  <div><dt>{t('scan.volume.rescan_islands')}</dt><dd>{formatNumber(locale, scanSnapshot.occupancyBridgeRescanComponentCount)}</dd></div>
                 )}
-                <div><dt>Surface residual</dt><dd>{Math.round(scanSnapshot.averageStableResidualMeters * 1000)} mm</dd></div>
+                <div><dt>{t('scan.volume.residual')}</dt><dd>{formatNumber(locale, Math.round(scanSnapshot.averageStableResidualMeters * 1000))} mm</dd></div>
                 {extent !== null && (
                   <>
-                    <div><dt>Extent X</dt><dd>{formatMeters(extent[0])}</dd></div>
-                    <div><dt>Extent Y</dt><dd>{formatMeters(extent[1])}</dd></div>
-                    <div><dt>Height Z</dt><dd>{formatMeters(extent[2])}</dd></div>
+                    <div><dt>{t('scan.volume.extent_x')}</dt><dd>{formatMeters(extent[0], locale)}</dd></div>
+                    <div><dt>{t('scan.volume.extent_y')}</dt><dd>{formatMeters(extent[1], locale)}</dd></div>
+                    <div><dt>{t('scan.volume.height_z')}</dt><dd>{formatMeters(extent[2], locale)}</dd></div>
                   </>
                 )}
               </dl>
@@ -813,66 +809,66 @@ export default function App({ objectId, sessionId, status }: AppProps) {
               {scanPersistence?.scan === 'saved' &&
                 (scanPersistence.occupancy === 'failed' || scanPersistence.occupancy === 'unavailable') && (
                 <p className="scan-volume-note" role="status">
-                  {scanPersistence.occupancyError ?? 'Localization data is not ready until occupancy is saved.'}
+                  {scanPersistence.occupancyError ?? t('scan.volume.occupancy_not_ready')}
                 </p>
               )}
 
               {scanPersistence?.scan === 'saved' &&
                 (scanPersistence.preview === 'failed' || scanPersistence.preview === 'unavailable') && (
                 <p className="scan-volume-note" role="status">
-                  {scanPersistence.previewError ?? 'The ESP32 voxel preview is not ready.'}
+                  {scanPersistence.previewError ?? t('scan.volume.preview_not_ready')}
                 </p>
               )}
 
               {persistenceController.retryAvailable && (
                 <button type="button" className="scan-clear-button" disabled={storageActionsDisabled || scanPersistence?.scan === 'saving' || scanPersistence?.occupancy === 'saving' || scanPersistence?.preview === 'saving'} onClick={retryPersistence}>
-                  {scanPersistence?.scan === 'blocked_recording' ? 'Retry scan save' : scanPersistence?.occupancy === 'failed' ? 'Retry occupancy save' : 'Retry preview save'}
+                  {scanPersistence?.scan === 'blocked_recording' ? t('scan.retry.scan') : scanPersistence?.occupancy === 'failed' ? t('scan.retry.occupancy') : t('scan.retry.preview')}
                 </button>
               )}
 
               {scanSnapshot.occupancyBridgeRescanComponentCount > 0 && (
                 <p className="scan-volume-note">
-                  Weak measured surfels suggest a possible bridge from retained structure to {scanSnapshot.occupancyBridgeRescanComponentCount} quarantined island(s). Rescan those boundaries. They are not allowed to expand the UNKNOWN search envelope until their own physical support becomes sufficient.
+                  {t('scan.volume.bridge_note', { count: formatNumber(locale, scanSnapshot.occupancyBridgeRescanComponentCount) })}
                 </p>
               )}
 
               <p className="scan-volume-note">
-                Red and yellow points are still uncertain. Green surfels are the stable measured boundary. Blue voxels are ray-verified free air. Amber voxels are still unknown and therefore remain valid seismic-source search volume. Magenta pins and lines are operator-confirmed structural constraints.
+                {t('scan.volume.legend')}
               </p>
 
               <details className="xr-technical-details scan-result-details">
-                <summary>Technical details</summary>
+                <summary>{t('scan.details.technical')}</summary>
                 <dl className="status-list">
-                  <div><dt>Retained surface hypotheses</dt><dd>{scanSnapshot.rawPointCount.toLocaleString()}</dd></div>
-                  <div><dt>Promoted surfels</dt><dd>{scanSnapshot.promotedPointCount.toLocaleString()}</dd></div>
-                  <div><dt>UNKNOWN envelope components</dt><dd>{scanSnapshot.occupancyEnvelopeComponentCount.toLocaleString()}</dd></div>
-                  <div><dt>Quarantined surface components</dt><dd>{scanSnapshot.occupancyQuarantinedSurfaceComponentCount.toLocaleString()}</dd></div>
-                  <div><dt>Quarantined surface points</dt><dd>{scanSnapshot.occupancyQuarantinedSurfacePointCount.toLocaleString()}</dd></div>
-                  <div><dt>Weak-bridge rescan components</dt><dd>{scanSnapshot.occupancyBridgeRescanComponentCount.toLocaleString()}</dd></div>
-                  <div><dt>Weak-bridge diagnostic</dt><dd>{scanSnapshot.occupancyBridgeEvidenceTruncated ? 'bounded / incomplete' : 'complete'}</dd></div>
-                  <div><dt>Ready coverage cells</dt><dd>{scanSnapshot.readyCoverageCellCount.toLocaleString()}</dd></div>
-                  <div><dt>Independent keyframes</dt><dd>{scanSnapshot.integrationKeyframes.toLocaleString()}</dd></div>
-                  <div><dt>Coverage cells</dt><dd>{scanSnapshot.coverageCellCount.toLocaleString()}</dd></div>
-                  <div><dt>Coverage cell</dt><dd>{Math.round(scanSnapshot.coverageCellSizeMeters * 1000)} mm</dd></div>
-                  <div><dt>Surface association voxel</dt><dd>{Math.round(scanSnapshot.voxelSizeMeters * 1000)} mm</dd></div>
-                  <div><dt>Occupancy display voxel</dt><dd>{Math.round(scanSnapshot.occupancyVoxelSizeMeters * 1000)} mm</dd></div>
-                  <div><dt>Adaptive reps / cell</dt><dd>{scanSnapshot.adaptivePointsPerCell}</dd></div>
-                  <div><dt>Polish frames</dt><dd>{scanSnapshot.polishFrames.toLocaleString()}</dd></div>
-                  <div><dt>Residual rejects</dt><dd>{scanSnapshot.residualRejectedSamples.toLocaleString()}</dd></div>
-                  <div><dt>Stale tentative pruned</dt><dd>{scanSnapshot.staleTentativePruned.toLocaleString()}</dd></div>
-                  <div><dt>Candidate samples</dt><dd>{scanSnapshot.candidateSampleCount.toLocaleString()}</dd></div>
-                  <div><dt>Decimated / rejected</dt><dd>{scanSnapshot.discardedSampleCount.toLocaleString()}</dd></div>
-                  <div><dt>In-cell replacements</dt><dd>{scanSnapshot.replacementCount.toLocaleString()}</dd></div>
-                  <div><dt>Memory budget</dt><dd>{scanSnapshot.memoryBudgetPoints.toLocaleString()}</dd></div>
-                  <div><dt>Coverage rejects</dt><dd>{scanSnapshot.coverageRejectedCount.toLocaleString()}</dd></div>
-                  <div><dt>Depth frames</dt><dd>{scanSnapshot.depthFrameCount.toLocaleString()}</dd></div>
-                  <div><dt>Integrated frames</dt><dd>{scanSnapshot.sampledDepthFrames.toLocaleString()}</dd></div>
-                  <div><dt>Depth cap</dt><dd>{formatMeters(scanSnapshot.maxDepthMeters)}</dd></div>
+                  <div><dt>{t('scan.details.retained')}</dt><dd>{formatNumber(locale, scanSnapshot.rawPointCount)}</dd></div>
+                  <div><dt>{t('scan.details.promoted')}</dt><dd>{formatNumber(locale, scanSnapshot.promotedPointCount)}</dd></div>
+                  <div><dt>{t('scan.details.unknown_components')}</dt><dd>{formatNumber(locale, scanSnapshot.occupancyEnvelopeComponentCount)}</dd></div>
+                  <div><dt>{t('scan.details.quarantined_components')}</dt><dd>{formatNumber(locale, scanSnapshot.occupancyQuarantinedSurfaceComponentCount)}</dd></div>
+                  <div><dt>{t('scan.details.quarantined_points')}</dt><dd>{formatNumber(locale, scanSnapshot.occupancyQuarantinedSurfacePointCount)}</dd></div>
+                  <div><dt>{t('scan.details.weak_bridge')}</dt><dd>{formatNumber(locale, scanSnapshot.occupancyBridgeRescanComponentCount)}</dd></div>
+                  <div><dt>{t('scan.details.bridge_diagnostic')}</dt><dd>{scanSnapshot.occupancyBridgeEvidenceTruncated ? t('scan.details.bounded_incomplete') : t('scan.details.complete')}</dd></div>
+                  <div><dt>{t('scan.details.ready_cells')}</dt><dd>{formatNumber(locale, scanSnapshot.readyCoverageCellCount)}</dd></div>
+                  <div><dt>{t('scan.details.keyframes')}</dt><dd>{formatNumber(locale, scanSnapshot.integrationKeyframes)}</dd></div>
+                  <div><dt>{t('scan.details.coverage_cells')}</dt><dd>{formatNumber(locale, scanSnapshot.coverageCellCount)}</dd></div>
+                  <div><dt>{t('scan.details.coverage_cell')}</dt><dd>{formatNumber(locale, Math.round(scanSnapshot.coverageCellSizeMeters * 1000))} mm</dd></div>
+                  <div><dt>{t('scan.details.surface_voxel')}</dt><dd>{formatNumber(locale, Math.round(scanSnapshot.voxelSizeMeters * 1000))} mm</dd></div>
+                  <div><dt>{t('scan.details.occupancy_voxel')}</dt><dd>{formatNumber(locale, Math.round(scanSnapshot.occupancyVoxelSizeMeters * 1000))} mm</dd></div>
+                  <div><dt>{t('scan.details.adaptive_reps')}</dt><dd>{formatNumber(locale, scanSnapshot.adaptivePointsPerCell)}</dd></div>
+                  <div><dt>{t('scan.details.polish_frames')}</dt><dd>{formatNumber(locale, scanSnapshot.polishFrames)}</dd></div>
+                  <div><dt>{t('scan.details.residual_rejects')}</dt><dd>{formatNumber(locale, scanSnapshot.residualRejectedSamples)}</dd></div>
+                  <div><dt>{t('scan.details.stale_pruned')}</dt><dd>{formatNumber(locale, scanSnapshot.staleTentativePruned)}</dd></div>
+                  <div><dt>{t('scan.details.candidate_samples')}</dt><dd>{formatNumber(locale, scanSnapshot.candidateSampleCount)}</dd></div>
+                  <div><dt>{t('scan.details.decimated_rejected')}</dt><dd>{formatNumber(locale, scanSnapshot.discardedSampleCount)}</dd></div>
+                  <div><dt>{t('scan.details.replacements')}</dt><dd>{formatNumber(locale, scanSnapshot.replacementCount)}</dd></div>
+                  <div><dt>{t('scan.details.memory_budget')}</dt><dd>{formatNumber(locale, scanSnapshot.memoryBudgetPoints)}</dd></div>
+                  <div><dt>{t('scan.details.coverage_rejects')}</dt><dd>{formatNumber(locale, scanSnapshot.coverageRejectedCount)}</dd></div>
+                  <div><dt>{t('scan.details.depth_frames')}</dt><dd>{formatNumber(locale, scanSnapshot.depthFrameCount)}</dd></div>
+                  <div><dt>{t('scan.details.integrated_frames')}</dt><dd>{formatNumber(locale, scanSnapshot.sampledDepthFrames)}</dd></div>
+                  <div><dt>{t('scan.details.depth_cap')}</dt><dd>{formatMeters(scanSnapshot.maxDepthMeters, locale)}</dd></div>
                 </dl>
               </details>
 
               <button type="button" className="scan-clear-button" disabled={storageBusy} onClick={deleteSavedScan}>
-                {scanStoragePhase === 'deleting' ? 'Deleting…' : 'Delete saved scan'}
+                {scanStoragePhase === 'deleting' ? t('scan.deleting') : t('scan.delete_saved')}
               </button>
             </section>
           </aside>

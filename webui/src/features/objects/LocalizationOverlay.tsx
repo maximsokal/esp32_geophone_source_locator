@@ -11,6 +11,8 @@ import {
   uncertaintyText,
   type ResultVariant,
 } from '../../domain/localizationOverlay';
+import { useLocale, useT } from '../../i18n';
+import { formatDistance, formatNumber } from '../../i18n/format';
 
 const LocalizationOverlayScene = lazy(() => import('./LocalizationOverlayScene'));
 
@@ -27,16 +29,17 @@ interface Props {
 }
 
 /** The latest run of a method's posterior summary, or a dash. */
-function uncertaintyCell(runs: LocalizationRun[], method: string): string {
+function uncertaintyCell(runs: LocalizationRun[], method: string, locale: 'en' | 'uk'): string {
   const latest = runs
     .filter((run) => run.method_name === method)
     .reduce<LocalizationRun | null>((best, run) => (best === null || run.computed_at_ms > best.computed_at_ms ? run : best), null);
-  const text = latest === null ? '' : uncertaintyText(latest);
+  const text = latest === null ? '' : uncertaintyText(latest, locale);
   return text === '' ? '—' : text;
 }
 
-function formatPosition(x: number, y: number, z: number): string {
-  return `${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)} m`;
+function formatPosition(x: number, y: number, z: number, locale: 'en' | 'uk'): string {
+  const digits = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+  return `${formatNumber(locale, x, digits)}, ${formatNumber(locale, y, digits)}, ${formatNumber(locale, z, digits)} m`;
 }
 
 /**
@@ -44,6 +47,8 @@ function formatPosition(x: number, y: number, z: number): string {
  * selected method is vivid, the others dim. Selecting never recomputes.
  */
 export default function LocalizationOverlay({ runs, geometry, hasScan = null, renderScene = true }: Props) {
+  const t = useT();
+  const { locale } = useLocale();
   const base = useMemo(() => buildLocalizationOverlay(runs, geometry, null), [runs, geometry]);
   const availability = useMemo(() => toggleAvailability(runs, hasScan), [runs, hasScan]);
   const [variant, setVariant] = useState<ResultVariant>('unconstrained');
@@ -52,6 +57,11 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
   const variantModel = availability.available ? filterOverlayByVariant(base, variant) : base;
   const model = selected === null ? variantModel : selectOverlayMethod(variantModel, selected);
   const overlaps = overlappingSectors(model);
+  const unavailableReason = availability.reason === null ? null : t(({
+    checking_scan: 'overlay.checking_scan',
+    no_scan: 'overlay.no_scan',
+    no_constrained_results: 'overlay.no_constrained_results',
+  } as const)[availability.reason as 'checking_scan' | 'no_scan' | 'no_constrained_results'] ?? 'overlay.checking_scan');
 
   if (base.sectors.length === 0 && base.unavailable.length === 0) return null;
 
@@ -61,12 +71,12 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
   };
 
   return (
-    <section className="localization-overlay" aria-label="Localization method comparison">
+    <section className="localization-overlay" aria-label={t('overlay.aria_label')}>
       <div className="card-heading">
-        <div><span className="eyebrow">SOURCE ESTIMATES</span><h3>Method comparison</h3></div>
+        <div><span className="eyebrow">{t('overlay.source_estimates')}</span><h3>{t('overlay.title')}</h3></div>
         {model.sectors.length > 0 && (
           <label className="overlay-select">
-            Method
+            {t('overlay.method')}
             <select
               value={model.selectedMethod ?? ''}
               onChange={(event) => setSelected(event.target.value)}
@@ -80,7 +90,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
       </div>
 
       <fieldset className="overlay-variant-toggle" disabled={!availability.available}>
-        <legend>Result variant</legend>
+        <legend>{t('overlay.result_variant')}</legend>
         <label>
           <input
             type="radio"
@@ -90,7 +100,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
             disabled={!availability.available}
             onChange={() => chooseVariant('unconstrained')}
           />
-          Unconstrained
+          {t('overlay.unconstrained')}
         </label>
         <label>
           <input
@@ -101,47 +111,44 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
             disabled={!availability.available}
             onChange={() => chooseVariant('scan_constrained')}
           />
-          Scan-constrained
+          {t('overlay.scan_constrained')}
         </label>
-        {availability.reason !== null && <span className="overlay-variant-reason">{availability.reason}</span>}
+        {unavailableReason !== null && <span className="overlay-variant-reason">{unavailableReason}</span>}
       </fieldset>
 
       {model.sectors.length === 0 && model.unavailable.length === 0 && (
-        <p className="overlay-note">No {variant === 'scan_constrained' ? 'scan-constrained' : 'unconstrained'} results for this recording.</p>
+        <p className="overlay-note">{t('overlay.no_results', { variant: t(variant === 'scan_constrained' ? 'overlay.scan_constrained' : 'overlay.unconstrained') })}</p>
       )}
       {model.sectors.length > 0 && renderScene && (
-        <Suspense fallback={<p>Loading 3D view…</p>}>
+        <Suspense fallback={<p>{t('overlay.loading_3d')}</p>}>
           <LocalizationOverlayScene model={model} />
         </Suspense>
       )}
       <p className="overlay-note">
-        Sensor frame of this recording (MAIN at the origin, metres). The object scan is not drawn under the sectors until it is registered to this frame (AprilTag registration, MAX-145).
-        Sector radius = RMS time residual × propagation speed; for Bayesian runs twice the largest posterior standard
-        deviation, with the credible region drawn as a box; “nominal” means the method reported neither.
-        A 2D (planar, 3-REMOTE) result never solved its own height -- it is drawn as a flat disc, not a positioned sphere.
+        {t('overlay.note')}
       </p>
 
       {(model.sectors.length > 0 || model.unavailable.length > 0) && (
       <table className="overlay-table">
         <thead>
-          <tr><th>Method</th><th>Source (x, y, z)</th><th>Radius</th><th>Confidence</th><th>Residual</th><th>Uncertainty</th><th>Dim.</th></tr>
+          <tr><th>{t('overlay.method')}</th><th>{t('overlay.source_xyz')}</th><th>{t('overlay.radius')}</th><th>{t('overlay.confidence')}</th><th>{t('overlay.residual')}</th><th>{t('overlay.uncertainty')}</th><th>{t('overlay.dimension')}</th></tr>
         </thead>
         <tbody>
           {model.sectors.map((sector) => (
             <tr key={sector.method} className={sector.emphasis === 'selected' ? 'selected' : 'dim'}>
               <td><span className="method-swatch" style={{ background: sector.color }} />{sector.method}</td>
-              <td>{formatPosition(sector.position.x_m, sector.position.y_m, sector.position.z_m)}</td>
-              <td>{sector.radiusM.toFixed(2)} m{sector.radiusSource === 'nominal' ? ' (nominal)' : sector.radiusSource === 'posterior' ? ' (2 sd)' : ''}</td>
-              <td>{sector.confidence.toFixed(2)}</td>
-              <td>{sector.rmsResidualUs === null ? '—' : `${sector.rmsResidualUs.toFixed(0)} µs`}</td>
-              <td>{uncertaintyCell(runs, sector.method)}</td>
-              <td>{dimensionalityLabel(sector.dimensionality)}</td>
+              <td>{formatPosition(sector.position.x_m, sector.position.y_m, sector.position.z_m, locale)}</td>
+              <td>{formatDistance(locale, sector.radiusM)}{sector.radiusSource === 'nominal' ? ` (${t('overlay.nominal')})` : sector.radiusSource === 'posterior' ? ` (${t('overlay.two_sd')})` : ''}</td>
+              <td>{formatNumber(locale, sector.confidence, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td>{sector.rmsResidualUs === null ? '—' : `${formatNumber(locale, sector.rmsResidualUs)} µs`}</td>
+              <td>{uncertaintyCell(runs, sector.method, locale)}</td>
+              <td>{dimensionalityLabel(sector.dimensionality, locale)}</td>
             </tr>
           ))}
           {model.unavailable.map((entry) => (
             <tr key={`unavailable-${entry.method}`} className="unavailable">
               <td>{entry.method}</td>
-              <td colSpan={6}>unavailable: {entry.reason}</td>
+              <td colSpan={6}>{t('overlay.unavailable_reason', { reason: entry.reason })}</td>
             </tr>
           ))}
         </tbody>
@@ -149,7 +156,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
       )}
       {overlaps.length > 0 && (
         <p className="overlay-note">
-          Overlapping estimates: {overlaps.map(([a, b]) => `${a} ↔ ${b}`).join(', ')}.
+          {t('overlay.overlapping', { methods: overlaps.map(([a, b]) => `${a} ↔ ${b}`).join(', ') })}
         </p>
       )}
     </section>

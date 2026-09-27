@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import LocalizationOverlay from '../../src/features/objects/LocalizationOverlay';
 import type { LocalizationRun } from '../../src/api/deviceApi';
+import { LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { formatDistance } from '../../src/i18n/format';
 
 /** The rendered <input .../> tag for one radio value, regardless of React's SSR attribute order. */
 function radioTag(html: string, value: string): string {
@@ -42,16 +44,26 @@ describe('LocalizationOverlay view', () => {
     expect(html).toContain('<option value="semblance_scan">semblance_scan</option>');
     /* The failed method is never an option and never a sector. */
     expect(html).not.toContain('<option value="traveltime_inversion"');
-    expect(html).toContain('unavailable: fewer than 4 accepted picks');
+    expect(html).toContain(translate('en', 'overlay.unavailable_reason', { reason: 'fewer than 4 accepted picks' }));
     expect(html.match(/<tr class="selected">/g)?.length).toBe(1);
     expect(html.match(/<tr class="dim">/g)?.length).toBe(1);
-    expect(html).toContain('0.15 m'); /* 500 us x 300 m/s */
-    expect(html).toContain('(nominal)');
-    expect(html).toContain('MAX-145');
+    expect(html).toContain(formatDistance('en', 0.15)); /* 500 us x 300 m/s */
+    expect(html).toContain(`(${translate('en', 'overlay.nominal')})`);
+    expect(html).toContain(translate('en', 'overlay.note'));
   });
 
   it('renders nothing without runs', () => {
     expect(renderToStaticMarkup(createElement(LocalizationOverlay, { runs: [], geometry: null, renderScene: false }))).toBe('');
+  });
+
+  it.each(['en', 'uk'] as const)('renders the localized overlay heading and scan explanation in %s', (locale: I18nLocale) => {
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(LocalizationOverlay, {
+      runs: [run('gauss_newton_tdoa')], geometry: null, hasScan: false, renderScene: false,
+    })));
+    expect(html).toContain(`aria-label="${translate(locale, 'overlay.aria_label')}"`);
+    expect(html).toContain(`<h3>${translate(locale, 'overlay.title')}</h3>`);
+    expect(html).toContain(translate(locale, 'overlay.no_scan'));
+    expect(/(?:^|\s)[a-z_]+\.[a-z_.]+(?=\s|$)/.test(html.replace(/<[^>]*>/g, ' '))).toBe(false);
   });
 });
 

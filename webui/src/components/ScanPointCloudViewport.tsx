@@ -9,6 +9,8 @@ import type { SceneModel } from '../domain/scene';
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 import { describeMeshQuality } from '../xr/meshQualityUi';
+import { useLocale, useT } from '../i18n';
+import { formatDistance, formatNumber } from '../i18n/format';
 import type { SensorPlacementMarker, SensorPlacementNode } from '../xr/sensorPlacementScene';
 import {
   displayFingerprint,
@@ -212,6 +214,8 @@ export function ScanPointCloudViewport({
   sensorGeometry = null,
   registrationArtifact = null,
 }: ScanPointCloudViewportProps) {
+  const { locale } = useLocale();
+  const t = useT();
   const prepared = useMemo(() => prepareScanScene(snapshot), [snapshot]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
@@ -323,40 +327,40 @@ export function ScanPointCloudViewport({
     [prepared.centerX, prepared.centerY, prepared.centerZ, tsdfMesh],
   );
 
-  const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode);
+  const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode, locale);
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
-  const meshQuality = tsdfMesh === null ? null : describeMeshQuality(tsdfMesh);
+  const meshQuality = tsdfMesh === null ? null : describeMeshQuality(tsdfMesh, locale);
   const meshStatus = snapshot.tsdfPointCount < MESH_MIN_POINTS
-    ? 'MESH · SCAN MORE FOR CERTIFIED GEOMETRY'
+    ? t('scan.badge.mesh_more')
     : tsdfError !== null
-      ? 'MESH · UNAVAILABLE'
+      ? t('scan.badge.mesh_unavailable')
       : meshQuality === null
-        ? 'MESH · BUILDING…'
-        : `${meshQuality.label} · ${snapshot.tsdfPointCount.toLocaleString()} surfels`;
+        ? t('scan.badge.mesh_building')
+        : t('scan.surfel_count', { label: meshQuality.label, count: formatNumber(locale, snapshot.tsdfPointCount) });
 
-  return <div className="viewport-shell scan-viewport" aria-label="Measured WebXR rescue search volume" data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
+  return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
-    <div className="scan-source-badge">{scanSourceBadgeText(snapshot)}</div>
+    <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
-    {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared)}</div>}
+    {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}
     {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}
-    {selectedMarker !== null && <section className="scan-sensor-details" aria-label="Selected sensor marker details" data-sensor-status={selectedMarker.status}>
-      <h3>{selectedMarker.node} · {selectedMarker.status.replace('_', ' ')}</h3>
+    {selectedMarker !== null && <section className="scan-sensor-details" aria-label={t('scan.selected_sensor_details')} data-sensor-status={selectedMarker.status}>
+      <h3>{selectedMarker.node} · {t(`scan.marker_status.${selectedMarker.status}` as 'scan.marker_status.anchored' | 'scan.marker_status.cs_projected' | 'scan.marker_status.visual_only' | 'scan.marker_status.cs_unregistered')}</h3>
       <dl>
-        <div><dt>Source</dt><dd>{selectedMarker.source === 'channel_sounding_baro'
-          ? 'Channel Sounding + barometric Z'
-          : selectedMarker.source === 'channel_sounding' ? 'Channel Sounding' : selectedMarker.source ?? '—'}</dd></div>
-        <div><dt>Uncertainty</dt><dd>{selectedMarker.uncertaintyM === null ? '—' : `${selectedMarker.uncertaintyM.toFixed(3)} m`}</dd></div>
-        <div><dt>Residual</dt><dd>{selectedMarker.residualM === null ? '—' : `${selectedMarker.residualM.toFixed(3)} m`}</dd></div>
-        <div><dt>Tag ID</dt><dd>{selectedMarker.tagId ?? '—'}</dd></div>
+        <div><dt>{t('scan.source')}</dt><dd>{selectedMarker.source === 'channel_sounding_baro'
+          ? t('scan.channel_sounding_baro')
+          : selectedMarker.source === 'channel_sounding' ? t('scan.channel_sounding') : selectedMarker.source === 'apriltag' ? t('scan.tag_apriltag') : selectedMarker.source ?? '—'}</dd></div>
+        <div><dt>{t('scan.uncertainty')}</dt><dd>{selectedMarker.uncertaintyM === null ? '—' : formatDistance(locale, selectedMarker.uncertaintyM, 3)}</dd></div>
+        <div><dt>{t('scan.residual')}</dt><dd>{selectedMarker.residualM === null ? '—' : formatDistance(locale, selectedMarker.residualM, 3)}</dd></div>
+        <div><dt>{t('scan.tag_id')}</dt><dd>{selectedMarker.tagId ?? '—'}</dd></div>
       </dl>
-      <p>{selectedMarker.details}</p>
+      <p>{t(`scan.marker_detail.${selectedMarker.status}` as 'scan.marker_detail.anchored' | 'scan.marker_detail.cs_projected' | 'scan.marker_detail.visual_only' | 'scan.marker_detail.cs_unregistered')}</p>
     </section>}
-    {sensorFrameScene !== null && <section className="scan-sensor-inset" aria-label="Unregistered CS geometry">
-      <div className="scan-sensor-inset-caption">CS geometry — not registered to the scan</div>
+    {sensorFrameScene !== null && <section className="scan-sensor-inset" aria-label={t('scan.unregistered_geometry')}>
+      <div className="scan-sensor-inset-caption">{t('scan.unregistered_geometry')}</div>
       <SceneViewport scene={sensorFrameScene} selectedId={selectedNode ?? ''} viewCommand={viewCommand}
         onSelect={(node) => { const selected = sensorNode(node); if (selected !== null) selectSensorNode(selected); }} />
     </section>}
-    <div className="axis-note">1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height</div>
+    <div className="axis-note">{t('scan.axis_note')}</div>
   </div>;
 }

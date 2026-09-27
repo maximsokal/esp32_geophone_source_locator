@@ -8,6 +8,9 @@
  * number is the device's own measurement.
  */
 
+import { translate, type I18nLocale } from '../i18n';
+import { formatNumber } from '../i18n/format';
+
 export type LocalizationJobState = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
 
 export interface LocalizationJobTiming {
@@ -51,38 +54,51 @@ export function isJobFinished(status: LocalizationJobStatus): boolean {
   return status.state === 'succeeded' || status.state === 'failed';
 }
 
-function seconds(ms: number): string {
-  return `${(ms / 1000).toFixed(1)} s`;
+function seconds(locale: I18nLocale, ms: number): string {
+  return `${formatNumber(locale, ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`;
 }
 
 /** One line of live progress, as the device reports it. */
-export function jobProgressText(status: LocalizationJobStatus): string {
+export function jobProgressText(status: LocalizationJobStatus, locale: I18nLocale = 'en'): string {
   switch (status.state) {
     case 'queued':
-      return 'Queued on the device…';
+      return translate(locale, 'calc.job_queued');
     case 'running':
-      return `Calculating on the device: ${status.current_method === '' ? 'starting' : status.current_method}` +
-        ` · ${seconds(status.elapsed_ms)} of ${seconds(status.budget_ms)} budget`;
+      return translate(locale, 'calc.job_running', {
+        method: status.current_method === '' ? translate(locale, 'calc.job_starting') : status.current_method,
+        elapsed: seconds(locale, status.elapsed_ms),
+        budget: seconds(locale, status.budget_ms),
+      });
     case 'succeeded':
-      return `Done in ${seconds(status.elapsed_ms)}: ${status.summary.methods_solved} of ${status.summary.methods_attempted}` +
-        ' methods solved' +
-        (status.summary.methods_skipped_for_time > 0
-          ? `, ${status.summary.methods_skipped_for_time} not started (time budget ${seconds(status.budget_ms)})`
-          : '');
+      return translate(locale, 'calc.job_done', {
+        elapsed: seconds(locale, status.elapsed_ms),
+        solved: formatNumber(locale, status.summary.methods_solved),
+        attempted: formatNumber(locale, status.summary.methods_attempted),
+      }) + (status.summary.methods_skipped_for_time > 0
+        ? translate(locale, 'calc.job_skipped', {
+          count: formatNumber(locale, status.summary.methods_skipped_for_time),
+          budget: seconds(locale, status.budget_ms),
+        })
+        : '');
     case 'failed':
-      return `Failed after ${seconds(status.elapsed_ms)}: ${status.error ?? 'unknown error'}`;
+      return translate(locale, 'calc.job_failed', {
+        elapsed: seconds(locale, status.elapsed_ms),
+        error: status.error ?? translate(locale, 'calc.job_unknown_error'),
+      });
     default:
-      return 'No calculation has run since the device started.';
+      return translate(locale, 'calc.job_idle');
   }
 }
 
 /** The worker's measured stack headroom. */
-export function stackText(status: LocalizationJobStatus): string {
+export function stackText(status: LocalizationJobStatus, locale: I18nLocale = 'en'): string {
   if (status.stack.free_min_bytes <= 0) return '';
-  const kib = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KiB`;
-  return `worker stack: ${kib(status.stack.size_bytes - status.stack.free_min_bytes)} used at most of ` +
-    `${kib(status.stack.size_bytes)} (min free ${kib(status.stack.free_min_bytes)})` +
-    (status.stack.margin_ok ? '' : ` — below the ${kib(status.stack.margin_bytes)} safety margin`);
+  const kib = (bytes: number): string => `${formatNumber(locale, bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KiB`;
+  return translate(locale, 'calc.stack_summary', {
+    used: kib(status.stack.size_bytes - status.stack.free_min_bytes),
+    total: kib(status.stack.size_bytes),
+    free: kib(status.stack.free_min_bytes),
+  }) + (status.stack.margin_ok ? '' : translate(locale, 'calc.stack_below', { margin: kib(status.stack.margin_bytes) }));
 }
 
 /** Timings sorted slowest first, with their share of the whole run. */
@@ -97,6 +113,7 @@ export interface WaitOptions {
   objectId: string;
   sessionId: string;
   budgetMs: number;
+  locale?: I18nLocale;
   onProgress?: (status: LocalizationJobStatus) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -115,6 +132,7 @@ export async function waitForLocalizationJob(
 ): Promise<LocalizationJobStatus> {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? (() => Date.now());
+  const locale = options.locale ?? 'en';
   const deadline = now() + options.budgetMs + JOB_WAIT_GRACE_MS;
   let lastError: unknown = null;
   for (;;) {
@@ -129,10 +147,12 @@ export async function waitForLocalizationJob(
       lastError = reason;
     }
     if (now() >= deadline) {
-      throw new Error(
-        `The device did not finish the calculation within ${seconds(options.budgetMs + JOB_WAIT_GRACE_MS)}` +
-        (lastError instanceof Error ? ` (last poll: ${lastError.message})` : ''),
-      );
+      throw new Error(translate(locale, 'calc.job_timeout', {
+        duration: seconds(locale, options.budgetMs + JOB_WAIT_GRACE_MS),
+        lastPoll: lastError instanceof Error
+          ? translate(locale, 'calc.job_last_poll', { error: lastError.message })
+          : '',
+      }));
     }
     await sleep(JOB_POLL_INTERVAL_MS);
   }

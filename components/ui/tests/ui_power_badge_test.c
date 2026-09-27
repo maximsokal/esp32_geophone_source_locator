@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "ui_power_badge.h"
+#include "ui_i18n.h"
 
 /* MAX-182/183: TFT header power badge. */
 
@@ -108,9 +109,25 @@ static void test_unknown_and_null(void)
 
 int main(void)
 {
+    ui_i18n_set_locale(UI_LOCALE_EN);
     test_battery_levels();
     test_usb_states();
     test_low_battery_alerts_outrank_everything();
     test_unknown_and_null();
+
+    ui_i18n_set_locale(UI_LOCALE_UK);
+    device_power_status_t p = power_with(DEVICE_POWER_STATE_USB_CHARGING, 0.0f);
+    p.battery_percent_valid = false;
+    assert(strcmp(badge_of(&p).text, "ЗАРЯД") == 0);
+    p = power_with(DEVICE_POWER_STATE_USB_BATTERY_READY, 0.0f);
+    p.battery_full = true;
+    assert(strcmp(badge_of(&p).text, "ПОВНА") == 0);
+    p = power_with(DEVICE_POWER_STATE_BATTERY_LOW, 8.0f);
+    assert(strcmp(badge_of(&p).text, "НИЗЬК.") == 0);
+    p = power_with(DEVICE_POWER_STATE_BATTERY_CRITICAL, 1.0f);
+    assert(strcmp(badge_of(&p).text, "КРИТ.") == 0);
+    p.low_battery = DEVICE_LOW_BATTERY_GRACE;
+    p.shutdown_in_s = 8U;
+    assert(strcmp(badge_of(&p).text, "USB 8с") == 0);
     return 0;
 }

@@ -69,14 +69,26 @@ export function displayForScanMode(mode: ScanMode): ScanDisplayOptions {
   return { ...source };
 }
 
-export function scanModeLabel(mode: ScanMode | null): string {
+export function scanModeLabel(mode: ScanMode | null, locale: I18nLocale = 'en'): string {
   switch (mode) {
-    case 'surface': return 'STABLE SURFACE';
-    case 'search-volume': return 'SEARCH VOLUME';
-    case 'mesh': return 'SURFACE MESH';
-    case 'quality': return 'QUALITY MAP';
-    default: return 'CUSTOM LAYERS';
+    case 'surface': return translate(locale, 'scan.mode.surface');
+    case 'search-volume': return translate(locale, 'scan.mode.search_volume');
+    case 'mesh': return translate(locale, 'scan.mode.mesh');
+    case 'quality': return translate(locale, 'scan.mode.quality');
+    default: return translate(locale, 'scan.mode.custom');
   }
+}
+
+export function displayLayersLabel(display: ScanDisplayOptions, locale: I18nLocale = 'en'): string {
+  return ([
+    display.goodPoints ? translate(locale, 'scan.layer.stable') : '',
+    display.badPoints ? translate(locale, 'scan.layer.tentative') : '',
+    display.mesh ? translate(locale, 'scan.layer.mesh') : '',
+    display.freeAir ? translate(locale, 'scan.layer.free') : '',
+    display.unknownSpace ? translate(locale, 'scan.layer.unknown') : '',
+    display.manualPoints ? translate(locale, 'scan.layer.pins') : '',
+    display.dimensions ? translate(locale, 'scan.layer.dimensions') : '',
+  ].filter(Boolean).join(' + ') || translate(locale, 'scan.layer.empty')).toUpperCase();
 }
 
 export function displayFingerprint(display: ScanDisplayOptions): string {
@@ -109,3 +121,5 @@ export function scanViewForMode(mode: ScanMode): ScanViewState {
 export function toggleScanLayer(state: ScanViewState, layer: keyof ScanDisplayOptions): ScanViewState {
   return { mode: null, display: { ...state.display, [layer]: !state.display[layer] } };
 }
+import type { I18nLocale } from '../i18n';
+import { translate } from '../i18n';

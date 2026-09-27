@@ -6,10 +6,12 @@ import {
   setCertifiedGuideEdges,
 } from '../../src/xr/certifiedCornerRegistry';
 import {
+  manualPlacementErrorLabel,
   manualPreviewLabel,
   previewManualPlacementFromStableSurface,
 } from '../../src/xr/manualPlacementPreview';
 import type { ManualPlacementSurfaceSnapshot } from '../../src/xr/manualPlacementSurface';
+import { translate, type I18nLocale } from '../../src/i18n';
 
 interface MutableCloud {
   positions: number[];
@@ -76,7 +78,7 @@ describe('manual placement live preview', () => {
     const preview = previewManualPlacementFromStableSurface(0.5, 0.5, snapshot(source), projector);
     expect(preview.resolution.accepted).toBe(true);
     expect(preview.resolution.mode).toBe('edge');
-    expect(manualPreviewLabel(preview)).toBe('EDGE LOCK');
+    expect(manualPreviewLabel(preview, 'en')).toBe(translate('en', 'xr.manual.edge_lock'));
   });
 
   it('shows CORNER LOCK for a conditioned three-plane accumulated corner', () => {
@@ -89,7 +91,7 @@ describe('manual placement live preview', () => {
     expect(preview.resolution.accepted).toBe(true);
     expect(preview.resolution.mode).toBe('corner');
     expect(preview.resolution.confidence).toBeLessThan(1);
-    expect(manualPreviewLabel(preview)).toBe('CORNER LOCK');
+    expect(manualPreviewLabel(preview, 'en')).toBe(translate('en', 'xr.manual.corner_lock'));
   });
 
   it('falls through an active-but-empty certified registry to the robust physical surface preview', () => {
@@ -103,7 +105,7 @@ describe('manual placement live preview', () => {
 
     expect(preview.resolution.accepted).toBe(true);
     expect(preview.resolution.mode).toBe('edge');
-    expect(manualPreviewLabel(preview)).toBe('EDGE LOCK');
+    expect(manualPreviewLabel(preview, 'en')).toBe(translate('en', 'xr.manual.edge_lock'));
   });
 
   it('shows SCAN MORE when the cursor is away from stable projected geometry', () => {
@@ -114,7 +116,7 @@ describe('manual placement live preview', () => {
     const preview = previewManualPlacementFromStableSurface(0.9, 0.9, snapshot(source), projector);
     expect(preview.resolution.accepted).toBe(false);
     expect(preview.seedPosition).toBeNull();
-    expect(manualPreviewLabel(preview)).toBe('SCAN MORE');
+    expect(manualPreviewLabel(preview, 'en')).toBe(translate('en', 'xr.manual.scan_more'));
   });
 
   it('does not offer a corner when only one stable surface family is known', () => {
@@ -123,7 +125,7 @@ describe('manual placement live preview', () => {
 
     const preview = previewManualPlacementFromStableSurface(0.5, 0.5, snapshot(source), projector);
     expect(preview.resolution.accepted).toBe(false);
-    expect(manualPreviewLabel(preview)).toBe('SCAN MORE');
+    expect(manualPreviewLabel(preview, 'en')).toBe(translate('en', 'xr.manual.scan_more'));
   });
 
   it('selects the frontmost stable surface when foreground and background overlap on screen', () => {
@@ -150,5 +152,10 @@ describe('manual placement live preview', () => {
     expect(preview.seedViewDepthMeters!).toBeLessThan(1.2);
     expect(preview.resolution.accepted).toBe(true);
     expect(preview.resolution.position![2]).toBeLessThan(0.2);
+  });
+
+  it.each(['en', 'uk'] as const)('localizes known placement reasons in %s and preserves unknown codes', (locale: I18nLocale) => {
+    expect(manualPlacementErrorLabel('SCAN MORE · edge uncertainty is still too high.', locale)).toBe(translate(locale, 'xr.manual.reason.edge_uncertain'));
+    expect(manualPlacementErrorLabel('future_reason', locale)).toBe('future_reason');
   });
 });

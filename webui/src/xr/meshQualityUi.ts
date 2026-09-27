@@ -1,4 +1,6 @@
 import type { SparseTsdfMesh } from './sparseTsdf';
+import { translate, type I18nLocale } from '../i18n';
+import { formatNumber, formatPercent } from '../i18n/format';
 
 export interface MeshQualityUiStatus {
   label: string;
@@ -17,9 +19,11 @@ const NOISY_MESH_SCORE = 0.60;
  * warning, but do not force a full rescan unless component quarantine, diagnostic
  * truncation or a high global noise score remains after the repair.
  */
-export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
-  const readinessPercent = Math.round(Math.max(0, Math.min(1, mesh.meshReadiness)) * 100);
-  const noisePercent = Math.round(Math.max(0, Math.min(1, mesh.meshNoiseScore)) * 100);
+export function describeMeshQuality(mesh: SparseTsdfMesh, locale: I18nLocale = 'en'): MeshQualityUiStatus {
+  const percent = (value: number): string => formatPercent(locale, Math.max(0, Math.min(1, value)));
+  const readinessPercent = percent(mesh.meshReadiness);
+  const noisePercent = percent(mesh.meshNoiseScore);
+  const triangles = formatNumber(locale, mesh.triangleCount);
   const localHotspotTriangles = Math.max(
     0,
     Math.min(mesh.quarantinedTriangleCount, mesh.localNoiseHotspotTriangleCount),
@@ -31,7 +35,7 @@ export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
 
   if (mesh.meshReadiness < 1 - 1e-9) {
     return {
-      label: `MESH ${readinessPercent}% · SCAN WIDER`,
+      label: translate(locale, 'xr.mesh.scan_wider', { percent: readinessPercent }),
       severity: 'warning',
       rescanRecommended: false,
     };
@@ -39,8 +43,8 @@ export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
   if (mesh.selfIntersectionTruncated) {
     return {
       label: mesh.triangleCount > 0
-        ? `MESH PARTIAL · ${mesh.triangleCount.toLocaleString()}△ · CHECK LIMITED · ${noisePercent}% noise`
-        : `MESH CHECK LIMITED · ${noisePercent}% noise · RESCAN`,
+        ? translate(locale, 'xr.mesh.partial_limited', { count: triangles, noise: noisePercent })
+        : translate(locale, 'xr.mesh.check_limited_rescan', { noise: noisePercent }),
       severity: 'bad',
       rescanRecommended: true,
     };
@@ -48,35 +52,35 @@ export function describeMeshQuality(mesh: SparseTsdfMesh): MeshQualityUiStatus {
   if (mesh.meshNoiseScore > NOISY_MESH_SCORE || componentQuarantinedTriangles > 0) {
     return {
       label: mesh.triangleCount > 0
-        ? `MESH PARTIAL · ${mesh.triangleCount.toLocaleString()}△ · ${noisePercent}% noise · Q${componentQuarantinedTriangles.toLocaleString()}`
-        : `MESH NOISY ${noisePercent}% · Q${componentQuarantinedTriangles.toLocaleString()} · RESCAN`,
+        ? translate(locale, 'xr.mesh.partial_noisy', { count: triangles, noise: noisePercent, quarantined: formatNumber(locale, componentQuarantinedTriangles) })
+        : translate(locale, 'xr.mesh.noisy_rescan', { noise: noisePercent, quarantined: formatNumber(locale, componentQuarantinedTriangles) }),
       severity: 'bad',
       rescanRecommended: true,
     };
   }
   if (mesh.triangleCount === 0) {
     return {
-      label: 'MESH EMPTY · RESCAN',
+      label: translate(locale, 'xr.mesh.empty_rescan'),
       severity: 'bad',
       rescanRecommended: true,
     };
   }
   if (mesh.localNoiseHotspotTriangleCount > 0) {
     return {
-      label: `MESH REPAIRED · H${mesh.localNoiseHotspotCount.toLocaleString()} · ${mesh.triangleCount.toLocaleString()}△`,
+      label: translate(locale, 'xr.mesh.repaired', { hotspots: formatNumber(locale, mesh.localNoiseHotspotCount), count: triangles }),
       severity: 'warning',
       rescanRecommended: false,
     };
   }
   if (mesh.selfIntersectionPairCount > 0 || mesh.orientationConflictCount > 0 || mesh.nonManifoldEdgeCount > 0) {
     return {
-      label: `MESH CHECK ${noisePercent}% · ${mesh.triangleCount.toLocaleString()}△`,
+      label: translate(locale, 'xr.mesh.check', { noise: noisePercent, count: triangles }),
       severity: 'warning',
       rescanRecommended: false,
     };
   }
   return {
-    label: `MESH OK · ${mesh.triangleCount.toLocaleString()}△`,
+    label: translate(locale, 'xr.mesh.ok', { count: triangles }),
     severity: 'ok',
     rescanRecommended: false,
   };

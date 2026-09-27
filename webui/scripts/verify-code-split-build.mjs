@@ -35,6 +35,7 @@ function embeddedSymbolBase(fileName) {
 const [scannerKey, scanner] = requireDynamic('src/App.tsx', 'WebXR scanner');
 const [seismicKey] = requireDynamic('src/features/seismic/LiveSeismicPanel.tsx', 'Live seismic panel');
 const [viewportKey, viewport] = requireDynamic('src/components/ScanPointCloudViewport.tsx', '3D result viewport');
+const [ukCatalogKey] = requireDynamic('src/i18n/catalog.uk.gen.ts', 'Ukrainian catalog');
 forbidDynamic('src/features/objects/ObjectsFeature.tsx', 'Object workspace');
 forbidDynamic('src/features/sensors/SensorsFeature.tsx', 'Sensor diagnostics');
 
@@ -52,7 +53,7 @@ if ((viewport.css ?? []).length !== 0) {
 }
 
 const [entryKey, entryValue] = appEntry;
-for (const dynamicKey of [scannerKey, seismicKey, viewportKey]) {
+for (const dynamicKey of [scannerKey, seismicKey, viewportKey, ukCatalogKey]) {
   if ((entryValue.imports ?? []).includes(dynamicKey)) {
     throw new Error(`${dynamicKey} unexpectedly appears in the static entry dependency list.`);
   }
@@ -80,6 +81,22 @@ if (initialVendorNames.length !== 1) {
   );
 }
 
+function staticDependencyKeys(startKey) {
+  const dependencies = new Set();
+  const visit = (key) => {
+    if (dependencies.has(key)) return;
+    dependencies.add(key);
+    for (const imported of manifest[key]?.imports ?? []) visit(imported);
+  };
+  visit(startKey);
+  return dependencies;
+}
+
+const initialGraph = staticDependencyKeys(entryKey);
+if (initialGraph.has(ukCatalogKey)) {
+  throw new Error('Ukrainian catalog is reachable through the initial static import graph.');
+}
+
 let totalRaw = 0;
 let totalGzip = 0;
 const rows = [];
@@ -96,6 +113,23 @@ const appRow = rows.find((row) => row.name === appFile);
 if (appRow === undefined) throw new Error(`Entry asset ${entryValue.file} not found in dist/assets.`);
 if (appRow.rawBytes >= 250_000) {
   throw new Error(`Initial console entry is too large: ${appRow.rawBytes} bytes (target < 250000).`);
+}
+
+const webCatalog = JSON.parse(await readFile(resolve(root, '../i18n/web.json'), 'utf8'));
+const ukSentinel = webCatalog.entries?.['nav.objects']?.uk;
+if (typeof ukSentinel !== 'string' || ukSentinel.length === 0) {
+  throw new Error('Could not find the Ukrainian catalog sentinel string in i18n/web.json.');
+}
+for (const name of [appFile, ...initialVendorNames]) {
+  const data = await readFile(join(dist, 'assets', name));
+  if (data.includes(Buffer.from(ukSentinel, 'utf8'))) {
+    throw new Error(`Ukrainian catalog text leaked into initial asset ${name}.`);
+  }
+}
+const ukCatalogFile = basename(manifest[ukCatalogKey].file);
+const ukCatalogData = await readFile(join(dist, 'assets', ukCatalogFile));
+if (!ukCatalogData.includes(Buffer.from(ukSentinel, 'utf8'))) {
+  throw new Error(`Ukrainian catalog sentinel is absent from its lazy asset ${ukCatalogFile}.`);
 }
 
 const initialCssNames = (entryValue.css ?? []).map((path) => basename(path));
@@ -169,4 +203,5 @@ console.log('Core console tabs: Objects + Sensors are statically reachable from 
 console.log(`Dynamic scanner: ${scannerKey}`);
 console.log(`Dynamic seismic: ${seismicKey}`);
 console.log(`Dynamic 3D viewport: ${viewportKey}`);
+console.log(`Dynamic Ukrainian catalog: ${ukCatalogKey} (${ukCatalogFile})`);
 console.log(`Entry: ${entryKey}`);

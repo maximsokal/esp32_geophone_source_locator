@@ -4,6 +4,8 @@ import {
   stackText,
   type LocalizationJobStatus,
 } from '../../domain/localizationJob';
+import { useLocale, useT } from '../../i18n';
+import { formatNumber, formatPercent } from '../../i18n/format';
 
 /**
  * Progress of the background "Calculate source" job while it runs, and the
@@ -12,23 +14,25 @@ import {
  * worker stack's high-water mark.
  */
 export default function LocalizationJobReport({ status }: { status: LocalizationJobStatus }) {
+  const { locale } = useLocale();
+  const t = useT();
   const finished = status.state === 'succeeded' || status.state === 'failed';
   const rows = finished ? jobTimingRows(status) : [];
-  const stack = finished ? stackText(status) : '';
+  const stack = finished ? stackText(status, locale) : '';
   return (
-    <section className="localization-job" aria-label="Calculation on the device" aria-live="polite">
-      <p className="overlay-note" data-job-state={status.state}>{jobProgressText(status)}</p>
+    <section className="localization-job" aria-label={t('calc.job_aria')} aria-live="polite">
+      <p className="overlay-note" data-job-state={status.state}>{jobProgressText(status, locale)}</p>
       {rows.length > 0 && (
         <details className="settings-details">
-          <summary>Measured on the device ({rows.length} steps)</summary>
+          <summary>{t('calc.job_measured', { count: formatNumber(locale, rows.length) })}</summary>
           <table className="overlay-table">
-            <thead><tr><th>Method</th><th>Time</th><th>Share</th></tr></thead>
+            <thead><tr><th>{t('calc.job_method')}</th><th>{t('calc.job_time')}</th><th>{t('calc.job_share')}</th></tr></thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.method} className={row.skipped_for_time ? 'unavailable' : undefined}>
                   <td>{row.method}</td>
-                  <td>{row.skipped_for_time ? 'not started (time budget)' : `${row.ms} ms`}</td>
-                  <td>{row.skipped_for_time ? '—' : `${Math.round(row.share * 100)}%`}</td>
+                  <td>{row.skipped_for_time ? t('calc.job_not_started') : `${formatNumber(locale, row.ms)} ms`}</td>
+                  <td>{row.skipped_for_time ? '—' : formatPercent(locale, row.share)}</td>
                 </tr>
               ))}
             </tbody>

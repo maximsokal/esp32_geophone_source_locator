@@ -12,6 +12,7 @@
 #include "seismic_acquisition.h"
 #include "seismic_recorder_internal.h"
 #include "nrf_cs_authority.h"
+#include "nrf_geometry_solver.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
 #include "storage_manager.h"
@@ -27,6 +28,7 @@ static object_store_geometry_t last_geometry;
 static bool last_geometry_set;
 static object_store_cs_pairs_t last_cs_pairs;
 static bool last_cs_pairs_set;
+static bool fail_cs_pairs_write;
 static char persisted_session_json[4096];
 static unsigned metadata_write_calls;
 static char last_metadata_status[24];
@@ -100,7 +102,7 @@ esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t
     return ESP_OK;
 }
 esp_err_t object_store_set_geometry(const char *object_id, const object_store_geometry_t *geometry) { (void)object_id; last_geometry = *geometry; last_geometry_set = true; return ESP_OK; }
-esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs) { (void)object_id; last_cs_pairs = *cs_pairs; last_cs_pairs_set = true; return ESP_OK; }
+esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs) { (void)object_id; if (fail_cs_pairs_write) return ESP_FAIL; last_cs_pairs = *cs_pairs; last_cs_pairs_set = true; return ESP_OK; }
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
 
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary) { *summary = fake_leveling; return ESP_OK; }
@@ -198,6 +200,7 @@ int main(void)
      * C=(150,-200) distinguished only via their own 400mm pair) so the
      * geometry math here is known-correct, not re-derived. */
     memset(&fake_topology, 0, sizeof(fake_topology));
+    fake_topology.generation = 143U;
     fake_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
     fake_topology.main.node_id = 0U;
     fake_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
@@ -233,19 +236,36 @@ int main(void)
         fake_sensor_cache[channel].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
         fake_sensor_cache[channel].sensor.reference_generation = 7U;
         fake_sensor_cache[channel].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+        fake_sensor_cache[channel].sensor.sample_complete_uptime_ms = 980U + channel;
+        fake_sensor_cache[channel].esp_receipt_uptime_ms = 990U + channel;
     }
 
     memset(&fake_cycle, 0, sizeof(fake_cycle));
     fake_cycle.active = false;
     fake_cycle.complete = true;
     fake_cycle.result = NRF_CS_AUTHORITY_COMPLETE;
+    fake_cycle.membership_generation = 52U;
     fake_cycle.pair_count = 6U;
-    fake_cycle.pairs[0] = (nrf_cs_pair_result_t){ .node_a = 0U, .node_b = 1U, .state = NRF_CS_PAIR_VALID, .distance_mm = 300 };
+    fake_cycle.pairs[0] = (nrf_cs_pair_result_t){
+        .node_a = 0U, .node_b = 1U, .state = NRF_CS_PAIR_VALID,
+        .last_failure = NRF_CS_FAILURE_TIMEOUT, .distance_mm = 300,
+        .provider_quality_flags = 3U, .scheduler_quality_flags = NRF_CS_QUALITY_HAD_RETRY,
+    };
     fake_cycle.pairs[1] = (nrf_cs_pair_result_t){ .node_a = 0U, .node_b = 2U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[2] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 2U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[3] = (nrf_cs_pair_result_t){ .node_a = 0U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[4] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[5] = (nrf_cs_pair_result_t){ .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 400 };
+
+    /* MAX-166 G1: the live object already has a different pair set, and its
+     * best-effort update fails. The session must still freeze this cycle. */
+    memset(&last_cs_pairs, 0, sizeof(last_cs_pairs));
+    last_cs_pairs.pair_count = 1U;
+    last_cs_pairs.pairs[0] = (object_store_cs_pair_t) {
+        .node_a = 0U, .node_b = 1U, .valid = true, .distance_mm = 7777,
+    };
+    last_cs_pairs_set = true;
+    fail_cs_pairs_write = true;
 
     assert(seismic_recorder_init() == ESP_OK);
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
@@ -286,6 +306,19 @@ int main(void)
     assert(start_participation.z_provenance.available);
     assert(start_participation.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
     assert(start_participation.z_provenance.fallback_reason[0] == '\0');
+    assert(start_participation.geometry_provenance.available);
+    assert(strcmp(start_participation.geometry_provenance.solver, "nrf_geometry_solver") == 0);
+    assert(strcmp(start_participation.geometry_provenance.solver_version, NRF_GEOMETRY_SOLVER_VERSION) == 0);
+    assert(start_participation.geometry_provenance.topology_generation == 143U);
+    assert(start_participation.geometry_provenance.cs_membership_generation == 52U);
+    assert(start_participation.geometry_provenance.main_height_reference_generation == 7U);
+    assert(start_participation.geometry_provenance.start_uptime_ms == 1000U);
+    assert(strcmp(start_participation.geometry_provenance.setup_id, "1000-143-52-7") == 0);
+    assert(start_participation.pods[0].source_sample_uptime_ms == 980U);
+    assert(start_participation.pods[0].esp_receipt_uptime_ms == 990U);
+    assert(start_participation.pods[0].source_age_at_start_known);
+    assert(start_participation.pods[0].source_age_ms_at_start == 10U);
+    assert(start_participation.pods[0].height_reference_generation == 7U);
     assert(!start_participation.pods[3].assigned && !start_participation.pods[3].node_id_known);
     assert(start_participation.pods[3].hardware_id_length == 0U);
     assert(start_participation.pods[3].position_source == SEISMIC_RECORDER_POSITION_SOURCE_NONE);
@@ -293,14 +326,22 @@ int main(void)
     /* MAX-148: the same "solve first, persist after" ordering must hold for
      * the CS pair evidence behind that solve. */
     assert(last_cs_pairs_set);
-    assert(last_cs_pairs.pair_count == 6U);
-    assert(last_cs_pairs.pairs[0].node_a == 0U && last_cs_pairs.pairs[0].node_b == 1U);
-    assert(last_cs_pairs.pairs[0].valid);
-    assert(last_cs_pairs.pairs[0].distance_mm == 300);
+    assert(last_cs_pairs.pair_count == 1U);
+    assert(last_cs_pairs.pairs[0].distance_mm == 7777);
     object_store_cs_pairs_t written_cs_pairs;
     assert(seismic_recorder_read_session_cs_pairs("OBJ_0005", "S000001", &written_cs_pairs) == ESP_OK);
     assert(written_cs_pairs.pair_count == 6U);
+    for (size_t i = 0U; i < fake_cycle.pair_count; ++i) {
+        assert(written_cs_pairs.pairs[i].node_a == fake_cycle.pairs[i].node_a);
+        assert(written_cs_pairs.pairs[i].node_b == fake_cycle.pairs[i].node_b);
+        assert(written_cs_pairs.pairs[i].valid == (fake_cycle.pairs[i].state == NRF_CS_PAIR_VALID));
+        assert(written_cs_pairs.pairs[i].distance_mm == fake_cycle.pairs[i].distance_mm);
+    }
     assert(written_cs_pairs.pairs[0].distance_mm == 300);
+    assert(strcmp(written_cs_pairs.pairs[0].state, "valid") == 0);
+    assert(strcmp(written_cs_pairs.pairs[0].last_failure, "timeout") == 0);
+    assert(written_cs_pairs.pairs[0].provider_quality_flags == 3U);
+    assert(written_cs_pairs.pairs[0].scheduler_quality_flags == NRF_CS_QUALITY_HAD_RETRY);
 
     seismic_recorder_snapshot_t snapshot;
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
@@ -312,6 +353,22 @@ int main(void)
     fake_acquisition.timer_ticks = 106U;
     fake_acquisition.conversion_attempts = 104U;
     fake_acquisition.collapsed_periods = 2U;
+
+    /* Live state may move while this recording runs; STOP must rewrite the
+     * session from the frozen START copies. */
+    object_store_geometry_t moved_geometry = {0};
+    moved_geometry.pods[0].computed = true;
+    moved_geometry.pods[0].x_mm = 9999;
+    assert(object_store_set_geometry("OBJ_0005", &moved_geometry) == ESP_OK);
+    object_store_cs_pairs_t moved_pairs = {0};
+    moved_pairs.pair_count = 1U;
+    moved_pairs.pairs[0].distance_mm = 8888;
+    fail_cs_pairs_write = false;
+    assert(object_store_set_cs_pairs("OBJ_0005", &moved_pairs) == ESP_OK);
+    fake_topology.generation = 701U;
+    fake_cycle.membership_generation = 702U;
+    fake_device_status.main.height_reference.generation = 703U;
+    fake_sensor_cache[0].sensor.reference_generation = 704U;
 
     assert(seismic_recorder_stop() == ESP_OK);
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
@@ -340,6 +397,17 @@ int main(void)
         assert(memcmp(final_participation.pods[pod].hardware_id, start_participation.pods[pod].hardware_id, sizeof(start_participation.pods[pod].hardware_id)) == 0);
         assert(final_participation.pods[pod].position_source == start_participation.pods[pod].position_source);
     }
+    assert(final_participation.geometry_provenance.topology_generation == 143U);
+    assert(final_participation.geometry_provenance.cs_membership_generation == 52U);
+    assert(final_participation.geometry_provenance.main_height_reference_generation == 7U);
+    assert(final_participation.pods[0].height_reference_generation == 7U);
+    object_store_geometry_t final_geometry;
+    assert(seismic_recorder_read_session_geometry("OBJ_0005", "S000001", &final_geometry) == ESP_OK);
+    assert(final_geometry.pods[0].x_mm == 300);
+    object_store_cs_pairs_t final_cs_pairs;
+    assert(seismic_recorder_read_session_cs_pairs("OBJ_0005", "S000001", &final_cs_pairs) == ESP_OK);
+    assert(final_cs_pairs.pair_count == 6U);
+    assert(final_cs_pairs.pairs[0].distance_mm == 300);
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
     return 0;

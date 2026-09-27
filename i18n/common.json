@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "namespace": "common",
+  "entries": {
+    "app.title": {
+      "en": "GeoLocator 3D",
+      "uk": ""
+    },
+    "power.low_battery_soon": {
+      "en": "LOW BATTERY - CONNECT USB SOON",
+      "uk": "",
+      "note": "Current TFT low-battery notice"
+    }
+  }
+}

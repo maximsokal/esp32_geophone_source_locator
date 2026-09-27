@@ -36,6 +36,8 @@ import { applyStructuralVisualCorroboration } from '../xr/structuralVisualCorrob
 import type { VisualEvidenceFrame } from '../xr/visualLineEvidence';
 import type { WebXrRuntime, WebXrRuntimeState } from '../xr/webxrRuntime';
 import { getVisualEvidenceFrames } from '../xr/xrGuidanceRegistry';
+import { useLocale, useT } from '../i18n';
+import { formatDistance, formatNumber, formatPercent } from '../i18n/format';
 
 import './StructuralGuideOverlay.css';
 
@@ -102,8 +104,8 @@ function insideWorkingView(u: number, v: number): boolean {
   return u >= VIEW_MARGIN && u <= 1 - VIEW_MARGIN && v >= VIEW_MARGIN && v <= 1 - VIEW_MARGIN;
 }
 
-function percent(value: number): string {
-  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+function percent(value: number, locale: 'en' | 'uk'): string {
+  return formatPercent(locale, Math.max(0, Math.min(1, value)));
 }
 
 function hasUsableLineCoverage(frames: readonly VisualEvidenceFrame[]): boolean {
@@ -244,6 +246,8 @@ function mergeCornerCandidates(
 }
 
 export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabled }: Props) {
+  const { locale } = useLocale();
+  const t = useT();
   const client = useMemo(() => new StructuralGuideClient(), []);
   const [result, setResult] = useState<StructuralGuideResult | null>(null);
   const [validationSnapshot, setValidationSnapshot] = useState<StructuralGuideSnapshot | null>(null);
@@ -583,19 +587,27 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
     planarPatches: result?.planarPatches ?? 0,
     workerEdges: result?.edges.length ?? 0,
     rgbCorroboration: rgbActive,
-  });
+  }, locale);
+  const metric = (value: string): string => t(({
+    points: 'xr.readiness.metric.points',
+    views: 'xr.readiness.metric.views',
+    extent: 'xr.readiness.metric.extent',
+    'surface-density': 'xr.readiness.metric.surface_density',
+    faces: 'xr.readiness.metric.faces',
+    unknown: 'xr.readiness.metric.unknown',
+  } as Record<string, 'xr.readiness.metric.points' | 'xr.readiness.metric.views' | 'xr.readiness.metric.extent' | 'xr.readiness.metric.surface_density' | 'xr.readiness.metric.faces' | 'xr.readiness.metric.unknown'>)[value] ?? 'xr.readiness.metric.unknown');
   const readinessTitle = [
-    `Structural readiness ${percent(readiness.structural.progress)} (${readiness.structural.limitingMetric})`,
-    readiness.mesh === null ? 'Mesh scale not measured yet' : `Mesh readiness ${percent(readiness.mesh.progress)} (${readiness.mesh.limitingMetric})`,
-    `View coverage ${percent(readiness.viewCoverage)}; ${readiness.viewSectors}/${readiness.totalViewSectors} camera azimuth sectors`,
-    `Camera baseline ${readiness.cameraBaselineMeters.toFixed(2)} m`,
+    t('xr.guide.structural_readiness', { progress: percent(readiness.structural.progress, locale), metric: metric(readiness.structural.limitingMetric) }),
+    readiness.mesh === null ? t('xr.guide.mesh_not_measured') : t('xr.guide.mesh_readiness', { progress: percent(readiness.mesh.progress, locale), metric: metric(readiness.mesh.limitingMetric) }),
+    t('xr.guide.view_coverage', { progress: percent(readiness.viewCoverage, locale), sectors: formatNumber(locale, readiness.viewSectors), total: formatNumber(locale, readiness.totalViewSectors) }),
+    t('xr.guide.camera_baseline', { distance: formatDistance(locale, readiness.cameraBaselineMeters) }),
     readiness.objectMajorExtentMeters === null || readiness.objectMinorExtentMeters === null
-      ? 'Object extent not measured yet'
-      : `Measured component ${readiness.objectMajorExtentMeters.toFixed(2)} × ${readiness.objectMinorExtentMeters.toFixed(2)} m`,
+      ? t('xr.guide.extent_not_measured')
+      : t('xr.guide.measured_component', { major: formatDistance(locale, readiness.objectMajorExtentMeters), minor: formatDistance(locale, readiness.objectMinorExtentMeters) }),
   ].join(' · ');
 
   return (
-    <div className="xr-structural-guide" aria-label="Automatic structural suggestions">
+    <div className="xr-structural-guide" aria-label={t('xr.guide.aria_label')}>
       <div className="xr-structural-guide-status" title={readinessTitle}>
         {readinessLabel}
       </div>
@@ -614,7 +626,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
             </svg>
             {interactionEnabled && (
               <button type="button" className="xr-edge-confirm" style={{ left: `${midX}%`, top: `${midY}%` }} onClick={() => confirmEdge(edge)}>
-                LINE? {Math.round(edge.candidate.confidence * 100)}%
+                {t('xr.guide.line_suggestion', { confidence: formatPercent(locale, edge.candidate.confidence) })}
               </button>
             )}
           </div>
@@ -629,15 +641,15 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
             disabled={!interactionEnabled}
             onClick={() => confirmCorner(candidate)}
             title={candidate.id.startsWith('endpoint:')
-              ? 'Confirm multi-view edge endpoint'
+              ? t('xr.guide.confirm_endpoint')
               : candidate.id.startsWith('edge-vertex:')
-                ? 'Confirm vertex inferred from two mature 3D edges'
-                : 'Confirm robustly certified 3D corner'}
+                ? t('xr.guide.confirm_vertex')
+                : t('xr.guide.confirm_corner')}
           >
             ?
           </button>
-          <span>{Math.round(candidate.confidence * 100)}%</span>
-          {interactionEnabled && <button type="button" className="xr-corner-reject" onClick={() => rejectCorner(candidate)} aria-label="Reject suggested corner">×</button>}
+          <span>{formatPercent(locale, candidate.confidence)}</span>
+          {interactionEnabled && <button type="button" className="xr-corner-reject" onClick={() => rejectCorner(candidate)} aria-label={t('xr.guide.reject_corner')}>×</button>}
         </div>
       ))}
     </div>

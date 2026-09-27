@@ -13,6 +13,7 @@ idf_component_register(
         "ui_home.c"
         "ui_measurements.c"
         "ui_measurement_trace.c"
+        "fonts/ui_font_montserrat_14.c"
         "ui_frame_scheduler.c"
         "ui_objects.c"
         "ui_objects_input.c"
@@ -39,6 +40,7 @@ idf_component_register(
         measurement_service
         localization_calculate
         runtime_observability
+        ui_i18n
         scan_occupancy
         scan_preview
         seismic_recorder
@@ -58,4 +60,5 @@ idf_component_register(
     PRIV_REQUIRES
         esp_app_format
         heap
+        lvgl
 )

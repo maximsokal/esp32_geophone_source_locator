@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import DeviceConsoleApp from './DeviceConsoleApp';
 import { installClientDiagnostics } from './data/clientDiagnostics';
+import { LocaleProvider } from './i18n';
 import './styles.css';
 /*
  * The scanner itself is code-split, but its styles must not be. ESP32 serves a
@@ -18,6 +19,6 @@ installClientDiagnostics();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <DeviceConsoleApp />
+    <LocaleProvider><DeviceConsoleApp /></LocaleProvider>
   </StrictMode>,
 );

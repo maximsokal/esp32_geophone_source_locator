@@ -1,4 +1,5 @@
 import type { ObjectLocation } from './device';
+import { translate, type I18nLocale } from '../i18n';
 
 /**
  * MAX-151: explicit frame bookkeeping (see docs/spatial-frames.md).
@@ -32,50 +33,47 @@ export interface FrameSummary {
   transforms: FrameTransform[];
 }
 
-export const SENSOR_AXIS_CONVENTION =
-  'Sensor frame: MAIN at the origin, +X towards the first placed REMOTE, +Z up (REMOTE relZ minus MAIN relZ when valid references share a generation), mirror side arbitrary, heading unknown.';
-
-export function describeFrames(location: ObjectLocation | undefined, scanAvailable: boolean): FrameSummary {
+export function describeFrames(location: ObjectLocation | undefined, scanAvailable: boolean, locale: I18nLocale = 'en'): FrameSummary {
   const gpsValid = location !== undefined && location.valid &&
     Number.isFinite(location.latitude) && Number.isFinite(location.longitude);
   return {
     headingKnown: false,
     mirrorResolved: false,
-    axisConvention: SENSOR_AXIS_CONVENTION,
+    axisConvention: translate(locale, 'report.frame.sensor_axis'),
     transforms: [
       {
         from: 'sensor',
         to: 'gps',
         status: gpsValid ? 'translation_only' : 'unknown',
-        source: gpsValid ? `phone GPS (${location?.source ?? 'unknown'})` : 'none',
+        source: gpsValid ? translate(locale, 'report.frame.phone_gps', { source: location?.source ?? 'unknown' }) : translate(locale, 'report.frame.no_source'),
         timestampMs: gpsValid ? location?.captured_at_ms ?? null : null,
         translationUncertaintyM: gpsValid && Number.isFinite(location?.accuracy_m) ? location?.accuracy_m ?? null : null,
         rotationUncertaintyDeg: null,
         note: gpsValid
-          ? 'MAIN placed at the GPS fix; no heading -- a single GPS point cannot orient the layout.'
-          : 'No stored GPS fix.',
+          ? translate(locale, 'report.frame.sensor_to_gps_measured')
+          : translate(locale, 'report.frame.sensor_to_gps_unknown'),
       },
       {
         from: 'scan',
         to: 'sensor',
         status: 'unknown',
-        source: 'none',
+        source: translate(locale, 'report.frame.no_source'),
         timestampMs: null,
         translationUncertaintyM: null,
         rotationUncertaintyDeg: null,
         note: scanAvailable
-          ? 'Scan saved but not registered: needs AprilTag/ArUco anchors (MAX-145).'
-          : 'No scan saved for this recording.',
+          ? translate(locale, 'report.frame.scan_to_sensor_registered')
+          : translate(locale, 'report.frame.scan_to_sensor_missing'),
       },
       {
         from: 'report',
         to: 'sensor',
         status: 'identity',
-        source: 'definition',
+        source: translate(locale, 'report.frame.definition'),
         timestampMs: null,
         translationUncertaintyM: 0,
         rotationUncertaintyDeg: 0,
-        note: 'Localization results and report projections use the sensor frame of the recording.',
+        note: translate(locale, 'report.frame.report_to_sensor'),
       },
     ],
   };

@@ -174,6 +174,9 @@ typedef enum
 } seismic_recorder_geometry_z_policy_t;
 
 #define SEISMIC_RECORDER_Z_FALLBACK_REASON_SIZE 40U
+#define SEISMIC_RECORDER_SOLVER_NAME_SIZE 32U
+#define SEISMIC_RECORDER_SOLVER_VERSION_SIZE 8U
+#define SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE 64U
 
 typedef struct
 {
@@ -185,12 +188,32 @@ typedef struct
 
 typedef struct
 {
+    bool available;
+    char solver[SEISMIC_RECORDER_SOLVER_NAME_SIZE];
+    char solver_version[SEISMIC_RECORDER_SOLVER_VERSION_SIZE];
+    bool refined;
+    uint8_t refine_iterations;
+    uint32_t topology_generation;
+    uint32_t cs_membership_generation;
+    uint16_t main_height_reference_generation;
+    char setup_id[SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE];
+    uint64_t start_uptime_ms;
+} seismic_recorder_geometry_provenance_t;
+
+
+typedef struct
+{
     bool assigned;
     bool node_id_known;
     uint8_t node_id;
     uint8_t hardware_id_length;
     uint8_t hardware_id[SEISMIC_RECORDER_HARDWARE_ID_MAX];
     seismic_recorder_position_source_t position_source;
+    uint64_t source_sample_uptime_ms;
+    uint64_t esp_receipt_uptime_ms;
+    bool source_age_at_start_known;
+    uint64_t source_age_ms_at_start;
+    uint16_t height_reference_generation;
 } seismic_recorder_pod_participation_t;
 
 
@@ -198,6 +221,7 @@ typedef struct
 {
     seismic_recorder_pod_participation_t pods[OBJECT_STORE_POD_COUNT];
     seismic_recorder_geometry_z_provenance_t z_provenance;
+    seismic_recorder_geometry_provenance_t geometry_provenance;
 } seismic_recorder_session_participation_t;
 
 

@@ -5,13 +5,13 @@ static bool ui_objects_measurement_mutation_allowed_locked(void)
 {
     measurement_service_snapshot_t measurement;
     if (measurement_service_get_snapshot(&measurement) != ESP_OK) {
-        ui_set_notice_locked("MEASUREMENT SERVICE UNAVAILABLE");
+        ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_MEASURE_SERVICE_UNAVAILABLE));
         ui_render_objects_locked();
         return false;
     }
 
     if (!measurement_service_snapshot_allows_object_mutation(&measurement)) {
-        ui_set_notice_locked("MEASUREMENT OPERATION IN PROGRESS");
+        ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_MEASURE_OPERATION_BUSY));
         ui_render_objects_locked();
         return false;
     }
@@ -31,7 +31,7 @@ void ui_handle_objects_key_locked(
         if (key == KEYPAD_KEY_LEFT) {
             ui_open_home_locked();
         } else {
-            ui_set_notice_locked("CHECKING STORAGE...");
+            ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_CHECKING_STORAGE));
             ui_render_objects_locked();
         }
         return;
@@ -68,7 +68,7 @@ void ui_handle_objects_key_locked(
                 }
 
                 ui_set_notice_locked(
-                    "CREATING OBJECT..."
+                    ui_tr(UI_I18N_KEY_OBJECTS_CREATING)
                 );
 
                 esp_err_t err =
@@ -76,7 +76,7 @@ void ui_handle_objects_key_locked(
 
                 if (err != ESP_OK) {
                     ui_set_notice_locked(
-                        "OBJECT SERVICE BUSY/FAILED"
+                        ui_tr(UI_I18N_KEY_OBJECTS_SERVICE_BUSY)
                     );
                 }
 
@@ -134,8 +134,8 @@ void ui_handle_objects_key_locked(
 
                 ui_set_notice_locked(
                     err == ESP_OK
-                        ? "DELETING..."
-                        : "DELETE FAILED TO START"
+                        ? ui_tr(UI_I18N_KEY_OBJECTS_DELETING)
+                        : ui_tr(UI_I18N_KEY_OBJECTS_DELETE_START_FAILED)
                 );
 
                 ui_render_objects_locked();
@@ -209,8 +209,8 @@ void ui_handle_objects_key_locked(
 
             ui_set_notice_locked(
                 err == ESP_OK
-                    ? "SETTING ACTIVE..."
-                    : "SET ACTIVE FAILED TO START"
+                    ? ui_tr(UI_I18N_KEY_OBJECTS_SETTING_ACTIVE)
+                    : ui_tr(UI_I18N_KEY_OBJECTS_SET_ACTIVE_START_FAILED)
             );
 
             ui_render_objects_locked();

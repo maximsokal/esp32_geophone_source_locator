@@ -1,6 +1,9 @@
 import type { ScanDisplayOptions } from './scanDisplayModes';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import type { SensorPlacementMarker } from './sensorPlacementScene';
+import type { I18nLocale } from '../i18n';
+import { formatDistance, formatNumber } from '../i18n/format';
+import { translate } from '../i18n';
 
 /**
  * Pure scene preparation for ScanPointCloudViewport: which scanned data
@@ -291,10 +294,10 @@ export function orbitDistanceLimits(extent: number): { minDistance: number; maxD
 /* ---- Overlay text ---------------------------------------------------------- */
 
 export function scanSourceBadgeText(snapshot: Pick<ScanPointCloudSnapshot,
-  'pointCount' | 'knownFreeVoxelCount' | 'unknownCandidateVoxelCount' | 'manualControlPoints' | 'operatorEdges'>): string {
-  return `SURFACE ${snapshot.pointCount.toLocaleString()} · FREE ${snapshot.knownFreeVoxelCount.toLocaleString()} · UNKNOWN ${snapshot.unknownCandidateVoxelCount.toLocaleString()} · PINS ${snapshot.manualControlPoints.length.toLocaleString()} · EDGES ${snapshot.operatorEdges.length.toLocaleString()}`;
+  'pointCount' | 'knownFreeVoxelCount' | 'unknownCandidateVoxelCount' | 'manualControlPoints' | 'operatorEdges'>, locale: I18nLocale = 'en'): string {
+  return `${translate(locale, 'scan.badge.surface')} ${formatNumber(locale, snapshot.pointCount)} · ${translate(locale, 'scan.badge.free')} ${formatNumber(locale, snapshot.knownFreeVoxelCount)} · ${translate(locale, 'scan.badge.unknown')} ${formatNumber(locale, snapshot.unknownCandidateVoxelCount)} · ${translate(locale, 'scan.badge.pins')} ${formatNumber(locale, snapshot.manualControlPoints.length)} · ${translate(locale, 'scan.badge.edges')} ${formatNumber(locale, snapshot.operatorEdges.length)}`;
 }
 
-export function scanDimensionsText(prepared: Pick<PreparedScanScene, 'extentX' | 'extentY' | 'extentZ'>): string {
-  return `X ${prepared.extentX.toFixed(2)} m · Y ${prepared.extentY.toFixed(2)} m · Z ${prepared.extentZ.toFixed(2)} m`;
+export function scanDimensionsText(prepared: Pick<PreparedScanScene, 'extentX' | 'extentY' | 'extentZ'>, locale: I18nLocale = 'en'): string {
+  return `X ${formatDistance(locale, prepared.extentX)} · Y ${formatDistance(locale, prepared.extentY)} · Z ${formatDistance(locale, prepared.extentZ)}`;
 }

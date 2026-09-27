@@ -11,6 +11,17 @@ import {
 import type { DeviceMainStatus, DevicePod, PodHeightReference } from '../../src/domain/device';
 import SensorsFeature from '../../src/features/sensors/SensorsFeature';
 import LevelingCard from '../../src/features/sensors/LevelingCard';
+import { formatNumber } from '../../src/i18n/format';
+import { translate } from '../../src/i18n';
+
+vi.mock('../../src/i18n', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/i18n')>();
+  return {
+    ...actual,
+    useLocale: () => ({ locale: 'en' as const, setLocale: () => undefined }),
+    useT: () => (key: Parameters<typeof actual.translate>[1], params?: Parameters<typeof actual.translate>[2]) => actual.translate('en', key, params),
+  };
+});
 
 function pod(id: number, height_reference?: PodHeightReference): DevicePod {
   return { id, state: 'CONNECTED', height_reference } as DevicePod;
@@ -50,14 +61,14 @@ describe('height calibration UI (MAX-282)', () => {
       pod(4, { state: 'sensor_invalid', generation: 1, relative_z_mm: 82 }),
     ]);
 
-    expect(html).toContain('Not established');
-    expect(html).toContain('Valid');
-    expect(html).toContain('Rejected: node was moving');
-    expect(html).toContain('Unavailable: sensor invalid');
-    expect(html).toContain('12.3 mm');
-    expect(html).not.toContain('80.0 mm');
-    expect(html).not.toContain('81.0 mm');
-    expect(html).not.toContain('82.0 mm');
+    expect(html).toContain(translate('en', 'leveling.not_established'));
+    expect(html).toContain(translate('en', 'leveling.valid'));
+    expect(html).toContain(translate('en', 'leveling.rejected_moving'));
+    expect(html).toContain(translate('en', 'leveling.unavailable_sensor_invalid'));
+    expect(html).toContain(`${formatNumber('en', 12.34, { maximumFractionDigits: 1 })} mm`);
+    expect(html).not.toContain(`${formatNumber('en', 80, { maximumFractionDigits: 1 })} mm`);
+    expect(html).not.toContain(`${formatNumber('en', 81, { maximumFractionDigits: 1 })} mm`);
+    expect(html).not.toContain(`${formatNumber('en', 82, { maximumFractionDigits: 1 })} mm`);
   });
 
   it('reports differing generations and missing height data from older firmware', () => {
@@ -67,8 +78,8 @@ describe('height calibration UI (MAX-282)', () => {
     ]);
     const olderFirmware = renderCard([pod(1)]);
 
-    expect(mismatch).toContain('Height references have different generations.');
-    expect(olderFirmware).toContain('Not reported by firmware');
+    expect(mismatch).toContain(translate('en', 'leveling.generations_differ'));
+    expect(olderFirmware).toContain(translate('en', 'leveling.not_reported_firmware'));
     expect(olderFirmware).not.toContain('ESP API');
   });
 
@@ -83,11 +94,11 @@ describe('height calibration UI (MAX-282)', () => {
     const olderFirmware = renderCard([pod(1)]);
 
     expect(current).toContain('<td>MAIN</td>');
-    expect(current).toContain('0.0 mm');
-    expect(current).toContain('-80.0 mm');
-    expect(unstable).toContain('Rejected: pressure was unstable');
+    expect(current).toContain(`${formatNumber('en', 0, { maximumFractionDigits: 1 })} mm`);
+    expect(current).toContain(`${formatNumber('en', -80, { maximumFractionDigits: 1 })} mm`);
+    expect(unstable).toContain(translate('en', 'leveling.rejected_pressure_unstable'));
     expect(olderFirmware).toContain('<td>MAIN</td>');
-    expect(olderFirmware).toContain('Not reported by firmware');
+    expect(olderFirmware).toContain(translate('en', 'leveling.not_reported_firmware'));
   });
 
   it('routes height calibration through the critical lane', async () => {

@@ -3,6 +3,8 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { LocalizationRun } from '../../src/api/deviceApi';
+import { LocaleProvider, translate } from '../../src/i18n';
+import { formatNumber, formatPercent } from '../../src/i18n/format';
 import {
   buildLocalizationOverlay,
   credibleBox,
@@ -64,6 +66,10 @@ describe('colours of the extended methods', () => {
 
 describe('posterior region of a Bayesian run', () => {
   const bayes: LocalizationRun = JSON.parse(FIRMWARE_JSON) as LocalizationRun;
+  const fixed = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+  const sd = [0.03, 0.01, 0.05].map((value) => formatNumber('en', value, fixed)).join(' / ');
+  const region = translate('en', 'overlay.region_percent', { percent: formatPercent('en', 0.9) });
+  const uncertaintyEn = `±${sd} m (${translate('en', 'overlay.one_sd')}) · ${region} ${formatNumber('en', 0.0008, { notation: 'scientific', maximumFractionDigits: 1 })} m³`;
 
   it('reads the firmware field names', () => {
     expect(bayes.uncertainty?.credible_level).toBe(0.9);
@@ -72,11 +78,13 @@ describe('posterior region of a Bayesian run', () => {
   });
 
   it('formats the per-axis sd and the region size (volume in 3D, area when planar)', () => {
-    expect(uncertaintyText(bayes)).toBe('±0.03 / 0.01 / 0.05 m (1 sd) · 90% region 8.0e-4 m³');
+    expect(uncertaintyText(bayes, 'en')).toBe(uncertaintyEn);
     const planar = { ...bayes.uncertainty!, credible_volume_m3: 0, credible_area_m2: 0.25 };
-    expect(uncertaintyText({ uncertainty: planar })).toBe('±0.03 / 0.01 / 0.05 m (1 sd) · 90% region 0.25 m²');
-    expect(uncertaintyText({})).toBe('');
-    expect(uncertaintyText({ uncertainty: { ...bayes.uncertainty!, credible_level: 0 } })).toBe('');
+    expect(uncertaintyText({ uncertainty: planar }, 'en')).toBe(
+      `±${sd} m (${translate('en', 'overlay.one_sd')}) · ${region} ${formatNumber('en', 0.25, fixed)} m²`,
+    );
+    expect(uncertaintyText({}, 'en')).toBe('');
+    expect(uncertaintyText({ uncertainty: { ...bayes.uncertainty!, credible_level: 0 } }, 'en')).toBe('');
   });
 
   it('turns the region into a box and the sector radius into 2 sd', () => {
@@ -129,11 +137,20 @@ describe('extended methods in the comparison overlay', () => {
   });
 
   it('shows the uncertainty column and keeps the unavailable reason across the table', () => {
-    const html = renderToStaticMarkup(createElement(LocalizationOverlay, { runs, geometry: null, renderScene: false }));
-    expect(html).toContain('<th>Uncertainty</th>');
-    expect(html).toContain('±0.03 / 0.01 / 0.05 m (1 sd) · 90% region 8.0e-4 m³');
-    expect(html).toContain('0.10 m (2 sd)');
-    expect(html).toContain('<td colSpan="6">unavailable: underdetermined');
+    const sd = [0.03, 0.01, 0.05].map((value) => formatNumber('en', value, {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    })).join(' / ');
+    const uncertaintyEn = `±${sd} m (${translate('en', 'overlay.one_sd')}) · ${translate('en', 'overlay.region_percent', {
+      percent: formatPercent('en', 0.9),
+    })} ${formatNumber('en', 0.0008, { notation: 'scientific', maximumFractionDigits: 1 })} m³`;
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: 'en' },
+      createElement(LocalizationOverlay, { runs, geometry: null, renderScene: false })));
+    expect(html).toContain(`<th>${translate('en', 'overlay.uncertainty')}</th>`);
+    expect(html).toContain(uncertaintyEn);
+    expect(html).toContain(`${formatNumber('en', 0.1, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m (${translate('en', 'overlay.two_sd')})`);
+    expect(html).toContain(`<td colSpan="6">${translate('en', 'overlay.unavailable_reason', {
+      reason: 'underdetermined: depth trades against vP (set a vP uncertainty or add an off-plane pod)',
+    })}</td>`);
     for (const name of NEW_METHODS.filter((name) => name !== 'psp_joint' && name !== 'eikonal_fmm' && name !== 'bayesian')) {
       expect(html).toContain(`<option value="${name}"`);
     }

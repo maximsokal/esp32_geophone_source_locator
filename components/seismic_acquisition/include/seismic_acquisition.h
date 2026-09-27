@@ -7,6 +7,20 @@
 
 
 #define SEISMIC_ACQUISITION_MAX_CHANNELS  8
+#define SEISMIC_ACQUISITION_JITTER_BUCKET_COUNT  16U
+
+
+typedef struct
+{
+    uint32_t count;
+    uint32_t early_count;
+    uint64_t min_us;
+    uint64_t max_us;
+    uint64_t sum_us;
+    uint32_t histogram_us[SEISMIC_ACQUISITION_JITTER_BUCKET_COUNT];
+    uint64_t period_us;
+
+} seismic_acquisition_jitter_t;
 
 
 typedef struct
@@ -46,6 +60,7 @@ typedef struct
     uint64_t collapsed_periods;
     uint64_t last_successful_sample_interval_us;
     uint64_t max_successful_sample_interval_us;
+    seismic_acquisition_jitter_t jitter;
 
     /* AD7606 serial observability. Other sources leave these at defaults. */
     bool serial_suspicious;

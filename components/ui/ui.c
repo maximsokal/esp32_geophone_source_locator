@@ -8,6 +8,7 @@
 #include "seismic_acquisition.h"
 #include "ui_frame_scheduler.h"
 #include "ui_internal.h"
+#include "ui_i18n_nvs.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -216,6 +217,7 @@ esp_err_t ui_init(void)
     s_context.screen = UI_SCREEN_HOME;
     s_context.selected = 0;
     s_context.notice[0] = '\0';
+    ui_i18n_set_locale(ui_i18n_nvs_load_locale());
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
     ui_frame_scheduler_init(&s_frame_scheduler, now_us);
     s_refresh_generation = 0U;

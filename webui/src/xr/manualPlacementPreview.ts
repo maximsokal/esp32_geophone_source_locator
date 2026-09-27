@@ -4,6 +4,7 @@ import {
   getCertifiedGuideRegistrySummary,
 } from './certifiedCornerRegistry';
 import { getLatestProjectRay } from './latestProjectionRegistry';
+import { translate, type I18nKey, type I18nLocale } from '../i18n';
 import { intersectCameraRayWithCertifiedEdge } from './manualRayEdgePlacement';
 import {
   solveManualPlacementOnStableSurface,
@@ -191,9 +192,35 @@ export function previewManualPlacementFromStableSurface(
   };
 }
 
-export function manualPreviewLabel(preview: ManualPlacementPreview | null): string {
-  if (preview === null) return 'SCAN MORE';
+export function manualPreviewLabel(preview: ManualPlacementPreview | null, locale: I18nLocale = 'en'): string {
+  if (preview === null) return translate(locale, 'xr.manual.scan_more');
   const resolution = preview.resolution;
-  if (!resolution.accepted || resolution.position === null || resolution.mode === null) return 'SCAN MORE';
-  return resolution.mode === 'corner' ? 'CORNER LOCK' : 'EDGE LOCK';
+  if (!resolution.accepted || resolution.position === null || resolution.mode === null) return translate(locale, 'xr.manual.scan_more');
+  return translate(locale, resolution.mode === 'corner' ? 'xr.manual.corner_lock' : 'xr.manual.edge_lock');
+}
+
+const MANUAL_ERROR_KEYS: Readonly<Record<string, I18nKey>> = {
+  'SCAN MORE · not enough stable 3D support here.': 'xr.manual.reason.not_enough_support',
+  'SCAN MORE · cursor is not supported by a dense stable surface neighbourhood.': 'xr.manual.reason.no_neighborhood',
+  'SCAN MORE · only one robust surface is supported here; observe the other side of the edge.': 'xr.manual.reason.one_surface',
+  'SCAN MORE · inferred corner lies in ray-verified FREE space.': 'xr.manual.reason.corner_free',
+  'SCAN MORE · local planes do not produce a well-conditioned edge near the cursor.': 'xr.manual.reason.edge_unconditioned',
+  'SCAN MORE · the mathematical plane intersection is outside measured surface support.': 'xr.manual.reason.intersection_unsupported',
+  'SCAN MORE · edge uncertainty is still too high.': 'xr.manual.reason.edge_uncertain',
+  'SCAN MORE · inferred edge lies in ray-verified FREE space.': 'xr.manual.reason.edge_free',
+  'SCAN MORE · aim at a certified edge/corner or collect another viewpoint.': 'xr.manual.reason.aim_for_edge_corner',
+  'SCAN MORE · no stable multi-view surface under the cursor.': 'xr.manual.reason.no_multiview_surface',
+  'SCAN MORE · no frontmost stable surface could be resolved.': 'xr.manual.reason.no_frontmost_surface',
+  'SCAN MORE · invalid edge geometry.': 'xr.manual.reason.invalid_edge',
+  'SCAN MORE · camera ray is too parallel to this edge.': 'xr.manual.reason.ray_parallel',
+  'SCAN MORE · edge solution is behind the camera.': 'xr.manual.reason.behind_camera',
+  'SCAN MORE · reticle lies outside the measured edge segment.': 'xr.manual.reason.outside_segment',
+  'SCAN MORE · reticle ray misses the certified 3D edge.': 'xr.manual.reason.ray_misses_edge',
+  'Manual point can only be placed during an active AR scan.': 'xr.manual.reason.scan_not_active',
+  'The selected manual point no longer exists.': 'xr.manual.reason.point_disappeared',
+};
+
+export function manualPlacementErrorLabel(message: string, locale: I18nLocale): string {
+  const key = MANUAL_ERROR_KEYS[message];
+  return key === undefined ? message : translate(locale, key);
 }

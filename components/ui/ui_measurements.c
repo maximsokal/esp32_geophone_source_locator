@@ -256,7 +256,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     snprintf(
         label,
         sizeof(label),
-        "CH%u  --",
+        ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY),
         (unsigned)(channel + 1U)
     );
 
@@ -366,7 +366,7 @@ static void ui_measurements_refresh_charts_locked(
         acquisition != NULL &&
         acquisition->serial_pattern != NULL
             ? acquisition->serial_pattern
-            : "UNKNOWN";
+            : ui_tr(UI_I18N_KEY_MEASUREMENT_UNKNOWN);
 
     size_t frame_count = 0U;
     seismic_buffer_info_t buffer_info;
@@ -478,13 +478,13 @@ static void ui_measurements_refresh_charts_locked(
             continue;
         }
 
-        char text[32];
+        char text[64];
 
         if (transport_fault) {
             snprintf(
                 text,
                 sizeof(text),
-                "CH%u INVALID %s",
+                ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_INVALID),
                 (unsigned)(channel + 1U),
                 serial_pattern
             );
@@ -493,7 +493,7 @@ static void ui_measurements_refresh_charts_locked(
             snprintf(
                 text,
                 sizeof(text),
-                "CH%u DATA? DIGITAL",
+                ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_DIGITAL),
                 (unsigned)(channel + 1U)
             );
         }
@@ -501,7 +501,7 @@ static void ui_measurements_refresh_charts_locked(
             snprintf(
                 text,
                 sizeof(text),
-                "CH%u SERIAL? %s",
+                ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_SERIAL),
                 (unsigned)(channel + 1U),
                 serial_pattern
             );
@@ -529,17 +529,17 @@ static void ui_measurements_refresh_charts_locked(
             snprintf(
                 text,
                 sizeof(text),
-                "CH%u %+6.2fmV %s",
+                ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_VALUE),
                 (unsigned)(channel + 1U),
                 latest_mv,
-                flat ? "FLAT" : "VAR"
+                flat ? ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_FLAT) : ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_VARIABLE)
             );
         }
         else {
             snprintf(
                 text,
                 sizeof(text),
-                "CH%u  --",
+                ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY),
                 (unsigned)(channel + 1U)
             );
         }
@@ -602,7 +602,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     if (card == NULL) return NULL;
 
     char label[24];
-    snprintf(label, sizeof(label), "CH%u  --", (unsigned)(channel + 1U));
+    snprintf(label, sizeof(label), ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY), (unsigned)(channel + 1U));
     context->measurement_channel_labels[channel] = ui_create_label_locked(
         card,
         5,
@@ -635,20 +635,20 @@ static const char *ui_measurements_state_name(
 {
     switch (state) {
         case MEASUREMENT_SERVICE_LIVE:
-            return "LIVE";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_LIVE);
         case MEASUREMENT_SERVICE_STARTING:
-            return "STARTING";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_STARTING);
         case MEASUREMENT_SERVICE_RECORDING:
-            return "REC";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_RECORDING);
         case MEASUREMENT_SERVICE_STOPPING:
-            return "STOPPING";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_STOPPING);
         case MEASUREMENT_SERVICE_REVIEW:
-            return "STOPPED";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_COMPLETE);
         case MEASUREMENT_SERVICE_DELETING:
-            return "DELETING";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_DELETING);
         case MEASUREMENT_SERVICE_ERROR:
         default:
-            return "ERROR";
+            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_ERROR);
     }
 }
 
@@ -669,8 +669,8 @@ void ui_render_measurements_locked(void)
 #endif
 
     lv_obj_t *screen = ui_create_screen_base_locked(
-        "MEASUREMENTS",
-        "LEFT BACK   OK ACTION   UP/DOWN SELECT"
+        ui_tr(UI_I18N_KEY_MEASUREMENT_TITLE),
+        ui_tr(UI_I18N_KEY_MEASUREMENT_FOOTER)
     );
 
     if (screen == NULL) {
@@ -695,7 +695,7 @@ void ui_render_measurements_locked(void)
         8,
         3,
         284,
-        "LIVE --",
+        ui_tr(UI_I18N_KEY_MEASUREMENT_SUMMARY_LIVE),
         UI_COLOR_TEXT
     );
 
@@ -704,7 +704,7 @@ void ui_render_measurements_locked(void)
         8,
         18,
         284,
-        "OBJECT --",
+        ui_tr(UI_I18N_KEY_MEASUREMENT_SUMMARY_OBJECT),
         UI_COLOR_MUTED
     );
 
@@ -756,9 +756,9 @@ void ui_render_measurements_locked(void)
         196,
         296,
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
-        "OK START",
+        ui_tr(UI_I18N_KEY_MEASUREMENT_HEALTH_START),
 #else
-        "TFT GRAPHS OFF  ADC+SD ON",
+        ui_tr(UI_I18N_KEY_MEASUREMENT_GRAPHS_OFF),
 #endif
         UI_COLOR_ACCENT
     );
@@ -796,7 +796,7 @@ void ui_measurements_refresh_locked(void)
     if (measurement_err != ESP_OK) {
         (void)ui_measurements_label_set_if_changed(
             context->measurement_summary,
-            "MEASUREMENT SERVICE UNAVAILABLE"
+            ui_tr(UI_I18N_KEY_SHARED_MEASURE_SERVICE_UNAVAILABLE)
         );
         (void)ui_measurements_text_color_set_if_changed(
             context->measurement_summary,
@@ -815,12 +815,12 @@ void ui_measurements_refresh_locked(void)
         if (measurement.state == MEASUREMENT_SERVICE_RECORDING) {
             const esp_err_t stop_err = measurement_service_stop_async();
             if (stop_err == ESP_OK) {
-                ui_set_notice_locked("STOPPING AND LEAVING...");
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_STOPPING_LEAVING));
                 return;
             }
 
             context->measurement_exit_after_stop = false;
-            ui_set_notice_locked("STOP FAILED");
+            ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_STOP_FAILED));
         }
         else if (measurement.state == MEASUREMENT_SERVICE_REVIEW) {
             const esp_err_t keep_err = measurement_service_keep_async();
@@ -831,7 +831,7 @@ void ui_measurements_refresh_locked(void)
             }
 
             context->measurement_exit_after_stop = false;
-            ui_set_notice_locked("FAILED TO LEAVE MEASUREMENT");
+            ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_LEAVE_FAILED));
         }
         else if (
             measurement.state == MEASUREMENT_SERVICE_LIVE ||
@@ -852,10 +852,10 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "REC %s  %lus  %luHz",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_RECORDING),
             measurement.session_id[0] != '\0'
                 ? measurement.session_id
-                : "--",
+                : ui_tr(UI_I18N_KEY_SHARED_EMPTY),
             (unsigned long)(measurement.recording_ms / 1000U),
             sample_rate_hz
         );
@@ -864,10 +864,10 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "STOPPED %s  %lus",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_STOPPED),
             measurement.session_id[0] != '\0'
                 ? measurement.session_id
-                : "--",
+                : ui_tr(UI_I18N_KEY_SHARED_EMPTY),
             (unsigned long)(measurement.recording_ms / 1000U)
         );
     }
@@ -875,7 +875,7 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "%s  %luHz  CH1-CH4",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_IDLE_SUMMARY),
             ui_measurements_state_name(measurement.state),
             sample_rate_hz
         );
@@ -916,18 +916,18 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "OBJECT %s  [%s]",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_FORMAT),
             measurement.object_name[0] != '\0'
                 ? measurement.object_name
-                : "--",
+                : ui_tr(UI_I18N_KEY_SHARED_EMPTY),
             measurement.object_id
         );
     }
     else if (measurement.state == MEASUREMENT_SERVICE_STARTING) {
-        snprintf(text, sizeof(text), "RESOLVING OBJECT...");
+        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_RESOLVING));
     }
     else {
-        snprintf(text, sizeof(text), "NO ACTIVE OBJECT");
+        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_NONE));
     }
 
     (void)ui_measurements_label_set_if_changed(context->measurement_transport, text);
@@ -949,8 +949,8 @@ void ui_measurements_refresh_locked(void)
                 sizeof(text),
                 "%s",
                 measurement.active_object_present
-                    ? "OK START"
-                    : "SELECT ACTIVE OBJECT FIRST"
+                    ? ui_tr(UI_I18N_KEY_MEASUREMENT_HEALTH_START)
+                    : ui_tr(UI_I18N_KEY_MEASUREMENT_SELECT_OBJECT)
             );
             action_color =
                 measurement.active_object_present
@@ -962,23 +962,26 @@ void ui_measurements_refresh_locked(void)
             snprintf(
                 text,
                 sizeof(text),
-                "OK STOP   S:%" PRIu64 "   DROP:%" PRIu64,
-                measurement.samples_written,
-                measurement.dropped_frames
+                ui_tr(UI_I18N_KEY_MEASUREMENT_RECORDING_STATUS),
+                (unsigned long long)measurement.samples_written,
+                (unsigned long long)measurement.dropped_frames
             );
             action_color = UI_COLOR_ERROR;
             break;
 
-        case MEASUREMENT_SERVICE_REVIEW:
+        case MEASUREMENT_SERVICE_REVIEW: {
+            static const ui_i18n_key_t action_keys[3] = {
+                UI_I18N_KEY_MEASUREMENT_ACTION_SAVE,
+                UI_I18N_KEY_MEASUREMENT_ACTION_DELETE,
+                UI_I18N_KEY_MEASUREMENT_ACTION_PREVIEW,
+            };
             snprintf(
                 text,
                 sizeof(text),
-                "%s S:%" PRIu64 " D:%" PRIu64,
-                context->measurement_action == 0U ? "> SAVE   DELETE   3D" :
-                context->measurement_action == 1U ? "SAVE   > DELETE   3D" :
-                                                    "SAVE    DELETE   >3D",
-                measurement.samples_written,
-                measurement.dropped_frames
+                ui_tr(UI_I18N_KEY_MEASUREMENT_REVIEW_COUNTS),
+                ui_tr(action_keys[context->measurement_action % 3U]),
+                (unsigned long long)measurement.samples_written,
+                (unsigned long long)measurement.dropped_frames
             );
             action_color =
                 context->measurement_action == 0U
@@ -987,12 +990,13 @@ void ui_measurements_refresh_locked(void)
                         ? UI_COLOR_WARNING
                         : UI_COLOR_ACCENT;
             break;
+        }
 
         case MEASUREMENT_SERVICE_ERROR:
             snprintf(
                 text,
                 sizeof(text),
-                "ERROR %s   OK RETRY",
+                ui_tr(UI_I18N_KEY_MEASUREMENT_ERROR_RETRY),
                 esp_err_to_name(measurement.last_error)
             );
             action_color = UI_COLOR_ERROR;
@@ -1007,8 +1011,8 @@ void ui_measurements_refresh_locked(void)
                 sizeof(text),
                 "%s",
                 context->measurement_exit_after_stop
-                    ? "PLEASE WAIT - LEAVING..."
-                    : "PLEASE WAIT..."
+                    ? ui_tr(UI_I18N_KEY_MEASUREMENT_WAIT_LEAVING)
+                    : ui_tr(UI_I18N_KEY_MEASUREMENT_WAIT)
             );
             action_color = UI_COLOR_WARNING;
             break;
@@ -1021,10 +1025,10 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "ADC INVALID TRANSPORT  %s",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_TRANSPORT_FAULT),
             acquisition.serial_pattern != NULL
                 ? acquisition.serial_pattern
-                : "UNKNOWN"
+                : ui_tr(UI_I18N_KEY_MEASUREMENT_UNKNOWN)
         );
         action_color = UI_COLOR_ERROR;
     }
@@ -1035,10 +1039,10 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "ADC DATA? DIGITAL  %s",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_DIGITAL_FAULT),
             acquisition.serial_pattern != NULL
                 ? acquisition.serial_pattern
-                : "UNKNOWN"
+                : ui_tr(UI_I18N_KEY_MEASUREMENT_UNKNOWN)
         );
         action_color = UI_COLOR_WARNING;
     }
@@ -1049,17 +1053,17 @@ void ui_measurements_refresh_locked(void)
         snprintf(
             text,
             sizeof(text),
-            "ADC SERIAL?  %s",
+            ui_tr(UI_I18N_KEY_MEASUREMENT_SERIAL_FAULT),
             acquisition.serial_pattern != NULL
                 ? acquisition.serial_pattern
-                : "UNKNOWN"
+                : ui_tr(UI_I18N_KEY_MEASUREMENT_UNKNOWN)
         );
         action_color = UI_COLOR_ERROR;
     }
 
 #if !UI_MEASUREMENTS_GRAPHS_ENABLED
     char graph_mode_text[128];
-    snprintf(graph_mode_text, sizeof(graph_mode_text), "TFT GRAPHS OFF  %s", text);
+    snprintf(graph_mode_text, sizeof(graph_mode_text), ui_tr(UI_I18N_KEY_MEASUREMENT_GRAPHS_STATUS), text);
     snprintf(text, sizeof(text), "%s", graph_mode_text);
 #endif
 
@@ -1079,7 +1083,7 @@ void ui_handle_measurements_key_locked(
 
     measurement_service_snapshot_t snapshot;
     if (measurement_service_get_snapshot(&snapshot) != ESP_OK) {
-        ui_set_notice_locked("MEASUREMENT SERVICE UNAVAILABLE");
+        ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_MEASURE_SERVICE_UNAVAILABLE));
         return;
     }
 
@@ -1096,7 +1100,7 @@ void ui_handle_measurements_key_locked(
             snapshot.busy
         ) {
             context->measurement_exit_after_stop = true;
-            ui_set_notice_locked("LEAVING WHEN OPERATION FINISHES...");
+            ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_LEAVING_AFTER_OPERATION));
             return;
         }
 
@@ -1110,8 +1114,8 @@ void ui_handle_measurements_key_locked(
 
             ui_set_notice_locked(
                 err == ESP_OK
-                    ? "STOPPING AND LEAVING..."
-                    : "STOP FAILED"
+                    ? ui_tr(UI_I18N_KEY_MEASUREMENT_STOPPING_LEAVING)
+                    : ui_tr(UI_I18N_KEY_MEASUREMENT_STOP_FAILED)
             );
             if (err == ESP_OK) {
                 ui_measurements_refresh_locked();
@@ -1124,7 +1128,7 @@ void ui_handle_measurements_key_locked(
         if (snapshot.state == MEASUREMENT_SERVICE_REVIEW) {
             const esp_err_t err = measurement_service_keep_async();
             if (err != ESP_OK) {
-                ui_set_notice_locked("FAILED TO KEEP SESSION");
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_KEEP_FAILED));
                 return;
             }
         }
@@ -1140,7 +1144,7 @@ void ui_handle_measurements_key_locked(
         snapshot.state == MEASUREMENT_SERVICE_DELETING;
 
     if (transitional) {
-        ui_set_notice_locked("MEASUREMENT OPERATION IN PROGRESS");
+        ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_MEASURE_OPERATION_BUSY));
         return;
     }
 
@@ -1163,7 +1167,7 @@ void ui_handle_measurements_key_locked(
         case MEASUREMENT_SERVICE_LIVE:
         case MEASUREMENT_SERVICE_ERROR:
             if (!snapshot.active_object_present) {
-                ui_set_notice_locked("SELECT ACTIVE OBJECT FIRST");
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_SELECT_OBJECT));
                 ui_measurements_refresh_locked();
                 return;
             }
@@ -1171,8 +1175,8 @@ void ui_handle_measurements_key_locked(
             err = measurement_service_start_async();
             ui_set_notice_locked(
                 err == ESP_OK
-                    ? "STARTING RECORDING..."
-                    : "START FAILED"
+                    ? ui_tr(UI_I18N_KEY_MEASUREMENT_STARTING_RECORDING)
+                    : ui_tr(UI_I18N_KEY_MEASUREMENT_START_FAILED)
             );
             break;
 
@@ -1180,8 +1184,8 @@ void ui_handle_measurements_key_locked(
             err = measurement_service_stop_async();
             ui_set_notice_locked(
                 err == ESP_OK
-                    ? "STOPPING RECORDING..."
-                    : "STOP FAILED"
+                    ? ui_tr(UI_I18N_KEY_MEASUREMENT_STOPPING_RECORDING)
+                    : ui_tr(UI_I18N_KEY_MEASUREMENT_STOP_FAILED)
             );
             break;
 
@@ -1190,16 +1194,16 @@ void ui_handle_measurements_key_locked(
                 err = measurement_service_keep_async();
                 ui_set_notice_locked(
                     err == ESP_OK
-                        ? "SESSION SAVED"
-                        : "SAVE FAILED"
+                        ? ui_tr(UI_I18N_KEY_MEASUREMENT_SESSION_SAVED)
+                        : ui_tr(UI_I18N_KEY_MEASUREMENT_SAVE_FAILED)
                 );
             }
             else if (context->measurement_action == 1U) {
                 err = measurement_service_delete_async();
                 ui_set_notice_locked(
                     err == ESP_OK
-                        ? "DELETING SESSION..."
-                        : "DELETE FAILED"
+                        ? ui_tr(UI_I18N_KEY_MEASUREMENT_DELETING_SESSION)
+                        : ui_tr(UI_I18N_KEY_MEASUREMENT_DELETE_FAILED)
                 );
             }
             else if (snapshot.object_id[0] != '\0' && snapshot.session_id[0] != '\0') {
@@ -1207,7 +1211,7 @@ void ui_handle_measurements_key_locked(
                 return;
             }
             else {
-                ui_set_notice_locked("NO SAVED SESSION TO PREVIEW");
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_NO_SESSION_PREVIEW));
             }
             break;
 

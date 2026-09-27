@@ -1,4 +1,5 @@
 import type { ScanCapabilityReadiness } from './scanCapabilityReadiness';
+import { translate, type I18nLocale } from '../i18n';
 
 export interface CompactGuideCounts {
   visibleCorners: number;
@@ -43,6 +44,7 @@ export function structuralFeatureStage(counts: CompactGuideCounts): StructuralFe
 export function compactScanReadinessLabel(
   readiness: ScanCapabilityReadiness,
   counts: CompactGuideCounts,
+  locale: I18nLocale = 'en',
 ): string {
   const parts = [`S${wholePercent(readiness.structural.progress)}`];
   parts.push(readiness.mesh === null ? 'M--' : `M${wholePercent(readiness.mesh.progress)}`);
@@ -58,11 +60,11 @@ export function compactScanReadinessLabel(
   } else if (!readiness.structural.ready && readiness.structural.limitingMetric === 'views') {
     // More frames from the same pose do not satisfy this gate. Tell the operator
     // to change viewpoint instead of silently encouraging more stationary scans.
-    parts.push('MOVE');
+    parts.push(translate(locale, 'xr.readiness.move'));
   } else if (!readiness.structural.ready && readiness.structural.limitingMetric === 'faces') {
     // MAX-254: one face is measured well, but an edge needs an adjacent,
     // non-parallel face: scan around the corner rather than the same side.
-    parts.push('FACE+');
+    parts.push(translate(locale, 'xr.readiness.face'));
   }
   if (counts.certifiedCorners > 0 || counts.certifiedEdges > 0) {
     parts.push(`C${counts.visibleCorners}/${counts.certifiedCorners}`);

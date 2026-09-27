@@ -8,6 +8,33 @@
 #include "ad7606_driver.h"
 
 
+#define AD7606_ACQUISITION_JITTER_BUCKET_COUNT 16U
+
+
+typedef struct
+{
+    uint32_t count;
+    uint32_t early_count;
+    uint64_t min_us;
+    uint64_t max_us;
+    uint64_t sum_us;
+    uint32_t histogram_us[AD7606_ACQUISITION_JITTER_BUCKET_COUNT];
+    uint64_t period_us;
+
+} ad7606_acquisition_jitter_t;
+
+
+static inline uint32_t ad7606_acquisition_saturating_add_u32(
+    uint32_t current,
+    uint32_t increment
+)
+{
+    return increment > UINT32_MAX - current
+        ? UINT32_MAX
+        : current + increment;
+}
+
+
 typedef struct
 {
     bool running;
@@ -23,6 +50,7 @@ typedef struct
     uint64_t collapsed_periods;
     uint64_t last_successful_sample_interval_us;
     uint64_t max_successful_sample_interval_us;
+    ad7606_acquisition_jitter_t jitter;
 
     bool serial_suspicious;
     ad7606_serial_pattern_t serial_pattern;

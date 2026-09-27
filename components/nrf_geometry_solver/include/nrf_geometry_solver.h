@@ -6,6 +6,8 @@
 
 #include "nrf_cs_scheduler.h"
 
+#define NRF_GEOMETRY_SOLVER_VERSION "1"
+
 #ifdef __cplusplus
 extern "C" {
 #endif

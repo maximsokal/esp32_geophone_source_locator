@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 import type { SceneModel, SensorPlacement, TriangleMesh, Vec3 } from '../domain/scene';
+import { useT } from '../i18n';
 
 export type ViewPreset = 'perspective' | 'top' | 'front';
 
@@ -221,8 +222,9 @@ function SceneContents({
 }
 
 export function SceneViewport(props: SceneViewportProps) {
+  const t = useT();
   return (
-    <div className="viewport-shell" aria-label="3D sensor placement view">
+    <div className="viewport-shell" aria-label={t('scene.aria_label')}>
       <Canvas
         camera={{ position: [7.2, 5.4, 7.8], fov: 48, near: 0.05, far: 100 }}
         dpr={[1, 1.75]}
@@ -230,7 +232,7 @@ export function SceneViewport(props: SceneViewportProps) {
       >
         <SceneContents {...props} />
       </Canvas>
-      <div className="axis-note">X / Y = local horizontal · Z = height</div>
+      <div className="axis-note">{t('scene.axis_note')}</div>
     </div>
   );
 }

@@ -1089,10 +1089,12 @@ esp_err_t seismic_recorder_init(void)
  */
 static esp_err_t seismic_recorder_prepare_geometry(
     const char *object_id,
-    seismic_recorder_session_participation_t *participation
+    seismic_recorder_session_participation_t *participation,
+    object_store_cs_pairs_t *session_cs_pairs,
+    uint64_t start_uptime_ms
 )
 {
-    if (participation == NULL) {
+    if (participation == NULL || session_cs_pairs == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1182,6 +1184,8 @@ static esp_err_t seismic_recorder_prepare_geometry(
         channels[channel].relative_z_mm = cache.sensor.relative_z_mm;
         channels[channel].leveled =
             cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+        channels[channel].source_sample_uptime_ms = cache.sensor.sample_complete_uptime_ms;
+        channels[channel].esp_receipt_uptime_ms = cache.esp_receipt_uptime_ms;
     }
 
     device_status_snapshot_t device_status = {0};
@@ -1224,9 +1228,10 @@ static esp_err_t seismic_recorder_prepare_geometry(
         solution.max_residual_mm
     );
 
+    const uint64_t computed_at_ms = (uint64_t)(esp_timer_get_time() / 1000);
     object_store_geometry_t geometry;
     seismic_recorder_geometry_apply_solution(
-        &solution, &topology, channels, (uint64_t)(esp_timer_get_time() / 1000), &geometry);
+        &solution, &topology, channels, computed_at_ms, &geometry);
 
     if (!seismic_recorder_geometry_all_assigned_pods_computed(&topology, &geometry)) {
         ESP_LOGE(TAG, "START rejected: geometry incomplete for one or more assigned pods");
@@ -1259,6 +1264,49 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return err;
     }
 
+    seismic_recorder_geometry_provenance_t *solver_provenance =
+        &participation->geometry_provenance;
+    solver_provenance->available = true;
+    snprintf(solver_provenance->solver, sizeof(solver_provenance->solver), "nrf_geometry_solver");
+    snprintf(
+        solver_provenance->solver_version,
+        sizeof(solver_provenance->solver_version),
+        "%s",
+        NRF_GEOMETRY_SOLVER_VERSION
+    );
+    solver_provenance->refined = solution.refined;
+    solver_provenance->refine_iterations = solution.refine_iterations;
+    solver_provenance->topology_generation = topology.generation;
+    solver_provenance->cs_membership_generation = cycle.membership_generation;
+    solver_provenance->main_height_reference_generation =
+        main_reference.valid ? main_reference.generation : 0U;
+    solver_provenance->start_uptime_ms = start_uptime_ms;
+    const int setup_id_length = snprintf(
+        solver_provenance->setup_id,
+        sizeof(solver_provenance->setup_id),
+        "%" PRIu64 "-%" PRIu32 "-%" PRIu32 "-%u",
+        computed_at_ms,
+        topology.generation,
+        cycle.membership_generation,
+        (unsigned)solver_provenance->main_height_reference_generation
+    );
+    if (setup_id_length < 0 || setup_id_length >= (int)sizeof(solver_provenance->setup_id)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (size_t pod_index = 0U; pod_index < OBJECT_STORE_POD_COUNT; ++pod_index) {
+        seismic_recorder_pod_participation_t *pod = &participation->pods[pod_index];
+        const seismic_recorder_geometry_channel_status_t *channel = &channels[pod_index];
+        pod->source_sample_uptime_ms = channel->source_sample_uptime_ms;
+        pod->esp_receipt_uptime_ms = channel->esp_receipt_uptime_ms;
+        pod->height_reference_generation = channel->height_reference_generation;
+        if (channel->sensor_valid && channel->esp_receipt_uptime_ms <= start_uptime_ms) {
+            pod->source_age_at_start_known = true;
+            pod->source_age_ms_at_start =
+                start_uptime_ms - channel->esp_receipt_uptime_ms;
+        }
+    }
+
     /*
      * MAX-148: persist the raw CS pair evidence behind this same solve,
      * best-effort -- a WebUI placement-confidence view is strictly less
@@ -1266,9 +1314,10 @@ static esp_err_t seismic_recorder_prepare_geometry(
      * continues rather than rejecting START (unlike the geometry write
      * above, which the recording gate's own admission promise depends on).
      */
-    object_store_cs_pairs_t cs_pairs;
-    seismic_recorder_geometry_apply_cs_pairs(cycle.pairs, cycle.pair_count, &cs_pairs);
-    const esp_err_t cs_pairs_err = object_store_set_cs_pairs(object_id, &cs_pairs);
+    seismic_recorder_geometry_apply_cs_pairs(
+        cycle.pairs, cycle.pair_count, session_cs_pairs
+    );
+    const esp_err_t cs_pairs_err = object_store_set_cs_pairs(object_id, session_cs_pairs);
     if (cs_pairs_err != ESP_OK) {
         ESP_LOGW(TAG, "Could not persist CS pair evidence err=%s", esp_err_to_name(cs_pairs_err));
     }
@@ -1284,6 +1333,7 @@ esp_err_t seismic_recorder_start(
     if (object_id == NULL || object_id[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
+    const uint64_t start_uptime_ms = (uint64_t)(esp_timer_get_time() / 1000);
 
     if (s_mutex == NULL || s_events == NULL) {
         ESP_LOGE(
@@ -1362,7 +1412,10 @@ esp_err_t seismic_recorder_start(
      * instead of the geometry this exact recording actually solved.
      */
     seismic_recorder_session_participation_t participation = {0};
-    err = seismic_recorder_prepare_geometry(object_id, &participation);
+    object_store_cs_pairs_t session_cs_pairs = {0};
+    err = seismic_recorder_prepare_geometry(
+        object_id, &participation, &session_cs_pairs, start_uptime_ms
+    );
     if (err != ESP_OK) {
         free(profile);
         return err;
@@ -1373,7 +1426,9 @@ esp_err_t seismic_recorder_start(
         free(profile);
         return err;
     }
-
+    /* Freeze the completed cycle in the session copy even if the best-effort
+     * object-store write failed and the reloaded live profile is stale. */
+    profile->cs_pairs = session_cs_pairs;
     seismic_recorder_lock();
     if (s_starting || s_snapshot.running || s_samples_file != NULL) {
         ESP_LOGE(

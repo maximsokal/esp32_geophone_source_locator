@@ -1,5 +1,7 @@
 import type { DeviceStatus, ObjectStoreState } from '../../domain/device';
 import { activeObject, connectedPodCount, formatCoordinate } from '../../domain/device';
+import { useT, useLocale } from '../../i18n';
+import { formatDistance, formatNumber } from '../../i18n/format';
 
 interface Props {
   status: DeviceStatus | null;
@@ -20,66 +22,74 @@ export default function DeviceDashboard({
   onOpenActiveObject,
   onRefresh,
 }: Props) {
+  const t = useT();
+  const { locale } = useLocale();
   const active = activeObject(objects);
   const connected = connectedPodCount(status);
-  const systemState = status?.system.state ?? 'CONNECTING…';
+  const systemState = status?.system.state ?? t('device.connecting');
   const acquisition = status?.acquisition;
   const hardwareProblem = status !== null && status.system.state !== 'READY';
 
   return (
     <section className="console-page dashboard-grid">
-      {error !== null && <div className="console-alert" role="alert">ESP API: {error}</div>}
+      {error !== null && <div className="console-alert" role="alert">{t('api.error_prefix', { error })}</div>}
       {hardwareProblem && (
         <div className="console-alert" role="status">
-          Hardware {status.system.state}: acquisition {acquisition?.hardware_ready ? 'verified' : 'not verified'}; ready pods {status.system.ready_pods}/{status.system.required_pods}
-          {acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? `; ADC error ${acquisition.last_error_name}` : ''}.
+          {t('dashboard.hardware_alert', {
+            state: status.system.state,
+            acquisition: t(acquisition?.hardware_ready ? 'dashboard.acquisition_verified' : 'dashboard.acquisition_unverified'),
+            ready: formatNumber(locale, status.system.ready_pods),
+            required: formatNumber(locale, status.system.required_pods),
+          })}{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK'
+            ? `; ${t('dashboard.adc_error', { code: acquisition.last_error_name })}`
+            : ''}.
         </div>
       )}
 
       <article className="console-card hero-card">
-        <div className="eyebrow">ESP32 GEOLOCATOR</div>
-        <h1>Rescue locator console</h1>
-        <p>Device control, SD objects, sensor pods, seismic stream and phone-assisted 3D scanning from one HTTPS interface.</p>
+        <div className="eyebrow">{t('dashboard.eyebrow')}</div>
+        <h1>{t('dashboard.title')}</h1>
+        <p>{t('dashboard.description')}</p>
         <div className="console-actions">
-          <button onClick={onOpenObjects}>Objects</button>
-          <button onClick={onOpenSensors}>Sensor pods</button>
-          <button onClick={onRefresh} className="secondary">Refresh</button>
+          <button onClick={onOpenObjects}>{t('nav.objects')}</button>
+          <button onClick={onOpenSensors}>{t('dashboard.sensor_pods')}</button>
+          <button onClick={onRefresh} className="secondary">{t('common.refresh')}</button>
         </div>
       </article>
 
       <article className="console-card metric-card">
-        <span>DEVICE</span><strong>{systemState}</strong>
-        <small>mode {status?.system.mode ?? '—'}</small>
+        <span>{t('dashboard.device')}</span><strong>{systemState}</strong>
+        <small>{t('dashboard.mode', { mode: status?.system.mode ?? '—' })}</small>
       </article>
       <article className="console-card metric-card">
-        <span>SENSOR PODS</span><strong>{connected}/4</strong>
-        <small>{status ? `${status.system.ready_pods}/4 ready` : 'waiting for status'}</small>
+        <span>{t('dashboard.sensor_pods_metric')}</span><strong>{formatNumber(locale, connected)}/4</strong>
+        <small>{status ? t('dashboard.ready_count', { count: formatNumber(locale, status.system.ready_pods) }) : t('dashboard.waiting_status')}</small>
       </article>
       <article className="console-card metric-card">
-        <span>ACQUISITION</span>
-        <strong>{acquisition?.running ? 'RUNNING' : acquisition?.hardware_ready ? 'STOPPED' : 'NOT VERIFIED'}</strong>
+        <span>{t('dashboard.acquisition')}</span>
+        <strong>{t(acquisition?.running ? 'dashboard.running' : acquisition?.hardware_ready ? 'dashboard.stopped' : 'dashboard.not_verified')}</strong>
         <small>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK'
           ? acquisition.last_error_name
-          : acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz · ${acquisition.source}` : 'no verified source'}</small>
+          : acquisition?.sample_rate_hz ? `${formatNumber(locale, acquisition.sample_rate_hz)} Hz · ${acquisition.source}` : t('dashboard.no_verified_source')}</small>
       </article>
       <article className="console-card metric-card">
-        <span>OBJECTS</span><strong>{objects?.available ? objects.objects.length : '—'}</strong>
-        <small>{objects?.available ? 'stored on SD' : 'object store unavailable'}</small>
+        <span>{t('dashboard.objects_metric')}</span><strong>{objects?.available ? formatNumber(locale, objects.objects.length) : '—'}</strong>
+        <small>{t(objects?.available ? 'dashboard.stored_sd' : 'dashboard.store_unavailable')}</small>
       </article>
 
       <article className="console-card wide-card">
         <div className="card-heading">
-          <div><span className="eyebrow">ACTIVE OBJECT</span><h2>{active?.name ?? 'No active object'}</h2></div>
-          {active !== null && <button onClick={onOpenActiveObject}>Open</button>}
+          <div><span className="eyebrow">{t('dashboard.active_object')}</span><h2>{active?.name ?? t('dashboard.no_active_object')}</h2></div>
+          {active !== null && <button onClick={onOpenActiveObject}>{t('common.open')}</button>}
         </div>
         {active === null ? (
-          <p>Create or activate an object before binding phone geometry or starting an object workflow.</p>
+          <p>{t('dashboard.create_or_activate')}</p>
         ) : (
           <dl className="console-dl">
-            <div><dt>ID</dt><dd>{active.id}</dd></div>
-            <div><dt>Base GPS</dt><dd>{active.location.valid ? `${formatCoordinate(active.location.latitude)}, ${formatCoordinate(active.location.longitude)}` : 'not bound'}</dd></div>
-            <div><dt>GPS accuracy</dt><dd>{active.location.valid ? `±${active.location.accuracy_m.toFixed(1)} m` : '—'}</dd></div>
-            <div><dt>Cables</dt><dd>{active.cable_lengths_m.map((length) => `${length.toFixed(1)}m`).join(' · ')}</dd></div>
+            <div><dt>{t('common.id')}</dt><dd>{active.id}</dd></div>
+            <div><dt>{t('common.base_gps')}</dt><dd>{active.location.valid ? `${formatCoordinate(active.location.latitude)}, ${formatCoordinate(active.location.longitude)}` : t('common.not_bound')}</dd></div>
+            <div><dt>{t('common.gps_accuracy')}</dt><dd>{active.location.valid ? `±${formatDistance(locale, active.location.accuracy_m, 1)}` : '—'}</dd></div>
+            <div><dt>{t('common.cables')}</dt><dd>{active.cable_lengths_m.map((length) => formatDistance(locale, length, 1)).join(' · ')}</dd></div>
           </dl>
         )}
       </article>

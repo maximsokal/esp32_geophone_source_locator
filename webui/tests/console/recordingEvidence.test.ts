@@ -48,7 +48,7 @@ describe('recording evidence', () => {
   it('summarises the frozen geometry: participants, levelling, policy, quality', () => {
     const e = buildRecordingEvidence(listing(pods), { present: true, bytes: 2048 }, { present: false, bytes: 0 });
     expect(e.remotes).toEqual([1, 2, 3]);
-    expect(e.remoteSummary).toBe('3/4');
+    expect(e.remoteCount).toBe(3);
     expect(e.leveledRemotes).toBe(2);
     expect(e.policy).toBe('planar_2d');
     expect(e.worstResidualM).toBeCloseTo(0.12);
@@ -56,7 +56,7 @@ describe('recording evidence', () => {
     expect(e.worstUncertaintyM).toBeCloseTo(0.09);
     expect(e.undeterminedPods).toEqual([2]);
     expect(e.geometryComputedAtMs).toBe(950);
-    expect(e.positions.map((p) => p.label)).toEqual(['MAIN', 'Pod 1', 'Pod 2', 'Pod 3']);
+    expect(e.positions.map((p) => p.pod)).toEqual([0, 1, 2, 3]);
     expect(e.positions[1].position).toEqual({ x_m: 4, y_m: 0, z_m: 0.1 });
     expect(e.scan).toBe('available');
     expect(e.scanBytes).toBe(2048);
@@ -89,13 +89,13 @@ describe('recording evidence', () => {
 
   it('reports unknown rather than guessing when data is missing', () => {
     const e = buildRecordingEvidence(null, null, null);
-    expect(e.remoteSummary).toBe('unknown');
+    expect(e.remoteCount).toBeNull();
     expect(e.policy).toBe('unknown');
     expect(e.localization).toBe('unknown');
     expect(e.scan).toBe('unknown');
     expect(e.worstResidualM).toBeNull();
     const noGeometry = buildRecordingEvidence({ ...listing([]), geometry: { available: false, pods: [] } }, null, null);
     expect(noGeometry.geometryAvailable).toBe(false);
-    expect(noGeometry.remoteSummary).toBe('unknown');
+    expect(noGeometry.remoteCount).toBeNull();
   });
 });

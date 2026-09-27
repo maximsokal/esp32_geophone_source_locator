@@ -351,28 +351,53 @@ static void refresh_now(uint64_t *flush_us_out)
     *flush_us_out = elapsed > 0 ? (uint64_t)elapsed : 0U;
 }
 
+static const char *preview_reason_text(const char *reason)
+{
+    if (reason == NULL || reason[0] == '\0') return "";
+    if (strcmp(reason, "preview unavailable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_UNAVAILABLE);
+    if (strcmp(reason, "invalid session id") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_INVALID_SESSION);
+    if (strcmp(reason, "recording active") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_RECORDING_ACTIVE);
+    if (strcmp(reason, "scan missing") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_SCAN_MISSING);
+    if (strcmp(reason, "scan unreadable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_SCAN_UNREADABLE);
+    if (strcmp(reason, "preview memory") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_MEMORY);
+    if (strcmp(reason, "stale scan CRC") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_STALE_CRC);
+    if (strcmp(reason, "invalid preview") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_INVALID_PREVIEW);
+    if (strcmp(reason, "preview missing") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_MISSING);
+    if (strcmp(reason, "preview unreadable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_UNREADABLE);
+    if (strcmp(reason, "no preview or occupancy") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_NO_DATA);
+    if (strcmp(reason, "no valid preview or occupancy") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_NO_VALID_DATA);
+    if (strcmp(reason, "screen allocation failed") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_SCREEN_MEMORY);
+    if (strcmp(reason, "canvas memory unavailable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_CANVAS_MEMORY);
+    if (strcmp(reason, "loader unavailable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_LOADER);
+    return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_UNAVAILABLE);
+}
+
 static void show_status_locked(scan_preview_screen_status_t status, const char *reason)
 {
     if (s_status_label == NULL) return;
-    const char *text = status == SCAN_PREVIEW_SCREEN_LOADING ? "LOADING..." :
-        status == SCAN_PREVIEW_SCREEN_NO_3D_SCAN ? "NO 3D SCAN" : "NO PREVIEW";
+    const char *text = status == SCAN_PREVIEW_SCREEN_LOADING ? ui_tr(UI_I18N_KEY_SCAN_LOADING) :
+        status == SCAN_PREVIEW_SCREEN_NO_3D_SCAN ? ui_tr(UI_I18N_KEY_SCAN_NO_3D_SCAN) : ui_tr(UI_I18N_KEY_SCAN_NO_PREVIEW);
     lv_label_set_text(s_status_label, text);
     lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
-    if (s_info_label != NULL && reason != NULL && reason[0] != '\0') lv_label_set_text(s_info_label, reason);
+    if (s_info_label != NULL && reason != NULL && reason[0] != '\0') {
+        lv_label_set_text(s_info_label, preview_reason_text(reason));
+    }
 }
 
 static void show_ready_locked(void)
 {
     if (s_status_label != NULL) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
     if (s_info_label == NULL) return;
-    char text[80];
+    char text[128];
+    const char *reason = preview_reason_text(s_state.fallback_reason);
     if (s_state.has_preview) {
-        snprintf(text, sizeof(text), "VOXELS %" PRIu32 "  COARSEN %" PRIu16 "%s%s", s_state.preview.voxel_count,
-                 s_state.preview.coarsening_steps,
-                 s_state.fallback_reason[0] != '\0' ? "  " : "",
-                 s_state.fallback_reason);
+        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_VOXELS),
+                 (unsigned)s_state.preview.voxel_count,
+                 (unsigned)s_state.preview.coarsening_steps,
+                 reason[0] != '\0' ? "  " : "", reason);
     } else {
-        snprintf(text, sizeof(text), "OCCUPANCY %u  %s", (unsigned)s_state.occupancy.occupied_count, s_state.fallback_reason);
+        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_OCCUPANCY),
+                 (unsigned)s_state.occupancy.occupied_count, reason);
     }
     lv_label_set_text(s_info_label, text);
 }
@@ -540,7 +565,7 @@ void ui_scan_preview_screen_open_locked(void)
     (void)strncpy(s_session_id, s_target_session_id, sizeof(s_session_id) - 1U);
     ui_preview3d_view_preset(&s_view, UI_PREVIEW3D_PRESET_ISO);
 
-    lv_obj_t *screen = ui_create_screen_base_locked("3D PREVIEW", "LEFT BACK RIGHT YAW UP/DN PITCH OK VIEW");
+    lv_obj_t *screen = ui_create_screen_base_locked(ui_tr(UI_I18N_KEY_SCAN_TITLE), ui_tr(UI_I18N_KEY_SCAN_FOOTER));
     if (screen == NULL) {
         (void)scan_preview_state_complete(&s_state, generation, SCAN_PREVIEW_SCREEN_NO_PREVIEW, NULL, NULL, "screen allocation failed");
         return;
@@ -559,7 +584,7 @@ void ui_scan_preview_screen_open_locked(void)
             s_canvas_pixels = draw_buffer != NULL ? lv_draw_buf_goto_xy(draw_buffer, 0U, 0U) : NULL;
         }
     }
-    s_status_label = ui_create_label_locked(screen, 10, 106, 300, "LOADING...", UI_COLOR_TEXT);
+    s_status_label = ui_create_label_locked(screen, 10, 106, 300, ui_tr(UI_I18N_KEY_SCAN_LOADING), UI_COLOR_TEXT);
     if (s_status_label != NULL) lv_obj_set_style_text_align(s_status_label, LV_TEXT_ALIGN_CENTER, 0);
     s_info_label = ui_create_label_locked(screen, 8, 38, 304, "", UI_COLOR_TEXT);
     if (s_info_label != NULL) {

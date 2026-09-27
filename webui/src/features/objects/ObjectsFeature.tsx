@@ -6,12 +6,15 @@ import type {
   PhoneLocationInput,
   RecordingSessionCollection,
 } from '../../domain/device';
-import { formatCoordinate, normalizeCableLength } from '../../domain/device';
+import { normalizeCableLength } from '../../domain/device';
+import { useLocale, useT } from '../../i18n';
+import { formatNumber } from '../../i18n/format';
 import {
   measurementControlLocked,
   measurementOwnsRecorder,
 } from './measurementTransition';
 import { recordingGateBlocksStart as isRecordingGateBlockingStart } from './recordingGate';
+import { recordingGateReason, recordingGateWarning } from './recordingGateUi';
 import '../seismic/SavedSeismicViewer.css';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
@@ -40,6 +43,8 @@ interface Props {
   onOpenScanner: (objectId: string, sessionId: string) => void;
 }
 
+type GpsMessage = { kind: 'requesting' } | { kind: 'saved'; accuracy: number } | { kind: 'error'; message: string };
+
 function formatDuration(milliseconds: number | undefined): string {
   const seconds = Math.max(0, Math.floor((milliseconds ?? 0) / 1000));
   const minutes = Math.floor(seconds / 60);
@@ -48,6 +53,8 @@ function formatDuration(milliseconds: number | undefined): string {
 }
 
 export default function ObjectsFeature(props: Props) {
+  const { locale, selectedLocale } = useLocale();
+  const t = useT();
   const { status, store, sessions, selectedId, busy, error } = props;
   const selected = store?.objects.find((object) => object.id === selectedId)
     ?? store?.objects.find((object) => object.active)
@@ -60,7 +67,7 @@ export default function ObjectsFeature(props: Props) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [showCalculate, setShowCalculate] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
-  const [gpsMessage, setGpsMessage] = useState<string | null>(null);
+  const [gpsMessage, setGpsMessage] = useState<GpsMessage | null>(null);
 
   useEffect(() => {
     setRename(selected?.name ?? '');
@@ -94,6 +101,8 @@ export default function ObjectsFeature(props: Props) {
     && measurementObjectId === selected.id;
   const anotherRecording = measurementOwnsTheRecorder && !selectedRecording;
   const recordingGate = status?.recording_gate;
+  const gateReason = recordingGate === undefined ? null : recordingGateReason(recordingGate, t);
+  const gateWarning = recordingGate === undefined ? null : recordingGateWarning(recordingGate, t);
   /* MAX-165: block starting a *new* recording when the gate says so (fewer
    * than 3 assigned REMOTEs, or an assigned REMOTE that is not yet level).
    * Never blocks stopping an already-running recording -- the gate is about
@@ -120,7 +129,7 @@ export default function ObjectsFeature(props: Props) {
 
       <aside className="console-card object-list-card">
         <div className="card-heading">
-          <div><span className="eyebrow">DATABASE</span><h2>Objects</h2></div>
+          <div><span className="eyebrow">{t('objects.database')}</span><h2>{t('nav.objects')}</h2></div>
           <span>{store?.objects.length ?? 0}</span>
         </div>
         <form
@@ -131,8 +140,8 @@ export default function ObjectsFeature(props: Props) {
             void props.onCreate(name).then(() => setNewName(''));
           }}
         >
-          <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="New object name" maxLength={31} />
-          <button disabled={busy}>Create</button>
+          <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={t('objects.new_name')} maxLength={31} />
+          <button disabled={busy}>{t('objects.create')}</button>
         </form>
 
         <div className="object-list">
@@ -144,18 +153,18 @@ export default function ObjectsFeature(props: Props) {
               onClick={() => props.onSelect(object.id)}
             >
               <span><strong>{object.name}</strong><small>{object.id}</small></span>
-              {object.active && <i>ACTIVE</i>}
+              {object.active && <i>{t('web.objects.active')}</i>}
             </button>
           ))}
-          {store?.available === false && <p>SD/object database unavailable.</p>}
+          {store?.available === false && <p>{t('objects.store_unavailable')}</p>}
         </div>
 
         <details className="settings-details">
-          <summary>Global cable defaults</summary>
-          <p>New objects copy these values. Existing objects retain their object-specific cable lengths.</p>
+          <summary>{t('objects.defaults')}</summary>
+          <p>{t('objects.defaults_note')}</p>
           {defaults.map((length, index) => (
             <label key={index}>
-              Pod {index + 1}
+              {t('objects.pod', { number: index + 1 })}
               <input
                 type="number"
                 min="0.1"
@@ -177,65 +186,65 @@ export default function ObjectsFeature(props: Props) {
       <div className="object-workspace">
         {selected === null ? (
           <article className="console-card empty-card">
-            <h2>Select an object</h2>
-            <p>Create or select an SD object to bind GPS, configure sensor geometry and start measurements.</p>
+            <h2>{t('objects.select_title')}</h2>
+            <p>{t('objects.select_note')}</p>
           </article>
         ) : (
           <>
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">OBJECT {selected.id}</span><h1>{selected.name}</h1></div>
-                <span className={`state-pill ${selected.active ? 'ready' : 'offline'}`}>{selected.active ? 'ACTIVE' : 'INACTIVE'}</span>
+                <div><span className="eyebrow">{t('objects.object_label', { id: selected.id })}</span><h1>{selected.name}</h1></div>
+                <span className={`state-pill ${selected.active ? 'ready' : 'offline'}`}>{selected.active ? t('web.objects.active') : t('objects.inactive')}</span>
               </div>
               <div className="inline-form">
                 <input value={rename} maxLength={31} onChange={(event) => setRename(event.target.value)} />
-                <button disabled={busy || rename.trim().length === 0 || rename.trim() === selected.name} onClick={() => void props.onRename(selected.id, rename.trim())}>Rename</button>
+                <button disabled={busy || rename.trim().length === 0 || rename.trim() === selected.name} onClick={() => void props.onRename(selected.id, rename.trim())}>{t('objects.rename')}</button>
               </div>
               <div className="console-actions">
-                {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>Set active</button>}
+                {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>{t('web.objects.set_active')}</button>}
                 <button
                   disabled={busy || selectedRecording}
                   className="danger"
-                  title={selectedRecording ? 'Stop the active recording before deleting this object.' : undefined}
-                  onClick={() => { if (window.confirm(`Delete ${selected.name}?`)) void props.onDelete(selected.id); }}
-                >Delete</button>
+                  title={selectedRecording ? t('objects.delete_stop_first') : undefined}
+                  onClick={() => { if (window.confirm(t('objects.delete_confirm', { name: selected.name }))) void props.onDelete(selected.id); }}
+                >{t('web.objects.delete')}</button>
               </div>
             </article>
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">BASE STATION</span><h2>Phone GPS anchor</h2></div>
+                <div><span className="eyebrow">{t('objects.base_station')}</span><h2>{t('objects.phone_gps')}</h2></div>
                 <button
                   disabled={busy}
                   onClick={() => {
-                    setGpsMessage('Requesting high-accuracy phone position…');
+                    setGpsMessage({ kind: 'requesting' });
                     void props.onBindGps(selected.id)
-                      .then((position) => setGpsMessage(`Saved ±${position.accuracy_m.toFixed(1)} m`))
-                      .catch((reason) => setGpsMessage(reason instanceof Error ? reason.message : String(reason)));
+                      .then((position) => setGpsMessage({ kind: 'saved', accuracy: position.accuracy_m }))
+                      .catch((reason) => setGpsMessage({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) }));
                   }}
-                >Bind current GPS</button>
+                >{t('objects.bind_gps')}</button>
               </div>
               {selected.location.valid ? (
                 <dl className="console-dl">
-                  <div><dt>Latitude</dt><dd>{formatCoordinate(selected.location.latitude)}</dd></div>
-                  <div><dt>Longitude</dt><dd>{formatCoordinate(selected.location.longitude)}</dd></div>
-                  <div><dt>Accuracy</dt><dd>±{selected.location.accuracy_m.toFixed(1)} m</dd></div>
-                  <div><dt>Altitude</dt><dd>{selected.location.altitude_valid ? `${selected.location.altitude_m.toFixed(1)} m` : 'not reported by phone'}</dd></div>
-                  <div><dt>Source</dt><dd>{selected.location.source}</dd></div>
+                  <div><dt>{t('objects.latitude')}</dt><dd>{formatNumber(locale, selected.location.latitude, { useGrouping: false, minimumFractionDigits: 6, maximumFractionDigits: 6 })}</dd></div>
+                  <div><dt>{t('objects.longitude')}</dt><dd>{formatNumber(locale, selected.location.longitude, { useGrouping: false, minimumFractionDigits: 6, maximumFractionDigits: 6 })}</dd></div>
+                  <div><dt>{t('objects.accuracy')}</dt><dd>±{formatNumber(locale, selected.location.accuracy_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m</dd></div>
+                  <div><dt>{t('objects.altitude')}</dt><dd>{selected.location.altitude_valid ? `${formatNumber(locale, selected.location.altitude_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m` : t('objects.not_reported_phone')}</dd></div>
+                  <div><dt>{t('objects.source')}</dt><dd>{selected.location.source}</dd></div>
                 </dl>
-              ) : <p>No global base coordinate is bound to this object.</p>}
-              {gpsMessage !== null && <small>{gpsMessage}</small>}
+              ) : <p>{t('objects.no_base_coordinate')}</p>}
+              {gpsMessage !== null && <small>{gpsMessage.kind === 'requesting' ? t('objects.gps_requesting') : gpsMessage.kind === 'saved' ? t('objects.gps_saved', { accuracy: formatNumber(locale, gpsMessage.accuracy, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : gpsMessage.message}</small>}
             </article>
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">GEOMETRY</span><h2>Sensor cable lengths</h2></div>
-                <small>object override</small>
+                <div><span className="eyebrow">{t('objects.geometry')}</span><h2>{t('objects.cable_lengths')}</h2></div>
+                <small>{t('objects.object_override')}</small>
               </div>
               <div className="cable-grid">
                 {cables.map((length, index) => (
                   <label key={index}>
-                    <span>Pod {index + 1}</span>
+                    <span>{t('objects.pod', { number: index + 1 })}</span>
                     <input
                       type="number"
                       min="0.1"
@@ -248,7 +257,7 @@ export default function ObjectsFeature(props: Props) {
                         setCables(next);
                       }}
                     />
-                    <button disabled={busy} onClick={() => void props.onCable(selected.id, index + 1, normalizeCableLength(cables[index]))}>Save</button>
+                    <button disabled={busy} onClick={() => void props.onCable(selected.id, index + 1, normalizeCableLength(cables[index]))}>{t('objects.save')}</button>
                   </label>
                 ))}
               </div>
@@ -256,72 +265,71 @@ export default function ObjectsFeature(props: Props) {
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">SEISMIC</span><h2>Acquisition & recording</h2></div>
+                <div><span className="eyebrow">{t('objects.seismic')}</span><h2>{t('objects.acquisition_recording')}</h2></div>
                 <span className={`state-pill ${selectedRecording ? 'ready' : status?.acquisition.running ? 'ready' : 'offline'}`}>
-                  {selectedRecording ? 'RECORDING' : status?.acquisition.running ? 'LIVE' : 'STOPPED'}
+                  {selectedRecording ? t('objects.recording') : status?.acquisition.running ? t('objects.live') : t('objects.stopped')}
                 </span>
               </div>
-              <p>Live acquisition stays independent from SD recording. Record drains the lock-free ring in bounded batches, so FAT/SD latency never becomes part of the acquisition producer hot path.</p>
+              <p>{t('objects.recording_description')}</p>
 
               {selectedRecording && (
                 <dl className="console-dl">
-                  <div><dt>Session</dt><dd>{recording?.session_id ?? '—'}</dd></div>
-                  <div><dt>Elapsed</dt><dd>{formatDuration(recording?.recording_ms)}</dd></div>
-                  <div><dt>Written</dt><dd>{(recording?.samples_written ?? 0).toLocaleString()} frames</dd></div>
-                  <div><dt>Ring drops</dt><dd>{(recording?.dropped_frames ?? 0).toLocaleString()}</dd></div>
+                  <div><dt>{t('objects.session')}</dt><dd>{recording?.session_id ?? '—'}</dd></div>
+                  <div><dt>{t('objects.elapsed')}</dt><dd>{formatDuration(recording?.recording_ms)}</dd></div>
+                  <div><dt>{t('objects.written')}</dt><dd>{formatNumber(locale, recording?.samples_written ?? 0)} {t('objects.frames')}</dd></div>
+                  <div><dt>{t('objects.ring_drops')}</dt><dd>{formatNumber(locale, recording?.dropped_frames ?? 0)}</dd></div>
                 </dl>
               )}
 
               {anotherRecording && (
                 <div className="console-alert">
-                  Recording {recording?.session_id ?? ''} belongs to object {recording?.object_id}. Stop it before starting another object.
+                  {t('objects.another_recording', { session: recording?.session_id ?? '', object: recording?.object_id ?? '' })}
                 </div>
               )}
 
               {recordingGateBlocksStart && (
                 <div className="console-alert" role="alert">
-                  Record disabled: {recordingGate?.reason}
-                  {' '}({recordingGate?.assigned_count ?? 0} assigned, {recordingGate?.accepted_count ?? 0} level)
+                  {t('objects.recording_disabled', { reason: gateReason ?? recordingGate?.decision ?? '', assigned: formatNumber(locale, recordingGate?.assigned_count ?? 0), accepted: formatNumber(locale, recordingGate?.accepted_count ?? 0) })}
                 </div>
               )}
 
               {recordingGate?.decision === 'ALLOWED_PLANAR_2D' && (
                 <div className="console-alert warning" role="status">
-                  {recordingGate.warning}
+                  {gateWarning}
                 </div>
               )}
 
               <div className="console-actions">
-                <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>Start acquisition</button>
+                <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>{t('objects.start_acquisition')}</button>
                 <button
                   disabled={busy || status?.acquisition.running !== true || measurementLocked}
                   onClick={() => void props.onAcquisition(false)}
-                >Stop acquisition</button>
+                >{t('objects.stop_acquisition')}</button>
                 <button
                   className="secondary"
                   disabled={!liveAvailable}
-                  title={liveAvailable ? undefined : 'Start acquisition before opening the live waveform.'}
+                  title={liveAvailable ? undefined : t('objects.live_signal_start_first')}
                   onClick={() => setShowLive((value) => !value)}
-                >{showLive ? 'Hide' : 'Show'} live signal</button>
+                >{showLive ? t('objects.hide') : t('objects.show')} {t('objects.live_signal')}</button>
                 <button
                   disabled={recordingToggleDisabled}
                   className={selectedRecording ? 'danger' : undefined}
                   onClick={() => void props.onRecording(selected.id, !selectedRecording)}
                 >
-                  {selectedRecording ? 'Stop recording' : 'Record session'}
+                  {selectedRecording ? t('objects.stop_recording') : t('objects.record_session')}
                 </button>
               </div>
             </article>
 
             <article className="console-card">
               <div className="card-heading">
-                <div><span className="eyebrow">SESSIONS</span><h2>Saved measurements</h2></div>
+                <div><span className="eyebrow">{t('objects.sessions')}</span><h2>{t('objects.saved_measurements')}</h2></div>
                 <span>{selectedSessions.length}</span>
               </div>
               {sessions?.available === false && sessions.object_id === selected.id ? (
-                <p>Session list unavailable: {sessions.error ?? 'storage error'}</p>
+                <p>{t('objects.sessions_unavailable', { error: sessions.error ?? t('objects.storage_error') })}</p>
               ) : selectedSessions.length === 0 ? (
-                <p>No saved geophone sessions for this object yet.</p>
+                <p>{t('objects.no_sessions')}</p>
               ) : (
                 <div className="session-list">
                   {selectedSessions.map((session) => {
@@ -333,20 +341,20 @@ export default function ObjectsFeature(props: Props) {
                         className="session-row"
                         key={session.session_id}
                         disabled={!readable || busy}
-                        title={readable ? 'Open saved waveform viewer' : 'Only terminal readable sessions can be viewed'}
+                          title={readable ? t('objects.open_waveform') : t('objects.unreadable_session')}
                         onClick={() => setOpenSessionId(session.session_id)}
                       >
                         <span>
                           <strong>{session.session_id}</strong>
-                          <small>{session.sample_rate_hz.toLocaleString()} Hz · {session.channel_count} ch · {session.recording_ms_available === false ? 'duration unknown' : formatDuration(session.recording_ms)}</small>
+                          <small>{formatNumber(locale, session.sample_rate_hz)} Hz · {formatNumber(locale, session.channel_count)} {t('objects.channels')} · {session.recording_ms_available === false ? t('objects.duration_unknown') : formatDuration(session.recording_ms)}</small>
                         </span>
                         <span>
-                          <strong>{session.samples_written.toLocaleString()}</strong>
+                          <strong>{formatNumber(locale, session.samples_written)}</strong>
                           <small>
                             {session.dropped_frames_available === false
-                              ? `${statusLabel} · drops unknown`
+                              ? t('objects.drops_unknown', { status: statusLabel })
                               : session.dropped_frames > 0
-                                ? `${statusLabel} · ${session.dropped_frames.toLocaleString()} dropped`
+                                ? t('objects.dropped', { status: statusLabel, count: formatNumber(locale, session.dropped_frames) })
                                 : statusLabel}
                           </small>
                         </span>
@@ -366,35 +374,36 @@ export default function ObjectsFeature(props: Props) {
                 />
                 <article className="console-card">
                   <div className="card-heading">
-                    <div><span className="eyebrow">SESSION {openSession.session_id}</span><h2>3D scan</h2></div>
+                    <div><span className="eyebrow">{t('objects.session')} {openSession.session_id}</span><h2>{t('objects.scan')}</h2></div>
                   </div>
-                  <p>A 3D scan belongs to this recording, not the object -- open it here to add or review the scan captured for session {openSession.session_id}.</p>
+                  <p>{t('objects.scan_description', { session: openSession.session_id })}</p>
                   <div className="console-actions">
                     <button
                       disabled={busy}
                       className="secondary"
                       onClick={() => props.onOpenScanner(selected.id, openSession.session_id)}
-                    >Add / open 3D scan</button>
+                    >{t('objects.scan_add')}</button>
                     <button
                       disabled={busy}
                       className="secondary"
                       onClick={() => setShowCalculate((value) => !value)}
-                    >{showCalculate ? 'Hide localization' : 'Calculate / view localization'}</button>
+                    >{showCalculate ? t('objects.localization_hide') : t('objects.localization_open')}</button>
                     <button
                       disabled={busy}
                       className="secondary"
                       onClick={() => {
                         setReportError(null);
+                        const localeAtAdmission = selectedLocale;
                         void import('../report/reportExport')
-                          .then((module) => module.openRecordingReport(selected, openSession))
+                          .then((module) => module.openRecordingReport(selected, openSession, null, localeAtAdmission))
                           .catch((reason: unknown) => setReportError(reason instanceof Error ? reason.message : String(reason)));
                       }}
-                    >Export report (PDF)</button>
+                    >{t('objects.export_pdf')}</button>
                   </div>
-                  {reportError !== null && <p className="overlay-note">Report: {reportError}</p>}
+                  {reportError !== null && <p className="overlay-note">{t('objects.report_error', { error: reportError })}</p>}
                 </article>
                 {showCalculate && (
-                  <Suspense fallback={<div className="console-card">Loading localization module…</div>}>
+                  <Suspense fallback={<div className="console-card">{t('objects.loading_localization')}</div>}>
                     <LocalizationCalculatePanel
                       objectId={selected.id}
                       sessionId={openSession.session_id}
@@ -403,7 +412,7 @@ export default function ObjectsFeature(props: Props) {
                     />
                   </Suspense>
                 )}
-                <Suspense fallback={<div className="console-card">Loading saved waveform module…</div>}>
+                <Suspense fallback={<div className="console-card">{t('objects.loading_saved_waveform')}</div>}>
                   <SavedSeismicViewer
                     objectId={selected.id}
                     sessionId={openSession.session_id}
@@ -415,7 +424,7 @@ export default function ObjectsFeature(props: Props) {
             )}
 
             {showLive && liveAvailable && (
-              <Suspense fallback={<div className="console-card">Loading waveform module…</div>}>
+              <Suspense fallback={<div className="console-card">{t('objects.loading_waveform')}</div>}>
                 <LiveSeismicPanel />
               </Suspense>
             )}

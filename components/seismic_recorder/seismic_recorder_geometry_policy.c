@@ -1,5 +1,6 @@
 #include "seismic_recorder_geometry_policy.h"
 
+#include <stdio.h>
 #include <string.h>
 
 
@@ -246,6 +247,24 @@ void seismic_recorder_geometry_apply_cs_pairs(
     size_t count = 0U;
     for (size_t i = 0U; i < pair_count && count < OBJECT_STORE_MAX_CS_PAIRS; ++i) {
         object_store_cs_pair_t *out = &cs_pairs_out->pairs[count];
+        const char *state = "unknown";
+        switch (pairs[i].state) {
+            case NRF_CS_PAIR_PENDING: state = "pending"; break;
+            case NRF_CS_PAIR_VALID: state = "valid"; break;
+            case NRF_CS_PAIR_MISSING: state = "missing"; break;
+            case NRF_CS_PAIR_RETRY_EXHAUSTED: state = "retry_exhausted"; break;
+            case NRF_CS_PAIR_UNKNOWN:
+            default: break;
+        }
+        const char *last_failure = "unknown";
+        switch (pairs[i].last_failure) {
+            case NRF_CS_FAILURE_NONE: last_failure = "none"; break;
+            case NRF_CS_FAILURE_TIMEOUT: last_failure = "timeout"; break;
+            case NRF_CS_FAILURE_TRANSPORT: last_failure = "transport"; break;
+            case NRF_CS_FAILURE_OUTLIER: last_failure = "outlier"; break;
+            case NRF_CS_FAILURE_DISCONNECTED: last_failure = "disconnected"; break;
+            default: break;
+        }
         out->node_a = pairs[i].node_a;
         out->node_b = pairs[i].node_b;
         out->valid = pairs[i].state == NRF_CS_PAIR_VALID;
@@ -255,6 +274,10 @@ void seismic_recorder_geometry_apply_cs_pairs(
         out->valid_samples = pairs[i].valid_samples;
         out->spread_mm = pairs[i].spread_mm;
         out->rejected_samples = pairs[i].rejected_samples;
+        snprintf(out->state, sizeof(out->state), "%s", state);
+        snprintf(out->last_failure, sizeof(out->last_failure), "%s", last_failure);
+        out->provider_quality_flags = pairs[i].provider_quality_flags;
+        out->scheduler_quality_flags = pairs[i].scheduler_quality_flags;
         ++count;
     }
     cs_pairs_out->pair_count = count;

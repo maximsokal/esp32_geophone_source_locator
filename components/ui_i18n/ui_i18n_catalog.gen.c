@@ -1,0 +1,482 @@
+/* generated — do not edit */
+#include "ui_i18n_catalog.gen.h"
+
+static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
+    "GeoLocator 3D", /* app.title */
+    "CHECK CARD, CS AND WIRING", /* boot.check_wiring */
+    "PRESS POWER TO SHUT DOWN", /* boot.error_footer */
+    "BOOT ERROR", /* boot.error_title */
+    "ESP32-S3  |  INITIALIZING", /* boot.footer */
+    "MOUNT FAILED", /* boot.mount_failed */
+    "SD SPI CEILING 20 MHz", /* boot.sd_limit */
+    "ACTIVE OBJECT...", /* boot.stage_active_object */
+    "NETWORK + UI...", /* boot.stage_network */
+    "OBJECT STORE...", /* boot.stage_object_store */
+    "STARTING...", /* boot.stage_starting */
+    "STORAGE...", /* boot.stage_storage */
+    "SYSTEM STARTUP", /* boot.startup */
+    "SD CARD / STORAGE FAILURE", /* boot.storage_failure */
+    "GEOPHONE LOCATOR", /* boot.title */
+    "WRITE TEST FAILED", /* boot.write_test_failed */
+    "ADC --", /* header.adc_idle */
+    "NET --", /* header.network_offline */
+    "NET OK", /* header.network_ready */
+    "SETUP", /* header.network_setup */
+    "--", /* header.power_empty */
+    "%s%s%s", /* header.power_format */
+    "%s %s", /* header.source_format */
+    "CHECKING STORAGE...", /* home.checking_storage */
+    "UP/DOWN NAV   OK/RIGHT OPEN", /* home.navigation */
+    "STORAGE CHECK INCOMPLETE", /* home.storage_incomplete */
+    "MAIN", /* home.title */
+    "SAVE   > DELETE   3D", /* measurement.action_delete */
+    "SAVE    DELETE   >3D", /* measurement.action_preview */
+    "> SAVE   DELETE   3D", /* measurement.action_save */
+    "CH%u DATA? DIGITAL", /* measurement.channel_digital */
+    "CH%u  --", /* measurement.channel_empty */
+    "FLAT", /* measurement.channel_flat */
+    "CH%u INVALID %s", /* measurement.channel_invalid */
+    "CH%u SERIAL? %s", /* measurement.channel_serial */
+    "CH%u %+6.2fmV %s", /* measurement.channel_value */
+    "VAR", /* measurement.channel_variable */
+    "DELETE FAILED", /* measurement.delete_failed */
+    "DELETING SESSION...", /* measurement.deleting_session */
+    "ADC DATA? DIGITAL  %s", /* measurement.digital_fault */
+    "ERROR %s   OK RETRY", /* measurement.error_retry */
+    "LEFT BACK   OK ACTION   UP/DOWN SELECT", /* measurement.footer */
+    "TFT GRAPHS OFF  ADC+SD ON", /* measurement.graphs_off */
+    "TFT GRAPHS OFF  %s", /* measurement.graphs_status */
+    "OK START", /* measurement.health_start */
+    "%s  %luHz  CH1-CH4", /* measurement.idle_summary */
+    "FAILED TO KEEP SESSION", /* measurement.keep_failed */
+    "FAILED TO LEAVE MEASUREMENT", /* measurement.leave_failed */
+    "LEAVING WHEN OPERATION FINISHES...", /* measurement.leaving_after_operation */
+    "NO SAVED SESSION TO PREVIEW", /* measurement.no_session_preview */
+    "OBJECT %s  [%s]", /* measurement.object_format */
+    "NO ACTIVE OBJECT", /* measurement.object_none */
+    "RESOLVING OBJECT...", /* measurement.object_resolving */
+    "REC %s  %lus  %luHz", /* measurement.recording */
+    "OK STOP   S:%llu   DROP:%llu", /* measurement.recording_status */
+    "%s S:%llu D:%llu", /* measurement.review_counts */
+    "SAVE FAILED", /* measurement.save_failed */
+    "SELECT ACTIVE OBJECT FIRST", /* measurement.select_object */
+    "ADC SERIAL?  %s", /* measurement.serial_fault */
+    "SESSION SAVED", /* measurement.session_saved */
+    "START FAILED", /* measurement.start_failed */
+    "STARTING RECORDING...", /* measurement.starting_recording */
+    "STOPPED", /* measurement.state_complete */
+    "DELETING", /* measurement.state_deleting */
+    "ERROR", /* measurement.state_error */
+    "LIVE", /* measurement.state_live */
+    "REC", /* measurement.state_recording */
+    "STARTING", /* measurement.state_starting */
+    "STOPPING", /* measurement.state_stopping */
+    "STOP FAILED", /* measurement.stop_failed */
+    "STOPPED %s  %lus", /* measurement.stopped */
+    "STOPPING AND LEAVING...", /* measurement.stopping_leaving */
+    "STOPPING RECORDING...", /* measurement.stopping_recording */
+    "LIVE --", /* measurement.summary_live */
+    "OBJECT --", /* measurement.summary_object */
+    "MEASUREMENTS", /* measurement.title */
+    "ADC INVALID TRANSPORT  %s", /* measurement.transport_fault */
+    "UNKNOWN", /* measurement.unknown */
+    "PLEASE WAIT...", /* measurement.wait */
+    "PLEASE WAIT - LEAVING...", /* measurement.wait_leaving */
+    "MEASUREMENTS / AD7606", /* menu.measurements */
+    "OBJECTS", /* menu.objects */
+    "STORAGE / SD CARD", /* menu.storage */
+    "ACTIVE  %s  %s", /* objects.active */
+    "ACTIVE %s", /* objects.active_done */
+    "[ACTIVE]", /* objects.active_marker */
+    "ACTIVE  NONE", /* objects.active_none */
+    "DELETE OBJECT?", /* objects.confirm_delete */
+    "OK/RIGHT CONFIRM   LEFT CANCEL", /* objects.confirm_footer */
+    "CREATED %s", /* objects.created */
+    "CREATING OBJECT...", /* objects.creating */
+    "DELETE OBJECT", /* objects.delete */
+    "DELETE FAILED TO START", /* objects.delete_start_failed */
+    "DELETED %s", /* objects.deleted */
+    "DELETING...", /* objects.deleting */
+    "%s  %s%s", /* objects.list_entry */
+    "OBJECT LIST FAILED", /* objects.list_failed */
+    "LOADING OBJECTS...", /* objects.loading */
+    "%s  %s", /* objects.name_pair */
+    "NEW OBJECT", /* objects.new */
+    "NO OBJECTS", /* objects.none */
+    "OBJECT OPERATION FAILED", /* objects.operation_failed */
+    "SELECT OBJECT TO ACTIVATE", /* objects.select_activate */
+    "SELECT OBJECT TO DELETE", /* objects.select_delete */
+    "OBJECT SERVICE BUSY/FAILED", /* objects.service_busy */
+    "SET ACTIVE OBJECT", /* objects.set_active */
+    "SET ACTIVE FAILED TO START", /* objects.set_active_start_failed */
+    "SETTING ACTIVE...", /* objects.setting_active */
+    "USB CONNECTED - SHUTDOWN CANCELLED", /* power.alert_cancelled */
+    "LOW BATTERY - CONNECT USB - SHUTTING DOWN", /* power.alert_critical */
+    "LOW BATTERY - CONNECT USB SOON", /* power.alert_low */
+    "LOW BATTERY - SHUTTING DOWN", /* power.alert_shutdown */
+    "BAT", /* power.battery */
+    "CHG", /* power.charging */
+    "CRIT", /* power.critical */
+    "FULL", /* power.full */
+    "USB %us", /* power.grace */
+    "LOW BATTERY - CONNECT USB SOON", /* power.low_battery_soon */
+    "OFF", /* power.off */
+    "%d%%", /* power.percent */
+    "USB", /* power.usb */
+    "LOW", /* power_badge.low */
+    "LEFT BACK RIGHT YAW UP/DN PITCH OK VIEW", /* scan.footer */
+    "LOADING...", /* scan.loading */
+    "NO 3D SCAN", /* scan.no_3d_scan */
+    "NO PREVIEW", /* scan.no_preview */
+    "OCCUPANCY %u  %s", /* scan.occupancy */
+    "canvas memory unavailable", /* scan.reason_canvas_memory */
+    "invalid preview", /* scan.reason_invalid_preview */
+    "invalid session id", /* scan.reason_invalid_session */
+    "loader unavailable", /* scan.reason_loader */
+    "no preview or occupancy", /* scan.reason_no_data */
+    "no valid preview or occupancy", /* scan.reason_no_valid_data */
+    "preview memory", /* scan.reason_preview_memory */
+    "preview missing", /* scan.reason_preview_missing */
+    "preview unavailable", /* scan.reason_preview_unavailable */
+    "preview unreadable", /* scan.reason_preview_unreadable */
+    "recording active", /* scan.reason_recording_active */
+    "scan missing", /* scan.reason_scan_missing */
+    "scan unreadable", /* scan.reason_scan_unreadable */
+    "screen allocation failed", /* scan.reason_screen_memory */
+    "stale scan CRC", /* scan.reason_stale_crc */
+    "3D PREVIEW", /* scan.title */
+    "VOXELS %u  COARSEN %u%s%s", /* scan.voxels */
+    "CHECKING STORAGE...", /* shared.checking_storage */
+    "--", /* shared.empty */
+    "UP/DOWN NAV   OK SELECT   LEFT BACK", /* shared.footer_back */
+    "UP/DOWN NAV   OK SELECT   LEFT CANCEL", /* shared.footer_cancel */
+    "MEASUREMENT OPERATION IN PROGRESS", /* shared.measure_operation_busy */
+    "MEASUREMENT SERVICE UNAVAILABLE", /* shared.measure_service_unavailable */
+    "CONFIRM ERASE DATA", /* storage.confirm_erase */
+    "PRESS OK AGAIN TO ERASE DATA", /* storage.confirm_prompt */
+    "DATA ERASE COMPLETE - REFRESH INFO", /* storage.erase_complete */
+    "ERASE DEVICE DATA", /* storage.erase_device */
+    "DATA ERASE FAILED", /* storage.erase_failed */
+    "ERASING DATA...", /* storage.erasing */
+    "SD INFO FAILED", /* storage.info_failed */
+    "SD INFORMATION NOT LOADED", /* storage.not_loaded */
+    "RECOVERY COMPLETE - REOPEN OBJECTS", /* storage.recovery_complete */
+    "RECOVERY FAILED - REOPEN OBJECTS", /* storage.recovery_failed */
+    "REFRESH SD INFO", /* storage.refresh */
+    "REFRESHING SD INFO...", /* storage.refreshing */
+    "SD RUNTIME CEILING 20 MHz", /* storage.runtime_limit */
+    "STORAGE SERVICE BUSY/FAILED", /* storage.service_busy */
+    "FREE %.2f GB   SPI %.2f MHz", /* storage.space */
+    "%s  %s  %.2f GB", /* storage.summary */
+    "STORAGE", /* storage.title */
+    "CORE0 SERVICES/LVGL   CORE1 ACQUISITION", /* system.cores */
+    "FW      %s", /* system.firmware */
+    "HEAP     %lu KB internal free", /* system.heap */
+    "HEAP     -- KB internal free", /* system.heap_empty */
+    "ESP-IDF  %s", /* system.idf_version */
+    "LANGUAGE: ENGLISH", /* system.language_english */
+    "UP/DN SELECT  OK APPLY  LEFT BACK", /* system.language_footer */
+    "LANGUAGE: UKRAINIAN", /* system.language_ukrainian */
+    "LVGL     %d.%d.%d + esp_lvgl_port", /* system.lvgl_version */
+    "PSRAM    %lu KB free", /* system.psram */
+    "PSRAM    -- KB free", /* system.psram_empty */
+    "SYSTEM", /* system.title */
+    "UPTIME   %lld s", /* system.uptime */
+    "UPTIME   -- s", /* system.uptime_empty */
+    "AP  %s", /* wifi.ap_ssid */
+    "PRESS OK AGAIN: FORGET NETWORK", /* wifi.ask_forget */
+    "PRESS OK AGAIN: ENTER SETUP", /* wifi.ask_setup */
+    "CAMERA + WEBXR TEST", /* wifi.camera_webxr */
+    "WI-FI COMMAND FAILED", /* wifi.command_failed */
+    "WI-FI COMMAND ACCEPTED", /* wifi.command_ok */
+    "CONNECT SAVED NETWORK", /* wifi.connect_saved */
+    "DOWNLOAD PUBLIC CA", /* wifi.download_ca */
+    "ENABLE PHONE HOTSPOT", /* wifi.enable_hotspot */
+    "FORGET SAVED NETWORK", /* wifi.forget */
+    "CONFIRM FORGET NETWORK", /* wifi.forget_confirm */
+    "INSTALL CA IN ANDROID", /* wifi.install_android */
+    "IP    %s", /* wifi.ip */
+    "MODE  %s", /* wifi.mode */
+    "NEXT: HTTPS VERIFY QR", /* wifi.next_verify */
+    "CA CONFIRMED - SCAN HOTSPOT SETUP QR", /* wifi.notice_ca_confirmed */
+    "CA DOWNLOADED - INSTALL IT, THEN CONTINUE", /* wifi.notice_ca_downloaded */
+    "WI-FI CONNECTED - STARTING HTTPS", /* wifi.notice_connected */
+    "CONNECTING TO SAVED WI-FI...", /* wifi.notice_connecting */
+    "WI-FI DISCONNECTED - RETRYING", /* wifi.notice_disconnected */
+    "HTTPS READY - SCAN VERIFY QR ON PHONE", /* wifi.notice_https_ready */
+    "INSTALL CA, RECONNECT, THEN CONFIRM", /* wifi.notice_install_reconnect */
+    "SETUP LINK CLOSED - SWITCHING TO WI-FI", /* wifi.notice_link_closed */
+    "PHONE DISCONNECTED - SCAN WI-FI QR", /* wifi.notice_phone_disconnected */
+    "PHONE CONNECTED - SCAN ROOT CA QR", /* wifi.notice_phone_ready */
+    "SAVED - ENABLE HOTSPOT, CONNECTING...", /* wifi.notice_saved */
+    "SETUP PAGE OPEN - ENTER HOTSPOT DATA", /* wifi.notice_setup_open */
+    "HTTPS/CAMERA/WEBXR VERIFIED", /* wifi.notice_verified */
+    "VERIFY INCOMPLETE - CHECK PHONE RESULTS", /* wifi.notice_verify_incomplete */
+    "PHONE REPORT RECEIVED", /* wifi.phone_report */
+    "RETURN + TAP CONTINUE", /* wifi.return_continue */
+    "ROOT CA CONFIRMED", /* wifi.root_ca_confirmed */
+    "SCAN WI-FI QR", /* wifi.scan_join */
+    "SCAN QR ON PHONE", /* wifi.scan_phone */
+    "CONFIRM ENTER SETUP", /* wifi.setup_confirm */
+    "ENTER SETUP MODE", /* wifi.setup_enter */
+    "SSID  %s", /* wifi.ssid */
+    "STEP 1/4  CONNECT PHONE", /* wifi.step1_connect */
+    "STEP 2/4  CA DOWNLOADED", /* wifi.step2_downloaded */
+    "STEP 2/4  INSTALL ROOT CA", /* wifi.step2_install */
+    "STEP 3/4  CONFIGURE HOTSPOT", /* wifi.step3_configure */
+    "STEP 3/4  SETUP PAGE OPEN", /* wifi.step3_page_open */
+    "STEP 3/4  SETTINGS SAVED", /* wifi.step3_saved */
+    "STEP 4/4  VERIFY INCOMPLETE", /* wifi.step4_incomplete */
+    "STEP 4/4  HTTPS / WEBXR VERIFIED", /* wifi.step4_verified */
+    "WI-FI / WEB", /* wifi.title */
+    "SEC %s  CAM %s  XR %s  AR %s", /* wifi.verify_codes */
+    "STEP 4/4  VERIFY HTTPS", /* wifi.verify_https */
+};
+
+static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
+    "", /* app.title */
+    "ПЕРЕВІРТЕ КАРТУ, CS І ДРОТИ", /* boot.check_wiring */
+    "НАТИСНІТЬ ЖИВЛЕННЯ ДЛЯ ВИМКНЕННЯ", /* boot.error_footer */
+    "ПОМИЛКА ЗАПУСКУ", /* boot.error_title */
+    "ESP32-S3  |  ЗАПУСК", /* boot.footer */
+    "НЕ ВДАЛОСЯ ЗМОНТУВАТИ", /* boot.mount_failed */
+    "ЛІМІТ SD 20 MHz", /* boot.sd_limit */
+    "АКТИВНИЙ ОБ’ЄКТ...", /* boot.stage_active_object */
+    "МЕРЕЖА + UI...", /* boot.stage_network */
+    "СХОВИЩЕ ОБ’ЄКТІВ...", /* boot.stage_object_store */
+    "ЗАПУСК...", /* boot.stage_starting */
+    "СХОВИЩЕ...", /* boot.stage_storage */
+    "ЗАПУСК СИСТЕМИ", /* boot.startup */
+    "ЗБІЙ SD-КАРТИ / СХОВИЩА", /* boot.storage_failure */
+    "ГЕОФОННИЙ ЛОКАТОР", /* boot.title */
+    "ТЕСТ ЗАПИСУ НЕ ПРОЙШОВ", /* boot.write_test_failed */
+    "ADC --", /* header.adc_idle */
+    "Wi-Fi --", /* header.network_offline */
+    "Wi-Fi OK", /* header.network_ready */
+    "НАЛАШТ.", /* header.network_setup */
+    "--", /* header.power_empty */
+    "%s%s%s", /* header.power_format */
+    "%s %s", /* header.source_format */
+    "ПЕРЕВІРКА СХОВИЩА...", /* home.checking_storage */
+    "UP/DOWN НАВ   OK/RIGHT ВІДКРИТИ", /* home.navigation */
+    "ПЕРЕВІРКУ СХОВИЩА НЕ ЗАВЕРШЕНО", /* home.storage_incomplete */
+    "MAIN", /* home.title */
+    "ЗБЕРЕГТИ   > ВИДАЛИТИ   3D", /* measurement.action_delete */
+    "ЗБЕРЕГТИ   ВИДАЛИТИ   >3D", /* measurement.action_preview */
+    "> ЗБЕРЕГТИ   ВИДАЛИТИ   3D", /* measurement.action_save */
+    "CH%u ЦИФР. ЗАВАДА", /* measurement.channel_digital */
+    "CH%u  --", /* measurement.channel_empty */
+    "СТАЛИЙ", /* measurement.channel_flat */
+    "CH%u ЗБІЙ %s", /* measurement.channel_invalid */
+    "CH%u SERIAL? %s", /* measurement.channel_serial */
+    "CH%u %+6.2fмВ %s", /* measurement.channel_value */
+    "ЗМІННИЙ", /* measurement.channel_variable */
+    "НЕ ВДАЛОСЯ ВИДАЛИТИ", /* measurement.delete_failed */
+    "ВИДАЛЕННЯ СЕАНСУ...", /* measurement.deleting_session */
+    "ADC ЦИФР. ЗАВАДА  %s", /* measurement.digital_fault */
+    "ПОМИЛКА %s   OK ПОВТОРИТИ", /* measurement.error_retry */
+    "LEFT НАЗАД   OK ДІЯ   UP/DOWN ВИБІР", /* measurement.footer */
+    "ГРАФІКИ TFT ВИМК.  ADC+SD УВІМК.", /* measurement.graphs_off */
+    "ГРАФІКИ TFT ВИМК.  %s", /* measurement.graphs_status */
+    "OK ПОЧАТИ", /* measurement.health_start */
+    "%s  %luГц  CH1-CH4", /* measurement.idle_summary */
+    "НЕ ВДАЛОСЯ ЗБЕРЕГТИ СЕАНС", /* measurement.keep_failed */
+    "НЕ ВДАЛОСЯ ЗАВЕРШИТИ ВИМІРЮВАННЯ", /* measurement.leave_failed */
+    "ВИХІД ПІСЛЯ ЗАВЕРШЕННЯ ДІЇ...", /* measurement.leaving_after_operation */
+    "НЕМАЄ ЗБЕРЕЖЕНОГО СЕАНСУ ДЛЯ 3D ОГЛЯДУ", /* measurement.no_session_preview */
+    "ОБ’ЄКТ %s  [%s]", /* measurement.object_format */
+    "НЕМАЄ АКТИВНОГО ОБ’ЄКТА", /* measurement.object_none */
+    "ПОШУК ОБ’ЄКТА...", /* measurement.object_resolving */
+    "ЗАПИС %s  %luс  %luГц", /* measurement.recording */
+    "OK ЗУПИНИТИ   S:%llu   ВТРАТИ:%llu", /* measurement.recording_status */
+    "%s S:%llu ВТР:%llu", /* measurement.review_counts */
+    "НЕ ВДАЛОСЯ ЗБЕРЕГТИ", /* measurement.save_failed */
+    "СПОЧАТКУ ОБЕРІТЬ АКТИВНИЙ ОБ’ЄКТ", /* measurement.select_object */
+    "ADC SERIAL?  %s", /* measurement.serial_fault */
+    "СЕАНС ЗБЕРЕЖЕНО", /* measurement.session_saved */
+    "НЕ ВДАЛОСЯ ПОЧАТИ", /* measurement.start_failed */
+    "ПОЧАТОК ЗАПИСУ...", /* measurement.starting_recording */
+    "ЗАВЕРШЕНО", /* measurement.state_complete */
+    "ВИДАЛЕННЯ", /* measurement.state_deleting */
+    "ПОМИЛКА", /* measurement.state_error */
+    "НАЖИВО", /* measurement.state_live */
+    "ЗАПИС", /* measurement.state_recording */
+    "ЗАПУСК", /* measurement.state_starting */
+    "ЗУПИНКА", /* measurement.state_stopping */
+    "НЕ ВДАЛОСЯ ЗУПИНИТИ", /* measurement.stop_failed */
+    "ЗАВЕРШЕНО %s  %luс", /* measurement.stopped */
+    "ЗУПИНКА ПЕРЕД ВИХОДОМ...", /* measurement.stopping_leaving */
+    "ЗУПИНКА ЗАПИСУ...", /* measurement.stopping_recording */
+    "НАЖИВО --", /* measurement.summary_live */
+    "ОБ’ЄКТ --", /* measurement.summary_object */
+    "ВИМІРЮВАННЯ", /* measurement.title */
+    "ADC ЗБІЙ ПЕРЕДАЧІ  %s", /* measurement.transport_fault */
+    "НЕВІДОМО", /* measurement.unknown */
+    "ЗАЧЕКАЙТЕ...", /* measurement.wait */
+    "ЗАЧЕКАЙТЕ — ВИХІД...", /* measurement.wait_leaving */
+    "ВИМІРЮВАННЯ / AD7606", /* menu.measurements */
+    "ОБ’ЄКТИ", /* menu.objects */
+    "СХОВИЩЕ / SD CARD", /* menu.storage */
+    "АКТИВНИЙ  %s  %s", /* objects.active */
+    "АКТИВНИЙ %s", /* objects.active_done */
+    "[АКТИВНИЙ]", /* objects.active_marker */
+    "АКТИВНИЙ: НЕМАЄ", /* objects.active_none */
+    "ВИДАЛИТИ ОБ’ЄКТ?", /* objects.confirm_delete */
+    "OK/RIGHT ПІДТВЕРДИТИ   LEFT СКАСУВАТИ", /* objects.confirm_footer */
+    "СТВОРЕНО %s", /* objects.created */
+    "СТВОРЕННЯ ОБ’ЄКТА...", /* objects.creating */
+    "ВИДАЛИТИ ОБ’ЄКТ", /* objects.delete */
+    "НЕ ВДАЛОСЯ ПОЧАТИ ВИДАЛЕННЯ", /* objects.delete_start_failed */
+    "ВИДАЛЕНО %s", /* objects.deleted */
+    "ВИДАЛЕННЯ...", /* objects.deleting */
+    "%s  %s%s", /* objects.list_entry */
+    "НЕ ВДАЛОСЯ ЗЧИТАТИ ОБ’ЄКТИ", /* objects.list_failed */
+    "ЗАВАНТАЖЕННЯ ОБ’ЄКТІВ...", /* objects.loading */
+    "%s  %s", /* objects.name_pair */
+    "НОВИЙ ОБ’ЄКТ", /* objects.new */
+    "НЕМАЄ ОБ’ЄКТІВ", /* objects.none */
+    "ДІЯ З ОБ’ЄКТОМ НЕ ВДАЛАСЯ", /* objects.operation_failed */
+    "ОБЕРІТЬ ОБ’ЄКТ ДЛЯ АКТИВАЦІЇ", /* objects.select_activate */
+    "ОБЕРІТЬ ОБ’ЄКТ ДЛЯ ВИДАЛЕННЯ", /* objects.select_delete */
+    "СЛУЖБА ОБ’ЄКТІВ ЗАЙНЯТА / ЗБІЙ", /* objects.service_busy */
+    "ЗРОБИТИ АКТИВНИМ", /* objects.set_active */
+    "НЕ ВДАЛОСЯ ПОЧАТИ АКТИВАЦІЮ", /* objects.set_active_start_failed */
+    "АКТИВАЦІЯ ОБ’ЄКТА...", /* objects.setting_active */
+    "USB ПІДКЛЮЧЕНО — ВИМКНЕННЯ СКАСОВАНО", /* power.alert_cancelled */
+    "НИЗЬКИЙ ЗАРЯД — USB АБО ВИМКНЕННЯ", /* power.alert_critical */
+    "НИЗЬКИЙ ЗАРЯД — ПІДКЛЮЧІТЬ USB", /* power.alert_low */
+    "НИЗЬКИЙ ЗАРЯД — ВИМКНЕННЯ", /* power.alert_shutdown */
+    "АКБ", /* power.battery */
+    "ЗАРЯД", /* power.charging */
+    "КРИТ.", /* power.critical */
+    "ПОВНА", /* power.full */
+    "USB %uс", /* power.grace */
+    "", /* power.low_battery_soon */
+    "ВИМК.", /* power.off */
+    "%d%%", /* power.percent */
+    "USB", /* power.usb */
+    "НИЗЬК.", /* power_badge.low */
+    "LEFT НАЗАД RIGHT ОБЕРТ UP/DN НАХИЛ OK ОГЛЯД", /* scan.footer */
+    "ЗАВАНТАЖЕННЯ...", /* scan.loading */
+    "НЕМАЄ 3D-СКАНУ", /* scan.no_3d_scan */
+    "НЕМАЄ ОГЛЯДУ", /* scan.no_preview */
+    "ЗАПОВНЕННЯ %u  %s", /* scan.occupancy */
+    "ПАМ’ЯТІ ДЛЯ ПОЛОТНА НЕДОСТАТНЬО", /* scan.reason_canvas_memory */
+    "НЕКОРЕКТНИЙ ОГЛЯД", /* scan.reason_invalid_preview */
+    "НЕКОРЕКТНИЙ СЕАНС", /* scan.reason_invalid_session */
+    "ЗАВАНТАЖУВАЧ НЕДОСТУПНИЙ", /* scan.reason_loader */
+    "НЕМАЄ ОГЛЯДУ АБО ЗАПОВНЕННЯ", /* scan.reason_no_data */
+    "НЕМАЄ КОРЕКТНОГО ОГЛЯДУ АБО ЗАПОВНЕННЯ", /* scan.reason_no_valid_data */
+    "НЕДОСТАТНЬО ПАМ’ЯТІ ДЛЯ 3D ОГЛЯДУ", /* scan.reason_preview_memory */
+    "ОГЛЯД НЕ ЗНАЙДЕНО", /* scan.reason_preview_missing */
+    "3D ОГЛЯД НЕДОСТУПНИЙ", /* scan.reason_preview_unavailable */
+    "НЕ ВДАЛОСЯ ПРОЧИТАТИ ОГЛЯД", /* scan.reason_preview_unreadable */
+    "ТРИВАЄ ЗАПИС", /* scan.reason_recording_active */
+    "СКАН НЕ ЗНАЙДЕНО", /* scan.reason_scan_missing */
+    "НЕ ВДАЛОСЯ ПРОЧИТАТИ СКАН", /* scan.reason_scan_unreadable */
+    "НЕ ВДАЛОСЯ СТВОРИТИ ЕКРАН", /* scan.reason_screen_memory */
+    "СКАН CRC ЗАСТАРІВ", /* scan.reason_stale_crc */
+    "3D ОГЛЯД", /* scan.title */
+    "ВОКСЕЛІ %u  СПРОЩЕННЯ %u%s%s", /* scan.voxels */
+    "ПЕРЕВІРКА СХОВИЩА...", /* shared.checking_storage */
+    "--", /* shared.empty */
+    "UP/DOWN НАВ   OK ВИБІР   LEFT НАЗАД", /* shared.footer_back */
+    "UP/DOWN НАВ   OK ВИБІР   LEFT СКАСУВАТИ", /* shared.footer_cancel */
+    "ТРИВАЄ ДІЯ ВИМІРЮВАННЯ", /* shared.measure_operation_busy */
+    "СЛУЖБА ВИМІРЮВАНЬ НЕДОСТУПНА", /* shared.measure_service_unavailable */
+    "ПІДТВЕРДИТИ СТИРАННЯ ДАНИХ", /* storage.confirm_erase */
+    "НАТИСНІТЬ OK ЩЕ РАЗ, ЩОБ СТЕРТИ ДАНІ", /* storage.confirm_prompt */
+    "ДАНІ СТЕРТО. ОНОВІТЬ ІНФОРМАЦІЮ", /* storage.erase_complete */
+    "СТЕРТИ ДАНІ ПРИСТРОЮ", /* storage.erase_device */
+    "НЕ ВДАЛОСЯ СТЕРТИ ДАНІ", /* storage.erase_failed */
+    "СТИРАННЯ ДАНИХ...", /* storage.erasing */
+    "НЕ ВДАЛОСЯ ПРОЧИТАТИ SD", /* storage.info_failed */
+    "ДАНІ SD НЕ ЗАВАНТАЖЕНО", /* storage.not_loaded */
+    "?????? ? ????? ????????? ???????", /* storage.recovery_complete */
+    "???? ? ????? ????????? ???????", /* storage.recovery_failed */
+    "ОНОВИТИ ДАНІ SD", /* storage.refresh */
+    "ОНОВЛЕННЯ ДАНИХ SD...", /* storage.refreshing */
+    "ЛІМІТ SD ПІД ЧАС РОБОТИ 20 MHz", /* storage.runtime_limit */
+    "СЛУЖБА СХОВИЩА ЗАЙНЯТА / ЗБІЙ", /* storage.service_busy */
+    "ВІЛЬНО %.2f GB   SPI %.2f MHz", /* storage.space */
+    "%s  %s  %.2f GB", /* storage.summary */
+    "СХОВИЩЕ", /* storage.title */
+    "CORE0 СЕРВІСИ/LVGL   CORE1 ЗБІР ДАНИХ", /* system.cores */
+    "ПЗ      %s", /* system.firmware */
+    "ВНУТР. КУЧА %lu KB вільно", /* system.heap */
+    "ВНУТР. КУЧА -- KB вільно", /* system.heap_empty */
+    "ESP-IDF  %s", /* system.idf_version */
+    "МОВА: АНГЛІЙСЬКА", /* system.language_english */
+    "UP/DN ВИБІР  OK ЗБЕРЕГТИ  LEFT НАЗАД", /* system.language_footer */
+    "МОВА: УКРАЇНСЬКА", /* system.language_ukrainian */
+    "LVGL     %d.%d.%d + esp_lvgl_port", /* system.lvgl_version */
+    "PSRAM    %lu KB вільно", /* system.psram */
+    "PSRAM    -- KB вільно", /* system.psram_empty */
+    "СИСТЕМА", /* system.title */
+    "ЧАС      %lld с", /* system.uptime */
+    "ЧАС      -- с", /* system.uptime_empty */
+    "AP  %s", /* wifi.ap_ssid */
+    "НАТИСНІТЬ OK ЩЕ РАЗ: ЗАБУТИ МЕРЕЖУ", /* wifi.ask_forget */
+    "НАТИСНІТЬ OK ЩЕ РАЗ: НАЛАШТУВАТИ", /* wifi.ask_setup */
+    "ТЕСТ КАМЕРИ + WEBXR", /* wifi.camera_webxr */
+    "КОМАНДА WI-FI НЕ ВДАЛАСЯ", /* wifi.command_failed */
+    "КОМАНДУ WI-FI ПРИЙНЯТО", /* wifi.command_ok */
+    "ПІДКЛЮЧИТИСЯ ДО ЗБЕРЕЖЕНОЇ МЕРЕЖІ", /* wifi.connect_saved */
+    "ЗАВАНТАЖТЕ ПУБЛІЧНИЙ CA", /* wifi.download_ca */
+    "УВІМКНІТЬ ТОЧКУ ДОСТУПУ ТЕЛЕФОНА", /* wifi.enable_hotspot */
+    "ЗАБУТИ ЗБЕРЕЖЕНУ МЕРЕЖУ", /* wifi.forget */
+    "ПІДТВЕРДИТИ ЗАБУВАННЯ МЕРЕЖІ", /* wifi.forget_confirm */
+    "ВСТАНОВІТЬ CA В ANDROID", /* wifi.install_android */
+    "IP    %s", /* wifi.ip */
+    "РЕЖИМ  %s", /* wifi.mode */
+    "ДАЛІ: QR ДЛЯ ПЕРЕВІРКИ HTTPS", /* wifi.next_verify */
+    "CA ПІДТВЕРДЖЕНО — СКАНУЙТЕ QR НАЛАШТУВАННЯ", /* wifi.notice_ca_confirmed */
+    "CA ЗАВАНТАЖЕНО — ВСТАНОВІТЬ І ПРОДОВЖТЕ", /* wifi.notice_ca_downloaded */
+    "WI-FI ПІДКЛЮЧЕНО — ЗАПУСК HTTPS", /* wifi.notice_connected */
+    "ПІДКЛЮЧЕННЯ ДО ЗБЕРЕЖЕНОЇ МЕРЕЖІ WI-FI...", /* wifi.notice_connecting */
+    "WI-FI ВІД’ЄДНАНО — ПОВТОРНА СПРОБА", /* wifi.notice_disconnected */
+    "HTTPS ГОТОВЕ — СКАНУЙТЕ QR ПЕРЕВІРКИ", /* wifi.notice_https_ready */
+    "ВСТАНОВІТЬ CA, ПІДКЛЮЧІТЬСЯ Й ПІДТВЕРДЬТЕ", /* wifi.notice_install_reconnect */
+    "ПОСИЛАННЯ ЗАКРИТО — ПЕРЕХІД НА WI-FI", /* wifi.notice_link_closed */
+    "ТЕЛЕФОН ВІД’ЄДНАНО — СКАНУЙТЕ QR WI-FI", /* wifi.notice_phone_disconnected */
+    "ТЕЛЕФОН ПІДКЛЮЧЕНО — СКАНУЙТЕ QR ROOT CA", /* wifi.notice_phone_ready */
+    "ЗБЕРЕЖЕНО — УВІМКНІТЬ ТОЧКУ ДОСТУПУ", /* wifi.notice_saved */
+    "СТОРІНКУ ВІДКРИТО — ВВЕДІТЬ ДАНІ ТОЧКИ ДОСТУПУ", /* wifi.notice_setup_open */
+    "HTTPS/КАМЕРА/WEBXR ПЕРЕВІРЕНО", /* wifi.notice_verified */
+    "ПЕРЕВІРКУ НЕ ЗАВЕРШЕНО — ПЕРЕВІРТЕ ТЕЛЕФОН", /* wifi.notice_verify_incomplete */
+    "ЗВІТ З ТЕЛЕФОНА ОТРИМАНО", /* wifi.phone_report */
+    "ПОВЕРНІТЬСЯ Й НАТИСНІТЬ ДАЛІ", /* wifi.return_continue */
+    "ROOT CA ПІДТВЕРДЖЕНО", /* wifi.root_ca_confirmed */
+    "СКАНУЙТЕ QR WI-FI", /* wifi.scan_join */
+    "СКАНУЙТЕ QR ТЕЛЕФОНОМ", /* wifi.scan_phone */
+    "ПІДТВЕРДИТИ НАЛАШТУВАННЯ", /* wifi.setup_confirm */
+    "УВІЙТИ В РЕЖИМ НАЛАШТУВАННЯ", /* wifi.setup_enter */
+    "SSID  %s", /* wifi.ssid */
+    "КРОК 1/4  ПІДКЛЮЧІТЬ ТЕЛЕФОН", /* wifi.step1_connect */
+    "КРОК 2/4  CA ЗАВАНТАЖЕНО", /* wifi.step2_downloaded */
+    "КРОК 2/4  ВСТАНОВІТЬ ROOT CA", /* wifi.step2_install */
+    "КРОК 3/4  НАЛАШТУЙТЕ HOTSPOT", /* wifi.step3_configure */
+    "КРОК 3/4  СТОРІНКУ ВІДКРИТО", /* wifi.step3_page_open */
+    "КРОК 3/4  НАЛАШТУВАННЯ ЗБЕРЕЖЕНО", /* wifi.step3_saved */
+    "КРОК 4/4  ПЕРЕВІРКУ НЕ ЗАВЕРШЕНО", /* wifi.step4_incomplete */
+    "КРОК 4/4  HTTPS / WEBXR ПЕРЕВІРЕНО", /* wifi.step4_verified */
+    "Wi-Fi / ВЕБ", /* wifi.title */
+    "SEC %s  CAM %s  XR %s  AR %s", /* wifi.verify_codes */
+    "КРОК 4/4  ПЕРЕВІРТЕ HTTPS", /* wifi.verify_https */
+};
+
+const char *ui_i18n_catalog_en(ui_i18n_key_t key)
+{
+    if ((unsigned)key >= (unsigned)UI_I18N_KEY_COUNT) {
+        return 0;
+    }
+    return s_ui_i18n_en[(unsigned)key];
+}
+
+const char *ui_i18n_catalog_uk(ui_i18n_key_t key)
+{
+    if ((unsigned)key >= (unsigned)UI_I18N_KEY_COUNT) {
+        return 0;
+    }
+    return s_ui_i18n_uk[(unsigned)key];
+}

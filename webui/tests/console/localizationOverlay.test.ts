@@ -259,19 +259,19 @@ describe('toggle availability (MAX-148 unconstrained vs scan-constrained)', () =
   it('disabled while the scan presence is still loading (hasScan === null)', () => {
     const result = toggleAvailability(mixed, null);
     expect(result.available).toBe(false);
-    expect(result.reason).toMatch(/checking/i);
+    expect(result.reason).toBe('checking_scan');
   });
 
   it('disabled with an explanation when the session has no scan', () => {
     const result = toggleAvailability(mixed, false);
     expect(result.available).toBe(false);
-    expect(result.reason).toMatch(/no 3d scan/i);
+    expect(result.reason).toBe('no_scan');
   });
 
   it('disabled with an explanation when there is a scan but no constrained results yet', () => {
     const result = toggleAvailability(unconstrainedOnly, true);
     expect(result.available).toBe(false);
-    expect(result.reason).toMatch(/no scan-constrained/i);
+    expect(result.reason).toBe('no_constrained_results');
   });
 
   it('enabled once a scan exists and at least one constrained run is on record', () => {

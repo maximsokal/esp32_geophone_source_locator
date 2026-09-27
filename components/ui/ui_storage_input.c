@@ -58,7 +58,7 @@ void ui_handle_storage_key_locked(
                 false;
 
             ui_set_notice_locked(
-                "REFRESHING SD INFO..."
+                ui_tr(UI_I18N_KEY_STORAGE_REFRESHING)
             );
 
             esp_err_t err =
@@ -66,7 +66,7 @@ void ui_handle_storage_key_locked(
 
             if (err != ESP_OK) {
                 ui_set_notice_locked(
-                    "STORAGE SERVICE BUSY/FAILED"
+                    ui_tr(UI_I18N_KEY_STORAGE_SERVICE_BUSY)
                 );
             }
         } else {
@@ -81,14 +81,14 @@ void ui_handle_storage_key_locked(
                     true;
 
                 ui_set_notice_locked(
-                    "PRESS OK AGAIN TO ERASE DATA"
+                    ui_tr(UI_I18N_KEY_STORAGE_CONFIRM_PROMPT)
                 );
             } else {
                 context->storage_erase_confirm =
                     false;
 
                 ui_set_notice_locked(
-                    "ERASING DATA..."
+                    ui_tr(UI_I18N_KEY_STORAGE_ERASING)
                 );
 
                 esp_err_t err =
@@ -96,7 +96,7 @@ void ui_handle_storage_key_locked(
 
                 if (err != ESP_OK) {
                     ui_set_notice_locked(
-                        "STORAGE SERVICE BUSY/FAILED"
+                        ui_tr(UI_I18N_KEY_STORAGE_SERVICE_BUSY)
                     );
                 }
             }

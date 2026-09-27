@@ -2,7 +2,10 @@ import type { RecordingReport } from '../../domain/reportModel';
 import { makeProjection } from '../../domain/reportModel';
 import type { ProjectionAxis } from '../../domain/reportModel';
 import { encodeQr, qrSvgPath } from '../../domain/qrCode';
+import { qrByteCapacity } from '../../domain/qrCode';
 import { describeFrames } from '../../domain/spatialFrames';
+import { useLocale, useT } from '../../i18n';
+import { formatDate, formatDistance, formatNumber } from '../../i18n/format';
 
 /*
  * MAX-150: printable report of one saved recording. Pure view (no network,
@@ -90,55 +93,57 @@ function ScanPanel({ report, horizontal, vertical, title }: Omit<PanelProps, 'wi
   );
 }
 
-function fmt(value: number, digits = 2): string {
-  return Number.isFinite(value) ? value.toFixed(digits) : '—';
+function fmt(value: number, locale: 'en' | 'uk', digits = 2): string {
+  return Number.isFinite(value) ? formatNumber(locale, value, { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
 }
 
 export default function ReportView({ report }: { report: RecordingReport }) {
+  const tr = useT();
+  const { locale } = useLocale();
   const { object, session, evidence, overlay, links } = report;
   const location = object.location;
   return (
     <article className="report">
       <header>
-        <h1>{object.name} — recording {session.session_id}</h1>
-        <p>Object {object.id} · generated {new Date(report.generatedAtMs).toLocaleString()} · from the recording saved on the device (no live acquisition used).</p>
+        <h1>{tr('report.title', { object: object.name, session: session.session_id })}</h1>
+        <p>{tr('report.metadata', { id: object.id, date: formatDate(locale, report.generatedAtMs) })}</p>
       </header>
 
       <section>
-        <h2>Location</h2>
+        <h2>{tr('report.location')}</h2>
         {links === null ? (
-          <p>No phone GPS location stored for this object.</p>
+          <p>{tr('report.no_phone_gps')}</p>
         ) : (
           <>
             <p>
-              {fmt(location.latitude, 6)}, {fmt(location.longitude, 6)} (±{fmt(location.accuracy_m, 0)} m, {location.source})
-              {location.altitude_valid ? ` · altitude ${fmt(location.altitude_m, 1)} m` : ''}
+              {formatNumber(locale, location.latitude, { useGrouping: false, minimumFractionDigits: 6, maximumFractionDigits: 6 })}, {formatNumber(locale, location.longitude, { useGrouping: false, minimumFractionDigits: 6, maximumFractionDigits: 6 })} ({tr('report.translation_uncertainty', { value: formatNumber(locale, location.accuracy_m, { maximumFractionDigits: 0 }) })}, {location.source})
+              {location.altitude_valid ? ` · ${tr('report.altitude', { value: formatNumber(locale, location.altitude_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}` : ''}
             </p>
             <p><a href={links.osm}>{links.osm}</a><br /><a href={links.google}>{links.google}</a></p>
             <div className="report-qrs">
-              <QrImage text={links.osm} label="OpenStreetMap" />
-              <QrImage text={links.google} label="Google Maps" />
+              <QrImage text={links.osm} label={tr('report.openstreetmap')} />
+              <QrImage text={links.google} label={tr('report.google_maps')} />
             </div>
           </>
         )}
       </section>
 
       <section>
-        <h2>Coordinate frames</h2>
+        <h2>{tr('report.coordinate_frames')}</h2>
         {(() => {
-          const frames = describeFrames(location, report.scanPoints.length > 0);
+          const frames = describeFrames(location, report.scanPoints.length > 0, locale);
           return (
             <>
-              <p>{frames.axisConvention} Heading (true north) is not known and is never derived from the GPS fix.</p>
+              <p>{frames.axisConvention} {tr('report.frames_heading_note')}</p>
               <table>
-                <thead><tr><th>Transform</th><th>Status</th><th>Source</th><th>Note</th></tr></thead>
+                <thead><tr><th>{tr('report.transform')}</th><th>{tr('report.status')}</th><th>{tr('report.source')}</th><th>{tr('report.note')}</th></tr></thead>
                 <tbody>
-                  {frames.transforms.map((t) => (
-                    <tr key={`${t.from}-${t.to}`}>
-                      <td>{t.from} → {t.to}</td>
-                      <td>{t.status.replace('_', ' ')}{t.translationUncertaintyM !== null && t.status === 'translation_only' ? ` (±${fmt(t.translationUncertaintyM, 0)} m)` : ''}</td>
-                      <td>{t.source}</td>
-                      <td>{t.note}</td>
+                  {frames.transforms.map((transform) => (
+                    <tr key={`${transform.from}-${transform.to}`}>
+                      <td>{tr(`report.frame.${transform.from}` as 'report.frame.gps' | 'report.frame.sensor' | 'report.frame.scan' | 'report.frame.report')} -&gt; {tr(`report.frame.${transform.to}` as 'report.frame.gps' | 'report.frame.sensor' | 'report.frame.scan' | 'report.frame.report')}</td>
+                      <td>{transform.status === 'translation_only' ? tr('report.translation_only') : tr(`report.frame.${transform.status}` as 'report.frame.measured' | 'report.frame.identity' | 'report.frame.unknown')}{transform.translationUncertaintyM !== null && transform.status === 'translation_only' ? ` ${tr('report.translation_uncertainty', { value: formatNumber(locale, transform.translationUncertaintyM, { maximumFractionDigits: 0 }) })}` : ''}</td>
+                      <td>{transform.source}</td>
+                      <td>{transform.note}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -149,90 +154,90 @@ export default function ReportView({ report }: { report: RecordingReport }) {
       </section>
 
       <section>
-        <h2>Recording</h2>
+        <h2>{tr('report.recording')}</h2>
         <table>
           <tbody>
-            <tr><th>Status</th><td>{session.status ?? (session.complete ? 'complete' : 'incomplete')}</td></tr>
-            <tr><th>Source</th><td>{session.source ?? '—'}</td></tr>
-            <tr><th>Sample rate</th><td>{session.sample_rate_hz} Hz · {session.channel_count} channels</td></tr>
-            <tr><th>Duration</th><td>{session.recording_ms_available === false ? 'unknown' : `${fmt(session.recording_ms / 1000, 1)} s`}</td></tr>
-            <tr><th>Samples / dropped</th><td>{session.samples_written} / {session.dropped_frames_available === false ? 'unknown' : session.dropped_frames}</td></tr>
-            <tr><th>REMOTE nodes</th><td>{evidence.remoteSummary} · policy {evidence.policy}</td></tr>
+            <tr><th>{tr('report.status')}</th><td>{session.status ?? (session.complete ? 'complete' : 'incomplete')}</td></tr>
+            <tr><th>{tr('report.source')}</th><td>{session.source ?? '—'}</td></tr>
+            <tr><th>{tr('report.sample_rate')}</th><td>{formatNumber(locale, session.sample_rate_hz)} Hz · {tr('report.channels', { count: formatNumber(locale, session.channel_count) })}</td></tr>
+            <tr><th>{tr('report.duration')}</th><td>{session.recording_ms_available === false ? tr('report.unknown') : `${formatNumber(locale, session.recording_ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`}</td></tr>
+            <tr><th>{tr('report.samples_dropped')}</th><td>{formatNumber(locale, session.samples_written)} / {session.dropped_frames_available === false ? tr('report.unknown') : formatNumber(locale, session.dropped_frames)}</td></tr>
+            <tr><th>{tr('report.remote_nodes')}</th><td>{evidence.remoteCount === null ? tr('report.policy.unknown') : tr('report.remote_count', { count: formatNumber(locale, evidence.remoteCount) })} · {tr('report.policy', { value: tr(`report.policy.${evidence.policy}` as 'report.policy.unknown' | 'report.policy.insufficient' | 'report.policy.planar_2d' | 'report.policy.capable_3d') })}</td></tr>
           </tbody>
         </table>
       </section>
 
       <section>
-        <h2>Sensor geometry and levelling (frozen with the recording)</h2>
-        {evidence.positions.length === 0 ? <p>No geometry was frozen with this recording.</p> : (
+        <h2>{tr('report.sensor_geometry')}</h2>
+        {evidence.positions.length === 0 ? <p>{tr('report.no_geometry')}</p> : (
           <table>
-            <thead><tr><th>Sensor</th><th>x (m)</th><th>y (m)</th><th>z (m)</th><th>Levelled</th></tr></thead>
+            <thead><tr><th>{tr('report.sensor')}</th><th>{tr('report.x_m')}</th><th>{tr('report.y_m')}</th><th>{tr('report.z_m')}</th><th>{tr('report.levelled')}</th></tr></thead>
             <tbody>
               {evidence.positions.map((p) => (
-                <tr key={p.label}><td>{p.label}</td><td>{fmt(p.position.x_m)}</td><td>{fmt(p.position.y_m)}</td><td>{fmt(p.position.z_m)}</td><td>{p.leveled ? 'yes' : 'no'}</td></tr>
+                <tr key={p.pod}><td>{p.pod === 0 ? tr('report.main_node') : tr('report.remote_node', { number: formatNumber(locale, p.pod) })}</td><td>{fmt(p.position.x_m, locale)}</td><td>{fmt(p.position.y_m, locale)}</td><td>{fmt(p.position.z_m, locale)}</td><td>{tr(p.leveled ? 'report.yes' : 'report.no')}</td></tr>
               ))}
             </tbody>
           </table>
         )}
         <p className="report-note">
-          Worst CS residual {evidence.worstResidualM === null ? '—' : `${fmt(evidence.worstResidualM)} m`} ·
-          worst position uncertainty {evidence.worstUncertaintyM === null ? '—' : `${fmt(evidence.worstUncertaintyM)} m`}
-          {evidence.undeterminedPods.length > 0 ? ` · undetermined: Pod ${evidence.undeterminedPods.join(', ')}` : ''}
+          {tr('report.worst_cs_residual')}: {evidence.worstResidualM === null ? '—' : formatDistance(locale, evidence.worstResidualM)} ·
+          {tr('report.worst_position_uncertainty')}: {evidence.worstUncertaintyM === null ? '—' : formatDistance(locale, evidence.worstUncertaintyM)}
+          {evidence.undeterminedPods.length > 0 ? ` · ${tr('report.undetermined_pods', { nodes: evidence.undeterminedPods.map((pod) => formatNumber(locale, pod)).join(', ') })}` : ''}
         </p>
       </section>
 
       <section className="report-break">
-        <h2>Projections — sensor frame (MAIN at the origin)</h2>
+        <h2>{tr('report.projections')}</h2>
         <div className="report-panels">
-          <GeometryPanel report={report} horizontal="x" vertical="y" title="Top (x/y), geometry only" withLocalization={false} />
-          <GeometryPanel report={report} horizontal="x" vertical="z" title="Side (x/z), geometry only" withLocalization={false} />
-          <GeometryPanel report={report} horizontal="x" vertical="y" title="Top (x/y), with localization" withLocalization />
-          <GeometryPanel report={report} horizontal="x" vertical="z" title="Side (x/z), with localization" withLocalization />
+          <GeometryPanel report={report} horizontal="x" vertical="y" title={tr('report.projection.top_geometry')} withLocalization={false} />
+          <GeometryPanel report={report} horizontal="x" vertical="z" title={tr('report.projection.side_geometry')} withLocalization={false} />
+          <GeometryPanel report={report} horizontal="x" vertical="y" title={tr('report.projection.top_localization')} withLocalization />
+          <GeometryPanel report={report} horizontal="x" vertical="z" title={tr('report.projection.side_localization')} withLocalization />
         </div>
       </section>
 
       <section>
-        <h2>3D scan of the object</h2>
-        {report.scanPoints.length === 0 ? <p>No 3D scan saved for this recording.</p> : (
+        <h2>{tr('report.scan')}</h2>
+        {report.scanPoints.length === 0 ? <p>{tr('report.no_scan')}</p> : (
           <>
             <div className="report-panels">
-              <ScanPanel report={report} horizontal="x" vertical="y" title="Scan, top" />
-              <ScanPanel report={report} horizontal="x" vertical="z" title="Scan, side" />
+              <ScanPanel report={report} horizontal="x" vertical="y" title={tr('report.projection.scan_top')} />
+              <ScanPanel report={report} horizontal="x" vertical="z" title={tr('report.projection.scan_side')} />
             </div>
-            <p className="report-note">Scan frame. It is not yet registered to the sensor frame (AprilTag/ArUco registration, MAX-145), so localization results are not drawn on the scan.</p>
+            <p className="report-note">{tr('report.scan_not_registered')}</p>
           </>
         )}
       </section>
 
       <section className="report-break">
-        <h2>Localization methods</h2>
-        {overlay.sectors.length === 0 && overlay.unavailable.length === 0 ? <p>Not calculated.</p> : (
+        <h2>{tr('report.localization_methods')}</h2>
+        {overlay.sectors.length === 0 && overlay.unavailable.length === 0 ? <p>{tr('report.not_calculated')}</p> : (
           <table>
-            <thead><tr><th>Method</th><th>Source x / y / z (m)</th><th>Radius</th><th>Confidence</th><th>Residual</th><th>DoF</th></tr></thead>
+            <thead><tr><th>{tr('report.method')}</th><th>{tr('report.source_xyz')}</th><th>{tr('report.radius')}</th><th>{tr('report.confidence')}</th><th>{tr('report.residual')}</th><th>{tr('report.dof')}</th></tr></thead>
             <tbody>
               {overlay.sectors.map((s) => (
                 <tr key={s.method}>
-                  <td>{s.method}{s.kind === 'joint_fusion' ? ' (joint)' : ''}{s.emphasis === 'selected' ? ' ★' : ''}</td>
-                  <td>{fmt(s.position.x_m)} / {fmt(s.position.y_m)} / {fmt(s.position.z_m)}</td>
-                  <td>{fmt(s.radiusM)} m{s.radiusSource === 'nominal' ? ' (nominal)' : s.radiusSource === 'posterior' ? ' (2 sd)' : ''}</td>
-                  <td>{fmt(s.confidence)}</td>
-                  <td>{s.rmsResidualUs === null ? '—' : `${fmt(s.rmsResidualUs, 0)} µs`}</td>
-                  <td>{s.degreesOfFreedom ?? '—'}</td>
+                  <td>{s.method}{s.kind === 'joint_fusion' ? ` (${tr('report.joint')})` : ''}{s.emphasis === 'selected' ? ' *' : ''}</td>
+                  <td>{fmt(s.position.x_m, locale)} / {fmt(s.position.y_m, locale)} / {fmt(s.position.z_m, locale)}</td>
+                  <td>{formatDistance(locale, s.radiusM)}{s.radiusSource === 'nominal' ? ` (${tr('report.nominal')})` : s.radiusSource === 'posterior' ? ` (${tr('report.two_sd')})` : ''}</td>
+                  <td>{fmt(s.confidence, locale)}</td>
+                  <td>{s.rmsResidualUs === null ? '—' : `${formatNumber(locale, s.rmsResidualUs)} µs`}</td>
+                  <td>{s.degreesOfFreedom === null ? '—' : formatNumber(locale, s.degreesOfFreedom)}</td>
                 </tr>
               ))}
               {overlay.unavailable.map((u) => (
-                <tr key={`u-${u.method}`}><td>{u.method}</td><td colSpan={5}>unavailable: {u.reason}</td></tr>
+                <tr key={`u-${u.method}`}><td>{u.method}</td><td colSpan={5}>{tr('report.unavailable_reason', { reason: u.reason })}</td></tr>
               ))}
             </tbody>
           </table>
         )}
-        <p className="report-note">Radius = RMS time residual × propagation speed (a visual extent, not a statistical confidence region). ★ = method highlighted in the projections.</p>
+        <p className="report-note">{tr('report.radius_explanation')}</p>
       </section>
 
       <section>
-        <h2>Report QR</h2>
-        <QrImage text={report.qr.text} label={report.qr.kind === 'full_payload' ? 'Result summary' : 'Recording reference'} />
-        <p className="report-note">{report.qr.note}</p>
+        <h2>{tr('report.qr')}</h2>
+        <QrImage text={report.qr.text} label={tr(report.qr.kind === 'full_payload' ? 'report.result_summary' : 'report.recording_reference')} />
+        <p className="report-note">{tr(report.qr.kind === 'full_payload' ? 'report.qr_full_payload_note' : 'report.qr_reference_note', { bytes: qrByteCapacity(10) })}</p>
       </section>
     </article>
   );

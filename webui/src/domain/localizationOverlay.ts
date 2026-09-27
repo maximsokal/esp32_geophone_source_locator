@@ -3,6 +3,9 @@ import type {
   LocalizationRunPosition,
   LocalizationSessionGeometry,
 } from '../api/deviceApi';
+import type { I18nLocale } from '../i18n';
+import { translate } from '../i18n';
+import { formatNumber, formatPercent } from '../i18n/format';
 
 /**
  * MAX-161: compare localization methods of ONE saved recording in one scene.
@@ -140,17 +143,17 @@ export function isPlanarSector(sector: Pick<OverlaySector, 'dimensionality'>): b
   return sector.dimensionality === 'planar_2d';
 }
 
-export function dimensionalityLabel(dimensionality: LocalizationRun['dimensionality']): string {
+export function dimensionalityLabel(dimensionality: LocalizationRun['dimensionality'], locale: I18nLocale = 'en'): string {
   switch (dimensionality) {
     case 'planar_2d': return '2D';
     case 'capable_3d': return '3D';
-    default: return 'insufficient';
+    default: return translate(locale, 'overlay.insufficient');
   }
 }
 
 export interface ToggleAvailability {
   available: boolean;
-  /** Why the toggle is disabled; null when available. */
+  /** Stable reason code for the UI; null when available. */
   reason: string | null;
 }
 
@@ -160,10 +163,10 @@ export interface ToggleAvailability {
  * with a distinct explanation from "no scan at all".
  */
 export function toggleAvailability(runs: LocalizationRun[], hasScan: boolean | null): ToggleAvailability {
-  if (hasScan === null) return { available: false, reason: 'Checking whether this session has a 3D scan…' };
-  if (!hasScan) return { available: false, reason: 'This session has no 3D scan, so no scan-constrained results can exist.' };
+  if (hasScan === null) return { available: false, reason: 'checking_scan' };
+  if (!hasScan) return { available: false, reason: 'no_scan' };
   const hasConstrained = runs.some((run) => isConstrainedMethod(run.method_name));
-  if (!hasConstrained) return { available: false, reason: 'No scan-constrained localization results have been computed for this session yet.' };
+  if (!hasConstrained) return { available: false, reason: 'no_constrained_results' };
   return { available: true, reason: null };
 }
 
@@ -217,18 +220,19 @@ export function credibleBox(run: LocalizationRun): OverlayCredibleBox | null {
 }
 
 /** Table text: per-axis 1-sd and the credible region's size ('' when none). */
-export function uncertaintyText(run: Pick<LocalizationRun, 'uncertainty'>): string {
+export function uncertaintyText(run: Pick<LocalizationRun, 'uncertainty'>, locale: I18nLocale = 'en'): string {
   const u = run.uncertainty;
   if (u === undefined || !(u.credible_level > 0)) return '';
-  const sd = `±${u.std_m.x_m.toFixed(2)} / ${u.std_m.y_m.toFixed(2)} / ${u.std_m.z_m.toFixed(2)} m (1 sd)`;
-  const percent = Math.round(u.credible_level * 100);
+  const fixed = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+  const sd = `±${formatNumber(locale, u.std_m.x_m, fixed)} / ${formatNumber(locale, u.std_m.y_m, fixed)} / ${formatNumber(locale, u.std_m.z_m, fixed)} m (${translate(locale, 'overlay.one_sd')})`;
+  const percent = formatPercent(locale, u.credible_level);
   const size = u.credible_volume_m3 > 0
-    ? `${u.credible_volume_m3 < 0.01 ? u.credible_volume_m3.toExponential(1) : u.credible_volume_m3.toFixed(2)} m³`
-    : `${u.credible_area_m2 < 0.01 ? u.credible_area_m2.toExponential(1) : u.credible_area_m2.toFixed(2)} m²`;
+    ? `${formatNumber(locale, u.credible_volume_m3, u.credible_volume_m3 < 0.01 ? { notation: 'scientific', maximumFractionDigits: 1 } : fixed)} m³`
+    : `${formatNumber(locale, u.credible_area_m2, u.credible_area_m2 < 0.01 ? { notation: 'scientific', maximumFractionDigits: 1 } : fixed)} m²`;
   const inflation = u.sigma_inflation !== undefined && u.sigma_inflation > 1
-    ? ` · widened ×${u.sigma_inflation.toFixed(1)} (data misfit)`
+    ? ` · ${translate(locale, 'overlay.widened_misfit', { factor: formatNumber(locale, u.sigma_inflation, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}`
     : '';
-  return `${sd} · ${percent}% region ${size}${inflation}`;
+  return `${sd} · ${translate(locale, 'overlay.region_percent', { percent })} ${size}${inflation}`;
 }
 
 export function sectorRadius(run: LocalizationRun): { radiusM: number; source: 'residual' | 'posterior' | 'nominal' } {

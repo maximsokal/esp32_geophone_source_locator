@@ -23,6 +23,7 @@ import {
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
 import PowerBanner from './components/PowerBanner';
+import { useLocale, useT } from './i18n';
 
 const XrScannerFeature = lazy(() => import('./App'));
 
@@ -50,6 +51,8 @@ function transportFailure(message: string): boolean {
 }
 
 export default function DeviceConsoleApp() {
+  const { locale, selectedLocale, localeLoading, localeLoadFailed, setLocale } = useLocale();
+  const t = useT();
   const [screen, setScreen] = useState<Screen>('dashboard');
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [objects, setObjects] = useState<ObjectStoreState | null>(null);
@@ -319,8 +322,8 @@ export default function DeviceConsoleApp() {
     const scannerObjectId = selectedId ?? objects?.active_id ?? null;
     return (
       <div className="scanner-feature-shell">
-        <button className="console-floating-back" onClick={() => setScreen('objects')}>← Object</button>
-        <Suspense fallback={<main className="console-loading">Loading WebXR scanner…</main>}>
+        <button className="console-floating-back" onClick={() => setScreen('objects')}>{t('console.back_object')}</button>
+        <Suspense fallback={<main className="console-loading">{t('console.loading_xr')}</main>}>
           <XrScannerFeature objectId={scannerObjectId} sessionId={scannerSessionId} status={status} />
         </Suspense>
       </div>
@@ -328,7 +331,7 @@ export default function DeviceConsoleApp() {
   }
 
   const apiOnline = status !== null && linkError === null;
-  const apiLabel = status === null && linkError === null ? 'CONNECTING' : apiOnline ? 'ESP LINK' : 'API ERROR';
+  const apiLabel = status === null && linkError === null ? t('console.api_connecting') : apiOnline ? t('console.api_link') : t('console.api_error');
   const pageError = workspaceError ?? linkError;
 
   return (
@@ -339,11 +342,26 @@ export default function DeviceConsoleApp() {
           <small>{selectedObject?.name ?? 'ESP32-S3'}</small>
         </button>
         <nav>
-          <button aria-pressed={screen === 'dashboard'} onClick={() => setScreen('dashboard')}>Home</button>
-          <button aria-pressed={screen === 'objects'} onClick={() => setScreen('objects')}>Objects</button>
-          <button aria-pressed={screen === 'sensors'} onClick={() => setScreen('sensors')}>Sensors</button>
+          <button aria-pressed={screen === 'dashboard'} onClick={() => setScreen('dashboard')}>{t('nav.home')}</button>
+          <button aria-pressed={screen === 'objects'} onClick={() => setScreen('objects')}>{t('nav.objects')}</button>
+          <button aria-pressed={screen === 'sensors'} onClick={() => setScreen('sensors')}>{t('nav.sensors')}</button>
         </nav>
-        <div className={`device-dot ${apiOnline ? 'online' : 'offline'}`}>{apiLabel}</div>
+        <div className="console-topbar-actions">
+          <label className="locale-picker">
+            <span className="sr-only">{t('web.locale_label')}</span>
+            {/* The selector shows the requested locale; content stays EN until UK is ready. */}
+            <select aria-label={t('web.locale_label')} aria-busy={localeLoading} value={selectedLocale} onChange={(event) => setLocale(event.target.value as 'en' | 'uk')}>
+              <option value="en">EN</option>
+              <option value="uk">UK</option>
+            </select>
+          </label>
+          {(localeLoading || localeLoadFailed) && (
+            <small role="status" aria-live="polite">
+              {localeLoading ? t('web.locale_loading') : t('web.locale_load_failed')}
+            </small>
+          )}
+          <div className={`device-dot ${apiOnline ? 'online' : 'offline'}`}>{apiLabel}</div>
+        </div>
       </header>
 
       <PowerBanner status={status} />

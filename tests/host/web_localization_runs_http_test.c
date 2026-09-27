@@ -51,6 +51,23 @@ static void reset_fakes(void)
     };
     s_participation.z_provenance.available = true;
     s_participation.z_provenance.effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE;
+    s_participation.geometry_provenance = (seismic_recorder_geometry_provenance_t) {
+        .available = true,
+        .solver = "nrf_geometry_solver",
+        .solver_version = "1",
+        .refined = true,
+        .refine_iterations = 3U,
+        .topology_generation = 143U,
+        .cs_membership_generation = 52U,
+        .main_height_reference_generation = 7U,
+        .setup_id = "1000-143-52-7",
+        .start_uptime_ms = 995U,
+    };
+    s_participation.pods[0].source_sample_uptime_ms = 980U;
+    s_participation.pods[0].esp_receipt_uptime_ms = 990U;
+    s_participation.pods[0].source_age_at_start_known = true;
+    s_participation.pods[0].source_age_ms_at_start = 5U;
+    s_participation.pods[0].height_reference_generation = 7U;
     s_cs_pairs_calls = 0U;
     s_cs_pairs_result = ESP_OK;
     s_picks_list_calls = 0U;
@@ -130,6 +147,10 @@ esp_err_t seismic_recorder_read_session_cs_pairs(
     cs_pairs->pairs[0].confidence = 950U;
     cs_pairs->pairs[0].attempts = 1U;
     cs_pairs->pairs[0].valid_samples = 12U;
+    snprintf(cs_pairs->pairs[0].state, sizeof(cs_pairs->pairs[0].state), "valid");
+    snprintf(cs_pairs->pairs[0].last_failure, sizeof(cs_pairs->pairs[0].last_failure), "timeout");
+    cs_pairs->pairs[0].provider_quality_flags = 3U;
+    cs_pairs->pairs[0].scheduler_quality_flags = 1U;
     return ESP_OK;
 }
 
@@ -373,7 +394,7 @@ static httpd_req_t make_request(const char *query, char *response, size_t respon
 static void test_runs_listing_round_trips_persisted_records(void)
 {
     reset_fakes();
-    char response[4096] = {0};
+    char response[8192] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
     assert(web_localization_runs_handler(&request) == ESP_OK);
@@ -391,11 +412,17 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(s_geometry_calls == 1U);
     assert(strstr(response, "\"geometry\":{\"available\":true") != NULL);
     assert(strstr(response, "\"z_policy_effective\":\"barometric_relative\",\"z_fallback_reason\":\"\"") != NULL);
+    assert(strstr(response, "\"solver\":\"nrf_geometry_solver\",\"solver_version\":\"1\"") != NULL);
+    assert(strstr(response, "\"topology_generation\":143") != NULL);
+    assert(strstr(response, "\"cs_membership_generation\":52") != NULL);
+    assert(strstr(response, "\"setup_id\":\"1000-143-52-7\"") != NULL);
     assert(strstr(response, "\"pod\":1,\"computed\":true,\"leveled\":true") != NULL);
     assert(strstr(response, "\"x_mm\":300,\"y_mm\":-150") != NULL);
     assert(strstr(response, "\"pod\":3,\"computed\":false,\"leveled\":false") != NULL);
     assert(s_participation_calls == 1U);
     assert(strstr(response, "\"assigned\":true,\"node_id\":42,\"hardware_id\":\"01abff\",\"position_source\":\"channel_sounding_baro\"") != NULL);
+    assert(strstr(response, "\"source_sample_uptime_ms\":980,\"esp_receipt_uptime_ms\":990,\"height_reference_generation\":7,\"source_age_ms_at_start\":5") != NULL);
+    assert(strstr(response, "\"source_age_ms_at_start\":null") != NULL);
     assert(strstr(response, "\"assigned\":true,\"node_id\":null,\"hardware_id\":null,\"position_source\":\"channel_sounding_baro\"") != NULL);
     /* geometry must appear before runs, matching the documented response shape. */
     assert(strstr(response, "\"geometry\":") < strstr(response, "\"runs\":["));
@@ -404,6 +431,8 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "\"cs_pairs\":{\"available\":true") != NULL);
     assert(strstr(response, "\"node_a\":0,\"node_b\":1,\"valid\":true,\"distance_mm\":3200") != NULL);
     assert(strstr(response, "\"confidence\":950,\"attempts\":1,\"valid_samples\":12") != NULL);
+    assert(strstr(response, "\"state\":\"valid\",\"last_failure\":\"timeout\"") != NULL);
+    assert(strstr(response, "\"provider_quality_flags\":3,\"scheduler_quality_flags\":1") != NULL);
     /* cs_pairs must appear between geometry and runs. */
     assert(strstr(response, "\"geometry\":") < strstr(response, "\"cs_pairs\":"));
     assert(strstr(response, "\"cs_pairs\":") < strstr(response, "\"runs\":["));
@@ -424,7 +453,7 @@ static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
     s_geometry_result = ESP_ERR_NOT_FOUND;
     s_cs_pairs_result = ESP_ERR_NOT_FOUND;
     s_picks_list_result = ESP_ERR_NOT_FOUND;
-    char response[2048] = {0};
+    char response[8192] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
     assert(web_localization_runs_handler(&request) == ESP_OK);
@@ -444,7 +473,7 @@ static void test_participation_read_failure_keeps_geometry_response(void)
 {
     reset_fakes();
     s_participation_result = ESP_ERR_INVALID_RESPONSE;
-    char response[4096] = {0};
+    char response[8192] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
     assert(web_localization_runs_handler(&request) == ESP_OK);
@@ -466,11 +495,24 @@ static void test_runs_listing_includes_planar_fallback_reason(void)
         sizeof(s_participation.z_provenance.fallback_reason), "reference_generation_mismatch");
     s_participation.pods[0].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
     s_participation.pods[1].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
-    char response[4096] = {0};
+    char response[8192] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
     assert(web_localization_runs_handler(&request) == ESP_OK);
     assert(strstr(response,
         "\"z_policy_effective\":\"planar\",\"z_fallback_reason\":\"reference_generation_mismatch\"") != NULL);
+}
+
+
+static void test_unknown_provenance_is_omitted_and_source_age_is_null(void)
+{
+    reset_fakes();
+    s_participation.geometry_provenance.available = false;
+    s_participation.pods[0].source_age_at_start_known = false;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response, "\"provenance\"") == NULL);
+    assert(strstr(response, "\"source_age_ms_at_start\":null") != NULL);
 }
 
 static void test_runs_listing_requires_both_query_parameters(void)
@@ -604,6 +646,7 @@ int main(void)
     test_runs_listing_reports_geometry_unavailable_without_failing();
     test_participation_read_failure_keeps_geometry_response();
     test_runs_listing_includes_planar_fallback_reason();
+    test_unknown_provenance_is_omitted_and_source_age_is_null();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     test_runs_listing_surfaces_invalid_arg_as_422();
