@@ -81,6 +81,32 @@ static bool dimensionality_from_name(
 }
 
 
+static const char *failure_class_name(localization_failure_class_t failure_class)
+{
+    switch (failure_class) {
+        case LOCALIZATION_FAILURE_CLASS_NONE: return "none";
+        case LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN: return "record_again";
+        case LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS: return "move_sensors";
+        case LOCALIZATION_FAILURE_CLASS_INTERNAL: return "internal";
+        default: return NULL;
+    }
+}
+
+
+static bool failure_class_from_name(const char *name, localization_failure_class_t *failure_class)
+{
+    if (name == NULL || failure_class == NULL) {
+        return false;
+    }
+    if (strcmp(name, "none") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_NONE;
+    else if (strcmp(name, "record_again") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+    else if (strcmp(name, "move_sensors") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+    else if (strcmp(name, "internal") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_INTERNAL;
+    else return false;
+    return true;
+}
+
+
 static bool point_finite(const localization_point3d_t *p)
 {
     return isfinite(p->x_m) && isfinite(p->y_m) && isfinite(p->z_m);
@@ -123,6 +149,25 @@ esp_err_t localization_run_record_to_json(
 )
 {
     if (record == NULL || json_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *failure_class = failure_class_name(record->failure_class);
+    const bool legacy_unclassified_rejection = !record->solved &&
+        record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE &&
+        record->schema_version == LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY;
+    const uint32_t write_schema_version = legacy_unclassified_rejection
+        ? LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY
+        : LOCALIZATION_RUN_SCHEMA_VERSION;
+    if (
+        failure_class == NULL ||
+        (record->uncertainty_too_high &&
+         (!record->solved || record->failure_class != LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS)) ||
+        (record->solved && !record->uncertainty_too_high &&
+         record->failure_class != LOCALIZATION_FAILURE_CLASS_NONE) ||
+        (!record->solved && record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE &&
+         record->schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY)
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -171,7 +216,7 @@ esp_err_t localization_run_record_to_json(
 
     bool ok =
         cJSON_AddNumberToObject(
-            root, "schema_version", LOCALIZATION_RUN_SCHEMA_VERSION
+            root, "schema_version", write_schema_version
         ) != NULL &&
         cJSON_AddStringToObject(root, "object_id", record->object_id) != NULL &&
         cJSON_AddStringToObject(root, "session_id", record->session_id) != NULL &&
@@ -214,7 +259,9 @@ esp_err_t localization_run_record_to_json(
         cJSON_AddNumberToObject(
             root, "degrees_of_freedom", (double)record->degrees_of_freedom
         ) != NULL &&
-        cJSON_AddBoolToObject(root, "solved", record->solved) != NULL;
+        cJSON_AddBoolToObject(root, "solved", record->solved) != NULL &&
+        cJSON_AddStringToObject(root, "failure_class", failure_class) != NULL &&
+        cJSON_AddBoolToObject(root, "uncertainty_too_high", record->uncertainty_too_high) != NULL;
 
     if (ok && record->solved) {
         cJSON *position = cJSON_AddObjectToObject(root, "source_position");
@@ -367,7 +414,10 @@ esp_err_t localization_run_record_from_json(
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    if ((uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION) {
+    if (
+        (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION &&
+        (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY
+    ) {
         cJSON_Delete(root);
         return ESP_ERR_NOT_FOUND;
     }
@@ -384,6 +434,7 @@ esp_err_t localization_run_record_from_json(
     double propagation_speed_uncertainty_mps = 0.0;
     double confidence_score = 0.0;
     bool solved = false;
+    bool uncertainty_too_high = false;
 
     bool ok =
         read_string(root, "object_id", record->object_id, sizeof(record->object_id)) &&
@@ -427,6 +478,18 @@ esp_err_t localization_run_record_from_json(
         confidence_score >= 0.0 &&
         read_bool(root, "solved", &solved);
 
+    const cJSON *failure_class_item = cJSON_GetObjectItemCaseSensitive(root, "failure_class");
+    if (failure_class_item != NULL) {
+        ok = ok && cJSON_IsString(failure_class_item) &&
+            failure_class_from_name(failure_class_item->valuestring, &record->failure_class);
+    } else if ((uint32_t)schema_version == LOCALIZATION_RUN_SCHEMA_VERSION) {
+        ok = false;
+    }
+    const cJSON *uncertainty_too_high_item = cJSON_GetObjectItemCaseSensitive(root, "uncertainty_too_high");
+    if (uncertainty_too_high_item != NULL) {
+        ok = ok && read_bool(root, "uncertainty_too_high", &uncertainty_too_high);
+    }
+
     if (!ok) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
@@ -441,6 +504,7 @@ esp_err_t localization_run_record_from_json(
     record->propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
     record->confidence_score = confidence_score;
     record->solved = solved;
+    record->uncertainty_too_high = uncertainty_too_high;
 
     /* Optional (MAX-212): absent in records written before the field. */
     double degrees_of_freedom = -1.0;
@@ -533,6 +597,24 @@ esp_err_t localization_run_record_from_json(
             cJSON_Delete(root);
             return ESP_ERR_INVALID_RESPONSE;
         }
+        if (
+            (uint32_t)schema_version == LOCALIZATION_RUN_SCHEMA_VERSION &&
+            record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE
+        ) {
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    if (
+        (record->uncertainty_too_high &&
+         (!record->solved || record->failure_class != LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS ||
+          record->uncertainty.credible_level <= 0.0)) ||
+        (record->solved && !record->uncertainty_too_high &&
+         record->failure_class != LOCALIZATION_FAILURE_CLASS_NONE)
+    ) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
     }
 
     cJSON_Delete(root);

@@ -23,6 +23,8 @@ int nrf_sensor_upstream_runtime_zephyr_request_refresh(
 
 int nrf_sensor_upstream_runtime_zephyr_request_height_reference(
     const nrf_upstream_height_reference_t *request);
+int nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(
+    const nrf_upstream_imu_calibrate_t *request);
 
 bool nrf_sensor_upstream_runtime_zephyr_get_snapshot(
     nrf_upstream_sensor_snapshot_t *snapshot);

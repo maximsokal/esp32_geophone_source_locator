@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "wf6_seismic_recorder_staging",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
+        "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "wf6_web_scan_store_staging",
+      "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
+        "tests/host/web_scan_store_http_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_scan_store",
+        "tests/host/stubs/web_api_control",
+        "components/storage_manager",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/object_format/include",
+        "components/web_server"
+      ]
+    }
+  ]
+}

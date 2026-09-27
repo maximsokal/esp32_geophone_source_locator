@@ -1,0 +1,468 @@
+#include "workflow_core.h"
+
+#include <string.h>
+
+static void workflow_core_set_reason(workflow_core_t *core, const char *reason)
+{
+    if (reason == NULL || reason[0] == '\0') {
+        core->reason[0] = '\0';
+        return;
+    }
+    size_t length = 0U;
+    while (length + 1U < sizeof(core->reason) && reason[length] != '\0') ++length;
+    memcpy(core->reason, reason, length);
+    core->reason[length] = '\0';
+}
+
+static void workflow_core_advance_generation(workflow_core_t *core)
+{
+    ++core->generation;
+    if (core->generation == 0U) ++core->generation;
+}
+
+static void workflow_core_transition(
+    workflow_core_t *core,
+    workflow_step_t step,
+    const char *reason
+)
+{
+    if (core->step == step) {
+        if (reason != NULL) workflow_core_set_reason(core, reason);
+        return;
+    }
+    core->step = step;
+    core->progress = WORKFLOW_PROGRESS_UNKNOWN;
+    core->calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+    workflow_core_set_reason(core, reason);
+    workflow_core_advance_generation(core);
+}
+
+static workflow_sensor_sufficiency_t workflow_core_sufficiency(size_t assigned_remotes)
+{
+    if (assigned_remotes < 3U) return WORKFLOW_SENSOR_INSUFFICIENT;
+    if (assigned_remotes == 3U) return WORKFLOW_SENSOR_PLANAR_2D;
+    return WORKFLOW_SENSOR_CAPABLE_3D;
+}
+
+static uint32_t workflow_core_actions(
+    workflow_step_t step,
+    size_t assigned_remotes,
+    bool placement_ready,
+    bool calibration_ok,
+    bool ranging_ok,
+    workflow_calculation_class_t calculation_class
+)
+{
+    uint32_t actions = 0U;
+#define ADD_ACTION(command) (actions |= WORKFLOW_ACTION(command))
+    switch (step) {
+        case WORKFLOW_STEP_IDLE:
+            break;
+        case WORKFLOW_STEP_OBJECT:
+            ADD_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_SENSOR_CHECK:
+            if (assigned_remotes >= 3U) ADD_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_CALIB_PREP:
+            ADD_ACTION(WORKFLOW_COMMAND_SENSORS_PLACED);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_CALIBRATING:
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_CALIB_RESULT:
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            ADD_ACTION(calibration_ok
+                ? WORKFLOW_COMMAND_PLACE_SENSORS
+                : WORKFLOW_COMMAND_RETRY);
+            break;
+        case WORKFLOW_STEP_PLACEMENT:
+            if (placement_ready) ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_RANGING:
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_RANGING_RESULT:
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            ADD_ACTION(ranging_ok ? WORKFLOW_COMMAND_CONFIRM : WORKFLOW_COMMAND_RETRY);
+            break;
+        case WORKFLOW_STEP_RECORD_READY:
+            ADD_ACTION(WORKFLOW_COMMAND_START_RECORDING);
+            ADD_ACTION(WORKFLOW_COMMAND_MOVE_SENSORS);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_RECORDING:
+            ADD_ACTION(WORKFLOW_COMMAND_STOP_RECORDING);
+            break;
+        case WORKFLOW_STEP_STOPPED:
+            ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES);
+            ADD_ACTION(WORKFLOW_COMMAND_DELETE_RECORDING);
+            ADD_ACTION(WORKFLOW_COMMAND_RECORD_AGAIN);
+            ADD_ACTION(WORKFLOW_COMMAND_MOVE_SENSORS);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_CALCULATING:
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_RESULT:
+            if (calculation_class != WORKFLOW_CALCULATION_CLASS_NONE) {
+                ADD_ACTION(WORKFLOW_COMMAND_RECORD_AGAIN);
+            }
+            ADD_ACTION(WORKFLOW_COMMAND_MOVE_SENSORS);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_COUNT:
+        default:
+            break;
+    }
+#undef ADD_ACTION
+    return actions;
+}
+
+void workflow_core_init(workflow_core_t *core, bool active_object_present)
+{
+    if (core == NULL) return;
+    memset(core, 0, sizeof(*core));
+    core->step = active_object_present ? WORKFLOW_STEP_OBJECT : WORKFLOW_STEP_IDLE;
+    core->generation = 1U;
+    core->sensor_sufficiency = WORKFLOW_SENSOR_INSUFFICIENT;
+    core->progress = WORKFLOW_PROGRESS_UNKNOWN;
+}
+
+void workflow_core_reset_object(
+    workflow_core_t *core,
+    bool active_object_present,
+    bool force_generation
+)
+{
+    if (core == NULL) return;
+    const workflow_step_t step = active_object_present
+        ? WORKFLOW_STEP_OBJECT
+        : WORKFLOW_STEP_IDLE;
+    if (core->step != step || force_generation) {
+        core->step = step;
+        core->progress = WORKFLOW_PROGRESS_UNKNOWN;
+        core->calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+        core->calibration_ok = false;
+        core->ranging_ok = false;
+        workflow_core_set_reason(core, NULL);
+        workflow_core_advance_generation(core);
+    }
+}
+
+static workflow_step_t workflow_core_back_step(workflow_step_t step)
+{
+    /* BACK from CALIBRATING, RANGING, and CALCULATING cancels the running step. */
+    switch (step) {
+        case WORKFLOW_STEP_OBJECT: return WORKFLOW_STEP_COUNT;
+        case WORKFLOW_STEP_SENSOR_CHECK: return WORKFLOW_STEP_OBJECT;
+        case WORKFLOW_STEP_CALIB_PREP: return WORKFLOW_STEP_SENSOR_CHECK;
+        case WORKFLOW_STEP_CALIBRATING: return WORKFLOW_STEP_CALIB_PREP;
+        case WORKFLOW_STEP_CALIB_RESULT: return WORKFLOW_STEP_CALIB_PREP;
+        case WORKFLOW_STEP_PLACEMENT: return WORKFLOW_STEP_CALIB_RESULT;
+        case WORKFLOW_STEP_RANGING: return WORKFLOW_STEP_PLACEMENT;
+        case WORKFLOW_STEP_RANGING_RESULT: return WORKFLOW_STEP_PLACEMENT;
+        case WORKFLOW_STEP_RECORD_READY: return WORKFLOW_STEP_RANGING_RESULT;
+        case WORKFLOW_STEP_STOPPED: return WORKFLOW_STEP_RECORD_READY;
+        case WORKFLOW_STEP_CALCULATING: return WORKFLOW_STEP_STOPPED;
+        case WORKFLOW_STEP_RESULT: return WORKFLOW_STEP_STOPPED;
+        case WORKFLOW_STEP_IDLE:
+        case WORKFLOW_STEP_RECORDING:
+        case WORKFLOW_STEP_COUNT:
+        default:
+            return WORKFLOW_STEP_COUNT;
+    }
+}
+
+workflow_command_result_t workflow_core_apply(
+    workflow_core_t *core,
+    workflow_command_t command,
+    const workflow_command_params_t *params,
+    size_t assigned_remotes,
+    bool placement_ready
+)
+{
+    if (core == NULL || params == NULL || command < 0 || command >= WORKFLOW_COMMAND_COUNT) {
+        return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+    core->assigned_remotes = assigned_remotes > UINT8_MAX ? UINT8_MAX : (uint8_t)assigned_remotes;
+    core->sensor_sufficiency = workflow_core_sufficiency(assigned_remotes);
+    if (params->has_generation && params->expected_generation != core->generation) {
+        return WORKFLOW_COMMAND_RESULT_STALE;
+    }
+
+    workflow_step_t next = WORKFLOW_STEP_COUNT;
+    const char *reason = NULL;
+    switch (command) {
+        case WORKFLOW_COMMAND_START_MEASUREMENT:
+            if (core->step == WORKFLOW_STEP_OBJECT) next = WORKFLOW_STEP_SENSOR_CHECK;
+            break;
+        case WORKFLOW_COMMAND_GO_CALIBRATION:
+            if (core->step == WORKFLOW_STEP_SENSOR_CHECK) {
+                if (assigned_remotes < 3U) {
+                    workflow_core_set_reason(core, "insufficient_remotes");
+                    return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+                }
+                next = WORKFLOW_STEP_CALIB_PREP;
+            }
+            break;
+        case WORKFLOW_COMMAND_SENSORS_PLACED:
+            if (core->step == WORKFLOW_STEP_CALIB_PREP) next = WORKFLOW_STEP_CALIBRATING;
+            break;
+        case WORKFLOW_COMMAND_CALIBRATION_DONE:
+            if (core->step == WORKFLOW_STEP_CALIBRATING && params->has_ok) {
+                core->calibration_ok = params->ok;
+                next = WORKFLOW_STEP_CALIB_RESULT;
+                reason = params->ok ? NULL : (params->reason != NULL && params->reason[0] != '\0'
+                    ? params->reason
+                    : "calibration_failed");
+            }
+            else if (core->step == WORKFLOW_STEP_CALIBRATING) {
+                return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+            }
+            break;
+        case WORKFLOW_COMMAND_RETRY:
+            if (core->step == WORKFLOW_STEP_CALIB_RESULT && !core->calibration_ok) {
+                next = WORKFLOW_STEP_CALIBRATING;
+            }
+            else if (core->step == WORKFLOW_STEP_RANGING_RESULT && !core->ranging_ok) {
+                next = WORKFLOW_STEP_RANGING;
+            }
+            break;
+        case WORKFLOW_COMMAND_PLACE_SENSORS:
+            if (core->step == WORKFLOW_STEP_CALIB_RESULT && core->calibration_ok) {
+                next = WORKFLOW_STEP_PLACEMENT;
+            }
+            break;
+        case WORKFLOW_COMMAND_CALCULATE_POSITIONS:
+            if (core->step == WORKFLOW_STEP_PLACEMENT) {
+                if (!placement_ready) {
+                    workflow_core_set_reason(core, "placement_not_ready");
+                    return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+                }
+                next = WORKFLOW_STEP_RANGING;
+            }
+            break;
+        case WORKFLOW_COMMAND_RANGING_DONE:
+            if (core->step == WORKFLOW_STEP_RANGING && params->has_ok) {
+                core->ranging_ok = params->ok;
+                next = WORKFLOW_STEP_RANGING_RESULT;
+                reason = params->ok ? NULL : (params->reason != NULL && params->reason[0] != '\0'
+                    ? params->reason
+                    : "ranging_failed");
+            }
+            else if (core->step == WORKFLOW_STEP_RANGING) {
+                return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+            }
+            break;
+        case WORKFLOW_COMMAND_CONFIRM:
+            if (core->step == WORKFLOW_STEP_RANGING_RESULT && core->ranging_ok) {
+                next = WORKFLOW_STEP_RECORD_READY;
+            }
+            break;
+        case WORKFLOW_COMMAND_START_RECORDING:
+            if (core->step == WORKFLOW_STEP_RECORD_READY) next = WORKFLOW_STEP_RECORDING;
+            break;
+        case WORKFLOW_COMMAND_STOP_RECORDING:
+            if (core->step == WORKFLOW_STEP_RECORDING) next = WORKFLOW_STEP_STOPPED;
+            break;
+        case WORKFLOW_COMMAND_MOVE_SENSORS:
+            if (core->step == WORKFLOW_STEP_RECORD_READY ||
+                core->step == WORKFLOW_STEP_STOPPED ||
+                core->step == WORKFLOW_STEP_RESULT) {
+                next = WORKFLOW_STEP_PLACEMENT;
+            }
+            break;
+        case WORKFLOW_COMMAND_CALCULATE_SOURCES:
+            if (core->step == WORKFLOW_STEP_STOPPED) next = WORKFLOW_STEP_CALCULATING;
+            break;
+        case WORKFLOW_COMMAND_CALCULATION_DONE:
+            if (core->step == WORKFLOW_STEP_CALCULATING && params->has_ok) {
+                if (!params->ok &&
+                    params->calculation_class != WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN &&
+                    params->calculation_class != WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS) {
+                    return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+                }
+                next = WORKFLOW_STEP_RESULT;
+                core->calculation_class = params->ok
+                    ? WORKFLOW_CALCULATION_CLASS_NONE
+                    : params->calculation_class;
+                reason = params->ok
+                    ? NULL
+                    : (params->reason != NULL && params->reason[0] != '\0'
+                        ? params->reason
+                        : workflow_core_calculation_class_name(params->calculation_class));
+            }
+            else if (core->step == WORKFLOW_STEP_CALCULATING) {
+                return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+            }
+            break;
+        case WORKFLOW_COMMAND_DELETE_RECORDING:
+            if (core->step == WORKFLOW_STEP_STOPPED) next = WORKFLOW_STEP_RECORD_READY;
+            break;
+        case WORKFLOW_COMMAND_RECORD_AGAIN:
+            if (core->step == WORKFLOW_STEP_STOPPED ||
+                (core->step == WORKFLOW_STEP_RESULT &&
+                    core->calculation_class != WORKFLOW_CALCULATION_CLASS_NONE)) {
+                next = WORKFLOW_STEP_RECORD_READY;
+            }
+            break;
+        case WORKFLOW_COMMAND_BACK:
+            if (core->step == WORKFLOW_STEP_CALIBRATING ||
+                core->step == WORKFLOW_STEP_RANGING ||
+                core->step == WORKFLOW_STEP_CALCULATING) {
+                reason = "cancelled_by_back";
+            }
+            next = workflow_core_back_step(core->step);
+            break;
+        case WORKFLOW_COMMAND_COUNT:
+        default:
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+
+    if (next == WORKFLOW_STEP_COUNT) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+    workflow_core_transition(core, next, reason);
+    if (command == WORKFLOW_COMMAND_CALCULATION_DONE) {
+        core->calculation_class = params->ok
+            ? WORKFLOW_CALCULATION_CLASS_NONE
+            : params->calculation_class;
+    }
+    return WORKFLOW_COMMAND_RESULT_OK;
+}
+
+void workflow_core_reconcile(
+    workflow_core_t *core,
+    workflow_step_t step,
+    const char *reason
+)
+{
+    if (core == NULL || step < 0 || step >= WORKFLOW_STEP_COUNT) return;
+    workflow_core_transition(core, step, reason);
+}
+
+bool workflow_core_set_progress(workflow_core_t *core, int progress)
+{
+    if (core == NULL || core->step != WORKFLOW_STEP_CALCULATING ||
+        (progress != WORKFLOW_PROGRESS_UNKNOWN && (progress < 0 || progress > 100))) {
+        return false;
+    }
+    core->progress = progress;
+    return true;
+}
+
+void workflow_core_snapshot(
+    const workflow_core_t *core,
+    size_t assigned_remotes,
+    bool placement_ready,
+    workflow_snapshot_t *snapshot
+)
+{
+    if (core == NULL || snapshot == NULL) return;
+    snapshot->step = core->step;
+    snapshot->generation = core->generation;
+    snapshot->allowed_actions = 0U;
+    snapshot->reason[0] = '\0';
+    memcpy(snapshot->reason, core->reason, sizeof(snapshot->reason));
+    snapshot->progress = core->progress;
+    snapshot->calculation_class = core->calculation_class;
+    snapshot->assigned_remotes = assigned_remotes > UINT8_MAX
+        ? UINT8_MAX
+        : (uint8_t)assigned_remotes;
+    snapshot->sensor_sufficiency = workflow_core_sufficiency(assigned_remotes);
+    snapshot->allowed_actions = workflow_core_actions(
+        core->step,
+        assigned_remotes,
+        placement_ready,
+        core->calibration_ok,
+        core->ranging_ok,
+        core->calculation_class
+    );
+    snapshot->recommended_action = WORKFLOW_COMMAND_COUNT;
+    if (core->step == WORKFLOW_STEP_RESULT) {
+        if (core->calculation_class == WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN) {
+            snapshot->recommended_action = WORKFLOW_COMMAND_RECORD_AGAIN;
+        }
+        else if (core->calculation_class == WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS) {
+            snapshot->recommended_action = WORKFLOW_COMMAND_MOVE_SENSORS;
+        }
+    }
+}
+
+const char *workflow_core_step_name(workflow_step_t step)
+{
+    static const char *const names[WORKFLOW_STEP_COUNT] = {
+        "IDLE", "OBJECT", "SENSOR_CHECK", "CALIB_PREP", "CALIBRATING",
+        "CALIB_RESULT", "PLACEMENT", "RANGING", "RANGING_RESULT",
+        "RECORD_READY", "RECORDING", "STOPPED", "CALCULATING", "RESULT"
+    };
+    return step >= 0 && step < WORKFLOW_STEP_COUNT ? names[step] : "UNKNOWN";
+}
+
+const char *workflow_core_command_name(workflow_command_t command)
+{
+    static const char *const names[WORKFLOW_COMMAND_COUNT] = {
+        "START_MEASUREMENT", "GO_CALIBRATION", "SENSORS_PLACED",
+        "CALIBRATION_DONE", "RETRY", "PLACE_SENSORS", "CALCULATE_POSITIONS",
+        "RANGING_DONE", "CONFIRM", "START_RECORDING", "STOP_RECORDING",
+        "MOVE_SENSORS", "CALCULATE_SOURCES", "CALCULATION_DONE",
+        "DELETE_RECORDING", "RECORD_AGAIN", "BACK"
+    };
+    return command >= 0 && command < WORKFLOW_COMMAND_COUNT ? names[command] : "UNKNOWN";
+}
+
+const char *workflow_core_sufficiency_name(workflow_sensor_sufficiency_t sufficiency)
+{
+    switch (sufficiency) {
+        case WORKFLOW_SENSOR_PLANAR_2D: return "PLANAR_2D";
+        case WORKFLOW_SENSOR_CAPABLE_3D: return "CAPABLE_3D";
+        case WORKFLOW_SENSOR_INSUFFICIENT:
+        default: return "INSUFFICIENT";
+    }
+}
+
+const char *workflow_core_calculation_class_name(workflow_calculation_class_t calculation_class)
+{
+    switch (calculation_class) {
+        case WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN: return "record_again";
+        case WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS: return "move_sensors";
+        case WORKFLOW_CALCULATION_CLASS_NONE:
+        default: return "none";
+    }
+}
+
+bool workflow_core_command_from_name(const char *name, workflow_command_t *command)
+{
+    if (name == NULL || command == NULL) return false;
+    for (int candidate = 0; candidate < WORKFLOW_COMMAND_COUNT; ++candidate) {
+        if (strcmp(name, workflow_core_command_name((workflow_command_t)candidate)) == 0) {
+            *command = (workflow_command_t)candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool workflow_core_calculation_class_from_name(
+    const char *name,
+    workflow_calculation_class_t *calculation_class
+)
+{
+    if (name == NULL || calculation_class == NULL) return false;
+    if (strcmp(name, "record_again") == 0) {
+        *calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+        return true;
+    }
+    if (strcmp(name, "move_sensors") == 0) {
+        *calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS;
+        return true;
+    }
+    if (strcmp(name, "none") == 0) {
+        *calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+        return true;
+    }
+    return false;
+}

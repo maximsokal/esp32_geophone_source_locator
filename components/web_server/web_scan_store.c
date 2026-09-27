@@ -10,7 +10,6 @@
 #if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
 #endif
-
 #include "app_task_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -33,6 +32,8 @@
 #define WEB_SCAN_DRAIN_BUFFER_SIZE 256U
 
 static const char *TAG = "WEB_SCAN_STORE";
+/* Object-selection hook: call with the object being left. */
+esp_err_t web_scan_store_clear_staging(const char *object_id);
 /*
  * MAX-162: the same session directory also holds the compact FREE/OCCUPIED
  * occupancy artifact derived from that scan (components/scan_occupancy),
@@ -75,6 +76,11 @@ static const web_scan_kind_t WEB_SCAN_KIND_REGISTRATION = {
 static bool web_scan_kind_size_valid(const web_scan_kind_t *kind, long size)
 {
     return kind != NULL && size > 0L && (unsigned long)size <= kind->max_bytes;
+}
+
+static bool web_scan_session_is_staging(const char *session_id)
+{
+    return session_id != NULL && strcmp(session_id, "staging") == 0;
 }
 
 
@@ -197,18 +203,27 @@ static esp_err_t web_scan_paths(
     char backup_path[WEB_SCAN_PATH_SIZE]
 )
 {
-    if (!object_format_id_is_valid(object_id)) return ESP_ERR_INVALID_ARG;
+    if (!object_format_id_is_valid(object_id) || session_id == NULL || kind == NULL) return ESP_ERR_INVALID_ARG;
     /* MAX-167: a scan belongs to one recording/session, under that session's
      * own directory -- never directly under the object. */
-    const int final_written = snprintf(
-        final_path,
-        WEB_SCAN_PATH_SIZE,
-        "%s/%s/sessions/%s/%s",
-        STORAGE_MANAGER_OBJECTS_PATH,
-        object_id,
-        session_id,
-        kind->file_name
-    );
+    const int final_written = web_scan_session_is_staging(session_id)
+        ? snprintf(
+            final_path,
+            WEB_SCAN_PATH_SIZE,
+            "%s/%s/staging/%s",
+            STORAGE_MANAGER_OBJECTS_PATH,
+            object_id,
+            kind->file_name
+        )
+        : snprintf(
+            final_path,
+            WEB_SCAN_PATH_SIZE,
+            "%s/%s/sessions/%s/%s",
+            STORAGE_MANAGER_OBJECTS_PATH,
+            object_id,
+            session_id,
+            kind->file_name
+        );
     if (final_written <= 0 || final_written >= (int)WEB_SCAN_PATH_SIZE) return ESP_ERR_INVALID_SIZE;
     const int temp_written = snprintf(temp_path, WEB_SCAN_PATH_SIZE, "%s.tmp", final_path);
     const int backup_written = snprintf(backup_path, WEB_SCAN_PATH_SIZE, "%s.bak", final_path);
@@ -246,6 +261,9 @@ static esp_err_t web_scan_verify_object(const char *object_id)
  */
 static esp_err_t web_scan_verify_session(const char *object_id, const char *session_id)
 {
+    if (object_id == NULL || session_id == NULL) return ESP_ERR_INVALID_ARG;
+    if (web_scan_session_is_staging(session_id)) return ESP_OK;
+
     seismic_recorder_session_summary_t sessions[SEISMIC_RECORDER_MAX_SESSIONS];
     size_t session_count = 0U;
     const esp_err_t err = seismic_recorder_list_sessions(
@@ -278,6 +296,31 @@ static esp_err_t web_scan_send_registration_conflict(httpd_req_t *request)
 static bool web_scan_kind_uses_bulk_admission(const web_scan_kind_t *kind)
 {
     return kind == &WEB_SCAN_KIND_SCAN || kind == &WEB_SCAN_KIND_OCCUPANCY || kind == &WEB_SCAN_KIND_PREVIEW;
+}
+
+static bool web_scan_requires_bulk_admission(
+    const web_scan_kind_t *kind,
+    const char *session_id
+)
+{
+    return web_scan_kind_uses_bulk_admission(kind) || web_scan_session_is_staging(session_id);
+}
+
+static esp_err_t web_scan_ensure_staging_directory(const char *object_id, const char *session_id)
+{
+    if (!web_scan_session_is_staging(session_id)) return ESP_OK;
+
+    char path[WEB_SCAN_PATH_SIZE];
+    const int written = snprintf(
+        path,
+        sizeof(path),
+        "%s/%s/staging",
+        STORAGE_MANAGER_OBJECTS_PATH,
+        object_id
+    );
+    if (written <= 0 || (size_t)written >= sizeof(path)) return ESP_ERR_INVALID_SIZE;
+
+    return storage_manager_create_directory(path);
 }
 
 
@@ -499,7 +542,7 @@ static void web_scan_remove_temp_best_effort(const char *temp_path)
 static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
     if (
-        web_scan_kind_uses_bulk_admission(kind) &&
+        web_scan_requires_bulk_admission(kind, session_id) &&
         storage_bulk_admission_is_protected()
     ) {
         web_scan_drain_request_body(request, 0U, kind->max_bytes);
@@ -513,12 +556,17 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
-    if (kind == &WEB_SCAN_KIND_REGISTRATION && web_scan_registration_session_is_recording(object_id, session_id)) {
+    if (
+        kind == &WEB_SCAN_KIND_REGISTRATION && !web_scan_session_is_staging(session_id) &&
+        web_scan_registration_session_is_recording(object_id, session_id)
+    ) {
         return web_scan_send_registration_conflict(request);
     }
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
+    if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
+    err = web_scan_ensure_staging_directory(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_save", object_id, session_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
@@ -583,7 +631,7 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
                 .size = (size_t)received,
                 .invoked = false,
             };
-            err = web_scan_kind_uses_bulk_admission(kind)
+            err = web_scan_requires_bulk_admission(kind, session_id)
                 ? storage_bulk_admission_run_chunk(
                     web_scan_write_chunk,
                     &chunk
@@ -734,7 +782,7 @@ static esp_err_t web_scan_read_chunk(void *context)
 static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
     if (
-        web_scan_kind_uses_bulk_admission(kind) &&
+        web_scan_requires_bulk_admission(kind, session_id) &&
         storage_bulk_admission_is_protected()
     ) {
         return web_scan_send_recording_busy(request, "scan_load");
@@ -796,7 +844,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
             .capacity = request_size,
             .read_out = &read_count,
         };
-        err = web_scan_kind_uses_bulk_admission(kind)
+        err = web_scan_requires_bulk_admission(kind, session_id)
             ? storage_bulk_admission_run_chunk(
                 web_scan_read_chunk,
                 &chunk
@@ -854,7 +902,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
 static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
     if (
-        web_scan_kind_uses_bulk_admission(kind) &&
+        web_scan_requires_bulk_admission(kind, session_id) &&
         storage_bulk_admission_is_protected()
     ) {
         return web_scan_send_recording_busy(request, "scan_delete");
@@ -863,7 +911,10 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_delete", object_id, session_id, err, 0U);
-    if (kind == &WEB_SCAN_KIND_REGISTRATION && web_scan_registration_session_is_recording(object_id, session_id)) {
+    if (
+        kind == &WEB_SCAN_KIND_REGISTRATION && !web_scan_session_is_staging(session_id) &&
+        web_scan_registration_session_is_recording(object_id, session_id)
+    ) {
         return web_scan_send_registration_conflict(request);
     }
 
@@ -906,6 +957,13 @@ static esp_err_t web_scan_delete(httpd_req_t *request, const char *object_id, co
  * {"ok":false,...,"error":"ESP_ERR_NOT_FOUND"}; present is {"ok":true,"bytes":N}. */
 static esp_err_t web_scan_info(httpd_req_t *request, const char *object_id, const char *session_id, const web_scan_kind_t *kind)
 {
+    if (
+        web_scan_session_is_staging(session_id) &&
+        storage_bulk_admission_is_protected()
+    ) {
+        return web_scan_send_recording_busy(request, "scan_info");
+    }
+
     esp_err_t err = web_scan_verify_object(object_id);
     if (err == ESP_OK) err = web_scan_verify_session(object_id, session_id);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_info", object_id, session_id, err, 0U);
@@ -921,6 +979,38 @@ static esp_err_t web_scan_info(httpd_req_t *request, const char *object_id, cons
         err = web_scan_close_reader(&file);
     }
     return web_scan_send_json(request, "scan_info", object_id, session_id, err, err == ESP_OK ? size : 0U);
+}
+
+
+esp_err_t web_scan_store_clear_staging(const char *object_id)
+{
+    if (!object_format_id_is_valid(object_id)) return ESP_ERR_INVALID_ARG;
+
+    esp_err_t err = web_scan_verify_object(object_id);
+    if (err != ESP_OK) return err;
+
+    err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+
+    const web_scan_kind_t *const kinds[] = {
+        &WEB_SCAN_KIND_SCAN,
+        &WEB_SCAN_KIND_OCCUPANCY,
+        &WEB_SCAN_KIND_PREVIEW,
+        &WEB_SCAN_KIND_REGISTRATION,
+    };
+    for (size_t i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
+        char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+        err = web_scan_paths(object_id, "staging", kinds[i], final_path, temp_path, backup_path);
+        if (err != ESP_OK) break;
+        const char *const paths[] = {final_path, temp_path, backup_path};
+        for (size_t path_index = 0U; path_index < sizeof(paths) / sizeof(paths[0]); ++path_index) {
+            if (remove(paths[path_index]) != 0 && errno != ENOENT) err = ESP_FAIL;
+        }
+        if (err != ESP_OK) break;
+    }
+
+    storage_manager_operation_end();
+    return err;
 }
 
 

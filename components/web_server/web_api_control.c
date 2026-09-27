@@ -13,8 +13,11 @@
 #include "localization_job.h"
 #include "main_barometer.h"
 #include "nrf_topology_service.h"
+#include "workflow_service.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+
+esp_err_t web_scan_store_clear_staging(const char *object_id);
 
 #define WEB_CONTROL_MAX_BODY 1024U
 #define WEB_CONTROL_ACTION_SIZE 48U
@@ -22,6 +25,9 @@
 #define WEB_CONTROL_SCAN_ACTION_SIZE 16U
 
 static const char *TAG = "WEB_API_CONTROL";
+
+bool web_status_json_add_workflow(cJSON *root);
+static const char *web_control_string(cJSON *root, const char *key);
 
 static bool web_control_requires_object_cache_refresh(const char *action)
 {
@@ -214,6 +220,104 @@ static esp_err_t web_control_send_height_calibration_result(
     const esp_err_t send_result = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
     cJSON_free(json);
     return send_result;
+}
+
+static esp_err_t web_control_send_workflow_result(
+    httpd_req_t *request,
+    workflow_command_result_t result
+)
+{
+    if (result == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT) {
+        return web_control_send_result(
+            request,
+            "workflow_command",
+            ESP_ERR_INVALID_ARG,
+            NULL
+        );
+    }
+    if (result == WORKFLOW_COMMAND_RESULT_UNAVAILABLE) {
+        return web_control_send_result(
+            request,
+            "workflow_command",
+            ESP_ERR_INVALID_STATE,
+            NULL
+        );
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) return ESP_ERR_NO_MEM;
+    const bool accepted = result == WORKFLOW_COMMAND_RESULT_OK;
+    if (cJSON_AddBoolToObject(root, "ok", accepted) == NULL ||
+        (accepted
+            ? !web_status_json_add_workflow(root)
+            : cJSON_AddStringToObject(
+                root,
+                "reason",
+                result == WORKFLOW_COMMAND_RESULT_STALE ? "stale" : "not_allowed"
+            ) == NULL)) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) return ESP_ERR_NO_MEM;
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (!accepted) httpd_resp_set_status(request, "409 Conflict");
+    const esp_err_t send_result = httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(json);
+    return send_result;
+}
+
+static workflow_command_result_t web_control_workflow_command(cJSON *root)
+{
+    workflow_command_t command;
+    const char *command_name = web_control_string(root, "command");
+    if (!workflow_core_command_from_name(command_name, &command)) {
+        return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+
+    workflow_command_params_t params = {
+        .calculation_class = WORKFLOW_CALCULATION_CLASS_NONE,
+    };
+    const cJSON *generation = cJSON_GetObjectItemCaseSensitive(root, "generation");
+    if (generation != NULL) {
+        const double value = generation->valuedouble;
+        if (!cJSON_IsNumber(generation) || !isfinite(value) || value < 0.0 ||
+            value > UINT32_MAX || floor(value) != value) {
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        }
+        params.has_generation = true;
+        params.expected_generation = (uint32_t)value;
+    }
+
+    const cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+    if (ok != NULL) {
+        if (!cJSON_IsBool(ok)) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        params.has_ok = true;
+        params.ok = cJSON_IsTrue(ok);
+    }
+
+    const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+    if (reason != NULL) {
+        if (!cJSON_IsString(reason) || reason->valuestring == NULL ||
+            strnlen(reason->valuestring, WORKFLOW_REASON_MAX) >= WORKFLOW_REASON_MAX) {
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        }
+        params.reason = reason->valuestring;
+    }
+
+    const cJSON *calculation_class = cJSON_GetObjectItemCaseSensitive(root, "class");
+    if (calculation_class != NULL &&
+        (!cJSON_IsString(calculation_class) ||
+         !workflow_core_calculation_class_from_name(
+             calculation_class->valuestring,
+             &params.calculation_class
+         ))) {
+        return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+    return workflow_service_command(command, &params);
 }
 
 static esp_err_t web_control_calibrate_heights(httpd_req_t *request)
@@ -603,8 +707,19 @@ static esp_err_t web_control_process(
 
     if (strcmp(action, "activate_object") == 0) {
         if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+        object_store_summary_t previous_active = {0};
+        const bool had_previous_active = object_store_get_active(&previous_active) == ESP_OK;
         const esp_err_t err = object_store_set_active(object_id);
         if (err == ESP_OK) {
+            if (had_previous_active && strcmp(previous_active.id, object_id) != 0) {
+                /* Staging is object-scoped; clear the object being left and
+                 * preserve staging for the selected object's next recording. */
+                const esp_err_t staging_err = web_scan_store_clear_staging(previous_active.id);
+                if (staging_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Could not clear staging for previous object %s: %s",
+                             previous_active.id, esp_err_to_name(staging_err));
+                }
+            }
             snprintf(object_id_out, OBJECT_STORE_ID_SIZE, "%s", object_id);
         }
         return err;
@@ -771,6 +886,12 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
             ESP_ERR_INVALID_STATE,
             NULL
         );
+    }
+
+    if (strcmp(action_copy, "workflow_command") == 0) {
+        const workflow_command_result_t result = web_control_workflow_command(root);
+        cJSON_Delete(root);
+        return web_control_send_workflow_result(request, result);
     }
 
     if (strcmp(action_copy, "calibrate_heights") == 0) {

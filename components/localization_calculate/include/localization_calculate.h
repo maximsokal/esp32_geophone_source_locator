@@ -52,6 +52,25 @@
 /* One method's wall time in a run (the device measures its own budget). */
 #define LOCALIZATION_CALCULATE_MAX_TIMINGS 24U
 #define LOCALIZATION_CALCULATE_TIMING_NAME_SIZE 32U
+#define LOCALIZATION_CALCULATE_RECOMMENDATION_REASON_SIZE 160U
+#define LOCALIZATION_CALCULATE_DEFAULT_MAX_HORIZONTAL_UNCERTAINTY_M 2.0
+
+typedef enum
+{
+    LOCALIZATION_RECOMMENDATION_NONE = 0,
+    LOCALIZATION_RECOMMENDATION_RECORD_AGAIN,
+    LOCALIZATION_RECOMMENDATION_MOVE_SENSORS
+
+} localization_recommendation_action_t;
+
+
+typedef struct
+{
+    localization_recommendation_action_t action;
+    bool successful;
+    char reason_summary[LOCALIZATION_CALCULATE_RECOMMENDATION_REASON_SIZE];
+
+} localization_recommendation_t;
 
 typedef struct
 {
@@ -63,8 +82,14 @@ typedef struct
 
 } localization_calculate_method_timing_t;
 
-/* Called as each method starts (e.g. to publish progress); must be quick. */
-typedef void (*localization_calculate_progress_fn)(const char *method_name, void *context);
+/* Called when each method starts and completes; must be quick. */
+typedef void (*localization_calculate_progress_fn)(
+    const char *method_name,
+    bool completed,
+    size_t methods_completed,
+    size_t methods_total,
+    void *context
+);
 
 
 typedef struct
@@ -104,6 +129,10 @@ typedef struct
      * above the highest sensor. */
     double max_source_depth_m;
 
+    /* Optional calibration limit for horizontal 1-sigma uncertainty. Zero
+     * selects LOCALIZATION_CALCULATE_DEFAULT_MAX_HORIZONTAL_UNCERTAINTY_M. */
+    double max_horizontal_uncertainty_m;
+
     /* Optional (PSAFUVS): pick the S-wave onset after each accepted P pick.
      * false leaves PSAFUVS persisted as not attempted, with that reason;
      * when true every s_pick_config field must come from measured/reviewed
@@ -127,6 +156,8 @@ typedef struct
 typedef struct
 {
     size_t participating_channel_count;
+    size_t methods_total;
+    size_t methods_completed;
     size_t methods_attempted;
     size_t methods_solved;
     size_t methods_persisted;
@@ -136,6 +167,7 @@ typedef struct
     localization_calculate_method_timing_t timings[LOCALIZATION_CALCULATE_MAX_TIMINGS];
     size_t timing_count;
     size_t methods_skipped_for_time;
+    localization_recommendation_t recommendation;
 
 } localization_calculate_summary_t;
 

@@ -319,7 +319,8 @@ def main(argv: list[str] | None = None, *, root: Path | None = None) -> int:
             relative.as_posix()
             for relative, content in outputs.items()
             if not (repo_root / relative).is_file()
-            or (repo_root / relative).read_bytes() != content.encode("utf-8")
+            or (repo_root / relative).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            != content.encode("utf-8")
         ]
         if stale:
             print("stale generated files: " + ", ".join(stale), file=sys.stderr)

@@ -57,6 +57,7 @@ static localization_run_record_t rejected_record(void)
     record.geometry_computed_at_ms = 123400000ULL;
     record.propagation_speed_mps = 340.0;
     record.solved = false;
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
     snprintf(
         record.rejection_reason,
         sizeof(record.rejection_reason),
@@ -77,6 +78,7 @@ static void test_solved_record_round_trips(void)
     assert(json != NULL);
     assert(strstr(json, "\"kind\":\"individual_method\"") != NULL);
     assert(strstr(json, "\"dimensionality\":\"capable_3d\"") != NULL);
+    assert(strstr(json, "\"failure_class\":\"none\"") != NULL);
 
     localization_run_record_t parsed;
     assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
@@ -119,12 +121,14 @@ static void test_rejected_record_round_trips_with_reason(void)
 
     assert(localization_run_record_to_json(&original, &json) == ESP_OK);
     assert(strstr(json, "\"solved\":false") != NULL);
+    assert(strstr(json, "\"failure_class\":\"record_again\"") != NULL);
     assert(strstr(json, "rejection_reason") != NULL);
     assert(strstr(json, "\"source_position\"") == NULL);
 
     localization_run_record_t parsed;
     assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
     assert(!parsed.solved);
+    assert(parsed.failure_class == LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     assert(strcmp(parsed.rejection_reason, original.rejection_reason) == 0);
     /* An unsolved record must never carry a stale/zeroed XYZ that looks
      * like a real answer. */
@@ -135,6 +139,55 @@ static void test_rejected_record_round_trips_with_reason(void)
 }
 
 
+static void test_old_rejected_record_without_failure_class_reads_as_none(void)
+{
+    localization_run_record_t old = rejected_record();
+    old.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY;
+    old.failure_class = LOCALIZATION_FAILURE_CLASS_NONE;
+    char *json = NULL;
+    assert(localization_run_record_to_json(&old, &json) == ESP_OK);
+    assert(strstr(json, "\"schema_version\":3") != NULL);
+
+    char *field = strstr(json, ",\"failure_class\":\"none\"");
+    assert(field != NULL);
+    memmove(field, field + strlen(",\"failure_class\":\"none\""),
+            strlen(field + strlen(",\"failure_class\":\"none\"")) + 1U);
+    field = strstr(json, ",\"uncertainty_too_high\":false");
+    assert(field != NULL);
+    memmove(field, field + strlen(",\"uncertainty_too_high\":false"),
+            strlen(field + strlen(",\"uncertainty_too_high\":false")) + 1U);
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.schema_version == LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY);
+    assert(!parsed.solved && parsed.failure_class == LOCALIZATION_FAILURE_CLASS_NONE);
+    free(json);
+}
+
+
+static void test_uncertainty_flag_round_trips_and_requires_geometry_class(void)
+{
+    localization_run_record_t record = solved_record();
+    record.uncertainty_too_high = true;
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+    record.uncertainty.credible_level = 0.9;
+    record.uncertainty.std_m = (localization_point3d_t) { 1.5, 1.5, 0.2 };
+    record.uncertainty.credible_min = (localization_point3d_t) { 1.0, 0.0, 1.0 };
+    record.uncertainty.credible_max = (localization_point3d_t) { 2.0, 1.0, 3.0 };
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"uncertainty_too_high\":true") != NULL);
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.uncertainty_too_high);
+    assert(parsed.failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    free(json);
+
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_NONE;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+}
+
+
 static void test_unsolved_record_without_reason_is_rejected(void)
 {
     localization_run_record_t record = rejected_record();
@@ -142,6 +195,24 @@ static void test_unsolved_record_without_reason_is_rejected(void)
     char *json = NULL;
 
     assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+}
+
+
+static void test_unsolved_record_with_reason_but_no_class_is_rejected(void)
+{
+    localization_run_record_t record = rejected_record();
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_NONE;
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    char *field = strstr(json, "\"failure_class\":\"record_again\"");
+    assert(field != NULL);
+    memcpy(field + strlen("\"failure_class\":\""), "none", strlen("none"));
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(json);
 }
 
 
@@ -418,7 +489,10 @@ int main(void)
 {
     test_solved_record_round_trips();
     test_rejected_record_round_trips_with_reason();
+    test_old_rejected_record_without_failure_class_reads_as_none();
+    test_uncertainty_flag_round_trips_and_requires_geometry_class();
     test_unsolved_record_without_reason_is_rejected();
+    test_unsolved_record_with_reason_but_no_class_is_rejected();
     test_solved_record_with_non_finite_position_is_rejected();
     test_negative_propagation_uncertainty_is_rejected();
     test_unknown_propagation_uncertainty_round_trips_as_zero();

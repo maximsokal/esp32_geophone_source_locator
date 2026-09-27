@@ -1,2 +1,6 @@
 # Binary test vectors / artifacts must never be line-ending converted.
 *.bin binary
+
+webui/src/i18n/*.gen.ts text eol=lf
+components/ui_i18n/**/*.gen.* text eol=lf
+i18n/*.json text eol=lf

@@ -3,9 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "esp_event.h"
 
-typedef void *esp_event_loop_handle_t;
-typedef const char *esp_event_base_t;
 typedef void (*esp_event_handler_t)(void *, esp_event_base_t, int32_t, void *);
 
 extern const char APP_EVENT_BASE[];

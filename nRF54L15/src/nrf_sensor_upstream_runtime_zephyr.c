@@ -13,6 +13,7 @@
 #include "nrf_ema_filter.h"
 #include "nrf_baro_altitude.h"
 #include "nrf_height_reference.h"
+#include "nrf_imu_calibration.h"
 #include "nrf_verticality_state.h"
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
@@ -35,6 +36,7 @@ typedef enum {
     NRF_SENSOR_EVENT_ACTIVATE = 1,
     NRF_SENSOR_EVENT_REFRESH = 2,
     NRF_SENSOR_EVENT_HEIGHT_REFERENCE = 3,
+    NRF_SENSOR_EVENT_IMU_CALIBRATE = 4,
 } nrf_sensor_event_type_t;
 
 typedef struct {
@@ -42,6 +44,7 @@ typedef struct {
     uint32_t request_id;
     nrf_upstream_assign_t assign;
     nrf_upstream_height_reference_t height_reference;
+    nrf_upstream_imu_calibrate_t imu_calibration;
 } nrf_sensor_event_t;
 
 K_MSGQ_DEFINE(
@@ -62,6 +65,7 @@ static nrf_orientation_estimator_t s_orientation_estimator;
 static nrf_verticality_config_t s_verticality_config;
 static nrf_verticality_estimator_t s_verticality_estimator;
 static nrf_height_reference_t s_height_reference;
+static nrf_imu_calibration_t s_imu_calibration;
 static struct {
     nrf_ema_filter_t accel[3];
     nrf_ema_filter_t gyro[3];
@@ -74,6 +78,13 @@ static uint64_t s_next_orientation_due_ms;
 static bool s_orientation_config_set;
 static bool s_started;
 static bool s_activation_queued;
+static uint32_t s_imu_calibration_request_id;
+static uint32_t s_imu_calibration_completed_request_id;
+
+static void publish_refresh(
+    uint32_t request_id,
+    const nrf_upstream_height_reference_t *height_reference_request);
+static void copy_imu_calibration_to_snapshot(nrf_upstream_sensor_snapshot_t *wire);
 
 static void imu_filters_reset(void)
 {
@@ -156,13 +167,22 @@ static bool filter_imu_sample(
         }
         output.gyro_mdps[axis] = rounded_i32(value);
     }
-    if (nrf_ema_filter_update(
-            &s_imu_filters.gyro_motion,
-            (double)gyro_peak_mdps(sample),
-            timestamp_ms,
-            &value) != NRF_EMA_FILTER_UPDATED) {
-        imu_filters_reset();
-        return false;
+    {
+        int32_t corrected_gyro[3];
+        nrf_imu_sample_t motion_sample = *sample;
+        nrf_imu_calibration_correct_gyro_mdps(
+            &s_imu_calibration,
+            sample->gyro_mdps,
+            corrected_gyro);
+        memcpy(motion_sample.gyro_mdps, corrected_gyro, sizeof(corrected_gyro));
+        if (nrf_ema_filter_update(
+                &s_imu_filters.gyro_motion,
+                (double)gyro_peak_mdps(&motion_sample),
+                timestamp_ms,
+                &value) != NRF_EMA_FILTER_UPDATED) {
+            imu_filters_reset();
+            return false;
+        }
     }
     *filtered = output;
     return true;
@@ -295,6 +315,7 @@ static void copy_runtime_payload(
         &s_height_reference,
         (wire->valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U,
         wire->altitude_mm);
+    copy_imu_calibration_to_snapshot(wire);
 }
 
 static void orientation_advance_deadline(uint64_t sample_uptime_ms)
@@ -333,25 +354,111 @@ static void orientation_reset(void)
         runtime_uptime_ms());
 }
 
+static void set_orientation_reference_axis(nrf_orientation_reference_axis_t axis)
+{
+    k_spinlock_key_t key;
+    s_orientation_config.reference_axis = axis;
+    key = k_spin_lock(&s_orientation_lock);
+    (void)nrf_orientation_estimator_init(
+        &s_orientation_estimator,
+        &s_orientation_config);
+    k_spin_unlock(&s_orientation_lock, key);
+    nrf_ema_filter_reset(&s_imu_filters.gyro_motion);
+    s_next_orientation_due_ms = 0U;
+    nrf_verticality_state_reset(&s_verticality_estimator);
+}
+
+static void update_gyro_motion(
+    const nrf_imu_sample_t *sample,
+    bool sample_valid,
+    uint64_t sample_uptime_ms)
+{
+    double filtered_motion;
+    if (!sample_valid) {
+        nrf_ema_filter_reset(&s_imu_filters.gyro_motion);
+        return;
+    }
+    if (s_imu_filters.gyro_motion.initialized &&
+        sample_uptime_ms <= s_imu_filters.gyro_motion.timestamp_ms) {
+        return;
+    }
+    if (nrf_ema_filter_update(
+            &s_imu_filters.gyro_motion,
+            (double)gyro_peak_mdps(sample),
+            sample_uptime_ms,
+            &filtered_motion) != NRF_EMA_FILTER_UPDATED) {
+        nrf_ema_filter_reset(&s_imu_filters.gyro_motion);
+    }
+}
+
+static void copy_imu_calibration_to_snapshot(nrf_upstream_sensor_snapshot_t *wire)
+{
+    memcpy(wire->gyro_bias_mdps, s_imu_calibration.gyro_bias_mdps,
+           sizeof(wire->gyro_bias_mdps));
+    memcpy(wire->gravity_ref_mg, s_imu_calibration.gravity_ref_mg,
+           sizeof(wire->gravity_ref_mg));
+    wire->imu_cal_state = (uint8_t)s_imu_calibration.state;
+    wire->imu_cal_generation = s_imu_calibration.generation;
+}
+
 static void orientation_feed_sample(
     const nrf_imu_sample_t *sample,
     bool sample_valid,
     uint64_t sample_uptime_ms)
 {
     nrf_imu_sample_t empty = {0};
+    nrf_imu_sample_t corrected;
+    int32_t corrected_gyro[3];
     nrf_orientation_output_t orientation;
     k_spinlock_key_t key;
+    bool calibration_completed = false;
 
     if (sample == NULL) {
         sample = &empty;
     }
+    corrected = *sample;
+    nrf_imu_calibration_correct_gyro_mdps(
+        &s_imu_calibration,
+        sample->gyro_mdps,
+        corrected_gyro);
+    memcpy(corrected.gyro_mdps, corrected_gyro, sizeof(corrected.gyro_mdps));
+    update_gyro_motion(&corrected, sample_valid, sample_uptime_ms);
+
     key = k_spin_lock(&s_orientation_lock);
     (void)nrf_orientation_estimator_update(
         &s_orientation_estimator,
-        sample,
+        &corrected,
         sample_valid);
     nrf_orientation_estimator_get(&s_orientation_estimator, &orientation);
     k_spin_unlock(&s_orientation_lock, key);
+
+    if (s_imu_calibration.capturing) {
+        const uint32_t corrected_peak = sample_valid ? gyro_peak_mdps(&corrected) : 0U;
+        calibration_completed = nrf_imu_calibration_update(
+            &s_imu_calibration,
+            sample,
+            sample_valid,
+            orientation.state == NRF_ORIENTATION_STATE_MOVING ||
+                corrected_peak >= s_verticality_config.gyro_motion_threshold_mdps,
+            sample_uptime_ms);
+        if (calibration_completed &&
+            s_imu_calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED) {
+            set_orientation_reference_axis(s_imu_calibration.reference_axis);
+            nrf_imu_calibration_correct_gyro_mdps(
+                &s_imu_calibration,
+                sample->gyro_mdps,
+                corrected_gyro);
+            memcpy(corrected.gyro_mdps, corrected_gyro, sizeof(corrected.gyro_mdps));
+            update_gyro_motion(&corrected, sample_valid, sample_uptime_ms);
+            key = k_spin_lock(&s_orientation_lock);
+            (void)nrf_orientation_estimator_update(
+                &s_orientation_estimator,
+                &corrected,
+                sample_valid);
+            nrf_orientation_estimator_get(&s_orientation_estimator, &orientation);
+            k_spin_unlock(&s_orientation_lock, key);
+        }
+    }
     (void)nrf_verticality_state_update(
         &s_verticality_estimator,
         sample_valid,
@@ -365,11 +472,16 @@ static void orientation_feed_sample(
         s_verticality_estimator.state,
         sample_uptime_ms);
     orientation_advance_deadline(sample_uptime_ms);
+    if (calibration_completed) {
+        s_imu_calibration_completed_request_id = s_imu_calibration_request_id;
+        s_imu_calibration_request_id = 0U;
+    }
 }
 
 static bool orientation_periodic_enabled(void)
 {
-    return s_orientation_config.reference_axis != NRF_ORIENTATION_AXIS_UNCONFIGURED &&
+    return (s_orientation_config.reference_axis != NRF_ORIENTATION_AXIS_UNCONFIGURED ||
+            s_imu_calibration.capturing) &&
            s_worker_node_state.lifecycle == NRF_NODE_LIFECYCLE_READY &&
            s_worker_node_state.role == NRF_NODE_ROLE_REMOTE &&
            s_runtime.core.imu_ready &&
@@ -429,6 +541,11 @@ static void orientation_periodic_read(void)
         result == 0 ? &filtered_sample : NULL,
         result == 0,
         completion_uptime_ms);
+    if (s_imu_calibration_completed_request_id != 0U) {
+        const uint32_t request_id = s_imu_calibration_completed_request_id;
+        s_imu_calibration_completed_request_id = 0U;
+        publish_refresh(request_id, NULL);
+    }
 }
 
 static void orientation_consume_aggregate_refresh(bool did_refresh)
@@ -497,6 +614,40 @@ static void apply_height_reference_request(
     }
 }
 
+static void handle_imu_calibration_request(
+    const nrf_upstream_imu_calibrate_t *request)
+{
+    const uint64_t now = runtime_uptime_ms();
+    if (request->action == NRF_UPSTREAM_IMU_CALIBRATE_CLEAR) {
+        nrf_imu_calibration_clear(&s_imu_calibration, request->generation);
+        set_orientation_reference_axis(NRF_ORIENTATION_AXIS_UNCONFIGURED);
+        publish_refresh(request->request_id, NULL);
+        return;
+    }
+
+    if (!nrf_imu_calibration_begin_capture(
+            &s_imu_calibration,
+            request->generation,
+            now)) {
+        return;
+    }
+    imu_filters_reset();
+    s_imu_calibration_request_id = request->request_id;
+    if (!s_runtime.core.imu_ready || s_runtime.core.sources.read_imu == NULL) {
+        (void)nrf_imu_calibration_update(
+            &s_imu_calibration,
+            NULL,
+            false,
+            false,
+            now);
+        s_imu_calibration_completed_request_id = request->request_id;
+        s_imu_calibration_request_id = 0U;
+        publish_refresh(request->request_id, NULL);
+        return;
+    }
+    s_next_orientation_due_ms = now;
+}
+
 static void publish_refresh(
     uint32_t request_id,
     const nrf_upstream_height_reference_t *height_reference_request)
@@ -523,6 +674,7 @@ static void publish_refresh(
         wire.flags = runtime_flags();
         wire.reference_state = (uint8_t)s_height_reference.state;
         wire.reference_generation = s_height_reference.generation;
+        copy_imu_calibration_to_snapshot(&wire);
     } else if (s_runtime.core.imu_ready || s_runtime.core.env_ready) {
         did_refresh = true;
         refresh_result = nrf_remote_sensor_runtime_zephyr_refresh(
@@ -630,6 +782,8 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
                 publish_refresh(event.request_id, NULL);
             } else if (event.type == NRF_SENSOR_EVENT_HEIGHT_REFERENCE) {
                 publish_refresh(event.request_id, &event.height_reference);
+            } else if (event.type == NRF_SENSOR_EVENT_IMU_CALIBRATE) {
+                handle_imu_calibration_request(&event.imu_calibration);
             }
             continue;
         }
@@ -683,6 +837,9 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
 
     nrf_sensor_session_init(&s_session);
     nrf_height_reference_init(&s_height_reference);
+    nrf_imu_calibration_init(&s_imu_calibration);
+    s_imu_calibration_request_id = 0U;
+    s_imu_calibration_completed_request_id = 0U;
     nrf_remote_sensor_runtime_zephyr_init(&s_runtime);
     for (size_t axis = 0U; axis < 3U; ++axis) {
         if (!nrf_ema_filter_init(
@@ -874,6 +1031,52 @@ int nrf_sensor_upstream_runtime_zephyr_request_height_reference(
     event.type = NRF_SENSOR_EVENT_HEIGHT_REFERENCE;
     event.request_id = request->request_id;
     event.height_reference = *request;
+    if (k_msgq_put(&s_sensor_queue, &event, K_NO_WAIT) != 0) {
+        key = k_spin_lock(&s_session_lock);
+        (void)nrf_sensor_session_mark_enqueue_busy(&s_session, request->request_id);
+        k_spin_unlock(&s_session_lock, key);
+        return -ENOSPC;
+    }
+    return 0;
+}
+
+int nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(
+    const nrf_upstream_imu_calibrate_t *request)
+{
+    nrf_sensor_session_request_result_t result;
+    nrf_sensor_event_t event;
+    k_spinlock_key_t key;
+
+    if (!s_started) {
+        return -EAGAIN;
+    }
+    if (request == NULL || request->request_id == 0U ||
+        (request->action != NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE &&
+         request->action != NRF_UPSTREAM_IMU_CALIBRATE_CLEAR)) {
+        return -EINVAL;
+    }
+
+    key = k_spin_lock(&s_session_lock);
+    result = nrf_sensor_session_begin_request(&s_session, request->request_id);
+    k_spin_unlock(&s_session_lock, key);
+
+    if (result == NRF_SENSOR_SESSION_REQUEST_IDEMPOTENT) {
+        return 0;
+    }
+    if (result == NRF_SENSOR_SESSION_REQUEST_BUSY) {
+        return -EBUSY;
+    }
+    if (result == NRF_SENSOR_SESSION_REQUEST_NOT_REMOTE) {
+        return -EAGAIN;
+    }
+    if (result != NRF_SENSOR_SESSION_REQUEST_ACCEPTED) {
+        return -EINVAL;
+    }
+
+    memset(&event, 0, sizeof(event));
+    event.type = NRF_SENSOR_EVENT_IMU_CALIBRATE;
+    event.request_id = request->request_id;
+    event.imu_calibration = *request;
     if (k_msgq_put(&s_sensor_queue, &event, K_NO_WAIT) != 0) {
         key = k_spin_lock(&s_session_lock);
         (void)nrf_sensor_session_mark_enqueue_busy(&s_session, request->request_id);

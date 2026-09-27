@@ -255,6 +255,19 @@ cJSON *cJSON_CreateNumber(double value)
     return item;
 }
 
+cJSON *cJSON_CreateString(const char *value)
+{
+    if (value == NULL) return NULL;
+    cJSON *item = new_item(cJSON_String);
+    if (item == NULL) return NULL;
+    item->valuestring = duplicate_text(value);
+    if (item->valuestring == NULL) {
+        cJSON_Delete(item);
+        return NULL;
+    }
+    return item;
+}
+
 cJSON *cJSON_CreateNull(void)
 {
     return new_item(cJSON_NULL);

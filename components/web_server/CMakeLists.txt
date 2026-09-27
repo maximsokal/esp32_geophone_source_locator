@@ -354,6 +354,7 @@ idf_component_register(
         localization_run_store
         main_barometer
         measurement_service
+        workflow_service
         nrf_topology_service
         object_store
         power_control

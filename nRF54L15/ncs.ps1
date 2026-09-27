@@ -406,7 +406,7 @@ function Probe-ProductionBuild {
         "CONFIG_GPIO=y",
         "CONFIG_I2C=y",
         "CONFIG_I2C_TARGET=y",
-        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128",
+        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=144",
         "CONFIG_HWINFO=y"
     )) {
         Assert-ConfigLine $config $line
@@ -442,7 +442,7 @@ function Probe-CsBuild {
         "CONFIG_BT_CTLR_SDC_CS_COUNT=1",
         "CONFIG_BT_CTLR_SDC_CS_MAX_ANTENNA_PATHS=1",
         "CONFIG_BT_CTLR_SDC_CS_NUM_ANTENNAS=1",
-        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128"
+        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=144"
     )) {
         Assert-ConfigLine $config $line
     }

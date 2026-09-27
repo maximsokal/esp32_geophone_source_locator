@@ -78,11 +78,15 @@ esp_err_t localization_event_solve(
 
     if (availability == LOCALIZATION_METHOD_SKIPPED_INSUFFICIENT_SENSORS) {
         result->status = LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS;
+        /* Here the dimensionality count is accepted picks, so this method
+         * failure is fixed by recording another usable signal. */
+        result->failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
         return ESP_OK;
     }
 
     if (availability == LOCALIZATION_METHOD_SKIPPED_REQUIRES_3D) {
         result->status = LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY;
+        result->failure_class = localization_method_availability_failure_class(availability);
         return ESP_OK;
     }
 
@@ -96,6 +100,7 @@ esp_err_t localization_event_solve(
 
     if (solve_err != ESP_OK) {
         result->status = LOCALIZATION_EVENT_SOLVER_REJECTED;
+        result->failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
         return ESP_OK;
     }
 

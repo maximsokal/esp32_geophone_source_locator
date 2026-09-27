@@ -104,6 +104,7 @@ esp_err_t localization_event_result_to_run_record(
     record.propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
 
     record.solved = event_result->status == LOCALIZATION_EVENT_SOLVED;
+    record.failure_class = event_result->failure_class;
 
     if (record.solved) {
         const localization_result_t *solver_result = &event_result->solver_result;

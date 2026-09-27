@@ -487,7 +487,8 @@ static void test_bayesian_region_with_scanned_voids(void)
         .propagation_model_name = "tap", .propagation_speed_mps = VP, .propagation_speed_uncertainty_mps = 10.0,
     };
     localization_run_record_t record;
-    localization_calculate_bayes_to_run_record(&context, &with_scan, "bayesian_scan_voids", NULL, true,
+    localization_calculate_bayes_to_run_record(&context, &with_scan, "bayesian_scan_voids", NULL,
+                                               LOCALIZATION_FAILURE_CLASS_INTERNAL, true,
                                                0x7FU, 0U, 1U, 60.0, &record);
     assert(record.solved && strcmp(record.method_name, "bayesian_scan_voids") == 0);
     assert(record.uncertainty.credible_level == 0.9 && record.uncertainty.credible_volume_m3 > 0.0);

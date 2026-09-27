@@ -126,13 +126,58 @@ static uint32_t elapsed_ms(int64_t from_us, int64_t to_us)
 }
 
 
-void localization_job_state_progress(localization_job_state_t *state, const char *method_name, int64_t now_us)
+static const char *recommendation_action_name(localization_recommendation_action_t action)
+{
+    switch (action) {
+        case LOCALIZATION_RECOMMENDATION_RECORD_AGAIN: return "record_again";
+        case LOCALIZATION_RECOMMENDATION_MOVE_SENSORS: return "move_sensors";
+        case LOCALIZATION_RECOMMENDATION_NONE:
+        default: return "none";
+    }
+}
+
+
+static uint32_t progress_percent(size_t completed, size_t total)
+{
+    if (total == 0U) {
+        return 0U;
+    }
+    if (completed > total) {
+        completed = total;
+    }
+    return (uint32_t)(((uint64_t)completed * 100U) / total);
+}
+
+
+void localization_job_state_progress(
+    localization_job_state_t *state,
+    const char *method_name,
+    bool completed,
+    size_t methods_completed,
+    size_t methods_total,
+    int64_t now_us
+)
 {
     if (state->status.state != LOCALIZATION_JOB_RUNNING) {
         return;
     }
-    snprintf(state->status.current_method, sizeof(state->status.current_method), "%s",
-             method_name != NULL ? method_name : "");
+    if (!completed) {
+        snprintf(state->status.current_method, sizeof(state->status.current_method), "%s",
+                 method_name != NULL ? method_name : "");
+    }
+    if (state->status.summary.methods_total != 0U) {
+        methods_total = state->status.summary.methods_total;
+    }
+    if (methods_completed < state->status.summary.methods_completed) {
+        methods_completed = state->status.summary.methods_completed;
+    }
+    state->status.summary.methods_total = methods_total;
+    state->status.summary.methods_completed = methods_completed;
+    const uint32_t calculated_percent = progress_percent(methods_completed, methods_total);
+    const uint32_t running_percent = calculated_percent >= 100U ? 99U : calculated_percent;
+    if (running_percent > state->status.progress_percent) {
+        state->status.progress_percent = running_percent;
+    }
     state->status.elapsed_ms = elapsed_ms(state->started_us, now_us);
 }
 
@@ -153,8 +198,22 @@ void localization_job_state_finish(
     status->error = result;
     status->current_method[0] = '\0';
     status->elapsed_ms = elapsed_ms(state->started_us, now_us);
+    const size_t previous_methods_total = status->summary.methods_total;
+    const size_t previous_methods_completed = status->summary.methods_completed;
     if (summary != NULL) {
         status->summary = *summary;
+        if (previous_methods_total != 0U) {
+            status->summary.methods_total = previous_methods_total;
+            if (status->summary.methods_completed < previous_methods_completed) {
+                status->summary.methods_completed = previous_methods_completed;
+            }
+        }
+    }
+    const uint32_t finished_percent = progress_percent(
+        status->summary.methods_completed, status->summary.methods_total
+    );
+    if (finished_percent > status->progress_percent) {
+        status->progress_percent = finished_percent;
     }
     if (status->stack_free_min_bytes == 0U || stack_free_min_bytes < status->stack_free_min_bytes) {
         status->stack_free_min_bytes = stack_free_min_bytes;
@@ -193,7 +252,10 @@ esp_err_t localization_job_status_to_json(const localization_job_status_t *statu
         cJSON_AddNumberToObject(root, "computed_at_ms", (double)status->computed_at_ms) != NULL &&
         cJSON_AddStringToObject(root, "current_method", status->current_method) != NULL &&
         cJSON_AddNumberToObject(root, "elapsed_ms", status->elapsed_ms) != NULL &&
-        cJSON_AddNumberToObject(root, "budget_ms", status->budget_ms) != NULL;
+        cJSON_AddNumberToObject(root, "budget_ms", status->budget_ms) != NULL &&
+        cJSON_AddNumberToObject(root, "methods_total", (double)status->summary.methods_total) != NULL &&
+        cJSON_AddNumberToObject(root, "methods_completed", (double)status->summary.methods_completed) != NULL &&
+        cJSON_AddNumberToObject(root, "progress_percent", status->progress_percent) != NULL;
     if (ok && status->state == LOCALIZATION_JOB_FAILED) {
         ok = cJSON_AddStringToObject(root, "error", error_name(status->error)) != NULL;
     }
@@ -204,7 +266,16 @@ esp_err_t localization_job_status_to_json(const localization_job_status_t *statu
         cJSON_AddNumberToObject(summary, "methods_attempted", (double)status->summary.methods_attempted) != NULL &&
         cJSON_AddNumberToObject(summary, "methods_solved", (double)status->summary.methods_solved) != NULL &&
         cJSON_AddNumberToObject(summary, "methods_persisted", (double)status->summary.methods_persisted) != NULL &&
-        cJSON_AddNumberToObject(summary, "methods_skipped_for_time", (double)status->summary.methods_skipped_for_time) != NULL;
+        cJSON_AddNumberToObject(summary, "methods_skipped_for_time", (double)status->summary.methods_skipped_for_time) != NULL &&
+        cJSON_AddBoolToObject(summary, "successful", status->summary.recommendation.successful) != NULL;
+    cJSON *recommendation = ok ? cJSON_AddObjectToObject(summary, "recommendation") : NULL;
+    ok = recommendation != NULL &&
+        cJSON_AddStringToObject(
+            recommendation, "action", recommendation_action_name(status->summary.recommendation.action)
+        ) != NULL &&
+        cJSON_AddStringToObject(
+            recommendation, "reason_summary", status->summary.recommendation.reason_summary
+        ) != NULL;
     cJSON *timings = ok ? cJSON_AddArrayToObject(summary, "timings") : NULL;
     ok = ok && timings != NULL;
     const size_t count = status->summary.timing_count < LOCALIZATION_CALCULATE_MAX_TIMINGS

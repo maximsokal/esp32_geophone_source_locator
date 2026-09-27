@@ -113,6 +113,34 @@ export interface MeasurementServiceStatus {
   error?: string;
 }
 
+export type WorkflowStep =
+  | 'IDLE'
+  | 'OBJECT'
+  | 'SENSOR_CHECK'
+  | 'CALIB_PREP'
+  | 'CALIBRATING'
+  | 'CALIB_RESULT'
+  | 'PLACEMENT'
+  | 'RANGING'
+  | 'RANGING_RESULT'
+  | 'RECORD_READY'
+  | 'RECORDING'
+  | 'STOPPED'
+  | 'CALCULATING'
+  | 'RESULT';
+
+export type WorkflowSensorSufficiency = 'INSUFFICIENT' | 'PLANAR_2D' | 'CAPABLE_3D';
+
+export interface DeviceWorkflowStatus {
+  step: WorkflowStep;
+  generation: number;
+  allowed_actions: string[];
+  sensor_sufficiency: WorkflowSensorSufficiency;
+  assigned_remotes: number;
+  reason: string;
+  progress: number | null;
+}
+
 export type RecordingSessionStatus =
   | 'complete'
   | 'incomplete'
@@ -339,6 +367,7 @@ export interface DeviceStatus {
   measurement?: MeasurementServiceStatus;
   object_store?: ObjectStoreState;
   recording_sessions?: RecordingSessionCollection;
+  workflow?: DeviceWorkflowStatus;
 }
 
 export type DevicePowerState =

@@ -7,6 +7,7 @@
 #include "measurement_service.h"
 #include "nrf_topology_service.h"
 #include "seismic_recorder.h"
+#include "workflow_service.h"
 #include "web_server_internal.h"
 
 
@@ -28,6 +29,39 @@ esp_err_t nrf_topology_service_get_leveling_summary(
 
 static nrf_topology_leveling_nodes_t g_nodes;
 static esp_err_t g_nodes_error = ESP_OK;
+static workflow_snapshot_t g_workflow_snapshot;
+static esp_err_t g_workflow_snapshot_error = ESP_OK;
+static unsigned g_workflow_snapshot_calls;
+
+bool web_status_json_add_workflow(cJSON *root);
+
+esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
+{
+    ++g_workflow_snapshot_calls;
+    if (g_workflow_snapshot_error != ESP_OK) return g_workflow_snapshot_error;
+    *snapshot = g_workflow_snapshot;
+    return ESP_OK;
+}
+
+const char *workflow_core_step_name(workflow_step_t step)
+{
+    return step == WORKFLOW_STEP_RESULT ? "RESULT" : "OTHER";
+}
+
+const char *workflow_core_sufficiency_name(workflow_sensor_sufficiency_t sufficiency)
+{
+    return sufficiency == WORKFLOW_SENSOR_CAPABLE_3D ? "CAPABLE_3D" : "INSUFFICIENT";
+}
+
+const char *workflow_core_command_name(workflow_command_t command)
+{
+    switch (command) {
+        case WORKFLOW_COMMAND_MOVE_SENSORS: return "MOVE_SENSORS";
+        case WORKFLOW_COMMAND_RECORD_AGAIN: return "RECORD_AGAIN";
+        case WORKFLOW_COMMAND_BACK: return "BACK";
+        default: return "OTHER";
+    }
+}
 
 esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes)
 {
@@ -246,6 +280,60 @@ static void test_null_root_is_rejected_without_topology_access(void)
     assert(!web_status_json_add_recording_gate(NULL));
 }
 
+static void test_workflow_json_orders_recommended_action_and_handles_unknown_progress(void)
+{
+    g_workflow_snapshot = (workflow_snapshot_t){
+        .step = WORKFLOW_STEP_RESULT,
+        .generation = 27U,
+        .allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_MOVE_SENSORS) |
+            WORKFLOW_ACTION(WORKFLOW_COMMAND_RECORD_AGAIN) |
+            WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK),
+        .sensor_sufficiency = WORKFLOW_SENSOR_CAPABLE_3D,
+        .assigned_remotes = 4U,
+        .reason = "geometry_degenerate",
+        .progress = WORKFLOW_PROGRESS_UNKNOWN,
+        .calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS,
+        .recommended_action = WORKFLOW_COMMAND_MOVE_SENSORS,
+    };
+    g_workflow_snapshot_error = ESP_OK;
+    g_workflow_snapshot_calls = 0U;
+    cJSON *root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+
+    const cJSON *workflow = item(root, "workflow");
+    assert_string(workflow, "step", "RESULT");
+    assert_number(workflow, "generation", 27.0);
+    assert_string(workflow, "sensor_sufficiency", "CAPABLE_3D");
+    assert_number(workflow, "assigned_remotes", 4.0);
+    assert_string(workflow, "reason", "geometry_degenerate");
+    assert(cJSON_IsNull(item(workflow, "progress")));
+    const cJSON *actions = item(workflow, "allowed_actions");
+    assert(cJSON_GetArraySize(actions) == 3);
+    assert(cJSON_IsString(cJSON_GetArrayItem(actions, 0)));
+    assert(strcmp(cJSON_GetArrayItem(actions, 0)->valuestring, "MOVE_SENSORS") == 0);
+    assert(strcmp(cJSON_GetArrayItem(actions, 1)->valuestring, "RECORD_AGAIN") == 0);
+    assert(strcmp(cJSON_GetArrayItem(actions, 2)->valuestring, "BACK") == 0);
+    assert(g_workflow_snapshot_calls == 1U);
+    cJSON_Delete(root);
+
+    g_workflow_snapshot.progress = 64;
+    g_workflow_snapshot.recommended_action = WORKFLOW_COMMAND_COUNT;
+    root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+    workflow = item(root, "workflow");
+    assert_number(workflow, "progress", 64.0);
+    cJSON_Delete(root);
+
+    g_workflow_snapshot_error = ESP_ERR_INVALID_STATE;
+    root = cJSON_CreateObject();
+    assert(!web_status_json_add_workflow(root));
+    assert(cJSON_GetObjectItemCaseSensitive(root, "workflow") == NULL);
+    cJSON_Delete(root);
+    const unsigned calls_before_null = g_workflow_snapshot_calls;
+    assert(!web_status_json_add_workflow(NULL));
+    assert(g_workflow_snapshot_calls == calls_before_null);
+}
+
 
 int main(void)
 {
@@ -256,6 +344,7 @@ int main(void)
     test_topology_error_is_available_false_with_error_name();
     test_null_root_is_rejected_without_topology_access();
     test_per_node_leveling_is_serialized();
+    test_workflow_json_orders_recommended_action_and_handles_unknown_progress();
     puts("web status recording gate host tests passed");
     return 0;
 }

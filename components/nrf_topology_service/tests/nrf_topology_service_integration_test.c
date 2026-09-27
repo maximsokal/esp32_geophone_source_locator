@@ -62,8 +62,14 @@ typedef struct {
     int32_t relative_z_mm;
     uint8_t reference_state;
     uint16_t reference_generation;
+    int16_t gyro_bias_mdps[3];
+    int16_t gravity_ref_mg[3];
+    uint8_t imu_cal_state;
+    uint16_t imu_cal_generation;
     unsigned height_reference_captures;
     uint16_t captured_generation[8];
+    unsigned imu_calibration_requests;
+    uint16_t imu_calibration_generations[8];
     nrf_cs_control_request_t cs_request;
     nrf_cs_control_request_t cs_status_request;
     bool cs_request_valid;
@@ -112,6 +118,9 @@ static bool s_long_error_was_logged;
 static bool s_in_height_calibration_handler;
 static unsigned s_height_reference_writes;
 static nrf_upstream_height_reference_t s_height_reference_requests[32];
+static bool s_in_imu_calibration_handler;
+static unsigned s_imu_calibration_writes;
+static nrf_upstream_imu_calibrate_t s_imu_calibration_requests[32];
 
 static void reset_world(void);
 static void run_service(void);
@@ -164,7 +173,7 @@ static void node_boot(sim_node_t *node, uint8_t channel, uint8_t id)
 {
     memset(node, 0, sizeof(*node));
     node->present = true;
-    node->snapshot_version = 2U;
+    node->snapshot_version = 3U;
     node->snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_NO_DATA;
     node->channel = channel;
     node->address = NRF_UPSTREAM_ADDRESS_DISCOVERY;
@@ -373,6 +382,10 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         sensor.relative_z_mm = node->relative_z_mm;
         sensor.reference_state = node->reference_state;
         sensor.reference_generation = node->reference_generation;
+        memcpy(sensor.gyro_bias_mdps, node->gyro_bias_mdps, sizeof(sensor.gyro_bias_mdps));
+        memcpy(sensor.gravity_ref_mg, node->gravity_ref_mg, sizeof(sensor.gravity_ref_mg));
+        sensor.imu_cal_state = node->imu_cal_state;
+        sensor.imu_cal_generation = node->imu_cal_generation;
         assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, data) == NRF_UPSTREAM_RESULT_OK);
         if (node->snapshot_version == 1U) {
             data[30] = 1U;
@@ -422,6 +435,22 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         assert(s_height_reference_writes <
                sizeof(s_height_reference_requests) / sizeof(s_height_reference_requests[0]));
         s_height_reference_requests[s_height_reference_writes++] = request;
+        return ESP_OK;
+    }
+    if (data_len == NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH) {
+        nrf_upstream_imu_calibrate_t request;
+        assert(!s_in_imu_calibration_handler);
+        assert(node->node_state.role == NRF_NODE_ROLE_REMOTE);
+        assert(nrf_upstream_protocol_decode_imu_calibrate(data, data_len, &request) ==
+               NRF_UPSTREAM_RESULT_OK);
+        assert(request.action == NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE);
+        assert(node->imu_calibration_requests <
+               sizeof(node->imu_calibration_generations) /
+                   sizeof(node->imu_calibration_generations[0]));
+        node->imu_calibration_generations[node->imu_calibration_requests++] = request.generation;
+        assert(s_imu_calibration_writes <
+               sizeof(s_imu_calibration_requests) / sizeof(s_imu_calibration_requests[0]));
+        s_imu_calibration_requests[s_imu_calibration_writes++] = request;
         return ESP_OK;
     }
     if (data_len == NRF_CS_CONTROL_EXECUTE_LENGTH) {
@@ -654,6 +683,9 @@ static nrf_topology_snapshot_t s_rejoin_snapshot;
 static esp_err_t s_height_request_result;
 static uint8_t s_height_requested_mask;
 static uint16_t s_height_requested_generation;
+static esp_err_t s_imu_calibration_request_result;
+static uint8_t s_imu_calibration_requested_mask;
+static uint16_t s_imu_calibration_requested_generation;
 
 static void request_height_calibration_from_handler(void)
 {
@@ -680,6 +712,48 @@ static void request_height_calibration_with_no_remotes(void)
     s_in_height_calibration_handler = false;
     assert(s_height_request_result == ESP_ERR_NOT_FOUND);
     assert(s_height_requested_mask == 0U);
+}
+
+static void request_imu_calibration_from_handler(void)
+{
+    const unsigned writes_before = s_imu_calibration_writes;
+    s_imu_calibration_requested_mask = (uint8_t)((1U << 2U) | (1U << 5U));
+    s_imu_calibration_requested_generation = 0xBEEFU;
+    s_in_imu_calibration_handler = true;
+    assert(nrf_topology_service_request_imu_calibration(0xBEEFU, 0U) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_request_imu_calibration(0xBEEFU, (uint8_t)(1U << 0U)) ==
+           ESP_ERR_NOT_FOUND);
+    s_imu_calibration_request_result = nrf_topology_service_request_imu_calibration(
+        s_imu_calibration_requested_generation,
+        s_imu_calibration_requested_mask);
+    assert(s_imu_calibration_writes == writes_before);
+    assert(nrf_topology_service_request_imu_calibration(
+               s_imu_calibration_requested_generation,
+               s_imu_calibration_requested_mask) == ESP_ERR_INVALID_STATE);
+    s_in_imu_calibration_handler = false;
+    assert(s_imu_calibration_request_result == ESP_OK);
+}
+
+static void assert_imu_calibration_requests_and_cached_fields(void)
+{
+    nrf_remote_sensor_cache_t cache;
+    assert(s_imu_calibration_writes == 2U);
+    assert(s_nodes[1].imu_calibration_requests == 1U);
+    assert(s_nodes[2].imu_calibration_requests == 1U);
+    assert(s_nodes[1].imu_calibration_generations[0] == 0xBEEFU);
+    assert(s_nodes[2].imu_calibration_generations[0] == 0xBEEFU);
+    for (unsigned i = 0U; i < s_imu_calibration_writes; ++i) {
+        assert(s_imu_calibration_requests[i].action == NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE);
+        assert(s_imu_calibration_requests[i].request_id != 0U);
+        assert(s_imu_calibration_requests[i].generation == 0xBEEFU);
+    }
+    assert(nrf_topology_service_get_sensor_snapshot(5U, &cache) == ESP_OK);
+    assert(cache.response_valid);
+    assert(cache.sensor.gyro_bias_mdps[0] == -321);
+    assert(cache.sensor.gyro_bias_mdps[1] == 456);
+    assert(cache.sensor.gravity_ref_mg[1] == 1000);
+    assert(cache.sensor.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(cache.sensor.imu_cal_generation == UINT16_MAX);
 }
 
 static void assert_height_capture_counts_and_generation_65535(void)
@@ -753,6 +827,35 @@ static void test_height_calibration_without_remotes(void)
     script(EV_STOP, 0U, NULL);
     run_service();
     assert(s_height_reference_writes == 0U);
+}
+
+static void test_imu_calibration_worker_dispatch_and_v3_cache(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    node_boot(&s_nodes[2], 5U, 0x33U);
+    s_nodes[1].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+    s_nodes[2].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+    s_nodes[2].gyro_bias_mdps[0] = -321;
+    s_nodes[2].gyro_bias_mdps[1] = 456;
+    s_nodes[2].gravity_ref_mg[1] = 1000;
+    s_nodes[2].imu_cal_state = NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED;
+    s_nodes[2].imu_cal_generation = UINT16_MAX;
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_imu_calibration_from_handler);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_imu_calibration_requests_and_cached_fields);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_imu_calibration_request_result == ESP_OK);
+    assert(s_imu_calibration_requested_mask ==
+           (uint8_t)((1U << 2U) | (1U << 5U)));
+    assert(s_imu_calibration_requested_generation == 0xBEEFU);
+    assert(s_imu_calibration_writes == 2U);
 }
 
 static void capture_cs(void)
@@ -985,6 +1088,7 @@ static void reset_world(void)
     memset(s_nodes, 0, sizeof(s_nodes));
     memset(s_devices, 0, sizeof(s_devices));
     memset(s_height_reference_requests, 0, sizeof(s_height_reference_requests));
+    memset(s_imu_calibration_requests, 0, sizeof(s_imu_calibration_requests));
     s_tca_present = false;
     s_tca_control = 0U;
     s_tca_writes = 0U;
@@ -1001,8 +1105,13 @@ static void reset_world(void)
     s_cs_execute_count = 0U;
     s_in_height_calibration_handler = false;
     s_height_reference_writes = 0U;
+    s_in_imu_calibration_handler = false;
+    s_imu_calibration_writes = 0U;
     s_height_request_result = ESP_ERR_INVALID_STATE;
     s_height_requested_mask = 0U;
+    s_imu_calibration_request_result = ESP_ERR_INVALID_STATE;
+    s_imu_calibration_requested_mask = 0U;
+    s_imu_calibration_requested_generation = 0U;
     s_stack_hwm_default = 2048U;
     s_stack_hwm_sequence_count = 0U;
     s_stack_hwm_sequence_pos = 0U;
@@ -1169,6 +1278,8 @@ static void test_api_guards_when_stopped(void)
     assert(nrf_topology_service_request_sensor_refresh(NRF_TOPOLOGY_REMOTE_COUNT) == ESP_ERR_INVALID_ARG);
     assert(nrf_topology_service_request_height_reference_capture(
         &height_mask, &height_generation) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_request_imu_calibration(1U, 0U) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_request_imu_calibration(1U, 1U) == ESP_ERR_INVALID_STATE);
     assert(height_mask == 0U);
     assert(height_generation == 0U);
     assert(nrf_topology_service_get_snapshot(NULL) == ESP_ERR_INVALID_ARG);
@@ -1185,6 +1296,7 @@ int main(void)
     test_remote_snapshot_v1_and_v2_cache_read_path();
     test_height_calibration_worker_queue_and_generation_wrap();
     test_height_calibration_without_remotes();
+    test_imu_calibration_worker_dispatch_and_v3_cache();
     test_without_tca_only_main_is_managed();
     test_unplug_and_replug_between_reconciles();
     test_stack_phase_tracking_and_cs_cycle_path();

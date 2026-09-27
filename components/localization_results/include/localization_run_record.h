@@ -28,10 +28,13 @@
  * iterative Gauss-Newton TDOA solver's own result shape (iterations,
  * converged, emission_time_us), which the other backends in this epic
  * (semblance/coherency, statistical traveltime inversion, and the joint
- * fusion, MAX-136/137/138) have no equivalent of.
+ * fusion, MAX-136/137/138) have no equivalent of. Schema v4 adds the
+ * producer-assigned failure class; schema v3 records without it still read
+ * as LOCALIZATION_FAILURE_CLASS_NONE.
  */
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 3U
+#define LOCALIZATION_RUN_SCHEMA_VERSION 4U
+#define LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY 3U
 
 #define LOCALIZATION_RUN_OBJECT_ID_SIZE   16U
 #define LOCALIZATION_RUN_SESSION_ID_SIZE  16U
@@ -112,6 +115,11 @@ typedef struct
     double propagation_speed_uncertainty_mps;
 
     bool solved;
+
+    /* The operator action class attached by the method that produced a
+     * rejection. NONE is also the backward-compatible value for old JSON. */
+    localization_failure_class_t failure_class;
+    bool uncertainty_too_high;
 
     /*
      * A generic, method-defined [0, 1] confidence/focus score -- 0 means

@@ -121,6 +121,7 @@ static void test_one_rejected_pick_leaves_planar_2d_method_unavailable(void)
 
     assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
     assert(result.status == LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY);
+    assert(result.failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
     assert(result.dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D);
     assert(result.channel_mask_used == 0x0Du); /* bits 0,2,3 */
     assert(result.channel_mask_rejected == 0x02u); /* bit 1 */
@@ -169,6 +170,7 @@ static void test_two_channels_is_genuinely_insufficient(void)
 
     assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
     assert(result.status == LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS);
+    assert(result.failure_class == LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     assert(result.dimensionality == LOCALIZATION_DIMENSIONALITY_INSUFFICIENT);
     assert(result.channels_used_count == 2u);
 }
@@ -188,6 +190,7 @@ static void test_degenerate_coplanar_geometry_is_solver_rejected(void)
 
     assert(localization_event_solve(channels, 4u, &config, NULL, &result) == ESP_OK);
     assert(result.status == LOCALIZATION_EVENT_SOLVER_REJECTED);
+    assert(result.failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
     assert(result.channels_used_count == 4u);
 }
 

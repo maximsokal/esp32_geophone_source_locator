@@ -20,9 +20,13 @@
 #include "freertos/task.h"
 #include "runtime_observability.h"
 #include "ui_internal.h"
+#include "ui_i18n_nvs.h"
+
+ESP_EVENT_DECLARE_BASE(UI_I18N_STORE_EVENT);
 
 static esp_event_loop_handle_t fake_loop;
 static esp_err_t fake_register_result;
+static unsigned register_failure_call;
 static esp_event_handler_t captured_handler;
 static void *captured_handler_arg;
 static unsigned register_calls;
@@ -42,6 +46,19 @@ static bool wake_block;
 static bool wake_entered;
 static bool wake_release;
 static bool stop_returned;
+static bool app_event_registered;
+static bool locale_event_registered;
+
+bool ui_i18n_nvs_save_locale(ui_locale_t locale)
+{
+    (void)locale;
+    return true;
+}
+
+
+void ui_render_system_locked(void)
+{
+}
 
 #ifdef _WIN32
 static CRITICAL_SECTION sync_lock;
@@ -160,6 +177,11 @@ static void reset_observation(void)
 {
     register_calls = 0U;
     unregister_calls = 0U;
+    register_failure_call = 0U;
+    captured_handler = NULL;
+    captured_handler_arg = NULL;
+    app_event_registered = false;
+    locale_event_registered = false;
     wake_calls = 0U;
     delay_calls = 0U;
     key_dispatch_calls = 0U;
@@ -194,12 +216,23 @@ esp_err_t esp_event_handler_register_with(
 )
 {
     assert(loop == fake_loop);
-    assert(event_base == APP_EVENT);
     assert(event_id == ESP_EVENT_ANY_ID);
     ++register_calls;
     captured_handler = event_handler;
     captured_handler_arg = event_handler_arg;
-    return fake_register_result;
+    if (register_calls == register_failure_call) {
+        return fake_register_result;
+    }
+    if (event_base == APP_EVENT) {
+        assert(!app_event_registered);
+        app_event_registered = true;
+    }
+    else {
+        assert(event_base == UI_I18N_STORE_EVENT);
+        assert(!locale_event_registered);
+        locale_event_registered = true;
+    }
+    return ESP_OK;
 }
 
 esp_err_t esp_event_handler_unregister_with(
@@ -210,9 +243,17 @@ esp_err_t esp_event_handler_unregister_with(
 )
 {
     assert(loop == fake_loop);
-    assert(event_base == APP_EVENT);
     assert(event_id == ESP_EVENT_ANY_ID);
     assert(event_handler == captured_handler);
+    if (event_base == APP_EVENT) {
+        assert(app_event_registered);
+        app_event_registered = false;
+    }
+    else {
+        assert(event_base == UI_I18N_STORE_EVENT);
+        assert(locale_event_registered);
+        locale_event_registered = false;
+    }
     ++unregister_calls;
     return ESP_OK;
 }
@@ -354,15 +395,31 @@ int main(void)
 
     fake_loop = (void *)(uintptr_t)1U;
     fake_register_result = ESP_FAIL;
+    register_failure_call = 1U;
     assert(ui_event_dispatcher_start() == ESP_FAIL);
     assert(register_calls == 1U);
+    assert(unregister_calls == 0U);
     assert(captured_handler != NULL);
     emit_event(APP_EVENT_KEYPAD, KEYPAD_KEY_UP);
     assert(wake_calls == 0U);
     ui_event_dispatcher_dispatch_pending_locked();
     assert(key_dispatch_calls == 0U);
 
+    reset_observation();
+    fake_loop = (void *)(uintptr_t)1U;
+    fake_register_result = ESP_FAIL;
+    register_failure_call = 2U;
+    assert(ui_event_dispatcher_start() == ESP_FAIL);
+    assert(register_calls == 2U);
+    assert(unregister_calls == 1U);
+    assert(!app_event_registered && !locale_event_registered);
+    emit_event(APP_EVENT_KEYPAD, KEYPAD_KEY_UP);
+    assert(wake_calls == 0U);
+
+    reset_observation();
+    fake_loop = (void *)(uintptr_t)1U;
     fake_register_result = ESP_OK;
+    register_failure_call = 0U;
     assert(ui_event_dispatcher_start() == ESP_OK);
     assert(register_calls == 2U);
     assert(ui_event_dispatcher_start() == ESP_OK);
@@ -378,7 +435,8 @@ int main(void)
     emit_event(55, 1234);
     assert(wake_calls == 2U);
     ui_event_dispatcher_stop();
-    assert(unregister_calls == 1U);
+    assert(unregister_calls == 2U);
+    assert(!app_event_registered && !locale_event_registered);
     ui_event_dispatcher_dispatch_pending_locked();
     assert(app_dispatch_calls == 0U);
     assert(last_app_event_id == 0 && last_app_event_value == 0);
@@ -389,7 +447,7 @@ int main(void)
     assert(last_app_event_id == 0 && last_app_event_value == 0);
 
     ui_event_dispatcher_stop();
-    assert(unregister_calls == 1U);
+    assert(unregister_calls == 2U);
 
     reset_observation();
     fake_loop = (void *)(uintptr_t)1U;
@@ -422,7 +480,7 @@ int main(void)
     assert(stop_returned);
     sync_leave();
     assert(delay_calls > 0U);
-    assert(unregister_calls == 1U);
+    assert(unregister_calls == 2U);
     assert(wake_calls == 1U);
 
     emit_event(77, 1111);

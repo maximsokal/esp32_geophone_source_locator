@@ -30,6 +30,7 @@ typedef struct cJSON
 cJSON *cJSON_Parse(const char *text);
 cJSON *cJSON_CreateObject(void);
 cJSON *cJSON_CreateNumber(double value);
+cJSON *cJSON_CreateString(const char *value);
 cJSON *cJSON_CreateNull(void);
 cJSON *cJSON_GetObjectItemCaseSensitive(const cJSON *object, const char *name);
 cJSON *cJSON_GetArrayItem(const cJSON *array, int index);

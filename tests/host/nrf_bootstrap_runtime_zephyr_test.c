@@ -21,6 +21,7 @@ static unsigned s_reboot_calls;
 static unsigned s_sensor_assignment_calls;
 static unsigned s_sensor_refresh_calls;
 static unsigned s_height_reference_calls;
+static unsigned s_imu_calibration_calls;
 static bool s_registered;
 static uint16_t s_address;
 static int s_readdress_result;
@@ -29,6 +30,7 @@ static bool s_readdress_rollback_discovery;
 static nrf_upstream_sensor_snapshot_t s_sensor_snapshot;
 static nrf_upstream_sensor_refresh_t s_last_sensor_refresh;
 static nrf_upstream_height_reference_t s_last_height_reference;
+static nrf_upstream_imu_calibrate_t s_last_imu_calibration;
 
 int k_work_submit(struct k_work *work)
 {
@@ -81,6 +83,15 @@ int nrf_sensor_upstream_runtime_zephyr_request_height_reference(
     assert(request != NULL);
     s_last_height_reference = *request;
     ++s_height_reference_calls;
+    return 0;
+}
+
+int nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(
+    const nrf_upstream_imu_calibrate_t *request)
+{
+    assert(request != NULL);
+    s_last_imu_calibration = *request;
+    ++s_imu_calibration_calls;
     return 0;
 }
 
@@ -217,6 +228,19 @@ static void send_height_reference(
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
 }
 
+static void send_imu_calibration(uint8_t action, uint32_t request_id, uint16_t generation)
+{
+    nrf_upstream_imu_calibrate_t request = {
+        .action = action,
+        .request_id = request_id,
+        .generation = generation,
+    };
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH];
+    assert(nrf_upstream_protocol_encode_imu_calibrate(&request, frame) ==
+           NRF_UPSTREAM_RESULT_OK);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
 static void run_submitted_work(void)
 {
     struct k_work *work = s_submitted_work;
@@ -298,6 +322,32 @@ int main(void)
         assert(s_last_height_reference.action == NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE);
         assert(s_last_height_reference.request_id == 0x87654321U);
         assert(s_last_height_reference.generation == UINT16_MAX);
+        assert(s_submit_calls == before_submit);
+        assert(s_sensor_refresh_calls == before_refresh);
+    }
+
+    {
+        const unsigned before_submit = s_submit_calls;
+        const unsigned before_refresh = s_sensor_refresh_calls;
+        send_imu_calibration(
+            NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE,
+            0x10203040U,
+            UINT16_MAX);
+        assert(s_imu_calibration_calls == 1U);
+        assert(s_last_imu_calibration.action == NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE);
+        assert(s_last_imu_calibration.request_id == 0x10203040U);
+        assert(s_last_imu_calibration.generation == UINT16_MAX);
+        assert(s_submit_calls == before_submit);
+        assert(s_sensor_refresh_calls == before_refresh);
+
+        send_imu_calibration(
+            NRF_UPSTREAM_IMU_CALIBRATE_CLEAR,
+            0x10203041U,
+            0U);
+        assert(s_imu_calibration_calls == 2U);
+        assert(s_last_imu_calibration.action == NRF_UPSTREAM_IMU_CALIBRATE_CLEAR);
+        assert(s_last_imu_calibration.request_id == 0x10203041U);
+        assert(s_last_imu_calibration.generation == 0U);
         assert(s_submit_calls == before_submit);
         assert(s_sensor_refresh_calls == before_refresh);
     }

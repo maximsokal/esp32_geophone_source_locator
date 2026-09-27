@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "localization_calculate_policy.h"
+#include "localization_calculate_failure_class_test_support.h"
 
 
 static bool nearly_equal(double a, double b, double epsilon)
@@ -284,6 +285,7 @@ static void test_traveltime_adapter_insufficient_picks_is_unsolved_with_reason(v
 
     assert(!record.solved);
     assert(record.rejection_reason[0] != '\0');
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 }
 
 
@@ -296,6 +298,7 @@ static void test_traveltime_adapter_null_result_is_unsolved(void)
     );
     assert(!record.solved);
     assert(record.rejection_reason[0] != '\0');
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
 }
 
 
@@ -305,11 +308,12 @@ static void test_semblance_adapter_not_attempted_uses_the_given_reason(void)
     localization_run_record_t record;
     localization_calculate_semblance_to_run_record(
         &context, NULL, "no accepted arrival pick to anchor the search window",
-        0U, 0x0FU, 1U, &record
+        LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN, 0U, 0x0FU, 1U, &record
     );
     assert(strcmp(record.method_name, "semblance") == 0);
     assert(!record.solved);
     assert(strcmp(record.rejection_reason, "no accepted arrival pick to anchor the search window") == 0);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 }
 
 
@@ -324,7 +328,7 @@ static void test_semblance_adapter_found_is_solved(void)
 
     localization_run_record_t record;
     localization_calculate_semblance_to_run_record(
-        &context, &result, NULL, 0x0FU, 0U, 1U, &record
+        &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0x0FU, 0U, 1U, &record
     );
     assert(record.solved);
     assert(record.source_position.y_m == 0.5);
@@ -341,10 +345,11 @@ static void test_semblance_adapter_not_found_is_unsolved(void)
 
     localization_run_record_t record;
     localization_calculate_semblance_to_run_record(
-        &context, &result, NULL, 0x0FU, 0U, 1U, &record
+        &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0x0FU, 0U, 1U, &record
     );
     assert(!record.solved);
     assert(record.rejection_reason[0] != '\0');
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 }
 
 
@@ -369,9 +374,11 @@ static void test_energy_baseline_adapter(void)
     localization_calculate_energy_baseline_to_run_record(&context, &unsolved, 0x0FU, 0U, 1U, &record);
     assert(!record.solved);
     assert(record.rejection_reason[0] != '\0');
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 
     localization_calculate_energy_baseline_to_run_record(&context, NULL, 0x0FU, 0U, 1U, &record);
     assert(!record.solved);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
 }
 
 
@@ -412,6 +419,7 @@ static void test_joint_adapter_not_found_is_unsolved(void)
 
     localization_calculate_joint_to_run_record(&context, NULL, 0U, 0x0FU, 1U, &record);
     assert(!record.solved);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
 }
 
 
@@ -683,11 +691,14 @@ static void test_tdcas_adapter_reports_estimated_velocity_and_reasons(void)
     assert(!record.solved);
     assert(strstr(record.rejection_reason, "needs 5") != NULL);
     assert(strstr(record.rejection_reason, "have 4") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     result.status = LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION;
     localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
     assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
     localization_calculate_tdcas_to_run_record(&context, NULL, 0xFU, 0U, 2U, 10.0, &record);
     assert(!record.solved && record.rejection_reason[0] != '\0');
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 }
 
 
@@ -704,7 +715,9 @@ static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
     result.iterations = 4U;
     result.converged = true;
     localization_run_record_t record;
-    localization_calculate_psafuvs_to_run_record(&context, &result, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_psafuvs_to_run_record(
+        &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record
+    );
     assert(record.solved);
     assert(strcmp(record.method_name, "psafuvs") == 0);
     assert(record.estimated_p_velocity_mps == 320.0 && record.estimated_s_velocity_mps == 170.0);
@@ -713,21 +726,33 @@ static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
 
     /* Not attempted: the caller's reason is kept verbatim. */
     localization_calculate_psafuvs_to_run_record(
-        &context, NULL, "S-wave picking not configured", 0U, 0xFU, 1U, 20.0, &record
+        &context, NULL, "S-wave picking not configured", LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+        0U, 0xFU, 1U, 20.0, &record
     );
     assert(!record.solved);
     assert(strcmp(record.rejection_reason, "S-wave picking not configured") == 0);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 
     const localization_psafuvs_status_t statuses[] = {
         LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS, LOCALIZATION_PSAFUVS_DEGENERATE,
         LOCALIZATION_PSAFUVS_NONPHYSICAL_VELOCITIES, LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED,
         LOCALIZATION_PSAFUVS_NO_ALLOWED_CANDIDATE,
     };
+    const localization_failure_class_t expected_classes[] = {
+        LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+        LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+        LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+        LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS,
+        LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS,
+    };
     for (size_t i = 0U; i < sizeof(statuses) / sizeof(statuses[0]); ++i) {
         result.status = statuses[i];
-        localization_calculate_psafuvs_to_run_record(&context, &result, NULL, 0xFU, 0U, 1U, 20.0, &record);
+        localization_calculate_psafuvs_to_run_record(
+            &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record
+        );
         assert(!record.solved && record.rejection_reason[0] != '\0');
         assert(record.estimated_p_velocity_mps == 0.0);
+        localization_calculate_test_assert_rejection_class(&record, expected_classes[i]);
     }
 }
 
@@ -751,9 +776,15 @@ static void test_suea_adapter_and_redundancy(void)
     result.pick_mask_unreachable = 0x2U;
     localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
     assert(!record.solved && strstr(record.rejection_reason, "empty space") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    result.status = LOCALIZATION_SUEA_INSUFFICIENT_PICKS;
+    result.pick_mask_unreachable = 0U;
+    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     result.status = LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE;
     localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
     assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
 
     /* Velocity-free redundancy: 4 P picks cannot verify 5 unknowns;
      * 4 P + 4 S picks leave 2 degrees of freedom for PSAFUVS. */
@@ -903,9 +934,19 @@ static void test_xcorr_and_robust_adapters(void)
     xcorr.channels_used = 2U;
     localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0x3U, 0xCU, 1U, 20.0, &record);
     assert(!record.solved && strstr(record.rejection_reason, "only 1 of 6 channel pairs") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     xcorr.status = LOCALIZATION_XCORR_TDOA_NO_ANCHOR;
     localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0U, 0xFU, 1U, 20.0, &record);
     assert(!record.solved && strstr(record.rejection_reason, "anchor") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
+    xcorr.status = LOCALIZATION_XCORR_TDOA_NO_ALLOWED_CANDIDATE;
+    localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    xcorr.status = LOCALIZATION_XCORR_TDOA_UNDERDETERMINED;
+    localization_calculate_xcorr_tdoa_to_run_record(&context, &xcorr, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    localization_calculate_xcorr_tdoa_to_run_record(&context, NULL, 0U, 0xFU, 1U, 20.0, &record);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
 
     localization_robust_result_t robust;
     memset(&robust, 0, sizeof(robust));
@@ -926,8 +967,10 @@ static void test_xcorr_and_robust_adapters(void)
     robust.degrees_of_freedom = -1;
     localization_calculate_robust_to_run_record(&context, &robust, 0x7U, 0x8U, 1U, 20.0, &record);
     assert(!record.solved && strstr(record.rejection_reason, "needs 4 accepted P picks for a 3D search, have 3") != NULL);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     localization_calculate_robust_to_run_record(&context, NULL, 0U, 0xFU, 1U, 20.0, &record);
     assert(!record.solved && record.rejection_reason[0] != '\0');
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
 }
 
 
@@ -943,14 +986,23 @@ static void test_psp_eikonal_and_bayes_adapters(void)
     psp.p_velocity_mps = 320.0;
     psp.s_velocity_mps = 180.0;
     psp.rms_p_residual_us = 20.0;
-    localization_calculate_psp_to_run_record(&context, &psp, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_psp_to_run_record(
+        &context, &psp, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record
+    );
     assert(record.solved && strcmp(record.method_name, "psp_joint") == 0);
     assert(record.estimated_p_velocity_mps == 320.0 && record.estimated_s_velocity_mps == 180.0);
     psp.status = LOCALIZATION_PSP_UNDERDETERMINED;
-    localization_calculate_psp_to_run_record(&context, &psp, NULL, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_psp_to_run_record(
+        &context, &psp, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record
+    );
     assert(!record.solved && strstr(record.rejection_reason, "underdetermined") != NULL);
-    localization_calculate_psp_to_run_record(&context, NULL, "S-wave picking not configured", 0U, 0xFU, 1U, 20.0, &record);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    localization_calculate_psp_to_run_record(
+        &context, NULL, "S-wave picking not configured", LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+        0U, 0xFU, 1U, 20.0, &record
+    );
     assert(!record.solved && strcmp(record.rejection_reason, "S-wave picking not configured") == 0);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 
     localization_eikonal_result_t eikonal;
     memset(&eikonal, 0, sizeof(eikonal));
@@ -958,20 +1010,26 @@ static void test_psp_eikonal_and_bayes_adapters(void)
     eikonal.position = (localization_point3d_t) { 2.0, 1.0, -0.6 };
     eikonal.velocity_scale = 0.85;
     eikonal.rms_residual_us = 10.0;
-    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_scan_voids", NULL, true,
+    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_scan_voids", NULL,
+                                                 LOCALIZATION_FAILURE_CLASS_INTERNAL, true,
                                                  0xFU, 0U, 1U, 20.0, &record);
     assert(record.solved && strcmp(record.method_name, "eikonal_scan_voids") == 0);
     assert(nearly_equal(record.estimated_p_velocity_mps, 340.0 / 0.85, 1e-9));
-    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_fmm", NULL, false,
+    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_fmm", NULL,
+                                                 LOCALIZATION_FAILURE_CLASS_INTERNAL, false,
                                                  0xFU, 0U, 1U, 20.0, &record);
     assert(record.estimated_p_velocity_mps == 0.0); /* the scale was fixed */
     eikonal.status = LOCALIZATION_EIKONAL_NO_REACHABLE_CANDIDATE;
-    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_scan_voids", NULL, true,
+    localization_calculate_eikonal_to_run_record(&context, &eikonal, "eikonal_scan_voids", NULL,
+                                                 LOCALIZATION_FAILURE_CLASS_INTERNAL, true,
                                                  0xFU, 0U, 1U, 20.0, &record);
     assert(!record.solved && strstr(record.rejection_reason, "around the voids") != NULL);
-    localization_calculate_eikonal_to_run_record(&context, NULL, "eikonal_scan_voids", "constraint not applied", true,
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    localization_calculate_eikonal_to_run_record(&context, NULL, "eikonal_scan_voids", "constraint not applied",
+                                                 LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS, true,
                                                  0xFU, 0U, 1U, 20.0, &record);
     assert(!record.solved && strcmp(record.rejection_reason, "constraint not applied") == 0);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
 
     localization_bayes_result_t bayes;
     memset(&bayes, 0, sizeof(bayes));
@@ -984,7 +1042,10 @@ static void test_psp_eikonal_and_bayes_adapters(void)
     bayes.credible_max = (localization_point3d_t) { 1.3, 1.8, -0.1 };
     bayes.velocity_mean_mps = 333.0;
     bayes.rms_residual_us = 20.0;
-    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, true, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_bayes_to_run_record(
+        &context, &bayes, "bayesian", NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, true,
+        0xFU, 0U, 1U, 20.0, &record
+    );
     assert(record.solved && strcmp(record.method_name, "bayesian") == 0);
     assert(record.source_position.z_m == -1.3);
     assert(record.uncertainty.credible_level == 0.9 && record.uncertainty.std_m.z_m == 0.8);
@@ -996,8 +1057,12 @@ static void test_psp_eikonal_and_bayes_adapters(void)
     assert(strstr(json, "\"uncertainty\"") != NULL);
     free(json);
     bayes.status = LOCALIZATION_BAYES_INSUFFICIENT_PICKS;
-    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, true, 0x7U, 0x8U, 1U, 20.0, &record);
+    localization_calculate_bayes_to_run_record(
+        &context, &bayes, "bayesian", NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, true,
+        0x7U, 0x8U, 1U, 20.0, &record
+    );
     assert(!record.solved && record.uncertainty.credible_level == 0.0);
+    localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 }
 
 
@@ -1022,11 +1087,110 @@ static int64_t fake_clock(void)
 }
 
 static char s_progress_log[256];
-static void log_progress(const char *method, void *context)
+static size_t s_progress_last_completed;
+static uint32_t s_progress_last_percent;
+static void log_progress(
+    const char *method,
+    bool completed,
+    size_t methods_completed,
+    size_t methods_total,
+    void *context
+)
 {
     (void)context;
-    strncat(s_progress_log, method, sizeof(s_progress_log) - strlen(s_progress_log) - 2U);
-    strncat(s_progress_log, ",", sizeof(s_progress_log) - strlen(s_progress_log) - 1U);
+    assert(methods_total == 3U);
+    assert(methods_completed >= s_progress_last_completed);
+    assert(completed ? methods_completed == s_progress_last_completed + 1U
+                     : methods_completed == s_progress_last_completed);
+    const uint32_t percent = (uint32_t)(((uint64_t)methods_completed * 100U) / methods_total);
+    assert(percent >= s_progress_last_percent && percent <= 100U);
+    s_progress_last_completed = methods_completed;
+    s_progress_last_percent = percent;
+    const size_t used = strlen(s_progress_log);
+    snprintf(
+        s_progress_log + used, sizeof(s_progress_log) - used,
+        "%s:%s:%u/%u,", method, completed ? "done" : "start",
+        (unsigned)methods_completed, (unsigned)methods_total
+    );
+}
+
+
+static void test_session_recommendation_aggregation(void)
+{
+    typedef struct
+    {
+        const char *name;
+        size_t record_count;
+        localization_failure_class_t classes[4];
+        uint8_t solved_mask;
+        uint8_t uncertainty_too_high_mask;
+        size_t no_trigger_count;
+        localization_recommendation_action_t expected_action;
+        bool expected_successful;
+    } recommendation_case_t;
+
+    static const recommendation_case_t cases[] = {
+        { "all pick failures", 3U,
+          { LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+            LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN },
+          0U, 0U, 0U, LOCALIZATION_RECOMMENDATION_RECORD_AGAIN, false },
+        { "all geometry failures", 3U,
+          { LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS,
+            LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS },
+          0U, 0U, 0U, LOCALIZATION_RECOMMENDATION_MOVE_SENSORS, false },
+        { "mixed classes tie toward recording", 4U,
+          { LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS,
+            LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS },
+          0U, 0U, 0U, LOCALIZATION_RECOMMENDATION_RECORD_AGAIN, false },
+        { "internal failures do not enter the vote", 3U,
+          { LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS, LOCALIZATION_FAILURE_CLASS_INTERNAL,
+            LOCALIZATION_FAILURE_CLASS_INTERNAL },
+          0U, 0U, 0U, LOCALIZATION_RECOMMENDATION_MOVE_SENSORS, false },
+        { "solved but uncertain result", 1U,
+          { LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS },
+          0x01U, 0x01U, 0U, LOCALIZATION_RECOMMENDATION_MOVE_SENSORS, false },
+        { "usable result", 1U,
+          { LOCALIZATION_FAILURE_CLASS_NONE },
+          0x01U, 0U, 0U, LOCALIZATION_RECOMMENDATION_NONE, true },
+        { "pick status overrides geometry vote", 3U,
+          { LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS,
+            LOCALIZATION_FAILURE_CLASS_INTERNAL },
+          0U, 0U, 3U, LOCALIZATION_RECOMMENDATION_RECORD_AGAIN, false },
+    };
+
+    for (size_t test = 0U; test < sizeof(cases) / sizeof(cases[0]); ++test) {
+        localization_run_record_t records[4];
+        memset(records, 0, sizeof(records));
+        for (size_t i = 0U; i < cases[test].record_count; ++i) {
+            records[i].computed_at_ms = 500U;
+            records[i].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+            records[i].failure_class = cases[test].classes[i];
+            records[i].solved = (cases[test].solved_mask & (1U << i)) != 0U;
+            records[i].uncertainty_too_high =
+                (cases[test].uncertainty_too_high_mask & (1U << i)) != 0U;
+            if (!records[i].solved) {
+                snprintf(records[i].rejection_reason, sizeof(records[i].rejection_reason), "table case failure");
+            }
+        }
+
+        localization_pick_record_t picks;
+        memset(&picks, 0, sizeof(picks));
+        picks.computed_at_ms = 500U;
+        for (size_t i = 0U; i < LOCALIZATION_PICK_RECORD_CHANNEL_COUNT; ++i) {
+            picks.channels[i].participating = true;
+            picks.channels[i].pick.status = i < cases[test].no_trigger_count
+                ? GEOPHONE_PICK_REJECTED_NO_TRIGGER
+                : GEOPHONE_PICK_ACCEPTED;
+        }
+
+        localization_recommendation_t recommendation;
+        localization_calculate_recommendation(
+            records, cases[test].record_count, &picks, 1U, &recommendation
+        );
+        assert(recommendation.action == cases[test].expected_action);
+        assert(recommendation.successful == cases[test].expected_successful);
+        assert(recommendation.reason_summary[0] != '\0');
+    }
 }
 
 
@@ -1034,10 +1198,16 @@ static void test_time_budget_times_every_method_and_skips_after_the_deadline(voi
 {
     localization_calculate_summary_t summary;
     memset(&summary, 0, sizeof(summary));
+    summary.methods_total = 3U;
     s_progress_log[0] = '\0';
+    s_progress_last_completed = 0U;
+    s_progress_last_percent = 0U;
     s_fake_now_us = 1000000;
     localization_calculate_budget_t budget;
-    localization_calculate_budget_init(&budget, fake_clock, 1000000 + 5000000, log_progress, NULL, &summary);
+    localization_calculate_budget_init(
+        &budget, fake_clock, 1000000 + 5000000, log_progress, NULL, &summary,
+        LOCALIZATION_CALCULATE_DEFAULT_MAX_HORIZONTAL_UNCERTAINTY_M
+    );
 
     /* Runs and is timed. */
     localization_run_record_t record;
@@ -1068,17 +1238,51 @@ static void test_time_budget_times_every_method_and_skips_after_the_deadline(voi
     assert(strcmp(summary.timings[0].method_name, "tdcas") == 0 && summary.timings[0].duration_ms == 1250U);
     assert(summary.timings[1].skipped_for_time && summary.timings[1].duration_ms == 0U);
     assert(!summary.timings[2].skipped_for_time && summary.timings[2].duration_ms == 3U);
-    /* Progress is published only for methods that start. */
-    assert(strcmp(s_progress_log, "tdcas,energy_baseline,") == 0);
+    assert(summary.methods_completed == 3U && s_progress_last_percent == 100U);
+    assert(strcmp(
+        s_progress_log,
+        "tdcas:start:0/3,tdcas:done:1/3,bayesian:start:1/3,bayesian:done:2/3,"
+        "energy_baseline:start:2/3,energy_baseline:done:3/3,"
+    ) == 0);
 
     /* No deadline: nothing is ever skipped; the timings list is bounded. */
     memset(&summary, 0, sizeof(summary));
-    localization_calculate_budget_init(&budget, fake_clock, 0, NULL, NULL, &summary);
+    localization_calculate_budget_init(&budget, fake_clock, 0, NULL, NULL, &summary, 2.0);
     for (size_t i = 0U; i < LOCALIZATION_CALCULATE_MAX_TIMINGS + 3U; ++i) {
         assert(localization_calculate_budget_begin(&budget, "semblance", true));
         localization_calculate_budget_end(&budget, NULL);
     }
     assert(summary.timing_count == LOCALIZATION_CALCULATE_MAX_TIMINGS && summary.methods_skipped_for_time == 0U);
+}
+
+
+static void test_budget_flags_horizontal_uncertainty_above_threshold(void)
+{
+    localization_calculate_summary_t summary;
+    memset(&summary, 0, sizeof(summary));
+    summary.methods_total = 1U;
+    localization_calculate_budget_t budget;
+    localization_calculate_budget_init(&budget, fake_clock, 0, NULL, NULL, &summary, 2.0);
+
+    localization_run_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.solved = true;
+    record.uncertainty.credible_level = 0.9;
+    record.uncertainty.std_m = (localization_point3d_t) { 1.0, 1.0, 3.0 };
+    assert(localization_calculate_budget_begin(&budget, "bayesian", false));
+    localization_calculate_budget_end(&budget, &record);
+    assert(record.solved && !record.uncertainty_too_high);
+    assert(record.failure_class == LOCALIZATION_FAILURE_CLASS_NONE);
+
+    summary.methods_completed = 0U;
+    memset(&record, 0, sizeof(record));
+    record.solved = true;
+    record.uncertainty.credible_level = 0.9;
+    record.uncertainty.std_m = (localization_point3d_t) { 1.5, 1.5, 0.1 };
+    assert(localization_calculate_budget_begin(&budget, "bayesian", false));
+    localization_calculate_budget_end(&budget, &record);
+    assert(record.solved && record.uncertainty_too_high);
+    assert(record.failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
 }
 
 
@@ -1099,10 +1303,16 @@ static void test_bayes_adapter_carries_the_inflation(void)
     bayes.credible_level = 0.9;
     bayes.sigma_inflation = 4.1;
     localization_run_record_t record;
-    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, false, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_bayes_to_run_record(
+        &context, &bayes, "bayesian", NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, false,
+        0xFU, 0U, 1U, 20.0, &record
+    );
     assert(record.uncertainty.sigma_inflation == 4.1);
     bayes.sigma_inflation = 0.0; /* not computed: never below 1 */
-    localization_calculate_bayes_to_run_record(&context, &bayes, "bayesian", NULL, false, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_bayes_to_run_record(
+        &context, &bayes, "bayesian", NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, false,
+        0xFU, 0U, 1U, 20.0, &record
+    );
     assert(record.uncertainty.sigma_inflation == 1.0);
 }
 
@@ -1159,9 +1369,11 @@ int main(void)
     test_xcorr_and_robust_adapters();
     test_psp_eikonal_and_bayes_adapters();
     test_s_minus_p_sigma_grows_as_the_s_onset_weakens();
+    test_session_recommendation_aggregation();
     test_extended_bounds_copy_the_search_box();
     test_discretization_error();
     test_time_budget_times_every_method_and_skips_after_the_deadline();
+    test_budget_flags_horizontal_uncertainty_above_threshold();
     test_bayes_adapter_carries_the_inflation();
     return 0;
 }

@@ -14,8 +14,11 @@ extern "C" {
 #define NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH 28U
 #define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U
 #define NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH 16U
+#define NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH 20U
 #define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH 112U
-#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 120U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH 120U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH 136U
+#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH
 
 #define NRF_UPSTREAM_ADDRESS_DISCOVERY 0x30U
 #define NRF_UPSTREAM_ADDRESS_MAIN      0x31U
@@ -50,6 +53,19 @@ typedef enum {
     NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR = 2,
 } nrf_upstream_height_reference_action_t;
 
+typedef enum {
+    NRF_UPSTREAM_IMU_CALIBRATION_NOT_CALIBRATED = 0,
+    NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED = 1,
+    NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING = 2,
+    NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_GRAVITY = 3,
+    NRF_UPSTREAM_IMU_CALIBRATION_SENSOR_INVALID = 4,
+} nrf_upstream_imu_calibration_state_t;
+
+typedef enum {
+    NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE = 1,
+    NRF_UPSTREAM_IMU_CALIBRATE_CLEAR = 2,
+} nrf_upstream_imu_calibrate_action_t;
+
 /*
  * Numeric range mirrors nrf_orientation_state_t/nrf_orientation_blink_class_t
  * (UNAVAILABLE/MOVING/ACCEPTED/OUTSIDE and NONE/SLOW/MEDIUM/FAST, both 0..3).
@@ -66,6 +82,7 @@ typedef enum {
     NRF_UPSTREAM_MESSAGE_ASSIGN = 0x01,
     NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH = 0x02,
     NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE = 0x05,
+    NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE = 0x06,
     NRF_UPSTREAM_MESSAGE_STATUS = 0x80,
 } nrf_upstream_message_type_t;
 
@@ -144,6 +161,12 @@ typedef struct {
 } nrf_upstream_height_reference_t;
 
 typedef struct {
+    uint8_t action;
+    uint32_t request_id;
+    uint16_t generation;
+} nrf_upstream_imu_calibrate_t;
+
+typedef struct {
     uint32_t request_id;
     uint32_t sequence;
     uint32_t valid_mask;
@@ -171,6 +194,10 @@ typedef struct {
     int32_t relative_z_mm;
     uint8_t reference_state;
     uint16_t reference_generation;
+    int16_t gyro_bias_mdps[3];
+    int16_t gravity_ref_mg[3];
+    uint8_t imu_cal_state;
+    uint16_t imu_cal_generation;
 } nrf_upstream_sensor_snapshot_t;
 
 uint16_t nrf_upstream_protocol_crc16_ccitt_false(const uint8_t *data, size_t length);
@@ -213,6 +240,15 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_height_reference(
     const uint8_t *frame,
     size_t length,
     nrf_upstream_height_reference_t *request);
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_imu_calibrate(
+    const nrf_upstream_imu_calibrate_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH]);
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_imu_calibrate(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_imu_calibrate_t *request);
 
 nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
     const nrf_upstream_status_t *status,

@@ -45,24 +45,33 @@
       "sources": [
         "components/ui/ui_screen_registry.c",
         "components/ui/ui_navigation.c",
+        "components/ui/ui_system.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
         "tests/host/ui_home_navigation_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/ui_navigation",
         "tests/host/stubs/ui_event_dispatcher",
-        "components/ui"
+        "tests/host/stubs/runtime_observability",
+        "components/ui",
+        "components/ui_i18n/include"
       ]
     },
     {
       "name": "ui_event_dispatcher_lifecycle",
       "sources": [
         "components/ui/ui_event_dispatcher.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
         "tests/host/stubs/ui_event_dispatcher/app_events_base.c",
         "tests/host/ui_event_dispatcher_lifecycle_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/ui_event_dispatcher",
-        "components/ui"
+        "tests/host/stubs/app_events",
+        "components/ui",
+        "components/ui_i18n/include"
       ],
       "libraries": ["pthread"]
     }

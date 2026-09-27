@@ -16,6 +16,7 @@
 #include "storage_bulk_admission.h"
 #include "storage_manager_internal.h"
 #include "web_server_internal.h"
+#include "workflow_service.h"
 
 typedef struct {
     bool locked;
@@ -25,6 +26,12 @@ static object_store_location_t s_saved_location;
 static unsigned s_location_calls;
 static unsigned s_cache_invalidations;
 static unsigned s_cache_refresh_requests;
+static char s_previous_active_id[OBJECT_STORE_ID_SIZE];
+static esp_err_t s_set_active_result;
+static char s_last_set_active_id[OBJECT_STORE_ID_SIZE];
+static unsigned s_set_active_calls;
+static unsigned s_clear_staging_calls;
+static char s_cleared_staging_id[OBJECT_STORE_ID_SIZE];
 static unsigned s_calculate_calls;
 static localization_calculate_config_t s_last_calculate_config;
 static char s_last_calculate_session_id[32];
@@ -46,6 +53,13 @@ static unsigned s_height_capture_wire_sends;
 static uint16_t s_main_capture_generation;
 static unsigned s_main_capture_calls;
 static fake_admission_mutex_t *s_admission_mutex;
+static workflow_command_result_t s_workflow_result;
+static workflow_command_t s_workflow_command;
+static workflow_command_params_t s_workflow_params;
+static char s_workflow_reason[WORKFLOW_REASON_MAX];
+static unsigned s_workflow_command_calls;
+static unsigned s_workflow_snapshot_calls;
+static workflow_snapshot_t s_workflow_snapshot;
 
 static void reset_fakes(void)
 {
@@ -53,6 +67,12 @@ static void reset_fakes(void)
     s_location_calls = 0U;
     s_cache_invalidations = 0U;
     s_cache_refresh_requests = 0U;
+    (void)snprintf(s_previous_active_id, sizeof(s_previous_active_id), "%s", "OBJ_0001");
+    s_set_active_result = ESP_OK;
+    s_last_set_active_id[0] = '\0';
+    s_set_active_calls = 0U;
+    s_clear_staging_calls = 0U;
+    s_cleared_staging_id[0] = '\0';
     s_calculate_calls = 0U;
     memset(&s_last_calculate_config, 0, sizeof(s_last_calculate_config));
     memset(s_last_calculate_session_id, 0, sizeof(s_last_calculate_session_id));
@@ -73,6 +93,20 @@ static void reset_fakes(void)
     s_height_capture_wire_sends = 0U;
     s_main_capture_generation = 0U;
     s_main_capture_calls = 0U;
+    s_workflow_result = WORKFLOW_COMMAND_RESULT_OK;
+    s_workflow_command = WORKFLOW_COMMAND_COUNT;
+    memset(&s_workflow_params, 0, sizeof(s_workflow_params));
+    s_workflow_reason[0] = '\0';
+    s_workflow_command_calls = 0U;
+    s_workflow_snapshot_calls = 0U;
+    s_workflow_snapshot = (workflow_snapshot_t){
+        .step = WORKFLOW_STEP_OBJECT,
+        .generation = 1U,
+        .sensor_sufficiency = WORKFLOW_SENSOR_INSUFFICIENT,
+        .reason = "",
+        .progress = WORKFLOW_PROGRESS_UNKNOWN,
+        .recommended_action = WORKFLOW_COMMAND_COUNT,
+    };
     storage_bulk_admission_exit_protected();
 }
 
@@ -186,9 +220,29 @@ esp_err_t object_store_create_named(const char *name, object_store_summary_t *cr
     return ESP_OK;
 }
 
+esp_err_t object_store_get_active(object_store_summary_t *object)
+{
+    assert(object != NULL);
+    memset(object, 0, sizeof(*object));
+    object->active = true;
+    (void)snprintf(object->id, sizeof(object->id), "%s", s_previous_active_id);
+    return ESP_OK;
+}
+
 esp_err_t object_store_set_active(const char *object_id)
 {
-    (void)object_id;
+    assert(object_id != NULL);
+    ++s_set_active_calls;
+    (void)snprintf(s_last_set_active_id, sizeof(s_last_set_active_id), "%s", object_id);
+    return s_set_active_result;
+}
+
+esp_err_t web_scan_store_clear_staging(const char *object_id)
+{
+    assert(object_id != NULL);
+    assert(s_set_active_calls == 1U && s_set_active_result == ESP_OK);
+    ++s_clear_staging_calls;
+    (void)snprintf(s_cleared_staging_id, sizeof(s_cleared_staging_id), "%s", object_id);
     return ESP_OK;
 }
 
@@ -413,6 +467,41 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *u
 #define static
 #include "../../components/web_server/web_api_control.c"
 #undef static
+#include "../../components/workflow_service/workflow_core.c"
+
+workflow_command_result_t workflow_service_command(
+    workflow_command_t command,
+    const workflow_command_params_t *params
+)
+{
+    assert(params != NULL);
+    ++s_workflow_command_calls;
+    s_workflow_command = command;
+    s_workflow_params = *params;
+    s_workflow_params.reason = NULL;
+    if (params->reason != NULL) {
+        (void)snprintf(s_workflow_reason, sizeof(s_workflow_reason), "%s", params->reason);
+    }
+    return s_workflow_result;
+}
+
+esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
+{
+    assert(snapshot != NULL);
+    ++s_workflow_snapshot_calls;
+    *snapshot = s_workflow_snapshot;
+    return ESP_OK;
+}
+
+bool web_status_json_add_workflow(cJSON *root)
+{
+    workflow_snapshot_t snapshot;
+    if (workflow_service_get_snapshot(&snapshot) != ESP_OK) return false;
+    cJSON *workflow = cJSON_AddObjectToObject(root, "workflow");
+    return workflow != NULL &&
+        cJSON_AddStringToObject(workflow, "step", workflow_core_step_name(snapshot.step)) != NULL &&
+        cJSON_AddNumberToObject(workflow, "generation", snapshot.generation) != NULL;
+}
 
 static httpd_req_t make_request(const char *body, char *response, size_t response_capacity)
 {
@@ -878,6 +967,110 @@ static void test_calculate_source_action_surfaces_solver_failure(void)
     assert(s_calculate_calls == 1U);
 }
 
+static void test_activate_object_clears_staging_for_previous_object(void)
+{
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"activate_object\",\"object_id\":\"OBJ_0002\"}",
+        response,
+        sizeof(response)
+    );
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_set_active_calls == 1U);
+    assert(strcmp(s_last_set_active_id, "OBJ_0002") == 0);
+    assert(s_clear_staging_calls == 1U);
+    assert(strcmp(s_cleared_staging_id, "OBJ_0001") == 0);
+}
+
+static void test_activate_object_does_not_clear_staging_when_activation_fails(void)
+{
+    reset_fakes();
+    s_set_active_result = ESP_FAIL;
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"activate_object\",\"object_id\":\"OBJ_0002\"}",
+        response,
+        sizeof(response)
+    );
+
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(s_set_active_calls == 1U);
+    assert(s_clear_staging_calls == 0U);
+}
+
+static void test_workflow_command_success_and_conflict_responses(void)
+{
+    static const char *const success_body =
+        "{\"action\":\"workflow_command\",\"command\":\"BACK\",\"generation\":12,"
+        "\"ok\":true,\"reason\":\"operator_back\"}";
+    reset_fakes();
+    s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+    s_workflow_snapshot.generation = 13U;
+    char response[512] = {0};
+    httpd_req_t request = make_request(success_body, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_workflow_command_calls == 1U && s_workflow_snapshot_calls == 1U);
+    assert(s_workflow_command == WORKFLOW_COMMAND_BACK);
+    assert(s_workflow_params.has_generation && s_workflow_params.expected_generation == 12U);
+    assert(s_workflow_params.has_ok && s_workflow_params.ok);
+    assert(strcmp(s_workflow_reason, "operator_back") == 0);
+    cJSON *body = cJSON_Parse(response);
+    assert(body != NULL && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "ok")));
+    cJSON *workflow = cJSON_GetObjectItemCaseSensitive(body, "workflow");
+    assert(cJSON_IsObject(workflow));
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(workflow, "step")->valuestring, "SENSOR_CHECK") == 0);
+    assert(cJSON_GetObjectItemCaseSensitive(workflow, "generation")->valuedouble == 13.0);
+    cJSON_Delete(body);
+
+    reset_fakes();
+    s_workflow_result = WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+    request = make_request(
+        "{\"action\":\"workflow_command\",\"command\":\"BACK\"}",
+        response,
+        sizeof(response)
+    );
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    body = cJSON_Parse(response);
+    assert(body != NULL && !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "ok")));
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(body, "reason")->valuestring, "not_allowed") == 0);
+    assert(cJSON_GetObjectItemCaseSensitive(body, "workflow") == NULL);
+    cJSON_Delete(body);
+
+    reset_fakes();
+    s_workflow_result = WORKFLOW_COMMAND_RESULT_STALE;
+    request = make_request(
+        "{\"action\":\"workflow_command\",\"command\":\"BACK\",\"generation\":3}",
+        response,
+        sizeof(response)
+    );
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    body = cJSON_Parse(response);
+    assert(body != NULL);
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(body, "reason")->valuestring, "stale") == 0);
+    cJSON_Delete(body);
+}
+
+static void test_workflow_command_rejects_unknown_name_before_dispatch(void)
+{
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"workflow_command\",\"command\":\"NOT_A_COMMAND\"}",
+        response,
+        sizeof(response)
+    );
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    assert(s_workflow_command_calls == 0U);
+    assert(strstr(response, "ESP_ERR_INVALID_ARG") != NULL);
+}
+
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
@@ -890,6 +1083,8 @@ int main(void)
     test_calibrate_heights_queues_channel_mask_without_bus_io();
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
+    test_activate_object_clears_staging_for_previous_object();
+    test_activate_object_does_not_clear_staging_when_activation_fails();
     test_calculate_source_action_submits_a_background_job();
     test_calculate_source_optional_max_depth();
     test_calculate_source_optional_s_wave_picking();
@@ -897,5 +1092,7 @@ int main(void)
     test_calculate_source_action_rejects_missing_session_id();
     test_calculate_source_action_surfaces_solver_failure();
     test_calculate_source_time_budget();
+    test_workflow_command_success_and_conflict_responses();
+    test_workflow_command_rejects_unknown_name_before_dispatch();
     return 0;
 }

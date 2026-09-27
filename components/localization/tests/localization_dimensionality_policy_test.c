@@ -83,6 +83,12 @@ static void test_reasons_are_non_empty_and_distinct_for_skips_only(void)
     assert(insufficient != NULL && strlen(insufficient) > 0u);
     assert(requires_3d != NULL && strlen(requires_3d) > 0u);
     assert(strcmp(insufficient, requires_3d) != 0);
+    assert(localization_method_availability_failure_class(LOCALIZATION_METHOD_SKIPPED_INSUFFICIENT_SENSORS) ==
+           LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    assert(localization_method_availability_failure_class(LOCALIZATION_METHOD_SKIPPED_REQUIRES_3D) ==
+           LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
+    assert(localization_method_availability_failure_class(LOCALIZATION_METHOD_RUNNABLE) ==
+           LOCALIZATION_FAILURE_CLASS_NONE);
 }
 
 

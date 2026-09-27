@@ -94,6 +94,7 @@ static void test_insufficient_channels_produces_the_shared_policy_reason(void)
     localization_event_result_t event_result;
     memset(&event_result, 0, sizeof(event_result));
     event_result.status = LOCALIZATION_EVENT_INSUFFICIENT_CHANNELS;
+    event_result.failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
     event_result.dimensionality = LOCALIZATION_DIMENSIONALITY_INSUFFICIENT;
 
     localization_run_record_t record;
@@ -105,6 +106,7 @@ static void test_insufficient_channels_produces_the_shared_policy_reason(void)
     );
 
     assert(!record.solved);
+    assert(record.failure_class == LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     assert(
         strcmp(
             record.rejection_reason,
@@ -124,6 +126,7 @@ static void test_method_unavailable_for_dimensionality_produces_the_shared_polic
     localization_event_result_t event_result;
     memset(&event_result, 0, sizeof(event_result));
     event_result.status = LOCALIZATION_EVENT_METHOD_UNAVAILABLE_FOR_DIMENSIONALITY;
+    event_result.failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
     event_result.dimensionality = LOCALIZATION_DIMENSIONALITY_PLANAR_2D;
 
     localization_run_record_t record;
@@ -135,6 +138,7 @@ static void test_method_unavailable_for_dimensionality_produces_the_shared_polic
     );
 
     assert(!record.solved);
+    assert(record.failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
     assert(
         strcmp(
             record.rejection_reason,
@@ -150,6 +154,7 @@ static void test_solver_rejected_produces_a_non_empty_reason(void)
     localization_event_result_t event_result;
     memset(&event_result, 0, sizeof(event_result));
     event_result.status = LOCALIZATION_EVENT_SOLVER_REJECTED;
+    event_result.failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
     event_result.dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
 
     localization_run_record_t record;
@@ -161,6 +166,7 @@ static void test_solver_rejected_produces_a_non_empty_reason(void)
     );
 
     assert(!record.solved);
+    assert(record.failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
     assert(record.rejection_reason[0] != '\0');
     assert(strstr(record.rejection_reason, "degenerate") != NULL);
 }

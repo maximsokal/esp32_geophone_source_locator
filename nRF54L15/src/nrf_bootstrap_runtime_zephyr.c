@@ -94,6 +94,7 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     nrf_upstream_assign_t assign;
     nrf_upstream_sensor_refresh_t sensor_request;
     nrf_upstream_height_reference_t height_reference_request;
+    nrf_upstream_imu_calibrate_t imu_calibration_request;
     nrf_cs_control_request_t cs_request;
     nrf_upstream_result_t result;
     uint32_t request_id;
@@ -117,6 +118,11 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     if((size_t)len==NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE){
         result=nrf_upstream_protocol_decode_height_reference(ptr,(size_t)len,&height_reference_request);
         if(result==NRF_UPSTREAM_RESULT_OK)(void)nrf_sensor_upstream_runtime_zephyr_request_height_reference(&height_reference_request);
+        return;
+    }
+    if((size_t)len==NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE){
+        result=nrf_upstream_protocol_decode_imu_calibrate(ptr,(size_t)len,&imu_calibration_request);
+        if(result==NRF_UPSTREAM_RESULT_OK)(void)nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(&imu_calibration_request);
         return;
     }
     request_id=nrf_upstream_protocol_request_id_hint(ptr,(size_t)len);

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "result_view",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/result_view/tests/result_view_test.c"
+      ],
+      "include_dirs": [
+        "components/result_view/include",
+        "components/geophone_events/include",
+        "components/object_store/tests/stubs",
+        "components/object_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}

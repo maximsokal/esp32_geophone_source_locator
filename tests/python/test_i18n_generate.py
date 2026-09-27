@@ -233,6 +233,28 @@ def test_check_detects_stale_files_without_writing(tmp_path):
     assert stale.read_bytes() == b"stale\n"
 
 
+def test_check_normalizes_crlf_but_detects_content_changes(tmp_path):
+    for source in (REPO_ROOT / "i18n").glob("*.json"):
+        target = tmp_path / "i18n" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+
+    outputs, _ = generator.generate_outputs(REPO_ROOT)
+    for relative in outputs:
+        current = (REPO_ROOT / relative).read_bytes()
+        current_lf = current.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        assert current_lf == outputs[relative].encode("utf-8")
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(current_lf.replace(b"\n", b"\r\n"))
+
+    assert generator.main(["--check"], root=tmp_path) == 0
+
+    stale = tmp_path / next(iter(outputs))
+    stale.write_bytes(stale.read_bytes() + b"// content changed\r\n")
+    assert generator.main(["--check"], root=tmp_path) == 1
+
+
 def test_repository_catalogs_are_current():
     result = subprocess.run(
         [sys.executable, "tools/i18n_generate.py", "--check"],
