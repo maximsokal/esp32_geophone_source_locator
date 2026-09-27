@@ -2,7 +2,7 @@
   "version": 1,
   "tests": [
     {
-      "name": "workflow_calibration_wfa",
+      "name": "workflow_service_wfa",
       "sources": [
         "components/workflow_service/workflow_core.c",
         "components/workflow_service/workflow_service.c",

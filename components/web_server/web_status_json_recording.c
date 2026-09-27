@@ -393,6 +393,44 @@ static bool web_status_json_add_workflow_calibration(
     return true;
 }
 
+static bool web_status_json_add_workflow_placement(
+    cJSON *workflow,
+    const workflow_placement_snapshot_t *placement)
+{
+    cJSON *object = cJSON_AddObjectToObject(workflow, "placement");
+    cJSON *nodes = object != NULL ? cJSON_AddArrayToObject(object, "per_node") : NULL;
+    if (object == NULL || nodes == NULL ||
+        cJSON_AddBoolToObject(object, "all_stable", placement->all_stable) == NULL) {
+        return false;
+    }
+    const size_t node_count = placement->per_node_count < WORKFLOW_MAX_CALIBRATION_NODES
+        ? placement->per_node_count
+        : WORKFLOW_MAX_CALIBRATION_NODES;
+    for (size_t i = 0U; i < node_count; ++i) {
+        const workflow_placement_node_t *source = &placement->per_node[i];
+        cJSON *node = cJSON_CreateObject();
+        if (node == NULL ||
+            cJSON_AddStringToObject(node, "node", source->node) == NULL ||
+            cJSON_AddBoolToObject(node, "vertical", source->vertical) == NULL ||
+            cJSON_AddBoolToObject(node, "stable", source->stable) == NULL) {
+            cJSON_Delete(node);
+            return false;
+        }
+        const bool height_added = source->height_rel_main_mm_valid
+            ? cJSON_AddNumberToObject(
+                node, "height_rel_main_mm", (double)source->height_rel_main_mm) != NULL
+            : cJSON_AddNullToObject(node, "height_rel_main_mm") != NULL;
+        const bool altitude_added = source->altitude_asl_m_valid
+            ? cJSON_AddNumberToObject(node, "altitude_asl_m", source->altitude_asl_m) != NULL
+            : cJSON_AddNullToObject(node, "altitude_asl_m") != NULL;
+        if (!height_added || !altitude_added || !cJSON_AddItemToArray(nodes, node)) {
+            cJSON_Delete(node);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool web_status_json_add_workflow(cJSON *root)
 {
     if (root == NULL) return false;
@@ -424,6 +462,9 @@ bool web_status_json_add_workflow(cJSON *root)
     }
 
     if (!web_status_json_add_workflow_calibration(workflow, &snapshot.calibration)) {
+        return false;
+    }
+    if (!web_status_json_add_workflow_placement(workflow, &snapshot.placement)) {
         return false;
     }
 

@@ -151,6 +151,19 @@ export interface WorkflowCalibrationStatus {
   reasons: string[];
 }
 
+export interface WorkflowPlacementNode {
+  node: string;
+  vertical: boolean;
+  height_rel_main_mm: number | null;
+  altitude_asl_m: number | null;
+  stable: boolean;
+}
+
+export interface WorkflowPlacementStatus {
+  per_node: WorkflowPlacementNode[];
+  all_stable: boolean;
+}
+
 export interface DeviceWorkflowStatus {
   step: WorkflowStep;
   generation: number;
@@ -160,6 +173,7 @@ export interface DeviceWorkflowStatus {
   reason: string;
   progress: number | null;
   calibration: WorkflowCalibrationStatus;
+  placement: WorkflowPlacementStatus;
 }
 
 export type RecordingSessionStatus =

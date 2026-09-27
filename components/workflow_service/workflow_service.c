@@ -16,6 +16,7 @@
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
 #define WORKFLOW_CALIBRATION_CS_MAX_SPREAD_MM 150
+#define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
 
 static const char *TAG = "WORKFLOW";
 
@@ -33,6 +34,29 @@ typedef struct {
     uint32_t cycle_id;
 } workflow_calibration_run_t;
 
+typedef struct {
+    uint64_t timestamp_ms;
+    int64_t height_rel_main_mm;
+} workflow_placement_sample_t;
+
+typedef struct {
+    bool node_valid;
+    uint8_t node_id;
+    bool vertical_known;
+    bool vertical;
+    uint16_t generation;
+    uint64_t last_sample_ms;
+    bool last_sample_valid;
+    uint64_t blocked_until_ms;
+    size_t sample_count;
+    workflow_placement_sample_t samples[WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES];
+} workflow_placement_history_t;
+
+typedef struct {
+    workflow_placement_snapshot_t status;
+    workflow_placement_history_t history[WORKFLOW_MAX_CALIBRATION_NODES];
+} workflow_placement_run_t;
+
 static SemaphoreHandle_t s_mutex;
 static bool s_initialized;
 static bool s_recorder_reconciliation_armed;
@@ -42,6 +66,7 @@ static workflow_core_t s_core;
 static workflow_service_placement_ready_fn s_placement_ready_predicate;
 static void *s_placement_ready_context;
 static workflow_calibration_run_t s_calibration;
+static workflow_placement_run_t s_placement;
 
 static bool workflow_service_lock(void)
 {
@@ -55,8 +80,9 @@ static void workflow_service_unlock(void)
 
 static bool workflow_service_placement_ready(void)
 {
-    return s_placement_ready_predicate != NULL &&
-        s_placement_ready_predicate(s_placement_ready_context);
+    return s_placement.status.all_stable &&
+        (s_placement_ready_predicate == NULL ||
+         s_placement_ready_predicate(s_placement_ready_context));
 }
 
 static void workflow_service_copy_string(char *target, size_t capacity, const char *source)
@@ -509,6 +535,214 @@ static void workflow_service_calibration_cancel(void)
         "cancelled");
 }
 
+static void workflow_service_placement_clear_samples(
+    workflow_placement_history_t *history)
+{
+    history->sample_count = 0U;
+    history->last_sample_valid = false;
+    history->blocked_until_ms = 0U;
+}
+
+static void workflow_service_placement_reset_history(
+    workflow_placement_history_t *history)
+{
+    memset(history, 0, sizeof(*history));
+}
+
+static bool workflow_service_placement_update_node(
+    workflow_placement_history_t *history,
+    uint8_t node_id,
+    uint16_t generation,
+    bool vertical,
+    bool height_valid,
+    int64_t height_rel_main_mm,
+    uint64_t sample_ms,
+    uint64_t now_ms,
+    bool collect_sample)
+{
+    if (!history->node_valid || history->node_id != node_id ||
+        history->generation != generation) {
+        workflow_service_placement_reset_history(history);
+        history->node_valid = true;
+        history->node_id = node_id;
+        history->generation = generation;
+    }
+    if (history->vertical_known && history->vertical != vertical) {
+        workflow_service_placement_clear_samples(history);
+    }
+    history->vertical_known = true;
+    history->vertical = vertical;
+
+    if (now_ms < sample_ms || !vertical || !height_valid) {
+        workflow_service_placement_clear_samples(history);
+        return false;
+    }
+    if (now_ms - sample_ms > WORKFLOW_PLACEMENT_WINDOW_MS) {
+        workflow_service_placement_clear_samples(history);
+        return false;
+    }
+    if (now_ms < history->blocked_until_ms) return false;
+
+    while (history->sample_count > 0U &&
+           now_ms - history->samples[0].timestamp_ms > WORKFLOW_PLACEMENT_WINDOW_MS) {
+        --history->sample_count;
+        memmove(
+            &history->samples[0],
+            &history->samples[1],
+            history->sample_count * sizeof(history->samples[0]));
+    }
+
+    if (collect_sample &&
+        (!history->last_sample_valid || sample_ms > history->last_sample_ms)) {
+        if (history->sample_count >= WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES) {
+            /* ponytail: 32 samples cap RAM; overflow blocks one window rather than lose a live outlier. Raise the cap if polling exceeds 10 Hz. */
+            workflow_service_placement_clear_samples(history);
+            history->blocked_until_ms = now_ms + WORKFLOW_PLACEMENT_WINDOW_MS;
+            return false;
+        }
+        history->samples[history->sample_count++] = (workflow_placement_sample_t){
+            .timestamp_ms = sample_ms,
+            .height_rel_main_mm = height_rel_main_mm,
+        };
+        history->last_sample_ms = sample_ms;
+        history->last_sample_valid = true;
+    } else if (collect_sample && history->last_sample_valid &&
+               sample_ms < history->last_sample_ms) {
+        workflow_service_placement_clear_samples(history);
+        return false;
+    }
+
+    if (history->sample_count < WORKFLOW_PLACEMENT_MIN_SAMPLES) return false;
+    int64_t minimum = history->samples[0].height_rel_main_mm;
+    int64_t maximum = minimum;
+    for (size_t i = 1U; i < history->sample_count; ++i) {
+        if (history->samples[i].height_rel_main_mm < minimum) {
+            minimum = history->samples[i].height_rel_main_mm;
+        }
+        if (history->samples[i].height_rel_main_mm > maximum) {
+            maximum = history->samples[i].height_rel_main_mm;
+        }
+    }
+    return maximum - minimum <= WORKFLOW_PLACEMENT_MAX_RANGE_MM;
+}
+
+static void workflow_service_placement_set_name(
+    workflow_placement_node_t *node,
+    uint8_t node_id)
+{
+    if (node_id == NRF_TOPOLOGY_MAIN_NODE_ID) {
+        workflow_service_copy_string(node->node, sizeof(node->node), "MAIN");
+    } else {
+        (void)snprintf(node->node, sizeof(node->node), "G%u", (unsigned)node_id);
+    }
+}
+
+static void workflow_service_placement_poll(bool collect_samples)
+{
+    workflow_placement_snapshot_t *status = &s_placement.status;
+    memset(status, 0, sizeof(*status));
+    const uint64_t now_ms = workflow_service_now_ms();
+    const bool in_placement = s_core.step == WORKFLOW_STEP_PLACEMENT;
+    device_status_snapshot_t device;
+    const bool device_valid = device_status_try_get_snapshot(&device) == ESP_OK;
+    const bool main_reference_valid = device_valid &&
+        device.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
+        device.main.height_reference.generation != 0U;
+    const bool main_baro_valid = device_valid && device.main.bmp280_valid &&
+        device.main.pressure_pa > 0U;
+    const bool main_height_valid = main_reference_valid && main_baro_valid;
+    const uint16_t main_generation = main_reference_valid
+        ? device.main.height_reference.generation
+        : 0U;
+    const bool take_samples = in_placement && collect_samples;
+
+    if (!in_placement) {
+        for (size_t i = 0U; i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
+            workflow_service_placement_reset_history(&s_placement.history[i]);
+        }
+    }
+
+    workflow_placement_node_t *main_node = &status->per_node[status->per_node_count++];
+    workflow_service_placement_set_name(main_node, NRF_TOPOLOGY_MAIN_NODE_ID);
+    main_node->vertical = true;
+    main_node->height_rel_main_mm_valid = main_height_valid;
+    main_node->height_rel_main_mm = 0;
+    main_node->altitude_asl_m_valid = main_baro_valid;
+    if (main_baro_valid) {
+        main_node->altitude_asl_m =
+            (double)nrf_baro_pressure_to_altitude_mm(device.main.pressure_pa) / 1000.0;
+    }
+    main_node->stable = workflow_service_placement_update_node(
+        &s_placement.history[0],
+        NRF_TOPOLOGY_MAIN_NODE_ID,
+        main_generation,
+        main_node->vertical,
+        main_height_valid,
+        0,
+        now_ms,
+        now_ms,
+        take_samples);
+
+    nrf_topology_snapshot_t topology;
+    const bool topology_valid = nrf_topology_service_get_snapshot(&topology) == ESP_OK;
+    bool assigned[NRF_TOPOLOGY_REMOTE_COUNT] = { false };
+    bool all_stable = topology_valid && in_placement && main_node->stable;
+    if (topology_valid) {
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            const nrf_topology_node_snapshot_t *remote = &topology.remotes[channel];
+            if (remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            assigned[channel] = true;
+            workflow_placement_node_t *node =
+                &status->per_node[status->per_node_count++];
+            workflow_service_placement_set_name(node, remote->node_id);
+
+            nrf_remote_sensor_cache_t cache;
+            memset(&cache, 0, sizeof(cache));
+            const bool cache_read =
+                nrf_topology_service_get_sensor_snapshot(channel, &cache) == ESP_OK;
+            const bool cache_current = cache_read && cache.identity_valid &&
+                cache.topology_current && cache.response_valid &&
+                cache.identity.node_id == remote->node_id &&
+                now_ms >= cache.esp_receipt_uptime_ms &&
+                now_ms - cache.esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_WINDOW_MS;
+            const bool environment_valid = cache_current &&
+                (cache.sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
+                cache.sensor.pressure_pa > 0U;
+            node->vertical = cache_current &&
+                cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+            node->height_rel_main_mm_valid = main_height_valid && environment_valid &&
+                cache.sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
+                cache.sensor.reference_generation == main_generation;
+            if (node->height_rel_main_mm_valid) {
+                node->height_rel_main_mm =
+                    (int64_t)cache.sensor.relative_z_mm -
+                    (int64_t)device.main.height_reference.relative_z_mm;
+            }
+            node->altitude_asl_m_valid = environment_valid;
+            if (environment_valid) {
+                node->altitude_asl_m = (double)cache.sensor.altitude_mm / 1000.0;
+            }
+            node->stable = workflow_service_placement_update_node(
+                &s_placement.history[(size_t)channel + 1U],
+                remote->node_id,
+                node->height_rel_main_mm_valid ? main_generation : 0U,
+                node->vertical,
+                node->height_rel_main_mm_valid,
+                node->height_rel_main_mm,
+                cache.esp_receipt_uptime_ms,
+                now_ms,
+                take_samples && cache_current);
+            all_stable = all_stable && node->stable;
+        }
+    }
+    for (size_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (!assigned[channel]) {
+            workflow_service_placement_reset_history(&s_placement.history[channel + 1U]);
+        }
+    }
+    status->all_stable = all_stable;
+}
+
 static uint8_t workflow_service_assigned_remote_count(void)
 {
     nrf_topology_snapshot_t topology;
@@ -591,6 +825,7 @@ esp_err_t workflow_service_init(void)
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
+    memset(&s_placement, 0, sizeof(s_placement));
     workflow_service_copy_string(
         s_calibration.status.phase,
         sizeof(s_calibration.status.phase),
@@ -617,6 +852,7 @@ void workflow_service_shutdown(void)
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
+    memset(&s_placement, 0, sizeof(s_placement));
     memset(&s_core, 0, sizeof(s_core));
 }
 
@@ -625,6 +861,7 @@ esp_err_t workflow_service_poll(void)
     if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
     workflow_service_reconcile_locked();
     workflow_service_calibration_poll();
+    workflow_service_placement_poll(true);
     workflow_service_unlock();
     return ESP_OK;
 }
@@ -643,6 +880,7 @@ esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
         snapshot
     );
     snapshot->calibration = s_calibration.status;
+    snapshot->placement = s_placement.status;
     workflow_service_unlock();
     return ESP_OK;
 }
@@ -655,6 +893,7 @@ workflow_command_result_t workflow_service_command(
     if (params == NULL) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
     if (!s_initialized || !workflow_service_lock()) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
     workflow_service_reconcile_locked();
+    workflow_service_placement_poll(false);
 
     const workflow_core_t previous = s_core;
     const workflow_command_result_t result = workflow_core_apply(
@@ -667,6 +906,10 @@ workflow_command_result_t workflow_service_command(
     if (result != WORKFLOW_COMMAND_RESULT_OK) {
         workflow_service_unlock();
         return result;
+    }
+
+    if (s_core.step != previous.step) {
+        workflow_service_placement_poll(false);
     }
 
     if (s_core.step == WORKFLOW_STEP_CALIBRATING &&

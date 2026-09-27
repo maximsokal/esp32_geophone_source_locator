@@ -353,6 +353,26 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
             .pairs_done = 0U,
             .pairs_total = 3U,
         },
+        .placement = {
+            .per_node_count = 2U,
+            .per_node = {
+                {
+                    .node = "MAIN",
+                    .vertical = true,
+                    .height_rel_main_mm_valid = false,
+                    .altitude_asl_m_valid = false,
+                    .stable = false,
+                },
+                {
+                    .node = "G1",
+                    .vertical = false,
+                    .height_rel_main_mm_valid = false,
+                    .altitude_asl_m_valid = false,
+                    .stable = false,
+                },
+            },
+            .all_stable = false,
+        },
     };
     g_workflow_snapshot_error = ESP_OK;
     cJSON *root = cJSON_CreateObject();
@@ -383,6 +403,22 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
         assert(cJSON_IsNull(cJSON_GetArrayItem(gyro, i)));
         assert(cJSON_IsNull(cJSON_GetArrayItem(gravity, i)));
     }
+    const cJSON *placement = item(item(root, "workflow"), "placement");
+    assert_bool(placement, "all_stable", false);
+    const cJSON *placement_nodes = item(placement, "per_node");
+    assert(cJSON_GetArraySize(placement_nodes) == 2);
+    const cJSON *placement_node = cJSON_GetArrayItem(placement_nodes, 0);
+    assert_string(placement_node, "node", "MAIN");
+    assert_bool(placement_node, "vertical", true);
+    assert(cJSON_IsNull(item(placement_node, "height_rel_main_mm")));
+    assert(cJSON_IsNull(item(placement_node, "altitude_asl_m")));
+    assert_bool(placement_node, "stable", false);
+    placement_node = cJSON_GetArrayItem(placement_nodes, 1);
+    assert_string(placement_node, "node", "G1");
+    assert_bool(placement_node, "vertical", false);
+    assert(cJSON_IsNull(item(placement_node, "height_rel_main_mm")));
+    assert(cJSON_IsNull(item(placement_node, "altitude_asl_m")));
+    assert_bool(placement_node, "stable", false);
     cJSON_Delete(root);
 
     workflow_calibration_node_t *source =
@@ -399,6 +435,25 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
     source->gravity_ref_mg[1] = 2;
     source->gravity_ref_mg[2] = 997;
     source->cs_pairs_ok = true;
+    g_workflow_snapshot.placement.all_stable = true;
+    g_workflow_snapshot.placement.per_node[0] = (workflow_placement_node_t){
+        .node = "MAIN",
+        .vertical = true,
+        .height_rel_main_mm_valid = true,
+        .height_rel_main_mm = 0,
+        .altitude_asl_m_valid = true,
+        .altitude_asl_m = 0.0,
+        .stable = true,
+    };
+    g_workflow_snapshot.placement.per_node[1] = (workflow_placement_node_t){
+        .node = "G1",
+        .vertical = true,
+        .height_rel_main_mm_valid = true,
+        .height_rel_main_mm = -23,
+        .altitude_asl_m_valid = true,
+        .altitude_asl_m = 12.345,
+        .stable = true,
+    };
     g_workflow_snapshot.calibration.max_spread_valid = true;
     g_workflow_snapshot.calibration.max_spread_mm = 149;
     g_workflow_snapshot.calibration.result_valid = true;
@@ -420,6 +475,21 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
     assert(item(item(node, "height"), "relative_z_mm")->valuedouble == -23.0);
     assert(cJSON_GetArrayItem(item(item(node, "imu"), "gyro_bias_mdps"), 0)->valuedouble == -11.0);
     assert(cJSON_GetArrayItem(item(item(node, "imu"), "gravity_ref_mg"), 2)->valuedouble == 997.0);
+    placement = item(item(root, "workflow"), "placement");
+    assert_bool(placement, "all_stable", true);
+    placement_nodes = item(placement, "per_node");
+    placement_node = cJSON_GetArrayItem(placement_nodes, 0);
+    assert_string(placement_node, "node", "MAIN");
+    assert_bool(placement_node, "vertical", true);
+    assert(item(placement_node, "height_rel_main_mm")->valuedouble == 0.0);
+    assert(item(placement_node, "altitude_asl_m")->valuedouble == 0.0);
+    assert_bool(placement_node, "stable", true);
+    placement_node = cJSON_GetArrayItem(placement_nodes, 1);
+    assert_string(placement_node, "node", "G1");
+    assert_bool(placement_node, "vertical", true);
+    assert(item(placement_node, "height_rel_main_mm")->valuedouble == -23.0);
+    assert(item(placement_node, "altitude_asl_m")->valuedouble == 12.345);
+    assert_bool(placement_node, "stable", true);
     cJSON_Delete(root);
 }
 

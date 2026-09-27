@@ -9,6 +9,8 @@
 #define NRF_TOPOLOGY_REMOTE_COUNT 8U
 #define NRF_TOPOLOGY_MAIN_NODE_ID 0U
 #define NRF_CS_MAX_PAIRS 10U
+#define NRF_UPSTREAM_SENSOR_VALID_ENV 0x02U
+#define NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED 2U
 
 typedef enum {
     NRF_TOPOLOGY_NODE_UNKNOWN = 0,
@@ -19,12 +21,13 @@ typedef enum {
 typedef struct {
     nrf_topology_node_state_t state;
     uint8_t node_id;
-} nrf_topology_remote_snapshot_t;
+} nrf_topology_node_snapshot_t;
+typedef nrf_topology_node_snapshot_t nrf_topology_remote_snapshot_t;
 
 typedef struct {
     uint32_t generation;
-    nrf_topology_remote_snapshot_t main;
-    nrf_topology_remote_snapshot_t remotes[NRF_TOPOLOGY_REMOTE_COUNT];
+    nrf_topology_node_snapshot_t main;
+    nrf_topology_node_snapshot_t remotes[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_snapshot_t;
 
 typedef struct {
@@ -33,6 +36,10 @@ typedef struct {
     bool response_valid;
     struct { uint8_t node_id; } identity;
     struct {
+        uint32_t valid_mask;
+        uint32_t pressure_pa;
+        int32_t altitude_mm;
+        uint8_t orientation_state;
         uint8_t reference_state;
         uint16_t reference_generation;
         int32_t relative_z_mm;
@@ -41,6 +48,7 @@ typedef struct {
         int16_t gyro_bias_mdps[3];
         int16_t gravity_ref_mg[3];
     } sensor;
+    uint64_t esp_receipt_uptime_ms;
 } nrf_remote_sensor_cache_t;
 
 typedef enum {

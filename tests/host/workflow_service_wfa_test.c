@@ -245,6 +245,8 @@ static void enter_calibrating(void)
 static void publish_all_pass_results(void)
 {
     const uint16_t generation = s_requested_generation;
+    s_device.main.bmp280_valid = true;
+    s_device.main.pressure_pa = 101325U;
     s_device.main.height_reference = (device_main_height_reference_status_t){
         .state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID,
         .generation = generation,
@@ -255,6 +257,12 @@ static void publish_all_pass_results(void)
         s_cache[channel].topology_current = true;
         s_cache[channel].response_valid = true;
         s_cache[channel].identity.node_id = s_topology.remotes[channel].node_id;
+        s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+        s_cache[channel].sensor.valid_mask = NRF_UPSTREAM_SENSOR_VALID_ENV;
+        s_cache[channel].sensor.pressure_pa = 101325U;
+        s_cache[channel].sensor.altitude_mm = (int32_t)(12000U + 1000U * channel);
+        s_cache[channel].sensor.orientation_state =
+            NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
         s_cache[channel].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
         s_cache[channel].sensor.reference_generation = generation;
         s_cache[channel].sensor.relative_z_mm = (int32_t)(100U * (channel + 1U));
@@ -461,6 +469,243 @@ static void test_calibration_retry_changes_generation_and_ignores_stale_results(
     workflow_service_shutdown();
 }
 
+static void enter_placement(void)
+{
+    enter_calibrating();
+    publish_all_pass_results();
+    workflow_snapshot_t snapshot;
+    assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
+    assert(snapshot.calibration.result_valid && snapshot.calibration.result_ok);
+    assert(command(WORKFLOW_COMMAND_PLACE_SENSORS) == WORKFLOW_COMMAND_RESULT_OK);
+}
+
+static void publish_placement_sample(
+    uint64_t timestamp_ms,
+    const int32_t remote_height_mm[3],
+    const uint8_t orientation[3])
+{
+    s_now_ms = timestamp_ms;
+    s_device.main.bmp280_valid = true;
+    s_device.main.pressure_pa = 101325U;
+    s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    s_device.main.height_reference.generation = s_requested_generation;
+    s_device.main.height_reference.relative_z_mm = 0;
+    for (uint8_t channel = 0U; channel < 3U; ++channel) {
+        nrf_remote_sensor_cache_t *cache = &s_cache[channel];
+        cache->identity_valid = true;
+        cache->topology_current = true;
+        cache->response_valid = true;
+        cache->identity.node_id = s_topology.remotes[channel].node_id;
+        cache->esp_receipt_uptime_ms = timestamp_ms;
+        cache->sensor.valid_mask = NRF_UPSTREAM_SENSOR_VALID_ENV;
+        cache->sensor.pressure_pa = 101325U;
+        cache->sensor.altitude_mm = (int32_t)(12000U + 1000U * channel);
+        cache->sensor.orientation_state = orientation[channel];
+        cache->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+        cache->sensor.reference_generation = s_requested_generation;
+        cache->sensor.relative_z_mm = remote_height_mm[channel];
+    }
+    assert(workflow_service_poll() == ESP_OK);
+}
+
+static workflow_snapshot_t get_workflow_snapshot(void)
+{
+    workflow_snapshot_t snapshot;
+    assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
+    return snapshot;
+}
+
+static void test_placement_sample_count_and_calculate_guard(void)
+{
+    reset_fakes();
+    enter_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_placement_sample(1000U, heights, upright);
+    publish_placement_sample(1100U, heights, upright);
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.all_stable);
+    assert(!snapshot.placement.per_node[0].stable);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+
+    publish_placement_sample(1200U, heights, upright);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.all_stable);
+    assert(snapshot.placement.per_node_count == 4U);
+    assert(snapshot.placement.per_node[0].vertical);
+    assert(snapshot.placement.per_node[0].stable);
+    assert(snapshot.placement.per_node[1].height_rel_main_mm == 100);
+    assert(snapshot.placement.per_node[1].altitude_asl_m == 12.0);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_service_shutdown();
+}
+
+static void test_placement_height_range_50mm_boundary(void)
+{
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    const int32_t at_boundary[][3] = {
+        { 100, 200, 300 },
+        { 149, 200, 300 },
+        { 150, 200, 300 },
+    };
+    reset_fakes();
+    enter_placement();
+    for (size_t i = 0U; i < 3U; ++i) {
+        publish_placement_sample(1000U + 100U * i, at_boundary[i], upright);
+    }
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.per_node[1].stable);
+    assert(snapshot.placement.all_stable);
+    workflow_service_shutdown();
+
+    const int32_t outside_boundary[][3] = {
+        { 100, 200, 300 },
+        { 149, 200, 300 },
+        { 151, 200, 300 },
+    };
+    reset_fakes();
+    enter_placement();
+    for (size_t i = 0U; i < 3U; ++i) {
+        publish_placement_sample(1000U + 100U * i, outside_boundary[i], upright);
+    }
+    snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[1].stable);
+    assert(!snapshot.placement.all_stable);
+    workflow_service_shutdown();
+}
+
+static void test_placement_uses_inclusive_three_second_window(void)
+{
+    reset_fakes();
+    enter_placement();
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    const int32_t outside_then_stable[][3] = {
+        { 100, 200, 300 },
+        { 0, 200, 300 },
+        { 0, 200, 300 },
+        { 0, 200, 300 },
+    };
+    publish_placement_sample(1000U, outside_then_stable[0], upright);
+    publish_placement_sample(2000U, outside_then_stable[1], upright);
+    publish_placement_sample(3000U, outside_then_stable[2], upright);
+    publish_placement_sample(4000U, outside_then_stable[3], upright);
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[1].stable);
+    publish_placement_sample(4001U, outside_then_stable[3], upright);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.per_node[1].stable);
+    workflow_service_shutdown();
+}
+
+static void test_placement_vertical_flip_resets_sample_window(void)
+{
+    reset_fakes();
+    enter_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    const uint8_t tilted[3] = { 2U, 1U, 2U };
+    publish_placement_sample(1000U, heights, upright);
+    publish_placement_sample(1100U, heights, upright);
+    publish_placement_sample(1200U, heights, upright);
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.per_node[2].stable);
+
+    publish_placement_sample(1300U, heights, tilted);
+    snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[2].vertical);
+    assert(!snapshot.placement.per_node[2].stable);
+    assert(!snapshot.placement.all_stable);
+
+    publish_placement_sample(1400U, heights, upright);
+    publish_placement_sample(1500U, heights, upright);
+    snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[2].stable);
+    publish_placement_sample(1600U, heights, upright);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.per_node[2].stable);
+    workflow_service_shutdown();
+}
+
+static void test_placement_generation_mismatch_and_node_dropout_are_unknown(void)
+{
+    reset_fakes();
+    enter_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_placement_sample(1000U, heights, upright);
+    publish_placement_sample(1100U, heights, upright);
+    publish_placement_sample(1200U, heights, upright);
+    s_cache[1].sensor.reference_generation++;
+    s_now_ms = 1300U;
+    s_cache[1].esp_receipt_uptime_ms = s_now_ms;
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[2].height_rel_main_mm_valid);
+    assert(!snapshot.placement.per_node[2].stable);
+    assert(!snapshot.placement.all_stable);
+
+    s_cache[1].sensor.reference_generation = s_requested_generation;
+    publish_placement_sample(1400U, heights, upright);
+    s_cache[2].response_valid = false;
+    s_now_ms = 1500U;
+    s_cache[2].esp_receipt_uptime_ms = s_now_ms;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[3].vertical);
+    assert(!snapshot.placement.per_node[3].height_rel_main_mm_valid);
+    assert(!snapshot.placement.per_node[3].altitude_asl_m_valid);
+    assert(!snapshot.placement.per_node[3].stable);
+    assert(!snapshot.placement.all_stable);
+    workflow_service_shutdown();
+}
+
+static void test_main_is_vertical_but_needs_a_valid_height_reference(void)
+{
+    reset_fakes();
+    enter_placement();
+    s_device.main.height_reference.state =
+        DEVICE_MAIN_HEIGHT_REFERENCE_NOT_ESTABLISHED;
+    s_now_ms = 1100U;
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.per_node[0].vertical);
+    assert(!snapshot.placement.per_node[0].height_rel_main_mm_valid);
+    assert(!snapshot.placement.per_node[0].stable);
+    assert(!snapshot.placement.all_stable);
+    workflow_service_shutdown();
+}
+
+static void test_placement_history_overflow_fails_closed(void)
+{
+    reset_fakes();
+    enter_placement();
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    for (uint64_t sample = 0U; sample < 40U; ++sample) {
+        const int32_t heights[3] = {
+            sample == 0U ? 100 : 0,
+            200,
+            300,
+        };
+        publish_placement_sample(1000U + sample, heights, upright);
+    }
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[1].stable);
+    assert(!snapshot.placement.all_stable);
+
+    const int32_t steady[3] = { 0, 200, 300 };
+    publish_placement_sample(4031U, steady, upright);
+    snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.all_stable);
+    publish_placement_sample(4032U, steady, upright);
+    publish_placement_sample(4033U, steady, upright);
+    publish_placement_sample(4034U, steady, upright);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.all_stable);
+    workflow_service_shutdown();
+}
+
 int main(void)
 {
     test_calibration_all_pass();
@@ -474,5 +719,12 @@ int main(void)
     test_calibration_timeout();
     test_calibration_back_cancels_pending_results();
     test_calibration_retry_changes_generation_and_ignores_stale_results();
+    test_placement_sample_count_and_calculate_guard();
+    test_placement_height_range_50mm_boundary();
+    test_placement_uses_inclusive_three_second_window();
+    test_placement_vertical_flip_resets_sample_window();
+    test_placement_generation_mismatch_and_node_dropout_are_unknown();
+    test_main_is_vertical_but_needs_a_valid_height_reference();
+    test_placement_history_overflow_fails_closed();
     return 0;
 }

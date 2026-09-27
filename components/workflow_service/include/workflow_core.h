@@ -10,6 +10,9 @@
 #define WORKFLOW_MAX_CALIBRATION_NODES (WORKFLOW_MAX_REMOTE_NODES + 1U)
 #define WORKFLOW_MAX_CALIBRATION_REASONS (WORKFLOW_MAX_REMOTE_NODES * 3U + 3U)
 #define WORKFLOW_CALIBRATION_REASON_MAX 40U
+#define WORKFLOW_PLACEMENT_WINDOW_MS 3000U
+#define WORKFLOW_PLACEMENT_MAX_RANGE_MM 50
+#define WORKFLOW_PLACEMENT_MIN_SAMPLES 3U
 
 typedef enum {
     WORKFLOW_STEP_IDLE = 0,
@@ -109,6 +112,22 @@ typedef struct {
 } workflow_calibration_snapshot_t;
 
 typedef struct {
+    char node[8];
+    bool vertical;
+    bool height_rel_main_mm_valid;
+    int64_t height_rel_main_mm;
+    bool altitude_asl_m_valid;
+    double altitude_asl_m;
+    bool stable;
+} workflow_placement_node_t;
+
+typedef struct {
+    size_t per_node_count;
+    workflow_placement_node_t per_node[WORKFLOW_MAX_CALIBRATION_NODES];
+    bool all_stable;
+} workflow_placement_snapshot_t;
+
+typedef struct {
     workflow_step_t step;
     uint32_t generation;
     uint32_t allowed_actions;
@@ -119,6 +138,7 @@ typedef struct {
     workflow_calculation_class_t calculation_class;
     workflow_command_t recommended_action;
     workflow_calibration_snapshot_t calibration;
+    workflow_placement_snapshot_t placement;
 } workflow_snapshot_t;
 
 typedef struct {
