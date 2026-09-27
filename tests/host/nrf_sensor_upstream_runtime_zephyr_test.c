@@ -56,6 +56,12 @@ static bool s_exit_worker_when_empty;
 static bool s_include_env;
 static bool s_force_stationary;
 static bool s_force_moving;
+static bool s_override_gravity;
+static unsigned s_fake_gravity_axis;
+static int s_fake_gravity_sign = 1;
+static int32_t s_fake_gyro_bias_mdps;
+static bool s_advance_worker_time;
+static int64_t s_worker_stop_at_ms;
 static bool s_change_pressure;
 static uint32_t s_fake_pressure_pa;
 static jmp_buf s_worker_exit;
@@ -93,6 +99,16 @@ int k_msgq_get(struct k_msgq *q, void *data, k_timeout_t timeout)
         s_max_worker_wait = timeout;
     }
     if (q->count == 0U) {
+        if (s_advance_worker_time) {
+            if (s_test_uptime_ms >= s_worker_stop_at_ms) {
+                longjmp(s_worker_exit, 1);
+            }
+            if (timeout > 0) {
+                const int64_t remaining = s_worker_stop_at_ms - s_test_uptime_ms;
+                s_test_uptime_ms += timeout < remaining ? timeout : remaining;
+            }
+            return -ENOMSG;
+        }
         if (s_exit_worker_when_empty) {
             longjmp(s_worker_exit, 1);
         }
@@ -174,13 +190,18 @@ static int fake_read_imu(void *context, nrf_imu_sample_t *sample)
     (void)context;
     ++s_imu_read_calls;
     memset(sample, 0, sizeof(*sample));
+    sample->gyro_mdps[0] = s_fake_gyro_bias_mdps;
     if (s_force_moving) {
         sample->gyro_mdps[0] = 120000;
     } else if (!s_force_stationary && s_refresh_calls >= 2U) {
         sample->accel_mg[0] = 300;
-        sample->gyro_mdps[0] = 30000;
+        sample->gyro_mdps[0] += 30000;
     }
-    sample->accel_mg[2] = 1000;
+    if (s_override_gravity) {
+        sample->accel_mg[s_fake_gravity_axis] = s_fake_gravity_sign * 1000;
+    } else {
+        sample->accel_mg[2] = 1000;
+    }
     return 0;
 }
 
@@ -270,6 +291,48 @@ static void process_height_reference_request(
     s_test_uptime_ms += 100;
     assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&request) == 0);
     run_worker_until_empty();
+}
+
+static void run_worker_advancing(uint32_t duration_ms)
+{
+    s_advance_worker_time = true;
+    s_exit_worker_when_empty = true;
+    s_worker_stop_at_ms = s_test_uptime_ms + duration_ms;
+    if (setjmp(s_worker_exit) == 0) {
+        s_worker_entry(NULL, NULL, NULL);
+        assert(false);
+    }
+    s_exit_worker_when_empty = false;
+    s_advance_worker_time = false;
+}
+
+static void process_imu_calibration_request(
+    uint8_t action,
+    uint32_t request_id,
+    uint16_t generation)
+{
+    const nrf_upstream_imu_calibrate_t request = {
+        .action = action,
+        .request_id = request_id,
+        .generation = generation,
+    };
+    const unsigned refreshes_before = s_refresh_calls;
+    const unsigned reads_before = s_imu_read_calls;
+    s_test_uptime_ms += 100;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(&request) == 0);
+    assert(s_refresh_calls == refreshes_before && s_imu_read_calls == reads_before);
+    run_worker_until_empty();
+    if (action == NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE) {
+        assert(s_refresh_calls == refreshes_before && s_imu_read_calls == reads_before);
+        nrf_upstream_sensor_refresh_t competing = {.request_id = request_id + 1U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&competing) == -EBUSY);
+        run_worker_advancing(2000U);
+        assert(s_refresh_calls == refreshes_before + 1U);
+        assert(s_imu_read_calls > reads_before);
+    } else {
+        assert(s_refresh_calls == refreshes_before + 1U);
+        assert(s_imu_read_calls == reads_before + 1U);
+    }
 }
 
 int main(void)
@@ -493,6 +556,40 @@ int main(void)
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
     assert(snapshot.reference_generation == 45U);
     assert(snapshot.relative_z_mm == 0);
+
+    s_force_stationary = true;
+    s_force_moving = false;
+    s_include_env = false;
+    s_override_gravity = true;
+    s_fake_gravity_axis = 0U;
+    s_fake_gravity_sign = 1;
+    s_fake_gyro_bias_mdps = 14000;
+    process_imu_calibration_request(
+        NRF_UPSTREAM_IMU_CALIBRATE_CLEAR, 60U, 60U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_NOT_CALIBRATED);
+    assert(snapshot.imu_cal_generation == 60U);
+    assert(snapshot.gyro_bias_mdps[0] == 0 && snapshot.gravity_ref_mg[0] == 0);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
+    assert(orientation.reason == NRF_ORIENTATION_REASON_UNCONFIGURED);
+
+    process_imu_calibration_request(
+        NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 61U, 61U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(snapshot.imu_cal_generation == 61U);
+    assert(snapshot.gyro_bias_mdps[0] == 14000);
+    assert(snapshot.gravity_ref_mg[0] == 1000);
+    assert(snapshot.gravity_ref_mg[1] == 0 && snapshot.gravity_ref_mg[2] == 0);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
+    assert(orientation.state == NRF_ORIENTATION_STATE_ACCEPTED);
+    assert(orientation.filtered_accel_mg[0] == 1000);
+    assert(orientation.gyro_peak_mdps == 0U);
+    request.request_id = 62U;
+    process_refresh_request(request.request_id);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED);
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
 
     /* Same assignment is idempotent; a conflicting active identity is rejected. */
     {

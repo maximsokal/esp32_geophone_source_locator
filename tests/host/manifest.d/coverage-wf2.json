@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_imu_calibration",
+      "sources": [
+        "nRF54L15/src/nrf_imu_calibration.c",
+        "tests/host/nrf_imu_calibration_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    }
+  ]
+}

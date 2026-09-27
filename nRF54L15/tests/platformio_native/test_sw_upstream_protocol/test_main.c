@@ -9,7 +9,7 @@
  * compiled into this native PlatformIO suite, not copied into the test. */
 #include "../../../src/nrf_upstream_protocol.c"
 
-static void test_remote_snapshot_is_120_bytes_and_round_trips(void)
+static void test_remote_snapshot_is_136_bytes_and_round_trips(void)
 {
     nrf_upstream_status_t status;
     nrf_upstream_sensor_snapshot_t sensor;
@@ -48,8 +48,8 @@ static void test_remote_snapshot_is_120_bytes_and_round_trips(void)
     TEST_ASSERT_EQUAL(
         NRF_UPSTREAM_RESULT_OK,
         nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, frame));
-    TEST_ASSERT_EQUAL_UINT8(2U, frame[30]);
-    TEST_ASSERT_EQUAL_UINT16(120U, frame[32] | ((uint16_t)frame[33] << 8U));
+    TEST_ASSERT_EQUAL_UINT8(3U, frame[30]);
+    TEST_ASSERT_EQUAL_UINT16(136U, frame[32] | ((uint16_t)frame[33] << 8U));
     TEST_ASSERT_EQUAL(
         NRF_UPSTREAM_RESULT_OK,
         nrf_upstream_protocol_decode_remote_snapshot(
@@ -95,7 +95,7 @@ static void test_remote_snapshot_rejects_wrong_wire_length(void)
 int main(void)
 {
     UNITY_BEGIN();
-    RUN_TEST(test_remote_snapshot_is_120_bytes_and_round_trips);
+    RUN_TEST(test_remote_snapshot_is_136_bytes_and_round_trips);
     RUN_TEST(test_remote_snapshot_rejects_wrong_wire_length);
     return UNITY_END();
 }
