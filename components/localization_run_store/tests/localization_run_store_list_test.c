@@ -92,6 +92,7 @@ static localization_run_record_t make_record(
         record.converged = true;
     }
     else {
+        record.failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
         snprintf(record.rejection_reason, sizeof(record.rejection_reason), "not enough picks");
     }
     return record;
@@ -154,6 +155,7 @@ static void test_lists_every_persisted_run_including_unsolved(void)
         else {
             assert(!records[i].solved);
             assert(strcmp(records[i].rejection_reason, "not enough picks") == 0);
+            assert(records[i].failure_class == LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
         }
     }
 

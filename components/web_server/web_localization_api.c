@@ -5,11 +5,20 @@
 #include <string.h>
 
 #include "localization_job.h"
+#include "../localization_calculate/include/localization_calculate.h"
 #include "localization_pick_record.h"
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+
+void localization_calculate_recommendation(
+    const localization_run_record_t *records,
+    size_t record_count,
+    const localization_pick_record_t *pick_records,
+    size_t pick_record_count,
+    localization_recommendation_t *recommendation_out
+);
 
 static const char *web_localization_z_fallback_reason(const char *reason)
 {
@@ -116,6 +125,17 @@ static int web_localization_http_status(esp_err_t err)
         case ESP_ERR_NO_MEM:
         default:
             return 500;
+    }
+}
+
+
+static const char *web_localization_recommendation_action_name(localization_recommendation_action_t action)
+{
+    switch (action) {
+        case LOCALIZATION_RECOMMENDATION_RECORD_AGAIN: return "record_again";
+        case LOCALIZATION_RECOMMENDATION_MOVE_SENSORS: return "move_sensors";
+        case LOCALIZATION_RECOMMENDATION_NONE:
+        default: return "none";
     }
 }
 
@@ -443,7 +463,6 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         }
         free(pick_json);
     }
-    free(picks);
     web_json_writer_write(&writer, "],");
 
     web_json_writer_write(&writer, "\"runs\":[");
@@ -461,7 +480,18 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         free(record_json);
     }
 
-    web_json_writer_write(&writer, "]}");
+    localization_recommendation_t recommendation;
+    localization_calculate_recommendation(
+        records, record_count, picks, pick_count, &recommendation
+    );
+    web_json_writer_printf(
+        &writer,
+        "],\"successful\":%s,\"recommendation\":{\"action\":\"%s\",\"reason_summary\":\"%s\"}}",
+        recommendation.successful ? "true" : "false",
+        web_localization_recommendation_action_name(recommendation.action),
+        recommendation.reason_summary
+    );
+    free(picks);
     free(records);
     return web_json_writer_finish(&writer);
 }

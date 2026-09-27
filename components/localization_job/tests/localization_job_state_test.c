@@ -34,24 +34,41 @@ static void test_one_job_at_a_time_with_its_deadline(void)
     assert(state.status.state == LOCALIZATION_JOB_QUEUED && state.status.job_id == 1U);
     assert(state.status.budget_ms == LOCALIZATION_JOB_DEFAULT_BUDGET_MS);
     assert(state.status.computed_at_ms == 777U);
+    assert(state.status.progress_percent == 0U);
     /* A second submit while one is pending is refused, not queued. */
     assert(localization_job_state_submit(&state, "OBJ_0001", "S000002", &c, 0U, 778U) == ESP_ERR_INVALID_STATE);
 
     localization_calculate_config_t run;
     assert(localization_job_state_start(&state, 5000000, &run));
+    assert(state.status.progress_percent == 0U);
     assert(run.deadline_us == 5000000 + (int64_t)LOCALIZATION_JOB_DEFAULT_BUDGET_MS * 1000);
     assert(run.propagation_speed_mps == 300.0);
     assert(!localization_job_state_start(&state, 5000001, &run)); /* already running */
     assert(localization_job_state_submit(&state, "OBJ_0001", "S000002", &c, 0U, 778U) == ESP_ERR_INVALID_STATE);
 
-    localization_job_state_progress(&state, "eikonal_scan_voids", 7500000);
+    localization_job_state_progress(&state, "tdcas", false, 0U, 4U, 6000000);
+    assert(state.status.progress_percent == 0U);
+    localization_job_state_progress(&state, "bayesian", true, 1U, 4U, 7000000);
+    assert(state.status.progress_percent == 25U);
+    localization_job_state_progress(&state, "eikonal_scan_voids", false, 1U, 4U, 7500000);
+    assert(state.status.progress_percent == 25U);
+    localization_job_state_progress(&state, "eikonal_scan_voids", true, 2U, 4U, 7750000);
+    assert(state.status.progress_percent == 50U);
     localization_job_state_snapshot(&state, 8000000, &status);
     assert(status.state == LOCALIZATION_JOB_RUNNING);
     assert(strcmp(status.current_method, "eikonal_scan_voids") == 0);
     assert(status.elapsed_ms == 3000U); /* brought up to "now" */
+    localization_job_state_progress(&state, "joint_fusion", false, 3U, 4U, 8200000);
+    assert(state.status.progress_percent == 75U);
+    localization_job_state_progress(&state, "joint_fusion", true, 4U, 4U, 8500000);
+    assert(state.status.progress_percent == 99U); /* 100 is reserved for finish(). */
+    localization_job_state_progress(&state, "stale_callback", true, 1U, 9U, 8600000);
+    assert(state.status.progress_percent == 99U && state.status.summary.methods_total == 4U);
 
     localization_calculate_summary_t summary;
     memset(&summary, 0, sizeof(summary));
+    summary.methods_total = 4U;
+    summary.methods_completed = 4U;
     summary.methods_attempted = 18U;
     summary.methods_solved = 12U;
     summary.methods_skipped_for_time = 2U;
@@ -63,6 +80,8 @@ static void test_one_job_at_a_time_with_its_deadline(void)
     localization_job_state_finish(&state, ESP_OK, &summary, 9000U, 9500000);
     localization_job_state_snapshot(&state, 99000000, &status);
     assert(status.state == LOCALIZATION_JOB_SUCCEEDED);
+    assert(status.progress_percent == 100U);
+    assert(status.summary.methods_total == 4U && status.summary.methods_completed == 4U);
     assert(status.elapsed_ms == 4500U); /* frozen at the finish */
     assert(status.current_method[0] == '\0');
     assert(status.summary.methods_solved == 12U && status.summary.timing_count == 2U);
@@ -106,6 +125,10 @@ static void test_status_json(void)
     localization_calculate_summary_t summary;
     memset(&summary, 0, sizeof(summary));
     summary.timing_count = 1U;
+    summary.methods_total = 5U;
+    summary.methods_completed = 4U;
+    summary.recommendation.action = LOCALIZATION_RECOMMENDATION_RECORD_AGAIN;
+    snprintf(summary.recommendation.reason_summary, sizeof(summary.recommendation.reason_summary), "Pick evidence was weak.");
     snprintf(summary.timings[0].method_name, sizeof(summary.timings[0].method_name), "tdcas");
     summary.timings[0].duration_ms = 17U;
     localization_job_state_finish(&state, ESP_ERR_NOT_FOUND, &summary, 11000U, 2000000);
@@ -117,6 +140,11 @@ static void test_status_json(void)
     assert(strstr(json, "\"error\":\"ESP_ERR_NOT_FOUND\"") != NULL);
     assert(strstr(json, "\"job_id\":1") != NULL);
     assert(strstr(json, "\"computed_at_ms\":42") != NULL);
+    assert(strstr(json, "\"methods_total\":5") != NULL);
+    assert(strstr(json, "\"methods_completed\":4") != NULL);
+    assert(strstr(json, "\"progress_percent\":80") != NULL);
+    assert(strstr(json, "\"successful\":false") != NULL);
+    assert(strstr(json, "\"recommendation\":{\"action\":\"record_again\",\"reason_summary\":\"Pick evidence was weak.\"}") != NULL);
     assert(strstr(json, "\"elapsed_ms\":2000") != NULL && strstr(json, "\"budget_ms\":20000") != NULL);
     assert(strstr(json, "\"timings\":[{\"method\":\"tdcas\",\"ms\":17,\"skipped_for_time\":false}]") != NULL);
     assert(strstr(json, "\"stack\":{\"size_bytes\":16384,\"free_min_bytes\":11000,\"margin_bytes\":4096,\"margin_ok\":true}") != NULL);

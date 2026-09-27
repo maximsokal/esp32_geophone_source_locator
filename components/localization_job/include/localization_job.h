@@ -10,7 +10,7 @@
 /*
  * "Calculate source" as a background job.
  *
- * A full run (twenty methods, eikonal fields, posterior lattices) takes
+ * A full run (up to 21 methods, eikonal fields, posterior lattices) takes
  * seconds on the ESP32-S3 and several KiB of stack. It must not run inside
  * an HTTP handler: the HTTPS task has an 8 KiB stack and the WebUI waits
  * at most 12 s for a response. Instead the handler submits a job and
@@ -62,6 +62,7 @@ typedef struct
     char current_method[LOCALIZATION_CALCULATE_TIMING_NAME_SIZE];
     uint32_t elapsed_ms;            /* since start (running) or total (done) */
     uint32_t budget_ms;
+    uint32_t progress_percent;
 
     esp_err_t error;                /* FAILED: why */
     localization_calculate_summary_t summary;
@@ -127,7 +128,14 @@ bool localization_job_state_start(
     localization_calculate_config_t *config_out
 );
 
-void localization_job_state_progress(localization_job_state_t *state, const char *method_name, int64_t now_us);
+void localization_job_state_progress(
+    localization_job_state_t *state,
+    const char *method_name,
+    bool completed,
+    size_t methods_completed,
+    size_t methods_total,
+    int64_t now_us
+);
 
 void localization_job_state_finish(
     localization_job_state_t *state,

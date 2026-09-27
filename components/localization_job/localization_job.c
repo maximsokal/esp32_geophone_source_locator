@@ -24,11 +24,19 @@ static localization_calculate_config_t s_config;
 static localization_calculate_summary_t s_summary;
 
 
-static void progress_hook(const char *method_name, void *context)
+static void progress_hook(
+    const char *method_name,
+    bool completed,
+    size_t methods_completed,
+    size_t methods_total,
+    void *context
+)
 {
     (void)context;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    localization_job_state_progress(&s_state, method_name, esp_timer_get_time());
+    localization_job_state_progress(
+        &s_state, method_name, completed, methods_completed, methods_total, esp_timer_get_time()
+    );
     xSemaphoreGive(s_mutex);
 }
 

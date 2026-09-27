@@ -26,6 +26,7 @@
 #endif
 
 #include "localization_calculate.h"
+#include "localization_calculate_failure_class_test_support.h"
 #include "localization_calculate_policy.h"
 #include "localization_dimensionality_policy.h"
 #include "localization_run_store.h"
@@ -434,10 +435,16 @@ static void test_four_pods_clean_event_solves_near_truth(void)
 
     assert(err == ESP_OK);
     assert(summary.participating_channel_count == 4U);
+    assert(summary.methods_total == 13U && summary.methods_completed == 13U);
     assert(g_recorded_count == 13U);
 
     for (size_t i = 0U; i < g_recorded_count; ++i) {
         assert(g_recorded[i].dimensionality == LOCALIZATION_DIMENSIONALITY_CAPABLE_3D);
+        if (!g_recorded[i].solved) {
+            localization_calculate_test_assert_rejection_class(
+                &g_recorded[i], g_recorded[i].failure_class
+            );
+        }
     }
 
     const localization_run_record_t *tdoa = find_record("tdoa_gauss_newton");
@@ -456,6 +463,7 @@ static void test_four_pods_clean_event_solves_near_truth(void)
         solved_ref = traveltime;
     }
     assert(solved_ref != NULL);
+    assert(summary.recommendation.successful);
 
     const double dx = solved_ref->source_position.x_m - s_source.x_m;
     const double dy = solved_ref->source_position.y_m - s_source.y_m;
@@ -490,10 +498,17 @@ static void test_flat_signal_every_method_unsolved_with_reason(void)
     assert(err == ESP_OK);
     assert(g_recorded_count == 13U);
     assert(summary.methods_solved == 0U);
+    assert(summary.methods_total == 13U && summary.methods_completed == 13U);
+    assert(!summary.recommendation.successful);
+    assert(summary.recommendation.action == LOCALIZATION_RECOMMENDATION_RECORD_AGAIN);
 
     for (size_t i = 0U; i < g_recorded_count; ++i) {
         assert(!g_recorded[i].solved);
         assert(strlen(g_recorded[i].rejection_reason) > 0U);
+        assert(g_recorded[i].failure_class != LOCALIZATION_FAILURE_CLASS_NONE);
+        localization_calculate_test_assert_rejection_class(
+            &g_recorded[i], g_recorded[i].failure_class
+        );
     }
 
     puts("  flat signal: every method unsolved with a reason, no crash -- OK");
@@ -609,11 +624,15 @@ static void test_time_budget_exhausted_skips_remaining_methods(void)
         assert(record != NULL);
         assert(!record->solved);
         assert(strcmp(record->rejection_reason, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON) == 0);
+        assert(record->failure_class == LOCALIZATION_FAILURE_CLASS_INTERNAL);
+        localization_calculate_test_assert_rejection_class(record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
     }
 
     const localization_run_record_t *tdoa = find_record("tdoa_gauss_newton");
     const localization_run_record_t *energy = find_record("energy_baseline");
     assert(tdoa != NULL && energy != NULL);
+    assert(summary.methods_total == 13U && summary.methods_completed == 13U);
+    assert(summary.methods_skipped_for_time == 10U);
     assert(strcmp(tdoa->rejection_reason, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON) != 0);
     assert(strcmp(energy->rejection_reason, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON) != 0
            || energy->solved);
@@ -687,6 +706,7 @@ static void test_unusable_scan_reports_constraint_not_applied(void)
     assert(err == ESP_OK);
     /* 12 unconstrained + 8 scan-constrained + 1 joint. */
     assert(g_recorded_count == 21U);
+    assert(summary.methods_total == 21U && summary.methods_completed == 21U);
 
     static const char *const not_applied_reason =
         "scan occupancy artifact unreadable or invalid: constraint not applied";
@@ -695,6 +715,8 @@ static void test_unusable_scan_reports_constraint_not_applied(void)
         assert(record != NULL);
         assert(!record->solved);
         assert(strcmp(record->rejection_reason, not_applied_reason) == 0);
+        assert(record->failure_class == LOCALIZATION_FAILURE_CLASS_INTERNAL);
+        localization_calculate_test_assert_rejection_class(record, LOCALIZATION_FAILURE_CLASS_INTERNAL);
     }
 
     remove(occupancy_path);

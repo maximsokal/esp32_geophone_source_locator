@@ -12,6 +12,16 @@
 #define LOCALIZATION_DIMENSIONALITY_MIN_PLANAR_2D 3u
 
 
+typedef enum localization_failure_class
+{
+    LOCALIZATION_FAILURE_CLASS_NONE = 0,
+    LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
+    LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS,
+    LOCALIZATION_FAILURE_CLASS_INTERNAL
+
+} localization_failure_class_t;
+
+
 typedef enum
 {
     /* Fewer than LOCALIZATION_DIMENSIONALITY_MIN_PLANAR_2D participating
@@ -70,5 +80,11 @@ localization_method_availability_t localization_method_availability(
 /* A short, stable, human/log-friendly reason string for a skipped method.
  * Returns "" (never NULL) for LOCALIZATION_METHOD_RUNNABLE. */
 const char *localization_method_availability_reason(
+    localization_method_availability_t availability
+);
+
+/* The sensor-count reason is geometry-owned; the event bridge can override
+ * it to RECORD_AGAIN when the low count is caused by rejected picks. */
+localization_failure_class_t localization_method_availability_failure_class(
     localization_method_availability_t availability
 );

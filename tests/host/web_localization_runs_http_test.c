@@ -236,6 +236,7 @@ esp_err_t localization_run_store_list(
         records[1].rejection_reason, sizeof(records[1].rejection_reason),
         "semblance search found no coherent candidate"
     );
+    records[1].failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
 
     *record_count_out = 2U;
     return ESP_OK;
@@ -381,6 +382,27 @@ esp_err_t localization_job_status_json(char **json_out)
 #include "../../components/web_server/web_localization_api.c"
 #undef static
 
+void localization_calculate_recommendation(
+    const localization_run_record_t *records,
+    size_t record_count,
+    const localization_pick_record_t *pick_records,
+    size_t pick_record_count,
+    localization_recommendation_t *recommendation_out
+)
+{
+    (void)pick_records;
+    (void)pick_record_count;
+    memset(recommendation_out, 0, sizeof(*recommendation_out));
+    for (size_t i = 0U; records != NULL && i < record_count; ++i) {
+        if (records[i].solved && !records[i].uncertainty_too_high) {
+            recommendation_out->successful = true;
+            snprintf(recommendation_out->reason_summary, sizeof(recommendation_out->reason_summary),
+                     "At least one method produced a usable result.");
+            return;
+        }
+    }
+}
+
 static httpd_req_t make_request(const char *query, char *response, size_t response_capacity)
 {
     return (httpd_req_t) {
@@ -408,6 +430,9 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "semblance") != NULL);
     assert(strstr(response, "\"solved\":true") != NULL);
     assert(strstr(response, "\"solved\":false") != NULL);
+    assert(strstr(response, "\"failure_class\":\"record_again\"") != NULL);
+    assert(strstr(response, "\"successful\":true") != NULL);
+    assert(strstr(response, "\"recommendation\":{\"action\":\"none\",\"reason_summary\":\"At least one method produced a usable result.\"}") != NULL);
     assert(strstr(response, "no coherent candidate") != NULL);
     assert(s_geometry_calls == 1U);
     assert(strstr(response, "\"geometry\":{\"available\":true") != NULL);

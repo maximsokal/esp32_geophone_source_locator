@@ -45,6 +45,10 @@
 #define LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK \
     ((1U << OBJECT_STORE_POD_COUNT) - 1U)
 
+#define LOCALIZATION_CALCULATE_BASE_METHODS 12U
+#define LOCALIZATION_CALCULATE_SCAN_METHODS 8U
+#define LOCALIZATION_CALCULATE_FUSION_METHODS 1U
+
 /* Twelve unconstrained methods (fused) plus up to eight scan-constrained
  * variants (persisted for comparison, never fused). */
 #define LOCALIZATION_CALCULATE_MAX_RECORDS 20U
@@ -201,6 +205,38 @@ static esp_err_t load_session_occupancy(
 }
 
 
+static esp_err_t session_occupancy_probe(const char *object_id, const char *session_id)
+{
+    char path[192];
+    const int written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    if (written <= 0 || (size_t)written >= sizeof(path)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        return err;
+    }
+    FILE *file = fopen(path, "rb");
+    const bool found = file != NULL;
+    if (found) {
+        fclose(file);
+    }
+    storage_manager_operation_end();
+    return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+
+static bool record_has_rejection_class(const localization_run_record_t *record)
+{
+    return record != NULL &&
+        (record->solved || record->rejection_reason[0] == '\0' ||
+         record->failure_class != LOCALIZATION_FAILURE_CLASS_NONE);
+}
+
+
 static int64_t monotonic_us(void)
 {
     return esp_timer_get_time();
@@ -243,7 +279,9 @@ esp_err_t localization_calculate_run(
         !(config->propagation_speed_mps > 0.0) ||
         !(config->propagation_speed_uncertainty_mps >= 0.0) ||
         !(config->timing_uncertainty_us > 0.0) ||
-        config->semblance_window_half_span_samples == 0U
+        config->semblance_window_half_span_samples == 0U ||
+        !isfinite(config->max_horizontal_uncertainty_m) ||
+        config->max_horizontal_uncertainty_m < 0.0
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -525,18 +563,29 @@ esp_err_t localization_calculate_run(
         .propagation_speed_uncertainty_mps = config->propagation_speed_uncertainty_mps,
     };
 
-    /* Seven unconstrained methods (fused below) plus up to five
+    /* Twelve unconstrained methods (fused below) plus up to eight
      * scan-constrained variants (MAX-147), which are persisted for
      * comparison but never fused -- the joint result stays the
      * unconstrained one. */
     localization_run_record_t *records = workspace->records;
     size_t record_count = 0U;
 
+    /* Probe only for the scan branch before methods start; the full artifact
+     * is still loaded at its existing point in the analysis sequence. */
+    const esp_err_t occupancy_probe_err = session_occupancy_probe(object_id, session_id);
+    const bool scan_variants_planned = occupancy_probe_err != ESP_ERR_NOT_FOUND;
+    summary_out->methods_total = LOCALIZATION_CALCULATE_BASE_METHODS +
+        (scan_variants_planned ? LOCALIZATION_CALCULATE_SCAN_METHODS : 0U) +
+        LOCALIZATION_CALCULATE_FUSION_METHODS;
+
     /* Every method is timed; the skippable ones stop starting once the
      * caller's deadline has passed (their records then say so). */
     localization_calculate_budget_t budget;
     localization_calculate_budget_init(
-        &budget, monotonic_us, config->deadline_us, config->progress, config->progress_context, summary_out
+        &budget, monotonic_us, config->deadline_us, config->progress, config->progress_context, summary_out,
+        config->max_horizontal_uncertainty_m > 0.0
+            ? config->max_horizontal_uncertainty_m
+            : LOCALIZATION_CALCULATE_DEFAULT_MAX_HORIZONTAL_UNCERTAINTY_M
     );
     bool method_allowed = true;
 
@@ -547,7 +596,7 @@ esp_err_t localization_calculate_run(
     tdoa_config.propagation_speed_mps = config->propagation_speed_mps;
 
     localization_event_result_t event_result;
-    localization_event_solve(
+    const esp_err_t tdoa_err = localization_event_solve(
         event_channels, OBJECT_STORE_POD_COUNT, &tdoa_config, NULL, &event_result
     );
     summary_out->methods_attempted++;
@@ -558,6 +607,11 @@ esp_err_t localization_calculate_run(
         config->propagation_speed_mps, config->propagation_speed_uncertainty_mps,
         config->timing_uncertainty_us, &records[record_count]
     );
+    if (tdoa_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "TDOA event bridge call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     /* MAX-212: the Gauss-Newton TDOA solve is always 3D. */
     localization_calculate_apply_redundancy(
         &records[record_count],
@@ -672,6 +726,9 @@ esp_err_t localization_calculate_run(
         semblance_attempted
             ? "semblance search call failed"
             : "no accepted arrival pick to anchor the search window",
+        semblance_attempted
+            ? LOCALIZATION_FAILURE_CLASS_INTERNAL
+            : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
         all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
         LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
     );
@@ -728,10 +785,13 @@ esp_err_t localization_calculate_run(
         LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
     );
     if (!energy_window_known) {
-        snprintf(
-            records[record_count].rejection_reason,
-            sizeof(records[record_count].rejection_reason), "%s",
-            "no accepted arrival pick to define the event energy window"
+        localization_calculate_set_rejection(
+            &records[record_count], "no accepted arrival pick to define the event energy window",
+            LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+        );
+    } else if (energy_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "energy baseline call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
         );
     }
     localization_calculate_budget_end(&budget, &records[record_count]);
@@ -764,6 +824,11 @@ esp_err_t localization_calculate_run(
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (p_observation_count > 0U && tdcas_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "TDCAS solver call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     localization_calculate_apply_redundancy(
         &records[record_count],
         localization_calculate_velocity_free_degrees_of_freedom(
@@ -820,10 +885,16 @@ esp_err_t localization_calculate_run(
     }
     localization_calculate_psafuvs_to_run_record(
         &context, psafuvs_err == ESP_OK ? psafuvs_result : NULL, psafuvs_not_attempted,
+        LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
         ps_used_mask, (~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (ps_observation_count > 0U && psafuvs_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "PSAFUVS solver call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     localization_calculate_apply_redundancy(
         &records[record_count],
         localization_calculate_velocity_free_degrees_of_freedom(
@@ -876,6 +947,15 @@ esp_err_t localization_calculate_run(
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (suea_grid_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "SUEA grid model could not be built", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    } else if (p_observation_count > 0U && suea_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "SUEA solver call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     localization_calculate_apply_redundancy(
         &records[record_count],
         localization_calculate_degrees_of_freedom(
@@ -945,9 +1025,22 @@ esp_err_t localization_calculate_run(
         &records[record_count]
     );
     if (xcorr_err != ESP_OK) {
-        snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason), "%s",
-                 any_accepted ? "cross-correlation TDOA input rejected"
-                              : "no accepted arrival pick to anchor the correlation windows");
+        if (!any_accepted) {
+            localization_calculate_set_rejection(
+                &records[record_count], "no accepted arrival pick to anchor the correlation windows",
+                LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+            );
+        } else if (participants < 2U) {
+            localization_calculate_set_rejection(
+                &records[record_count], "fewer than 2 participating sensors for cross-correlation TDOA",
+                LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
+            );
+        } else {
+            localization_calculate_set_rejection(
+                &records[record_count], "cross-correlation TDOA input rejected",
+                LOCALIZATION_FAILURE_CLASS_INTERNAL
+            );
+        }
     }
     localization_calculate_apply_redundancy(
         &records[record_count],
@@ -978,6 +1071,16 @@ esp_err_t localization_calculate_run(
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (p_observation_count == 0U) {
+        localization_calculate_set_rejection(
+            &records[record_count], "no accepted arrival pick for robust fit",
+            LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+        );
+    } else if (robust_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "robust fit call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     localization_calculate_apply_redundancy(
         &records[record_count], robust_err == ESP_OK ? robust_result->degrees_of_freedom : -1
     );
@@ -1015,10 +1118,16 @@ esp_err_t localization_calculate_run(
     }
     localization_calculate_psp_to_run_record(
         &context, psp_err == ESP_OK ? psp_result : NULL, psafuvs_not_attempted,
+        LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
         traveltime_used_mask, traveltime_rejected_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (psp_s_count > 0U && psp_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "joint P-TDOA and P-S fit call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     if (psp_err == ESP_OK) {
         localization_calculate_apply_redundancy(&records[record_count], psp_result->degrees_of_freedom);
     }
@@ -1065,11 +1174,16 @@ esp_err_t localization_calculate_run(
     }
     localization_calculate_bayes_to_run_record(
         &context, bayes_err == ESP_OK ? bayes_result : NULL, "bayesian",
-        "no accepted arrival pick", velocity_uncertain,
+        "no accepted arrival pick", LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN, velocity_uncertain,
         traveltime_used_mask, traveltime_rejected_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (p_observation_count > 0U && bayes_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "Bayesian location call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     localization_calculate_apply_redundancy(
         &records[record_count], localization_calculate_degrees_of_freedom(bayes_result->picks_used, planar)
     );
@@ -1120,10 +1234,16 @@ esp_err_t localization_calculate_run(
     localization_calculate_eikonal_to_run_record(
         &context, eikonal_err == ESP_OK ? eikonal_result : NULL, "eikonal_fmm",
         p_observation_count > 0U ? "eikonal model could not be built" : "no accepted arrival pick",
+        p_observation_count > 0U ? LOCALIZATION_FAILURE_CLASS_INTERNAL : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
         velocity_uncertain, traveltime_used_mask, traveltime_rejected_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
         &records[record_count]
     );
+    if (eikonal_model_err == ESP_OK && p_observation_count > 0U && eikonal_err != ESP_OK) {
+        localization_calculate_set_rejection(
+            &records[record_count], "eikonal location call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+    }
     localization_calculate_apply_redundancy(
         &records[record_count], localization_calculate_degrees_of_freedom(eikonal_result->picks_used, planar)
     );
@@ -1138,8 +1258,10 @@ esp_err_t localization_calculate_run(
      * constraint is recorded as not applied (fail closed). The
      * unconstrained records above are always kept for comparison. */
     scan_occupancy_t occupancy;
-    const esp_err_t occupancy_err = load_session_occupancy(object_id, session_id, &occupancy);
-    if (occupancy_err != ESP_ERR_NOT_FOUND) {
+    const esp_err_t occupancy_err = scan_variants_planned
+        ? load_session_occupancy(object_id, session_id, &occupancy)
+        : ESP_ERR_NOT_FOUND;
+    if (scan_variants_planned) {
         const bool usable =
             occupancy_err == ESP_OK &&
             scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms);
@@ -1147,6 +1269,9 @@ esp_err_t localization_calculate_run(
             occupancy_err != ESP_OK
                 ? "scan occupancy artifact unreadable or invalid: constraint not applied"
                 : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied";
+        const localization_failure_class_t not_applied_failure_class = occupancy_err != ESP_OK
+            ? LOCALIZATION_FAILURE_CLASS_INTERNAL
+            : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
 
         /* Traveltime, constrained. */
         localization_traveltime_result_t constrained_traveltime;
@@ -1178,9 +1303,9 @@ esp_err_t localization_calculate_run(
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
                  "%s", "traveltime_scan_constrained");
         if (!usable) {
-            records[record_count].solved = false;
-            snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
-                     "%s", not_applied_reason);
+            localization_calculate_set_rejection(
+                &records[record_count], not_applied_reason, not_applied_failure_class
+            );
         }
         free(constrained_traveltime.surface);
         localization_calculate_budget_end(&budget, &records[record_count]);
@@ -1222,13 +1347,25 @@ esp_err_t localization_calculate_run(
             !usable
                 ? not_applied_reason
                 : (semblance_attempted
-                    ? "scan occupancy excluded every candidate or the search failed"
+                    ? (constrained_semblance_err == ESP_OK
+                        ? "scan occupancy excluded every candidate or the search failed"
+                        : "scan-constrained semblance search failed")
                     : "no accepted arrival pick to anchor the search window"),
+            !usable
+                ? not_applied_failure_class
+                : (semblance_attempted
+                    ? (constrained_semblance_err == ESP_OK
+                        ? LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
+                        : LOCALIZATION_FAILURE_CLASS_INTERNAL)
+                    : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN),
             all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
             LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
         );
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
                  "%s", "semblance_scan_constrained");
+        if (usable && constrained_semblance_err == ESP_OK && !constrained_semblance.found) {
+            records[record_count].failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+        }
         localization_calculate_budget_end(&budget, &records[record_count]);
     ++record_count;
 
@@ -1278,9 +1415,9 @@ esp_err_t localization_calculate_run(
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
                  "%s", "tdcas_scan_constrained");
         if (!usable) {
-            records[record_count].solved = false;
-            snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
-                     "%s", not_applied_reason);
+            localization_calculate_set_rejection(
+                &records[record_count], not_applied_reason, not_applied_failure_class
+            );
         }
         localization_calculate_budget_end(&budget, &records[record_count]);
     ++record_count;
@@ -1305,6 +1442,7 @@ esp_err_t localization_calculate_run(
         localization_calculate_psafuvs_to_run_record(
             &context, constrained_psafuvs_err == ESP_OK ? constrained_psafuvs : NULL,
             usable ? psafuvs_not_attempted : not_applied_reason,
+            usable ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN : not_applied_failure_class,
             ps_used_mask & ~psafuvs_obstructed_channels,
             ((~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK) | psafuvs_obstructed_channels,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
@@ -1354,9 +1492,9 @@ esp_err_t localization_calculate_run(
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
                  "%s", "suea_scan_voids");
         if (!usable) {
-            records[record_count].solved = false;
-            snprintf(records[record_count].rejection_reason, sizeof(records[record_count].rejection_reason),
-                     "%s", not_applied_reason);
+            localization_calculate_set_rejection(
+                &records[record_count], not_applied_reason, not_applied_failure_class
+            );
         }
         localization_calculate_budget_end(&budget, &records[record_count]);
     ++record_count;
@@ -1406,7 +1544,11 @@ esp_err_t localization_calculate_run(
         );
         localization_calculate_eikonal_to_run_record(
             &context, scan_eikonal_err == ESP_OK ? scan_eikonal : NULL, "eikonal_scan_voids",
-            scan_fields_reason, velocity_uncertain,
+            scan_fields_reason,
+            !usable ? not_applied_failure_class
+                : p_observation_count == 0U ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+                : LOCALIZATION_FAILURE_CLASS_INTERNAL,
+            velocity_uncertain,
             traveltime_used_mask & ~eikonal_unreachable, traveltime_rejected_mask | eikonal_unreachable,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
             &records[record_count]
@@ -1455,8 +1597,19 @@ esp_err_t localization_calculate_run(
             !scan_fields_ready
                 ? scan_fields_reason
                 : (semblance_attempted
-                    ? "no candidate reaches every pod around the voids, or the search failed"
+                    ? (eikonal_semblance_err == ESP_OK
+                        ? "scan occupancy excluded every candidate around the voids"
+                        : "eikonal-focused semblance call failed")
                     : "no accepted arrival pick to anchor the search window"),
+            !scan_fields_ready
+                ? (!usable ? not_applied_failure_class
+                    : p_observation_count == 0U ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+                    : LOCALIZATION_FAILURE_CLASS_INTERNAL)
+                : (semblance_attempted
+                    ? (eikonal_semblance_err == ESP_OK
+                        ? LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
+                        : LOCALIZATION_FAILURE_CLASS_INTERNAL)
+                    : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN),
             all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
             LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
         );
@@ -1486,7 +1639,11 @@ esp_err_t localization_calculate_run(
         }
         localization_calculate_bayes_to_run_record(
             &context, scan_bayes_err == ESP_OK ? scan_bayes : NULL, "bayesian_scan_voids",
-            scan_fields_reason, velocity_uncertain,
+            scan_fields_reason,
+            !usable ? not_applied_failure_class
+                : p_observation_count == 0U ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+                : LOCALIZATION_FAILURE_CLASS_INTERNAL,
+            velocity_uncertain,
             traveltime_used_mask, traveltime_rejected_mask,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
             &records[record_count]
@@ -1521,6 +1678,10 @@ esp_err_t localization_calculate_run(
 
     esp_err_t first_write_err = ESP_OK;
     for (size_t i = 0U; i < record_count; ++i) {
+        if (!record_has_rejection_class(&records[i])) {
+            first_write_err = ESP_ERR_INVALID_STATE;
+            continue;
+        }
         const esp_err_t write_err = localization_run_store_write(object_id, session_id, &records[i]);
         if (write_err == ESP_OK) {
             summary_out->methods_persisted++;
@@ -1530,6 +1691,8 @@ esp_err_t localization_calculate_run(
     }
 
     /* --- Joint quality-weighted fusion (MAX-138 part 4) ------------------- */
+
+    (void)localization_calculate_budget_begin(&budget, "joint_fusion", false);
 
     localization_comparison_method_result_t *comparison_methods = workspace->comparison_methods;
     for (size_t i = 0U; i < fused_record_count; ++i) {
@@ -1549,6 +1712,17 @@ esp_err_t localization_calculate_run(
     );
     if (joint_record->solved) {
         summary_out->methods_solved++;
+    }
+
+    localization_calculate_budget_end(&budget, joint_record);
+    localization_calculate_recommendation(
+        records, record_count, &workspace->pick_record, 1U, &summary_out->recommendation
+    );
+
+    if (!record_has_rejection_class(joint_record)) {
+        first_write_err = ESP_ERR_INVALID_STATE;
+        heap_caps_free(workspace);
+        return first_write_err;
     }
 
     const esp_err_t joint_write_err = localization_run_store_write(object_id, session_id, joint_record);

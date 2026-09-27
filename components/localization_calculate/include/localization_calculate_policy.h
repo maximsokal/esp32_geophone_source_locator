@@ -6,6 +6,8 @@
 
 #include "localization_bayes.h"
 #include "localization_calculate.h"
+#include "localization_pick_record.h"
+#include "localization_run_record.h"
 #include "localization_comparison.h"
 #include "localization_eikonal.h"
 #include "localization_energy_baseline.h"
@@ -156,6 +158,7 @@ void localization_calculate_semblance_to_run_record(
     const localization_calculate_run_context_t *context,
     const localization_semblance_result_t *result,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
     uint32_t method_version,
@@ -351,6 +354,7 @@ void localization_calculate_psafuvs_to_run_record(
     const localization_calculate_run_context_t *context,
     const localization_psafuvs_result_t *result,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
     uint32_t method_version,
@@ -473,6 +477,7 @@ void localization_calculate_psp_to_run_record(
     const localization_calculate_run_context_t *context,
     const localization_psp_result_t *result,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
     uint32_t method_version,
@@ -488,6 +493,7 @@ void localization_calculate_eikonal_to_run_record(
     const localization_eikonal_result_t *result,
     const char *method_name,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     bool velocity_estimated,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
@@ -504,6 +510,7 @@ void localization_calculate_bayes_to_run_record(
     const localization_bayes_result_t *result,
     const char *method_name,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     bool velocity_estimated,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
@@ -576,6 +583,7 @@ typedef struct
     localization_calculate_progress_fn progress;
     void *progress_context;
     localization_calculate_summary_t *summary;
+    double max_horizontal_uncertainty_m;
 
     const char *method;
     int64_t started_us;
@@ -592,7 +600,8 @@ void localization_calculate_budget_init(
     int64_t deadline_us,
     localization_calculate_progress_fn progress,
     void *progress_context,
-    localization_calculate_summary_t *summary
+    localization_calculate_summary_t *summary,
+    double max_horizontal_uncertainty_m
 );
 
 /* true when the method may run (always, unless skippable and past the
@@ -607,4 +616,20 @@ bool localization_calculate_budget_begin(
 void localization_calculate_budget_end(
     localization_calculate_budget_t *budget,
     localization_run_record_t *record
+);
+
+void localization_calculate_set_rejection(
+    localization_run_record_t *record,
+    const char *reason,
+    localization_failure_class_t failure_class
+);
+
+/* Aggregates the newest run set and its matching pick record into the
+ * session-level operator recommendation. */
+void localization_calculate_recommendation(
+    const localization_run_record_t *records,
+    size_t record_count,
+    const localization_pick_record_t *pick_records,
+    size_t pick_record_count,
+    localization_recommendation_t *recommendation_out
 );

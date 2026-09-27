@@ -57,3 +57,18 @@ const char *localization_method_availability_reason(
             return "";
     }
 }
+
+
+localization_failure_class_t localization_method_availability_failure_class(
+    localization_method_availability_t availability
+)
+{
+    switch (availability) {
+        case LOCALIZATION_METHOD_SKIPPED_INSUFFICIENT_SENSORS:
+        case LOCALIZATION_METHOD_SKIPPED_REQUIRES_3D:
+            return LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+        case LOCALIZATION_METHOD_RUNNABLE:
+        default:
+            return LOCALIZATION_FAILURE_CLASS_NONE;
+    }
+}

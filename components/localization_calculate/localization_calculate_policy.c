@@ -220,13 +220,20 @@ void localization_calculate_traveltime_to_run_record(
         method_version, channel_mask_used, channel_mask_rejected, record_out
     );
 
-    if (result == NULL || result->status != LOCALIZATION_TRAVELTIME_SOLVED) {
-        record_out->solved = false;
-        snprintf(
-            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
-            result != NULL && result->status == LOCALIZATION_TRAVELTIME_NO_ALLOWED_CANDIDATE
+    if (result == NULL) {
+        localization_calculate_set_rejection(
+            record_out, "traveltime inversion call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+        return;
+    }
+    if (result->status != LOCALIZATION_TRAVELTIME_SOLVED) {
+        const bool scan_excluded = result->status == LOCALIZATION_TRAVELTIME_NO_ALLOWED_CANDIDATE;
+        localization_calculate_set_rejection(
+            record_out,
+            scan_excluded
                 ? "scan occupancy excluded every candidate (verified FREE air or outside the scan)"
-                : "insufficient accepted picks for traveltime inversion"
+                : "insufficient accepted picks for traveltime inversion",
+            scan_excluded ? LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
         );
         return;
     }
@@ -244,6 +251,7 @@ void localization_calculate_semblance_to_run_record(
     const localization_calculate_run_context_t *context,
     const localization_semblance_result_t *result,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
     uint32_t method_version,
@@ -256,21 +264,19 @@ void localization_calculate_semblance_to_run_record(
     );
 
     if (result == NULL) {
-        record_out->solved = false;
-        snprintf(
-            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
+        localization_calculate_set_rejection(
+            record_out,
             (not_attempted_reason != NULL && not_attempted_reason[0] != '\0')
                 ? not_attempted_reason
-                : "semblance search was not attempted"
+                : "semblance search was not attempted",
+            not_attempted_failure_class
         );
         return;
     }
 
     if (!result->found) {
-        record_out->solved = false;
-        snprintf(
-            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
-            "semblance search found no coherent candidate"
+        localization_calculate_set_rejection(
+            record_out, "semblance search found no coherent candidate", LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
         );
         return;
     }
@@ -295,11 +301,15 @@ void localization_calculate_energy_baseline_to_run_record(
         method_version, channel_mask_used, channel_mask_rejected, record_out
     );
 
-    if (result == NULL || !result->found) {
-        record_out->solved = false;
-        snprintf(
-            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
-            "no channel had positive weighted energy"
+    if (result == NULL) {
+        localization_calculate_set_rejection(
+            record_out, "energy baseline call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+        return;
+    }
+    if (!result->found) {
+        localization_calculate_set_rejection(
+            record_out, "no channel had positive weighted energy", LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
         );
         return;
     }
@@ -325,10 +335,8 @@ void localization_calculate_joint_to_run_record(
     );
 
     if (result == NULL || !result->joint_found) {
-        record_out->solved = false;
-        snprintf(
-            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
-            "no individual method solved with usable quality"
+        localization_calculate_set_rejection(
+            record_out, "no individual method solved with usable quality", LOCALIZATION_FAILURE_CLASS_INTERNAL
         );
         return;
     }
@@ -673,23 +681,30 @@ void localization_calculate_tdcas_to_run_record(
     );
 
     if (result == NULL || result->status != LOCALIZATION_TDCAS_SOLVED) {
-        record_out->solved = false;
         if (result != NULL && result->status == LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS) {
+            char reason[LOCALIZATION_RUN_REJECTION_REASON_SIZE];
             snprintf(
-                record_out->rejection_reason, sizeof(record_out->rejection_reason),
+                reason, sizeof(reason),
                 "TDCAS needs %u accepted P picks for this layout (%s), have %u",
                 (unsigned)(result->planar_layout ? LOCALIZATION_TDCAS_MIN_SENSORS_PLANAR : LOCALIZATION_TDCAS_MIN_SENSORS_3D),
                 result->planar_layout ? "planar surface array" : "depth-resolving array",
                 (unsigned)result->sensors_used
             );
+            localization_calculate_set_rejection(
+                record_out, reason, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+            );
         } else {
-            snprintf(
-                record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
+            const bool scan_excluded = result != NULL && result->status == LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION;
+            localization_calculate_set_rejection(
+                record_out,
                 result == NULL
                     ? "TDCAS was not attempted"
-                    : result->status == LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION
+                    : scan_excluded
                         ? "scan occupancy excluded every sensor combination (FREE air or obstructed rays)"
-                        : "no sensor combination gave a physical velocity-free solution"
+                        : "no sensor combination gave a physical velocity-free solution",
+                result == NULL
+                    ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+                    : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
             );
         }
         return;
@@ -710,6 +725,7 @@ void localization_calculate_psafuvs_to_run_record(
     const localization_calculate_run_context_t *context,
     const localization_psafuvs_result_t *result,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
     uint32_t method_version,
@@ -725,6 +741,7 @@ void localization_calculate_psafuvs_to_run_record(
     if (result == NULL || result->status != LOCALIZATION_PSAFUVS_SOLVED) {
         record_out->solved = false;
         const char *reason = "PSAFUVS was not attempted";
+        localization_failure_class_t failure_class = not_attempted_failure_class;
         if (result == NULL) {
             if (not_attempted_reason != NULL && not_attempted_reason[0] != '\0') {
                 reason = not_attempted_reason;
@@ -732,26 +749,31 @@ void localization_calculate_psafuvs_to_run_record(
         } else {
             switch (result->status) {
                 case LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
                     reason = result->planar_layout
                         ? "PSAFUVS needs 4 channels with accepted P and S picks on a planar array"
                         : "PSAFUVS needs 5 channels with accepted P and S picks on a depth-resolving array";
                     break;
                 case LOCALIZATION_PSAFUVS_NONPHYSICAL_VELOCITIES:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
                     reason = "P/S fit is not physical (S velocity not below P velocity)";
                     break;
                 case LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
                     reason = "scan voids obstruct too many straight rays for PSAFUVS";
                     break;
                 case LOCALIZATION_PSAFUVS_NO_ALLOWED_CANDIDATE:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
                     reason = "PSAFUVS solution lies in scan-verified FREE air or outside the scan";
                     break;
                 case LOCALIZATION_PSAFUVS_DEGENERATE:
                 default:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
                     reason = "P and S arrivals do not describe one source (degenerate system)";
                     break;
             }
         }
-        snprintf(record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s", reason);
+        localization_calculate_set_rejection(record_out, reason, failure_class);
         return;
     }
 
@@ -785,18 +807,25 @@ void localization_calculate_suea_to_run_record(
     );
 
     if (result == NULL || result->status != LOCALIZATION_SUEA_SOLVED) {
-        record_out->solved = false;
-        snprintf(
-            record_out->rejection_reason, sizeof(record_out->rejection_reason), "%s",
+        const bool unreachable_sensor =
+            result != NULL && result->status == LOCALIZATION_SUEA_INSUFFICIENT_PICKS &&
+            result->pick_mask_unreachable != 0U;
+        const localization_failure_class_t failure_class = result == NULL ||
+            (result->status == LOCALIZATION_SUEA_INSUFFICIENT_PICKS && !unreachable_sensor)
+            ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+            : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+        localization_calculate_set_rejection(
+            record_out,
             result == NULL
                 ? "SUEA was not attempted"
                 : result->status == LOCALIZATION_SUEA_INSUFFICIENT_PICKS
-                    ? (result->pick_mask_unreachable != 0U
+                    ? (unreachable_sensor
                         ? "fewer than 3 usable picks: some sensors sit inside scan-verified empty space"
                         : "fewer than 3 accepted picks for SUEA")
                     : result->status == LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE
                         ? "scan occupancy excluded every reachable grid point"
-                        : "no grid point is reachable from every sensor with a physical fit"
+                        : "no grid point is reachable from every sensor with a physical fit",
+            failure_class
         );
         return;
     }
@@ -936,10 +965,142 @@ localization_extended_bounds_t localization_calculate_extended_bounds(
 }
 
 
-static void set_reason(localization_run_record_t *record, const char *reason)
+void localization_calculate_set_rejection(
+    localization_run_record_t *record,
+    const char *reason,
+    localization_failure_class_t failure_class
+)
 {
+    if (record == NULL) {
+        return;
+    }
     record->solved = false;
+    record->uncertainty_too_high = false;
+    record->failure_class = failure_class;
     snprintf(record->rejection_reason, sizeof(record->rejection_reason), "%s", reason);
+}
+
+
+void localization_calculate_recommendation(
+    const localization_run_record_t *records,
+    size_t record_count,
+    const localization_pick_record_t *pick_records,
+    size_t pick_record_count,
+    localization_recommendation_t *recommendation_out
+)
+{
+    if (recommendation_out == NULL) {
+        return;
+    }
+    *recommendation_out = (localization_recommendation_t) { 0 };
+
+    uint64_t latest_computed_at_ms = 0U;
+    bool have_methods = false;
+    for (size_t i = 0U; records != NULL && i < record_count; ++i) {
+        if (records[i].kind == LOCALIZATION_RUN_KIND_JOINT_FUSION) {
+            continue;
+        }
+        if (!have_methods || records[i].computed_at_ms > latest_computed_at_ms) {
+            latest_computed_at_ms = records[i].computed_at_ms;
+        }
+        have_methods = true;
+    }
+
+    size_t record_again_count = 0U;
+    size_t move_sensors_count = 0U;
+    bool have_usable_result = false;
+    for (size_t i = 0U; records != NULL && i < record_count; ++i) {
+        const localization_run_record_t *record = &records[i];
+        if (
+            record->kind == LOCALIZATION_RUN_KIND_JOINT_FUSION ||
+            record->computed_at_ms != latest_computed_at_ms
+        ) {
+            continue;
+        }
+        if (record->solved && !record->uncertainty_too_high) {
+            have_usable_result = true;
+            continue;
+        }
+        if (record->uncertainty_too_high || record->failure_class == LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS) {
+            ++move_sensors_count;
+        } else if (record->failure_class == LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN) {
+            ++record_again_count;
+        }
+    }
+
+    if (have_usable_result) {
+        recommendation_out->successful = true;
+        snprintf(
+            recommendation_out->reason_summary,
+            sizeof(recommendation_out->reason_summary),
+            "%s",
+            "At least one method produced a usable result."
+        );
+        return;
+    }
+
+    const localization_pick_record_t *latest_picks = NULL;
+    for (size_t i = 0U; pick_records != NULL && i < pick_record_count; ++i) {
+        if (pick_records[i].computed_at_ms == latest_computed_at_ms) {
+            latest_picks = &pick_records[i];
+            break;
+        }
+    }
+    size_t participating_count = 0U;
+    size_t no_trigger_or_low_snr_count = 0U;
+    if (latest_picks != NULL) {
+        for (size_t i = 0U; i < LOCALIZATION_PICK_RECORD_CHANNEL_COUNT; ++i) {
+            const localization_pick_channel_t *channel = &latest_picks->channels[i];
+            if (!channel->participating) {
+                continue;
+            }
+            ++participating_count;
+            if (
+                channel->pick.status == GEOPHONE_PICK_REJECTED_NO_TRIGGER ||
+                channel->pick.status == GEOPHONE_PICK_REJECTED_LOW_SNR
+            ) {
+                ++no_trigger_or_low_snr_count;
+            }
+        }
+    }
+    if (participating_count > 0U && no_trigger_or_low_snr_count * 2U > participating_count) {
+        recommendation_out->action = LOCALIZATION_RECOMMENDATION_RECORD_AGAIN;
+        snprintf(
+            recommendation_out->reason_summary,
+            sizeof(recommendation_out->reason_summary),
+            "%s",
+            "Most participating channels had no trigger or low SNR."
+        );
+        return;
+    }
+
+    if (record_again_count == 0U && move_sensors_count == 0U) {
+        snprintf(
+            recommendation_out->reason_summary,
+            sizeof(recommendation_out->reason_summary),
+            "%s",
+            have_methods ? "Only internal failures were reported; retry calculation."
+                          : "No localization method result is available."
+        );
+    } else if (record_again_count >= move_sensors_count) {
+        recommendation_out->action = LOCALIZATION_RECOMMENDATION_RECORD_AGAIN;
+        snprintf(
+            recommendation_out->reason_summary,
+            sizeof(recommendation_out->reason_summary),
+            "Method failures favor recording again (%u pick-related, %u geometry-related).",
+            (unsigned)record_again_count,
+            (unsigned)move_sensors_count
+        );
+    } else {
+        recommendation_out->action = LOCALIZATION_RECOMMENDATION_MOVE_SENSORS;
+        snprintf(
+            recommendation_out->reason_summary,
+            sizeof(recommendation_out->reason_summary),
+            "Method failures favor moving sensors (%u geometry-related, %u pick-related).",
+            (unsigned)move_sensors_count,
+            (unsigned)record_again_count
+        );
+    }
 }
 
 
@@ -959,25 +1120,33 @@ void localization_calculate_xcorr_tdoa_to_run_record(
     );
     if (result == NULL || result->status != LOCALIZATION_XCORR_TDOA_SOLVED) {
         if (result != NULL && result->status == LOCALIZATION_XCORR_TDOA_INSUFFICIENT_PAIRS) {
-            record_out->solved = false;
+            char reason[LOCALIZATION_RUN_REJECTION_REASON_SIZE];
             snprintf(
-                record_out->rejection_reason, sizeof(record_out->rejection_reason),
+                reason, sizeof(reason),
                 "only %u of %u channel pairs correlate (>= %.1f) across %u channels: too few for a %s fit",
                 (unsigned)result->pairs_measured, (unsigned)result->pairs_total,
                 LOCALIZATION_CALCULATE_XCORR_MIN_CORRELATION, (unsigned)result->channels_used,
                 result->planar ? "planar" : "3D"
             );
+            localization_calculate_set_rejection(
+                record_out, reason, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+            );
             return;
         }
-        set_reason(
+        localization_calculate_set_rejection(
             record_out,
             result == NULL
-                ? "cross-correlation TDOA was not attempted"
+                ? "cross-correlation TDOA call failed"
                 : result->status == LOCALIZATION_XCORR_TDOA_NO_ANCHOR
                     ? "no accepted arrival pick to anchor the correlation windows"
                     : result->status == LOCALIZATION_XCORR_TDOA_NO_ALLOWED_CANDIDATE
                         ? "scan occupancy excluded every candidate"
-                        : "pair delays do not determine the source (underdetermined geometry)"
+                        : "pair delays do not determine the source (underdetermined geometry)",
+            result == NULL
+                ? LOCALIZATION_FAILURE_CLASS_INTERNAL
+                : result->status == LOCALIZATION_XCORR_TDOA_NO_ANCHOR
+                    ? LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+                    : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
         );
         return;
     }
@@ -1006,20 +1175,26 @@ void localization_calculate_robust_to_run_record(
     );
     if (result == NULL || result->status != LOCALIZATION_ROBUST_SOLVED) {
         if (result != NULL && result->status == LOCALIZATION_ROBUST_INSUFFICIENT_OBSERVATIONS) {
-            record_out->solved = false;
+            char reason[LOCALIZATION_RUN_REJECTION_REASON_SIZE];
             snprintf(
-                record_out->rejection_reason, sizeof(record_out->rejection_reason),
+                reason, sizeof(reason),
                 "robust fit needs %u accepted P picks for a %s search, have %u",
                 result->planar ? 3U : 4U, result->planar ? "planar" : "3D",
                 (unsigned)(result->degrees_of_freedom + (result->planar ? 3 : 4))
             );
+            localization_calculate_set_rejection(
+                record_out, reason, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN
+            );
             return;
         }
-        set_reason(
+        localization_calculate_set_rejection(
             record_out,
             result == NULL
                 ? "robust fit was not attempted"
-                : "scan occupancy excluded every candidate"
+                : "scan occupancy excluded every candidate",
+            result == NULL
+                ? LOCALIZATION_FAILURE_CLASS_INTERNAL
+                : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
         );
         return;
     }
@@ -1040,6 +1215,7 @@ void localization_calculate_psp_to_run_record(
     const localization_calculate_run_context_t *context,
     const localization_psp_result_t *result,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
     uint32_t method_version,
@@ -1055,26 +1231,32 @@ void localization_calculate_psp_to_run_record(
         const char *reason = not_attempted_reason != NULL && not_attempted_reason[0] != '\0'
             ? not_attempted_reason
             : "joint P-TDOA + P-S fit was not attempted";
+        localization_failure_class_t failure_class = not_attempted_failure_class;
         if (result != NULL) {
             switch (result->status) {
                 case LOCALIZATION_PSP_INSUFFICIENT_OBSERVATIONS:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
                     reason = "too few P picks and S-P intervals for the joint fit's unknowns";
                     break;
                 case LOCALIZATION_PSP_NO_ALLOWED_CANDIDATE:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
                     reason = "scan occupancy excluded every candidate";
                     break;
                 case LOCALIZATION_PSP_NONPHYSICAL_VELOCITIES:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
                     reason = "no candidate gives physical velocities (vS < vP)";
                     break;
                 case LOCALIZATION_PSP_UNDERDETERMINED:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
                     reason = "underdetermined: pods on one circle, depth trades against vP (set a vP uncertainty or move a pod)";
                     break;
                 case LOCALIZATION_PSP_NO_S_PICK:
                 default:
+                    failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
                     break;
             }
         }
-        set_reason(record_out, reason);
+        localization_calculate_set_rejection(record_out, reason, failure_class);
         return;
     }
     record_out->solved = true;
@@ -1094,6 +1276,7 @@ void localization_calculate_eikonal_to_run_record(
     const localization_eikonal_result_t *result,
     const char *method_name,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     bool velocity_estimated,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
@@ -1110,14 +1293,22 @@ void localization_calculate_eikonal_to_run_record(
         const char *reason = not_attempted_reason != NULL && not_attempted_reason[0] != '\0'
             ? not_attempted_reason
             : "eikonal location was not attempted";
+        localization_failure_class_t failure_class = not_attempted_failure_class;
         if (result != NULL) {
-            reason = result->status == LOCALIZATION_EIKONAL_INSUFFICIENT_PICKS
-                ? "too few picked sensors are reachable in the velocity model"
-                : result->status == LOCALIZATION_EIKONAL_NO_REACHABLE_CANDIDATE
-                    ? "no candidate reaches every picked sensor around the voids"
-                    : "scan occupancy excluded every candidate";
+            if (result->status == LOCALIZATION_EIKONAL_INSUFFICIENT_PICKS) {
+                reason = "too few picked sensors are reachable in the velocity model";
+                failure_class = result->pick_mask_unreachable != 0U
+                    ? LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
+                    : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+            } else if (result->status == LOCALIZATION_EIKONAL_NO_REACHABLE_CANDIDATE) {
+                reason = "no candidate reaches every picked sensor around the voids";
+                failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+            } else {
+                reason = "scan occupancy excluded every candidate";
+                failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+            }
         }
-        set_reason(record_out, reason);
+        localization_calculate_set_rejection(record_out, reason, failure_class);
         return;
     }
     record_out->solved = true;
@@ -1138,6 +1329,7 @@ void localization_calculate_bayes_to_run_record(
     const localization_bayes_result_t *result,
     const char *method_name,
     const char *not_attempted_reason,
+    localization_failure_class_t not_attempted_failure_class,
     bool velocity_estimated,
     uint32_t channel_mask_used,
     uint32_t channel_mask_rejected,
@@ -1154,14 +1346,20 @@ void localization_calculate_bayes_to_run_record(
         const char *reason = not_attempted_reason != NULL && not_attempted_reason[0] != '\0'
             ? not_attempted_reason
             : "Bayesian location was not attempted";
+        localization_failure_class_t failure_class = not_attempted_failure_class;
         if (result != NULL) {
-            reason = result->status == LOCALIZATION_BAYES_INSUFFICIENT_PICKS
-                ? "too few accepted P picks for the posterior"
-                : result->status == LOCALIZATION_BAYES_NO_REACHABLE_CANDIDATE
-                    ? "no candidate reaches every picked sensor around the voids"
-                    : "scan occupancy excluded every candidate";
+            if (result->status == LOCALIZATION_BAYES_INSUFFICIENT_PICKS) {
+                reason = "too few accepted P picks for the posterior";
+                failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+            } else if (result->status == LOCALIZATION_BAYES_NO_REACHABLE_CANDIDATE) {
+                reason = "no candidate reaches every picked sensor around the voids";
+                failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+            } else {
+                reason = "scan occupancy excluded every candidate";
+                failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+            }
         }
-        set_reason(record_out, reason);
+        localization_calculate_set_rejection(record_out, reason, failure_class);
         return;
     }
     record_out->solved = true;
@@ -1245,7 +1443,8 @@ void localization_calculate_budget_init(
     int64_t deadline_us,
     localization_calculate_progress_fn progress,
     void *progress_context,
-    localization_calculate_summary_t *summary
+    localization_calculate_summary_t *summary,
+    double max_horizontal_uncertainty_m
 )
 {
     memset(budget, 0, sizeof(*budget));
@@ -1254,6 +1453,7 @@ void localization_calculate_budget_init(
     budget->progress = progress;
     budget->progress_context = progress_context;
     budget->summary = summary;
+    budget->max_horizontal_uncertainty_m = max_horizontal_uncertainty_m;
 }
 
 
@@ -1266,8 +1466,14 @@ bool localization_calculate_budget_begin(
     budget->method = method_name;
     budget->started_us = budget->now_us != NULL ? budget->now_us() : 0;
     budget->allowed = !skippable || budget->deadline_us <= 0 || budget->started_us < budget->deadline_us;
-    if (budget->allowed && budget->progress != NULL) {
-        budget->progress(method_name, budget->progress_context);
+    if (budget->progress != NULL) {
+        budget->progress(
+            method_name,
+            false,
+            budget->summary != NULL ? budget->summary->methods_completed : 0U,
+            budget->summary != NULL ? budget->summary->methods_total : 0U,
+            budget->progress_context
+        );
     }
     return budget->allowed;
 }
@@ -1293,11 +1499,30 @@ void localization_calculate_budget_end(
             summary->methods_skipped_for_time++;
         }
         if (record != NULL) {
-            record->solved = false;
             record->confidence_score = 0.0;
-            snprintf(record->rejection_reason, sizeof(record->rejection_reason), "%s",
-                     LOCALIZATION_CALCULATE_TIME_BUDGET_REASON);
+            localization_calculate_set_rejection(
+                record, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON, LOCALIZATION_FAILURE_CLASS_INTERNAL
+            );
         }
+    } else if (
+        record != NULL && record->solved && record->uncertainty.credible_level > 0.0 &&
+        hypot(record->uncertainty.std_m.x_m, record->uncertainty.std_m.y_m) >
+            budget->max_horizontal_uncertainty_m
+    ) {
+        record->uncertainty_too_high = true;
+        record->failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+    }
+    if (summary != NULL && summary->methods_completed < summary->methods_total) {
+        ++summary->methods_completed;
+    }
+    if (budget->progress != NULL) {
+        budget->progress(
+            budget->method,
+            true,
+            summary != NULL ? summary->methods_completed : 0U,
+            summary != NULL ? summary->methods_total : 0U,
+            budget->progress_context
+        );
     }
     budget->method = NULL;
 }

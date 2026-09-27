@@ -68,6 +68,7 @@ typedef enum
 typedef struct
 {
     localization_event_status_t status;
+    localization_failure_class_t failure_class;
 
     /* Bit i corresponds to channels[i]. Exactly one of the two masks has
      * bit i set for every i < channel_count. */
