@@ -1,5 +1,7 @@
 import type { DeviceStatus, ObjectProfile } from '../../domain/device';
 import LevelingCard from './LevelingCard';
+import { useLocale, useT } from '../../i18n';
+import { formatNumber } from '../../i18n/format';
 
 interface Props {
   status: DeviceStatus | null;
@@ -8,11 +10,13 @@ interface Props {
   onCalibrateHeights: () => Promise<boolean>;
 }
 
-function measured(valid: boolean, text: string): string {
-  return valid ? text : 'unavailable';
+function measured(valid: boolean, text: string, unavailable: string): string {
+  return valid ? text : unavailable;
 }
 
 export default function SensorsFeature({ status, object, error, onCalibrateHeights }: Props) {
+  const t = useT();
+  const { locale } = useLocale();
   const pods = status?.pods ?? [];
   const acquisition = status?.acquisition;
   const serial = acquisition?.serial;
@@ -21,69 +25,73 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
   const powerFault = serial?.power_fault_latched === true;
   const overcurrentFault = powerFault && serial?.power_gate === 'overcurrent';
   const powerInterlock = serial?.power_gate === undefined
-    ? 'not reported'
+    ? t('sensors.not_reported')
     : overcurrentFault
-      ? `OVER-CURRENT: AD7606 +5 V ${(serial.power_fault_current_a ?? 0).toFixed(3)} A — pins released to Hi-Z`
+      ? t('sensors.power_overcurrent', { current: formatNumber(locale, serial.power_fault_current_a ?? 0, { minimumFractionDigits: 3, maximumFractionDigits: 3 }) })
       : powerFault
-      ? `POWER FAULT: AD7606 +5 V ${(serial.power_fault_rail_v ?? 0).toFixed(2)} V — pins released to Hi-Z`
+      ? t('sensors.power_fault', { voltage: formatNumber(locale, serial.power_fault_rail_v ?? 0, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })
       : serial.power_gate === 'ok'
-        ? 'AD7606 +5 V verified (INA3221 CH3)'
+        ? t('sensors.power_verified')
         : serial.power_gate === 'unverified'
-          ? 'not verified (no fresh INA3221 CH3 reading)'
+          ? t('sensors.power_unverified_reading')
           : serial.power_gate;
   const overcurrentChannels = (status?.power.channels ?? []).filter(
     (channel) => channel.overcurrent === 'warning' || channel.overcurrent === 'critical',
   );
   const serialStream = serial === undefined
-    ? 'not observed'
+    ? t('sensors.not_observed')
     : streamStuck
-      ? `ADC DATA STUCK (${serial.pattern})`
+      ? t('sensors.adc_data_stuck', { pattern: serial.pattern })
       : serialInterference
-        ? `SERIAL INTERFERENCE (${serial.pattern})`
+        ? t('sensors.serial_interference', { pattern: serial.pattern })
         : serial.pattern;
 
   return (
     <section className="console-page">
-      {error !== null && <div className="console-alert" role="alert">ESP API: {error}</div>}
+      {error !== null && <div className="console-alert" role="alert">{t('api.error_prefix', { error })}</div>}
       {powerFault && !overcurrentFault && (
         <div className="console-alert" role="alert">
-          AD7606 power fault latched: its +5 V rail was below the safe threshold, so acquisition was stopped and every AD7606 pin released to Hi-Z. Check the AD7606 supply, then start acquisition again.
+          {t('sensors.power_fault_alert')}
         </div>
       )}
       {overcurrentFault && (
         <div className="console-alert" role="alert">
-          AD7606 over-current latched: its +5 V rail drew more than the critical limit, so acquisition was stopped and every AD7606 pin released to Hi-Z. Look for a short on the AD7606 module, then start acquisition again.
+          {t('sensors.overcurrent_alert')}
         </div>
       )}
       {overcurrentChannels.map((channel) => (
         <div className="console-alert" role="alert" key={`oc-${channel.id}`}>
-          INA3221 {channel.name}: {channel.overcurrent === 'critical' ? 'CRITICAL over-current' : 'over-current warning'} ({channel.current_a.toFixed(3)} A){channel.overcurrent_latched ? ', latched' : ''}.
+          {t(channel.overcurrent === 'critical' ? 'sensors.channel_overcurrent_critical' : 'sensors.channel_overcurrent_warning', {
+            channel: channel.name,
+            current: formatNumber(locale, channel.current_a, { minimumFractionDigits: 3, maximumFractionDigits: 3 }),
+            latched: channel.overcurrent_latched ? t('sensors.latched_suffix') : '',
+          })}.
         </div>
       ))}
 
       <div className="section-heading">
-        <div><span className="eyebrow">HARDWARE DIAGNOSTICS</span><h1>Acquisition + four remote assemblies</h1></div>
-        <p>READY is only reported from explicit hardware evidence. Missing ADC/pods remain unavailable instead of being inferred from configured drivers.</p>
+        <div><span className="eyebrow">{t('sensors.hardware_diagnostics')}</span><h1>{t('sensors.acquisition_four_remotes')}</h1></div>
+        <p>{t('sensors.ready_evidence')}</p>
       </div>
 
       <article className="console-card wide-card">
         <div className="card-heading">
-          <div><span className="eyebrow">BASE ADC</span><h2>{acquisition?.source ?? 'Acquisition source'}</h2></div>
+          <div><span className="eyebrow">{t('sensors.base_adc')}</span><h2>{acquisition?.source ?? t('sensors.acquisition_source')}</h2></div>
           <span className={`state-pill ${acquisition?.hardware_ready ? 'ready' : 'offline'}`}>
-            {acquisition?.hardware_ready ? 'DETECTED' : 'NOT DETECTED'}
+            {t(acquisition?.hardware_ready ? 'sensors.detected' : 'sensors.not_detected')}
           </span>
         </div>
         <dl className="console-dl">
-          <div><dt>Hardware proof</dt><dd>{acquisition?.hardware_ready ? 'BUSY pulse train verified' : 'no verified conversion pulse train'}</dd></div>
-          <div><dt>Acquisition</dt><dd>{acquisition?.running ? 'running' : acquisition?.requested_running ? 'requested but unhealthy' : 'stopped'}</dd></div>
-          <div><dt>Last error</dt><dd>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? acquisition.last_error_name : 'none'}</dd></div>
-          <div><dt>Sample rate</dt><dd>{acquisition?.sample_rate_hz ? `${acquisition.sample_rate_hz} Hz` : '—'}</dd></div>
-          <div><dt>Power interlock</dt><dd>{powerInterlock}</dd></div>
-          <div><dt>Serial stream</dt><dd>{serialStream}</dd></div>
-          <div><dt>Stream state</dt><dd>{serial?.stream_state ?? 'not observed'}</dd></div>
-          <div><dt>Serial quality</dt><dd>{serial?.quality ?? 'not observed'}</dd></div>
-          <div><dt>Signal quality</dt><dd>{acquisition?.signal?.quality ?? 'not observed'}</dd></div>
-          <div><dt>Serial streak</dt><dd>{serial ? `${serial.suspicious_streak} abnormal · ${serial.busy_level} BUSY` : 'not observed'}</dd></div>
+          <div><dt>{t('sensors.hardware_proof')}</dt><dd>{t(acquisition?.hardware_ready ? 'sensors.busy_verified' : 'sensors.no_verified_pulse')}</dd></div>
+          <div><dt>{t('sensors.acquisition')}</dt><dd>{t(acquisition?.running ? 'sensors.running' : acquisition?.requested_running ? 'sensors.requested_unhealthy' : 'sensors.stopped')}</dd></div>
+          <div><dt>{t('sensors.last_error')}</dt><dd>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK' ? acquisition.last_error_name : t('sensors.none')}</dd></div>
+          <div><dt>{t('sensors.sample_rate')}</dt><dd>{acquisition?.sample_rate_hz ? `${formatNumber(locale, acquisition.sample_rate_hz)} Hz` : '—'}</dd></div>
+          <div><dt>{t('sensors.power_interlock')}</dt><dd>{powerInterlock}</dd></div>
+          <div><dt>{t('sensors.serial_stream')}</dt><dd>{serialStream}</dd></div>
+          <div><dt>{t('sensors.stream_state')}</dt><dd>{serial?.stream_state ?? t('sensors.not_observed')}</dd></div>
+          <div><dt>{t('sensors.serial_quality')}</dt><dd>{serial?.quality ?? t('sensors.not_observed')}</dd></div>
+          <div><dt>{t('sensors.signal_quality')}</dt><dd>{acquisition?.signal?.quality ?? t('sensors.not_observed')}</dd></div>
+          <div><dt>{t('sensors.serial_streak')}</dt><dd>{serial ? t('sensors.abnormal_busy', { count: formatNumber(locale, serial.suspicious_streak), level: serial.busy_level }) : t('sensors.not_observed')}</dd></div>
         </dl>
       </article>
 
@@ -96,25 +104,25 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
           return (
             <article className="console-card pod-card" key={index}>
               <div className="card-heading">
-                <h2>Pod {index + 1}</h2>
+                <h2>{t('sensors.pod', { number: formatNumber(locale, index + 1) })}</h2>
                 <span className={`state-pill ${connected ? 'ready' : 'offline'}`}>{pod?.state ?? 'DISCONNECTED'}</span>
               </div>
               <dl className="console-dl compact">
-                <div><dt>Cable</dt><dd>{object?.cable_lengths_m[index]?.toFixed(2) ?? '5.00'} m</dd></div>
-                <div><dt>Pressure</dt><dd>{pod ? measured(pod.barometer.valid, `${(pod.barometer.pressure_pa / 100).toFixed(1)} hPa`) : 'unavailable'}</dd></div>
-                <div><dt>Relative height</dt><dd>{pod ? measured(pod.barometer.valid, `${(pod.barometer.relative_altitude_cm / 100).toFixed(2)} m`) : 'unavailable'}</dd></div>
-                <div><dt>Temperature</dt><dd>{pod ? measured(pod.environment.temperature_valid, `${pod.environment.temperature_c.toFixed(1)} °C`) : 'unavailable'}</dd></div>
-                <div><dt>Humidity</dt><dd>{pod ? measured(pod.environment.humidity_valid, `${pod.environment.humidity_percent.toFixed(1)} %`) : 'unavailable'}</dd></div>
-                <div><dt>Roll / pitch</dt><dd>{pod ? measured(pod.imu.valid, `${pod.imu.roll_deg.toFixed(1)}° / ${pod.imu.pitch_deg.toFixed(1)}°`) : 'unavailable'}</dd></div>
-                <div><dt>Yaw</dt><dd>{pod ? measured(pod.imu.valid, `${pod.imu.yaw_relative_deg.toFixed(1)}° relative`) : 'unavailable'}</dd></div>
-                <div><dt>Geophone instant</dt><dd>{pod ? measured(pod.geophone.valid, `${pod.geophone.instant_uv.toFixed(2)} µV`) : 'unavailable'}</dd></div>
-                <div><dt>Geophone RMS</dt><dd>{pod ? measured(pod.geophone.valid, `${pod.geophone.rms_uv.toFixed(2)} µV`) : 'unavailable'}</dd></div>
-                <div><dt>Local X/Y</dt><dd>{pod ? measured(pod.position.local_valid, `${pod.position.local_x_m.toFixed(2)} / ${pod.position.local_y_m.toFixed(2)} m`) : 'unavailable'}</dd></div>
-                <div><dt>Global coordinates</dt><dd>{pod?.position.global_valid
-                  ? `${pod.position.latitude.toFixed(6)}, ${pod.position.longitude.toFixed(6)}${pod.position.altitude_valid ? ` / ${pod.position.altitude_m.toFixed(1)} m` : ''}`
+                <div><dt>{t('sensors.cable')}</dt><dd>{formatNumber(locale, object?.cable_lengths_m[index] ?? 5, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m</dd></div>
+                <div><dt>{t('sensors.pressure')}</dt><dd>{pod ? measured(pod.barometer.valid, `${formatNumber(locale, pod.barometer.pressure_pa / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} hPa`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.relative_height')}</dt><dd>{pod ? measured(pod.barometer.valid, `${formatNumber(locale, pod.barometer.relative_altitude_cm / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.temperature')}</dt><dd>{pod ? measured(pod.environment.temperature_valid, `${formatNumber(locale, pod.environment.temperature_c, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.humidity')}</dt><dd>{pod ? measured(pod.environment.humidity_valid, `${formatNumber(locale, pod.environment.humidity_percent, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.roll_pitch')}</dt><dd>{pod ? measured(pod.imu.valid, `${formatNumber(locale, pod.imu.roll_deg, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}° / ${formatNumber(locale, pod.imu.pitch_deg, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}°`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.yaw')}</dt><dd>{pod ? measured(pod.imu.valid, `${formatNumber(locale, pod.imu.yaw_relative_deg, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}° ${t('sensors.relative')}`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.geophone_instant')}</dt><dd>{pod ? measured(pod.geophone.valid, `${formatNumber(locale, pod.geophone.instant_uv, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} µV`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.geophone_rms')}</dt><dd>{pod ? measured(pod.geophone.valid, `${formatNumber(locale, pod.geophone.rms_uv, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} µV`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.local_xy')}</dt><dd>{pod ? measured(pod.position.local_valid, `${formatNumber(locale, pod.position.local_x_m, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${formatNumber(locale, pod.position.local_y_m, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m`, t('common.not_available')) : t('common.not_available')}</dd></div>
+                <div><dt>{t('sensors.global_coordinates')}</dt><dd>{pod?.position.global_valid
+                  ? `${formatNumber(locale, pod.position.latitude, { minimumFractionDigits: 6, maximumFractionDigits: 6 })}, ${formatNumber(locale, pod.position.longitude, { minimumFractionDigits: 6, maximumFractionDigits: 6 })}${pod.position.altitude_valid ? ` / ${formatNumber(locale, pod.position.altitude_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m` : ''}`
                   : object?.location.valid
-                    ? 'base GPS bound; pod position unavailable'
-                    : 'unavailable'}</dd></div>
+                    ? t('sensors.base_gps_pod_unavailable')
+                    : t('common.not_available')}</dd></div>
               </dl>
             </article>
           );

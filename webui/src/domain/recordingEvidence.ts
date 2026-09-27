@@ -19,7 +19,7 @@ export type LocalizationState = 'unknown' | 'not_calculated' | 'calculated' | 'f
 export type PolicyState = 'unknown' | 'insufficient' | 'planar_2d' | 'capable_3d';
 
 export interface EvidencePosition {
-  label: string;
+  pod: number;
   position: LocalizationRunPosition;
   leveled: boolean;
 }
@@ -28,7 +28,7 @@ export interface RecordingEvidence {
   geometryAvailable: boolean;
   /** Computed REMOTE pods (1..4) in this recording's frozen geometry. */
   remotes: number[];
-  remoteSummary: string;
+  remoteCount: number | null;
   leveledRemotes: number;
   policy: PolicyState;
   positions: EvidencePosition[];
@@ -99,11 +99,11 @@ export function buildRecordingEvidence(
   return {
     geometryAvailable: computed.length > 0,
     remotes,
-    remoteSummary: geometry?.available === true ? `${remotes.length}/${REMOTE_PODS}` : 'unknown',
+    remoteCount: geometry?.available === true ? remotes.length : null,
     leveledRemotes: computed.filter((pod) => pod.pod >= 1 && pod.leveled).length,
     policy: geometry?.available === true ? policyFor(remotes.length) : 'unknown',
     positions: computed.map((pod) => ({
-      label: pod.pod === 0 ? 'MAIN' : `Pod ${pod.pod}`,
+      pod: pod.pod,
       position: { x_m: (pod.x_mm ?? 0) / 1000, y_m: (pod.y_mm ?? 0) / 1000, z_m: (pod.z_mm ?? 0) / 1000 },
       leveled: pod.leveled,
     })),

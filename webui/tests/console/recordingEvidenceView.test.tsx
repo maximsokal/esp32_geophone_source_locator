@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import { LocaleProvider, translate } from '../../src/i18n';
+import { formatDistance, formatNumber } from '../../src/i18n/format';
 import { RecordingEvidenceView } from '../../src/features/objects/RecordingEvidenceCard';
 import { buildRecordingEvidence } from '../../src/domain/recordingEvidence';
 
@@ -23,18 +25,28 @@ describe('RecordingEvidenceView', () => {
       { present: true, bytes: 4096 },
       { present: true, bytes: 100 },
     );
-    const html = renderToStaticMarkup(createElement(RecordingEvidenceView, { evidence }));
-    expect(html).toContain('3/4 (Pod 1, 2, 3)');
-    expect(html).toContain('planar only (3 REMOTEs)');
-    expect(html).toContain('2/3');
-    expect(html).toContain('available (4 KiB, occupancy artifact saved), not registered to the sensors');
-    expect(html).toContain('not calculated');
-    expect(html).toContain('<dt>AprilTag anchor</dt><dd>none</dd>');
-    expect(html).toContain('0.03 m');
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: 'en' },
+      createElement(RecordingEvidenceView, { evidence })));
+    const remotes = [1, 2, 3].map((number) => translate('en', 'report.remote_node', { number: formatNumber('en', number) })).join(', ');
+    expect(html).toContain(`${translate('en', 'report.remote_count', { count: formatNumber('en', 3)})} (${remotes})`);
+    expect(html).toContain(translate('en', 'evidence.policy.planar'));
+    expect(html).toContain(`${formatNumber('en', 2)}/${formatNumber('en', 3)}`);
+    expect(html).toContain(translate('en', 'evidence.scan.available', {
+      size: `${formatNumber('en', 4)} KiB`,
+      occupancy: translate('en', 'evidence.occupancy_saved'),
+      registration: translate('en', 'evidence.not_registered'),
+    }));
+    expect(html).toContain(translate('en', 'evidence.localization.not_calculated'));
+    expect(html).toContain(`<dt>${translate('en', 'evidence.apriltag_anchor')}</dt><dd>${translate('en', 'evidence.anchor_none')}</dd>`);
+    expect(html).toContain(formatDistance('en', 0.03));
   });
 
   it('says unknown while nothing has loaded', () => {
-    const html = renderToStaticMarkup(createElement(RecordingEvidenceView, { evidence: buildRecordingEvidence(null, null, null) }));
-    expect(html.match(/unknown/g)?.length).toBeGreaterThanOrEqual(4);
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: 'en' },
+      createElement(RecordingEvidenceView, { evidence: buildRecordingEvidence(null, null, null) })));
+    expect(html).toContain(`<dt>${translate('en', 'evidence.remote_nodes')}</dt><dd>${translate('en', 'evidence.policy.unknown')}</dd>`);
+    expect(html).toContain(`<dt>${translate('en', 'evidence.localization_policy')}</dt><dd>${translate('en', 'evidence.policy.unknown')}</dd>`);
+    expect(html).toContain(`<dt>${translate('en', 'evidence.scan')}</dt><dd>${translate('en', 'evidence.scan.unknown')}</dd>`);
+    expect(html).toContain(`<dt>${translate('en', 'evidence.localization')}</dt><dd>${translate('en', 'evidence.localization.unknown')}</dd>`);
   });
 });

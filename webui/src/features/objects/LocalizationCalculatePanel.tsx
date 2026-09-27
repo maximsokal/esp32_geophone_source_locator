@@ -14,6 +14,8 @@ import type {
   LocalizationSessionCsPairs,
   LocalizationSessionGeometry,
 } from '../../api/deviceApi';
+import { useLocale, useT, translate, type I18nLocale, type I18nKey } from '../../i18n';
+import { formatDistance, formatNumber } from '../../i18n/format';
 
 interface Props {
   objectId: string;
@@ -97,12 +99,16 @@ export function staLtaThresholdIssue(
   staWindowSamples: number | null,
   ltaWindowSamples: number | null,
   triggerRatio: number | null,
+  locale: I18nLocale = 'en',
 ): string | null {
   if (staWindowSamples === null || ltaWindowSamples === null || triggerRatio === null) return null;
-  if (ltaWindowSamples <= staWindowSamples) return 'LTA window must be longer than the STA window.';
+  if (ltaWindowSamples <= staWindowSamples) return translate(locale, 'calc.sta_lta_longer_error');
   const maximum = ltaWindowSamples / staWindowSamples;
   if (triggerRatio >= maximum) {
-    return `STA/LTA can never reach ${triggerRatio}: with these windows the ratio is at most ${maximum.toFixed(2)}.`;
+    return translate(locale, 'calc.sta_lta_never_error', {
+      trigger: formatNumber(locale, triggerRatio),
+      maximum: formatNumber(locale, maximum, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    });
   }
   return null;
 }
@@ -146,11 +152,11 @@ export type SWavePickSettings =
  * it off (PSAFUVS is then reported as not attempted), all fields valid
  * turns it on, anything in between blocks the calculation.
  */
-export function sWavePickSettings(fields: SWavePickFields): SWavePickSettings {
+export function sWavePickSettings(fields: SWavePickFields, locale: I18nLocale = 'en'): SWavePickSettings {
   const texts = Object.values(fields);
   if (texts.every((text) => text.trim().length === 0)) return { state: 'off' };
   if (texts.some((text) => text.trim().length === 0)) {
-    return { state: 'invalid', issue: 'S-wave picking needs every field filled in, or all left blank.' };
+    return { state: 'invalid', issue: translate(locale, 'calc.s_wave_empty_error') };
   }
   const minSeparation = nonNegativeInteger(fields.minSeparationSamples);
   const maxSeparation = positiveInteger(fields.maxSeparationSamples);
@@ -159,13 +165,13 @@ export function sWavePickSettings(fields: SWavePickFields): SWavePickSettings {
   const ratio = positiveNumber(fields.staLtaTriggerRatio);
   const minimumSnr = nonNegativeNumber(fields.minimumSnr);
   if (minSeparation === null || maxSeparation === null || sta === null || lta === null || ratio === null || minimumSnr === null) {
-    return { state: 'invalid', issue: 'S-wave windows must be whole samples; ratio and SNR must be positive numbers.' };
+    return { state: 'invalid', issue: translate(locale, 'calc.s_wave_values_error') };
   }
   if (maxSeparation <= minSeparation) {
-    return { state: 'invalid', issue: 'S-wave search: the maximum P-to-S separation must exceed the minimum.' };
+    return { state: 'invalid', issue: translate(locale, 'calc.s_wave_separation_error') };
   }
-  const thresholdIssue = staLtaThresholdIssue(sta, lta, ratio);
-  if (thresholdIssue !== null) return { state: 'invalid', issue: `S-wave ${thresholdIssue}` };
+  const thresholdIssue = staLtaThresholdIssue(sta, lta, ratio, locale);
+  if (thresholdIssue !== null) return { state: 'invalid', issue: translate(locale, 'calc.s_wave_threshold_error', { issue: thresholdIssue }) };
   return {
     state: 'on',
     payload: {
@@ -190,36 +196,36 @@ export function timeBudgetSeconds(value: string): number | undefined | null {
 }
 
 /** Velocities a method (TDCAS, PSAFUVS, SUEA, PSP, eikonal, Bayesian) estimated for this event. */
-export function estimatedVelocityText(run: Pick<LocalizationRun, 'estimated_p_velocity_mps' | 'estimated_s_velocity_mps'>): string {
+export function estimatedVelocityText(run: Pick<LocalizationRun, 'estimated_p_velocity_mps' | 'estimated_s_velocity_mps'>, locale: I18nLocale = 'en'): string {
   const p = run.estimated_p_velocity_mps;
   const s = run.estimated_s_velocity_mps;
   if (p === undefined || !(p > 0)) return '';
-  return s !== undefined && s > 0
-    ? ` · estimated vP ${p.toFixed(0)} m/s, vS ${s.toFixed(0)} m/s`
-    : ` · estimated v ${p.toFixed(0)} m/s`;
+  const params = { p: formatNumber(locale, Math.round(p)), s: formatNumber(locale, Math.round(s ?? 0)) };
+  return ` · ${s !== undefined && s > 0 ? translate(locale, 'calc.velocity_both', params) : translate(locale, 'calc.velocity_p', params)}`;
 }
 
-function formatPosition(run: LocalizationRun): string {
+function formatPosition(run: LocalizationRun, locale: I18nLocale): string {
   if (run.source_position === undefined) return '—';
   const { x_m, y_m, z_m } = run.source_position;
-  return `${x_m.toFixed(2)}, ${y_m.toFixed(2)}, ${z_m.toFixed(2)} m`;
+  const options = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+  return `${formatNumber(locale, x_m, options)}, ${formatNumber(locale, y_m, options)}, ${formatNumber(locale, z_m, options)} m`;
 }
 
-function formatMm(value: number | undefined): string {
-  return value === undefined ? '—' : `${(value / 1000).toFixed(2)} m`;
+function formatMm(value: number | undefined, locale: I18nLocale): string {
+  return value === undefined ? '—' : formatDistance(locale, value / 1000);
 }
 
-function nodeLabel(node: number): string {
-  return node === 0 ? 'MAIN' : `Pod ${node}`;
+function nodeLabel(node: number, locale: I18nLocale): string {
+  return node === 0 ? 'MAIN' : translate(locale, 'objects.pod', { number: formatNumber(locale, node) });
 }
 
-function pickStatusLabel(status: LocalizationPickRecord['channels'][number]['status']): string {
+function pickStatusLabel(status: LocalizationPickRecord['channels'][number]['status'], t: (key: I18nKey) => string): string {
   switch (status) {
-    case 'accepted': return 'accepted';
-    case 'rejected_no_trigger': return 'no trigger';
-    case 'rejected_no_refinement': return 'no refinement';
-    case 'rejected_low_snr': return 'low SNR';
-    case 'rejected_inconsistent': return 'inconsistent with other channels';
+    case 'accepted': return t('calc.pick.accepted');
+    case 'rejected_no_trigger': return t('calc.pick.no_trigger');
+    case 'rejected_no_refinement': return t('calc.pick.no_refinement');
+    case 'rejected_low_snr': return t('calc.pick.low_snr');
+    case 'rejected_inconsistent': return t('calc.pick.inconsistent');
     default: return status;
   }
 }
@@ -232,6 +238,8 @@ function latestPickRecord(picks: LocalizationPickRecord[]): LocalizationPickReco
 }
 
 export default function LocalizationCalculatePanel({ objectId, sessionId, busy, onClose }: Props) {
+  const { locale } = useLocale();
+  const t = useT();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -293,7 +301,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const maxSourceDepthM = form.maxSourceDepthM.trim().length === 0 ? undefined : positiveNumber(form.maxSourceDepthM);
   /* Optional: blank = the device's default budget (60 s). */
   const timeBudgetS = timeBudgetSeconds(form.timeBudgetS);
-  const staLtaIssue = staLtaThresholdIssue(parsed.staWindowSamples, parsed.ltaWindowSamples, parsed.staLtaTriggerRatio);
+  const staLtaIssue = staLtaThresholdIssue(parsed.staWindowSamples, parsed.ltaWindowSamples, parsed.staLtaTriggerRatio, locale);
   const sWave = sWavePickSettings({
     minSeparationSamples: form.sMinSeparationSamples,
     maxSeparationSamples: form.sMaxSeparationSamples,
@@ -301,7 +309,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     ltaWindowSamples: form.sLtaWindowSamples,
     staLtaTriggerRatio: form.sStaLtaTriggerRatio,
     minimumSnr: form.sMinimumSnr,
-  });
+  }, locale);
   const formValid =
     Object.values(parsed).every((value) => value !== null) &&
     maxSourceDepthM !== null &&
@@ -344,11 +352,12 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
           objectId,
           sessionId,
           budgetMs: (timeBudgetS ?? DEFAULT_TIME_BUDGET_S) * 1000,
+          locale,
           onProgress: setJob,
         });
       })
       .then((finished) => {
-        if (finished.state === 'failed') throw new Error(jobProgressText(finished));
+        if (finished.state === 'failed') throw new Error(jobProgressText(finished, locale));
         return fetchLocalizationRuns(objectId, sessionId);
       })
       .then((listing) => {
@@ -362,40 +371,32 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   return (
     <article className="console-card">
       <div className="card-heading">
-        <div><span className="eyebrow">SESSION {sessionId}</span><h2>Calculate source</h2></div>
-        <button disabled={busy || running} onClick={onClose}>Close</button>
+        <div><span className="eyebrow">{t('calc.session', { id: sessionId })}</span><h2>{t('calc.title')}</h2></div>
+        <button disabled={busy || running} onClick={onClose}>{t('calc.close')}</button>
       </div>
-      <p>
-        Runs every localization backend (TDOA, traveltime inversion, semblance, energy baseline, the
-        velocity-free TDCAS / PSAFUVS / SUEA, waveform cross-correlation TDOA, a robust outlier-rejecting
-        fit, joint P-TDOA + P–S, eikonal travel times, a Bayesian posterior region, joint fusion) against
-        this session's frozen geometry and raw samples; with a registered 3D scan, scan variants also use its
-        empty and filled space (eikonal waves go around its voids).
-        Every value below must come from this object's own measured/reviewed calibration -- nothing here is
-        a guessed default.
-      </p>
+      <p>{t('calc.description')}</p>
 
-      <h3>Sensor geometry (frozen for this session)</h3>
+      <h3>{t('calc.geometry')}</h3>
       {geometryError !== null && <div className="console-alert" role="alert">{geometryError}</div>}
-      {geometry === null && geometryError === null && <p>Loading sensor geometry…</p>}
+      {geometry === null && geometryError === null && <p>{t('calc.loading_geometry')}</p>}
       {geometry !== null && !geometry.available && (
-        <p>No frozen geometry was recorded for this session (recorded before per-session geometry freezing, or never solved).</p>
+        <p>{t('calc.no_geometry')}</p>
       )}
       {geometry !== null && geometry.available && (
         <dl className="console-dl">
           {geometry.pods.map((pod) => (
             <div key={pod.pod}>
-              <dt>Pod {pod.pod}</dt>
+              <dt>{t('objects.pod', { number: formatNumber(locale, pod.pod) })}</dt>
               <dd>
                 {pod.computed
-                  ? `${formatMm(pod.x_mm)}, ${formatMm(pod.y_mm)}, ${formatMm(pod.z_mm)} · ${pod.leveled ? 'level' : 'not level'}` +
-                    (pod.residual_mm !== undefined ? ` · CS residual ${formatMm(pod.residual_mm)}` : '') +
+                  ? `${formatMm(pod.x_mm, locale)}, ${formatMm(pod.y_mm, locale)}, ${formatMm(pod.z_mm, locale)} · ${pod.leveled ? t('calc.level') : t('calc.not_level')}` +
+                    (pod.residual_mm !== undefined ? ` · ${t('calc.cs_residual', { value: formatMm(pod.residual_mm, locale) })}` : '') +
                     (pod.uncertainty_mm === undefined || pod.uncertainty_mm === 0
                       ? ''
                       : pod.uncertainty_mm >= 2147483647
-                        ? ' · position not determined by the CS mesh'
-                        : ` · ±${formatMm(pod.uncertainty_mm)}`)
-                  : 'not participating'}
+                        ? ` · ${t('calc.position_not_determined')}`
+                        : ` · ±${formatMm(pod.uncertainty_mm, locale)}`)
+                  : t('calc.not_participating')}
               </dd>
             </div>
           ))}
@@ -404,17 +405,17 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
       {csPairs !== null && csPairs.available && csPairs.pairs.length > 0 && (
         <details className="settings-details">
-          <summary>Channel Sounding pair evidence ({csPairs.pairs.length})</summary>
+          <summary>{t('calc.cs_pairs', { count: formatNumber(locale, csPairs.pairs.length) })}</summary>
           <div className="session-list">
             {csPairs.pairs.map((pair) => (
               <div className="session-row" key={`${pair.node_a}-${pair.node_b}`}>
                 <span>
-                  <strong>{nodeLabel(pair.node_a)} ↔ {nodeLabel(pair.node_b)}</strong>
-                  <small>{pair.valid ? 'valid' : 'invalid'} · {pair.attempts} attempt{pair.attempts === 1 ? '' : 's'}</small>
+                  <strong>{nodeLabel(pair.node_a, locale)} ↔ {nodeLabel(pair.node_b, locale)}</strong>
+                  <small>{pair.valid ? t('calc.valid') : t('calc.invalid')} · {formatNumber(locale, pair.attempts)} {pair.attempts === 1 ? t('calc.attempt') : t('calc.attempts')}</small>
                 </span>
                 <span>
-                  <strong>{(pair.distance_mm / 1000).toFixed(2)} m</strong>
-                  <small>confidence {(pair.confidence / 1000).toFixed(2)} · {pair.valid_samples} samples{pair.spread_mm !== undefined && pair.valid_samples > 1 ? ` · spread ${formatMm(pair.spread_mm)}` : ''}{pair.rejected_samples ? ` · ${pair.rejected_samples} outlier${pair.rejected_samples === 1 ? '' : 's'} dropped` : ''}</small>
+                  <strong>{formatDistance(locale, pair.distance_mm / 1000)}</strong>
+                  <small>{t('calc.confidence_value', { value: formatNumber(locale, pair.confidence / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })} · {formatNumber(locale, pair.valid_samples)} {t('calc.samples')}{pair.spread_mm !== undefined && pair.valid_samples > 1 ? ` · ${t('calc.spread', { value: formatDistance(locale, pair.spread_mm / 1000) })}` : ''}{pair.rejected_samples ? ` · ${t('calc.outliers_dropped', { count: formatNumber(locale, pair.rejected_samples) })}` : ''}</small>
                 </span>
               </div>
             ))}
@@ -427,17 +428,17 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         if (latest === null) return null;
         return (
           <details className="settings-details">
-            <summary>Arrival pick evidence (latest calculate, {picks.length} on record)</summary>
+            <summary>{t('calc.arrival_picks', { count: formatNumber(locale, picks.length) })}</summary>
             <div className="session-list">
               {latest.channels.map((channel) => (
                 <div className="session-row" key={channel.channel}>
                   <span>
-                    <strong>Channel {channel.channel}</strong>
-                    <small>{channel.participating ? pickStatusLabel(channel.status) : 'not participating'}</small>
+                    <strong>{t('calc.channel', { number: formatNumber(locale, channel.channel) })}</strong>
+                    <small>{channel.participating ? pickStatusLabel(channel.status, t) : t('calc.not_participating')}</small>
                   </span>
                   <span>
-                    <strong>{channel.status === 'accepted' ? `${channel.arrival_time_s.toFixed(3)} s` : '—'}</strong>
-                    <small>SNR {channel.snr.toFixed(1)}</small>
+                    <strong>{channel.status === 'accepted' ? `${formatNumber(locale, channel.arrival_time_s, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} s` : '—'}</strong>
+                    <small>{t('calc.snr_value', { value: formatNumber(locale, channel.snr, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</small>
                   </span>
                 </div>
               ))}
@@ -448,105 +449,105 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
       <div className="cable-grid">
         <label>
-          <span>Propagation speed (m/s)</span>
+          <span>{t('calc.propagation_speed')}</span>
           <input type="number" min="0" step="any" value={form.propagationSpeedMps} onChange={set('propagationSpeedMps')} />
         </label>
         <label>
-          <span>Speed uncertainty (m/s)</span>
+          <span>{t('calc.speed_uncertainty')}</span>
           <input type="number" min="0" step="any" value={form.propagationSpeedUncertaintyMps} onChange={set('propagationSpeedUncertaintyMps')} />
         </label>
         <label>
-          <span>Propagation model name (optional)</span>
+          <span>{t('calc.model_name')}</span>
           <input type="text" maxLength={31} value={form.propagationModelName} onChange={set('propagationModelName')} />
         </label>
         <label>
-          <span>Timing uncertainty (µs)</span>
+          <span>{t('calc.timing_uncertainty')}</span>
           <input type="number" min="0" step="any" value={form.timingUncertaintyUs} onChange={set('timingUncertaintyUs')} />
         </label>
       </div>
 
       <details className="settings-details">
-        <summary>Pick-detection config (required)</summary>
+        <summary>{t('calc.pick_config')}</summary>
         <div className="cable-grid">
           <label>
-            <span>Noise window (samples)</span>
+            <span>{t('calc.noise_window')}</span>
             <input type="number" min="1" step="1" value={form.noiseWindowSamples} onChange={set('noiseWindowSamples')} />
           </label>
           <label>
-            <span>STA window (samples)</span>
+            <span>{t('calc.sta_window')}</span>
             <input type="number" min="1" step="1" value={form.staWindowSamples} onChange={set('staWindowSamples')} />
           </label>
           <label>
-            <span>LTA window (samples)</span>
+            <span>{t('calc.lta_window')}</span>
             <input type="number" min="1" step="1" value={form.ltaWindowSamples} onChange={set('ltaWindowSamples')} />
           </label>
           <label>
-            <span>STA/LTA trigger ratio</span>
+            <span>{t('calc.trigger_ratio')}</span>
             <input type="number" min="0" step="any" value={form.staLtaTriggerRatio} onChange={set('staLtaTriggerRatio')} />
           </label>
           <label>
-            <span>Refine lookback (samples)</span>
+            <span>{t('calc.refine_lookback')}</span>
             <input type="number" min="1" step="1" value={form.refineLookbackSamples} onChange={set('refineLookbackSamples')} />
           </label>
           <label>
-            <span>Refine lookahead (samples)</span>
+            <span>{t('calc.refine_lookahead')}</span>
             <input type="number" min="1" step="1" value={form.refineLookaheadSamples} onChange={set('refineLookaheadSamples')} />
           </label>
           <label>
-            <span>Refine amplitude fraction</span>
+            <span>{t('calc.refine_fraction')}</span>
             <input type="number" min="0" max="1" step="any" value={form.refineAmplitudeFraction} onChange={set('refineAmplitudeFraction')} />
           </label>
           <label>
-            <span>SNR signal window (samples)</span>
+            <span>{t('calc.snr_window')}</span>
             <input type="number" min="1" step="1" value={form.snrSignalWindowSamples} onChange={set('snrSignalWindowSamples')} />
           </label>
-          <label title="SNR here is the peak |amplitude| after the pick divided by the RMS of the noise window at the start of the recording. Pure noise already scores above 1 (its own peaks exceed its RMS), so choose the threshold from this site's measured recordings.">
-            <span>Minimum SNR (peak / noise RMS)</span>
+          <label title={t('calc.minimum_snr_help')}>
+            <span>{t('calc.minimum_snr')}</span>
             <input type="number" min="0" step="any" value={form.minimumSnr} onChange={set('minimumSnr')} />
           </label>
           <label>
-            <span>Semblance window half-span (samples)</span>
+            <span>{t('calc.semblance_window')}</span>
             <input type="number" min="1" step="1" value={form.semblanceWindowHalfSpanSamples} onChange={set('semblanceWindowHalfSpanSamples')} />
           </label>
-          <label title="How far below the lowest geophone a 3D search may place the source. Blank = half the array diagonal (at least 1 m). The search never goes above the highest geophone.">
-            <span>Max source depth (m, optional)</span>
+          <label title={t('calc.max_depth_help')}>
+            <span>{t('calc.max_depth')}</span>
             <input type="number" min="0" step="any" value={form.maxSourceDepthM} onChange={set('maxSourceDepthM')} />
           </label>
-          <label title="The calculation runs on the device in the background. Methods not started within this many seconds are recorded as skipped (their reason says so). Blank = 60 s.">
-            <span>Time budget (s, optional)</span>
+          <label title={t('calc.time_budget_help')}>
+            <span>{t('calc.time_budget')}</span>
             <input type="number" min="1" max="600" step="any" value={form.timeBudgetS} onChange={set('timeBudgetS')} />
           </label>
         </div>
         {staLtaIssue !== null && <div className="console-alert" role="alert">{staLtaIssue}</div>}
-        {maxSourceDepthM === null && <div className="console-alert" role="alert">Max source depth must be a positive number of meters, or blank.</div>}
-        {timeBudgetS === null && <div className="console-alert" role="alert">Time budget must be 1–600 seconds, or blank.</div>}
+        {maxSourceDepthM === null && <div className="console-alert" role="alert">{t('calc.max_depth_error')}</div>}
+        {timeBudgetS === null && <div className="console-alert" role="alert">{t('calc.time_budget_error')}</div>}
       </details>
 
       <details className="settings-details">
-        <summary>S-wave picking for PSAFUVS and PSP (optional: all fields or none)</summary>
+        <summary>{t('calc.swave_config')}</summary>
         <div className="cable-grid">
-          <label title="The S onset is searched from this many samples after the P pick.">
-            <span>Min P→S separation (samples)</span>
+          <label title={t('calc.s_min_help')}>
+            <span>{t('calc.s_min_separation')}</span>
             <input type="number" min="0" step="1" value={form.sMinSeparationSamples} onChange={set('sMinSeparationSamples')} />
           </label>
-          <label title="... up to this many samples after the P pick.">
-            <span>Max P→S separation (samples)</span>
+          <label title={t('calc.s_max_help')}>
+            <span>{t('calc.s_max_separation')}</span>
             <input type="number" min="1" step="1" value={form.sMaxSeparationSamples} onChange={set('sMaxSeparationSamples')} />
           </label>
           <label>
-            <span>S STA window (samples)</span>
+            <span>{t('calc.s_sta_window')}</span>
             <input type="number" min="1" step="1" value={form.sStaWindowSamples} onChange={set('sStaWindowSamples')} />
           </label>
-          <label title="Measured over the P coda, never the pre-event noise.">
-            <span>S LTA window (samples)</span>
+          <label title={t('calc.s_lta_help')}>
+            <span>{t('calc.s_lta_window')}</span>
             <input type="number" min="1" step="1" value={form.sLtaWindowSamples} onChange={set('sLtaWindowSamples')} />
           </label>
           <label>
-            <span>S STA/LTA trigger ratio</span>
+            <span>{t('calc.s_trigger_ratio')}</span>
             <input type="number" min="0" step="any" value={form.sStaLtaTriggerRatio} onChange={set('sStaLtaTriggerRatio')} />
           </label>
-          <label title="RMS of the S window over RMS of the P coda just before it.">
-            <span>S minimum SNR (S / P-coda RMS)</span>
+          <label title={t('calc.s_minimum_snr_help')}>
+            <span>{t('calc.s_minimum_snr')}</span>
             <input type="number" min="0" step="any" value={form.sMinimumSnr} onChange={set('sMinimumSnr')} />
           </label>
         </div>
@@ -557,7 +558,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
       <div className="console-actions">
         <button disabled={busy || running || !formValid} onClick={runCalculate}>
-          {running ? 'Calculating…' : 'Calculate source'}
+          {running ? t('calc.loading') : t('calc.calculate')}
         </button>
       </div>
 
@@ -569,25 +570,25 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
       {runs !== null && (
         <>
-        <h3>Localization runs</h3>
+        <h3>{t('calc.runs')}</h3>
         <div className="session-list">
           {runs.length === 0 ? (
-            <p>No localization runs persisted for this session.</p>
+            <p>{t('calc.no_runs')}</p>
           ) : runs.map((run) => (
             <div className="session-row" key={`${run.method_name}-${run.computed_at_ms}`}>
               <span>
                 <strong>{run.method_name}</strong>
-                <small>{run.kind === 'joint_fusion' ? 'joint fusion' : run.dimensionality}</small>
+                <small>{run.kind === 'joint_fusion' ? t('calc.joint_fusion') : run.dimensionality}</small>
               </span>
               <span>
-                <strong>{run.solved ? formatPosition(run) : 'unsolved'}</strong>
+                <strong>{run.solved ? formatPosition(run, locale) : t('calc.unsolved')}</strong>
                 <small>
                   {run.solved
-                    ? `confidence ${run.confidence_score.toFixed(2)}` +
-                      (run.degrees_of_freedom === 0 ? ' · unverified (no redundant picks)' : '') +
-                      estimatedVelocityText(run) +
-                      (uncertaintyText(run) === '' ? '' : ` · ${uncertaintyText(run)}`) +
-                      (run.method_name === 'energy_baseline' ? ' · diagnostic only, not fused' : '')
+                    ? t('calc.confidence_value', { value: formatNumber(locale, run.confidence_score, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }) +
+                      (run.degrees_of_freedom === 0 ? ` · ${t('calc.unverified')}` : '') +
+                      estimatedVelocityText(run, locale) +
+                      (uncertaintyText(run, locale) === '' ? '' : ` · ${uncertaintyText(run, locale)}`) +
+                      (run.method_name === 'energy_baseline' ? ` · ${t('calc.diagnostic_only')}` : '')
                     : run.rejection_reason}
                 </small>
               </span>

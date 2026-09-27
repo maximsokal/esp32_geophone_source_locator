@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchSeismic } from '../../api/deviceApi';
 import type { SeismicSnapshot } from '../../domain/device';
+import { useLocale, useT } from '../../i18n';
+import { formatNumber } from '../../i18n/format';
 
 const LIVE_REFRESH_MS = 500;
 const LIVE_ERROR_BACKOFF_MIN_MS = 1500;
@@ -93,6 +95,8 @@ export function polylineSegments(
 }
 
 export default function LiveSeismicPanel() {
+  const { locale } = useLocale();
+  const t = useT();
   const [snapshot, setSnapshot] = useState<SeismicSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -154,15 +158,15 @@ export default function LiveSeismicPanel() {
   return (
     <section className="console-card seismic-live-card">
       <div className="card-heading">
-        <div><span className="eyebrow">LIVE GEOPHONES</span><h3>{snapshot?.source ?? 'waiting for acquisition'}</h3></div>
-        <small>{snapshot?.sample_rate_hz ? `${snapshot.sample_rate_hz} Hz` : '—'}</small>
+        <div><span className="eyebrow">{t('seismic.live_heading')}</span><h3>{snapshot?.source ?? t('seismic.waiting_acquisition')}</h3></div>
+        <small>{snapshot?.sample_rate_hz ? `${formatNumber(locale, snapshot.sample_rate_hz)} Hz` : '—'}</small>
       </div>
       {error !== null && <p className="console-error">{error}</p>}
       <div className="seismic-stack">
         {[0, 1, 2, 3].map((index) => (
           <div className="seismic-row" key={index}>
             <span>G{index + 1}</span>
-            <svg viewBox="0 0 720 120" role="img" aria-label={`Geophone ${index + 1} live waveform`} preserveAspectRatio="none">
+            <svg viewBox="0 0 720 120" role="img" aria-label={t('seismic.live_waveform', { number: index + 1 })} preserveAspectRatio="none">
               <line x1="0" y1="60" x2="720" y2="60" className="seismic-zero" />
               {(lines[index] ?? []).map((points, segmentIndex) => (
                 <polyline
@@ -175,7 +179,7 @@ export default function LiveSeismicPanel() {
           </div>
         ))}
       </div>
-      <small>{snapshot ? `${snapshot.count} displayed · ${snapshot.total_frames.toLocaleString()} total frames` : 'No samples yet'}</small>
+      <small>{snapshot ? t('seismic.live_frames', { displayed: formatNumber(locale, snapshot.count), total: formatNumber(locale, snapshot.total_frames) }) : t('seismic.no_samples')}</small>
     </section>
   );
 }

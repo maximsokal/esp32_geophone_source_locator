@@ -1,5 +1,7 @@
 import type { XrRuntimePhase } from './webxrRuntime';
 import type { MonocularDepthProviderStatus } from './monocularDepthPrior';
+import { translate, type I18nLocale } from '../i18n';
+import { formatPercent } from '../i18n/format';
 
 export interface AiPriorUiInput {
   enabled: boolean;
@@ -19,53 +21,49 @@ export interface AiPriorUiState {
   good: boolean;
 }
 
-function percent(value: number): string {
-  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
-}
-
 /** Pure display policy: live AR is staging-only; inference/calibration happens after Finish. */
-export function describeAiPrior(input: AiPriorUiInput): AiPriorUiState {
+export function describeAiPrior(input: AiPriorUiInput, locale: I18nLocale = 'en'): AiPriorUiState {
   if (!input.enabled) {
-    return { shortStatus: 'OFF', calibrationLabel: '--', explanation: 'Optional AI is disabled.', good: false };
+    return { shortStatus: 'OFF', calibrationLabel: '--', explanation: translate(locale, 'xr.ai.disabled'), good: false };
   }
   if (input.providerStatus === 'unavailable') {
-    return { shortStatus: 'UNAVAILABLE', calibrationLabel: '--', explanation: 'WebGPU AI is unavailable; physical ARCore remains authoritative.', good: false };
+    return { shortStatus: translate(locale, 'xr.ai.unavailable'), calibrationLabel: '--', explanation: translate(locale, 'xr.ai.webgpu_unavailable'), good: false };
   }
   if (input.phase === 'running' || input.phase === 'starting' || input.phase === 'stopping') {
     return {
-      shortStatus: input.hasStagedPostScanFrame ? 'ARMED · POST-SCAN' : 'ARMING · POST-SCAN',
-      calibrationLabel: input.hasStagedPostScanFrame ? 'PENDING AFTER FINISH' : 'WAITING FOR RGB+DEPTH',
-      explanation: 'No ONNX inference runs in the live XR loop. The latest RGB frame and physical anchors are only staged for Finish.',
+      shortStatus: translate(locale, input.hasStagedPostScanFrame ? 'xr.ai.armed' : 'xr.ai.arming'),
+      calibrationLabel: translate(locale, input.hasStagedPostScanFrame ? 'xr.ai.pending' : 'xr.ai.waiting_rgb_depth'),
+      explanation: translate(locale, 'xr.ai.live_staging'),
       good: input.hasStagedPostScanFrame,
     };
   }
   if (input.busy || input.providerStatus === 'loading') {
-    return { shortStatus: 'RUNNING', calibrationLabel: 'CALIBRATING…', explanation: 'ONNX Depth Anything is running after the XR session.', good: false };
+    return { shortStatus: translate(locale, 'xr.ai.running'), calibrationLabel: translate(locale, 'xr.ai.calibrating'), explanation: translate(locale, 'xr.ai.post_scan_running'), good: false };
   }
   if (input.calibrationConfidence > 0) {
     const model = input.calibrationModel ? ` · ${input.calibrationModel}` : '';
     return {
-      shortStatus: 'READY',
-      calibrationLabel: `${percent(input.calibrationConfidence)}${model}`,
-      explanation: 'AI passed physical-anchor calibration and may veto gross TSDF surface outliers only.',
+      shortStatus: translate(locale, 'scan.ready'),
+      calibrationLabel: `${formatPercent(locale, input.calibrationConfidence)}${model}`,
+      explanation: translate(locale, 'xr.ai.calibrated'),
       good: true,
     };
   }
   if (input.error !== null || input.providerStatus === 'error') {
-    return { shortStatus: 'NOT APPLIED', calibrationLabel: 'CALIBRATION FAILED', explanation: input.error ?? 'AI calibration failed open.', good: false };
+    return { shortStatus: translate(locale, 'xr.ai.not_applied'), calibrationLabel: translate(locale, 'xr.ai.calibration_failed'), explanation: input.error ?? translate(locale, 'xr.ai.failed_open'), good: false };
   }
   if (input.phase === 'ended' && !input.hasStagedPostScanFrame) {
     return {
-      shortStatus: 'NOT APPLIED',
-      calibrationLabel: 'NO STAGED RGB+DEPTH',
-      explanation: 'The scan ended without enough pose-aligned physical RGB+depth anchors to run the optional prior.',
+      shortStatus: translate(locale, 'xr.ai.not_applied'),
+      calibrationLabel: translate(locale, 'xr.ai.no_staged_rgb_depth'),
+      explanation: translate(locale, 'xr.ai.no_staged_explanation'),
       good: false,
     };
   }
   return {
-    shortStatus: 'ARMED · POST-SCAN',
-    calibrationLabel: 'PENDING AFTER FINISH',
-    explanation: 'AI is enabled but has not run yet.',
+    shortStatus: translate(locale, 'xr.ai.armed'),
+    calibrationLabel: translate(locale, 'xr.ai.pending'),
+    explanation: translate(locale, 'xr.ai.not_run'),
     good: false,
   };
 }

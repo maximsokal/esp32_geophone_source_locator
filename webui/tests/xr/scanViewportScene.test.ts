@@ -22,6 +22,8 @@ import {
   type ScanSceneSource,
 } from '../../src/xr/scanViewportScene';
 import type { SensorPlacementMarker } from '../../src/xr/sensorPlacementScene';
+import { formatDistance, formatNumber } from '../../src/i18n/format';
+import { translate, type I18nLocale } from '../../src/i18n';
 
 /*
  * The 3D result viewport: which scanned data types (stable/tentative
@@ -244,11 +246,13 @@ describe('3D / Top / Front camera switching', () => {
 });
 
 describe('scan viewport overlay text', () => {
-  it('reports every scanned data type count and the dimensions', () => {
-    expect(scanSourceBadgeText({
+  it.each(['en', 'uk'] as const)('formats every scanned data type count and dimension in %s', (locale: I18nLocale) => {
+    const snapshot = {
       pointCount: 1234, knownFreeVoxelCount: 56, unknownCandidateVoxelCount: 7,
       manualControlPoints: [{} as never, {} as never], operatorEdges: [{} as never],
-    })).toBe('SURFACE 1,234 · FREE 56 · UNKNOWN 7 · PINS 2 · EDGES 1');
-    expect(scanDimensionsText(prepareScanScene(source()))).toBe('X 2.00 m · Y 4.00 m · Z 1.00 m');
+    };
+    expect(scanSourceBadgeText(snapshot, locale)).toBe(`${translate(locale, 'scan.badge.surface')} ${formatNumber(locale, 1234)} · ${translate(locale, 'scan.badge.free')} ${formatNumber(locale, 56)} · ${translate(locale, 'scan.badge.unknown')} ${formatNumber(locale, 7)} · ${translate(locale, 'scan.badge.pins')} ${formatNumber(locale, 2)} · ${translate(locale, 'scan.badge.edges')} ${formatNumber(locale, 1)}`);
+    const dimensions = prepareScanScene(source());
+    expect(scanDimensionsText(dimensions, locale)).toBe(`X ${formatDistance(locale, dimensions.extentX)} · Y ${formatDistance(locale, dimensions.extentY)} · Z ${formatDistance(locale, dimensions.extentZ)}`);
   });
 });

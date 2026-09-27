@@ -1,3 +1,5 @@
+import { translate, type I18nLocale } from '../i18n';
+
 /**
  * MAX-146: optional BLE RSSI source for pre-anchor rough placement.
  *
@@ -42,12 +44,12 @@ export function bleRssiSupport(nav: NavigatorLike | undefined, secureContext: bo
   return 'supported';
 }
 
-export function describeBleRssiSupport(support: BleRssiSupport): string {
+export function describeBleRssiSupport(support: BleRssiSupport, locale: I18nLocale = 'en'): string {
   switch (support) {
-    case 'supported': return 'BLE RSSI hints available (rough placement only).';
-    case 'insecure_context': return 'BLE RSSI hints need a secure (HTTPS) page.';
-    case 'no_web_bluetooth': return 'This browser has no Web Bluetooth; scanning works without RSSI hints.';
-    case 'no_le_scan': return 'This browser cannot passively scan BLE advertisements; scanning works without RSSI hints.';
+    case 'supported': return translate(locale, 'ble.supported');
+    case 'insecure_context': return translate(locale, 'ble.secure_context');
+    case 'no_web_bluetooth': return translate(locale, 'ble.no_web_bluetooth');
+    case 'no_le_scan': return translate(locale, 'ble.no_le_scan');
   }
 }
 
