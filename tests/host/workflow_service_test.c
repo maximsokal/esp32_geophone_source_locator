@@ -240,7 +240,7 @@ static void test_reconciliation_review_error_and_async_recording_commands(void)
     assert(command(WORKFLOW_COMMAND_DELETE_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(s_delete_calls == 1U);
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
-    assert(snapshot.step == WORKFLOW_STEP_OBJECT);
+    assert(snapshot.step == WORKFLOW_STEP_RECORD_READY);
     workflow_service_shutdown();
 }
 

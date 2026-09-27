@@ -156,19 +156,20 @@ void workflow_core_reset_object(
 
 static workflow_step_t workflow_core_back_step(workflow_step_t step)
 {
+    /* BACK from CALIBRATING, RANGING, and CALCULATING cancels the running step. */
     switch (step) {
         case WORKFLOW_STEP_OBJECT: return WORKFLOW_STEP_COUNT;
         case WORKFLOW_STEP_SENSOR_CHECK: return WORKFLOW_STEP_OBJECT;
         case WORKFLOW_STEP_CALIB_PREP: return WORKFLOW_STEP_SENSOR_CHECK;
         case WORKFLOW_STEP_CALIBRATING: return WORKFLOW_STEP_CALIB_PREP;
-        case WORKFLOW_STEP_CALIB_RESULT: return WORKFLOW_STEP_CALIBRATING;
+        case WORKFLOW_STEP_CALIB_RESULT: return WORKFLOW_STEP_CALIB_PREP;
         case WORKFLOW_STEP_PLACEMENT: return WORKFLOW_STEP_CALIB_RESULT;
         case WORKFLOW_STEP_RANGING: return WORKFLOW_STEP_PLACEMENT;
-        case WORKFLOW_STEP_RANGING_RESULT: return WORKFLOW_STEP_RANGING;
+        case WORKFLOW_STEP_RANGING_RESULT: return WORKFLOW_STEP_PLACEMENT;
         case WORKFLOW_STEP_RECORD_READY: return WORKFLOW_STEP_RANGING_RESULT;
         case WORKFLOW_STEP_STOPPED: return WORKFLOW_STEP_RECORD_READY;
         case WORKFLOW_STEP_CALCULATING: return WORKFLOW_STEP_STOPPED;
-        case WORKFLOW_STEP_RESULT: return WORKFLOW_STEP_CALCULATING;
+        case WORKFLOW_STEP_RESULT: return WORKFLOW_STEP_STOPPED;
         case WORKFLOW_STEP_IDLE:
         case WORKFLOW_STEP_RECORDING:
         case WORKFLOW_STEP_COUNT:
@@ -226,7 +227,7 @@ workflow_command_result_t workflow_core_apply(
             break;
         case WORKFLOW_COMMAND_RETRY:
             if (core->step == WORKFLOW_STEP_CALIB_RESULT && !core->calibration_ok) {
-                next = WORKFLOW_STEP_CALIB_PREP;
+                next = WORKFLOW_STEP_CALIBRATING;
             }
             else if (core->step == WORKFLOW_STEP_RANGING_RESULT && !core->ranging_ok) {
                 next = WORKFLOW_STEP_RANGING;
@@ -301,7 +302,7 @@ workflow_command_result_t workflow_core_apply(
             }
             break;
         case WORKFLOW_COMMAND_DELETE_RECORDING:
-            if (core->step == WORKFLOW_STEP_STOPPED) next = WORKFLOW_STEP_OBJECT;
+            if (core->step == WORKFLOW_STEP_STOPPED) next = WORKFLOW_STEP_RECORD_READY;
             break;
         case WORKFLOW_COMMAND_RECORD_AGAIN:
             if (core->step == WORKFLOW_STEP_STOPPED ||
@@ -311,6 +312,11 @@ workflow_command_result_t workflow_core_apply(
             }
             break;
         case WORKFLOW_COMMAND_BACK:
+            if (core->step == WORKFLOW_STEP_CALIBRATING ||
+                core->step == WORKFLOW_STEP_RANGING ||
+                core->step == WORKFLOW_STEP_CALCULATING) {
+                reason = "cancelled_by_back";
+            }
             next = workflow_core_back_step(core->step);
             break;
         case WORKFLOW_COMMAND_COUNT:
