@@ -11,7 +11,7 @@ extern "C" {
 
 #define NRF_CS_MAX_NODES 5U
 #define NRF_CS_MAX_PAIRS 10U
-#define NRF_CS_MAX_EXECUTIONS 10U
+#define NRF_CS_MAX_EXECUTIONS (NRF_CS_MAX_NODES * (NRF_CS_MAX_NODES - 1U))
 #define NRF_CS_CONFIDENCE_MAX 1000U
 
 /*
@@ -84,6 +84,8 @@ typedef struct {
     /* MAX-206: accepted samples to collect per execution, 1..
      * NRF_CS_MAX_SAMPLES_PER_EXECUTION; 0 is treated as 1. */
     uint8_t samples_per_pair;
+    /* Run both directed executions for every pair, in canonical pair order. */
+    bool full_rotation;
 } nrf_cs_policy_t;
 
 typedef struct {
@@ -109,6 +111,9 @@ typedef struct {
     int32_t spread_mm;
     /* Accepted samples discarded as outliers from the median. */
     uint8_t rejected_samples;
+    /* Full-rotation result metadata. */
+    bool single_direction;
+    int32_t direction_disagreement_mm;
 } nrf_cs_pair_result_t;
 
 /* A directed execution token for one undirected matrix cell. */
@@ -144,8 +149,8 @@ typedef struct {
     size_t node_count;
     uint8_t disconnected_mask;
     nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
-    int32_t sample_distance_mm[NRF_CS_MAX_PAIRS][NRF_CS_MAX_SAMPLES_PER_PAIR];
-    uint16_t sample_confidence[NRF_CS_MAX_PAIRS][NRF_CS_MAX_SAMPLES_PER_PAIR];
+    int32_t sample_distance_mm[NRF_CS_MAX_EXECUTIONS][NRF_CS_MAX_SAMPLES_PER_EXECUTION];
+    uint16_t sample_confidence[NRF_CS_MAX_EXECUTIONS][NRF_CS_MAX_SAMPLES_PER_EXECUTION];
     size_t pair_count;
     nrf_cs_execution_t executions[NRF_CS_MAX_EXECUTIONS];
     size_t execution_count;
@@ -176,8 +181,13 @@ nrf_cs_result_t nrf_cs_scheduler_complete_step(
 nrf_cs_result_t nrf_cs_scheduler_disconnect(
     nrf_cs_scheduler_t *scheduler,
     nrf_cs_node_id_t node_id);
+nrf_cs_result_t nrf_cs_scheduler_abort_cycle(
+    nrf_cs_scheduler_t *scheduler,
+    nrf_cs_failure_reason_t reason);
 
 bool nrf_cs_scheduler_is_complete(const nrf_cs_scheduler_t *scheduler);
+size_t nrf_cs_scheduler_execution_count(const nrf_cs_scheduler_t *scheduler);
+size_t nrf_cs_scheduler_executions_done(const nrf_cs_scheduler_t *scheduler);
 size_t nrf_cs_scheduler_pair_count(const nrf_cs_scheduler_t *scheduler);
 const nrf_cs_pair_result_t *nrf_cs_scheduler_pair_at(
     const nrf_cs_scheduler_t *scheduler,

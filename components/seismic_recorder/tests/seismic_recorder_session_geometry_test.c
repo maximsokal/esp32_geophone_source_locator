@@ -190,6 +190,7 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
         .main_height_reference_generation = 23U,
         .setup_id = "1234-901-77-23",
         .start_uptime_ms = 1200U,
+        .ranging_source = "workflow_ranging",
     };
     participation.pods[0] = (seismic_recorder_pod_participation_t) {
         .assigned = true,
@@ -251,6 +252,7 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     assert(strstr(s_persisted_json, "\"hardware_id\":null") != NULL);
     assert(strstr(s_persisted_json, "\"solver_version\":\"1\"") != NULL);
     assert(strstr(s_persisted_json, "\"setup_id\":\"1234-901-77-23\"") != NULL);
+    assert(strstr(s_persisted_json, "\"ranging_source\":\"workflow_ranging\"") != NULL);
     assert(strstr(s_persisted_json, "\"source_age_ms_at_start\":5") != NULL);
     assert(strstr(s_persisted_json, "\"source_age_ms_at_start\":null") != NULL);
     assert(strstr(s_persisted_json, "\"provider_quality_flags\":5") != NULL);
@@ -283,6 +285,7 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     assert(readback.geometry_provenance.main_height_reference_generation == 23U);
     assert(strcmp(readback.geometry_provenance.setup_id, "1234-901-77-23") == 0);
     assert(readback.geometry_provenance.start_uptime_ms == 1200U);
+    assert(strcmp(readback.geometry_provenance.ranging_source, "workflow_ranging") == 0);
     assert(readback.pods[0].source_sample_uptime_ms == 1190U);
     assert(readback.pods[0].esp_receipt_uptime_ms == 1195U);
     assert(readback.pods[0].source_age_at_start_known);
@@ -451,6 +454,38 @@ static void test_v2_malformed_geometry_provenance_is_skipped(void)
 }
 
 
+static void test_v2_geometry_provenance_defaults_old_source(void)
+{
+    set_session_json(
+        "{\"schema_version\":2,\"geometry\":{\"provenance\":{"
+        "\"solver\":\"nrf_geometry_solver\",\"solver_version\":\"1\","
+        "\"refined\":true,\"refine_iterations\":1,\"topology_generation\":2,"
+        "\"cs_membership_generation\":3,\"main_height_reference_generation\":4,"
+        "\"setup_id\":\"5-2-3-4\",\"start_uptime_ms\":5},\"pods\":["
+        "{\"computed\":true,\"x_mm\":1,\"y_mm\":2,\"z_mm\":3,\"computed_at_ms\":5,"
+        "\"assigned\":true,\"node_id\":null,\"hardware_id\":null,\"position_source\":\"none\"}]}}"
+    );
+
+    seismic_recorder_session_participation_t participation;
+    assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &participation) == ESP_OK);
+    assert(participation.geometry_provenance.available);
+    assert(strcmp(participation.geometry_provenance.ranging_source, "start_cycle") == 0);
+
+    set_session_json(
+        "{\"schema_version\":2,\"geometry\":{\"provenance\":{"
+        "\"solver\":\"nrf_geometry_solver\",\"solver_version\":\"1\","
+        "\"refined\":true,\"refine_iterations\":1,\"topology_generation\":2,"
+        "\"cs_membership_generation\":3,\"main_height_reference_generation\":4,"
+        "\"setup_id\":\"5-2-3-4\",\"start_uptime_ms\":5,"
+        "\"ranging_source\":\"unexpected\"},\"pods\":["
+        "{\"computed\":true,\"x_mm\":1,\"y_mm\":2,\"z_mm\":3,\"computed_at_ms\":5,"
+        "\"assigned\":true,\"node_id\":null,\"hardware_id\":null,\"position_source\":\"none\"}]}}"
+    );
+    assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &participation) == ESP_OK);
+    assert(!participation.geometry_provenance.available);
+}
+
+
 static void test_unsupported_schema_versions_are_rejected(void)
 {
     static const char *schemas[] = { "0", "3", "\"2\"" };
@@ -571,6 +606,7 @@ int main(void)
     test_v1_participation_defaults();
     test_v2_malformed_pod_values_are_isolated();
     test_v2_malformed_geometry_provenance_is_skipped();
+    test_v2_geometry_provenance_defaults_old_source();
     test_unsupported_schema_versions_are_rejected();
     test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions();
     puts("seismic recorder session geometry tests passed");

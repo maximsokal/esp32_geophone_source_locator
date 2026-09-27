@@ -1,5 +1,6 @@
 #include "nrf_cs_scheduler.h"
 
+#include <limits.h>
 #include <string.h>
 
 static bool nrf_cs_policy_valid(const nrf_cs_policy_t *policy)
@@ -126,6 +127,12 @@ static void nrf_cs_add_pair(
 
     nrf_cs_pair_init(&scheduler->pairs[pair_index], left, right);
 
+    if (scheduler->policy.full_rotation) {
+        nrf_cs_add_execution(scheduler, (uint8_t)pair_index, left, right);
+        nrf_cs_add_execution(scheduler, (uint8_t)pair_index, right, left);
+        return;
+    }
+
     if (scheduler->node_count == 2U) {
         nrf_cs_add_execution(scheduler, (uint8_t)pair_index, left, right);
         nrf_cs_add_execution(scheduler, (uint8_t)pair_index, right, left);
@@ -195,14 +202,73 @@ static void nrf_cs_record_failure_quality(
     }
 }
 
+typedef struct {
+    size_t sample_count;
+    int32_t distance_mm;
+    uint16_t confidence;
+    int32_t spread_mm;
+    uint8_t rejected_samples;
+} nrf_cs_sample_summary_t;
+
+static bool nrf_cs_summarize_samples(
+    const int32_t *distances,
+    const uint16_t *confidences,
+    size_t count,
+    nrf_cs_sample_summary_t *summary)
+{
+    int32_t sorted[NRF_CS_MAX_SAMPLES_PER_PAIR];
+    int32_t deviations[NRF_CS_MAX_SAMPLES_PER_PAIR];
+    int32_t kept[NRF_CS_MAX_SAMPLES_PER_PAIR];
+    size_t kept_count = 0U;
+    uint32_t kept_confidence_sum = 0U;
+
+    if (distances == NULL || confidences == NULL || summary == NULL ||
+        count == 0U || count > NRF_CS_MAX_SAMPLES_PER_PAIR) {
+        return false;
+    }
+
+    memcpy(sorted, distances, count * sizeof(sorted[0]));
+    nrf_cs_sort_i32(sorted, count);
+    const int32_t median = nrf_cs_sorted_median(sorted, count);
+    for (size_t i = 0U; i < count; ++i) {
+        deviations[i] = nrf_cs_abs_i32(distances[i] - median);
+    }
+    nrf_cs_sort_i32(deviations, count);
+    const int32_t mad = nrf_cs_sorted_median(deviations, count);
+    const int32_t sigma = (int32_t)(((int64_t)mad * 14826 + 5000) / 10000);
+    int32_t band = 3 * sigma;
+    if (band < NRF_CS_MIN_OUTLIER_BAND_MM) {
+        band = NRF_CS_MIN_OUTLIER_BAND_MM;
+    }
+
+    for (size_t i = 0U; i < count; ++i) {
+        if (nrf_cs_abs_i32(distances[i] - median) <= band) {
+            kept[kept_count++] = distances[i];
+            kept_confidence_sum += confidences[i];
+        }
+    }
+    nrf_cs_sort_i32(kept, kept_count);
+
+    summary->sample_count = count;
+    summary->distance_mm = nrf_cs_sorted_median(kept, kept_count);
+    summary->confidence = (uint16_t)(kept_confidence_sum / kept_count);
+    summary->spread_mm = count > 1U ? sigma : 0;
+    summary->rejected_samples = (uint8_t)(count - kept_count);
+    return true;
+}
+
 static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_index)
 {
     nrf_cs_pair_result_t *pair = &scheduler->pairs[pair_index];
     bool any_failure = false;
     bool any_disconnect = false;
-    size_t i;
+    int32_t distances[NRF_CS_MAX_SAMPLES_PER_PAIR];
+    uint16_t confidences[NRF_CS_MAX_SAMPLES_PER_PAIR];
+    size_t sample_count = 0U;
+    nrf_cs_sample_summary_t directions[2];
+    size_t direction_count = 0U;
 
-    for (i = 0U; i < scheduler->execution_count; ++i) {
+    for (size_t i = 0U; i < scheduler->execution_count; ++i) {
         const nrf_cs_execution_t *execution = &scheduler->executions[i];
 
         if (execution->pair_index != pair_index) {
@@ -211,61 +277,104 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
         if (!execution->terminal) {
             return;
         }
+    }
+
+    pair->valid_samples = 0U;
+    pair->distance_mm = 0;
+    pair->confidence = 0U;
+    pair->spread_mm = 0;
+    pair->rejected_samples = 0U;
+    pair->single_direction = false;
+    pair->direction_disagreement_mm = 0;
+
+    for (size_t i = 0U; i < scheduler->execution_count; ++i) {
+        const nrf_cs_execution_t *execution = &scheduler->executions[i];
+        if (execution->pair_index != pair_index) {
+            continue;
+        }
         if (!execution->succeeded) {
             any_failure = true;
             if (execution->last_failure == NRF_CS_FAILURE_DISCONNECTED) {
                 any_disconnect = true;
             }
         }
+        for (size_t sample = 0U; sample < execution->successes; ++sample) {
+            distances[sample_count] = scheduler->sample_distance_mm[i][sample];
+            confidences[sample_count] = scheduler->sample_confidence[i][sample];
+            ++sample_count;
+        }
+        if (scheduler->policy.full_rotation && execution->successes > 0U) {
+            if (direction_count >= sizeof(directions) / sizeof(directions[0]) ||
+                !nrf_cs_summarize_samples(
+                    scheduler->sample_distance_mm[i],
+                    scheduler->sample_confidence[i],
+                    execution->successes,
+                    &directions[direction_count])) {
+                return;
+            }
+            ++direction_count;
+        }
     }
 
-    if (pair->valid_samples > 0U) {
-        const size_t count = pair->valid_samples;
-        int32_t sorted[NRF_CS_MAX_SAMPLES_PER_PAIR];
-        int32_t deviations[NRF_CS_MAX_SAMPLES_PER_PAIR];
-
+    if (scheduler->policy.full_rotation) {
+        if (direction_count > 0U) {
+            const nrf_cs_sample_summary_t *first = &directions[0];
+            pair->state = NRF_CS_PAIR_VALID;
+            pair->valid_samples = (uint8_t)sample_count;
+            pair->distance_mm = first->distance_mm;
+            pair->confidence = first->confidence;
+            pair->spread_mm = first->spread_mm;
+            pair->rejected_samples = first->rejected_samples;
+            if (direction_count == 2U) {
+                const nrf_cs_sample_summary_t *second = &directions[1];
+                const int64_t difference =
+                    (int64_t)first->distance_mm - (int64_t)second->distance_mm;
+                const int64_t disagreement = difference < 0 ? -difference : difference;
+                const int64_t spread =
+                    ((int64_t)first->spread_mm + second->spread_mm + 1) / 2 + disagreement;
+                pair->distance_mm = (int32_t)(
+                    ((int64_t)first->distance_mm + second->distance_mm) / 2);
+                pair->confidence = (uint16_t)(
+                    ((uint32_t)first->confidence + second->confidence) / 2U);
+                pair->spread_mm = spread > INT32_MAX ? INT32_MAX : (int32_t)spread;
+                pair->direction_disagreement_mm = disagreement > INT32_MAX
+                    ? INT32_MAX
+                    : (int32_t)disagreement;
+                pair->rejected_samples = (uint8_t)(
+                    first->rejected_samples + second->rejected_samples);
+            } else {
+                pair->single_direction = true;
+                pair->scheduler_quality_flags |= NRF_CS_QUALITY_PARTIAL;
+            }
+            if (any_failure) {
+                pair->scheduler_quality_flags |= NRF_CS_QUALITY_PARTIAL;
+            }
+            if (pair->rejected_samples > 0U) {
+                pair->scheduler_quality_flags |= NRF_CS_QUALITY_OUTLIER;
+            }
+            return;
+        }
+    } else if (sample_count > 0U) {
+        nrf_cs_sample_summary_t summary;
+        if (!nrf_cs_summarize_samples(distances, confidences, sample_count, &summary)) {
+            return;
+        }
         pair->state = NRF_CS_PAIR_VALID;
+        pair->valid_samples = (uint8_t)summary.sample_count;
+        pair->distance_mm = summary.distance_mm;
+        pair->confidence = summary.confidence;
+        pair->spread_mm = summary.spread_mm;
+        pair->rejected_samples = summary.rejected_samples;
         if (any_failure) {
             pair->scheduler_quality_flags |= NRF_CS_QUALITY_PARTIAL;
         }
-
-        /* MAX-206: median + MAD outlier rejection over every accepted
-         * sample, instead of trusting whichever single sample came first. */
-        memcpy(sorted, scheduler->sample_distance_mm[pair_index], count * sizeof(sorted[0]));
-        nrf_cs_sort_i32(sorted, count);
-        const int32_t median = nrf_cs_sorted_median(sorted, count);
-        for (i = 0U; i < count; ++i) {
-            deviations[i] = nrf_cs_abs_i32(scheduler->sample_distance_mm[pair_index][i] - median);
-        }
-        nrf_cs_sort_i32(deviations, count);
-        const int32_t mad = nrf_cs_sorted_median(deviations, count);
-        /* 1.4826 x MAD estimates sigma for Gaussian range noise. */
-        const int32_t sigma = (int32_t)(((int64_t)mad * 14826 + 5000) / 10000);
-        int32_t band = 3 * sigma;
-        if (band < NRF_CS_MIN_OUTLIER_BAND_MM) {
-            band = NRF_CS_MIN_OUTLIER_BAND_MM;
-        }
-
-        int32_t kept[NRF_CS_MAX_SAMPLES_PER_PAIR];
-        size_t kept_count = 0U;
-        uint32_t kept_confidence_sum = 0U;
-        for (i = 0U; i < count; ++i) {
-            const int32_t sample = scheduler->sample_distance_mm[pair_index][i];
-            if (nrf_cs_abs_i32(sample - median) <= band) {
-                kept[kept_count++] = sample;
-                kept_confidence_sum += scheduler->sample_confidence[pair_index][i];
-            }
-        }
-        nrf_cs_sort_i32(kept, kept_count);
-
-        pair->distance_mm = nrf_cs_sorted_median(kept, kept_count);
-        pair->confidence = (uint16_t)(kept_confidence_sum / kept_count);
-        pair->spread_mm = count > 1U ? sigma : 0;
-        pair->rejected_samples = (uint8_t)(count - kept_count);
         if (pair->rejected_samples > 0U) {
             pair->scheduler_quality_flags |= NRF_CS_QUALITY_OUTLIER;
         }
-    } else if (any_disconnect) {
+        return;
+    }
+
+    if (any_disconnect) {
         pair->state = NRF_CS_PAIR_MISSING;
     } else {
         pair->state = NRF_CS_PAIR_RETRY_EXHAUSTED;
@@ -434,13 +543,13 @@ nrf_cs_result_t nrf_cs_scheduler_complete_step(
                        measurement->confidence >= scheduler->policy.min_confidence;
     if (accepted_success) {
         execution->last_failure = NRF_CS_FAILURE_NONE;
+        if (execution->successes < NRF_CS_MAX_SAMPLES_PER_EXECUTION) {
+            scheduler->sample_distance_mm[scheduler->active_execution_index][execution->successes] = measurement->distance_mm;
+            scheduler->sample_confidence[scheduler->active_execution_index][execution->successes] = measurement->confidence;
+        }
         ++execution->successes;
         execution->succeeded = true;
-        if (pair->valid_samples < NRF_CS_MAX_SAMPLES_PER_PAIR) {
-            scheduler->sample_distance_mm[pair_index][pair->valid_samples] = measurement->distance_mm;
-            scheduler->sample_confidence[pair_index][pair->valid_samples] = measurement->confidence;
-            ++pair->valid_samples;
-        }
+        ++pair->valid_samples;
         if (execution->successes >= nrf_cs_samples_target(&scheduler->policy)) {
             execution->terminal = true;
         }
@@ -527,6 +636,36 @@ nrf_cs_result_t nrf_cs_scheduler_disconnect(
     return NRF_CS_OK;
 }
 
+nrf_cs_result_t nrf_cs_scheduler_abort_cycle(
+    nrf_cs_scheduler_t *scheduler,
+    nrf_cs_failure_reason_t reason)
+{
+    if (scheduler == NULL || !scheduler->cycle_started ||
+        reason < NRF_CS_FAILURE_TIMEOUT || reason > NRF_CS_FAILURE_DISCONNECTED) {
+        return NRF_CS_ERR_ARGUMENT;
+    }
+    if (scheduler->active) {
+        scheduler->active = false;
+        memset(&scheduler->active_step, 0, sizeof(scheduler->active_step));
+    }
+    for (size_t i = 0U; i < scheduler->execution_count; ++i) {
+        nrf_cs_execution_t *execution = &scheduler->executions[i];
+        if (execution->terminal) {
+            continue;
+        }
+        execution->terminal = true;
+        execution->succeeded = execution->successes > 0U;
+        execution->last_failure = reason;
+        nrf_cs_pair_result_t *pair = &scheduler->pairs[execution->pair_index];
+        pair->last_failure = reason;
+        nrf_cs_record_failure_quality(pair, reason);
+    }
+    for (size_t i = 0U; i < scheduler->pair_count; ++i) {
+        nrf_cs_finalize_pair(scheduler, i);
+    }
+    return NRF_CS_OK;
+}
+
 bool nrf_cs_scheduler_is_complete(const nrf_cs_scheduler_t *scheduler)
 {
     size_t i;
@@ -540,6 +679,25 @@ bool nrf_cs_scheduler_is_complete(const nrf_cs_scheduler_t *scheduler)
         }
     }
     return true;
+}
+
+size_t nrf_cs_scheduler_execution_count(const nrf_cs_scheduler_t *scheduler)
+{
+    return scheduler == NULL ? 0U : scheduler->execution_count;
+}
+
+size_t nrf_cs_scheduler_executions_done(const nrf_cs_scheduler_t *scheduler)
+{
+    size_t done = 0U;
+    if (scheduler == NULL) {
+        return 0U;
+    }
+    for (size_t i = 0U; i < scheduler->execution_count; ++i) {
+        if (scheduler->executions[i].terminal) {
+            ++done;
+        }
+    }
+    return done;
 }
 
 size_t nrf_cs_scheduler_pair_count(const nrf_cs_scheduler_t *scheduler)

@@ -10,6 +10,9 @@
 #include "web_status_policy.h"
 
 bool web_status_json_add_workflow(cJSON *root);
+#if defined(ESP_PLATFORM)
+bool web_status_json_add_ranging(cJSON *root);
+#endif
 
 void web_server_https_runtime_status(
     uint32_t *clients_out,
@@ -696,8 +699,13 @@ esp_err_t web_status_json_build_extended(
         web_status_json_add_recording_gate(root) &&
         web_status_json_add_measurement(root) &&
         web_status_json_add_workflow(root);
+#if defined(ESP_PLATFORM)
+    const bool ranging_ok = base_ok && web_status_json_add_ranging(root);
+#else
+    const bool ranging_ok = base_ok;
+#endif
 
-    if (!base_ok) {
+    if (!ranging_ok) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }

@@ -1,6 +1,7 @@
 import type { ScanDisplayOptions } from './scanDisplayModes';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import type { SensorPlacementMarker } from './sensorPlacementScene';
+import type { SourceHighlightScene } from './sourceHighlight';
 import type { I18nLocale } from '../i18n';
 import { formatDistance, formatNumber } from '../i18n/format';
 import { translate } from '../i18n';
@@ -143,7 +144,8 @@ export type ScanLayerDataType =
   | 'operator-edges'
   | 'operator-pins'
   | 'scan-bounds'
-  | 'sensor-markers';
+  | 'sensor-markers'
+  | 'source-highlight';
 
 export type ScanQualityBand = 'weak' | 'improving' | 'stable';
 
@@ -188,7 +190,15 @@ export interface SensorMarkerLayerSpec extends LayerBase {
   markers: ReadonlyArray<{ marker: SensorPlacementMarker; positionViewport: Vec3Tuple }>;
 }
 
-export type ScanLayerSpec = PointLayerSpec | MeshLayerSpec | LineLayerSpec | PinLayerSpec | SensorMarkerLayerSpec;
+export interface SourceHighlightLayerSpec extends LayerBase {
+  kind: 'source-highlights';
+  primaryVoxel: Vec3Tuple | null;
+  uncertaintyVoxels: ReadonlyArray<Vec3Tuple>;
+  voxelSizeMeters: number;
+  markers: ReadonlyArray<{ positionViewport: Vec3Tuple; primary: boolean; edge: boolean }>;
+}
+
+export type ScanLayerSpec = PointLayerSpec | MeshLayerSpec | LineLayerSpec | PinLayerSpec | SensorMarkerLayerSpec | SourceHighlightLayerSpec;
 
 export const SCAN_LAYER_COLORS = {
   unknownSpace: '#f59e0b',
@@ -239,6 +249,7 @@ export function scanLayerPlan(
   meshPositions: Float32Array,
   wireframe: boolean,
   sensorMarkers: readonly SensorPlacementMarker[] = [],
+  sourceHighlights: SourceHighlightScene | null = null,
 ): ScanLayerSpec[] {
   const voxelPointSize = clamp(prepared.extent * 0.010, 0.018, 0.055);
   const layers: ScanLayerSpec[] = [];
@@ -265,9 +276,38 @@ export function scanLayerPlan(
     positionViewport: toViewport(...marker.positionScanM, prepared.centerX, prepared.centerY, prepared.centerZ),
   }]);
   if (placedMarkers.length > 0) layers.push({ kind: 'sensor-markers', id: 'sensor-markers', dataType: 'sensor-markers', renderOrder: 60, markers: placedMarkers });
+  if (sourceHighlights !== null) {
+    const primaryVoxel = sourceHighlights.primary?.voxel === null || sourceHighlights.primary === null
+      ? null
+      : toViewport(...sourceHighlights.primary.voxel.center, prepared.centerX, prepared.centerY, prepared.centerZ);
+    const markers = [
+      ...(sourceHighlights.primary?.edgeMarker === null || sourceHighlights.primary?.edgeMarker === undefined ? [] : [{
+        positionViewport: toViewport(...sourceHighlights.primary.edgeMarker, prepared.centerX, prepared.centerY, prepared.centerZ),
+        primary: true,
+        edge: true,
+      }]),
+      ...sourceHighlights.secondary.map((source) => ({
+        positionViewport: toViewport(...(source.edgeMarker ?? source.positionProjectM), prepared.centerX, prepared.centerY, prepared.centerZ),
+        primary: false,
+        edge: source.edgeMarker !== null,
+      })),
+    ];
+    if (primaryVoxel !== null || sourceHighlights.uncertaintyVoxels.length > 0 || markers.length > 0) {
+      layers.push({
+        kind: 'source-highlights', id: 'source-highlight', dataType: 'source-highlight', renderOrder: 80,
+        primaryVoxel,
+        uncertaintyVoxels: sourceHighlights.uncertaintyVoxels.map((cell) =>
+          toViewport(...cell.center, prepared.centerX, prepared.centerY, prepared.centerZ)),
+        voxelSizeMeters: sourceHighlights.voxelSizeMeters,
+        markers,
+      });
+    }
+  }
   return layers.filter((layer) => layer.kind === 'pins'
     ? layer.pins.length > 0
-    : layer.kind === 'sensor-markers' ? layer.markers.length > 0 : layer.positions.length > 0);
+    : layer.kind === 'sensor-markers' ? layer.markers.length > 0
+      : layer.kind === 'source-highlights' ? layer.primaryVoxel !== null || layer.uncertaintyVoxels.length > 0 || layer.markers.length > 0
+        : layer.positions.length > 0);
 }
 
 /* ---- Camera --------------------------------------------------------------- */

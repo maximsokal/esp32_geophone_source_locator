@@ -41,6 +41,7 @@ idf_component_register(
         object_service
         measurement_service
         localization_calculate
+        localization_run_store
         runtime_observability
         ui_i18n
         scan_occupancy

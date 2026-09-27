@@ -124,6 +124,42 @@
       "include_dirs": ["nRF54L15/include", "components/nrf_cs_authority/include"]
     },
     {
+      "name": "nrf_topology_service_ranging_integration",
+      "sources": [
+        "components/nrf_topology_service/nrf_topology_service.c",
+        "components/nrf_topology_service/nrf_topology.c",
+        "components/nrf_topology_service/nrf_sensor_transport.c",
+        "components/nrf_topology_service/nrf_topology_leveling_policy.c",
+        "components/nrf_topology_service/nrf_topology_bus_recovery.c",
+        "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/i2c_line_recovery.c",
+        "components/tca9548a_mux/tca9548a_mux.c",
+        "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",
+        "components/nrf_cs_authority/nrf_cs_authority.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_bootstrap.c",
+        "nRF54L15/src/nrf_node_state.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_topology_service/tests/nrf_topology_service_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_topology_service",
+        "components/nrf_topology_service/include",
+        "components/nrf_topology_service",
+        "components/sensor_bus/include",
+        "components/tca9548a_mux/include",
+        "components/nrf_cs_authority/include",
+        "components/app_config/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ],
+      "defines": ["NRF_TOPOLOGY_SERVICE_TEST_HARNESS", "NRF_TOPOLOGY_SERVICE_TEST_RANGING"],
+      "libraries": ["m"]
+    },
+    {
       "name": "nrf_topology_leveling_policy",
       "sources": [
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",

@@ -16,6 +16,8 @@
 #endif
 
 #include "freertos/semphr.h"
+#include "device_status.h"
+#include "main_barometer.h"
 #include "measurement_service.h"
 #include "nrf_topology_service.h"
 #include "object_service.h"
@@ -41,7 +43,22 @@ static object_service_summary_t s_object;
 static esp_err_t s_object_result;
 static nrf_topology_snapshot_t s_topology;
 static esp_err_t s_topology_result;
+static nrf_remote_sensor_cache_t s_cache[NRF_TOPOLOGY_REMOTE_COUNT];
+static device_status_snapshot_t s_device;
+static uint16_t s_height_generation;
+static uint64_t s_now_ms;
 static bool s_placement_ready;
+static nrf_topology_ranging_progress_t s_ranging_progress;
+
+int64_t esp_timer_get_time(void)
+{
+    return (int64_t)(s_now_ms * UINT64_C(1000));
+}
+
+int32_t nrf_baro_pressure_to_altitude_mm(uint32_t pressure_pa)
+{
+    return (int32_t)(((INT64_C(101325) - pressure_pa) * INT64_C(1000)) / INT64_C(12));
+}
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
@@ -137,6 +154,89 @@ esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_request_height_reference_capture(
+    uint8_t *requested_channel_mask,
+    uint16_t *requested_generation)
+{
+    if (requested_channel_mask == NULL || requested_generation == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t mask = 0U;
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        if (s_topology.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            mask |= (uint8_t)(1U << i);
+        }
+    }
+    if (mask == 0U) return ESP_ERR_NOT_FOUND;
+    ++s_height_generation;
+    if (s_height_generation == 0U) ++s_height_generation;
+    *requested_channel_mask = mask;
+    *requested_generation = s_height_generation;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_request_imu_calibration(uint16_t generation, uint8_t channel_mask)
+{
+    return generation != 0U && channel_mask != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t nrf_topology_service_get_sensor_snapshot(
+    uint8_t channel,
+    nrf_remote_sensor_cache_t *snapshot)
+{
+    if (channel >= NRF_TOPOLOGY_REMOTE_COUNT || snapshot == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *snapshot = s_cache[channel];
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
+{
+    return policy != NULL ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
+{
+    (void)snapshot;
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    if (policy == NULL) return ESP_ERR_INVALID_ARG;
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    s_ranging_progress.active = true;
+    s_ranging_progress.started_at_ms = s_now_ms;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_get_progress(
+    nrf_topology_ranging_progress_t *progress)
+{
+    if (progress == NULL) return ESP_ERR_INVALID_ARG;
+    *progress = s_ranging_progress;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_invalidate_ranging(void)
+{
+    return ESP_OK;
+}
+
+esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
+{
+    return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    *snapshot = s_device;
+    return ESP_OK;
+}
+
 static bool placement_ready(void *context)
 {
     (void)context;
@@ -162,9 +262,15 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     memset(&s_topology, 0, sizeof(s_topology));
     for (size_t i = 0U; i < assigned && i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
         s_topology.remotes[i].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        s_topology.remotes[i].node_id = (uint8_t)(i + 1U);
     }
     s_topology_result = ESP_OK;
+    memset(s_cache, 0, sizeof(s_cache));
+    memset(&s_device, 0, sizeof(s_device));
+    s_height_generation = 0U;
+    s_now_ms = 1000U;
     s_placement_ready = false;
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     assert(workflow_service_init() == ESP_OK);
 }
 
@@ -186,6 +292,43 @@ static void enter_record_ready(void)
     assert(command(WORKFLOW_COMMAND_CALIBRATION_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_PLACE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     s_placement_ready = true;
+    for (unsigned sample = 0U; sample < 2U; ++sample) {
+        s_now_ms += 100U;
+        s_device.main.bmp280_valid = true;
+        s_device.main.pressure_pa = 101325U;
+        s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+        s_device.main.height_reference.generation = s_height_generation;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (s_topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            s_cache[channel].identity_valid = true;
+            s_cache[channel].topology_current = true;
+            s_cache[channel].response_valid = true;
+            s_cache[channel].identity.node_id = s_topology.remotes[channel].node_id;
+            s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+            s_cache[channel].sensor.valid_mask = NRF_UPSTREAM_SENSOR_VALID_ENV;
+            s_cache[channel].sensor.pressure_pa = 101325U;
+            s_cache[channel].sensor.orientation_state =
+                NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+            s_cache[channel].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+            s_cache[channel].sensor.reference_generation = s_height_generation;
+            s_cache[channel].sensor.relative_z_mm = (int32_t)(100U + channel * 100U);
+        }
+        assert(workflow_service_poll() == ESP_OK);
+    }
+    workflow_snapshot_t placement_snapshot;
+    assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
+    assert(!placement_snapshot.placement.all_stable);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    s_now_ms += 100U;
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (s_topology.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+        }
+    }
+    assert(workflow_service_poll() == ESP_OK);
+    assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
+    assert(placement_snapshot.placement.all_stable);
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_RANGING_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_OK);

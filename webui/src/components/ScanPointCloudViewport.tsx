@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-import type { LocalizationSessionGeometry } from '../api/deviceApi';
+import type { LocalizationRun, LocalizationSessionGeometry } from '../api/deviceApi';
 import { buildLocalizationOverlay } from '../domain/localizationOverlay';
 import type { SceneModel } from '../domain/scene';
 import { clientDiagnostics } from '../data/clientDiagnostics';
@@ -12,6 +12,7 @@ import { describeMeshQuality } from '../xr/meshQualityUi';
 import { useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber } from '../i18n/format';
 import type { SensorPlacementMarker, SensorPlacementNode } from '../xr/sensorPlacementScene';
+import { buildSourceHighlightScene, sourceVoxelGridForScan, type SourceHighlightScene } from '../xr/sourceHighlight';
 import {
   displayFingerprint,
   scanModeLabel,
@@ -29,6 +30,7 @@ import {
   toViewportPositions,
   type PreparedScanScene,
   type SensorMarkerLayerSpec,
+  type SourceHighlightLayerSpec,
   type ScanLayerSpec,
 } from '../xr/scanViewportScene';
 import { SparseTsdfMeshClient } from '../xr/sparseTsdfClient';
@@ -47,9 +49,13 @@ interface ScanPointCloudViewportProps {
   onSensorMarkerSelect?: (node: SensorPlacementNode) => void;
   sensorGeometry?: LocalizationSessionGeometry | null;
   registrationArtifact?: RegistrationArtifact | null;
+  objectId?: string | null;
+  sessionId?: string | null;
+  localizationRuns?: readonly LocalizationRun[];
 }
 
 const NO_SENSOR_MARKERS: SensorPlacementMarker[] = [];
+const NO_LOCALIZATION_RUNS: LocalizationRun[] = [];
 
 function nodeForId(nodeId: number | null | undefined): SensorPlacementNode | null {
   return Number.isInteger(nodeId) && nodeId! >= 0 && nodeId! <= 4
@@ -121,6 +127,31 @@ function SensorMarkerLayer({ layer, extent, selectedNode, onSelect }: {
   ))}</>;
 }
 
+function SourceHighlightLayer({ layer }: { layer: SourceHighlightLayerSpec }) {
+  const size = Math.max(0.025, layer.voxelSizeMeters);
+  const markerSize = Math.max(0.035, size * 0.42);
+  return <group>
+    {layer.uncertaintyVoxels.map((position, index) => <mesh key={`uncertainty-${index}`} position={position} renderOrder={79}>
+      <boxGeometry args={[size * 0.96, size * 0.96, size * 0.96]} />
+      <meshBasicMaterial color="#a78bfa" transparent opacity={0.22} depthTest={false} depthWrite={false} />
+    </mesh>)}
+    {layer.primaryVoxel !== null && <mesh position={layer.primaryVoxel} renderOrder={81}>
+      <boxGeometry args={[size * 0.98, size * 0.98, size * 0.98]} />
+      <meshBasicMaterial color="#f472b6" transparent opacity={0.78} depthTest={false} depthWrite={false} />
+    </mesh>}
+    {layer.markers.map(({ positionViewport, primary, edge }, index) => <group key={`source-${index}`} position={positionViewport} renderOrder={82}>
+      <mesh renderOrder={82}>
+        <sphereGeometry args={[markerSize * (primary ? 1.35 : 0.7), 12, 8]} />
+        <meshBasicMaterial color={edge ? '#facc15' : '#f8fafc'} depthTest={false} />
+      </mesh>
+      {edge && <mesh rotation={[Math.PI / 2, 0, 0]} renderOrder={83}>
+        <torusGeometry args={[markerSize * 2, markerSize * 0.18, 6, 16]} />
+        <meshBasicMaterial color="#facc15" depthTest={false} />
+      </mesh>}
+    </group>)}
+  </group>;
+}
+
 function SensorMarker({ marker, position, extent, selected, onSelect }: {
   marker: SensorPlacementMarker;
   position: readonly [number, number, number];
@@ -187,19 +218,21 @@ function LayerView({ layer, extent, selectedNode, onSensorSelect }: {
     case 'lines': return <LineLayer positions={layer.positions} color={layer.color} opacity={layer.opacity} renderOrder={layer.renderOrder} />;
     case 'pins': return <>{layer.pins.map((position, index) => <ManualPin key={index} id={index + 1} position={position} extent={extent} />)}</>;
     case 'sensor-markers': return <SensorMarkerLayer layer={layer} extent={extent} selectedNode={selectedNode} onSelect={onSensorSelect} />;
+    case 'source-highlights': return <SourceHighlightLayer layer={layer} />;
   }
 }
 
-function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarkers, selectedNode, onSensorSelect }: {
+function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights, selectedNode, onSensorSelect }: {
   prepared: PreparedScanScene;
   display: ScanDisplayOptions;
   meshPositions: Float32Array;
   wireframe: boolean;
   sensorMarkers: readonly SensorPlacementMarker[];
+  sourceHighlights: SourceHighlightScene;
   selectedNode: SensorPlacementNode | null;
   onSensorSelect: (node: SensorPlacementNode) => void;
 }) {
-  const layers = useMemo(() => scanLayerPlan(prepared, display, meshPositions, wireframe, sensorMarkers), [prepared, display, meshPositions, wireframe, sensorMarkers]);
+  const layers = useMemo(() => scanLayerPlan(prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights), [prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights]);
   return <><color attach="background" args={['#07101a']} />{layers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} selectedNode={selectedNode} onSensorSelect={onSensorSelect} />)}</>;
 }
 
@@ -213,10 +246,18 @@ export function ScanPointCloudViewport({
   onSensorMarkerSelect,
   sensorGeometry = null,
   registrationArtifact = null,
+  objectId = null,
+  sessionId = null,
+  localizationRuns = NO_LOCALIZATION_RUNS,
 }: ScanPointCloudViewportProps) {
   const { locale } = useLocale();
   const t = useT();
   const prepared = useMemo(() => prepareScanScene(snapshot), [snapshot]);
+  const sourceGrid = useMemo(() => sourceVoxelGridForScan(snapshot), [snapshot]);
+  const sourceHighlights = useMemo(() => objectId === null || sessionId === null
+    ? { reason: null, primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0 } as SourceHighlightScene
+    : buildSourceHighlightScene(localizationRuns, { objectId, sessionId }, registrationArtifact, sourceGrid),
+  [localizationRuns, objectId, registrationArtifact, sessionId, sourceGrid]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
   const [tsdfError, setTsdfError] = useState<string | null>(null);
@@ -338,8 +379,8 @@ export function ScanPointCloudViewport({
         ? t('scan.badge.mesh_building')
         : t('scan.surfel_count', { label: meshQuality.label, count: formatNumber(locale, snapshot.tsdfPointCount) });
 
-  return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+  return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
     <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
     {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}

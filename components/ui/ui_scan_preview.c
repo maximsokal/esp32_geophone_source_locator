@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "localization_calculate_policy.h"
+#include "localization_run_store.h"
 #include "scan_preview_state.h"
 #include "seismic_recorder.h"
 #include "storage_bulk_admission.h"
@@ -47,6 +48,8 @@ typedef struct
     object_store_geometry_t geometry;
     uint64_t geometry_computed_at_ms;
     uint32_t *draw_order;
+    ui_preview3d_source_t sources[UI_PREVIEW3D_MAX_SOURCES];
+    size_t source_count;
     char fallback_reason[40];
 } preview_result_t;
 
@@ -70,6 +73,13 @@ typedef struct
     object_store_geometry_t *geometry;
 } geometry_read_t;
 
+typedef struct
+{
+    const preview_request_t *request;
+    localization_run_record_t *records;
+    size_t record_count;
+} source_runs_read_t;
+
 static scan_preview_state_t s_state;
 static bool s_state_initialized;
 static atomic_uint s_active_generation;
@@ -89,6 +99,8 @@ static char s_target_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 static char s_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 static object_store_geometry_t s_geometry;
 static uint64_t s_geometry_computed_at_ms;
+static ui_preview3d_source_t s_sources[UI_PREVIEW3D_MAX_SOURCES];
+static size_t s_source_count;
 
 static bool request_is_current(const preview_request_t *request)
 {
@@ -159,6 +171,53 @@ static esp_err_t session_geometry_callback(void *context)
         read->request->session_id,
         read->geometry
     );
+}
+
+static esp_err_t source_runs_callback(void *context)
+{
+    source_runs_read_t *read = context;
+    if (!request_is_current(read->request)) return ESP_ERR_INVALID_STATE;
+    return localization_run_store_list(
+        read->request->object_id,
+        read->request->session_id,
+        read->records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION,
+        &read->record_count
+    );
+}
+
+static void load_sources(const preview_request_t *request, preview_result_t *result)
+{
+    const size_t capacity = LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION;
+    localization_run_record_t *records = heap_caps_malloc(capacity * sizeof(*records), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (records == NULL) return;
+    source_runs_read_t read = {.request = request, .records = records, .record_count = 0U};
+    const esp_err_t err = storage_chunk(request, source_runs_callback, &read);
+    if (err == ESP_OK && read.record_count > 0U) {
+        ui_preview3d_source_candidate_t *candidates = heap_caps_calloc(
+            read.record_count, sizeof(*candidates), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (candidates != NULL) {
+            for (size_t i = 0U; i < read.record_count; ++i) {
+                const localization_run_record_t *run = &records[i];
+                candidates[i] = (ui_preview3d_source_candidate_t){
+                    .method_name = run->method_name,
+                    .computed_at_ms = run->computed_at_ms,
+                    .confidence_score = run->confidence_score,
+                    .position = { (float)run->source_position.x_m, (float)run->source_position.y_m, (float)run->source_position.z_m },
+                    .horizontal_std_x_m = run->uncertainty.std_m.x_m,
+                    .horizontal_std_y_m = run->uncertainty.std_m.y_m,
+                    .joint_fusion = run->kind == LOCALIZATION_RUN_KIND_JOINT_FUSION,
+                    .solved = run->solved,
+                    .uncertainty_too_high = run->uncertainty_too_high,
+                    .uncertainty_valid = run->uncertainty.credible_level > 0.0,
+                };
+            }
+            result->source_count = ui_preview3d_select_sources(
+                candidates, read.record_count, result->sources, UI_PREVIEW3D_MAX_SOURCES);
+            heap_caps_free(candidates);
+        }
+    }
+    heap_caps_free(records);
 }
 
 static esp_err_t read_file_size(const preview_request_t *request, const char *name, size_t maximum, size_t *size_out)
@@ -271,6 +330,8 @@ static void load_session(const preview_request_t *request, preview_result_t *res
         set_reason(result, "recording active");
         return;
     }
+
+    load_sources(request, result);
 
     geometry_read_t geometry_read = {.request = request, .geometry = &result->geometry};
     if (storage_chunk(request, session_geometry_callback, &geometry_read) == ESP_OK) {
@@ -428,6 +489,8 @@ static void render_ready_locked(void)
     } else if (s_state.has_occupancy) {
         ui_preview3d_scene_set_occupancy(&scene, &s_state.occupancy, s_geometry_computed_at_ms);
     }
+    memcpy(scene.sources, s_sources, s_source_count * sizeof(*s_sources));
+    scene.source_count = s_source_count;
     add_geometry_overlay(&scene);
     ui_preview3d_stats_t stats;
     const int64_t render_started = esp_timer_get_time();
@@ -439,12 +502,14 @@ static void render_ready_locked(void)
     uint64_t flush_us = 0U;
     refresh_now(&flush_us);
     ESP_LOGI(TAG,
-             "PREVIEW_RENDER session=%s voxel_count=%u render_us=%" PRIu64 " flush_us=%" PRIu64 " fallback_reason=%s",
+             "PREVIEW_RENDER session=%s voxel_count=%u render_us=%" PRIu64 " flush_us=%" PRIu64 " fallback_reason=%s source_reason=%s",
              s_session_id,
              s_state.has_preview ? s_state.preview.voxel_count : (uint32_t)s_state.occupancy.occupied_count,
              render_us,
              flush_us,
-             s_state.fallback_reason[0] != '\0' ? s_state.fallback_reason : "none");
+             s_state.fallback_reason[0] != '\0' ? s_state.fallback_reason : "none",
+             stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_UNREGISTERED ? "unregistered" :
+                 stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID ? "outside_grid" : "none");
     (void)stats;
     scan_preview_state_render_end(&s_state, generation);
     taskYIELD();
@@ -488,6 +553,8 @@ static void accept_result_locked(const preview_request_t *request, preview_resul
     }
     s_draw_order = result->draw_order;
     result->draw_order = NULL;
+    s_source_count = result->source_count;
+    memcpy(s_sources, result->sources, s_source_count * sizeof(*s_sources));
     render_current_locked();
 }
 
@@ -538,6 +605,7 @@ static void setup_palette(lv_obj_t *canvas)
         UI_COLOR_BACKGROUND, UI_COLOR_TEXT, UI_COLOR_MUTED, UI_COLOR_GOOD,
         UI_COLOR_ACCENT, UI_COLOR_WARNING, UI_COLOR_ERROR,
         0xE6EEF8, 0x69B9D0, 0x4081A5,
+        0xF472B6, 0xA78BFA, 0xFACC15,
     };
     for (uint8_t i = 0U; i < UI_PREVIEW3D_PX_COUNT; ++i) {
         lv_canvas_set_palette(canvas, i, lv_color_to_32(lv_color_hex(colors[i]), LV_OPA_COVER));
@@ -562,6 +630,7 @@ void ui_scan_preview_screen_open_locked(void)
     const uint32_t generation = scan_preview_state_open(&s_state);
     atomic_store_explicit(&s_active_generation, generation, memory_order_release);
     s_session_id[0] = '\0';
+    s_source_count = 0U;
     (void)strncpy(s_session_id, s_target_session_id, sizeof(s_session_id) - 1U);
     ui_preview3d_view_preset(&s_view, UI_PREVIEW3D_PRESET_ISO);
 
@@ -623,6 +692,7 @@ void ui_scan_preview_screen_open_locked(void)
 void ui_scan_preview_close_locked(void)
 {
     if (!s_state_initialized) return;
+    s_source_count = 0U;
     scan_preview_state_close(&s_state);
     atomic_store_explicit(&s_active_generation, s_state.generation, memory_order_release);
 }

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,10 +12,66 @@
 #define GUARD 16
 #define CANARY 0xA5
 #define VOXEL_TEST_BUDGET 3000U
+#define SOURCE_VECTORS_PATH "../../../tests/fixtures/source_highlight_vectors.json"
+#define SOURCE_VECTOR_ROWS 16U
+#define SOURCE_MAPPING_COLUMNS 11U
+#define SOURCE_UNCERTAINTY_COLUMNS 22U
 
 static uint8_t s_frame[GUARD + 320 * 240 + GUARD];
 static ui_preview3d_scene_t s_scene;
 static uint32_t s_voxel_order[VOXEL_TEST_BUDGET];
+
+static char *read_source_vectors(void)
+{
+    FILE *file = fopen(SOURCE_VECTORS_PATH, "rb");
+    assert(file != NULL);
+    assert(fseek(file, 0L, SEEK_END) == 0);
+    const long length = ftell(file);
+    assert(length >= 0L);
+    assert(fseek(file, 0L, SEEK_SET) == 0);
+    char *text = malloc((size_t)length + 1U);
+    assert(text != NULL);
+    assert(fread(text, 1U, (size_t)length, file) == (size_t)length);
+    text[length] = '\0';
+    assert(fclose(file) == 0);
+    return text;
+}
+
+static size_t read_source_vector_rows(
+    const char *fixture,
+    const char *section,
+    size_t columns,
+    double rows[SOURCE_VECTOR_ROWS][SOURCE_UNCERTAINTY_COLUMNS])
+{
+    const char *cursor = strstr(fixture, section);
+    assert(cursor != NULL);
+    cursor = strchr(cursor, '[');
+    assert(cursor != NULL);
+    ++cursor;
+    size_t count = 0U;
+    for (;;) {
+        while (isspace((unsigned char)*cursor) || *cursor == ',') ++cursor;
+        if (*cursor == ']') break;
+        assert(*cursor == '[' && count < SOURCE_VECTOR_ROWS);
+        ++cursor;
+        for (size_t column = 0U; column < columns; ++column) {
+            while (isspace((unsigned char)*cursor)) ++cursor;
+            char *end = NULL;
+            rows[count][column] = strtod(cursor, &end);
+            assert(end != cursor);
+            cursor = end;
+            while (isspace((unsigned char)*cursor)) ++cursor;
+            if (column + 1U < columns) {
+                assert(*cursor == ',');
+                ++cursor;
+            }
+        }
+        assert(*cursor == ']');
+        ++cursor;
+        ++count;
+    }
+    return count;
+}
 
 static uint8_t *frame_pixels(void)
 {
@@ -175,7 +232,7 @@ static void test_golden_top_view(void)
     const int w = 32, h = 16;
     ui_preview3d_view_t v;
     ui_preview3d_stats_t stats;
-    static const char glyph[UI_PREVIEW3D_PX_COUNT] = {'.', ':', '-', 'o', 'M', 's', 'S', 'T', 'B', 'F'};
+    static const char glyph[UI_PREVIEW3D_PX_COUNT] = {'.', ':', '-', 'o', 'M', 's', 'S', 'T', 'B', 'F', 'H', 'U', 'X'};
 
     layout_scene();
     ui_preview3d_view_preset(&v, UI_PREVIEW3D_PRESET_TOP);
@@ -214,7 +271,10 @@ static void test_frames_are_not_mixed_without_registration(void)
     frame_reset();
     ui_preview3d_render(&s_scene, &v, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), w, h, &stats);
     assert(stats.drew_scan && !stats.drew_sensors && stats.overlay_suppressed_unregistered);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_UNREGISTERED);
     assert(count_colour(w, h, UI_PREVIEW3D_PX_MAIN) == 0 && count_colour(w, h, UI_PREVIEW3D_PX_SCAN) == 2);
+    assert(count_colour(w, h, UI_PREVIEW3D_PX_SOURCE) == 0 &&
+           count_colour(w, h, UI_PREVIEW3D_PX_SOURCE_SELECTED) == 0);
 
     ui_preview3d_render(&s_scene, &v, UI_PREVIEW3D_LAYER_SENSORS, frame_pixels(), w, h, &stats);
     assert(!stats.drew_scan && stats.drew_sensors && !stats.overlay_suppressed_unregistered);
@@ -483,6 +543,164 @@ static void test_voxel_viewport_clipping_far_depth_and_budget(void)
     frame_assert_guards(320, 240);
 }
 
+static void test_localization_source_selection(void)
+{
+    ui_preview3d_source_t selected[UI_PREVIEW3D_MAX_SOURCES];
+    ui_preview3d_source_candidate_t candidates[] = {
+        {.method_name = "gauss_newton_tdoa", .computed_at_ms = 10U, .confidence_score = 0.95,
+         .position = {1.0f, 0.0f, 0.0f}, .solved = true},
+        {.method_name = "joint_fusion", .computed_at_ms = 11U, .confidence_score = 0.40,
+         .position = {2.0f, 0.0f, 0.0f}, .joint_fusion = true, .solved = true},
+    };
+    size_t count = ui_preview3d_select_sources(candidates, 2U, selected, UI_PREVIEW3D_MAX_SOURCES);
+    assert(count == 2U && selected[0].selected && selected[0].position.x == 2.0f);
+    assert(!selected[1].selected && selected[1].position.x == 1.0f);
+
+    candidates[1].uncertainty_too_high = true;
+    candidates[1].confidence_score = 1.0;
+    count = ui_preview3d_select_sources(candidates, 2U, selected, UI_PREVIEW3D_MAX_SOURCES);
+    assert(count == 2U && selected[0].selected && selected[0].position.x == 1.0f);
+    assert(!selected[1].selected && selected[1].position.x == 2.0f);
+
+    candidates[0].computed_at_ms = 12U;
+    candidates[1].solved = false;
+    count = ui_preview3d_select_sources(candidates, 2U, selected, UI_PREVIEW3D_MAX_SOURCES);
+    assert(count == 1U && selected[0].selected && selected[0].position.x == 1.0f);
+
+    candidates[0].solved = false;
+    count = ui_preview3d_select_sources(candidates, 2U, selected, UI_PREVIEW3D_MAX_SOURCES);
+    assert(count == 0U);
+
+    /* A newer unsolved run supersedes that method's older solved result. */
+    candidates[0].solved = true;
+    candidates[0].confidence_score = 0.99;
+    candidates[1] = (ui_preview3d_source_candidate_t){
+        .method_name = "gauss_newton_tdoa", .computed_at_ms = 13U, .confidence_score = 0.0,
+        .position = {3.0f, 0.0f, 0.0f}, .solved = false,
+    };
+    count = ui_preview3d_select_sources(candidates, 2U, selected, UI_PREVIEW3D_MAX_SOURCES);
+    assert(count == 0U);
+}
+
+static void test_source_to_voxel_mapping(void)
+{
+    const ui_preview3d_voxel_grid_t grid = {
+        .origin = {0.0f, 0.0f, 0.0f},
+        .dimensions = {2U, 2U, 2U},
+        .voxel_size_m = 1.0f,
+    };
+    uint32_t index = UINT32_MAX;
+    assert(ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.5f, 0.5f, 0.5f}, &index));
+    assert(index == 0U);
+    assert(ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.0f, 0.0f, 0.0f}, &index));
+    assert(index == 0U);
+    assert(ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){1.0f, 0.5f, 0.5f}, &index));
+    assert(index == 1U);
+    assert(!ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){2.0f, 0.5f, 0.5f}, &index));
+    assert(!ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){-0.001f, 0.5f, 0.5f}, &index));
+    assert(!ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){NAN, 0.5f, 0.5f}, &index));
+}
+
+static void test_shared_source_mapping_vectors(void)
+{
+    char *fixture = read_source_vectors();
+    double rows[SOURCE_VECTOR_ROWS][SOURCE_UNCERTAINTY_COLUMNS] = {{0}};
+    const size_t count = read_source_vector_rows(fixture, "\"mapping\"", SOURCE_MAPPING_COLUMNS, rows);
+    assert(count == 5U);
+    for (size_t i = 0U; i < count; ++i) {
+        const ui_preview3d_voxel_grid_t grid = {
+            .origin = {(float)rows[i][0], (float)rows[i][1], (float)rows[i][2]},
+            .dimensions = {(uint16_t)rows[i][3], (uint16_t)rows[i][4], (uint16_t)rows[i][5]},
+            .voxel_size_m = (float)rows[i][6],
+        };
+        const ui_preview3d_vec3_t position = {(float)rows[i][7], (float)rows[i][8], (float)rows[i][9]};
+        uint32_t actual = UINT32_MAX;
+        const bool mapped = ui_preview3d_source_to_voxel_index(&grid, &position, &actual);
+        if (rows[i][10] < 0.0) assert(!mapped);
+        else assert(mapped && actual == (uint32_t)rows[i][10]);
+    }
+    free(fixture);
+}
+
+static void test_shared_source_uncertainty_vectors(void)
+{
+    char *fixture = read_source_vectors();
+    double rows[SOURCE_VECTOR_ROWS][SOURCE_UNCERTAINTY_COLUMNS] = {{0}};
+    const size_t count = read_source_vector_rows(
+        fixture, "\"uncertainty\"", SOURCE_UNCERTAINTY_COLUMNS, rows);
+    assert(count == 4U);
+    for (size_t row = 0U; row < count; ++row) {
+        const ui_preview3d_voxel_grid_t grid = {
+            .origin = {(float)rows[row][0], (float)rows[row][1], (float)rows[row][2]},
+            .dimensions = {(uint16_t)rows[row][3], (uint16_t)rows[row][4], (uint16_t)rows[row][5]},
+            .voxel_size_m = (float)rows[row][6],
+        };
+        const ui_preview3d_vec3_t position = {
+            (float)rows[row][7], (float)rows[row][8], (float)rows[row][9],
+        };
+        const size_t capacity = (size_t)rows[row][13];
+        uint32_t actual[SOURCE_UNCERTAINTY_COLUMNS] = {0U};
+        const size_t actual_count = ui_preview3d_source_uncertainty_voxels(
+            &grid, &position, (float)rows[row][10], (float)rows[row][11], rows[row][12] != 0.0,
+            actual, capacity);
+        size_t expected_count = 0U;
+        for (size_t column = 14U; column < SOURCE_UNCERTAINTY_COLUMNS && rows[row][column] >= 0.0; ++column) {
+            assert(expected_count < SOURCE_UNCERTAINTY_COLUMNS);
+            assert(actual_count > expected_count && actual[expected_count] == (uint32_t)rows[row][column]);
+            ++expected_count;
+        }
+        assert(actual_count == expected_count);
+    }
+    free(fixture);
+}
+
+static void test_primary_source_highlights_voxel_faces(void)
+{
+    static uint32_t indices[] = {0U};
+    static uint8_t masks[] = {0x3fU};
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+    set_voxel_scene(&s_scene, indices, masks, 1U, 2U, 1U, 1U,
+                    (ui_preview3d_vec3_t){-0.5f, -0.5f, -0.5f}, 1.0f);
+    s_scene.registered = true;
+    s_scene.sensor_to_scan[0] = s_scene.sensor_to_scan[5] =
+        s_scene.sensor_to_scan[10] = s_scene.sensor_to_scan[15] = 1.0;
+    s_scene.sources[0] = (ui_preview3d_source_t){.position = {1.0f, 0.0f, 0.0f}, .selected = true};
+    s_scene.source_count = 1U;
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE);
+    /* Source cell 1 is absent from the scan's sparse surface list and must
+     * still render as a synthetic highlight voxel. */
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT) > 0U);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_TOP) > 0U);
+
+    s_scene.sources[0].position.x = 3.0f;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_SOURCE_OUTSIDE_GRID) > 0U);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT) == 0U);
+
+    static uint32_t neighborhood_indices[] = {4U};
+    static uint8_t neighborhood_masks[] = {0x3fU};
+    set_voxel_scene(&s_scene, neighborhood_indices, neighborhood_masks, 1U, 3U, 3U, 1U,
+                    (ui_preview3d_vec3_t){-1.5f, -1.5f, -0.5f}, 1.0f);
+    s_scene.registered = true;
+    s_scene.sensor_to_scan[0] = s_scene.sensor_to_scan[5] =
+        s_scene.sensor_to_scan[10] = s_scene.sensor_to_scan[15] = 1.0;
+    s_scene.sources[0] = (ui_preview3d_source_t){
+        .position = {0.0f, 0.0f, 0.0f}, .selected = true,
+        .horizontal_std_x_m = 1.0f, .horizontal_std_y_m = 1.0f, .uncertainty_valid = true,
+    };
+    s_scene.source_count = 1U;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT) > 0U);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY) > 0U);
+}
+
 int main(void)
 {
     test_presets_and_keys();
@@ -495,6 +713,11 @@ int main(void)
     test_voxel_cube_faces_and_projected_corners();
     test_voxel_depth_order_and_registration_binding();
     test_voxel_viewport_clipping_far_depth_and_budget();
+    test_localization_source_selection();
+    test_source_to_voxel_mapping();
+    test_shared_source_mapping_vectors();
+    test_shared_source_uncertainty_vectors();
+    test_primary_source_highlights_voxel_faces();
     puts("ui_preview3d tests passed");
     return 0;
 }

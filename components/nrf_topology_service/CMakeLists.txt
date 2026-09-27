@@ -11,6 +11,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        device_status
         esp_hw_support
         esp_timer
         freertos
@@ -18,6 +19,7 @@ idf_component_register(
         log
         nrf_cs_authority
         nrf_cs_shared
+        nrf_geometry_solver
         nrf_upstream_protocol
         sensor_bus
         tca9548a_mux

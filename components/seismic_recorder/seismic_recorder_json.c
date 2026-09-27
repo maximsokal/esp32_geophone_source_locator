@@ -265,10 +265,17 @@ static bool seismic_recorder_json_add_geometry(
     const seismic_recorder_geometry_provenance_t *solver =
         &participation->geometry_provenance;
     if (solver->available) {
+        const char *ranging_source = solver->ranging_source[0] == '\0'
+            ? "start_cycle"
+            : solver->ranging_source;
         if (
             strnlen(solver->solver, sizeof(solver->solver)) >= sizeof(solver->solver) ||
             strnlen(solver->solver_version, sizeof(solver->solver_version)) >= sizeof(solver->solver_version) ||
             strnlen(solver->setup_id, sizeof(solver->setup_id)) >= sizeof(solver->setup_id) ||
+            strnlen(ranging_source, SEISMIC_RECORDER_RANGING_SOURCE_SIZE) >=
+                SEISMIC_RECORDER_RANGING_SOURCE_SIZE ||
+            (strcmp(ranging_source, "workflow_ranging") != 0 &&
+             strcmp(ranging_source, "start_cycle") != 0) ||
             strcmp(solver->solver, "nrf_geometry_solver") != 0 ||
             solver->solver_version[0] == '\0' ||
             solver->setup_id[0] == '\0'
@@ -290,7 +297,8 @@ static bool seismic_recorder_json_add_geometry(
                 solver->main_height_reference_generation
             ) == NULL ||
             cJSON_AddStringToObject(provenance, "setup_id", solver->setup_id) == NULL ||
-            cJSON_AddNumberToObject(provenance, "start_uptime_ms", (double)solver->start_uptime_ms) == NULL
+            cJSON_AddNumberToObject(provenance, "start_uptime_ms", (double)solver->start_uptime_ms) == NULL ||
+            cJSON_AddStringToObject(provenance, "ranging_source", ranging_source) == NULL
         ) {
             return false;
         }
@@ -1076,6 +1084,7 @@ static bool seismic_recorder_json_parse_geometry_provenance(
     const cJSON *solver_version = cJSON_GetObjectItemCaseSensitive(object, "solver_version");
     const cJSON *refined = cJSON_GetObjectItemCaseSensitive(object, "refined");
     const cJSON *setup_id = cJSON_GetObjectItemCaseSensitive(object, "setup_id");
+    const cJSON *ranging_source = cJSON_GetObjectItemCaseSensitive(object, "ranging_source");
     uint16_t refine_iterations = 0U;
     uint32_t topology_generation = 0U;
     uint32_t cs_membership_generation = 0U;
@@ -1114,6 +1123,14 @@ static bool seismic_recorder_json_parse_geometry_provenance(
             SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE ||
         !seismic_recorder_json_uint64(object, "start_uptime_ms", &start_uptime_ms)
     ) {
+        return false;
+    }
+    if (ranging_source != NULL &&
+        (!cJSON_IsString(ranging_source) || ranging_source->valuestring == NULL ||
+         strnlen(ranging_source->valuestring, SEISMIC_RECORDER_RANGING_SOURCE_SIZE) >=
+             SEISMIC_RECORDER_RANGING_SOURCE_SIZE ||
+         (strcmp(ranging_source->valuestring, "workflow_ranging") != 0 &&
+          strcmp(ranging_source->valuestring, "start_cycle") != 0))) {
         return false;
     }
 
@@ -1162,6 +1179,12 @@ static bool seismic_recorder_json_parse_geometry_provenance(
     provenance->main_height_reference_generation = main_height_reference_generation;
     snprintf(provenance->setup_id, sizeof(provenance->setup_id), "%s", setup_id->valuestring);
     provenance->start_uptime_ms = start_uptime_ms;
+    snprintf(
+        provenance->ranging_source,
+        sizeof(provenance->ranging_source),
+        "%s",
+        ranging_source == NULL ? "start_cycle" : ranging_source->valuestring
+    );
     return true;
 }
 

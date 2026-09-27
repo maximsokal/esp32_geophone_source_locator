@@ -177,6 +177,7 @@ typedef enum
 #define SEISMIC_RECORDER_SOLVER_NAME_SIZE 32U
 #define SEISMIC_RECORDER_SOLVER_VERSION_SIZE 8U
 #define SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE 64U
+#define SEISMIC_RECORDER_RANGING_SOURCE_SIZE 24U
 
 typedef struct
 {
@@ -198,6 +199,7 @@ typedef struct
     uint16_t main_height_reference_generation;
     char setup_id[SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE];
     uint64_t start_uptime_ms;
+    char ranging_source[SEISMIC_RECORDER_RANGING_SOURCE_SIZE];
 } seismic_recorder_geometry_provenance_t;
 
 

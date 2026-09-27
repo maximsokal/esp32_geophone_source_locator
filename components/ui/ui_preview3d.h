@@ -22,7 +22,9 @@
 
 #define UI_PREVIEW3D_MAX_POINTS 1500U
 #define UI_PREVIEW3D_MAX_SENSORS 5U
-#define UI_PREVIEW3D_MAX_SOURCES 4U
+/* One source per comparison method plus joint fusion. */
+#define UI_PREVIEW3D_MAX_SOURCES 17U
+#define UI_PREVIEW3D_SOURCE_UNCERTAINTY_VOXEL_CAP 64U
 
 typedef enum
 {
@@ -36,6 +38,9 @@ typedef enum
     UI_PREVIEW3D_PX_VOXEL_TOP,
     UI_PREVIEW3D_PX_VOXEL_SIDE,
     UI_PREVIEW3D_PX_VOXEL_FRONT,
+    UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT,
+    UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY,
+    UI_PREVIEW3D_PX_SOURCE_OUTSIDE_GRID,
     UI_PREVIEW3D_PX_COUNT
 } ui_preview3d_pixel_t;
 
@@ -74,10 +79,34 @@ typedef struct
 
 typedef struct
 {
+    ui_preview3d_vec3_t origin;
+    uint16_t dimensions[3];
+    float voxel_size_m;
+} ui_preview3d_voxel_grid_t;
+
+typedef struct
+{
     ui_preview3d_vec3_t position;
     float radius_m;
     bool selected;
+    float horizontal_std_x_m;
+    float horizontal_std_y_m;
+    bool uncertainty_valid;
 } ui_preview3d_source_t;
+
+typedef struct
+{
+    const char *method_name;
+    uint64_t computed_at_ms;
+    double confidence_score;
+    ui_preview3d_vec3_t position;
+    double horizontal_std_x_m;
+    double horizontal_std_y_m;
+    bool joint_fusion;
+    bool solved;
+    bool uncertainty_too_high;
+    bool uncertainty_valid;
+} ui_preview3d_source_candidate_t;
 
 typedef enum
 {
@@ -85,6 +114,13 @@ typedef enum
     UI_PREVIEW3D_LAYER_SCAN,
     UI_PREVIEW3D_LAYER_SENSORS,
 } ui_preview3d_layer_t;
+
+typedef enum
+{
+    UI_PREVIEW3D_SOURCE_REASON_NONE = 0,
+    UI_PREVIEW3D_SOURCE_REASON_UNREGISTERED,
+    UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID,
+} ui_preview3d_source_reason_t;
 
 typedef struct
 {
@@ -119,6 +155,7 @@ typedef struct
     bool drew_sensors;
     /* Scan and sensors both present but no registration: not overlaid. */
     bool overlay_suppressed_unregistered;
+    ui_preview3d_source_reason_t source_reason;
     bool empty;
     uint32_t points_drawn;
     uint32_t voxels_drawn;
@@ -128,6 +165,32 @@ typedef struct
 } ui_preview3d_stats_t;
 
 void ui_preview3d_view_preset(ui_preview3d_view_t *view, ui_preview3d_preset_t preset);
+
+/* Selects the latest run per method, then returns primary followed by the
+ * highest-confidence solved alternatives. Joint fusion is primary only when
+ * solved and below the uncertainty threshold. */
+size_t ui_preview3d_select_sources(
+    const ui_preview3d_source_candidate_t *candidates,
+    size_t candidate_count,
+    ui_preview3d_source_t *sources,
+    size_t source_capacity);
+
+/* Maps the half-open grid volume to its row-major voxel index. */
+bool ui_preview3d_source_to_voxel_index(
+    const ui_preview3d_voxel_grid_t *grid,
+    const ui_preview3d_vec3_t *position,
+    uint32_t *index_out);
+
+/* Returns up to capacity voxel indices in source-centered rings in the source's
+ * Z layer. A zero or unavailable horizontal sigma falls back to the source voxel. */
+size_t ui_preview3d_source_uncertainty_voxels(
+    const ui_preview3d_voxel_grid_t *grid,
+    const ui_preview3d_vec3_t *position,
+    float sigma_x_m,
+    float sigma_y_m,
+    bool uncertainty_valid,
+    uint32_t *indices,
+    size_t capacity);
 
 /* RIGHT adds 15 deg of yaw (wrapped to [0, 360)); UP/DOWN change pitch by
  * 10 deg (clamped to 0..90); OK cycles TOP -> SIDE -> ISO -> TOP. LEFT is
