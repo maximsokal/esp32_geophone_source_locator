@@ -17,6 +17,7 @@
 #include "storage_service.h"
 #include "ui_theme.h"
 #include "ui_i18n.h"
+#include "ui_measurements_nodes.h"
 
 
 typedef enum
@@ -103,6 +104,7 @@ typedef struct
     lv_obj_t *measurement_summary;
     lv_obj_t *measurement_transport;
     lv_obj_t *measurement_health;
+    lv_obj_t *measurement_node_labels[UI_MEASUREMENTS_NODE_COUNT];
     size_t measurement_action;
     bool measurement_exit_after_stop;
 

@@ -12,6 +12,7 @@ idf_component_register(
         "ui_boot_error.c"
         "ui_home.c"
         "ui_measurements.c"
+        "ui_measurements_nodes.c"
         "ui_measurement_trace.c"
         "fonts/ui_font_montserrat_14.c"
         "ui_frame_scheduler.c"
@@ -35,6 +36,7 @@ idf_component_register(
         display
         keypad
         device_status
+        nrf_topology_service
         wifi_manager
         object_service
         measurement_service

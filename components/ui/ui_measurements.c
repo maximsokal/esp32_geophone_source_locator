@@ -15,6 +15,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "device_status.h"
+#include "nrf_topology_service.h"
 
 #include "ui_measurement_trace.h"
 
@@ -245,7 +247,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         x,
         y,
         148,
-        55
+        30
     );
 
     if (card == NULL) {
@@ -264,7 +266,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         ui_create_label_locked(
             card,
             5,
-            2,
+            0,
             138,
             label,
             UI_COLOR_TEXT
@@ -278,8 +280,8 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         return card;
     }
 
-    lv_obj_set_pos(chart, 4, 17);
-    lv_obj_set_size(chart, 140, 34);
+    lv_obj_set_pos(chart, 4, 15);
+    lv_obj_set_size(chart, 140, 14);
     lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(chart, 0, 0);
     lv_obj_set_style_pad_all(chart, 0, 0);
@@ -338,8 +340,8 @@ static lv_obj_t *ui_measurements_create_graph_container_locked(
         return NULL;
     }
 
-    lv_obj_set_pos(container, 10, 76);
-    lv_obj_set_size(container, 300, 114);
+    lv_obj_set_pos(container, 10, 66);
+    lv_obj_set_size(container, 300, 63);
     lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(container, 0, 0);
     lv_obj_set_style_pad_all(container, 0, 0);
@@ -598,7 +600,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
 )
 {
     ui_context_t *context = ui_context();
-    lv_obj_t *card = ui_create_card_locked(screen, x, y, 148, 55);
+    lv_obj_t *card = ui_create_card_locked(screen, x, y, 148, 30);
     if (card == NULL) return NULL;
 
     char label[24];
@@ -653,6 +655,92 @@ static const char *ui_measurements_state_name(
 }
 
 
+static ui_measurements_node_level_t ui_measurements_node_level_get(
+    uint8_t channel
+)
+{
+    nrf_remote_sensor_cache_t cache;
+    if (
+        nrf_topology_service_get_sensor_snapshot(channel, &cache) != ESP_OK ||
+        !cache.response_valid ||
+        !cache.topology_current
+    ) {
+        return UI_MEASUREMENTS_NODE_LEVEL_NO_DATA;
+    }
+
+    switch (cache.sensor.orientation_state) {
+        case NRF_TOPOLOGY_LEVELING_MOVING - 1U:
+            return UI_MEASUREMENTS_NODE_LEVEL_MOVING;
+        case NRF_TOPOLOGY_LEVELING_ACCEPTED - 1U:
+            return UI_MEASUREMENTS_NODE_LEVEL_LEVELED;
+        case NRF_TOPOLOGY_LEVELING_OUTSIDE - 1U:
+            return UI_MEASUREMENTS_NODE_LEVEL_TILTED;
+        case NRF_TOPOLOGY_LEVELING_UNAVAILABLE - 1U:
+        default:
+            return UI_MEASUREMENTS_NODE_LEVEL_NO_DATA;
+    }
+}
+
+
+static void ui_measurements_refresh_nodes_locked(void)
+{
+    static const ui_i18n_key_t node_name_keys[UI_MEASUREMENTS_NODE_COUNT] = {
+        UI_I18N_KEY_MEASUREMENT_NODE_MAIN,
+        UI_I18N_KEY_MEASUREMENT_NODE_G1,
+        UI_I18N_KEY_MEASUREMENT_NODE_G2,
+        UI_I18N_KEY_MEASUREMENT_NODE_G3,
+        UI_I18N_KEY_MEASUREMENT_NODE_G4,
+    };
+
+    ui_context_t *context = ui_context();
+    device_status_snapshot_t status;
+    const bool status_available =
+        device_status_try_get_snapshot(&status) == ESP_OK;
+    const ui_measurements_node_text_t text = {
+        .unknown = ui_tr(UI_I18N_KEY_SHARED_EMPTY),
+        .no_data = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_NO_DATA),
+        .leveled = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_LEVEL),
+        .tilted = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_TILTED),
+        .moving = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_MOVING),
+        .solved = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_SOLVED),
+        .unsolved = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_UNSOLVED),
+    };
+
+    for (size_t row = 0U; row < UI_MEASUREMENTS_NODE_COUNT; ++row) {
+        const bool main_node = row == 0U;
+        const size_t pod_index = main_node ? 0U : row - 1U;
+        const bool computed = main_node || (
+            status_available &&
+            pod_index < DEVICE_STATUS_POD_COUNT &&
+            status.pods[pod_index].position.local_valid
+        );
+        const float x_m = main_node
+            ? 0.0f
+            : computed ? status.pods[pod_index].position.local_x_m : 0.0f;
+        const float y_m = main_node
+            ? 0.0f
+            : computed ? status.pods[pod_index].position.local_y_m : 0.0f;
+        const ui_measurements_node_level_t level = main_node
+            ? UI_MEASUREMENTS_NODE_LEVEL_NO_DATA
+            : ui_measurements_node_level_get((uint8_t)pod_index);
+
+        char line[96];
+        (void)ui_measurements_node_format(
+            line,
+            sizeof(line),
+            ui_tr(node_name_keys[row]),
+            computed,
+            x_m,
+            y_m,
+            level,
+            &text);
+        (void)ui_measurements_label_set_if_changed(
+            context->measurement_node_labels[row],
+            line);
+    }
+}
+
+
 void ui_render_measurements_locked(void)
 {
     ui_context_t *context = ui_context();
@@ -681,9 +769,9 @@ void ui_render_measurements_locked(void)
     lv_obj_t *summary_card = ui_create_card_locked(
         screen,
         10,
-        38,
+        35,
         300,
-        34
+        29
     );
 
     if (summary_card == NULL) {
@@ -693,7 +781,7 @@ void ui_render_measurements_locked(void)
     context->measurement_summary = ui_create_label_locked(
         summary_card,
         8,
-        3,
+        1,
         284,
         ui_tr(UI_I18N_KEY_MEASUREMENT_SUMMARY_LIVE),
         UI_COLOR_TEXT
@@ -702,7 +790,7 @@ void ui_render_measurements_locked(void)
     context->measurement_transport = ui_create_label_locked(
         summary_card,
         8,
-        18,
+        15,
         284,
         ui_tr(UI_I18N_KEY_MEASUREMENT_SUMMARY_OBJECT),
         UI_COLOR_MUTED
@@ -711,8 +799,8 @@ void ui_render_measurements_locked(void)
     lv_obj_t *graph_parent = screen;
     int chart_x_left = 10;
     int chart_x_right = 162;
-    int chart_y_top = 76;
-    int chart_y_bottom = 135;
+    int chart_y_top = 66;
+    int chart_y_bottom = 98;
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
     context->measurement_graphs =
         ui_measurements_create_graph_container_locked(screen);
@@ -721,7 +809,7 @@ void ui_render_measurements_locked(void)
         chart_x_left = 0;
         chart_x_right = 152;
         chart_y_top = 0;
-        chart_y_bottom = 59;
+        chart_y_bottom = 32;
     }
 #endif
 
@@ -750,10 +838,23 @@ void ui_render_measurements_locked(void)
         chart_y_bottom
     );
 
+    static const int node_row_y[UI_MEASUREMENTS_NODE_COUNT] = {
+        130, 144, 158, 172, 186,
+    };
+    for (size_t row = 0U; row < UI_MEASUREMENTS_NODE_COUNT; ++row) {
+        context->measurement_node_labels[row] = ui_create_label_locked(
+            screen,
+            10,
+            node_row_y[row],
+            300,
+            ui_tr(UI_I18N_KEY_SHARED_EMPTY),
+            UI_COLOR_TEXT);
+    }
+
     context->measurement_health = ui_create_label_locked(
         screen,
         12,
-        196,
+        202,
         296,
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
         ui_tr(UI_I18N_KEY_MEASUREMENT_HEALTH_START),
@@ -790,6 +891,7 @@ void ui_measurements_refresh_locked(void)
     ui_measurements_refresh_charts_locked(
         acquisition_err == ESP_OK ? &acquisition : NULL
     );
+    ui_measurements_refresh_nodes_locked();
 
     char text[128];
 

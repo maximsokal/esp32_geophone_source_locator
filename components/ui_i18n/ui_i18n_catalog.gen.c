@@ -52,6 +52,17 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "FAILED TO LEAVE MEASUREMENT", /* measurement.leave_failed */
     "LEAVING WHEN OPERATION FINISHES...", /* measurement.leaving_after_operation */
     "NO SAVED SESSION TO PREVIEW", /* measurement.no_session_preview */
+    "G1", /* measurement.node_g1 */
+    "G2", /* measurement.node_g2 */
+    "G3", /* measurement.node_g3 */
+    "G4", /* measurement.node_g4 */
+    "LEVEL", /* measurement.node_level */
+    "MAIN", /* measurement.node_main */
+    "MOVE", /* measurement.node_moving */
+    "N/D", /* measurement.node_no_data */
+    "SOL", /* measurement.node_solved */
+    "TILT", /* measurement.node_tilted */
+    "UNS", /* measurement.node_unsolved */
     "OBJECT %s  [%s]", /* measurement.object_format */
     "NO ACTIVE OBJECT", /* measurement.object_none */
     "RESOLVING OBJECT...", /* measurement.object_resolving */
@@ -284,6 +295,17 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "НЕ ВДАЛОСЯ ЗАВЕРШИТИ ВИМІРЮВАННЯ", /* measurement.leave_failed */
     "ВИХІД ПІСЛЯ ЗАВЕРШЕННЯ ДІЇ...", /* measurement.leaving_after_operation */
     "НЕМАЄ ЗБЕРЕЖЕНОГО СЕАНСУ ДЛЯ 3D ОГЛЯДУ", /* measurement.no_session_preview */
+    "G1", /* measurement.node_g1 */
+    "G2", /* measurement.node_g2 */
+    "G3", /* measurement.node_g3 */
+    "G4", /* measurement.node_g4 */
+    "РІВНО", /* measurement.node_level */
+    "MAIN", /* measurement.node_main */
+    "РУХ", /* measurement.node_moving */
+    "Н/Д", /* measurement.node_no_data */
+    "РОЗВ", /* measurement.node_solved */
+    "НАХИЛ", /* measurement.node_tilted */
+    "НЕРОЗВ", /* measurement.node_unsolved */
     "ОБ’ЄКТ %s  [%s]", /* measurement.object_format */
     "НЕМАЄ АКТИВНОГО ОБ’ЄКТА", /* measurement.object_none */
     "ПОШУК ОБ’ЄКТА...", /* measurement.object_resolving */
