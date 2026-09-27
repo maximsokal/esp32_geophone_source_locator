@@ -35,6 +35,16 @@ static const char s_deep_nested_settings_json[] =
     "\"semblance_window_half_span_samples\":25,"
     "\"unknown\":{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":{\"g\":{\"h\":0}}}}}}}}}";
 
+static const char s_concrete_settings_json[] =
+    "{\"material\":\"concrete\",\"propagation_speed_mps\":4000,"
+    "\"propagation_speed_uncertainty_mps\":500,\"propagation_model_name\":\"site-model\","
+    "\"timing_uncertainty_us\":2000,\"noise_window_samples\":50,"
+    "\"sta_window_samples\":10,\"lta_window_samples\":100,\"sta_lta_trigger_ratio\":3,"
+    "\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+    "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":20,"
+    "\"minimum_snr\":3,\"semblance_window_half_span_samples\":10,"
+    "\"s_pick_enabled\":false,\"time_budget_s\":60}";
+
 typedef struct {
 #ifdef _WIN32
     SRWLOCK lock;
@@ -823,6 +833,85 @@ static void test_second_calculation_while_orphaned_is_busy_without_duplicate_sub
     workflow_service_shutdown();
 }
 
+static void test_material_save_runs_in_poll_and_refreshes_settings_ready(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_settings_json = NULL;
+    assert(!try_snapshot().calc_settings_ready);
+    assert(workflow_service_save_calc_material_async("custom", 50U, 1U) == ESP_ERR_INVALID_ARG);
+    assert(workflow_service_save_calc_material_async("custom", 340U, 340U) == ESP_ERR_INVALID_ARG);
+    assert(workflow_service_save_calc_material_async("unknown", 340U, 5U) == ESP_ERR_INVALID_ARG);
+    workflow_service_test_lock_mutex();
+    assert(workflow_service_save_calc_material_async("concrete", 0U, 0U) == ESP_OK);
+    workflow_service_test_unlock_mutex();
+    assert(workflow_test_settings_save_calls == 0U);
+    assert(try_snapshot().last_material_save.seq == 0U);
+
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(workflow_test_settings_save_calls == 1U);
+    assert(strcmp(workflow_test_saved_object_id, "object-a") == 0);
+    assert(strstr(workflow_test_saved_settings, "\"material\":\"concrete\"") != NULL);
+    assert(snapshot.last_material_save.seq != 0U);
+    assert(snapshot.last_material_save.result == ESP_OK);
+    assert(snapshot.calc_settings_ready);
+    assert(strcmp(snapshot.calc_material, "concrete") == 0);
+    workflow_service_shutdown();
+}
+
+static void test_material_save_reports_sd_error_and_missing_active_object(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_settings_json = NULL;
+    workflow_test_settings_save_result = ESP_FAIL;
+    assert(workflow_service_save_calc_material_async("soil_dry", 0U, 0U) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(workflow_test_settings_save_calls == 1U);
+    assert(snapshot.last_material_save.seq != 0U);
+    assert(snapshot.last_material_save.result == ESP_FAIL);
+    assert(!snapshot.calc_settings_ready);
+    workflow_service_shutdown();
+
+    reset_fakes(false, MEASUREMENT_SERVICE_LIVE, 0U);
+    assert(workflow_service_save_calc_material_async("concrete", 0U, 0U) == ESP_OK);
+    assert(workflow_test_settings_save_calls == 0U);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(workflow_test_settings_save_calls == 0U);
+    assert(snapshot.last_material_save.seq != 0U);
+    assert(snapshot.last_material_save.result == ESP_ERR_NOT_FOUND);
+    assert(snapshot.calc_material[0] == '\0');
+    workflow_service_shutdown();
+}
+
+static void test_material_save_queue_full_is_rejected_without_sd_write(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    for (size_t i = 0U; i < 4U; ++i) {
+        assert(workflow_service_save_calc_material_async("rubble", 0U, 0U) == ESP_OK);
+    }
+    assert(workflow_service_save_calc_material_async("steel", 0U, 0U) == ESP_ERR_NO_MEM);
+    assert(workflow_test_settings_save_calls == 0U);
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t snapshot = try_snapshot();
+    assert(workflow_test_settings_save_calls == 4U);
+    assert(snapshot.last_material_save.seq != 0U);
+    assert(snapshot.last_material_save.result == ESP_OK);
+    assert(strcmp(snapshot.calc_material, "rubble") == 0);
+    workflow_service_shutdown();
+}
+
+static void test_material_is_carried_into_run_provenance(void)
+{
+    enter_stopped();
+    workflow_test_settings_json = s_concrete_settings_json;
+    (void)begin_calculation();
+    assert(workflow_test_submitted_config.propagation_speed_mps == 4000.0);
+    assert(strcmp(workflow_test_submitted_config.propagation_model_name, "site-model@concrete") == 0);
+    workflow_service_shutdown();
+}
+
 int main(void)
 {
     test_reconciliation_review_error_and_async_recording_commands();
@@ -838,5 +927,9 @@ int main(void)
     test_calculation_success_progress_failure_classes_and_submit_errors();
     test_invalid_settings_at_submit_and_orphaned_job_completion();
     test_second_calculation_while_orphaned_is_busy_without_duplicate_submit();
+    test_material_save_runs_in_poll_and_refreshes_settings_ready();
+    test_material_save_reports_sd_error_and_missing_active_object();
+    test_material_save_queue_full_is_rejected_without_sd_write();
+    test_material_is_carried_into_run_provenance();
     return 0;
 }

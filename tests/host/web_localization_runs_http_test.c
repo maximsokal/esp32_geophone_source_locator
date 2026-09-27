@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_http_server.h"
+#include "cJSON.h"
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "object_store.h"
@@ -692,12 +693,33 @@ static void test_job_status_shares_the_runs_route(void)
 static void test_settings_read_returns_valid_json_or_null(void)
 {
     reset_fakes();
-    char response[1024] = {0};
+    char response[4096] = {0};
     httpd_req_t request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
     assert(web_localization_runs_handler(&request) == ESP_OK);
     assert(request.response_status == NULL);
     assert(strstr(response, "{\"ok\":true,\"settings\":{") == response);
     assert(strstr(response, "\"propagation_speed_mps\":340") != NULL);
+    assert(strstr(response, "\"material\":\"custom\"") != NULL);
+    assert(strstr(response, "\"presets\":[") != NULL);
+    assert(strstr(response, "\"standard_processing\":{") != NULL);
+    cJSON *body = cJSON_Parse(response);
+    assert(body != NULL);
+    cJSON *settings = cJSON_GetObjectItemCaseSensitive(body, "settings");
+    cJSON *presets = cJSON_GetObjectItemCaseSensitive(body, "presets");
+    cJSON *standard = cJSON_GetObjectItemCaseSensitive(body, "standard_processing");
+    assert(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(settings, "material")));
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(settings, "material")->valuestring, "custom") == 0);
+    assert(cJSON_GetArraySize(presets) == 7);
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(presets, 0), "id")->valuestring,
+        "concrete") == 0);
+    assert(cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(presets, 0),
+        "propagation_speed_mps")->valuedouble == 4000.0);
+    assert(cJSON_GetObjectItemCaseSensitive(standard, "timing_uncertainty_us")->valuedouble == 2000.0);
+    assert(cJSON_GetObjectItemCaseSensitive(standard, "sta_lta_trigger_ratio")->valuedouble == 3.0);
+    assert(cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(standard, "s_pick_enabled")));
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(standard, "s_pick_enabled")));
+    assert(cJSON_GetObjectItemCaseSensitive(standard, "time_budget_s")->valuedouble == 60.0);
+    cJSON_Delete(body);
     assert(request.content_type != NULL && strcmp(request.content_type, "application/json; charset=utf-8") == 0);
     assert(request.cache_control != NULL && strcmp(request.cache_control, "no-store") == 0);
     assert(s_list_calls == 0U);
@@ -706,13 +728,14 @@ static void test_settings_read_returns_valid_json_or_null(void)
     memset(response, 0, sizeof(response));
     request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
     assert(web_localization_runs_handler(&request) == ESP_OK);
-    assert(strcmp(response, "{\"ok\":true,\"settings\":null}") == 0);
+    assert(strstr(response, "{\"ok\":true,\"settings\":null,") == response);
+    assert(strstr(response, "\"presets\":[") != NULL);
 
     s_calc_settings_json = "{";
     memset(response, 0, sizeof(response));
     request = make_request("job=settings&object_id=OBJ_0001", response, sizeof(response));
     assert(web_localization_runs_handler(&request) == ESP_OK);
-    assert(strcmp(response, "{\"ok\":true,\"settings\":null}") == 0);
+    assert(strstr(response, "{\"ok\":true,\"settings\":null,") == response);
 
     s_calc_settings_result = ESP_FAIL;
     memset(response, 0, sizeof(response));

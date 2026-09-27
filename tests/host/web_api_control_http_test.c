@@ -975,6 +975,7 @@ static void test_save_calc_settings_validates_and_persists_only_settings(void)
     assert(strstr(s_saved_calc_settings, "\"object_id\"") == NULL);
     assert(strstr(s_saved_calc_settings, "\"ignored_extension\"") == NULL);
     assert(strstr(s_saved_calc_settings, "\"propagation_speed_mps\":340") != NULL);
+    assert(strstr(s_saved_calc_settings, "\"material\":\"custom\"") != NULL);
     assert(strstr(s_saved_calc_settings, "\"time_budget_s\":45.5") != NULL);
 
     const char *saved_before_invalid = s_saved_calc_settings;
@@ -995,6 +996,90 @@ static void test_save_calc_settings_validates_and_persists_only_settings(void)
     assert(s_calc_settings_save_calls == 1U);
     assert(s_calc_settings_notify_calls == 1U);
     assert(strcmp(s_saved_calc_settings, saved_copy) == 0);
+}
+
+static void test_save_material_profiles_resolve_defaults_and_advanced_overrides(void)
+{
+    static const char *const preset_override =
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"concrete\","
+        "\"propagation_speed_mps\":90,\"propagation_speed_uncertainty_mps\":1,"
+        "\"timing_uncertainty_us\":777}";
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(preset_override, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL && s_calc_settings_save_calls == 1U);
+    cJSON *saved = cJSON_Parse(s_saved_calc_settings);
+    assert(saved != NULL);
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(saved, "material")->valuestring, "concrete") == 0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "propagation_speed_mps")->valuedouble == 4000.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved,
+        "propagation_speed_uncertainty_mps")->valuedouble == 500.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "timing_uncertainty_us")->valuedouble == 777.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "noise_window_samples")->valuedouble == 50.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "sta_window_samples")->valuedouble == 10.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "lta_window_samples")->valuedouble == 100.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "s_pick_enabled") != NULL &&
+        !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(saved, "s_pick_enabled")));
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "time_budget_s")->valuedouble == 60.0);
+    cJSON_Delete(saved);
+
+    static const char *const custom =
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"custom\","
+        "\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":12}";
+    reset_fakes();
+    memset(response, 0, sizeof(response));
+    request = make_request(custom, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL && s_calc_settings_save_calls == 1U);
+    saved = cJSON_Parse(s_saved_calc_settings);
+    assert(saved != NULL);
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(saved, "material")->valuestring, "custom") == 0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "propagation_speed_mps")->valuedouble == 340.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved,
+        "propagation_speed_uncertainty_mps")->valuedouble == 12.0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "minimum_snr")->valuedouble == 3.0);
+    cJSON_Delete(saved);
+
+    static const char *const explicit_preset =
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\","
+        "\"propagation_speed_mps\":2200,\"propagation_speed_uncertainty_mps\":700,"
+        "\"timing_uncertainty_us\":2000,\"noise_window_samples\":50,"
+        "\"sta_window_samples\":10,\"lta_window_samples\":100,\"sta_lta_trigger_ratio\":3,"
+        "\"refine_lookback_samples\":10,\"refine_lookahead_samples\":10,"
+        "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":20,"
+        "\"minimum_snr\":3,\"semblance_window_half_span_samples\":10}";
+    reset_fakes();
+    memset(response, 0, sizeof(response));
+    request = make_request(explicit_preset, response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL && s_calc_settings_save_calls == 1U);
+    saved = cJSON_Parse(s_saved_calc_settings);
+    assert(saved != NULL);
+    assert(strcmp(cJSON_GetObjectItemCaseSensitive(saved, "material")->valuestring, "brick_masonry") == 0);
+    assert(cJSON_GetObjectItemCaseSensitive(saved, "propagation_speed_mps")->valuedouble == 2200.0);
+    cJSON_Delete(saved);
+}
+
+static void test_save_calc_material_rejects_unknown_and_custom_bounds(void)
+{
+    static const char *const invalid[] = {
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"unknown\"}",
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"custom\"}",
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"custom\",\"propagation_speed_mps\":50,\"propagation_speed_uncertainty_mps\":1}",
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"custom\",\"propagation_speed_mps\":8000,\"propagation_speed_uncertainty_mps\":1}",
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"custom\",\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":0}",
+        "{\"action\":\"save_calc_settings\",\"object_id\":\"OBJ_0001\",\"material\":\"custom\",\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":340}",
+    };
+    for (size_t i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        reset_fakes();
+        char response[512] = {0};
+        httpd_req_t request = make_request(invalid[i], response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_calc_settings_save_calls == 0U);
+        assert(s_calc_settings_notify_calls == 0U);
+    }
 }
 
 static void test_calculate_source_time_budget(void)
@@ -1204,6 +1289,8 @@ int main(void)
     test_calculate_source_rejects_unreachable_sta_lta_threshold();
     test_calculate_source_action_rejects_missing_session_id();
     test_save_calc_settings_validates_and_persists_only_settings();
+    test_save_material_profiles_resolve_defaults_and_advanced_overrides();
+    test_save_calc_material_rejects_unknown_and_custom_bounds();
     test_calculate_source_action_surfaces_solver_failure();
     test_calculate_source_time_budget();
     test_workflow_command_success_and_conflict_responses();

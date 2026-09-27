@@ -6,6 +6,7 @@
 
 #include "localization_config.h"
 #include "localization_job.h"
+#include "localization_material_presets.h"
 #include "cJSON.h"
 #include "../localization_calculate/include/localization_calculate.h"
 #include "localization_pick_record.h"
@@ -169,12 +170,21 @@ static esp_err_t web_localization_settings_handler(httpd_req_t *request, const c
 {
     char *settings = NULL;
     const esp_err_t read_err = object_store_get_calc_settings_json(object_id, &settings);
+    char *resolved_settings = NULL;
     bool valid = false;
     if (read_err == ESP_OK && settings != NULL) {
         cJSON *root = cJSON_Parse(settings);
         localization_calculate_config_t config;
         uint32_t budget_ms = 0U;
         valid = root != NULL && localization_config_from_json(root, &config, &budget_ms) == ESP_OK;
+        if (valid) {
+            const cJSON *material = cJSON_GetObjectItemCaseSensitive(root, "material");
+            const char *material_id = cJSON_IsString(material) && material->valuestring != NULL
+                ? material->valuestring : "custom";
+            if (budget_ms == 0U) budget_ms = LOCALIZATION_JOB_DEFAULT_BUDGET_MS;
+            valid = localization_config_to_json(
+                &config, material_id, budget_ms, &resolved_settings) == ESP_OK;
+        }
         cJSON_Delete(root);
     }
 
@@ -182,19 +192,62 @@ static esp_err_t web_localization_settings_handler(httpd_req_t *request, const c
         free(settings);
         return httpd_resp_send_err(request, 500, "Calculation settings unavailable");
     }
-    const char *settings_value = valid ? settings : "null";
-    const size_t body_size = strlen(settings_value) + sizeof("{\"ok\":true,\"settings\":}");
+    cJSON *presets_container = cJSON_CreateObject();
+    if (presets_container == NULL) {
+        free(settings);
+        cJSON_free(resolved_settings);
+        return httpd_resp_send_err(request, 500, "Out of memory");
+    }
+    cJSON *presets = cJSON_AddArrayToObject(presets_container, "presets");
+    bool presets_ok = presets != NULL;
+    for (size_t i = 0U; presets_ok && i < localization_material_preset_count(); ++i) {
+        const localization_material_preset_t *preset = localization_material_preset_at(i);
+        cJSON *entry = cJSON_CreateObject();
+        if (entry == NULL ||
+            cJSON_AddStringToObject(entry, "id", preset->id) == NULL ||
+            cJSON_AddNumberToObject(entry, "propagation_speed_mps",
+                (double)preset->propagation_speed_mps) == NULL ||
+            cJSON_AddNumberToObject(entry, "propagation_speed_uncertainty_mps",
+                (double)preset->propagation_speed_uncertainty_mps) == NULL ||
+            !cJSON_AddItemToArray(presets, entry)) {
+            cJSON_Delete(entry);
+            presets_ok = false;
+        }
+    }
+    char *presets_json = presets_ok ? cJSON_PrintUnformatted(presets) : NULL;
+    cJSON_Delete(presets_container);
+    char *standard_json = NULL;
+    const esp_err_t standard_err = localization_config_standard_processing_to_json(&standard_json);
+    if (presets_json == NULL || standard_err != ESP_OK || standard_json == NULL) {
+        free(settings);
+        cJSON_free(resolved_settings);
+        cJSON_free(presets_json);
+        cJSON_free(standard_json);
+        return httpd_resp_send_err(request, 500, "Out of memory");
+    }
+
+    const char *settings_value = valid ? resolved_settings : "null";
+    const size_t body_size = strlen(settings_value) + strlen(presets_json) + strlen(standard_json) +
+        sizeof("{\"ok\":true,\"settings\":,\"presets\":,\"standard_processing\":}");
     char *body = malloc(body_size);
     if (body == NULL) {
         free(settings);
+        cJSON_free(resolved_settings);
+        cJSON_free(presets_json);
+        cJSON_free(standard_json);
         return httpd_resp_send_err(request, 500, "Out of memory");
     }
-    snprintf(body, body_size, "{\"ok\":true,\"settings\":%s}", settings_value);
+    snprintf(body, body_size,
+        "{\"ok\":true,\"settings\":%s,\"presets\":%s,\"standard_processing\":%s}",
+        settings_value, presets_json, standard_json);
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     const esp_err_t err = httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
     free(body);
     free(settings);
+    cJSON_free(resolved_settings);
+    cJSON_free(presets_json);
+    cJSON_free(standard_json);
     return err;
 }
 

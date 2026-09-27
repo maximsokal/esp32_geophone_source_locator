@@ -10,6 +10,11 @@ unsigned workflow_test_scan_calls;
 bool workflow_test_scan_present;
 esp_err_t workflow_test_settings_error;
 const char *workflow_test_settings_json;
+esp_err_t workflow_test_settings_save_result;
+unsigned workflow_test_settings_save_calls;
+char workflow_test_saved_settings[1024];
+char workflow_test_saved_object_id[16];
+bool workflow_test_saved_settings_valid;
 localization_job_status_t workflow_test_job_status;
 esp_err_t workflow_test_job_submit_result;
 unsigned workflow_test_job_submit_calls;
@@ -34,6 +39,11 @@ void workflow_service_host_fakes_reset(void)
     workflow_test_scan_present = false;
     workflow_test_settings_error = ESP_OK;
     workflow_test_settings_json = s_valid_settings;
+    workflow_test_settings_save_result = ESP_OK;
+    workflow_test_settings_save_calls = 0U;
+    workflow_test_saved_settings[0] = '\0';
+    workflow_test_saved_object_id[0] = '\0';
+    workflow_test_saved_settings_valid = false;
     memset(&workflow_test_job_status, 0, sizeof(workflow_test_job_status));
     workflow_test_job_status.state = LOCALIZATION_JOB_IDLE;
     workflow_test_job_submit_result = ESP_OK;
@@ -59,11 +69,25 @@ esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json
     assert(object_id != NULL && json_out != NULL);
     *json_out = NULL;
     if (workflow_test_settings_error != ESP_OK) return workflow_test_settings_error;
-    if (workflow_test_settings_json == NULL) return ESP_ERR_NOT_FOUND;
-    const size_t size = strlen(workflow_test_settings_json) + 1U;
+    const char *settings = workflow_test_saved_settings_valid
+        ? workflow_test_saved_settings : workflow_test_settings_json;
+    if (settings == NULL) return ESP_ERR_NOT_FOUND;
+    const size_t size = strlen(settings) + 1U;
     *json_out = malloc(size);
     if (*json_out == NULL) return ESP_ERR_NO_MEM;
-    memcpy(*json_out, workflow_test_settings_json, size);
+    memcpy(*json_out, settings, size);
+    return ESP_OK;
+}
+
+esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json)
+{
+    assert(object_id != NULL && json != NULL);
+    ++workflow_test_settings_save_calls;
+    if (workflow_test_settings_save_result != ESP_OK) return workflow_test_settings_save_result;
+    if (strlen(json) >= sizeof(workflow_test_saved_settings)) return ESP_ERR_INVALID_ARG;
+    (void)snprintf(workflow_test_saved_object_id, sizeof(workflow_test_saved_object_id), "%s", object_id);
+    (void)snprintf(workflow_test_saved_settings, sizeof(workflow_test_saved_settings), "%s", json);
+    workflow_test_saved_settings_valid = true;
     return ESP_OK;
 }
 

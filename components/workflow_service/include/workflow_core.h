@@ -138,6 +138,11 @@ typedef struct {
 } workflow_last_async_t;
 
 typedef struct {
+    uint32_t seq;
+    esp_err_t result;
+} workflow_last_material_save_t;
+
+typedef struct {
     workflow_step_t step;
     uint32_t generation;
     uint32_t allowed_actions;
@@ -150,7 +155,9 @@ typedef struct {
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
     bool has_scan;
     bool calc_settings_ready;
+    char calc_material[24];
     workflow_last_async_t last_async;
+    workflow_last_material_save_t last_material_save;
     workflow_command_t recommended_action;
     workflow_calibration_snapshot_t calibration;
     workflow_placement_snapshot_t placement;

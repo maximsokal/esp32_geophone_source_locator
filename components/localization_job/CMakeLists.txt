@@ -3,6 +3,7 @@ idf_component_register(
         "localization_job_state.c"
         "localization_job.c"
         "localization_config.c"
+        "localization_material_presets.c"
 
     INCLUDE_DIRS
         "include"
@@ -15,4 +16,5 @@ idf_component_register(
         json
         localization_calculate
         log
+        seismic_test_generator
 )

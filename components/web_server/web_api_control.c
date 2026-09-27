@@ -12,6 +12,7 @@
 #include "localization_calculate.h"
 #include "localization_config.h"
 #include "localization_job.h"
+#include "localization_material_presets.h"
 #include "main_barometer.h"
 #include "nrf_topology_service.h"
 #include "workflow_service.h"
@@ -528,57 +529,95 @@ static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id
 
 static esp_err_t web_control_save_calc_settings(cJSON *root, const char *object_id)
 {
-    static const char *const setting_fields[] = {
-        "propagation_speed_mps",
-        "propagation_speed_uncertainty_mps",
-        "timing_uncertainty_us",
-        "noise_window_samples",
-        "sta_window_samples",
-        "lta_window_samples",
-        "sta_lta_trigger_ratio",
-        "refine_lookback_samples",
-        "refine_lookahead_samples",
-        "refine_amplitude_fraction",
-        "snr_signal_window_samples",
-        "minimum_snr",
-        "semblance_window_half_span_samples",
-        "max_source_depth_m",
-        "s_min_separation_samples",
-        "s_max_separation_samples",
-        "s_sta_window_samples",
-        "s_lta_window_samples",
-        "s_sta_lta_trigger_ratio",
-        "s_minimum_snr",
-        "propagation_model_name",
-        "time_budget_s",
-    };
-    if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+    if (root == NULL || object_id == NULL) return ESP_ERR_INVALID_ARG;
+
+    const cJSON *material_item = cJSON_GetObjectItemCaseSensitive(root, "material");
+    const char *material_id = "custom";
+    const localization_material_preset_t *preset = NULL;
+    if (material_item != NULL) {
+        if (!cJSON_IsString(material_item) || material_item->valuestring == NULL ||
+            strlen(material_item->valuestring) >= LOCALIZATION_MATERIAL_ID_SIZE) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        material_id = material_item->valuestring;
+        if (strcmp(material_id, "custom") != 0) {
+            preset = localization_material_preset_lookup(material_id);
+            if (preset == NULL) return ESP_ERR_INVALID_ARG;
+        }
+    } else {
+        const cJSON *speed = cJSON_GetObjectItemCaseSensitive(root, "propagation_speed_mps");
+        const cJSON *uncertainty = cJSON_GetObjectItemCaseSensitive(
+            root, "propagation_speed_uncertainty_mps");
+        if (!cJSON_IsNumber(speed) || !cJSON_IsNumber(uncertainty) ||
+            !isfinite(speed->valuedouble) || !isfinite(uncertainty->valuedouble)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        for (size_t i = 0U; i < localization_material_preset_count(); ++i) {
+            const localization_material_preset_t *candidate = localization_material_preset_at(i);
+            if (speed->valuedouble == (double)candidate->propagation_speed_mps &&
+                uncertainty->valuedouble == (double)candidate->propagation_speed_uncertainty_mps) {
+                preset = candidate;
+                material_id = candidate->id;
+                break;
+            }
+        }
+    }
+
+    if (preset != NULL) {
+        cJSON_DeleteItemFromObjectCaseSensitive(root, "propagation_speed_mps");
+        cJSON_DeleteItemFromObjectCaseSensitive(root, "propagation_speed_uncertainty_mps");
+        if (cJSON_AddNumberToObject(root, "propagation_speed_mps",
+                (double)preset->propagation_speed_mps) == NULL ||
+            cJSON_AddNumberToObject(root, "propagation_speed_uncertainty_mps",
+                (double)preset->propagation_speed_uncertainty_mps) == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        const cJSON *speed = cJSON_GetObjectItemCaseSensitive(root, "propagation_speed_mps");
+        const cJSON *uncertainty = cJSON_GetObjectItemCaseSensitive(
+            root, "propagation_speed_uncertainty_mps");
+        if (!cJSON_IsNumber(speed) || !cJSON_IsNumber(uncertainty)) return ESP_ERR_INVALID_ARG;
+    }
+
+    if (material_item == NULL) {
+        if (cJSON_AddStringToObject(root, "material", material_id) == NULL) return ESP_ERR_NO_MEM;
+    }
+
+    if (material_item != NULL) {
+        char *standard_json = NULL;
+        esp_err_t err = localization_config_standard_processing_to_json(&standard_json);
+        if (err != ESP_OK || standard_json == NULL) return err != ESP_OK ? err : ESP_ERR_NO_MEM;
+        cJSON *standard = cJSON_Parse(standard_json);
+        cJSON_free(standard_json);
+        if (standard == NULL) return ESP_ERR_NO_MEM;
+        for (const cJSON *field = standard->child; field != NULL; field = field->next) {
+            if (field->string == NULL ||
+                cJSON_GetObjectItemCaseSensitive(root, field->string) != NULL) continue;
+            if (cJSON_IsBool(field)) {
+                if (cJSON_AddBoolToObject(root, field->string, cJSON_IsTrue(field)) == NULL) {
+                    cJSON_Delete(standard);
+                    return ESP_ERR_NO_MEM;
+                }
+            } else if (cJSON_IsNumber(field)) {
+                if (cJSON_AddNumberToObject(root, field->string, field->valuedouble) == NULL) {
+                    cJSON_Delete(standard);
+                    return ESP_ERR_NO_MEM;
+                }
+            }
+        }
+        cJSON_Delete(standard);
+    }
+
     localization_calculate_config_t config;
     uint32_t budget_ms = 0U;
     const esp_err_t parse_err = localization_config_from_json(root, &config, &budget_ms);
     if (parse_err != ESP_OK) return parse_err;
-    (void)config;
-    (void)budget_ms;
-
-    cJSON_DeleteItemFromObjectCaseSensitive(root, "action");
-    cJSON_DeleteItemFromObjectCaseSensitive(root, "object_id");
-    cJSON_DeleteItemFromObjectCaseSensitive(root, "session_id");
-    for (cJSON *item = root->child; item != NULL;) {
-        cJSON *next = item->next;
-        bool recognized = false;
-        for (size_t i = 0U; i < sizeof(setting_fields) / sizeof(setting_fields[0]); ++i) {
-            if (item->string != NULL && strcmp(item->string, setting_fields[i]) == 0) {
-                recognized = true;
-                break;
-            }
-        }
-        if (!recognized && item->string != NULL) {
-            cJSON_DeleteItemFromObjectCaseSensitive(root, item->string);
-        }
-        item = next;
+    char *json = NULL;
+    const esp_err_t serialize_err = localization_config_to_json(
+        &config, material_id, budget_ms, &json);
+    if (serialize_err != ESP_OK || json == NULL) {
+        return serialize_err != ESP_OK ? serialize_err : ESP_ERR_NO_MEM;
     }
-    char *json = cJSON_PrintUnformatted(root);
-    if (json == NULL) return ESP_ERR_NO_MEM;
     const esp_err_t err = object_store_set_calc_settings_json(object_id, json);
     cJSON_free(json);
     if (err == ESP_OK) (void)workflow_service_notify_calc_settings_saved(object_id);

@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "localization_config.h"
 #include "localization_job.h"
+#include "localization_material_presets.h"
 #include "main_barometer.h"
 #include "measurement_service.h"
 #include "nrf_baro_altitude.h"
@@ -34,6 +35,7 @@
 #define WORKFLOW_SERVICE_STATUS_REFRESH_MS 2000U
 #define WORKFLOW_SERVICE_POLL_TASK_PRIORITY 1U
 #define WORKFLOW_ASYNC_QUEUE_DEPTH 4U
+#define WORKFLOW_CALC_MATERIAL_ID_SIZE 24U
 
 /*
  * 8 KiB is the fixed Xtensa budget for the deepest branch: poll task (48 B) ->
@@ -89,11 +91,20 @@ typedef struct {
     uint64_t started_at_ms;
 } workflow_ranging_run_t;
 
+typedef enum {
+    WORKFLOW_ASYNC_COMMAND = 0,
+    WORKFLOW_ASYNC_MATERIAL_SAVE,
+} workflow_async_kind_t;
+
 typedef struct {
     uint32_t seq;
+    workflow_async_kind_t kind;
     workflow_command_t command;
     bool has_generation;
     uint32_t expected_generation;
+    char material_id[WORKFLOW_CALC_MATERIAL_ID_SIZE];
+    uint32_t custom_v_mps;
+    uint32_t custom_sigma_mps;
 } workflow_async_command_t;
 
 typedef struct {
@@ -120,6 +131,7 @@ static char s_active_object_id[OBJECT_STORE_ID_SIZE];
 static char s_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 static uint32_t s_async_next_seq;
 static workflow_last_async_t s_last_async;
+static workflow_last_material_save_t s_last_material_save;
 static bool s_placement_ready;
 static bool s_has_scan;
 static bool s_scan_cache_valid;
@@ -131,6 +143,7 @@ static bool s_calc_settings_ready;
 static bool s_calc_settings_cache_valid;
 static uint64_t s_calc_settings_cache_updated_ms;
 static char s_calc_settings_cache_object_id[OBJECT_STORE_ID_SIZE];
+static char s_calc_material[WORKFLOW_CALC_MATERIAL_ID_SIZE];
 static uint32_t s_calculation_job_id;
 static uint32_t s_orphaned_job_id;
 static workflow_core_t s_core;
@@ -146,6 +159,7 @@ static workflow_command_result_t workflow_service_command_locked(
     const workflow_command_params_t *params
 );
 static void workflow_service_process_async_locked(void);
+static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms);
 static void workflow_service_mark_calculation_orphaned_locked(void);
 static BaseType_t workflow_service_create_poll_task(TaskHandle_t *task_out);
 static void workflow_service_poll_task(void *argument);
@@ -211,15 +225,25 @@ static bool workflow_service_calc_settings_depth_ok(const char *json)
 /* Called only while s_mutex is held; settings are a flat scalar schema. */
 static esp_err_t workflow_service_parse_calc_settings_locked(
     const char *json,
-    uint32_t *budget_ms_out
+    uint32_t *budget_ms_out,
+    localization_calculate_config_t *config_out,
+    char material_out[WORKFLOW_CALC_MATERIAL_ID_SIZE]
 )
 {
     if (json == NULL || budget_ms_out == NULL) return ESP_ERR_INVALID_ARG;
     if (!workflow_service_calc_settings_depth_ok(json)) return ESP_ERR_INVALID_RESPONSE;
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
+    localization_calculate_config_t *config = config_out != NULL
+        ? config_out : &s_poll_scratch.calculation_config;
     const esp_err_t err = localization_config_from_json(
-        root, &s_poll_scratch.calculation_config, budget_ms_out);
+        root, config, budget_ms_out);
+    if (err == ESP_OK && material_out != NULL) {
+        const cJSON *material = cJSON_GetObjectItemCaseSensitive(root, "material");
+        workflow_service_copy_string(material_out, WORKFLOW_CALC_MATERIAL_ID_SIZE,
+            cJSON_IsString(material) && material->valuestring != NULL
+                ? material->valuestring : "custom");
+    }
     cJSON_Delete(root);
     return err;
 }
@@ -268,6 +292,30 @@ static void workflow_service_update_session_locked(
     }
 }
 
+static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms)
+{
+    const bool object_changed = strcmp(s_calc_settings_cache_object_id, s_active_object_id) != 0;
+    if (!s_calc_settings_cache_valid || object_changed ||
+        now_ms - s_calc_settings_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
+        s_calc_settings_ready = false;
+        s_calc_material[0] = '\0';
+        if (s_active_object_id[0] != '\0') {
+            char *json = NULL;
+            if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
+                uint32_t budget_ms = 0U;
+                s_calc_settings_ready = workflow_service_parse_calc_settings_locked(
+                    json, &budget_ms, NULL, s_calc_material) == ESP_OK;
+                free(json);
+            }
+        }
+        workflow_core_set_calc_settings_ready(&s_core, s_calc_settings_ready);
+        workflow_service_copy_string(
+            s_calc_settings_cache_object_id, sizeof(s_calc_settings_cache_object_id), s_active_object_id);
+        s_calc_settings_cache_updated_ms = now_ms;
+        s_calc_settings_cache_valid = true;
+    }
+}
+
 static void workflow_service_refresh_presence_locked(void)
 {
     const uint64_t now_ms = workflow_service_now_ms();
@@ -291,25 +339,7 @@ static void workflow_service_refresh_presence_locked(void)
         s_scan_cache_valid = true;
     }
 
-    const bool object_changed = strcmp(s_calc_settings_cache_object_id, s_active_object_id) != 0;
-    if (!s_calc_settings_cache_valid || object_changed ||
-        now_ms - s_calc_settings_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
-        s_calc_settings_ready = false;
-        if (s_active_object_id[0] != '\0') {
-            char *json = NULL;
-            if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
-                uint32_t budget_ms = 0U;
-                s_calc_settings_ready = workflow_service_parse_calc_settings_locked(
-                    json, &budget_ms) == ESP_OK;
-                free(json);
-            }
-        }
-        workflow_core_set_calc_settings_ready(&s_core, s_calc_settings_ready);
-        workflow_service_copy_string(
-            s_calc_settings_cache_object_id, sizeof(s_calc_settings_cache_object_id), s_active_object_id);
-        s_calc_settings_cache_updated_ms = now_ms;
-        s_calc_settings_cache_valid = true;
-    }
+    workflow_service_refresh_calc_settings_locked(now_ms);
 }
 
 static void workflow_service_calibration_add_reason(const char *reason)
@@ -1144,6 +1174,27 @@ static void workflow_service_calculation_done_locked(
     }
 }
 
+static void workflow_service_set_material_provenance(
+    localization_calculate_config_t *config,
+    const char *material_id
+)
+{
+    if (config == NULL || material_id == NULL || material_id[0] == '\0') return;
+    char annotated[sizeof(config->propagation_model_name)];
+    const size_t capacity = sizeof(annotated);
+    const size_t model_length = strnlen(config->propagation_model_name, capacity);
+    const size_t material_length = strlen(material_id);
+    const bool has_model = model_length > 0U;
+    if (material_length + (has_model ? 1U : 0U) >= capacity) return;
+    const size_t model_limit = capacity - material_length - (has_model ? 1U : 0U) - 1U;
+    const size_t kept_model_length = model_length < model_limit ? model_length : model_limit;
+    (void)snprintf(annotated, sizeof(annotated), "%.*s%s%s",
+        (int)kept_model_length, config->propagation_model_name,
+        has_model ? "@" : "", material_id);
+    (void)snprintf(config->propagation_model_name,
+        sizeof(config->propagation_model_name), "%s", annotated);
+}
+
 static void workflow_service_calculation_start_locked(void)
 {
     localization_job_status_t *status = &s_poll_scratch.job_status;
@@ -1159,11 +1210,13 @@ static void workflow_service_calculation_start_locked(void)
 
     char *json = NULL;
     uint32_t budget_ms = 0U;
+    char material_id[WORKFLOW_CALC_MATERIAL_ID_SIZE] = {0};
     esp_err_t err = s_active_object_id[0] == '\0'
         ? ESP_ERR_NOT_FOUND
         : object_store_get_calc_settings_json(s_active_object_id, &json);
     if (err == ESP_OK && json != NULL) {
-        err = workflow_service_parse_calc_settings_locked(json, &budget_ms);
+        err = workflow_service_parse_calc_settings_locked(
+            json, &budget_ms, &s_poll_scratch.calculation_config, material_id);
     }
     free(json);
     if (err != ESP_OK) {
@@ -1172,6 +1225,9 @@ static void workflow_service_calculation_start_locked(void)
         return;
     }
 
+    /* Run records already persist propagation_model_name; include the material there. */
+    workflow_service_set_material_provenance(
+        &s_poll_scratch.calculation_config, material_id);
     uint32_t job_id = 0U;
     err = localization_job_submit(
         s_active_object_id,
@@ -1274,6 +1330,7 @@ esp_err_t workflow_service_init(void)
     s_placement_ready_context = NULL;
     s_session_id[0] = '\0';
     memset(&s_last_async, 0, sizeof(s_last_async));
+    memset(&s_last_material_save, 0, sizeof(s_last_material_save));
     s_placement_ready = false;
     s_has_scan = false;
     s_scan_cache_valid = false;
@@ -1285,6 +1342,7 @@ esp_err_t workflow_service_init(void)
     s_calc_settings_cache_valid = false;
     s_calc_settings_cache_updated_ms = 0U;
     s_calc_settings_cache_object_id[0] = '\0';
+    s_calc_material[0] = '\0';
     s_calculation_job_id = 0U;
     s_orphaned_job_id = 0U;
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
@@ -1342,6 +1400,7 @@ void workflow_service_shutdown(void)
     s_orphaned_job_id = 0U;
     s_scan_cache_valid = false;
     s_calc_settings_cache_valid = false;
+    s_calc_material[0] = '\0';
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
     s_poll_first_calculation_seen = false;
     s_placement_ready_predicate = NULL;
@@ -1360,7 +1419,9 @@ static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
     workflow_service_copy_string(snapshot->session_id, sizeof(snapshot->session_id), s_session_id);
     snapshot->has_scan = s_has_scan;
     snapshot->calc_settings_ready = s_calc_settings_ready;
+    workflow_service_copy_string(snapshot->calc_material, sizeof(snapshot->calc_material), s_calc_material);
     snapshot->last_async = s_last_async;
+    snapshot->last_material_save = s_last_material_save;
     snapshot->calibration = s_calibration.status;
     snapshot->placement = s_placement.status;
 }
@@ -1475,6 +1536,45 @@ static void workflow_service_process_async_locked(void)
 {
     workflow_async_command_t item;
     while (xQueueReceive(s_async_queue, &item, 0U) == pdTRUE) {
+        if (item.kind == WORKFLOW_ASYNC_MATERIAL_SAVE) {
+            workflow_service_reconcile_locked();
+            esp_err_t result = ESP_ERR_NOT_FOUND;
+            if (s_active_object_id[0] != '\0') {
+                const localization_material_preset_t *preset =
+                    localization_material_preset_lookup(item.material_id);
+                const bool custom = strcmp(item.material_id, "custom") == 0;
+                if (custom || preset != NULL) {
+                    uint32_t budget_ms = 0U;
+                    result = localization_config_standard_processing(
+                        &s_poll_scratch.calculation_config, &budget_ms);
+                    if (result == ESP_OK) {
+                        s_poll_scratch.calculation_config.propagation_speed_mps = custom
+                            ? (double)item.custom_v_mps : (double)preset->propagation_speed_mps;
+                        s_poll_scratch.calculation_config.propagation_speed_uncertainty_mps = custom
+                            ? (double)item.custom_sigma_mps
+                            : (double)preset->propagation_speed_uncertainty_mps;
+                        char *json = NULL;
+                        result = localization_config_to_json(
+                            &s_poll_scratch.calculation_config, item.material_id, budget_ms, &json);
+                        if (result == ESP_OK) {
+                            result = object_store_set_calc_settings_json(s_active_object_id, json);
+                        }
+                        cJSON_free(json);
+                    }
+                } else {
+                    result = ESP_ERR_INVALID_ARG;
+                }
+            }
+            s_last_material_save = (workflow_last_material_save_t) {
+                .seq = item.seq,
+                .result = result,
+            };
+            if (result == ESP_OK) {
+                s_calc_settings_cache_valid = false;
+                workflow_service_refresh_calc_settings_locked(workflow_service_now_ms());
+            }
+            continue;
+        }
         const workflow_command_params_t params = {
             .has_generation = item.has_generation,
             .expected_generation = item.expected_generation,
@@ -1520,8 +1620,9 @@ esp_err_t workflow_service_command_async(
     if (xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
     uint32_t seq = s_async_next_seq + 1U;
     if (seq == 0U) seq = 1U;
-    const workflow_async_command_t item = {
+    workflow_async_command_t item = {
         .seq = seq,
+        .kind = WORKFLOW_ASYNC_COMMAND,
         .command = command,
         .has_generation = has_generation,
         .expected_generation = expected_generation,
@@ -1532,6 +1633,44 @@ esp_err_t workflow_service_command_async(
     }
     s_async_next_seq = seq;
     *out_seq = seq;
+    xSemaphoreGive(s_async_enqueue_mutex);
+    return ESP_OK;
+}
+
+esp_err_t workflow_service_save_calc_material_async(
+    const char *material_id,
+    uint32_t custom_v_mps,
+    uint32_t custom_sigma_mps
+)
+{
+    if (material_id == NULL || strnlen(material_id, WORKFLOW_CALC_MATERIAL_ID_SIZE) >=
+        WORKFLOW_CALC_MATERIAL_ID_SIZE) return ESP_ERR_INVALID_ARG;
+    const bool custom = strcmp(material_id, "custom") == 0;
+    const localization_material_preset_t *preset = custom
+        ? NULL : localization_material_preset_lookup(material_id);
+    if ((!custom && preset == NULL) ||
+        (custom && (!(custom_v_mps > 50U && custom_v_mps < 8000U) ||
+            custom_sigma_mps == 0U || custom_sigma_mps >= custom_v_mps))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || s_async_queue == NULL || s_async_enqueue_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
+    uint32_t seq = s_async_next_seq + 1U;
+    if (seq == 0U) seq = 1U;
+    workflow_async_command_t item = {
+        .seq = seq,
+        .kind = WORKFLOW_ASYNC_MATERIAL_SAVE,
+        .custom_v_mps = custom_v_mps,
+        .custom_sigma_mps = custom_sigma_mps,
+    };
+    (void)snprintf(item.material_id, sizeof(item.material_id), "%s", material_id);
+    if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
+        xSemaphoreGive(s_async_enqueue_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    s_async_next_seq = seq;
     xSemaphoreGive(s_async_enqueue_mutex);
     return ESP_OK;
 }

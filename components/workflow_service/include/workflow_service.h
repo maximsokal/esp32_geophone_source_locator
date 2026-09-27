@@ -28,6 +28,11 @@ esp_err_t workflow_service_set_placement_ready_predicate(
 );
 esp_err_t workflow_service_set_progress(int progress);
 esp_err_t workflow_service_notify_calc_settings_saved(const char *object_id);
+esp_err_t workflow_service_save_calc_material_async(
+    const char *material_id,
+    uint32_t custom_v_mps,
+    uint32_t custom_sigma_mps
+);
 esp_err_t workflow_service_capture_height_references(
     uint8_t *requested_channel_mask,
     uint16_t *requested_generation
