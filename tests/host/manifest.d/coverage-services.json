@@ -79,6 +79,7 @@
         "tests/host/measurement_service_hook_lifecycle_test.c",
         "components/measurement_service/tests/stubs/freertos/idf_additions.c",
         "components/object_format/object_format.c",
+        "components/storage_manager/storage_bulk_admission.c",
         "tests/host/stubs/runtime_observability/noop.c"
       ],
       "include_dirs": [
@@ -90,7 +91,9 @@
         "tests/host/stubs/runtime_observability",
         "components/runtime_observability/include",
         "components/object_store/include",
-        "components/seismic_buffer/include"
+        "components/seismic_buffer/include",
+        "components/storage_manager",
+        "components/storage_manager/include"
       ]
     }
   ]

@@ -3,6 +3,11 @@
 #include <string.h>
 
 #include "app_events.h"
+#include "esp_app_desc.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+#include "lvgl.h"
 #include "ui_internal.h"
 
 
@@ -15,6 +20,7 @@ static unsigned s_wifi_renders;
 static unsigned s_system_renders;
 static unsigned s_object_list_requests;
 static unsigned s_storage_info_requests;
+static unsigned char s_fake_lvgl_object;
 
 
 ui_context_t *ui_context(void)
@@ -64,19 +70,14 @@ void ui_render_wifi_locked(void)
 }
 
 
-void ui_render_system_locked(void)
-{
-    ++s_system_renders;
-}
-
-
 void ui_measurements_refresh_locked(void)
 {
 }
 
 
-void ui_system_refresh_locked(void)
+static lv_obj_t *fake_lvgl_object(void)
 {
+    return (lv_obj_t *)&s_fake_lvgl_object;
 }
 
 
@@ -115,6 +116,141 @@ esp_err_t storage_service_info_async(void)
 {
     ++s_storage_info_requests;
     return ESP_OK;
+}
+
+
+lv_obj_t *ui_create_screen_base_locked(const char *title, const char *footer)
+{
+    (void)title;
+    (void)footer;
+    ++s_system_renders;
+    return fake_lvgl_object();
+}
+
+
+lv_obj_t *ui_create_card_locked(
+    lv_obj_t *parent,
+    int x,
+    int y,
+    int width,
+    int height
+)
+{
+    (void)parent;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    return fake_lvgl_object();
+}
+
+
+lv_obj_t *ui_create_label_locked(
+    lv_obj_t *parent,
+    int x,
+    int y,
+    int width,
+    const char *text,
+    uint32_t color
+)
+{
+    (void)parent;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)text;
+    (void)color;
+    return fake_lvgl_object();
+}
+
+
+lv_obj_t *ui_create_row_locked(
+    lv_obj_t *parent,
+    int y,
+    const char *text,
+    bool selected,
+    bool enabled
+)
+{
+    (void)parent;
+    (void)y;
+    (void)text;
+    (void)selected;
+    (void)enabled;
+    return fake_lvgl_object();
+}
+
+
+const char *lv_label_get_text(const lv_obj_t *label)
+{
+    (void)label;
+    return "";
+}
+
+
+void lv_label_set_text(lv_obj_t *label, const char *text)
+{
+    (void)label;
+    (void)text;
+}
+
+
+const esp_app_desc_t *esp_app_get_description(void)
+{
+    static const esp_app_desc_t app = {"host"};
+    return &app;
+}
+
+
+const char *esp_get_idf_version(void)
+{
+    return "host";
+}
+
+
+size_t heap_caps_get_free_size(uint32_t caps)
+{
+    (void)caps;
+    return 1024U;
+}
+
+
+int64_t esp_timer_get_time(void)
+{
+    return 1000000LL;
+}
+
+
+esp_err_t ui_event_dispatcher_queue_locale_save(ui_locale_t locale)
+{
+    (void)locale;
+    return ESP_OK;
+}
+
+
+void ui_scan_preview_screen_open_locked(void)
+{
+}
+
+
+void ui_scan_preview_close_locked(void)
+{
+}
+
+
+void ui_scan_preview_release_locked(void)
+{
+}
+
+
+void ui_scan_preview_render_locked(void)
+{
+}
+
+
+void ui_scan_preview_handle_key_locked(keypad_key_t key)
+{
+    (void)key;
 }
 
 

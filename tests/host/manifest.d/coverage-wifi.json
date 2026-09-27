@@ -27,6 +27,7 @@
       "name": "wifi_manager_events_runtime",
       "sources": [
         "components/wifi_manager/wifi_manager_event_policy.c",
+        "components/wifi_manager/wifi_manager_reconnect_policy.c",
         "components/wifi_manager/wifi_manager_runtime.c",
         "components/wifi_manager/wifi_manager_runtime_format.c",
         "components/wifi_manager/wifi_manager_status.c",

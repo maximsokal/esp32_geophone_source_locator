@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "measurement_service.h"
+#include "storage_manager_internal.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -370,6 +371,7 @@ static void reset_fakes(void)
 static void start_service(void)
 {
     reset_fakes();
+    assert(storage_bulk_admission_initialize() == ESP_OK);
     assert(measurement_service_init() == ESP_OK);
     /* The deterministic host harness drives queued commands explicitly. */
     s_task = NULL;

@@ -6,6 +6,7 @@
       "sources": [
         "components/measurement_service/tests/measurement_service_autonomous_error_contract_test.c",
         "components/object_format/object_format.c",
+        "components/storage_manager/storage_bulk_admission.c",
         "tests/host/stubs/runtime_observability/noop.c"
       ],
       "include_dirs": [
@@ -18,7 +19,9 @@
         "tests/host/stubs/runtime_observability",
         "components/runtime_observability/include",
         "components/object_store/include",
-        "components/seismic_buffer/include"
+        "components/seismic_buffer/include",
+        "components/storage_manager",
+        "components/storage_manager/include"
       ]
     }
   ]
