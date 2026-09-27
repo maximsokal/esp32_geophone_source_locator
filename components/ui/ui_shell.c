@@ -126,6 +126,11 @@ lv_obj_t *ui_create_screen_base_locked(
         0,
         sizeof(context->measurement_max_series)
     );
+    memset(
+        context->measurement_node_labels,
+        0,
+        sizeof(context->measurement_node_labels)
+    );
     context->measurement_summary = NULL;
     context->measurement_transport = NULL;
     context->measurement_health = NULL;
@@ -356,10 +361,10 @@ static void ui_refresh_power_badge_locked(ui_context_t *context)
     if (context->header_power == NULL) {
         return;
     }
-    /* Static: the snapshot is large and this runs on the LVGL task. */
+    /* This runs on LVGL; never wait for the shared status mutex here. */
     static device_status_snapshot_t snapshot;
     ui_power_badge_t badge;
-    if (device_status_get_snapshot(&snapshot) == ESP_OK) {
+    if (device_status_try_get_snapshot(&snapshot) == ESP_OK) {
         ui_power_badge_from_status(&snapshot.power, &badge);
     } else {
         ui_power_badge_from_status(NULL, &badge);

@@ -18,7 +18,9 @@ export function powerBannerText(status: DeviceStatus | null, locale: I18nLocale 
     case 'shutdown':
       return translate(locale, 'power.critical_shutdown');
     case 'grace':
-      return translate(locale, 'power.critical_grace', { seconds: formatNumber(locale, power.shutdown_in_s ?? 0) });
+      return power.shutdown_in_s === undefined
+        ? translate(locale, 'power.critical_grace_unknown')
+        : translate(locale, 'power.critical_grace', { seconds: formatNumber(locale, power.shutdown_in_s) });
     case 'warning':
       return translate(locale, 'web.power.low');
     default:

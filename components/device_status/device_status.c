@@ -106,6 +106,28 @@ esp_err_t device_status_get_snapshot(
 }
 
 
+esp_err_t device_status_try_get_snapshot(
+    device_status_snapshot_t *snapshot
+)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (snapshot == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (xSemaphoreTake(s_mutex, 0U) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    *snapshot = s_status;
+    xSemaphoreGive(s_mutex);
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_internal_lock(
     device_status_snapshot_t **status
 )

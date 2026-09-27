@@ -10,6 +10,8 @@ import {
 import { uncertaintyText } from '../../domain/localizationOverlay';
 import type {
   LocalizationPickRecord,
+  LocalizationGeometryProvenance,
+  LocalizationSessionPodGeometry,
   LocalizationRun,
   LocalizationSessionCsPairs,
   LocalizationSessionGeometry,
@@ -219,6 +221,35 @@ function nodeLabel(node: number, locale: I18nLocale): string {
   return node === 0 ? 'MAIN' : translate(locale, 'objects.pod', { number: formatNumber(locale, node) });
 }
 
+function presentProvenanceFields(fields: Array<[I18nKey, string | number | undefined]>): Array<{ key: I18nKey; value: string }> {
+  return fields.flatMap(([key, value]) => value === undefined ? [] : [{ key, value: String(value) }]);
+}
+
+function geometryProvenanceFields(provenance: LocalizationGeometryProvenance, t: (key: I18nKey) => string) {
+  return presentProvenanceFields([
+    ['calc.provenance.solver', provenance.solver],
+    ['calc.provenance.solver_version', provenance.solver_version],
+    ['calc.provenance.refined', provenance.refined === undefined ? undefined : t(provenance.refined ? 'report.yes' : 'report.no')],
+    ['calc.provenance.refine_iterations', provenance.refine_iterations],
+    ['calc.provenance.topology_generation', provenance.topology_generation],
+    ['calc.provenance.cs_membership_generation', provenance.cs_membership_generation],
+    ['calc.provenance.main_height_reference_generation', provenance.main_height_reference_generation],
+    ['calc.provenance.setup_id', provenance.setup_id],
+    ['calc.provenance.start_uptime_ms', provenance.start_uptime_ms],
+  ]);
+}
+
+function podProvenanceFields(pod: LocalizationSessionPodGeometry, t: (key: I18nKey) => string) {
+  return presentProvenanceFields([
+    ['calc.provenance.source_sample_uptime_ms', pod.source_sample_uptime_ms],
+    ['calc.provenance.esp_receipt_uptime_ms', pod.esp_receipt_uptime_ms],
+    ['calc.provenance.source_age_ms_at_start', pod.source_age_ms_at_start === undefined
+      ? undefined
+      : pod.source_age_ms_at_start === null ? t('report.unknown') : pod.source_age_ms_at_start],
+    ['calc.provenance.height_reference_generation', pod.height_reference_generation],
+  ]);
+}
+
 function pickStatusLabel(status: LocalizationPickRecord['channels'][number]['status'], t: (key: I18nKey) => string): string {
   switch (status) {
     case 'accepted': return t('calc.pick.accepted');
@@ -251,6 +282,10 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [geometryError, setGeometryError] = useState<string | null>(null);
   /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
   const [hasScan, setHasScan] = useState<boolean | null>(null);
+  const provenance = geometry?.provenance;
+  const provenanceFields = provenance === undefined ? [] : geometryProvenanceFields(provenance, t);
+  const podProvenance = (geometry?.pods ?? []).map((pod) => ({ pod: pod.pod, fields: podProvenanceFields(pod, t) }))
+    .filter(({ fields }) => fields.length > 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -383,24 +418,42 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         <p>{t('calc.no_geometry')}</p>
       )}
       {geometry !== null && geometry.available && (
-        <dl className="console-dl">
-          {geometry.pods.map((pod) => (
-            <div key={pod.pod}>
-              <dt>{t('objects.pod', { number: formatNumber(locale, pod.pod) })}</dt>
-              <dd>
-                {pod.computed
-                  ? `${formatMm(pod.x_mm, locale)}, ${formatMm(pod.y_mm, locale)}, ${formatMm(pod.z_mm, locale)} · ${pod.leveled ? t('calc.level') : t('calc.not_level')}` +
-                    (pod.residual_mm !== undefined ? ` · ${t('calc.cs_residual', { value: formatMm(pod.residual_mm, locale) })}` : '') +
-                    (pod.uncertainty_mm === undefined || pod.uncertainty_mm === 0
-                      ? ''
-                      : pod.uncertainty_mm >= 2147483647
-                        ? ` · ${t('calc.position_not_determined')}`
-                        : ` · ±${formatMm(pod.uncertainty_mm, locale)}`)
-                  : t('calc.not_participating')}
-              </dd>
+        <>
+          <dl className="console-dl">
+            {geometry.pods.map((pod) => (
+              <div key={pod.pod}>
+                <dt>{t('objects.pod', { number: formatNumber(locale, pod.pod) })}</dt>
+                <dd>
+                  {pod.computed
+                    ? `${formatMm(pod.x_mm, locale)}, ${formatMm(pod.y_mm, locale)}, ${formatMm(pod.z_mm, locale)} · ${pod.leveled ? t('calc.level') : t('calc.not_level')}` +
+                      (pod.residual_mm !== undefined ? ` · ${t('calc.cs_residual', { value: formatMm(pod.residual_mm, locale) })}` : '') +
+                      (pod.uncertainty_mm === undefined || pod.uncertainty_mm === 0
+                        ? ''
+                        : pod.uncertainty_mm >= 2147483647
+                          ? ` · ${t('calc.position_not_determined')}`
+                          : ` · ±${formatMm(pod.uncertainty_mm, locale)}`)
+                    : t('calc.not_participating')}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          {(provenanceFields.length > 0 || podProvenance.length > 0) && (
+            <div className="provenance-block">
+              <h4>{t('calc.provenance')}</h4>
+              {provenanceFields.length > 0 && (
+                <dl className="console-dl">
+                  {provenanceFields.map(({ key, value }) => <div key={key}><dt>{t(key)}</dt><dd>{value}</dd></div>)}
+                </dl>
+              )}
+              {podProvenance.map(({ pod, fields }) => (
+                <div className="session-row" key={`provenance-${pod}`}>
+                  <strong>{nodeLabel(pod, locale)}</strong>
+                  <small>{fields.map(({ key, value }) => `${t(key)}: ${value}`).join(' · ')}</small>
+                </div>
+              ))}
             </div>
-          ))}
-        </dl>
+          )}
+        </>
       )}
 
       {csPairs !== null && csPairs.available && csPairs.pairs.length > 0 && (
@@ -411,11 +464,11 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
               <div className="session-row" key={`${pair.node_a}-${pair.node_b}`}>
                 <span>
                   <strong>{nodeLabel(pair.node_a, locale)} ↔ {nodeLabel(pair.node_b, locale)}</strong>
-                  <small>{pair.valid ? t('calc.valid') : t('calc.invalid')} · {formatNumber(locale, pair.attempts)} {pair.attempts === 1 ? t('calc.attempt') : t('calc.attempts')}</small>
+                  <small>{pair.valid ? t('calc.valid') : t('calc.invalid')} · {formatNumber(locale, pair.attempts)} {pair.attempts === 1 ? t('calc.attempt') : t('calc.attempts')}{pair.state !== undefined ? ` · ${t('calc.provenance.state')}: ${pair.state}` : ''}{pair.last_failure !== undefined ? ` · ${t('calc.provenance.last_failure')}: ${pair.last_failure}` : ''}</small>
                 </span>
                 <span>
                   <strong>{formatDistance(locale, pair.distance_mm / 1000)}</strong>
-                  <small>{t('calc.confidence_value', { value: formatNumber(locale, pair.confidence / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })} · {formatNumber(locale, pair.valid_samples)} {t('calc.samples')}{pair.spread_mm !== undefined && pair.valid_samples > 1 ? ` · ${t('calc.spread', { value: formatDistance(locale, pair.spread_mm / 1000) })}` : ''}{pair.rejected_samples ? ` · ${t('calc.outliers_dropped', { count: formatNumber(locale, pair.rejected_samples) })}` : ''}</small>
+                  <small>{t('calc.confidence_value', { value: formatNumber(locale, pair.confidence / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })} · {formatNumber(locale, pair.valid_samples)} {t('calc.samples')}{pair.spread_mm !== undefined && pair.valid_samples > 1 ? ` · ${t('calc.spread', { value: formatDistance(locale, pair.spread_mm / 1000) })}` : ''}{pair.rejected_samples ? ` · ${t('calc.outliers_dropped', { count: formatNumber(locale, pair.rejected_samples) })}` : ''}{pair.provider_quality_flags !== undefined ? ` · ${t('calc.provenance.provider_quality_flags')}: ${pair.provider_quality_flags}` : ''}{pair.scheduler_quality_flags !== undefined ? ` · ${t('calc.provenance.scheduler_quality_flags')}: ${pair.scheduler_quality_flags}` : ''}</small>
                 </span>
               </div>
             ))}

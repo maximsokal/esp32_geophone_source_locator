@@ -1,7 +1,6 @@
 import type {
   LocalizationRun,
   LocalizationRunListing,
-  LocalizationRunPosition,
   ScanArtifactInfo,
 } from '../api/deviceApi';
 import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
@@ -20,7 +19,7 @@ export type PolicyState = 'unknown' | 'insufficient' | 'planar_2d' | 'capable_3d
 
 export interface EvidencePosition {
   pod: number;
-  position: LocalizationRunPosition;
+  position: { x_m: number; y_m: number; z_m: number | null };
   leveled: boolean;
 }
 
@@ -104,7 +103,11 @@ export function buildRecordingEvidence(
     policy: geometry?.available === true ? policyFor(remotes.length) : 'unknown',
     positions: computed.map((pod) => ({
       pod: pod.pod,
-      position: { x_m: (pod.x_mm ?? 0) / 1000, y_m: (pod.y_mm ?? 0) / 1000, z_m: (pod.z_mm ?? 0) / 1000 },
+      position: {
+        x_m: (pod.x_mm ?? 0) / 1000,
+        y_m: (pod.y_mm ?? 0) / 1000,
+        z_m: pod.z_mm === undefined ? null : pod.z_mm / 1000,
+      },
       leveled: pod.leveled,
     })),
     worstResidualM: residuals.length === 0 ? null : Math.max(...residuals) / 1000,

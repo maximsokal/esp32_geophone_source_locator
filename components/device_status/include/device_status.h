@@ -340,6 +340,12 @@ esp_err_t device_status_get_snapshot(
 );
 
 
+/* Copy the current status without waiting; returns ESP_ERR_TIMEOUT if busy. */
+esp_err_t device_status_try_get_snapshot(
+    device_status_snapshot_t *snapshot
+);
+
+
 /*
  * Set the primary power values shown by the UI.
  */

@@ -30,6 +30,7 @@ def write_fixture(root: Path) -> dict[str, dict]:
         path = root / "i18n" / f"{namespace}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (root / "i18n" / "concepts.json").write_text("[]\n", encoding="utf-8")
     return data
 
 
@@ -39,6 +40,13 @@ def save_fixture(root: Path, data: dict[str, dict]) -> None:
             json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+def save_concepts(root: Path, concepts: list[dict]) -> None:
+    (root / "i18n" / "concepts.json").write_text(
+        json.dumps(concepts, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize(
@@ -139,6 +147,59 @@ def test_rejects_nonempty_uk_with_missing_or_extra_placeholders(tmp_path):
 
     with pytest.raises(generator.CatalogError, match="en/uk placeholders differ"):
         generator.generate_outputs(tmp_path)
+
+
+def test_concept_map_rejects_a_missing_catalog_key(tmp_path):
+    write_fixture(tmp_path)
+    save_concepts(tmp_path, [{
+        "id": "status.recording", "tft": None, "web": "missing.key", "report": None,
+        "same_uk": False, "note": "Web key is not in its catalog.",
+    }])
+
+    with pytest.raises(generator.CatalogError, match="references missing web key"):
+        generator.generate_outputs(tmp_path)
+    assert generator.main(["--check"], root=tmp_path) == 1
+
+
+def test_concept_map_rejects_a_same_uk_mismatch(tmp_path):
+    data = write_fixture(tmp_path)
+    for namespace, ukrainian in (("tft", "ЗАПИС"), ("web", "Триває"), ("report", "запис")):
+        key = f"{namespace}.status.recording"
+        data[namespace]["entries"][key] = {"en": "Recording", "uk": ukrainian}
+    save_fixture(tmp_path, data)
+    save_concepts(tmp_path, [{
+        "id": "status.recording", "tft": "tft.status.recording", "web": "web.status.recording",
+        "report": "report.status.recording", "same_uk": True, "note": "Expected parity.",
+    }])
+
+    with pytest.raises(generator.CatalogError, match="same_uk values differ"):
+        generator.generate_outputs(tmp_path)
+
+
+def test_concept_map_accepts_matching_uk_values_after_casefold(tmp_path):
+    data = write_fixture(tmp_path)
+    for namespace, ukrainian in (("tft", "ЗАПИС"), ("web", "Запис"), ("report", "запис")):
+        key = f"{namespace}.status.recording"
+        data[namespace]["entries"][key] = {"en": "Recording", "uk": ukrainian}
+    save_fixture(tmp_path, data)
+    save_concepts(tmp_path, [{
+        "id": "status.recording", "tft": "tft.status.recording", "web": "web.status.recording",
+        "report": "report.status.recording", "same_uk": True, "note": "Matching across surfaces.",
+    }])
+
+    generator.generate_outputs(tmp_path)
+
+
+def test_repository_concept_map_covers_requested_state_families():
+    concepts = json.loads((REPO_ROOT / "i18n" / "concepts.json").read_text(encoding="utf-8"))
+    concept_ids = {concept["id"] for concept in concepts}
+    assert {
+        "recording", "stopping", "stopped", "review", "error",
+        "orientation.accepted", "orientation.moving", "orientation.tilted", "orientation.fault",
+        "power.battery", "power.charging", "power.full", "power.low", "power.critical", "power.unknown",
+        "localization.solved", "localization.unsolved", "localization.unverified",
+        "constrained", "unconstrained", "unknown", "unavailable",
+    } <= concept_ids
 
 
 def test_firmware_catalog_contains_common_and_tft_namespaces_only():

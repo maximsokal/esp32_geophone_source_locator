@@ -797,6 +797,61 @@
       "uk": "ЗМІННИЙ",
       "max_len": 7
     },
+    "measurement.node_main": {
+      "en": "MAIN",
+      "uk": "MAIN",
+      "max_len": 4
+    },
+    "measurement.node_g1": {
+      "en": "G1",
+      "uk": "G1",
+      "max_len": 2
+    },
+    "measurement.node_g2": {
+      "en": "G2",
+      "uk": "G2",
+      "max_len": 2
+    },
+    "measurement.node_g3": {
+      "en": "G3",
+      "uk": "G3",
+      "max_len": 2
+    },
+    "measurement.node_g4": {
+      "en": "G4",
+      "uk": "G4",
+      "max_len": 2
+    },
+    "measurement.node_no_data": {
+      "en": "N/D",
+      "uk": "Н/Д",
+      "max_len": 3
+    },
+    "measurement.node_level": {
+      "en": "LEVEL",
+      "uk": "РІВНО",
+      "max_len": 5
+    },
+    "measurement.node_tilted": {
+      "en": "TILT",
+      "uk": "НАХИЛ",
+      "max_len": 5
+    },
+    "measurement.node_moving": {
+      "en": "MOVE",
+      "uk": "РУХ",
+      "max_len": 4
+    },
+    "measurement.node_solved": {
+      "en": "SOL",
+      "uk": "РОЗВ",
+      "max_len": 4
+    },
+    "measurement.node_unsolved": {
+      "en": "UNS",
+      "uk": "НЕРОЗВ",
+      "max_len": 6
+    },
     "measurement.state_live": {
       "en": "LIVE",
       "uk": "НАЖИВО",

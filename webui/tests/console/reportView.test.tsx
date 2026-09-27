@@ -97,6 +97,16 @@ function machineModelHash(report: ReturnType<typeof makeReport>): string {
   return createHash('sha256').update(JSON.stringify(machineFields)).digest('hex');
 }
 
+function renderedMachineFields(html: string): { ids: string[]; methods: string[]; coordinates: number[] } {
+  const row = html.match(/<tr><td>REMOTE 2<\/td>(.*?)<\/tr>/)?.[1] ?? '';
+  const cells = [...row.matchAll(/<td>([^<]*)<\/td>/g)].map((match) => match[1]);
+  return {
+    ids: [object.id, session.session_id],
+    methods: ['gauss_newton_tdoa', 'joint', 'traveltime_inversion'].filter((method) => html.includes(method)),
+    coordinates: cells.slice(0, 3).map((value) => Number(value.replace(',', '.'))),
+  };
+}
+
 function qrPaths(html: string): string[] {
   return [...html.matchAll(/<path d="([^"]+)"/g)].map((match) => match[1]);
 }
@@ -168,7 +178,54 @@ describe('ReportView', () => {
     expect(modelForEnglish.qr.text).toBe(modelForUkrainian.qr.text);
     expect(links(english)).toEqual(links(ukrainian));
     expect(qrPaths(english)).toEqual(qrPaths(ukrainian));
+    expect(renderedMachineFields(english)).toEqual(renderedMachineFields(ukrainian));
     expect(english).not.toBe(ukrainian);
+  });
+
+  it.each(['en', 'uk'] as const)('localizes known session statuses and marks unknown statuses in %s', (locale) => {
+    const statuses = [
+      ['complete', 'report.session_status.complete'],
+      ['incomplete', 'report.session_status.incomplete'],
+      ['error', 'report.session_status.error'],
+      ['recovered_error', 'report.session_status.recovered_error'],
+    ] as const;
+    for (const [status, key] of statuses) {
+      const report = buildRecordingReport(object, { ...session, status }, null, null, null, 0);
+      expect(render(report, locale)).toContain(`<tr><th>${translate(locale, 'report.status')}</th><td>${translate(locale, key)}</td></tr>`);
+    }
+
+    const rawStatus = 'future-session-state';
+    const unknownReport = buildRecordingReport(object, { ...session, status: rawStatus }, null, null, null, 0);
+    expect(render(unknownReport, locale)).toContain(
+      `<tr><th>${translate(locale, 'report.status')}</th><td>${rawStatus} (${translate(locale, 'report.session_status.unknown')})</td></tr>`,
+    );
+  });
+
+  it.each(['en', 'uk'] as const)('keeps an unknown remote count distinct from zero in %s', (locale) => {
+    const unknown = render(buildRecordingReport(object, session, null, null, null, 0), locale);
+    expect(unknown).toContain(
+      `<tr><th>${translate(locale, 'report.remote_nodes')}</th><td>${translate(locale, 'report.policy.unknown')} · ${translate(locale, 'report.policy', { value: translate(locale, 'report.policy.unknown') })}</td></tr>`,
+    );
+
+    const emptyGeometry: LocalizationRunListing = {
+      ...listing, geometry: { available: true, pods: [] },
+    };
+    const zero = render(buildRecordingReport(object, session, emptyGeometry, null, null, 0), locale);
+    expect(zero).toContain(
+      `<tr><th>${translate(locale, 'report.remote_nodes')}</th><td>${translate(locale, 'report.remote_count', { count: formatNumber(locale, 0) })} · ${translate(locale, 'report.policy', { value: translate(locale, 'report.policy.insufficient') })}</td></tr>`,
+    );
+  });
+
+  it.each(['en', 'uk'] as const)('renders a missing report z coordinate as unknown in %s', (locale) => {
+    const missingZ: LocalizationRunListing = {
+      ...listing,
+      geometry: { available: true, pods: [{ pod: 0, computed: true, leveled: true, x_mm: 0, y_mm: 0 }] },
+    };
+    const html = render(buildRecordingReport(object, session, missingZ, null, null, 0), locale);
+    const fixed = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+    expect(html).toContain(
+      `<tr><td>${translate(locale, 'report.main_node')}</td><td>${formatNumber(locale, 0, fixed)}</td><td>${formatNumber(locale, 0, fixed)}</td><td>${translate(locale, 'report.unknown')}</td><td>${translate(locale, 'report.yes')}</td></tr>`,
+    );
   });
 
   it.each(['en', 'uk'] as const)('distinguishes zero GPS coordinates from unavailable location in %s', (locale) => {

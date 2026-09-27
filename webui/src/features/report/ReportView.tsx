@@ -4,7 +4,7 @@ import type { ProjectionAxis } from '../../domain/reportModel';
 import { encodeQr, qrSvgPath } from '../../domain/qrCode';
 import { qrByteCapacity } from '../../domain/qrCode';
 import { describeFrames } from '../../domain/spatialFrames';
-import { useLocale, useT } from '../../i18n';
+import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatDate, formatDistance, formatNumber } from '../../i18n/format';
 
 /*
@@ -97,6 +97,16 @@ function fmt(value: number, locale: 'en' | 'uk', digits = 2): string {
   return Number.isFinite(value) ? formatNumber(locale, value, { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
 }
 
+function sessionStatusText(status: string, tr: (key: I18nKey) => string): string {
+  switch (status) {
+    case 'complete': return tr('report.session_status.complete');
+    case 'incomplete': return tr('report.session_status.incomplete');
+    case 'error': return tr('report.session_status.error');
+    case 'recovered_error': return tr('report.session_status.recovered_error');
+    default: return `${status} (${tr('report.session_status.unknown')})`;
+  }
+}
+
 export default function ReportView({ report }: { report: RecordingReport }) {
   const tr = useT();
   const { locale } = useLocale();
@@ -157,7 +167,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
         <h2>{tr('report.recording')}</h2>
         <table>
           <tbody>
-            <tr><th>{tr('report.status')}</th><td>{session.status ?? (session.complete ? 'complete' : 'incomplete')}</td></tr>
+            <tr><th>{tr('report.status')}</th><td>{sessionStatusText(session.status ?? (session.complete ? 'complete' : 'incomplete'), tr)}</td></tr>
             <tr><th>{tr('report.source')}</th><td>{session.source ?? '—'}</td></tr>
             <tr><th>{tr('report.sample_rate')}</th><td>{formatNumber(locale, session.sample_rate_hz)} Hz · {tr('report.channels', { count: formatNumber(locale, session.channel_count) })}</td></tr>
             <tr><th>{tr('report.duration')}</th><td>{session.recording_ms_available === false ? tr('report.unknown') : `${formatNumber(locale, session.recording_ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`}</td></tr>
@@ -174,7 +184,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
             <thead><tr><th>{tr('report.sensor')}</th><th>{tr('report.x_m')}</th><th>{tr('report.y_m')}</th><th>{tr('report.z_m')}</th><th>{tr('report.levelled')}</th></tr></thead>
             <tbody>
               {evidence.positions.map((p) => (
-                <tr key={p.pod}><td>{p.pod === 0 ? tr('report.main_node') : tr('report.remote_node', { number: formatNumber(locale, p.pod) })}</td><td>{fmt(p.position.x_m, locale)}</td><td>{fmt(p.position.y_m, locale)}</td><td>{fmt(p.position.z_m, locale)}</td><td>{tr(p.leveled ? 'report.yes' : 'report.no')}</td></tr>
+                <tr key={p.pod}><td>{p.pod === 0 ? tr('report.main_node') : tr('report.remote_node', { number: formatNumber(locale, p.pod) })}</td><td>{fmt(p.position.x_m, locale)}</td><td>{fmt(p.position.y_m, locale)}</td><td>{p.position.z_m === null ? tr('report.unknown') : fmt(p.position.z_m, locale)}</td><td>{tr(p.leveled ? 'report.yes' : 'report.no')}</td></tr>
               ))}
             </tbody>
           </table>

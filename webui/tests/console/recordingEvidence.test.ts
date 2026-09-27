@@ -87,6 +87,14 @@ describe('recording evidence', () => {
     expect(buildRecordingEvidence(listing(two), null, null).policy).toBe('insufficient');
   });
 
+  it('keeps a missing z coordinate unknown while preserving a valid zero', () => {
+    const evidence = buildRecordingEvidence(listing([
+      { pod: 0, computed: true, leveled: true, x_mm: 0, y_mm: 0 },
+      { pod: 1, computed: true, leveled: true, x_mm: 1000, y_mm: 0, z_mm: 0 },
+    ]), null, null);
+    expect(evidence.positions.map(({ position }) => position.z_m)).toEqual([null, 0]);
+  });
+
   it('reports unknown rather than guessing when data is missing', () => {
     const e = buildRecordingEvidence(null, null, null);
     expect(e.remoteCount).toBeNull();

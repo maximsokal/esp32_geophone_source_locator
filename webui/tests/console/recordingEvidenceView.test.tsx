@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { LocaleProvider, translate } from '../../src/i18n';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 import { formatDistance, formatNumber } from '../../src/i18n/format';
 import { RecordingEvidenceView } from '../../src/features/objects/RecordingEvidenceCard';
 import { buildRecordingEvidence } from '../../src/domain/recordingEvidence';
 
 /* MAX-169: the evidence card states facts or "unknown", never guesses. */
+
+beforeAll(async () => { await loadUkrainianCatalog(); });
 
 describe('RecordingEvidenceView', () => {
   it('shows participation, policy, scan and localization status of one recording', () => {
@@ -48,5 +50,23 @@ describe('RecordingEvidenceView', () => {
     expect(html).toContain(`<dt>${translate('en', 'evidence.localization_policy')}</dt><dd>${translate('en', 'evidence.policy.unknown')}</dd>`);
     expect(html).toContain(`<dt>${translate('en', 'evidence.scan')}</dt><dd>${translate('en', 'evidence.scan.unknown')}</dd>`);
     expect(html).toContain(`<dt>${translate('en', 'evidence.localization')}</dt><dd>${translate('en', 'evidence.localization.unknown')}</dd>`);
+  });
+
+  it.each(['en', 'uk'] as const)('renders missing z as unknown and a valid zero as zero in %s', (locale: I18nLocale) => {
+    const evidence = buildRecordingEvidence({
+      object_id: 'o', session_id: 's',
+      geometry: { available: true, pods: [
+        { pod: 0, computed: true, leveled: true, x_mm: 0, y_mm: 0 },
+        { pod: 1, computed: true, leveled: true, x_mm: 1000, y_mm: 0, z_mm: 0 },
+      ] },
+      cs_pairs: { available: false, pairs: [] }, picks: [], runs: [],
+    }, null, null);
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale },
+      createElement(RecordingEvidenceView, { evidence })));
+    const zero = formatNumber(locale, 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const unknown = translate(locale, 'evidence.policy.unknown');
+    const remote = translate(locale, 'report.remote_node', { number: formatNumber(locale, 1) });
+    expect(html).toContain(`MAIN ${zero}/${zero}/${unknown}`);
+    expect(html).toContain(`${remote} ${formatNumber(locale, 1, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}/${zero}/${zero}`);
   });
 });

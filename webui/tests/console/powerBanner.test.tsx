@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import PowerBanner, { powerBannerText } from '../../src/components/PowerBanner';
 import type { DeviceStatus } from '../../src/domain/device';
-import { LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 import { formatNumber } from '../../src/i18n/format';
 
 /* MAX-180/183: the low-battery banner follows the ESP32's decision. */
+
+beforeAll(async () => { await loadUkrainianCatalog(); });
 
 function withPower(power: Record<string, unknown> | undefined): DeviceStatus {
   return { power } as unknown as DeviceStatus;
@@ -22,6 +24,14 @@ describe('PowerBanner', () => {
     expect(html).toContain(expected);
     expect(html).toContain('role="alert"');
     expect(/(?:^|\s)[a-z_]+\.[a-z_.]+(?=\s|$)/.test(html.replace(/<[^>]*>/g, ' '))).toBe(false);
+  });
+
+  it.each(['en', 'uk'] as const)('keeps a missing shutdown countdown unknown in %s', (locale: I18nLocale) => {
+    const missing = withPower({ state: 'BATTERY_CRITICAL', low_battery: 'grace' });
+    const zero = withPower({ state: 'BATTERY_CRITICAL', low_battery: 'grace', shutdown_in_s: 0 });
+    expect(powerBannerText(missing, locale)).toBe(translate(locale, 'power.critical_grace_unknown'));
+    expect(powerBannerText(missing, locale)).not.toContain('0');
+    expect(powerBannerText(zero, locale)).toBe(translate(locale, 'power.critical_grace', { seconds: formatNumber(locale, 0) }));
   });
 
   it('announces the running safe shutdown', () => {
