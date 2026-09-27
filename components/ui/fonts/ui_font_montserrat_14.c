@@ -1,13 +1,13 @@
 /*******************************************************************************
  * Size: 14 px
  * Bpp: 4
- * Opts: --font components/ui/fonts/Montserrat-Regular.ttf -r 0x20-0x7e,0xa0-0xff,0x400-0x4ff,0x2bc,0x2013-0x2014,0x2019,0x2212 --size 14 --bpp 4 --format lvgl --lv-font-name ui_font_montserrat_14 --lv-fallback lv_font_montserrat_14 --output components/ui/fonts/ui_font_montserrat_14.c
+ * Opts: --font components/ui/fonts/Montserrat-Regular.ttf -r 0x20-0x7e,0xa0-0xff,0x400-0x4ff,0x2bc,0x2013-0x2014,0x2019,0x2212 --size 14 --bpp 4 --format lvgl --lv-include lvgl.h --lv-font-name ui_font_montserrat_14 --lv-fallback lv_font_montserrat_14 --output components/ui/fonts/ui_font_montserrat_14.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
 #else
-#include "lvgl/lvgl.h"
+#include "lvgl.h"
 #endif
 
 #ifndef UI_FONT_MONTSERRAT_14

@@ -60,4 +60,5 @@ idf_component_register(
     PRIV_REQUIRES
         esp_app_format
         heap
+        lvgl
 )

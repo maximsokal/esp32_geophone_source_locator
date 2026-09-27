@@ -153,12 +153,8 @@ def test_firmware_catalog_contains_common_and_tft_namespaces_only():
 
 def test_running_generator_twice_writes_identical_bytes(tmp_path):
     write_fixture(tmp_path)
+    paths = tuple(generator.generate_outputs(tmp_path)[0])
     assert generator.main([], root=tmp_path) == 0
-    paths = (
-        Path("webui/src/i18n/catalog.gen.ts"),
-        Path("components/ui_i18n/include/ui_i18n_catalog.gen.h"),
-        Path("components/ui_i18n/ui_i18n_catalog.gen.c"),
-    )
     first = {path: (tmp_path / path).read_bytes() for path in paths}
 
     assert generator.main([], root=tmp_path) == 0
@@ -170,7 +166,7 @@ def test_check_detects_stale_files_without_writing(tmp_path):
     assert generator.main([], root=tmp_path) == 0
     assert generator.main(["--check"], root=tmp_path) == 0
 
-    stale = tmp_path / "webui/src/i18n/catalog.gen.ts"
+    stale = tmp_path / next(iter(generator.generate_outputs(tmp_path)[0]))
     stale.write_bytes(b"stale\n")
     assert generator.main(["--check"], root=tmp_path) == 1
     assert stale.read_bytes() == b"stale\n"
