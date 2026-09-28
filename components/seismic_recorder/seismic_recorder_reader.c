@@ -866,6 +866,29 @@ esp_err_t seismic_recorder_read_session(
  * long a session this can analyze in one call; a session that does not fit
  * fails closed with ESP_ERR_INVALID_SIZE rather than silently truncating.
  */
+esp_err_t seismic_recorder_get_session_summary(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary_out
+)
+{
+    if (object_id == NULL || session_id == NULL || summary_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    object_store_profile_t *profile = malloc(sizeof(*profile));
+    if (profile == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = object_store_get_profile(object_id, profile);
+    free(profile);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return seismic_recorder_json_read_summary(object_id, session_id, summary_out);
+}
+
+
 esp_err_t seismic_recorder_read_session_raw(
     const char *object_id,
     const char *session_id,
@@ -887,18 +910,8 @@ esp_err_t seismic_recorder_read_session_raw(
 
     *frame_count_out = 0U;
 
-    object_store_profile_t *profile = malloc(sizeof(*profile));
-    if (profile == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = object_store_get_profile(object_id, profile);
-    free(profile);
-    if (err != ESP_OK) {
-        return err;
-    }
-
     seismic_recorder_session_summary_t summary;
-    err = seismic_recorder_json_read_summary(object_id, session_id, &summary);
+    esp_err_t err = seismic_recorder_get_session_summary(object_id, session_id, &summary);
     if (err != ESP_OK) {
         return err;
     }
@@ -1014,6 +1027,152 @@ esp_err_t seismic_recorder_read_session_raw(
 
     if (err == ESP_OK && summary_out != NULL) {
         *summary_out = summary;
+    }
+    return err;
+}
+
+
+esp_err_t seismic_recorder_read_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_index,
+    size_t max_frames,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out
+)
+{
+    if (
+        object_id == NULL || session_id == NULL || max_frames == 0U ||
+        frames == NULL || frame_count_out == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *frame_count_out = 0U;
+
+    seismic_recorder_session_summary_t summary;
+    esp_err_t err = seismic_recorder_get_session_summary(object_id, session_id, &summary);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (!summary.readable && !summary.complete) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (start_index > summary.samples_written) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint64_t remaining = summary.samples_written - start_index;
+    const size_t frames_to_read = remaining < (uint64_t)max_frames
+        ? (size_t)remaining
+        : max_frames;
+    if (frames_to_read == 0U) {
+        if (summary_out != NULL) {
+            *summary_out = summary;
+        }
+        return ESP_OK;
+    }
+
+    char *samples_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (samples_path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = seismic_recorder_fs_build_session_path(
+        object_id,
+        session_id,
+        samples_path,
+        SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_append_suffix(
+            samples_path,
+            SEISMIC_RECORDER_PATH_SIZE,
+            "/samples.bin"
+        );
+    }
+
+    uint64_t file_size = 0U;
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_file_size(samples_path, &file_size);
+    }
+    if (err == ESP_OK && file_size < sizeof(seismic_recorder_binary_header_t)) {
+        err = ESP_ERR_INVALID_RESPONSE;
+    }
+
+    seismic_recorder_bounded_reader_t raw_reader = {
+        .path = samples_path,
+    };
+    seismic_recorder_samples_reader_t samples_reader;
+    if (err == ESP_OK) {
+        err = seismic_recorder_samples_reader_open(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            file_size,
+            &summary,
+            &samples_reader
+        );
+    }
+    if (err == ESP_OK) {
+        err = seismic_recorder_samples_reader_skip(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            &samples_reader,
+            start_index
+        );
+    }
+
+#ifdef ESP_PLATFORM
+    seismic_recorder_reader_priority_guard_t priority_guard = {0};
+    if (err == ESP_OK) {
+        priority_guard = seismic_recorder_reader_priority_enter();
+    }
+#endif
+    size_t frames_read = 0U;
+    while (err == ESP_OK && frames_read < frames_to_read) {
+        size_t count = 0U;
+        uint64_t first_sample_index = 0U;
+        bool block_gap_before = false;
+        err = seismic_recorder_samples_reader_next(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            &samples_reader,
+            frames + frames_read,
+            frames_to_read - frames_read,
+            &count,
+            &first_sample_index,
+            &block_gap_before
+        );
+        if (err != ESP_OK) {
+            break;
+        }
+        if (count == 0U) {
+            err = ESP_ERR_INVALID_RESPONSE;
+            break;
+        }
+        for (size_t i = 0U; i < count; ++i) {
+            if (source_sample_indices != NULL) {
+                source_sample_indices[frames_read + i] = first_sample_index + (uint64_t)i;
+            }
+            if (gap_before != NULL) {
+                gap_before[frames_read + i] = i == 0U && block_gap_before;
+            }
+        }
+        frames_read += count;
+    }
+#ifdef ESP_PLATFORM
+    if (priority_guard.changed) {
+        seismic_recorder_reader_priority_leave(priority_guard);
+    }
+#endif
+
+    free(samples_path);
+    if (err == ESP_OK) {
+        *frame_count_out = frames_read;
+        if (summary_out != NULL) {
+            *summary_out = summary;
+        }
     }
     return err;
 }

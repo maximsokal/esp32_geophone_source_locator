@@ -8,6 +8,7 @@
 #define LOCALIZATION_CALCULATE_SEARCH_STEP_M 0.1
 #define LOCALIZATION_CALCULATE_SEARCH_MARGIN_FRACTION 0.5
 #define LOCALIZATION_CALCULATE_SEARCH_MIN_MARGIN_M 1.0
+#define LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES 30000U
 
 
 double localization_calculate_quality_from_residual_us(
@@ -50,6 +51,32 @@ size_t localization_calculate_participating_channels(
         *channel_mask_out = mask;
     }
     return count;
+}
+
+
+size_t localization_calculate_analysis_window_frames(
+    uint32_t sample_rate_hz,
+    uint32_t max_analysis_seconds,
+    uint64_t psram_budget_bytes,
+    size_t bytes_per_frame
+)
+{
+    if (sample_rate_hz == 0U || max_analysis_seconds == 0U || bytes_per_frame == 0U) {
+        return 0U;
+    }
+
+    const uint64_t time_frames = (uint64_t)sample_rate_hz * max_analysis_seconds;
+    uint64_t max_frames = psram_budget_bytes / bytes_per_frame;
+    if (time_frames < max_frames) {
+        max_frames = time_frames;
+    }
+    if (
+        sample_rate_hz == 500U &&
+        max_frames < LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES
+    ) {
+        max_frames = LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES;
+    }
+    return max_frames > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)max_frames;
 }
 
 

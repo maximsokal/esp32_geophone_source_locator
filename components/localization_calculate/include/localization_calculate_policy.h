@@ -57,6 +57,14 @@ size_t localization_calculate_participating_channels(
     uint32_t *channel_mask_out
 );
 
+/* Bound raw analysis frames by both duration and concurrent PSRAM use. */
+size_t localization_calculate_analysis_window_frames(
+    uint32_t sample_rate_hz,
+    uint32_t max_analysis_seconds,
+    uint64_t psram_budget_bytes,
+    size_t bytes_per_frame
+);
+
 
 /*
  * Converts one pod's frozen millimeter geometry to the meter-based

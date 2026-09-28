@@ -25,15 +25,13 @@
 #include "storage_manager.h"
 
 
-/*
- * Bounds how long a single finalized session this build can pull into
- * PSRAM for offline analysis in one call, matching
- * seismic_recorder_read_session_raw()'s own "fail closed rather than
- * silently truncate" contract. 30000 frames is 60 s at this project's own
- * measured ~500 Hz acquisition rate (MAX-141/142) -- generous headroom for
- * one impact/tap event capture, not a guess at a physical property.
- */
-#define LOCALIZATION_CALCULATE_MAX_FRAMES 30000U
+#ifndef CONFIG_LOCALIZATION_MAX_ANALYSIS_S
+#define CONFIG_LOCALIZATION_MAX_ANALYSIS_S 10
+#endif
+
+#ifndef CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB
+#define CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB 4096
+#endif
 
 /* A numerical search-strategy knob (coarse-to-refine grid narrowing), not a
  * physical measurement -- see localization_calculate_search_bounds()'s own
@@ -308,28 +306,17 @@ esp_err_t localization_calculate_run(
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* --- Read this session's full-resolution raw samples ---------------- */
-
-    seismic_frame_t *frames = heap_caps_malloc(
-        sizeof(*frames) * LOCALIZATION_CALCULATE_MAX_FRAMES,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
-    );
-    if (frames == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
+    /* --- Read a bounded full-resolution prefix of this session ----------- */
     seismic_recorder_session_summary_t session_summary;
-    size_t frame_count = 0U;
-    err = seismic_recorder_read_session_raw(
-        object_id, session_id, frames, LOCALIZATION_CALCULATE_MAX_FRAMES,
-        &frame_count, &session_summary
-    );
+    err = seismic_recorder_get_session_summary(object_id, session_id, &session_summary);
     if (err != ESP_OK) {
-        heap_caps_free(frames);
         return err;
     }
-    if (frame_count == 0U || session_summary.sample_rate_hz == 0U) {
-        heap_caps_free(frames);
+    if (
+        (!session_summary.readable && !session_summary.complete) ||
+        session_summary.samples_written == 0U ||
+        session_summary.sample_rate_hz == 0U
+    ) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -343,10 +330,48 @@ esp_err_t localization_calculate_run(
     );
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "session-rate window rescaling failed: %s", rate_error);
-        heap_caps_free(frames);
         return err;
     }
     config = &session_config;
+
+    const size_t bytes_per_frame =
+        sizeof(seismic_frame_t) + SEISMIC_CHANNEL_COUNT * sizeof(float);
+    const size_t max_window_frames = localization_calculate_analysis_window_frames(
+        session_summary.sample_rate_hz,
+        CONFIG_LOCALIZATION_MAX_ANALYSIS_S,
+        (uint64_t)CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB * 1024ULL,
+        bytes_per_frame
+    );
+    const size_t frame_capacity = session_summary.samples_written < (uint64_t)max_window_frames
+        ? (size_t)session_summary.samples_written
+        : max_window_frames;
+    if (frame_capacity == 0U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    seismic_frame_t *frames = heap_caps_malloc(
+        sizeof(*frames) * frame_capacity,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (frames == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t frame_count = 0U;
+    err = seismic_recorder_read_session_range(
+        object_id, session_id, 0U, frame_capacity, frames, NULL, NULL,
+        &frame_count, NULL
+    );
+    if (err != ESP_OK) {
+        heap_caps_free(frames);
+        return err;
+    }
+    if (frame_count == 0U || session_summary.sample_rate_hz == 0U) {
+        heap_caps_free(frames);
+        return ESP_ERR_INVALID_STATE;
+    }
+    const bool analysis_window_truncated =
+        session_summary.samples_written > (uint64_t)frame_count;
 
     /* --- Per-channel DC removal, energy, and arrival picking ------------- */
 
@@ -1692,6 +1717,11 @@ esp_err_t localization_calculate_run(
         if (records[i].solved) {
             summary_out->methods_solved++;
         }
+        if (analysis_window_truncated) {
+            records[i].analysis_window_truncated = true;
+            records[i].analysis_window_start_index = 0U;
+            records[i].analysis_window_frames = frame_count;
+        }
     }
 
     /* --- Persist every individual method's own record, solved or not ----- */
@@ -1730,6 +1760,11 @@ esp_err_t localization_calculate_run(
         all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
         LOCALIZATION_CALCULATE_METHOD_VERSION, joint_record
     );
+    if (analysis_window_truncated) {
+        joint_record->analysis_window_truncated = true;
+        joint_record->analysis_window_start_index = 0U;
+        joint_record->analysis_window_frames = frame_count;
+    }
     if (joint_record->solved) {
         summary_out->methods_solved++;
     }

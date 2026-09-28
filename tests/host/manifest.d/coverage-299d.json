@@ -22,6 +22,7 @@
     },
     {
       "name": "localization_calculate_rate_windows_299d",
+      "defines": ["CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=1200"],
       "sources": [
         "components/localization_calculate/localization_calculate.c",
         "components/localization_calculate/localization_calculate_policy.c",

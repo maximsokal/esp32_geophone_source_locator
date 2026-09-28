@@ -70,7 +70,8 @@ static seismic_recorder_session_summary_t g_fixture_summary;
 static esp_err_t g_fixture_geometry_err;
 static esp_err_t g_fixture_raw_err;
 static size_t g_geometry_read_calls;
-static size_t g_raw_read_calls;
+static size_t g_summary_read_calls;
+static size_t g_range_read_calls;
 
 esp_err_t seismic_recorder_read_session_geometry(
     const char *object_id,
@@ -88,26 +89,55 @@ esp_err_t seismic_recorder_read_session_geometry(
     return ESP_OK;
 }
 
-esp_err_t seismic_recorder_read_session_raw(
+esp_err_t seismic_recorder_get_session_summary(
     const char *object_id,
     const char *session_id,
+    seismic_recorder_session_summary_t *summary_out
+)
+{
+    (void)object_id;
+    (void)session_id;
+    ++g_summary_read_calls;
+    if (g_fixture_raw_err != ESP_OK) {
+        return g_fixture_raw_err;
+    }
+    if (summary_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *summary_out = g_fixture_summary;
+    return ESP_OK;
+}
+
+esp_err_t seismic_recorder_read_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_index,
+    size_t max_frames,
     seismic_frame_t *frames,
-    size_t frame_capacity,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
     size_t *frame_count_out,
     seismic_recorder_session_summary_t *summary_out
 )
 {
     (void)object_id;
     (void)session_id;
-    ++g_raw_read_calls;
+    (void)source_sample_indices;
+    (void)gap_before;
+    ++g_range_read_calls;
     if (g_fixture_raw_err != ESP_OK) {
         return g_fixture_raw_err;
     }
-    if (frame_capacity < g_fixture_frame_count) {
-        return ESP_ERR_INVALID_SIZE;
+    if (
+        frames == NULL || frame_count_out == NULL || start_index > g_fixture_frame_count ||
+        max_frames == 0U
+    ) {
+        return ESP_ERR_INVALID_ARG;
     }
-    memcpy(frames, g_fixture_frames, sizeof(*frames) * g_fixture_frame_count);
-    *frame_count_out = g_fixture_frame_count;
+    const size_t remaining = g_fixture_frame_count - (size_t)start_index;
+    const size_t count = remaining < max_frames ? remaining : max_frames;
+    memcpy(frames, g_fixture_frames + (size_t)start_index, sizeof(*frames) * count);
+    *frame_count_out = count;
     if (summary_out != NULL) {
         *summary_out = g_fixture_summary;
     }
@@ -167,7 +197,8 @@ static void reset_fakes(void)
     g_fixture_geometry_err = ESP_OK;
     g_fixture_raw_err = ESP_OK;
     g_geometry_read_calls = 0U;
-    g_raw_read_calls = 0U;
+    g_summary_read_calls = 0U;
+    g_range_read_calls = 0U;
 
     g_recorded_count = 0U;
     g_write_call_count = 0U;
@@ -301,6 +332,28 @@ static void build_fixture(
     memset(&g_fixture_summary, 0, sizeof(g_fixture_summary));
     g_fixture_summary.sample_rate_hz = FIX_SAMPLE_RATE_HZ;
     g_fixture_summary.channel_count = OBJECT_STORE_POD_COUNT;
+    g_fixture_summary.samples_written = buffer_len;
+    g_fixture_summary.complete = true;
+    g_fixture_summary.readable = true;
+}
+
+
+static void extend_fixture_frames(size_t frame_count)
+{
+    assert(frame_count >= g_fixture_frame_count);
+    seismic_frame_t *extended = realloc(
+        g_fixture_frames,
+        sizeof(*g_fixture_frames) * frame_count
+    );
+    assert(extended != NULL);
+    memset(
+        extended + g_fixture_frame_count,
+        0,
+        sizeof(*g_fixture_frames) * (frame_count - g_fixture_frame_count)
+    );
+    g_fixture_frames = extended;
+    g_fixture_frame_count = frame_count;
+    g_fixture_summary.samples_written = frame_count;
 }
 
 
@@ -486,7 +539,10 @@ static void test_run_revalidates_windows_against_session_rate(void)
         "OBJ01", "S000099", &config, 46000ULL, &summary
     );
     assert(err == ESP_ERR_INVALID_ARG); /* 1/2 samples collapse to 1/1 at 500 Hz */
-    assert(g_geometry_read_calls == 1U && g_raw_read_calls == 1U);
+    assert(
+        g_geometry_read_calls == 1U && g_summary_read_calls == 1U &&
+        g_range_read_calls == 0U
+    );
     assert(g_write_call_count == 0U && g_pick_write_calls == 0U);
     free_fixture_frames();
 }
@@ -519,13 +575,42 @@ static void test_insufficient_dimensionality_writes_nothing(void)
         assert(err == ESP_ERR_INVALID_STATE);
         assert(summary.participating_channel_count == pod_count);
         assert(g_geometry_read_calls == 1U);
-        assert(g_raw_read_calls == 0U); /* geometry gate fails before raw is ever read */
+        assert(g_summary_read_calls == 0U && g_range_read_calls == 0U);
         assert(g_write_call_count == 0U);
         assert(g_pick_write_calls == 0U);
         assert(g_recorded_count == 0U);
     }
     free_fixture_frames();
     puts("  insufficient dimensionality (0/1/2 pods): zero run-store writes -- OK");
+}
+
+
+static void test_truncated_session_persists_analysis_window(void)
+{
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    extend_fixture_frames(30721U);
+
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        "OBJ01", "S000004", &config, 45000ULL, &summary
+    ) == ESP_OK);
+    assert(g_summary_read_calls == 1U && g_range_read_calls == 1U);
+    assert(g_recorded_count > 0U);
+    for (size_t i = 0U; i < g_recorded_count; ++i) {
+        if (!g_recorded[i].analysis_window_truncated) {
+            fprintf(stderr, "missing window provenance record=%zu method=%s start=%llu frames=%llu samples=%llu\n",
+                i, g_recorded[i].method_name,
+                (unsigned long long)g_recorded[i].analysis_window_start_index,
+                (unsigned long long)g_recorded[i].analysis_window_frames,
+                (unsigned long long)g_fixture_summary.samples_written);
+        }
+        assert(g_recorded[i].analysis_window_truncated);
+        assert(g_recorded[i].analysis_window_start_index == 0U);
+        assert(g_recorded[i].analysis_window_frames == 30720U);
+    }
+    free_fixture_frames();
 }
 
 
@@ -696,7 +781,7 @@ static void test_read_failures_propagate_with_no_partial_writes(void)
 
     assert(err == ESP_ERR_TIMEOUT);
     assert(g_geometry_read_calls == 1U);
-    assert(g_raw_read_calls == 1U);
+    assert(g_summary_read_calls == 1U && g_range_read_calls == 0U);
     assert(g_write_call_count == 0U);
     assert(g_pick_write_calls == 0U);
     assert(g_recorded_count == 0U);
@@ -709,7 +794,7 @@ static void test_read_failures_propagate_with_no_partial_writes(void)
 
     assert(err == ESP_FAIL);
     assert(g_geometry_read_calls == 1U);
-    assert(g_raw_read_calls == 0U); /* geometry is read and checked before raw samples at all */
+    assert(g_summary_read_calls == 0U && g_range_read_calls == 0U);
     assert(g_write_call_count == 0U);
     assert(g_pick_write_calls == 0U);
     assert(g_recorded_count == 0U);
@@ -893,6 +978,7 @@ int main(void)
     test_sample_windows_rescale_across_session_rates();
     test_run_revalidates_windows_against_session_rate();
     test_insufficient_dimensionality_writes_nothing();
+    test_truncated_session_persists_analysis_window();
     test_three_pods_planar_no_fabricated_z();
     test_four_pods_clean_event_solves_near_truth();
     test_flat_signal_every_method_unsolved_with_reason();

@@ -134,6 +134,22 @@ menu "Seismic Acquisition"
             roughly one minute of resident recorder history.  Physical HIL
             heap/high-water telemetry must justify any increase.
 
+    config LOCALIZATION_MAX_ANALYSIS_S
+        int "Maximum localization analysis duration (seconds)"
+        range 1 3600
+        default 10
+        help
+            Analyze at most this many seconds from the start of a recording,
+            further bounded by the localization analysis PSRAM budget.
+
+    config LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB
+        int "Localization analysis PSRAM budget (KiB)"
+        range 1200 8192
+        default 4096
+        help
+            Bounds the raw frame array and per-channel work arrays together.
+            The 1200 KiB minimum retains at least 30000 frames at 500 Hz.
+
 endmenu
 
 menu "Status indicator"
