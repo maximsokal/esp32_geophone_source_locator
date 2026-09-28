@@ -20,7 +20,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from ad7606_health import classify_evidence, uart_transport_violations
+from ad7606_health import classify_evidence, sample_rate_hz_from_evidence, uart_transport_violations
 
 
 @dataclass(frozen=True)
@@ -250,7 +250,10 @@ def analyze(
     health = classify_evidence(health_evidence)
     missing.extend(f"transport health: {item}" for item in health.missing)
     violations.extend(f"transport health: {item}" for item in health.violations)
-    uart_faults = uart_transport_violations(content)
+    uart_faults = uart_transport_violations(
+        content,
+        sample_rate_hz=sample_rate_hz_from_evidence(health_evidence),
+    )
     violations.extend(uart_faults)
 
     max_mutex = _maximum([sample.mutex_wait_us for sample in begins])

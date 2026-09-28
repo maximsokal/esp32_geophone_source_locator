@@ -378,8 +378,12 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     assert(strstr(response, "\"source\":\"AD7606\"") != NULL);
     assert(strstr(response, "\"sample_rate_hz\":500") != NULL);
     assert(strstr(response, "\"count\":20") != NULL);
+    assert(strstr(response, "\"frame_count\":20") != NULL);
+    assert(strstr(response, "\"requested_span_ms\":480") != NULL);
+    assert(strstr(response, "\"span_ms\":40") != NULL);
+    assert(strstr(response, "\"decimation_factor\":1") != NULL);
     assert(strstr(response, "\"total_frames\":20") != NULL);
-    assert(strstr(response, "\"timestamps_ms\":[2,4,6") != NULL);
+    assert(strstr(response, "\"points\":[{\"timestamp_us\":2000") != NULL);
     assert(strstr(response, "18000.000") != NULL);
     assert(strstr(response, "-12000.000") != NULL);
 

@@ -20,6 +20,7 @@ def health_status(
     stream_state: str = "NORMAL",
     suspicious: bool = False,
     stream_stuck: bool = False,
+    sample_rate_hz: int = 500,
     quality_window_frames: int = 500,
     consecutive_failures: int = 0,
     error_counters_available: bool = True,
@@ -31,6 +32,7 @@ def health_status(
 ) -> dict:
     return {
         "acquisition": {
+            "sample_rate_hz": sample_rate_hz,
             "error_counters_available": error_counters_available,
             "consecutive_failures": consecutive_failures,
             "cadence": {
@@ -288,6 +290,32 @@ def test_immature_or_unknown_transport_health_blocks_sustained_pass():
     assert any("immature" in item for item in result.missing)
 
 
+def test_high_rate_health_maturity_uses_one_second_of_frames():
+    log, live, saved = make_evidence()
+    immature = analyze(
+        log,
+        live,
+        saved,
+        sample_rate_hz=20_000,
+        health_evidence=health_evidence(
+            health_status(sample_rate_hz=20_000, quality_window_frames=19_999)
+        ),
+    )
+    mature = analyze(
+        log,
+        live,
+        saved,
+        sample_rate_hz=20_000,
+        health_evidence=health_evidence(
+            health_status(sample_rate_hz=20_000, quality_window_frames=20_000)
+        ),
+    )
+
+    assert immature.transport_health_status == "BLOCKED"
+    assert any("19999/20000" in item for item in immature.missing)
+    assert mature.transport_health_status == "PASS"
+
+
 def test_mature_transport_faults_fail_byte_perfect_roundtrip():
     log, live, saved = make_evidence()
     bad_samples = [
@@ -337,6 +365,32 @@ def test_uart_mature_transport_fault_remains_fail_with_healthy_status_evidence()
     assert result.status == "FAIL"
     assert result.uart_transport_fault_count == 1
     assert any("UART mature AD7606 transport fault" in item for item in result.violations)
+
+
+def test_uart_quality_window_uses_reported_rate_before_cli_fallback():
+    log, live, saved = make_evidence()
+    log += (
+        "I AD7606_DIAG: AD7606_SERIAL_DIAG: rx=00 00 class=ALL_00 "
+        "transport_quality=FAULT signal_quality=HEALTHY stream_state=STUCK "
+        "stream_stuck=yes busy=0 samples=500 streak=5 repeated_streak=500 all_zero=500 "
+        "all_ff=0 identical=500 varied=0 digital_interference=0 signal_rail_hits=0 "
+        "signal_clips=0 window=500 transport_bad=500 all_zero=500 all_ff=0 "
+        "identical=500 repeated=500 digital=0 signal_rail=0 signal_clip=0 "
+        "serial_suspicious=yes\n"
+    )
+    evidence = health_evidence(
+        health_status(sample_rate_hz=20_000, quality_window_frames=20_000)
+    )
+
+    result = analyze(
+        log,
+        live,
+        saved,
+        sample_rate_hz=500,
+        health_evidence=evidence,
+    )
+
+    assert result.uart_transport_fault_count == 0
 
 
 def test_sustained_gate_rejects_insufficient_aggregate_write_margin():

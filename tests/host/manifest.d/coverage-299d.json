@@ -81,6 +81,39 @@
       "libraries": [
         "m"
       ]
+    },
+    {
+      "name": "ui_measurement_trace_rate_span_299d",
+      "sources": [
+        "components/ui/ui_measurement_trace.c",
+        "components/ui/tests/ui_measurement_trace_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ui_measurement_span",
+        "components/ui",
+        "components/ui/tests/stubs",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "seismic_api_time_span_299d",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/web_server/web_seismic_api.c",
+        "components/web_server/web_json_writer.c",
+        "tests/host/web_seismic_api_time_span_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_pipeline",
+        "tests/host/stubs/ui_measurement_span",
+        "components/seismic_buffer/include",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/web_server"
+      ]
     }
   ]
 }

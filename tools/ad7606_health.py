@@ -13,7 +13,8 @@ import re
 from typing import Any, Iterable
 
 
-MINIMUM_QUALITY_WINDOW_FRAMES = 500
+QUALITY_WINDOW_DURATION_SECONDS = 1
+LEGACY_MINIMUM_QUALITY_WINDOW_FRAMES = 500
 GOOD_STREAM_STATES = frozenset({"NORMAL", "QUIET"})
 BAD_TRANSPORT_QUALITIES = frozenset({"DEGRADED", "FAULT"})
 BAD_STREAM_STATES = frozenset({"SUSPICIOUS", "STUCK"})
@@ -91,11 +92,25 @@ def _acquisition(payload: Any) -> dict[str, Any] | None:
     return None
 
 
+def sample_rate_hz_from_evidence(evidence: Any) -> int | None:
+    if not isinstance(evidence, dict):
+        return None
+    samples = evidence.get("samples")
+    candidates = samples if isinstance(samples, list) else [evidence]
+    for sample in candidates:
+        payload = sample.get("status", sample) if isinstance(sample, dict) else sample
+        acquisition = _acquisition(payload)
+        rate = _optional_int(acquisition.get("sample_rate_hz")) if acquisition else None
+        if rate is not None and rate > 0:
+            return rate
+    return None
+
+
 def classify_status(
     payload: Any,
     *,
     phase: str = "unknown",
-    minimum_window_frames: int = MINIMUM_QUALITY_WINDOW_FRAMES,
+    minimum_window_frames: int | None = None,
 ) -> HealthSample:
     acquisition = _acquisition(payload)
     if acquisition is None:
@@ -129,6 +144,15 @@ def classify_status(
     consecutive_failures = _optional_int(acquisition.get("consecutive_failures"))
     signal_quality = _upper(signal.get("quality"))
 
+    reported_rate = _optional_int(acquisition.get("sample_rate_hz"))
+    required_window_frames = minimum_window_frames
+    if required_window_frames is None:
+        required_window_frames = (
+            reported_rate * QUALITY_WINDOW_DURATION_SECONDS
+            if reported_rate is not None and reported_rate > 0
+            else LEGACY_MINIMUM_QUALITY_WINDOW_FRAMES
+        )
+
     blocked: list[str] = []
     violations: list[str] = []
 
@@ -138,13 +162,13 @@ def classify_status(
     mature = (
         counters_available is True
         and quality_window_frames is not None
-        and quality_window_frames >= minimum_window_frames
+        and quality_window_frames >= required_window_frames
     )
     if quality_window_frames is None:
         blocked.append("serial quality_window_frames is missing")
-    elif quality_window_frames < minimum_window_frames:
+    elif quality_window_frames < required_window_frames:
         blocked.append(
-            f"serial quality window immature ({quality_window_frames}/{minimum_window_frames})"
+            f"serial quality window immature ({quality_window_frames}/{required_window_frames})"
         )
 
     if mature:
@@ -209,7 +233,7 @@ def _iter_evidence_samples(evidence: Any) -> Iterable[tuple[str, Any]]:
 def classify_evidence(
     evidence: Any,
     *,
-    minimum_window_frames: int = MINIMUM_QUALITY_WINDOW_FRAMES,
+    minimum_window_frames: int | None = None,
 ) -> HealthEvidence:
     samples = tuple(
         classify_status(
@@ -248,13 +272,21 @@ def classify_evidence(
 def uart_transport_violations(
     content: str,
     *,
-    minimum_window_frames: int = MINIMUM_QUALITY_WINDOW_FRAMES,
+    minimum_window_frames: int | None = None,
+    sample_rate_hz: int | None = None,
 ) -> tuple[str, ...]:
     """Return sticky mature transport faults observed in event-driven UART diagnostics."""
+    required_window_frames = minimum_window_frames
+    if required_window_frames is None:
+        required_window_frames = (
+            sample_rate_hz * QUALITY_WINDOW_DURATION_SECONDS
+            if sample_rate_hz is not None and sample_rate_hz > 0
+            else LEGACY_MINIMUM_QUALITY_WINDOW_FRAMES
+        )
     violations: list[str] = []
     for match in SERIAL_DIAG_RE.finditer(content):
         window = int(match.group("window"))
-        if window < minimum_window_frames:
+        if window < required_window_frames:
             continue
         quality = match.group("quality").upper()
         stream = match.group("stream").upper()

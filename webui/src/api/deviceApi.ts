@@ -588,13 +588,20 @@ export function deleteObjectScanArtifact(objectId: string, sessionId: string): P
   }, DEVICE_API_SCAN_TIMEOUT_MS, 'bulk');
 }
 
-export function fetchSeismic(points = 180): Promise<SeismicSnapshot> {
+export interface LiveSeismicRequestOptions {
+  spanMs?: number;
+  maxPoints?: number;
+}
+
+export function fetchSeismic(options: LiveSeismicRequestOptions = {}): Promise<SeismicSnapshot> {
   if (seismicRequest !== null) return seismicRequest;
 
-  const bounded = Math.max(16, Math.min(1200, Math.round(points)));
+  const maxPoints = Math.max(16, Math.min(1200, Math.round(options.maxPoints ?? 220)));
+  const spanMs = Math.max(1, Math.min(60000, Math.round(options.spanMs ?? 440)));
+  const query = new URLSearchParams({ span_ms: String(spanMs), max_points: String(maxPoints) });
   let request: Promise<SeismicSnapshot>;
   request = jsonRequest<SeismicSnapshot>(
-    `/api/seismic?points=${bounded}`,
+    `/api/seismic?${query.toString()}`,
     {},
     DEVICE_API_FAST_TIMEOUT_MS,
   ).then((value) => normalizeSeismicSnapshot(value)).finally(() => {

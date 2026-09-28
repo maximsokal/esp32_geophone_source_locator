@@ -32,12 +32,14 @@ def status_sample(
     stream_state: str = "NORMAL",
     suspicious: bool = False,
     stream_stuck: bool = False,
+    sample_rate_hz: int = 500,
     quality_window_frames: int = 500,
     consecutive_failures: int = 0,
     signal_quality: str = "HEALTHY",
 ) -> dict:
     return {
         "acquisition": {
+            "sample_rate_hz": sample_rate_hz,
             "error_counters_available": True,
             "consecutive_failures": consecutive_failures,
             "serial": {
@@ -217,6 +219,32 @@ def test_replay_immature_health_remains_blocked(tmp_path: Path):
     assert result.returncode == 1
     assert "AD7606_TRANSPORT_HEALTH: BLOCKED" in result.stdout
     assert "STORAGE_SPI_HIL_RESULT: BLOCKED" in result.stdout
+
+
+def test_replay_uses_reported_rate_for_health_and_uart_window_maturity(tmp_path: Path):
+    serial_fault = (
+        "I AD7606_DIAG: AD7606_SERIAL_DIAG: transport_quality=FAULT "
+        "signal_quality=HEALTHY stream_state=STUCK stream_stuck=yes "
+        "window=500 serial_suspicious=yes"
+    )
+    path = tmp_path / "storage-spi-high-rate.log"
+    path.write_text(make_log(extra=serial_fault), encoding="utf-8")
+    immature = write_health(
+        tmp_path / "health-high-rate-immature.json",
+        status_sample(sample_rate_hz=20_000, quality_window_frames=19_999),
+    )
+
+    blocked = run_replay(path, "-HealthEvidencePath", str(immature))
+    assert "19999/20000 frames, one second at 20000Hz" in blocked.stdout
+    assert "AD7606_TRANSPORT_FAULT:" not in blocked.stdout
+
+    mature = write_health(
+        tmp_path / "health-high-rate-mature.json",
+        status_sample(sample_rate_hz=20_000, quality_window_frames=20_000),
+    )
+    healthy = run_replay(path, "-HealthEvidencePath", str(mature))
+    assert "AD7606_TRANSPORT_HEALTH: PASS" in healthy.stdout
+    assert "AD7606_TRANSPORT_FAULT:" not in healthy.stdout
 
 
 def test_replay_mature_uart_fault_is_sticky_with_healthy_pre_post_status(tmp_path: Path):

@@ -5,11 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "seismic_buffer.h"
 #include "seismic_recorder.h"
 
 
 #define WEB_SEISMIC_DEFAULT_POINTS  240
+#define WEB_SEISMIC_DEFAULT_SPAN_MS 480U
+#define WEB_SEISMIC_MAX_SPAN_MS    60000U
 #define WEB_SEISMIC_MIN_POINTS      16
 #define WEB_SEISMIC_MAX_POINTS      1200
 
@@ -93,24 +96,52 @@ static bool web_seismic_parse_points(
 }
 
 
-static size_t web_seismic_requested_points(
-    httpd_req_t *request
+static esp_err_t web_seismic_live_request_options(
+    httpd_req_t *request,
+    uint32_t *span_ms,
+    size_t *points,
+    size_t *legacy_frame_count
 )
 {
+    *span_ms = WEB_SEISMIC_DEFAULT_SPAN_MS;
+    *points = WEB_SEISMIC_DEFAULT_POINTS;
+    *legacy_frame_count = 0U;
+
     char query[256];
-    if (web_seismic_query_copy(request, query, sizeof(query)) != ESP_OK) {
-        return WEB_SEISMIC_DEFAULT_POINTS;
-    }
+    const esp_err_t query_err = web_seismic_query_copy(request, query, sizeof(query));
+    if (query_err == ESP_ERR_NOT_FOUND) return ESP_OK;
+    if (query_err != ESP_OK) return ESP_ERR_INVALID_ARG;
 
     char value[24];
-    if (web_seismic_query_value(query, "points", value, sizeof(value)) != ESP_OK) {
-        return WEB_SEISMIC_DEFAULT_POINTS;
+    const esp_err_t span_err = web_seismic_query_value(query, "span_ms", value, sizeof(value));
+    if (span_err == ESP_OK) {
+        uint64_t requested = 0U;
+        if (!web_seismic_parse_u64(value, &requested) || requested == 0U ||
+            requested > WEB_SEISMIC_MAX_SPAN_MS) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        *span_ms = (uint32_t)requested;
+    }
+    else if (span_err != ESP_ERR_NOT_FOUND) {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    size_t points = WEB_SEISMIC_DEFAULT_POINTS;
-    return web_seismic_parse_points(value, &points)
-        ? points
-        : WEB_SEISMIC_DEFAULT_POINTS;
+    const esp_err_t max_points_err =
+        web_seismic_query_value(query, "max_points", value, sizeof(value));
+    if (max_points_err == ESP_OK) {
+        return web_seismic_parse_points(value, points) ? ESP_OK : ESP_ERR_INVALID_ARG;
+    }
+    if (max_points_err != ESP_ERR_NOT_FOUND) return ESP_ERR_INVALID_ARG;
+
+    /* `points` remains an alias so existing live-chart clients keep working. */
+    if (web_seismic_query_value(query, "points", value, sizeof(value)) == ESP_OK) {
+        size_t legacy_points = WEB_SEISMIC_DEFAULT_POINTS;
+        if (web_seismic_parse_points(value, &legacy_points)) {
+            *points = legacy_points;
+            if (span_err == ESP_ERR_NOT_FOUND) *legacy_frame_count = legacy_points;
+        }
+    }
+    return ESP_OK;
 }
 
 
@@ -177,45 +208,63 @@ static esp_err_t web_seismic_handler(
     httpd_req_t *request
 )
 {
-    size_t requested_points =
-        web_seismic_requested_points(
-            request
-        );
-
-    seismic_frame_t *frames =
-        calloc(
-            requested_points,
-            sizeof(seismic_frame_t)
-        );
-
-    if (frames == NULL) {
-        return httpd_resp_send_err(
+    uint32_t requested_span_ms = 0U;
+    size_t requested_points = 0U;
+    size_t legacy_frame_count = 0U;
+    if (web_seismic_live_request_options(
             request,
-            HTTPD_500_INTERNAL_SERVER_ERROR,
-            "Out of memory"
-        );
+            &requested_span_ms,
+            &requested_points,
+            &legacy_frame_count) != ESP_OK) {
+        return httpd_resp_send_err(request, 400, "span_ms and max_points must be valid numeric values");
     }
 
-    size_t frame_count = 0;
+    seismic_frame_t latest_frame;
+    size_t latest_count = 0U;
     seismic_buffer_info_t info;
-
-    esp_err_t err =
-        seismic_buffer_copy_latest(
-            frames,
-            requested_points,
-            &frame_count,
-            &info
-        );
-
+    esp_err_t err = seismic_buffer_copy_latest(&latest_frame, 1U, &latest_count, &info);
     if (err != ESP_OK) {
-        free(frames);
-
-        return httpd_resp_send_err(
-            request,
-            HTTPD_500_INTERNAL_SERVER_ERROR,
-            "Seismic buffer unavailable"
-        );
+        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
     }
+
+    const uint64_t requested_frames = legacy_frame_count > 0U
+        ? legacy_frame_count
+        : info.sample_rate_hz == 0U
+        ? 0U
+        : ((uint64_t)info.sample_rate_hz * requested_span_ms + 999U) / 1000U;
+    if (legacy_frame_count > 0U && info.sample_rate_hz > 0U) {
+        const uint64_t legacy_span_ms =
+            ((uint64_t)legacy_frame_count * 1000U + info.sample_rate_hz / 2U) / info.sample_rate_hz;
+        requested_span_ms = (uint32_t)(legacy_span_ms == 0U ? 1U : legacy_span_ms);
+    }
+    const size_t frame_capacity = requested_frames < info.buffered_frames
+        ? (size_t)requested_frames
+        : info.buffered_frames;
+    if (frame_capacity > SIZE_MAX / sizeof(seismic_frame_t)) {
+        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Requested waveform is too large");
+    }
+    seismic_frame_t *frames = frame_capacity == 0U
+        ? NULL
+        : heap_caps_malloc(frame_capacity * sizeof(*frames), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (frame_capacity > 0U && frames == NULL) {
+        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+    }
+
+    size_t frame_count = 0U;
+    if (frame_capacity > 0U) {
+        err = seismic_buffer_copy_latest(frames, frame_capacity, &frame_count, &info);
+        if (err != ESP_OK) {
+            heap_caps_free(frames);
+            return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
+        }
+    }
+    const size_t point_count = frame_count < requested_points ? frame_count : requested_points;
+    const uint32_t decimation_factor = point_count == 0U
+        ? 0U
+        : (uint32_t)((frame_count + point_count - 1U) / point_count);
+    const uint64_t effective_span_ms = info.sample_rate_hz == 0U
+        ? 0U
+        : ((uint64_t)frame_count * 1000U + info.sample_rate_hz / 2U) / info.sample_rate_hz;
 
     httpd_resp_set_type(
         request,
@@ -233,72 +282,65 @@ static esp_err_t web_seismic_handler(
 
     web_json_writer_printf(
         &writer,
-        "{"
-        "\"source\":\"%s\","
-        "\"sample_rate_hz\":%" PRIu32 ","
-        "\"count\":%u,"
-        "\"buffered_frames\":%u,"
-        "\"total_frames\":%" PRIu64 ","
-        "\"timestamps_ms\":[",
+        "{\"source\":\"%s\",\"sample_rate_hz\":%" PRIu32 ",",
         seismic_buffer_source_name(info.source),
-        info.sample_rate_hz,
+        info.sample_rate_hz
+    );
+    web_json_writer_printf(
+        &writer,
+        "\"count\":%u,\"frame_count\":%u,\"requested_span_ms\":%" PRIu32 ",",
+        (unsigned)point_count,
         (unsigned)frame_count,
+        requested_span_ms
+    );
+    web_json_writer_printf(
+        &writer,
+        "\"span_ms\":%" PRIu64 ",\"decimation_factor\":%" PRIu32 ",",
+        effective_span_ms,
+        decimation_factor
+    );
+    web_json_writer_printf(
+        &writer,
+        "\"buffered_frames\":%u,\"total_frames\":%" PRIu64 ",\"points\":[",
         (unsigned)info.buffered_frames,
         info.total_frames
     );
 
-    for (size_t i = 0; i < frame_count; ++i) {
-        if (i > 0) {
-            web_json_writer_write(&writer, ",");
-        }
-
+    for (size_t point = 0U; point < point_count; ++point) {
+        const size_t start = (point * frame_count) / point_count;
+        size_t end = ((point + 1U) * frame_count) / point_count;
+        if (end <= start) end = start + 1U;
+        if (point > 0U) web_json_writer_write(&writer, ",");
         web_json_writer_printf(
             &writer,
-            "%" PRId64,
-            frames[i].timestamp_us / 1000
-        );
-    }
-
-    web_json_writer_write(
-        &writer,
-        "],\"channels\":["
-    );
-
-    for (
-        size_t channel = 0;
-        channel < SEISMIC_CHANNEL_COUNT;
-        ++channel
-    ) {
-        if (channel > 0) {
-            web_json_writer_write(&writer, ",");
-        }
-
-        web_json_writer_printf(
-            &writer,
-            "{"
-            "\"id\":%u,"
-            "\"samples_uv\":[",
-            (unsigned)(channel + 1)
+            "{\"timestamp_us\":%" PRId64 ",\"end_timestamp_us\":%" PRId64 ",\"channels\":[",
+            frames[start].timestamp_us,
+            frames[end - 1U].timestamp_us
         );
 
-        for (size_t i = 0; i < frame_count; ++i) {
-            if (i > 0) {
-                web_json_writer_write(&writer, ",");
+        for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+            float minimum = frames[start].channel_uv[channel];
+            float maximum = minimum;
+            for (size_t frame = start + 1U; frame < end; ++frame) {
+                const float value = frames[frame].channel_uv[channel];
+                if (value < minimum) minimum = value;
+                if (value > maximum) maximum = value;
             }
-
+            if (channel > 0U) web_json_writer_write(&writer, ",");
             web_json_writer_printf(
                 &writer,
-                "%.3f",
-                frames[i].channel_uv[channel]
+                "{\"id\":%u,\"min_uv\":%.3f,\"max_uv\":%.3f}",
+                (unsigned)(channel + 1U),
+                minimum,
+                maximum
             );
         }
-
         web_json_writer_write(&writer, "]}");
     }
 
     web_json_writer_write(&writer, "]}");
 
-    free(frames);
+    heap_caps_free(frames);
 
     return web_json_writer_finish(&writer);
 }

@@ -483,19 +483,17 @@ export type DevicePowerState =
   | 'BATTERY_CRITICAL'
   | 'UNKNOWN';
 
-export interface SeismicChannel {
-  id: number;
-  samples_uv: number[];
-}
-
 export interface SeismicSnapshot {
   source: string;
   sample_rate_hz: number;
   count: number;
+  frame_count: number;
+  requested_span_ms: number;
+  span_ms: number;
+  decimation_factor: number;
   buffered_frames: number;
   total_frames: number;
-  timestamps_ms: number[];
-  channels: SeismicChannel[];
+  points: SavedSeismicEnvelopePoint[];
 }
 
 export interface SavedSeismicEnvelopeChannel {
@@ -633,7 +631,48 @@ function normalizeSavedSessionStatus(payload: Record<string, unknown>): {
   };
 }
 
-/** Validate the four-channel /api/seismic boundary before rendering it. */
+function normalizeSeismicEnvelopePoints(value: unknown, count: number): SavedSeismicEnvelopePoint[] {
+  if (!Array.isArray(value) || value.length !== count) {
+    throw new Error('ESP seismic API returned an invalid envelope point count.');
+  }
+
+  let previousStart = -Infinity;
+  let previousEnd = -Infinity;
+  return value.map((rawPoint) => {
+    if (typeof rawPoint !== 'object' || rawPoint === null) {
+      throw new Error('ESP seismic API returned an invalid envelope point.');
+    }
+    const point = rawPoint as Record<string, unknown>;
+    const timestamp = point.timestamp_us;
+    const endTimestamp = point.end_timestamp_us;
+    const rawChannels = point.channels;
+    if (
+      !isFiniteNumber(timestamp) || !isFiniteNumber(endTimestamp) ||
+      endTimestamp < timestamp || timestamp < previousStart || endTimestamp < previousEnd ||
+      !Array.isArray(rawChannels) || rawChannels.length !== 4
+    ) {
+      throw new Error('ESP seismic API returned invalid envelope timing or channels.');
+    }
+    previousStart = timestamp;
+    previousEnd = endTimestamp;
+    const channels = rawChannels.map((rawChannel, index) => {
+      if (typeof rawChannel !== 'object' || rawChannel === null) {
+        throw new Error('ESP seismic API returned an invalid envelope channel.');
+      }
+      const channel = rawChannel as Record<string, unknown>;
+      if (
+        channel.id !== index + 1 || !isFiniteNumber(channel.min_uv) ||
+        !isFiniteNumber(channel.max_uv) || channel.min_uv > channel.max_uv
+      ) {
+        throw new Error('ESP seismic API returned an invalid envelope range.');
+      }
+      return { id: index + 1, min_uv: channel.min_uv, max_uv: channel.max_uv };
+    });
+    return { timestamp_us: timestamp, end_timestamp_us: endTimestamp, channels };
+  });
+}
+
+/** Validate the four-channel time-window envelope returned for live seismic. */
 export function normalizeSeismicSnapshot(value: unknown): SeismicSnapshot {
   if (typeof value !== 'object' || value === null) {
     throw new Error('ESP seismic API returned a non-object payload.');
@@ -643,53 +682,43 @@ export function normalizeSeismicSnapshot(value: unknown): SeismicSnapshot {
   const source = payload.source;
   const sampleRate = payload.sample_rate_hz;
   const count = payload.count;
+  const frameCount = payload.frame_count;
+  const requestedSpanMs = payload.requested_span_ms;
+  const spanMs = payload.span_ms;
+  const decimationFactor = payload.decimation_factor;
   const bufferedFrames = payload.buffered_frames;
   const totalFrames = payload.total_frames;
-  const timestamps = payload.timestamps_ms;
-  const channels = payload.channels;
+  const rawPoints = payload.points;
 
   if (
     typeof source !== 'string' ||
     !isFiniteNumber(sampleRate) || sampleRate < 0 ||
     !isNonNegativeInteger(count) ||
     !isNonNegativeInteger(bufferedFrames) ||
+    !isNonNegativeInteger(frameCount) || frameCount > bufferedFrames ||
+    !isNonNegativeInteger(requestedSpanMs) || requestedSpanMs < 1 ||
+    !isNonNegativeInteger(spanMs) ||
+    !isNonNegativeInteger(decimationFactor) ||
+    (count === 0 ? decimationFactor !== 0 : decimationFactor < 1) ||
     !isNonNegativeInteger(totalFrames) ||
-    !Array.isArray(timestamps) || timestamps.length !== count ||
-    !timestamps.every(isFiniteNumber) ||
-    !Array.isArray(channels) || channels.length !== 4
+    count > 1200 || count > frameCount ||
+    !Array.isArray(rawPoints) || rawPoints.length !== count
   ) {
     throw new Error('ESP seismic API returned an invalid snapshot shape.');
   }
-
-  const normalizedChannels = channels.map((channel, index) => {
-    if (typeof channel !== 'object' || channel === null) {
-      throw new Error('ESP seismic API returned an invalid channel.');
-    }
-
-    const candidate = channel as Record<string, unknown>;
-    if (
-      candidate.id !== index + 1 ||
-      !Array.isArray(candidate.samples_uv) ||
-      candidate.samples_uv.length !== count ||
-      !candidate.samples_uv.every(isFiniteNumber)
-    ) {
-      throw new Error('ESP seismic API returned an invalid channel shape.');
-    }
-
-    return {
-      id: index + 1,
-      samples_uv: candidate.samples_uv,
-    };
-  });
+  const points = normalizeSeismicEnvelopePoints(rawPoints, count);
 
   return {
     source,
     sample_rate_hz: sampleRate,
     count,
+    frame_count: frameCount,
+    requested_span_ms: requestedSpanMs,
+    span_ms: spanMs,
+    decimation_factor: decimationFactor,
     buffered_frames: bufferedFrames,
     total_frames: totalFrames,
-    timestamps_ms: timestamps,
-    channels: normalizedChannels,
+    points,
   };
 }
 
