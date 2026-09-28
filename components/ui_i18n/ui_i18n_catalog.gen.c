@@ -219,8 +219,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "UP/DOWN select OK run LEFT back RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN actions  OK run  LEFT back", /* tft.workflow.hint.navigation */
     "Select an object", /* tft.workflow.idle.select_object */
-    "Set sigma (m/s)", /* tft.workflow.material.custom_sigma */
-    "sigma: %s m/s", /* tft.workflow.material.custom_sigma_value */
+    "Set uncertainty (m/s)", /* tft.workflow.material.custom_sigma */
+    "+/- %s m/s", /* tft.workflow.material.custom_sigma_value */
     "Set speed (m/s)", /* tft.workflow.material.custom_speed */
     "v: %s m/s", /* tft.workflow.material.custom_speed_value */
     "UP/DOWN adjust OK next LEFT back", /* tft.workflow.material.hint_adjust */
@@ -240,7 +240,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Save failed", /* tft.workflow.material.save_failed */
     "Saved", /* tft.workflow.material.saved */
     "Saving...", /* tft.workflow.material.saving */
-    "v=%s +/- %s sigma m/s", /* tft.workflow.material.speed */
+    "%s +/- %s m/s", /* tft.workflow.material.speed */
     "MATERIAL", /* tft.workflow.material.title */
     "Material: not set", /* tft.workflow.material.unset */
     "Busy", /* tft.workflow.notice.busy */
@@ -578,10 +578,10 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "UP/DOWN вибір OK дія LEFT назад RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN дії  OK вибір  LEFT назад", /* tft.workflow.hint.navigation */
     "Виберіть об’єкт", /* tft.workflow.idle.select_object */
-    "Задати sigma (m/s)", /* tft.workflow.material.custom_sigma */
-    "sigma: %s m/s", /* tft.workflow.material.custom_sigma_value */
-    "Задати швидкість (m/s)", /* tft.workflow.material.custom_speed */
-    "v: %s m/s", /* tft.workflow.material.custom_speed_value */
+    "Задати невизначеність (м/с)", /* tft.workflow.material.custom_sigma */
+    "+/- %s м/с", /* tft.workflow.material.custom_sigma_value */
+    "Задати швидкість (м/с)", /* tft.workflow.material.custom_speed */
+    "v: %s м/с", /* tft.workflow.material.custom_speed_value */
     "UP/DOWN зміна OK далі LEFT назад", /* tft.workflow.material.hint_adjust */
     "UP/DOWN зміна OK зберегти LEFT назад", /* tft.workflow.material.hint_save */
     "UP/DOWN вибір OK вибрати LEFT назад", /* tft.workflow.material.hint_select */
@@ -599,7 +599,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Помилка збереження", /* tft.workflow.material.save_failed */
     "Збережено", /* tft.workflow.material.saved */
     "Збереження...", /* tft.workflow.material.saving */
-    "v=%s +/- %s sigma m/s", /* tft.workflow.material.speed */
+    "%s +/- %s м/с", /* tft.workflow.material.speed */
     "МАТЕРІАЛ", /* tft.workflow.material.title */
     "Матеріал: не задано", /* tft.workflow.material.unset */
     "Зайнято", /* tft.workflow.notice.busy */
@@ -619,7 +619,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "OK двічі: зупинити запис", /* tft.workflow.preview.stop_hint */
     "Зупинення запису...", /* tft.workflow.preview.stop_pending */
     "Пари %s/%s нев’язка %s мм", /* tft.workflow.ranging.pairs */
-    "%s sigma:%s мм", /* tft.workflow.ranging.sigma */
+    "%s сигма:%s мм", /* tft.workflow.ranging.sigma */
     "помилка пари CS", /* tft.workflow.reason.cs_pair */
     "великий розкид CS", /* tft.workflow.reason.cs_spread */
     "операція не вдалася", /* tft.workflow.reason.failed */
@@ -642,7 +642,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Недостатньо датчиків навіть для 2D", /* tft.workflow.sensor.insufficient */
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
     "3D готове", /* tft.workflow.sensor.ready */
-    "REMOTE: %s", /* tft.workflow.sensor.remote_count */
+    "ВІДДАЛ.: %s", /* tft.workflow.sensor.remote_count */
     "Відкалібровано", /* tft.workflow.state.calibrated */
     "Гравітація", /* tft.workflow.state.gravity */
     "Рух", /* tft.workflow.state.moving */
