@@ -70,7 +70,7 @@ def test_ad7606_replay_reports_adc_and_timer_aggregates(tmp_path: Path):
     assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in result.stdout
 
 
-def test_esp_adc_bench_replay_accepts_the_500hz_backend_marker(tmp_path: Path):
+def test_esp_adc_bench_replay_uses_the_reported_backend_rate(tmp_path: Path):
     path = tmp_path / "esp-adc-bench.log"
     path.write_text(
         timing_log(
@@ -83,9 +83,28 @@ def test_esp_adc_bench_replay_accepts_the_500hz_backend_marker(tmp_path: Path):
     result = run_replay(path, "-Source", "ESP_ADC_BENCH")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "ESP_ADC_BENCH backend marker observed at 500Hz" in result.stdout
+    assert "ESP_ADC_BENCH backend marker reports 500Hz" in result.stdout
     assert "KEYPAD_TIMING_TELEMETRY_RESULT: PASS" in result.stdout
     assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in result.stdout
+
+
+def test_default_rate_accepts_reported_20khz_and_override_can_reject_it(tmp_path: Path):
+    path = tmp_path / "ad7606-20khz.log"
+    path.write_text(
+        timing_log(
+            "AD7606",
+            "I AD7606_ACQ: Started: 20000 Hz, 8 channels, SPI3 dedicated, core=1",
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_replay(path, "-Source", "AD7606")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "backend marker reports 20000Hz" in result.stdout
+
+    mismatch = run_replay(path, "-Source", "AD7606", "-ExpectedSampleRateHz", "500")
+    assert mismatch.returncode == 1
+    assert "reported 20000Hz, expected 500Hz" in mismatch.stdout
 
 
 def test_overflowed_p95_is_reported_as_censored_data(tmp_path: Path):

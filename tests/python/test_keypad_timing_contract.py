@@ -63,7 +63,7 @@ def test_timing_profiles_select_separate_sources_and_do_not_touch_production_def
     assert "MinimumWindows" in runner
     assert "MinimumSnapshots" in runner
     assert "AD7606 with no deliberate keypad activity" in timing_doc
-    assert "ESP ADC bench at 500 Hz while pressing" in timing_doc
+    assert "ESP ADC bench at its configured rate while pressing" in timing_doc
     assert "bounded-histogram `p95`" in timing_doc
     assert "p95_overflow" in timing_doc
     assert "NOT_ESTABLISHED" in timing_doc

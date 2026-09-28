@@ -58,13 +58,15 @@ def run_api_fixture(
     tmp_path: Path,
     seismic_payload: dict,
     *,
+    sample_rate_hz: int = 500,
+    log_text: str = GOOD_LOG,
     stale_tasks: tuple[str, ...] = (),
     future_tasks: tuple[str, ...] = (),
     backwards_clock: bool = False,
     max_age_ms: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     log_path = tmp_path / "good.log"
-    log_path.write_text(GOOD_LOG, encoding="utf-8")
+    log_path.write_text(log_text, encoding="utf-8")
     polls = {"seismic": 0, "status": 0}
 
     def status_payload(index: int) -> dict:
@@ -89,7 +91,7 @@ def run_api_fixture(
                 "running": True,
                 "hardware_ready": True,
                 "source": "AD7606",
-                "sample_rate_hz": 500,
+                "sample_rate_hz": sample_rate_hz,
                 "last_error": 0,
                 "error_counters_available": True,
                 "read_errors": 0,
@@ -151,6 +153,19 @@ def test_replay_passes_without_serial_ports_and_never_flashes(tmp_path: Path):
     assert "PIPELINE_HIL_RESULT: PASS" in result.stdout
 
 
+def test_replay_uses_reported_20khz_rate_by_default_and_supports_an_override(tmp_path: Path):
+    path = tmp_path / "20khz.log"
+    path.write_text(GOOD_LOG.replace("Started: 500 Hz", "Started: 20000 Hz"), encoding="utf-8")
+
+    result = run_replay(path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Startup marker reports 20000Hz" in result.stdout
+
+    mismatch = run_replay(path, "-ExpectedSampleRateHz", "500")
+    assert mismatch.returncode == 1
+    assert "Reported rate is 20000Hz, expected 500Hz" in mismatch.stdout
+
+
 def test_replay_reports_read_failure(tmp_path: Path):
     path = tmp_path / "bad.log"
     path.write_text(GOOD_LOG + "E AD7606_ACQ: Read failed: timeout\n", encoding="utf-8")
@@ -167,12 +182,33 @@ def test_replay_rejects_wrong_started_sample_rate(tmp_path: Path):
     path = tmp_path / "wrong-rate.log"
     path.write_text(GOOD_LOG.replace("Started: 500 Hz", "Started: 100 Hz"), encoding="utf-8")
 
-    result = run_replay(path)
+    result = run_replay(path, "-ExpectedSampleRateHz", "500")
 
     assert result.returncode == 1
     assert "AD7606 acquisition started" in result.stdout
-    assert "Required marker was not observed" in result.stdout
+    assert "Reported rate is 100Hz, expected 500Hz" in result.stdout
     assert "PIPELINE_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_api_pipeline_derives_20khz_expectation_from_reported_rates(tmp_path: Path):
+    result = run_api_fixture(
+        tmp_path,
+        {
+            "source": "AD7606",
+            "sample_rate_hz": 20000,
+            "count": 3,
+            "total_frames": 100,
+            "timestamps_ms": [1000, 1001, 1002],
+            "channels": [{"id": channel_id, "samples_uv": [1, 2, 3]} for channel_id in range(1, 5)],
+        },
+        sample_rate_hz=20000,
+        log_text=GOOD_LOG.replace("Started: 500 Hz", "Started: 20000 Hz"),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Startup marker reports 20000Hz" in result.stdout
+    assert "rate=20000Hz" in result.stdout
+    assert "PIPELINE_HIL_RESULT: PASS" in result.stdout
 
 
 def test_replay_rejects_missing_dma_marker(tmp_path: Path):
@@ -221,6 +257,14 @@ def test_api_seismic_rejects_large_timestamp_jitter(tmp_path: Path):
     assert result.returncode == 1
     assert "timestamp interval at index 2" in result.stdout
     assert "PIPELINE_HIL_RESULT: FAIL" in result.stdout
+
+
+def test_saved_lod_runner_checks_against_the_reported_rate_by_default():
+    runner = (REPO_ROOT / "tools" / "run_saved_lod_hil.ps1").read_text(encoding="utf-8")
+
+    assert "[int]$ExpectedSampleRateHz = 0" in runner
+    assert "$reportedSampleRateHz = [int]$status.acquisition.sample_rate_hz" in runner
+    assert "[int]$saved.sample_rate_hz -ne $reportedSampleRateHz" in runner
 
 
 def test_api_status_rejects_stale_runtime_heartbeat(tmp_path: Path):

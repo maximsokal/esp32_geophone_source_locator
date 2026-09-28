@@ -26,8 +26,8 @@ param(
     [ValidateRange(100, 10000)]
     [int]$PollIntervalMs = 500,
 
-    [ValidateRange(1, 2000)]
-    [int]$ExpectedSampleRateHz = 500,
+    [ValidateRange(0, 40000)]
+    [int]$ExpectedSampleRateHz = 0,
 
     [ValidateRange(100, 60000)]
     [int]$MaxTaskHeartbeatAgeMs = 1000
@@ -148,6 +148,20 @@ function Read-PipelineLog {
 }
 
 
+function Get-PipelineReportedSampleRate {
+    param([string]$Content)
+
+    $marker = [regex]::Match(
+        $Content,
+        "(?im)AD7606[_ ]?ACQ:.*Started:\s*(?<rate>\d+)\s*Hz,\s*8\s*channels,\s*SPI3 dedicated,\s*core=1"
+    )
+    if (-not $marker.Success) {
+        return 0
+    }
+    return [int]$marker.Groups["rate"].Value
+}
+
+
 function Add-PowerButtonTimingMarkerCheck {
     param(
         [System.Collections.Generic.List[object]]$Checks,
@@ -182,7 +196,7 @@ function Add-PowerButtonTimingMarkerCheck {
 function Test-PipelineLog {
     param(
         [string]$Content,
-        [int]$ExpectedRate = 500
+        [int]$ExpectedRate = 0
     )
 
     $checks = [System.Collections.Generic.List[object]]::new()
@@ -195,8 +209,7 @@ function Test-PipelineLog {
     $markers = @(
         @("AD7606 GPIO configuration", "AD7606[_ ]?DRIVER:.*GPIO configured"),
         @("AD7606 SPI3 initialization", "AD7606[_ ]?DRIVER:.*SPI3 initialized successfully.*DMA[=: ]+auto"),
-        @("AD7606 self-test", "AD7606[_ ]?DRIVER:.*Self-test conversion \+ SPI read OK"),
-        @("AD7606 acquisition started", ("AD7606[_ ]?ACQ:.*Started:\s*{0}\s*Hz,\s*8\s*channels,\s*SPI3 dedicated,\s*core=1" -f $ExpectedRate))
+        @("AD7606 self-test", "AD7606[_ ]?DRIVER:.*Self-test conversion \+ SPI read OK")
     )
 
     foreach ($marker in $markers) {
@@ -205,6 +218,15 @@ function Test-PipelineLog {
         } else {
             Add-Check $checks $marker[0] "FAIL" "Required marker was not observed."
         }
+    }
+
+    $reportedRate = Get-PipelineReportedSampleRate $Content
+    if ($reportedRate -le 0) {
+        Add-Check $checks "AD7606 acquisition started" "FAIL" "No valid reported acquisition sample rate was observed."
+    } elseif ($ExpectedRate -gt 0 -and $reportedRate -ne $ExpectedRate) {
+        Add-Check $checks "AD7606 acquisition started" "FAIL" ("Reported rate is {0}Hz, expected {1}Hz." -f $reportedRate, $ExpectedRate)
+    } else {
+        Add-Check $checks "AD7606 acquisition started" "PASS" ("Startup marker reports {0}Hz." -f $reportedRate)
     }
 
     $diagnosticChannels = @(
@@ -303,7 +325,10 @@ function Test-MonotonicSeismicResponse {
     $total = [uint64]$Response.total_frames
     $rate = [int]$Response.sample_rate_hz
 
-    if ($rate -ne $ExpectedRate) {
+    if ($rate -le 0) {
+        return [pscustomobject]@{ Pass = $false; Detail = "sample_rate_hz=$rate is not valid." }
+    }
+    if ($ExpectedRate -gt 0 -and $rate -ne $ExpectedRate) {
         return [pscustomobject]@{ Pass = $false; Detail = "sample_rate_hz=$rate, expected $ExpectedRate." }
     }
     if ($Response.source -ne "AD7606") {
@@ -331,7 +356,7 @@ function Test-MonotonicSeismicResponse {
         }
     }
     if ($timestamps.Count -gt 1) {
-        $expectedIntervalMs = 1000.0 / [double]$ExpectedRate
+        $expectedIntervalMs = 1000.0 / [double]$rate
         $intervalToleranceMs = [math]::Max(1.0, $expectedIntervalMs * 0.10)
         for ($i = 1; $i -lt $timestamps.Count; ++$i) {
             $intervalMs = [double]$timestamps[$i] - [double]$timestamps[$i - 1]
@@ -887,7 +912,13 @@ try {
         }
         Add-Check $checks "HTTP pipeline checks" "SKIPPED" "Pass -BaseUrl to poll /api/seismic and /api/status."
     } else {
-        Invoke-HttpPipelineChecks $checks $BaseUrl $ExpectedSampleRateHz $PollIntervalMs $MaxTaskHeartbeatAgeMs $Record $ObjectId
+        $reportedRate = Get-PipelineReportedSampleRate $content
+        $httpExpectedRate = if ($ExpectedSampleRateHz -gt 0) {
+            $ExpectedSampleRateHz
+        } else {
+            $reportedRate
+        }
+        Invoke-HttpPipelineChecks $checks $BaseUrl $httpExpectedRate $PollIntervalMs $MaxTaskHeartbeatAgeMs $Record $ObjectId
     }
 } catch {
     Add-Check $checks "Runner execution" $(if ($isReplay) { "FAIL" } else { "BLOCKED" }) $_.Exception.Message

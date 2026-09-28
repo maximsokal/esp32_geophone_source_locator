@@ -24,8 +24,8 @@ param(
     [ValidateRange(100, 10000)]
     [int]$PollIntervalMs = 500,
 
-    [ValidateRange(100, 5000)]
-    [int]$ExpectedSampleRateHz = 500,
+    [ValidateRange(0, 40000)]
+    [int]$ExpectedSampleRateHz = 0,
 
     [ValidateRange(1, 32)]
     [int]$Jobs = 2
@@ -76,21 +76,39 @@ function Test-TimingBackendMarker {
     )
 
     $pattern = if ($SelectedSource -eq "AD7606") {
-        "(?im)AD7606[_ ]?ACQ:.*Started:\s*$ExpectedRate\s*Hz,\s*8\s*channels,\s*SPI3 dedicated,\s*core=1"
+        "(?im)AD7606[_ ]?ACQ:.*Started:\s*(?<rate>\d+)\s*Hz,\s*8\s*channels,\s*SPI3 dedicated,\s*core=1"
     } else {
-        "(?im)GEOPHONE_ADC:.*ESP ADC bench enabled:.*at\s+$ExpectedRate\s+Hz\s+core=1"
+        "(?im)GEOPHONE_ADC:.*ESP ADC bench enabled:.*at\s+(?<rate>\d+)\s+Hz\s+core=1"
     }
 
-    if ($Content -match $pattern) {
+    $marker = [regex]::Match($Content, $pattern)
+    if ($marker.Success) {
+        $reportedRate = [int]$marker.Groups["rate"].Value
+        if ($reportedRate -le 0) {
+            return [pscustomobject]@{
+                Pass = $false
+                ReportedRate = 0
+                Detail = "$SelectedSource backend marker reported an invalid sample rate."
+            }
+        }
+        if ($ExpectedRate -gt 0 -and $reportedRate -ne $ExpectedRate) {
+            return [pscustomobject]@{
+                Pass = $false
+                ReportedRate = $reportedRate
+                Detail = "$SelectedSource reported ${reportedRate}Hz, expected ${ExpectedRate}Hz."
+            }
+        }
         return [pscustomobject]@{
             Pass = $true
-            Detail = "$SelectedSource backend marker observed at ${ExpectedRate}Hz."
+            ReportedRate = $reportedRate
+            Detail = "$SelectedSource backend marker reports ${reportedRate}Hz."
         }
     }
 
     return [pscustomobject]@{
         Pass = $false
-        Detail = "Required $SelectedSource backend marker at ${ExpectedRate}Hz was not observed."
+        ReportedRate = 0
+        Detail = "Required $SelectedSource backend marker with a reported sample rate was not observed."
     }
 }
 
@@ -344,7 +362,7 @@ foreach ($check in $checks) {
 if ($isReplay) {
     Write-Host ("LOG_REPLAY: {0}" -f $logFile)
 }
-Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; samples at or above 2048us are excluded from normal buckets, and p95 is censored only when its rank lands in that overflow tail. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at 500Hz with frequent keypad presses; serial replay cannot prove physical activity or board timing."
+Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; samples at or above 2048us are excluded from normal buckets, and p95 is censored only when its rank lands in that overflow tail. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at its reported rate with frequent keypad presses; serial replay cannot prove physical activity or board timing."
 Write-Host ("KEYPAD_TIMING_TELEMETRY_RESULT: {0}" -f $telemetryResult)
 Write-Host ("PHYSICAL_CONDITION: {0}" -f $physicalCondition)
 Write-Host "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED"

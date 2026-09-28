@@ -22,8 +22,8 @@ param(
     [ValidateRange(100, 5000)]
     [int]$PollIntervalMs = 250,
 
-    [ValidateRange(1, 2000)]
-    [int]$ExpectedSampleRateHz = 500
+    [ValidateRange(0, 40000)]
+    [int]$ExpectedSampleRateHz = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -227,13 +227,17 @@ try {
     if ($status.acquisition.source -ne "AD7606") {
         throw "Expected AD7606 acquisition, got '$($status.acquisition.source)'."
     }
-    if ([int]$status.acquisition.sample_rate_hz -ne $ExpectedSampleRateHz) {
-        throw "Expected $ExpectedSampleRateHz Hz acquisition, got $($status.acquisition.sample_rate_hz) Hz."
+    $reportedSampleRateHz = [int]$status.acquisition.sample_rate_hz
+    if ($reportedSampleRateHz -le 0) {
+        throw "Acquisition reported an invalid sample rate: $reportedSampleRateHz Hz."
+    }
+    if ($ExpectedSampleRateHz -gt 0 -and $reportedSampleRateHz -ne $ExpectedSampleRateHz) {
+        throw "Expected $ExpectedSampleRateHz Hz acquisition, got $reportedSampleRateHz Hz."
     }
     if ($null -ne $status.recording -and $status.recording.running -eq $true) {
         throw "A recording is already active. Stop it before running this HIL test."
     }
-    Add-Check $checks "Acquisition prerequisite" "PASS" ("AD7606 is running at {0} Hz." -f $ExpectedSampleRateHz)
+    Add-Check $checks "Acquisition prerequisite" "PASS" ("AD7606 reports {0} Hz." -f $reportedSampleRateHz)
 
     $startBody = @{ action = "recording_start"; object_id = $ObjectId } | ConvertTo-Json -Compress
     $start = Invoke-JsonRequest ("{0}/api/control" -f $rootUrl) "POST" $startBody
@@ -328,8 +332,8 @@ try {
     if ($saved.complete -ne $true) {
         throw "Saved waveform did not report complete=true."
     }
-    if ([int]$saved.sample_rate_hz -ne $ExpectedSampleRateHz) {
-        throw "Saved waveform sample_rate_hz=$($saved.sample_rate_hz), expected $ExpectedSampleRateHz."
+    if ([int]$saved.sample_rate_hz -ne $reportedSampleRateHz) {
+        throw "Saved waveform sample_rate_hz=$($saved.sample_rate_hz), expected reported acquisition rate $reportedSampleRateHz."
     }
     if ([uint64]$saved.start_frame -ne 0 -or [uint64]$saved.frame_count -ne [uint64]$TargetFrames) {
         throw "Saved waveform returned start_frame=$($saved.start_frame), frame_count=$($saved.frame_count); expected 0/$TargetFrames."
