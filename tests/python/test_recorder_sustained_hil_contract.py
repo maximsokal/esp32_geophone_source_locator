@@ -60,9 +60,10 @@ def test_integrity_contract_exercises_psram_to_internal_dma_to_sd_production_pat
     assert "s_cache_storage = heap_caps_malloc(" in recorder
     assert "PSRAM cache=%u frames" in recorder
 
-    assert "DMA_ATTR static seismic_frame_t s_dma_staging" in filesystem
-    assert "memcpy(\n            s_dma_staging," in filesystem
-    assert "fwrite(\n            s_dma_staging," in filesystem
+    assert "DMA_ATTR static seismic_recorder_dma_staging_t s_dma_staging" in filesystem
+    assert "memcpy(\n                s_dma_staging.v1_frames," in filesystem
+    assert "fwrite(\n                s_dma_staging.v1_frames," in filesystem
+    assert "fwrite(s_dma_staging.v2_window, 1U, encoded_bytes, samples_file)" in filesystem
     assert "RECORDER_IO_TIMING op=fwrite" in filesystem
 
     assert 'seismic_recorder_reader_log_path(\n                "cache"' in reader

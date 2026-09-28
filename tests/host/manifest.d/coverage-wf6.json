@@ -4,8 +4,11 @@
     {
       "name": "wf6_seismic_recorder_staging",
       "sources": [
-        "components/object_format/object_format.c",
-        "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
+    "components/object_format/object_format.c",
+    "components/seismic_recorder/seismic_recorder_waveform.c",
+    "components/seismic_recorder/seismic_recorder_lod.c",
+    "components/seismic_recorder/seismic_recorder_lod_reader.c",
+    "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
         "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
       ],
       "include_dirs": [

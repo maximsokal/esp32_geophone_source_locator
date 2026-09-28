@@ -175,7 +175,7 @@ def test_cs_proof_still_checks_resolved_controller_kconfig():
         "CONFIG_BT_LL_SOFTDEVICE_MULTIROLE=y",
         "CONFIG_BT_CTLR_SDC_CS_ROLE_BOTH=y",
         "CONFIG_BT_CTLR_SDC_CS_COUNT=1",
-        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128",
+        "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=144",
     ):
         assert required in script
 
@@ -193,10 +193,11 @@ def test_existing_dual_i2c_overlay_contract_is_untouched():
 def test_upstream_wire_sizes_are_not_changed_by_max51():
     protocol = text(PROTOCOL)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
-    # 112U as of MAX-114 (altitude/orientation fields appended); this guard
-    # is about MAX-51's Channel Sounding work not touching the sensor
-    # snapshot frame, not about the frame being frozen at its previous size.
-    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", protocol)
+    # Channel Sounding preserves v1 decode compatibility; later extensions
+    # carry the current snapshot in v3.
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH\s+112U", protocol)
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH\s+120U", protocol)
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH\s+136U", protocol)
 
 
 def test_proof_doc_preserves_sdk_one_connection_and_historical_evidence():

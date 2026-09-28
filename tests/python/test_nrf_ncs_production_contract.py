@@ -166,7 +166,7 @@ def test_platformio_wrapper_still_exists_but_is_not_used_by_canonical_runners():
 def test_wire_contract_stays_12_and_112_bytes():
     protocol = text(PROTOCOL)
     assert re.search(r"NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH\s+12U", protocol)
-    # 112U as of MAX-114 (altitude/orientation fields appended); this guard
-    # is about the NCS production promotion not touching the sensor
-    # snapshot frame, not about the frame being frozen at its previous size.
-    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH\s+112U", protocol)
+    # NCS production preserves the versioned frames; v3 is the current size.
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH\s+112U", protocol)
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH\s+120U", protocol)
+    assert re.search(r"NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH\s+136U", protocol)

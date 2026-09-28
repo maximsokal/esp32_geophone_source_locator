@@ -70,10 +70,11 @@ def test_recorder_batch_is_psram_backed_and_amortizes_sd_operations():
 
     # SDSPI receives only bounded internal DMA-capable staging buffers. The
     # large PSRAM cache is never handed directly to fwrite.
-    assert "DMA_ATTR static seismic_frame_t s_dma_staging" in filesystem
+    assert "DMA_ATTR static seismic_recorder_dma_staging_t s_dma_staging" in filesystem
     assert "memcpy(" in filesystem and "s_dma_staging" in filesystem
-    assert "s_dma_staging," in filesystem
-    assert "fwrite(\n            s_dma_staging," in filesystem
+    assert "s_dma_staging.v1_frames," in filesystem
+    assert re.search(r"fwrite\(\s*s_dma_staging\.v1_frames,", filesystem)
+    assert "fwrite(s_dma_staging.v2_window, 1U, encoded_bytes, samples_file)" in filesystem
     assert "fwrite(\n        frames," not in filesystem
 
     # Normal STOP still performs explicit flush + media sync after the dirty
@@ -97,8 +98,8 @@ def test_write_behind_uses_separate_ingest_and_persisted_frontiers():
     # Acquisition is rescued from the realtime ring into PSRAM before the task
     # considers an SD flush. A full cache leaves the ingest cursor unchanged so
     # the same acquisition frames are retried after one bounded dirty drain.
-    copy = task.index("seismic_buffer_copy_since(")
-    append = task.index("seismic_recorder_cache_append(")
+    copy = task.index("seismic_buffer_copy_since_with_source_indices(")
+    append = task.index("seismic_recorder_cache_append_with_source_indices(")
     should_flush = task.index("const bool should_flush")
     flush_call = task.index("seismic_recorder_flush_one_dirty_chunk(")
     assert copy < append < should_flush < flush_call
@@ -134,7 +135,7 @@ def test_recorder_heartbeat_is_post_operation_and_progress_is_snapshot_based():
     assert observations
     next_observe = lambda operation: next(index for index in observations if index > operation)
 
-    copy = task.index("seismic_buffer_copy_since(")
+    copy = task.index("seismic_buffer_copy_since_with_source_indices(")
     write_behind = task.index("seismic_recorder_flush_one_dirty_chunk(")
     assert next_observe(copy) > copy
     assert next_observe(write_behind) > write_behind

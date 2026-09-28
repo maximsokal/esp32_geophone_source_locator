@@ -35,10 +35,12 @@ def test_profile_is_fetched_after_the_geometry_solve_not_before() -> None:
         "esp_err_t seismic_recorder_stop(",
     )
 
-    prepare_geometry_call = start.index("seismic_recorder_prepare_geometry(object_id)")
+    prepare_geometry_call = start.index("err = seismic_recorder_prepare_geometry(")
     profile_fetch_call = start.index("object_store_get_profile(object_id, profile)")
 
     assert prepare_geometry_call < profile_fetch_call
+    assert "&session_cs_pairs" in start[prepare_geometry_call:profile_fetch_call]
+    assert "profile->cs_pairs = session_cs_pairs;" in start[profile_fetch_call:]
 
 
 def test_session_json_serializes_the_frozen_geometry() -> None:
@@ -50,7 +52,7 @@ def test_session_json_serializes_the_frozen_geometry() -> None:
     )
     cables_call = write_metadata.index("seismic_recorder_json_add_cables(root, profile)")
     geometry_call = write_metadata.index(
-        "seismic_recorder_json_add_geometry(root, &profile->geometry)"
+        "seismic_recorder_json_add_geometry(root, &profile->geometry, participation)"
     )
     assert cables_call < geometry_call
 

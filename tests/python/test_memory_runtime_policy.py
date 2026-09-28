@@ -334,7 +334,7 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     assert "lv_obj_invalidate(context->measurement_screen)" not in measurements
     assert "lv_chart_refresh(chart)" not in measurements
     assert "DIGITAL_INTERFERENCE" in measurements
-    assert "DATA? DIGITAL" in measurements
+    assert "UI_I18N_KEY_MEASUREMENT_DIGITAL_FAULT" in measurements
     assert "s_last_digital_interference" in measurements
     assert "digital_interference == s_last_digital_interference" in measurements
     assert "channel_mean" in reducer
@@ -390,7 +390,7 @@ def test_network_lifecycle_does_not_run_heavy_work_in_sys_evt():
     assert "runtime_observability_log_snapshot(\"before-https\")" not in web_server
     assert "runtime_observability_log_snapshot(\"after-https\")" not in web_server
     assert "xQueueOverwrite(" in web_server
-    assert "xQueueCreate(1U, sizeof(web_lifecycle_state_t))" in web_server
+    assert "xQueueCreate(1U, sizeof(web_lifecycle_command_t))" in web_server
     assert "web_lifecycle_state_t" in web_server
     assert "WEB_LIFECYCLE_STATE_SETUP_AP" in web_server
     assert "WEB_LIFECYCLE_STATE_QUIESCED" in web_server

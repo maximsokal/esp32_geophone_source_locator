@@ -28,7 +28,8 @@ def test_scheduler_bounds_match_five_node_project_model() -> None:
     header = read("nRF54L15/include/nrf_cs_scheduler.h")
     assert "#define NRF_CS_MAX_NODES 5U" in header
     assert "#define NRF_CS_MAX_PAIRS 10U" in header
-    assert "#define NRF_CS_MAX_EXECUTIONS 10U" in header
+    assert "#define NRF_CS_MAX_EXECUTIONS (NRF_CS_MAX_NODES * (NRF_CS_MAX_NODES - 1U))" in header
+    assert 5 * (5 - 1) == 20  # all directed executions in the five-node model
     assert "NRF_CS_PAIR_MISSING" in header
     assert "NRF_CS_PAIR_RETRY_EXHAUSTED" in header
     assert "uint32_t membership_generation;" in header
@@ -56,7 +57,8 @@ def test_scheduler_is_built_and_host_covered() -> None:
 def test_existing_upstream_wire_lengths_remain_unchanged() -> None:
     protocol = read("nRF54L15/include/nrf_upstream_protocol.h")
     assert "#define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U" in protocol
-    # 112U as of MAX-114 (altitude/orientation fields appended); this guard
-    # is about the CS scheduler work in *this* file not touching the
-    # sensor snapshot frame, not about the frame being frozen at its previous size.
-    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 112U" in protocol
+    # Preserve v1 while later extensions define the current frame.
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH 112U" in protocol
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH 120U" in protocol
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH 136U" in protocol
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH" in protocol

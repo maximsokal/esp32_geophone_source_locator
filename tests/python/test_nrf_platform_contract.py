@@ -82,7 +82,7 @@ def test_platformio_uses_a_minimal_compatibility_config_without_changing_ncs_pro
     assert "if(DEFINED PIO_PACKAGES_DIR)" in cmake
     assert 'set(CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/prj.platformio.conf")' in cmake
     assert "CONFIG_I2C_TARGET_BUFFER_MODE=y" in compatibility
-    assert "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=128" in compatibility
+    assert "CONFIG_I2C_NRFX_TWIS_BUF_SIZE=144" in compatibility
     assert "CONFIG_BT_CHANNEL_SOUNDING" not in compatibility
     assert "CONFIG_BT_LL_SOFTDEVICE" not in compatibility
     assert "CONFIG_BT_CHANNEL_SOUNDING=y" in production

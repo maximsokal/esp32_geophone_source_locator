@@ -17,10 +17,14 @@ def test_topology_snapshot_carries_assignment_epoch():
 
 def test_sensor_transport_uses_canonical_max36_codec_at_platform_boundary():
     service = read("components/nrf_topology_service/nrf_topology_service.c")
+    transport = read("components/nrf_topology_service/nrf_sensor_transport.c")
     assert "NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH" in service
     assert "nrf_upstream_protocol_encode_sensor_refresh" in service
-    assert "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH" in service
     assert "nrf_upstream_protocol_decode_remote_snapshot" in service
+    assert "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH" in service
+    assert "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH" in service
+    assert "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH" in service
+    assert "read_remote_snapshot" in transport
     assert "NRF_UPSTREAM_ADDRESS_DISCOVERY" not in read(
         "components/nrf_topology_service/nrf_sensor_transport.c"
     )

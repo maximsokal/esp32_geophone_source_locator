@@ -17,41 +17,44 @@ def numeric_define(text: str, name: str) -> int:
 def test_wire_lengths_fit_explicit_twis_buffer():
     protocol = read("nRF54L15/include/nrf_upstream_protocol.h")
     conf = read("nRF54L15/zephyr/prj.conf")
-    frame_len = numeric_define(protocol, "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH")
+    v1_len = numeric_define(protocol, "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH")
+    v2_len = numeric_define(protocol, "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH")
+    frame_len = numeric_define(protocol, "NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH")
     request_len = numeric_define(protocol, "NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH")
     match = re.search(r"CONFIG_I2C_NRFX_TWIS_BUF_SIZE=(\d+)", conf)
     assert match
     buffer_len = int(match.group(1))
     assert request_len == 12
-    # 112 bytes as of MAX-114 (altitude_mm + orientation_state/blink_class/
-    # tilt_sin2_ppm appended); the previous frame was 102 bytes. Deliberate,
-    # reviewed change -- not a silent regression. Still comfortably inside
-    # the 128-byte TWIS buffer.
-    assert frame_len == 112
+    # v1/v2 remain decodable while current extensions use v3.
+    assert (v1_len, v2_len, frame_len) == (112, 120, 136)
     assert frame_len <= buffer_len
-    assert buffer_len == 128
+    assert buffer_len == 144
 
 
 def test_remote_frame_keeps_legacy_status_prefix_contract():
     protocol = read("nRF54L15/src/nrf_upstream_protocol.c")
     assert "nrf_upstream_protocol_encode_status(status, frame)" in protocol
     assert "frame[28] = NRF_UPSTREAM_SENSOR_MAGIC_0" in protocol
-    # CRC now covers 110 bytes (was 100 before the MAX-114 field extension).
-    assert "nrf_upstream_protocol_crc16_ccitt_false(frame, 110U)" in protocol
+    # The encoder writes v3; decoding retains the version-specific CRC offsets.
+    assert "nrf_upstream_protocol_crc16_ccitt_false(frame, 134U)" in protocol
+    assert "? 110U" in protocol
+    assert "? 118U : 134U" in protocol
     assert "nrf_upstream_protocol_decode_status(\n        frame,\n        NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH" in protocol
 
 
-def test_physical_hil_gate_is_rebased_to_the_full_112_byte_snapshot():
+def test_physical_hil_gate_covers_the_current_versioned_snapshot():
     protocol_doc = read("docs/nrf-upstream-sensor-snapshot-protocol.md")
     matrix = read("docs/verification-evidence-matrix.md")
     architecture = read("ARCHITECTURE.md")
-    assert "a complete 112-byte read" in protocol_doc
-    assert "112-byte TX buffer" in protocol_doc
-    assert "112-byte REMOTE snapshot" in matrix
-    assert "112-byte sensor frame" in architecture
-    assert "112-byte TWIS response" in architecture
-    assert "112-byte polling" in architecture
-    assert "full 112-byte TWIS behavior" in architecture
+    assert "The v3 REMOTE frame is 136 bytes." in protocol_doc
+    assert "v1 (112 bytes)" in protocol_doc
+    assert "v2 (120 bytes)" in protocol_doc
+    assert "v3 (136 bytes)" in protocol_doc
+    assert "136-byte v3 REMOTE snapshot" in matrix
+    assert "136-byte v3 sensor frame" in architecture
+    assert "136-byte TWIS response" in architecture
+    assert "136-byte polling" in architecture
+    assert "full 136-byte TWIS behavior" in architecture
     assert "102-byte sensor frame" not in architecture
     assert "102-byte TWIS response" not in architecture
     assert "102-byte polling" not in architecture

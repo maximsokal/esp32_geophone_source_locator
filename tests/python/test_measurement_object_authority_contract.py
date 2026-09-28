@@ -56,9 +56,9 @@ def test_web_and_tft_objects_use_the_same_admission_helper():
     assert "measurement_service_snapshot_allows_object_mutation" in web_gate
     assert "MEASUREMENT_SERVICE_" not in web_gate
     assert "measurement_service_snapshot_allows_object_mutation" in ui_gate
-    assert "MEASUREMENT OPERATION IN PROGRESS" in ui_gate
+    assert "UI_I18N_KEY_SHARED_MEASURE_OPERATION_BUSY" in ui_gate
 
-    assert ui.count("ui_objects_measurement_mutation_allowed_locked()") == 3
+    assert ui.count("if (!ui_objects_measurement_mutation_allowed_locked())") == 4
     assert "object_service_create_async" in ui
     assert "object_service_set_active_async" in ui
     assert "object_service_delete_async" in ui
@@ -90,4 +90,4 @@ def test_measurement_tft_renders_session_owner_independently_of_global_active():
     assert "displayed_object_present" in refresh
     assert "measurement.object_id[0] != '\\0'" in refresh
     assert "? measurement.active_object_present" in refresh
-    assert "RESOLVING OBJECT..." in refresh
+    assert "UI_I18N_KEY_MEASUREMENT_OBJECT_RESOLVING" in refresh
