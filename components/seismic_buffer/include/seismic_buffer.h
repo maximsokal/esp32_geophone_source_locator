@@ -7,6 +7,7 @@
 
 
 #define SEISMIC_CHANNEL_COUNT    4
+/* Compatibility for legacy tests/clients; use seismic_buffer_capacity(). */
 #define SEISMIC_BUFFER_CAPACITY  2048
 
 
@@ -47,6 +48,14 @@ typedef struct
 esp_err_t seismic_buffer_init(void);
 
 
+/* Runtime capacity in frames; zero if initialization/allocation failed. */
+size_t seismic_buffer_capacity(void);
+
+
+/*
+ * Call only after producer/consumer tasks are quiesced. In-flight push/copy
+ * calls are tracked; configuration then returns ESP_ERR_INVALID_STATE.
+ */
 esp_err_t seismic_buffer_configure(
     seismic_source_t source,
     uint32_t sample_rate_hz
@@ -55,6 +64,14 @@ esp_err_t seismic_buffer_configure(
 
 esp_err_t seismic_buffer_push(
     int64_t timestamp_us,
+    const float channel_uv[SEISMIC_CHANNEL_COUNT]
+);
+
+
+/* Publish with the acquisition-owned index, independent of ring order. */
+esp_err_t seismic_buffer_push_indexed(
+    int64_t timestamp_us,
+    uint64_t source_sample_index,
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
 );
 
@@ -82,6 +99,18 @@ esp_err_t seismic_buffer_copy_latest(
 esp_err_t seismic_buffer_copy_since(
     uint64_t *cursor,
     seismic_frame_t *frames,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *dropped_frames,
+    seismic_buffer_info_t *info
+);
+
+
+/* As copy_since, with acquisition sample indexes for every returned frame. */
+esp_err_t seismic_buffer_copy_since_with_source_indices(
+    uint64_t *cursor,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
     size_t max_frames,
     size_t *frame_count,
     uint64_t *dropped_frames,

@@ -544,6 +544,16 @@ esp_err_t seismic_recorder_json_write_metadata(
         return ESP_ERR_INVALID_ARG;
     }
 
+    const uint16_t format_version = snapshot->format_version == 0U
+        ? SEISMIC_RECORDER_BINARY_VERSION_V1
+        : snapshot->format_version;
+    if (
+        format_version != SEISMIC_RECORDER_BINARY_VERSION_V1 &&
+        format_version != SEISMIC_RECORDER_BINARY_VERSION_V2
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     seismic_recorder_session_participation_t preserved_participation;
     if (participation == NULL) {
         const esp_err_t read_err = seismic_recorder_read_session_participation(
@@ -591,6 +601,12 @@ esp_err_t seismic_recorder_json_write_metadata(
             snapshot->stop_stage_error
         ) != NULL &&
         cJSON_AddStringToObject(root, "source", snapshot->source_name) != NULL &&
+        cJSON_AddStringToObject(
+            root,
+            "sample_format",
+            format_version == SEISMIC_RECORDER_BINARY_VERSION_V2 ? "i16" : "f32"
+        ) != NULL &&
+        cJSON_AddNumberToObject(root, "format_version", format_version) != NULL &&
         cJSON_AddNumberToObject(root, "sample_rate_hz", snapshot->sample_rate_hz) != NULL &&
         cJSON_AddNumberToObject(root, "channel_count", snapshot->channel_count) != NULL &&
         cJSON_AddNumberToObject(root, "samples_written", (double)snapshot->samples_written) != NULL &&
@@ -614,7 +630,7 @@ esp_err_t seismic_recorder_json_write_metadata(
 
     cJSON *format = NULL;
     if (ok) {
-        format = cJSON_AddObjectToObject(root, "sample_format");
+        format = cJSON_AddObjectToObject(root, "format");
         ok = format != NULL;
     }
 
@@ -622,9 +638,27 @@ esp_err_t seismic_recorder_json_write_metadata(
         ok =
             cJSON_AddStringToObject(format, "container", "GEOSEIS1") != NULL &&
             cJSON_AddStringToObject(format, "file", "samples.bin") != NULL &&
-            cJSON_AddStringToObject(format, "timestamp", "int64_le_us") != NULL &&
-            cJSON_AddStringToObject(format, "channels", "float32_le_uv") != NULL &&
-            cJSON_AddNumberToObject(format, "frame_size_bytes", sizeof(seismic_frame_t)) != NULL;
+            cJSON_AddStringToObject(
+                format,
+                "timestamp",
+                format_version == SEISMIC_RECORDER_BINARY_VERSION_V2
+                    ? "block_first_timestamp_us_plus_sample_period"
+                    : "int64_le_us"
+            ) != NULL &&
+            cJSON_AddStringToObject(
+                format,
+                "channels",
+                format_version == SEISMIC_RECORDER_BINARY_VERSION_V2
+                    ? "int16_le_uv"
+                    : "float32_le_uv"
+            ) != NULL &&
+            cJSON_AddNumberToObject(
+                format,
+                "frame_size_bytes",
+                format_version == SEISMIC_RECORDER_BINARY_VERSION_V2
+                    ? SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES
+                    : sizeof(seismic_frame_t)
+            ) != NULL;
     }
 
     if (ok) {
@@ -1368,6 +1402,40 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
 
     valid = valid && seismic_recorder_json_schema_version(root, NULL);
 
+    const cJSON *format_version_item =
+        cJSON_GetObjectItemCaseSensitive(root, "format_version");
+    uint16_t format_version = 0U;
+    valid = valid && seismic_recorder_json_optional_uint16(
+        root,
+        "format_version",
+        &format_version
+    );
+    const cJSON *sample_format =
+        cJSON_GetObjectItemCaseSensitive(root, "sample_format");
+    if (format_version_item == NULL) {
+        format_version = SEISMIC_RECORDER_BINARY_VERSION_V1;
+    }
+    valid = valid && (
+        format_version == SEISMIC_RECORDER_BINARY_VERSION_V1 ||
+        format_version == SEISMIC_RECORDER_BINARY_VERSION_V2
+    );
+    if (cJSON_IsString(sample_format) && sample_format->valuestring != NULL) {
+        valid = valid && (
+            (format_version == SEISMIC_RECORDER_BINARY_VERSION_V1 &&
+             strcmp(sample_format->valuestring, "f32") == 0) ||
+            (format_version == SEISMIC_RECORDER_BINARY_VERSION_V2 &&
+             strcmp(sample_format->valuestring, "i16") == 0)
+        );
+    }
+    else if (format_version_item != NULL) {
+        valid = false;
+    }
+    else if (sample_format != NULL) {
+        /* Existing v1 metadata used an object at this key. */
+        valid = valid && format_version == SEISMIC_RECORDER_BINARY_VERSION_V1 &&
+            cJSON_IsObject(sample_format);
+    }
+
     const cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
     const bool complete =
         cJSON_IsString(status) &&
@@ -1474,6 +1542,9 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
     summary->dropped_frames = dropped_frames;
     summary->recording_ms = recording_ms;
     summary->cadence = cadence;
+    summary->format_version = format_version;
+    summary->has_gaps = dropped_frames > 0U;
+    summary->missing_samples = dropped_frames;
 
     cJSON_Delete(root);
     free(path);

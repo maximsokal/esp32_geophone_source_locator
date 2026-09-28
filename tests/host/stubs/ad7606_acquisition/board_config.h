@@ -1,0 +1,4 @@
+#pragma once
+
+#define BOARD_AD7606_CONVST_GPIO 42
+#define BOARD_AD7606_BUSY_GPIO 47

@@ -87,14 +87,14 @@ def test_objects_screen_never_starts_archive_listing_during_recovery() -> None:
     assert opening.index("context->storage_recovery_active") < opening.index(
         "object_service_list_async"
     )
-    assert '"CHECKING STORAGE..."' in opening
+    assert "UI_I18N_KEY_SHARED_CHECKING_STORAGE" in opening
 
     navigation = read("components/ui/ui_navigation.c")
     started = navigation.index("case APP_EVENT_STORAGE_RECOVERY_STARTED:")
     finished = navigation.index("case APP_EVENT_STORAGE_RECOVERY_FINISHED:", started)
     start_block = navigation[started:finished]
     assert "UI_SCREEN_OBJECTS" in start_block
-    assert '"CHECKING STORAGE..."' in start_block
+    assert "UI_I18N_KEY_SHARED_CHECKING_STORAGE" in start_block
     assert "ui_render_objects_locked" in start_block
 
     objects = read("components/ui/ui_objects_input.c")

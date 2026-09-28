@@ -77,10 +77,9 @@ def test_wire_protocol_is_unchanged_and_max51_ble_surface_is_enabled():
     protocol = read("nRF54L15/include/nrf_upstream_protocol.h")
     prj = read("nRF54L15/zephyr/prj.conf")
     assert "#define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U" in protocol
-    # 112U as of MAX-114, which is precisely the orientation-state upstream
-    # extension this test file predates -- the frame length changing here
-    # is the point of MAX-114, not a regression.
-    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH 112U" in protocol
+    # Keep pre-orientation v1 decodable while v3 carries the current fields.
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH 112U" in protocol
+    assert "#define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH 136U" in protocol
     # This test used to assert "orientation" is absent from the wire
     # protocol -- true when this test was written (orientation stayed
     # local to the nRF), and precisely the gap MAX-114 closed on purpose:

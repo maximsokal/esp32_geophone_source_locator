@@ -178,7 +178,8 @@ esp_err_t localization_run_record_to_json(
     if (
         !isfinite(record->propagation_speed_uncertainty_mps) ||
         record->propagation_speed_uncertainty_mps < 0.0 ||
-        strnlen(record->material, sizeof(record->material)) >= sizeof(record->material)
+        strnlen(record->material, sizeof(record->material)) >= sizeof(record->material) ||
+        (record->analysis_window_truncated && record->analysis_window_frames == 0U)
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -266,6 +267,18 @@ esp_err_t localization_run_record_to_json(
 
     if (ok && record->material[0] != '\0') {
         ok = cJSON_AddStringToObject(root, "material", record->material) != NULL;
+    }
+
+    if (ok && record->analysis_window_truncated) {
+        cJSON *window = cJSON_AddObjectToObject(root, "analysis_window");
+        ok = window != NULL &&
+            cJSON_AddNumberToObject(
+                window, "start_index", (double)record->analysis_window_start_index
+            ) != NULL &&
+            cJSON_AddNumberToObject(
+                window, "frames", (double)record->analysis_window_frames
+            ) != NULL &&
+            cJSON_AddBoolToObject(window, "truncated", true) != NULL;
     }
 
     if (ok && record->solved) {
@@ -486,6 +499,27 @@ esp_err_t localization_run_record_from_json(
     const cJSON *material_item = cJSON_GetObjectItemCaseSensitive(root, "material");
     if (ok && material_item != NULL && !cJSON_IsNull(material_item)) {
         ok = read_string(root, "material", record->material, sizeof(record->material));
+    }
+
+    const cJSON *analysis_window =
+        cJSON_GetObjectItemCaseSensitive(root, "analysis_window");
+    if (ok && analysis_window != NULL) {
+        double start_index = 0.0;
+        double frames = 0.0;
+        bool truncated = false;
+        ok = cJSON_IsObject(analysis_window) &&
+            read_number(analysis_window, "start_index", &start_index) &&
+            start_index >= 0.0 && floor(start_index) == start_index &&
+            start_index <= 9007199254740991.0 &&
+            read_number(analysis_window, "frames", &frames) &&
+            frames > 0.0 && floor(frames) == frames &&
+            frames <= 9007199254740991.0 &&
+            read_bool(analysis_window, "truncated", &truncated) && truncated;
+        if (ok) {
+            record->analysis_window_truncated = true;
+            record->analysis_window_start_index = (uint64_t)start_index;
+            record->analysis_window_frames = (uint64_t)frames;
+        }
     }
 
     const cJSON *failure_class_item = cJSON_GetObjectItemCaseSensitive(root, "failure_class");

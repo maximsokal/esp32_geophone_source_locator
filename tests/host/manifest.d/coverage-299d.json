@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "localization_config_sample_rate_299d",
+      "sources": [
+        "components/localization_job/localization_config.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_job/tests/localization_config_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "tests/host/stubs/workflow_service",
+        "components/localization_job/include",
+        "components/localization_calculate/include",
+        "components/localization/include",
+        "components/geophone_events/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_calculate_rate_windows_299d",
+      "defines": ["CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=1200"],
+      "sources": [
+        "components/localization_calculate/localization_calculate.c",
+        "components/localization_calculate/localization_calculate_policy.c",
+        "components/localization/localization.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "components/localization/localization_event_bridge.c",
+        "components/localization/localization_propagation_model.c",
+        "components/geophone_events/geophone_event_energy_trigger.c",
+        "components/geophone_events/geophone_event_sta_lta.c",
+        "components/geophone_events/geophone_event_arrival_refine.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/geophone_events/geophone_event_quality.c",
+        "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
+        "components/localization_traveltime_inversion/localization_traveltime_inversion.c",
+        "components/localization_semblance/localization_semblance.c",
+        "components/localization_energy_baseline/localization_energy_baseline.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_tdcas.c",
+        "components/localization_velocity_free/localization_psafuvs.c",
+        "components/localization_velocity_free/localization_suea.c",
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_extended/localization_bayes.c",
+        "components/localization_extended/localization_psp.c",
+        "components/localization_extended/localization_robust.c",
+        "components/localization_extended/localization_xcorr_tdoa.c",
+        "components/localization_comparison/localization_comparison.c",
+        "components/localization_results/localization_event_run_record.c",
+        "components/scan_occupancy/scan_occupancy.c",
+        "components/seismic_dsp/seismic_dsp.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_calculate/tests/localization_calculate_run_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/localization_calculate_run",
+        "tests/host/stubs/object_store_profile",
+        "components/localization_calculate/include",
+        "components/localization/include",
+        "components/localization_extended/include",
+        "components/localization_extended",
+        "components/localization_velocity_free/include",
+        "components/localization_traveltime_inversion/include",
+        "components/localization_semblance/include",
+        "components/localization_energy_baseline/include",
+        "components/localization_comparison/include",
+        "components/localization_results/include",
+        "components/geophone_events/include",
+        "components/scan_occupancy/include",
+        "components/seismic_dsp/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/localization_run_store/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "ui_measurement_trace_rate_span_299d",
+      "sources": [
+        "components/ui/ui_measurement_trace.c",
+        "components/ui/tests/ui_measurement_trace_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ui_measurement_span",
+        "components/ui",
+        "components/ui/tests/stubs",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "seismic_api_time_span_299d",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/web_server/web_seismic_api.c",
+        "components/web_server/web_json_writer.c",
+        "tests/host/web_seismic_api_time_span_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_pipeline",
+        "tests/host/stubs/ui_measurement_span",
+        "components/seismic_buffer/include",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/web_server"
+      ]
+    }
+  ]
+}

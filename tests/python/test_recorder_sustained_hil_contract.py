@@ -36,6 +36,9 @@ def test_sustained_hil_runner_gates_every_recording_phase_on_transport_health():
     assert "HealthSettleSeconds = 15" in runner
     assert '"{0}/api/status" -f $base' in runner
     assert "quality_window_frames" in runner
+    assert "Get-ReportedSampleRateHz $Status" in runner
+    assert "one second at" in runner
+    assert "[ValidateRange(1, 40000)]" in runner
     assert 'streamState -ne "NORMAL" -and $streamState -ne "QUIET"' in runner
     assert 'Add-HealthSample $healthSamples "preflight"' in runner
     assert 'Add-HealthSample $healthSamples "during-start"' in runner
@@ -57,9 +60,10 @@ def test_integrity_contract_exercises_psram_to_internal_dma_to_sd_production_pat
     assert "s_cache_storage = heap_caps_malloc(" in recorder
     assert "PSRAM cache=%u frames" in recorder
 
-    assert "DMA_ATTR static seismic_frame_t s_dma_staging" in filesystem
-    assert "memcpy(\n            s_dma_staging," in filesystem
-    assert "fwrite(\n            s_dma_staging," in filesystem
+    assert "DMA_ATTR static seismic_recorder_dma_staging_t s_dma_staging" in filesystem
+    assert "memcpy(\n                s_dma_staging.v1_frames," in filesystem
+    assert "fwrite(\n                s_dma_staging.v1_frames," in filesystem
+    assert "fwrite(s_dma_staging.v2_window, 1U, encoded_bytes, samples_file)" in filesystem
     assert "RECORDER_IO_TIMING op=fwrite" in filesystem
 
     assert 'seismic_recorder_reader_log_path(\n                "cache"' in reader
@@ -83,7 +87,7 @@ def test_sustained_analyzer_requires_throughput_integrity_and_shared_transport_h
     assert "--health-evidence" in analyzer
     assert "RECORDER_SUSTAINED_ANALYSIS" in analyzer
 
-    assert "MINIMUM_QUALITY_WINDOW_FRAMES = 500" in health
+    assert "QUALITY_WINDOW_DURATION_SECONDS = 1" in health
     assert 'GOOD_STREAM_STATES = frozenset({"NORMAL", "QUIET"})' in health
     assert 'BAD_TRANSPORT_QUALITIES = frozenset({"DEGRADED", "FAULT"})' in health
     assert "signal_quality_states" in health

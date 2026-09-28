@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeSavedSeismicSnapshot } from '../../src/domain/device';
-import { polylinePoints, polylineSegments } from '../../src/features/seismic/LiveSeismicPanel';
+import { normalizeSavedSeismicSnapshot, normalizeSeismicSnapshot } from '../../src/domain/device';
 import { envelopePolylinePoints } from '../../src/features/seismic/savedWaveform';
 
 function channels(value: number) {
@@ -30,39 +29,48 @@ function savedBase() {
   };
 }
 
+function liveBase() {
+  return {
+    source: 'AD7606',
+    sample_rate_hz: 20000,
+    count: 2,
+    frame_count: 40,
+    requested_span_ms: 2,
+    span_ms: 2,
+    decimation_factor: 20,
+    buffered_frames: 80,
+    total_frames: 100,
+    points: [
+      { timestamp_us: 1_000, end_timestamp_us: 2_000, channels: channels(-5) },
+      { timestamp_us: 2_100, end_timestamp_us: 3_000, channels: channels(-10) },
+    ],
+  };
+}
+
 describe('seismic timestamp geometry', () => {
-  it('uses real live timestamps instead of sample index', () => {
-    const points = polylinePoints([0, 0, 0, 0, 0], [0, 2, 4, 10, 12], 120, 100);
-    expect(points.split(' ').map((point) => point.split(',')[0])).toEqual([
-      '0.0', '20.0', '40.0', '100.0', '120.0',
-    ]);
+  it('normalizes live time-window envelopes with effective-rate and decimation metadata', () => {
+    const snapshot = normalizeSeismicSnapshot(liveBase());
+    const geometry = envelopePolylinePoints(snapshot.points, 0, 120, 100, 1_000, 3_000);
+
+    expect(snapshot.sample_rate_hz).toBe(20_000);
+    expect(snapshot.requested_span_ms).toBe(2);
+    expect(snapshot.span_ms).toBe(2);
+    expect(snapshot.frame_count).toBe(40);
+    expect(snapshot.decimation_factor).toBe(20);
+    expect(snapshot.points[0].channels[0]).toEqual({ id: 1, min_uv: -5, max_uv: -4 });
+    expect(geometry.min).toContain('M 0.0');
+    expect(geometry.min).toContain('L 60.0');
+    expect(geometry.max).toContain('L 60.0');
   });
 
-  it('leaves a proven missed live sample period blank without inventing interpolation', () => {
-    const segments = polylineSegments(
-      [0, 1, 2, 3, 4],
-      [0, 2, 4, 10, 12],
-      120,
-      100,
-      500,
-    );
+  it('rejects invalid live envelope channel ranges and non-monotonic buckets', () => {
+    const invalidRange = liveBase();
+    invalidRange.points[0].channels[0] = { id: 1, min_uv: 5, max_uv: -5 };
+    expect(() => normalizeSeismicSnapshot(invalidRange)).toThrow(/envelope range/i);
 
-    expect(segments).toHaveLength(2);
-    expect(segments[0].split(' ').map((point) => point.split(',')[0]))
-      .toEqual(['0.0', '20.0', '40.0']);
-    expect(segments[1].split(' ').map((point) => point.split(',')[0]))
-      .toEqual(['100.0', '120.0']);
-
-    expect(polylineSegments([0, 1, 2, 3], [0, 2, 4, 6], 120, 100, 500))
-      .toHaveLength(1);
-  });
-
-  it('handles equal live timestamps deterministically and rejects non-monotonic input', () => {
-    expect(polylinePoints([1, 2], [5, 5], 120, 100).split(' ').map((point) => point.split(',')[0]))
-      .toEqual(['60.0', '60.0']);
-    expect(polylinePoints([1, 2, 3], [0, 4, 2], 120, 100)).toBe('');
-    expect(polylinePoints([1, 2], [0], 120, 100)).toBe('');
-    expect(polylineSegments([1, 2], [0, 2], 120, 100, 0)).toEqual([]);
+    const invalidTiming = liveBase();
+    invalidTiming.points[1].timestamp_us = 900;
+    expect(() => normalizeSeismicSnapshot(invalidTiming)).toThrow(/timing/i);
   });
 
   it('renders saved buckets across their real horizontal extent and leaves timestamp gaps blank', () => {

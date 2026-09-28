@@ -115,6 +115,7 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
+    uint16_t format_version;
 
     esp_err_t last_error;
     esp_err_t stop_stage_error;
@@ -140,6 +141,9 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
+    uint16_t format_version;
+    bool has_gaps;
+    uint64_t missing_samples;
 
     char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
 
@@ -246,6 +250,9 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
+    uint16_t format_version;
+    bool has_gaps;
+    uint64_t missing_samples;
 
     uint64_t source_frame_count;
     uint64_t start_frame;
@@ -359,6 +366,32 @@ esp_err_t seismic_recorder_read_session_raw(
     const char *session_id,
     seismic_frame_t *frames,
     size_t frame_capacity,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out
+);
+
+/* Read a session's frozen summary without opening its samples payload. */
+esp_err_t seismic_recorder_get_session_summary(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary_out
+);
+
+/*
+ * Read at most max_frames logical frames from start_index. For v2,
+ * source_sample_indices and gap_before retain source-index gaps; for v1,
+ * indices are the session frame numbers and the stored timestamps are kept.
+ * Optional metadata arrays may be NULL. start_index is a logical session
+ * offset (0..samples_written); a value beyond the end is invalid.
+ */
+esp_err_t seismic_recorder_read_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_index,
+    size_t max_frames,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
     size_t *frame_count_out,
     seismic_recorder_session_summary_t *summary_out
 );

@@ -336,13 +336,14 @@ when at least one source is available.
 `nrf_upstream_target_zephyr` remains the platform lifecycle/re-addressing
 adapter, while `nrf_upstream_protocol` and the bootstrap runtime define the
 project addresses and wire semantics. The upstream TWIS DMA buffer is
-explicitly configured to 128 bytes. REMOTE target reads expose a fixed
-112-byte sensor frame whose bytes `0..27` are the exact legacy STATUS frame;
-the extension carries sensor request ID, sequence, validity/fault masks, nRF
-sample-complete uptime, IMU/environment payload and a full-frame CRC. Explicit
+explicitly configured to 144 bytes. REMOTE target reads expose the current
+136-byte v3 sensor frame whose bytes `0..27` are the exact legacy STATUS frame;
+the decoder also accepts 112-byte v1 and 120-byte v2 frames. The extension
+carries sensor request ID, sequence, validity/fault masks, nRF sample-complete
+uptime, IMU/environment payload and a full-frame CRC. Explicit
 sensor refresh uses the fixed 12-byte SENSOR_REFRESH request. Physical proof
 that a controller can STOP after only the 28-byte prefix of a prepared
-112-byte TWIS response and then start the next transaction cleanly remains a
+136-byte TWIS response and then start the next transaction cleanly remains a
 HIL gate; software tests do not claim that electrical/driver behavior.
 
 The same ESP32 `nrf_topology` Core-0 task also consumes those REMOTE snapshots;
@@ -351,7 +352,7 @@ node ID, mux channel, runtime address and bootstrap `STATUS.request_id` as an
 assignment epoch, so a reboot/reassignment invalidates old samples even on the
 same physical slot. A bounded transaction performs verified one-hot select,
 optional MAIN identity validation, REMOTE identity validation, SENSOR_REFRESH,
-112-byte polling and verified close with a 500 ms total deadline and 10 ms
+136-byte polling and verified close with a 500 ms total deadline and 10 ms
 poll interval. Public callers can only request refreshes and read race-safe
 cached results; raw I2C/TCA handles remain private. A new/reassigned REMOTE
 queues one initial ESP-side refresh, but there is no continuous automatic
@@ -441,7 +442,7 @@ validity/fault masks, nRF completion uptime, acceleration, gyro, IMU
 temperature, environment temperature, pressure and humidity. The REMOTE sensor
 worker also contains a software-only orientation estimator that can consume
 BMI160 samples without triggering a BME280 conversion. It does not change the
-112-byte upstream frame and does not provide persistent history, synchronized
+136-byte v3 upstream frame and does not provide persistent history, synchronized
 cross-node time, Channel Sounding geometry or physical external LED/logger
 state.
 
@@ -459,7 +460,7 @@ re-address rollback and raw `hwinfo_get_device_id()` access. Project addresses
 backward-compatible REMOTE sensor snapshot protocol are implemented above that
 adapter. Bluetooth Channel Sounding, synchronized clocks, persistent sensor
 history and the physical remote LED/logger backend remain separate future work,
-while 28-byte early-STOP versus full 112-byte TWIS behavior remains a physical
+while 28-byte early-STOP versus full 136-byte TWIS behavior remains a physical
 HIL validation item.
 
 For static verticality, the accelerometer gravity vector is the primary

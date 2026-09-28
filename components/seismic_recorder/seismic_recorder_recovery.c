@@ -333,25 +333,6 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
 }
 
 
-static bool seismic_recorder_recovery_header_valid(
-    const seismic_recorder_binary_header_t *header,
-    const seismic_recorder_recovery_candidate_t *candidate
-)
-{
-    return
-        header != NULL &&
-        candidate != NULL &&
-        memcmp(header->magic, "GEOSEIS1", sizeof(header->magic)) == 0 &&
-        header->version == SEISMIC_RECORDER_BINARY_VERSION &&
-        header->channel_count == SEISMIC_CHANNEL_COUNT &&
-        header->channel_count == candidate->channel_count &&
-        header->sample_rate_hz == candidate->sample_rate_hz &&
-        header->sample_rate_hz > 0U &&
-        header->frame_size_bytes == sizeof(seismic_frame_t) &&
-        header->reserved == 0U;
-}
-
-
 static int seismic_recorder_recovery_file_descriptor(FILE *file)
 {
 #ifdef _WIN32
@@ -394,14 +375,19 @@ static int seismic_recorder_recovery_truncate_descriptor(
 static esp_err_t seismic_recorder_recovery_validate_raw(
     const char *samples_path,
     const seismic_recorder_recovery_candidate_t *candidate,
-    uint64_t *frame_count
+    uint64_t *frame_count,
+    uint16_t *format_version
 )
 {
-    if (samples_path == NULL || candidate == NULL || frame_count == NULL) {
+    if (
+        samples_path == NULL || candidate == NULL || frame_count == NULL ||
+        format_version == NULL
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
     *frame_count = 0U;
+    *format_version = 0U;
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) {
         return err;
@@ -426,48 +412,19 @@ static esp_err_t seismic_recorder_recovery_validate_raw(
         }
     }
 
-    if (
-        err == ESP_OK &&
-        (uint64_t)end_position < sizeof(seismic_recorder_binary_header_t)
-    ) {
-        err = ESP_ERR_INVALID_RESPONSE;
-    }
-
-    seismic_recorder_binary_header_t header;
-    if (err == ESP_OK && fseek(file, 0L, SEEK_SET) != 0) {
-        err = ESP_FAIL;
-    }
-    if (
-        err == ESP_OK &&
-        fread(&header, 1U, sizeof(header), file) != sizeof(header)
-    ) {
-        err = ESP_ERR_INVALID_RESPONSE;
-    }
-    if (
-        err == ESP_OK &&
-        !seismic_recorder_recovery_header_valid(&header, candidate)
-    ) {
-        err = ESP_ERR_INVALID_RESPONSE;
-    }
-
     uint64_t whole_frames = 0U;
     uint64_t target_size = 0U;
+    uint16_t recovered_format_version = 0U;
     if (err == ESP_OK) {
-        const uint64_t payload =
-            (uint64_t)end_position - sizeof(seismic_recorder_binary_header_t);
-        whole_frames = payload / sizeof(seismic_frame_t);
-        if (
-            whole_frames >
-                (UINT64_MAX - sizeof(seismic_recorder_binary_header_t)) /
-                    sizeof(seismic_frame_t)
-        ) {
-            err = ESP_ERR_INVALID_SIZE;
-        }
-        else {
-            target_size =
-                sizeof(seismic_recorder_binary_header_t) +
-                whole_frames * sizeof(seismic_frame_t);
-        }
+        err = seismic_recorder_samples_recover_file(
+            file,
+            (uint64_t)end_position,
+            candidate->sample_rate_hz,
+            candidate->channel_count,
+            &whole_frames,
+            &target_size,
+            &recovered_format_version
+        );
     }
 
     const int descriptor = err == ESP_OK
@@ -518,6 +475,7 @@ static esp_err_t seismic_recorder_recovery_validate_raw(
 
     if (err == ESP_OK) {
         *frame_count = whole_frames;
+        *format_version = recovered_format_version;
     }
     return err;
 }
@@ -594,10 +552,12 @@ static esp_err_t seismic_recorder_recovery_one(
     }
 
     uint64_t frame_count = 0U;
+    uint16_t format_version = 0U;
     err = seismic_recorder_recovery_validate_raw(
         samples_path,
         &candidate,
-        &frame_count
+        &frame_count,
+        &format_version
     );
     if (err != ESP_OK) {
         return err;
@@ -616,6 +576,7 @@ static esp_err_t seismic_recorder_recovery_one(
     snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
     snapshot.sample_rate_hz = candidate.sample_rate_hz;
     snapshot.channel_count = candidate.channel_count;
+    snapshot.format_version = format_version;
     snapshot.samples_written = frame_count;
     snapshot.last_error = ESP_FAIL;
     snapshot.stop_stage_error = ESP_OK;

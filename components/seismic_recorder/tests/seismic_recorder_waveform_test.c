@@ -1,4 +1,5 @@
 #include "seismic_recorder_internal.h"
+#include "../seismic_recorder_samples.c"
 
 #include <assert.h>
 #include <stdio.h>

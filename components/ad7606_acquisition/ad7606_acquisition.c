@@ -12,6 +12,7 @@
 #include "ad7606_driver.h"
 #include "ad7606_acquisition_timing.h"
 #include "ad7606_power_policy.h"
+#include "board_config.h"
 #include "ina3221_monitor.h"
 
 #include "runtime_observability.h"
@@ -20,6 +21,13 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "esp_rom_sys.h"
+
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/pulse_cnt.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -40,13 +48,10 @@ static const char *DIAG_TAG =
 static TaskHandle_t s_task =
     NULL;
 
-static esp_timer_handle_t s_timer =
-    NULL;
-
 static volatile bool s_running =
     false;
 
-static int64_t s_jitter_t0_us;
+static int64_t s_sample_t0_us;
 static uint64_t s_jitter_period_us;
 
 static portMUX_TYPE s_status_lock =
@@ -56,15 +61,38 @@ static ad7606_acquisition_status_t s_status;
 
 /* MAX-242: rail watch state, owned by the Core 1 worker. */
 static ad7606_rail_watch_t s_rail_watch;
-static int64_t s_rail_last_check_us = 0;
+static uint64_t s_rail_last_check_conversion = 0U;
 #define AD7606_RAIL_CHECK_PERIOD_US 1000000LL
 
 
-#define AD7606_SERIAL_DIAG_LOG_INTERVAL_US  1000000LL
-
 static ad7606_serial_diag_state_t s_serial_diag;
-static int64_t s_serial_diag_last_log_us = 0;
+static uint8_t *s_serial_quality_window_flags;
+static uint64_t s_serial_diag_last_log_sample = 0U;
 static bool s_serial_diag_log_pending = false;
+
+#define AD7606_LEDC_XTAL_CLOCK_HZ 40000000U
+/* Datasheet t3 CONVST high minimum is 25 ns; target 2.1 us for margin. */
+#define AD7606_CONVST_TARGET_HIGH_NS 2100U
+#define AD7606_ACQUISITION_BUSY_STOP_TIMEOUT_US 100U
+#define AD7606_PCNT_HIGH_LIMIT 16384
+#define AD7606_PCNT_LOW_LIMIT (-16384)
+
+static pcnt_unit_handle_t s_pcnt_unit;
+static pcnt_channel_handle_t s_pcnt_channel;
+static bool s_pcnt_enabled;
+static bool s_pcnt_started;
+static bool s_busy_isr_added;
+static bool s_busy_intr_enabled;
+static bool s_ledc_timer_configured;
+static bool s_ledc_channel_configured;
+static bool s_driver_initialized;
+static bool s_stop_requested;
+static uint32_t s_ledc_duty_resolution;
+static uint32_t s_ledc_duty_count;
+static uint32_t s_convst_high_ns;
+static ad7606_read_mode_t s_read_mode = AD7606_READ_MODE_AUTO;
+static ad7606_count_extension_t s_pcnt_extension;
+static ad7606_sample_accounting_t s_sample_accounting;
 
 
 typedef struct
@@ -88,7 +116,7 @@ typedef struct
 
 
 static ad7606_diag_channel_t s_diag[
-    /* Diagnostics cover every ADC word; the app buffer remains four-channel. */
+    /* All four words belong to the connected geophone inputs V1-V4. */
     AD7606_CHANNEL_COUNT
 ];
 
@@ -236,7 +264,7 @@ static void ad7606_status_reset(void)
         sizeof(s_status)
     );
 
-    s_jitter_t0_us = 0;
+    s_sample_t0_us = 0;
     s_jitter_period_us = 0U;
 
     s_status.serial_pattern =
@@ -319,61 +347,38 @@ static void ad7606_status_set_running(
 }
 
 
-static uint64_t ad7606_status_record_timer_wake(
-    uint32_t notification_count
-)
+static void ad7606_status_record_conversion_count(uint64_t conversion_count)
 {
-    if (notification_count == 0U) {
-        return 0U;
-    }
-
     portENTER_CRITICAL(
         &s_status_lock
     );
-
-    s_status.timer_ticks =
-        ad7606_acquisition_saturating_add_u64(
-            s_status.timer_ticks,
-            (uint64_t)notification_count
-        );
-
-    s_status.conversion_attempts =
-        ad7606_acquisition_saturating_add_u64(
-            s_status.conversion_attempts,
-            1U
-        );
-
-    s_status.collapsed_periods =
-        ad7606_acquisition_saturating_add_u64(
-            s_status.collapsed_periods,
-            ad7606_acquisition_collapsed_periods(notification_count)
-        );
-
-    const uint64_t timer_ticks_total = s_status.timer_ticks;
-
-    portEXIT_CRITICAL(
-        &s_status_lock
-    );
-
-    return timer_ticks_total;
+    s_status.timer_ticks = conversion_count;
+    portEXIT_CRITICAL(&s_status_lock);
 }
 
 
-static int64_t ad7606_jitter_scheduled_us(
-    uint64_t timer_ticks_total
-)
+static void ad7606_status_record_attempt(void)
 {
-    if (s_jitter_t0_us < 0 || s_jitter_period_us == 0U) {
-        return INT64_MAX;
-    }
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.conversion_attempts = ad7606_acquisition_saturating_add_u64(
+        s_status.conversion_attempts,
+        1U
+    );
+    portEXIT_CRITICAL(&s_status_lock);
+}
 
-    const uint64_t t0_us = (uint64_t)s_jitter_t0_us;
-    const uint64_t max_us = (uint64_t)INT64_MAX;
-    if (t0_us > max_us || timer_ticks_total > (max_us - t0_us) / s_jitter_period_us) {
-        return INT64_MAX;
-    }
 
-    return (int64_t)(t0_us + timer_ticks_total * s_jitter_period_us);
+static void ad7606_status_record_gaps(uint64_t missed_conversions)
+{
+    if (missed_conversions == 0U) {
+        return;
+    }
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.collapsed_periods = ad7606_acquisition_saturating_add_u64(
+        s_status.collapsed_periods,
+        missed_conversions
+    );
+    portEXIT_CRITICAL(&s_status_lock);
 }
 
 
@@ -422,8 +427,9 @@ static void ad7606_status_record_sample(
     int64_t scheduled_us
 )
 {
-    const bool early = sample->timestamp_us < scheduled_us;
-    const uint64_t lateness_us = early
+    const bool jitter_available = scheduled_us >= 0;
+    const bool early = jitter_available && sample->timestamp_us < scheduled_us;
+    const uint64_t lateness_us = !jitter_available || early
         ? 0U
         : (uint64_t)sample->timestamp_us - (uint64_t)scheduled_us;
     const unsigned jitter_bucket = ad7606_jitter_bucket(lateness_us);
@@ -432,36 +438,37 @@ static void ad7606_status_record_sample(
         &s_status_lock
     );
 
-    ad7606_acquisition_jitter_t *jitter = &s_status.jitter;
-    if (jitter->count == 0U) {
-        jitter->min_us = lateness_us;
-        jitter->max_us = lateness_us;
-    }
-    else {
-        if (lateness_us < jitter->min_us) {
+    if (jitter_available) {
+        ad7606_acquisition_jitter_t *jitter = &s_status.jitter;
+        if (jitter->count == 0U) {
             jitter->min_us = lateness_us;
-        }
-        if (lateness_us > jitter->max_us) {
             jitter->max_us = lateness_us;
         }
-    }
-    jitter->count = ad7606_acquisition_saturating_add_u32(jitter->count, 1U);
-    if (early) {
-        jitter->early_count = ad7606_acquisition_saturating_add_u32(
-            jitter->early_count,
-            1U
+        else {
+            if (lateness_us < jitter->min_us) {
+                jitter->min_us = lateness_us;
+            }
+            if (lateness_us > jitter->max_us) {
+                jitter->max_us = lateness_us;
+            }
+        }
+        jitter->count = ad7606_acquisition_saturating_add_u32(jitter->count, 1U);
+        if (early) {
+            jitter->early_count = ad7606_acquisition_saturating_add_u32(
+                jitter->early_count,
+                1U
+            );
+        }
+        jitter->sum_us = ad7606_acquisition_saturating_add_u64(
+            jitter->sum_us,
+            lateness_us
         );
+        jitter->histogram_us[jitter_bucket] =
+            ad7606_acquisition_saturating_add_u32(
+                jitter->histogram_us[jitter_bucket],
+                1U
+            );
     }
-    jitter->sum_us = ad7606_acquisition_saturating_add_u64(
-        jitter->sum_us,
-        lateness_us
-    );
-    jitter->histogram_us[jitter_bucket] =
-        ad7606_acquisition_saturating_add_u32(
-            jitter->histogram_us[jitter_bucket],
-            1U
-        );
-
     if (
         s_status.latest_valid &&
         sample->timestamp_us > s_status.last_sample_timestamp_us
@@ -584,15 +591,113 @@ static void ad7606_serial_diag_log_frame(
     const ad7606_serial_diag_state_t *serial_diag,
     const ad7606_serial_diag_event_t *event,
     uint64_t samples
+);
+
+
+static bool ad7606_account_sample_index(uint64_t sample_index, bool sample_valid)
+{
+    uint64_t missed = 0U;
+    const bool accepted = ad7606_acquisition_account_sample(
+        &s_sample_accounting,
+        sample_index,
+        sample_valid,
+        &missed
+    );
+    ad7606_status_record_gaps(missed);
+    return accepted;
+}
+
+
+static esp_err_t ad7606_publish_sample(
+    uint64_t sample_index,
+    ad7606_sample_t *sample,
+    const ad7606_serial_observation_t *serial_observation,
+    uint64_t *successful_samples
 )
 {
-    const int64_t now_us = esp_timer_get_time();
+    if (
+        sample == NULL ||
+        serial_observation == NULL ||
+        successful_samples == NULL ||
+        !ad7606_acquisition_timestamp_from_index(
+            s_sample_t0_us,
+            sample_index,
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            &sample->timestamp_us
+        )
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!ad7606_account_sample_index(sample_index, true)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ad7606_serial_diag_event_t serial_event;
+    (void)ad7606_serial_diag_observe(
+        &s_serial_diag,
+        serial_observation->rx,
+        &serial_event
+    );
+
+    float all_channels_uv[AD7606_CHANNEL_COUNT];
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        all_channels_uv[channel] = ad7606_raw_to_uv(sample->raw[channel]);
+    }
+
+    ad7606_status_record_sample(
+        sample,
+        all_channels_uv,
+        &s_serial_diag,
+        serial_observation->busy_level,
+        -1
+    );
+    ad7606_serial_diag_log_frame(
+        serial_observation,
+        &s_serial_diag,
+        &serial_event,
+        sample_index + 1U
+    );
+    ad7606_diag_record(sample);
+
+    float seismic_channels[SEISMIC_CHANNEL_COUNT];
+    for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        seismic_channels[channel] = all_channels_uv[channel];
+    }
+
+    const esp_err_t err = seismic_buffer_push_indexed(
+        sample->timestamp_us,
+        sample_index,
+        seismic_channels
+    );
+    if (err != ESP_OK) {
+        ad7606_status_record_gaps(1U);
+        ESP_LOGE(TAG, "Seismic buffer push failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ++*successful_samples;
+    runtime_observability_beat(RUNTIME_TASK_ACQUISITION, *successful_samples);
+    if ((sample_index + 1U) % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+        ad7606_diag_log_and_reset();
+    }
+    return ESP_OK;
+}
+
+
+static void ad7606_serial_diag_log_frame(
+    const ad7606_serial_observation_t *observation,
+    const ad7606_serial_diag_state_t *serial_diag,
+    const ad7606_serial_diag_event_t *event,
+    uint64_t samples
+)
+{
     const bool periodic_due =
         serial_diag->suspicious_streak > 0U &&
         (
-            s_serial_diag_last_log_us == 0 ||
-            now_us - s_serial_diag_last_log_us >=
-                AD7606_SERIAL_DIAG_LOG_INTERVAL_US
+            s_serial_diag_last_log_sample == 0U ||
+            samples - s_serial_diag_last_log_sample >=
+                CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
         );
 
     if (
@@ -612,9 +717,9 @@ static void ad7606_serial_diag_log_frame(
     }
 
     if (
-        s_serial_diag_last_log_us != 0 &&
-        now_us - s_serial_diag_last_log_us <
-            AD7606_SERIAL_DIAG_LOG_INTERVAL_US
+        s_serial_diag_last_log_sample != 0U &&
+        samples - s_serial_diag_last_log_sample <
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
     ) {
         return;
     }
@@ -627,7 +732,7 @@ static void ad7606_serial_diag_log_frame(
 
     ESP_LOGI(
         DIAG_TAG,
-        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s transport_quality=%s signal_quality=%s stream_state=%s stream_stuck=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u signal_rail_hits=%u signal_clips=%u window=%u transport_bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u signal_rail=%u signal_clip=%u serial_suspicious=%s",
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d] class=%s transport_quality=%s signal_quality=%s stream_state=%s stream_stuck=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u signal_rail_hits=%u signal_clips=%u window=%u transport_bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u signal_rail=%u signal_clip=%u serial_suspicious=%s",
         observation->rx[0],
         observation->rx[1],
         observation->rx[2],
@@ -636,22 +741,10 @@ static void ad7606_serial_diag_log_frame(
         observation->rx[5],
         observation->rx[6],
         observation->rx[7],
-        observation->rx[8],
-        observation->rx[9],
-        observation->rx[10],
-        observation->rx[11],
-        observation->rx[12],
-        observation->rx[13],
-        observation->rx[14],
-        observation->rx[15],
         words[0],
         words[1],
         words[2],
         words[3],
-        words[4],
-        words[5],
-        words[6],
-        words[7],
         ad7606_serial_pattern_name(
             serial_diag->pattern
         ),
@@ -682,146 +775,491 @@ static void ad7606_serial_diag_log_frame(
         serial_diag->serial_suspicious ? "yes" : "no"
     );
 
-    s_serial_diag_last_log_us = now_us;
+    s_serial_diag_last_log_sample = samples;
     s_serial_diag_log_pending = false;
 }
 
 
-static void ad7606_timer_callback(
-    void *argument
-)
+static void IRAM_ATTR ad7606_busy_isr(void *argument)
 {
     (void)argument;
-
-    if (
-        s_running &&
-        s_task != NULL
-    ) {
-        xTaskNotifyGive(
-            s_task
-        );
+    if (s_running && s_task != NULL) {
+        BaseType_t higher_priority_woken = pdFALSE;
+        vTaskNotifyGiveFromISR(s_task, &higher_priority_woken);
+        if (higher_priority_woken == pdTRUE) {
+            portYIELD_FROM_ISR();
+        }
     }
 }
 
 
-static void ad7606_worker_cleanup(void)
+static ad7606_read_mode_t ad7606_requested_read_mode(void)
 {
-    if (s_timer != NULL) {
-        (void)esp_timer_stop(
-            s_timer
-        );
+#if CONFIG_AD7606_READ_MODE_AFTER_CONVERSION
+    return AD7606_READ_MODE_AFTER_CONVERSION;
+#elif CONFIG_AD7606_READ_MODE_DURING_CONVERSION
+    return AD7606_READ_MODE_DURING_CONVERSION;
+#else
+    return AD7606_READ_MODE_AUTO;
+#endif
+}
 
-        (void)esp_timer_delete(
-            s_timer
-        );
 
-        s_timer =
-            NULL;
+static const char *ad7606_read_mode_name(ad7606_read_mode_t mode)
+{
+    switch (mode) {
+        case AD7606_READ_MODE_AFTER_CONVERSION: return "after_conversion";
+        case AD7606_READ_MODE_DURING_CONVERSION: return "during_conversion";
+        case AD7606_READ_MODE_AUTO: default: return "auto";
+    }
+}
+
+
+static esp_err_t ad7606_resolve_timing(void)
+{
+    const uint32_t max_resolution = ledc_find_suitable_duty_resolution(
+        AD7606_LEDC_XTAL_CLOCK_HZ,
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+    );
+    s_ledc_duty_resolution = ad7606_acquisition_ledc_exact_resolution(
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        AD7606_LEDC_XTAL_CLOCK_HZ,
+        max_resolution
+    );
+    if (s_ledc_duty_resolution == 0U) {
+        ESP_LOGE(TAG, "XTAL LEDC cannot generate %u Hz",
+            (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ);
+        return ESP_ERR_INVALID_ARG;
     }
 
-    /* SPI3 was initialized by this Core 1 worker and is released here. */
+    s_ledc_duty_count = ad7606_acquisition_ledc_duty_count(
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        s_ledc_duty_resolution,
+        AD7606_CONVST_TARGET_HIGH_NS,
+        &s_convst_high_ns
+    );
+    if (s_ledc_duty_count == 0U || s_convst_high_ns < 1000U) {
+        ESP_LOGE(TAG, "LEDC CONVST pulse calculation failed");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ad7606_timing_result_t timing;
+    if (!ad7606_acquisition_timing_resolve(
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            CONFIG_AD7606_OVERSAMPLING_RATIO,
+            CONFIG_AD7606_SPI_CLOCK_HZ,
+            ad7606_requested_read_mode(),
+            s_convst_high_ns,
+            &timing)) {
+        ESP_LOGE(
+            TAG,
+            "Invalid timing: rate=%u OS=%u SCLK=%u mode=%s CONVST_high=%u ns",
+            (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+            (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
+            ad7606_read_mode_name(ad7606_requested_read_mode()),
+            (unsigned)s_convst_high_ns
+        );
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_read_mode = timing.mode;
+    ESP_LOGI(
+        TAG,
+        "Timing valid: %u Hz OS%u SCLK=%u read=%" PRIu64
+        " ns tCONV(max)=%u ns mode=%s CONVST_high=%u ns",
+        (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+        (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
+        timing.read_time_ns,
+        (unsigned)timing.tconv_max_ns,
+        ad7606_read_mode_name(s_read_mode),
+        (unsigned)timing.convst_high_ns
+    );
+    return ESP_OK;
+}
+
+
+static esp_err_t ad7606_counter_init(void)
+{
+    const pcnt_unit_config_t unit_config = {
+        .low_limit = AD7606_PCNT_LOW_LIMIT,
+        .high_limit = AD7606_PCNT_HIGH_LIMIT,
+        .flags.accum_count = 1,
+    };
+    esp_err_t err = pcnt_new_unit(&unit_config, &s_pcnt_unit);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = pcnt_unit_add_watch_point(s_pcnt_unit, AD7606_PCNT_HIGH_LIMIT);
+    if (err == ESP_OK) {
+        err = pcnt_unit_add_watch_point(s_pcnt_unit, AD7606_PCNT_LOW_LIMIT);
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const pcnt_chan_config_t channel_config = {
+        .edge_gpio_num = BOARD_AD7606_BUSY_GPIO,
+        .level_gpio_num = -1,
+    };
+    err = pcnt_new_channel(s_pcnt_unit, &channel_config, &s_pcnt_channel);
+    if (err == ESP_OK) {
+        err = pcnt_channel_set_edge_action(
+            s_pcnt_channel,
+            PCNT_CHANNEL_EDGE_ACTION_HOLD,
+            PCNT_CHANNEL_EDGE_ACTION_INCREASE
+        );
+    }
+    if (err == ESP_OK) {
+        err = pcnt_channel_set_level_action(
+            s_pcnt_channel,
+            PCNT_CHANNEL_LEVEL_ACTION_KEEP,
+            PCNT_CHANNEL_LEVEL_ACTION_KEEP
+        );
+    }
+    if (err == ESP_OK) {
+        err = pcnt_unit_clear_count(s_pcnt_unit);
+    }
+    if (err == ESP_OK) {
+        err = pcnt_unit_enable(s_pcnt_unit);
+        s_pcnt_enabled = err == ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = pcnt_unit_start(s_pcnt_unit);
+        s_pcnt_started = err == ESP_OK;
+    }
+    if (err == ESP_OK) {
+        ad7606_acquisition_count_extension_reset(&s_pcnt_extension);
+    }
+    return err;
+}
+
+
+static esp_err_t ad7606_counter_verify_self_test(void)
+{
+    int count = 0;
+    esp_err_t err = pcnt_unit_get_count(s_pcnt_unit, &count);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (count <= 0) {
+        ESP_LOGE(TAG, "PCNT did not observe the AD7606 self-test BUSY pulse on GPIO%d",
+            BOARD_AD7606_BUSY_GPIO);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "PCNT BUSY input GPIO%d shares the interrupt pad through GPIO matrix; "
+        "self-test pulses=%d",
+        BOARD_AD7606_BUSY_GPIO,
+        count
+    );
+    err = pcnt_unit_clear_count(s_pcnt_unit);
+    if (err == ESP_OK) {
+        ad7606_acquisition_count_extension_reset(&s_pcnt_extension);
+        uint64_t ignored_count;
+        (void)ad7606_acquisition_count_extend_u32(&s_pcnt_extension, 0U, &ignored_count);
+    }
+    return err;
+}
+
+
+static esp_err_t ad7606_busy_interrupt_start(void)
+{
+    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "IRAM GPIO ISR service unavailable: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = gpio_set_intr_type(
+        BOARD_AD7606_BUSY_GPIO,
+        s_read_mode == AD7606_READ_MODE_AFTER_CONVERSION
+            ? GPIO_INTR_NEGEDGE
+            : GPIO_INTR_POSEDGE
+    );
+    if (err == ESP_OK) {
+        err = gpio_isr_handler_add(BOARD_AD7606_BUSY_GPIO, ad7606_busy_isr, NULL);
+        s_busy_isr_added = err == ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = gpio_intr_enable(BOARD_AD7606_BUSY_GPIO);
+        s_busy_intr_enabled = err == ESP_OK;
+    }
+    return err;
+}
+
+
+static esp_err_t ad7606_ledc_start(void)
+{
+    const ledc_timer_config_t timer_config = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = (ledc_timer_bit_t)s_ledc_duty_resolution,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        .clk_cfg = LEDC_USE_XTAL_CLK,
+    };
+    esp_err_t err = ledc_timer_config(&timer_config);
+    if (err != ESP_OK) {
+        return err;
+    }
+    s_ledc_timer_configured = true;
+
+    const ledc_channel_config_t channel_config = {
+        .gpio_num = BOARD_AD7606_CONVST_GPIO,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = s_ledc_duty_count,
+        .hpoint = 0,
+    };
+    s_sample_t0_us = esp_timer_get_time();
+    s_running = true;
+    err = ledc_channel_config(&channel_config);
+    if (err != ESP_OK) {
+        s_running = false;
+        return err;
+    }
+    s_ledc_channel_configured = true;
+    if (ledc_get_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0) !=
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) {
+        s_running = false;
+        ESP_LOGE(TAG, "LEDC XTAL output is not exactly %u Hz",
+            (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
+}
+
+
+static esp_err_t ad7606_read_conversion_count(uint64_t *conversion_count)
+{
+    if (conversion_count == NULL || s_pcnt_unit == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int raw_count = 0;
+    esp_err_t err = pcnt_unit_get_count(s_pcnt_unit, &raw_count);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint64_t previous_count = s_pcnt_extension.extended_count;
+    if (!ad7606_acquisition_count_extend_u32(
+            &s_pcnt_extension,
+            (uint32_t)raw_count,
+            conversion_count)) {
+        ESP_LOGE(TAG, "PCNT count moved backwards; stopping acquisition");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (*conversion_count > previous_count) {
+        ad7606_driver_presence_note_busy_pulse();
+    }
+    ad7606_status_record_conversion_count(*conversion_count);
+    return ESP_OK;
+}
+
+
+static void ad7606_wait_busy_idle(void)
+{
+    const uint32_t timeout_us =
+        (s_pcnt_unit != NULL ? 140U : AD7606_ACQUISITION_BUSY_STOP_TIMEOUT_US);
+    for (uint32_t waited = 0U; waited < timeout_us; ++waited) {
+        if (gpio_get_level(BOARD_AD7606_BUSY_GPIO) == 0) {
+            return;
+        }
+        esp_rom_delay_us(1U);
+    }
+    ESP_LOGW(TAG, "BUSY remained high while stopping; final sample may be a gap");
+}
+
+
+static void ad7606_hardware_stop(void)
+{
+    s_running = false;
+    if (s_ledc_channel_configured) {
+        const uint32_t pulse_wait_limit_us =
+            (1000000U / CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + 5U;
+        for (uint32_t waited = 0U;
+             gpio_get_level(BOARD_AD7606_CONVST_GPIO) != 0 &&
+                 waited < pulse_wait_limit_us;
+             ++waited) {
+            esp_rom_delay_us(1U);
+        }
+        (void)ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        s_ledc_channel_configured = false;
+    }
+    if (s_busy_intr_enabled) {
+        (void)gpio_intr_disable(BOARD_AD7606_BUSY_GPIO);
+        s_busy_intr_enabled = false;
+    }
+    if (s_busy_isr_added) {
+        (void)gpio_isr_handler_remove(BOARD_AD7606_BUSY_GPIO);
+        s_busy_isr_added = false;
+    }
+    (void)gpio_set_intr_type(BOARD_AD7606_BUSY_GPIO, GPIO_INTR_DISABLE);
+    if (s_pcnt_started) {
+        ad7606_wait_busy_idle();
+    }
+}
+
+
+static void ad7606_worker_cleanup(bool drain_latest, uint64_t *successful_samples)
+{
+    ad7606_hardware_stop();
+    if (drain_latest && s_driver_initialized && successful_samples != NULL) {
+        uint64_t conversion_count = 0U;
+        if (ad7606_read_conversion_count(&conversion_count) == ESP_OK &&
+            conversion_count > 0U &&
+            gpio_get_level(BOARD_AD7606_BUSY_GPIO) == 0) {
+            const uint64_t sample_index = conversion_count - 1U;
+            if (sample_index >= s_sample_accounting.next_sample_index) {
+                ad7606_sample_t sample = {0};
+                ad7606_status_record_attempt();
+                esp_err_t err = ad7606_driver_read_result(&sample);
+                const int busy_after = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
+                if (err == ESP_OK && busy_after == 0) {
+                    ad7606_serial_observation_t observation;
+                    err = ad7606_driver_get_last_serial_observation(&observation);
+                    if (err == ESP_OK && observation.spi_transaction_ok) {
+                        observation.busy_level = busy_after;
+                        (void)ad7606_publish_sample(
+                            sample_index,
+                            &sample,
+                            &observation,
+                            successful_samples
+                        );
+                    }
+                }
+                if (err != ESP_OK || busy_after != 0) {
+                    (void)ad7606_account_sample_index(sample_index, false);
+                    (void)ad7606_status_record_failure();
+                }
+            }
+        }
+    }
+    if (s_pcnt_started) {
+        (void)pcnt_unit_stop(s_pcnt_unit);
+        s_pcnt_started = false;
+    }
+    if (s_pcnt_enabled) {
+        (void)pcnt_unit_disable(s_pcnt_unit);
+        s_pcnt_enabled = false;
+    }
+    if (s_pcnt_channel != NULL) {
+        (void)pcnt_del_channel(s_pcnt_channel);
+        s_pcnt_channel = NULL;
+    }
+    if (s_pcnt_unit != NULL) {
+        (void)pcnt_del_unit(s_pcnt_unit);
+        s_pcnt_unit = NULL;
+    }
+    if (s_ledc_timer_configured) {
+        (void)ledc_timer_pause(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0);
+        const ledc_timer_config_t deconfigure = {
+            .speed_mode = LEDC_LOW_SPEED_MODE,
+            .timer_num = LEDC_TIMER_0,
+            .deconfigure = true,
+        };
+        (void)ledc_timer_config(&deconfigure);
+        s_ledc_timer_configured = false;
+    }
+
     ad7606_driver_deinit();
-
-    (void)seismic_buffer_configure(
-        SEISMIC_SOURCE_NONE,
-        0
-    );
-
-    s_running =
-        false;
-
-    ad7606_status_set_running(
-        false
-    );
+    s_driver_initialized = false;
+    ad7606_driver_presence_use_external_busy_isr(false);
+    if (s_serial_quality_window_flags != NULL) {
+        heap_caps_free(s_serial_quality_window_flags);
+        s_serial_quality_window_flags = NULL;
+    }
+    (void)seismic_buffer_configure(SEISMIC_SOURCE_NONE, 0U);
+    ad7606_status_set_running(false);
 }
 
 
 static esp_err_t ad7606_worker_initialize(void)
 {
-    /*
-     * This executes on Core 1, so SPI3 initialization and its ISR
-     * affinity stay on the real-time side of the application.
-     */
-    esp_err_t err =
-        ad7606_driver_init();
-
+    esp_err_t err = ad7606_resolve_timing();
     if (err != ESP_OK) {
         return err;
     }
 
-    err =
-        seismic_buffer_configure(
-            SEISMIC_SOURCE_AD7606,
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    const esp_timer_create_args_t timer_config = {
-        .callback =
-            ad7606_timer_callback,
-
-        .arg =
-            NULL,
-
-        .dispatch_method =
-            ESP_TIMER_TASK,
-
-        .name =
-            "ad7606_tick",
-    };
-
-    err =
-        esp_timer_create(
-            &timer_config,
-            &s_timer
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    const uint64_t period_us =
-        ad7606_acquisition_period_us(
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
-        );
-
-    s_running =
-        true;
-
-    err =
-        esp_timer_start_periodic(
-            s_timer,
-            period_us
-        );
-
-    if (err != ESP_OK) {
-        s_running =
-            false;
-
-        return err;
-    }
-
-    /* esp_timer's periodic alarms use an absolute schedule; tick N is t0+N*period. */
-    s_jitter_t0_us = esp_timer_get_time();
-    s_jitter_period_us = period_us;
-    portENTER_CRITICAL(&s_status_lock);
-    s_status.jitter.period_us = period_us;
-    portEXIT_CRITICAL(&s_status_lock);
-
-    ad7606_status_set_running(
-        true
+    const uint32_t quality_window_frames = ad7606_serial_quality_window_frames(
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
     );
+    s_serial_quality_window_flags = heap_caps_malloc(
+        quality_window_frames,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (s_serial_quality_window_flags == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    ad7606_serial_diag_reset(
+        &s_serial_diag,
+        s_serial_quality_window_flags,
+        quality_window_frames
+    );
+    ad7606_acquisition_count_extension_reset(&s_pcnt_extension);
+    s_sample_accounting = (ad7606_sample_accounting_t){0};
+    ad7606_diag_reset();
+    s_serial_diag_last_log_sample = 0U;
+    s_serial_diag_log_pending = false;
 
+    err = ad7606_counter_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ad7606_driver_presence_use_external_busy_isr(true);
+    err = ad7606_driver_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+    s_driver_initialized = true;
+    err = ad7606_counter_verify_self_test();
+    if (err != ESP_OK) {
+        return err;
+    }
+    s_rail_last_check_conversion = 0U;
+
+    err = seismic_buffer_configure(
+        SEISMIC_SOURCE_AD7606,
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+    );
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = ad7606_busy_interrupt_start();
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = ad7606_ledc_start();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_jitter_period_us = ad7606_acquisition_period_us(
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+    );
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.jitter.period_us = s_jitter_period_us;
+    portEXIT_CRITICAL(&s_status_lock);
+    ad7606_status_set_running(true);
     ESP_LOGI(
         TAG,
-        "Started: %d Hz, 8 channels, SPI3 dedicated, core=%d",
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        "Started: %u Hz, 4 channels, SPI3=%u Hz, OS%u, mode=%s, "
+        "LEDC XTAL, BUSY GPIO=%d PCNT, core=%d",
+        (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
+        (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+        ad7606_read_mode_name(s_read_mode),
+        BOARD_AD7606_BUSY_GPIO,
         APP_TASK_CORE_REALTIME
     );
-
     return ESP_OK;
 }
 
@@ -830,270 +1268,150 @@ static void ad7606_worker(
     void *argument
 )
 {
-    ad7606_start_context_t *start_context =
-        (ad7606_start_context_t *)argument;
+    ad7606_start_context_t *start_context = (ad7606_start_context_t *)argument;
+    s_task = xTaskGetCurrentTaskHandle();
 
-    s_task =
-        xTaskGetCurrentTaskHandle();
-
-    esp_err_t startup_err =
-        ad7606_worker_initialize();
-
+    const esp_err_t startup_err = ad7606_worker_initialize();
     if (startup_err != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Core 1 acquisition initialization failed: %s",
-            esp_err_to_name(startup_err)
-        );
-
-        ad7606_worker_cleanup();
-
-        s_task =
-            NULL;
-
-        start_context->result =
-            startup_err;
-
-        xSemaphoreGive(
-            start_context->ready
-        );
-
-        vTaskDelete(
-            NULL
-        );
-
+        ESP_LOGE(TAG, "Core 1 acquisition initialization failed: %s",
+            esp_err_to_name(startup_err));
+        ad7606_worker_cleanup(false, NULL);
+        s_task = NULL;
+        start_context->result = startup_err;
+        xSemaphoreGive(start_context->ready);
+        vTaskDelete(NULL);
         return;
     }
 
-    start_context->result =
-        ESP_OK;
+    start_context->result = ESP_OK;
+    xSemaphoreGive(start_context->ready);
+    start_context = NULL;
 
-    xSemaphoreGive(
-        start_context->ready
-    );
-
-    /* The caller owns this stack object after the semaphore is given. */
-    start_context =
-        NULL;
-
-    uint32_t successful_samples =
-        0;
-
-    ad7606_diag_reset();
-    ad7606_serial_diag_reset(
-        &s_serial_diag
-    );
-    s_serial_diag_last_log_us = 0;
-    s_serial_diag_log_pending = false;
-
+    uint64_t successful_samples = 0U;
     while (s_running) {
-        const uint32_t notification_count =
-            ulTaskNotifyTake(
-                pdTRUE,
-                portMAX_DELAY
-            );
-
+        const uint32_t notification_count = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (!s_running) {
-            /* STOP uses the same task notification but is not a timer period. */
+            break;
+        }
+        if (notification_count == 0U) {
+            continue;
+        }
+
+        uint64_t conversion_count = 0U;
+        esp_err_t err = ad7606_read_conversion_count(&conversion_count);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "PCNT read failed: %s", esp_err_to_name(err));
+            s_running = false;
             break;
         }
 
-        const uint64_t timer_ticks_total = ad7606_status_record_timer_wake(
-            notification_count
-        );
-        const int64_t scheduled_us =
-            ad7606_jitter_scheduled_us(timer_ticks_total);
-
 #if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
-        {
+        if (conversion_count - s_rail_last_check_conversion >=
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) {
+            s_rail_last_check_conversion = conversion_count;
             const int64_t now_us = esp_timer_get_time();
-            if (now_us - s_rail_last_check_us >= AD7606_RAIL_CHECK_PERIOD_US) {
-                s_rail_last_check_us = now_us;
-                ina3221_monitor_rail_t rail;
-                ad7606_read_rail(&rail);
-                if (rail.overcurrent_latched) {
-                    /* MAX-245: the monitor confirmed a critical current on
-                     * this rail (two samples). Same reaction as rail loss:
-                     * software protection only, ~1-3 s -- the supply's own
-                     * current limit is the fast protection. */
-                    ESP_LOGE(
-                        TAG,
-                        "AD7606 +5 V rail over-current (INA3221 CH3 %.3f A): "
-                        "stopping acquisition and releasing AD7606 pins to Hi-Z",
-                        (double)rail.overcurrent_latched_current_a
-                    );
-                    ad7606_status_set_overcurrent(
-                        rail.bus_voltage_v, rail.overcurrent_latched_current_a
-                    );
-                    s_running = false;
-                    break;
-                }
-                if (ad7606_rail_watch_update(
-                        &s_rail_watch, rail.available, rail.valid,
-                        rail.bus_voltage_v, rail.sampled_at_us, now_us)) {
-                    ESP_LOGE(
-                        TAG,
-                        "AD7606 +5 V rail lost (INA3221 CH3 %.2f V < %.2f V): "
-                        "stopping acquisition and releasing AD7606 pins to Hi-Z",
-                        (double)rail.bus_voltage_v,
-                        (double)AD7606_RAIL_LOSS_V
-                    );
-                    ad7606_status_set_power(
-                        AD7606_POWER_GATE_RAIL_LOW, true, rail.bus_voltage_v
-                    );
-                    /* Cleanup below deinitializes the driver, which enters
-                     * the Hi-Z safe state. */
-                    s_running = false;
-                    break;
-                }
+            ina3221_monitor_rail_t rail;
+            ad7606_read_rail(&rail);
+            if (rail.overcurrent_latched) {
+                ESP_LOGE(TAG,
+                    "AD7606 +5 V rail over-current (INA3221 CH3 %.3f A): "
+                    "stopping acquisition and releasing AD7606 pins to Hi-Z",
+                    (double)rail.overcurrent_latched_current_a);
+                ad7606_status_set_overcurrent(
+                    rail.bus_voltage_v, rail.overcurrent_latched_current_a);
+                s_running = false;
+                break;
+            }
+            if (ad7606_rail_watch_update(
+                    &s_rail_watch, rail.available, rail.valid,
+                    rail.bus_voltage_v, rail.sampled_at_us, now_us)) {
+                ESP_LOGE(TAG,
+                    "AD7606 +5 V rail lost (INA3221 CH3 %.2f V < %.2f V): "
+                    "stopping acquisition and releasing AD7606 pins to Hi-Z",
+                    (double)rail.bus_voltage_v, (double)AD7606_RAIL_LOSS_V);
+                ad7606_status_set_power(
+                    AD7606_POWER_GATE_RAIL_LOW, true, rail.bus_voltage_v);
+                s_running = false;
+                break;
             }
         }
 #endif
 
-        ad7606_sample_t sample = {0};
-
-        esp_err_t err =
-            ad7606_driver_read(
-                &sample
-            );
-
-        if (err != ESP_OK) {
-            const uint32_t consecutive_failures =
-                ad7606_status_record_failure();
-
-            if (
-                consecutive_failures == 1 ||
-                (
-                    consecutive_failures %
-                    CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
-                ) == 0
-            ) {
-                ESP_LOGW(
-                    TAG,
-                    "Read failed: %s (check BUSY/CONVST/SPI3 wiring)",
-                    esp_err_to_name(err)
-                );
-            }
-
-            /* Beat only after the potentially blocking read has returned. */
-            runtime_observability_beat(
-                RUNTIME_TASK_ACQUISITION,
-                successful_samples
-            );
-
+        const int busy_before = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
+        uint64_t sample_index = 0U;
+        bool discard_candidate = false;
+        const bool candidate_exists = ad7606_acquisition_sample_index_from_pcnt(
+            s_read_mode,
+            conversion_count,
+            busy_before != 0,
+            &sample_index,
+            &discard_candidate
+        );
+        if (!candidate_exists) {
+            runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
             continue;
+        }
+        if (discard_candidate) {
+            (void)ad7606_account_sample_index(sample_index, false);
+            runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
+            continue;
+        }
+
+        ad7606_status_record_attempt();
+        ad7606_sample_t sample = {0};
+        err = ad7606_driver_read_result(&sample);
+        const int busy_after = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
+        uint64_t count_after = conversion_count;
+        if (err == ESP_OK) {
+            err = ad7606_read_conversion_count(&count_after);
+        }
+
+        bool stable = err == ESP_OK;
+        if (s_read_mode == AD7606_READ_MODE_DURING_CONVERSION) {
+            stable = stable && busy_before != 0 && busy_after != 0 &&
+                count_after == conversion_count;
+        }
+        else {
+            stable = stable && count_after == conversion_count;
         }
 
         ad7606_serial_observation_t serial_observation;
-        if (
-            ad7606_driver_get_last_serial_observation(
-                &serial_observation
-            ) != ESP_OK ||
-            !serial_observation.spi_transaction_ok
-        ) {
-            ESP_LOGW(
-                DIAG_TAG,
-                "SPI transaction returned OK without a serial observation"
+        if (stable) {
+            err = ad7606_driver_get_last_serial_observation(&serial_observation);
+            stable = err == ESP_OK && serial_observation.spi_transaction_ok;
+        }
+        if (stable) {
+            serial_observation.busy_level = busy_after;
+            err = ad7606_publish_sample(
+                sample_index,
+                &sample,
+                &serial_observation,
+                &successful_samples
             );
-            continue;
+            if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "Sample %" PRIu64 " not published: %s",
+                    sample_index, esp_err_to_name(err));
+            }
         }
-
-        ad7606_serial_diag_event_t serial_event;
-        (void)ad7606_serial_diag_observe(
-            &s_serial_diag,
-            serial_observation.rx,
-            &serial_event
-        );
-
-        float all_channels_uv[
-            AD7606_CHANNEL_COUNT
-        ];
-
-        for (
-            size_t channel = 0;
-            channel < AD7606_CHANNEL_COUNT;
-            ++channel
-        ) {
-            all_channels_uv[channel] =
-                ad7606_raw_to_uv(
-                    sample.raw[channel]
-                );
+        else {
+            (void)ad7606_account_sample_index(sample_index, false);
+            if (err != ESP_OK) {
+                const uint32_t failures = ad7606_status_record_failure();
+                if (failures == 1U || failures %
+                    CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+                    ESP_LOGW(TAG, "AD7606 result read failed: %s",
+                        esp_err_to_name(err));
+                }
+            }
         }
-
-        ad7606_status_record_sample(
-            &sample,
-            all_channels_uv,
-            &s_serial_diag,
-            serial_observation.busy_level,
-            scheduled_us
-        );
-
-        ad7606_serial_diag_log_frame(
-            &serial_observation,
-            &s_serial_diag,
-            &serial_event,
-            (uint64_t)successful_samples + 1U
-        );
-
-        ad7606_diag_record(&sample);
-
-        float seismic_channels[
-            SEISMIC_CHANNEL_COUNT
-        ];
-
-        for (
-            size_t channel = 0;
-            channel < SEISMIC_CHANNEL_COUNT;
-            ++channel
-        ) {
-            seismic_channels[channel] =
-                all_channels_uv[channel];
-        }
-
-        /* Timestamp belongs to the simultaneous CONVST event. */
-        err =
-            seismic_buffer_push(
-                sample.timestamp_us,
-                seismic_channels
-            );
-
-        if (err != ESP_OK) {
-            ESP_LOGE(
-                TAG,
-                "Seismic buffer push failed: %s",
-                esp_err_to_name(err)
-            );
-        }
-
-        successful_samples++;
-
-        runtime_observability_beat(
-            RUNTIME_TASK_ACQUISITION,
-            successful_samples
-        );
-
-        if (
-            successful_samples %
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ ==
-            0
-        ) {
-            ad7606_diag_log_and_reset();
-        }
+        runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
     }
 
-    ad7606_worker_cleanup();
-
-    s_task =
-        NULL;
-
-    ESP_LOGI(
-        TAG,
-        "Stopped"
-    );
-
-    vTaskDelete(
-        NULL
-    );
+    ad7606_worker_cleanup(s_stop_requested, &successful_samples);
+    s_stop_requested = false;
+    s_task = NULL;
+    ESP_LOGI(TAG, "Stopped");
+    vTaskDelete(NULL);
 }
 
 
@@ -1105,7 +1423,8 @@ esp_err_t ad7606_acquisition_start(void)
 
     ad7606_status_reset();
     ad7606_rail_watch_reset(&s_rail_watch);
-    s_rail_last_check_us = 0;
+    s_rail_last_check_conversion = 0U;
+    s_stop_requested = false;
 
 #if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
     {
@@ -1175,6 +1494,7 @@ esp_err_t ad7606_acquisition_start(void)
 
         s_task =
             NULL;
+        s_stop_requested = false;
 
         return ESP_ERR_NO_MEM;
     }
@@ -1214,6 +1534,7 @@ void ad7606_acquisition_stop(void)
 
     s_running =
         false;
+    s_stop_requested = true;
 
     xTaskNotifyGive(
         task

@@ -113,6 +113,20 @@ function Get-OptionalProperty {
 }
 
 
+function Get-ReportedSampleRateHz {
+    param([AllowNull()][object]$Status)
+
+    $acquisition = Get-OptionalProperty $Status "acquisition"
+    $rate = 0
+    if ($null -ne $acquisition -and
+        [int]::TryParse([string](Get-OptionalProperty $acquisition "sample_rate_hz"), ([ref]$rate)) -and
+        $rate -gt 0) {
+        return $rate
+    }
+    return 500
+}
+
+
 function Get-Ad7606TransportHealth {
     param([AllowNull()][object]$Status)
 
@@ -132,6 +146,7 @@ function Get-Ad7606TransportHealth {
     $suspicious = Get-OptionalProperty $serial "suspicious"
     $streamStuck = Get-OptionalProperty $serial "stream_stuck"
     $windowValue = Get-OptionalProperty $serial "quality_window_frames"
+    $requiredWindowFrames = Get-ReportedSampleRateHz $Status
     $signalQuality = [string](Get-OptionalProperty $signal "quality")
 
     if ([string]::IsNullOrWhiteSpace($quality)) { $quality = "UNKNOWN" }
@@ -153,9 +168,9 @@ function Get-Ad7606TransportHealth {
             Status = "BLOCKED"; Reason = "serial quality_window_frames is missing"; SignalQuality = $signalQuality; Window = $null
         }
     }
-    if ($window -lt 500) {
+    if ($window -lt $requiredWindowFrames) {
         return [pscustomobject]@{
-            Status = "BLOCKED"; Reason = "serial quality window immature ($window/500)"; SignalQuality = $signalQuality; Window = $window
+            Status = "BLOCKED"; Reason = "serial quality window immature ($window/$requiredWindowFrames frames, one second at $(Get-ReportedSampleRateHz $Status)Hz)"; SignalQuality = $signalQuality; Window = $window
         }
     }
 
@@ -238,13 +253,17 @@ function Get-HealthEvidenceStatus {
 
 
 function Get-UartTransportFaults {
-    param([string]$Content)
+    param(
+        [string]$Content,
+        [int]$SampleRateHz = 500
+    )
 
     $faults = New-Object System.Collections.Generic.List[string]
+    $requiredWindowFrames = if ($SampleRateHz -gt 0) { $SampleRateHz } else { 500 }
     $pattern = '(?im)AD7606_SERIAL_DIAG:.*?transport_quality=(?<quality>[A-Z_]+).*?signal_quality=(?<signal>[A-Z_]+).*?stream_state=(?<stream>[A-Z_]+).*?stream_stuck=(?<stuck>yes|no).*?window=(?<window>\d+).*?serial_suspicious=(?<suspicious>yes|no)'
     foreach ($match in [regex]::Matches($Content, $pattern)) {
         $window = [int]$match.Groups['window'].Value
-        if ($window -lt 500) { continue }
+        if ($window -lt $requiredWindowFrames) { continue }
         $quality = $match.Groups['quality'].Value.ToUpperInvariant()
         $stream = $match.Groups['stream'].Value.ToUpperInvariant()
         $stuck = $match.Groups['stuck'].Value -ieq 'yes'
@@ -427,7 +446,13 @@ if ($healthStatus -ne "FAIL") {
     $healthStatus = $healthGate.Status
     $healthReason = $healthGate.Reason
 }
-$uartTransportFaults = @(Get-UartTransportFaults $content)
+$uartStatus = $null
+$healthSamplesForRate = @(Get-OptionalProperty $healthEvidence "samples")
+if ($healthSamplesForRate.Count -gt 0) {
+    $uartStatus = Get-OptionalProperty $healthSamplesForRate[0] "status"
+}
+$uartSampleRateHz = Get-ReportedSampleRateHz $uartStatus
+$uartTransportFaults = @(Get-UartTransportFaults -Content $content -SampleRateHz $uartSampleRateHz)
 if ($uartTransportFaults.Count -gt 0) {
     $healthStatus = "FAIL"
     $healthReason = "mature in-capture UART transport fault: $($uartTransportFaults -join '; ')"

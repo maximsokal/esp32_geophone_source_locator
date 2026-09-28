@@ -115,6 +115,10 @@ typedef struct
      * residual->quality mapping (see localization_calculate_policy.h). */
     double timing_uncertainty_us;
 
+    /* Rate used to derive the sample-count fields below. Zero is accepted
+     * only for in-memory legacy callers and means 500 Hz. */
+    uint32_t sample_rate_hz;
+
     /* Required: every field must be filled in by the caller from
      * measured/reviewed values -- geophone_events.h itself refuses to
      * default any of these. */

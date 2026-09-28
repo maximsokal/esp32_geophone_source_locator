@@ -52,15 +52,32 @@ typedef enum
 
 } seismic_recorder_fs_metadata_state_t;
 
-/*
- * ESP-IDF 5.5.4's SDSPI path copies external-RAM sources into a temporary
- * 512-byte DMA buffer and sends one block at a time. Keep the large recorder
- * backlog in PSRAM, but make the actual fwrite source internal and DMA-safe.
- * 256 frames are 6144 bytes (12 sectors) for the current 24-byte frame.
- */
-DMA_ATTR static seismic_frame_t s_dma_staging[
-    SEISMIC_RECORDER_WRITE_STAGING_FRAMES
-];
+/* Reuse the old DMA buffer for v1 records or all v2 blocks in one 256-frame window. */
+typedef union
+{
+    seismic_frame_t v1_frames[SEISMIC_RECORDER_WRITE_STAGING_FRAMES];
+    uint8_t v2_window[
+        SEISMIC_RECORDER_WRITE_STAGING_FRAMES *
+        (SEISMIC_RECORDER_V2_BLOCK_HEADER_BYTES +
+         SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES)
+    ];
+} seismic_recorder_dma_staging_t;
+
+DMA_ATTR static seismic_recorder_dma_staging_t s_dma_staging;
+static seismic_recorder_sample_format_t s_active_sample_format = {
+    .version = SEISMIC_RECORDER_BINARY_VERSION_V1,
+};
+static uint64_t s_last_written_sample_index = 0U;
+static bool s_have_written_sample_index = false;
+
+
+static void seismic_recorder_fs_reset_sample_format(void)
+{
+    memset(&s_active_sample_format, 0, sizeof(s_active_sample_format));
+    s_active_sample_format.version = SEISMIC_RECORDER_BINARY_VERSION_V1;
+    s_last_written_sample_index = 0U;
+    s_have_written_sample_index = false;
+}
 
 static bool seismic_recorder_fs_parse_session_number(
     const char *name,
@@ -471,24 +488,37 @@ static bool seismic_recorder_fs_restore_staged_artifacts(
 
 esp_err_t seismic_recorder_fs_create_session(
     const char *object_id,
-    uint32_t sample_rate_hz,
+    const seismic_acquisition_snapshot_t *acquisition,
     uint8_t channel_count,
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE],
-    FILE **samples_file
+    FILE **samples_file,
+    uint16_t *format_version
 )
 {
     if (
         object_id == NULL ||
+        acquisition == NULL ||
         session_id == NULL ||
         samples_file == NULL ||
-        sample_rate_hz == 0U ||
+        format_version == NULL ||
+        acquisition->sample_rate_hz == 0U ||
         channel_count == 0U
     ) {
         return ESP_ERR_INVALID_ARG;
     }
 
     *samples_file = NULL;
+    *format_version = 0U;
     session_id[0] = '\0';
+
+    seismic_recorder_sample_format_t sample_format;
+    esp_err_t err = seismic_recorder_samples_format_from_acquisition(
+        acquisition,
+        &sample_format
+    );
+    if (err != ESP_OK) {
+        return err;
+    }
 
     const int64_t operation_started_us =
         esp_timer_get_time();
@@ -498,7 +528,7 @@ esp_err_t seismic_recorder_fs_create_session(
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t err = storage_manager_operation_begin();
+    err = storage_manager_operation_begin();
     if (err != ESP_OK) {
         free(path);
         return err;
@@ -514,7 +544,7 @@ esp_err_t seismic_recorder_fs_create_session(
      * Sxxxxxx/samples.bin commit path.
      */
     err = seismic_recorder_storage_preflight(
-        sample_rate_hz
+        acquisition->sample_rate_hz
     );
 
     if (err == ESP_OK) {
@@ -552,7 +582,7 @@ esp_err_t seismic_recorder_fs_create_session(
     if (err == ESP_OK && channel_count == SEISMIC_CHANNEL_COUNT) {
         const esp_err_t lod_err = seismic_recorder_lod_store_begin(
             path,
-            sample_rate_hz
+            acquisition->sample_rate_hz
         );
         if (lod_err != ESP_OK) {
             ESP_LOGW(
@@ -586,15 +616,27 @@ esp_err_t seismic_recorder_fs_create_session(
     if (err == ESP_OK) {
         const seismic_recorder_binary_header_t header = {
             .magic = {'G', 'E', 'O', 'S', 'E', 'I', 'S', '1'},
-            .version = SEISMIC_RECORDER_BINARY_VERSION,
+            .version = sample_format.version,
             .channel_count = channel_count,
-            .sample_rate_hz = sample_rate_hz,
-            .frame_size_bytes = sizeof(seismic_frame_t),
+            .sample_rate_hz = acquisition->sample_rate_hz,
+            .frame_size_bytes = sample_format.version == SEISMIC_RECORDER_BINARY_VERSION_V2
+                ? SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES
+                : sizeof(seismic_frame_t),
             .reserved = 0U,
         };
 
         if (fwrite(&header, sizeof(header), 1U, file) != 1U) {
             err = ESP_FAIL;
+        }
+        if (err == ESP_OK && sample_format.version == SEISMIC_RECORDER_BINARY_VERSION_V2) {
+            seismic_recorder_binary_v2_metadata_t metadata;
+            seismic_recorder_samples_v2_metadata_from_format(
+                &sample_format,
+                &metadata
+            );
+            if (fwrite(&metadata, sizeof(metadata), 1U, file) != 1U) {
+                err = ESP_FAIL;
+            }
         }
     }
 
@@ -641,6 +683,10 @@ esp_err_t seismic_recorder_fs_create_session(
     }
     else {
         *samples_file = file;
+        *format_version = sample_format.version;
+        s_active_sample_format = sample_format;
+        s_last_written_sample_index = 0U;
+        s_have_written_sample_index = false;
     }
 
     storage_manager_operation_end();
@@ -659,6 +705,7 @@ esp_err_t seismic_recorder_fs_create_session(
 esp_err_t seismic_recorder_fs_write_frames(
     FILE *samples_file,
     const seismic_frame_t *frames,
+    const uint64_t *sample_indices,
     size_t frame_count,
     size_t *frames_written
 )
@@ -666,6 +713,7 @@ esp_err_t seismic_recorder_fs_write_frames(
     if (
         samples_file == NULL ||
         frames == NULL ||
+        sample_indices == NULL ||
         frames_written == NULL ||
         frame_count == 0U
     ) {
@@ -686,12 +734,6 @@ esp_err_t seismic_recorder_fs_write_frames(
             ? remaining
             : SEISMIC_RECORDER_WRITE_STAGING_FRAMES;
 
-        memcpy(
-            s_dma_staging,
-            frames + written,
-            chunk * sizeof(seismic_frame_t)
-        );
-
         /* Release the LVGL/SPI2 guard between bounded writes. A slow SD
          * card must not hold the TFT mutex for the whole recorder batch. */
         const int64_t window_started_us = esp_timer_get_time();
@@ -700,13 +742,88 @@ esp_err_t seismic_recorder_fs_write_frames(
             break;
         }
 
-        const size_t chunk_written = fwrite(
-            s_dma_staging,
-            sizeof(seismic_frame_t),
-            chunk,
-            samples_file
-        );
-        written += chunk_written;
+        err = ESP_OK;
+        size_t chunk_written = 0U;
+        if (s_active_sample_format.version == SEISMIC_RECORDER_BINARY_VERSION_V1) {
+            memcpy(
+                s_dma_staging.v1_frames,
+                frames + written,
+                chunk * sizeof(seismic_frame_t)
+            );
+            chunk_written = fwrite(
+                s_dma_staging.v1_frames,
+                sizeof(seismic_frame_t),
+                chunk,
+                samples_file
+            );
+            written += chunk_written;
+        }
+        else if (s_active_sample_format.version == SEISMIC_RECORDER_BINARY_VERSION_V2) {
+            size_t encoded_frames = 0U;
+            size_t encoded_bytes = 0U;
+            while (encoded_frames < chunk) {
+                const size_t run_start = encoded_frames;
+                size_t run_count = 1U;
+                while (run_start + run_count < chunk) {
+                    const uint64_t previous =
+                        sample_indices[written + run_start + run_count - 1U];
+                    if (
+                        previous == UINT64_MAX ||
+                        sample_indices[written + run_start + run_count] != previous + 1U
+                    ) {
+                        break;
+                    }
+                    ++run_count;
+                }
+
+                bool gap_before = false;
+                if (run_start > 0U || s_have_written_sample_index) {
+                    const uint64_t previous = run_start > 0U
+                        ? sample_indices[written + run_start - 1U]
+                        : s_last_written_sample_index;
+                    const uint64_t first = sample_indices[written + run_start];
+                    if (
+                        previous == UINT64_MAX ||
+                        first <= previous
+                    ) {
+                        err = ESP_ERR_INVALID_RESPONSE;
+                        break;
+                    }
+                    gap_before = first > previous + 1U;
+                }
+
+                size_t block_bytes = 0U;
+                err = seismic_recorder_samples_encode_v2_block(
+                    &s_active_sample_format,
+                    frames + written + run_start,
+                    sample_indices + written + run_start,
+                    run_count,
+                    gap_before,
+                    s_dma_staging.v2_window + encoded_bytes,
+                    sizeof(s_dma_staging.v2_window) - encoded_bytes,
+                    &block_bytes
+                );
+                if (err != ESP_OK) {
+                    break;
+                }
+                encoded_bytes += block_bytes;
+                encoded_frames += run_count;
+            }
+            if (err == ESP_OK) {
+                if (fwrite(s_dma_staging.v2_window, 1U, encoded_bytes, samples_file) != encoded_bytes) {
+                    err = ESP_FAIL;
+                }
+                else {
+                    chunk_written = encoded_frames;
+                    written += chunk_written;
+                    s_last_written_sample_index = sample_indices[written - 1U];
+                    s_have_written_sample_index = true;
+                }
+            }
+        }
+        else {
+            err = ESP_ERR_INVALID_STATE;
+        }
         storage_manager_operation_end();
         ++storage_windows;
 
@@ -720,14 +837,62 @@ esp_err_t seismic_recorder_fs_write_frames(
          * LOD write owns a separate bounded storage window, so LVGL can run
          * between the raw write and index maintenance. Keep the raw-window
          * timing above independent from this optional index work. */
-        if (
-            chunk_written > 0U &&
-            seismic_recorder_lod_store_is_active()
-        ) {
-            const esp_err_t lod_err = seismic_recorder_lod_store_append(
-                s_dma_staging,
-                chunk_written
-            );
+        if (chunk_written > 0U && seismic_recorder_lod_store_is_active()) {
+            const size_t input_start = written - chunk_written;
+            const seismic_frame_t *lod_frames = frames + input_start;
+            esp_err_t lod_err = ESP_OK;
+            if (s_active_sample_format.version == SEISMIC_RECORDER_BINARY_VERSION_V2) {
+                size_t timestamp_run_start = 0U;
+                uint64_t run_first_timestamp_us = 0U;
+                for (size_t index = 0U; index < chunk_written; ++index) {
+                    lod_err =
+                        seismic_recorder_samples_quantize_frame(
+                            &s_active_sample_format,
+                            &lod_frames[index],
+                            &s_dma_staging.v1_frames[index]
+                        );
+                    if (lod_err != ESP_OK) {
+                        break;
+                    }
+
+                    const uint64_t current_index = sample_indices[input_start + index];
+                    if (
+                        index == 0U ||
+                        sample_indices[input_start + index - 1U] == UINT64_MAX ||
+                        current_index != sample_indices[input_start + index - 1U] + 1U
+                    ) {
+                        timestamp_run_start = index;
+                        if (frames[input_start + index].timestamp_us < 0) {
+                            lod_err = ESP_ERR_INVALID_RESPONSE;
+                            break;
+                        }
+                        run_first_timestamp_us =
+                            (uint64_t)frames[input_start + index].timestamp_us;
+                    }
+                    uint64_t timestamp_us = 0U;
+                    if (
+                        !seismic_recorder_samples_timestamp_at(
+                            run_first_timestamp_us,
+                            (uint64_t)(index - timestamp_run_start),
+                            s_active_sample_format.sample_rate_hz,
+                            &timestamp_us
+                        ) ||
+                        timestamp_us > (uint64_t)INT64_MAX
+                    ) {
+                        lod_err = ESP_ERR_INVALID_RESPONSE;
+                        break;
+                    }
+                    s_dma_staging.v1_frames[index].timestamp_us =
+                        (int64_t)timestamp_us;
+                }
+                lod_frames = s_dma_staging.v1_frames;
+            }
+            if (lod_err == ESP_OK) {
+                lod_err = seismic_recorder_lod_store_append(
+                    lod_frames,
+                    chunk_written
+                );
+            }
             if (lod_err != ESP_OK) {
                 ESP_LOGW(
                     TAG,
@@ -737,7 +902,11 @@ esp_err_t seismic_recorder_fs_write_frames(
             }
         }
 
-        if (chunk_written != chunk || ferror(samples_file) != 0) {
+        if (
+            err != ESP_OK ||
+            chunk_written != chunk ||
+            ferror(samples_file) != 0
+        ) {
             err = ESP_FAIL;
             break;
         }
@@ -928,6 +1097,7 @@ esp_err_t seismic_recorder_fs_close(
          * path; the caller must never lose ownership of an open stream.
          */
         const int forced_fclose_result = fclose(samples_file);
+        seismic_recorder_fs_reset_sample_format();
         seismic_recorder_lod_store_abort();
         ESP_LOGI(
             TAG,
@@ -954,6 +1124,7 @@ esp_err_t seismic_recorder_fs_close(
     }
 
     storage_manager_operation_end();
+    seismic_recorder_fs_reset_sample_format();
 
     if (seismic_recorder_lod_store_is_active()) {
         const esp_err_t lod_err = seismic_recorder_lod_store_close();

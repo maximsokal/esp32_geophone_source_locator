@@ -152,9 +152,9 @@ def test_background_recovery_status_is_visible_without_reentering_boot_ui():
     assert "context->storage_recovery_active = false;" in UI_NAVIGATION
     assert "context->storage_recovery_failed = event_value != ESP_OK;" in UI_NAVIGATION
 
-    assert '"CHECKING STORAGE..."' in UI_HOME
-    assert '"STORAGE CHECK INCOMPLETE"' in UI_HOME
-    assert '"UP/DOWN NAV   OK/RIGHT OPEN"' in UI_HOME
+    assert "UI_I18N_KEY_HOME_CHECKING_STORAGE" in UI_HOME
+    assert "UI_I18N_KEY_HOME_STORAGE_INCOMPLETE" in UI_HOME
+    assert "UI_I18N_KEY_HOME_NAVIGATION" in UI_HOME
 
 
 def test_web_archive_cache_waits_for_background_recovery_completion():

@@ -388,6 +388,38 @@ static void test_material_round_trips_and_is_optional_for_old_records(void)
 }
 
 
+static void test_truncated_analysis_window_is_provenance(void)
+{
+    localization_run_record_t record = solved_record();
+    record.analysis_window_truncated = true;
+    record.analysis_window_start_index = 0U;
+    record.analysis_window_frames = 104857U;
+
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(
+        json,
+        "\"analysis_window\":{\"start_index\":0,\"frames\":104857,\"truncated\":true}"
+    ) != NULL);
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.analysis_window_truncated);
+    assert(parsed.analysis_window_start_index == 0U);
+    assert(parsed.analysis_window_frames == 104857U);
+    free(json);
+
+    record.analysis_window_frames = 0U;
+    assert(localization_run_record_to_json(&record, &json) == ESP_ERR_INVALID_ARG);
+
+    record = solved_record();
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"analysis_window\"") == NULL);
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(!parsed.analysis_window_truncated);
+    free(json);
+}
+
+
 static void test_estimated_velocities_round_trip_and_stay_optional(void)
 {
     /* A velocity-free method reports the velocities it estimated. */
@@ -520,6 +552,7 @@ int main(void)
     test_confidence_score_round_trips();
     test_degrees_of_freedom_round_trips_and_defaults();
     test_material_round_trips_and_is_optional_for_old_records();
+    test_truncated_analysis_window_is_provenance();
     test_estimated_velocities_round_trip_and_stay_optional();
     test_uncertainty_round_trips_and_stays_optional();
     test_negative_confidence_score_is_rejected();

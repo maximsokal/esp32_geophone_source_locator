@@ -502,6 +502,25 @@ static void test_event_window_covers_signal_and_moveout(void)
 }
 
 
+static void test_analysis_window_respects_time_and_psram_at_supported_rates(void)
+{
+    const uint64_t budget_bytes = 4ULL * 1024ULL * 1024ULL;
+    const size_t bytes_per_frame = 40U; /* frame plus four channel arrays */
+    assert(localization_calculate_analysis_window_frames(
+        500U, 10U, budget_bytes, bytes_per_frame
+    ) == 30000U);
+    assert(localization_calculate_analysis_window_frames(
+        20000U, 10U, budget_bytes, bytes_per_frame
+    ) == (size_t)(budget_bytes / bytes_per_frame));
+    assert(localization_calculate_analysis_window_frames(
+        40000U, 10U, budget_bytes, bytes_per_frame
+    ) == (size_t)(budget_bytes / bytes_per_frame));
+    assert(localization_calculate_analysis_window_frames(
+        0U, 10U, budget_bytes, bytes_per_frame
+    ) == 0U);
+}
+
+
 static void test_fusion_mapping_groups_picks_and_excludes_energy(void)
 {
     localization_run_record_t record;
@@ -1342,6 +1361,7 @@ int main(void)
     test_search_bounds_stay_below_surface_and_honor_depth();
     test_redundancy_caps_unverified_confidence();
     test_event_window_covers_signal_and_moveout();
+    test_analysis_window_respects_time_and_psram_at_supported_rates();
     test_fusion_mapping_groups_picks_and_excludes_energy();
     test_consistency_gate_rejects_physically_impossible_pick();
     test_xcorr_refines_relative_delay_to_sub_sample();

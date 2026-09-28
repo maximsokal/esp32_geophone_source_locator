@@ -8,6 +8,7 @@
 #define LOCALIZATION_CALCULATE_SEARCH_STEP_M 0.1
 #define LOCALIZATION_CALCULATE_SEARCH_MARGIN_FRACTION 0.5
 #define LOCALIZATION_CALCULATE_SEARCH_MIN_MARGIN_M 1.0
+#define LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES 30000U
 
 
 double localization_calculate_quality_from_residual_us(
@@ -50,6 +51,32 @@ size_t localization_calculate_participating_channels(
         *channel_mask_out = mask;
     }
     return count;
+}
+
+
+size_t localization_calculate_analysis_window_frames(
+    uint32_t sample_rate_hz,
+    uint32_t max_analysis_seconds,
+    uint64_t psram_budget_bytes,
+    size_t bytes_per_frame
+)
+{
+    if (sample_rate_hz == 0U || max_analysis_seconds == 0U || bytes_per_frame == 0U) {
+        return 0U;
+    }
+
+    const uint64_t time_frames = (uint64_t)sample_rate_hz * max_analysis_seconds;
+    uint64_t max_frames = psram_budget_bytes / bytes_per_frame;
+    if (time_frames < max_frames) {
+        max_frames = time_frames;
+    }
+    if (
+        sample_rate_hz == 500U &&
+        max_frames < LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES
+    ) {
+        max_frames = LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES;
+    }
+    return max_frames > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)max_frames;
 }
 
 
@@ -99,6 +126,117 @@ int64_t localization_calculate_arrival_time_us(
     const double arrival_time_us =
         (double)arrival_sample_index * 1.0e6 / (double)sample_rate_hz;
     return (int64_t)llround(arrival_time_us);
+}
+
+
+static esp_err_t rescale_sample_count(
+    size_t *sample_count,
+    uint32_t settings_rate_hz,
+    uint32_t session_rate_hz
+)
+{
+    const uint64_t count = (uint64_t)*sample_count;
+    const uint64_t whole = count / settings_rate_hz;
+    const uint64_t remainder = count % settings_rate_hz;
+    if (whole > (uint64_t)SIZE_MAX / session_rate_hz) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const uint64_t scaled_whole = whole * session_rate_hz;
+    const uint64_t scaled_remainder =
+        (remainder * session_rate_hz + settings_rate_hz / 2U) / settings_rate_hz;
+    if (scaled_whole > (uint64_t)SIZE_MAX - scaled_remainder) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const size_t scaled = (size_t)(scaled_whole + scaled_remainder);
+    *sample_count = scaled == 0U ? 1U : scaled;
+    return ESP_OK;
+}
+
+
+static bool valid_scaled_sta_lta(size_t sta, size_t lta, float trigger_ratio)
+{
+    return sta > 0U && lta > sta && isfinite(trigger_ratio) && trigger_ratio > 0.0f &&
+        (double)trigger_ratio < (double)lta / (double)sta;
+}
+
+
+esp_err_t localization_calculate_rescale_sample_windows(
+    localization_calculate_config_t *config,
+    uint32_t session_sample_rate_hz,
+    char *reason_out,
+    size_t reason_size
+)
+{
+    if (reason_out != NULL && reason_size > 0U) reason_out[0] = '\0';
+    if (config == NULL || session_sample_rate_hz == 0U) {
+        if (reason_out != NULL && reason_size > 0U) {
+            (void)snprintf(reason_out, reason_size, "configuration must be present and session sample rate must be nonzero");
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    localization_calculate_config_t scaled = *config;
+    const uint32_t settings_rate_hz = scaled.sample_rate_hz == 0U
+        ? 500U
+        : scaled.sample_rate_hz;
+    size_t *counts[] = {
+        &scaled.pick_config.noise_window_samples,
+        &scaled.pick_config.sta_window_samples,
+        &scaled.pick_config.lta_window_samples,
+        &scaled.pick_config.refine_lookback_samples,
+        &scaled.pick_config.refine_lookahead_samples,
+        &scaled.pick_config.snr_signal_window_samples,
+        &scaled.semblance_window_half_span_samples,
+    };
+    if (scaled.s_pick_enabled) {
+        size_t *s_counts[] = {
+            &scaled.s_pick_config.min_separation_samples,
+            &scaled.s_pick_config.max_separation_samples,
+            &scaled.s_pick_config.sta_window_samples,
+            &scaled.s_pick_config.lta_window_samples,
+        };
+        for (size_t i = 0U; i < sizeof(s_counts) / sizeof(s_counts[0]); ++i) {
+            if (rescale_sample_count(s_counts[i], settings_rate_hz, session_sample_rate_hz) != ESP_OK) {
+                if (reason_out != NULL && reason_size > 0U) {
+                    (void)snprintf(reason_out, reason_size, "sample-window rescaling overflowed size_t");
+                }
+                return ESP_ERR_INVALID_SIZE;
+            }
+        }
+    }
+    for (size_t i = 0U; i < sizeof(counts) / sizeof(counts[0]); ++i) {
+        if (rescale_sample_count(counts[i], settings_rate_hz, session_sample_rate_hz) != ESP_OK) {
+            if (reason_out != NULL && reason_size > 0U) {
+                (void)snprintf(reason_out, reason_size, "sample-window rescaling overflowed size_t");
+            }
+            return ESP_ERR_INVALID_SIZE;
+        }
+    }
+
+    if (!valid_scaled_sta_lta(
+            scaled.pick_config.sta_window_samples,
+            scaled.pick_config.lta_window_samples,
+            scaled.pick_config.sta_lta_trigger_ratio)) {
+        if (reason_out != NULL && reason_size > 0U) {
+            (void)snprintf(reason_out, reason_size, "rescaled P-wave STA/LTA windows violate the trigger ratio rule");
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (scaled.s_pick_enabled && (
+            scaled.s_pick_config.min_separation_samples >= scaled.s_pick_config.max_separation_samples ||
+            !valid_scaled_sta_lta(
+                scaled.s_pick_config.sta_window_samples,
+                scaled.s_pick_config.lta_window_samples,
+                scaled.s_pick_config.sta_lta_trigger_ratio))) {
+        if (reason_out != NULL && reason_size > 0U) {
+            (void)snprintf(reason_out, reason_size, "rescaled S-wave separation or STA/LTA windows are invalid");
+        }
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    scaled.sample_rate_hz = session_sample_rate_hz;
+    *config = scaled;
+    return ESP_OK;
 }
 
 

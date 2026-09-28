@@ -1078,6 +1078,7 @@
     },
     {
       "name": "localization_calculate_run",
+      "defines": ["CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=1200"],
       "sources": [
         "components/localization_calculate/localization_calculate.c",
         "components/localization_calculate/localization_calculate_policy.c",
@@ -1439,6 +1440,9 @@
       "name": "seismic_recorder",
       "sources": [
         "components/object_format/object_format.c",
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/seismic_recorder_lod.c",
+        "components/seismic_recorder/seismic_recorder_lod_reader.c",
         "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
         "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
       ],
@@ -1450,6 +1454,9 @@
         "components/object_format/include",
         "components/storage_manager/include",
         "components/seismic_buffer/include"
+      ],
+      "libraries": [
+        "m"
       ]
     },
     {

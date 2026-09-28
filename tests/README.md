@@ -42,6 +42,14 @@ application-owned polling/debounce tasks; the target Button component owns
 that service. UI event callbacks only enqueue into a bounded pending queue and
 LVGL applies events from its own task/timer.
 
+Localization reads a bounded raw-frame range from the start of the saved
+session. Session summaries do not persist an event index, so the analysis
+window starts at index 0. `LOCALIZATION_MAX_ANALYSIS_S` defaults to 10 seconds;
+`LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB` defaults to 4096 KiB and bounds the
+frame and channel work arrays. At 500 Hz the old 30000-frame minimum remains.
+Longer sessions proceed on the prefix and each run record stores the window
+start, frame count and `truncated: true` provenance.
+
 ## Host tests
 
 ```powershell

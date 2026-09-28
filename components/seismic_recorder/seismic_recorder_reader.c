@@ -363,25 +363,6 @@ static esp_err_t seismic_recorder_reader_append_suffix(
 }
 
 
-static bool seismic_recorder_reader_header_matches_summary(
-    const seismic_recorder_binary_header_t *header,
-    const seismic_recorder_session_summary_t *summary
-)
-{
-    return
-        header != NULL &&
-        summary != NULL &&
-        memcmp(header->magic, "GEOSEIS1", sizeof(header->magic)) == 0 &&
-        header->version == SEISMIC_RECORDER_BINARY_VERSION &&
-        header->channel_count == SEISMIC_CHANNEL_COUNT &&
-        header->channel_count == summary->channel_count &&
-        header->sample_rate_hz > 0U &&
-        header->sample_rate_hz == summary->sample_rate_hz &&
-        header->frame_size_bytes == sizeof(seismic_frame_t) &&
-        header->reserved == 0U;
-}
-
-
 static void seismic_recorder_reader_apply_terminal_info(
     const seismic_recorder_session_summary_t *summary,
     seismic_recorder_waveform_info_t *info
@@ -400,6 +381,15 @@ static void seismic_recorder_reader_apply_terminal_info(
     info->dropped_frames = summary->dropped_frames;
     info->recording_ms = summary->recording_ms;
     info->cadence = summary->cadence;
+    info->format_version = summary->format_version;
+    info->has_gaps = info->has_gaps || summary->has_gaps ||
+        summary->dropped_frames > 0U;
+    if (summary->missing_samples != 0U) {
+        info->missing_samples = summary->missing_samples;
+    }
+    else if (summary->dropped_frames != 0U) {
+        info->missing_samples = summary->dropped_frames;
+    }
 }
 
 
@@ -416,6 +406,7 @@ static void seismic_recorder_reader_fill_empty_info(
     snprintf(info->source_name, sizeof(info->source_name), "%s", summary->source_name);
     info->sample_rate_hz = summary->sample_rate_hz;
     info->channel_count = summary->channel_count;
+    info->format_version = summary->format_version;
     info->source_frame_count = summary->samples_written;
     info->start_frame = start_frame;
     info->frame_count = 0U;
@@ -595,53 +586,30 @@ esp_err_t seismic_recorder_read_session(
         return err;
     }
 
-    uint64_t expected_raw_file_size = 0U;
-    if (!seismic_recorder_reader_virtual_file_size(
-            summary.samples_written,
-            &expected_raw_file_size
-        )) {
-        free(lod_path);
-        free(samples_path);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    /* Final ERROR metadata is the authoritative committed prefix. A failed
-     * fwrite can leave bytes after its last fully-accounted frame; expose only
-     * the exact metadata prefix rather than turning the whole failed run into
-     * an unreadable session. COMPLETE and RECOVERED_ERROR remain exact-size
-     * contracts, and every status fails closed if the raw file is too short. */
-    const bool terminal_error_prefix =
-        summary.status == SEISMIC_RECORDER_SESSION_ERROR &&
-        !summary.recovered;
-    if (
-        raw_file_size < expected_raw_file_size ||
-        (!terminal_error_prefix && raw_file_size != expected_raw_file_size)
-    ) {
+    if (raw_file_size < sizeof(seismic_recorder_binary_header_t)) {
         free(lod_path);
         free(samples_path);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    const uint64_t contract_raw_file_size = expected_raw_file_size;
+    /* The decoder uses the terminal sample count as its logical prefix and
+     * tolerates a physical tail only for an unrecovered ERROR session. */
+    const uint64_t contract_raw_file_size = raw_file_size;
 
     seismic_recorder_bounded_reader_t raw_reader = {
         .path = samples_path,
     };
-    seismic_recorder_binary_header_t raw_header;
-    err = seismic_recorder_reader_read_at(
+    seismic_recorder_samples_reader_t samples_reader;
+    err = seismic_recorder_samples_reader_open(
+        seismic_recorder_reader_read_at,
         &raw_reader,
-        0U,
-        &raw_header,
-        sizeof(raw_header)
+        contract_raw_file_size,
+        &summary,
+        &samples_reader
     );
     if (err != ESP_OK) {
         free(lod_path);
         free(samples_path);
         return err;
-    }
-    if (!seismic_recorder_reader_header_matches_summary(&raw_header, &summary)) {
-        free(lod_path);
-        free(samples_path);
-        return ESP_ERR_INVALID_RESPONSE;
     }
 
     /*
@@ -651,6 +619,16 @@ esp_err_t seismic_recorder_read_session(
      * a discarded physical tail, but it is never part of this logical file.
      */
     if (resolved_frame_count == 0U) {
+        err = seismic_recorder_samples_reader_finish(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            &samples_reader
+        );
+        if (err != ESP_OK) {
+            free(lod_path);
+            free(samples_path);
+            return err;
+        }
         seismic_recorder_reader_fill_empty_info(
             object_id,
             &summary,
@@ -680,6 +658,7 @@ esp_err_t seismic_recorder_read_session(
      */
     uint64_t virtual_file_size = 0U;
     const bool virtual_size_valid =
+        samples_reader.header.version != SEISMIC_RECORDER_BINARY_VERSION_V2 &&
         seismic_recorder_reader_virtual_file_size(
             summary.samples_written,
             &virtual_file_size
@@ -702,11 +681,13 @@ esp_err_t seismic_recorder_read_session(
         const seismic_recorder_reader_priority_guard_t priority_guard =
             seismic_recorder_reader_priority_enter();
 #endif
+        seismic_recorder_session_summary_t cache_summary = summary;
+        cache_summary.format_version = SEISMIC_RECORDER_BINARY_VERSION_V1;
         err = seismic_recorder_waveform_read_source(
             seismic_recorder_cache_reader_read_at,
             &cache_reader,
             virtual_file_size,
-            &summary,
+            &cache_summary,
             start_frame,
             resolved_frame_count,
             max_points,
@@ -885,6 +866,29 @@ esp_err_t seismic_recorder_read_session(
  * long a session this can analyze in one call; a session that does not fit
  * fails closed with ESP_ERR_INVALID_SIZE rather than silently truncating.
  */
+esp_err_t seismic_recorder_get_session_summary(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary_out
+)
+{
+    if (object_id == NULL || session_id == NULL || summary_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    object_store_profile_t *profile = malloc(sizeof(*profile));
+    if (profile == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = object_store_get_profile(object_id, profile);
+    free(profile);
+    if (err != ESP_OK) {
+        return err;
+    }
+    return seismic_recorder_json_read_summary(object_id, session_id, summary_out);
+}
+
+
 esp_err_t seismic_recorder_read_session_raw(
     const char *object_id,
     const char *session_id,
@@ -906,18 +910,8 @@ esp_err_t seismic_recorder_read_session_raw(
 
     *frame_count_out = 0U;
 
-    object_store_profile_t *profile = malloc(sizeof(*profile));
-    if (profile == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = object_store_get_profile(object_id, profile);
-    free(profile);
-    if (err != ESP_OK) {
-        return err;
-    }
-
     seismic_recorder_session_summary_t summary;
-    err = seismic_recorder_json_read_summary(object_id, session_id, &summary);
+    esp_err_t err = seismic_recorder_get_session_summary(object_id, session_id, &summary);
     if (err != ESP_OK) {
         return err;
     }
@@ -960,28 +954,38 @@ esp_err_t seismic_recorder_read_session_raw(
         return err;
     }
 
-    uint64_t expected_raw_file_size = 0U;
-    if (!seismic_recorder_reader_virtual_file_size(summary.samples_written, &expected_raw_file_size)) {
-        free(samples_path);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    /* Matches seismic_recorder_read_session()'s own terminal-prefix contract:
-     * an ERROR session that was never recovered may have a discarded
-     * physical tail past its committed metadata prefix. */
-    const bool terminal_error_prefix =
-        summary.status == SEISMIC_RECORDER_SESSION_ERROR && !summary.recovered;
-    if (
-        raw_file_size < expected_raw_file_size ||
-        (!terminal_error_prefix && raw_file_size != expected_raw_file_size)
-    ) {
+    if (raw_file_size < sizeof(seismic_recorder_binary_header_t)) {
         free(samples_path);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    const uint64_t contract_raw_file_size = expected_raw_file_size;
+    const uint64_t contract_raw_file_size = raw_file_size;
+
+    seismic_recorder_bounded_reader_t raw_reader = {
+        .path = samples_path,
+    };
+    seismic_recorder_samples_reader_t samples_reader;
+    err = seismic_recorder_samples_reader_open(
+        seismic_recorder_reader_read_at,
+        &raw_reader,
+        contract_raw_file_size,
+        &summary,
+        &samples_reader
+    );
+    if (err != ESP_OK) {
+        free(samples_path);
+        return err;
+    }
 
     if (summary.samples_written == 0U) {
+        err = seismic_recorder_samples_reader_finish(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            &samples_reader
+        );
         free(samples_path);
+        if (err != ESP_OK) {
+            return err;
+        }
         if (summary_out != NULL) {
             *summary_out = summary;
         }
@@ -996,10 +1000,6 @@ esp_err_t seismic_recorder_read_session_raw(
         free(samples_path);
         return ESP_ERR_NO_MEM;
     }
-
-    seismic_recorder_bounded_reader_t raw_reader = {
-        .path = samples_path,
-    };
 
 #ifdef ESP_PLATFORM
     const seismic_recorder_reader_priority_guard_t priority_guard =
@@ -1027,6 +1027,152 @@ esp_err_t seismic_recorder_read_session_raw(
 
     if (err == ESP_OK && summary_out != NULL) {
         *summary_out = summary;
+    }
+    return err;
+}
+
+
+esp_err_t seismic_recorder_read_session_range(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_index,
+    size_t max_frames,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out
+)
+{
+    if (
+        object_id == NULL || session_id == NULL || max_frames == 0U ||
+        frames == NULL || frame_count_out == NULL
+    ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *frame_count_out = 0U;
+
+    seismic_recorder_session_summary_t summary;
+    esp_err_t err = seismic_recorder_get_session_summary(object_id, session_id, &summary);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (!summary.readable && !summary.complete) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (start_index > summary.samples_written) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint64_t remaining = summary.samples_written - start_index;
+    const size_t frames_to_read = remaining < (uint64_t)max_frames
+        ? (size_t)remaining
+        : max_frames;
+    if (frames_to_read == 0U) {
+        if (summary_out != NULL) {
+            *summary_out = summary;
+        }
+        return ESP_OK;
+    }
+
+    char *samples_path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (samples_path == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    err = seismic_recorder_fs_build_session_path(
+        object_id,
+        session_id,
+        samples_path,
+        SEISMIC_RECORDER_PATH_SIZE
+    );
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_append_suffix(
+            samples_path,
+            SEISMIC_RECORDER_PATH_SIZE,
+            "/samples.bin"
+        );
+    }
+
+    uint64_t file_size = 0U;
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_file_size(samples_path, &file_size);
+    }
+    if (err == ESP_OK && file_size < sizeof(seismic_recorder_binary_header_t)) {
+        err = ESP_ERR_INVALID_RESPONSE;
+    }
+
+    seismic_recorder_bounded_reader_t raw_reader = {
+        .path = samples_path,
+    };
+    seismic_recorder_samples_reader_t samples_reader;
+    if (err == ESP_OK) {
+        err = seismic_recorder_samples_reader_open(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            file_size,
+            &summary,
+            &samples_reader
+        );
+    }
+    if (err == ESP_OK) {
+        err = seismic_recorder_samples_reader_skip(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            &samples_reader,
+            start_index
+        );
+    }
+
+#ifdef ESP_PLATFORM
+    seismic_recorder_reader_priority_guard_t priority_guard = {0};
+    if (err == ESP_OK) {
+        priority_guard = seismic_recorder_reader_priority_enter();
+    }
+#endif
+    size_t frames_read = 0U;
+    while (err == ESP_OK && frames_read < frames_to_read) {
+        size_t count = 0U;
+        uint64_t first_sample_index = 0U;
+        bool block_gap_before = false;
+        err = seismic_recorder_samples_reader_next(
+            seismic_recorder_reader_read_at,
+            &raw_reader,
+            &samples_reader,
+            frames + frames_read,
+            frames_to_read - frames_read,
+            &count,
+            &first_sample_index,
+            &block_gap_before
+        );
+        if (err != ESP_OK) {
+            break;
+        }
+        if (count == 0U) {
+            err = ESP_ERR_INVALID_RESPONSE;
+            break;
+        }
+        for (size_t i = 0U; i < count; ++i) {
+            if (source_sample_indices != NULL) {
+                source_sample_indices[frames_read + i] = first_sample_index + (uint64_t)i;
+            }
+            if (gap_before != NULL) {
+                gap_before[frames_read + i] = i == 0U && block_gap_before;
+            }
+        }
+        frames_read += count;
+    }
+#ifdef ESP_PLATFORM
+    if (priority_guard.changed) {
+        seismic_recorder_reader_priority_leave(priority_guard);
+    }
+#endif
+
+    free(samples_path);
+    if (err == ESP_OK) {
+        *frame_count_out = frames_read;
+        if (summary_out != NULL) {
+            *summary_out = summary;
+        }
     }
     return err;
 }

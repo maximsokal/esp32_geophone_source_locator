@@ -21,6 +21,7 @@ def status_sample(
     stream_state: str = "NORMAL",
     suspicious: bool = False,
     stream_stuck: bool = False,
+    sample_rate_hz: int = 500,
     quality_window_frames: int = 500,
     consecutive_failures: int = 0,
     error_counters_available: bool = True,
@@ -28,6 +29,7 @@ def status_sample(
 ) -> dict:
     return {
         "acquisition": {
+            "sample_rate_hz": sample_rate_hz,
             "error_counters_available": error_counters_available,
             "consecutive_failures": consecutive_failures,
             "serial": {
@@ -126,6 +128,21 @@ def test_immature_or_unknown_transport_health_blocks_pass():
     assert any("transport health" in item for item in unavailable.missing)
 
 
+def test_health_window_maturity_tracks_reported_one_second_sample_rate():
+    immature = analyze(
+        healthy_log(),
+        evidence(status_sample(sample_rate_hz=20_000, quality_window_frames=19_999)),
+    )
+    mature = analyze(
+        healthy_log(),
+        evidence(status_sample(sample_rate_hz=20_000, quality_window_frames=20_000)),
+    )
+
+    assert immature.transport_health_status == "BLOCKED"
+    assert any("19999/20000" in item for item in immature.missing)
+    assert mature.transport_health_status == "PASS"
+
+
 def test_mature_transport_faults_fail_even_when_storage_bytes_are_clean():
     cases = [
         status_sample(quality="DEGRADED"),
@@ -172,6 +189,20 @@ def test_mature_uart_transport_fault_is_sticky_even_with_healthy_status_evidence
     assert result.status == "FAIL"
     assert result.uart_transport_fault_count == 1
     assert any("UART mature AD7606 transport fault" in item for item in result.violations)
+
+
+def test_uart_window_uses_reported_sample_rate():
+    serial_diag = (
+        "I AD7606_DIAG: AD7606_SERIAL_DIAG: transport_quality=FAULT "
+        "signal_quality=HEALTHY stream_state=STUCK stream_stuck=yes "
+        "window=500 serial_suspicious=yes\n"
+    )
+    result = analyze(
+        healthy_log() + serial_diag,
+        evidence(status_sample(sample_rate_hz=20_000, quality_window_frames=20_000)),
+    )
+    assert result.status == "PASS"
+    assert result.uart_transport_fault_count == 0
 
 
 def test_exact_threshold_boundaries_pass():

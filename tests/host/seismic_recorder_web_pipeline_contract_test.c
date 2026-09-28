@@ -43,6 +43,7 @@ static unsigned storage_end_calls;
 static httpd_uri_t registered_uri;
 static bool fake_complete_metadata;
 static uint64_t fake_samples_written = 20U;
+static uint16_t fake_format_version = SEISMIC_RECORDER_BINARY_VERSION_V1;
 
 static int make_directory(const char *path)
 {
@@ -151,6 +152,7 @@ esp_err_t seismic_recorder_json_read_summary(
     summary->complete = true;
     summary->sample_rate_hz = 500U;
     summary->channel_count = SEISMIC_CHANNEL_COUNT;
+    summary->format_version = fake_format_version;
     summary->samples_written = fake_samples_written;
     summary->recording_ms = fake_samples_written * 2U;
     (void)object_id;
@@ -273,6 +275,7 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *u
 
 #include "../../components/web_server/web_json_writer.c"
 #include "../../components/seismic_recorder/seismic_recorder_fs.c"
+#include "../../components/seismic_recorder/seismic_recorder_samples.c"
 
 /* The hybrid reducer is part of the same recorder/Web boundary contract. Keep
  * it in this translation unit so the host manifest stays a single integration
@@ -321,14 +324,30 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     assert(frame_count == 20U && dropped == 0U && cursor == 20U);
     assert(info.source == SEISMIC_SOURCE_AD7606 && info.sample_rate_hz == 500U);
 
+    const seismic_acquisition_snapshot_t acquisition = {
+        .source_name = "AD7606",
+        .sample_rate_hz = info.sample_rate_hz,
+        .bus_clock_hz = 10000000U,
+        .channel_count = SEISMIC_CHANNEL_COUNT,
+        .oversampling_ratio = 4U,
+        .input_range_v = 5.0f,
+    };
+    uint64_t sample_indices[20];
+    for (size_t index = 0U; index < 20U; ++index) {
+        sample_indices[index] = index + 1U;
+    }
+
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = { 0 };
     FILE *samples_file = NULL;
-    assert(seismic_recorder_fs_create_session("OBJ_0001", info.sample_rate_hz,
+    uint16_t format_version = 0U;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", &acquisition,
                                               SEISMIC_CHANNEL_COUNT, session_id,
-                                              &samples_file) == ESP_OK);
+                                              &samples_file, &format_version) == ESP_OK);
+    assert(format_version == SEISMIC_RECORDER_BINARY_VERSION_V2);
     assert(strcmp(session_id, "S000001") == 0);
     size_t written = 0U;
-    assert(seismic_recorder_fs_write_frames(samples_file, frames, frame_count, &written) == ESP_OK);
+    assert(seismic_recorder_fs_write_frames(samples_file, frames, sample_indices,
+                                            frame_count, &written) == ESP_OK);
     assert(written == frame_count);
     assert(seismic_recorder_fs_close(samples_file) == ESP_OK);
 
@@ -337,17 +356,26 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     seismic_recorder_binary_header_t header = { 0 };
     assert(fread(&header, sizeof(header), 1U, readback) == 1U);
     assert(memcmp(header.magic, "GEOSEIS1", 8U) == 0);
-    assert(header.version == 1U && header.channel_count == SEISMIC_CHANNEL_COUNT);
-    assert(header.sample_rate_hz == 500U && header.frame_size_bytes == sizeof(seismic_frame_t));
-    seismic_frame_t recorded[20] = { 0 };
-    assert(fread(recorded, sizeof(recorded[0]), 20U, readback) == 20U);
-    assert(recorded[6].timestamp_us == frames[6].timestamp_us);
-    assert(recorded[6].channel_uv[0] == 18000.0f);
-    assert(recorded[6].channel_uv[1] == -12000.0f);
+    assert(header.version == SEISMIC_RECORDER_BINARY_VERSION_V2 &&
+           header.channel_count == SEISMIC_CHANNEL_COUNT);
+    assert(header.sample_rate_hz == 500U &&
+           header.frame_size_bytes == SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES);
+    seismic_recorder_binary_v2_metadata_t metadata = { 0 };
+    assert(fread(&metadata, sizeof(metadata), 1U, readback) == 1U);
+    assert(metadata.scale_uv_per_lsb[0] == 5000000.0f / 32768.0f);
+    seismic_recorder_binary_v2_block_header_t block = { 0 };
+    assert(fread(&block, sizeof(block), 1U, readback) == 1U);
+    assert(block.first_sample_index == 1U && block.first_timestamp_us == 2000U);
+    assert(block.frame_count == 20U && block.flags == 0U);
+    int16_t recorded_codes[20][SEISMIC_CHANNEL_COUNT] = { 0 };
+    assert(fread(recorded_codes, sizeof(recorded_codes), 1U, readback) == 1U);
+    assert(recorded_codes[6][0] == 118);
+    assert(recorded_codes[6][1] == -79);
     assert(fgetc(readback) == EOF);
     assert(fclose(readback) == 0);
 
     fake_complete_metadata = true;
+    fake_format_version = SEISMIC_RECORDER_BINARY_VERSION_V2;
     char saved_response[32768] = { 0 };
     httpd_req_t saved_request = {
         .uri = "/api/seismic/session",
@@ -360,14 +388,13 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     assert(strstr(saved_response, "\"object_id\":\"OBJ_0001\"") != NULL);
     assert(strstr(saved_response, "\"session_id\":\"S000001\"") != NULL);
     assert(strstr(saved_response, "\"frame_count\":20") != NULL);
-    assert(strstr(saved_response, "\"min_uv\":18000.000") != NULL);
-    assert(strstr(saved_response, "\"min_uv\":-12000.000") != NULL ||
-           strstr(saved_response, "\"max_uv\":-12000.000") != NULL);
+    assert(strstr(saved_response, "18005.371") != NULL);
+    assert(strstr(saved_response, "-12054.443") != NULL);
 
     char response[8192] = { 0 };
     httpd_req_t request = {
         .uri = "/api/seismic",
-        .query = "points=20",
+        .query = "span_ms=480&max_points=20",
         .response_body = response,
         .response_capacity = sizeof(response),
     };
@@ -378,8 +405,12 @@ static void test_recorder_binary_and_web_json_share_the_same_frames(void)
     assert(strstr(response, "\"source\":\"AD7606\"") != NULL);
     assert(strstr(response, "\"sample_rate_hz\":500") != NULL);
     assert(strstr(response, "\"count\":20") != NULL);
+    assert(strstr(response, "\"frame_count\":20") != NULL);
+    assert(strstr(response, "\"requested_span_ms\":480") != NULL);
+    assert(strstr(response, "\"span_ms\":40") != NULL);
+    assert(strstr(response, "\"decimation_factor\":1") != NULL);
     assert(strstr(response, "\"total_frames\":20") != NULL);
-    assert(strstr(response, "\"timestamps_ms\":[2,4,6") != NULL);
+    assert(strstr(response, "\"points\":[{\"timestamp_us\":2000") != NULL);
     assert(strstr(response, "18000.000") != NULL);
     assert(strstr(response, "-12000.000") != NULL);
 
@@ -484,25 +515,38 @@ static void test_public_reader_invalid_lod_never_breaks_raw(void)
     storage_end_calls = 0U;
     fake_complete_metadata = false;
     fake_samples_written = 128U;
+    fake_format_version = SEISMIC_RECORDER_BINARY_VERSION_V1;
 
     seismic_frame_t frames[128];
     fill_saved_frames(frames, 128U);
+    const seismic_acquisition_snapshot_t acquisition = {
+        .source_name = "TEST",
+        .sample_rate_hz = 500U,
+    };
+    uint64_t sample_indices[128];
+    for (size_t index = 0U; index < 128U; ++index) {
+        sample_indices[index] = index + 1U;
+    }
 
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
     FILE *samples_file = NULL;
+    uint16_t format_version = 0U;
     assert(seismic_recorder_fs_create_session(
         "OBJ_0001",
-        500U,
+        &acquisition,
         SEISMIC_CHANNEL_COUNT,
         session_id,
-        &samples_file
+        &samples_file,
+        &format_version
     ) == ESP_OK);
+    assert(format_version == SEISMIC_RECORDER_BINARY_VERSION_V1);
     assert(strcmp(session_id, "S000001") == 0);
 
     size_t written = 0U;
     assert(seismic_recorder_fs_write_frames(
         samples_file,
         frames,
+        sample_indices,
         128U,
         &written
     ) == ESP_OK);

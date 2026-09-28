@@ -10,7 +10,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ObjectId,
 
-    [ValidateRange(1, 2000)]
+    [ValidateRange(1, 40000)]
     [int]$ExpectedSampleRateHz = 500,
 
     [ValidateRange(1, 256)]
@@ -122,6 +122,20 @@ function Get-OptionalProperty {
 }
 
 
+function Get-ReportedSampleRateHz {
+    param([AllowNull()][object]$Status)
+
+    $acquisition = Get-OptionalProperty $Status "acquisition"
+    $rate = 0
+    if ($null -ne $acquisition -and
+        [int]::TryParse([string](Get-OptionalProperty $acquisition "sample_rate_hz"), ([ref]$rate)) -and
+        $rate -gt 0) {
+        return $rate
+    }
+    return 500
+}
+
+
 function Get-Ad7606TransportHealth {
     param([AllowNull()][object]$Status)
 
@@ -138,6 +152,7 @@ function Get-Ad7606TransportHealth {
     $suspicious = Get-OptionalProperty $serial "suspicious"
     $streamStuck = Get-OptionalProperty $serial "stream_stuck"
     $windowValue = Get-OptionalProperty $serial "quality_window_frames"
+    $requiredWindowFrames = Get-ReportedSampleRateHz $Status
     $signalQuality = [string](Get-OptionalProperty $signal "quality")
 
     if ([string]::IsNullOrWhiteSpace($quality)) { $quality = "UNKNOWN" }
@@ -154,8 +169,8 @@ function Get-Ad7606TransportHealth {
     if ($null -eq $windowValue -or -not [int]::TryParse([string]$windowValue, ([ref]$window))) {
         return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial quality_window_frames is missing"; SignalQuality = $signalQuality; Window = $null }
     }
-    if ($window -lt 500) {
-        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial quality window immature ($window/500)"; SignalQuality = $signalQuality; Window = $window }
+    if ($window -lt $requiredWindowFrames) {
+        return [pscustomobject]@{ Status = "BLOCKED"; Reason = "serial quality window immature ($window/$requiredWindowFrames frames, one second at $(Get-ReportedSampleRateHz $Status)Hz)"; SignalQuality = $signalQuality; Window = $window }
     }
 
     $reasons = New-Object System.Collections.Generic.List[string]

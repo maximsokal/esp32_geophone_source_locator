@@ -1,0 +1,3 @@
+#pragma once
+
+typedef struct seismic_acquisition_snapshot seismic_acquisition_snapshot_t;

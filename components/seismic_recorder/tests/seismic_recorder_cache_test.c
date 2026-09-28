@@ -63,16 +63,19 @@ static void test_persisted_history_evicts_before_dirty_tail(void)
     assert(seismic_recorder_cache_append(&cache, 10U, first, 3U) == ESP_OK);
 
     seismic_frame_t dirty[4] = {0};
+    uint64_t dirty_sources[4] = {0};
     size_t dirty_count = 0U;
     uint64_t dirty_first = UINT64_MAX;
-    assert(seismic_recorder_cache_copy_dirty(
+    assert(seismic_recorder_cache_copy_dirty_with_source_indices(
         &cache,
         dirty,
+        dirty_sources,
         2U,
         &dirty_count,
         &dirty_first
     ) == ESP_OK);
     assert(dirty_first == 0U && dirty_count == 2U);
+    assert(dirty_sources[0] == 10U && dirty_sources[1] == 11U);
     assert(dirty[0].timestamp_us == 20000LL);
     assert(dirty[1].timestamp_us == 22000LL);
 
@@ -115,14 +118,16 @@ static void test_persisted_history_evicts_before_dirty_tail(void)
     assert(resident[3].timestamp_us == 28000LL);
 
     memset(dirty, 0, sizeof(dirty));
-    assert(seismic_recorder_cache_copy_dirty(
+    assert(seismic_recorder_cache_copy_dirty_with_source_indices(
         &cache,
         dirty,
+        dirty_sources,
         4U,
         &dirty_count,
         &dirty_first
     ) == ESP_OK);
     assert(dirty_first == 2U && dirty_count == 3U);
+    assert(dirty_sources[0] == 12U && dirty_sources[2] == 14U);
     assert(dirty[0].timestamp_us == 24000LL);
     assert(dirty[2].timestamp_us == 28000LL);
 
@@ -187,11 +192,13 @@ static void test_dense_session_frames_preserve_source_gaps(void)
     assert(seismic_recorder_cache_append(&cache, 120U, after_gap, 2U) == ESP_OK);
 
     seismic_frame_t dirty[4] = {0};
+    uint64_t dirty_sources[4] = {0};
     size_t dirty_count = 0U;
     uint64_t dirty_first = UINT64_MAX;
-    assert(seismic_recorder_cache_copy_dirty(
+    assert(seismic_recorder_cache_copy_dirty_with_source_indices(
         &cache,
         dirty,
+        dirty_sources,
         4U,
         &dirty_count,
         &dirty_first
@@ -202,10 +209,10 @@ static void test_dense_session_frames_preserve_source_gaps(void)
     assert(dirty[1].timestamp_us == 202000LL);
     assert(dirty[2].timestamp_us == 240000LL);
     assert(dirty[3].timestamp_us == 242000LL);
+    assert(dirty_sources[0] == 100U && dirty_sources[1] == 101U);
+    assert(dirty_sources[2] == 120U && dirty_sources[3] == 121U);
 
-    /* samples.bin is dense: four written records occupy session frames 0..3.
-     * The returned producer cursor must still jump across the acquisition gap
-     * so the recorder never treats dropped source frames 102..119 as pending. */
+    /* Session ordinals stay dense while retained source indexes preserve the gap. */
     uint64_t last_source = 0U;
     assert(seismic_recorder_cache_mark_persisted(
         &cache,

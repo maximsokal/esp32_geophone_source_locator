@@ -6,23 +6,6 @@
 #include <string.h>
 
 
-static bool seismic_recorder_lod_raw_header_valid(
-    const seismic_recorder_binary_header_t *header,
-    uint32_t sample_rate_hz
-)
-{
-    return
-        header != NULL &&
-        memcmp(header->magic, "GEOSEIS1", sizeof(header->magic)) == 0 &&
-        header->version == SEISMIC_RECORDER_BINARY_VERSION &&
-        header->channel_count == SEISMIC_CHANNEL_COUNT &&
-        header->sample_rate_hz == sample_rate_hz &&
-        header->sample_rate_hz > 0U &&
-        header->frame_size_bytes == sizeof(seismic_frame_t) &&
-        header->reserved == 0U;
-}
-
-
 static bool seismic_recorder_lod_mul_u64(
     uint64_t left,
     uint64_t right,
@@ -225,29 +208,10 @@ static void seismic_recorder_lod_merge_bounds(
 }
 
 
-static bool seismic_recorder_lod_raw_expected_size(
-    uint64_t frame_count,
-    uint64_t *size_bytes
-)
-{
-    uint64_t payload_bytes = 0U;
-    return
-        seismic_recorder_lod_mul_u64(
-            frame_count,
-            sizeof(seismic_frame_t),
-            &payload_bytes
-        ) &&
-        seismic_recorder_lod_add_u64(
-            sizeof(seismic_recorder_binary_header_t),
-            payload_bytes,
-            size_bytes
-        );
-}
-
-
 static esp_err_t seismic_recorder_lod_read_raw_run(
     seismic_recorder_waveform_read_at_fn raw_read_at,
     void *raw_context,
+    seismic_recorder_samples_reader_t *samples_reader,
     uint64_t request_start_frame,
     uint64_t request_frame_count,
     size_t point_count,
@@ -260,32 +224,43 @@ static esp_err_t seismic_recorder_lod_read_raw_run(
     int64_t *last_timestamp_us
 )
 {
-    uint64_t frame_offset_bytes = 0U;
-    uint64_t read_offset_bytes = 0U;
-    if (
-        !seismic_recorder_lod_mul_u64(
-            first_session_frame,
-            sizeof(seismic_frame_t),
-            &frame_offset_bytes
-        ) ||
-        !seismic_recorder_lod_add_u64(
-            sizeof(seismic_recorder_binary_header_t),
-            frame_offset_bytes,
-            &read_offset_bytes
-        ) ||
-        run_count > SIZE_MAX / sizeof(seismic_frame_t)
-    ) {
+    if (samples_reader == NULL || run_count > SIZE_MAX / sizeof(seismic_frame_t)) {
         return ESP_ERR_INVALID_SIZE;
     }
 
-    esp_err_t err = raw_read_at(
+    if (first_session_frame < samples_reader->logical_frame_position) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = seismic_recorder_samples_reader_skip(
+        raw_read_at,
         raw_context,
-        read_offset_bytes,
-        raw_staging,
-        run_count * sizeof(seismic_frame_t)
+        samples_reader,
+        first_session_frame - samples_reader->logical_frame_position
     );
     if (err != ESP_OK) {
         return err;
+    }
+
+    size_t loaded = 0U;
+    while (loaded < run_count) {
+        size_t chunk_count = 0U;
+        err = seismic_recorder_samples_reader_next(
+            raw_read_at,
+            raw_context,
+            samples_reader,
+            &raw_staging[loaded],
+            run_count - loaded,
+            &chunk_count,
+            NULL,
+            NULL
+        );
+        if (err != ESP_OK) {
+            return err;
+        }
+        if (chunk_count == 0U || chunk_count > run_count - loaded) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        loaded += chunk_count;
     }
 
     for (size_t index = 0U; index < run_count; ++index) {
@@ -481,39 +456,30 @@ esp_err_t seismic_recorder_lod_read_source_with_stats(
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint64_t expected_raw_size = 0U;
     uint64_t expected_lod_size = 0U;
     if (
-        !seismic_recorder_lod_raw_expected_size(
-            summary->samples_written,
-            &expected_raw_size
-        ) ||
         !seismic_recorder_lod_expected_file_size(
             summary->samples_written,
             &expected_lod_size
         ) ||
-        raw_file_size != expected_raw_size ||
+        raw_file_size < sizeof(seismic_recorder_binary_header_t) ||
         lod_file_size != expected_lod_size
     ) {
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    seismic_recorder_binary_header_t raw_header;
-    esp_err_t err = raw_read_at(
+    seismic_recorder_samples_reader_t samples_reader;
+    esp_err_t err = seismic_recorder_samples_reader_open(
+        raw_read_at,
         raw_context,
-        0U,
-        &raw_header,
-        sizeof(raw_header)
+        raw_file_size,
+        summary,
+        &samples_reader
     );
-    if (
-        err != ESP_OK ||
-        !seismic_recorder_lod_raw_header_valid(
-            &raw_header,
-            summary->sample_rate_hz
-        )
-    ) {
-        return err != ESP_OK ? err : ESP_ERR_INVALID_RESPONSE;
+    if (err != ESP_OK) {
+        return err;
     }
+    const seismic_recorder_binary_header_t raw_header = samples_reader.header;
 
     seismic_recorder_lod_file_header_t lod_header;
     err = lod_read_at(
@@ -668,6 +634,7 @@ esp_err_t seismic_recorder_lod_read_source_with_stats(
         err = seismic_recorder_lod_read_raw_run(
             raw_read_at,
             raw_context,
+            &samples_reader,
             start_frame,
             frame_count,
             point_count,
@@ -686,6 +653,27 @@ esp_err_t seismic_recorder_lod_read_source_with_stats(
             stats->raw_frames_read += (uint64_t)raw_count;
         }
         cursor += raw_count;
+    }
+
+    if (samples_reader.logical_frame_position < samples_reader.logical_frame_count) {
+        err = seismic_recorder_samples_reader_skip(
+            raw_read_at,
+            raw_context,
+            &samples_reader,
+            samples_reader.logical_frame_count -
+                samples_reader.logical_frame_position
+        );
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    err = seismic_recorder_samples_reader_finish(
+        raw_read_at,
+        raw_context,
+        &samples_reader
+    );
+    if (err != ESP_OK) {
+        return err;
     }
 
     if (
@@ -711,6 +699,14 @@ esp_err_t seismic_recorder_lod_read_source_with_stats(
     info->dropped_frames = summary->dropped_frames;
     info->recording_ms = summary->recording_ms;
     info->cadence = summary->cadence;
+    info->format_version = raw_header.version;
+    info->has_gaps = summary->has_gaps ||
+        summary->dropped_frames > 0U || samples_reader.has_gaps;
+    info->missing_samples = summary->missing_samples != 0U
+        ? summary->missing_samples
+        : summary->dropped_frames != 0U
+            ? summary->dropped_frames
+            : samples_reader.missing_sample_count;
     info->source_frame_count = summary->samples_written;
     info->start_frame = start_frame;
     info->frame_count = frame_count;

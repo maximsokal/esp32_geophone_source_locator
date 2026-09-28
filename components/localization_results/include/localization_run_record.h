@@ -176,6 +176,11 @@ typedef struct
      * geometry"). Never left blank for an unsolved run. */
     char rejection_reason[LOCALIZATION_RUN_REJECTION_REASON_SIZE];
 
+    /* Present when localization analyzed a truncated prefix of a session. */
+    bool analysis_window_truncated;
+    uint64_t analysis_window_start_index;
+    uint64_t analysis_window_frames;
+
 } localization_run_record_t;
 
 

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "ui_measurement_trace.h"
+#include "ui_measurements_internal.h"
 
 
 static void test_empty_input_clears_trace(void)
@@ -146,11 +147,21 @@ static void test_channels_are_reduced_independently(void)
 }
 
 
+static void test_preview_span_is_time_based(void)
+{
+    assert(ui_measurements_preview_frames_for_rate(0U) == 0U);
+    assert(ui_measurements_preview_frames_for_rate(500U) == 512U);
+    assert(ui_measurements_preview_frames_for_rate(20000U) == 20480U);
+    assert(ui_measurements_preview_frames_for_rate(40000U) == 40960U);
+}
+
+
 int main(void)
 {
     test_empty_input_clears_trace();
     test_short_window_is_right_aligned();
     test_bucket_keeps_min_and_max_envelope();
     test_channels_are_reduced_independently();
+    test_preview_span_is_time_based();
     return 0;
 }

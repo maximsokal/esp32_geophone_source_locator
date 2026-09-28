@@ -152,7 +152,7 @@ def test_cs_pairs_are_persisted_from_the_same_completed_cs_cycle_as_geometry():
     source = prepare_geometry_source()
 
     geometry_write_index = source.index("object_store_set_geometry(object_id, &geometry);")
-    cs_pairs_write_index = source.index("object_store_set_cs_pairs(object_id, &cs_pairs);")
+    cs_pairs_write_index = source.index("object_store_set_cs_pairs(object_id, session_cs_pairs);")
     # CS pairs are frozen right after geometry, from the same solve --
     # never before it (which would risk freezing a stale/prior cycle).
     assert geometry_write_index < cs_pairs_write_index

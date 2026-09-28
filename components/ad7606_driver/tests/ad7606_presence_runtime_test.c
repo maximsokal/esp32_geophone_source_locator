@@ -45,9 +45,14 @@ static esp_err_t s_add_result;
 static esp_err_t s_enable_result;
 static unsigned s_remove_calls;
 static unsigned s_disable_calls;
+static unsigned s_add_calls;
+static unsigned s_enable_calls;
+static unsigned s_set_intr_calls;
+static bool s_external_busy_isr;
 
 static void reset_world(busy_mode_t mode, int pulse_budget)
 {
+    ad7606_driver_presence_use_external_busy_isr(false);
     s_mode = mode;
     s_pulse_budget = pulse_budget;
     s_level = mode == BUSY_STUCK_HIGH ? 1 : 0;
@@ -61,6 +66,10 @@ static void reset_world(busy_mode_t mode, int pulse_budget)
     s_enable_result = ESP_OK;
     s_remove_calls = 0U;
     s_disable_calls = 0U;
+    s_add_calls = 0U;
+    s_enable_calls = 0U;
+    s_set_intr_calls = 0U;
+    s_external_busy_isr = false;
 }
 
 void test_port_enter_critical(portMUX_TYPE *mux)
@@ -95,6 +104,9 @@ static void simulate_tick(void)
     }
     drive(1);
     drive(0);
+    if (s_external_busy_isr) {
+        ad7606_driver_presence_note_busy_pulse();
+    }
     if (s_pulse_budget > 0) {
         --s_pulse_budget;
     }
@@ -137,6 +149,7 @@ esp_err_t gpio_install_isr_service(int flags)
 esp_err_t gpio_set_intr_type(gpio_num_t gpio_num, gpio_int_type_t type)
 {
     assert(gpio_num == BOARD_AD7606_BUSY_GPIO);
+    ++s_set_intr_calls;
     s_intr_type = type;
     return ESP_OK;
 }
@@ -146,6 +159,7 @@ esp_err_t gpio_isr_handler_add(gpio_num_t gpio_num, gpio_isr_t isr, void *args)
     assert(gpio_num == BOARD_AD7606_BUSY_GPIO);
     assert(s_critical_depth == 0);
     (void)args;
+    ++s_add_calls;
     if (s_add_result != ESP_OK) {
         return s_add_result;
     }
@@ -165,6 +179,7 @@ esp_err_t gpio_isr_handler_remove(gpio_num_t gpio_num)
 esp_err_t gpio_intr_enable(gpio_num_t gpio_num)
 {
     assert(gpio_num == BOARD_AD7606_BUSY_GPIO);
+    ++s_enable_calls;
     if (s_enable_result != ESP_OK) {
         return s_enable_result;
     }
@@ -278,6 +293,26 @@ static void test_stop_is_idempotent(void)
     assert(!ad7606_driver_presence_is_healthy());
 }
 
+static void test_external_busy_isr_uses_acquisition_pulses_without_gpio_claim(void)
+{
+    reset_world(BUSY_CONVERTING, -1);
+    const unsigned installs_before = s_install_calls;
+    ad7606_driver_presence_use_external_busy_isr(true);
+    s_external_busy_isr = true;
+
+    assert(ad7606_driver_presence_monitor_start() == ESP_OK);
+    assert(s_isr == NULL && !s_intr_enabled);
+    assert(s_add_calls == 0U && s_enable_calls == 0U && s_set_intr_calls == 0U);
+    assert(s_install_calls == installs_before);
+    assert(ad7606_driver_presence_is_healthy());
+
+    ad7606_driver_presence_monitor_stop();
+    assert(s_remove_calls == 0U && s_disable_calls == 0U);
+    assert(!ad7606_driver_presence_is_healthy());
+    ad7606_driver_presence_use_external_busy_isr(false);
+    s_external_busy_isr = false;
+}
+
 int main(void)
 {
     /* A service installed by another driver is accepted on first use. */
@@ -292,5 +327,6 @@ int main(void)
     test_registration_failures_leave_nothing_armed();
     test_isr_service_installed_once_and_shared_service_accepted();
     test_stop_is_idempotent();
+    test_external_busy_isr_uses_acquisition_pulses_without_gpio_claim();
     return 0;
 }

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "ad7606_fast_timing_accounting",
+      "sources": [
+        "components/ad7606_acquisition/ad7606_acquisition_timing.c",
+        "components/ad7606_acquisition/tests/ad7606_acquisition_fast_timing_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_acquisition/include"
+      ]
+    }
+  ]
+}

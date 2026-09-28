@@ -114,10 +114,13 @@ def test_button_contracts_preserve_adc_and_power_safety_boundaries():
 def test_acquisition_heartbeat_follows_read_and_buffer_publication():
     source = (REPO_ROOT / "components/ad7606_acquisition/ad7606_acquisition.c").read_text(encoding="utf-8")
     task = _function_body(source, "static void ad7606_worker(")
+    publish_helper = _function_body(source, "static esp_err_t ad7606_publish_sample(")
 
     beats = _positions(task, "runtime_observability_beat(")
-    assert len(beats) == 2
-    read = task.index("ad7606_driver_read(")
-    publish = task.index("seismic_buffer_push(")
-    assert beats[0] > read
-    assert beats[1] > publish
+    read = task.index("ad7606_driver_read_result(")
+    publish = task.index("ad7606_publish_sample(")
+    assert read < publish
+    assert any(beat > publish for beat in beats)
+    push = publish_helper.index("seismic_buffer_push_indexed(")
+    published_beat = publish_helper.index("runtime_observability_beat(")
+    assert push < published_beat
