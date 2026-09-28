@@ -38,6 +38,8 @@ target_sources(app PRIVATE
     ../src/nrf_blue_led.c
     ../src/nrf_blue_led_zephyr.c
     ../src/nrf_upstream_protocol.c
+    ../src/nrf_log_protocol.c
+    ../src/nrf_log_ring.c
     ../src/nrf_sensor_session.c
     ../src/nrf_sensor_upstream_runtime_zephyr.c
     ../src/nrf_bootstrap.c

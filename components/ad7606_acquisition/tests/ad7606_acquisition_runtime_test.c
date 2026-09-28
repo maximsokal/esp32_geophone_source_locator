@@ -97,7 +97,9 @@ static unsigned s_fake_watch_points;
 
 /* Injected behaviour. */
 static esp_err_t s_driver_init_result;
+static uint32_t s_fake_measured_tconv_ns;
 static esp_err_t s_gpio_install_result;
+static bool s_fake_isr_service_ready;
 static esp_err_t s_ledc_timer_result;
 static esp_err_t s_read_result;
 static bool s_rail_available;
@@ -153,11 +155,11 @@ static void reset_world(void)
     s_last_ledc_frequency = 0U;
     s_last_ledc_duty = 0U;
     s_last_ledc_resolution = 0U;
-    s_fake_gpio_install_flags = 0;
     s_fake_watch_points = 0U;
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
     memset(s_push_sample_indices, 0, sizeof(s_push_sample_indices));
     s_driver_init_result = ESP_OK;
+    s_fake_measured_tconv_ns = 4000U;
     s_gpio_install_result = ESP_OK;
     s_ledc_timer_result = ESP_OK;
     s_read_result = ESP_OK;
@@ -361,6 +363,19 @@ esp_err_t gpio_install_isr_service(int flags)
 {
     s_fake_gpio_install_flags = flags;
     return s_gpio_install_result;
+}
+
+esp_err_t board_gpio_isr_service_install(void)
+{
+    if (s_fake_isr_service_ready) {
+        return ESP_OK;
+    }
+    const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+        s_fake_isr_service_ready = true;
+        return ESP_OK;
+    }
+    return err;
 }
 
 esp_err_t gpio_set_intr_type(gpio_num_t gpio_num, gpio_int_type_t intr_type)
@@ -569,6 +584,13 @@ esp_err_t ad7606_driver_init(void)
     }
     s_driver_live = true;
     ++s_fake_pcnt_count; /* Driver self-test confirms BUSY reaches PCNT. */
+    return ESP_OK;
+}
+
+esp_err_t ad7606_driver_get_measured_tconv_ns(uint32_t *tconv_ns)
+{
+    assert(tconv_ns != NULL);
+    *tconv_ns = s_fake_measured_tconv_ns;
     return ESP_OK;
 }
 
@@ -799,8 +821,38 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(status.collapsed_periods == 0U);
     assert(status.power_gate == AD7606_POWER_GATE_OK);
     assert(!status.power_fault_latched);
+    assert(status.os_ratio_configured == 1U);
+    assert(status.os_ratio_measured == 1U);
+    assert(!status.os_mismatch);
 
     assert(s_fake_busy_isr == NULL); /* no BUSY ISR survives stop */
+}
+
+
+static void test_safe_os_mismatch_runs_and_is_reported(void)
+{
+    reset_world();
+    s_fake_measured_tconv_ns = 17000U; /* OS4 while Kconfig remains OS1. */
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.os_ratio_configured == 1U);
+    assert(status.os_ratio_measured == 4U);
+    assert(status.os_mismatch);
+    assert_fully_released();
+}
+
+
+static void test_unknown_os_measurement_refuses_start(void)
+{
+    reset_world();
+    s_fake_measured_tconv_ns = 5000U; /* Outside every calibrated interval. */
+    assert(ad7606_acquisition_start() == ESP_ERR_INVALID_RESPONSE);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.os_ratio_configured == 1U);
+    assert(status.os_ratio_measured == 0U);
+    assert(status.os_mismatch);
+    assert_fully_released();
 }
 
 static void test_collapsed_periods_are_one_conversion(void)
@@ -986,15 +1038,13 @@ static void test_read_errors_are_counted_and_not_pushed(void)
 
 static void test_startup_failures_clean_up(void)
 {
-    /* Driver init, GPIO ISR install and LEDC timer failures report
-     * the error and nothing stays configured or driven. */
-    for (int which = 0; which < 3; ++which) {
+    /* Driver init and LEDC timer failures report the error and nothing stays
+     * configured or driven. ISR service installation is covered by its owner. */
+    for (int which = 0; which < 2; ++which) {
         reset_world();
-        const esp_err_t injected = which == 0 ? ESP_ERR_NOT_FOUND
-            : which == 1 ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_STATE;
+        const esp_err_t injected = which == 0 ? ESP_ERR_NOT_FOUND : ESP_ERR_INVALID_STATE;
         if (which == 0) s_driver_init_result = injected;
-        if (which == 1) s_gpio_install_result = injected;
-        if (which == 2) s_ledc_timer_result = injected;
+        if (which == 1) s_ledc_timer_result = injected;
         assert(ad7606_acquisition_start() == injected);
         assert(s_driver_deinits == 1U);
         assert(s_reads == 0U);
@@ -1071,6 +1121,8 @@ static void test_overcurrent_stops_and_latches(void)
 int main(void)
 {
     test_run_samples_then_stop_releases_everything();
+    test_safe_os_mismatch_runs_and_is_reported();
+    test_unknown_os_measurement_refuses_start();
     test_collapsed_periods_are_one_conversion();
     test_successful_read_jitter_statistics();
     test_jitter_bucket_boundaries_and_open_ended_bucket();

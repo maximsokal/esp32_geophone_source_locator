@@ -45,10 +45,13 @@ LVGL applies events from its own task/timer.
 Localization reads a bounded raw-frame range from the start of the saved
 session. Session summaries do not persist an event index, so the analysis
 window starts at index 0. `LOCALIZATION_MAX_ANALYSIS_S` defaults to 10 seconds;
-`LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB` defaults to 4096 KiB and bounds the
-frame and channel work arrays. At 500 Hz the old 30000-frame minimum remains.
-Longer sessions proceed on the prefix and each run record stores the window
-start, frame count and `truncated: true` provenance.
+`LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB` defaults to 3072 KiB and bounds the
+frame and channel work arrays. Runtime allocation also respects the largest
+free PSRAM block after a 3 MiB reserve for scan occupancy parsing and
+workspace. Windows below one second fail with
+an `insufficient_memory` INTERNAL record. Longer sessions proceed on the
+prefix and each run record stores the window start, frame count and
+`truncated: true` provenance; free-memory truncation records `reason: memory`.
 
 ## Host tests
 

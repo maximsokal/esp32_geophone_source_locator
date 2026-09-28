@@ -12,6 +12,8 @@
 #include "driver/spi_master.h"
 
 #include "esp_log.h"
+#include "esp_cpu.h"
+#include "esp_private/esp_clk.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 
@@ -54,6 +56,8 @@ static bool s_initialized =
 static bool s_busy_release_error_logged =
     false;
 
+static uint32_t s_measured_tconv_ns = 0U;
+
 static ad7606_serial_observation_t s_last_serial_observation = {
     .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
 };
@@ -89,6 +93,79 @@ static esp_err_t ad7606_wait_busy_level(
         esp_rom_delay_us(1);
     }
 
+    return ESP_OK;
+}
+
+
+static esp_err_t ad7606_wait_busy_edge_cycles(
+    int expected_level,
+    uint32_t timeout_start_cycles,
+    uint32_t timeout_cycles,
+    uint32_t *edge_cycles
+)
+{
+    for (;;) {
+        const uint32_t now_cycles = (uint32_t)esp_cpu_get_cycle_count();
+        if (gpio_get_level(BOARD_AD7606_BUSY_GPIO) == expected_level) {
+            *edge_cycles = now_cycles;
+            return ESP_OK;
+        }
+        if ((uint32_t)(now_cycles - timeout_start_cycles) >= timeout_cycles) {
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+}
+
+
+static esp_err_t ad7606_measure_busy_tconv(void)
+{
+    const int cpu_hz = esp_clk_cpu_freq();
+    if (cpu_hz <= 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = ad7606_wait_busy_level(0, AD7606_BUSY_RELEASE_TIMEOUT_US);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 1);
+    if (err != ESP_OK) {
+        return err;
+    }
+    esp_rom_delay_us(AD7606_CONVST_PULSE_US);
+    err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint64_t timeout_cycles_64 =
+        (uint64_t)(unsigned)cpu_hz * AD7606_BUSY_RELEASE_TIMEOUT_US / 1000000U;
+    if (timeout_cycles_64 == 0U || timeout_cycles_64 > UINT32_MAX) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const uint32_t timeout_start_cycles = (uint32_t)esp_cpu_get_cycle_count();
+    const uint32_t timeout_cycles = (uint32_t)timeout_cycles_64;
+    uint32_t busy_rising_cycles = 0U;
+    uint32_t busy_falling_cycles = 0U;
+
+    err = ad7606_wait_busy_edge_cycles(
+        1, timeout_start_cycles, timeout_cycles, &busy_rising_cycles);
+    if (err == ESP_OK) {
+        err = ad7606_wait_busy_edge_cycles(
+            0, timeout_start_cycles, timeout_cycles, &busy_falling_cycles);
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint32_t width_cycles = busy_falling_cycles - busy_rising_cycles;
+    const uint64_t width_ns =
+        ((uint64_t)width_cycles * UINT64_C(1000000000) + (uint32_t)cpu_hz / 2U) /
+        (uint32_t)cpu_hz;
+    if (width_cycles == 0U || width_ns > UINT32_MAX) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    s_measured_tconv_ns = (uint32_t)width_ns;
     return ESP_OK;
 }
 
@@ -513,6 +590,16 @@ static esp_err_t ad7606_self_test(void)
         return err;
     }
 
+    /* Measure a second clean pulse because BUSY may be high after RESET. */
+    err = ad7606_measure_busy_tconv();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Self-test BUSY tCONV measurement failed: %s",
+            esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "AD7606_TCONV_MEASURED: %u ns",
+        (unsigned)s_measured_tconv_ns);
+
     uint8_t self_test_window[1] = {0};
     ad7606_serial_diag_state_t self_test_diag;
     ad7606_serial_diag_event_t self_test_event;
@@ -585,6 +672,7 @@ esp_err_t ad7606_driver_init(void)
 
     s_busy_release_error_logged =
         false;
+    s_measured_tconv_ns = 0U;
 
     esp_err_t err =
         ad7606_configure_gpio();
@@ -758,6 +846,19 @@ esp_err_t ad7606_driver_get_last_serial_observation(
     *observation =
         s_last_serial_observation;
 
+    return ESP_OK;
+}
+
+
+esp_err_t ad7606_driver_get_measured_tconv_ns(uint32_t *tconv_ns)
+{
+    if (tconv_ns == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_measured_tconv_ns == 0U) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    *tconv_ns = s_measured_tconv_ns;
     return ESP_OK;
 }
 

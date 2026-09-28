@@ -9,8 +9,8 @@
 #include "freertos/FreeRTOS.h"
 #include "seismic_buffer.h"
 
-#define TEST_PSRAM_BUDGET_BYTES 4194304U
-#define TEST_SECONDS            4U
+#define TEST_PSRAM_BUDGET_BYTES 2097152U
+#define TEST_SECONDS            2U
 #define TEST_SLOT_BYTES         \
     (sizeof(seismic_frame_t) + 2U * sizeof(uint64_t) + sizeof(uint32_t))
 
@@ -18,6 +18,7 @@
 static bool s_fail_next_allocation;
 static size_t s_last_allocation_size;
 static size_t s_allocation_count;
+static size_t s_free_count;
 #endif
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
 static bool s_reconfigure_on_enter;
@@ -50,6 +51,7 @@ void *heap_caps_malloc(size_t size, uint32_t caps)
 void heap_caps_free(void *memory)
 {
     if (memory != NULL) {
+        ++s_free_count;
         free(memory);
     }
 }
@@ -153,7 +155,14 @@ static void test_allocation_failures(void)
 
     assert(seismic_buffer_push(10, channels) == ESP_ERR_INVALID_STATE);
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 5000U) == ESP_OK);
-    assert(seismic_buffer_capacity() == 20000U);
+    assert(seismic_buffer_capacity() == 10000U);
+
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 20000U) == ESP_OK);
+    const size_t frees_before_stop = s_free_count;
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_NONE, 0U) == ESP_OK);
+    assert(seismic_buffer_capacity() == 0U);
+    assert(s_free_count == frees_before_stop + 1U);
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 20000U) == ESP_OK);
 }
 #endif
 
@@ -164,14 +173,15 @@ static void test_capacity_by_rate_and_budget(void)
     assert(seismic_buffer_capacity() == 2048U);
 
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 5000U) == ESP_OK);
-    assert(seismic_buffer_capacity() == 20000U);
+    assert(seismic_buffer_capacity() == 10000U);
 
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 20000U) == ESP_OK);
-    assert(seismic_buffer_capacity() == 80000U);
+    assert(seismic_buffer_capacity() == 40000U);
 
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 40000U) == ESP_OK);
     const size_t budget_cap = TEST_PSRAM_BUDGET_BYTES / TEST_SLOT_BYTES;
     assert(seismic_buffer_capacity() == budget_cap);
+    assert(budget_cap == 47662U);
     assert(seismic_buffer_capacity() < 40000U * TEST_SECONDS);
     assert(budget_cap * TEST_SLOT_BYTES <= TEST_PSRAM_BUDGET_BYTES);
 }
@@ -328,7 +338,7 @@ static void test_reconfigure_rejected_during_producer_and_consumer(void)
     assert(seismic_buffer_capacity() == 2048U);
 
     assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 5000U) == ESP_OK);
-    assert(seismic_buffer_capacity() == 20000U);
+    assert(seismic_buffer_capacity() == 10000U);
 }
 #endif
 

@@ -40,6 +40,9 @@ typedef struct
     uint8_t channel_count;
     uint8_t bus_mode;
     uint8_t oversampling_ratio;
+    uint8_t os_ratio_configured;
+    uint8_t os_ratio_measured;
+    bool os_mismatch;
 
     int core_id;
 

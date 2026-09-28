@@ -282,6 +282,9 @@ static void ad7606_status_reset(void)
     s_status.busy_level =
         -1;
 
+    s_status.os_ratio_configured = CONFIG_AD7606_OVERSAMPLING_RATIO;
+    s_status.os_ratio_measured = 0U;
+
     portEXIT_CRITICAL(
         &s_status_lock
     );
@@ -815,7 +818,7 @@ static const char *ad7606_read_mode_name(ad7606_read_mode_t mode)
 }
 
 
-static esp_err_t ad7606_resolve_timing(void)
+static esp_err_t ad7606_prepare_timing(void)
 {
     const uint32_t max_resolution = ledc_find_suitable_duty_resolution(
         AD7606_LEDC_XTAL_CLOCK_HZ,
@@ -843,39 +846,69 @@ static esp_err_t ad7606_resolve_timing(void)
         return ESP_ERR_INVALID_ARG;
     }
 
+    return ESP_OK;
+}
+
+
+static esp_err_t ad7606_resolve_measured_timing(
+    uint8_t measured_os,
+    uint32_t measured_tconv_ns
+)
+{
+    const bool os_mismatch = measured_os != CONFIG_AD7606_OVERSAMPLING_RATIO;
+    portENTER_CRITICAL(&s_status_lock);
+    s_status.os_ratio_configured = CONFIG_AD7606_OVERSAMPLING_RATIO;
+    s_status.os_ratio_measured = measured_os;
+    s_status.os_mismatch = os_mismatch;
+    portEXIT_CRITICAL(&s_status_lock);
+    if (measured_os == 0U) {
+        ESP_LOGE(TAG,
+            "AD7606_OS_UNKNOWN: configured=OS%u measured=unknown tCONV=%u ns is outside calibrated bands",
+            (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+            (unsigned)measured_tconv_ns);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (os_mismatch) {
+        ESP_LOGE(TAG, "AD7606_OS_MISMATCH: configured=OS%u measured=OS%u tCONV=%u ns",
+            (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+            (unsigned)measured_os,
+            (unsigned)measured_tconv_ns);
+    }
+
     ad7606_timing_result_t timing;
-    if (!ad7606_acquisition_timing_resolve(
+    if (!ad7606_acquisition_timing_resolve_measured(
             CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
             CONFIG_AD7606_OVERSAMPLING_RATIO,
+            measured_os,
             CONFIG_AD7606_SPI_CLOCK_HZ,
             ad7606_requested_read_mode(),
             s_convst_high_ns,
             &timing)) {
-        ESP_LOGE(
-            TAG,
-            "Invalid timing: rate=%u OS=%u SCLK=%u mode=%s CONVST_high=%u ns",
+        ESP_LOGE(TAG,
+            "Measured timing unsafe or read mode differs: rate=%u configured=OS%u "
+            "measured=OS%u SCLK=%u requested=%s tCONV=%u ns",
             (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
             (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+            (unsigned)measured_os,
             (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
             ad7606_read_mode_name(ad7606_requested_read_mode()),
-            (unsigned)s_convst_high_ns
-        );
+            (unsigned)measured_tconv_ns);
         return ESP_ERR_INVALID_ARG;
     }
 
     s_read_mode = timing.mode;
-    ESP_LOGI(
-        TAG,
-        "Timing valid: %u Hz OS%u SCLK=%u read=%" PRIu64
-        " ns tCONV(max)=%u ns mode=%s CONVST_high=%u ns",
+    ESP_LOGI(TAG,
+        "Timing valid: rate=%u Hz configured=OS%u measured=OS%u tCONV=%u ns "
+        "SCLK=%u read=%" PRIu64 " ns tCONV(max)=%u ns mode=%s CONVST_high=%u ns",
         (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
         (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+        (unsigned)measured_os,
+        (unsigned)measured_tconv_ns,
         (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
         timing.read_time_ns,
         (unsigned)timing.tconv_max_ns,
         ad7606_read_mode_name(s_read_mode),
-        (unsigned)timing.convst_high_ns
-    );
+        (unsigned)timing.convst_high_ns);
     return ESP_OK;
 }
 
@@ -969,7 +1002,7 @@ static esp_err_t ad7606_counter_verify_self_test(void)
 
 static esp_err_t ad7606_busy_interrupt_start(void)
 {
-    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    esp_err_t err = board_gpio_isr_service_install();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "IRAM GPIO ISR service unavailable: %s", esp_err_to_name(err));
         return err;
@@ -1183,7 +1216,7 @@ static void ad7606_worker_cleanup(bool drain_latest, uint64_t *successful_sample
 
 static esp_err_t ad7606_worker_initialize(void)
 {
-    esp_err_t err = ad7606_resolve_timing();
+    esp_err_t err = ad7606_prepare_timing();
     if (err != ESP_OK) {
         return err;
     }
@@ -1220,6 +1253,17 @@ static esp_err_t ad7606_worker_initialize(void)
         return err;
     }
     s_driver_initialized = true;
+    uint32_t measured_tconv_ns = 0U;
+    err = ad7606_driver_get_measured_tconv_ns(&measured_tconv_ns);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "AD7606_TCONV_MEASURED unavailable: %s", esp_err_to_name(err));
+        return err;
+    }
+    const uint8_t measured_os = ad7606_acquisition_classify_tconv_ns(measured_tconv_ns);
+    err = ad7606_resolve_measured_timing(measured_os, measured_tconv_ns);
+    if (err != ESP_OK) {
+        return err;
+    }
     err = ad7606_counter_verify_self_test();
     if (err != ESP_OK) {
         return err;
@@ -1251,11 +1295,13 @@ static esp_err_t ad7606_worker_initialize(void)
     ad7606_status_set_running(true);
     ESP_LOGI(
         TAG,
-        "Started: %u Hz, 4 channels, SPI3=%u Hz, OS%u, mode=%s, "
+        "Started: %u Hz, 4 channels, SPI3=%u Hz, OS configured=%u measured=%u mismatch=%s mode=%s, "
         "LEDC XTAL, BUSY GPIO=%d PCNT, core=%d",
         (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
         (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
         (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+        (unsigned)measured_os,
+        measured_os != CONFIG_AD7606_OVERSAMPLING_RATIO ? "yes" : "no",
         ad7606_read_mode_name(s_read_mode),
         BOARD_AD7606_BUSY_GPIO,
         APP_TASK_CORE_REALTIME

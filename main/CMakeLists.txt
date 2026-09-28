@@ -13,6 +13,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        board_config
         runtime_observability
         app_events
         status_indicator

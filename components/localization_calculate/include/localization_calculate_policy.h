@@ -62,7 +62,10 @@ size_t localization_calculate_analysis_window_frames(
     uint32_t sample_rate_hz,
     uint32_t max_analysis_seconds,
     uint64_t psram_budget_bytes,
-    size_t bytes_per_frame
+    size_t largest_free_block_bytes,
+    size_t safety_reserve_bytes,
+    size_t bytes_per_frame,
+    bool *limited_by_free_memory_out
 );
 
 

@@ -129,6 +129,43 @@ static void test_default_20khz_os1_auto_reads_after_conversion(void)
 }
 
 
+static void test_measured_busy_width_classification_and_timing_gate(void)
+{
+    assert(ad7606_acquisition_classify_tconv_ns(2950U) == 1U);
+    assert(ad7606_acquisition_classify_tconv_ns(4650U) == 1U);
+    assert(ad7606_acquisition_classify_tconv_ns(7400U) == 2U);
+    assert(ad7606_acquisition_classify_tconv_ns(9600U) == 2U);
+    assert(ad7606_acquisition_classify_tconv_ns(15500U) == 4U);
+    assert(ad7606_acquisition_classify_tconv_ns(19300U) == 4U);
+    assert(ad7606_acquisition_classify_tconv_ns(32500U) == 8U);
+    assert(ad7606_acquisition_classify_tconv_ns(39500U) == 8U);
+    assert(ad7606_acquisition_classify_tconv_ns(4000U) == 1U);
+    assert(ad7606_acquisition_classify_tconv_ns(8500U) == 2U);
+    assert(ad7606_acquisition_classify_tconv_ns(17000U) == 4U);
+    assert(ad7606_acquisition_classify_tconv_ns(36000U) == 8U);
+    assert(ad7606_acquisition_classify_tconv_ns(0U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(2949U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(4651U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(7399U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(9601U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(15499U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(19301U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(32499U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(39501U) == 0U);
+
+    ad7606_timing_result_t result = {0};
+    assert(ad7606_acquisition_timing_resolve_measured(
+        20000U, 1U, 4U, 10000000U, AD7606_READ_MODE_AUTO, 2149U, &result));
+    assert(result.mode == AD7606_READ_MODE_AFTER_CONVERSION);
+    assert(!ad7606_acquisition_timing_resolve_measured(
+        40000U, 1U, 4U, 10000000U, AD7606_READ_MODE_AUTO, 2149U, &result));
+    assert(!ad7606_acquisition_timing_resolve_measured(
+        40000U, 1U, 8U, 10000000U, AD7606_READ_MODE_AUTO, 2149U, &result));
+    assert(!ad7606_acquisition_timing_resolve_measured(
+        20000U, 1U, 0U, 10000000U, AD7606_READ_MODE_AUTO, 2149U, &result));
+}
+
+
 static void test_invalid_timing_boundaries(void)
 {
     ad7606_timing_result_t result = {0};
@@ -263,6 +300,7 @@ int main(void)
     test_ledc_convst_pulse_quantization();
     test_full_rate_os_clock_mode_matrix();
     test_default_20khz_os1_auto_reads_after_conversion();
+    test_measured_busy_width_classification_and_timing_gate();
     test_invalid_timing_boundaries();
     test_sample_index_timestamps_for_long_runs_and_overflow();
     test_pcnt_extension_wrap_restart_and_monotonicity();

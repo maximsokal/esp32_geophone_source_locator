@@ -12,8 +12,8 @@
         "components/seismic_buffer/include"
       ],
       "defines": [
-        "CONFIG_SEISMIC_BUFFER_SECONDS=4",
-        "CONFIG_SEISMIC_BUFFER_PSRAM_BUDGET_BYTES=4194304",
+        "CONFIG_SEISMIC_BUFFER_SECONDS=2",
+        "CONFIG_SEISMIC_BUFFER_PSRAM_BUDGET_BYTES=2097152",
         "SEISMIC_BUFFER_TEST_ALLOCATOR=1",
         "SEISMIC_BUFFER_TEST_HOOKS=1"
       ]

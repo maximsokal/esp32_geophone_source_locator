@@ -180,6 +180,7 @@ typedef struct
     bool analysis_window_truncated;
     uint64_t analysis_window_start_index;
     uint64_t analysis_window_frames;
+    char analysis_window_reason[16];
 
 } localization_run_record_t;
 

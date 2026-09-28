@@ -10,6 +10,9 @@
 #include "driver/spi_master.h"
 
 static int fake_busy_level;
+static unsigned fake_convst_pulses;
+static unsigned fake_measured_busy_reads;
+static uint32_t fake_cycle_count;
 static int fake_spi_error;
 static int fake_gpio_error;
 static int fake_spi_initialize_calls;
@@ -69,6 +72,9 @@ esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
         return ESP_ERR_INVALID_STATE;
     }
     assert(gpio_num >= 0 && gpio_num < FAKE_GPIO_COUNT);
+    if (gpio_num == BOARD_AD7606_CONVST_GPIO && fake_pin_level[gpio_num] != 0 && level == 0U) {
+        ++fake_convst_pulses;
+    }
     fake_pin_level[gpio_num] = level != 0U ? 1 : 0;
     check_cs();
     return ESP_OK;
@@ -85,8 +91,21 @@ static void assert_ad7606_pins_hi_z(void)
 
 int gpio_get_level(gpio_num_t gpio_num)
 {
-    (void)gpio_num;
+    if (gpio_num == BOARD_AD7606_BUSY_GPIO && fake_convst_pulses >= 2U) {
+        return fake_measured_busy_reads++ == 0U ? 1 : 0;
+    }
     return fake_busy_level;
+}
+
+uint32_t esp_cpu_get_cycle_count(void)
+{
+    fake_cycle_count += 960U; /* At 240 MHz, the scripted BUSY pulse measures 4 us. */
+    return fake_cycle_count;
+}
+
+int esp_clk_cpu_freq(void)
+{
+    return 240000000;
 }
 
 esp_err_t spi_bus_initialize(
@@ -181,6 +200,9 @@ static void reset_fake(void)
     }
     cs_driven_low_events = 0;
     fake_busy_level = 0;
+    fake_convst_pulses = 0U;
+    fake_measured_busy_reads = 0U;
+    fake_cycle_count = 0U;
     fake_spi_error = 0;
     fake_gpio_error = 0;
     fake_spi_initialize_calls = 0;
@@ -214,6 +236,9 @@ static void test_successful_init_and_conversion(void)
     assert(last_device_config.spics_io_num == GPIO_NUM_41);
     assert(last_device_config.queue_size == 1);
     assert(fake_transmit_calls == 1);
+    uint32_t measured_tconv_ns = 0U;
+    assert(ad7606_driver_get_measured_tconv_ns(&measured_tconv_ns) == ESP_OK);
+    assert(measured_tconv_ns == 4000U);
     assert(fake_freq_limit_calls == 1);
     assert(fake_freq_limit_gpio_used);
     assert(fake_freq_limit_input_delay_ns == 36);
@@ -222,7 +247,7 @@ static void test_successful_init_and_conversion(void)
     assert(ad7606_driver_read(NULL) == ESP_ERR_INVALID_ARG);
     assert(ad7606_driver_read(&sample) == ESP_OK);
     assert(fake_transmit_calls == 2);
-    assert(sample.timestamp_us == 1138);
+    assert(sample.timestamp_us == 1139);
     for (size_t channel = 0; channel < AD7606_CHANNEL_COUNT; ++channel) {
         assert(sample.raw[channel] == (int16_t)((int)channel * 1000 - 3000));
     }

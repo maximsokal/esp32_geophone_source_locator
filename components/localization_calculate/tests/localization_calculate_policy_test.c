@@ -504,19 +504,39 @@ static void test_event_window_covers_signal_and_moveout(void)
 
 static void test_analysis_window_respects_time_and_psram_at_supported_rates(void)
 {
-    const uint64_t budget_bytes = 4ULL * 1024ULL * 1024ULL;
+    const uint64_t budget_bytes = 3ULL * 1024ULL * 1024ULL;
     const size_t bytes_per_frame = 40U; /* frame plus four channel arrays */
+    const size_t largest_free_block = 8U * 1024U * 1024U;
+    const size_t reserve = 512U * 1024U;
+    bool limited_by_free_memory = true;
     assert(localization_calculate_analysis_window_frames(
-        500U, 10U, budget_bytes, bytes_per_frame
-    ) == 30000U);
+        500U, 10U, budget_bytes, largest_free_block, reserve, bytes_per_frame,
+        &limited_by_free_memory
+    ) == 5000U);
+    assert(!limited_by_free_memory);
     assert(localization_calculate_analysis_window_frames(
-        20000U, 10U, budget_bytes, bytes_per_frame
+        20000U, 10U, budget_bytes, largest_free_block, reserve, bytes_per_frame,
+        &limited_by_free_memory
     ) == (size_t)(budget_bytes / bytes_per_frame));
+    assert(!limited_by_free_memory);
     assert(localization_calculate_analysis_window_frames(
-        40000U, 10U, budget_bytes, bytes_per_frame
+        40000U, 10U, budget_bytes, largest_free_block, reserve, bytes_per_frame,
+        &limited_by_free_memory
     ) == (size_t)(budget_bytes / bytes_per_frame));
+    assert(!limited_by_free_memory);
     assert(localization_calculate_analysis_window_frames(
-        0U, 10U, budget_bytes, bytes_per_frame
+        20000U, 10U, budget_bytes, 1536U * 1024U, reserve, bytes_per_frame,
+        &limited_by_free_memory
+    ) == (size_t)((1536U * 1024U - reserve) / bytes_per_frame));
+    assert(limited_by_free_memory);
+    assert(localization_calculate_analysis_window_frames(
+        20000U, 10U, budget_bytes, reserve, reserve, bytes_per_frame,
+        &limited_by_free_memory
+    ) == 0U);
+    assert(limited_by_free_memory);
+    assert(localization_calculate_analysis_window_frames(
+        0U, 10U, budget_bytes, largest_free_block, reserve, bytes_per_frame,
+        &limited_by_free_memory
     ) == 0U);
 }
 

@@ -59,14 +59,14 @@ static bool ui_measurements_digital_interference(
 }
 
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
-/*
- * A 512-frame preview is about 12 KiB. Keeping that array in normal .bss
- * permanently removes the same amount from scarce internal DRAM, including
- * before HTTPS has created its server task. Allocate it from the board's 8 MiB
- * PSRAM only when the measurement screen is actually used instead.
- */
-static seismic_frame_t *s_preview_frames = NULL;
-static size_t s_preview_frame_capacity = 0U;
+#define UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES 1024U
+
+/* 24 KiB fixed PSRAM read scratch; reducer state stays below 2 KiB in DRAM. */
+static seismic_frame_t *s_preview_chunk = NULL;
+static ui_measurement_trace_accumulator_t s_preview_reducer;
+static float s_preview_latest[SEISMIC_CHANNEL_COUNT];
+static float s_preview_min[SEISMIC_CHANNEL_COUNT];
+static float s_preview_max[SEISMIC_CHANNEL_COUNT];
 static uint64_t s_last_chart_generation = UINT64_MAX;
 
 static bool ui_measurements_label_set_if_changed(lv_obj_t *label, const char *text)
@@ -160,44 +160,33 @@ static void ui_measurements_perf_log_if_due(uint64_t now_us)
 
 static size_t ui_measurements_preview_buffer_limit(const seismic_buffer_info_t *info)
 {
-    /* TODO(MAX-304): query the ring's runtime capacity before its first frame is published. */
-    return info != NULL && info->buffered_frames > 0U
-        ? info->buffered_frames
-        : SEISMIC_BUFFER_CAPACITY;
+    return info != NULL ? info->buffered_frames : 0U;
 }
 
 
-static bool ui_measurements_ensure_preview_buffer(size_t required_frames)
+static bool ui_measurements_ensure_preview_chunk(void)
 {
-    if (required_frames == 0U || required_frames > SIZE_MAX / sizeof(seismic_frame_t)) {
-        return false;
-    }
-    if (s_preview_frames != NULL && s_preview_frame_capacity >= required_frames) return true;
-
-    const size_t bytes = sizeof(seismic_frame_t) * required_frames;
-
-    seismic_frame_t *preview = heap_caps_malloc(
+    if (s_preview_chunk != NULL) return true;
+    const size_t bytes =
+        sizeof(seismic_frame_t) * UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES;
+    s_preview_chunk = heap_caps_malloc(
         bytes,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
 
-    if (preview == NULL) {
+    if (s_preview_chunk == NULL) {
         ESP_LOGE(
             TAG,
-            "Unable to allocate %u-byte measurement preview in PSRAM",
+            "Unable to allocate %u-byte measurement preview scratch in PSRAM",
             (unsigned)bytes
         );
         return false;
     }
 
-    heap_caps_free(s_preview_frames);
-    s_preview_frames = preview;
-    s_preview_frame_capacity = required_frames;
-
     ESP_LOGI(
         TAG,
-        "Measurement preview allocated in PSRAM: %u frames, %u bytes",
-        (unsigned)required_frames,
+        "Measurement preview scratch allocated in PSRAM: %u frames, %u bytes",
+        (unsigned)UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES,
         (unsigned)bytes
     );
 
@@ -205,19 +194,30 @@ static bool ui_measurements_ensure_preview_buffer(size_t required_frames)
 }
 
 
-static esp_err_t ui_measurements_copy_preview(
+static esp_err_t ui_measurements_reduce_preview(
     size_t requested_frames,
     const seismic_buffer_info_t *snapshot,
-    size_t *frame_count_out
+    size_t *frame_count_out,
+    float *peak_out
 )
 {
     *frame_count_out = 0U;
+    *peak_out = 0.0f;
     const size_t available_frames = ui_measurements_preview_buffer_limit(snapshot);
     const size_t frame_count = requested_frames < available_frames
         ? requested_frames
         : available_frames;
-    if (frame_count == 0U) return ESP_OK;
-    if (!ui_measurements_ensure_preview_buffer(frame_count)) return ESP_ERR_NO_MEM;
+    if (frame_count == 0U) {
+        (void)ui_measurement_trace_reduce(NULL, 0U, s_trace_min, s_trace_max);
+        memset(s_preview_latest, 0, sizeof(s_preview_latest));
+        memset(s_preview_min, 0, sizeof(s_preview_min));
+        memset(s_preview_max, 0, sizeof(s_preview_max));
+        return ESP_OK;
+    }
+    if (!ui_measurements_ensure_preview_chunk()) return ESP_ERR_NO_MEM;
+    if (!ui_measurement_trace_accumulator_begin(&s_preview_reducer, frame_count)) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     uint64_t cursor = snapshot->total_frames > frame_count
         ? snapshot->total_frames - frame_count
@@ -225,15 +225,15 @@ static esp_err_t ui_measurements_copy_preview(
     size_t copied_total = 0U;
     while (copied_total < frame_count) {
         const size_t remaining = frame_count - copied_total;
-        const size_t chunk_size = remaining < SEISMIC_BUFFER_CAPACITY
+        const size_t chunk_size = remaining < UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES
             ? remaining
-            : SEISMIC_BUFFER_CAPACITY;
+            : UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES;
         size_t copied = 0U;
         uint64_t dropped = 0U;
         seismic_buffer_info_t chunk_info;
         const esp_err_t err = seismic_buffer_copy_since(
             &cursor,
-            s_preview_frames + copied_total,
+            s_preview_chunk,
             chunk_size,
             &copied,
             &dropped,
@@ -242,12 +242,21 @@ static esp_err_t ui_measurements_copy_preview(
         if (err != ESP_OK) return err;
         if (dropped != 0U) return ESP_ERR_INVALID_STATE;
         if (copied == 0U) {
-            if (snapshot->total_frames == 0U) break;
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (!ui_measurement_trace_accumulator_add(
+                &s_preview_reducer, copied_total, s_preview_chunk, copied
+            )) {
             return ESP_ERR_INVALID_STATE;
         }
         copied_total += copied;
     }
+
     *frame_count_out = copied_total;
+    *peak_out = ui_measurement_trace_accumulator_finish(
+        &s_preview_reducer, s_trace_min, s_trace_max,
+        s_preview_latest, s_preview_min, s_preview_max
+    );
     return ESP_OK;
 }
 
@@ -462,19 +471,23 @@ void ui_measurements_refresh_charts_locked(
         ui_measurements_perf_log_if_due((uint64_t)esp_timer_get_time());
         return;
     }
+    const int64_t reduce_started_us = esp_timer_get_time();
+    float max_abs_uv = 0.0f;
     if (err == ESP_OK) {
         s_last_chart_generation = buffer_info.total_frames;
         const size_t requested_frames = ui_measurements_preview_frames_for_rate(buffer_info.sample_rate_hz);
-        err = ui_measurements_copy_preview(requested_frames, &buffer_info, &frame_count);
+        err = ui_measurements_reduce_preview(
+            requested_frames, &buffer_info, &frame_count, &max_abs_uv
+        );
     }
 
-    const int64_t reduce_started_us = esp_timer_get_time();
-    const float max_abs_uv = ui_measurement_trace_reduce(
-        err == ESP_OK ? s_preview_frames : NULL,
-        err == ESP_OK ? frame_count : 0U,
-        s_trace_min,
-        s_trace_max
-    );
+    if (err != ESP_OK) {
+        frame_count = 0U;
+        max_abs_uv = ui_measurement_trace_reduce(NULL, 0U, s_trace_min, s_trace_max);
+        memset(s_preview_latest, 0, sizeof(s_preview_latest));
+        memset(s_preview_min, 0, sizeof(s_preview_min));
+        memset(s_preview_max, 0, sizeof(s_preview_max));
+    }
     const uint64_t reduce_us =
         (uint64_t)(esp_timer_get_time() - reduce_started_us);
 
@@ -566,24 +579,8 @@ void ui_measurements_refresh_charts_locked(
             );
         }
         else if (err == ESP_OK && frame_count > 0U) {
-            const double latest_mv =
-                (double)s_preview_frames[frame_count - 1U]
-                    .channel_uv[channel] /
-                1000.0;
-
-            float min_uv = s_preview_frames[0].channel_uv[channel];
-            float max_uv = min_uv;
-            for (size_t frame = 1U; frame < frame_count; ++frame) {
-                const float value = s_preview_frames[frame].channel_uv[channel];
-                if (value < min_uv) {
-                    min_uv = value;
-                }
-                if (value > max_uv) {
-                    max_uv = value;
-                }
-            }
-
-            const bool flat = min_uv == max_uv;
+            const double latest_mv = (double)s_preview_latest[channel] / 1000.0;
+            const bool flat = s_preview_min[channel] == s_preview_max[channel];
 
             snprintf(
                 text,

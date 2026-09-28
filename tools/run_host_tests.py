@@ -317,7 +317,7 @@ def main() -> int:
             # with a fake header.
             common_flags.append("/experimental:c11atomics")
         if args.sanitizers == "address":
-            common_flags.append("/fsanitize=address")
+            common_flags.extend(["/MD", "/Zi", "/fsanitize=address"])
     else:
         common_flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-UNDEBUG", *sanitizer_flags(args.sanitizers)]
         if args.coverage:

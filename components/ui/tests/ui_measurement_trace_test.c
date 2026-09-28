@@ -108,6 +108,60 @@ static void test_bucket_keeps_min_and_max_envelope(void)
 }
 
 
+static void test_chunked_reduction_matches_full_span(void)
+{
+    const size_t frame_count = UI_MEASUREMENT_TRACE_POINTS * 9U + 13U;
+    seismic_frame_t frames[UI_MEASUREMENT_TRACE_POINTS * 9U + 13U] = {0};
+    uint32_t state = 0x6D2B79F5U;
+    for (size_t i = 0U; i < frame_count; ++i) {
+        for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            frames[i].channel_uv[channel] = (float)(int32_t)(state % 200001U) - 100000.0f;
+        }
+    }
+
+    int32_t full_min[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t full_max[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t chunked_min[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    int32_t chunked_max[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    const float full_peak = ui_measurement_trace_reduce(
+        frames, frame_count, full_min, full_max
+    );
+
+    ui_measurement_trace_accumulator_t accumulator;
+    assert(sizeof(accumulator) <= 2U * 1024U);
+    assert(ui_measurement_trace_accumulator_begin(&accumulator, frame_count));
+    const size_t chunks[] = {1U, 31U, 64U, 7U, 113U};
+    size_t offset = 0U;
+    size_t chunk_index = 0U;
+    while (offset < frame_count) {
+        size_t count = chunks[chunk_index++ % (sizeof(chunks) / sizeof(chunks[0]))];
+        if (count > frame_count - offset) count = frame_count - offset;
+        assert(ui_measurement_trace_accumulator_add(
+            &accumulator, offset, frames + offset, count
+        ));
+        offset += count;
+    }
+
+    float latest[SEISMIC_CHANNEL_COUNT];
+    float channel_min[SEISMIC_CHANNEL_COUNT];
+    float channel_max[SEISMIC_CHANNEL_COUNT];
+    const float chunked_peak = ui_measurement_trace_accumulator_finish(
+        &accumulator, chunked_min, chunked_max,
+        latest, channel_min, channel_max
+    );
+    assert(full_peak == chunked_peak);
+    assert(memcmp(full_min, chunked_min, sizeof(full_min)) == 0);
+    assert(memcmp(full_max, chunked_max, sizeof(full_max)) == 0);
+    for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        assert(latest[channel] == frames[frame_count - 1U].channel_uv[channel]);
+        assert(channel_min[channel] <= channel_max[channel]);
+    }
+}
+
+
 static void test_channels_are_reduced_independently(void)
 {
     seismic_frame_t frames[UI_MEASUREMENT_TRACE_POINTS * 2U] = {0};
@@ -161,6 +215,7 @@ int main(void)
     test_empty_input_clears_trace();
     test_short_window_is_right_aligned();
     test_bucket_keeps_min_and_max_envelope();
+    test_chunked_reduction_matches_full_span();
     test_channels_are_reduced_independently();
     test_preview_span_is_time_based();
     return 0;

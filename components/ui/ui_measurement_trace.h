@@ -1,12 +1,44 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include "seismic_buffer.h"
+#include "seismic_envelope.h"
 
 
 #define UI_MEASUREMENT_TRACE_POINTS  48U
+
+typedef struct
+{
+    seismic_envelope_accumulator_t envelope;
+    float bucket_min[SEISMIC_CHANNEL_COUNT * UI_MEASUREMENT_TRACE_POINTS];
+    float bucket_max[SEISMIC_CHANNEL_COUNT * UI_MEASUREMENT_TRACE_POINTS];
+    bool bucket_initialized[UI_MEASUREMENT_TRACE_POINTS];
+
+} ui_measurement_trace_accumulator_t;
+
+
+bool ui_measurement_trace_accumulator_begin(
+    ui_measurement_trace_accumulator_t *accumulator,
+    size_t frame_count
+);
+
+bool ui_measurement_trace_accumulator_add(
+    ui_measurement_trace_accumulator_t *accumulator,
+    size_t frame_offset,
+    const seismic_frame_t *frames,
+    size_t frame_count
+);
+
+float ui_measurement_trace_accumulator_finish(
+    ui_measurement_trace_accumulator_t *accumulator,
+    int32_t trace_min[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS],
+    int32_t trace_max[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS],
+    float latest[SEISMIC_CHANNEL_COUNT],
+    float channel_min[SEISMIC_CHANNEL_COUNT],
+    float channel_max[SEISMIC_CHANNEL_COUNT]
+);
 
 
 /*

@@ -1,6 +1,7 @@
 #include "app_pod_status_bridge.h"
 #include "app_shutdown.h"
 #include "app_startup.h"
+#include "board_config.h"
 #include "nrf_emergency_stop_monitor.h"
 #include "nrf_topology_service.h"
 
@@ -13,6 +14,9 @@ static const char *TAG =
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(board_gpio_isr_service_install());
+    ESP_LOGI(TAG, "ISR service owner: board_config (IRAM)");
+
     ESP_LOGI(
         TAG,
         "ESP32 Geophone Source Locator"

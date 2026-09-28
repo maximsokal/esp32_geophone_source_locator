@@ -411,6 +411,9 @@ static void fill_status(void)
     g_acquisition_snapshot.source_healthy = true;
     g_acquisition_snapshot.latest_valid = true;
     g_acquisition_snapshot.sample_rate_hz = 4000;
+    g_acquisition_snapshot.os_ratio_configured = 1U;
+    g_acquisition_snapshot.os_ratio_measured = 4U;
+    g_acquisition_snapshot.os_mismatch = true;
     g_acquisition_snapshot.read_errors = 2;
     g_acquisition_snapshot.consecutive_failures = 1;
     g_acquisition_snapshot.cadence_available = true;
@@ -521,6 +524,9 @@ static void test_full_builder_and_pods(void)
     cJSON *acquisition = object_item(root, "acquisition");
     assert(bool_item(acquisition, "running"));
     assert_number_near(number_item(acquisition, "sample_rate_hz"), 4000.0);
+    assert_number_near(number_item(acquisition, "os_ratio_configured"), 1.0);
+    assert_number_near(number_item(acquisition, "os_ratio_measured"), 4.0);
+    assert(bool_item(acquisition, "os_mismatch"));
     assert_number_near(number_item(acquisition, "read_errors"), 2.0);
     cJSON *cadence = object_item(acquisition, "cadence");
     assert(bool_item(cadence, "available"));

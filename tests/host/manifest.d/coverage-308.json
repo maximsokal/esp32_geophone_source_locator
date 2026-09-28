@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_log_protocol",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_log_protocol.c",
+        "tests/host/nrf_log_protocol_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_log_ring",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_log_protocol.c",
+        "nRF54L15/src/nrf_log_ring.c",
+        "tests/host/nrf_log_ring_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"],
+      "defines": ["NRF_LOG_RING_TEST_HOOKS"]
+    }
+  ]
+}

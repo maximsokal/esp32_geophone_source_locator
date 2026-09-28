@@ -41,6 +41,8 @@ static gpio_pull_mode_t s_pull;
 static bool s_pull_set;
 static unsigned s_install_calls;
 static esp_err_t s_install_result;
+static int s_install_flags;
+static bool s_isr_service_ready;
 static esp_err_t s_add_result;
 static esp_err_t s_enable_result;
 static unsigned s_remove_calls;
@@ -141,9 +143,22 @@ esp_err_t gpio_set_pull_mode(gpio_num_t gpio_num, gpio_pull_mode_t pull)
 
 esp_err_t gpio_install_isr_service(int flags)
 {
-    (void)flags;
+    s_install_flags = flags;
     ++s_install_calls;
     return s_install_result;
+}
+
+esp_err_t board_gpio_isr_service_install(void)
+{
+    if (s_isr_service_ready) {
+        return ESP_OK;
+    }
+    const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+        s_isr_service_ready = true;
+        return ESP_OK;
+    }
+    return err;
 }
 
 esp_err_t gpio_set_intr_type(gpio_num_t gpio_num, gpio_int_type_t type)
@@ -319,6 +334,7 @@ int main(void)
     s_install_result = ESP_ERR_INVALID_STATE;
     test_converting_adc_is_detected_and_healthy();
     assert(s_install_calls == 1U);
+    assert(s_install_flags == ESP_INTR_FLAG_IRAM);
     s_install_result = ESP_OK;
 
     test_missing_adc_times_out_and_releases_the_isr();

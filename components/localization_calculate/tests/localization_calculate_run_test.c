@@ -31,8 +31,10 @@
 #include "localization_dimensionality_policy.h"
 #include "localization_run_store.h"
 #include "object_store.h"
+#include "psram_model.h"
 #include "scan_occupancy.h"
 #include "seismic_recorder.h"
+#include "seismic_buffer.h"
 #include "storage_manager.h"
 
 
@@ -589,7 +591,10 @@ static void test_truncated_session_persists_analysis_window(void)
 {
     reset_fakes();
     build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
-    extend_fixture_frames(30721U);
+    const size_t expected_window_frames =
+        (3072U * 1024U) /
+        (sizeof(seismic_frame_t) + SEISMIC_CHANNEL_COUNT * sizeof(float));
+    extend_fixture_frames(expected_window_frames + 1U);
 
     localization_calculate_config_t config = default_test_config();
     localization_calculate_summary_t summary;
@@ -608,9 +613,92 @@ static void test_truncated_session_persists_analysis_window(void)
         }
         assert(g_recorded[i].analysis_window_truncated);
         assert(g_recorded[i].analysis_window_start_index == 0U);
-        assert(g_recorded[i].analysis_window_frames == 30720U);
+        assert(g_recorded[i].analysis_window_frames == expected_window_frames);
     }
     free_fixture_frames();
+}
+
+
+static void test_limited_free_psram_truncates_with_memory_provenance(void)
+{
+    reset_fakes();
+    localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 4U * 1024U * 1024U);
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    extend_fixture_frames(39322U);
+    g_fixture_summary.sample_rate_hz = 20000U;
+
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        "OBJ01", "S000007", &config, 48000ULL, &summary
+    ) == ESP_OK);
+    assert(g_recorded_count > 0U);
+    for (size_t i = 0U; i < g_recorded_count; ++i) {
+        assert(g_recorded[i].analysis_window_truncated);
+        assert(g_recorded[i].analysis_window_frames == 26214U);
+        assert(strcmp(g_recorded[i].analysis_window_reason, "memory") == 0);
+    }
+    assert(localization_test_psram_model_allocated_bytes() == 0U);
+    free_fixture_frames();
+    localization_test_psram_model_reset();
+}
+
+
+static void test_insufficient_free_psram_records_internal_failure(void)
+{
+    reset_fakes();
+    localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 600U * 1024U);
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    g_fixture_summary.sample_rate_hz = 20000U;
+
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        "OBJ01", "S000008", &config, 49000ULL, &summary
+    ) == ESP_ERR_NO_MEM);
+    assert(g_recorded_count == 1U);
+    assert(strcmp(g_recorded[0].rejection_reason, "insufficient_memory") == 0);
+    assert(g_recorded[0].failure_class == LOCALIZATION_FAILURE_CLASS_INTERNAL);
+    assert(summary.methods_total == 1U && summary.methods_persisted == 1U);
+    assert(localization_test_psram_model_allocated_bytes() == 0U);
+    free_fixture_frames();
+    localization_test_psram_model_reset();
+}
+
+
+static void test_record_stop_then_localize_with_reserved_psram(void)
+{
+    reset_fakes();
+    free_fixture_frames();
+    localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 4U * 1024U * 1024U);
+    assert(localization_test_psram_model_free_bytes() == 4U * 1024U * 1024U);
+    assert(seismic_buffer_init() == ESP_OK);
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 20000U) == ESP_OK);
+    assert(seismic_buffer_capacity() == 40000U);
+
+    const float samples[SEISMIC_CHANNEL_COUNT] = {1.0f, -1.0f, 2.0f, -2.0f};
+    for (uint64_t i = 0U; i < 20000U; ++i) {
+        assert(seismic_buffer_push_indexed((int64_t)i * 50, i, samples) == ESP_OK);
+    }
+    assert(localization_test_psram_model_free_bytes() < 4U * 1024U * 1024U);
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_NONE, 0U) == ESP_OK);
+    assert(seismic_buffer_capacity() == 0U);
+    assert(localization_test_psram_model_free_bytes() == 4U * 1024U * 1024U);
+
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 0.0f, 0.0f, false);
+    extend_fixture_frames(20000U);
+    g_fixture_summary.sample_rate_hz = 20000U;
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        "OBJ01", "S000009", &config, 50000ULL, &summary
+    ) == ESP_OK);
+    assert(g_range_read_calls == 1U);
+    assert(g_recorded_count > 0U);
+    assert(localization_test_psram_model_allocated_bytes() == 0U);
+    assert(localization_test_psram_model_free_bytes() == 4U * 1024U * 1024U);
+    free_fixture_frames();
+    localization_test_psram_model_reset();
 }
 
 
@@ -979,6 +1067,8 @@ int main(void)
     test_run_revalidates_windows_against_session_rate();
     test_insufficient_dimensionality_writes_nothing();
     test_truncated_session_persists_analysis_window();
+    test_limited_free_psram_truncates_with_memory_provenance();
+    test_insufficient_free_psram_records_internal_failure();
     test_three_pods_planar_no_fabricated_z();
     test_four_pods_clean_event_solves_near_truth();
     test_flat_signal_every_method_unsolved_with_reason();
@@ -986,6 +1076,7 @@ int main(void)
     test_run_store_write_failure_midway_contract();
     test_time_budget_exhausted_skips_remaining_methods();
     test_unusable_scan_reports_constraint_not_applied();
+    test_record_stop_then_localize_with_reserved_psram();
 
     free_fixture_frames();
     puts("localization_calculate_run integration tests passed");

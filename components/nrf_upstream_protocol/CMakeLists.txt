@@ -5,6 +5,7 @@ set(NRF_UPSTREAM_PROTOCOL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../nRF54L15")
 idf_component_register(
     SRCS
         "${NRF_UPSTREAM_PROTOCOL_ROOT}/src/nrf_upstream_protocol.c"
+        "${NRF_UPSTREAM_PROTOCOL_ROOT}/src/nrf_log_protocol.c"
 
     INCLUDE_DIRS
         "${NRF_UPSTREAM_PROTOCOL_ROOT}/include"

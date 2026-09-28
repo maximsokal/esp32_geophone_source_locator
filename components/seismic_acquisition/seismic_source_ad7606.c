@@ -126,6 +126,9 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->bus_mode = AD7606_SPI_MODE;
     snapshot->input_range_v = AD7606_INPUT_RANGE_V;
     snapshot->oversampling_ratio = CONFIG_AD7606_OVERSAMPLING_RATIO;
+    snapshot->os_ratio_configured = status.os_ratio_configured;
+    snapshot->os_ratio_measured = status.os_ratio_measured;
+    snapshot->os_mismatch = status.os_mismatch;
 
     for (
         size_t channel = 0;

@@ -22,7 +22,7 @@
     },
     {
       "name": "localization_calculate_rate_windows_299d",
-      "defines": ["CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=1200"],
+      "defines": ["CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072"],
       "sources": [
         "components/localization_calculate/localization_calculate.c",
         "components/localization_calculate/localization_calculate_policy.c",
@@ -54,6 +54,8 @@
         "components/localization_results/localization_event_run_record.c",
         "components/scan_occupancy/scan_occupancy.c",
         "components/seismic_dsp/seismic_dsp.c",
+        "components/seismic_buffer/seismic_buffer.c",
+        "tests/host/stubs/localization_calculate_run/psram_model.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/localization_calculate/tests/localization_calculate_run_test.c"
       ],
@@ -75,6 +77,7 @@
         "components/seismic_dsp/include",
         "components/seismic_recorder/include",
         "components/seismic_buffer/include",
+        "components/seismic_buffer/tests/stubs",
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include"
@@ -86,6 +89,7 @@
     {
       "name": "ui_measurement_trace_rate_span_299d",
       "sources": [
+        "components/seismic_buffer/seismic_envelope.c",
         "components/ui/ui_measurement_trace.c",
         "components/ui/tests/ui_measurement_trace_test.c"
       ],
@@ -100,11 +104,13 @@
       "name": "seismic_api_time_span_299d",
       "sources": [
         "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/seismic_envelope.c",
         "components/web_server/web_seismic_api.c",
         "components/web_server/web_json_writer.c",
         "tests/host/web_seismic_api_time_span_test.c"
       ],
       "include_dirs": [
+        "tests/host/stubs/seismic_api",
         "tests/host/stubs/seismic_pipeline",
         "tests/host/stubs/ui_measurement_span",
         "components/seismic_buffer/include",

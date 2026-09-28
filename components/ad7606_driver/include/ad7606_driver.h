@@ -65,6 +65,9 @@ esp_err_t ad7606_driver_get_last_serial_observation(
     ad7606_serial_observation_t *observation
 );
 
+/* BUSY pulse width timed with the CPU cycle counter during startup self-test. */
+esp_err_t ad7606_driver_get_measured_tconv_ns(uint32_t *tconv_ns);
+
 /*
  * Physical presence is established from real BUSY LOW-HIGH-LOW conversion
  * pulses, not from SPI receiving a plausible constant byte pattern. This is

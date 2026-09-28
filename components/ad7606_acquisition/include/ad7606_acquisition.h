@@ -52,6 +52,10 @@ typedef struct
     uint64_t max_successful_sample_interval_us;
     ad7606_acquisition_jitter_t jitter;
 
+    uint8_t os_ratio_configured;
+    uint8_t os_ratio_measured;
+    bool os_mismatch;
+
     bool serial_suspicious;
     ad7606_serial_pattern_t serial_pattern;
     ad7606_serial_quality_t serial_quality;
