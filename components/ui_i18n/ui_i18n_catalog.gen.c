@@ -642,7 +642,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Недостатньо датчиків навіть для 2D", /* tft.workflow.sensor.insufficient */
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
     "3D готове", /* tft.workflow.sensor.ready */
-    "ВІДДАЛ.: %s", /* tft.workflow.sensor.remote_count */
+    "REMOTE: %s", /* tft.workflow.sensor.remote_count */
     "Відкалібровано", /* tft.workflow.state.calibrated */
     "Гравітація", /* tft.workflow.state.gravity */
     "Рух", /* tft.workflow.state.moving */

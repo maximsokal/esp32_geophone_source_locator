@@ -1208,7 +1208,7 @@
     "tft.workflow.title.result": { "en": "RESULT", "uk": "Результат", "max_len": 10 },
     "tft.workflow.idle.select_object": { "en": "Select an object", "uk": "Виберіть об’єкт", "max_len": 18 },
     "tft.workflow.object.select": { "en": "Select object for measurement", "uk": "Виберіть об’єкт для вимірювання", "max_len": 34 },
-    "tft.workflow.sensor.remote_count": {"en": "REMOTE: %s", "uk": "ВІДДАЛ.: %s", "max_len": 12},
+    "tft.workflow.sensor.remote_count": {"en": "REMOTE: %s", "uk": "REMOTE: %s", "max_len": 12},
     "tft.workflow.sensor.insufficient": { "en": "Not enough sensors even for 2D", "uk": "Недостатньо датчиків навіть для 2D", "max_len": 36 },
     "tft.workflow.sensor.planar": { "en": "2D possible; connect >=4 for 3D", "uk": "Можливе 2D; для 3D підключіть щонайменше 4", "max_len": 46 },
     "tft.workflow.sensor.ready": {"en": "3D ready", "uk": "3D готове", "max_len": 12},
