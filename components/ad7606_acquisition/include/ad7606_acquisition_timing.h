@@ -91,6 +91,24 @@ bool ad7606_acquisition_timing_resolve(
     ad7606_timing_result_t *result
 );
 
+/*
+ * Resolve the measured OS ratio and require any valid configured plan to use
+ * the same read mode. This lets a safe same-mode mismatch run while refusing
+ * to use a mode chosen from the wrong hardware strap.
+ */
+bool ad7606_acquisition_timing_resolve_measured(
+    uint32_t sample_rate_hz,
+    uint32_t configured_oversampling_ratio,
+    uint32_t measured_oversampling_ratio,
+    uint32_t spi_clock_hz,
+    ad7606_read_mode_t requested_mode,
+    uint32_t convst_high_ns,
+    ad7606_timing_result_t *result
+);
+
+/* Returns 1, 2, 4, or 8 for a calibrated BUSY width; zero means unknown. */
+uint8_t ad7606_acquisition_classify_tconv_ns(uint32_t tconv_ns);
+
 /* Exact-index timestamps avoid accumulated period rounding error. */
 bool ad7606_acquisition_timestamp_from_index(
     int64_t t0_us,

@@ -60,6 +60,12 @@ menu "Seismic Acquisition"
     choice AD7606_OS_RATIO
         prompt "AD7606 oversampling jumper setting (must match OS0-2 jumpers)" if SEISMIC_SOURCE_AD7606
         default AD7606_OS_RATIO_1
+        help
+            The firmware measures the startup BUSY pulse and reports the
+            configured and measured ratios. The default OS x1 matches the
+            shipped 000 jumpers. For OS x4, set the physical jumpers to 010
+            and select OS x4 here; do not use 40 kSPS HIL until the measured
+            ratio matches this setting.
 
         config AD7606_OS_RATIO_1
             bool "1"

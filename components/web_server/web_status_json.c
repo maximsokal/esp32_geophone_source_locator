@@ -232,6 +232,21 @@ static bool web_status_json_add_acquisition(
         cJSON_AddNumberToObject(object, "last_error", last_error) != NULL &&
         cJSON_AddStringToObject(object, "last_error_name", esp_err_to_name(last_error)) != NULL &&
         cJSON_AddNumberToObject(object, "sample_rate_hz", running ? acquisition->sample_rate_hz : 0) != NULL &&
+        cJSON_AddNumberToObject(
+            object,
+            "os_ratio_configured",
+            source_snapshot_available ? source_snapshot->os_ratio_configured : 0U
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            object,
+            "os_ratio_measured",
+            source_snapshot_available ? source_snapshot->os_ratio_measured : 0U
+        ) != NULL &&
+        cJSON_AddBoolToObject(
+            object,
+            "os_mismatch",
+            source_snapshot_available && source_snapshot->os_mismatch
+        ) != NULL &&
         cJSON_AddNumberToObject(object, "samples_recorded", (double)acquisition->samples_recorded) != NULL &&
         cJSON_AddNumberToObject(object, "recording_ms", (double)acquisition->recording_ms) != NULL &&
         cJSON_AddBoolToObject(object, "error_counters_available", source_snapshot_available) != NULL &&

@@ -97,6 +97,7 @@ static unsigned s_fake_watch_points;
 
 /* Injected behaviour. */
 static esp_err_t s_driver_init_result;
+static uint32_t s_fake_measured_tconv_ns;
 static esp_err_t s_gpio_install_result;
 static bool s_fake_isr_service_ready;
 static esp_err_t s_ledc_timer_result;
@@ -158,6 +159,7 @@ static void reset_world(void)
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
     memset(s_push_sample_indices, 0, sizeof(s_push_sample_indices));
     s_driver_init_result = ESP_OK;
+    s_fake_measured_tconv_ns = 4000U;
     s_gpio_install_result = ESP_OK;
     s_ledc_timer_result = ESP_OK;
     s_read_result = ESP_OK;
@@ -585,6 +587,13 @@ esp_err_t ad7606_driver_init(void)
     return ESP_OK;
 }
 
+esp_err_t ad7606_driver_get_measured_tconv_ns(uint32_t *tconv_ns)
+{
+    assert(tconv_ns != NULL);
+    *tconv_ns = s_fake_measured_tconv_ns;
+    return ESP_OK;
+}
+
 void ad7606_driver_deinit(void)
 {
     ++s_driver_deinits;
@@ -812,8 +821,38 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(status.collapsed_periods == 0U);
     assert(status.power_gate == AD7606_POWER_GATE_OK);
     assert(!status.power_fault_latched);
+    assert(status.os_ratio_configured == 1U);
+    assert(status.os_ratio_measured == 1U);
+    assert(!status.os_mismatch);
 
     assert(s_fake_busy_isr == NULL); /* no BUSY ISR survives stop */
+}
+
+
+static void test_safe_os_mismatch_runs_and_is_reported(void)
+{
+    reset_world();
+    s_fake_measured_tconv_ns = 17000U; /* OS4 while Kconfig remains OS1. */
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.os_ratio_configured == 1U);
+    assert(status.os_ratio_measured == 4U);
+    assert(status.os_mismatch);
+    assert_fully_released();
+}
+
+
+static void test_unknown_os_measurement_refuses_start(void)
+{
+    reset_world();
+    s_fake_measured_tconv_ns = 5000U; /* Outside every calibrated interval. */
+    assert(ad7606_acquisition_start() == ESP_ERR_INVALID_RESPONSE);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.os_ratio_configured == 1U);
+    assert(status.os_ratio_measured == 0U);
+    assert(status.os_mismatch);
+    assert_fully_released();
 }
 
 static void test_collapsed_periods_are_one_conversion(void)
@@ -1082,6 +1121,8 @@ static void test_overcurrent_stops_and_latches(void)
 int main(void)
 {
     test_run_samples_then_stop_releases_everything();
+    test_safe_os_mismatch_runs_and_is_reported();
+    test_unknown_os_measurement_refuses_start();
     test_collapsed_periods_are_one_conversion();
     test_successful_read_jitter_statistics();
     test_jitter_bucket_boundaries_and_open_ended_bucket();

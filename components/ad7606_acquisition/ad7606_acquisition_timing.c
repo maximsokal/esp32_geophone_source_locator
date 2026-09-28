@@ -219,6 +219,61 @@ bool ad7606_acquisition_timing_resolve(
 }
 
 
+bool ad7606_acquisition_timing_resolve_measured(
+    uint32_t sample_rate_hz,
+    uint32_t configured_oversampling_ratio,
+    uint32_t measured_oversampling_ratio,
+    uint32_t spi_clock_hz,
+    ad7606_read_mode_t requested_mode,
+    uint32_t convst_high_ns,
+    ad7606_timing_result_t *result
+)
+{
+    if (result == NULL) {
+        return false;
+    }
+
+    ad7606_timing_result_t measured_timing;
+    if (!ad7606_acquisition_timing_resolve(
+            sample_rate_hz,
+            measured_oversampling_ratio,
+            spi_clock_hz,
+            requested_mode,
+            convst_high_ns,
+            &measured_timing)) {
+        return false;
+    }
+
+    if (configured_oversampling_ratio != measured_oversampling_ratio) {
+        ad7606_timing_result_t configured_timing;
+        if (ad7606_acquisition_timing_resolve(
+                sample_rate_hz,
+                configured_oversampling_ratio,
+                spi_clock_hz,
+                requested_mode,
+                convst_high_ns,
+                &configured_timing) &&
+            configured_timing.mode != measured_timing.mode) {
+            return false;
+        }
+    }
+
+    *result = measured_timing;
+    return true;
+}
+
+
+uint8_t ad7606_acquisition_classify_tconv_ns(uint32_t tconv_ns)
+{
+    /* Datasheet-derived BUSY widths widened by +/-500 ns for board/clock tolerance. */
+    if (tconv_ns >= 2950U && tconv_ns <= 4650U) return 1U;
+    if (tconv_ns >= 7400U && tconv_ns <= 9600U) return 2U;
+    if (tconv_ns >= 15500U && tconv_ns <= 19300U) return 4U;
+    if (tconv_ns >= 32500U && tconv_ns <= 39500U) return 8U;
+    return 0U;
+}
+
+
 bool ad7606_acquisition_timestamp_from_index(
     int64_t t0_us,
     uint64_t sample_index,
