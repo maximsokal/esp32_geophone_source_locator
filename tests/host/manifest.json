@@ -253,6 +253,17 @@
       ]
     },
     {
+      "name": "board_config_isr_service",
+      "sources": [
+        "components/board_config/board_config.c",
+        "components/board_config/tests/board_config_isr_service_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/board_config_isr",
+        "components/board_config/include"
+      ]
+    },
+    {
       "name": "ad7606_presence_runtime",
       "sources": [
         "components/ad7606_driver/ad7606_presence.c",

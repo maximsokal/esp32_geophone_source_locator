@@ -1,7 +1,17 @@
 #pragma once
 
+#include "esp_err.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+
+
+/*
+ * Install the process-wide GPIO ISR service with IRAM support. Call this
+ * before registering any GPIO ISR. ESP-IDF cannot report the flags of a
+ * service installed elsewhere, so ESP_ERR_INVALID_STATE is accepted under
+ * the source-level sole-owner rule: no other code may install this service.
+ */
+esp_err_t board_gpio_isr_service_install(void);
 
 
 // Shared SPI2 bus for TFT + microSD only.

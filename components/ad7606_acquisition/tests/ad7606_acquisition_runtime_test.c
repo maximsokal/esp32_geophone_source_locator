@@ -98,6 +98,7 @@ static unsigned s_fake_watch_points;
 /* Injected behaviour. */
 static esp_err_t s_driver_init_result;
 static esp_err_t s_gpio_install_result;
+static bool s_fake_isr_service_ready;
 static esp_err_t s_ledc_timer_result;
 static esp_err_t s_read_result;
 static bool s_rail_available;
@@ -153,7 +154,6 @@ static void reset_world(void)
     s_last_ledc_frequency = 0U;
     s_last_ledc_duty = 0U;
     s_last_ledc_resolution = 0U;
-    s_fake_gpio_install_flags = 0;
     s_fake_watch_points = 0U;
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
     memset(s_push_sample_indices, 0, sizeof(s_push_sample_indices));
@@ -361,6 +361,19 @@ esp_err_t gpio_install_isr_service(int flags)
 {
     s_fake_gpio_install_flags = flags;
     return s_gpio_install_result;
+}
+
+esp_err_t board_gpio_isr_service_install(void)
+{
+    if (s_fake_isr_service_ready) {
+        return ESP_OK;
+    }
+    const esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+        s_fake_isr_service_ready = true;
+        return ESP_OK;
+    }
+    return err;
 }
 
 esp_err_t gpio_set_intr_type(gpio_num_t gpio_num, gpio_int_type_t intr_type)
@@ -986,15 +999,13 @@ static void test_read_errors_are_counted_and_not_pushed(void)
 
 static void test_startup_failures_clean_up(void)
 {
-    /* Driver init, GPIO ISR install and LEDC timer failures report
-     * the error and nothing stays configured or driven. */
-    for (int which = 0; which < 3; ++which) {
+    /* Driver init and LEDC timer failures report the error and nothing stays
+     * configured or driven. ISR service installation is covered by its owner. */
+    for (int which = 0; which < 2; ++which) {
         reset_world();
-        const esp_err_t injected = which == 0 ? ESP_ERR_NOT_FOUND
-            : which == 1 ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_STATE;
+        const esp_err_t injected = which == 0 ? ESP_ERR_NOT_FOUND : ESP_ERR_INVALID_STATE;
         if (which == 0) s_driver_init_result = injected;
-        if (which == 1) s_gpio_install_result = injected;
-        if (which == 2) s_ledc_timer_result = injected;
+        if (which == 1) s_ledc_timer_result = injected;
         assert(ad7606_acquisition_start() == injected);
         assert(s_driver_deinits == 1U);
         assert(s_reads == 0U);

@@ -6,6 +6,7 @@
 typedef int gpio_num_t;
 
 #define GPIO_NUM_47 47
+#define ESP_INTR_FLAG_IRAM 0x01
 
 typedef enum { GPIO_PULLUP_ONLY = 0, GPIO_PULLDOWN_ONLY = 1, GPIO_PULLUP_PULLDOWN = 2, GPIO_FLOATING = 3 } gpio_pull_mode_t;
 typedef enum { GPIO_INTR_DISABLE = 0, GPIO_INTR_POSEDGE = 1, GPIO_INTR_NEGEDGE = 2, GPIO_INTR_ANYEDGE = 3 } gpio_int_type_t;

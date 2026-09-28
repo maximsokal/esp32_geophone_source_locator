@@ -969,7 +969,7 @@ static esp_err_t ad7606_counter_verify_self_test(void)
 
 static esp_err_t ad7606_busy_interrupt_start(void)
 {
-    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    esp_err_t err = board_gpio_isr_service_install();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "IRAM GPIO ISR service unavailable: %s", esp_err_to_name(err));
         return err;

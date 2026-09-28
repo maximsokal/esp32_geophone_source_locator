@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+#include "esp_attr.h"
+
 void ad7606_presence_observer_reset(
     ad7606_presence_observer_t *observer,
     int initial_level
@@ -16,7 +18,7 @@ void ad7606_presence_observer_reset(
     observer->completed_pulses = 0;
 }
 
-void ad7606_presence_observer_observe(
+void IRAM_ATTR ad7606_presence_observer_observe(
     ad7606_presence_observer_t *observer,
     int level
 )

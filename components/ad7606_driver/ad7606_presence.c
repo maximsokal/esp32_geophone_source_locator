@@ -7,6 +7,7 @@
 #include "board_config.h"
 
 #include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -21,11 +22,10 @@ static const char *TAG = "AD7606_PRESENCE";
 static portMUX_TYPE s_presence_lock = portMUX_INITIALIZER_UNLOCKED;
 static ad7606_presence_observer_t s_observer;
 static bool s_monitor_active = false;
-static bool s_isr_service_ready = false;
 static bool s_external_busy_isr = false;
 static TickType_t s_last_complete_pulse_tick = 0;
 
-static void ad7606_presence_isr(void *argument)
+static void IRAM_ATTR ad7606_presence_isr(void *argument)
 {
     (void)argument;
 
@@ -64,29 +64,18 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
      * AD7606 BUSY output is push-pull, so this weak internal pull-down is only
      * a deterministic fallback when no ADC is physically driving the line.
      */
-    esp_err_t err = gpio_set_pull_mode(
+    esp_err_t err = board_gpio_isr_service_install();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO ISR service unavailable: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = gpio_set_pull_mode(
         BOARD_AD7606_BUSY_GPIO,
         GPIO_PULLDOWN_ONLY
     );
     if (err != ESP_OK) {
         return err;
-    }
-
-    /*
-     * gpio_uninstall_isr_service() is deliberately not used: the service is a
-     * process-wide singleton and may be shared by other drivers. Install it at
-     * most once from this component. A pre-existing service is accepted on the
-     * first call; subsequent AD7606 retries no longer emit the driver's
-     * "GPIO isr service already installed" error before returning
-     * ESP_ERR_INVALID_STATE.
-     */
-    if (!external_busy_isr && !s_isr_service_ready) {
-        err = gpio_install_isr_service(0);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "GPIO ISR service install failed: %s", esp_err_to_name(err));
-            return err;
-        }
-        s_isr_service_ready = true;
     }
 
     if (!external_busy_isr) {
