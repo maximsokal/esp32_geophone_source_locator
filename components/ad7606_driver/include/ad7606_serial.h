@@ -5,12 +5,12 @@
 #include <stdint.h>
 
 
-#define AD7606_SERIAL_WORD_COUNT        8U
+#define AD7606_SERIAL_WORD_COUNT        4U
 #define AD7606_SERIAL_WORD_BYTES        2U
 #define AD7606_SERIAL_RX_BYTES          \
     (AD7606_SERIAL_WORD_COUNT * AD7606_SERIAL_WORD_BYTES)
 
-/* The application waveform uses CH1-CH4; CH5-CH8 remain ADC diagnostics. */
+/* The application waveform and serial frame contain only used inputs V1-V4. */
 #define AD7606_SIGNAL_CHANNEL_COUNT     4U
 
 #if AD7606_SIGNAL_CHANNEL_COUNT == 0U || \
@@ -18,16 +18,13 @@
 #error "AD7606 signal channel scope must fit inside the serial frame"
 #endif
 
-#define AD7606_SERIAL_QUALITY_WINDOW_FRAMES  500U
+#define AD7606_SERIAL_QUALITY_WINDOW_FRAMES  500U /* standalone/test default */
 /* Keep the state UNKNOWN until a short initial sample is available. */
 #define AD7606_SERIAL_QUALITY_MIN_FRAMES     10U
 
 /* A single transport anomaly is not enough to declare the serial path broken. */
 #define AD7606_SERIAL_SUSPICIOUS_STREAK_THRESHOLD  10U
 
-/* Stream-state decisions require one complete rolling second at 500 Hz. */
-#define AD7606_SERIAL_STREAM_STATE_MIN_FRAMES      \
-    AD7606_SERIAL_QUALITY_WINDOW_FRAMES
 #define AD7606_SERIAL_STREAM_STUCK_ENTER_PERCENT   80U
 #define AD7606_SERIAL_STREAM_STUCK_LEAVE_PERCENT   60U
 #define AD7606_SERIAL_STREAM_QUIET_ENTER_PERCENT   80U
@@ -113,8 +110,9 @@ typedef struct
     uint32_t quality_window_digital_interference_frames;
     uint32_t signal_quality_window_rail_hit_frames;
     uint32_t signal_quality_window_clip_frames;
-    uint16_t quality_window_next;
-    uint8_t quality_window_flags[AD7606_SERIAL_QUALITY_WINDOW_FRAMES];
+    uint32_t quality_window_next;
+    uint32_t quality_window_capacity;
+    uint8_t *quality_window_flags;
 
     uint8_t previous_rx[AD7606_SERIAL_RX_BYTES];
 
@@ -170,8 +168,12 @@ const char *ad7606_serial_stream_state_name(
 
 
 void ad7606_serial_diag_reset(
-    ad7606_serial_diag_state_t *state
+    ad7606_serial_diag_state_t *state,
+    uint8_t *quality_window_flags,
+    uint32_t quality_window_capacity
 );
+
+uint32_t ad7606_serial_quality_window_frames(uint32_t sample_rate_hz);
 
 
 bool ad7606_serial_diag_observe(

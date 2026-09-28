@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "board_config.h"
+#include "sdkconfig.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -19,7 +20,7 @@ static const char *TAG =
     "AD7606_DRIVER";
 
 
-#define AD7606_SPI_CLOCK_HZ                    1000000
+#define AD7606_SPI_INPUT_DELAY_ESTIMATE_NS       36
 
 #define AD7606_RESET_PULSE_US                  10
 #define AD7606_RESET_SETTLE_US                 20
@@ -34,12 +35,15 @@ static const char *TAG =
  */
 #define AD7606_BUSY_RELEASE_TIMEOUT_US          100
 
-#define AD7606_FULL_SCALE_UV                    5000000.0f
 #define AD7606_CODES_PER_HALF_RANGE             32768.0f
 
 
 static spi_device_handle_t s_spi_device =
     NULL;
+
+/* No DMA: four 16-bit words fit in the SPI FIFO. Reused by the sole reader. */
+static uint8_t s_spi_rx_buffer[AD7606_SERIAL_RX_BYTES];
+static spi_transaction_t s_spi_transaction;
 
 static bool s_spi_bus_initialized =
     false;
@@ -205,7 +209,7 @@ static esp_err_t ad7606_init_spi_bus(void)
             -1,
 
         .max_transfer_sz =
-            AD7606_CHANNEL_COUNT * 2,
+            AD7606_SERIAL_RX_BYTES,
 
         .flags =
             SPICOMMON_BUSFLAG_MASTER,
@@ -225,7 +229,7 @@ static esp_err_t ad7606_init_spi_bus(void)
         spi_bus_initialize(
             BOARD_AD7606_SPI_HOST,
             &bus_config,
-            SPI_DMA_CH_AUTO
+            SPI_DMA_DISABLED
         );
 
     if (err != ESP_OK) {
@@ -243,7 +247,8 @@ static esp_err_t ad7606_init_spi_bus(void)
 
     ESP_LOGI(
         TAG,
-        "SPI3 initialized successfully: DMA=auto (SPI_DMA_CH_AUTO)"
+        "SPI3 initialized successfully without DMA; RX=%u bytes",
+        (unsigned)sizeof(s_spi_rx_buffer)
     );
 
     return ESP_OK;
@@ -270,7 +275,7 @@ static esp_err_t ad7606_add_spi_device(void)
             2,
 
         .clock_speed_hz =
-            AD7606_SPI_CLOCK_HZ,
+            CONFIG_AD7606_SPI_CLOCK_HZ,
 
         .spics_io_num =
             BOARD_AD7606_CS_GPIO,
@@ -290,7 +295,7 @@ static esp_err_t ad7606_add_spi_device(void)
         ESP_LOGI(
             TAG,
             "SPI device registered: SPI3 mode=2 clock=%d Hz CS=%d",
-            AD7606_SPI_CLOCK_HZ,
+            CONFIG_AD7606_SPI_CLOCK_HZ,
             BOARD_AD7606_CS_GPIO
         );
     }
@@ -400,151 +405,74 @@ static esp_err_t ad7606_hardware_reset(void)
 }
 
 
-/*
- * One complete simultaneous conversion + 8-channel SPI read.
- *
- * This internal function deliberately does NOT check
- * s_initialized, because init() itself uses it for the
- * first hardware self-test.
- */
-static esp_err_t ad7606_read_once(
-    ad7606_sample_t *sample
-)
+/* One reusable, FIFO-sized, four-word DOUTA polling transaction. */
+static esp_err_t ad7606_spi_read_words(ad7606_sample_t *sample)
 {
     if (sample == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    sample->timestamp_us =
-        0;
-
-    s_last_serial_observation =
-        (ad7606_serial_observation_t) {
-            .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
-        };
-
-    /*
-     * Start simultaneous conversion.
-     * CVA and CVB are physically tied together to GPIO42.
-     */
-    esp_err_t err =
-        gpio_set_level(
-            BOARD_AD7606_CONVST_GPIO,
-            1
-        );
-
+    memset(s_spi_rx_buffer, 0, sizeof(s_spi_rx_buffer));
+    s_spi_transaction.length = sizeof(s_spi_rx_buffer) * 8U;
+    s_spi_transaction.rx_buffer = s_spi_rx_buffer;
+    const esp_err_t err = spi_device_polling_transmit(
+        s_spi_device,
+        &s_spi_transaction
+    );
     if (err != ESP_OK) {
         return err;
     }
 
-    /*
-     * Capture the sample timestamp immediately after the rising
-     * CONVST edge, rather than after BUSY handling and SPI readout.
-     */
-    sample->timestamp_us =
-        esp_timer_get_time();
+    memcpy(s_last_serial_observation.rx, s_spi_rx_buffer, sizeof(s_spi_rx_buffer));
+    s_last_serial_observation.pattern = ad7606_serial_classify(s_spi_rx_buffer);
+    s_last_serial_observation.spi_transaction_ok = true;
+    if (!ad7606_serial_decode_frame(s_spi_rx_buffer, sample->raw)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
+}
 
-    esp_rom_delay_us(
-        AD7606_CONVST_PULSE_US
-    );
 
-    err =
-        gpio_set_level(
-            BOARD_AD7606_CONVST_GPIO,
-            0
-        );
+/* One-shot conversion retained only for driver self-test and direct probes. */
+static esp_err_t ad7606_read_once(ad7606_sample_t *sample)
+{
+    if (sample == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
+    sample->timestamp_us = 0;
+    s_last_serial_observation = (ad7606_serial_observation_t) {
+        .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
+    };
+
+    esp_err_t err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 1);
+    if (err != ESP_OK) {
+        return err;
+    }
+    sample->timestamp_us = esp_timer_get_time();
+    esp_rom_delay_us(AD7606_CONVST_PULSE_US);
+    err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 0);
     if (err != ESP_OK) {
         return err;
     }
 
-    /*
-     * Do not require software to catch the short BUSY-HIGH
-     * interval. Wait beyond the conversion time first.
-     */
-    esp_rom_delay_us(
-        AD7606_CONVERSION_GUARD_US
-    );
-
-    if (
-        gpio_get_level(
-            BOARD_AD7606_BUSY_GPIO
-        ) != 0
-    ) {
-        err =
-            ad7606_wait_busy_level(
-                0,
-                AD7606_BUSY_RELEASE_TIMEOUT_US
-            );
-
+    esp_rom_delay_us(AD7606_CONVERSION_GUARD_US);
+    if (gpio_get_level(BOARD_AD7606_BUSY_GPIO) != 0) {
+        err = ad7606_wait_busy_level(0, AD7606_BUSY_RELEASE_TIMEOUT_US);
         if (err != ESP_OK) {
             if (!s_busy_release_error_logged) {
-                ESP_LOGE(
-                    TAG,
-                    "BUSY remained HIGH after conversion; level=%d",
-                    gpio_get_level(
-                        BOARD_AD7606_BUSY_GPIO
-                    )
-                );
-
-                s_busy_release_error_logged =
-                    true;
+                ESP_LOGE(TAG, "BUSY remained HIGH after conversion; level=%d",
+                    gpio_get_level(BOARD_AD7606_BUSY_GPIO));
+                s_busy_release_error_logged = true;
             }
-
             return err;
         }
     }
 
-    esp_rom_delay_us(
-        AD7606_POST_CONVERSION_DELAY_US
-    );
-
-    s_last_serial_observation.conversion_complete =
-        true;
-    s_last_serial_observation.busy_level =
-        gpio_get_level(
-            BOARD_AD7606_BUSY_GPIO
-        );
-
-    uint8_t rx[
-        AD7606_CHANNEL_COUNT * 2
-    ] = {0};
-
-    spi_transaction_t transaction = {
-        .length =
-            sizeof(rx) * 8,
-
-        .rx_buffer =
-            rx,
-    };
-
-    err =
-        spi_device_transmit(
-            s_spi_device,
-            &transaction
-        );
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    memcpy(
-        s_last_serial_observation.rx,
-        rx,
-        sizeof(rx)
-    );
-    s_last_serial_observation.pattern =
-        ad7606_serial_classify(
-            rx
-        );
-    s_last_serial_observation.spi_transaction_ok =
-        true;
-
-    if (!ad7606_serial_decode_frame(rx, sample->raw)) {
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-
-    return ESP_OK;
+    esp_rom_delay_us(AD7606_POST_CONVERSION_DELAY_US);
+    s_last_serial_observation.conversion_complete = true;
+    s_last_serial_observation.busy_level = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
+    return ad7606_spi_read_words(sample);
 }
 
 
@@ -585,9 +513,10 @@ static esp_err_t ad7606_self_test(void)
         return err;
     }
 
+    uint8_t self_test_window[1] = {0};
     ad7606_serial_diag_state_t self_test_diag;
     ad7606_serial_diag_event_t self_test_event;
-    ad7606_serial_diag_reset(&self_test_diag);
+    ad7606_serial_diag_reset(&self_test_diag, self_test_window, 1U);
     (void)ad7606_serial_diag_observe(
         &self_test_diag,
         s_last_serial_observation.rx,
@@ -610,20 +539,16 @@ static esp_err_t ad7606_self_test(void)
 
     ESP_LOGI(
         TAG,
-        "Self-test raw=[%d,%d,%d,%d,%d,%d,%d,%d]",
+        "Self-test raw=[%d,%d,%d,%d]",
         sample.raw[0],
         sample.raw[1],
         sample.raw[2],
-        sample.raw[3],
-        sample.raw[4],
-        sample.raw[5],
-        sample.raw[6],
-        sample.raw[7]
+        sample.raw[3]
     );
 
     ESP_LOGI(
         TAG,
-        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d,%d,%d,%d,%d] class=%s busy=%d samples=0 streak=%u all_zero=%u all_ff=%u identical=%u varied=%u suspicious=%s",
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d] class=%s busy=%d samples=0 streak=%u all_zero=%u all_ff=%u identical=%u varied=%u suspicious=%s",
         s_last_serial_observation.rx[0],
         s_last_serial_observation.rx[1],
         s_last_serial_observation.rx[2],
@@ -632,22 +557,10 @@ static esp_err_t ad7606_self_test(void)
         s_last_serial_observation.rx[5],
         s_last_serial_observation.rx[6],
         s_last_serial_observation.rx[7],
-        s_last_serial_observation.rx[8],
-        s_last_serial_observation.rx[9],
-        s_last_serial_observation.rx[10],
-        s_last_serial_observation.rx[11],
-        s_last_serial_observation.rx[12],
-        s_last_serial_observation.rx[13],
-        s_last_serial_observation.rx[14],
-        s_last_serial_observation.rx[15],
         sample.raw[0],
         sample.raw[1],
         sample.raw[2],
         sample.raw[3],
-        sample.raw[4],
-        sample.raw[5],
-        sample.raw[6],
-        sample.raw[7],
         ad7606_serial_pattern_name(
             s_last_serial_observation.pattern
         ),
@@ -694,6 +607,32 @@ esp_err_t ad7606_driver_init(void)
         goto fail;
     }
 
+    s_spi_transaction = (spi_transaction_t) {
+        .length = AD7606_SERIAL_RX_BYTES * 8U,
+        .rx_buffer = s_spi_rx_buffer,
+    };
+    /* t19 max is 32 ns at VDRIVE=3.3 V; add 4 ns for board routing. */
+    const int spi_limit_hz = spi_get_freq_limit(
+        true,
+        AD7606_SPI_INPUT_DELAY_ESTIMATE_NS
+    );
+    ESP_LOGI(
+        TAG,
+        "SPI GPIO-matrix limit=%d Hz configured=%d Hz input_delay=%d ns "
+        "(datasheet t19 32 ns + 4 ns routing)",
+        spi_limit_hz,
+        CONFIG_AD7606_SPI_CLOCK_HZ,
+        AD7606_SPI_INPUT_DELAY_ESTIMATE_NS
+    );
+    if (spi_limit_hz > 0 && CONFIG_AD7606_SPI_CLOCK_HZ > spi_limit_hz) {
+        ESP_LOGW(
+            TAG,
+            "Configured AD7606 SCLK %d Hz exceeds SPI GPIO-matrix limit %d Hz",
+            CONFIG_AD7606_SPI_CLOCK_HZ,
+            spi_limit_hz
+        );
+    }
+
     err =
         ad7606_add_spi_device();
 
@@ -722,7 +661,7 @@ esp_err_t ad7606_driver_init(void)
 
     /*
      * Initialization is not considered successful until one
-     * real conversion has completed and all 8 words have been
+     * real conversion has completed and all 4 used words have been
      * read over the dedicated SPI3 bus.
      */
     err =
@@ -737,8 +676,8 @@ esp_err_t ad7606_driver_init(void)
 
     ESP_LOGI(
         TAG,
-        "Initialized successfully: 8 channels, SPI3 mode=2, clock=%d Hz",
-        AD7606_SPI_CLOCK_HZ
+        "Initialized successfully: 4 channels, SPI3 mode=2, clock=%d Hz",
+        CONFIG_AD7606_SPI_CLOCK_HZ
     );
 
     return ESP_OK;
@@ -789,6 +728,25 @@ esp_err_t ad7606_driver_read(
 }
 
 
+esp_err_t ad7606_driver_read_result(ad7606_sample_t *sample)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (sample == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    sample->timestamp_us = 0;
+    s_last_serial_observation = (ad7606_serial_observation_t) {
+        .conversion_complete = true,
+        .busy_level = gpio_get_level(BOARD_AD7606_BUSY_GPIO),
+        .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
+    };
+    return ad7606_spi_read_words(sample);
+}
+
+
 esp_err_t ad7606_driver_get_last_serial_observation(
     ad7606_serial_observation_t *observation
 )
@@ -808,10 +766,35 @@ float ad7606_raw_to_uv(
     int16_t raw
 )
 {
-    return
-        (float)raw *
-        (
-            AD7606_FULL_SCALE_UV /
-            AD7606_CODES_PER_HALF_RANGE
-        );
+    float microvolts = 0.0f;
+    (void)ad7606_raw_to_uv_for_config(
+        raw,
+        CONFIG_AD7606_OVERSAMPLING_RATIO,
+        (uint32_t)(AD7606_INPUT_RANGE_V * 1000.0f),
+        &microvolts
+    );
+    return microvolts;
+}
+
+
+bool ad7606_raw_to_uv_for_config(
+    int16_t raw,
+    uint8_t oversampling_ratio,
+    uint32_t full_scale_mv,
+    float *microvolts
+)
+{
+    if (
+        microvolts == NULL ||
+        (oversampling_ratio != 1U && oversampling_ratio != 2U &&
+         oversampling_ratio != 4U && oversampling_ratio != 8U) ||
+        (full_scale_mv != 5000U && full_scale_mv != 10000U)
+    ) {
+        return false;
+    }
+
+    /* OS changes digital filtering, not the bipolar transfer-function LSB. */
+    *microvolts = (float)raw *
+        ((float)full_scale_mv * 1000.0f / AD7606_CODES_PER_HALF_RANGE);
+    return true;
 }

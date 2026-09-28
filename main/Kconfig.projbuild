@@ -12,6 +12,7 @@ menu "Seismic Acquisition"
 
         config SEISMIC_SOURCE_AD7606
             bool "AD7606 SPI acquisition"
+            select PCNT_ISR_IRAM_SAFE
     endchoice
 
     # ESP-IDF 5.5 resolves component dependencies before sdkconfig is
@@ -27,11 +28,82 @@ menu "Seismic Acquisition"
         range 100 2000
         default 500
 
+    choice SEISMIC_AD7606_RATE
+        prompt "AD7606 acquisition sample rate" if SEISMIC_SOURCE_AD7606
+        default SEISMIC_AD7606_RATE_500
+
+        config SEISMIC_AD7606_RATE_500
+            bool "500 Hz"
+
+        config SEISMIC_AD7606_RATE_5000
+            bool "5 kHz"
+
+        config SEISMIC_AD7606_RATE_10000
+            bool "10 kHz"
+
+        config SEISMIC_AD7606_RATE_20000
+            bool "20 kHz"
+
+        config SEISMIC_AD7606_RATE_40000
+            bool "40 kHz"
+    endchoice
+
+    # Preserve the numeric API consumed by backend metadata and buffers.
     config SEISMIC_AD7606_SAMPLE_RATE_HZ
         int
-        prompt "AD7606 acquisition sample rate (Hz)" if SEISMIC_SOURCE_AD7606
-        range 100 5000
-        default 500
+        default 500 if SEISMIC_AD7606_RATE_500
+        default 5000 if SEISMIC_AD7606_RATE_5000
+        default 10000 if SEISMIC_AD7606_RATE_10000
+        default 20000 if SEISMIC_AD7606_RATE_20000
+        default 40000 if SEISMIC_AD7606_RATE_40000
+
+    choice AD7606_OS_RATIO
+        prompt "AD7606 oversampling jumper setting (must match OS0-2 jumpers)" if SEISMIC_SOURCE_AD7606
+        default AD7606_OS_RATIO_1
+
+        config AD7606_OS_RATIO_1
+            bool "1"
+
+        config AD7606_OS_RATIO_2
+            bool "2"
+
+        config AD7606_OS_RATIO_4
+            bool "4"
+
+        config AD7606_OS_RATIO_8
+            bool "8"
+    endchoice
+
+    config AD7606_OVERSAMPLING_RATIO
+        int
+        default 1 if AD7606_OS_RATIO_1
+        default 2 if AD7606_OS_RATIO_2
+        default 4 if AD7606_OS_RATIO_4
+        default 8 if AD7606_OS_RATIO_8
+
+    config AD7606_SPI_CLOCK_HZ
+        int
+        prompt "AD7606 SPI clock (Hz)" if SEISMIC_SOURCE_AD7606
+        range 1000000 15000000
+        default 10000000
+        help
+            The original AD7606 at VDRIVE 3.3 V is specified for serial SCLK
+            up to 15 MHz. The default is 10 MHz; the firmware warns if the
+            selected clock exceeds the ESP32-S3 SPI frequency limit.
+
+    choice AD7606_READ_MODE
+        prompt "AD7606 serial read timing" if SEISMIC_SOURCE_AD7606
+        default AD7606_READ_MODE_AUTO
+
+        config AD7606_READ_MODE_AUTO
+            bool "Automatic (after conversion when valid, otherwise during)"
+
+        config AD7606_READ_MODE_AFTER_CONVERSION
+            bool "After conversion"
+
+        config AD7606_READ_MODE_DURING_CONVERSION
+            bool "During conversion (read previous result)"
+    endchoice
 
     config SEISMIC_AD7606_RAIL_INTERLOCK
         bool

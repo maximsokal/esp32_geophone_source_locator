@@ -22,6 +22,7 @@ static portMUX_TYPE s_presence_lock = portMUX_INITIALIZER_UNLOCKED;
 static ad7606_presence_observer_t s_observer;
 static bool s_monitor_active = false;
 static bool s_isr_service_ready = false;
+static bool s_external_busy_isr = false;
 static TickType_t s_last_complete_pulse_tick = 0;
 
 static void ad7606_presence_isr(void *argument)
@@ -54,6 +55,10 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
 {
     ad7606_driver_presence_monitor_stop();
 
+    portENTER_CRITICAL(&s_presence_lock);
+    const bool external_busy_isr = s_external_busy_isr;
+    portEXIT_CRITICAL(&s_presence_lock);
+
     /*
      * A disconnected BUSY input must not float into a false-positive. The
      * AD7606 BUSY output is push-pull, so this weak internal pull-down is only
@@ -75,7 +80,7 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
      * "GPIO isr service already installed" error before returning
      * ESP_ERR_INVALID_STATE.
      */
-    if (!s_isr_service_ready) {
+    if (!external_busy_isr && !s_isr_service_ready) {
         err = gpio_install_isr_service(0);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             ESP_LOGE(TAG, "GPIO ISR service install failed: %s", esp_err_to_name(err));
@@ -84,12 +89,14 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
         s_isr_service_ready = true;
     }
 
-    err = gpio_set_intr_type(
-        BOARD_AD7606_BUSY_GPIO,
-        GPIO_INTR_ANYEDGE
-    );
-    if (err != ESP_OK) {
-        return err;
+    if (!external_busy_isr) {
+        err = gpio_set_intr_type(
+            BOARD_AD7606_BUSY_GPIO,
+            GPIO_INTR_ANYEDGE
+        );
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     portENTER_CRITICAL(&s_presence_lock);
@@ -101,26 +108,28 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
     s_monitor_active = true;
     portEXIT_CRITICAL(&s_presence_lock);
 
-    err = gpio_isr_handler_add(
-        BOARD_AD7606_BUSY_GPIO,
-        ad7606_presence_isr,
-        NULL
-    );
-    if (err != ESP_OK) {
-        portENTER_CRITICAL(&s_presence_lock);
-        s_monitor_active = false;
-        portEXIT_CRITICAL(&s_presence_lock);
-        ESP_LOGE(TAG, "BUSY ISR registration failed: %s", esp_err_to_name(err));
-        return err;
-    }
+    if (!external_busy_isr) {
+        err = gpio_isr_handler_add(
+            BOARD_AD7606_BUSY_GPIO,
+            ad7606_presence_isr,
+            NULL
+        );
+        if (err != ESP_OK) {
+            portENTER_CRITICAL(&s_presence_lock);
+            s_monitor_active = false;
+            portEXIT_CRITICAL(&s_presence_lock);
+            ESP_LOGE(TAG, "BUSY ISR registration failed: %s", esp_err_to_name(err));
+            return err;
+        }
 
-    err = gpio_intr_enable(BOARD_AD7606_BUSY_GPIO);
-    if (err != ESP_OK) {
-        (void)gpio_isr_handler_remove(BOARD_AD7606_BUSY_GPIO);
-        portENTER_CRITICAL(&s_presence_lock);
-        s_monitor_active = false;
-        portEXIT_CRITICAL(&s_presence_lock);
-        return err;
+        err = gpio_intr_enable(BOARD_AD7606_BUSY_GPIO);
+        if (err != ESP_OK) {
+            (void)gpio_isr_handler_remove(BOARD_AD7606_BUSY_GPIO);
+            portENTER_CRITICAL(&s_presence_lock);
+            s_monitor_active = false;
+            portEXIT_CRITICAL(&s_presence_lock);
+            return err;
+        }
     }
 
     const int64_t deadline_us =
@@ -169,8 +178,31 @@ void ad7606_driver_presence_monitor_stop(void)
         return;
     }
 
-    (void)gpio_intr_disable(BOARD_AD7606_BUSY_GPIO);
-    (void)gpio_isr_handler_remove(BOARD_AD7606_BUSY_GPIO);
+    portENTER_CRITICAL(&s_presence_lock);
+    const bool external_busy_isr = s_external_busy_isr;
+    portEXIT_CRITICAL(&s_presence_lock);
+    if (!external_busy_isr) {
+        (void)gpio_intr_disable(BOARD_AD7606_BUSY_GPIO);
+        (void)gpio_isr_handler_remove(BOARD_AD7606_BUSY_GPIO);
+    }
+}
+
+void ad7606_driver_presence_use_external_busy_isr(bool enabled)
+{
+    portENTER_CRITICAL(&s_presence_lock);
+    s_external_busy_isr = enabled;
+    portEXIT_CRITICAL(&s_presence_lock);
+}
+
+void ad7606_driver_presence_note_busy_pulse(void)
+{
+    portENTER_CRITICAL(&s_presence_lock);
+    if (s_external_busy_isr && s_monitor_active) {
+        ad7606_presence_observer_observe(&s_observer, 1);
+        ad7606_presence_observer_observe(&s_observer, 0);
+        s_last_complete_pulse_tick = xTaskGetTickCount();
+    }
+    portEXIT_CRITICAL(&s_presence_lock);
 }
 
 bool ad7606_driver_presence_is_healthy(void)

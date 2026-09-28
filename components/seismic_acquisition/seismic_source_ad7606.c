@@ -122,10 +122,10 @@ static esp_err_t seismic_source_ad7606_snapshot(
     snapshot->serial_busy_level = status.busy_level;
     snapshot->last_sample_timestamp_us = status.last_sample_timestamp_us;
 
-    snapshot->bus_clock_hz = AD7606_BUS_CLOCK_HZ;
+    snapshot->bus_clock_hz = CONFIG_AD7606_SPI_CLOCK_HZ;
     snapshot->bus_mode = AD7606_SPI_MODE;
     snapshot->input_range_v = AD7606_INPUT_RANGE_V;
-    snapshot->oversampling_ratio = AD7606_OVERSAMPLING_RATIO;
+    snapshot->oversampling_ratio = CONFIG_AD7606_OVERSAMPLING_RATIO;
 
     for (
         size_t channel = 0;

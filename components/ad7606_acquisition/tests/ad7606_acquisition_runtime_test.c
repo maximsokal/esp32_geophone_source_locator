@@ -9,6 +9,10 @@
 #include "ad7606_acquisition.h"
 #include "ad7606_driver.h"
 #include "ad7606_power_policy.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/pulse_cnt.h"
+#include "esp_rom_sys.h"
 #include "app_task_config.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -19,12 +23,12 @@
 #include "seismic_buffer.h"
 
 /*
- * MAX-246 item 2: ad7606_acquisition start/stop lifecycle, timer, sample
+ * MAX-246 item 2: AD7606 hardware-timed lifecycle, indexed samples
  * path and the MAX-242 rail interlock, without a board.
  *
  * The Core 1 worker runs inline inside xTaskCreatePinnedToCore. Its
- * ulTaskNotifyTake() consumes a script: TICK events advance the clock by
- * whole sampling periods and return the notification count; a STOP event
+ * ulTaskNotifyTake() consumes a script: TICK events generate BUSY edges,
+ * advance the PCNT conversion counter and return coalesced notifications; STOP
  * calls the real ad7606_acquisition_stop(), whose wait loop (vTaskDelay
  * while the worker still exists) jumps back into the worker so it can
  * observe the stop and clean up, as the real scheduler would.
@@ -44,7 +48,7 @@ static size_t s_script_len;
 static size_t s_script_pos;
 
 static int64_t s_now_us;
-static int64_t s_timestamp_adjustment_us;
+static unsigned s_esp_timer_get_time_calls;
 static int s_critical_depth;
 static bool s_in_worker;
 static bool s_stop_waiting;
@@ -62,6 +66,7 @@ static unsigned s_reads;
 static unsigned s_reads_after_deinit;
 static bool s_driver_live;
 static unsigned s_pushes;
+static int64_t s_push_timestamps[64];
 static int64_t s_last_push_ts;
 static float s_last_push[SEISMIC_CHANNEL_COUNT];
 static seismic_source_t s_buffer_source;
@@ -69,17 +74,30 @@ static uint32_t s_buffer_rate;
 static uint32_t s_ad7606_rate;
 static bool s_running_seen_during_push;
 static unsigned s_beats;
-static bool s_timer_exists;
-static bool s_timer_started;
-static uint64_t s_timer_period;
-static esp_timer_dispatch_t s_timer_dispatch;
-static esp_timer_cb_t s_timer_cb;
 static unsigned s_notify_gives;
+static unsigned s_notify_from_isr;
+static uint32_t s_fake_pcnt_count;
+static int s_fake_busy_level;
+static gpio_int_type_t s_fake_busy_intr_type;
+static gpio_int_type_t s_last_busy_intr_edge;
+static gpio_isr_t s_fake_busy_isr;
+static void *s_fake_busy_isr_args;
+static bool s_fake_gpio_intr_enabled;
+static bool s_fake_pcnt_enabled;
+static bool s_fake_pcnt_started;
+static bool s_fake_ledc_timer_configured;
+static bool s_fake_ledc_channel_configured;
+static uint32_t s_fake_ledc_frequency;
+static uint32_t s_last_ledc_frequency;
+static uint32_t s_last_ledc_duty;
+static uint32_t s_last_ledc_resolution;
+static int s_fake_gpio_install_flags;
+static unsigned s_fake_watch_points;
 
 /* Injected behaviour. */
 static esp_err_t s_driver_init_result;
-static esp_err_t s_timer_create_result;
-static esp_err_t s_timer_start_result;
+static esp_err_t s_gpio_install_result;
+static esp_err_t s_ledc_timer_result;
 static esp_err_t s_read_result;
 static bool s_rail_available;
 static bool s_rail_valid;
@@ -100,7 +118,7 @@ static void reset_world(void)
     s_script_len = 0U;
     s_script_pos = 0U;
     s_now_us = 50000000LL;
-    s_timestamp_adjustment_us = 0;
+    s_esp_timer_get_time_calls = 0U;
     s_critical_depth = 0;
     s_in_worker = false;
     s_stop_waiting = false;
@@ -117,14 +135,29 @@ static void reset_world(void)
     s_ad7606_rate = 0U;
     s_running_seen_during_push = true;
     s_beats = 0U;
-    s_timer_exists = false;
-    s_timer_started = false;
-    s_timer_period = 0U;
-    s_timer_cb = NULL;
     s_notify_gives = 0U;
+    s_notify_from_isr = 0U;
+    s_fake_pcnt_count = 0U;
+    s_fake_busy_level = 0;
+    s_fake_busy_intr_type = GPIO_INTR_DISABLE;
+    s_last_busy_intr_edge = GPIO_INTR_DISABLE;
+    s_fake_busy_isr = NULL;
+    s_fake_busy_isr_args = NULL;
+    s_fake_gpio_intr_enabled = false;
+    s_fake_pcnt_enabled = false;
+    s_fake_pcnt_started = false;
+    s_fake_ledc_timer_configured = false;
+    s_fake_ledc_channel_configured = false;
+    s_fake_ledc_frequency = 0U;
+    s_last_ledc_frequency = 0U;
+    s_last_ledc_duty = 0U;
+    s_last_ledc_resolution = 0U;
+    s_fake_gpio_install_flags = 0;
+    s_fake_watch_points = 0U;
+    memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
     s_driver_init_result = ESP_OK;
-    s_timer_create_result = ESP_OK;
-    s_timer_start_result = ESP_OK;
+    s_gpio_install_result = ESP_OK;
+    s_ledc_timer_result = ESP_OK;
     s_read_result = ESP_OK;
     s_rail_available = true;
     s_rail_valid = true;
@@ -156,8 +189,8 @@ static void script_with_lateness(uint32_t count, int64_t lateness_us)
     s_script[s_script_len] = (event_t) {
         .type = EV_TICK,
         .count = count,
-        /* The fake driver retains its historical now-7 timestamp. */
-        .timestamp_adjustment_us = lateness_us + 7,
+        /* Task delay changes wall time, never the sample-index timestamp. */
+        .timestamp_adjustment_us = lateness_us,
     };
     ++s_script_len;
 }
@@ -255,6 +288,15 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
     return pdPASS;
 }
 
+void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *higher_priority_task_woken)
+{
+    assert(task == &s_task_token);
+    ++s_notify_from_isr;
+    if (higher_priority_task_woken != NULL) {
+        *higher_priority_task_woken = pdFALSE;
+    }
+}
+
 void vTaskDelay(TickType_t ticks)
 {
     assert(s_critical_depth == 0);
@@ -273,12 +315,23 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     assert(s_in_worker);
     assert(s_script_pos < s_script_len); /* every test ends with STOP or self-stop */
     const event_t event = s_script[s_script_pos++];
-    s_timestamp_adjustment_us = event.timestamp_adjustment_us;
     if (event.type == EV_TICK) {
-        s_now_us += PERIOD_US * (int64_t)event.count;
+        for (uint32_t conversion = 0U; conversion < event.count; ++conversion) {
+            s_fake_busy_level = 1;
+            if (s_fake_gpio_intr_enabled &&
+                s_fake_busy_intr_type == GPIO_INTR_POSEDGE && s_fake_busy_isr != NULL) {
+                s_fake_busy_isr(s_fake_busy_isr_args);
+            }
+            s_fake_busy_level = 0;
+            ++s_fake_pcnt_count;
+            if (s_fake_gpio_intr_enabled &&
+                s_fake_busy_intr_type == GPIO_INTR_NEGEDGE && s_fake_busy_isr != NULL) {
+                s_fake_busy_isr(s_fake_busy_isr_args);
+            }
+        }
+        s_now_us += PERIOD_US * (int64_t)event.count + event.timestamp_adjustment_us;
         return event.count;
     }
-    s_timestamp_adjustment_us = 0;
     if (setjmp(s_stop_return) == 0) {
         s_stop_waiting = true;
         ad7606_acquisition_stop();
@@ -287,50 +340,219 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     return 1U;
 }
 
-/* ---- esp_timer ---- */
+/* ---- ESP timer / LEDC / PCNT / GPIO ---- */
 
-struct test_esp_timer { int unused; };
-static struct test_esp_timer s_timer_obj;
-
-int64_t esp_timer_get_time(void) { return s_now_us; }
-
-esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *out_handle)
+int64_t esp_timer_get_time(void)
 {
-    assert(s_in_worker);
-    if (s_timer_create_result != ESP_OK) {
-        return s_timer_create_result;
+    ++s_esp_timer_get_time_calls;
+    return s_now_us;
+}
+
+void esp_rom_delay_us(uint32_t us) { s_now_us += us; }
+
+int gpio_get_level(gpio_num_t gpio_num)
+{
+    return gpio_num == 42 ? 0 : s_fake_busy_level;
+}
+
+esp_err_t gpio_install_isr_service(int flags)
+{
+    s_fake_gpio_install_flags = flags;
+    return s_gpio_install_result;
+}
+
+esp_err_t gpio_set_intr_type(gpio_num_t gpio_num, gpio_int_type_t intr_type)
+{
+    assert(gpio_num == 47);
+    s_fake_busy_intr_type = intr_type;
+    if (intr_type != GPIO_INTR_DISABLE) {
+        s_last_busy_intr_edge = intr_type;
     }
-    assert(!s_timer_exists);
-    s_timer_exists = true;
-    s_timer_cb = args->callback;
-    s_timer_dispatch = args->dispatch_method;
-    *out_handle = &s_timer_obj;
     return ESP_OK;
 }
 
-esp_err_t esp_timer_start_periodic(esp_timer_handle_t timer, uint64_t period_us)
+esp_err_t gpio_isr_handler_add(gpio_num_t gpio_num, gpio_isr_t isr, void *args)
 {
-    assert(timer == &s_timer_obj && s_timer_exists);
-    if (s_timer_start_result != ESP_OK) {
-        return s_timer_start_result;
+    assert(gpio_num == 47 && isr != NULL);
+    s_fake_busy_isr = isr;
+    s_fake_busy_isr_args = args;
+    return ESP_OK;
+}
+
+esp_err_t gpio_isr_handler_remove(gpio_num_t gpio_num)
+{
+    assert(gpio_num == 47);
+    s_fake_busy_isr = NULL;
+    s_fake_busy_isr_args = NULL;
+    return ESP_OK;
+}
+
+esp_err_t gpio_intr_enable(gpio_num_t gpio_num)
+{
+    assert(gpio_num == 47);
+    s_fake_gpio_intr_enabled = true;
+    return ESP_OK;
+}
+
+esp_err_t gpio_intr_disable(gpio_num_t gpio_num)
+{
+    assert(gpio_num == 47);
+    s_fake_gpio_intr_enabled = false;
+    return ESP_OK;
+}
+
+uint32_t ledc_find_suitable_duty_resolution(uint32_t source_hz, uint32_t timer_hz)
+{
+    uint32_t bits = 14U;
+    while (bits > 0U && ((uint64_t)timer_hz << bits) > source_hz) {
+        --bits;
     }
-    s_timer_started = true;
-    s_timer_period = period_us;
+    return bits;
+}
+
+esp_err_t ledc_timer_config(const ledc_timer_config_t *config)
+{
+    if (config->deconfigure) {
+        s_fake_ledc_timer_configured = false;
+        s_fake_ledc_frequency = 0U;
+        return ESP_OK;
+    }
+    if (s_ledc_timer_result != ESP_OK) {
+        return s_ledc_timer_result;
+    }
+    assert(config->clk_cfg == LEDC_USE_XTAL_CLK);
+    s_fake_ledc_timer_configured = true;
+    s_fake_ledc_frequency = config->freq_hz;
+    s_last_ledc_frequency = config->freq_hz;
+    s_last_ledc_resolution = (uint32_t)config->duty_resolution;
     return ESP_OK;
 }
 
-esp_err_t esp_timer_stop(esp_timer_handle_t timer)
+esp_err_t ledc_channel_config(const ledc_channel_config_t *config)
 {
-    assert(timer == &s_timer_obj && s_timer_exists);
-    s_timer_started = false;
+    assert(s_fake_ledc_timer_configured);
+    assert(config->gpio_num == 42);
+    s_fake_ledc_channel_configured = true;
+    s_last_ledc_duty = config->duty;
     return ESP_OK;
 }
 
-esp_err_t esp_timer_delete(esp_timer_handle_t timer)
+uint32_t ledc_get_freq(ledc_mode_t mode, ledc_timer_t timer)
 {
-    assert(timer == &s_timer_obj && s_timer_exists);
-    assert(!s_timer_started); /* stopped before delete */
-    s_timer_exists = false;
+    assert(mode == LEDC_LOW_SPEED_MODE && timer == LEDC_TIMER_0);
+    return s_fake_ledc_frequency;
+}
+
+esp_err_t ledc_stop(ledc_mode_t mode, ledc_channel_t channel, uint32_t idle_level)
+{
+    assert(mode == LEDC_LOW_SPEED_MODE && channel == LEDC_CHANNEL_0 && idle_level == 0U);
+    s_fake_ledc_channel_configured = false;
+    return ESP_OK;
+}
+
+esp_err_t ledc_timer_pause(ledc_mode_t mode, ledc_timer_t timer)
+{
+    assert(mode == LEDC_LOW_SPEED_MODE && timer == LEDC_TIMER_0);
+    return ESP_OK;
+}
+
+struct test_pcnt_unit { int unused; };
+struct test_pcnt_channel { int unused; };
+static struct test_pcnt_unit s_fake_pcnt_unit;
+static struct test_pcnt_channel s_fake_pcnt_channel;
+
+esp_err_t pcnt_new_unit(const pcnt_unit_config_t *config, pcnt_unit_handle_t *ret_unit)
+{
+    assert(config->low_limit < 0 && config->high_limit > 0);
+    assert(config->flags.accum_count == 1U);
+    *ret_unit = &s_fake_pcnt_unit;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_del_unit(pcnt_unit_handle_t unit)
+{
+    assert(unit == &s_fake_pcnt_unit && !s_fake_pcnt_enabled);
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_add_watch_point(pcnt_unit_handle_t unit, int watch_point)
+{
+    assert(unit == &s_fake_pcnt_unit && (watch_point == 16384 || watch_point == -16384));
+    ++s_fake_watch_points;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_new_channel(pcnt_unit_handle_t unit, const pcnt_chan_config_t *config,
+    pcnt_channel_handle_t *ret_channel)
+{
+    assert(unit == &s_fake_pcnt_unit && config->edge_gpio_num == 47);
+    *ret_channel = &s_fake_pcnt_channel;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_del_channel(pcnt_channel_handle_t channel)
+{
+    assert(channel == &s_fake_pcnt_channel);
+    return ESP_OK;
+}
+
+esp_err_t pcnt_channel_set_edge_action(pcnt_channel_handle_t channel,
+    pcnt_channel_edge_action_t pos_act, pcnt_channel_edge_action_t neg_act)
+{
+    assert(channel == &s_fake_pcnt_channel);
+    assert(pos_act == PCNT_CHANNEL_EDGE_ACTION_HOLD);
+    assert(neg_act == PCNT_CHANNEL_EDGE_ACTION_INCREASE);
+    return ESP_OK;
+}
+
+esp_err_t pcnt_channel_set_level_action(pcnt_channel_handle_t channel,
+    pcnt_channel_level_action_t high_act, pcnt_channel_level_action_t low_act)
+{
+    assert(channel == &s_fake_pcnt_channel);
+    (void)high_act;
+    (void)low_act;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_clear_count(pcnt_unit_handle_t unit)
+{
+    assert(unit == &s_fake_pcnt_unit);
+    s_fake_pcnt_count = 0U;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_enable(pcnt_unit_handle_t unit)
+{
+    assert(unit == &s_fake_pcnt_unit);
+    s_fake_pcnt_enabled = true;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_disable(pcnt_unit_handle_t unit)
+{
+    assert(unit == &s_fake_pcnt_unit && !s_fake_pcnt_started);
+    s_fake_pcnt_enabled = false;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_start(pcnt_unit_handle_t unit)
+{
+    assert(unit == &s_fake_pcnt_unit && s_fake_pcnt_enabled);
+    s_fake_pcnt_started = true;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_stop(pcnt_unit_handle_t unit)
+{
+    assert(unit == &s_fake_pcnt_unit && s_fake_pcnt_enabled);
+    s_fake_pcnt_started = false;
+    return ESP_OK;
+}
+
+esp_err_t pcnt_unit_get_count(pcnt_unit_handle_t unit, int *value)
+{
+    assert(unit == &s_fake_pcnt_unit && value != NULL);
+    *value = (int32_t)s_fake_pcnt_count;
     return ESP_OK;
 }
 
@@ -344,6 +566,7 @@ esp_err_t ad7606_driver_init(void)
         return s_driver_init_result;
     }
     s_driver_live = true;
+    ++s_fake_pcnt_count; /* Driver self-test confirms BUSY reaches PCNT. */
     return ESP_OK;
 }
 
@@ -358,7 +581,7 @@ static int16_t raw_for(unsigned sample, unsigned channel)
     return (int16_t)((int)(sample * 10U + channel) - 40);
 }
 
-esp_err_t ad7606_driver_read(ad7606_sample_t *sample)
+esp_err_t ad7606_driver_read_result(ad7606_sample_t *sample)
 {
     ++s_reads;
     if (!s_driver_live) {
@@ -367,11 +590,19 @@ esp_err_t ad7606_driver_read(ad7606_sample_t *sample)
     if (s_read_result != ESP_OK) {
         return s_read_result;
     }
-    sample->timestamp_us = s_now_us - 7 + s_timestamp_adjustment_us;
+    const unsigned completed_conversion = s_fake_pcnt_count > 0U
+        ? (unsigned)s_fake_pcnt_count
+        : 0U;
+    sample->timestamp_us = 0;
     for (unsigned c = 0U; c < AD7606_CHANNEL_COUNT; ++c) {
-        sample->raw[c] = raw_for(s_reads, c);
+        sample->raw[c] = raw_for(completed_conversion, c);
     }
     return ESP_OK;
+}
+
+esp_err_t ad7606_driver_read(ad7606_sample_t *sample)
+{
+    return ad7606_driver_read_result(sample);
 }
 
 esp_err_t ad7606_driver_get_last_serial_observation(ad7606_serial_observation_t *observation)
@@ -380,7 +611,10 @@ esp_err_t ad7606_driver_get_last_serial_observation(ad7606_serial_observation_t 
     observation->conversion_complete = true;
     observation->spi_transaction_ok = true;
     for (unsigned c = 0U; c < AD7606_CHANNEL_COUNT; ++c) {
-        const uint16_t word = (uint16_t)raw_for(s_reads, c);
+        const uint16_t word = (uint16_t)raw_for(
+            s_fake_pcnt_count > 0U ? (unsigned)s_fake_pcnt_count : 0U,
+            c
+        );
         observation->rx[2U * c] = (uint8_t)(word >> 8);
         observation->rx[2U * c + 1U] = (uint8_t)(word & 0xFFU);
     }
@@ -391,6 +625,26 @@ float ad7606_raw_to_uv(int16_t raw)
 {
     return (float)raw * 152.587890625f; /* 5 V / 32768 */
 }
+
+bool ad7606_raw_to_uv_for_config(
+    int16_t raw,
+    uint8_t oversampling_ratio,
+    uint32_t full_scale_mv,
+    float *microvolts
+)
+{
+    (void)oversampling_ratio;
+    if (microvolts == NULL) return false;
+    *microvolts = (float)raw * ((float)full_scale_mv * 1000.0f / 32768.0f);
+    return true;
+}
+
+void ad7606_driver_presence_use_external_busy_isr(bool enabled)
+{
+    (void)enabled;
+}
+
+void ad7606_driver_presence_note_busy_pulse(void) {}
 
 /* ---- INA3221 CH3 rail ---- */
 
@@ -438,6 +692,9 @@ esp_err_t seismic_buffer_configure(seismic_source_t source, uint32_t sample_rate
 
 esp_err_t seismic_buffer_push(int64_t timestamp_us, const float channel_uv[SEISMIC_CHANNEL_COUNT])
 {
+    if (s_pushes < sizeof(s_push_timestamps) / sizeof(s_push_timestamps[0])) {
+        s_push_timestamps[s_pushes] = timestamp_us;
+    }
     ++s_pushes;
     s_last_push_ts = timestamp_us;
     memcpy(s_last_push, channel_uv, sizeof(s_last_push));
@@ -466,8 +723,12 @@ static ad7606_acquisition_status_t status_now(void)
 
 static void assert_fully_released(void)
 {
-    assert(!s_timer_exists);
     assert(!s_driver_live);
+    assert(!s_fake_pcnt_enabled);
+    assert(!s_fake_pcnt_started);
+    assert(!s_fake_ledc_timer_configured);
+    assert(!s_fake_ledc_channel_configured);
+    assert(!s_fake_gpio_intr_enabled);
     assert(s_buffer_source == SEISMIC_SOURCE_NONE);
     assert(!status_now().running);
     assert(!s_sem_live);
@@ -478,6 +739,7 @@ static void assert_fully_released(void)
 static void test_run_samples_then_stop_releases_everything(void)
 {
     reset_world();
+    const int64_t sample_t0 = s_now_us;
     script(EV_TICK, 1U);
     script(EV_TICK, 1U);
     script(EV_TICK, 1U);
@@ -490,8 +752,14 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(s_task_core == APP_TASK_CORE_REALTIME);
     assert(s_task_priority == APP_TASK_PRIORITY_AD7606);
     assert(s_driver_inits == 1U && s_driver_init_in_worker);
-    assert(s_timer_dispatch == ESP_TIMER_TASK);
-    assert(s_timer_period == (uint64_t)PERIOD_US);
+    assert(s_last_ledc_frequency == 500U);
+    assert(s_last_ledc_resolution == 14U);
+    assert(s_last_ledc_duty == 18U);
+    assert(s_last_busy_intr_edge == GPIO_INTR_NEGEDGE);
+    assert(s_fake_gpio_install_flags == ESP_INTR_FLAG_IRAM);
+    assert(s_fake_watch_points == 2U);
+    assert(s_notify_from_isr == 3U);
+    assert(s_esp_timer_get_time_calls == 2U); /* start gate + LEDC t0, never per sample */
     assert(s_ad7606_rate == 500U);
     assert(s_buffer_rate == 0U); /* detached again on stop */
 
@@ -499,13 +767,15 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(s_reads == 3U);
     assert(s_pushes == 3U);
     assert(s_running_seen_during_push);
-    assert(s_last_push_ts == s_now_us - 7);
+    assert(s_push_timestamps[0] == sample_t0);
+    assert(s_push_timestamps[1] == sample_t0 + PERIOD_US);
+    assert(s_last_push_ts == sample_t0 + 2 * PERIOD_US);
     for (unsigned c = 0U; c < SEISMIC_CHANNEL_COUNT; ++c) {
         assert(fabsf(s_last_push[c] - ad7606_raw_to_uv(raw_for(3U, c))) < 1e-3f);
     }
     assert(s_beats >= 3U);
 
-    /* STOP: timer stopped+deleted, driver deinit (-> Hi-Z safe state),
+    /* STOP: hardware clocks and counters stopped, driver deinit (-> Hi-Z safe state),
      * buffer detached, status not running. */
     assert(s_driver_deinits == 1U);
     assert(s_reads_after_deinit == 0U);
@@ -523,16 +793,14 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(status.power_gate == AD7606_POWER_GATE_OK);
     assert(!status.power_fault_latched);
 
-    /* A late timer callback after stop never wakes a dead task. */
-    const unsigned gives = s_notify_gives;
-    s_timer_cb(NULL);
-    assert(s_notify_gives == gives);
+    assert(s_fake_busy_isr == NULL); /* no BUSY ISR survives stop */
 }
 
 static void test_collapsed_periods_are_one_conversion(void)
 {
     reset_world();
-    script_with_lateness(4U, 17); /* worker was late: 4 periods in one wake */
+    const int64_t sample_t0 = s_now_us;
+    script_with_lateness(4U, 17); /* four conversion edges coalesce before task service */
     script(EV_STOP, 0U);
     assert(ad7606_acquisition_start() == ESP_OK);
     assert(s_reads == 1U);
@@ -540,11 +808,9 @@ static void test_collapsed_periods_are_one_conversion(void)
     assert(status.timer_ticks == 4U);
     assert(status.conversion_attempts == 1U);
     assert(status.collapsed_periods == 3U);
-    assert(status.jitter.count == 1U);
-    assert(status.jitter.min_us == 17U);
-    assert(status.jitter.max_us == 17U);
-    assert(status.jitter.histogram_us[4] == 1U);
-    /* Collapsed periods are scheduler lateness, not read failures. */
+    assert(status.jitter.count == 0U);
+    assert(s_push_timestamps[0] == sample_t0 + 3 * PERIOD_US);
+    /* Collapsed periods are PCNT-observed conversions without a pushed frame. */
     assert(status.read_errors == 0U);
     assert(status.consecutive_failures == 0U);
 }
@@ -552,6 +818,7 @@ static void test_collapsed_periods_are_one_conversion(void)
 static void test_successful_read_jitter_statistics(void)
 {
     reset_world();
+    const int64_t sample_t0 = s_now_us;
     const int64_t lateness_us[] = { 0, 1, 3, 17, 1000, 40000 };
     for (size_t i = 0U; i < sizeof(lateness_us) / sizeof(lateness_us[0]); ++i) {
         script_with_lateness(1U, lateness_us[i]);
@@ -560,25 +827,18 @@ static void test_successful_read_jitter_statistics(void)
 
     assert(ad7606_acquisition_start() == ESP_OK);
     const ad7606_acquisition_status_t status = status_now();
-    assert(status.jitter.count == 6U);
-    assert(status.jitter.early_count == 0U);
-    assert(status.jitter.min_us == 0U);
-    assert(status.jitter.max_us == 40000U);
-    assert(status.jitter.sum_us == 41021U);
-    assert(fabs((double)status.jitter.sum_us / (double)status.jitter.count - 41021.0 / 6.0) < 0.000001);
+    assert(status.jitter.count == 0U); /* no per-sample esp_timer timestamping */
     assert(status.jitter.period_us == (uint64_t)PERIOD_US);
-    const uint32_t expected[AD7606_ACQUISITION_JITTER_BUCKET_COUNT] = {
-        2U, 1U, 0U, 0U, 1U, 0U, 0U, 0U,
-        0U, 1U, 0U, 0U, 0U, 0U, 0U, 1U,
-    };
-    for (size_t bucket = 0U; bucket < AD7606_ACQUISITION_JITTER_BUCKET_COUNT; ++bucket) {
-        assert(status.jitter.histogram_us[bucket] == expected[bucket]);
+    assert(s_pushes == 6U);
+    for (size_t sample = 0U; sample < 6U; ++sample) {
+        assert(s_push_timestamps[sample] == sample_t0 + (int64_t)sample * PERIOD_US);
     }
 }
 
 static void test_jitter_bucket_boundaries_and_open_ended_bucket(void)
 {
     reset_world();
+    const int64_t sample_t0 = s_now_us;
     script_with_lateness(1U, 1);
     script_with_lateness(1U, 2);
     script_with_lateness(1U, 3);
@@ -589,29 +849,24 @@ static void test_jitter_bucket_boundaries_and_open_ended_bucket(void)
 
     assert(ad7606_acquisition_start() == ESP_OK);
     const ad7606_acquisition_status_t status = status_now();
-    assert(status.jitter.count == 6U);
-    assert(status.jitter.min_us == 1U);
-    assert(status.jitter.max_us == (UINT64_C(1) << 40));
-    assert(status.jitter.histogram_us[0] == 1U);
-    assert(status.jitter.histogram_us[1] == 2U);
-    assert(status.jitter.histogram_us[2] == 1U);
-    assert(status.jitter.histogram_us[15] == 2U);
+    assert(status.jitter.count == 0U);
+    assert(s_pushes == 6U);
+    for (size_t sample = 0U; sample < 6U; ++sample) {
+        assert(s_push_timestamps[sample] == sample_t0 + (int64_t)sample * PERIOD_US);
+    }
 }
 
 static void test_negative_jitter_is_clamped_and_counted_early(void)
 {
     reset_world();
+    const int64_t sample_t0 = s_now_us;
     script_with_lateness(1U, -5);
     script(EV_STOP, 0U);
 
     assert(ad7606_acquisition_start() == ESP_OK);
     const ad7606_acquisition_status_t status = status_now();
-    assert(status.jitter.count == 1U);
-    assert(status.jitter.early_count == 1U);
-    assert(status.jitter.min_us == 0U);
-    assert(status.jitter.max_us == 0U);
-    assert(status.jitter.sum_us == 0U);
-    assert(status.jitter.histogram_us[0] == 1U);
+    assert(status.jitter.count == 0U);
+    assert(s_push_timestamps[0] == sample_t0);
 }
 
 static void test_jitter_counter_saturation(void)
@@ -627,7 +882,7 @@ static void test_low_rail_refuses_start_without_touching_the_adc(void)
     assert(ad7606_acquisition_start() == ESP_ERR_INVALID_STATE);
     assert(s_task_creates == 0U);
     assert(s_driver_inits == 0U);
-    assert(!s_timer_exists);
+    assert(!s_fake_ledc_channel_configured);
     const ad7606_acquisition_status_t status = status_now();
     assert(status.power_gate == AD7606_POWER_GATE_RAIL_LOW);
     assert(status.power_fault_latched);
@@ -657,8 +912,8 @@ static void test_confirmed_rail_loss_stops_and_releases_the_adc(void)
 {
     reset_world();
     const int64_t t0 = s_now_us;
-    /* The rail collapses 1.5 s into the run. The worker checks it at most
-     * once per second; two fresh low readings confirm the loss. */
+    /* The rail collapses 1.5 s into the run. PCNT gates checks to 1 Hz;
+     * two fresh low readings confirm the loss. */
     s_rail_low_from_us = t0 + 1500000LL;
     s_rail_low_v = 4.20f;
     for (int i = 0; i < 40; ++i) {
@@ -686,7 +941,7 @@ static void test_single_low_reading_does_not_stop(void)
 {
     reset_world();
     const int64_t t0 = s_now_us;
-    /* One rail check (and only one) lands in a short dip. */
+    /* One 1 Hz rail check lands in a short dip. */
     s_rail_low_from_us = t0 + 1500000LL;
     s_rail_low_until_us = t0 + 2500000LL;
     s_rail_low_v = 4.20f;
@@ -714,8 +969,8 @@ static void test_read_errors_are_counted_and_not_pushed(void)
     assert(status.read_errors == 2U);
     assert(status.consecutive_failures == 2U);
     assert(status.samples == 0U);
-    /* Read failures are not counted as collapsed timer periods. */
-    assert(status.collapsed_periods == 0U);
+    /* Each failed, PCNT-indexed output is now an explicit acquisition gap. */
+    assert(status.collapsed_periods == 2U);
     assert(status.timer_ticks == 2U);
     assert(s_beats >= 2U); /* still alive for the watchdog */
     assert_fully_released();
@@ -723,15 +978,15 @@ static void test_read_errors_are_counted_and_not_pushed(void)
 
 static void test_startup_failures_clean_up(void)
 {
-    /* Driver init, timer create and timer start failures: start() reports
+    /* Driver init, GPIO ISR install and LEDC timer failures report
      * the error and nothing stays configured or driven. */
     for (int which = 0; which < 3; ++which) {
         reset_world();
         const esp_err_t injected = which == 0 ? ESP_ERR_NOT_FOUND
             : which == 1 ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_STATE;
         if (which == 0) s_driver_init_result = injected;
-        if (which == 1) s_timer_create_result = injected;
-        if (which == 2) s_timer_start_result = injected;
+        if (which == 1) s_gpio_install_result = injected;
+        if (which == 2) s_ledc_timer_result = injected;
         assert(ad7606_acquisition_start() == injected);
         assert(s_driver_deinits == 1U);
         assert(s_reads == 0U);
@@ -748,8 +1003,7 @@ static void test_restart_resets_cadence_counters(void)
     assert(ad7606_acquisition_start() == ESP_OK);
     const ad7606_acquisition_status_t first_run = status_now();
     assert(first_run.collapsed_periods == 4U);
-    assert(first_run.jitter.count == 1U);
-    assert(first_run.jitter.max_us == 40000U);
+    assert(first_run.jitter.count == 0U);
 
     reset_world();
     script_with_lateness(1U, 3);
@@ -759,13 +1013,7 @@ static void test_restart_resets_cadence_counters(void)
     assert(status.timer_ticks == 1U);
     assert(status.collapsed_periods == 0U);
     assert(status.samples == 1U);
-    assert(status.jitter.count == 1U);
-    assert(status.jitter.early_count == 0U);
-    assert(status.jitter.min_us == 3U);
-    assert(status.jitter.max_us == 3U);
-    assert(status.jitter.sum_us == 3U);
-    assert(status.jitter.histogram_us[1] == 1U);
-    assert(status.jitter.histogram_us[15] == 0U);
+    assert(status.jitter.count == 0U);
     assert(status.jitter.period_us == (uint64_t)PERIOD_US);
 }
 

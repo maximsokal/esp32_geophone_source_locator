@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -9,6 +10,7 @@ typedef void *spi_device_handle_t;
 
 #define SPI3_HOST 3
 #define SPI_DMA_CH_AUTO 1
+#define SPI_DMA_DISABLED 0
 #define SPICOMMON_BUSFLAG_MASTER 1
 
 typedef struct {
@@ -53,7 +55,8 @@ esp_err_t spi_bus_add_device(
 );
 esp_err_t spi_bus_remove_device(spi_device_handle_t handle);
 esp_err_t spi_bus_free(spi_host_device_t host_id);
-esp_err_t spi_device_transmit(
+esp_err_t spi_device_polling_transmit(
     spi_device_handle_t handle,
     spi_transaction_t *transaction
 );
+int spi_get_freq_limit(bool gpio_is_used, int input_delay_ns);

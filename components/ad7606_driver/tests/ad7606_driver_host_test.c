@@ -5,6 +5,7 @@
 
 #include "ad7606_driver.h"
 #include "board_config.h"
+#include "sdkconfig.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 
@@ -14,8 +15,13 @@ static int fake_gpio_error;
 static int fake_spi_initialize_calls;
 static int fake_spi_free_calls;
 static int fake_transmit_calls;
+static int fake_freq_limit_calls;
+static bool fake_freq_limit_gpio_used;
+static int fake_freq_limit_input_delay_ns;
 static int64_t fake_time_us;
 static uint8_t fake_rx[AD7606_CHANNEL_COUNT * 2];
+static spi_transaction_t *last_transaction;
+static void *last_rx_buffer;
 static spi_bus_config_t last_bus_config;
 static spi_device_interface_config_t last_device_config;
 
@@ -90,7 +96,7 @@ esp_err_t spi_bus_initialize(
 )
 {
     assert(host_id == SPI3_HOST);
-    assert(dma_chan == SPI_DMA_CH_AUTO);
+    assert(dma_chan == SPI_DMA_DISABLED);
     last_bus_config = *bus_config;
     fake_spi_initialize_calls++;
     return fake_spi_error ? ESP_ERR_INVALID_STATE : ESP_OK;
@@ -121,13 +127,20 @@ esp_err_t spi_bus_free(spi_host_device_t host_id)
     return ESP_OK;
 }
 
-esp_err_t spi_device_transmit(
+esp_err_t spi_device_polling_transmit(
     spi_device_handle_t handle,
     spi_transaction_t *transaction
 )
 {
     assert(handle == (spi_device_handle_t)(uintptr_t)0x1);
-    assert(transaction->length == AD7606_CHANNEL_COUNT * 2U * 8U);
+    assert(transaction->length == AD7606_SERIAL_RX_BYTES * 8U);
+    assert(transaction->rx_buffer != NULL);
+    if (last_transaction != NULL) {
+        assert(last_transaction == transaction); /* reusable transaction */
+        assert(last_rx_buffer == transaction->rx_buffer);
+    }
+    last_transaction = transaction;
+    last_rx_buffer = transaction->rx_buffer;
     fake_transmit_calls++;
     if (fake_spi_error) {
         return ESP_ERR_INVALID_STATE;
@@ -138,6 +151,14 @@ esp_err_t spi_device_transmit(
     /* Model a transport that completes well after CONVST timestamp capture. */
     fake_time_us += 100;
     return ESP_OK;
+}
+
+int spi_get_freq_limit(bool gpio_is_used, int input_delay_ns)
+{
+    fake_freq_limit_calls++;
+    fake_freq_limit_gpio_used = gpio_is_used;
+    fake_freq_limit_input_delay_ns = input_delay_ns;
+    return 12000000;
 }
 
 int64_t esp_timer_get_time(void)
@@ -165,6 +186,11 @@ static void reset_fake(void)
     fake_spi_initialize_calls = 0;
     fake_spi_free_calls = 0;
     fake_transmit_calls = 0;
+    fake_freq_limit_calls = 0;
+    fake_freq_limit_gpio_used = false;
+    fake_freq_limit_input_delay_ns = 0;
+    last_transaction = NULL;
+    last_rx_buffer = NULL;
     fake_time_us = 1000;
     for (size_t i = 0; i < AD7606_CHANNEL_COUNT; ++i) {
         const int16_t value = (int16_t)((int)i * 1000 - 3000);
@@ -182,12 +208,15 @@ static void test_successful_init_and_conversion(void)
     assert(last_bus_config.mosi_io_num == -1);
     assert(last_bus_config.miso_io_num == GPIO_NUM_39);
     assert(last_bus_config.sclk_io_num == GPIO_NUM_40);
-    assert(last_bus_config.max_transfer_sz == AD7606_CHANNEL_COUNT * 2);
+    assert(last_bus_config.max_transfer_sz == AD7606_SERIAL_RX_BYTES);
     assert(last_device_config.mode == AD7606_SPI_MODE);
-    assert(last_device_config.clock_speed_hz == AD7606_BUS_CLOCK_HZ);
+    assert(last_device_config.clock_speed_hz == CONFIG_AD7606_SPI_CLOCK_HZ);
     assert(last_device_config.spics_io_num == GPIO_NUM_41);
     assert(last_device_config.queue_size == 1);
     assert(fake_transmit_calls == 1);
+    assert(fake_freq_limit_calls == 1);
+    assert(fake_freq_limit_gpio_used);
+    assert(fake_freq_limit_input_delay_ns == 36);
 
     ad7606_sample_t sample = { 0 };
     assert(ad7606_driver_read(NULL) == ESP_ERR_INVALID_ARG);
@@ -199,6 +228,11 @@ static void test_successful_init_and_conversion(void)
     }
     assert(ad7606_raw_to_uv(-32768) == -5000000.0f);
     assert(ad7606_raw_to_uv(32767) > 4999840.0f);
+
+    sample.timestamp_us = -1;
+    assert(ad7606_driver_read_result(&sample) == ESP_OK);
+    assert(sample.timestamp_us == 0);
+    assert(fake_transmit_calls == 3);
 
     ad7606_driver_deinit();
     assert(fake_spi_free_calls == 1);
@@ -217,6 +251,17 @@ static void test_two_complement_boundary_codes_convert_to_documented_uv_scale(vo
     assert(ad7606_raw_to_uv(32767) == 4999847.5f);     /* 0x7FFF */
     assert(ad7606_raw_to_uv(-32768) == -5000000.0f);   /* 0x8000 */
     assert(ad7606_raw_to_uv(-1) == -152.587890625f);   /* 0xFFFF */
+
+    float microvolts = 0.0f;
+    for (uint8_t os = 1U; os <= 8U; os = (uint8_t)(os * 2U)) {
+        assert(ad7606_raw_to_uv_for_config(-32768, os, 5000U, &microvolts));
+        assert(microvolts == -5000000.0f);
+        assert(ad7606_raw_to_uv_for_config(32767, os, 10000U, &microvolts));
+        assert(microvolts > 9999600.0f && microvolts < 10000000.0f);
+    }
+    assert(!ad7606_raw_to_uv_for_config(1, 3U, 5000U, &microvolts));
+    assert(!ad7606_raw_to_uv_for_config(1, 1U, 500U, &microvolts));
+    assert(!ad7606_raw_to_uv_for_config(1, 1U, 5000U, NULL));
 }
 
 
@@ -241,7 +286,7 @@ static void test_constant_payload_is_observable_but_not_transport_failure(void)
     assert(observation.conversion_complete);
     assert(observation.spi_transaction_ok);
     assert(observation.pattern == AD7606_SERIAL_PATTERN_ALL_00);
-    assert(observation.rx[0] == 0x00U && observation.rx[15] == 0x00U);
+    assert(observation.rx[0] == 0x00U && observation.rx[7] == 0x00U);
     ad7606_driver_deinit();
 
     reset_fake();

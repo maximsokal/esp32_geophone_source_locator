@@ -382,7 +382,7 @@ static ad7606_serial_stream_state_t ad7606_serial_stream_state_update(
 )
 {
     const ad7606_serial_stream_state_t old_state = state->stream_state;
-    if (state->quality_window_frames < AD7606_SERIAL_STREAM_STATE_MIN_FRAMES) {
+    if (state->quality_window_frames < state->quality_window_capacity) {
         return old_state;
     }
 
@@ -481,7 +481,11 @@ static void ad7606_serial_quality_window_observe(
     uint8_t flags
 )
 {
-    if (state->quality_window_frames == AD7606_SERIAL_QUALITY_WINDOW_FRAMES) {
+    if (state->quality_window_flags == NULL || state->quality_window_capacity == 0U) {
+        return;
+    }
+
+    if (state->quality_window_frames == state->quality_window_capacity) {
         const uint8_t old_flags =
             state->quality_window_flags[state->quality_window_next];
         if ((old_flags & AD7606_SERIAL_FRAME_TRANSPORT_BAD) != 0U) {
@@ -538,14 +542,21 @@ static void ad7606_serial_quality_window_observe(
     if ((flags & AD7606_SERIAL_FRAME_ALL_IDENTICAL) != 0U) {
         ++state->quality_window_all_identical_frames;
     }
-    state->quality_window_next = (uint16_t)(
-        (state->quality_window_next + 1U) % AD7606_SERIAL_QUALITY_WINDOW_FRAMES
-    );
+    state->quality_window_next =
+        (state->quality_window_next + 1U) % state->quality_window_capacity;
+}
+
+
+uint32_t ad7606_serial_quality_window_frames(uint32_t sample_rate_hz)
+{
+    return sample_rate_hz;
 }
 
 
 void ad7606_serial_diag_reset(
-    ad7606_serial_diag_state_t *state
+    ad7606_serial_diag_state_t *state,
+    uint8_t *quality_window_flags,
+    uint32_t quality_window_capacity
 )
 {
     if (state == NULL) {
@@ -553,6 +564,15 @@ void ad7606_serial_diag_reset(
     }
 
     memset(state, 0, sizeof(*state));
+    if (quality_window_flags == NULL || quality_window_capacity == 0U) {
+        quality_window_flags = NULL;
+        quality_window_capacity = 0U;
+    }
+    else {
+        memset(quality_window_flags, 0, quality_window_capacity);
+    }
+    state->quality_window_flags = quality_window_flags;
+    state->quality_window_capacity = quality_window_capacity;
     state->pattern = AD7606_SERIAL_PATTERN_UNKNOWN;
     state->quality = AD7606_SERIAL_QUALITY_UNKNOWN;
     state->signal_quality = AD7606_SIGNAL_QUALITY_UNKNOWN;

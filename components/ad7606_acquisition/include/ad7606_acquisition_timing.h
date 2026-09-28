@@ -2,6 +2,45 @@
 
 #include <stdint.h>
 
+#include <stdbool.h>
+
+
+typedef enum
+{
+    AD7606_READ_MODE_AUTO = 0,
+    AD7606_READ_MODE_AFTER_CONVERSION,
+    AD7606_READ_MODE_DURING_CONVERSION
+
+} ad7606_read_mode_t;
+
+
+typedef struct
+{
+    ad7606_read_mode_t mode;
+    uint32_t tconv_max_ns;
+    uint64_t read_time_ns;
+    uint32_t convst_high_ns;
+
+} ad7606_timing_result_t;
+
+
+typedef struct
+{
+    uint32_t last_raw_count;
+    uint64_t extended_count;
+    bool initialized;
+
+} ad7606_count_extension_t;
+
+
+typedef struct
+{
+    uint64_t next_sample_index;
+    uint64_t missed_conversions;
+    bool initialized;
+
+} ad7606_sample_accounting_t;
+
 
 /*
  * esp_timer accepts an integral microsecond period. Round to the nearest
@@ -25,4 +64,63 @@ uint64_t ad7606_acquisition_collapsed_periods(
 uint64_t ad7606_acquisition_saturating_add_u64(
     uint64_t current,
     uint64_t increment
+);
+
+/* Quantizes a minimum CONVST high pulse to the selected LEDC resolution. */
+uint32_t ad7606_acquisition_ledc_duty_count(
+    uint32_t sample_rate_hz,
+    uint32_t duty_resolution_bits,
+    uint32_t target_high_ns,
+    uint32_t *actual_high_ns
+);
+
+/* Chooses a supported LEDC resolution whose XTAL divider produces exact fs. */
+uint32_t ad7606_acquisition_ledc_exact_resolution(
+    uint32_t sample_rate_hz,
+    uint32_t source_clock_hz,
+    uint32_t maximum_resolution_bits
+);
+
+/* Resolves configured timing against the AD7606 tCONV and throughput limits. */
+bool ad7606_acquisition_timing_resolve(
+    uint32_t sample_rate_hz,
+    uint32_t oversampling_ratio,
+    uint32_t spi_clock_hz,
+    ad7606_read_mode_t requested_mode,
+    uint32_t convst_high_ns,
+    ad7606_timing_result_t *result
+);
+
+/* Exact-index timestamps avoid accumulated period rounding error. */
+bool ad7606_acquisition_timestamp_from_index(
+    int64_t t0_us,
+    uint64_t sample_index,
+    uint32_t sample_rate_hz,
+    int64_t *timestamp_us
+);
+
+bool ad7606_acquisition_sample_index_from_pcnt(
+    ad7606_read_mode_t mode,
+    uint64_t completed_conversions,
+    bool busy_high,
+    uint64_t *sample_index,
+    bool *discard
+);
+
+void ad7606_acquisition_count_extension_reset(
+    ad7606_count_extension_t *state
+);
+
+bool ad7606_acquisition_count_extend_u32(
+    ad7606_count_extension_t *state,
+    uint32_t raw_count,
+    uint64_t *extended_count
+);
+
+/* Returns true only when this candidate is a new publishable sample index. */
+bool ad7606_acquisition_account_sample(
+    ad7606_sample_accounting_t *state,
+    uint64_t sample_index,
+    bool sample_valid,
+    uint64_t *new_missed_conversions
 );
