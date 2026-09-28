@@ -8,6 +8,8 @@
 #include "seismic_buffer.h"
 
 
+
+
 /*
  * Optional waveform index writer. samples.bin remains authoritative; every
  * caller must treat an error here as "disable/remove the acceleration index",

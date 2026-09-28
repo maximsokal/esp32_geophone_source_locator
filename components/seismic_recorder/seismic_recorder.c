@@ -74,11 +74,13 @@ static seismic_recorder_cadence_t s_cadence_start;
 static seismic_recorder_session_participation_t s_participation;
 
 /*
- * The worker copy buffer is PSRAM-backed and is reused for both acquisition
- * ingestion and one bounded write-behind flush. The actual SDSPI writer still
- * copies each <=256-frame flush through its internal DMA_ATTR staging buffer.
+ * Worker buffers live in PSRAM and are reused for acquisition ingestion and
+ * one bounded write-behind flush. Source indexes travel beside the frames so
+ * v2 blocks can preserve gaps without an additional internal-RAM staging
+ * object.
  */
 static seismic_frame_t *s_batch = NULL;
+static uint64_t *s_batch_sample_indices = NULL;
 
 /*
  * Write-behind cache: acquisition is acknowledged into this PSRAM ring first.
@@ -99,6 +101,19 @@ static int64_t s_last_flush_us = 0;
 static int64_t s_last_batch_log_us = 0;
 static bool s_stop_requested = false;
 static bool s_starting = false;
+
+
+static void seismic_recorder_free_batch_buffers(void)
+{
+    if (s_batch_sample_indices != NULL) {
+        heap_caps_free(s_batch_sample_indices);
+        s_batch_sample_indices = NULL;
+    }
+    if (s_batch != NULL) {
+        heap_caps_free(s_batch);
+        s_batch = NULL;
+    }
+}
 
 
 static void seismic_recorder_lock(void)
@@ -550,9 +565,10 @@ static esp_err_t seismic_recorder_flush_one_dirty_chunk(
     uint64_t first_session_frame = 0U;
 
     seismic_recorder_lock();
-    esp_err_t err = seismic_recorder_cache_copy_dirty(
+    esp_err_t err = seismic_recorder_cache_copy_dirty_with_source_indices(
         &s_cache,
         s_batch,
+        s_batch_sample_indices,
         SEISMIC_RECORDER_WRITE_STAGING_FRAMES,
         &dirty_count,
         &first_session_frame
@@ -566,6 +582,7 @@ static esp_err_t seismic_recorder_flush_one_dirty_chunk(
     const esp_err_t write_err = seismic_recorder_fs_write_frames(
         file,
         s_batch,
+        s_batch_sample_indices,
         dirty_count,
         &frames_written
     );
@@ -953,13 +970,21 @@ esp_err_t seismic_recorder_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    s_batch_sample_indices = heap_caps_malloc(
+        sizeof(*s_batch_sample_indices) * SEISMIC_RECORDER_BATCH_FRAMES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (s_batch_sample_indices == NULL) {
+        seismic_recorder_free_batch_buffers();
+        return ESP_ERR_NO_MEM;
+    }
+
     const size_t requested_cache_bytes =
         (size_t)CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB * 1024U;
     s_cache_capacity =
         requested_cache_bytes / sizeof(seismic_recorder_cache_slot_t);
     if (s_cache_capacity < SEISMIC_RECORDER_BATCH_FRAMES) {
-        heap_caps_free(s_batch);
-        s_batch = NULL;
+        seismic_recorder_free_batch_buffers();
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -973,8 +998,7 @@ esp_err_t seismic_recorder_init(void)
             "Unable to allocate recorder write-behind cache: requested=%u KiB",
             (unsigned)CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB
         );
-        heap_caps_free(s_batch);
-        s_batch = NULL;
+        seismic_recorder_free_batch_buffers();
         return ESP_ERR_NO_MEM;
     }
 
@@ -985,18 +1009,16 @@ esp_err_t seismic_recorder_init(void)
     );
     if (err != ESP_OK) {
         heap_caps_free(s_cache_storage);
-        heap_caps_free(s_batch);
+        seismic_recorder_free_batch_buffers();
         s_cache_storage = NULL;
-        s_batch = NULL;
         s_cache_capacity = 0U;
         return err;
     }
 
     if (!storage_manager_is_ready()) {
         heap_caps_free(s_cache_storage);
-        heap_caps_free(s_batch);
+        seismic_recorder_free_batch_buffers();
         s_cache_storage = NULL;
-        s_batch = NULL;
         s_cache_capacity = 0U;
         return ESP_ERR_INVALID_STATE;
     }
@@ -1004,9 +1026,8 @@ esp_err_t seismic_recorder_init(void)
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) {
         heap_caps_free(s_cache_storage);
-        heap_caps_free(s_batch);
+        seismic_recorder_free_batch_buffers();
         s_cache_storage = NULL;
-        s_batch = NULL;
         s_cache_capacity = 0U;
         return ESP_ERR_NO_MEM;
     }
@@ -1016,9 +1037,8 @@ esp_err_t seismic_recorder_init(void)
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
         heap_caps_free(s_cache_storage);
-        heap_caps_free(s_batch);
+        seismic_recorder_free_batch_buffers();
         s_cache_storage = NULL;
-        s_batch = NULL;
         s_cache_capacity = 0U;
         return ESP_ERR_NO_MEM;
     }
@@ -1052,9 +1072,8 @@ esp_err_t seismic_recorder_init(void)
         s_mutex = NULL;
         s_task = NULL;
         heap_caps_free(s_cache_storage);
-        heap_caps_free(s_batch);
+        seismic_recorder_free_batch_buffers();
         s_cache_storage = NULL;
-        s_batch = NULL;
         s_cache_capacity = 0U;
         return ESP_ERR_NO_MEM;
     }
@@ -1471,15 +1490,17 @@ esp_err_t seismic_recorder_start(
 
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE] = "";
     FILE *file = NULL;
+    uint16_t format_version = 0U;
 
     ESP_LOGI(TAG, "Preparing session for object=%s", object_id);
 
     err = seismic_recorder_fs_create_session(
         object_id,
-        acquisition.sample_rate_hz,
+        &acquisition,
         SEISMIC_CHANNEL_COUNT,
         session_id,
-        &file
+        &file,
+        &format_version
     );
     if (err != ESP_OK) {
         free(profile);
@@ -1496,6 +1517,7 @@ esp_err_t seismic_recorder_start(
     initial_snapshot.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_NONE;
     initial_snapshot.sample_rate_hz = acquisition.sample_rate_hz;
     initial_snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
+    initial_snapshot.format_version = format_version;
     initial_snapshot.last_error = ESP_OK;
     initial_snapshot.stop_stage_error = ESP_OK;
 

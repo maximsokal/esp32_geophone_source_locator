@@ -34,6 +34,7 @@ idf_component_register(
         "seismic_recorder_geometry_policy.c"
         "seismic_recorder_session_selection.c"
         "seismic_recorder_json.c"
+        "seismic_recorder_samples.c"
         "seismic_recorder_reader.c"
         "seismic_recorder_waveform.c"
         "seismic_recorder_lod.c"

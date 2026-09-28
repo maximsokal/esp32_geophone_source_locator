@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "seismic_recorder_samples_v2",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_samples.c",
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/seismic_recorder_lod.c",
+        "components/seismic_recorder/seismic_recorder_lod_reader.c",
+        "tests/host/seismic_recorder_samples_v2_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include",
+        "components/object_store/include",
+        "components/object_format/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "seismic_recorder_fs_v2_writer",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
+        "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}

@@ -115,6 +115,7 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
+    uint16_t format_version;
 
     esp_err_t last_error;
     esp_err_t stop_stage_error;
@@ -140,6 +141,9 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
+    uint16_t format_version;
+    bool has_gaps;
+    uint64_t missing_samples;
 
     char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
 
@@ -246,6 +250,9 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
+    uint16_t format_version;
+    bool has_gaps;
+    uint64_t missing_samples;
 
     uint64_t source_frame_count;
     uint64_t start_frame;

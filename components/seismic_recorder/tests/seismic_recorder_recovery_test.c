@@ -247,6 +247,7 @@ static void *recovery_test_malloc(size_t size)
 
 
 #define malloc recovery_test_malloc
+#include "../seismic_recorder_samples.c"
 #include "../seismic_recorder_recovery.c"
 #undef malloc
 

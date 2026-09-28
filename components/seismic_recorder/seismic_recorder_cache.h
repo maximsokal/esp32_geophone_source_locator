@@ -72,6 +72,16 @@ esp_err_t seismic_recorder_cache_copy_dirty(
 );
 
 
+esp_err_t seismic_recorder_cache_copy_dirty_with_source_indices(
+    const seismic_recorder_cache_t *cache,
+    seismic_frame_t *frames,
+    uint64_t *source_frame_numbers,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *first_session_frame
+);
+
+
 esp_err_t seismic_recorder_cache_mark_persisted(
     seismic_recorder_cache_t *cache,
     uint64_t first_session_frame,

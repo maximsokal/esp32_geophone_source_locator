@@ -256,9 +256,10 @@ esp_err_t seismic_recorder_cache_copy_range(
 }
 
 
-esp_err_t seismic_recorder_cache_copy_dirty(
+esp_err_t seismic_recorder_cache_copy_dirty_with_source_indices(
     const seismic_recorder_cache_t *cache,
     seismic_frame_t *frames,
+    uint64_t *source_frame_numbers,
     size_t max_frames,
     size_t *frame_count,
     uint64_t *first_session_frame
@@ -292,18 +293,43 @@ esp_err_t seismic_recorder_cache_copy_dirty(
         ? dirty
         : max_frames;
 
-    const esp_err_t err = seismic_recorder_cache_copy_range(
-        cache,
-        cache->persisted_session_frame,
-        frames,
-        count
+    const size_t oldest = seismic_recorder_cache_oldest_index(cache);
+    const size_t offset = (size_t)(
+        cache->persisted_session_frame - cache->first_session_frame
     );
-    if (err != ESP_OK) {
-        return err;
+    size_t source = (oldest + offset) % cache->capacity;
+    for (size_t index = 0U; index < count; ++index) {
+        const seismic_recorder_cache_slot_t *slot = &cache->slots[source];
+        frames[index] = slot->frame;
+        if (source_frame_numbers != NULL) {
+            source_frame_numbers[index] = slot->source_frame_number;
+        }
+        if (++source == cache->capacity) {
+            source = 0U;
+        }
     }
 
     *frame_count = count;
     return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_cache_copy_dirty(
+    const seismic_recorder_cache_t *cache,
+    seismic_frame_t *frames,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *first_session_frame
+)
+{
+    return seismic_recorder_cache_copy_dirty_with_source_indices(
+        cache,
+        frames,
+        NULL,
+        max_frames,
+        frame_count,
+        first_session_frame
+    );
 }
 
 
