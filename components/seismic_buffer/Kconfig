@@ -1,0 +1,19 @@
+menu "Seismic buffer"
+
+config SEISMIC_BUFFER_SECONDS
+    int "Seismic history duration (seconds)"
+    range 1 60
+    default 4
+    help
+        Retain at least this much recent acquisition history when the PSRAM
+        budget permits. The ring always contains at least 2,048 frames.
+
+config SEISMIC_BUFFER_PSRAM_BUDGET_BYTES
+    int "Seismic buffer PSRAM budget (bytes)"
+    range 73728 8388608
+    default 4194304
+    help
+        Maximum PSRAM reserved for the realtime seismic ring, including each
+        frame's publication sequence and frame number metadata.
+
+endmenu

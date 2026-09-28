@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "seismic_buffer_runtime_capacity",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/tests/seismic_buffer_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_buffer/tests/stubs",
+        "components/seismic_buffer/include"
+      ],
+      "defines": [
+        "CONFIG_SEISMIC_BUFFER_SECONDS=4",
+        "CONFIG_SEISMIC_BUFFER_PSRAM_BUDGET_BYTES=4194304",
+        "SEISMIC_BUFFER_TEST_ALLOCATOR=1",
+        "SEISMIC_BUFFER_TEST_HOOKS=1"
+      ]
+    }
+  ]
+}

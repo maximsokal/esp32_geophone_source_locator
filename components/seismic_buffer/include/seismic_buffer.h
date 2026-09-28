@@ -7,6 +7,7 @@
 
 
 #define SEISMIC_CHANNEL_COUNT    4
+/* Compatibility for legacy tests/clients; use seismic_buffer_capacity(). */
 #define SEISMIC_BUFFER_CAPACITY  2048
 
 
@@ -47,6 +48,14 @@ typedef struct
 esp_err_t seismic_buffer_init(void);
 
 
+/* Runtime capacity in frames; zero if initialization/allocation failed. */
+size_t seismic_buffer_capacity(void);
+
+
+/*
+ * Call only after producer/consumer tasks are quiesced. In-flight push/copy
+ * calls are tracked; configuration then returns ESP_ERR_INVALID_STATE.
+ */
 esp_err_t seismic_buffer_configure(
     seismic_source_t source,
     uint32_t sample_rate_hz
