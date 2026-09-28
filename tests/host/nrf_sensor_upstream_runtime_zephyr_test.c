@@ -9,6 +9,8 @@
 #include <zephyr/kernel.h>
 
 #include "nrf_blue_led.h"
+#include "nrf_log_events.h"
+#include "nrf_log_runtime_zephyr.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
@@ -64,8 +66,43 @@ static bool s_advance_worker_time;
 static int64_t s_worker_stop_at_ms;
 static bool s_change_pressure;
 static uint32_t s_fake_pressure_pa;
+static uint32_t s_test_fault_mask;
 static jmp_buf s_worker_exit;
 static void (*s_worker_entry)(void *, void *, void *);
+static struct {
+    uint16_t event_id;
+    uint32_t arg0;
+    uint32_t arg1;
+} s_log_events[16];
+static unsigned s_log_event_count;
+
+void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint32_t arg1)
+{
+    assert(s_log_event_count < sizeof(s_log_events) / sizeof(s_log_events[0]));
+    s_log_events[s_log_event_count].event_id = event_id;
+    s_log_events[s_log_event_count].arg0 = arg0;
+    s_log_events[s_log_event_count].arg1 = arg1;
+    ++s_log_event_count;
+}
+
+static unsigned log_event_count(uint16_t event_id)
+{
+    unsigned count = 0U;
+    for (unsigned index = 0U; index < s_log_event_count; ++index) {
+        if (s_log_events[index].event_id == event_id) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static void assert_last_log_event(uint16_t event_id, uint32_t arg0, uint32_t arg1)
+{
+    assert(s_log_event_count != 0U);
+    assert(s_log_events[s_log_event_count - 1U].event_id == event_id);
+    assert(s_log_events[s_log_event_count - 1U].arg0 == arg0);
+    assert(s_log_events[s_log_event_count - 1U].arg1 == arg1);
+}
 
 void k_msgq_purge(struct k_msgq *q)
 {
@@ -230,9 +267,10 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
 {
     (void)node_state;
     ++s_refresh_calls;
-    runtime->core.snapshot.valid_mask = NRF_SENSOR_VALID_IMU;
+    runtime->core.snapshot.valid_mask = NRF_SENSOR_VALID_IMU & ~s_test_fault_mask;
+    runtime->core.snapshot.fault_mask = s_test_fault_mask;
     if (s_include_env) {
-        runtime->core.snapshot.valid_mask |= NRF_SENSOR_VALID_ENV;
+        runtime->core.snapshot.valid_mask |= NRF_SENSOR_VALID_ENV & ~s_test_fault_mask;
         runtime->core.snapshot.env.temperature_milli_c = 21500;
         runtime->core.snapshot.env.pressure_pa = s_change_pressure
             ? s_fake_pressure_pa
@@ -539,6 +577,14 @@ int main(void)
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING);
     assert(snapshot.reference_generation == 42U);
     assert(snapshot.relative_z_mm == 0);
+    assert(log_event_count(NRF_LOG_EVENT_HEIGHT_REF_REJECTED) == 1U);
+    assert_last_log_event(
+        NRF_LOG_EVENT_HEIGHT_REF_REJECTED,
+        44U,
+        NRF_UPSTREAM_REFERENCE_REJECTED_MOVING);
+    process_height_reference_request(
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 0x44U + 1U, 43U);
+    assert(log_event_count(NRF_LOG_EVENT_HEIGHT_REF_REJECTED) == 1U);
 
     s_force_moving = false;
     s_force_stationary = true;
@@ -590,6 +636,37 @@ int main(void)
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED);
     assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+
+    s_force_stationary = false;
+    s_force_moving = true;
+    process_imu_calibration_request(
+        NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 63U, 63U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING);
+    assert(log_event_count(NRF_LOG_EVENT_IMU_CAL_REJECTED) == 1U);
+    assert_last_log_event(
+        NRF_LOG_EVENT_IMU_CAL_REJECTED,
+        63U,
+        NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING);
+
+    s_force_moving = false;
+    s_force_stationary = true;
+    s_include_env = true;
+    s_test_fault_mask = NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV;
+    process_refresh_request(70U);
+    assert(log_event_count(NRF_LOG_EVENT_IMU_FAULT_SET) == 1U);
+    assert(log_event_count(NRF_LOG_EVENT_ENV_FAULT_SET) == 1U);
+    process_refresh_request(71U);
+    assert(log_event_count(NRF_LOG_EVENT_IMU_FAULT_SET) == 1U);
+    assert(log_event_count(NRF_LOG_EVENT_ENV_FAULT_SET) == 1U);
+
+    s_test_fault_mask = 0U;
+    process_refresh_request(72U);
+    assert(log_event_count(NRF_LOG_EVENT_IMU_FAULT_CLEARED) == 1U);
+    assert(log_event_count(NRF_LOG_EVENT_ENV_FAULT_CLEARED) == 1U);
+    process_refresh_request(73U);
+    assert(log_event_count(NRF_LOG_EVENT_IMU_FAULT_CLEARED) == 1U);
+    assert(log_event_count(NRF_LOG_EVENT_ENV_FAULT_CLEARED) == 1U);
 
     /* Same assignment is idempotent; a conflicting active identity is rejected. */
     {

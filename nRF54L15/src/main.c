@@ -9,11 +9,14 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <stdint.h>
 #include <nrfx_power.h>
 
 #include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_node_state.h"
+#include "nrf_log_events.h"
+#include "nrf_log_runtime_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
 
@@ -30,6 +33,11 @@ int main(void)
     int ret;
     bool led_is_on = true;
     nrf_node_state_t node_state;
+
+    ret = nrf_log_runtime_zephyr_init();
+    if (ret != 0) {
+        return ret;
+    }
 
 #if defined(CONFIG_NRFX_POWER)
     nrfx_power_constlat_mode_request();
@@ -73,6 +81,15 @@ int main(void)
     }
 
     while (1) {
+#if defined(CONFIG_APP_LOG_TEST_EVENTS) && CONFIG_APP_LOG_TEST_EVENTS
+        static uint32_t test_event_index;
+        for (uint32_t burst_index = 0U; burst_index < 32U; ++burst_index) {
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_LOG_TEST_EVENT,
+                ++test_event_index,
+                (uint32_t)k_uptime_get());
+        }
+#endif
         nrf_watchdog_zephyr_service();
 
         ret = gpio_pin_set_dt(&led, (int)led_is_on);

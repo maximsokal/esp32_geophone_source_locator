@@ -65,6 +65,9 @@ static inline void k_work_init(struct k_work *work, k_work_handler_t handler)
 
 int k_work_submit(struct k_work *work);
 
+int64_t k_uptime_get(void);
+uint32_t k_cycle_get_32(void);
+
 typedef unsigned int k_spinlock_key_t;
 struct k_spinlock {
     unsigned int unused;

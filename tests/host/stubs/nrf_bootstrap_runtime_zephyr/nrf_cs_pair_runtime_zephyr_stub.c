@@ -1,5 +1,14 @@
 #include "nrf_cs_pair_runtime_zephyr.h"
 
+static int s_next_execute_result;
+static nrf_cs_outcome_t s_next_outcome;
+
+void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcome_t outcome)
+{
+    s_next_execute_result = execute_result;
+    s_next_outcome = outcome;
+}
+
 int nrf_cs_pair_runtime_zephyr_start(void)
 {
     return 0;
@@ -16,9 +25,18 @@ int nrf_cs_pair_runtime_zephyr_execute(
     nrf_cs_pair_runtime_complete_cb_t complete_cb,
     void *context)
 {
-    (void)step;
-    (void)complete_cb;
-    (void)context;
+    nrf_cs_measurement_t measurement = {
+        .outcome = s_next_outcome,
+    };
+    int execute_result = s_next_execute_result;
+    s_next_execute_result = 0;
+    s_next_outcome = NRF_CS_OUTCOME_SUCCESS;
+    if (execute_result != 0) {
+        return execute_result;
+    }
+    if (complete_cb != NULL) {
+        complete_cb(step, &measurement, context);
+    }
     return 0;
 }
 

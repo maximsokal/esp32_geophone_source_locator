@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_log_runtime_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_log_protocol.c",
+        "nRF54L15/src/nrf_log_ring.c",
+        "nRF54L15/src/nrf_log_runtime_zephyr.c",
+        "tests/host/nrf_log_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr",
+        "tests/host/stubs/nrf_upstream_target_zephyr",
+        "nRF54L15/include"
+      ],
+      "defines": ["NRF_LOG_RING_TEST_HOOKS"]
+    },
+    {
+      "name": "nrf_watchdog_runtime_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_watchdog_health.c",
+        "nRF54L15/src/nrf_watchdog_zephyr.c",
+        "tests/host/nrf_watchdog_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_watchdog_runtime_zephyr",
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr",
+        "tests/host/stubs/nrf_upstream_target_zephyr",
+        "nRF54L15/include"
+      ]
+    }
+  ]
+}

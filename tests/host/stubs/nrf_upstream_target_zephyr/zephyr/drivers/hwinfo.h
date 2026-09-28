@@ -11,5 +11,9 @@ typedef ptrdiff_t ssize_t;
 #endif
 
 ssize_t hwinfo_get_device_id(uint8_t *buffer, size_t length);
+int hwinfo_get_reset_cause(uint32_t *cause);
+int hwinfo_clear_reset_cause(void);
+
+#define RESET_WATCHDOG 0x00000004U
 
 #endif
