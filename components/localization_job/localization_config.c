@@ -45,6 +45,7 @@ esp_err_t localization_config_standard_processing(
     }
 
     memset(config_out, 0, sizeof(*config_out));
+    config_out->sample_rate_hz = LOCALIZATION_CONFIG_SAMPLE_RATE_HZ;
     config_out->timing_uncertainty_us =
         1000000.0 / (double)LOCALIZATION_CONFIG_SAMPLE_RATE_HZ;
     config_out->pick_config.noise_window_samples = samples_for_ms(LOCALIZATION_CONFIG_SAMPLE_RATE_HZ, 100U);
@@ -91,6 +92,16 @@ esp_err_t localization_config_from_json(
     }
 
     localization_calculate_config_t config = {0};
+    config.sample_rate_hz = 500U;
+    const cJSON *sample_rate = cJSON_GetObjectItemCaseSensitive(root, "sample_rate_hz");
+    if (sample_rate != NULL) {
+        size_t parsed_rate = 0U;
+        if (!size_item(root, "sample_rate_hz", &parsed_rate) ||
+            parsed_rate == 0U || parsed_rate > UINT32_MAX) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        config.sample_rate_hz = (uint32_t)parsed_rate;
+    }
     double speed = 0.0;
     double speed_uncertainty = 0.0;
     double timing_uncertainty = 0.0;
@@ -237,6 +248,8 @@ static bool add_processing_fields(cJSON *root, const localization_calculate_conf
 {
     const geophone_channel_pick_config_t *pick = &config->pick_config;
     if (cJSON_AddNumberToObject(root, "timing_uncertainty_us", config->timing_uncertainty_us) == NULL ||
+        cJSON_AddNumberToObject(root, "sample_rate_hz",
+            config->sample_rate_hz == 0U ? 500U : config->sample_rate_hz) == NULL ||
         cJSON_AddNumberToObject(root, "noise_window_samples", (double)pick->noise_window_samples) == NULL ||
         cJSON_AddNumberToObject(root, "sta_window_samples", (double)pick->sta_window_samples) == NULL ||
         cJSON_AddNumberToObject(root, "lta_window_samples", (double)pick->lta_window_samples) == NULL ||

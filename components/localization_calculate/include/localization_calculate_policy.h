@@ -93,6 +93,16 @@ int64_t localization_calculate_arrival_time_us(
     uint32_t sample_rate_hz
 );
 
+/* Rescales every configured sample-count window from its recorded settings
+ * rate to the session rate. Returns INVALID_ARG with a concise reason when
+ * rounding makes a P or S STA/LTA configuration invalid. */
+esp_err_t localization_calculate_rescale_sample_windows(
+    localization_calculate_config_t *config,
+    uint32_t session_sample_rate_hz,
+    char *reason_out,
+    size_t reason_size
+);
+
 
 /*
  * Derives a grid-search box from the session's own solved sensor positions

@@ -312,6 +312,7 @@ static localization_calculate_config_t default_test_config(void)
     config.propagation_speed_uncertainty_mps = 20.0;
     snprintf(config.propagation_model_name, sizeof(config.propagation_model_name), "%s", "test-model");
     config.timing_uncertainty_us = 60.0;
+    config.sample_rate_hz = FIX_SAMPLE_RATE_HZ;
     config.pick_config.noise_window_samples = FIX_NOISE_W;
     config.pick_config.sta_window_samples = FIX_STA_W;
     config.pick_config.lta_window_samples = FIX_LTA_W;
@@ -328,6 +329,166 @@ static localization_calculate_config_t default_test_config(void)
     config.progress = NULL;
     config.progress_context = NULL;
     return config;
+}
+
+
+static localization_calculate_config_t rate_fixture_config(uint32_t settings_rate_hz)
+{
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = settings_rate_hz;
+    config.pick_config.noise_window_samples = 200U;
+    config.pick_config.sta_window_samples = 40U;
+    config.pick_config.lta_window_samples = 400U;
+    config.pick_config.refine_lookback_samples = 40U;
+    config.pick_config.refine_lookahead_samples = 40U;
+    config.pick_config.snr_signal_window_samples = 80U;
+    config.semblance_window_half_span_samples = 40U;
+    return config;
+}
+
+
+static void test_sample_windows_rescale_across_session_rates(void)
+{
+    localization_calculate_config_t config = rate_fixture_config(20000U);
+    char reason[96];
+    assert(localization_calculate_rescale_sample_windows(&config, 0U, reason, sizeof(reason)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(reason, "session sample rate") != NULL);
+
+    config = rate_fixture_config(20000U);
+    assert(localization_calculate_rescale_sample_windows(&config, 500U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.sample_rate_hz == 500U);
+    assert(config.pick_config.noise_window_samples == 5U);
+    assert(config.pick_config.sta_window_samples == 1U);
+    assert(config.pick_config.lta_window_samples == 10U);
+    assert(config.pick_config.refine_lookback_samples == 1U);
+    assert(config.pick_config.refine_lookahead_samples == 1U);
+    assert(config.pick_config.snr_signal_window_samples == 2U);
+    assert(config.semblance_window_half_span_samples == 1U);
+    assert(reason[0] == '\0');
+
+    config = rate_fixture_config(500U);
+    assert(localization_calculate_rescale_sample_windows(&config, 20000U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.pick_config.noise_window_samples == 8000U);
+    assert(config.pick_config.sta_window_samples == 1600U);
+    assert(config.pick_config.lta_window_samples == 16000U);
+    assert(config.pick_config.refine_lookback_samples == 1600U);
+    assert(config.pick_config.refine_lookahead_samples == 1600U);
+    assert(config.pick_config.snr_signal_window_samples == 3200U);
+    assert(config.semblance_window_half_span_samples == 1600U);
+
+    config = rate_fixture_config(500U);
+    const localization_calculate_config_t identity = config;
+    assert(localization_calculate_rescale_sample_windows(&config, 500U, reason, sizeof(reason)) == ESP_OK);
+    assert(memcmp(&config.pick_config, &identity.pick_config, sizeof(config.pick_config)) == 0);
+    assert(config.semblance_window_half_span_samples == identity.semblance_window_half_span_samples);
+
+    config = rate_fixture_config(500U);
+    config.pick_config.sta_window_samples = 10000000U;
+    config.pick_config.lta_window_samples = 30000001U;
+    config.pick_config.sta_lta_trigger_ratio = 3.0f;
+    assert(localization_calculate_rescale_sample_windows(&config, 500U, reason, sizeof(reason)) == ESP_OK);
+
+    config = rate_fixture_config(0U); /* in-memory legacy profile means 500 Hz */
+    assert(localization_calculate_rescale_sample_windows(&config, 20000U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.sample_rate_hz == 20000U && config.pick_config.sta_window_samples == 1600U);
+
+    config = rate_fixture_config(3U);
+    config.pick_config.noise_window_samples = 4U;
+    config.pick_config.sta_window_samples = 2U;
+    config.pick_config.lta_window_samples = 6U;
+    config.pick_config.refine_lookback_samples = 1U;
+    config.pick_config.refine_lookahead_samples = 2U;
+    config.pick_config.snr_signal_window_samples = 4U;
+    config.semblance_window_half_span_samples = 1U;
+    assert(localization_calculate_rescale_sample_windows(&config, 2U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.pick_config.noise_window_samples == 3U); /* 4 * 2/3 rounds to nearest */
+    assert(config.pick_config.sta_window_samples == 1U); /* min 1 */
+    assert(config.pick_config.lta_window_samples == 4U);
+    assert(config.semblance_window_half_span_samples == 1U);
+
+    config = rate_fixture_config(2U);
+    config.pick_config.noise_window_samples = 3U;
+    assert(localization_calculate_rescale_sample_windows(&config, 1U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.pick_config.noise_window_samples == 2U); /* exact half rounds upward */
+
+    config = rate_fixture_config(500U);
+    config.s_pick_enabled = true;
+    config.s_pick_config.min_separation_samples = 120U;
+    config.s_pick_config.max_separation_samples = 800U;
+    config.s_pick_config.sta_window_samples = 30U;
+    config.s_pick_config.lta_window_samples = 300U;
+    config.s_pick_config.sta_lta_trigger_ratio = 4.0f;
+    assert(localization_calculate_rescale_sample_windows(&config, 20000U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.s_pick_config.min_separation_samples == 4800U);
+    assert(config.s_pick_config.max_separation_samples == 32000U);
+    assert(config.s_pick_config.sta_window_samples == 1200U);
+    assert(config.s_pick_config.lta_window_samples == 12000U);
+
+    config = rate_fixture_config(20000U);
+    config.s_pick_enabled = true;
+    config.s_pick_config.min_separation_samples = 120U;
+    config.s_pick_config.max_separation_samples = 800U;
+    config.s_pick_config.sta_window_samples = 30U;
+    config.s_pick_config.lta_window_samples = 300U;
+    config.s_pick_config.sta_lta_trigger_ratio = 4.0f;
+    assert(localization_calculate_rescale_sample_windows(&config, 500U, reason, sizeof(reason)) == ESP_OK);
+    assert(config.s_pick_config.min_separation_samples == 3U);
+    assert(config.s_pick_config.max_separation_samples == 20U);
+    assert(config.s_pick_config.sta_window_samples == 1U);
+    assert(config.s_pick_config.lta_window_samples == 8U);
+
+    config = rate_fixture_config(2U);
+    config.s_pick_enabled = true;
+    config.s_pick_config.min_separation_samples = 1U;
+    config.s_pick_config.max_separation_samples = 2U;
+    config.s_pick_config.sta_window_samples = 2U;
+    config.s_pick_config.lta_window_samples = 4U;
+    config.s_pick_config.sta_lta_trigger_ratio = 1.0f;
+    assert(localization_calculate_rescale_sample_windows(&config, 1U, reason, sizeof(reason)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(reason, "S-wave") != NULL);
+
+    config = rate_fixture_config(2U);
+    config.pick_config.sta_window_samples = 1U;
+    config.pick_config.lta_window_samples = 2U;
+    config.pick_config.sta_lta_trigger_ratio = 0.5f;
+    assert(localization_calculate_rescale_sample_windows(&config, 1U, reason, sizeof(reason)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(reason, "STA/LTA") != NULL);
+
+    config = rate_fixture_config(2U);
+    config.pick_config.sta_window_samples = 3U;
+    config.pick_config.lta_window_samples = 5U;
+    config.pick_config.sta_lta_trigger_ratio = 1.6f;
+    assert(localization_calculate_rescale_sample_windows(&config, 1U, reason, sizeof(reason)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(reason, "trigger ratio") != NULL);
+}
+
+
+static void test_run_revalidates_windows_against_session_rate(void)
+{
+    const localization_point3d_t source = { 0.25, 0.40, 0.30 };
+    reset_fakes();
+    build_fixture(4U, &source, 340.0, 0.01, 1.0f, 0.02f, true);
+    g_fixture_summary.sample_rate_hz = 500U;
+
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = 20000U;
+    config.pick_config.noise_window_samples = 1U;
+    config.pick_config.sta_window_samples = 1U;
+    config.pick_config.lta_window_samples = 2U;
+    config.pick_config.sta_lta_trigger_ratio = 1.5f;
+    config.pick_config.refine_lookback_samples = 1U;
+    config.pick_config.refine_lookahead_samples = 1U;
+    config.pick_config.snr_signal_window_samples = 1U;
+    config.semblance_window_half_span_samples = 1U;
+
+    localization_calculate_summary_t summary;
+    const esp_err_t err = localization_calculate_run(
+        "OBJ01", "S000099", &config, 46000ULL, &summary
+    );
+    assert(err == ESP_ERR_INVALID_ARG); /* 1/2 samples collapse to 1/1 at 500 Hz */
+    assert(g_geometry_read_calls == 1U && g_raw_read_calls == 1U);
+    assert(g_write_call_count == 0U && g_pick_write_calls == 0U);
+    free_fixture_frames();
 }
 
 
@@ -729,6 +890,8 @@ static void test_unusable_scan_reports_constraint_not_applied(void)
 
 int main(void)
 {
+    test_sample_windows_rescale_across_session_rates();
+    test_run_revalidates_windows_against_session_rate();
     test_insufficient_dimensionality_writes_nothing();
     test_three_pods_planar_no_fabricated_z();
     test_four_pods_clean_event_solves_near_truth();

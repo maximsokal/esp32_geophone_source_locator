@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "localization_bayes.h"
 #include "localization_calculate_policy.h"
@@ -41,6 +42,8 @@
 #define LOCALIZATION_CALCULATE_REFINE_DIVISOR 4U
 
 #define LOCALIZATION_CALCULATE_METHOD_VERSION 1U
+
+static const char *TAG = "LOCALIZATION_CALCULATE";
 
 #define LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK \
     ((1U << OBJECT_STORE_POD_COUNT) - 1U)
@@ -329,6 +332,21 @@ esp_err_t localization_calculate_run(
         heap_caps_free(frames);
         return ESP_ERR_INVALID_STATE;
     }
+
+    localization_calculate_config_t session_config = *config;
+    char rate_error[96];
+    err = localization_calculate_rescale_sample_windows(
+        &session_config,
+        session_summary.sample_rate_hz,
+        rate_error,
+        sizeof(rate_error)
+    );
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "session-rate window rescaling failed: %s", rate_error);
+        heap_caps_free(frames);
+        return err;
+    }
+    config = &session_config;
 
     /* --- Per-channel DC removal, energy, and arrival picking ------------- */
 
