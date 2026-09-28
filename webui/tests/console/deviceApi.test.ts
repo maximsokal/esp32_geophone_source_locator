@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEVICE_API_FAST_TIMEOUT_MS,
   fetchDeviceStatus,
+  getCalcSettings,
+  saveCalcSettings,
   sendControl,
 } from '../../src/api/deviceApi';
 
@@ -20,6 +22,40 @@ afterEach(() => {
 });
 
 describe('device API request pressure and failures', () => {
+  it('loads typed material presets and standard processing settings for an object', async () => {
+    const body = {
+      ok: true,
+      settings: null,
+      presets: [{ id: 'concrete', propagation_speed_mps: 4100, propagation_speed_uncertainty_mps: 450 }],
+      standard_processing: { sta_window_samples: 20, lta_window_samples: 200 },
+    };
+    const fetchMock = vi.fn(async () => jsonResponse(body));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getCalcSettings('OBJ_0001')).resolves.toEqual({
+      settings: null,
+      presets: body.presets,
+      standardProcessing: body.standard_processing,
+    });
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/localization/runs?job=settings&object_id=OBJ_0001');
+  });
+
+  it('returns the save error and HTTP status without throwing', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ error: 'invalid material' }, 400, 'Bad Request'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(saveCalcSettings('OBJ_0001', { material: 'custom' })).resolves.toEqual({
+      ok: false,
+      error: 'ESP API 400 POST /api/control: invalid material',
+      httpStatus: 400,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+      action: 'save_calc_settings',
+      object_id: 'OBJ_0001',
+      material: 'custom',
+    });
+  });
+
   it('coalesces identical concurrent fast status requests', async () => {
     let resolveFetch!: (response: Response) => void;
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve; }));

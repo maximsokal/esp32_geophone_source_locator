@@ -177,6 +177,7 @@ export interface DeviceWorkflowStatus {
   object_id?: string | null;
   session_id?: string | null;
   has_scan?: boolean;
+  calc_settings_ready?: boolean;
   calculation_class?: string | null;
 }
 

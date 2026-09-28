@@ -8,6 +8,7 @@ import type { SavedSeismicSnapshot } from '../../domain/device';
 import { fetchResultSegment, resultViewSourceDistances } from '../../domain/resultSegment';
 import { useLocale, useT } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
+import { materialNameKey } from '../objects/material';
 import { envelopePolylinePoints } from '../seismic/savedWaveform';
 import { WORKFLOW_UNKNOWN } from './workflowViewModel';
 
@@ -15,6 +16,7 @@ interface ResultData {
   snapshot: SavedSeismicSnapshot | null;
   pods: LocalizationSessionPodGeometry[];
   distances: (number | null)[];
+  material: string | null;
 }
 
 interface Props {
@@ -38,7 +40,7 @@ export default function WorkflowResultViewer({ objectId, sessionId }: Props) {
     const load = async (): Promise<void> => {
       try {
         if (objectId === null || sessionId === null) {
-          if (!cancelled) setData({ snapshot: null, pods: [], distances: [] });
+          if (!cancelled) setData({ snapshot: null, pods: [], distances: [], material: null });
           return;
         }
         const [status, listing] = await Promise.all([
@@ -72,6 +74,7 @@ export default function WorkflowResultViewer({ objectId, sessionId }: Props) {
             snapshot: segment?.session ?? null,
             pods: listing.geometry.pods,
             distances,
+            material: run?.material ?? null,
           });
         }
       } catch {
@@ -102,6 +105,9 @@ export default function WorkflowResultViewer({ objectId, sessionId }: Props) {
 
   return (
     <div className="workflow-result-viewer">
+      {data.material !== null && (
+        <p>{t('workflow.material.run', { name: t(materialNameKey(data.material)) })}</p>
+      )}
       <h3>{t('workflow.result.waveform')}</h3>
       {data.snapshot === null
         ? <p>{t('workflow.result.waveform_unavailable')}</p>

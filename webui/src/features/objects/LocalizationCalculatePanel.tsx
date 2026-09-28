@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchLocalizationJob, fetchLocalizationRuns, fetchScanInfo, sendControl } from '../../api/deviceApi';
+import type { CalcSettingsProfile } from '../../api/deviceApi';
+import MaterialSettingsForm from './MaterialSettingsForm';
 import LocalizationJobReport from './LocalizationJobReport';
 import LocalizationOverlay from './LocalizationOverlay';
 import {
@@ -82,6 +84,39 @@ const EMPTY_FORM: FormState = {
   sStaLtaTriggerRatio: '',
   sMinimumSnr: '',
 };
+
+function formFromSettings(settings: CalcSettingsProfile): FormState {
+  const next = { ...EMPTY_FORM };
+  const fields: Array<[keyof FormState, string]> = [
+    ['propagationSpeedMps', 'propagation_speed_mps'],
+    ['propagationSpeedUncertaintyMps', 'propagation_speed_uncertainty_mps'],
+    ['propagationModelName', 'propagation_model_name'],
+    ['timingUncertaintyUs', 'timing_uncertainty_us'],
+    ['noiseWindowSamples', 'noise_window_samples'],
+    ['staWindowSamples', 'sta_window_samples'],
+    ['ltaWindowSamples', 'lta_window_samples'],
+    ['staLtaTriggerRatio', 'sta_lta_trigger_ratio'],
+    ['refineLookbackSamples', 'refine_lookback_samples'],
+    ['refineLookaheadSamples', 'refine_lookahead_samples'],
+    ['refineAmplitudeFraction', 'refine_amplitude_fraction'],
+    ['snrSignalWindowSamples', 'snr_signal_window_samples'],
+    ['minimumSnr', 'minimum_snr'],
+    ['semblanceWindowHalfSpanSamples', 'semblance_window_half_span_samples'],
+    ['maxSourceDepthM', 'max_source_depth_m'],
+    ['timeBudgetS', 'time_budget_s'],
+    ['sMinSeparationSamples', 's_min_separation_samples'],
+    ['sMaxSeparationSamples', 's_max_separation_samples'],
+    ['sStaWindowSamples', 's_sta_window_samples'],
+    ['sLtaWindowSamples', 's_lta_window_samples'],
+    ['sStaLtaTriggerRatio', 's_sta_lta_trigger_ratio'],
+    ['sMinimumSnr', 's_minimum_snr'],
+  ];
+  for (const [formField, settingField] of fields) {
+    const value = settings[settingField];
+    if (typeof value === 'number' || typeof value === 'string') next[formField] = String(value);
+  }
+  return next;
+}
 
 function positiveNumber(text: string): number | null {
   const value = Number(text);
@@ -272,6 +307,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const { locale } = useLocale();
   const t = useT();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const formTouched = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [job, setJob] = useState<LocalizationJobStatus | null>(null);
@@ -282,6 +318,9 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [geometryError, setGeometryError] = useState<string | null>(null);
   /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
   const [hasScan, setHasScan] = useState<boolean | null>(null);
+  const prefillFromSettings = useCallback((settings: CalcSettingsProfile | null) => {
+    if (settings !== null && !formTouched.current) setForm(formFromSettings(settings));
+  }, []);
   const provenance = geometry?.provenance;
   const provenanceFields = provenance === undefined ? [] : geometryProvenanceFields(provenance, t);
   const podProvenance = (geometry?.pods ?? []).map((pod) => ({ pod: pod.pod, fields: podProvenanceFields(pod, t) }))
@@ -289,6 +328,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
   useEffect(() => {
     let cancelled = false;
+    formTouched.current = false;
+    setForm(EMPTY_FORM);
     setGeometry(null);
     setCsPairs(null);
     setPicks(null);
@@ -314,6 +355,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   }, [objectId, sessionId]);
 
   const set = (key: keyof FormState) => (event: React.ChangeEvent<HTMLInputElement>) => {
+    formTouched.current = true;
     setForm((previous) => ({ ...previous, [key]: event.target.value }));
   };
 
@@ -410,6 +452,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         <button disabled={busy || running} onClick={onClose}>{t('calc.close')}</button>
       </div>
       <p>{t('calc.description')}</p>
+      <MaterialSettingsForm objectId={objectId} onSettingsLoaded={prefillFromSettings} />
 
       <h3>{t('calc.geometry')}</h3>
       {geometryError !== null && <div className="console-alert" role="alert">{geometryError}</div>}
@@ -503,7 +546,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       <div className="cable-grid">
         <label>
           <span>{t('calc.propagation_speed')}</span>
-          <input type="number" min="0" step="any" value={form.propagationSpeedMps} onChange={set('propagationSpeedMps')} />
+          <input data-testid="manual-propagation-speed" type="number" min="0" step="any" value={form.propagationSpeedMps} onChange={set('propagationSpeedMps')} />
         </label>
         <label>
           <span>{t('calc.speed_uncertainty')}</span>
@@ -528,11 +571,11 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
           </label>
           <label>
             <span>{t('calc.sta_window')}</span>
-            <input type="number" min="1" step="1" value={form.staWindowSamples} onChange={set('staWindowSamples')} />
+            <input data-testid="manual-sta-window" type="number" min="1" step="1" value={form.staWindowSamples} onChange={set('staWindowSamples')} />
           </label>
           <label>
             <span>{t('calc.lta_window')}</span>
-            <input type="number" min="1" step="1" value={form.ltaWindowSamples} onChange={set('ltaWindowSamples')} />
+            <input data-testid="manual-lta-window" type="number" min="1" step="1" value={form.ltaWindowSamples} onChange={set('ltaWindowSamples')} />
           </label>
           <label>
             <span>{t('calc.trigger_ratio')}</span>

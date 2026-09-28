@@ -170,6 +170,13 @@ describe('workflow view model (MAX-296)', () => {
     expect(html).not.toContain(translate('en', 'workflow.action.start_recording'));
   });
 
+  it('shows the inline material form at STOPPED until calculation settings are ready', () => {
+    const html = panelHtml(statusFor('STOPPED', [], 0, { calc_settings_ready: false }));
+    expect(html).toContain(translate('en', 'workflow.material.choose_hint'));
+    expect(html).toContain(translate('en', 'workflow.material.title'));
+    expect(html).toContain(translate('en', 'workflow.material.choose'));
+  });
+
   it('shows the 3D entry only when has_scan is true', () => {
     const hidden = panelHtml(statusFor('RECORD_READY', [], 4, { has_scan: false }));
     const visible = panelHtml(statusFor('RECORD_READY', [], 4, { has_scan: true }));

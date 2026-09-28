@@ -4,6 +4,7 @@ import type { DeviceStatus, WorkflowCalibrationNode } from '../../domain/device'
 import type { WorkflowCommandResult } from '../../api/deviceApi';
 import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
+import MaterialSettingsForm from '../objects/MaterialSettingsForm';
 import WorkflowResultViewer from './WorkflowResultViewer';
 import {
   rangingUncertaintyMm,
@@ -322,6 +323,18 @@ export default function WorkflowPanel({
         {model.sections.map((section, index) => (
           <WorkflowSection key={`${section.kind}-${index}`} section={section} status={status} />
         ))}
+        {workflow?.step === 'STOPPED' && workflow.object_id && (
+          <>
+            {workflow.calc_settings_ready !== true && (
+              <p>{t('workflow.material.choose_hint')}</p>
+            )}
+            <MaterialSettingsForm
+              objectId={workflow.object_id}
+              ready={workflow.calc_settings_ready === true}
+              onSaved={onRefreshStatus}
+            />
+          </>
+        )}
         {deleteArmed && <p role="alert">{t('workflow.delete_confirm.prompt')}</p>}
         <div className="console-actions" aria-busy={pendingCommand !== null}>
           {model.actions.map((action) => (

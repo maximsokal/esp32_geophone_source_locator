@@ -6,7 +6,9 @@ const api = vi.hoisted(() => ({
   fetchLocalizationJob: vi.fn(),
   fetchLocalizationRuns: vi.fn(),
   fetchScanInfo: vi.fn(),
+  getCalcSettings: vi.fn(),
   sendControl: vi.fn(),
+  saveCalcSettings: vi.fn(),
 }));
 vi.mock('../../src/api/deviceApi', () => api);
 
@@ -45,6 +47,7 @@ function fieldValue(text: string, label: string, expected: string): string {
 async function renderPanel(value: LocalizationRunListing, locale: I18nLocale): Promise<ReactTestRenderer> {
   api.fetchLocalizationRuns.mockResolvedValueOnce(value);
   api.fetchScanInfo.mockResolvedValueOnce({ present: false, bytes: 0 });
+  api.getCalcSettings.mockResolvedValueOnce({ settings: null, presets: [], standardProcessing: {} });
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = create(createElement(LocaleProvider, { initialLocale: locale }, createElement(LocalizationCalculatePanel, {
