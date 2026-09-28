@@ -2,7 +2,7 @@
 	(version 20260306)
 	(generator "eeschema")
 	(generator_version "10.0")
-	(uuid "cf901f3b-00f9-42e5-a35f-cccec34a5c9e")
+	(uuid "3d436d54-3d5a-4526-9ce4-fc68e2f23d33")
 	(paper "A3")
 	(lib_symbols
 		(symbol "Amplifier_Instrumentation:AD620"
