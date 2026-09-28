@@ -1395,6 +1395,7 @@
       "name": "seismic_pipeline_scheduling_contract",
       "sources": [
         "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/seismic_envelope.c",
         "components/ui/ui_measurement_trace.c",
         "tests/host/seismic_pipeline_scheduling_contract_test.c"
       ],
@@ -1432,6 +1433,7 @@
       "name": "seismic_recorder_web_pipeline_contract",
       "sources": [
         "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/seismic_envelope.c",
         "components/object_format/object_format.c",
         "components/seismic_recorder/seismic_recorder_waveform.c",
         "components/seismic_recorder/seismic_recorder_reader.c",
@@ -1913,6 +1915,7 @@
     {
       "name": "ui_measurement_trace",
       "sources": [
+        "components/seismic_buffer/seismic_envelope.c",
         "components/ui/ui_measurement_trace.c",
         "components/ui/tests/ui_measurement_trace_test.c"
       ],

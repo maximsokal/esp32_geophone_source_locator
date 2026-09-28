@@ -89,6 +89,7 @@
     {
       "name": "ui_measurement_trace_rate_span_299d",
       "sources": [
+        "components/seismic_buffer/seismic_envelope.c",
         "components/ui/ui_measurement_trace.c",
         "components/ui/tests/ui_measurement_trace_test.c"
       ],
@@ -103,11 +104,13 @@
       "name": "seismic_api_time_span_299d",
       "sources": [
         "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/seismic_envelope.c",
         "components/web_server/web_seismic_api.c",
         "components/web_server/web_json_writer.c",
         "tests/host/web_seismic_api_time_span_test.c"
       ],
       "include_dirs": [
+        "tests/host/stubs/seismic_api",
         "tests/host/stubs/seismic_pipeline",
         "tests/host/stubs/ui_measurement_span",
         "components/seismic_buffer/include",

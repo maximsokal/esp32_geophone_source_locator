@@ -37,11 +37,18 @@ bool ui_measurement_trace_accumulator_begin(
     }
 
     memset(accumulator, 0, sizeof(*accumulator));
-    accumulator->frame_count = frame_count;
-    accumulator->bucket_count = frame_count < UI_MEASUREMENT_TRACE_POINTS
+    const size_t bucket_count = frame_count < UI_MEASUREMENT_TRACE_POINTS
         ? frame_count
         : UI_MEASUREMENT_TRACE_POINTS;
-    return true;
+    return seismic_envelope_accumulator_begin(
+        &accumulator->envelope,
+        frame_count,
+        bucket_count,
+        UI_MEASUREMENT_TRACE_POINTS,
+        accumulator->bucket_min,
+        accumulator->bucket_max,
+        accumulator->bucket_initialized
+    );
 }
 
 
@@ -52,42 +59,9 @@ bool ui_measurement_trace_accumulator_add(
     size_t frame_count
 )
 {
-    if (
-        accumulator == NULL || frames == NULL || frame_count == 0U ||
-        frame_offset != accumulator->frames_consumed ||
-        frame_offset > accumulator->frame_count ||
-        frame_count > accumulator->frame_count - frame_offset
-    ) {
-        return false;
-    }
-
-    for (size_t i = 0U; i < frame_count; ++i) {
-        const size_t frame_index = frame_offset + i;
-        const size_t bucket = (size_t)(
-            (uint64_t)frame_index * accumulator->bucket_count /
-            accumulator->frame_count
-        );
-        for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-            const float value = frames[i].channel_uv[channel];
-            accumulator->channel_sum[channel] += (double)value;
-            accumulator->latest[channel] = value;
-            if (!accumulator->bucket_initialized[bucket]) {
-                accumulator->bucket_min[channel][bucket] = value;
-                accumulator->bucket_max[channel][bucket] = value;
-            }
-            else {
-                if (value < accumulator->bucket_min[channel][bucket]) {
-                    accumulator->bucket_min[channel][bucket] = value;
-                }
-                if (value > accumulator->bucket_max[channel][bucket]) {
-                    accumulator->bucket_max[channel][bucket] = value;
-                }
-            }
-        }
-        accumulator->bucket_initialized[bucket] = true;
-    }
-    accumulator->frames_consumed += frame_count;
-    return true;
+    return accumulator != NULL && seismic_envelope_accumulator_add(
+        &accumulator->envelope, frame_offset, frames, frame_count
+    );
 }
 
 
@@ -104,23 +78,21 @@ float ui_measurement_trace_accumulator_finish(
     ui_measurement_trace_clear(trace_max);
     if (
         accumulator == NULL || trace_min == NULL || trace_max == NULL ||
-        accumulator->frame_count == 0U ||
-        accumulator->frames_consumed != accumulator->frame_count
+        !seismic_envelope_accumulator_finish(&accumulator->envelope, true)
     ) {
         return 0.0f;
     }
 
-    const size_t output_offset = UI_MEASUREMENT_TRACE_POINTS - accumulator->bucket_count;
+    const size_t output_offset =
+        UI_MEASUREMENT_TRACE_POINTS - accumulator->envelope.bucket_count;
     float max_abs_uv = 0.0f;
     for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-        const float mean = (float)(
-            accumulator->channel_sum[channel] / (double)accumulator->frame_count
-        );
         float overall_min = 0.0f;
         float overall_max = 0.0f;
-        for (size_t bucket = 0U; bucket < accumulator->bucket_count; ++bucket) {
-            const float minimum = accumulator->bucket_min[channel][bucket] - mean;
-            const float maximum = accumulator->bucket_max[channel][bucket] - mean;
+        for (size_t bucket = 0U; bucket < accumulator->envelope.bucket_count; ++bucket) {
+            const size_t index = channel * UI_MEASUREMENT_TRACE_POINTS + bucket;
+            const float minimum = accumulator->bucket_min[index];
+            const float maximum = accumulator->bucket_max[index];
             const size_t output = output_offset + bucket;
             trace_min[channel][output] = ui_measurement_trace_round_to_i32(minimum);
             trace_max[channel][output] = ui_measurement_trace_round_to_i32(maximum);
@@ -132,7 +104,7 @@ float ui_measurement_trace_accumulator_finish(
             if (minimum_abs > max_abs_uv) max_abs_uv = minimum_abs;
             if (maximum_abs > max_abs_uv) max_abs_uv = maximum_abs;
         }
-        if (latest != NULL) latest[channel] = accumulator->latest[channel];
+        if (latest != NULL) latest[channel] = accumulator->envelope.latest[channel];
         if (channel_min != NULL) channel_min[channel] = overall_min;
         if (channel_max != NULL) channel_max[channel] = overall_max;
     }

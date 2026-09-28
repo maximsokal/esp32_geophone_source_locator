@@ -4,21 +4,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "seismic_buffer.h"
+#include "seismic_envelope.h"
 
 
 #define UI_MEASUREMENT_TRACE_POINTS  48U
 
 typedef struct
 {
-    size_t frame_count;
-    size_t frames_consumed;
-    size_t bucket_count;
-    double channel_sum[SEISMIC_CHANNEL_COUNT];
-    float bucket_min[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
-    float bucket_max[SEISMIC_CHANNEL_COUNT][UI_MEASUREMENT_TRACE_POINTS];
+    seismic_envelope_accumulator_t envelope;
+    float bucket_min[SEISMIC_CHANNEL_COUNT * UI_MEASUREMENT_TRACE_POINTS];
+    float bucket_max[SEISMIC_CHANNEL_COUNT * UI_MEASUREMENT_TRACE_POINTS];
     bool bucket_initialized[UI_MEASUREMENT_TRACE_POINTS];
-    float latest[SEISMIC_CHANNEL_COUNT];
 
 } ui_measurement_trace_accumulator_t;
 

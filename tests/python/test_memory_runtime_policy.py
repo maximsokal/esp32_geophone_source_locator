@@ -322,6 +322,7 @@ def test_ui_header_does_not_reinvalidate_unchanged_labels():
 def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     measurements = read("components/ui/ui_measurements.c")
     reducer = read("components/ui/ui_measurement_trace.c")
+    envelope = read("components/seismic_buffer/seismic_envelope.c")
     kconfig = read("main/Kconfig.projbuild")
 
     assert "lv_chart_set_series_ext_y_array" in measurements
@@ -337,10 +338,10 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     assert "UI_I18N_KEY_MEASUREMENT_DIGITAL_FAULT" in measurements
     assert "s_last_digital_interference" in measurements
     assert "digital_interference == s_last_digital_interference" in measurements
-    assert "channel_sum" in reducer
-    assert "bucket_min" in reducer
-    assert "bucket_max" in reducer
-    assert "frames_consumed" in reducer
+    assert "channel_sum" in envelope
+    assert "bucket_min" in envelope
+    assert "bucket_max" in envelope
+    assert "frames_consumed" in envelope
     assert "UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES 1024U" in measurements
     assert "ui_measurement_trace_accumulator_add" in measurements
     assert "trace_min" in reducer

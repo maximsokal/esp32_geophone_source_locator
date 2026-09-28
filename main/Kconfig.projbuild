@@ -151,13 +151,13 @@ config LOCALIZATION_MAX_ANALYSIS_S
     # MAX-299 8 MiB PSRAM budget estimates (KiB). Static EXT_RAM_BSS is 25 KiB
     # from the linked firmware map. Dynamic rows: 44 B ring slot; recorder
     # cache + batch/index + LOD scratch; localization frame + four channel
-    # arrays at 40 B/frame; fixed 24 KiB measurement chunk; quality flags;
-    # web live-waveform copy; service stacks; historical staging; web scan and
+    # arrays at 40 B/frame; fixed 24 KiB UI chunk; quality flags;
+    # web live-waveform scratch; service stacks; historical staging; web scan and
     # client-log buffers. Per-rate consumers:
     # Rate   static ring  recorder loc arrays UI flags web-wave service hist webIO
-    # 500 Hz     25   88      1044       195  24     1       48      75   24    8
-    # 20 kHz     25 1719      1044      3072  24    20      938      75   24    8
-    # 40 kHz     25 2048      1044      3072  24    40     1118      75   24    8
+    # 500 Hz     25   88      1044       195  24     1       24      75   24    8
+    # 20 kHz     25 1719      1044      3072  24    20       24      75   24    8
+    # 40 kHz     25 2048      1044      3072  24    40       24      75   24    8
     # On-demand peaks: scan preview up to 2458 KiB occupancy fallback + 57 KiB
     # canvas; localization occupancy file + expanded keys up to 2386 KiB.
     # Localization keeps a 3072 KiB largest-free-block reserve for that input,
@@ -168,9 +168,10 @@ config LOCALIZATION_MAX_ANALYSIS_S
     # maximum scan preview during acquisition. Localization runs after stop
     # frees the ring; its reserved block is counted as occupied for headroom.
     # Rate     acquisition+scan  headroom  localization  headroom  peak  headroom
-    # 500 Hz             3852      4340          4467      3725   4467      3725
-    # 20 kHz             6392      1800          7344       848   7344       848
-    # 40 kHz             6921      1271          7344       848   7344       848
+    # 500 Hz             3828      4364          4467      3725   4467      3725
+    # 20 kHz             5478      2714          7344       848   7344       848
+    # 40 kHz             5827      2365          7344       848   7344       848
+    # Peak remains the localization path at each rate; its table values are unchanged.
     # Bounded workflow/status/object/web allocations reduce the measured free
     # block before localization chooses its window; scan and localization are
     # on-demand paths. These are allocation estimates, not physical HIL data.

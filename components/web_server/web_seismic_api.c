@@ -7,6 +7,7 @@
 
 #include "esp_heap_caps.h"
 #include "seismic_buffer.h"
+#include "seismic_envelope.h"
 #include "seismic_recorder.h"
 
 
@@ -15,6 +16,7 @@
 #define WEB_SEISMIC_MAX_SPAN_MS    60000U
 #define WEB_SEISMIC_MIN_POINTS      16
 #define WEB_SEISMIC_MAX_POINTS      1200
+#define WEB_SEISMIC_CHUNK_FRAMES    1024U
 
 
 static esp_err_t web_seismic_query_copy(
@@ -240,24 +242,17 @@ static esp_err_t web_seismic_handler(
     const size_t frame_capacity = requested_frames < info.buffered_frames
         ? (size_t)requested_frames
         : info.buffered_frames;
-    if (frame_capacity > SIZE_MAX / sizeof(seismic_frame_t)) {
-        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Requested waveform is too large");
-    }
-    seismic_frame_t *frames = frame_capacity == 0U
+    const size_t chunk_capacity = frame_capacity < WEB_SEISMIC_CHUNK_FRAMES
+        ? frame_capacity
+        : WEB_SEISMIC_CHUNK_FRAMES;
+    seismic_frame_t *chunk = chunk_capacity == 0U
         ? NULL
-        : heap_caps_malloc(frame_capacity * sizeof(*frames), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (frame_capacity > 0U && frames == NULL) {
+        : heap_caps_malloc(chunk_capacity * sizeof(*chunk), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (chunk_capacity > 0U && chunk == NULL) {
         return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
     }
 
-    size_t frame_count = 0U;
-    if (frame_capacity > 0U) {
-        err = seismic_buffer_copy_latest(frames, frame_capacity, &frame_count, &info);
-        if (err != ESP_OK) {
-            heap_caps_free(frames);
-            return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
-        }
-    }
+    const size_t frame_count = frame_capacity;
     const size_t point_count = frame_count < requested_points ? frame_count : requested_points;
     const uint32_t decimation_factor = point_count == 0U
         ? 0U
@@ -306,33 +301,101 @@ static esp_err_t web_seismic_handler(
         info.total_frames
     );
 
+    uint64_t cursor = info.total_frames - frame_count;
+    size_t frames_copied = 0U;
+    size_t chunk_count = 0U;
+    size_t chunk_offset = 0U;
     for (size_t point = 0U; point < point_count; ++point) {
         const size_t start = (point * frame_count) / point_count;
         size_t end = ((point + 1U) * frame_count) / point_count;
         if (end <= start) end = start + 1U;
+        const size_t point_frame_count = end - start;
+        float bucket_min[SEISMIC_CHANNEL_COUNT];
+        float bucket_max[SEISMIC_CHANNEL_COUNT];
+        bool bucket_initialized[1];
+        seismic_envelope_accumulator_t reducer;
+        if (!seismic_envelope_accumulator_begin(
+                &reducer,
+                point_frame_count,
+                1U,
+                1U,
+                bucket_min,
+                bucket_max,
+                bucket_initialized
+            )) {
+            heap_caps_free(chunk);
+            return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
+        }
+
+        int64_t timestamp_us = 0;
+        int64_t end_timestamp_us = 0;
+        size_t point_frames_copied = 0U;
+        while (point_frames_copied < point_frame_count) {
+            if (chunk_offset == chunk_count) {
+                const size_t remaining = frame_count - frames_copied;
+                const size_t max_frames = remaining < chunk_capacity
+                    ? remaining
+                    : chunk_capacity;
+                uint64_t dropped = 0U;
+                seismic_buffer_info_t chunk_info;
+                err = seismic_buffer_copy_since(
+                    &cursor,
+                    chunk,
+                    max_frames,
+                    &chunk_count,
+                    &dropped,
+                    &chunk_info
+                );
+                if (err != ESP_OK || dropped != 0U || chunk_count == 0U) {
+                    heap_caps_free(chunk);
+                    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
+                }
+                frames_copied += chunk_count;
+                chunk_offset = 0U;
+            }
+
+            const size_t point_remaining = point_frame_count - point_frames_copied;
+            const size_t chunk_remaining = chunk_count - chunk_offset;
+            const size_t take = point_remaining < chunk_remaining
+                ? point_remaining
+                : chunk_remaining;
+            if (point_frames_copied == 0U) {
+                timestamp_us = chunk[chunk_offset].timestamp_us;
+            }
+            end_timestamp_us = chunk[chunk_offset + take - 1U].timestamp_us;
+            if (!seismic_envelope_accumulator_add(
+                    &reducer,
+                    point_frames_copied,
+                    chunk + chunk_offset,
+                    take
+                )) {
+                heap_caps_free(chunk);
+                return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
+            }
+            point_frames_copied += take;
+            chunk_offset += take;
+        }
+        if (!seismic_envelope_accumulator_finish(&reducer, false)) {
+            heap_caps_free(chunk);
+            return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Seismic buffer unavailable");
+        }
+
         if (point > 0U) web_json_writer_write(&writer, ",");
         web_json_writer_printf(
             &writer,
             "{\"timestamp_us\":%" PRId64 ",\"end_timestamp_us\":%" PRId64 ",\"channels\":[",
-            frames[start].timestamp_us,
-            frames[end - 1U].timestamp_us
+            timestamp_us,
+            end_timestamp_us
         );
 
         for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-            float minimum = frames[start].channel_uv[channel];
-            float maximum = minimum;
-            for (size_t frame = start + 1U; frame < end; ++frame) {
-                const float value = frames[frame].channel_uv[channel];
-                if (value < minimum) minimum = value;
-                if (value > maximum) maximum = value;
-            }
             if (channel > 0U) web_json_writer_write(&writer, ",");
             web_json_writer_printf(
                 &writer,
                 "{\"id\":%u,\"min_uv\":%.3f,\"max_uv\":%.3f}",
                 (unsigned)(channel + 1U),
-                minimum,
-                maximum
+                bucket_min[channel],
+                bucket_max[channel]
             );
         }
         web_json_writer_write(&writer, "]}");
@@ -340,7 +403,7 @@ static esp_err_t web_seismic_handler(
 
     web_json_writer_write(&writer, "]}");
 
-    heap_caps_free(frames);
+    heap_caps_free(chunk);
 
     return web_json_writer_finish(&writer);
 }
