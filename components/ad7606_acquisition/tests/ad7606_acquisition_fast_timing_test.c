@@ -114,6 +114,21 @@ static void test_full_rate_os_clock_mode_matrix(void)
 }
 
 
+static void test_default_20khz_os1_auto_reads_after_conversion(void)
+{
+    ad7606_timing_result_t result = {0};
+    assert(ad7606_acquisition_timing_resolve(
+        20000U,
+        1U,
+        10000000U,
+        AD7606_READ_MODE_AUTO,
+        2149U,
+        &result
+    ));
+    assert(result.mode == AD7606_READ_MODE_AFTER_CONVERSION);
+}
+
+
 static void test_invalid_timing_boundaries(void)
 {
     ad7606_timing_result_t result = {0};
@@ -247,6 +262,7 @@ int main(void)
 {
     test_ledc_convst_pulse_quantization();
     test_full_rate_os_clock_mode_matrix();
+    test_default_20khz_os1_auto_reads_after_conversion();
     test_invalid_timing_boundaries();
     test_sample_index_timestamps_for_long_runs_and_overflow();
     test_pcnt_extension_wrap_restart_and_monotonicity();

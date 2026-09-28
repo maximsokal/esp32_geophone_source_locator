@@ -30,7 +30,7 @@ menu "Seismic Acquisition"
 
     choice SEISMIC_AD7606_RATE
         prompt "AD7606 acquisition sample rate" if SEISMIC_SOURCE_AD7606
-        default SEISMIC_AD7606_RATE_500
+        default SEISMIC_AD7606_RATE_20000
 
         config SEISMIC_AD7606_RATE_500
             bool "500 Hz"
