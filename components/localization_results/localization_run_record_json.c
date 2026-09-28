@@ -179,6 +179,11 @@ esp_err_t localization_run_record_to_json(
         !isfinite(record->propagation_speed_uncertainty_mps) ||
         record->propagation_speed_uncertainty_mps < 0.0 ||
         strnlen(record->material, sizeof(record->material)) >= sizeof(record->material) ||
+        strnlen(record->analysis_window_reason, sizeof(record->analysis_window_reason)) >=
+            sizeof(record->analysis_window_reason) ||
+        (record->analysis_window_reason[0] != '\0' &&
+         (!record->analysis_window_truncated ||
+          strcmp(record->analysis_window_reason, "memory") != 0)) ||
         (record->analysis_window_truncated && record->analysis_window_frames == 0U)
     ) {
         return ESP_ERR_INVALID_ARG;
@@ -279,6 +284,11 @@ esp_err_t localization_run_record_to_json(
                 window, "frames", (double)record->analysis_window_frames
             ) != NULL &&
             cJSON_AddBoolToObject(window, "truncated", true) != NULL;
+        if (ok && record->analysis_window_reason[0] != '\0') {
+            ok = cJSON_AddStringToObject(
+                window, "reason", record->analysis_window_reason
+            ) != NULL;
+        }
     }
 
     if (ok && record->solved) {
@@ -519,6 +529,15 @@ esp_err_t localization_run_record_from_json(
             record->analysis_window_truncated = true;
             record->analysis_window_start_index = (uint64_t)start_index;
             record->analysis_window_frames = (uint64_t)frames;
+            const cJSON *reason = cJSON_GetObjectItemCaseSensitive(
+                analysis_window, "reason"
+            );
+            if (reason != NULL) {
+                ok = read_string(
+                    analysis_window, "reason", record->analysis_window_reason,
+                    sizeof(record->analysis_window_reason)
+                );
+            }
         }
     }
 

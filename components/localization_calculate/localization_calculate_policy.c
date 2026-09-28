@@ -8,7 +8,6 @@
 #define LOCALIZATION_CALCULATE_SEARCH_STEP_M 0.1
 #define LOCALIZATION_CALCULATE_SEARCH_MARGIN_FRACTION 0.5
 #define LOCALIZATION_CALCULATE_SEARCH_MIN_MARGIN_M 1.0
-#define LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES 30000U
 
 
 double localization_calculate_quality_from_residual_us(
@@ -58,24 +57,32 @@ size_t localization_calculate_analysis_window_frames(
     uint32_t sample_rate_hz,
     uint32_t max_analysis_seconds,
     uint64_t psram_budget_bytes,
-    size_t bytes_per_frame
+    size_t largest_free_block_bytes,
+    size_t safety_reserve_bytes,
+    size_t bytes_per_frame,
+    bool *limited_by_free_memory_out
 )
 {
+    if (limited_by_free_memory_out != NULL) {
+        *limited_by_free_memory_out = false;
+    }
     if (sample_rate_hz == 0U || max_analysis_seconds == 0U || bytes_per_frame == 0U) {
         return 0U;
     }
 
     const uint64_t time_frames = (uint64_t)sample_rate_hz * max_analysis_seconds;
-    uint64_t max_frames = psram_budget_bytes / bytes_per_frame;
-    if (time_frames < max_frames) {
-        max_frames = time_frames;
+    const uint64_t budget_frames = psram_budget_bytes / bytes_per_frame;
+    const size_t usable_free_bytes = largest_free_block_bytes > safety_reserve_bytes
+        ? largest_free_block_bytes - safety_reserve_bytes
+        : 0U;
+    const uint64_t free_frames = usable_free_bytes / bytes_per_frame;
+    uint64_t configured_frames = time_frames < budget_frames
+        ? time_frames
+        : budget_frames;
+    if (limited_by_free_memory_out != NULL) {
+        *limited_by_free_memory_out = free_frames < configured_frames;
     }
-    if (
-        sample_rate_hz == 500U &&
-        max_frames < LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES
-    ) {
-        max_frames = LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES;
-    }
+    const uint64_t max_frames = free_frames < configured_frames ? free_frames : configured_frames;
     return max_frames > (uint64_t)SIZE_MAX ? SIZE_MAX : (size_t)max_frames;
 }
 

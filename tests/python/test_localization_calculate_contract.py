@@ -58,10 +58,11 @@ def test_run_never_invents_a_physically_measured_parameter():
 
 def test_fails_closed_before_any_run_store_write():
     source = orchestrator_source()
+    run_source = source[source.index("esp_err_t localization_calculate_run("):]
 
-    dimensionality_check = source.index("LOCALIZATION_DIMENSIONALITY_INSUFFICIENT")
-    range_read_call = source.index("seismic_recorder_read_session_range(")
-    first_write = source.index("localization_run_store_write(")
+    dimensionality_check = run_source.index("LOCALIZATION_DIMENSIONALITY_INSUFFICIENT")
+    range_read_call = run_source.index("seismic_recorder_read_session_range(")
+    first_write = run_source.index("localization_run_store_write(")
 
     # Every fail-closed gate (geometry read, dimensionality, raw sample
     # read/capacity) must appear in the source before the first persisted
@@ -120,17 +121,21 @@ def test_max_frames_bound_is_documented_not_guessed():
     policy = read("components/localization_calculate/localization_calculate_policy.c")
     kconfig = read("main/Kconfig.projbuild")
 
-    # MAX-307 analyzes the session prefix bounded by both a time limit and a
-    # PSRAM budget. The 30,000-frame compatibility floor is retained at 500 Hz.
+    # MAX-299 bounds the window by time, configured budget, and live PSRAM.
     assert "localization_calculate_analysis_window_frames(" in source
     assert "CONFIG_LOCALIZATION_MAX_ANALYSIS_S" in source
     assert "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB" in source
     assert "config LOCALIZATION_MAX_ANALYSIS_S" in kconfig
     assert "config LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB" in kconfig
-    assert "LOCALIZATION_CALCULATE_LEGACY_MIN_ANALYSIS_FRAMES 30000U" in policy
-    assert "sample_rate_hz == 500U" in policy
+    assert "largest_free_block_bytes" in policy
+    assert "heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)" in source
+    assert "LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES" in source
+    assert '"insufficient_memory"' in source
+    assert '"memory"' in source
     assert "session_summary.samples_written > (uint64_t)frame_count" in source
     assert "records[i].analysis_window_start_index = 0U" in source
+    assert "LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES (3072U * 1024U)" in source
+    assert "max_window_frames < minimum_useful_frames" in source
 
 
 def test_pick_evidence_persistence_is_best_effort_not_gating():

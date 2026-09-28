@@ -9,11 +9,11 @@
 #include "freertos/FreeRTOS.h"
 
 #ifndef CONFIG_SEISMIC_BUFFER_SECONDS
-#define CONFIG_SEISMIC_BUFFER_SECONDS 4
+#define CONFIG_SEISMIC_BUFFER_SECONDS 2
 #endif
 
 #ifndef CONFIG_SEISMIC_BUFFER_PSRAM_BUDGET_BYTES
-#define CONFIG_SEISMIC_BUFFER_PSRAM_BUDGET_BYTES (4U * 1024U * 1024U)
+#define CONFIG_SEISMIC_BUFFER_PSRAM_BUDGET_BYTES (2U * 1024U * 1024U)
 #endif
 
 
@@ -548,6 +548,14 @@ esp_err_t seismic_buffer_configure(
         if (err != ESP_OK) {
             goto done;
         }
+    }
+
+    if (sample_rate_hz == 0U) {
+        /* Configuration owns the operation gate, so producer and readers
+         * are quiescent before the acquisition ring is released. */
+        seismic_buffer_clear_storage();
+        seismic_buffer_reset_metadata(source, 0U);
+        goto done;
     }
 
     if (sample_rate_hz != 0U &&

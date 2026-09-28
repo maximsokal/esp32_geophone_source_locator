@@ -30,7 +30,7 @@
 #endif
 
 #ifndef CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB
-#define CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB 4096
+#define CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB 3072
 #endif
 
 /* A numerical search-strategy knob (coarse-to-refine grid narrowing), not a
@@ -40,6 +40,9 @@
 #define LOCALIZATION_CALCULATE_REFINE_DIVISOR 4U
 
 #define LOCALIZATION_CALCULATE_METHOD_VERSION 1U
+/* Covers the 1 MiB occupancy file, up to 1.33 MiB expanded keys, workspace,
+ * and allocator margin while the analysis arrays are resident. */
+#define LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES (3072U * 1024U)
 
 static const char *TAG = "LOCALIZATION_CALCULATE";
 
@@ -257,6 +260,52 @@ static void free_channel_buffers(
 }
 
 
+static void localization_calculate_persist_memory_failure(
+    const char *object_id,
+    const char *session_id,
+    const localization_calculate_config_t *config,
+    const object_store_geometry_t *geometry,
+    uint32_t channel_mask,
+    localization_dimensionality_t dimensionality,
+    uint64_t computed_at_ms,
+    localization_calculate_summary_t *summary
+)
+{
+    localization_run_record_t record = {0};
+    record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    snprintf(record.object_id, sizeof(record.object_id), "%s", object_id);
+    snprintf(record.session_id, sizeof(record.session_id), "%s", session_id);
+    record.computed_at_ms = computed_at_ms;
+    record.kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    snprintf(record.method_name, sizeof(record.method_name), "localization_analysis");
+    record.method_version = LOCALIZATION_CALCULATE_METHOD_VERSION;
+    record.channel_mask_rejected = channel_mask;
+    record.dimensionality = dimensionality;
+    record.geometry_computed_at_ms =
+        localization_calculate_geometry_computed_at_ms(geometry);
+    snprintf(
+        record.propagation_model_name, sizeof(record.propagation_model_name),
+        "%s", config->propagation_model_name
+    );
+    snprintf(record.material, sizeof(record.material), "%s", config->material);
+    record.propagation_speed_mps = config->propagation_speed_mps;
+    record.propagation_speed_uncertainty_mps =
+        config->propagation_speed_uncertainty_mps;
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_INTERNAL;
+    snprintf(
+        record.rejection_reason, sizeof(record.rejection_reason),
+        "insufficient_memory"
+    );
+
+    summary->methods_total = 1U;
+    summary->methods_completed = 1U;
+    summary->methods_attempted = 1U;
+    if (localization_run_store_write(object_id, session_id, &record) == ESP_OK) {
+        summary->methods_persisted = 1U;
+    }
+}
+
+
 esp_err_t localization_calculate_run(
     const char *object_id,
     const char *session_id,
@@ -336,12 +385,32 @@ esp_err_t localization_calculate_run(
 
     const size_t bytes_per_frame =
         sizeof(seismic_frame_t) + SEISMIC_CHANNEL_COUNT * sizeof(float);
+    const size_t largest_free_psram_block =
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    bool analysis_limited_by_free_memory = false;
     const size_t max_window_frames = localization_calculate_analysis_window_frames(
         session_summary.sample_rate_hz,
         CONFIG_LOCALIZATION_MAX_ANALYSIS_S,
         (uint64_t)CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB * 1024ULL,
-        bytes_per_frame
+        largest_free_psram_block,
+        LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES,
+        bytes_per_frame,
+        &analysis_limited_by_free_memory
     );
+    const size_t minimum_useful_frames = session_summary.sample_rate_hz;
+    if (max_window_frames < minimum_useful_frames) {
+        ESP_LOGE(
+            TAG,
+            "insufficient_memory: largest PSRAM block=%u bytes; need a %u-frame window",
+            (unsigned)largest_free_psram_block,
+            (unsigned)minimum_useful_frames
+        );
+        localization_calculate_persist_memory_failure(
+            object_id, session_id, config, &geometry, all_channel_mask,
+            dimensionality, computed_at_ms, summary_out
+        );
+        return ESP_ERR_NO_MEM;
+    }
     const size_t frame_capacity = session_summary.samples_written < (uint64_t)max_window_frames
         ? (size_t)session_summary.samples_written
         : max_window_frames;
@@ -371,6 +440,9 @@ esp_err_t localization_calculate_run(
         return ESP_ERR_INVALID_STATE;
     }
     const bool analysis_window_truncated =
+        session_summary.samples_written > (uint64_t)frame_count;
+    const bool analysis_window_memory_limited =
+        analysis_limited_by_free_memory &&
         session_summary.samples_written > (uint64_t)frame_count;
 
     /* --- Per-channel DC removal, energy, and arrival picking ------------- */
@@ -1721,6 +1793,12 @@ esp_err_t localization_calculate_run(
             records[i].analysis_window_truncated = true;
             records[i].analysis_window_start_index = 0U;
             records[i].analysis_window_frames = frame_count;
+            if (analysis_window_memory_limited) {
+                snprintf(
+                    records[i].analysis_window_reason,
+                    sizeof(records[i].analysis_window_reason), "memory"
+                );
+            }
         }
     }
 
@@ -1764,6 +1842,12 @@ esp_err_t localization_calculate_run(
         joint_record->analysis_window_truncated = true;
         joint_record->analysis_window_start_index = 0U;
         joint_record->analysis_window_frames = frame_count;
+        if (analysis_window_memory_limited) {
+            snprintf(
+                joint_record->analysis_window_reason,
+                sizeof(joint_record->analysis_window_reason), "memory"
+            );
+        }
     }
     if (joint_record->solved) {
         summary_out->methods_solved++;

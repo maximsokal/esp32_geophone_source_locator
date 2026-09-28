@@ -394,18 +394,20 @@ static void test_truncated_analysis_window_is_provenance(void)
     record.analysis_window_truncated = true;
     record.analysis_window_start_index = 0U;
     record.analysis_window_frames = 104857U;
+    snprintf(record.analysis_window_reason, sizeof(record.analysis_window_reason), "memory");
 
     char *json = NULL;
     assert(localization_run_record_to_json(&record, &json) == ESP_OK);
     assert(strstr(
         json,
-        "\"analysis_window\":{\"start_index\":0,\"frames\":104857,\"truncated\":true}"
+        "\"analysis_window\":{\"start_index\":0,\"frames\":104857,\"truncated\":true,\"reason\":\"memory\"}"
     ) != NULL);
     localization_run_record_t parsed;
     assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
     assert(parsed.analysis_window_truncated);
     assert(parsed.analysis_window_start_index == 0U);
     assert(parsed.analysis_window_frames == 104857U);
+    assert(strcmp(parsed.analysis_window_reason, "memory") == 0);
     free(json);
 
     record.analysis_window_frames = 0U;

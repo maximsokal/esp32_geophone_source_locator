@@ -134,7 +134,7 @@ menu "Seismic Acquisition"
             roughly one minute of resident recorder history.  Physical HIL
             heap/high-water telemetry must justify any increase.
 
-    config LOCALIZATION_MAX_ANALYSIS_S
+config LOCALIZATION_MAX_ANALYSIS_S
         int "Maximum localization analysis duration (seconds)"
         range 1 3600
         default 10
@@ -142,13 +142,45 @@ menu "Seismic Acquisition"
             Analyze at most this many seconds from the start of a recording,
             further bounded by the localization analysis PSRAM budget.
 
+    # MAX-299 8 MiB PSRAM budget estimates (KiB). Static EXT_RAM_BSS is 25 KiB
+    # from the linked firmware map. Dynamic rows: 44 B ring slot; recorder
+    # cache + batch/index + LOD scratch; localization frame + four channel
+    # arrays at 40 B/frame; fixed 24 KiB measurement chunk; quality flags;
+    # web live-waveform copy; service stacks; historical staging; web scan and
+    # client-log buffers. Per-rate consumers:
+    # Rate   static ring  recorder loc arrays UI flags web-wave service hist webIO
+    # 500 Hz     25   88      1044       195  24     1       48      75   24    8
+    # 20 kHz     25 1719      1044      3072  24    20      938      75   24    8
+    # 40 kHz     25 2048      1044      3072  24    40     1118      75   24    8
+    # On-demand peaks: scan preview up to 2458 KiB occupancy fallback + 57 KiB
+    # canvas; localization occupancy file + expanded keys up to 2386 KiB.
+    # Localization keeps a 3072 KiB largest-free-block reserve for that input,
+    # its workspace and allocation margin. Other live bounded workflow/status
+    # allocations reduce the measured free block before the cap is computed.
+    # WebUI PSRAM asset caching is disabled in the default sdkconfig.
+    # Conservative path totals include recorder retention after stop and the
+    # maximum scan preview during acquisition. Localization runs after stop
+    # frees the ring; its reserved block is counted as occupied for headroom.
+    # Rate     acquisition+scan  headroom  localization  headroom  peak  headroom
+    # 500 Hz             3852      4340          4467      3725   4467      3725
+    # 20 kHz             6392      1800          7344       848   7344       848
+    # 40 kHz             6921      1271          7344       848   7344       848
+    # Bounded workflow/status/object/web allocations reduce the measured free
+    # block before localization chooses its window; scan and localization are
+    # on-demand paths. These are allocation estimates, not physical HIL data.
+
     config LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB
         int "Localization analysis PSRAM budget (KiB)"
         range 1200 8192
-        default 4096
+        default 3072
         help
             Bounds the raw frame array and per-channel work arrays together.
-            The 1200 KiB minimum retains at least 30000 frames at 500 Hz.
+            At runtime the window is further limited by the largest free
+            PSRAM block minus a 3 MiB reserve for session scan occupancy
+            parsing (up to a 1 MiB file plus 1.33 MiB expanded keys), workspace,
+            and allocator margin. Localization requires
+            at least one second of samples; otherwise it records
+            insufficient_memory and fails with an INTERNAL calculation class.
 
 endmenu
 

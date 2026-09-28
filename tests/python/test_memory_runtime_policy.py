@@ -337,7 +337,12 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     assert "UI_I18N_KEY_MEASUREMENT_DIGITAL_FAULT" in measurements
     assert "s_last_digital_interference" in measurements
     assert "digital_interference == s_last_digital_interference" in measurements
-    assert "channel_mean" in reducer
+    assert "channel_sum" in reducer
+    assert "bucket_min" in reducer
+    assert "bucket_max" in reducer
+    assert "frames_consumed" in reducer
+    assert "UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES 1024U" in measurements
+    assert "ui_measurement_trace_accumulator_add" in measurements
     assert "trace_min" in reducer
     assert "trace_max" in reducer
 
