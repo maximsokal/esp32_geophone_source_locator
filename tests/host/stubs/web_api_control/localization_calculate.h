@@ -40,6 +40,7 @@ typedef struct
     char propagation_model_name[LOCALIZATION_CALCULATE_STUB_MODEL_NAME_SIZE];
     char material[24];
     double timing_uncertainty_us;
+    uint32_t sample_rate_hz;
     geophone_channel_pick_config_t pick_config;
     size_t semblance_window_half_span_samples;
     double max_source_depth_m;
