@@ -43,6 +43,7 @@ idf_component_register(
         object_service
         measurement_service
         localization_calculate
+        localization_job
         localization_run_store
         result_view
         workflow_service

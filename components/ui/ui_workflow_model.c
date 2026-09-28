@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define UI_WORKFLOW_ACTION_MATERIAL ((workflow_command_t)WORKFLOW_COMMAND_COUNT)
+
 static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_START_MEASUREMENT,
     WORKFLOW_COMMAND_GO_CALIBRATION,
@@ -69,21 +71,27 @@ static ui_i18n_key_t action_key(workflow_command_t command)
         case WORKFLOW_COMMAND_DELETE_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_DELETE_RECORDING;
         case WORKFLOW_COMMAND_RECORD_AGAIN: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_RECORD_AGAIN;
         case WORKFLOW_COMMAND_BACK: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_BACK;
+        case WORKFLOW_COMMAND_COUNT: return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_ROW;
         case WORKFLOW_COMMAND_CALIBRATION_DONE:
         case WORKFLOW_COMMAND_RANGING_DONE:
         case WORKFLOW_COMMAND_CALCULATION_DONE:
-        case WORKFLOW_COMMAND_COUNT:
         default:
             return UI_I18N_KEY_COUNT;
     }
 }
 
-static size_t collect_actions(uint32_t allowed_actions, workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS])
+static size_t collect_actions(
+    const workflow_snapshot_t *snapshot,
+    const ui_workflow_model_state_t *state,
+    workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS])
 {
     size_t count = 0U;
+    if (snapshot->step == WORKFLOW_STEP_STOPPED && state->material_view == UI_WORKFLOW_MATERIAL_CLOSED) {
+        actions[count++] = UI_WORKFLOW_ACTION_MATERIAL;
+    }
     for (size_t i = 0U; i < sizeof(s_action_order) / sizeof(s_action_order[0]); ++i) {
         const workflow_command_t command = s_action_order[i];
-        if ((allowed_actions & WORKFLOW_ACTION(command)) != 0U &&
+        if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U &&
             action_key(command) < UI_I18N_KEY_COUNT && count < UI_WORKFLOW_MODEL_MAX_ACTIONS) {
             actions[count++] = command;
         }
@@ -103,6 +111,46 @@ static void resolve_pending(ui_workflow_model_state_t *state, const workflow_sna
     if (state->notice_key != UI_I18N_KEY_COUNT && now_ms >= state->notice_until_ms) {
         state->notice_key = UI_I18N_KEY_COUNT;
     }
+}
+
+static void resolve_material_save(
+    ui_workflow_model_state_t *state,
+    const workflow_snapshot_t *snapshot,
+    uint64_t now_ms)
+{
+    if (!state->material_save_pending ||
+        snapshot->last_material_save.seq < state->material_save_seq) return;
+    state->material_save_pending = false;
+    if (snapshot->last_material_save.result == ESP_OK) {
+        state->material_stored_index = state->material_selection_index;
+        state->material_selection_initialized = true;
+        state->material_view = UI_WORKFLOW_MATERIAL_CLOSED;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVED;
+    } else {
+        state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVE_FAILED;
+    }
+    state->notice_until_ms = now_ms + 2000U;
+}
+
+static void add_material_action(
+    ui_workflow_model_t *model,
+    const ui_workflow_model_state_t *state)
+{
+    if (model->action_count >= UI_WORKFLOW_MODEL_MAX_ACTIONS) return;
+    const size_t index = model->action_count++;
+    model->actions[index] = UI_WORKFLOW_ACTION_MATERIAL;
+    for (size_t i = 0U; i < UI_WORKFLOW_MODEL_ARGS; ++i) {
+        model->material_action_line.arg_keys[i] = UI_I18N_KEY_COUNT;
+    }
+    if (state->material_is_set) {
+        model->material_action_line.key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_ROW;
+        model->material_action_line.arg_keys[0] = state->material_name_key < UI_I18N_KEY_COUNT
+            ? state->material_name_key : UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_UNKNOWN;
+    } else {
+        model->material_action_line.key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_UNSET;
+    }
+    model->action_keys[index] = model->material_action_line.key;
 }
 
 static void add_action(ui_workflow_model_t *model, workflow_command_t command)
@@ -281,6 +329,61 @@ static bool step_can_preview(workflow_step_t step)
         step == WORKFLOW_STEP_RESULT;
 }
 
+static void add_material_speed_line(
+    ui_workflow_model_t *model,
+    uint32_t speed_mps,
+    uint32_t sigma_mps)
+{
+    char speed[12], sigma[12];
+    (void)snprintf(speed, sizeof(speed), "%lu", (unsigned long)speed_mps);
+    (void)snprintf(sigma, sizeof(sigma), "%lu", (unsigned long)sigma_mps);
+    ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SPEED);
+    set_arg(line, 0U, speed);
+    set_arg(line, 1U, sigma);
+}
+
+static void build_material_picker(
+    const ui_workflow_model_state_t *state,
+    ui_workflow_model_t *model)
+{
+    model->title_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_TITLE;
+    model->material_picker_visible = true;
+    switch (state->material_view) {
+        case UI_WORKFLOW_MATERIAL_SELECT: {
+            ui_workflow_model_line_t *name = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_OPTION);
+            set_key_arg(name, 0U, state->material_candidate_name_key);
+            add_material_speed_line(model, state->material_candidate_v_mps, state->material_candidate_sigma_mps);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SELECT;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_CUSTOM_SPEED: {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SPEED);
+            char speed[12];
+            (void)snprintf(speed, sizeof(speed), "%lu", (unsigned long)state->material_custom_v_mps);
+            ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SPEED_VALUE);
+            set_arg(value, 0U, speed);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_ADJUST;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA: {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SIGMA);
+            char sigma[12];
+            (void)snprintf(sigma, sizeof(sigma), "%lu", (unsigned long)state->material_custom_sigma_mps);
+            ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SIGMA_VALUE);
+            set_arg(value, 0U, sigma);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SAVE;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_SAVING:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVING);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SELECT;
+            break;
+        case UI_WORKFLOW_MATERIAL_CLOSED:
+        default:
+            break;
+    }
+}
+
 void ui_workflow_model_build(
     const workflow_snapshot_t *snapshot,
     const ui_workflow_ranging_t *ranging,
@@ -299,10 +402,18 @@ void ui_workflow_model_build(
     if (state->delete_confirm) model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_CONFIRM_DELETE;
 
     resolve_pending(state, snapshot, now_ms);
-    if (state->notice_key != UI_I18N_KEY_COUNT && now_ms < state->notice_until_ms) {
+    resolve_material_save(state, snapshot, now_ms);
+    if (state->material_save_pending) {
+        model->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVING;
+    } else if (state->notice_key != UI_I18N_KEY_COUNT && now_ms < state->notice_until_ms) {
         model->notice_key = state->notice_key;
     } else {
         state->notice_key = UI_I18N_KEY_COUNT;
+    }
+
+    if (state->material_view != UI_WORKFLOW_MATERIAL_CLOSED) {
+        build_material_picker(state, model);
+        return;
     }
 
     switch (snapshot->step) {
@@ -485,6 +596,7 @@ void ui_workflow_model_build(
             break;
     }
 
+    if (snapshot->step == WORKFLOW_STEP_STOPPED) add_material_action(model, state);
     for (size_t i = 0U; i < sizeof(s_action_order) / sizeof(s_action_order[0]); ++i) {
         const workflow_command_t command = s_action_order[i];
         if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U) add_action(model, command);
@@ -522,13 +634,88 @@ ui_workflow_event_t ui_workflow_model_handle_key(
     if (snapshot == NULL || state == NULL) return event;
 
     resolve_pending(state, snapshot, now_ms);
+    resolve_material_save(state, snapshot, now_ms);
+    if (state->material_view != UI_WORKFLOW_MATERIAL_CLOSED) {
+        if (state->material_view == UI_WORKFLOW_MATERIAL_SAVING) return event;
+        const size_t option_count = state->material_preset_count + 1U;
+        switch (state->material_view) {
+            case UI_WORKFLOW_MATERIAL_SELECT:
+                if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_selection_index = key == UI_WORKFLOW_KEY_DOWN
+                        ? (state->material_selection_index + 1U) % option_count
+                        : (state->material_selection_index + option_count - 1U) % option_count;
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CLOSED;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    state->notice_key = UI_I18N_KEY_COUNT;
+                    state->notice_until_ms = 0U;
+                    if (state->material_selection_index >= state->material_preset_count) {
+                        if (!state->material_custom_values_valid) {
+                            state->material_custom_v_mps = 1000U;
+                            state->material_custom_sigma_mps = 200U;
+                            state->material_custom_values_valid = true;
+                        }
+                        state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SPEED;
+                    } else {
+                        event.type = UI_WORKFLOW_EVENT_SAVE_MATERIAL;
+                        event.material_index = state->material_selection_index;
+                        state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+                    }
+                }
+                break;
+            case UI_WORKFLOW_MATERIAL_CUSTOM_SPEED:
+                if (key == UI_WORKFLOW_KEY_UP) {
+                    state->material_custom_v_mps = state->material_custom_v_mps > 7900U
+                        ? 7950U : state->material_custom_v_mps + 50U;
+                } else if (key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_custom_v_mps = state->material_custom_v_mps < 150U
+                        ? 100U : state->material_custom_v_mps - 50U;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA;
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+                }
+                if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
+                    if (state->material_custom_sigma_mps > state->material_custom_v_mps - 10U) {
+                        state->material_custom_sigma_mps = state->material_custom_v_mps - 10U;
+                    }
+                    if (state->material_custom_sigma_mps < 10U) state->material_custom_sigma_mps = 10U;
+                }
+                break;
+            case UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA: {
+                const uint32_t maximum_sigma = state->material_custom_v_mps - 10U;
+                if (key == UI_WORKFLOW_KEY_UP) {
+                    state->material_custom_sigma_mps = state->material_custom_sigma_mps > maximum_sigma - 10U
+                        ? maximum_sigma : state->material_custom_sigma_mps + 10U;
+                } else if (key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_custom_sigma_mps = state->material_custom_sigma_mps < 20U
+                        ? 10U : state->material_custom_sigma_mps - 10U;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    state->material_selection_index = state->material_preset_count;
+                    state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+                    event.type = UI_WORKFLOW_EVENT_SAVE_MATERIAL;
+                    event.material_index = state->material_preset_count;
+                    event.custom_v_mps = state->material_custom_v_mps;
+                    event.custom_sigma_mps = state->material_custom_sigma_mps;
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SPEED;
+                }
+                break;
+            }
+            case UI_WORKFLOW_MATERIAL_SAVING:
+            case UI_WORKFLOW_MATERIAL_CLOSED:
+            default:
+                break;
+        }
+        return event;
+    }
     if (key == UI_WORKFLOW_KEY_OK && state->has_pending) return event;
     switch (key) {
         case UI_WORKFLOW_KEY_UP:
         case UI_WORKFLOW_KEY_DOWN: {
             state->delete_confirm = false;
             workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS];
-            const size_t action_count = collect_actions(snapshot->allowed_actions, actions);
+            const size_t action_count = collect_actions(snapshot, state, actions);
             if (action_count > 0U) {
                 size_t selected = 0U;
                 if (state->has_selected_action) {
@@ -565,7 +752,7 @@ ui_workflow_event_t ui_workflow_model_handle_key(
         case UI_WORKFLOW_KEY_OK:
         {
             workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS];
-            const size_t action_count = collect_actions(snapshot->allowed_actions, actions);
+            const size_t action_count = collect_actions(snapshot, state, actions);
             if (action_count == 0U) break;
             size_t selected = 0U;
             if (state->has_selected_action) {
@@ -577,7 +764,13 @@ ui_workflow_event_t ui_workflow_model_handle_key(
                 }
             }
             event.command = actions[selected];
-            if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING && !state->delete_confirm) {
+            if (event.command == UI_WORKFLOW_ACTION_MATERIAL) {
+                state->material_selection_index = state->material_stored_index <= state->material_preset_count
+                    ? state->material_stored_index : 0U;
+                state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+                state->notice_key = UI_I18N_KEY_COUNT;
+                state->notice_until_ms = 0U;
+            } else if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING && !state->delete_confirm) {
                 state->delete_confirm = true;
                 event.type = UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED;
             } else if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING) {
@@ -613,6 +806,27 @@ void ui_workflow_model_command_sent(
         state->notice_key = result == ESP_ERR_NO_MEM
             ? UI_I18N_KEY_TFT_WORKFLOW_NOTICE_BUSY
             : UI_I18N_KEY_TFT_WORKFLOW_NOTICE_STATE_CHANGED;
+        state->notice_until_ms = now_ms + 2000U;
+    }
+}
+
+void ui_workflow_model_material_save_sent(
+    ui_workflow_model_state_t *state,
+    esp_err_t result,
+    uint32_t seq,
+    uint64_t now_ms)
+{
+    if (state == NULL) return;
+    if (result == ESP_OK) {
+        state->material_save_pending = true;
+        state->material_save_seq = seq;
+        state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+        state->notice_key = UI_I18N_KEY_COUNT;
+        state->notice_until_ms = 0U;
+    } else {
+        state->material_save_pending = false;
+        state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVE_FAILED;
         state->notice_until_ms = now_ms + 2000U;
     }
 }

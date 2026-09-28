@@ -219,6 +219,30 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "UP/DOWN select OK run LEFT back RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN actions  OK run  LEFT back", /* tft.workflow.hint.navigation */
     "Select an object", /* tft.workflow.idle.select_object */
+    "Set sigma (m/s)", /* tft.workflow.material.custom_sigma */
+    "sigma: %s m/s", /* tft.workflow.material.custom_sigma_value */
+    "Set speed (m/s)", /* tft.workflow.material.custom_speed */
+    "v: %s m/s", /* tft.workflow.material.custom_speed_value */
+    "UP/DOWN adjust OK next LEFT back", /* tft.workflow.material.hint_adjust */
+    "UP/DOWN adjust OK save LEFT back", /* tft.workflow.material.hint_save */
+    "UP/DOWN choose OK select LEFT back", /* tft.workflow.material.hint_select */
+    "Brick masonry", /* tft.workflow.material.name.brick_masonry */
+    "Concrete (monolithic)", /* tft.workflow.material.name.concrete */
+    "Custom value", /* tft.workflow.material.name.custom */
+    "Reinforced concrete", /* tft.workflow.material.name.reinforced_concrete */
+    "Construction debris / rubble", /* tft.workflow.material.name.rubble */
+    "Dry soil / backfill", /* tft.workflow.material.name.soil_dry */
+    "Saturated soil", /* tft.workflow.material.name.soil_saturated */
+    "Steel structures", /* tft.workflow.material.name.steel */
+    "Unknown material", /* tft.workflow.material.name.unknown */
+    "%s", /* tft.workflow.material.option */
+    "Material: %s", /* tft.workflow.material.row */
+    "Save failed", /* tft.workflow.material.save_failed */
+    "Saved", /* tft.workflow.material.saved */
+    "Saving...", /* tft.workflow.material.saving */
+    "v=%s +/- %s sigma m/s", /* tft.workflow.material.speed */
+    "MATERIAL", /* tft.workflow.material.title */
+    "Material: not set", /* tft.workflow.material.unset */
     "Busy", /* tft.workflow.notice.busy */
     "State changed", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */
@@ -554,6 +578,30 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "UP/DOWN вибір OK дія LEFT назад RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN дії  OK вибір  LEFT назад", /* tft.workflow.hint.navigation */
     "Виберіть об’єкт", /* tft.workflow.idle.select_object */
+    "Задати sigma (m/s)", /* tft.workflow.material.custom_sigma */
+    "sigma: %s m/s", /* tft.workflow.material.custom_sigma_value */
+    "Задати швидкість (m/s)", /* tft.workflow.material.custom_speed */
+    "v: %s m/s", /* tft.workflow.material.custom_speed_value */
+    "UP/DOWN зміна OK далі LEFT назад", /* tft.workflow.material.hint_adjust */
+    "UP/DOWN зміна OK зберегти LEFT назад", /* tft.workflow.material.hint_save */
+    "UP/DOWN вибір OK вибрати LEFT назад", /* tft.workflow.material.hint_select */
+    "Цегляна кладка", /* tft.workflow.material.name.brick_masonry */
+    "Бетон (монолітний)", /* tft.workflow.material.name.concrete */
+    "Власне значення", /* tft.workflow.material.name.custom */
+    "Залізобетон", /* tft.workflow.material.name.reinforced_concrete */
+    "Будівельне сміття / завали", /* tft.workflow.material.name.rubble */
+    "Сухий ґрунт / засипка", /* tft.workflow.material.name.soil_dry */
+    "Водонасичений ґрунт", /* tft.workflow.material.name.soil_saturated */
+    "Сталеві конструкції", /* tft.workflow.material.name.steel */
+    "Невідомий матеріал", /* tft.workflow.material.name.unknown */
+    "%s", /* tft.workflow.material.option */
+    "Матеріал: %s", /* tft.workflow.material.row */
+    "Помилка збереження", /* tft.workflow.material.save_failed */
+    "Збережено", /* tft.workflow.material.saved */
+    "Збереження...", /* tft.workflow.material.saving */
+    "v=%s +/- %s sigma m/s", /* tft.workflow.material.speed */
+    "МАТЕРІАЛ", /* tft.workflow.material.title */
+    "Матеріал: не задано", /* tft.workflow.material.unset */
     "Зайнято", /* tft.workflow.notice.busy */
     "Стан змінився", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */

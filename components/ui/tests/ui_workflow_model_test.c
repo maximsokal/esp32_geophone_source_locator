@@ -179,6 +179,9 @@ static void test_delete_confirmation(void)
     snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_DELETE_RECORDING);
     ui_workflow_model_state_t state = {0};
     ui_workflow_event_t event = ui_workflow_model_handle_key(
+        &snapshot, &state, UI_WORKFLOW_KEY_DOWN, 99U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE);
+    event = ui_workflow_model_handle_key(
         &snapshot, &state, UI_WORKFLOW_KEY_OK, 100U);
     assert(event.type == UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED);
     assert(state.delete_confirm);
@@ -189,6 +192,7 @@ static void test_delete_confirmation(void)
     assert(!state.delete_confirm);
 
     state = (ui_workflow_model_state_t){0};
+    (void)ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 99U);
     (void)ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 100U);
     event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_LEFT, 101U);
     assert(event.type == UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED);

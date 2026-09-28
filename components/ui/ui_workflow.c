@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "localization_pick_record.h"
+#include "localization_material_presets.h"
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "nrf_topology_service.h"
@@ -33,6 +34,8 @@
 
 typedef struct {
     workflow_step_t rendered_step;
+    bool rendered_material_picker;
+    char material_object_id[OBJECT_STORE_ID_SIZE];
     bool snapshot_valid;
     bool workflow_service_ready;
     uint64_t last_snapshot_ms;
@@ -92,6 +95,68 @@ static portMUX_TYPE s_result_request_mux = portMUX_INITIALIZER_UNLOCKED;
 static ui_workflow_load_request_t s_result_request;
 static bool s_result_request_pending;
 static uint32_t s_result_generation;
+
+static ui_i18n_key_t ui_workflow_material_name_key(const char *material_id)
+{
+    if (strcmp(material_id, "concrete") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_CONCRETE;
+    if (strcmp(material_id, "reinforced_concrete") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_REINFORCED_CONCRETE;
+    if (strcmp(material_id, "brick_masonry") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_BRICK_MASONRY;
+    if (strcmp(material_id, "rubble") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_RUBBLE;
+    if (strcmp(material_id, "steel") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_STEEL;
+    if (strcmp(material_id, "soil_dry") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_SOIL_DRY;
+    if (strcmp(material_id, "soil_saturated") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_SOIL_SATURATED;
+    if (strcmp(material_id, "custom") == 0) return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_CUSTOM;
+    return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_UNKNOWN;
+}
+
+static void ui_workflow_prepare_material_model(ui_workflow_screen_state_t *state)
+{
+    ui_workflow_model_state_t *model = &state->model_state;
+    const char *object_id = state->snapshot.object_id;
+    if (strcmp(state->material_object_id, object_id) != 0) {
+        (void)snprintf(state->material_object_id, sizeof(state->material_object_id), "%s", object_id);
+        model->material_view = UI_WORKFLOW_MATERIAL_CLOSED;
+        model->material_selection_initialized = false;
+        model->material_custom_values_valid = false;
+        model->material_save_pending = false;
+    }
+    model->material_preset_count = localization_material_preset_count();
+    model->material_is_set = state->snapshot.calc_material[0] != '\0';
+    model->material_name_key = ui_workflow_material_name_key(state->snapshot.calc_material);
+    if (!model->material_selection_initialized) {
+        model->material_stored_index = 0U;
+        if (strcmp(state->snapshot.calc_material, "custom") == 0) {
+            model->material_stored_index = model->material_preset_count;
+        } else {
+            for (size_t i = 0U; i < model->material_preset_count; ++i) {
+                const localization_material_preset_t *preset = localization_material_preset_at(i);
+                if (preset != NULL && strcmp(preset->id, state->snapshot.calc_material) == 0) {
+                    model->material_stored_index = i;
+                    break;
+                }
+            }
+        }
+        model->material_selection_index = model->material_stored_index;
+        model->material_selection_initialized = true;
+    }
+
+    if (model->material_selection_index >= model->material_preset_count) {
+        model->material_selection_index = model->material_preset_count;
+        model->material_candidate_name_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_CUSTOM;
+        model->material_candidate_v_mps = model->material_custom_values_valid
+            ? model->material_custom_v_mps : 1000U;
+        model->material_candidate_sigma_mps = model->material_custom_values_valid
+            ? model->material_custom_sigma_mps : 200U;
+    } else {
+        const localization_material_preset_t *preset =
+            localization_material_preset_at(model->material_selection_index);
+        if (preset != NULL) {
+            model->material_candidate_name_key = ui_workflow_material_name_key(preset->id);
+            model->material_candidate_v_mps = preset->propagation_speed_mps;
+            model->material_candidate_sigma_mps = preset->propagation_speed_uncertainty_mps;
+        }
+    }
+}
 
 static void ui_workflow_set_label(lv_obj_t *label, const char *text)
 {
@@ -460,6 +525,7 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
     state->screen = ui_create_screen_base_locked(ui_tr(state->model.title_key), footer);
     if (state->screen == NULL) return;
     state->rendered_step = state->snapshot.step;
+    state->rendered_material_picker = state->model.material_picker_visible;
     state->line_slots = ui_workflow_line_slots(&state->snapshot, &state->model);
     memset(state->line_labels, 0, sizeof(state->line_labels));
     memset(state->action_rows, 0, sizeof(state->action_rows));
@@ -559,8 +625,12 @@ static void ui_workflow_update_actions(ui_workflow_screen_state_t *state)
         const size_t index = first + slot;
         const workflow_command_t command = state->model.actions[index];
         const bool selected = index == state->model.selected_action;
-        char text[64];
-        (void)snprintf(text, sizeof(text), "%s", ui_tr(state->model.action_keys[index]));
+        char text[96];
+        if (command == (workflow_command_t)WORKFLOW_COMMAND_COUNT) {
+            ui_workflow_format_line(&state->model.material_action_line, text, sizeof(text));
+        } else {
+            (void)snprintf(text, sizeof(text), "%s", ui_tr(state->model.action_keys[index]));
+        }
         if (state->model.pending && state->model.pending_command == command) {
             const size_t length = strlen(text);
             (void)snprintf(text + length, sizeof(text) - length, "%s", ui_tr(UI_I18N_KEY_TFT_WORKFLOW_VALUE_PENDING));
@@ -669,10 +739,40 @@ static void ui_workflow_send_command(ui_workflow_screen_state_t *state, workflow
     ui_workflow_model_command_sent(&state->model_state, command, err, sequence, now_ms);
 }
 
+static void ui_workflow_save_material(
+    ui_workflow_screen_state_t *state,
+    const ui_workflow_event_t *event,
+    uint64_t now_ms)
+{
+    const size_t preset_count = localization_material_preset_count();
+    const bool custom = event->material_index >= preset_count;
+    const localization_material_preset_t *preset = custom
+        ? NULL : localization_material_preset_at(event->material_index);
+    if (!custom && preset == NULL) {
+        ui_workflow_model_material_save_sent(
+            &state->model_state, ESP_ERR_INVALID_ARG, 0U, now_ms);
+        return;
+    }
+
+    uint32_t sequence = state->snapshot.last_async.seq;
+    if (state->snapshot.last_material_save.seq > sequence) {
+        sequence = state->snapshot.last_material_save.seq;
+    }
+    sequence++;
+    if (sequence == 0U) sequence = 1U;
+    const esp_err_t err = workflow_service_save_calc_material_async(
+        custom ? "custom" : preset->id,
+        custom ? event->custom_v_mps : 0U,
+        custom ? event->custom_sigma_mps : 0U);
+    ui_workflow_model_material_save_sent(&state->model_state, err, sequence, now_ms);
+}
+
 static void ui_workflow_update(ui_workflow_screen_state_t *state, uint64_t now_ms)
 {
+    ui_workflow_prepare_material_model(state);
     ui_workflow_model_build(&state->snapshot, &state->ranging, &state->model_state, now_ms, &state->model);
-    if (state->screen == NULL || state->rendered_step != state->snapshot.step) {
+    if (state->screen == NULL || state->rendered_step != state->snapshot.step ||
+        state->rendered_material_picker != state->model.material_picker_visible) {
         ui_workflow_render_step_locked(state);
         if (state->snapshot.step == WORKFLOW_STEP_RESULT &&
             state->snapshot.calculation_class == WORKFLOW_CALCULATION_CLASS_NONE &&
@@ -732,6 +832,7 @@ void ui_workflow_screen_render_locked(void)
     if (s_workflow == NULL) return;
     s_workflow->screen = NULL;
     s_workflow->rendered_step = WORKFLOW_STEP_COUNT;
+    s_workflow->rendered_material_picker = false;
     ui_workflow_update(s_workflow, (uint64_t)esp_timer_get_time() / 1000U);
 }
 
@@ -767,6 +868,7 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
         default: return;
     }
     const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    ui_workflow_prepare_material_model(s_workflow);
     const ui_workflow_event_t event = ui_workflow_model_handle_key(
         &s_workflow->snapshot, &s_workflow->model_state, workflow_key, now_ms);
     switch (event.type) {
@@ -780,6 +882,9 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
             ui_scan_preview_open_from_workflow_locked(
                 s_workflow->snapshot.object_id, s_workflow->snapshot.session_id);
             return;
+        case UI_WORKFLOW_EVENT_SAVE_MATERIAL:
+            ui_workflow_save_material(s_workflow, &event, now_ms);
+            break;
         case UI_WORKFLOW_EVENT_NONE:
         case UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED:
         default:

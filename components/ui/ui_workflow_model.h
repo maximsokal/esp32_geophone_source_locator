@@ -10,7 +10,7 @@
 #include "ui_i18n_catalog.gen.h"
 #include "workflow_core.h"
 
-#define UI_WORKFLOW_MODEL_MAX_ACTIONS 14U
+#define UI_WORKFLOW_MODEL_MAX_ACTIONS 15U
 #define UI_WORKFLOW_MODEL_MAX_LINES 40U
 #define UI_WORKFLOW_MODEL_ARGS 6U
 #define UI_WORKFLOW_MODEL_ARG_SIZE 80U
@@ -26,6 +26,14 @@ typedef struct {
     int32_t sigma_mm[WORKFLOW_MAX_CALIBRATION_NODES];
 } ui_workflow_ranging_t;
 
+typedef enum {
+    UI_WORKFLOW_MATERIAL_CLOSED = 0,
+    UI_WORKFLOW_MATERIAL_SELECT,
+    UI_WORKFLOW_MATERIAL_CUSTOM_SPEED,
+    UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA,
+    UI_WORKFLOW_MATERIAL_SAVING,
+} ui_workflow_material_view_t;
+
 typedef struct {
     bool has_selected_action;
     workflow_command_t selected_action;
@@ -38,6 +46,21 @@ typedef struct {
     uint64_t recording_elapsed_ms;
     bool recording_elapsed_valid;
     char active_object_name[OBJECT_STORE_NAME_SIZE];
+    ui_workflow_material_view_t material_view;
+    size_t material_preset_count;
+    size_t material_stored_index;
+    size_t material_selection_index;
+    bool material_selection_initialized;
+    bool material_is_set;
+    ui_i18n_key_t material_name_key;
+    ui_i18n_key_t material_candidate_name_key;
+    uint32_t material_candidate_v_mps;
+    uint32_t material_candidate_sigma_mps;
+    uint32_t material_custom_v_mps;
+    uint32_t material_custom_sigma_mps;
+    bool material_custom_values_valid;
+    bool material_save_pending;
+    uint32_t material_save_seq;
 
     bool result_data_ready;
     bool result_load_failed;
@@ -57,6 +80,7 @@ typedef struct {
     ui_i18n_key_t title_key;
     ui_i18n_key_t hint_key;
     ui_i18n_key_t notice_key;
+    ui_workflow_model_line_t material_action_line;
     size_t line_count;
     ui_workflow_model_line_t lines[UI_WORKFLOW_MODEL_MAX_LINES];
     size_t action_count;
@@ -69,6 +93,7 @@ typedef struct {
     bool show_delete_confirm;
     bool show_3d_hint;
     bool progress_indeterminate;
+    bool material_picker_visible;
 } ui_workflow_model_t;
 
 typedef enum {
@@ -85,11 +110,15 @@ typedef enum {
     UI_WORKFLOW_EVENT_LEAVE_OBJECTS,
     UI_WORKFLOW_EVENT_OPEN_PREVIEW,
     UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED,
+    UI_WORKFLOW_EVENT_SAVE_MATERIAL,
 } ui_workflow_event_type_t;
 
 typedef struct {
     ui_workflow_event_type_t type;
     workflow_command_t command;
+    size_t material_index;
+    uint32_t custom_v_mps;
+    uint32_t custom_sigma_mps;
 } ui_workflow_event_t;
 
 void ui_workflow_model_build(
@@ -108,6 +137,12 @@ ui_workflow_event_t ui_workflow_model_handle_key(
 void ui_workflow_model_command_sent(
     ui_workflow_model_state_t *state,
     workflow_command_t command,
+    esp_err_t result,
+    uint32_t seq,
+    uint64_t now_ms);
+
+void ui_workflow_model_material_save_sent(
+    ui_workflow_model_state_t *state,
     esp_err_t result,
     uint32_t seq,
     uint64_t now_ms);
