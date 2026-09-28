@@ -29,6 +29,7 @@ typedef enum
     UI_SCREEN_WIFI,
     UI_SCREEN_SYSTEM,
     UI_SCREEN_SCAN_PREVIEW,
+    UI_SCREEN_WORKFLOW,
     UI_SCREEN_COUNT
 
 } ui_screen_t;
@@ -41,6 +42,7 @@ typedef enum
     UI_OBJECTS_MENU = 0,
     UI_OBJECTS_SELECT_ACTIVE,
     UI_OBJECTS_SELECT_DELETE,
+    UI_OBJECTS_SELECT_WORKFLOW,
     UI_OBJECTS_DELETE_CONFIRM
 
 } ui_objects_mode_t;
@@ -81,6 +83,7 @@ typedef struct
     lv_obj_t *header_wifi;
     /* MAX-182: battery/USB badge, refreshed with the header. */
     lv_obj_t *header_power;
+    lv_obj_t *footer_label;
 
     ui_screen_t screen;
     size_t selected;
@@ -118,6 +121,8 @@ typedef struct
     size_t object_index;
     size_t object_count;
     bool objects_loaded;
+    bool workflow_activation_pending;
+    size_t workflow_object_index;
     object_service_summary_t objects[
         OBJECT_SERVICE_MAX_OBJECTS
     ];
@@ -246,11 +251,18 @@ void ui_render_system_locked(void);
 void ui_system_refresh_locked(void);
 void ui_system_handle_key_locked(keypad_key_t key);
 void ui_system_handle_key_locked(keypad_key_t key);
+void ui_workflow_screen_open_locked(void);
+void ui_workflow_screen_close_locked(void);
+void ui_workflow_screen_render_locked(void);
+void ui_workflow_screen_refresh_locked(void);
+void ui_workflow_screen_handle_key_locked(keypad_key_t key);
 void ui_scan_preview_open_locked(const char *object_id, const char *session_id);
+void ui_scan_preview_open_from_workflow_locked(const char *object_id, const char *session_id);
 void ui_scan_preview_screen_open_locked(void);
 void ui_scan_preview_close_locked(void);
 void ui_scan_preview_release_locked(void);
 void ui_scan_preview_render_locked(void);
+void ui_scan_preview_refresh_locked(void);
 void ui_scan_preview_handle_key_locked(keypad_key_t key);
 
 

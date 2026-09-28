@@ -280,6 +280,7 @@ esp_err_t localization_calculate_run(
         !(config->propagation_speed_uncertainty_mps >= 0.0) ||
         !(config->timing_uncertainty_us > 0.0) ||
         config->semblance_window_half_span_samples == 0U ||
+        strnlen(config->material, sizeof(config->material)) >= sizeof(config->material) ||
         !isfinite(config->max_horizontal_uncertainty_m) ||
         config->max_horizontal_uncertainty_m < 0.0
     ) {
@@ -559,6 +560,7 @@ esp_err_t localization_calculate_run(
         .geometry_computed_at_ms = geometry_computed_at_ms,
         .dimensionality = dimensionality,
         .propagation_model_name = config->propagation_model_name,
+        .material = config->material,
         .propagation_speed_mps = config->propagation_speed_mps,
         .propagation_speed_uncertainty_mps = config->propagation_speed_uncertainty_mps,
     };
@@ -603,7 +605,7 @@ esp_err_t localization_calculate_run(
 
     localization_event_result_to_run_record(
         &event_result, object_id, session_id, computed_at_ms, geometry_computed_at_ms,
-        LOCALIZATION_CALCULATE_METHOD_VERSION, config->propagation_model_name,
+        LOCALIZATION_CALCULATE_METHOD_VERSION, config->propagation_model_name, config->material,
         config->propagation_speed_mps, config->propagation_speed_uncertainty_mps,
         config->timing_uncertainty_us, &records[record_count]
     );

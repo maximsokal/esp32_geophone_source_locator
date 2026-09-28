@@ -165,15 +165,83 @@ export interface WorkflowPlacementStatus {
 }
 
 export interface DeviceWorkflowStatus {
-  step: WorkflowStep;
+  step: WorkflowStep | (string & {});
   generation: number;
   allowed_actions: string[];
-  sensor_sufficiency: WorkflowSensorSufficiency;
-  assigned_remotes: number;
-  reason: string;
+  sensor_sufficiency?: WorkflowSensorSufficiency;
+  assigned_remotes?: number | null;
+  reason?: string | null;
   progress: number | null;
   calibration: WorkflowCalibrationStatus;
   placement: WorkflowPlacementStatus;
+  object_id?: string | null;
+  session_id?: string | null;
+  has_scan?: boolean;
+  calc_settings_ready?: boolean;
+  calculation_class?: string | null;
+}
+
+export interface RangingPairStatus {
+  node_a: number;
+  node_b: number;
+  state: string;
+  distance_mm: number;
+  spread_mm: number;
+  confidence: number;
+  valid_samples: number;
+  attempts: number;
+  single_direction: boolean;
+  direction_disagreement_mm: number;
+}
+
+export interface RangingNodeStatus {
+  node_id: number;
+  solved: boolean;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number;
+  node_residual_mm: number;
+  uncertainty_mm: number;
+}
+
+export interface RangingGeometryStatus {
+  residual_mm: number;
+  max_residual_mm: number;
+  nodes: RangingNodeStatus[];
+}
+
+export interface RangingProgressStatus {
+  active?: boolean;
+  complete?: boolean;
+  success?: boolean;
+  pairs_done?: number | null;
+  pairs_total?: number | null;
+  topology_generation?: number;
+  membership_generation?: number;
+  main_height_reference_generation?: number;
+  started_at_ms?: number;
+  updated_at_ms?: number;
+  failure_reason?: string | null;
+  solution_residual_mm?: number | null;
+  pairs?: RangingPairStatus[];
+  geometry?: RangingGeometryStatus;
+}
+
+export interface RangingLastResultStatus {
+  available: boolean;
+  invalidated?: boolean;
+  topology_generation?: number;
+  membership_generation?: number;
+  main_height_reference_generation?: number;
+  timestamp_ms?: number;
+  pairs?: RangingPairStatus[];
+  geometry?: RangingGeometryStatus;
+}
+
+export interface DeviceRangingStatus {
+  available: boolean;
+  progress?: RangingProgressStatus;
+  last_result?: RangingLastResultStatus;
 }
 
 export type RecordingSessionStatus =
@@ -403,6 +471,7 @@ export interface DeviceStatus {
   object_store?: ObjectStoreState;
   recording_sessions?: RecordingSessionCollection;
   workflow?: DeviceWorkflowStatus;
+  ranging?: DeviceRangingStatus;
 }
 
 export type DevicePowerState =

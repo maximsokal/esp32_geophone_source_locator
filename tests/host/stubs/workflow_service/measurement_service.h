@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -17,6 +18,8 @@ typedef enum {
 typedef struct {
     bool active_object_present;
     measurement_service_state_t state;
+    char object_id[16];
+    char session_id[16];
 } measurement_service_snapshot_t;
 
 esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snapshot);

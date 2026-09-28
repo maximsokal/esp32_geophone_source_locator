@@ -14,6 +14,7 @@
 #define OBJECT_STORE_LOCATION_SOURCE_SIZE 24
 #define OBJECT_STORE_DEFAULT_CABLE_LENGTH_M 5.0f
 #define OBJECT_STORE_MAX_LEASES 4U
+#define OBJECT_STORE_CALC_SETTINGS_JSON_SIZE 2048U
 
 typedef object_summary_t object_store_summary_t;
 
@@ -189,6 +190,15 @@ esp_err_t object_store_set_geometry(const char *object_id, const object_store_ge
  * that produced the geometry solve). Passing NULL clears it back to empty.
  */
 esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs);
+
+/* Per-object calculation input profile and shared scan artifact presence. */
+esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json);
+esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json_out);
+esp_err_t object_store_scan_present(
+    const char *object_id,
+    const char *session_id,
+    bool *present_out
+);
 
 /*
  * Shared anti-delete lease. Acquisition validates committed object existence

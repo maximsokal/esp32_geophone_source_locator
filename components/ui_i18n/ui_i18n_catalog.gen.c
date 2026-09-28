@@ -194,6 +194,122 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "SYSTEM", /* system.title */
     "UPTIME   %lld s", /* system.uptime */
     "UPTIME   -- s", /* system.uptime_empty */
+    "Back", /* tft.workflow.action.back */
+    "Calculate positions", /* tft.workflow.action.calculate_positions */
+    "Calculate source", /* tft.workflow.action.calculate_sources */
+    "Confirm", /* tft.workflow.action.confirm */
+    "Delete recording", /* tft.workflow.action.delete_recording */
+    "Go to calibration", /* tft.workflow.action.go_calibration */
+    "Move sensors", /* tft.workflow.action.move_sensors */
+    "Place sensors", /* tft.workflow.action.place_sensors */
+    "Record again", /* tft.workflow.action.record_again */
+    "Retry", /* tft.workflow.action.retry */
+    "Sensors placed", /* tft.workflow.action.sensors_placed */
+    "Start measurement", /* tft.workflow.action.start_measurement */
+    "Start recording", /* tft.workflow.action.start_recording */
+    "Stop recording", /* tft.workflow.action.stop_recording */
+    "Progress %s%%", /* tft.workflow.calculating.progress */
+    "Phase %s CS %s/%s spread %s mm", /* tft.workflow.calibration.header */
+    "Place all sensors next to the main housing", /* tft.workflow.calibration.prep */
+    "%s: %s", /* tft.workflow.calibration.reason */
+    "%s", /* tft.workflow.calibration.reason_single */
+    "%s H:%s z:%smm I:%s b:%s CS:%s", /* tft.workflow.calibration.row */
+    "Calibration: %s", /* tft.workflow.calibration.status */
+    "Delete recording? OK = yes, LEFT = no", /* tft.workflow.confirm.delete */
+    "UP/DOWN select OK run LEFT back RIGHT 3D", /* tft.workflow.hint.3d */
+    "UP/DOWN actions  OK run  LEFT back", /* tft.workflow.hint.navigation */
+    "Select an object", /* tft.workflow.idle.select_object */
+    "Set uncertainty (m/s)", /* tft.workflow.material.custom_sigma */
+    "+/- %s m/s", /* tft.workflow.material.custom_sigma_value */
+    "Set speed (m/s)", /* tft.workflow.material.custom_speed */
+    "v: %s m/s", /* tft.workflow.material.custom_speed_value */
+    "UP/DOWN adjust OK next LEFT back", /* tft.workflow.material.hint_adjust */
+    "UP/DOWN adjust OK save LEFT back", /* tft.workflow.material.hint_save */
+    "UP/DOWN choose OK select LEFT back", /* tft.workflow.material.hint_select */
+    "Brick masonry", /* tft.workflow.material.name.brick_masonry */
+    "Concrete (monolithic)", /* tft.workflow.material.name.concrete */
+    "Custom value", /* tft.workflow.material.name.custom */
+    "Reinforced concrete", /* tft.workflow.material.name.reinforced_concrete */
+    "Construction debris / rubble", /* tft.workflow.material.name.rubble */
+    "Dry soil / backfill", /* tft.workflow.material.name.soil_dry */
+    "Saturated soil", /* tft.workflow.material.name.soil_saturated */
+    "Steel structures", /* tft.workflow.material.name.steel */
+    "Unknown material", /* tft.workflow.material.name.unknown */
+    "%s", /* tft.workflow.material.option */
+    "Material: %s", /* tft.workflow.material.row */
+    "Save failed", /* tft.workflow.material.save_failed */
+    "Saved", /* tft.workflow.material.saved */
+    "Saving...", /* tft.workflow.material.saving */
+    "%s +/- %s m/s", /* tft.workflow.material.speed */
+    "MATERIAL", /* tft.workflow.material.title */
+    "Material: not set", /* tft.workflow.material.unset */
+    "Busy", /* tft.workflow.notice.busy */
+    "State changed", /* tft.workflow.notice.state_changed */
+    "%s", /* tft.workflow.object.name */
+    "Select object for measurement", /* tft.workflow.object.select */
+    "cancelled", /* tft.workflow.phase.cancelled */
+    "complete", /* tft.workflow.phase.complete */
+    "failed", /* tft.workflow.phase.failed */
+    "idle", /* tft.workflow.phase.idle */
+    "running", /* tft.workflow.phase.running */
+    "All stable", /* tft.workflow.placement.all_stable */
+    "%s V:%s dH:%smm ASL:%sm St:%s", /* tft.workflow.placement.row */
+    "Waiting for stability", /* tft.workflow.placement.waiting */
+    "OK again to stop recording", /* tft.workflow.preview.stop_confirm */
+    "State changed", /* tft.workflow.preview.stop_error */
+    "OK twice: stop recording", /* tft.workflow.preview.stop_hint */
+    "Stopping recording...", /* tft.workflow.preview.stop_pending */
+    "Pairs %s/%s residual %s mm", /* tft.workflow.ranging.pairs */
+    "%s sigma:%s mm", /* tft.workflow.ranging.sigma */
+    "CS pair failed", /* tft.workflow.reason.cs_pair */
+    "CS spread high", /* tft.workflow.reason.cs_spread */
+    "operation failed", /* tft.workflow.reason.failed */
+    "height: moving", /* tft.workflow.reason.height_moving */
+    "IMU: gravity", /* tft.workflow.reason.imu_gravity */
+    "IMU: moving", /* tft.workflow.reason.imu_moving */
+    "sensor error", /* tft.workflow.reason.sensor_invalid */
+    "Sensors are ready to record", /* tft.workflow.record_ready.instruction */
+    "Elapsed %s", /* tft.workflow.recording.elapsed */
+    "G%s: %s m", /* tft.workflow.result.distance */
+    "G%s: —", /* tft.workflow.result.distance_unknown */
+    "Internal error", /* tft.workflow.result.internal */
+    "Result details unavailable", /* tft.workflow.result.load_failed */
+    "Loading...", /* tft.workflow.result.loading */
+    "Move sensors", /* tft.workflow.result.move_sensors */
+    "Details: %s", /* tft.workflow.result.reason */
+    "Record again", /* tft.workflow.result.record_again */
+    "Source calculated successfully", /* tft.workflow.result.success */
+    "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
+    "Not enough sensors even for 2D", /* tft.workflow.sensor.insufficient */
+    "2D possible; connect >=4 for 3D", /* tft.workflow.sensor.planar */
+    "3D ready", /* tft.workflow.sensor.ready */
+    "REMOTE: %s", /* tft.workflow.sensor.remote_count */
+    "calibrated", /* tft.workflow.state.calibrated */
+    "gravity", /* tft.workflow.state.gravity */
+    "moving", /* tft.workflow.state.moving */
+    "error", /* tft.workflow.state.sensor_invalid */
+    "valid", /* tft.workflow.state.valid */
+    "Recording stopped", /* tft.workflow.stopped.instruction */
+    "Calculation parameters not set for this object", /* tft.workflow.stopped.settings_missing */
+    "CALCULATING SOURCE", /* tft.workflow.title.calculating */
+    "CALIBRATION SETUP", /* tft.workflow.title.calib_prep */
+    "CALIBRATION RESULT", /* tft.workflow.title.calib_result */
+    "CALIBRATION", /* tft.workflow.title.calibrating */
+    "IDLE", /* tft.workflow.title.idle */
+    "OBJECT", /* tft.workflow.title.object */
+    "SENSOR PLACEMENT", /* tft.workflow.title.placement */
+    "BLUETOOTH RANGING", /* tft.workflow.title.ranging */
+    "RANGING RESULT", /* tft.workflow.title.ranging_result */
+    "READY TO RECORD", /* tft.workflow.title.record_ready */
+    "RECORDING", /* tft.workflow.title.recording */
+    "RESULT", /* tft.workflow.title.result */
+    "SENSOR CHECK", /* tft.workflow.title.sensor_check */
+    "RECORDING STOPPED", /* tft.workflow.title.stopped */
+    "FAIL", /* tft.workflow.value.fail */
+    "X", /* tft.workflow.value.no */
+    "OK", /* tft.workflow.value.ok */
+    "...", /* tft.workflow.value.pending */
+    "—", /* tft.workflow.value.unknown */
     "AP  %s", /* wifi.ap_ssid */
     "PRESS OK AGAIN: FORGET NETWORK", /* wifi.ask_forget */
     "PRESS OK AGAIN: ENTER SETUP", /* wifi.ask_setup */
@@ -437,6 +553,122 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "СИСТЕМА", /* system.title */
     "ЧАС      %lld с", /* system.uptime */
     "ЧАС      -- с", /* system.uptime_empty */
+    "Назад", /* tft.workflow.action.back */
+    "Розрахувати координати", /* tft.workflow.action.calculate_positions */
+    "Визначити джерело", /* tft.workflow.action.calculate_sources */
+    "Підтвердити", /* tft.workflow.action.confirm */
+    "Видалити запис", /* tft.workflow.action.delete_recording */
+    "Перейти до калібрування", /* tft.workflow.action.go_calibration */
+    "Перемістити датчики", /* tft.workflow.action.move_sensors */
+    "Розмістити датчики", /* tft.workflow.action.place_sensors */
+    "Записати ще раз", /* tft.workflow.action.record_again */
+    "Повторити", /* tft.workflow.action.retry */
+    "Датчики розміщено", /* tft.workflow.action.sensors_placed */
+    "Почати вимірювання", /* tft.workflow.action.start_measurement */
+    "Почати запис", /* tft.workflow.action.start_recording */
+    "Зупинити запис", /* tft.workflow.action.stop_recording */
+    "Виконано %s%%", /* tft.workflow.calculating.progress */
+    "Етап %s CS %s/%s розкид %s мм", /* tft.workflow.calibration.header */
+    "Розмістіть усі датчики поруч із головним корпусом", /* tft.workflow.calibration.prep */
+    "%s: %s", /* tft.workflow.calibration.reason */
+    "%s", /* tft.workflow.calibration.reason_single */
+    "%s В:%s z:%sмм І:%s b:%s CS:%s", /* tft.workflow.calibration.row */
+    "Калібрування: %s", /* tft.workflow.calibration.status */
+    "Видалити запис? OK = так, LEFT = ні", /* tft.workflow.confirm.delete */
+    "UP/DOWN вибір OK дія LEFT назад RIGHT 3D", /* tft.workflow.hint.3d */
+    "UP/DOWN дії  OK вибір  LEFT назад", /* tft.workflow.hint.navigation */
+    "Виберіть об’єкт", /* tft.workflow.idle.select_object */
+    "Задати невизначеність (м/с)", /* tft.workflow.material.custom_sigma */
+    "+/- %s м/с", /* tft.workflow.material.custom_sigma_value */
+    "Задати швидкість (м/с)", /* tft.workflow.material.custom_speed */
+    "v: %s м/с", /* tft.workflow.material.custom_speed_value */
+    "UP/DOWN зміна OK далі LEFT назад", /* tft.workflow.material.hint_adjust */
+    "UP/DOWN зміна OK зберегти LEFT назад", /* tft.workflow.material.hint_save */
+    "UP/DOWN вибір OK вибрати LEFT назад", /* tft.workflow.material.hint_select */
+    "Цегляна кладка", /* tft.workflow.material.name.brick_masonry */
+    "Бетон (монолітний)", /* tft.workflow.material.name.concrete */
+    "Власне значення", /* tft.workflow.material.name.custom */
+    "Залізобетон", /* tft.workflow.material.name.reinforced_concrete */
+    "Будівельне сміття / завали", /* tft.workflow.material.name.rubble */
+    "Сухий ґрунт / засипка", /* tft.workflow.material.name.soil_dry */
+    "Водонасичений ґрунт", /* tft.workflow.material.name.soil_saturated */
+    "Сталеві конструкції", /* tft.workflow.material.name.steel */
+    "Невідомий матеріал", /* tft.workflow.material.name.unknown */
+    "%s", /* tft.workflow.material.option */
+    "Матеріал: %s", /* tft.workflow.material.row */
+    "Помилка збереження", /* tft.workflow.material.save_failed */
+    "Збережено", /* tft.workflow.material.saved */
+    "Збереження...", /* tft.workflow.material.saving */
+    "%s +/- %s м/с", /* tft.workflow.material.speed */
+    "МАТЕРІАЛ", /* tft.workflow.material.title */
+    "Матеріал: не задано", /* tft.workflow.material.unset */
+    "Зайнято", /* tft.workflow.notice.busy */
+    "Стан змінився", /* tft.workflow.notice.state_changed */
+    "%s", /* tft.workflow.object.name */
+    "Виберіть об’єкт для вимірювання", /* tft.workflow.object.select */
+    "Скасовано", /* tft.workflow.phase.cancelled */
+    "Завершено", /* tft.workflow.phase.complete */
+    "Не вдалося", /* tft.workflow.phase.failed */
+    "Очікування", /* tft.workflow.phase.idle */
+    "Виконується", /* tft.workflow.phase.running */
+    "Усі стабільні", /* tft.workflow.placement.all_stable */
+    "%s В:%s dH:%sмм над.р.м:%sм Ст:%s", /* tft.workflow.placement.row */
+    "Очікування стабільності", /* tft.workflow.placement.waiting */
+    "Натисніть OK ще раз, щоб зупинити запис", /* tft.workflow.preview.stop_confirm */
+    "Стан змінився", /* tft.workflow.preview.stop_error */
+    "OK двічі: зупинити запис", /* tft.workflow.preview.stop_hint */
+    "Зупинення запису...", /* tft.workflow.preview.stop_pending */
+    "Пари %s/%s нев’язка %s мм", /* tft.workflow.ranging.pairs */
+    "%s сигма:%s мм", /* tft.workflow.ranging.sigma */
+    "помилка пари CS", /* tft.workflow.reason.cs_pair */
+    "великий розкид CS", /* tft.workflow.reason.cs_spread */
+    "операція не вдалася", /* tft.workflow.reason.failed */
+    "висота: рух", /* tft.workflow.reason.height_moving */
+    "IMU: гравітація", /* tft.workflow.reason.imu_gravity */
+    "IMU: рух", /* tft.workflow.reason.imu_moving */
+    "помилка датчика", /* tft.workflow.reason.sensor_invalid */
+    "Датчики готові до запису", /* tft.workflow.record_ready.instruction */
+    "Тривалість %s", /* tft.workflow.recording.elapsed */
+    "G%s: %s м", /* tft.workflow.result.distance */
+    "G%s: —", /* tft.workflow.result.distance_unknown */
+    "Внутрішня помилка", /* tft.workflow.result.internal */
+    "Деталі результату недоступні", /* tft.workflow.result.load_failed */
+    "Завантаження...", /* tft.workflow.result.loading */
+    "Перемістіть датчики", /* tft.workflow.result.move_sensors */
+    "Деталі: %s", /* tft.workflow.result.reason */
+    "Запишіть ще раз", /* tft.workflow.result.record_again */
+    "Джерело успішно визначено", /* tft.workflow.result.success */
+    "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
+    "Недостатньо датчиків навіть для 2D", /* tft.workflow.sensor.insufficient */
+    "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
+    "3D готове", /* tft.workflow.sensor.ready */
+    "REMOTE: %s", /* tft.workflow.sensor.remote_count */
+    "Відкалібровано", /* tft.workflow.state.calibrated */
+    "Гравітація", /* tft.workflow.state.gravity */
+    "Рух", /* tft.workflow.state.moving */
+    "Помилка", /* tft.workflow.state.sensor_invalid */
+    "Дійсна", /* tft.workflow.state.valid */
+    "Запис зупинено", /* tft.workflow.stopped.instruction */
+    "Для цього об’єкта не задано параметри розрахунку", /* tft.workflow.stopped.settings_missing */
+    "Визначення джерела", /* tft.workflow.title.calculating */
+    "Підготовка до калібрування", /* tft.workflow.title.calib_prep */
+    "Результат калібрування", /* tft.workflow.title.calib_result */
+    "Калібрування", /* tft.workflow.title.calibrating */
+    "Очікування", /* tft.workflow.title.idle */
+    "Об’єкт", /* tft.workflow.title.object */
+    "Розміщення датчиків", /* tft.workflow.title.placement */
+    "Вимірювання дальності", /* tft.workflow.title.ranging */
+    "Результат дальності", /* tft.workflow.title.ranging_result */
+    "Готово до запису", /* tft.workflow.title.record_ready */
+    "Запис", /* tft.workflow.title.recording */
+    "Результат", /* tft.workflow.title.result */
+    "Перевірка датчиків", /* tft.workflow.title.sensor_check */
+    "Запис зупинено", /* tft.workflow.title.stopped */
+    "НЕВДАЛО", /* tft.workflow.value.fail */
+    "Ні", /* tft.workflow.value.no */
+    "OK", /* tft.workflow.value.ok */
+    "...", /* tft.workflow.value.pending */
+    "—", /* tft.workflow.value.unknown */
     "AP  %s", /* wifi.ap_ssid */
     "НАТИСНІТЬ OK ЩЕ РАЗ: ЗАБУТИ МЕРЕЖУ", /* wifi.ask_forget */
     "НАТИСНІТЬ OK ЩЕ РАЗ: НАЛАШТУВАТИ", /* wifi.ask_setup */

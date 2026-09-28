@@ -36,7 +36,7 @@ static void test_solved_result_converts_and_round_trips(void)
     assert(
         localization_event_result_to_run_record(
             &event_result, "OBJ_0007", "S000003", 123456789ULL, 123400000ULL,
-            1U, "bench_calibration", 340.0, 1.25, 50.0, &record
+            1U, "bench_calibration", "concrete", 340.0, 1.25, 50.0, &record
         ) == ESP_OK
     );
 
@@ -49,6 +49,7 @@ static void test_solved_result_converts_and_round_trips(void)
     assert(record.dimensionality == LOCALIZATION_DIMENSIONALITY_CAPABLE_3D);
     assert(record.geometry_computed_at_ms == 123400000ULL);
     assert(strcmp(record.propagation_model_name, "bench_calibration") == 0);
+    assert(strcmp(record.material, "concrete") == 0);
     assert(record.propagation_speed_mps == 340.0);
     assert(record.propagation_speed_uncertainty_mps == 1.25);
     assert(record.solved);
@@ -67,6 +68,7 @@ static void test_solved_result_converts_and_round_trips(void)
     localization_run_record_t parsed;
     assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
     assert(fabs(parsed.confidence_score - expected_confidence) < 1e-9);
+    assert(strcmp(parsed.material, "concrete") == 0);
     free(json);
 }
 
@@ -79,7 +81,7 @@ static void test_zero_timing_uncertainty_leaves_confidence_at_zero(void)
     assert(
         localization_event_result_to_run_record(
             &event_result, "OBJ_0007", "S000003", 0ULL, 0ULL,
-            1U, "", 340.0, 0.0, 0.0, &record
+            1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_OK
     );
 
@@ -101,7 +103,7 @@ static void test_insufficient_channels_produces_the_shared_policy_reason(void)
     assert(
         localization_event_result_to_run_record(
             &event_result, "OBJ_0007", "S000003", 0ULL, 0ULL,
-            1U, "", 340.0, 0.0, 0.0, &record
+            1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_OK
     );
 
@@ -133,7 +135,7 @@ static void test_method_unavailable_for_dimensionality_produces_the_shared_polic
     assert(
         localization_event_result_to_run_record(
             &event_result, "OBJ_0007", "S000003", 0ULL, 0ULL,
-            1U, "", 340.0, 0.0, 0.0, &record
+            1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_OK
     );
 
@@ -161,7 +163,7 @@ static void test_solver_rejected_produces_a_non_empty_reason(void)
     assert(
         localization_event_result_to_run_record(
             &event_result, "OBJ_0007", "S000003", 0ULL, 0ULL,
-            1U, "", 340.0, 0.0, 0.0, &record
+            1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_OK
     );
 
@@ -179,17 +181,17 @@ static void test_rejects_null_arguments(void)
 
     assert(
         localization_event_result_to_run_record(
-            NULL, "OBJ_0007", "S000003", 0ULL, 0ULL, 1U, "", 340.0, 0.0, 0.0, &record
+            NULL, "OBJ_0007", "S000003", 0ULL, 0ULL, 1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_ERR_INVALID_ARG
     );
     assert(
         localization_event_result_to_run_record(
-            &event_result, "OBJ_0007", "S000003", 0ULL, 0ULL, 1U, "", 340.0, 0.0, 0.0, NULL
+            &event_result, "OBJ_0007", "S000003", 0ULL, 0ULL, 1U, "", "", 340.0, 0.0, 0.0, NULL
         ) == ESP_ERR_INVALID_ARG
     );
     assert(
         localization_event_result_to_run_record(
-            &event_result, NULL, "S000003", 0ULL, 0ULL, 1U, "", 340.0, 0.0, 0.0, &record
+            &event_result, NULL, "S000003", 0ULL, 0ULL, 1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_ERR_INVALID_ARG
     );
 }
@@ -203,7 +205,7 @@ static void test_rejects_an_object_id_too_long_for_the_schema(void)
     assert(
         localization_event_result_to_run_record(
             &event_result, "OBJ_THIS_ID_IS_WAY_TOO_LONG_FOR_THE_FIELD", "S000003",
-            0ULL, 0ULL, 1U, "", 340.0, 0.0, 0.0, &record
+            0ULL, 0ULL, 1U, "", "", 340.0, 0.0, 0.0, &record
         ) == ESP_ERR_INVALID_ARG
     );
 }

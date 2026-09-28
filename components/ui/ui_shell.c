@@ -105,6 +105,7 @@ lv_obj_t *ui_create_screen_base_locked(
     context->header_source = NULL;
     context->header_wifi = NULL;
     context->header_power = NULL;
+    context->footer_label = NULL;
     memset(context->home_rows, 0, sizeof(context->home_rows));
     memset(
         context->measurement_channel_labels,
@@ -202,7 +203,7 @@ lv_obj_t *ui_create_screen_base_locked(
         lv_obj_set_style_radius(footer_bar, 0, 0);
         lv_obj_set_style_pad_all(footer_bar, 0, 0);
 
-        (void)ui_create_label_locked(
+        context->footer_label = ui_create_label_locked(
             footer_bar,
             8,
             6,

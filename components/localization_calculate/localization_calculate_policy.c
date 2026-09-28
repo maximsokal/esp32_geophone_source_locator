@@ -199,6 +199,8 @@ static void fill_common_fields(
         "%s",
         context->propagation_model_name != NULL ? context->propagation_model_name : ""
     );
+    snprintf(record_out->material, sizeof(record_out->material), "%s",
+        context->material != NULL ? context->material : "");
     record_out->propagation_speed_mps = context->propagation_speed_mps;
     record_out->propagation_speed_uncertainty_mps = context->propagation_speed_uncertainty_mps;
     record_out->degrees_of_freedom = -1;

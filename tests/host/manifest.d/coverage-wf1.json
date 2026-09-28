@@ -8,6 +8,7 @@
         "tests/host/workflow_core_test.c"
       ],
       "include_dirs": [
+        "tests/host/stubs/workflow_service",
         "components/workflow_service/include"
       ]
     },
@@ -16,12 +17,22 @@
       "sources": [
         "components/workflow_service/workflow_core.c",
         "components/workflow_service/workflow_service.c",
+        "components/localization_job/localization_config.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/stubs/workflow_service/host_rtos.c",
+        "tests/host/workflow_service_host_fakes.c",
         "tests/host/workflow_service_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/workflow_service",
-        "components/workflow_service/include"
+        "tests/host/stubs/object_store_profile",
+        "components/workflow_service/include",
+        "components/localization_job/include",
+        "components/localization_calculate/include",
+        "components/localization/include",
+        "components/geophone_events/include"
       ],
+      "defines": ["WORKFLOW_SERVICE_TEST_HARNESS"],
       "libraries": ["pthread"]
     },
     {
@@ -65,6 +76,7 @@
       "name": "workflow_control_http",
       "sources": [
         "components/storage_manager/storage_bulk_admission.c",
+        "components/localization_job/localization_config.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "tests/host/web_api_control_http_test.c"
       ],
@@ -73,6 +85,7 @@
         "components/measurement_service/tests/stubs",
         "components/storage_manager",
         "components/storage_manager/include",
+        "components/localization_job/include",
         "components/web_server"
       ],
       "defines": ["_POSIX_C_SOURCE=200809L"],

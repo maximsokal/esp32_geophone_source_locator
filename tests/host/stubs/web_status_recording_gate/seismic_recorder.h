@@ -5,6 +5,8 @@
 
 #include "esp_err.h"
 
+#define SEISMIC_RECORDER_SESSION_ID_SIZE 16U
+
 typedef enum {
     SEISMIC_RECORDER_IDLE = 0,
     SEISMIC_RECORDER_RECORDING,

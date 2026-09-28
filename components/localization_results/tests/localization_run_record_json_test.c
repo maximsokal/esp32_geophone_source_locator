@@ -367,6 +367,27 @@ static void test_degrees_of_freedom_round_trips_and_defaults(void)
 }
 
 
+static void test_material_round_trips_and_is_optional_for_old_records(void)
+{
+    localization_run_record_t record = solved_record();
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"material\"") == NULL);
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.material[0] == '\0');
+    free(json);
+
+    snprintf(record.material, sizeof(record.material), "concrete");
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    assert(strstr(json, "\"material\":\"concrete\"") != NULL);
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(strcmp(parsed.material, "concrete") == 0);
+    free(json);
+}
+
+
 static void test_estimated_velocities_round_trip_and_stay_optional(void)
 {
     /* A velocity-free method reports the velocities it estimated. */
@@ -498,6 +519,7 @@ int main(void)
     test_unknown_propagation_uncertainty_round_trips_as_zero();
     test_confidence_score_round_trips();
     test_degrees_of_freedom_round_trips_and_defaults();
+    test_material_round_trips_and_is_optional_for_old_records();
     test_estimated_velocities_round_trip_and_stay_optional();
     test_uncertainty_round_trips_and_stays_optional();
     test_negative_confidence_score_is_rejected();

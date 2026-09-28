@@ -1,24 +1,51 @@
 #include "workflow_service.h"
 
+#include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
 
+#include "app_task_config.h"
 #include "device_status.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "localization_config.h"
+#include "localization_job.h"
+#include "localization_material_presets.h"
 #include "main_barometer.h"
 #include "measurement_service.h"
 #include "nrf_baro_altitude.h"
 #include "nrf_topology_service.h"
 #include "object_service.h"
+#include "object_store.h"
+#include "cJSON.h"
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
 #define WORKFLOW_CALIBRATION_CS_MAX_SPREAD_MM 150
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
+#define WORKFLOW_SERVICE_POLL_STACK_BYTES 8192U
+#define WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH 8U
+#define WORKFLOW_SERVICE_STATUS_REFRESH_MS 2000U
+#define WORKFLOW_SERVICE_POLL_TASK_PRIORITY 1U
+#define WORKFLOW_ASYNC_QUEUE_DEPTH 4U
+#define WORKFLOW_CALC_MATERIAL_ID_SIZE 24U
 
+/*
+ * 8 KiB is the fixed Xtensa budget for the deepest branch: poll task (48 B) ->
+ * poll (32 B) -> async dispatch (80 B) -> command (144 B) -> calculation start
+ * (112 B), then an SD settings read, cJSON parse (depth capped at 8), config
+ * parse, or job submit. Target-size locals above 256 B are in the 4,388 B
+ * PSRAM scratch: job status 1,272 B, device status 792 B, ranging progress
+ * 632 B, calibration-node copy 720 B, and CS cycle 428 B. workflow_snapshot_t
+ * is a caller-owned output (2,440 B), never a poll-task local.
+ */
 static const char *TAG = "WORKFLOW";
 
 typedef struct {
@@ -64,17 +91,78 @@ typedef struct {
     uint64_t started_at_ms;
 } workflow_ranging_run_t;
 
+typedef enum {
+    WORKFLOW_ASYNC_COMMAND = 0,
+    WORKFLOW_ASYNC_MATERIAL_SAVE,
+} workflow_async_kind_t;
+
+typedef struct {
+    uint32_t seq;
+    workflow_async_kind_t kind;
+    workflow_command_t command;
+    bool has_generation;
+    uint32_t expected_generation;
+    char material_id[WORKFLOW_CALC_MATERIAL_ID_SIZE];
+    uint32_t custom_v_mps;
+    uint32_t custom_sigma_mps;
+} workflow_async_command_t;
+
+typedef struct {
+    device_status_snapshot_t device;
+    localization_job_status_t job_status;
+    localization_calculate_config_t calculation_config;
+    nrf_topology_snapshot_t topology;
+    nrf_cs_cycle_snapshot_t cs_cycle;
+    nrf_remote_sensor_cache_t remote_sensor;
+    nrf_topology_ranging_progress_t ranging_progress;
+    workflow_calibration_node_t old_calibration_nodes[WORKFLOW_MAX_CALIBRATION_NODES];
+} workflow_poll_scratch_t;
+
 static SemaphoreHandle_t s_mutex;
+static SemaphoreHandle_t s_async_enqueue_mutex;
+static QueueHandle_t s_async_queue;
+static TaskHandle_t s_poll_task;
+static atomic_bool s_poll_hwm_after_first_calculation;
+static bool s_poll_first_calculation_seen;
 static bool s_initialized;
 static bool s_recorder_reconciliation_armed;
 static uint8_t s_assigned_remotes;
-static char s_active_object_id[OBJECT_SERVICE_OBJECT_ID_SIZE];
+static char s_active_object_id[OBJECT_STORE_ID_SIZE];
+static char s_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+static uint32_t s_async_next_seq;
+static workflow_last_async_t s_last_async;
+static workflow_last_material_save_t s_last_material_save;
+static bool s_placement_ready;
+static bool s_has_scan;
+static bool s_scan_cache_valid;
+static uint64_t s_scan_cache_updated_ms;
+static workflow_step_t s_scan_cache_step;
+static char s_scan_cache_object_id[OBJECT_STORE_ID_SIZE];
+static char s_scan_cache_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+static bool s_calc_settings_ready;
+static bool s_calc_settings_cache_valid;
+static uint64_t s_calc_settings_cache_updated_ms;
+static char s_calc_settings_cache_object_id[OBJECT_STORE_ID_SIZE];
+static char s_calc_material[WORKFLOW_CALC_MATERIAL_ID_SIZE];
+static uint32_t s_calculation_job_id;
+static uint32_t s_orphaned_job_id;
 static workflow_core_t s_core;
 static workflow_service_placement_ready_fn s_placement_ready_predicate;
 static void *s_placement_ready_context;
 static EXT_RAM_BSS_ATTR workflow_calibration_run_t s_calibration;
 static EXT_RAM_BSS_ATTR workflow_placement_run_t s_placement;
 static EXT_RAM_BSS_ATTR workflow_ranging_run_t s_ranging;
+static EXT_RAM_BSS_ATTR workflow_poll_scratch_t s_poll_scratch;
+
+static workflow_command_result_t workflow_service_command_locked(
+    workflow_command_t command,
+    const workflow_command_params_t *params
+);
+static void workflow_service_process_async_locked(void);
+static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms);
+static void workflow_service_mark_calculation_orphaned_locked(void);
+static BaseType_t workflow_service_create_poll_task(TaskHandle_t *task_out);
+static void workflow_service_poll_task(void *argument);
 
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = 500U,
@@ -107,10 +195,149 @@ static void workflow_service_copy_string(char *target, size_t capacity, const ch
     (void)snprintf(target, capacity, "%s", source != NULL ? source : "");
 }
 
+static bool workflow_service_calc_settings_depth_ok(const char *json)
+{
+    size_t depth = 0U;
+    bool in_string = false;
+    bool escaped = false;
+    if (json == NULL) return false;
+
+    for (const char *cursor = json; *cursor != '\0'; ++cursor) {
+        const char value = *cursor;
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (value == '\\') escaped = true;
+            else if (value == '"') in_string = false;
+            continue;
+        }
+        if (value == '"') {
+            in_string = true;
+        } else if (value == '{' || value == '[') {
+            if (++depth > WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH) return false;
+        } else if (value == '}' || value == ']') {
+            if (depth == 0U) return false;
+            --depth;
+        }
+    }
+    return !in_string && depth == 0U;
+}
+
+/* Called only while s_mutex is held; settings are a flat scalar schema. */
+static esp_err_t workflow_service_parse_calc_settings_locked(
+    const char *json,
+    uint32_t *budget_ms_out,
+    localization_calculate_config_t *config_out,
+    char material_out[WORKFLOW_CALC_MATERIAL_ID_SIZE]
+)
+{
+    if (json == NULL || budget_ms_out == NULL) return ESP_ERR_INVALID_ARG;
+    if (!workflow_service_calc_settings_depth_ok(json)) return ESP_ERR_INVALID_RESPONSE;
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
+    localization_calculate_config_t *config = config_out != NULL
+        ? config_out : &s_poll_scratch.calculation_config;
+    const esp_err_t err = localization_config_from_json(
+        root, config, budget_ms_out);
+    if (err == ESP_OK && material_out != NULL) {
+        workflow_service_copy_string(material_out, WORKFLOW_CALC_MATERIAL_ID_SIZE,
+            config->material[0] != '\0' ? config->material : "custom");
+    }
+    cJSON_Delete(root);
+    return err;
+}
+
 static uint64_t workflow_service_now_ms(void)
 {
     const int64_t now_us = esp_timer_get_time();
     return now_us > 0 ? (uint64_t)now_us / UINT64_C(1000) : 0U;
+}
+
+static bool workflow_service_step_has_session(workflow_step_t step)
+{
+    return step == WORKFLOW_STEP_RECORDING || step == WORKFLOW_STEP_STOPPED ||
+        step == WORKFLOW_STEP_CALCULATING || step == WORKFLOW_STEP_RESULT;
+}
+
+static void workflow_service_update_session_locked(
+    esp_err_t measurement_err,
+    const measurement_service_snapshot_t *measurement
+)
+{
+    if (!workflow_service_step_has_session(s_core.step)) {
+        if (s_session_id[0] != '\0') {
+            s_session_id[0] = '\0';
+            s_scan_cache_valid = false;
+            s_has_scan = false;
+        }
+        return;
+    }
+    if (measurement_err != ESP_OK || measurement == NULL ||
+        strcmp(measurement->object_id, s_active_object_id) != 0 ||
+        measurement->session_id[0] == '\0') {
+        return;
+    }
+    const bool recording = s_core.step == WORKFLOW_STEP_RECORDING &&
+        (measurement->state == MEASUREMENT_SERVICE_STARTING ||
+         measurement->state == MEASUREMENT_SERVICE_RECORDING);
+    const bool reviewing = s_core.step != WORKFLOW_STEP_RECORDING &&
+        measurement->state == MEASUREMENT_SERVICE_REVIEW;
+    if (recording || reviewing) {
+        if (strcmp(s_session_id, measurement->session_id) != 0) {
+            s_scan_cache_valid = false;
+            s_has_scan = false;
+        }
+        workflow_service_copy_string(s_session_id, sizeof(s_session_id), measurement->session_id);
+    }
+}
+
+static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms)
+{
+    const bool object_changed = strcmp(s_calc_settings_cache_object_id, s_active_object_id) != 0;
+    if (!s_calc_settings_cache_valid || object_changed ||
+        now_ms - s_calc_settings_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
+        s_calc_settings_ready = false;
+        s_calc_material[0] = '\0';
+        if (s_active_object_id[0] != '\0') {
+            char *json = NULL;
+            if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
+                uint32_t budget_ms = 0U;
+                s_calc_settings_ready = workflow_service_parse_calc_settings_locked(
+                    json, &budget_ms, NULL, s_calc_material) == ESP_OK;
+                free(json);
+            }
+        }
+        workflow_core_set_calc_settings_ready(&s_core, s_calc_settings_ready);
+        workflow_service_copy_string(
+            s_calc_settings_cache_object_id, sizeof(s_calc_settings_cache_object_id), s_active_object_id);
+        s_calc_settings_cache_updated_ms = now_ms;
+        s_calc_settings_cache_valid = true;
+    }
+}
+
+static void workflow_service_refresh_presence_locked(void)
+{
+    const uint64_t now_ms = workflow_service_now_ms();
+    const bool identity_changed =
+        s_scan_cache_step != s_core.step ||
+        strcmp(s_scan_cache_object_id, s_active_object_id) != 0 ||
+        strcmp(s_scan_cache_session_id, s_session_id) != 0;
+    if (!s_scan_cache_valid || identity_changed ||
+        now_ms - s_scan_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
+        s_has_scan = false;
+        if (s_active_object_id[0] != '\0') {
+            bool present = false;
+            if (object_store_scan_present(s_active_object_id, s_session_id, &present) == ESP_OK) {
+                s_has_scan = present;
+            }
+        }
+        workflow_service_copy_string(s_scan_cache_object_id, sizeof(s_scan_cache_object_id), s_active_object_id);
+        workflow_service_copy_string(s_scan_cache_session_id, sizeof(s_scan_cache_session_id), s_session_id);
+        s_scan_cache_step = s_core.step;
+        s_scan_cache_updated_ms = now_ms;
+        s_scan_cache_valid = true;
+    }
+
+    workflow_service_refresh_calc_settings_locked(now_ms);
 }
 
 static void workflow_service_calibration_add_reason(const char *reason)
@@ -198,8 +425,8 @@ static void workflow_service_calibration_start_name(
 
 static esp_err_t workflow_service_calibration_start(void)
 {
-    nrf_topology_snapshot_t topology;
-    esp_err_t err = nrf_topology_service_get_snapshot(&topology);
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    esp_err_t err = nrf_topology_service_get_snapshot(topology);
     if (err != ESP_OK) return err;
 
     uint8_t channel_mask = 0U;
@@ -212,13 +439,13 @@ static esp_err_t workflow_service_calibration_start(void)
     size_t remote_count = 0U;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         if ((channel_mask & (uint8_t)(1U << channel)) == 0U) continue;
-        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED ||
-            topology.remotes[channel].node_id == NRF_TOPOLOGY_MAIN_NODE_ID ||
+        if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED ||
+            topology->remotes[channel].node_id == NRF_TOPOLOGY_MAIN_NODE_ID ||
             remote_count >= WORKFLOW_MAX_REMOTE_NODES) {
             return ESP_ERR_INVALID_STATE;
         }
         channels[remote_count] = channel;
-        node_ids[remote_count] = topology.remotes[channel].node_id;
+        node_ids[remote_count] = topology->remotes[channel].node_id;
         ++remote_count;
     }
     if (remote_count == 0U) return ESP_ERR_NOT_FOUND;
@@ -226,9 +453,9 @@ static esp_err_t workflow_service_calibration_start(void)
     err = nrf_topology_service_request_imu_calibration(generation, channel_mask);
     if (err != ESP_OK) return err;
 
-    nrf_cs_cycle_snapshot_t previous_cycle;
+    nrf_cs_cycle_snapshot_t *previous_cycle = &s_poll_scratch.cs_cycle;
     const bool previous_cycle_valid =
-        nrf_topology_service_get_cs_cycle(&previous_cycle) == ESP_OK;
+        nrf_topology_service_get_cs_cycle(previous_cycle) == ESP_OK;
     const nrf_cs_policy_t policy = {
         .pair_timeout_ms = 500U,
         .max_attempts = 3U,
@@ -245,7 +472,7 @@ static esp_err_t workflow_service_calibration_start(void)
     memcpy(s_calibration.node_ids, node_ids, remote_count * sizeof(node_ids[0]));
     s_calibration.started_ms = workflow_service_now_ms();
     s_calibration.previous_cycle_valid = previous_cycle_valid;
-    if (previous_cycle_valid) s_calibration.previous_cycle_id = previous_cycle.cycle_id;
+    if (previous_cycle_valid) s_calibration.previous_cycle_id = previous_cycle->cycle_id;
     s_calibration.status.generation = generation;
     workflow_service_copy_string(
         s_calibration.status.phase,
@@ -266,16 +493,16 @@ static esp_err_t workflow_service_calibration_start(void)
 
 static void workflow_service_calibration_update_main_height(void)
 {
-    device_status_snapshot_t device;
-    if (device_status_try_get_snapshot(&device) != ESP_OK) return;
+    device_status_snapshot_t *device = &s_poll_scratch.device;
+    if (device_status_try_get_snapshot(device) != ESP_OK) return;
     workflow_calibration_node_t *node = &s_calibration.status.per_node[0];
-    if (device.main.height_reference.generation != s_calibration.status.generation) return;
+    if (device->main.height_reference.generation != s_calibration.status.generation) return;
 
-    switch (device.main.height_reference.state) {
+    switch (device->main.height_reference.state) {
         case DEVICE_MAIN_HEIGHT_REFERENCE_VALID:
             workflow_service_copy_string(node->height_state, sizeof(node->height_state), "valid");
             node->relative_z_mm_valid = true;
-            node->relative_z_mm = device.main.height_reference.relative_z_mm;
+            node->relative_z_mm = device->main.height_reference.relative_z_mm;
             break;
         case DEVICE_MAIN_HEIGHT_REFERENCE_REJECTED_UNSTABLE:
             workflow_service_copy_string(
@@ -379,31 +606,31 @@ static bool workflow_service_cs_pair_matches(
 
 static void workflow_service_calibration_update_cs(void)
 {
-    nrf_cs_cycle_snapshot_t cycle;
-    if (nrf_topology_service_get_cs_cycle(&cycle) != ESP_OK) return;
+    nrf_cs_cycle_snapshot_t *cycle = &s_poll_scratch.cs_cycle;
+    if (nrf_topology_service_get_cs_cycle(cycle) != ESP_OK) return;
     if (s_calibration.previous_cycle_valid &&
-        cycle.cycle_id == s_calibration.previous_cycle_id) {
+        cycle->cycle_id == s_calibration.previous_cycle_id) {
         return;
     }
     if (!s_calibration.cycle_seen) {
         s_calibration.cycle_seen = true;
-        s_calibration.cycle_id = cycle.cycle_id;
-    } else if (cycle.cycle_id != s_calibration.cycle_id) {
+        s_calibration.cycle_id = cycle->cycle_id;
+    } else if (cycle->cycle_id != s_calibration.cycle_id) {
         return;
     }
 
     for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
         workflow_calibration_node_t *node = &s_calibration.status.per_node[i + 1U];
         const nrf_cs_pair_result_t *matched = NULL;
-        const size_t pair_count = cycle.pair_count < NRF_CS_MAX_PAIRS
-            ? cycle.pair_count
+        const size_t pair_count = cycle->pair_count < NRF_CS_MAX_PAIRS
+            ? cycle->pair_count
             : NRF_CS_MAX_PAIRS;
         for (size_t pair_index = 0U; pair_index < pair_count; ++pair_index) {
             if (workflow_service_cs_pair_matches(
-                    &cycle.pairs[pair_index],
+                    &cycle->pairs[pair_index],
                     NRF_TOPOLOGY_MAIN_NODE_ID,
                     s_calibration.node_ids[i])) {
-                matched = &cycle.pairs[pair_index];
+                matched = &cycle->pairs[pair_index];
                 break;
             }
         }
@@ -421,7 +648,7 @@ static void workflow_service_calibration_update_cs(void)
                 workflow_service_calibration_add_reason("cs_spread_too_high");
             }
         } else if ((matched != NULL && matched->state != NRF_CS_PAIR_PENDING &&
-                    matched->state != NRF_CS_PAIR_UNKNOWN) || cycle.complete) {
+                    matched->state != NRF_CS_PAIR_UNKNOWN) || cycle->complete) {
             s_calibration.cs_pair_terminal[i] = true;
             node->cs_pairs_ok = false;
             const uint8_t first = NRF_TOPOLOGY_MAIN_NODE_ID < s_calibration.node_ids[i]
@@ -508,14 +735,14 @@ static void workflow_service_calibration_finish(bool ok)
 static void workflow_service_calibration_poll(void)
 {
     if (!s_calibration.active) return;
-    workflow_calibration_node_t old_nodes[WORKFLOW_MAX_CALIBRATION_NODES];
-    memcpy(old_nodes, s_calibration.status.per_node, sizeof(old_nodes));
+    workflow_calibration_node_t *old_nodes = s_poll_scratch.old_calibration_nodes;
+    memcpy(old_nodes, s_calibration.status.per_node, sizeof(s_poll_scratch.old_calibration_nodes));
 
     workflow_service_calibration_update_main_height();
     for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
-        nrf_remote_sensor_cache_t cache;
-        memset(&cache, 0, sizeof(cache));
-        workflow_service_calibration_update_remote(i, &cache);
+        nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
+        memset(cache, 0, sizeof(*cache));
+        workflow_service_calibration_update_remote(i, cache);
     }
     workflow_service_calibration_update_cs();
 
@@ -575,12 +802,12 @@ static void workflow_service_ranging_start(void)
         &s_workflow_ranging_policy,
         NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS);
     if (err == ESP_OK) {
-        nrf_topology_ranging_progress_t progress;
-        err = nrf_topology_service_ranging_get_progress(&progress);
+        nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
+        err = nrf_topology_service_ranging_get_progress(progress);
         if (err == ESP_OK) {
             s_ranging = (workflow_ranging_run_t){
                 .active = true,
-                .started_at_ms = progress.started_at_ms,
+                .started_at_ms = progress->started_at_ms,
             };
             return;
         }
@@ -607,9 +834,9 @@ static void workflow_service_step_changed(workflow_step_t previous, workflow_ste
 static void workflow_service_ranging_poll(void)
 {
     if (!s_ranging.active) return;
-    nrf_topology_ranging_progress_t progress;
-    if (nrf_topology_service_ranging_get_progress(&progress) != ESP_OK ||
-        progress.started_at_ms != s_ranging.started_at_ms || !progress.complete) {
+    nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
+    if (nrf_topology_service_ranging_get_progress(progress) != ESP_OK ||
+        progress->started_at_ms != s_ranging.started_at_ms || !progress->complete) {
         return;
     }
 
@@ -619,7 +846,7 @@ static void workflow_service_ranging_poll(void)
         (void)nrf_topology_service_invalidate_ranging();
         return;
     }
-    workflow_service_ranging_done(progress.success, progress.failure_reason);
+    workflow_service_ranging_done(progress->success, progress->failure_reason);
 }
 
 static void workflow_service_placement_clear_samples(
@@ -730,16 +957,16 @@ static void workflow_service_placement_poll(bool collect_samples)
     memset(status, 0, sizeof(*status));
     const uint64_t now_ms = workflow_service_now_ms();
     const bool in_placement = s_core.step == WORKFLOW_STEP_PLACEMENT;
-    device_status_snapshot_t device;
-    const bool device_valid = device_status_try_get_snapshot(&device) == ESP_OK;
+    device_status_snapshot_t *device = &s_poll_scratch.device;
+    const bool device_valid = device_status_try_get_snapshot(device) == ESP_OK;
     const bool main_reference_valid = device_valid &&
-        device.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
-        device.main.height_reference.generation != 0U;
-    const bool main_baro_valid = device_valid && device.main.bmp280_valid &&
-        device.main.pressure_pa > 0U;
+        device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
+        device->main.height_reference.generation != 0U;
+    const bool main_baro_valid = device_valid && device->main.bmp280_valid &&
+        device->main.pressure_pa > 0U;
     const bool main_height_valid = main_reference_valid && main_baro_valid;
     const uint16_t main_generation = main_reference_valid
-        ? device.main.height_reference.generation
+        ? device->main.height_reference.generation
         : 0U;
     const bool take_samples = in_placement && collect_samples;
 
@@ -757,7 +984,7 @@ static void workflow_service_placement_poll(bool collect_samples)
     main_node->altitude_asl_m_valid = main_baro_valid;
     if (main_baro_valid) {
         main_node->altitude_asl_m =
-            (double)nrf_baro_pressure_to_altitude_mm(device.main.pressure_pa) / 1000.0;
+            (double)nrf_baro_pressure_to_altitude_mm(device->main.pressure_pa) / 1000.0;
     }
     main_node->stable = workflow_service_placement_update_node(
         &s_placement.history[0],
@@ -770,44 +997,44 @@ static void workflow_service_placement_poll(bool collect_samples)
         now_ms,
         take_samples);
 
-    nrf_topology_snapshot_t topology;
-    const bool topology_valid = nrf_topology_service_get_snapshot(&topology) == ESP_OK;
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    const bool topology_valid = nrf_topology_service_get_snapshot(topology) == ESP_OK;
     bool assigned[NRF_TOPOLOGY_REMOTE_COUNT] = { false };
     bool all_stable = topology_valid && in_placement && main_node->stable;
     if (topology_valid) {
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-            const nrf_topology_node_snapshot_t *remote = &topology.remotes[channel];
+            const nrf_topology_node_snapshot_t *remote = &topology->remotes[channel];
             if (remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
             assigned[channel] = true;
             workflow_placement_node_t *node =
                 &status->per_node[status->per_node_count++];
             workflow_service_placement_set_name(node, remote->node_id);
 
-            nrf_remote_sensor_cache_t cache;
-            memset(&cache, 0, sizeof(cache));
+            nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
+            memset(cache, 0, sizeof(*cache));
             const bool cache_read =
-                nrf_topology_service_get_sensor_snapshot(channel, &cache) == ESP_OK;
-            const bool cache_current = cache_read && cache.identity_valid &&
-                cache.topology_current && cache.response_valid &&
-                cache.identity.node_id == remote->node_id &&
-                now_ms >= cache.esp_receipt_uptime_ms &&
-                now_ms - cache.esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_WINDOW_MS;
+                nrf_topology_service_get_sensor_snapshot(channel, cache) == ESP_OK;
+            const bool cache_current = cache_read && cache->identity_valid &&
+                cache->topology_current && cache->response_valid &&
+                cache->identity.node_id == remote->node_id &&
+                now_ms >= cache->esp_receipt_uptime_ms &&
+                now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_WINDOW_MS;
             const bool environment_valid = cache_current &&
-                (cache.sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
-                cache.sensor.pressure_pa > 0U;
+                (cache->sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
+                cache->sensor.pressure_pa > 0U;
             node->vertical = cache_current &&
-                cache.sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+                cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
             node->height_rel_main_mm_valid = main_height_valid && environment_valid &&
-                cache.sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
-                cache.sensor.reference_generation == main_generation;
+                cache->sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
+                cache->sensor.reference_generation == main_generation;
             if (node->height_rel_main_mm_valid) {
                 node->height_rel_main_mm =
-                    (int64_t)cache.sensor.relative_z_mm -
-                    (int64_t)device.main.height_reference.relative_z_mm;
+                    (int64_t)cache->sensor.relative_z_mm -
+                    (int64_t)device->main.height_reference.relative_z_mm;
             }
             node->altitude_asl_m_valid = environment_valid;
             if (environment_valid) {
-                node->altitude_asl_m = (double)cache.sensor.altitude_mm / 1000.0;
+                node->altitude_asl_m = (double)cache->sensor.altitude_mm / 1000.0;
             }
             node->stable = workflow_service_placement_update_node(
                 &s_placement.history[(size_t)channel + 1U],
@@ -816,7 +1043,7 @@ static void workflow_service_placement_poll(bool collect_samples)
                 node->vertical,
                 node->height_rel_main_mm_valid,
                 node->height_rel_main_mm,
-                cache.esp_receipt_uptime_ms,
+                cache->esp_receipt_uptime_ms,
                 now_ms,
                 take_samples && cache_current);
             all_stable = all_stable && node->stable;
@@ -832,12 +1059,12 @@ static void workflow_service_placement_poll(bool collect_samples)
 
 static uint8_t workflow_service_assigned_remote_count(void)
 {
-    nrf_topology_snapshot_t topology;
-    if (nrf_topology_service_get_snapshot(&topology) != ESP_OK) return 0U;
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    if (nrf_topology_service_get_snapshot(topology) != ESP_OK) return 0U;
 
     size_t count = 0U;
     for (size_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
-        if (topology.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) ++count;
+        if (topology->remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) ++count;
     }
     return count > UINT8_MAX ? UINT8_MAX : (uint8_t)count;
 }
@@ -871,22 +1098,33 @@ static void workflow_service_reconcile_locked(void)
     if (workflow_service_active_object(object_id, &active_object_present) == ESP_OK &&
         strcmp(object_id, s_active_object_id) != 0) {
         workflow_service_calibration_cancel();
+        if (s_core.step == WORKFLOW_STEP_CALCULATING) {
+            workflow_service_mark_calculation_orphaned_locked();
+        }
         (void)snprintf(s_active_object_id, sizeof(s_active_object_id), "%s", object_id);
+        s_session_id[0] = '\0';
+        s_has_scan = false;
+        s_calc_settings_ready = false;
+        s_scan_cache_valid = false;
+        s_calc_settings_cache_valid = false;
         workflow_core_reset_object(&s_core, active_object_present, true);
     }
 
     s_assigned_remotes = workflow_service_assigned_remote_count();
     if (measurement_err != ESP_OK) {
+        workflow_service_update_session_locked(measurement_err, NULL);
         workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
 
     if (measurement.state == MEASUREMENT_SERVICE_LIVE) {
         s_recorder_reconciliation_armed = true;
+        workflow_service_update_session_locked(measurement_err, &measurement);
         workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
     if (!s_recorder_reconciliation_armed) {
+        workflow_service_update_session_locked(measurement_err, &measurement);
         workflow_service_step_changed(previous_step, s_core.step);
         return;
     }
@@ -903,7 +1141,136 @@ static void workflow_service_reconcile_locked(void)
         (s_core.step == WORKFLOW_STEP_RECORDING || s_core.step == WORKFLOW_STEP_STOPPED)) {
         workflow_core_reconcile(&s_core, WORKFLOW_STEP_STOPPED, "recording_error");
     }
+    workflow_service_update_session_locked(measurement_err, &measurement);
     workflow_service_step_changed(previous_step, s_core.step);
+}
+
+static void workflow_service_mark_calculation_orphaned_locked(void)
+{
+    if (s_calculation_job_id != 0U) s_orphaned_job_id = s_calculation_job_id;
+    s_calculation_job_id = 0U;
+}
+
+static void workflow_service_calculation_done_locked(
+    bool ok,
+    workflow_calculation_class_t calculation_class,
+    const char *reason
+)
+{
+    const workflow_step_t previous_step = s_core.step;
+    const workflow_command_params_t params = {
+        .has_ok = true,
+        .ok = ok,
+        .reason = reason,
+        .calculation_class = calculation_class,
+    };
+    if (workflow_core_apply(
+            &s_core, WORKFLOW_COMMAND_CALCULATION_DONE, &params,
+            s_assigned_remotes, s_placement_ready) == WORKFLOW_COMMAND_RESULT_OK) {
+        s_calculation_job_id = 0U;
+        workflow_service_step_changed(previous_step, s_core.step);
+    }
+}
+
+static void workflow_service_calculation_start_locked(void)
+{
+    localization_job_status_t *status = &s_poll_scratch.job_status;
+    localization_job_get_status(status);
+    if (status->state == LOCALIZATION_JOB_QUEUED || status->state == LOCALIZATION_JOB_RUNNING) {
+        workflow_service_calculation_done_locked(
+            false, WORKFLOW_CALCULATION_CLASS_INTERNAL, "busy");
+        return;
+    }
+    if (s_orphaned_job_id != 0U && status->job_id == s_orphaned_job_id) {
+        s_orphaned_job_id = 0U;
+    }
+
+    char *json = NULL;
+    uint32_t budget_ms = 0U;
+    esp_err_t err = s_active_object_id[0] == '\0'
+        ? ESP_ERR_NOT_FOUND
+        : object_store_get_calc_settings_json(s_active_object_id, &json);
+    if (err == ESP_OK && json != NULL) {
+        err = workflow_service_parse_calc_settings_locked(
+            json, &budget_ms, &s_poll_scratch.calculation_config, NULL);
+    }
+    free(json);
+    if (err != ESP_OK) {
+        workflow_service_calculation_done_locked(
+            false, WORKFLOW_CALCULATION_CLASS_INTERNAL, "calc_settings_invalid");
+        return;
+    }
+
+    uint32_t job_id = 0U;
+    err = localization_job_submit(
+        s_active_object_id,
+        s_session_id,
+        &s_poll_scratch.calculation_config,
+        budget_ms,
+        &job_id);
+    if (err != ESP_OK) {
+        char reason[WORKFLOW_REASON_MAX];
+        (void)snprintf(reason, sizeof(reason), "submit_failed:%s", esp_err_to_name(err));
+        workflow_service_calculation_done_locked(
+            false, WORKFLOW_CALCULATION_CLASS_INTERNAL, reason);
+        return;
+    }
+    s_calculation_job_id = job_id;
+    if (!s_poll_first_calculation_seen) {
+        s_poll_first_calculation_seen = true;
+        atomic_store_explicit(&s_poll_hwm_after_first_calculation, true, memory_order_release);
+    }
+    (void)workflow_core_set_progress(&s_core, 0);
+}
+
+static void workflow_service_calculation_poll_locked(void)
+{
+    if (s_calculation_job_id == 0U && s_orphaned_job_id == 0U) return;
+    localization_job_status_t *status = &s_poll_scratch.job_status;
+    localization_job_get_status(status);
+
+    if (s_orphaned_job_id != 0U && status->job_id == s_orphaned_job_id) {
+        if (status->state == LOCALIZATION_JOB_QUEUED || status->state == LOCALIZATION_JOB_RUNNING) return;
+        s_orphaned_job_id = 0U;
+    } else if (s_orphaned_job_id != 0U) {
+        s_orphaned_job_id = 0U;
+    }
+
+    if (s_calculation_job_id == 0U || s_core.step != WORKFLOW_STEP_CALCULATING ||
+        status->job_id != s_calculation_job_id ||
+        strcmp(status->object_id, s_active_object_id) != 0 ||
+        strcmp(status->session_id, s_session_id) != 0) {
+        return;
+    }
+    if (status->state == LOCALIZATION_JOB_QUEUED || status->state == LOCALIZATION_JOB_RUNNING) {
+        (void)workflow_core_set_progress(&s_core, (int)status->progress_percent);
+        return;
+    }
+    if (status->state != LOCALIZATION_JOB_SUCCEEDED && status->state != LOCALIZATION_JOB_FAILED) return;
+
+    const localization_recommendation_t *recommendation = &status->summary.recommendation;
+    const bool ok = status->state == LOCALIZATION_JOB_SUCCEEDED && recommendation->successful;
+    workflow_calculation_class_t calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+    const char *reason = recommendation->reason_summary;
+    if (!ok) {
+        switch (recommendation->action) {
+            case LOCALIZATION_RECOMMENDATION_RECORD_AGAIN:
+                calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+                break;
+            case LOCALIZATION_RECOMMENDATION_MOVE_SENSORS:
+                calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS;
+                break;
+            case LOCALIZATION_RECOMMENDATION_NONE:
+            default:
+                calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
+                break;
+        }
+        if (status->state == LOCALIZATION_JOB_FAILED && status->error != ESP_OK) {
+            reason = esp_err_to_name(status->error);
+        }
+        if (reason == NULL || reason[0] == '\0') reason = "calculation_failed";
+    }
+    workflow_service_calculation_done_locked(ok, calculation_class, reason);
 }
 
 esp_err_t workflow_service_init(void)
@@ -911,15 +1278,49 @@ esp_err_t workflow_service_init(void)
     if (s_initialized) return ESP_OK;
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) return ESP_ERR_NO_MEM;
+    s_async_enqueue_mutex = xSemaphoreCreateMutex();
+    s_async_queue = xQueueCreate(WORKFLOW_ASYNC_QUEUE_DEPTH, sizeof(workflow_async_command_t));
+    if (s_async_enqueue_mutex == NULL || s_async_queue == NULL) {
+        if (s_async_queue != NULL) vQueueDelete(s_async_queue);
+        if (s_async_enqueue_mutex != NULL) vSemaphoreDelete(s_async_enqueue_mutex);
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        s_async_enqueue_mutex = NULL;
+        s_async_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
 
     char object_id[OBJECT_SERVICE_OBJECT_ID_SIZE] = {0};
     bool active_object_present = false;
     (void)workflow_service_active_object(object_id, &active_object_present);
     (void)snprintf(s_active_object_id, sizeof(s_active_object_id), "%s", object_id);
     workflow_core_init(&s_core, active_object_present);
-    s_assigned_remotes = workflow_service_assigned_remote_count();
+    if (workflow_service_lock()) {
+        s_assigned_remotes = workflow_service_assigned_remote_count();
+        workflow_service_unlock();
+    }
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
+    s_session_id[0] = '\0';
+    memset(&s_last_async, 0, sizeof(s_last_async));
+    memset(&s_last_material_save, 0, sizeof(s_last_material_save));
+    s_placement_ready = false;
+    s_has_scan = false;
+    s_scan_cache_valid = false;
+    s_scan_cache_updated_ms = 0U;
+    s_scan_cache_step = WORKFLOW_STEP_COUNT;
+    s_scan_cache_object_id[0] = '\0';
+    s_scan_cache_session_id[0] = '\0';
+    s_calc_settings_ready = false;
+    s_calc_settings_cache_valid = false;
+    s_calc_settings_cache_updated_ms = 0U;
+    s_calc_settings_cache_object_id[0] = '\0';
+    s_calc_material[0] = '\0';
+    s_calculation_job_id = 0U;
+    s_orphaned_job_id = 0U;
+    atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
+    s_poll_first_calculation_seen = false;
+    s_poll_task = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
     memset(&s_placement, 0, sizeof(s_placement));
     memset(&s_ranging, 0, sizeof(s_ranging));
@@ -932,20 +1333,49 @@ esp_err_t workflow_service_init(void)
     s_recorder_reconciliation_armed =
         measurement_service_get_snapshot(&measurement) == ESP_OK &&
         measurement.state == MEASUREMENT_SERVICE_LIVE;
+    if (localization_job_init() != ESP_OK) {
+        workflow_service_shutdown();
+        return ESP_ERR_NO_MEM;
+    }
     s_initialized = true;
+    const BaseType_t task_created = workflow_service_create_poll_task(&s_poll_task);
+    if (task_created != pdPASS) {
+        workflow_service_shutdown();
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
 void workflow_service_shutdown(void)
 {
+    s_initialized = false;
+    if (s_poll_task != NULL) {
+        vTaskDelete(s_poll_task);
+        s_poll_task = NULL;
+    }
+    if (s_async_queue != NULL) {
+        vQueueDelete(s_async_queue);
+        s_async_queue = NULL;
+    }
+    if (s_async_enqueue_mutex != NULL) {
+        vSemaphoreDelete(s_async_enqueue_mutex);
+        s_async_enqueue_mutex = NULL;
+    }
     if (s_mutex != NULL) {
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
     }
-    s_initialized = false;
     s_recorder_reconciliation_armed = false;
     s_assigned_remotes = 0U;
     s_active_object_id[0] = '\0';
+    s_session_id[0] = '\0';
+    s_calculation_job_id = 0U;
+    s_orphaned_job_id = 0U;
+    s_scan_cache_valid = false;
+    s_calc_settings_cache_valid = false;
+    s_calc_material[0] = '\0';
+    atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
+    s_poll_first_calculation_seen = false;
     s_placement_ready_predicate = NULL;
     s_placement_ready_context = NULL;
     memset(&s_calibration, 0, sizeof(s_calibration));
@@ -954,13 +1384,40 @@ void workflow_service_shutdown(void)
     memset(&s_core, 0, sizeof(s_core));
 }
 
+static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
+{
+    workflow_core_snapshot(
+        &s_core, s_assigned_remotes, s_placement_ready, snapshot);
+    workflow_service_copy_string(snapshot->object_id, sizeof(snapshot->object_id), s_active_object_id);
+    workflow_service_copy_string(snapshot->session_id, sizeof(snapshot->session_id), s_session_id);
+    snapshot->has_scan = s_has_scan;
+    snapshot->calc_settings_ready = s_calc_settings_ready;
+    workflow_service_copy_string(snapshot->calc_material, sizeof(snapshot->calc_material), s_calc_material);
+    snapshot->last_async = s_last_async;
+    snapshot->last_material_save = s_last_material_save;
+    snapshot->calibration = s_calibration.status;
+    snapshot->placement = s_placement.status;
+}
+
+/*
+ * Poll waits indefinitely for the workflow mutex; measurement, object-service,
+ * topology/calibration/ranging, and localization-job getters may also wait on
+ * their service mutexes. Device-status reads are try-only. Presence refresh
+ * takes object-store/storage guards and touches SD (scan stat plus settings
+ * read/JSON parse) only on identity changes or at most every 2 s. The task is
+ * low priority and the LVGL path uses try_get_snapshot(), never this poll.
+ */
 esp_err_t workflow_service_poll(void)
 {
     if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
+    workflow_service_process_async_locked();
     workflow_service_reconcile_locked();
     workflow_service_calibration_poll();
     workflow_service_ranging_poll();
     workflow_service_placement_poll(true);
+    s_placement_ready = workflow_service_placement_ready();
+    workflow_service_refresh_presence_locked();
+    workflow_service_calculation_poll_locked();
     workflow_service_unlock();
     return ESP_OK;
 }
@@ -971,52 +1428,52 @@ esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
     const esp_err_t poll_err = workflow_service_poll();
     if (poll_err != ESP_OK) return poll_err;
     if (!workflow_service_lock()) return ESP_ERR_INVALID_STATE;
-
-    workflow_core_snapshot(
-        &s_core,
-        s_assigned_remotes,
-        workflow_service_placement_ready(),
-        snapshot
-    );
-    snapshot->calibration = s_calibration.status;
-    snapshot->placement = s_placement.status;
+    workflow_service_snapshot_locked(snapshot);
     workflow_service_unlock();
     return ESP_OK;
 }
 
-workflow_command_result_t workflow_service_command(
+esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out)
+{
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized || s_mutex == NULL) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
+    workflow_service_snapshot_locked(out);
+    workflow_service_unlock();
+    return ESP_OK;
+}
+
+static workflow_command_result_t workflow_service_command_locked(
     workflow_command_t command,
     const workflow_command_params_t *params
 )
 {
-    if (params == NULL) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
-    if (!s_initialized || !workflow_service_lock()) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
     workflow_service_reconcile_locked();
     workflow_service_placement_poll(false);
+    s_placement_ready = workflow_service_placement_ready();
 
     const workflow_core_t previous = s_core;
+    char previous_session[SEISMIC_RECORDER_SESSION_ID_SIZE];
+    memcpy(previous_session, s_session_id, sizeof(previous_session));
     const workflow_command_result_t result = workflow_core_apply(
-        &s_core,
-        command,
-        params,
-        s_assigned_remotes,
-        workflow_service_placement_ready()
-    );
-    if (result != WORKFLOW_COMMAND_RESULT_OK) {
-        workflow_service_unlock();
-        return result;
-    }
+        &s_core, command, params, s_assigned_remotes, s_placement_ready);
+    if (result != WORKFLOW_COMMAND_RESULT_OK) return result;
 
     if (s_core.step != previous.step) {
         workflow_service_placement_poll(false);
         workflow_service_step_changed(previous.step, s_core.step);
+        if (!workflow_service_step_has_session(s_core.step)) {
+            workflow_service_update_session_locked(ESP_ERR_INVALID_STATE, NULL);
+        }
+    }
+    if (previous.step == WORKFLOW_STEP_CALCULATING && s_core.step != WORKFLOW_STEP_CALCULATING) {
+        workflow_service_mark_calculation_orphaned_locked();
     }
 
-    if (s_core.step == WORKFLOW_STEP_CALIBRATING &&
-        previous.step != WORKFLOW_STEP_CALIBRATING) {
+    if (s_core.step == WORKFLOW_STEP_CALIBRATING && previous.step != WORKFLOW_STEP_CALIBRATING) {
         if (workflow_service_calibration_start() != ESP_OK) {
             s_core = previous;
-            workflow_service_unlock();
+            memcpy(s_session_id, previous_session, sizeof(s_session_id));
             return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
         }
     } else if (previous.step == WORKFLOW_STEP_CALIBRATING &&
@@ -1026,23 +1483,169 @@ workflow_command_result_t workflow_service_command(
 
     esp_err_t measurement_err = ESP_OK;
     if (command == WORKFLOW_COMMAND_START_RECORDING) {
+        s_session_id[0] = '\0';
+        s_scan_cache_valid = false;
+        s_has_scan = false;
         measurement_err = measurement_service_start_async();
         if (measurement_err == ESP_OK) s_recorder_reconciliation_armed = true;
-    }
-    else if (command == WORKFLOW_COMMAND_STOP_RECORDING) {
+    } else if (command == WORKFLOW_COMMAND_STOP_RECORDING) {
         measurement_err = measurement_service_stop_async();
-    }
-    else if (command == WORKFLOW_COMMAND_DELETE_RECORDING) {
+    } else if (command == WORKFLOW_COMMAND_DELETE_RECORDING) {
         measurement_err = measurement_service_delete_async();
     }
     if (measurement_err != ESP_OK) {
         s_core = previous;
-        workflow_service_unlock();
+        memcpy(s_session_id, previous_session, sizeof(s_session_id));
         return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
     }
 
-    workflow_service_unlock();
+    if (command == WORKFLOW_COMMAND_CALCULATE_SOURCES && s_core.step == WORKFLOW_STEP_CALCULATING) {
+        workflow_service_calculation_start_locked();
+    }
     return WORKFLOW_COMMAND_RESULT_OK;
+}
+
+static void workflow_service_process_async_locked(void)
+{
+    workflow_async_command_t item;
+    while (xQueueReceive(s_async_queue, &item, 0U) == pdTRUE) {
+        if (item.kind == WORKFLOW_ASYNC_MATERIAL_SAVE) {
+            workflow_service_reconcile_locked();
+            esp_err_t result = ESP_ERR_NOT_FOUND;
+            if (s_active_object_id[0] != '\0') {
+                const localization_material_preset_t *preset =
+                    localization_material_preset_lookup(item.material_id);
+                const bool custom = strcmp(item.material_id, "custom") == 0;
+                if (custom || preset != NULL) {
+                    uint32_t budget_ms = 0U;
+                    result = localization_config_standard_processing(
+                        &s_poll_scratch.calculation_config, &budget_ms);
+                    if (result == ESP_OK) {
+                        s_poll_scratch.calculation_config.propagation_speed_mps = custom
+                            ? (double)item.custom_v_mps : (double)preset->propagation_speed_mps;
+                        s_poll_scratch.calculation_config.propagation_speed_uncertainty_mps = custom
+                            ? (double)item.custom_sigma_mps
+                            : (double)preset->propagation_speed_uncertainty_mps;
+                        char *json = NULL;
+                        result = localization_config_to_json(
+                            &s_poll_scratch.calculation_config, item.material_id, budget_ms, &json);
+                        if (result == ESP_OK) {
+                            result = object_store_set_calc_settings_json(s_active_object_id, json);
+                        }
+                        cJSON_free(json);
+                    }
+                } else {
+                    result = ESP_ERR_INVALID_ARG;
+                }
+            }
+            s_last_material_save = (workflow_last_material_save_t) {
+                .seq = item.seq,
+                .result = result,
+            };
+            if (result == ESP_OK) {
+                s_calc_settings_cache_valid = false;
+                workflow_service_refresh_calc_settings_locked(workflow_service_now_ms());
+            }
+            continue;
+        }
+        const workflow_command_params_t params = {
+            .has_generation = item.has_generation,
+            .expected_generation = item.expected_generation,
+        };
+        s_last_async = (workflow_last_async_t){
+            .seq = item.seq,
+            .command = item.command,
+            .result = workflow_service_command_locked(item.command, &params),
+        };
+    }
+}
+
+workflow_command_result_t workflow_service_command(
+    workflow_command_t command,
+    const workflow_command_params_t *params
+)
+{
+    if (params == NULL) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    if (!s_initialized || !workflow_service_lock()) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
+    const workflow_command_result_t result = workflow_service_command_locked(command, params);
+    workflow_service_unlock();
+    return result;
+}
+
+esp_err_t workflow_service_command_async(
+    workflow_command_t command,
+    bool has_generation,
+    uint32_t expected_generation,
+    uint32_t *out_seq
+)
+{
+    if (command < 0 || command >= WORKFLOW_COMMAND_COUNT || out_seq == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (command == WORKFLOW_COMMAND_CALIBRATION_DONE ||
+        command == WORKFLOW_COMMAND_RANGING_DONE ||
+        command == WORKFLOW_COMMAND_CALCULATION_DONE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || s_async_queue == NULL || s_async_enqueue_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
+    uint32_t seq = s_async_next_seq + 1U;
+    if (seq == 0U) seq = 1U;
+    workflow_async_command_t item = {
+        .seq = seq,
+        .kind = WORKFLOW_ASYNC_COMMAND,
+        .command = command,
+        .has_generation = has_generation,
+        .expected_generation = expected_generation,
+    };
+    if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
+        xSemaphoreGive(s_async_enqueue_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    s_async_next_seq = seq;
+    *out_seq = seq;
+    xSemaphoreGive(s_async_enqueue_mutex);
+    return ESP_OK;
+}
+
+esp_err_t workflow_service_save_calc_material_async(
+    const char *material_id,
+    uint32_t custom_v_mps,
+    uint32_t custom_sigma_mps
+)
+{
+    if (material_id == NULL || strnlen(material_id, WORKFLOW_CALC_MATERIAL_ID_SIZE) >=
+        WORKFLOW_CALC_MATERIAL_ID_SIZE) return ESP_ERR_INVALID_ARG;
+    const bool custom = strcmp(material_id, "custom") == 0;
+    const localization_material_preset_t *preset = custom
+        ? NULL : localization_material_preset_lookup(material_id);
+    if ((!custom && preset == NULL) ||
+        (custom && (!(custom_v_mps > 50U && custom_v_mps < 8000U) ||
+            custom_sigma_mps == 0U || custom_sigma_mps >= custom_v_mps))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || s_async_queue == NULL || s_async_enqueue_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE) return ESP_ERR_TIMEOUT;
+    uint32_t seq = s_async_next_seq + 1U;
+    if (seq == 0U) seq = 1U;
+    workflow_async_command_t item = {
+        .seq = seq,
+        .kind = WORKFLOW_ASYNC_MATERIAL_SAVE,
+        .custom_v_mps = custom_v_mps,
+        .custom_sigma_mps = custom_sigma_mps,
+    };
+    (void)snprintf(item.material_id, sizeof(item.material_id), "%s", material_id);
+    if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
+        xSemaphoreGive(s_async_enqueue_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    s_async_next_seq = seq;
+    xSemaphoreGive(s_async_enqueue_mutex);
+    return ESP_OK;
 }
 
 esp_err_t workflow_service_set_placement_ready_predicate(
@@ -1053,6 +1656,7 @@ esp_err_t workflow_service_set_placement_ready_predicate(
     if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
     s_placement_ready_predicate = predicate;
     s_placement_ready_context = context;
+    s_placement_ready = workflow_service_placement_ready();
     workflow_service_unlock();
     return ESP_OK;
 }
@@ -1064,3 +1668,81 @@ esp_err_t workflow_service_set_progress(int progress)
     workflow_service_unlock();
     return updated ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
+
+esp_err_t workflow_service_notify_calc_settings_saved(const char *object_id)
+{
+    if (object_id == NULL || object_id[0] == '\0' || strlen(object_id) >= OBJECT_STORE_ID_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || !workflow_service_lock()) return ESP_ERR_INVALID_STATE;
+    if (strcmp(object_id, s_active_object_id) == 0) {
+        s_calc_settings_cache_valid = false;
+        s_calc_settings_ready = false;
+        workflow_core_set_calc_settings_ready(&s_core, false);
+    }
+    workflow_service_unlock();
+    return ESP_OK;
+}
+
+/*
+ * This call graph has no cache-disabling SPI-flash writes: settings and scan
+ * presence are SD reads; measurement *_async only queues commands (the START
+ * guard reserves RAM state, and workflow START supplies no object ID); topology
+ * requests and barometer/device snapshots only update or copy RAM; and
+ * localization_job_submit queues RAM state for its separate worker task.
+ * Object activation writes and NVS/partition/SPI-flash APIs are not reachable,
+ * so the fixed task stack can safely stay in PSRAM.
+ */
+static BaseType_t workflow_service_create_poll_task(TaskHandle_t *task_out)
+{
+    return xTaskCreatePinnedToCoreWithCaps(
+        workflow_service_poll_task,
+        "workflow_poll",
+        WORKFLOW_SERVICE_POLL_STACK_BYTES,
+        NULL,
+        WORKFLOW_SERVICE_POLL_TASK_PRIORITY,
+        task_out,
+        APP_TASK_CORE_SERVICES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+}
+
+static void workflow_service_log_poll_stack_hwm(const char *phase, uint32_t poll_count)
+{
+    const uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "poll task STACK_HWM phase=%s free=%u of %u bytes polls=%u",
+        phase,
+        (unsigned)free_bytes,
+        (unsigned)WORKFLOW_SERVICE_POLL_STACK_BYTES,
+        (unsigned)poll_count);
+}
+
+static void workflow_service_poll_task(void *argument)
+{
+    (void)argument;
+    uint32_t poll_count = 0U;
+    TickType_t last_wake = xTaskGetTickCount();
+    for (;;) {
+        if (!s_initialized) vTaskDelete(NULL);
+        (void)workflow_service_poll();
+        ++poll_count;
+        if (poll_count == 100U) workflow_service_log_poll_stack_hwm("after-100-polls", poll_count);
+        if (atomic_exchange_explicit(
+                &s_poll_hwm_after_first_calculation, false, memory_order_acq_rel)) {
+            workflow_service_log_poll_stack_hwm("after-first-calculation", poll_count);
+        }
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS));
+    }
+}
+
+#if defined(WORKFLOW_SERVICE_TEST_HARNESS)
+void workflow_service_test_lock_mutex(void)
+{
+    if (s_mutex != NULL) (void)xSemaphoreTake(s_mutex, portMAX_DELAY);
+}
+
+void workflow_service_test_unlock_mutex(void)
+{
+    if (s_mutex != NULL) (void)xSemaphoreGive(s_mutex);
+}
+#endif

@@ -6,6 +6,16 @@
 
 static const char *TAG = "UI_SCREEN";
 
+#if defined(_MSC_VER)
+/* The standalone MSVC navigation fixture intentionally omits these full UI screens. */
+void ui_workflow_screen_open_locked(void) {}
+void ui_workflow_screen_close_locked(void) {}
+void ui_workflow_screen_render_locked(void) {}
+void ui_workflow_screen_refresh_locked(void) {}
+void ui_workflow_screen_handle_key_locked(keypad_key_t key) { (void)key; }
+void ui_scan_preview_refresh_locked(void) {}
+#endif
+
 
 static void ui_screen_open_home(void)
 {
@@ -216,7 +226,16 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
         .open = ui_screen_open_scan_preview,
         .render = ui_scan_preview_render_locked,
         .handle_key = ui_scan_preview_handle_key_locked,
-        .refresh = NULL,
+        .refresh = ui_scan_preview_refresh_locked,
+    },
+
+    [UI_SCREEN_WORKFLOW] = {
+        .name = "WORKFLOW",
+        .home_label = UI_I18N_KEY_COUNT,
+        .open = ui_workflow_screen_open_locked,
+        .render = ui_workflow_screen_render_locked,
+        .handle_key = ui_workflow_screen_handle_key_locked,
+        .refresh = ui_workflow_screen_refresh_locked,
     },
 };
 
@@ -300,7 +319,10 @@ void ui_screen_open_locked(
     }
 
     const bool leaving_preview = ui_context()->screen == UI_SCREEN_SCAN_PREVIEW && screen != UI_SCREEN_SCAN_PREVIEW;
+    const bool leaving_workflow = ui_context()->screen == UI_SCREEN_WORKFLOW &&
+        screen != UI_SCREEN_WORKFLOW && screen != UI_SCREEN_SCAN_PREVIEW;
     if (leaving_preview) ui_scan_preview_close_locked();
+    if (leaving_workflow) ui_workflow_screen_close_locked();
     ui_context()->screen = screen;
     driver->open();
     if (leaving_preview) ui_scan_preview_release_locked();

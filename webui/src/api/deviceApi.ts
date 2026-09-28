@@ -3,6 +3,7 @@ import {
   normalizeSeismicSnapshot,
   normalizeSavedSeismicSnapshot,
   type DeviceStatus,
+  type DeviceWorkflowStatus,
   type PhoneLocationInput,
   type SavedSeismicSnapshot,
   type SeismicSnapshot,
@@ -22,6 +23,47 @@ export interface ControlResult {
   error?: string;
   outcome?: 'blocked_recording';
   busy_reason?: 'recording_active' | string;
+}
+
+export interface CalcMaterialPreset {
+  id: string;
+  propagation_speed_mps: number;
+  propagation_speed_uncertainty_mps: number;
+}
+
+export interface CalcSettingsProfile {
+  material: string;
+  propagation_speed_mps: number;
+  propagation_speed_uncertainty_mps: number;
+  [field: string]: string | number | boolean | undefined;
+}
+
+export interface CalcProcessingSettings {
+  [field: string]: string | number | boolean | undefined;
+}
+
+export interface CalcSettingsResponse {
+  settings: CalcSettingsProfile | null;
+  presets: CalcMaterialPreset[];
+  standardProcessing: CalcProcessingSettings;
+}
+
+export interface SaveCalcSettingsPayload {
+  material: string;
+  propagation_speed_mps?: number;
+  propagation_speed_uncertainty_mps?: number;
+  [field: string]: unknown;
+}
+
+export type SaveCalcSettingsResult =
+  | { ok: true }
+  | { ok: false; error: string; httpStatus: number };
+
+class ApiHttpError extends Error {
+  constructor(readonly httpStatus: number, message: string) {
+    super(message);
+    this.name = 'ApiHttpError';
+  }
 }
 
 export class ScanStorageBlockedRecordingError extends Error {
@@ -94,6 +136,7 @@ const CRITICAL_CONTROL_ACTIONS = new Set([
   'acquisition_start',
   'acquisition_stop',
   'calibrate_heights',
+  'workflow_command',
 ]);
 
 function errorText(reason: unknown): string {
@@ -116,6 +159,7 @@ async function performJsonRequest<T>(
   context: ApiRequestContext,
   init: RequestInit = {},
   timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
+  allowConflictResponse = false,
 ): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   const timeout = globalThis.setTimeout(() => {
@@ -157,9 +201,9 @@ async function performJsonRequest<T>(
       }
     }
 
-    if (!response.ok) {
+    if (!response.ok && !(allowConflictResponse && response.status === 409)) {
       if (recordingBlocked(body, response.status)) throw new ScanStorageBlockedRecordingError();
-      throw new Error(`ESP API ${response.status} ${method} ${url}: ${responseError(body, response)}`);
+      throw new ApiHttpError(response.status, `ESP API ${response.status} ${method} ${url}: ${responseError(body, response)}`);
     }
 
     return body as T;
@@ -401,6 +445,74 @@ export function sendControl(
   }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal');
 }
 
+export function getCalcSettings(objectId: string): Promise<CalcSettingsResponse> {
+  const query = new URLSearchParams({ job: 'settings', object_id: objectId });
+  return jsonRequest<{
+    ok: boolean;
+    settings: CalcSettingsProfile | null;
+    presets: CalcMaterialPreset[];
+    standard_processing: CalcProcessingSettings;
+  }>('/api/localization/runs?' + query.toString(), {}, DEVICE_API_EXTENDED_TIMEOUT_MS).then((response) => ({
+    settings: response.settings,
+    presets: response.presets,
+    standardProcessing: response.standard_processing,
+  }));
+}
+
+export async function saveCalcSettings(
+  objectId: string,
+  payload: SaveCalcSettingsPayload,
+): Promise<SaveCalcSettingsResult> {
+  try {
+    const result = await jsonRequest<ControlResult>('/api/control', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'save_calc_settings', object_id: objectId, ...payload }),
+    }, DEVICE_API_CONTROL_TIMEOUT_MS);
+    return result.ok
+      ? { ok: true }
+      : { ok: false, error: result.error ?? 'save_calc_settings failed', httpStatus: 200 };
+  } catch (reason) {
+    return {
+      ok: false,
+      error: errorText(reason),
+      httpStatus: reason instanceof ApiHttpError ? reason.httpStatus : 0,
+    };
+  }
+}
+
+export type WorkflowCommandResult =
+  | { ok: true; workflow: DeviceWorkflowStatus }
+  | { ok: false; reason: 'stale' | 'not_allowed' }
+  | { ok: false; reason: 'error'; message: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function sendWorkflowCommand(command: string, generation: number): Promise<WorkflowCommandResult> {
+  const request = queuedApiRequest<WorkflowCommandResult>(async (context) => {
+    const body = await performJsonRequest<unknown>('/api/control', context, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'workflow_command', command, generation }),
+    }, DEVICE_API_CONTROL_TIMEOUT_MS, true);
+
+    if (isRecord(body) && body.ok === true && isRecord(body.workflow)) {
+      return { ok: true, workflow: body.workflow as unknown as DeviceWorkflowStatus };
+    }
+    if (isRecord(body) && body.ok === false &&
+        (body.reason === 'stale' || body.reason === 'not_allowed')) {
+      return { ok: false, reason: body.reason };
+    }
+    return { ok: false, reason: 'error', message: 'invalid_response' };
+  }, 'critical');
+
+  return request.catch((reason: unknown) => ({
+    ok: false as const,
+    reason: 'error' as const,
+    message: errorText(reason),
+  }));
+}
+
 export function saveObjectScanArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
   return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context), 'bulk');
 }
@@ -564,6 +676,7 @@ export interface LocalizationRun {
   dimensionality: 'insufficient' | 'planar_2d' | 'capable_3d';
   geometry_computed_at_ms: number;
   propagation_model_name: string;
+  material?: string;
   propagation_speed_mps: number;
   propagation_speed_uncertainty_mps: number;
   confidence_score: number;

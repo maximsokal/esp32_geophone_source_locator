@@ -24,6 +24,8 @@
 #include "storage_bulk_admission.h"
 #include "storage_manager.h"
 #include "ui_preview3d.h"
+#include "ui_workflow_model.h"
+#include "workflow_service.h"
 
 #define PREVIEW_WIDTH 320U
 #define PREVIEW_HEIGHT 182U
@@ -101,6 +103,23 @@ static object_store_geometry_t s_geometry;
 static uint64_t s_geometry_computed_at_ms;
 static ui_preview3d_source_t s_sources[UI_PREVIEW3D_MAX_SOURCES];
 static size_t s_source_count;
+static bool s_from_workflow;
+static bool s_workflow_recording;
+static bool s_stop_armed;
+static uint64_t s_stop_armed_until_ms;
+static bool s_stop_pending;
+static uint32_t s_stop_seq;
+static ui_i18n_key_t s_stop_notice_key;
+static uint64_t s_stop_notice_until_ms;
+static uint64_t s_workflow_status_ms;
+
+static void preview_set_footer(ui_i18n_key_t key)
+{
+    ui_context_t *context = ui_context();
+    if (context->footer_label != NULL && key < UI_I18N_KEY_COUNT) {
+        lv_label_set_text(context->footer_label, ui_tr(key));
+    }
+}
 
 static bool request_is_current(const preview_request_t *request)
 {
@@ -439,7 +458,7 @@ static void show_status_locked(scan_preview_screen_status_t status, const char *
     const char *text = status == SCAN_PREVIEW_SCREEN_LOADING ? ui_tr(UI_I18N_KEY_SCAN_LOADING) :
         status == SCAN_PREVIEW_SCREEN_NO_3D_SCAN ? ui_tr(UI_I18N_KEY_SCAN_NO_3D_SCAN) : ui_tr(UI_I18N_KEY_SCAN_NO_PREVIEW);
     lv_label_set_text(s_status_label, text);
-    lv_obj_clear_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_status_label, false);
     if (s_info_label != NULL && reason != NULL && reason[0] != '\0') {
         lv_label_set_text(s_info_label, preview_reason_text(reason));
     }
@@ -447,7 +466,7 @@ static void show_status_locked(scan_preview_screen_status_t status, const char *
 
 static void show_ready_locked(void)
 {
-    if (s_status_label != NULL) lv_obj_add_flag(s_status_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_status_label != NULL) lv_obj_set_hidden(s_status_label, true);
     if (s_info_label == NULL) return;
     char text[128];
     const char *reason = preview_reason_text(s_state.fallback_reason);
@@ -614,6 +633,17 @@ static void setup_palette(lv_obj_t *canvas)
 
 void ui_scan_preview_open_locked(const char *object_id, const char *session_id)
 {
+    s_from_workflow = false;
+    memset(s_target_object_id, 0, sizeof(s_target_object_id));
+    memset(s_target_session_id, 0, sizeof(s_target_session_id));
+    if (object_id != NULL) (void)strncpy(s_target_object_id, object_id, sizeof(s_target_object_id) - 1U);
+    if (session_id != NULL) (void)strncpy(s_target_session_id, session_id, sizeof(s_target_session_id) - 1U);
+    ui_screen_open_locked(UI_SCREEN_SCAN_PREVIEW);
+}
+
+void ui_scan_preview_open_from_workflow_locked(const char *object_id, const char *session_id)
+{
+    s_from_workflow = true;
     memset(s_target_object_id, 0, sizeof(s_target_object_id));
     memset(s_target_session_id, 0, sizeof(s_target_session_id));
     if (object_id != NULL) (void)strncpy(s_target_object_id, object_id, sizeof(s_target_object_id) - 1U);
@@ -631,6 +661,19 @@ void ui_scan_preview_screen_open_locked(void)
     atomic_store_explicit(&s_active_generation, generation, memory_order_release);
     s_session_id[0] = '\0';
     s_source_count = 0U;
+    s_workflow_recording = false;
+    s_stop_armed = false;
+    s_stop_armed_until_ms = 0U;
+    s_stop_pending = false;
+    s_stop_seq = 0U;
+    s_stop_notice_key = UI_I18N_KEY_COUNT;
+    s_stop_notice_until_ms = 0U;
+    s_workflow_status_ms = 0U;
+    if (s_from_workflow) {
+        workflow_snapshot_t snapshot;
+        s_workflow_recording = workflow_service_try_get_snapshot(&snapshot) == ESP_OK &&
+            snapshot.step == WORKFLOW_STEP_RECORDING;
+    }
     (void)strncpy(s_session_id, s_target_session_id, sizeof(s_session_id) - 1U);
     ui_preview3d_view_preset(&s_view, UI_PREVIEW3D_PRESET_ISO);
 
@@ -660,6 +703,9 @@ void ui_scan_preview_screen_open_locked(void)
         lv_obj_set_style_bg_color(s_info_label, lv_color_hex(UI_COLOR_HEADER), 0);
         lv_obj_set_style_bg_opa(s_info_label, LV_OPA_80, 0);
         lv_obj_set_style_pad_hor(s_info_label, 3, 0);
+    }
+    if (s_from_workflow && s_workflow_recording) {
+        preview_set_footer(UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_HINT);
     }
 
     preview_request_t request = {.generation = generation};
@@ -717,10 +763,76 @@ void ui_scan_preview_render_locked(void)
     render_current_locked();
 }
 
+void ui_scan_preview_refresh_locked(void)
+{
+    if (!s_from_workflow) return;
+    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    if (s_workflow_status_ms != 0U && now_ms - s_workflow_status_ms < 250U) return;
+    s_workflow_status_ms = now_ms;
+    workflow_snapshot_t snapshot;
+    if (workflow_service_try_get_snapshot(&snapshot) != ESP_OK) return;
+    s_workflow_recording = snapshot.step == WORKFLOW_STEP_RECORDING;
+    if (s_stop_pending && snapshot.last_async.seq >= s_stop_seq) {
+        s_stop_pending = false;
+        if (snapshot.last_async.result != WORKFLOW_COMMAND_RESULT_OK) {
+            s_stop_notice_key = UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_ERROR;
+            s_stop_notice_until_ms = now_ms + 2000U;
+        }
+    }
+    if (s_stop_armed && now_ms >= s_stop_armed_until_ms) s_stop_armed = false;
+    if (s_stop_pending) {
+        preview_set_footer(UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_PENDING);
+    } else if (s_stop_notice_key != UI_I18N_KEY_COUNT && now_ms < s_stop_notice_until_ms) {
+        preview_set_footer(s_stop_notice_key);
+    } else if (s_workflow_recording) {
+        s_stop_notice_key = UI_I18N_KEY_COUNT;
+        preview_set_footer(s_stop_armed
+            ? UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_CONFIRM
+            : UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_HINT);
+    } else {
+        s_stop_notice_key = UI_I18N_KEY_COUNT;
+        preview_set_footer(UI_I18N_KEY_SCAN_FOOTER);
+    }
+}
+
 void ui_scan_preview_handle_key_locked(keypad_key_t key)
 {
     if (key == KEYPAD_KEY_LEFT) {
-        ui_open_home_locked();
+        if (s_from_workflow) ui_screen_open_locked(UI_SCREEN_WORKFLOW);
+        else ui_open_home_locked();
+        return;
+    }
+    if (key == KEYPAD_KEY_OK && s_from_workflow && s_workflow_recording) {
+        if (s_stop_pending) return;
+        const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+        if (!ui_workflow_model_preview_ok(true, s_stop_armed, now_ms, &s_stop_armed_until_ms)) {
+            s_stop_armed = true;
+            preview_set_footer(UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_CONFIRM);
+            return;
+        }
+        s_stop_armed = false;
+        workflow_snapshot_t snapshot;
+        if (workflow_service_try_get_snapshot(&snapshot) != ESP_OK ||
+            snapshot.step != WORKFLOW_STEP_RECORDING) {
+            s_stop_notice_key = UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_ERROR;
+            s_stop_notice_until_ms = now_ms + 2000U;
+            preview_set_footer(s_stop_notice_key);
+            return;
+        }
+        uint32_t seq = 0U;
+        const esp_err_t err = workflow_service_command_async(
+            WORKFLOW_COMMAND_STOP_RECORDING, true, snapshot.generation, &seq);
+        if (err == ESP_OK) {
+            s_stop_pending = true;
+            s_stop_seq = seq;
+            preview_set_footer(UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_PENDING);
+        } else {
+            s_stop_notice_key = err == ESP_ERR_NO_MEM
+                ? UI_I18N_KEY_TFT_WORKFLOW_NOTICE_BUSY
+                : UI_I18N_KEY_TFT_WORKFLOW_PREVIEW_STOP_ERROR;
+            s_stop_notice_until_ms = now_ms + 2000U;
+            preview_set_footer(s_stop_notice_key);
+        }
         return;
     }
     if (s_state.status != SCAN_PREVIEW_SCREEN_READY) return;

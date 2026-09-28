@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "ui_measurements_internal.h"
 
 #if defined(__has_include)
 #if __has_include("sdkconfig.h")
@@ -332,7 +333,8 @@ static lv_obj_t *ui_measurements_create_chart_locked(
 
 
 static lv_obj_t *ui_measurements_create_graph_container_locked(
-    lv_obj_t *screen
+    lv_obj_t *screen,
+    int y
 )
 {
     lv_obj_t *container = lv_obj_create(screen);
@@ -340,7 +342,7 @@ static lv_obj_t *ui_measurements_create_graph_container_locked(
         return NULL;
     }
 
-    lv_obj_set_pos(container, 10, 66);
+    lv_obj_set_pos(container, 10, y);
     lv_obj_set_size(container, 300, 63);
     lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(container, 0, 0);
@@ -351,7 +353,7 @@ static lv_obj_t *ui_measurements_create_graph_container_locked(
 }
 
 
-static void ui_measurements_refresh_charts_locked(
+void ui_measurements_refresh_charts_locked(
     const seismic_acquisition_snapshot_t *acquisition
 )
 {
@@ -620,7 +622,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
 }
 
 
-static void ui_measurements_refresh_charts_locked(
+void ui_measurements_refresh_charts_locked(
     const seismic_acquisition_snapshot_t *acquisition
 )
 {
@@ -629,6 +631,41 @@ static void ui_measurements_refresh_charts_locked(
 
 
 #endif
+
+
+void ui_measurements_create_charts_locked(lv_obj_t *screen, int y)
+{
+    ui_context_t *context = ui_context();
+    context->measurement_graphs = NULL;
+#if UI_MEASUREMENTS_GRAPHS_ENABLED
+    s_last_chart_generation = UINT64_MAX;
+    s_last_applied_scale_uv = 0;
+    s_last_transport_fault = false;
+    s_last_digital_interference = false;
+    s_last_chart_refresh_us = 0U;
+    ui_measurements_perf_reset((uint64_t)esp_timer_get_time());
+#endif
+
+    lv_obj_t *graph_parent = screen;
+    int chart_x_left = 10;
+    int chart_x_right = 162;
+    int chart_y_top = y;
+    int chart_y_bottom = y + 32;
+#if UI_MEASUREMENTS_GRAPHS_ENABLED
+    context->measurement_graphs = ui_measurements_create_graph_container_locked(screen, y);
+    if (context->measurement_graphs != NULL) {
+        graph_parent = context->measurement_graphs;
+        chart_x_left = 0;
+        chart_x_right = 152;
+        chart_y_top = 0;
+        chart_y_bottom = 32;
+    }
+#endif
+    (void)ui_measurements_create_chart_locked(graph_parent, 0U, chart_x_left, chart_y_top);
+    (void)ui_measurements_create_chart_locked(graph_parent, 1U, chart_x_right, chart_y_top);
+    (void)ui_measurements_create_chart_locked(graph_parent, 2U, chart_x_left, chart_y_bottom);
+    (void)ui_measurements_create_chart_locked(graph_parent, 3U, chart_x_right, chart_y_bottom);
+}
 
 
 static const char *ui_measurements_state_name(
@@ -747,15 +784,6 @@ void ui_render_measurements_locked(void)
     context->measurement_exit_after_stop = false;
     context->measurement_screen = NULL;
     context->measurement_graphs = NULL;
-#if UI_MEASUREMENTS_GRAPHS_ENABLED
-    s_last_chart_generation = UINT64_MAX;
-    s_last_applied_scale_uv = 0;
-    s_last_transport_fault = false;
-    s_last_digital_interference = false;
-    s_last_chart_refresh_us = 0U;
-    ui_measurements_perf_reset((uint64_t)esp_timer_get_time());
-#endif
-
     lv_obj_t *screen = ui_create_screen_base_locked(
         ui_tr(UI_I18N_KEY_MEASUREMENT_TITLE),
         ui_tr(UI_I18N_KEY_MEASUREMENT_FOOTER)
@@ -796,47 +824,7 @@ void ui_render_measurements_locked(void)
         UI_COLOR_MUTED
     );
 
-    lv_obj_t *graph_parent = screen;
-    int chart_x_left = 10;
-    int chart_x_right = 162;
-    int chart_y_top = 66;
-    int chart_y_bottom = 98;
-#if UI_MEASUREMENTS_GRAPHS_ENABLED
-    context->measurement_graphs =
-        ui_measurements_create_graph_container_locked(screen);
-    if (context->measurement_graphs != NULL) {
-        graph_parent = context->measurement_graphs;
-        chart_x_left = 0;
-        chart_x_right = 152;
-        chart_y_top = 0;
-        chart_y_bottom = 32;
-    }
-#endif
-
-    (void)ui_measurements_create_chart_locked(
-        graph_parent,
-        0U,
-        chart_x_left,
-        chart_y_top
-    );
-    (void)ui_measurements_create_chart_locked(
-        graph_parent,
-        1U,
-        chart_x_right,
-        chart_y_top
-    );
-    (void)ui_measurements_create_chart_locked(
-        graph_parent,
-        2U,
-        chart_x_left,
-        chart_y_bottom
-    );
-    (void)ui_measurements_create_chart_locked(
-        graph_parent,
-        3U,
-        chart_x_right,
-        chart_y_bottom
-    );
+    ui_measurements_create_charts_locked(screen, 66);
 
     static const int node_row_y[UI_MEASUREMENTS_NODE_COUNT] = {
         130, 144, 158, 172, 186,

@@ -130,6 +130,7 @@ typedef struct
     uint64_t geometry_computed_at_ms;
     localization_dimensionality_t dimensionality;
     const char *propagation_model_name;
+    const char *material;
     double propagation_speed_mps;
     double propagation_speed_uncertainty_mps;
 

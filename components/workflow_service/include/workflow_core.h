@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "object_store.h"
+#include "seismic_recorder.h"
+
 #define WORKFLOW_REASON_MAX 64U
 #define WORKFLOW_PROGRESS_UNKNOWN (-1)
 #define WORKFLOW_MAX_REMOTE_NODES 8U
@@ -62,7 +65,8 @@ typedef enum {
 typedef enum {
     WORKFLOW_CALCULATION_CLASS_NONE = 0,
     WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN,
-    WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS
+    WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS,
+    WORKFLOW_CALCULATION_CLASS_INTERNAL
 } workflow_calculation_class_t;
 
 typedef enum {
@@ -128,6 +132,17 @@ typedef struct {
 } workflow_placement_snapshot_t;
 
 typedef struct {
+    uint32_t seq;
+    workflow_command_t command;
+    workflow_command_result_t result;
+} workflow_last_async_t;
+
+typedef struct {
+    uint32_t seq;
+    esp_err_t result;
+} workflow_last_material_save_t;
+
+typedef struct {
     workflow_step_t step;
     uint32_t generation;
     uint32_t allowed_actions;
@@ -136,6 +151,13 @@ typedef struct {
     char reason[WORKFLOW_REASON_MAX];
     int progress;
     workflow_calculation_class_t calculation_class;
+    char object_id[OBJECT_STORE_ID_SIZE];
+    char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
+    bool has_scan;
+    bool calc_settings_ready;
+    char calc_material[24];
+    workflow_last_async_t last_async;
+    workflow_last_material_save_t last_material_save;
     workflow_command_t recommended_action;
     workflow_calibration_snapshot_t calibration;
     workflow_placement_snapshot_t placement;
@@ -151,6 +173,7 @@ typedef struct {
     workflow_calculation_class_t calculation_class;
     bool calibration_ok;
     bool ranging_ok;
+    bool calc_settings_ready;
 } workflow_core_t;
 
 void workflow_core_init(workflow_core_t *core, bool active_object_present);
@@ -168,6 +191,7 @@ void workflow_core_reconcile(
     const char *reason
 );
 bool workflow_core_set_progress(workflow_core_t *core, int progress);
+void workflow_core_set_calc_settings_ready(workflow_core_t *core, bool ready);
 void workflow_core_snapshot(
     const workflow_core_t *core,
     size_t assigned_remotes,

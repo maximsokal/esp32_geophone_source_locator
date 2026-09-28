@@ -6,13 +6,22 @@
       "sources": [
         "components/workflow_service/workflow_core.c",
         "components/workflow_service/workflow_service.c",
+        "components/localization_job/localization_config.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/stubs/workflow_service/host_rtos.c",
+        "tests/host/workflow_service_host_fakes.c",
         "nRF54L15/src/nrf_baro_altitude.c",
         "tests/host/workflow_service_wfa_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/workflow_wfa",
         "tests/host/stubs/workflow_service",
+        "tests/host/stubs/object_store_profile",
         "components/workflow_service/include",
+        "components/localization_job/include",
+        "components/localization_calculate/include",
+        "components/localization/include",
+        "components/geophone_events/include",
         "nRF54L15/include"
       ]
     },

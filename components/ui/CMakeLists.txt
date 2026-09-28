@@ -14,6 +14,8 @@ idf_component_register(
         "ui_measurements.c"
         "ui_measurements_nodes.c"
         "ui_measurement_trace.c"
+        "ui_workflow_model.c"
+        "ui_workflow.c"
         "fonts/ui_font_montserrat_14.c"
         "ui_frame_scheduler.c"
         "ui_objects.c"
@@ -41,7 +43,10 @@ idf_component_register(
         object_service
         measurement_service
         localization_calculate
+        localization_job
         localization_run_store
+        result_view
+        workflow_service
         runtime_observability
         ui_i18n
         scan_occupancy

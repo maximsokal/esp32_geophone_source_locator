@@ -11,6 +11,7 @@
 #include "nrf_topology_service.h"
 #include "object_service.h"
 #include "workflow_service.h"
+#include "workflow_service_host_fakes.h"
 
 typedef struct { bool held; } fake_mutex_t;
 
@@ -251,6 +252,7 @@ esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *snapshot)
 static void reset_fakes(void)
 {
     workflow_service_shutdown();
+    workflow_service_host_fakes_reset();
     memset(&s_measurement, 0, sizeof(s_measurement));
     s_measurement.state = MEASUREMENT_SERVICE_LIVE;
     memset(&s_object, 0, sizeof(s_object));

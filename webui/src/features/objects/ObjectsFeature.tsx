@@ -6,7 +6,7 @@ import type {
   PhoneLocationInput,
   RecordingSessionCollection,
 } from '../../domain/device';
-import { normalizeCableLength } from '../../domain/device';
+import { activeObject, normalizeCableLength } from '../../domain/device';
 import { useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 import {
@@ -16,6 +16,7 @@ import {
 import { recordingGateBlocksStart as isRecordingGateBlockingStart } from './recordingGate';
 import { recordingGateReason, recordingGateWarning } from './recordingGateUi';
 import '../seismic/SavedSeismicViewer.css';
+import '../workflow/workflow.css';
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
 const SavedSeismicViewer = lazy(() => import('../seismic/SavedSeismicViewer'));
@@ -38,6 +39,7 @@ interface Props {
   onDefaultCable: (podId: number, length: number) => Promise<void>;
   onAcquisition: (running: boolean) => Promise<void>;
   onRecording: (id: string, running: boolean) => Promise<void>;
+  onStartWorkflow: (id: string) => void;
   /* MAX-167: a 3D scan belongs to one recording/session, never the object
    * directly -- the caller must know which session it's attaching to. */
   onOpenScanner: (objectId: string, sessionId: string) => void;
@@ -59,6 +61,7 @@ export default function ObjectsFeature(props: Props) {
   const selected = store?.objects.find((object) => object.id === selectedId)
     ?? store?.objects.find((object) => object.active)
     ?? null;
+  const active = activeObject(store);
   const [newName, setNewName] = useState('');
   const [rename, setRename] = useState(selected?.name ?? '');
   const [cables, setCables] = useState<number[]>(selected?.cable_lengths_m ?? [5, 5, 5, 5]);
@@ -132,6 +135,14 @@ export default function ObjectsFeature(props: Props) {
           <div><span className="eyebrow">{t('objects.database')}</span><h2>{t('nav.objects')}</h2></div>
           <span>{store?.objects.length ?? 0}</span>
         </div>
+        {active !== null && (
+          <div className="workflow-entry">
+            <small>{active.name}</small>
+            <button type="button" className="secondary" disabled={busy} onClick={() => props.onStartWorkflow(active.id)}>
+              {t('workflow.entry_button')}
+            </button>
+          </div>
+        )}
         <form
           className="inline-form"
           onSubmit={(event) => {

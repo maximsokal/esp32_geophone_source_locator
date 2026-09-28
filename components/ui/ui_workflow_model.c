@@ -1,0 +1,847 @@
+#include "ui_workflow_model.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+#define UI_WORKFLOW_ACTION_MATERIAL ((workflow_command_t)WORKFLOW_COMMAND_COUNT)
+
+static const workflow_command_t s_action_order[] = {
+    WORKFLOW_COMMAND_START_MEASUREMENT,
+    WORKFLOW_COMMAND_GO_CALIBRATION,
+    WORKFLOW_COMMAND_SENSORS_PLACED,
+    WORKFLOW_COMMAND_RETRY,
+    WORKFLOW_COMMAND_PLACE_SENSORS,
+    WORKFLOW_COMMAND_CALCULATE_POSITIONS,
+    WORKFLOW_COMMAND_CONFIRM,
+    WORKFLOW_COMMAND_START_RECORDING,
+    WORKFLOW_COMMAND_STOP_RECORDING,
+    WORKFLOW_COMMAND_MOVE_SENSORS,
+    WORKFLOW_COMMAND_CALCULATE_SOURCES,
+    WORKFLOW_COMMAND_DELETE_RECORDING,
+    WORKFLOW_COMMAND_RECORD_AGAIN,
+    WORKFLOW_COMMAND_BACK,
+};
+
+static void copy_arg(char *destination, size_t capacity, const char *source)
+{
+    if (capacity == 0U) return;
+    if (source == NULL) source = "";
+    (void)snprintf(destination, capacity, "%s", source);
+}
+
+static ui_workflow_model_line_t *add_line(ui_workflow_model_t *model, ui_i18n_key_t key)
+{
+    if (model->line_count >= UI_WORKFLOW_MODEL_MAX_LINES) return NULL;
+    ui_workflow_model_line_t *line = &model->lines[model->line_count++];
+    memset(line, 0, sizeof(*line));
+    line->key = key;
+    for (size_t i = 0U; i < UI_WORKFLOW_MODEL_ARGS; ++i) {
+        line->arg_keys[i] = UI_I18N_KEY_COUNT;
+    }
+    return line;
+}
+
+static void set_arg(ui_workflow_model_line_t *line, size_t index, const char *value)
+{
+    if (line == NULL || index >= UI_WORKFLOW_MODEL_ARGS) return;
+    copy_arg(line->args[index], sizeof(line->args[index]), value);
+}
+
+static void set_key_arg(ui_workflow_model_line_t *line, size_t index, ui_i18n_key_t key)
+{
+    if (line == NULL || index >= UI_WORKFLOW_MODEL_ARGS) return;
+    line->arg_keys[index] = key;
+}
+
+static ui_i18n_key_t action_key(workflow_command_t command)
+{
+    switch (command) {
+        case WORKFLOW_COMMAND_START_MEASUREMENT: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_MEASUREMENT;
+        case WORKFLOW_COMMAND_GO_CALIBRATION: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_GO_CALIBRATION;
+        case WORKFLOW_COMMAND_SENSORS_PLACED: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_SENSORS_PLACED;
+        case WORKFLOW_COMMAND_RETRY: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_RETRY;
+        case WORKFLOW_COMMAND_PLACE_SENSORS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACE_SENSORS;
+        case WORKFLOW_COMMAND_CALCULATE_POSITIONS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CALCULATE_POSITIONS;
+        case WORKFLOW_COMMAND_CONFIRM: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CONFIRM;
+        case WORKFLOW_COMMAND_START_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_RECORDING;
+        case WORKFLOW_COMMAND_STOP_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_STOP_RECORDING;
+        case WORKFLOW_COMMAND_MOVE_SENSORS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_MOVE_SENSORS;
+        case WORKFLOW_COMMAND_CALCULATE_SOURCES: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CALCULATE_SOURCES;
+        case WORKFLOW_COMMAND_DELETE_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_DELETE_RECORDING;
+        case WORKFLOW_COMMAND_RECORD_AGAIN: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_RECORD_AGAIN;
+        case WORKFLOW_COMMAND_BACK: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_BACK;
+        case WORKFLOW_COMMAND_COUNT: return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_ROW;
+        case WORKFLOW_COMMAND_CALIBRATION_DONE:
+        case WORKFLOW_COMMAND_RANGING_DONE:
+        case WORKFLOW_COMMAND_CALCULATION_DONE:
+        default:
+            return UI_I18N_KEY_COUNT;
+    }
+}
+
+static size_t collect_actions(
+    const workflow_snapshot_t *snapshot,
+    const ui_workflow_model_state_t *state,
+    workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS])
+{
+    size_t count = 0U;
+    if (snapshot->step == WORKFLOW_STEP_STOPPED && state->material_view == UI_WORKFLOW_MATERIAL_CLOSED) {
+        actions[count++] = UI_WORKFLOW_ACTION_MATERIAL;
+    }
+    for (size_t i = 0U; i < sizeof(s_action_order) / sizeof(s_action_order[0]); ++i) {
+        const workflow_command_t command = s_action_order[i];
+        if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U &&
+            action_key(command) < UI_I18N_KEY_COUNT && count < UI_WORKFLOW_MODEL_MAX_ACTIONS) {
+            actions[count++] = command;
+        }
+    }
+    return count;
+}
+
+static void resolve_pending(ui_workflow_model_state_t *state, const workflow_snapshot_t *snapshot, uint64_t now_ms)
+{
+    if (state->has_pending && snapshot->last_async.seq >= state->pending_seq) {
+        state->has_pending = false;
+        if (snapshot->last_async.result != WORKFLOW_COMMAND_RESULT_OK) {
+            state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_NOTICE_STATE_CHANGED;
+            state->notice_until_ms = now_ms + 2000U;
+        }
+    }
+    if (state->notice_key != UI_I18N_KEY_COUNT && now_ms >= state->notice_until_ms) {
+        state->notice_key = UI_I18N_KEY_COUNT;
+    }
+}
+
+static void resolve_material_save(
+    ui_workflow_model_state_t *state,
+    const workflow_snapshot_t *snapshot,
+    uint64_t now_ms)
+{
+    if (!state->material_save_pending ||
+        snapshot->last_material_save.seq < state->material_save_seq) return;
+    state->material_save_pending = false;
+    if (snapshot->last_material_save.result == ESP_OK) {
+        state->material_stored_index = state->material_selection_index;
+        state->material_selection_initialized = true;
+        state->material_view = UI_WORKFLOW_MATERIAL_CLOSED;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVED;
+    } else {
+        state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVE_FAILED;
+    }
+    state->notice_until_ms = now_ms + 2000U;
+}
+
+static void add_material_action(
+    ui_workflow_model_t *model,
+    const ui_workflow_model_state_t *state)
+{
+    if (model->action_count >= UI_WORKFLOW_MODEL_MAX_ACTIONS) return;
+    const size_t index = model->action_count++;
+    model->actions[index] = UI_WORKFLOW_ACTION_MATERIAL;
+    for (size_t i = 0U; i < UI_WORKFLOW_MODEL_ARGS; ++i) {
+        model->material_action_line.arg_keys[i] = UI_I18N_KEY_COUNT;
+    }
+    if (state->material_is_set) {
+        model->material_action_line.key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_ROW;
+        model->material_action_line.arg_keys[0] = state->material_name_key < UI_I18N_KEY_COUNT
+            ? state->material_name_key : UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_NAME_UNKNOWN;
+    } else {
+        model->material_action_line.key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_UNSET;
+    }
+    model->action_keys[index] = model->material_action_line.key;
+}
+
+static void add_action(ui_workflow_model_t *model, workflow_command_t command)
+{
+    if (model->action_count >= UI_WORKFLOW_MODEL_MAX_ACTIONS) return;
+    const ui_i18n_key_t key = action_key(command);
+    if (key >= UI_I18N_KEY_COUNT) return;
+    const size_t index = model->action_count++;
+    model->actions[index] = command;
+    model->action_keys[index] = key;
+    model->actions_mask |= WORKFLOW_ACTION(command);
+}
+
+static ui_i18n_key_t title_key(workflow_step_t step)
+{
+    switch (step) {
+        case WORKFLOW_STEP_IDLE: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_IDLE;
+        case WORKFLOW_STEP_OBJECT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_OBJECT;
+        case WORKFLOW_STEP_SENSOR_CHECK: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_SENSOR_CHECK;
+        case WORKFLOW_STEP_CALIB_PREP: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIB_PREP;
+        case WORKFLOW_STEP_CALIBRATING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIBRATING;
+        case WORKFLOW_STEP_CALIB_RESULT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIB_RESULT;
+        case WORKFLOW_STEP_PLACEMENT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_PLACEMENT;
+        case WORKFLOW_STEP_RANGING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RANGING;
+        case WORKFLOW_STEP_RANGING_RESULT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RANGING_RESULT;
+        case WORKFLOW_STEP_RECORD_READY: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORD_READY;
+        case WORKFLOW_STEP_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORDING;
+        case WORKFLOW_STEP_STOPPED: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_STOPPED;
+        case WORKFLOW_STEP_CALCULATING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALCULATING;
+        case WORKFLOW_STEP_RESULT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RESULT;
+        case WORKFLOW_STEP_COUNT:
+        default: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_IDLE;
+    }
+}
+
+static ui_i18n_key_t command_result_key(bool ok)
+{
+    return ok ? UI_I18N_KEY_TFT_WORKFLOW_VALUE_OK : UI_I18N_KEY_TFT_WORKFLOW_VALUE_NO;
+}
+
+static ui_i18n_key_t result_status_key(bool ok)
+{
+    return ok ? UI_I18N_KEY_TFT_WORKFLOW_VALUE_OK : UI_I18N_KEY_TFT_WORKFLOW_VALUE_FAIL;
+}
+
+static ui_i18n_key_t state_value_key(const char *value)
+{
+    if (value == NULL || value[0] == '\0' || strcmp(value, "not_established") == 0 ||
+        strcmp(value, "not_calibrated") == 0) {
+        return UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+    }
+    if (strcmp(value, "valid") == 0) return UI_I18N_KEY_TFT_WORKFLOW_STATE_VALID;
+    if (strcmp(value, "calibrated") == 0) return UI_I18N_KEY_TFT_WORKFLOW_STATE_CALIBRATED;
+    if (strcmp(value, "rejected_moving") == 0) return UI_I18N_KEY_TFT_WORKFLOW_STATE_MOVING;
+    if (strcmp(value, "rejected_gravity") == 0) return UI_I18N_KEY_TFT_WORKFLOW_STATE_GRAVITY;
+    if (strcmp(value, "sensor_invalid") == 0) return UI_I18N_KEY_TFT_WORKFLOW_STATE_SENSOR_INVALID;
+    return UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+}
+
+static ui_i18n_key_t phase_value_key(const char *value)
+{
+    if (value == NULL || value[0] == '\0') return UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+    if (strcmp(value, "idle") == 0) return UI_I18N_KEY_TFT_WORKFLOW_PHASE_IDLE;
+    if (strcmp(value, "running") == 0) return UI_I18N_KEY_TFT_WORKFLOW_PHASE_RUNNING;
+    if (strcmp(value, "complete") == 0) return UI_I18N_KEY_TFT_WORKFLOW_PHASE_COMPLETE;
+    if (strcmp(value, "failed") == 0) return UI_I18N_KEY_TFT_WORKFLOW_PHASE_FAILED;
+    if (strcmp(value, "cancelled") == 0) return UI_I18N_KEY_TFT_WORKFLOW_PHASE_CANCELLED;
+    return UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+}
+
+static ui_i18n_key_t calibration_reason_key(const char *reason)
+{
+    if (reason == NULL) return UI_I18N_KEY_COUNT;
+    if (strstr(reason, "height_rejected_moving") != NULL) return UI_I18N_KEY_TFT_WORKFLOW_REASON_HEIGHT_MOVING;
+    if (strstr(reason, "height_sensor_invalid") != NULL || strstr(reason, "imu_sensor_invalid") != NULL) {
+        return UI_I18N_KEY_TFT_WORKFLOW_REASON_SENSOR_INVALID;
+    }
+    if (strstr(reason, "imu_rejected_moving") != NULL) return UI_I18N_KEY_TFT_WORKFLOW_REASON_IMU_MOVING;
+    if (strstr(reason, "imu_rejected_gravity") != NULL) return UI_I18N_KEY_TFT_WORKFLOW_REASON_IMU_GRAVITY;
+    if (strstr(reason, "cs_pair_invalid") != NULL) return UI_I18N_KEY_TFT_WORKFLOW_REASON_CS_PAIR;
+    if (strstr(reason, "cs_spread") != NULL) return UI_I18N_KEY_TFT_WORKFLOW_REASON_CS_SPREAD;
+    if (strcmp(reason, "calibration_failed") == 0) return UI_I18N_KEY_TFT_WORKFLOW_REASON_FAILED;
+    return UI_I18N_KEY_COUNT;
+}
+
+static void unknown_arg(ui_workflow_model_line_t *line, size_t index)
+{
+    set_key_arg(line, index, UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
+}
+
+static void add_reason(ui_workflow_model_t *model, const char *reason)
+{
+    if (reason == NULL || reason[0] == '\0') return;
+    const char *separator = reason != NULL ? strchr(reason, ':') : NULL;
+    const ui_i18n_key_t reason_key = calibration_reason_key(reason);
+    if (separator != NULL && separator != reason && reason_key != UI_I18N_KEY_COUNT) {
+        ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_REASON);
+        if (line == NULL) return;
+        const size_t prefix_length = (size_t)(separator - reason);
+        const size_t copy_length = prefix_length < sizeof(line->args[0]) - 1U
+            ? prefix_length : sizeof(line->args[0]) - 1U;
+        const char *prefix = strncmp(reason, "cs_pair_invalid:", prefix_length) == 0
+            ? separator + 1U : reason;
+        const size_t displayed_prefix_length = prefix == reason ? copy_length : strlen(prefix);
+        const size_t safe_length = displayed_prefix_length < sizeof(line->args[0]) - 1U
+            ? displayed_prefix_length : sizeof(line->args[0]) - 1U;
+        memcpy(line->args[0], prefix, safe_length);
+        line->args[0][safe_length] = '\0';
+        set_key_arg(line, 1U, reason_key);
+    } else if (reason_key != UI_I18N_KEY_COUNT) {
+        ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_REASON_SINGLE);
+        set_key_arg(line, 0U, reason_key);
+    } else {
+        ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
+        set_arg(line, 0U, reason);
+    }
+}
+
+static void build_result_lines(
+    const workflow_snapshot_t *snapshot,
+    const ui_workflow_model_state_t *state,
+    ui_workflow_model_t *model)
+{
+    if (snapshot->calculation_class != WORKFLOW_CALCULATION_CLASS_NONE) {
+        ui_i18n_key_t key = UI_I18N_KEY_TFT_WORKFLOW_RESULT_INTERNAL;
+        if (snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN) {
+            key = UI_I18N_KEY_TFT_WORKFLOW_RESULT_RECORD_AGAIN;
+        } else if (snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS) {
+            key = UI_I18N_KEY_TFT_WORKFLOW_RESULT_MOVE_SENSORS;
+        }
+        (void)add_line(model, key);
+        if (snapshot->reason[0] != '\0') {
+            ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
+            set_arg(line, 0U, snapshot->reason);
+        }
+        return;
+    }
+
+    (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_SUCCESS);
+    if (!state->result_data_ready) {
+        (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_LOADING);
+        return;
+    }
+    if (state->result_load_failed) {
+        (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_LOAD_FAILED);
+    } else if (!state->result_waveform_available) {
+        (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_WAVEFORM_UNAVAILABLE);
+    }
+
+    result_view_distance_t distances[OBJECT_STORE_POD_COUNT] = {0};
+    if (state->result_source_valid && result_view_source_distances(
+            state->result_source_m,
+            state->result_geometry.pods,
+            OBJECT_STORE_POD_COUNT,
+            distances) != RESULT_VIEW_OK) memset(distances, 0, sizeof(distances));
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        char channel[8];
+        (void)snprintf(channel, sizeof(channel), "%u", (unsigned)(i + 1U));
+        ui_workflow_model_line_t *line = add_line(
+            model,
+            distances[i].known
+                ? UI_I18N_KEY_TFT_WORKFLOW_RESULT_DISTANCE
+                : UI_I18N_KEY_TFT_WORKFLOW_RESULT_DISTANCE_UNKNOWN);
+        set_arg(line, 0U, channel);
+        if (distances[i].known) {
+            char distance[20];
+            (void)snprintf(distance, sizeof(distance), "%.1f", distances[i].distance_m);
+            set_arg(line, 1U, distance);
+        }
+    }
+}
+
+static bool step_can_preview(workflow_step_t step)
+{
+    return step == WORKFLOW_STEP_RECORD_READY || step == WORKFLOW_STEP_RECORDING ||
+        step == WORKFLOW_STEP_RESULT;
+}
+
+static void add_material_speed_line(
+    ui_workflow_model_t *model,
+    uint32_t speed_mps,
+    uint32_t sigma_mps)
+{
+    char speed[12], sigma[12];
+    (void)snprintf(speed, sizeof(speed), "%lu", (unsigned long)speed_mps);
+    (void)snprintf(sigma, sizeof(sigma), "%lu", (unsigned long)sigma_mps);
+    ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SPEED);
+    set_arg(line, 0U, speed);
+    set_arg(line, 1U, sigma);
+}
+
+static void build_material_picker(
+    const ui_workflow_model_state_t *state,
+    ui_workflow_model_t *model)
+{
+    model->title_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_TITLE;
+    model->material_picker_visible = true;
+    switch (state->material_view) {
+        case UI_WORKFLOW_MATERIAL_SELECT: {
+            ui_workflow_model_line_t *name = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_OPTION);
+            set_key_arg(name, 0U, state->material_candidate_name_key);
+            add_material_speed_line(model, state->material_candidate_v_mps, state->material_candidate_sigma_mps);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SELECT;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_CUSTOM_SPEED: {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SPEED);
+            char speed[12];
+            (void)snprintf(speed, sizeof(speed), "%lu", (unsigned long)state->material_custom_v_mps);
+            ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SPEED_VALUE);
+            set_arg(value, 0U, speed);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_ADJUST;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA: {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SIGMA);
+            char sigma[12];
+            (void)snprintf(sigma, sizeof(sigma), "%lu", (unsigned long)state->material_custom_sigma_mps);
+            ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SIGMA_VALUE);
+            set_arg(value, 0U, sigma);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SAVE;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_SAVING:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVING);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SELECT;
+            break;
+        case UI_WORKFLOW_MATERIAL_CLOSED:
+        default:
+            break;
+    }
+}
+
+void ui_workflow_model_build(
+    const workflow_snapshot_t *snapshot,
+    const ui_workflow_ranging_t *ranging,
+    ui_workflow_model_state_t *state,
+    uint64_t now_ms,
+    ui_workflow_model_t *model)
+{
+    if (snapshot == NULL || state == NULL || model == NULL) return;
+    memset(model, 0, sizeof(*model));
+    model->title_key = title_key(snapshot->step);
+    model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_HINT_NAVIGATION;
+    model->notice_key = UI_I18N_KEY_COUNT;
+    model->show_3d_hint = snapshot->has_scan && step_can_preview(snapshot->step);
+    if (model->show_3d_hint) model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_HINT_3D;
+    model->show_delete_confirm = state->delete_confirm;
+    if (state->delete_confirm) model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_CONFIRM_DELETE;
+
+    resolve_pending(state, snapshot, now_ms);
+    resolve_material_save(state, snapshot, now_ms);
+    if (state->material_save_pending) {
+        model->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVING;
+    } else if (state->notice_key != UI_I18N_KEY_COUNT && now_ms < state->notice_until_ms) {
+        model->notice_key = state->notice_key;
+    } else {
+        state->notice_key = UI_I18N_KEY_COUNT;
+    }
+
+    if (state->material_view != UI_WORKFLOW_MATERIAL_CLOSED) {
+        build_material_picker(state, model);
+        return;
+    }
+
+    switch (snapshot->step) {
+        case WORKFLOW_STEP_IDLE:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_IDLE_SELECT_OBJECT);
+            break;
+        case WORKFLOW_STEP_OBJECT: {
+            ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_OBJECT_NAME);
+            if (state->active_object_name[0] != '\0') set_arg(line, 0U, state->active_object_name);
+            else unknown_arg(line, 0U);
+            break;
+        }
+        case WORKFLOW_STEP_SENSOR_CHECK: {
+            char remotes[12];
+            (void)snprintf(remotes, sizeof(remotes), "%u", (unsigned)snapshot->assigned_remotes);
+            ui_workflow_model_line_t *count = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SENSOR_REMOTE_COUNT);
+            set_arg(count, 0U, remotes);
+            const ui_i18n_key_t sufficiency = snapshot->assigned_remotes < 3U
+                ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT
+                : snapshot->assigned_remotes == 3U
+                    ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_PLANAR
+                    : UI_I18N_KEY_TFT_WORKFLOW_SENSOR_READY;
+            (void)add_line(model, sufficiency);
+            break;
+        }
+        case WORKFLOW_STEP_CALIB_PREP:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_PREP);
+            break;
+        case WORKFLOW_STEP_CALIBRATING: {
+            char pairs_done[12], pairs_total[12], spread[20];
+            (void)snprintf(pairs_done, sizeof(pairs_done), "%u", (unsigned)snapshot->calibration.pairs_done);
+            (void)snprintf(pairs_total, sizeof(pairs_total), "%u", (unsigned)snapshot->calibration.pairs_total);
+            if (snapshot->calibration.max_spread_valid) {
+                (void)snprintf(spread, sizeof(spread), "%ld", (long)snapshot->calibration.max_spread_mm);
+            }
+            ui_workflow_model_line_t *header = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_HEADER);
+            set_key_arg(header, 0U, phase_value_key(snapshot->calibration.phase));
+            set_arg(header, 1U, pairs_done);
+            set_arg(header, 2U, pairs_total);
+            if (snapshot->calibration.max_spread_valid) set_arg(header, 3U, spread);
+            else unknown_arg(header, 3U);
+            for (size_t i = 0U; i < snapshot->calibration.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
+                const workflow_calibration_node_t *node = &snapshot->calibration.per_node[i];
+                char z[20], bias[20];
+                if (node->relative_z_mm_valid) (void)snprintf(z, sizeof(z), "%ld", (long)node->relative_z_mm);
+                if (node->imu_values_valid) {
+                    const double x = node->gyro_bias_mdps[0];
+                    const double y = node->gyro_bias_mdps[1];
+                    const double z_bias = node->gyro_bias_mdps[2];
+                    (void)snprintf(bias, sizeof(bias), "%.0f", sqrt(x * x + y * y + z_bias * z_bias));
+                }
+                ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW);
+                set_arg(row, 0U, node->node);
+                set_arg(row, 1U, node->height_state);
+                set_key_arg(row, 1U, state_value_key(node->height_state));
+                if (node->relative_z_mm_valid) set_arg(row, 2U, z);
+                else unknown_arg(row, 2U);
+                set_arg(row, 3U, node->imu_state);
+                set_key_arg(row, 3U, state_value_key(node->imu_state));
+                if (node->imu_values_valid) set_arg(row, 4U, bias);
+                else unknown_arg(row, 4U);
+                set_arg(row, 5U, node->cs_pairs_ok ? "OK" : "X");
+                set_key_arg(row, 5U, command_result_key(node->cs_pairs_ok));
+            }
+            break;
+        }
+        case WORKFLOW_STEP_CALIB_RESULT: {
+            ui_workflow_model_line_t *status = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_STATUS);
+            if (snapshot->calibration.result_valid) {
+                set_key_arg(status, 0U, result_status_key(snapshot->calibration.result_ok));
+            }
+            else unknown_arg(status, 0U);
+            for (size_t i = 0U; i < snapshot->calibration.reasons_count && i < WORKFLOW_MAX_CALIBRATION_REASONS; ++i) {
+                add_reason(model, snapshot->calibration.reasons[i]);
+            }
+            break;
+        }
+        case WORKFLOW_STEP_PLACEMENT:
+            for (size_t i = 0U; i < snapshot->placement.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
+                const workflow_placement_node_t *node = &snapshot->placement.per_node[i];
+                char height[24], altitude[24];
+                if (node->height_rel_main_mm_valid) (void)snprintf(height, sizeof(height), "%lld", (long long)node->height_rel_main_mm);
+                if (node->altitude_asl_m_valid) (void)snprintf(altitude, sizeof(altitude), "%.1f", node->altitude_asl_m);
+                ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
+                set_arg(row, 0U, node->node);
+                set_key_arg(row, 1U, command_result_key(node->vertical));
+                if (node->height_rel_main_mm_valid) set_arg(row, 2U, height);
+                else unknown_arg(row, 2U);
+                if (node->altitude_asl_m_valid) set_arg(row, 3U, altitude);
+                else unknown_arg(row, 3U);
+                set_key_arg(row, 4U, command_result_key(node->stable));
+            }
+            (void)add_line(model, snapshot->placement.all_stable
+                ? UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE
+                : UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+            break;
+        case WORKFLOW_STEP_RANGING: {
+            char done[12], total[12], residual[20];
+            if (ranging != NULL && ranging->available) {
+                (void)snprintf(done, sizeof(done), "%u", (unsigned)ranging->pairs_done);
+                (void)snprintf(total, sizeof(total), "%u", (unsigned)ranging->pairs_total);
+                if (ranging->residual_valid) (void)snprintf(residual, sizeof(residual), "%ld", (long)ranging->residual_mm);
+                else residual[0] = '\0';
+            } else {
+                done[0] = '\0';
+                total[0] = '\0';
+                residual[0] = '\0';
+            }
+            ui_workflow_model_line_t *pairs = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIRS);
+            if (ranging != NULL && ranging->available) {
+                set_arg(pairs, 0U, done);
+                set_arg(pairs, 1U, total);
+                if (ranging->residual_valid) set_arg(pairs, 2U, residual);
+                else unknown_arg(pairs, 2U);
+            } else {
+                unknown_arg(pairs, 0U);
+                unknown_arg(pairs, 1U);
+                unknown_arg(pairs, 2U);
+            }
+            if (ranging != NULL && ranging->available) {
+                for (size_t i = 0U; i < ranging->node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
+                    ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);
+                    set_arg(row, 0U, ranging->nodes[i]);
+                    if (ranging->sigma_mm[i] == INT32_MAX) unknown_arg(row, 1U);
+                    else {
+                        char sigma[20];
+                        (void)snprintf(sigma, sizeof(sigma), "%ld", (long)ranging->sigma_mm[i]);
+                        set_arg(row, 1U, sigma);
+                    }
+                }
+            }
+            break;
+        }
+        case WORKFLOW_STEP_RANGING_RESULT: {
+            const bool success = (snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) != 0U;
+            const bool known = success || (snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_RETRY)) != 0U;
+            ui_workflow_model_line_t *status = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_STATUS);
+            if (known) set_key_arg(status, 0U, result_status_key(success));
+            else unknown_arg(status, 0U);
+            if (snapshot->reason[0] != '\0') {
+                ui_workflow_model_line_t *reason = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
+                set_arg(reason, 0U, snapshot->reason);
+            }
+            break;
+        }
+        case WORKFLOW_STEP_RECORD_READY:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
+            break;
+        case WORKFLOW_STEP_RECORDING: {
+            char elapsed[16];
+            const uint64_t total_seconds = state->recording_elapsed_ms / 1000U;
+            (void)snprintf(elapsed, sizeof(elapsed), "%02u:%02u",
+                (unsigned)(total_seconds / 60U), (unsigned)(total_seconds % 60U));
+            ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORDING_ELAPSED);
+            if (state->recording_elapsed_valid) set_arg(line, 0U, elapsed);
+            else unknown_arg(line, 0U);
+            break;
+        }
+        case WORKFLOW_STEP_STOPPED:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_STOPPED_INSTRUCTION);
+            if (!snapshot->calc_settings_ready) (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_STOPPED_SETTINGS_MISSING);
+            break;
+        case WORKFLOW_STEP_CALCULATING: {
+            if (snapshot->progress < 0) {
+                model->progress_indeterminate = true;
+            } else {
+                char progress[12];
+                (void)snprintf(progress, sizeof(progress), "%u", (unsigned)snapshot->progress);
+                ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALCULATING_PROGRESS);
+                set_arg(line, 0U, progress);
+            }
+            break;
+        }
+        case WORKFLOW_STEP_RESULT:
+            build_result_lines(snapshot, state, model);
+            break;
+        case WORKFLOW_STEP_COUNT:
+        default:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_IDLE_SELECT_OBJECT);
+            break;
+    }
+
+    if (snapshot->step == WORKFLOW_STEP_STOPPED) add_material_action(model, state);
+    for (size_t i = 0U; i < sizeof(s_action_order) / sizeof(s_action_order[0]); ++i) {
+        const workflow_command_t command = s_action_order[i];
+        if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U) add_action(model, command);
+    }
+    if (state->has_pending) {
+        model->pending = true;
+        model->pending_command = state->pending_command;
+    }
+    if (model->action_count == 0U) {
+        model->selected_action = 0U;
+        state->has_selected_action = false;
+    } else {
+        size_t selected = 0U;
+        if (state->has_selected_action) {
+            for (size_t i = 0U; i < model->action_count; ++i) {
+                if (model->actions[i] == state->selected_action) {
+                    selected = i;
+                    break;
+                }
+            }
+        }
+        state->selected_action = model->actions[selected];
+        state->has_selected_action = true;
+        model->selected_action = selected;
+    }
+}
+
+ui_workflow_event_t ui_workflow_model_handle_key(
+    const workflow_snapshot_t *snapshot,
+    ui_workflow_model_state_t *state,
+    ui_workflow_key_t key,
+    uint64_t now_ms)
+{
+    ui_workflow_event_t event = {.type = UI_WORKFLOW_EVENT_NONE};
+    if (snapshot == NULL || state == NULL) return event;
+
+    resolve_pending(state, snapshot, now_ms);
+    resolve_material_save(state, snapshot, now_ms);
+    if (state->material_view != UI_WORKFLOW_MATERIAL_CLOSED) {
+        if (state->material_view == UI_WORKFLOW_MATERIAL_SAVING) return event;
+        const size_t option_count = state->material_preset_count + 1U;
+        switch (state->material_view) {
+            case UI_WORKFLOW_MATERIAL_SELECT:
+                if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_selection_index = key == UI_WORKFLOW_KEY_DOWN
+                        ? (state->material_selection_index + 1U) % option_count
+                        : (state->material_selection_index + option_count - 1U) % option_count;
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CLOSED;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    state->notice_key = UI_I18N_KEY_COUNT;
+                    state->notice_until_ms = 0U;
+                    if (state->material_selection_index >= state->material_preset_count) {
+                        if (!state->material_custom_values_valid) {
+                            state->material_custom_v_mps = 1000U;
+                            state->material_custom_sigma_mps = 200U;
+                            state->material_custom_values_valid = true;
+                        }
+                        state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SPEED;
+                    } else {
+                        event.type = UI_WORKFLOW_EVENT_SAVE_MATERIAL;
+                        event.material_index = state->material_selection_index;
+                        state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+                    }
+                }
+                break;
+            case UI_WORKFLOW_MATERIAL_CUSTOM_SPEED:
+                if (key == UI_WORKFLOW_KEY_UP) {
+                    state->material_custom_v_mps = state->material_custom_v_mps > 7900U
+                        ? 7950U : state->material_custom_v_mps + 50U;
+                } else if (key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_custom_v_mps = state->material_custom_v_mps < 150U
+                        ? 100U : state->material_custom_v_mps - 50U;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA;
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+                }
+                if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
+                    if (state->material_custom_sigma_mps > state->material_custom_v_mps - 10U) {
+                        state->material_custom_sigma_mps = state->material_custom_v_mps - 10U;
+                    }
+                    if (state->material_custom_sigma_mps < 10U) state->material_custom_sigma_mps = 10U;
+                }
+                break;
+            case UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA: {
+                const uint32_t maximum_sigma = state->material_custom_v_mps - 10U;
+                if (key == UI_WORKFLOW_KEY_UP) {
+                    state->material_custom_sigma_mps = state->material_custom_sigma_mps > maximum_sigma - 10U
+                        ? maximum_sigma : state->material_custom_sigma_mps + 10U;
+                } else if (key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_custom_sigma_mps = state->material_custom_sigma_mps < 20U
+                        ? 10U : state->material_custom_sigma_mps - 10U;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    state->material_selection_index = state->material_preset_count;
+                    state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+                    event.type = UI_WORKFLOW_EVENT_SAVE_MATERIAL;
+                    event.material_index = state->material_preset_count;
+                    event.custom_v_mps = state->material_custom_v_mps;
+                    event.custom_sigma_mps = state->material_custom_sigma_mps;
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SPEED;
+                }
+                break;
+            }
+            case UI_WORKFLOW_MATERIAL_SAVING:
+            case UI_WORKFLOW_MATERIAL_CLOSED:
+            default:
+                break;
+        }
+        return event;
+    }
+    if (key == UI_WORKFLOW_KEY_OK && state->has_pending) return event;
+    switch (key) {
+        case UI_WORKFLOW_KEY_UP:
+        case UI_WORKFLOW_KEY_DOWN: {
+            state->delete_confirm = false;
+            workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS];
+            const size_t action_count = collect_actions(snapshot, state, actions);
+            if (action_count > 0U) {
+                size_t selected = 0U;
+                if (state->has_selected_action) {
+                    for (size_t i = 0U; i < action_count; ++i) {
+                        if (actions[i] == state->selected_action) {
+                            selected = i;
+                            break;
+                        }
+                    }
+                }
+                selected = key == UI_WORKFLOW_KEY_DOWN
+                    ? (selected + 1U) % action_count
+                    : (selected + action_count - 1U) % action_count;
+                state->selected_action = actions[selected];
+                state->has_selected_action = true;
+            }
+            break;
+        }
+        case UI_WORKFLOW_KEY_LEFT:
+            if (state->delete_confirm) {
+                state->delete_confirm = false;
+                event.type = UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED;
+            } else if ((snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK)) != 0U) {
+                event.type = UI_WORKFLOW_EVENT_SEND_COMMAND;
+                event.command = WORKFLOW_COMMAND_BACK;
+            } else if (snapshot->step == WORKFLOW_STEP_IDLE || snapshot->step == WORKFLOW_STEP_OBJECT ||
+                snapshot->step == WORKFLOW_STEP_SENSOR_CHECK) {
+                event.type = UI_WORKFLOW_EVENT_LEAVE_OBJECTS;
+            }
+            break;
+        case UI_WORKFLOW_KEY_RIGHT:
+            if (snapshot->has_scan && step_can_preview(snapshot->step)) event.type = UI_WORKFLOW_EVENT_OPEN_PREVIEW;
+            break;
+        case UI_WORKFLOW_KEY_OK:
+        {
+            workflow_command_t actions[UI_WORKFLOW_MODEL_MAX_ACTIONS];
+            const size_t action_count = collect_actions(snapshot, state, actions);
+            if (action_count == 0U) break;
+            size_t selected = 0U;
+            if (state->has_selected_action) {
+                for (size_t i = 0U; i < action_count; ++i) {
+                    if (actions[i] == state->selected_action) {
+                        selected = i;
+                        break;
+                    }
+                }
+            }
+            event.command = actions[selected];
+            if (event.command == UI_WORKFLOW_ACTION_MATERIAL) {
+                state->material_selection_index = state->material_stored_index <= state->material_preset_count
+                    ? state->material_stored_index : 0U;
+                state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+                state->notice_key = UI_I18N_KEY_COUNT;
+                state->notice_until_ms = 0U;
+            } else if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING && !state->delete_confirm) {
+                state->delete_confirm = true;
+                event.type = UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED;
+            } else if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING) {
+                state->delete_confirm = false;
+                event.type = UI_WORKFLOW_EVENT_SEND_COMMAND;
+            } else {
+                event.type = UI_WORKFLOW_EVENT_SEND_COMMAND;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    return event;
+}
+
+void ui_workflow_model_command_sent(
+    ui_workflow_model_state_t *state,
+    workflow_command_t command,
+    esp_err_t result,
+    uint32_t seq,
+    uint64_t now_ms)
+{
+    if (state == NULL) return;
+    if (result == ESP_OK) {
+        state->has_pending = true;
+        state->pending_command = command;
+        state->pending_seq = seq;
+        state->notice_key = UI_I18N_KEY_COUNT;
+        state->notice_until_ms = 0U;
+    } else {
+        state->has_pending = false;
+        state->notice_key = result == ESP_ERR_NO_MEM
+            ? UI_I18N_KEY_TFT_WORKFLOW_NOTICE_BUSY
+            : UI_I18N_KEY_TFT_WORKFLOW_NOTICE_STATE_CHANGED;
+        state->notice_until_ms = now_ms + 2000U;
+    }
+}
+
+void ui_workflow_model_material_save_sent(
+    ui_workflow_model_state_t *state,
+    esp_err_t result,
+    uint32_t seq,
+    uint64_t now_ms)
+{
+    if (state == NULL) return;
+    if (result == ESP_OK) {
+        state->material_save_pending = true;
+        state->material_save_seq = seq;
+        state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+        state->notice_key = UI_I18N_KEY_COUNT;
+        state->notice_until_ms = 0U;
+    } else {
+        state->material_save_pending = false;
+        state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVE_FAILED;
+        state->notice_until_ms = now_ms + 2000U;
+    }
+}
+
+bool ui_workflow_model_preview_ok(
+    bool recording,
+    bool stop_armed,
+    uint64_t now_ms,
+    uint64_t *armed_until_ms)
+{
+    if (!recording || armed_until_ms == NULL) return false;
+    if (stop_armed && now_ms < *armed_until_ms) {
+        *armed_until_ms = 0U;
+        return true;
+    }
+    *armed_until_ms = now_ms + 2000U;
+    return false;
+}
