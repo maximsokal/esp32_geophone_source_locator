@@ -665,8 +665,9 @@ static esp_err_t ad7606_publish_sample(
         seismic_channels[channel] = all_channels_uv[channel];
     }
 
-    const esp_err_t err = seismic_buffer_push(
+    const esp_err_t err = seismic_buffer_push_indexed(
         sample->timestamp_us,
+        sample_index,
         seismic_channels
     );
     if (err != ESP_OK) {

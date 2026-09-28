@@ -12,7 +12,7 @@
 #define TEST_PSRAM_BUDGET_BYTES 4194304U
 #define TEST_SECONDS            4U
 #define TEST_SLOT_BYTES         \
-    (sizeof(seismic_frame_t) + sizeof(uint64_t) + sizeof(uint32_t))
+    (sizeof(seismic_frame_t) + 2U * sizeof(uint64_t) + sizeof(uint32_t))
 
 #if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
 static bool s_fail_next_allocation;
@@ -233,12 +233,13 @@ static void test_runtime_wrap_and_skipped_frames(void)
     }
 
     seismic_frame_t frames[10];
+    uint64_t source_sample_indices[10];
     size_t count = 0U;
     uint64_t cursor = capacity - 2U;
     uint64_t dropped = 99U;
     seismic_buffer_info_t info = { 0 };
-    assert(seismic_buffer_copy_since(
-        &cursor, frames, 10U, &count, &dropped, &info
+    assert(seismic_buffer_copy_since_with_source_indices(
+        &cursor, frames, source_sample_indices, 10U, &count, &dropped, &info
     ) == ESP_OK);
     assert(dropped == 0U);
     assert(count == 7U);
@@ -247,16 +248,19 @@ static void test_runtime_wrap_and_skipped_frames(void)
     assert_frame(&frames[1], capacity);
     assert_frame(&frames[2], capacity + 1U);
     assert_frame(&frames[6], total);
+    assert(source_sample_indices[0] == capacity - 2U);
 
     cursor = 0U;
-    assert(seismic_buffer_copy_since(
-        &cursor, frames, 10U, &count, &dropped, &info
+    assert(seismic_buffer_copy_since_with_source_indices(
+        &cursor, frames, source_sample_indices, 10U, &count, &dropped, &info
     ) == ESP_OK);
     assert(dropped == 5U);
     assert(count == 10U);
     assert(cursor == 15U);
     assert_frame(&frames[0], 6U);
     assert_frame(&frames[9], 15U);
+    assert(source_sample_indices[0] == 5U);
+    assert(source_sample_indices[9] == 14U);
 
     cursor = total + 1U;
     assert(seismic_buffer_copy_since(
@@ -267,6 +271,36 @@ static void test_runtime_wrap_and_skipped_frames(void)
     assert(seismic_buffer_copy_since(
         &cursor, frames, 10U, &count, &dropped, &info
     ) == ESP_ERR_INVALID_STATE);
+}
+
+
+static void test_indexed_source_gaps_are_preserved(void)
+{
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
+    const uint64_t indexes[] = {0U, 1U, 5U, 6U};
+    float channels[SEISMIC_CHANNEL_COUNT] = {0};
+    for (size_t index = 0U; index < sizeof(indexes) / sizeof(indexes[0]); ++index) {
+        assert(seismic_buffer_push_indexed(
+            (int64_t)indexes[index] * 2000LL,
+            indexes[index],
+            channels
+        ) == ESP_OK);
+    }
+
+    seismic_frame_t frames[4];
+    uint64_t source_sample_indices[4] = {0};
+    uint64_t cursor = 0U;
+    uint64_t dropped = 0U;
+    size_t count = 0U;
+    seismic_buffer_info_t info = {0};
+    assert(seismic_buffer_copy_since_with_source_indices(
+        &cursor, frames, source_sample_indices, 4U, &count, &dropped, &info
+    ) == ESP_OK);
+    assert(count == 4U && dropped == 0U);
+    for (size_t index = 0U; index < count; ++index) {
+        assert(source_sample_indices[index] == indexes[index]);
+        assert(frames[index].timestamp_us == (int64_t)indexes[index] * 2000LL);
+    }
 }
 
 
@@ -382,6 +416,7 @@ int main(void)
     test_capacity_by_rate_and_budget();
     test_latest_and_cursor_batches();
     test_runtime_wrap_and_skipped_frames();
+    test_indexed_source_gaps_are_preserved();
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
     test_reconfigure_rejected_during_producer_and_consumer();
 #endif

@@ -67,6 +67,7 @@ static unsigned s_reads_after_deinit;
 static bool s_driver_live;
 static unsigned s_pushes;
 static int64_t s_push_timestamps[64];
+static uint64_t s_push_sample_indices[64];
 static int64_t s_last_push_ts;
 static float s_last_push[SEISMIC_CHANNEL_COUNT];
 static seismic_source_t s_buffer_source;
@@ -155,6 +156,7 @@ static void reset_world(void)
     s_fake_gpio_install_flags = 0;
     s_fake_watch_points = 0U;
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
+    memset(s_push_sample_indices, 0, sizeof(s_push_sample_indices));
     s_driver_init_result = ESP_OK;
     s_gpio_install_result = ESP_OK;
     s_ledc_timer_result = ESP_OK;
@@ -690,10 +692,15 @@ esp_err_t seismic_buffer_configure(seismic_source_t source, uint32_t sample_rate
     return ESP_OK;
 }
 
-esp_err_t seismic_buffer_push(int64_t timestamp_us, const float channel_uv[SEISMIC_CHANNEL_COUNT])
+esp_err_t seismic_buffer_push_indexed(
+    int64_t timestamp_us,
+    uint64_t source_sample_index,
+    const float channel_uv[SEISMIC_CHANNEL_COUNT]
+)
 {
     if (s_pushes < sizeof(s_push_timestamps) / sizeof(s_push_timestamps[0])) {
         s_push_timestamps[s_pushes] = timestamp_us;
+        s_push_sample_indices[s_pushes] = source_sample_index;
     }
     ++s_pushes;
     s_last_push_ts = timestamp_us;
@@ -810,6 +817,7 @@ static void test_collapsed_periods_are_one_conversion(void)
     assert(status.collapsed_periods == 3U);
     assert(status.jitter.count == 0U);
     assert(s_push_timestamps[0] == sample_t0 + 3 * PERIOD_US);
+    assert(s_push_sample_indices[0] == 3U);
     /* Collapsed periods are PCNT-observed conversions without a pushed frame. */
     assert(status.read_errors == 0U);
     assert(status.consecutive_failures == 0U);

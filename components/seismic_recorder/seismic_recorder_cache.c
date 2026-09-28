@@ -96,10 +96,11 @@ void seismic_recorder_cache_reset(
 }
 
 
-esp_err_t seismic_recorder_cache_append(
+esp_err_t seismic_recorder_cache_append_with_source_indices(
     seismic_recorder_cache_t *cache,
     uint64_t first_source_frame_number,
     const seismic_frame_t *frames,
+    const uint64_t *source_sample_indices,
     size_t frame_count
 )
 {
@@ -163,6 +164,9 @@ esp_err_t seismic_recorder_cache_append(
             &cache->slots[cache->head];
         slot->source_frame_number =
             first_source_frame_number + (uint64_t)index;
+        slot->source_sample_index = source_sample_indices != NULL
+            ? source_sample_indices[index]
+            : first_source_frame_number + (uint64_t)index;
         slot->frame = frames[index];
 
         cache->head++;
@@ -302,7 +306,7 @@ esp_err_t seismic_recorder_cache_copy_dirty_with_source_indices(
         const seismic_recorder_cache_slot_t *slot = &cache->slots[source];
         frames[index] = slot->frame;
         if (source_frame_numbers != NULL) {
-            source_frame_numbers[index] = slot->source_frame_number;
+            source_frame_numbers[index] = slot->source_sample_index;
         }
         if (++source == cache->capacity) {
             source = 0U;
@@ -311,6 +315,23 @@ esp_err_t seismic_recorder_cache_copy_dirty_with_source_indices(
 
     *frame_count = count;
     return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_cache_append(
+    seismic_recorder_cache_t *cache,
+    uint64_t first_source_frame_number,
+    const seismic_frame_t *frames,
+    size_t frame_count
+)
+{
+    return seismic_recorder_cache_append_with_source_indices(
+        cache,
+        first_source_frame_number,
+        frames,
+        NULL,
+        frame_count
+    );
 }
 
 

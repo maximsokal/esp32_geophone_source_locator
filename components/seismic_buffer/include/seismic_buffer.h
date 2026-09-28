@@ -68,6 +68,14 @@ esp_err_t seismic_buffer_push(
 );
 
 
+/* Publish with the acquisition-owned index, independent of ring order. */
+esp_err_t seismic_buffer_push_indexed(
+    int64_t timestamp_us,
+    uint64_t source_sample_index,
+    const float channel_uv[SEISMIC_CHANNEL_COUNT]
+);
+
+
 esp_err_t seismic_buffer_copy_latest(
     seismic_frame_t *frames,
     size_t max_frames,
@@ -91,6 +99,18 @@ esp_err_t seismic_buffer_copy_latest(
 esp_err_t seismic_buffer_copy_since(
     uint64_t *cursor,
     seismic_frame_t *frames,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *dropped_frames,
+    seismic_buffer_info_t *info
+);
+
+
+/* As copy_since, with acquisition sample indexes for every returned frame. */
+esp_err_t seismic_buffer_copy_since_with_source_indices(
+    uint64_t *cursor,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
     size_t max_frames,
     size_t *frame_count,
     uint64_t *dropped_frames,

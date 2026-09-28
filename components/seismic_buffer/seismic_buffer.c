@@ -134,7 +134,7 @@ static void seismic_state_decrement(volatile uint32_t *state)
 #define SEISMIC_SNAPSHOT_RETRIES       4
 #define SEISMIC_MINIMUM_CAPACITY       2048U
 #define SEISMIC_SLOT_BYTES             \
-    (sizeof(seismic_frame_t) + sizeof(uint64_t) + sizeof(uint32_t))
+    (sizeof(seismic_frame_t) + (2U * sizeof(uint64_t)) + sizeof(uint32_t))
 #define SEISMIC_CONFIGURING            (1U << 31)
 #define SEISMIC_ACTIVE_MASK            (SEISMIC_CONFIGURING - 1U)
 
@@ -156,10 +156,11 @@ typedef struct
 static portMUX_TYPE s_metadata_lock =
     portMUX_INITIALIZER_UNLOCKED;
 
-/* One PSRAM allocation: frame payloads, 64-bit frame tags, then sequences. */
+/* One PSRAM allocation: frames, ring tags, source indexes, then sequences. */
 static void *s_storage = NULL;
 static seismic_frame_t *s_frames = NULL;
 static uint64_t *s_frame_numbers = NULL;
+static uint64_t *s_source_sample_indices = NULL;
 static volatile uint32_t *s_sequences = NULL;
 static volatile uint32_t s_capacity = 0;
 static volatile uint32_t s_operation_state = 0;
@@ -274,7 +275,8 @@ static void seismic_buffer_set_storage(void *storage, size_t capacity)
     s_storage = storage;
     s_frames = (seismic_frame_t *)base;
     s_frame_numbers = (uint64_t *)(base + frames_bytes);
-    s_sequences = (volatile uint32_t *)(base + frames_bytes + numbers_bytes);
+    s_source_sample_indices = (uint64_t *)(base + frames_bytes + numbers_bytes);
+    s_sequences = (volatile uint32_t *)(base + frames_bytes + 2U * numbers_bytes);
     seismic_state_store(&s_capacity, (uint32_t)capacity);
 }
 
@@ -287,6 +289,7 @@ static void seismic_buffer_clear_storage(void)
     s_storage = NULL;
     s_frames = NULL;
     s_frame_numbers = NULL;
+    s_source_sample_indices = NULL;
     s_sequences = NULL;
     seismic_state_store(&s_capacity, 0U);
 }
@@ -355,6 +358,7 @@ static void seismic_buffer_publish_info(
 static void seismic_buffer_write_slot(
     size_t slot_index,
     uint64_t frame_number,
+    uint64_t source_sample_index,
     int64_t timestamp_us,
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
 )
@@ -379,6 +383,7 @@ static void seismic_buffer_write_slot(
 
     s_frame_numbers[slot_index] =
         frame_number;
+    s_source_sample_indices[slot_index] = source_sample_index;
 
     s_frames[slot_index].timestamp_us =
         timestamp_us;
@@ -405,7 +410,8 @@ static void seismic_buffer_write_slot(
 static bool seismic_buffer_read_slot(
     size_t slot_index,
     uint64_t expected_frame_number,
-    seismic_frame_t *frame
+    seismic_frame_t *frame,
+    uint64_t *source_sample_index
 )
 {
     for (
@@ -424,6 +430,8 @@ static bool seismic_buffer_read_slot(
 
         const uint64_t frame_number =
             s_frame_numbers[slot_index];
+        const uint64_t candidate_source_sample_index =
+            s_source_sample_indices[slot_index];
 
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
         seismic_buffer_test_after_frame_tag(slot_index);
@@ -444,6 +452,9 @@ static bool seismic_buffer_read_slot(
         ) {
             *frame =
                 candidate;
+            if (source_sample_index != NULL) {
+                *source_sample_index = candidate_source_sample_index;
+            }
 
             return true;
         }
@@ -571,8 +582,10 @@ done:
 }
 
 
-esp_err_t seismic_buffer_push(
+static esp_err_t seismic_buffer_push_impl(
     int64_t timestamp_us,
+    uint64_t source_sample_index,
+    bool has_source_sample_index,
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
 )
 {
@@ -622,6 +635,9 @@ esp_err_t seismic_buffer_push(
 
     frame_number =
         s_total_frames + 1U;
+    if (!has_source_sample_index) {
+        source_sample_index = frame_number - 1U;
+    }
 
     portEXIT_CRITICAL(
         &s_metadata_lock
@@ -630,6 +646,7 @@ esp_err_t seismic_buffer_push(
     seismic_buffer_write_slot(
         write_index,
         frame_number,
+        source_sample_index,
         timestamp_us,
         channel_uv
     );
@@ -665,6 +682,30 @@ esp_err_t seismic_buffer_push(
 }
 
 
+esp_err_t seismic_buffer_push(
+    int64_t timestamp_us,
+    const float channel_uv[SEISMIC_CHANNEL_COUNT]
+)
+{
+    return seismic_buffer_push_impl(timestamp_us, 0U, false, channel_uv);
+}
+
+
+esp_err_t seismic_buffer_push_indexed(
+    int64_t timestamp_us,
+    uint64_t source_sample_index,
+    const float channel_uv[SEISMIC_CHANNEL_COUNT]
+)
+{
+    return seismic_buffer_push_impl(
+        timestamp_us,
+        source_sample_index,
+        true,
+        channel_uv
+    );
+}
+
+
 esp_err_t seismic_buffer_copy_latest(
     seismic_frame_t *frames,
     size_t max_frames,
@@ -690,6 +731,7 @@ esp_err_t seismic_buffer_copy_latest(
     }
     const size_t capacity = seismic_buffer_capacity();
     if (s_frames == NULL || s_frame_numbers == NULL ||
+        s_source_sample_indices == NULL ||
         s_sequences == NULL || capacity == 0U) {
         seismic_buffer_leave_operation();
         return ESP_ERR_INVALID_STATE;
@@ -754,7 +796,8 @@ esp_err_t seismic_buffer_copy_latest(
                 !seismic_buffer_read_slot(
                     source_index,
                     expected_frame_number,
-                    &frames[i]
+                    &frames[i],
+                    NULL
                 )
             ) {
                 consistent =
@@ -780,9 +823,10 @@ esp_err_t seismic_buffer_copy_latest(
 }
 
 
-esp_err_t seismic_buffer_copy_since(
+esp_err_t seismic_buffer_copy_since_with_source_indices(
     uint64_t *cursor,
     seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
     size_t max_frames,
     size_t *frame_count,
     uint64_t *dropped_frames,
@@ -812,6 +856,7 @@ esp_err_t seismic_buffer_copy_since(
     }
     const size_t capacity = seismic_buffer_capacity();
     if (s_frames == NULL || s_frame_numbers == NULL ||
+        s_source_sample_indices == NULL ||
         s_sequences == NULL || capacity == 0U) {
         seismic_buffer_leave_operation();
         return ESP_ERR_INVALID_STATE;
@@ -880,7 +925,10 @@ esp_err_t seismic_buffer_copy_since(
             if (!seismic_buffer_read_slot(
                     source_index,
                     expected_frame_number,
-                    &frames[i]
+                    &frames[i],
+                    source_sample_indices != NULL
+                        ? &source_sample_indices[i]
+                        : NULL
                 )) {
                 consistent = false;
                 break;
@@ -903,6 +951,27 @@ esp_err_t seismic_buffer_copy_since(
 
     seismic_buffer_leave_operation();
     return result;
+}
+
+
+esp_err_t seismic_buffer_copy_since(
+    uint64_t *cursor,
+    seismic_frame_t *frames,
+    size_t max_frames,
+    size_t *frame_count,
+    uint64_t *dropped_frames,
+    seismic_buffer_info_t *info
+)
+{
+    return seismic_buffer_copy_since_with_source_indices(
+        cursor,
+        frames,
+        NULL,
+        max_frames,
+        frame_count,
+        dropped_frames,
+        info
+    );
 }
 
 

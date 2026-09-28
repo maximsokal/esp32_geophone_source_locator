@@ -287,8 +287,7 @@ esp_err_t seismic_recorder_samples_encode_v2_block(
     if (
         payload_size > SIZE_MAX - SEISMIC_RECORDER_V2_BLOCK_HEADER_BYTES ||
         buffer_capacity < SEISMIC_RECORDER_V2_BLOCK_HEADER_BYTES + payload_size ||
-        frames[0].timestamp_us < 0 ||
-        sample_indices[0] == 0U
+        frames[0].timestamp_us < 0
     ) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -561,7 +560,6 @@ static esp_err_t seismic_recorder_samples_reader_load_block(
 
     uint64_t block_last_timestamp = 0U;
     if (
-        block.first_sample_index == 0U ||
         block.first_timestamp_us > (uint64_t)INT64_MAX ||
         !seismic_recorder_samples_timestamp_at(
             block.first_timestamp_us,
@@ -1021,7 +1019,6 @@ esp_err_t seismic_recorder_samples_recover_file(
             block.frame_count == 0U ||
             block.frame_count > SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES ||
             (block.flags & ~SEISMIC_RECORDER_V2_BLOCK_FLAG_GAP_BEFORE) != 0U ||
-            block.first_sample_index == 0U ||
             block.first_timestamp_us > (uint64_t)INT64_MAX
         ) {
             return ESP_ERR_INVALID_RESPONSE;

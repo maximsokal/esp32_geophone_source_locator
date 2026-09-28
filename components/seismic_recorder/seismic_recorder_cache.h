@@ -11,6 +11,7 @@
 typedef struct
 {
     uint64_t source_frame_number;
+    uint64_t source_sample_index;
     seismic_frame_t frame;
 
 } seismic_recorder_cache_slot_t;
@@ -59,6 +60,15 @@ esp_err_t seismic_recorder_cache_append(
     seismic_recorder_cache_t *cache,
     uint64_t first_source_frame_number,
     const seismic_frame_t *frames,
+    size_t frame_count
+);
+
+
+esp_err_t seismic_recorder_cache_append_with_source_indices(
+    seismic_recorder_cache_t *cache,
+    uint64_t first_source_frame_number,
+    const seismic_frame_t *frames,
+    const uint64_t *source_sample_indices,
     size_t frame_count
 );
 

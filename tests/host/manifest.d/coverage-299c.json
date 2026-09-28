@@ -24,11 +24,14 @@
     {
       "name": "seismic_recorder_fs_v2_writer",
       "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
         "components/object_format/object_format.c",
         "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
         "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
       ],
       "include_dirs": [
+        "components/seismic_buffer/tests/stubs",
         "components/seismic_recorder/tests/stubs",
         "components/seismic_recorder",
         "components/seismic_recorder/include",
@@ -38,6 +41,7 @@
         "components/object_format/include",
         "components/storage_manager/include"
       ],
+      "defines": ["SEISMIC_RECORDER_GAP_PIPELINE_TEST"],
       "libraries": ["m"]
     }
   ]

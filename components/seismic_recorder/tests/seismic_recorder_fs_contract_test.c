@@ -26,6 +26,7 @@
 #include "seismic_buffer.h"
 #include "object_store.h"
 #include "storage_manager.h"
+#include "seismic_recorder_cache.h"
 
 /* The embedded libc declares these through its POSIX compatibility headers. */
 int fileno(FILE *stream);
@@ -642,6 +643,292 @@ static esp_err_t test_file_read_at(
             ? ESP_OK
             : ESP_ERR_INVALID_RESPONSE;
 }
+
+
+#if defined(SEISMIC_RECORDER_GAP_PIPELINE_TEST)
+static void publish_synthetic_samples(
+    uint64_t first,
+    uint64_t end_exclusive,
+    bool include_three_sample_gap
+)
+{
+    const float channels[SEISMIC_CHANNEL_COUNT] = {1.0f, 2.0f, 3.0f, 4.0f};
+    for (uint64_t index = first; index < end_exclusive; ++index) {
+        if (include_three_sample_gap && index >= 100U && index <= 102U) {
+            continue;
+        }
+        assert(seismic_buffer_push_indexed(
+            (int64_t)index * 2000LL,
+            index,
+            channels
+        ) == ESP_OK);
+    }
+}
+
+
+static size_t copy_ring_into_cache(
+    uint64_t *cursor,
+    seismic_recorder_cache_t *cache,
+    seismic_frame_t *frames,
+    uint64_t *sample_indices,
+    size_t max_frames,
+    uint64_t *dropped_out
+)
+{
+    size_t frame_count = 0U;
+    uint64_t dropped = 0U;
+    seismic_buffer_info_t info = {0};
+    assert(seismic_buffer_copy_since_with_source_indices(
+        cursor,
+        frames,
+        sample_indices,
+        max_frames,
+        &frame_count,
+        &dropped,
+        &info
+    ) == ESP_OK);
+    if (frame_count > 0U) {
+        const uint64_t first_ring_frame =
+            *cursor - (uint64_t)frame_count + 1U;
+        assert(seismic_recorder_cache_append_with_source_indices(
+            cache,
+            first_ring_frame,
+            frames,
+            sample_indices,
+            frame_count
+        ) == ESP_OK);
+    }
+    if (dropped_out != NULL) {
+        *dropped_out = dropped;
+    }
+    return frame_count;
+}
+
+
+static size_t persist_cache_batch(
+    FILE *samples,
+    seismic_recorder_cache_t *cache,
+    seismic_frame_t *frames,
+    uint64_t *sample_indices,
+    size_t max_frames
+)
+{
+    size_t total_written = 0U;
+    for (;;) {
+        size_t frame_count = 0U;
+        uint64_t first_session_frame = 0U;
+        assert(seismic_recorder_cache_copy_dirty_with_source_indices(
+            cache,
+            frames,
+            sample_indices,
+            max_frames,
+            &frame_count,
+            &first_session_frame
+        ) == ESP_OK);
+        if (frame_count == 0U) {
+            break;
+        }
+
+        size_t frames_written = 0U;
+        assert(test_fs_write_frames_with_source_indices(
+            samples,
+            frames,
+            sample_indices,
+            frame_count,
+            &frames_written
+        ) == ESP_OK);
+        assert(frames_written == frame_count);
+        uint64_t last_ring_frame = 0U;
+        assert(seismic_recorder_cache_mark_persisted(
+            cache,
+            first_session_frame,
+            frames_written,
+            &last_ring_frame
+        ) == ESP_OK);
+        total_written += frames_written;
+    }
+    return total_written;
+}
+
+
+static void assert_recorded_timestamps_and_gaps(
+    FILE *samples,
+    const char *session_id,
+    uint64_t logical_frames,
+    uint64_t expected_missing,
+    uint64_t overflow_cutoff
+)
+{
+    assert(seismic_recorder_fs_close(samples) == ESP_OK);
+    char path[256];
+    const int path_size = snprintf(
+        path,
+        sizeof(path),
+        STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/%s/samples.bin",
+        session_id
+    );
+    assert(path_size > 0 && (size_t)path_size < sizeof(path));
+    FILE *reader_file = fopen(path, "rb");
+    assert(reader_file != NULL);
+    assert(fseek(reader_file, 0L, SEEK_END) == 0);
+    const long file_size = ftell(reader_file);
+    assert(file_size > 0L);
+
+    seismic_recorder_session_summary_t summary = {0};
+    summary.sample_rate_hz = 500U;
+    summary.channel_count = SEISMIC_CHANNEL_COUNT;
+    summary.format_version = SEISMIC_RECORDER_BINARY_VERSION_V2;
+    summary.samples_written = logical_frames;
+    summary.complete = true;
+    summary.recovered = true;
+    seismic_recorder_samples_reader_t reader;
+    const esp_err_t open_err = seismic_recorder_samples_reader_open(
+        test_file_read_at,
+        reader_file,
+        (uint64_t)file_size,
+        &summary,
+        &reader
+    );
+    assert(open_err == ESP_OK);
+
+    uint64_t logical_position = 0U;
+    unsigned gap_blocks = 0U;
+    while (logical_position < logical_frames) {
+        seismic_frame_t decoded[SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES] = {0};
+        size_t decoded_count = 0U;
+        uint64_t first_index = 0U;
+        bool gap_before = false;
+        assert(seismic_recorder_samples_reader_next(
+            test_file_read_at,
+            reader_file,
+            &reader,
+            decoded,
+            SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES,
+            &decoded_count,
+            &first_index,
+            &gap_before
+        ) == ESP_OK);
+        assert(decoded_count > 0U);
+        if (gap_before) {
+            ++gap_blocks;
+        }
+        for (size_t index = 0U; index < decoded_count; ++index) {
+            const uint64_t source_index = first_index + (uint64_t)index;
+            assert(decoded[index].timestamp_us == (int64_t)source_index * 2000LL);
+            if (overflow_cutoff != UINT64_MAX && logical_position >= overflow_cutoff) {
+                assert(source_index == logical_position + expected_missing);
+            }
+            else if (overflow_cutoff != UINT64_MAX) {
+                assert(source_index == logical_position);
+            }
+            if (expected_missing == 3U && logical_position >= 100U) {
+                assert(source_index == logical_position + 3U);
+            }
+            ++logical_position;
+        }
+    }
+    assert(reader.has_gaps == (expected_missing > 0U));
+    assert(reader.missing_sample_count == expected_missing);
+    assert(gap_blocks == 1U);
+    assert(seismic_recorder_samples_reader_finish(
+        test_file_read_at,
+        reader_file,
+        &reader
+    ) == ESP_OK);
+    assert(fclose(reader_file) == 0);
+}
+
+
+static void test_acquisition_gap_survives_ring_cache_v2_reader(void)
+{
+    remove_layout();
+    make_layout();
+    assert(seismic_buffer_init() == ESP_OK);
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples = NULL;
+    uint16_t version = 0U;
+    assert(test_fs_create_ad7606_session(session, &samples, &version) == ESP_OK);
+    assert(version == SEISMIC_RECORDER_BINARY_VERSION_V2);
+
+    publish_synthetic_samples(0U, 200U, true);
+    seismic_recorder_cache_slot_t slots[256];
+    seismic_recorder_cache_t cache;
+    assert(seismic_recorder_cache_init(&cache, slots, 256U) == ESP_OK);
+    seismic_frame_t frames[256] = {0};
+    uint64_t sample_indices[256] = {0};
+    uint64_t cursor = 0U;
+    uint64_t dropped = UINT64_MAX;
+    const size_t count = copy_ring_into_cache(
+        &cursor, &cache, frames, sample_indices, 256U, &dropped
+    );
+    assert(count == 197U && dropped == 0U);
+    assert(persist_cache_batch(samples, &cache, frames, sample_indices, 256U) == 197U);
+    assert_recorded_timestamps_and_gaps(samples, session, 197U, 3U, UINT64_MAX);
+    remove_layout();
+}
+
+
+static void test_ring_overflow_survives_as_recorded_gap(void)
+{
+    remove_layout();
+    make_layout();
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples = NULL;
+    uint16_t version = 0U;
+    assert(test_fs_create_ad7606_session(session, &samples, &version) == ESP_OK);
+
+    seismic_recorder_cache_slot_t slots[2200];
+    seismic_recorder_cache_t cache;
+    assert(seismic_recorder_cache_init(&cache, slots, 2200U) == ESP_OK);
+    seismic_frame_t frames[SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES] = {0};
+    uint64_t sample_indices[SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES] = {0};
+    uint64_t cursor = 0U;
+    publish_synthetic_samples(0U, 100U, false);
+    assert(copy_ring_into_cache(
+        &cursor, &cache, frames, sample_indices,
+        SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES, NULL
+    ) == 100U);
+    assert(persist_cache_batch(
+        samples, &cache, frames, sample_indices,
+        SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES
+    ) == 100U);
+
+    const uint64_t capacity = seismic_buffer_capacity();
+    assert(capacity == 2048U);
+    publish_synthetic_samples(100U, 2200U, false);
+    uint64_t dropped = 0U;
+    const size_t retained = copy_ring_into_cache(
+        &cursor,
+        &cache,
+        frames,
+        sample_indices,
+        SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES,
+        &dropped
+    );
+    assert(dropped == 52U && retained == SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES);
+    while (cursor < 2200U) {
+        const size_t count = copy_ring_into_cache(
+            &cursor,
+            &cache,
+            frames,
+            sample_indices,
+            SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES,
+            NULL
+        );
+        assert(count > 0U);
+    }
+    assert(persist_cache_batch(
+        samples, &cache, frames, sample_indices,
+        SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES
+    ) == 2048U);
+    assert_recorded_timestamps_and_gaps(samples, session, 2148U, 52U, 100U);
+    remove_layout();
+}
+#endif
 
 
 static void test_ad7606_session_writes_v2_blocks_and_source_gaps(void)
@@ -1452,5 +1739,9 @@ int main(void)
     test_create_session_aborts_on_session_scan_error();
     test_listing_missing_and_malformed_metadata_is_safe();
     test_listing_propagates_directory_errors();
+#if defined(SEISMIC_RECORDER_GAP_PIPELINE_TEST)
+    test_acquisition_gap_survives_ring_cache_v2_reader();
+    test_ring_overflow_survives_as_recorded_gap();
+#endif
     return 0;
 }

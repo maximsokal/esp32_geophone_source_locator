@@ -705,9 +705,10 @@ static void seismic_recorder_task(void *argument)
             size_t frame_count = 0U;
             uint64_t dropped = 0U;
 
-            const esp_err_t read_err = seismic_buffer_copy_since(
+            const esp_err_t read_err = seismic_buffer_copy_since_with_source_indices(
                 &copy_cursor,
                 s_batch,
+                s_batch_sample_indices,
                 SEISMIC_RECORDER_BATCH_FRAMES,
                 &frame_count,
                 &dropped,
@@ -769,10 +770,11 @@ static void seismic_recorder_task(void *argument)
             esp_err_t append_err = ESP_OK;
             if (allowed_count > 0U) {
                 seismic_recorder_lock();
-                append_err = seismic_recorder_cache_append(
+                append_err = seismic_recorder_cache_append_with_source_indices(
                     &s_cache,
                     first_frame,
                     s_batch,
+                    s_batch_sample_indices,
                     allowed_count
                 );
                 if (append_err == ESP_OK && s_snapshot.running) {
