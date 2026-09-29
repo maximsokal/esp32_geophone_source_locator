@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "localization.h"
+#include "localization_velocity_bounds.h"
 
 /*
  * Numerical helpers shared by the velocity-free backends (TDCAS, PSAFUVS,
@@ -121,6 +122,20 @@ bool vf_fit_travel_times(
     double prior_slowness,
     double prior_sigma,
     vf_time_fit_t *fit
+);
+
+/* Free fit, clamped to the range by a fixed-slowness refit when necessary.
+ * NULL/unset bounds preserve the free-fit then fallback-speed behavior. */
+bool vf_fit_travel_times_bounded(
+    const double *arrival_s,
+    const double *path_m,
+    const double *weight,
+    size_t count,
+    double sigma_t_s,
+    double fallback_velocity_mps,
+    const localization_velocity_bounds_t *bounds,
+    vf_time_fit_t *fit,
+    bool *at_bound_out
 );
 
 

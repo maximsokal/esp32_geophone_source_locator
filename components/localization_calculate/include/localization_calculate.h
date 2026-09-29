@@ -197,6 +197,14 @@ typedef struct
     size_t methods_skipped_for_time;
     localization_recommendation_t recommendation;
 
+    /* In-memory velocity statuses; S4 adds run-record persistence. */
+    localization_velocity_status_t tdcas_velocity_status;
+    localization_velocity_status_t psafuvs_velocity_status;
+    localization_velocity_status_t suea_velocity_status;
+    localization_velocity_status_t tdcas_scan_velocity_status;
+    localization_velocity_status_t psafuvs_scan_velocity_status;
+    localization_velocity_status_t suea_scan_velocity_status;
+
 } localization_calculate_summary_t;
 
 

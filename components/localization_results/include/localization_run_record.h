@@ -33,8 +33,22 @@
  * as LOCALIZATION_FAILURE_CLASS_NONE.
  */
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 4U
+#define LOCALIZATION_RUN_SCHEMA_VERSION 5U
+/* Schema v4: producer failure class, no velocity range (MAX-301 adds it in v5). */
+#define LOCALIZATION_RUN_SCHEMA_VERSION_V4 4U
 #define LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY 3U
+
+#define LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN        0U
+#define LOCALIZATION_RUN_VELOCITY_SOURCE_PRESET         1U
+#define LOCALIZATION_RUN_VELOCITY_SOURCE_USER           2U
+#define LOCALIZATION_RUN_VELOCITY_SOURCE_SCALAR_DERIVED 3U
+#define LOCALIZATION_RUN_VELOCITY_SOURCE_MEASURED       4U
+
+#define LOCALIZATION_RUN_VELOCITY_STATUS_UNKNOWN        0U
+#define LOCALIZATION_RUN_VELOCITY_STATUS_NOT_APPLICABLE 1U
+#define LOCALIZATION_RUN_VELOCITY_STATUS_OK             2U
+#define LOCALIZATION_RUN_VELOCITY_STATUS_AT_BOUND       3U
+#define LOCALIZATION_RUN_VELOCITY_STATUS_INCONSISTENT   4U
 
 #define LOCALIZATION_RUN_OBJECT_ID_SIZE   16U
 #define LOCALIZATION_RUN_SESSION_ID_SIZE  16U
@@ -158,6 +172,23 @@ typedef struct
     double estimated_p_velocity_mps;
     double estimated_s_velocity_mps;
 
+    /*
+     * MAX-301 (schema v5): the propagation-velocity range the run used,
+     * where it came from, and the method's verdict on it. Plain POD so this
+     * component does not depend on localization_calculate. Values mirror
+     * localization_velocity_range_source_t / localization_velocity_status_t:
+     *   source: 0 UNKNOWN, 1 PRESET, 2 USER, 3 SCALAR_DERIVED, 4 MEASURED
+     *   status: 0 UNKNOWN, 1 NOT_APPLICABLE, 2 OK, 3 AT_BOUND, 4 INCONSISTENT
+     * All zero (UNKNOWN, no range) in records read from schema v3/v4.
+     * vp_vs_min/max are 0 when no Vp/Vs bound was set.
+     */
+    float velocity_range_min_mps;
+    float velocity_range_max_mps;
+    float velocity_range_vp_vs_min;
+    float velocity_range_vp_vs_max;
+    uint8_t velocity_range_source;
+    uint8_t velocity_status;
+
     /* Optional; serialized only for a solved run with credible_level > 0. */
     localization_run_uncertainty_t uncertainty;
 
@@ -209,3 +240,17 @@ esp_err_t localization_run_record_from_json(
     const char *json,
     localization_run_record_t *record
 );
+
+/*
+ * MAX-301 decision C: may this run be picked as "the" result? A solved run
+ * whose method found the arrivals inconsistent with the velocity range is
+ * kept and listed with a warning, but never selected as primary. Every
+ * primary-result picker (TFT, WebUI, report) applies the same rule.
+ */
+static inline bool localization_run_record_is_primary_candidate(
+    const localization_run_record_t *record
+)
+{
+    return record != NULL && record->solved &&
+        record->velocity_status != LOCALIZATION_RUN_VELOCITY_STATUS_INCONSISTENT;
+}

@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "localization.h"
+#include "localization_velocity_bounds.h"
 
 /*
  * SUEA -- AE/MS source location for Structures containing Unknown Empty
@@ -215,6 +216,9 @@ typedef struct
 
     localization_candidate_filter_t candidate_filter;
 
+    /* NULL/unset preserves velocity-free and Gaussian-prior behavior. */
+    const localization_velocity_bounds_t *velocity_bounds;
+
 } localization_suea_config_t;
 
 
@@ -254,6 +258,7 @@ typedef struct
     size_t empty_cell_count;
     double cell_m_used;
     size_t candidates_evaluated;
+    localization_velocity_status_t velocity_status;
 
 } localization_suea_result_t;
 

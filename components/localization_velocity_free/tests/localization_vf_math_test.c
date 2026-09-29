@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <math.h>
+#include <string.h>
 #include <stdio.h>
 
 #include "localization_vf_math.h"
@@ -175,6 +176,41 @@ static void test_travel_time_fit(void)
 }
 
 
+static void test_bounded_travel_time_fit_and_unset_compatibility(void)
+{
+    const double lengths[4] = { 1.0, 2.0, 2.5, 4.0 };
+    double arrivals[4];
+    for (size_t i = 0U; i < 4U; ++i) arrivals[i] = 0.010 + lengths[i] / 250.0;
+
+    vf_time_fit_t legacy;
+    vf_time_fit_t unset;
+    assert(vf_fit_travel_times(arrivals, lengths, NULL, 4U, 1.0e-4, 0.0, -1.0, &legacy));
+    localization_velocity_bounds_t bounds = { 0 };
+    bool at_bound = true;
+    assert(vf_fit_travel_times_bounded(
+        arrivals, lengths, NULL, 4U, 1.0e-4, 237.0, &bounds, &unset, &at_bound
+    ));
+    /* Compatibility: unset bounds keep the legacy free-fit bytes. */
+    assert(!at_bound && memcmp(&legacy, &unset, sizeof(legacy)) == 0);
+
+    bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 300.0f, .v_max_mps = 400.0f, .set = true,
+    };
+    assert(vf_fit_travel_times_bounded(
+        arrivals, lengths, NULL, 4U, 1.0e-4, 350.0, &bounds, &unset, &at_bound
+    ));
+    assert(at_bound && fabs(1.0 / unset.slowness_s_per_m - 300.0) < 1.0e-12);
+    assert(unset.rms_s > 0.0);
+
+    bounds.v_min_mps = 250.0f;
+    bounds.v_max_mps = 250.0f;
+    assert(vf_fit_travel_times_bounded(
+        arrivals, lengths, NULL, 4U, 1.0e-4, 237.0, &bounds, &unset, &at_bound
+    ));
+    assert(at_bound && fabs(1.0 / unset.slowness_s_per_m - 250.0) < 1.0e-12);
+}
+
+
 int main(void)
 {
     test_least_squares_exact_and_rank_deficient();
@@ -182,6 +218,7 @@ int main(void)
     test_plane_frame_round_trip_and_orientation();
     test_logistic_fit();
     test_travel_time_fit();
+    test_bounded_travel_time_fit_and_unset_compatibility();
     printf("localization velocity-free math tests passed\n");
     return 0;
 }

@@ -328,6 +328,74 @@ static void test_candidate_filter_can_reject_every_combination(void)
 }
 
 
+static void test_velocity_bounds_planar_and_3d(void)
+{
+    const localization_point3d_t source = { 1.7, 1.1, -1.2 };
+    localization_observation_t observations[8];
+    localization_tdcas_result_t legacy;
+    localization_tdcas_result_t unset;
+    make_observations(SENSORS_3D, 8U, source, 2.0, 237.0, observations);
+    assert(localization_tdcas_solve(observations, 8U, NULL, &legacy) == ESP_OK);
+    localization_tdcas_config_t config = { 0 };
+    localization_velocity_bounds_t bounds = { 0 };
+    config.velocity_bounds = &bounds;
+    assert(localization_tdcas_solve(observations, 8U, &config, &unset) == ESP_OK);
+    /* Compatibility: an unset bounds pointer keeps the legacy result bytes. */
+    assert(memcmp(&legacy, &unset, sizeof(legacy)) == 0);
+
+    bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 234.63f, .v_max_mps = 239.37f, .set = true,
+    };
+    config.timing_uncertainty_us = 20.0;
+    localization_tdcas_result_t narrow;
+    assert(localization_tdcas_solve(observations, 8U, &config, &narrow) == ESP_OK);
+    assert(narrow.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(narrow.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(distance(narrow.position, legacy.position) < 0.01);
+
+    bounds.v_min_mps = 150.0f;
+    bounds.v_max_mps = 600.0f;
+    localization_tdcas_result_t wide;
+    assert(localization_tdcas_solve(observations, 8U, &config, &wide) == ESP_OK);
+    assert(wide.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(wide.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(distance(wide.position, source) < 0.01);
+
+    /* The planar five-sensor minimum is exercised separately. */
+    make_observations(SENSORS_PLANAR, 5U, source, 2.0, 237.0, observations);
+    bounds.v_min_mps = 150.0f;
+    bounds.v_max_mps = 500.0f;
+    localization_tdcas_result_t planar;
+    assert(localization_tdcas_solve(observations, 5U, &config, &planar) == ESP_OK);
+    assert(planar.status == LOCALIZATION_TDCAS_SOLVED && planar.planar_layout);
+    assert(planar.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(distance(planar.position, source) < 0.02);
+
+    bounds.v_min_mps = 237.0f;
+    bounds.v_max_mps = 237.0f;
+    localization_tdcas_result_t fixed;
+    assert(localization_tdcas_solve(observations, 5U, &config, &fixed) == ESP_OK);
+    assert(fixed.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(fixed.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(fabs(fixed.velocity_mps - 237.0) < 1.0e-9);
+
+    make_observations(SENSORS_PLANAR, 5U, source, 2.0, 600.0, observations);
+    localization_tdcas_result_t fixed_mismatch;
+    assert(localization_tdcas_solve(observations, 5U, &config, &fixed_mismatch) == ESP_OK);
+    assert(fixed_mismatch.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+
+    make_observations(SENSORS_3D, 8U, source, 2.0, 600.0, observations);
+    bounds.v_min_mps = 200.0f;
+    bounds.v_max_mps = 400.0f;
+    localization_tdcas_result_t outside;
+    assert(localization_tdcas_solve(observations, 8U, &config, &outside) == ESP_OK);
+    assert(outside.combinations_out_of_range == outside.combinations_valid);
+    assert(outside.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+    /* Picks from a coherent source with no allowed speed are inconsistent. */
+    assert(outside.velocity_status != LOCALIZATION_VELOCITY_STATUS_OK);
+}
+
+
 static void test_degenerate_and_invalid_input(void)
 {
     localization_observation_t observations[9];
@@ -359,6 +427,7 @@ int main(void)
     test_velocity_free_beats_a_misspecified_velocity();
     test_scan_void_ray_filter_removes_detoured_sensor();
     test_candidate_filter_can_reject_every_combination();
+    test_velocity_bounds_planar_and_3d();
     test_degenerate_and_invalid_input();
     printf("localization TDCAS tests passed\n");
     return 0;

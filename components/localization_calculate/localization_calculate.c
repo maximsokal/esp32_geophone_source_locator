@@ -324,6 +324,12 @@ esp_err_t localization_calculate_run(
     }
 
     memset(summary_out, 0, sizeof(*summary_out));
+    summary_out->tdcas_velocity_status = LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    summary_out->psafuvs_velocity_status = LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    summary_out->suea_velocity_status = LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    summary_out->tdcas_scan_velocity_status = LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    summary_out->psafuvs_scan_velocity_status = LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    summary_out->suea_scan_velocity_status = LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
 
     if (
         !isfinite(config->propagation_speed_mps) ||
@@ -560,9 +566,10 @@ esp_err_t localization_calculate_run(
         /* 3 sigma of pick noise plus one sample of quantization. */
         const double tolerance_s =
             3.0 * config->timing_uncertainty_us / 1.0e6 + 1.0 / (double)sample_rate_hz;
+        /* MAX-301 S3: the gate's slowest speed comes from the range (see policy.h). */
         const uint32_t consistent_mask = localization_calculate_consistent_pick_mask(
             arrival_s, gate_positions, OBJECT_STORE_POD_COUNT, accepted_mask,
-            config->propagation_speed_mps, config->propagation_speed_uncertainty_mps,
+            localization_calculate_gate_min_speed_mps(config), 0.0,
             tolerance_s
         );
         for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
@@ -687,6 +694,7 @@ esp_err_t localization_calculate_run(
         .material = config->material,
         .propagation_speed_mps = config->propagation_speed_mps,
         .propagation_speed_uncertainty_mps = config->propagation_speed_uncertainty_mps,
+        .velocity_range = &config->velocity_range,
     };
 
     /* Twelve unconstrained methods (fused below) plus up to eight
@@ -938,17 +946,21 @@ esp_err_t localization_calculate_run(
 
     /* TDCAS: needs 6 picks (5 on a planar array); with fewer the record
      * says so rather than inventing a position. */
+    const localization_tdcas_config_t tdcas_config = {
+        .velocity_bounds = &config->velocity_range.bounds,
+        .timing_uncertainty_us = config->timing_uncertainty_us,
+    };
     localization_tdcas_result_t *tdcas_result = &workspace->tdcas;
     esp_err_t tdcas_err = ESP_ERR_INVALID_ARG;
     if (localization_calculate_budget_begin(&budget, "tdcas", true) && p_observation_count > 0U) {
-        tdcas_err = localization_tdcas_solve(p_observations, p_observation_count, NULL, tdcas_result);
+        tdcas_err = localization_tdcas_solve(p_observations, p_observation_count, &tdcas_config, tdcas_result);
         summary_out->methods_attempted++;
     }
     localization_calculate_tdcas_to_run_record(
         &context, tdcas_err == ESP_OK ? tdcas_result : NULL,
         traveltime_used_mask, traveltime_rejected_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
-        &records[record_count]
+        &records[record_count], &summary_out->tdcas_velocity_status
     );
     if (p_observation_count > 0U && tdcas_err != ESP_OK) {
         localization_calculate_set_rejection(
@@ -1000,7 +1012,9 @@ esp_err_t localization_calculate_run(
     if (config->s_pick_enabled) {
         psafuvs_not_attempted = "no channel has an accepted S pick after its P pick";
     }
-    const localization_psafuvs_config_t psafuvs_config = localization_psafuvs_default_config();
+    localization_psafuvs_config_t psafuvs_config = localization_psafuvs_default_config();
+    psafuvs_config.velocity_bounds = &config->velocity_range.bounds;
+    psafuvs_config.timing_uncertainty_us = config->timing_uncertainty_us;
     localization_psafuvs_result_t *psafuvs_result = &workspace->psafuvs;
     esp_err_t psafuvs_err = ESP_ERR_INVALID_STATE;
     if (ps_observation_count > 0U) {
@@ -1014,7 +1028,7 @@ esp_err_t localization_calculate_run(
         LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
         ps_used_mask, (~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
-        &records[record_count]
+        &records[record_count], &summary_out->psafuvs_velocity_status
     );
     if (ps_observation_count > 0U && psafuvs_err != ESP_OK) {
         localization_calculate_set_rejection(
@@ -1055,6 +1069,7 @@ esp_err_t localization_calculate_run(
         .prior_velocity_mps = config->propagation_speed_mps,
         .prior_velocity_sigma_mps = config->propagation_speed_uncertainty_mps,
         .refine_divisor = LOCALIZATION_CALCULATE_REFINE_DIVISOR,
+        .velocity_bounds = &config->velocity_range.bounds,
     };
     localization_suea_result_t *suea_result = &workspace->suea;
     esp_err_t suea_err = ESP_ERR_INVALID_STATE;
@@ -1071,7 +1086,7 @@ esp_err_t localization_calculate_run(
         &context, suea_err == ESP_OK ? suea_result : NULL,
         traveltime_used_mask, traveltime_rejected_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
-        &records[record_count]
+        &records[record_count], &summary_out->suea_velocity_status
     );
     if (suea_grid_err != ESP_OK) {
         localization_calculate_set_rejection(
@@ -1516,6 +1531,8 @@ esp_err_t localization_calculate_run(
                     .clear = localization_calculate_scan_ray_clear,
                     .context = (void *)&ray_context,
                 },
+                .velocity_bounds = &config->velocity_range.bounds,
+                .timing_uncertainty_us = config->timing_uncertainty_us,
             };
             constrained_tdcas_err = localization_tdcas_solve(
                 p_observations, p_observation_count, &constrained_config, constrained_tdcas
@@ -1530,7 +1547,7 @@ esp_err_t localization_calculate_run(
             traveltime_used_mask & ~tdcas_obstructed_channels,
             traveltime_rejected_mask | tdcas_obstructed_channels,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
-            &records[record_count]
+            &records[record_count], &summary_out->tdcas_scan_velocity_status
         );
         localization_calculate_apply_redundancy(
             &records[record_count],
@@ -1557,6 +1574,8 @@ esp_err_t localization_calculate_run(
             constrained_config.candidate_filter.context = &occupancy;
             constrained_config.ray_filter.clear = localization_calculate_scan_ray_clear;
             constrained_config.ray_filter.context = (void *)&ray_context;
+            constrained_config.velocity_bounds = &config->velocity_range.bounds;
+            constrained_config.timing_uncertainty_us = config->timing_uncertainty_us;
             constrained_psafuvs_err = localization_psafuvs_solve(
                 ps_observations, ps_observation_count, &constrained_config, constrained_psafuvs
             );
@@ -1572,7 +1591,7 @@ esp_err_t localization_calculate_run(
             ps_used_mask & ~psafuvs_obstructed_channels,
             ((~ps_used_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK) | psafuvs_obstructed_channels,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
-            &records[record_count]
+            &records[record_count], &summary_out->psafuvs_scan_velocity_status
         );
         localization_calculate_apply_redundancy(
             &records[record_count],
@@ -1606,7 +1625,7 @@ esp_err_t localization_calculate_run(
                 ? (~scan_suea->pick_mask_used) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK
                 : traveltime_rejected_mask,
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
-            &records[record_count]
+            &records[record_count], &summary_out->suea_scan_velocity_status
         );
         localization_calculate_apply_redundancy(
             &records[record_count],

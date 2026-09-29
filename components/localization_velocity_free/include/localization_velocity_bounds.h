@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef struct
 {
@@ -11,6 +12,15 @@ typedef struct
     float vp_vs_max;
     bool set;
 } localization_velocity_bounds_t;
+
+typedef enum
+{
+    LOCALIZATION_VELOCITY_STATUS_UNKNOWN = 0,
+    LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE,
+    LOCALIZATION_VELOCITY_STATUS_OK,
+    LOCALIZATION_VELOCITY_STATUS_AT_BOUND,
+    LOCALIZATION_VELOCITY_STATUS_INCONSISTENT
+} localization_velocity_status_t;
 
 typedef enum
 {

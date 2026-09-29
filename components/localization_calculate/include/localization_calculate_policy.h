@@ -154,6 +154,9 @@ typedef struct
     const char *material;
     double propagation_speed_mps;
     double propagation_speed_uncertainty_mps;
+    /* MAX-301: the normalized range copied into every run record (v5).
+     * NULL (older callers, tests) records no range. */
+    const localization_velocity_range_t *velocity_range;
 
 } localization_calculate_run_context_t;
 
@@ -305,6 +308,18 @@ uint32_t localization_calculate_consistent_pick_mask(
 );
 
 /*
+ * MAX-301 S3: the slowest plausible speed used by the consistency gate.
+ * An operator or preset range (source USER or PRESET) supplies it as
+ * v_min. A range derived from the legacy scalar (SCALAR_DERIVED), an
+ * unset range and an unknown source keep the pre-range rule
+ * speed - uncertainty (or speed when that is not positive), bit for bit.
+ * The gate never infers an upper speed bound from a small arrival
+ * difference: a source equidistant from two sensors gives dt = 0 at any
+ * speed, so fast-arrival inconsistency is left to the solvers' status.
+ */
+double localization_calculate_gate_min_speed_mps(const localization_calculate_config_t *config);
+
+/*
  * Minimum normalized correlation for a cross-correlation delay to replace
  * the per-channel pick difference (MAX-209). Below it the two windows are
  * not similar enough for the correlation peak to mean "same wavelet".
@@ -369,7 +384,8 @@ void localization_calculate_tdcas_to_run_record(
     uint32_t channel_mask_rejected,
     uint32_t method_version,
     double timing_uncertainty_us,
-    localization_run_record_t *record_out
+    localization_run_record_t *record_out,
+    localization_velocity_status_t *velocity_status_out
 );
 
 void localization_calculate_psafuvs_to_run_record(
@@ -381,7 +397,8 @@ void localization_calculate_psafuvs_to_run_record(
     uint32_t channel_mask_rejected,
     uint32_t method_version,
     double timing_uncertainty_us,
-    localization_run_record_t *record_out
+    localization_run_record_t *record_out,
+    localization_velocity_status_t *velocity_status_out
 );
 
 void localization_calculate_suea_to_run_record(
@@ -391,7 +408,8 @@ void localization_calculate_suea_to_run_record(
     uint32_t channel_mask_rejected,
     uint32_t method_version,
     double timing_uncertainty_us,
-    localization_run_record_t *record_out
+    localization_run_record_t *record_out,
+    localization_velocity_status_t *velocity_status_out
 );
 
 /*

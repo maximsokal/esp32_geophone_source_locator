@@ -184,7 +184,8 @@ def test_velocity_free_methods_run_on_the_same_picks_and_are_fused_once():
     source = orchestrator_source()
     fused_index = source.index("const size_t fused_record_count = record_count;")
     for call in (
-        "localization_tdcas_solve(p_observations, p_observation_count, NULL, tdcas_result)",
+        # MAX-301: TDCAS now receives a config carrying the velocity bounds.
+        "localization_tdcas_solve(p_observations, p_observation_count, &tdcas_config, tdcas_result)",
         "localization_psafuvs_solve(",
         "localization_suea_locate(",
     ):

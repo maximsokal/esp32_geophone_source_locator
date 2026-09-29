@@ -349,6 +349,15 @@ static void fill_common_fields(
     record_out->propagation_speed_mps = context->propagation_speed_mps;
     record_out->propagation_speed_uncertainty_mps = context->propagation_speed_uncertainty_mps;
     record_out->degrees_of_freedom = -1;
+    /* MAX-301 (v5): the range every method of this run used. */
+    const localization_velocity_range_t *range = context->velocity_range;
+    if (range != NULL && range->bounds.set) {
+        record_out->velocity_range_min_mps = range->bounds.v_min_mps;
+        record_out->velocity_range_max_mps = range->bounds.v_max_mps;
+        record_out->velocity_range_vp_vs_min = range->bounds.vp_vs_min;
+        record_out->velocity_range_vp_vs_max = range->bounds.vp_vs_max;
+        record_out->velocity_range_source = (uint8_t)range->source;
+    }
 }
 
 
@@ -742,6 +751,47 @@ uint32_t localization_calculate_consistent_pick_mask(
 }
 
 
+/* The run record stores the range source and velocity status as plain
+ * uint8_t so localization_results needs no calculate dependency (MAX-301). */
+_Static_assert(LOCALIZATION_VELOCITY_RANGE_SOURCE_UNKNOWN == LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN &&
+               LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET == LOCALIZATION_RUN_VELOCITY_SOURCE_PRESET &&
+               LOCALIZATION_VELOCITY_RANGE_SOURCE_USER == LOCALIZATION_RUN_VELOCITY_SOURCE_USER &&
+               LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED ==
+                   LOCALIZATION_RUN_VELOCITY_SOURCE_SCALAR_DERIVED &&
+               LOCALIZATION_VELOCITY_RANGE_SOURCE_MEASURED_RESERVED ==
+                   LOCALIZATION_RUN_VELOCITY_SOURCE_MEASURED,
+               "velocity range source values must match the run record");
+_Static_assert(LOCALIZATION_VELOCITY_STATUS_UNKNOWN == LOCALIZATION_RUN_VELOCITY_STATUS_UNKNOWN &&
+               LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE ==
+                   LOCALIZATION_RUN_VELOCITY_STATUS_NOT_APPLICABLE &&
+               LOCALIZATION_VELOCITY_STATUS_OK == LOCALIZATION_RUN_VELOCITY_STATUS_OK &&
+               LOCALIZATION_VELOCITY_STATUS_AT_BOUND == LOCALIZATION_RUN_VELOCITY_STATUS_AT_BOUND &&
+               LOCALIZATION_VELOCITY_STATUS_INCONSISTENT == LOCALIZATION_RUN_VELOCITY_STATUS_INCONSISTENT,
+               "velocity status values must match the run record");
+
+
+double localization_calculate_gate_min_speed_mps(const localization_calculate_config_t *config)
+{
+    if (config == NULL) return 0.0;
+    const localization_velocity_range_t *range = &config->velocity_range;
+    if (
+        range->bounds.set &&
+        (range->source == LOCALIZATION_VELOCITY_RANGE_SOURCE_USER ||
+         range->source == LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET) &&
+        isfinite(range->bounds.v_min_mps) &&
+        range->bounds.v_min_mps > 0.0f
+    ) {
+        return (double)range->bounds.v_min_mps;
+    }
+    const double speed = config->propagation_speed_mps;
+    const double uncertainty = config->propagation_speed_uncertainty_mps;
+    if (isfinite(uncertainty) && uncertainty > 0.0 && speed - uncertainty > 0.0) {
+        return speed - uncertainty;
+    }
+    return speed;
+}
+
+
 bool localization_calculate_xcorr_relative_delay(
     const float *reference,
     const float *channel,
@@ -819,13 +869,21 @@ void localization_calculate_tdcas_to_run_record(
     uint32_t channel_mask_rejected,
     uint32_t method_version,
     double timing_uncertainty_us,
-    localization_run_record_t *record_out
+    localization_run_record_t *record_out,
+    localization_velocity_status_t *velocity_status_out
 )
 {
+    if (velocity_status_out != NULL) {
+        *velocity_status_out = result != NULL
+            ? result->velocity_status
+            : LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    }
     fill_common_fields(
         context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "tdcas",
         method_version, channel_mask_used, channel_mask_rejected, record_out
     );
+    record_out->velocity_status = (uint8_t)(result != NULL
+        ? result->velocity_status : LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE);
 
     if (result == NULL || result->status != LOCALIZATION_TDCAS_SOLVED) {
         if (result != NULL && result->status == LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS) {
@@ -877,13 +935,21 @@ void localization_calculate_psafuvs_to_run_record(
     uint32_t channel_mask_rejected,
     uint32_t method_version,
     double timing_uncertainty_us,
-    localization_run_record_t *record_out
+    localization_run_record_t *record_out,
+    localization_velocity_status_t *velocity_status_out
 )
 {
+    if (velocity_status_out != NULL) {
+        *velocity_status_out = result != NULL
+            ? result->velocity_status
+            : LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    }
     fill_common_fields(
         context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "psafuvs",
         method_version, channel_mask_used, channel_mask_rejected, record_out
     );
+    record_out->velocity_status = (uint8_t)(result != NULL
+        ? result->velocity_status : LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE);
 
     if (result == NULL || result->status != LOCALIZATION_PSAFUVS_SOLVED) {
         record_out->solved = false;
@@ -945,13 +1011,21 @@ void localization_calculate_suea_to_run_record(
     uint32_t channel_mask_rejected,
     uint32_t method_version,
     double timing_uncertainty_us,
-    localization_run_record_t *record_out
+    localization_run_record_t *record_out,
+    localization_velocity_status_t *velocity_status_out
 )
 {
+    if (velocity_status_out != NULL) {
+        *velocity_status_out = result != NULL
+            ? result->velocity_status
+            : LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE;
+    }
     fill_common_fields(
         context, LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD, "suea",
         method_version, channel_mask_used, channel_mask_rejected, record_out
     );
+    record_out->velocity_status = (uint8_t)(result != NULL
+        ? result->velocity_status : LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE);
 
     if (result == NULL || result->status != LOCALIZATION_SUEA_SOLVED) {
         const bool unreachable_sensor =

@@ -197,6 +197,85 @@ static void test_velocity_free_location_in_homogeneous_medium(void)
 }
 
 
+static void test_velocity_bounds_fixed_range_and_unset_compatibility(void)
+{
+    localization_suea_grid_t grid;
+    make_grid(&grid, (localization_point3d_t) { 0.0, 0.0, 0.0 }, (localization_point3d_t) { 4.0, 4.0, 0.0 }, 0.05);
+    const localization_point3d_t sensors[5] = {
+        { 0.2, 0.2, 0.0 }, { 3.8, 0.3, 0.0 }, { 0.1, 3.7, 0.0 }, { 3.9, 3.9, 0.0 }, { 2.2, 0.1, 0.0 },
+    };
+    const localization_point3d_t source = { 1.37, 2.61, 0.0 };
+    double paths[5];
+    for (size_t i = 0U; i < 5U; ++i) paths[i] = distance(sensors[i], source);
+    localization_suea_pick_t picks[5];
+    make_picks(sensors, paths, 5U, 4.0, 265.0, picks);
+
+    localization_suea_config_t config = default_config();
+    localization_suea_result_t legacy;
+    localization_suea_result_t unset;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &legacy) == ESP_OK);
+    localization_velocity_bounds_t bounds = { 0 };
+    config.velocity_bounds = &bounds;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &unset) == ESP_OK);
+    /* Compatibility: unset bounds preserve the legacy result bytes. */
+    assert(memcmp(&legacy, &unset, sizeof(legacy)) == 0);
+
+    bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 262.35f, .v_max_mps = 267.65f, .set = true,
+    };
+    localization_suea_result_t narrow;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &narrow) == ESP_OK);
+    assert(narrow.status == LOCALIZATION_SUEA_SOLVED);
+    assert(narrow.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK ||
+           narrow.velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND);
+    assert(distance(narrow.best_position, legacy.best_position) < 0.05);
+
+    bounds.v_min_mps = 150.0f;
+    bounds.v_max_mps = 500.0f;
+    localization_suea_result_t wide;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &wide) == ESP_OK);
+    assert(wide.status == LOCALIZATION_SUEA_SOLVED);
+    assert(wide.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(distance(wide.best_position, source) < 0.03);
+
+    /* Fixed bounds use the existing zero-sigma prior path. */
+    bounds.v_min_mps = 265.0f;
+    bounds.v_max_mps = 265.0f;
+    localization_suea_result_t fixed_range;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &fixed_range) == ESP_OK);
+    config.velocity_bounds = NULL;
+    config.prior_velocity_mps = 265.0;
+    config.prior_velocity_sigma_mps = 0.0;
+    localization_suea_result_t fixed_prior;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &fixed_prior) == ESP_OK);
+    assert(fixed_range.status == LOCALIZATION_SUEA_SOLVED && fixed_prior.status == LOCALIZATION_SUEA_SOLVED);
+    assert(fabs(fixed_range.velocity_mps - fixed_prior.velocity_mps) < 1.0e-12);
+    assert(fabs(fixed_range.best_residual_rms_us - fixed_prior.best_residual_rms_us) < 1.0e-9);
+    assert(distance(fixed_range.best_position, fixed_prior.best_position) < 1.0e-12);
+    assert(fixed_range.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+
+    localization_suea_pick_t fixed_mismatch_picks[5];
+    make_picks(sensors, paths, 5U, 4.0, 600.0, fixed_mismatch_picks);
+    localization_suea_config_t fixed_config = default_config();
+    fixed_config.velocity_bounds = &bounds;
+    localization_suea_result_t fixed_mismatch;
+    assert(localization_suea_locate(&grid, fixed_mismatch_picks, 5U, &fixed_config, &fixed_mismatch) == ESP_OK);
+    assert(fixed_mismatch.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+
+    bounds.v_min_mps = 1800.0f;
+    bounds.v_max_mps = 2400.0f;
+    config.velocity_bounds = &bounds;
+    config.prior_velocity_mps = 0.0;
+    config.prior_velocity_sigma_mps = 0.0;
+    localization_suea_result_t contradictory;
+    assert(localization_suea_locate(&grid, picks, 5U, &config, &contradictory) == ESP_OK);
+    assert(contradictory.velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND ||
+           contradictory.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+    assert(contradictory.velocity_status != LOCALIZATION_VELOCITY_STATUS_OK);
+    localization_suea_grid_free(&grid);
+}
+
+
 /* Thin wall at x = 2 (x in [1.975, 2.025]) from the bottom edge up to
  * y = 2.625: exact shortest path around its free top end. */
 static double wall_path(localization_point3d_t s, localization_point3d_t t)
@@ -626,6 +705,7 @@ int main(void)
     test_unobstructed_field_is_exact_straight_distance();
     test_path_detours_around_a_wall();
     test_velocity_free_location_in_homogeneous_medium();
+    test_velocity_bounds_fixed_range_and_unset_compatibility();
     test_known_void_beats_straight_rays();
     test_active_shots_identify_an_unknown_void();
     test_identification_never_overrules_scan_evidence();

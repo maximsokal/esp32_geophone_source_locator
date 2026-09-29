@@ -28,6 +28,7 @@ typedef struct
 typedef struct
 {
     localization_psafuvs_status_t status;
+    localization_velocity_status_t velocity_status;
     bool planar;
     vf_plane_frame_t frame;
     double theta[PSAFUVS_PARAMETERS]; /* x, y, z, t0, 1/vP, 1/vS */
@@ -110,6 +111,29 @@ static void keep_below_plane(const psafuvs_fit_t *fit, double *theta)
         theta[1] = mirrored.y_m;
         theta[2] = mirrored.z_m;
     }
+}
+
+
+static void project_slownesses(double *theta, const localization_velocity_bounds_t *bounds)
+{
+    if (bounds == NULL || !bounds->set) {
+        return;
+    }
+    const double s_p_min = 1.0 / bounds->v_max_mps;
+    const double s_p_max = 1.0 / bounds->v_min_mps;
+    theta[4] = fmin(s_p_max, fmax(s_p_min, theta[4]));
+    if (bounds->vp_vs_min != 0.0f) {
+        theta[5] = fmin(
+            bounds->vp_vs_max * theta[4],
+            fmax(bounds->vp_vs_min * theta[4], theta[5])
+        );
+    }
+}
+
+
+static bool slowness_near_bound(double value, double minimum, double maximum)
+{
+    return fabs(value - minimum) <= 0.01 * minimum || fabs(maximum - value) <= 0.01 * maximum;
 }
 
 
@@ -229,6 +253,9 @@ static void solve_subset(psafuvs_workspace_t *work, const localization_psafuvs_c
     double theta[PSAFUVS_PARAMETERS] = {
         position.x_m, position.y_m, position.z_m, timing[0], timing[1], timing[2],
     };
+    const localization_velocity_bounds_t *bounds = config != NULL ? config->velocity_bounds : NULL;
+    const bool bounds_set = bounds != NULL && bounds->set;
+    project_slownesses(theta, bounds);
 
     /* Levenberg-Marquardt over all 2N arrivals. */
     double *jacobian = work->jacobian;
@@ -257,6 +284,7 @@ static void solve_subset(psafuvs_workspace_t *work, const localization_psafuvs_c
 
         bool accepted = false;
         double step_m = 0.0;
+        bool slowness_converged = !bounds_set;
         for (int attempt = 0; attempt < 12 && !accepted; ++attempt) {
             double damped[PSAFUVS_PARAMETERS * PSAFUVS_PARAMETERS];
             memcpy(damped, jtj, sizeof(damped));
@@ -271,13 +299,19 @@ static void solve_subset(psafuvs_workspace_t *work, const localization_psafuvs_c
                     trial[p] = theta[p] + delta[p];
                 }
                 keep_below_plane(fit, trial);
+                project_slownesses(trial, bounds);
+                step_m = sqrt(
+                    (trial[0] - theta[0]) * (trial[0] - theta[0]) +
+                    (trial[1] - theta[1]) * (trial[1] - theta[1]) +
+                    (trial[2] - theta[2]) * (trial[2] - theta[2])
+                );
+                if (bounds_set) {
+                    const double ds_p = fabs(trial[4] - theta[4]) / fmax(fabs(theta[4]), 1.0e-12);
+                    const double ds_s = fabs(trial[5] - theta[5]) / fmax(fabs(theta[5]), 1.0e-12);
+                    slowness_converged = ds_p <= 1.0e-4 && ds_s <= 1.0e-4;
+                }
                 const double trial_cost = cost_of(subset, trial, NULL, NULL);
                 if (isfinite(trial_cost) && trial_cost < cost) {
-                    step_m = sqrt(
-                        (trial[0] - theta[0]) * (trial[0] - theta[0]) +
-                        (trial[1] - theta[1]) * (trial[1] - theta[1]) +
-                        (trial[2] - theta[2]) * (trial[2] - theta[2])
-                    );
                     memcpy(theta, trial, sizeof(theta));
                     cost = trial_cost;
                     lambda = lambda * 0.1 > 1.0e-12 ? lambda * 0.1 : 1.0e-12;
@@ -290,7 +324,7 @@ static void solve_subset(psafuvs_workspace_t *work, const localization_psafuvs_c
         }
 
         fit->iterations = (uint8_t)(iteration + 1U);
-        if (!accepted || step_m <= convergence) {
+        if (!accepted || (step_m <= convergence && slowness_converged)) {
             /* No downhill step left: at the (local) least-squares minimum. */
             fit->converged = true;
             break;
@@ -304,6 +338,22 @@ static void solve_subset(psafuvs_workspace_t *work, const localization_psafuvs_c
         return;
     }
     fit->status = LOCALIZATION_PSAFUVS_SOLVED;
+    if (bounds_set) {
+        const double p_min = 1.0 / bounds->v_max_mps;
+        const double p_max = 1.0 / bounds->v_min_mps;
+        const bool at_bound =
+            bounds->v_min_mps < bounds->v_max_mps &&
+                (slowness_near_bound(theta[4], p_min, p_max) ||
+                 (bounds->vp_vs_min > 0.0f && bounds->vp_vs_min < bounds->vp_vs_max &&
+                  slowness_near_bound(theta[5], bounds->vp_vs_min * theta[4], bounds->vp_vs_max * theta[4])));
+        const double uncertainty = config != NULL ? config->timing_uncertainty_us : 0.0;
+        fit->velocity_status = !fit->converged ||
+            (uncertainty > 0.0 && fit->rms_s * 1.0e6 > 3.0 * uncertainty)
+            ? LOCALIZATION_VELOCITY_STATUS_INCONSISTENT
+            : at_bound
+                ? LOCALIZATION_VELOCITY_STATUS_AT_BOUND
+                : LOCALIZATION_VELOCITY_STATUS_OK;
+    }
 }
 
 
@@ -345,6 +395,13 @@ esp_err_t localization_psafuvs_solve(
         return ESP_ERR_INVALID_ARG;
     }
 
+    const localization_velocity_bounds_t *velocity_bounds =
+        config != NULL ? config->velocity_bounds : NULL;
+    const bool bounds_set = velocity_bounds != NULL && velocity_bounds->set;
+    if (bounds_set && localization_velocity_bounds_validate(velocity_bounds) != LOCALIZATION_VELOCITY_BOUNDS_VALID) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     int64_t first_us = observations[0].p_arrival_time_us;
     for (size_t i = 0U; i < observation_count; ++i) {
         const localization_point3d_t p = observations[i].sensor_position;
@@ -378,6 +435,11 @@ esp_err_t localization_psafuvs_solve(
         psafuvs_fit_t *fit = &work->fit;
         const psafuvs_subset_t *subset = subset_view;
         if (fit->status != LOCALIZATION_PSAFUVS_SOLVED) {
+            if (bounds_set) {
+                fit->velocity_status = fit->status == LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS
+                    ? LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE
+                    : LOCALIZATION_VELOCITY_STATUS_INCONSISTENT;
+            }
             if (obstructed != 0U && fit->status == LOCALIZATION_PSAFUVS_INSUFFICIENT_SENSORS) {
                 fit->status = LOCALIZATION_PSAFUVS_RAYS_OBSTRUCTED;
             }
@@ -405,6 +467,9 @@ esp_err_t localization_psafuvs_solve(
     result->iterations = fit.iterations;
     result->converged = fit.converged;
     result->status = fit.status;
+    result->velocity_status = bounds_set
+        ? fit.velocity_status
+        : LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
     free(work);
     if (fit.status != LOCALIZATION_PSAFUVS_SOLVED) {
         return ESP_OK;

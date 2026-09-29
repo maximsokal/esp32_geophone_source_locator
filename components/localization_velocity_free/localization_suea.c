@@ -912,8 +912,26 @@ static void free_problem(suea_problem_t *problem)
 }
 
 
-static bool fit_at(const suea_problem_t *problem, const double *lengths, vf_time_fit_t *fit)
+static bool fit_at(
+    const suea_problem_t *problem,
+    const double *lengths,
+    const localization_velocity_bounds_t *bounds,
+    vf_time_fit_t *fit
+)
 {
+    if (bounds != NULL && bounds->set) {
+        if (bounds->v_min_mps == bounds->v_max_mps) {
+            return vf_fit_travel_times(
+                problem->arrival_s, lengths, problem->weight, problem->count,
+                problem->sigma_s, 1.0 / bounds->v_min_mps, 0.0, fit
+            ) && fit->slowness_s_per_m > 0.0;
+        }
+        return vf_fit_travel_times_bounded(
+            problem->arrival_s, lengths, problem->weight, problem->count,
+            problem->sigma_s, 0.5 * (bounds->v_min_mps + bounds->v_max_mps),
+            bounds, fit, NULL
+        ) && fit->slowness_s_per_m > 0.0;
+    }
     return
         vf_fit_travel_times(
             problem->arrival_s, lengths, problem->weight, problem->count,
@@ -942,6 +960,12 @@ esp_err_t localization_suea_locate(
         return ESP_ERR_INVALID_ARG;
     }
 
+    const localization_velocity_bounds_t *bounds = config->velocity_bounds;
+    const bool bounds_set = bounds != NULL && bounds->set;
+    if (bounds_set && localization_velocity_bounds_validate(bounds) != LOCALIZATION_VELOCITY_BOUNDS_VALID) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     memset(result, 0, sizeof(*result));
     result->cell_m_used = grid->cell_m;
     result->empty_cell_count = localization_suea_grid_count(grid, LOCALIZATION_SUEA_CELL_EMPTY);
@@ -949,7 +973,13 @@ esp_err_t localization_suea_locate(
     suea_problem_t problem;
     memset(&problem, 0, sizeof(problem));
     problem.sigma_s = config->timing_uncertainty_us * 1.0e-6;
-    if (config->prior_velocity_mps > 0.0) {
+    if (bounds_set && bounds->v_min_mps == bounds->v_max_mps) {
+        problem.prior_slowness = 1.0 / bounds->v_min_mps;
+        problem.prior_sigma = 0.0;
+    } else if (bounds_set) {
+        problem.prior_slowness = 0.0;
+        problem.prior_sigma = -1.0;
+    } else if (config->prior_velocity_mps > 0.0) {
         problem.prior_slowness = 1.0 / config->prior_velocity_mps;
         /* Delta method: sigma(1/v) = sigma_v / v^2. */
         problem.prior_sigma =
@@ -988,6 +1018,9 @@ esp_err_t localization_suea_locate(
     result->picks_used_count = problem.count;
     if (problem.count < SUEA_MIN_PICKS) {
         result->status = LOCALIZATION_SUEA_INSUFFICIENT_PICKS;
+        result->velocity_status = bounds_set
+            ? LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE
+            : LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
         free_problem(&problem);
         return ESP_OK;
     }
@@ -1026,7 +1059,7 @@ esp_err_t localization_suea_locate(
         ++allowed;
         ++result->candidates_evaluated;
         vf_time_fit_t fit;
-        if (fit_at(&problem, lengths, &fit) && fit.chi_square < best_chi) {
+        if (fit_at(&problem, lengths, bounds, &fit) && fit.chi_square < best_chi) {
             best_chi = fit.chi_square;
             best = center;
             best_fit = fit;
@@ -1038,6 +1071,11 @@ esp_err_t localization_suea_locate(
         result->status = reachable > 0U && allowed == 0U
             ? LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE
             : LOCALIZATION_SUEA_NO_REACHABLE_CANDIDATE;
+        result->velocity_status = bounds_set
+            ? (reachable > 0U && allowed == 0U
+                ? LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE
+                : LOCALIZATION_VELOCITY_STATUS_INCONSISTENT)
+            : LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
         free_problem(&problem);
         return ESP_OK;
     }
@@ -1065,7 +1103,7 @@ esp_err_t localization_suea_locate(
                 }
                 ++result->candidates_evaluated;
                 vf_time_fit_t fit;
-                if (fit_at(&problem, lengths, &fit) && fit.chi_square < best_chi) {
+                if (fit_at(&problem, lengths, bounds, &fit) && fit.chi_square < best_chi) {
                     best_chi = fit.chi_square;
                     best = candidate;
                     best_fit = fit;
@@ -1089,6 +1127,18 @@ esp_err_t localization_suea_locate(
     result->velocity_mps = 1.0 / best_fit.slowness_s_per_m;
     result->emission_time_us = first_us + (int64_t)llround(best_fit.t0_s * 1.0e6);
     result->max_detour_m = detour;
+    if (bounds_set) {
+        const double velocity = result->velocity_mps;
+        const bool at_bound =
+            bounds->v_min_mps < bounds->v_max_mps &&
+                (fabs(velocity - bounds->v_min_mps) <= 0.01 * bounds->v_min_mps ||
+                 fabs(bounds->v_max_mps - velocity) <= 0.01 * bounds->v_max_mps);
+        result->velocity_status = result->best_residual_rms_us > 3.0 * config->timing_uncertainty_us
+            ? LOCALIZATION_VELOCITY_STATUS_INCONSISTENT
+            : at_bound
+                ? LOCALIZATION_VELOCITY_STATUS_AT_BOUND
+                : LOCALIZATION_VELOCITY_STATUS_OK;
+    }
     free_problem(&problem);
     return ESP_OK;
 }

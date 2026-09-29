@@ -336,6 +336,110 @@ static void test_four_pods_on_one_circle_are_degenerate(void)
 }
 
 
+static void test_velocity_bounds_and_unset_compatibility(void)
+{
+    const localization_point3d_t source = { 1.2, 1.9, -1.4 };
+    localization_psafuvs_observation_t observations[4];
+    make_observations(FOUR_PODS, 4U, source, 7.25, 320.0, 170.0, observations);
+
+    localization_psafuvs_result_t legacy;
+    localization_psafuvs_result_t unset;
+    assert(localization_psafuvs_solve(observations, 4U, NULL, &legacy) == ESP_OK);
+    localization_psafuvs_config_t config = localization_psafuvs_default_config();
+    localization_velocity_bounds_t bounds = { 0 };
+    config.velocity_bounds = &bounds;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &unset) == ESP_OK);
+    /* Compatibility: unset bounds retain the pre-range result bytes. */
+    assert(memcmp(&legacy, &unset, sizeof(legacy)) == 0);
+
+    bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 316.8f, .v_max_mps = 323.2f,
+        .vp_vs_min = 1.80f, .vp_vs_max = 1.95f, .set = true,
+    };
+    config.velocity_bounds = &bounds;
+    config.timing_uncertainty_us = 20.0;
+    localization_psafuvs_result_t narrow;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &narrow) == ESP_OK);
+    assert(narrow.status == LOCALIZATION_PSAFUVS_SOLVED);
+    assert(narrow.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK ||
+           narrow.velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND);
+    assert(distance(narrow.position, legacy.position) < 0.03);
+
+    bounds.v_min_mps = 300.0f;
+    bounds.v_max_mps = 400.0f;
+    bounds.vp_vs_min = 1.5f;
+    bounds.vp_vs_max = 2.5f;
+    localization_psafuvs_result_t wide;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &wide) == ESP_OK);
+    assert(wide.status == LOCALIZATION_PSAFUVS_SOLVED);
+    assert(wide.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(distance(wide.position, source) < 0.03);
+
+    bounds.v_min_mps = 320.0f;
+    bounds.v_max_mps = 320.0f;
+    bounds.vp_vs_min = 320.0f / 170.0f;
+    bounds.vp_vs_max = bounds.vp_vs_min;
+    localization_psafuvs_result_t fixed;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &fixed) == ESP_OK);
+    assert(fixed.status == LOCALIZATION_PSAFUVS_SOLVED);
+    assert(fixed.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+    assert(fabs(fixed.p_velocity_mps - 320.0) < 1.0e-9);
+    assert(fabs(fixed.s_velocity_mps - 170.0) < 1.0e-6);
+
+    make_observations(FOUR_PODS, 4U, source, 7.25, 600.0, 300.0, observations);
+    localization_psafuvs_result_t fixed_mismatch;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &fixed_mismatch) == ESP_OK);
+    assert(fixed_mismatch.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+
+    make_observations(FOUR_PODS, 4U, source, 7.25, 320.0, 170.0, observations);
+    bounds.v_min_mps = 500.0f;
+    bounds.v_max_mps = 600.0f;
+    localization_psafuvs_result_t outside;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &outside) == ESP_OK);
+    assert(outside.velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND ||
+           outside.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+    assert(outside.velocity_status != LOCALIZATION_VELOCITY_STATUS_OK);
+
+    /* One badly mislabeled S arrival cannot be presented as an OK range fit. */
+    make_observations(FOUR_PODS, 4U, source, 7.25, 320.0, 170.0, observations);
+    observations[2].s_arrival_time_us += 100000;
+    bounds.v_min_mps = 300.0f;
+    bounds.v_max_mps = 400.0f;
+    localization_psafuvs_result_t mislabeled;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &mislabeled) == ESP_OK);
+    assert(mislabeled.velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND ||
+           mislabeled.velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
+}
+
+
+static void test_bounded_fit_converges_at_projected_optimum(void)
+{
+    const localization_point3d_t source = { 1.2, 1.9, -1.4 };
+    localization_psafuvs_observation_t observations[4];
+    make_observations(FOUR_PODS, 4U, source, 7.25, 400.0, 200.0, observations);
+    const int64_t noise_p_us[4] = { 900, -700, 500, -300 };
+    const int64_t noise_s_us[4] = { -800, 600, -400, 1000 };
+    for (size_t i = 0U; i < 4U; ++i) {
+        observations[i].p_arrival_time_us += noise_p_us[i];
+        observations[i].s_arrival_time_us += noise_s_us[i];
+    }
+    const localization_velocity_bounds_t bounds = {
+        .v_min_mps = 310.0f, .v_max_mps = 315.0f, .set = true,
+    };
+    localization_psafuvs_config_t config = localization_psafuvs_default_config();
+    config.max_iterations = 30U;
+    config.timing_uncertainty_us = 10000.0;
+    config.velocity_bounds = &bounds;
+    localization_psafuvs_result_t result;
+    assert(localization_psafuvs_solve(observations, 4U, &config, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_PSAFUVS_SOLVED);
+    assert(result.converged);
+    assert(result.velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND);
+    assert(fabs(result.p_velocity_mps - 315.0) < 1.0e-3);
+    assert(result.iterations < config.max_iterations);
+}
+
+
 int main(void)
 {
     test_four_flat_geophones_locate_buried_source();
@@ -347,6 +451,8 @@ int main(void)
     test_candidate_filter_and_invalid_input();
     test_inconsistent_arrivals_are_not_solved();
     test_four_pods_on_one_circle_are_degenerate();
+    test_velocity_bounds_and_unset_compatibility();
+    test_bounded_fit_converges_at_projected_optimum();
     printf("localization PSAFUVS tests passed\n");
     return 0;
 }
