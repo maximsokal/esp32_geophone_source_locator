@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 int main(void)
 {
@@ -9,7 +10,16 @@ int main(void)
     const web_route_identity_t *routes = web_https_route_catalog(&count);
     assert(count == WEB_HTTPS_URI_HANDLERS_REQUIRED);
     assert(count <= WEB_HTTPS_URI_HANDLERS_CAPACITY);
+    assert(WEB_HTTPS_URI_HANDLERS_CAPACITY == 14U);
+    assert(WEB_HTTPS_URI_HANDLER_RESERVE == 1U);
     assert(!web_route_catalog_has_duplicates(routes, count));
+    bool has_nrf_logs = false;
+    for (size_t i = 0U; i < count; ++i) {
+        if (routes[i].method == WEB_ROUTE_GET && strcmp(routes[i].uri, "/api/nrf/logs") == 0) {
+            has_nrf_logs = true;
+        }
+    }
+    assert(has_nrf_logs);
 
     routes = web_http_route_catalog(&count);
     assert(count == WEB_HTTP_URI_HANDLERS_REQUIRED);

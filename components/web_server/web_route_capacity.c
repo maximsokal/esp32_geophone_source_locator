@@ -8,6 +8,7 @@ static const web_route_identity_t s_https_routes[] = {
     { "/api/client-log", WEB_ROUTE_POST },
     { "/assets/*", WEB_ROUTE_GET },
     { "/api/status", WEB_ROUTE_GET },
+    { "/api/nrf/logs", WEB_ROUTE_GET },
     { "/api/control", WEB_ROUTE_POST },
     { "/seismic", WEB_ROUTE_GET },
     { "/api/seismic/session", WEB_ROUTE_GET },

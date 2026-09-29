@@ -3,6 +3,7 @@ idf_component_register(
         "nrf_topology.c"
         "nrf_topology_bus_recovery.c"
         "nrf_sensor_transport.c"
+        "nrf_log_collector.c"
         "nrf_topology_leveling_policy.c"
         "nrf_topology_service.c"
 
