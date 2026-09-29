@@ -54,6 +54,8 @@ export interface OverlaySector {
   color: string;
   emphasis: OverlayEmphasis;
   variant: ResultVariant;
+  /** MAX-301: the method found the arrivals inconsistent with the velocity range. */
+  velocityInconsistent: boolean;
 }
 
 export interface OverlayCredibleBox {
@@ -176,7 +178,7 @@ export function filterOverlayByVariant(model: LocalizationOverlayModel, variant:
   const unavailable = model.unavailable.filter((entry) => entry.variant === variant);
   const selected = sectors.some((sector) => sector.method === model.selectedMethod)
     ? model.selectedMethod
-    : sectors[0]?.method ?? null;
+    : sectors.find((sector) => !sector.velocityInconsistent)?.method ?? null;
   return {
     ...model,
     sectors: sectors.map((sector) => ({ ...sector, emphasis: sector.method === selected ? 'selected' : 'dim' })),
@@ -243,11 +245,17 @@ export function sectorRadius(run: LocalizationRun): { radiusM: number; source: '
     }
   }
   const residual = run.rms_residual_us;
+  /* MAX-301: with a velocity range the residual converts to distance at the
+   * fastest plausible speed (conservative); v3/v4 records keep the scalar. */
+  const rangeMax = run.velocity_range?.v_max_mps;
+  const speed = rangeMax !== undefined && Number.isFinite(rangeMax) && rangeMax > 0
+    ? rangeMax
+    : run.propagation_speed_mps;
   if (residual === undefined || !Number.isFinite(residual) || residual <= 0 ||
-      !Number.isFinite(run.propagation_speed_mps) || run.propagation_speed_mps <= 0) {
+      !Number.isFinite(speed) || speed <= 0) {
     return { radiusM: NOMINAL_SECTOR_RADIUS_M, source: 'nominal' };
   }
-  const radius = residual * 1e-6 * run.propagation_speed_mps;
+  const radius = residual * 1e-6 * speed;
   return {
     radiusM: Math.min(MAX_SECTOR_RADIUS_M, Math.max(MIN_SECTOR_RADIUS_M, radius)),
     source: 'residual',
@@ -301,12 +309,15 @@ export function buildLocalizationOverlay(
       color: methodColor(run.method_name, index),
       emphasis: 'dim',
       variant: resultVariant(run.method_name),
+      velocityInconsistent: run.velocity_status === 'inconsistent',
     });
   });
 
+  /* MAX-301 decision C: an operator may still pick an inconsistent sector
+   * explicitly, but it is never chosen as the default primary result. */
   const selected = sectors.some((sector) => sector.method === selectedMethod)
     ? selectedMethod
-    : sectors[0]?.method ?? null;
+    : sectors.find((sector) => !sector.velocityInconsistent)?.method ?? null;
 
   return {
     sectors: sectors.map((sector) => ({ ...sector, emphasis: sector.method === selected ? 'selected' : 'dim' })),

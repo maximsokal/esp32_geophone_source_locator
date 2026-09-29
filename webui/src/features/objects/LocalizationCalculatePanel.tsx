@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchLocalizationJob, fetchLocalizationRuns, fetchScanInfo, sendControl } from '../../api/deviceApi';
-import type { CalcSettingsProfile } from '../../api/deviceApi';
+import type { CalcSettingsProfile, LocalizationVelocityRange } from '../../api/deviceApi';
 import MaterialSettingsForm from './MaterialSettingsForm';
 import LocalizationJobReport from './LocalizationJobReport';
 import LocalizationOverlay from './LocalizationOverlay';
@@ -410,10 +410,18 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       parsed.propagationSpeedUncertaintyMps === calcSettings.propagation_speed_uncertainty_mps
       ? calcSettings.material
       : 'custom';
+    /* MAX-301: the device does not merge stored settings into this request, so
+     * an operator-entered (USER) range is sent explicitly while the saved
+     * speed/sigma are unchanged; otherwise the device derives the range. */
+    const storedRange = (calcSettings as { velocity_range?: LocalizationVelocityRange } | null)?.velocity_range;
+    const sendUserRange = calcSettings !== null && storedRange?.source === 'user' &&
+      parsed.propagationSpeedMps === calcSettings.propagation_speed_mps &&
+      parsed.propagationSpeedUncertaintyMps === calcSettings.propagation_speed_uncertainty_mps;
     void sendControl('calculate_source', {
       object_id: objectId,
       session_id: sessionId,
       material,
+      ...(sendUserRange && storedRange !== undefined ? { velocity_range: storedRange } : {}),
       propagation_speed_mps: parsed.propagationSpeedMps,
       propagation_speed_uncertainty_mps: parsed.propagationSpeedUncertaintyMps,
       propagation_model_name: form.propagationModelName.trim(),

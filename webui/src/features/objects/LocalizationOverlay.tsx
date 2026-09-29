@@ -11,7 +11,7 @@ import {
   uncertaintyText,
   type ResultVariant,
 } from '../../domain/localizationOverlay';
-import { useLocale, useT } from '../../i18n';
+import { translate, useLocale, useT } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
 
 const LocalizationOverlayScene = lazy(() => import('./LocalizationOverlayScene'));
@@ -35,6 +35,16 @@ function uncertaintyCell(runs: LocalizationRun[], method: string, locale: 'en' |
     .reduce<LocalizationRun | null>((best, run) => (best === null || run.computed_at_ms > best.computed_at_ms ? run : best), null);
   const text = latest === null ? '' : uncertaintyText(latest, locale);
   return text === '' ? '—' : text;
+}
+
+/** MAX-301: the latest run's verdict on the velocity range, when it warns. */
+function velocityNote(runs: LocalizationRun[], method: string, locale: 'en' | 'uk'): string {
+  const latest = runs
+    .filter((run) => run.method_name === method)
+    .reduce<LocalizationRun | null>((best, run) => (best === null || run.computed_at_ms > best.computed_at_ms ? run : best), null);
+  if (latest?.velocity_status === 'inconsistent') return ` — ${translate(locale, 'overlay.velocity_inconsistent')}`;
+  if (latest?.velocity_status === 'at_bound') return ` — ${translate(locale, 'overlay.velocity_at_bound')}`;
+  return '';
 }
 
 function formatPosition(x: number, y: number, z: number, locale: 'en' | 'uk'): string {
@@ -136,7 +146,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
         <tbody>
           {model.sectors.map((sector) => (
             <tr key={sector.method} className={sector.emphasis === 'selected' ? 'selected' : 'dim'}>
-              <td><span className="method-swatch" style={{ background: sector.color }} />{sector.method}</td>
+              <td><span className="method-swatch" style={{ background: sector.color }} />{sector.method}{velocityNote(runs, sector.method, locale)}</td>
               <td>{formatPosition(sector.position.x_m, sector.position.y_m, sector.position.z_m, locale)}</td>
               <td>{formatDistance(locale, sector.radiusM)}{sector.radiusSource === 'nominal' ? ` (${t('overlay.nominal')})` : sector.radiusSource === 'posterior' ? ` (${t('overlay.two_sd')})` : ''}</td>
               <td>{formatNumber(locale, sector.confidence, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>

@@ -730,6 +730,27 @@ export interface LocalizationRunUncertainty {
   sigma_inflation?: number;
 }
 
+export type LocalizationVelocityRangeSource = 'unknown' | 'preset' | 'user' | 'scalar_derived' | 'measured_reserved';
+export type LocalizationVelocityStatus = 'unknown' | 'not_applicable' | 'ok' | 'at_bound' | 'inconsistent';
+
+export interface LocalizationVelocityRange {
+  v_min_mps: number;
+  v_max_mps: number;
+  /** 0/0 = no Vp/Vs bound. */
+  vp_vs_min: number;
+  vp_vs_max: number;
+  source: LocalizationVelocityRangeSource;
+}
+
+/**
+ * MAX-301 decision C: a run whose method found the arrivals inconsistent with
+ * the velocity range is never the primary result. It stays listed with a
+ * warning. Every place that picks "the" result must use this predicate.
+ */
+export function runIsPrimaryCandidate(run: LocalizationRun): boolean {
+  return run.solved && run.velocity_status !== 'inconsistent';
+}
+
 export interface LocalizationRun {
   schema_version: number;
   object_id: string;
@@ -752,6 +773,10 @@ export interface LocalizationRun {
   /** Methods that estimate the event's own velocities (TDCAS, PSAFUVS, SUEA, PSP; eikonal and Bayesian when the speed is uncertain): P (or single-phase) and S; absent = not estimated. */
   estimated_p_velocity_mps?: number;
   estimated_s_velocity_mps?: number;
+  /** MAX-301 (schema v5): the velocity range the run used; absent in v3/v4 records. */
+  velocity_range?: LocalizationVelocityRange;
+  /** MAX-301 (schema v5): TDCAS/PSAFUVS/SUEA verdict on that range; absent = unknown. */
+  velocity_status?: LocalizationVelocityStatus;
   /** Bayesian methods: the posterior's spread and credible region; absent = not computed. */
   uncertainty?: LocalizationRunUncertainty;
   solved: boolean;

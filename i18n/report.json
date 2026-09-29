@@ -91,6 +91,7 @@
     "report.residual": { "en": "Residual", "uk": "Нев’язка" },
     "report.dof": { "en": "DoF", "uk": "Ст. віл." },
     "report.joint": { "en": "joint", "uk": "спільний" },
+    "report.velocity_inconsistent": { "en": "inconsistent with the velocity range", "uk": "не узгоджується з діапазоном швидкості" },
     "report.nominal": { "en": "nominal", "uk": "номінальний" },
     "report.two_sd": { "en": "2 sd", "uk": "2 СВ" },
     "report.unavailable_reason": { "en": "unavailable: {reason}", "uk": "недоступно: {reason}" },

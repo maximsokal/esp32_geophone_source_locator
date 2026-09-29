@@ -3,7 +3,7 @@ import {
   fetchDeviceStatus,
   fetchLocalizationRuns,
 } from '../../api/deviceApi';
-import type { LocalizationSessionPodGeometry } from '../../api/deviceApi';
+import { runIsPrimaryCandidate, type LocalizationSessionPodGeometry } from '../../api/deviceApi';
 import type { SavedSeismicSnapshot } from '../../domain/device';
 import { fetchResultSegment, resultViewSourceDistances } from '../../domain/resultSegment';
 import { useLocale, useT } from '../../i18n';
@@ -53,7 +53,7 @@ export default function WorkflowResultViewer({ objectId, sessionId }: Props) {
           .sort((a, b) => a.computed_at_ms - b.computed_at_ms)
           .at(-1);
         const run = listing.runs
-          .filter((item) => item.solved && item.source_position !== undefined)
+          .filter((item) => runIsPrimaryCandidate(item) && item.source_position !== undefined)
           .slice()
           .sort((a, b) => a.computed_at_ms - b.computed_at_ms)
           .at(-1);

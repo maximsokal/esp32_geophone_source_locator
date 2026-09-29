@@ -361,3 +361,65 @@ it('shows a run material name in the workflow result view', async () => {
   }));
   renderer.unmount();
 });
+
+/* MAX-301 S5: an explicit velocity range. */
+describe('velocity range editor', () => {
+  it('saves a custom min/max as a user velocity range', async () => {
+    const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
+    await act(async () => { renderer.root.findByType('select').props.onChange({ target: { value: 'custom' } }); });
+    await act(async () => {
+      input(renderer, translate('en', 'calc.propagation_speed')).props.onChange({ target: { value: '400' } });
+      input(renderer, translate('en', 'calc.speed_uncertainty')).props.onChange({ target: { value: '200' } });
+      input(renderer, translate('en', 'workflow.material.range_min')).props.onChange({ target: { value: '150' } });
+      input(renderer, translate('en', 'workflow.material.range_max')).props.onChange({ target: { value: '1200' } });
+    });
+    await act(async () => {
+      button(renderer, 'workflow.material.save').props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.saveCalcSettings).toHaveBeenCalledWith('OBJ_0001', expect.objectContaining({
+      material: 'custom',
+      velocity_range: { v_min_mps: 150, v_max_mps: 1200, vp_vs_min: 0, vp_vs_max: 0, source: 'user' },
+    }));
+    renderer.unmount();
+  });
+
+  it('blocks saving a range wider than 10x or with one limit missing, in both languages', async () => {
+    await loadUkrainianCatalog();
+    const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
+    await act(async () => { renderer.root.findByType('select').props.onChange({ target: { value: 'custom' } }); });
+    await act(async () => {
+      input(renderer, translate('en', 'calc.propagation_speed')).props.onChange({ target: { value: '400' } });
+      input(renderer, translate('en', 'calc.speed_uncertainty')).props.onChange({ target: { value: '200' } });
+      input(renderer, translate('en', 'workflow.material.range_min')).props.onChange({ target: { value: '100' } });
+      input(renderer, translate('en', 'workflow.material.range_max')).props.onChange({ target: { value: '1500' } });
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'workflow.material.validation.range'));
+    await act(async () => {
+      input(renderer, translate('en', 'workflow.material.range_max')).props.onChange({ target: { value: '' } });
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'workflow.material.validation.range'));
+    expect(translate('uk', 'workflow.material.validation.range')).not.toBe(translate('en', 'workflow.material.validation.range'));
+    renderer.unmount();
+  });
+
+  it('sends a stored user range with the calculate request while speed and sigma are unchanged', async () => {
+    const userRange = { v_min_mps: 150, v_max_mps: 1200, vp_vs_min: 0, vp_vs_max: 0, source: 'user' };
+    const renderer = await calculatePanel(profile({
+      material: 'custom',
+      propagation_speed_mps: 400,
+      propagation_speed_uncertainty_mps: 200,
+      velocity_range: userRange,
+    } as unknown as Partial<CalcSettingsProfile>));
+    expect(await submitCalculate(renderer)).toMatchObject({ material: 'custom', velocity_range: userRange });
+    renderer.unmount();
+  });
+
+  it('lets the device derive the range for a preset object', async () => {
+    const renderer = await calculatePanel(profile());
+    expect(await submitCalculate(renderer)).not.toHaveProperty('velocity_range');
+    renderer.unmount();
+  });
+});
