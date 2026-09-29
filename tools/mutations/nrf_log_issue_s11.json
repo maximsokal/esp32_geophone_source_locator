@@ -1,0 +1,114 @@
+[
+  {
+    "id": "s11_a_bad_crc_advances_cursor",
+    "description": "MAX-308 s11 (a): advance cursor on bad CRC — ESP collector must not move the per-node cursor when a LOG block fails CRC/decode.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "if (err != ESP_OK) return err;",
+    "replace": "if (err != ESP_OK) {\n        if (status_valid && collector_lock(collector)) {\n            collector->nodes[node_index].boot_id = status.boot_id;\n            collector->nodes[node_index].boot_id_valid = true;\n            collector->nodes[node_index].cursor_seq = status.next_seq;\n            collector->nodes[node_index].cursor_valid = true;\n            collector_unlock(collector);\n        }\n        return err;\n    }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_framing_faults_and_retries"
+  },
+  {
+    "id": "s11_b_ignore_boot_for_cursor_rollback",
+    "description": "MAX-308 s11 (b): treat reset seq rollback as corruption without checking boot_id — a new boot_id with seq restarting at 0 must be accepted as a new generation (not a protocol error / not a gap).",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "old_state.boot_id_valid && old_state.boot_id == status.boot_id && old_state.cursor_valid",
+    "replace": "old_state.boot_id_valid && old_state.cursor_valid",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_capability_boot_and_paging"
+  },
+  {
+    "id": "s11_c_skip_remote_tca_close",
+    "description": "MAX-308 s11 (c): omit TCA close — after a REMOTE log transaction behind the TCA9548A the channel must be closed/restored per the existing contract.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "if (node_open) {",
+    "replace": "if (node_open && node_index == 0U) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_five_node_tca_matrix"
+  },
+  {
+    "id": "s11_d_poll_same_node_forever",
+    "description": "MAX-308 s11 (d): poll same node forever — collector fairness: round-robin start node / per-node limits.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "collector->next_node_index = next_node < NRF_LOG_COLLECTOR_NODE_COUNT ? next_node : first_node;",
+    "replace": "collector->next_node_index = first_node;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_five_node_tca_matrix"
+  },
+  {
+    "id": "s11_e_blanket_invalid_state_nack",
+    "description": "MAX-308 s11 (e): treat every ESP_ERR_INVALID_STATE as NACK — on IDF 5.5 i2c_bus v2 a NACK is ESP_ERR_INVALID_STATE like a timeout; classification must use the existing probe-based MAX-248 logic, not blanket mapping.",
+    "file": "components/sensor_bus/sensor_bus.c",
+    "find": "    const esp_err_t err = s_bus != NULL\n        ? sensor_bus_classify_locked(address, transfer_err)\n        : transfer_err;\n    sensor_bus_unlock();\n    return err;",
+    "replace": "    const esp_err_t err = s_bus != NULL\n        ? sensor_bus_classify_locked(address, transfer_err)\n        : transfer_err;\n    sensor_bus_unlock();\n    return err == ESP_ERR_INVALID_STATE ? ESP_ERR_NOT_FOUND : err;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-tca.json",
+        "only": "sensor_bus_tca_lifecycle"
+      }
+    ],
+    "expected_killer": "tests/host/sensor_bus_tca_lifecycle_test.c::test_classify_transfer_error"
+  },
+  {
+    "id": "s11_f_bus_clear_on_normal_nack",
+    "description": "MAX-308 s11 (f): start bus-clear on normal NACK — an absent node's NACK must NOT trigger the MAX-243 destructive bus clear.",
+    "file": "components/sensor_bus/sensor_bus.c",
+    "find": "if (probe_err == ESP_ERR_NOT_FOUND) {\n        return ESP_ERR_NOT_FOUND;\n    }",
+    "replace": "if (probe_err == ESP_ERR_NOT_FOUND) {\n        return transfer_err;\n    }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-nrf.json",
+        "only": "nrf_topology_service_ranging_integration"
+      }
+    ],
+    "expected_killer": "components/nrf_topology_service/tests/nrf_topology_service_integration_test.c::test_full_topology_is_assigned_one_hot"
+  },
+  {
+    "id": "s11_g_remove_retry_bound",
+    "description": "MAX-308 s11 (g): remove retry bound — retries after a transport fault must be bounded.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "#define NRF_LOG_REQUEST_RETRIES 1U",
+    "replace": "#define NRF_LOG_REQUEST_RETRIES 7U",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_framing_faults_and_retries"
+  },
+  {
+    "id": "s11_h_native_status_layout_wire",
+    "description": "MAX-308 s11 (h): serialize native struct/padding as wire format — the codec must encode explicit little-endian fields; a mutation replacing an explicit field encode with memcpy of a struct (or equivalent layout change) must be caught by golden-vector tests.",
+    "file": "nRF54L15/src/nrf_log_protocol.c",
+    "find": "    frame[11] = status->flags;\n    write_le16(&frame[12], status->capacity);\n    write_le16(&frame[14], status->available);\n    write_le32(&frame[16], status->boot_id);\n    write_le32(&frame[20], status->oldest_seq);\n    write_le32(&frame[24], status->next_seq);\n    write_le32(&frame[28], status->overwritten_total);\n    write_le32(&frame[32], status->lost_internal_total);",
+    "replace": "    memcpy(&frame[11], &status->flags, NRF_LOG_PROTOCOL_STATUS_LENGTH - NRF_LOG_PROTOCOL_HEADER_LENGTH - NRF_LOG_PROTOCOL_CRC_LENGTH - 1U);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_protocol_test.c::test_golden_vectors_and_roundtrip"
+  }
+]

@@ -32,7 +32,7 @@
     "description": "Drop appends after the ring fills instead of overwriting the oldest record.",
     "file": "nRF54L15/src/nrf_log_ring.c",
     "find": "result = write_record_locked(ring, &record);",
-    "replace": "if (ring->count == NRF_LOG_RING_CAPACITY) {\r\n        result = NRF_LOG_ERROR_OK;\r\n    } else {\r\n        result = write_record_locked(ring, &record);\r\n    }",
+    "replace": "if (ring->count == NRF_LOG_RING_CAPACITY) {\n        result = NRF_LOG_ERROR_OK;\n    } else {\n        result = write_record_locked(ring, &record);\n    }",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-308.json",
@@ -73,8 +73,8 @@
     "id": "t0_unknown_wire_version",
     "description": "Accept an unknown status-body log wire version.",
     "file": "nRF54L15/src/nrf_log_protocol.c",
-    "find": "if (result == NRF_LOG_ERROR_OK && frame[10] != NRF_LOG_PROTOCOL_VERSION) {\r\n        result = NRF_LOG_ERROR_BAD_VERSION;\r\n    }\r\n    if (result == NRF_LOG_ERROR_OK) {\r\n        decoded.request_id = read_le32(&frame[6]);\r\n        decoded.flags = frame[11];\r\n        decoded.capacity = read_le16(&frame[12]);",
-    "replace": "if (0) {\r\n        result = NRF_LOG_ERROR_BAD_VERSION;\r\n    }\r\n    if (result == NRF_LOG_ERROR_OK) {\r\n        decoded.request_id = read_le32(&frame[6]);\r\n        decoded.flags = frame[11];\r\n        decoded.capacity = read_le16(&frame[12]);",
+    "find": "if (result == NRF_LOG_ERROR_OK && frame[10] != NRF_LOG_PROTOCOL_VERSION) {\n        result = NRF_LOG_ERROR_BAD_VERSION;\n    }\n    if (result == NRF_LOG_ERROR_OK) {\n        decoded.request_id = read_le32(&frame[6]);\n        decoded.flags = frame[11];\n        decoded.capacity = read_le16(&frame[12]);",
+    "replace": "if (0) {\n        result = NRF_LOG_ERROR_BAD_VERSION;\n    }\n    if (result == NRF_LOG_ERROR_OK) {\n        decoded.request_id = read_le32(&frame[6]);\n        decoded.flags = frame[11];\n        decoded.capacity = read_le16(&frame[12]);",
     "tests": [
       {
         "manifest": "tests/host/manifest.d/coverage-308.json",
