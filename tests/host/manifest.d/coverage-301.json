@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "localization_velocity_bounds",
+      "sources": [
+        "tests/host/localization_velocity_bounds_test.c"
+      ],
+      "include_dirs": [
+        "components/localization_velocity_free/include"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}

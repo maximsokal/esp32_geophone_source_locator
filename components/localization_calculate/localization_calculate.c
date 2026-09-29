@@ -326,8 +326,17 @@ esp_err_t localization_calculate_run(
     memset(summary_out, 0, sizeof(*summary_out));
 
     if (
+        !isfinite(config->propagation_speed_mps) ||
+        !isfinite(config->propagation_speed_uncertainty_mps) ||
+        !isfinite(config->velocity_range.bounds.v_min_mps) ||
+        !isfinite(config->velocity_range.bounds.v_max_mps) ||
+        !isfinite(config->velocity_range.bounds.vp_vs_min) ||
+        !isfinite(config->velocity_range.bounds.vp_vs_max) ||
         !(config->propagation_speed_mps > 0.0) ||
         !(config->propagation_speed_uncertainty_mps >= 0.0) ||
+        (config->velocity_range.bounds.set &&
+            localization_velocity_bounds_validate(&config->velocity_range.bounds) !=
+                LOCALIZATION_VELOCITY_BOUNDS_VALID) ||
         !(config->timing_uncertainty_us > 0.0) ||
         config->semblance_window_half_span_samples == 0U ||
         strnlen(config->material, sizeof(config->material)) >= sizeof(config->material) ||

@@ -13,6 +13,7 @@
         "tests/host/stubs/workflow_service",
         "components/localization_job/include",
         "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
         "components/localization/include",
         "components/geophone_events/include"
       ],

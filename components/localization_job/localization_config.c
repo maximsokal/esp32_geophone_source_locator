@@ -81,6 +81,149 @@ static bool size_item(const cJSON *root, const char *key, size_t *value)
     return true;
 }
 
+static const char *velocity_range_source_name(localization_velocity_range_source_t source)
+{
+    switch (source) {
+    case LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET: return "preset";
+    case LOCALIZATION_VELOCITY_RANGE_SOURCE_USER: return "user";
+    case LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED: return "scalar_derived";
+    case LOCALIZATION_VELOCITY_RANGE_SOURCE_MEASURED_RESERVED: return "measured_reserved";
+    default: return "unknown";
+    }
+}
+
+static bool velocity_range_source_is_known(const cJSON *item)
+{
+    if (!cJSON_IsString(item) || item->valuestring == NULL) return false;
+    return strcmp(item->valuestring, "unknown") == 0 ||
+        strcmp(item->valuestring, "preset") == 0 ||
+        strcmp(item->valuestring, "user") == 0 ||
+        strcmp(item->valuestring, "scalar_derived") == 0 ||
+        strcmp(item->valuestring, "measured_reserved") == 0;
+}
+
+static bool float_item(const cJSON *root, const char *key, float *value)
+{
+    double parsed = 0.0;
+    if (number_item(root, key, &parsed) == NULL || parsed < -FLT_MAX || parsed > FLT_MAX) return false;
+    *value = (float)parsed;
+    return isfinite(*value);
+}
+
+static bool parse_velocity_range(const cJSON *item, localization_velocity_bounds_t *bounds_out)
+{
+    if (!cJSON_IsObject(item) || bounds_out == NULL) return false;
+    localization_velocity_bounds_t bounds = {0};
+    if (!float_item(item, "v_min_mps", &bounds.v_min_mps) ||
+        !float_item(item, "v_max_mps", &bounds.v_max_mps) ||
+        !float_item(item, "vp_vs_min", &bounds.vp_vs_min) ||
+        !float_item(item, "vp_vs_max", &bounds.vp_vs_max) ||
+        !velocity_range_source_is_known(cJSON_GetObjectItemCaseSensitive(item, "source"))) {
+        return false;
+    }
+    bounds.set = true;
+    if (localization_velocity_bounds_validate(&bounds) != LOCALIZATION_VELOCITY_BOUNDS_VALID) return false;
+    *bounds_out = bounds;
+    return true;
+}
+
+static bool bounds_equal_preset(
+    const localization_velocity_bounds_t *bounds,
+    const localization_material_preset_t *preset
+)
+{
+    return preset != NULL && bounds->v_min_mps == preset->v_min_mps &&
+        bounds->v_max_mps == preset->v_max_mps &&
+        bounds->vp_vs_min == preset->vp_vs_min && bounds->vp_vs_max == preset->vp_vs_max;
+}
+
+static bool scalar_velocity_range(
+    double speed,
+    double uncertainty,
+    localization_velocity_bounds_t *bounds_out
+)
+{
+    if (bounds_out == NULL || !isfinite(speed) || !isfinite(uncertainty) ||
+        !(speed > 50.0 && speed < 8000.0) || !(uncertainty > 0.0 && uncertainty < speed)) {
+        return false;
+    }
+
+    const double sqrt10 = sqrt(10.0);
+    const double low = fmax(50.0, fmin(8000.0,
+        fmax(speed - 2.0 * uncertainty, speed / sqrt10)));
+    const double high = fmax(50.0, fmin(8000.0,
+        fmin(speed + 2.0 * uncertainty, speed * sqrt10)));
+    localization_velocity_bounds_t bounds = {
+        .v_min_mps = (float)low,
+        .v_max_mps = (float)high,
+        .set = true,
+    };
+    if ((double)bounds.v_min_mps > speed) bounds.v_min_mps = nextafterf(bounds.v_min_mps, -INFINITY);
+    if ((double)bounds.v_max_mps < speed) bounds.v_max_mps = nextafterf(bounds.v_max_mps, INFINITY);
+    if (bounds.v_max_mps / bounds.v_min_mps > 10.0f) {
+        const double max_width = (double)bounds.v_min_mps * 10.0;
+        bounds.v_max_mps = (float)max_width;
+        if ((double)bounds.v_max_mps > max_width) bounds.v_max_mps = nextafterf(bounds.v_max_mps, -INFINITY);
+    }
+    if (localization_velocity_bounds_validate(&bounds) != LOCALIZATION_VELOCITY_BOUNDS_VALID ||
+        (double)bounds.v_min_mps > speed || (double)bounds.v_max_mps < speed) {
+        return false;
+    }
+    *bounds_out = bounds;
+    return true;
+}
+
+static bool normalize_velocity_range(
+    localization_calculate_config_t *config,
+    const char *material_id,
+    const localization_material_preset_t *preset,
+    const localization_velocity_bounds_t *explicit_bounds
+)
+{
+    if (config == NULL) return false;
+    if (explicit_bounds != NULL) {
+        config->velocity_range.bounds = *explicit_bounds;
+        config->velocity_range.source =
+            strcmp(material_id, "custom") != 0 && bounds_equal_preset(explicit_bounds, preset)
+                ? LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET
+                : LOCALIZATION_VELOCITY_RANGE_SOURCE_USER;
+    } else if (preset != NULL) {
+        config->velocity_range.bounds = (localization_velocity_bounds_t) {
+            .v_min_mps = preset->v_min_mps,
+            .v_max_mps = preset->v_max_mps,
+            .vp_vs_min = preset->vp_vs_min,
+            .vp_vs_max = preset->vp_vs_max,
+            .set = true,
+        };
+        config->velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET;
+    } else {
+        config->velocity_range.bounds.vp_vs_min = 0.0f;
+        config->velocity_range.bounds.vp_vs_max = 0.0f;
+        if (!scalar_velocity_range(
+                config->propagation_speed_mps,
+                config->propagation_speed_uncertainty_mps,
+                &config->velocity_range.bounds)) {
+            return false;
+        }
+        config->velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED;
+    }
+    return localization_velocity_bounds_validate(&config->velocity_range.bounds) ==
+        LOCALIZATION_VELOCITY_BOUNDS_VALID;
+}
+
+static bool add_velocity_range(cJSON *root, const localization_velocity_range_t *range)
+{
+    cJSON *item = cJSON_AddObjectToObject(root, "velocity_range");
+    if (item == NULL) return false;
+    const localization_velocity_bounds_t *bounds = &range->bounds;
+    const bool ok = cJSON_AddNumberToObject(item, "v_min_mps", bounds->v_min_mps) != NULL &&
+        cJSON_AddNumberToObject(item, "v_max_mps", bounds->v_max_mps) != NULL &&
+        cJSON_AddNumberToObject(item, "vp_vs_min", bounds->vp_vs_min) != NULL &&
+        cJSON_AddNumberToObject(item, "vp_vs_max", bounds->vp_vs_max) != NULL &&
+        cJSON_AddStringToObject(item, "source", velocity_range_source_name(range->source)) != NULL;
+    return ok;
+}
+
 esp_err_t localization_config_from_json(
     const cJSON *root,
     localization_calculate_config_t *config_out,
@@ -166,6 +309,16 @@ esp_err_t localization_config_from_json(
         !(minimum_snr >= 0.0 && minimum_snr <= FLT_MAX) ||
         config.semblance_window_half_span_samples == 0U
     ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const cJSON *range_item = cJSON_GetObjectItemCaseSensitive(root, "velocity_range");
+    localization_velocity_bounds_t explicit_bounds = {0};
+    if (range_item != NULL && !parse_velocity_range(range_item, &explicit_bounds)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!normalize_velocity_range(
+            &config, material_id, preset, range_item != NULL ? &explicit_bounds : NULL)) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -291,6 +444,21 @@ esp_err_t localization_config_to_json(
         config->propagation_speed_uncertainty_mps != (double)preset->propagation_speed_uncertainty_mps)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!(config->propagation_speed_mps > 50.0 && config->propagation_speed_mps < 8000.0) ||
+        !(config->propagation_speed_uncertainty_mps > 0.0 &&
+          config->propagation_speed_uncertainty_mps < config->propagation_speed_mps)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    localization_calculate_config_t normalized = *config;
+    const localization_velocity_range_source_t range_source = config->velocity_range.source;
+    const localization_velocity_bounds_t *explicit_bounds =
+        config->velocity_range.bounds.set &&
+        range_source != LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET &&
+        range_source != LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED
+            ? &config->velocity_range.bounds : NULL;
+    if (!normalize_velocity_range(&normalized, material_id, preset, explicit_bounds)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (budget_ms == 0U) budget_ms = LOCALIZATION_JOB_DEFAULT_BUDGET_MS;
     if (budget_ms < LOCALIZATION_JOB_MIN_BUDGET_MS || budget_ms > LOCALIZATION_JOB_MAX_BUDGET_MS) {
         return ESP_ERR_INVALID_ARG;
@@ -302,6 +470,7 @@ esp_err_t localization_config_to_json(
         cJSON_AddNumberToObject(root, "propagation_speed_mps", config->propagation_speed_mps) != NULL &&
         cJSON_AddNumberToObject(root, "propagation_speed_uncertainty_mps",
             config->propagation_speed_uncertainty_mps) != NULL &&
+        add_velocity_range(root, &normalized.velocity_range) &&
         add_processing_fields(root, config) &&
         cJSON_AddNumberToObject(root, "time_budget_s", (double)budget_ms / 1000.0) != NULL;
     if (ok && config->propagation_model_name[0] != '\0') {

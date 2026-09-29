@@ -17,6 +17,14 @@ static localization_calculate_config_t config(void)
     memset(&c, 0, sizeof(c));
     c.propagation_speed_mps = 300.0;
     c.timing_uncertainty_us = 20.0;
+    c.velocity_range.bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 250.0f,
+        .v_max_mps = 350.0f,
+        .vp_vs_min = 1.5f,
+        .vp_vs_max = 2.0f,
+        .set = true,
+    };
+    c.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_USER;
     return c;
 }
 
@@ -43,6 +51,12 @@ static void test_one_job_at_a_time_with_its_deadline(void)
     assert(state.status.progress_percent == 0U);
     assert(run.deadline_us == 5000000 + (int64_t)LOCALIZATION_JOB_DEFAULT_BUDGET_MS * 1000);
     assert(run.propagation_speed_mps == 300.0);
+    assert(run.velocity_range.bounds.v_min_mps == 250.0f);
+    assert(run.velocity_range.bounds.v_max_mps == 350.0f);
+    assert(run.velocity_range.bounds.vp_vs_min == 1.5f);
+    assert(run.velocity_range.bounds.vp_vs_max == 2.0f);
+    assert(run.velocity_range.bounds.set);
+    assert(run.velocity_range.source == LOCALIZATION_VELOCITY_RANGE_SOURCE_USER);
     assert(!localization_job_state_start(&state, 5000001, &run)); /* already running */
     assert(localization_job_state_submit(&state, "OBJ_0001", "S000002", &c, 0U, 778U) == ESP_ERR_INVALID_STATE);
 
