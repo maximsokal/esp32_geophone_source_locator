@@ -126,11 +126,11 @@ describe('nRF log panel', () => {
   });
 
   it('renders decoded event arguments and exposes unsigned raw args in the tooltip', async () => {
-    api.fetchNrfLogs.mockResolvedValue(okPage([sample({ event_id: 3, arg0: 0x80, arg1: 6 })]));
+    api.fetchNrfLogs.mockResolvedValue(okPage([sample({ event_id: 3, arg0: 0x07, arg1: 6 })]));
     const view = await mount();
-    expect(text(view.root)).toContain('Message type: 0x00000080, Decoder error: Bad CRC (6)');
+    expect(text(view.root)).toContain('Message type: 0x00000007, Decoder error: Bad CRC (6)');
     const argsCell = view.root.findAllByType('td').find((cell) => typeof cell.props.title === 'string');
-    expect(argsCell?.props.title).toBe('Raw arg0: 128; arg1: 6');
+    expect(argsCell?.props.title).toBe('Raw arg0: 7; arg1: 6');
   });
 
   it('renders the four loss counters independently', async () => {

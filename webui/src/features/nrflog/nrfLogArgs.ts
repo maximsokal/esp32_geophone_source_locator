@@ -46,6 +46,64 @@ const logErrors = {
   16: key('error.reentrant_loss'),
 } as const;
 
+// Mirrors the firmware message type constants in these protocol headers.
+const NRF_LOG_MESSAGE_STATUS_REQUEST = 0x07;
+const NRF_LOG_MESSAGE_READ_REQUEST = 0x08;
+const NRF_LOG_MESSAGE_STATUS = 0x82;
+const NRF_LOG_MESSAGE_BLOCK = 0x83;
+const NRF_UPSTREAM_MESSAGE_ASSIGN = 0x01;
+const NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH = 0x02;
+const NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE = 0x05;
+const NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE = 0x06;
+const NRF_UPSTREAM_MESSAGE_STATUS = 0x80;
+const NRF_CS_CONTROL_MESSAGE_EXECUTE = 0x03;
+const NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST = 0x04;
+const NRF_CS_CONTROL_MESSAGE_RESULT = 0x81;
+
+// nRF54L15/include/nrf_log_protocol.h: nrf_log_message_type_t.
+const logMessageTypes = new Set([
+  NRF_LOG_MESSAGE_STATUS_REQUEST,
+  NRF_LOG_MESSAGE_READ_REQUEST,
+  NRF_LOG_MESSAGE_STATUS,
+  NRF_LOG_MESSAGE_BLOCK,
+]);
+
+// nRF54L15/include/nrf_upstream_protocol.h: nrf_upstream_message_type_t.
+const upstreamMessageTypes = new Set([
+  NRF_UPSTREAM_MESSAGE_ASSIGN,
+  NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH,
+  NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE,
+  NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE,
+  NRF_UPSTREAM_MESSAGE_STATUS,
+]);
+
+// nRF54L15/include/nrf_cs_control_protocol.h: NRF_CS_CONTROL_MESSAGE_*.
+const csControlMessageTypes = new Set([
+  NRF_CS_CONTROL_MESSAGE_EXECUTE,
+  NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST,
+  NRF_CS_CONTROL_MESSAGE_RESULT,
+]);
+
+// Values and names mirror nrf_upstream_result_t in nRF54L15/include/nrf_upstream_protocol.h.
+const upstreamResults = {
+  0: key('upstream_result.ok'), // NRF_UPSTREAM_RESULT_OK
+  1: key('upstream_result.pending'), // NRF_UPSTREAM_RESULT_PENDING
+  2: key('upstream_result.invalid_frame'), // NRF_UPSTREAM_RESULT_INVALID_FRAME
+  3: key('upstream_result.bad_crc'), // NRF_UPSTREAM_RESULT_BAD_CRC
+  4: key('upstream_result.unsupported_version'), // NRF_UPSTREAM_RESULT_UNSUPPORTED_VERSION
+  5: key('upstream_result.unsupported_type'), // NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE
+  6: key('upstream_result.request_id_invalid'), // NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID
+  7: key('upstream_result.hw_id_mismatch'), // NRF_UPSTREAM_RESULT_HW_ID_MISMATCH
+  8: key('upstream_result.role_invalid'), // NRF_UPSTREAM_RESULT_ROLE_INVALID
+  9: key('upstream_result.node_id_invalid'), // NRF_UPSTREAM_RESULT_NODE_ID_INVALID
+  10: key('upstream_result.channel_invalid'), // NRF_UPSTREAM_RESULT_CHANNEL_INVALID
+  11: key('upstream_result.role_conflict'), // NRF_UPSTREAM_RESULT_ROLE_CONFLICT
+  12: key('upstream_result.request_conflict'), // NRF_UPSTREAM_RESULT_REQUEST_CONFLICT
+  13: key('upstream_result.busy'), // NRF_UPSTREAM_RESULT_BUSY
+  14: key('upstream_result.readdress_failed'), // NRF_UPSTREAM_RESULT_READDRESS_FAILED
+  15: key('upstream_result.internal_error'), // NRF_UPSTREAM_RESULT_INTERNAL_ERROR
+} as const;
+
 const referenceStates = {
   0: key('reference.not_established'),
   1: key('reference.valid'),
@@ -76,7 +134,7 @@ const watchdogParticipants = {
 export const NRF_LOG_ARG_FORMATS = {
   BOOT: [hex(key('reset_cause_bits')), enumeration(key('boot_id_fallback'), bootIdFallback)],
   LOG_GENERATION_ROLLOVER: [hex(key('previous_boot_id')), hex(key('new_boot_id'))],
-  TWIS_INVALID_FRAME: [hex(key('message_type')), enumeration(key('decoder_error'), logErrors)],
+  TWIS_INVALID_FRAME: [hex(key('message_type')), number(key('decoder_error'))],
   TWIS_UNKNOWN_TYPE: [hex(key('message_type')), number(key('frame_length'))],
   TWIS_BUSY: [hex(key('message_type')), number(key('work_queue_capacity'))],
   ROLE_ASSIGNED: [hex(key('node_id')), enumeration(key('role'), roles)],
@@ -95,6 +153,8 @@ export const NRF_LOG_ARG_FORMATS = {
 
 export const NRF_LOG_ARG_I18N_KEYS: readonly I18nKey[] = (() => {
   const keys = new Set<I18nKey>([key('arg0'), key('arg1'), key('raw_values'), key('unknown_value')]);
+  keys.add(key('decoder_rejected'));
+  for (const valueKey of [...Object.values(logErrors), ...Object.values(upstreamResults)]) keys.add(valueKey);
   for (const [first, second] of Object.values(NRF_LOG_ARG_FORMATS)) {
     for (const spec of [first, second]) {
       keys.add(spec.labelKey);
@@ -124,6 +184,20 @@ function formatArgument(spec: ArgumentSpec, value: number): FormattedArgument {
   };
 }
 
+function formatDecoderError(messageType: number, result: number): FormattedArgument {
+  const type = asUint32(messageType);
+  if (logMessageTypes.has(type)) {
+    return formatArgument(enumeration(key('decoder_error'), logErrors), result);
+  }
+  if (upstreamMessageTypes.has(type)) {
+    return formatArgument(enumeration(key('decoder_error'), upstreamResults), result);
+  }
+  if (csControlMessageTypes.has(type)) {
+    return { labelKey: key('decoder_error'), valueKey: key('decoder_rejected'), raw: asUint32(result) };
+  }
+  return formatArgument(number(key('decoder_error')), result);
+}
+
 export function formatEventArgs(eventNameOrId: string | number, arg0: number, arg1: number): FormattedArgument[] {
   const eventName = typeof eventNameOrId === 'number'
     ? NRF_LOG_EVENTS[asUint32(eventNameOrId) as keyof typeof NRF_LOG_EVENTS]?.name
@@ -136,6 +210,9 @@ export function formatEventArgs(eventNameOrId: string | number, arg0: number, ar
       { labelKey: key('arg0'), valueKey: key('unknown_value'), raw: asUint32(arg0) },
       { labelKey: key('arg1'), valueKey: key('unknown_value'), raw: asUint32(arg1) },
     ];
+  }
+  if (eventName === 'TWIS_INVALID_FRAME') {
+    return [formatArgument(specs[0], arg0), formatDecoderError(arg0, arg1)];
   }
   return [formatArgument(specs[0], arg0), formatArgument(specs[1], arg1)];
 }
