@@ -105,6 +105,7 @@
     "report.session_status.incomplete": { "en": "Incomplete", "uk": "НЕЗАВЕРШЕНО" },
     "report.session_status.error": { "en": "Error", "uk": "ПОМИЛКА" },
     "report.session_status.recovered_error": { "en": "Recovered with error", "uk": "Відновлено з помилкою" },
-    "report.session_status.unknown": { "en": "Unknown status", "uk": "Невідомий стан" }
+    "report.session_status.unknown": { "en": "Unknown status", "uk": "Невідомий стан" },
+    "report.qr_too_long": {"en": "{label}: too long for a QR code.","uk": "{label}: \u0442\u0435\u043a\u0441\u0442 \u0437\u0430\u0432\u0435\u043b\u0438\u043a\u0438\u0439 \u0434\u043b\u044f QR-\u043a\u043e\u0434\u0443."}
   }
 }

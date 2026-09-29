@@ -8,7 +8,7 @@
  * number is the device's own measurement.
  */
 
-import { translate, type I18nLocale } from '../i18n';
+import { TranslatedError, translate, type I18nLocale } from '../i18n';
 import { formatNumber } from '../i18n/format';
 
 export type LocalizationJobState = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
@@ -113,7 +113,6 @@ export interface WaitOptions {
   objectId: string;
   sessionId: string;
   budgetMs: number;
-  locale?: I18nLocale;
   onProgress?: (status: LocalizationJobStatus) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -132,7 +131,6 @@ export async function waitForLocalizationJob(
 ): Promise<LocalizationJobStatus> {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? (() => Date.now());
-  const locale = options.locale ?? 'en';
   const deadline = now() + options.budgetMs + JOB_WAIT_GRACE_MS;
   let lastError: unknown = null;
   for (;;) {
@@ -147,12 +145,12 @@ export async function waitForLocalizationJob(
       lastError = reason;
     }
     if (now() >= deadline) {
-      throw new Error(translate(locale, 'calc.job_timeout', {
-        duration: seconds(locale, options.budgetMs + JOB_WAIT_GRACE_MS),
+      throw TranslatedError.fromKey('calc.job_timeout', {
+        duration: (locale) => seconds(locale, options.budgetMs + JOB_WAIT_GRACE_MS),
         lastPoll: lastError instanceof Error
-          ? translate(locale, 'calc.job_last_poll', { error: lastError.message })
+          ? TranslatedError.fromKey('calc.job_last_poll', { error: lastError.message })
           : '',
-      }));
+      });
     }
     await sleep(JOB_POLL_INTERVAL_MS);
   }

@@ -1,7 +1,7 @@
 import type { TagObservationFusion } from './tagObservationFusion';
 import type { RegistrationArtifact } from './registrationArtifact';
 import type { SensorToScanRegistration } from './rigidRegistration';
-import { translate, type I18nKey, type I18nLocale } from '../../i18n';
+import { formatErrorText, translate, type I18nKey, type I18nLocale } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 
 export type TagChipStatus = { tagId: 0 | 1 | 2 | 3 | 4; node: string; text: string; status: 'not-seen' | 'seen' | 'confirmed' };
@@ -54,7 +54,7 @@ export function tagModeErrorLabel(message: string, locale: I18nLocale): string {
   if (key !== undefined) return translate(locale, key);
   const prefix = TAG_ERROR_PREFIXES.find(([text]) => message.startsWith(text));
   return prefix === undefined
-    ? message
+    ? formatErrorText(locale, message)
     : translate(locale, prefix[1], { reason: tagModeErrorLabel(message.slice(prefix[0].length), locale) });
 }
 

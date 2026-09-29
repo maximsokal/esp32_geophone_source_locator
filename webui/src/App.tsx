@@ -38,7 +38,7 @@ import {
   type ScanMode,
 } from './xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot, WebXrCapabilities } from './xr/webxrRuntime';
-import { translate, useLocale, useT, type I18nLocale } from './i18n';
+import { formatErrorText, TranslatedError, translate, useLocale, useT, type I18nLocale } from './i18n';
 import { formatDistance, formatNumber } from './i18n/format';
 
 const ScanPointCloudViewport = lazy(async () => {
@@ -180,7 +180,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   const [scanStoragePhase, setScanStoragePhase] = useState<ScanStoragePhase>(
     objectId === null || sessionId === null ? 'unbound' : 'loading',
   );
-  const [scanStorageError, setScanStorageError] = useState<string | null>(null);
+  const [scanStorageError, setScanStorageError] = useState<unknown | null>(null);
   const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
   const [localizationGeometry, setLocalizationGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [localizationRunListing, setLocalizationRunListing] = useState<LocalizationRunListing | null>(null);
@@ -366,7 +366,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
         try {
           const restored = decodeScanArtifact(artifact);
-          if (restored.pointCount <= 0) throw new Error('saved artifact has no stable measured surface');
+          if (restored.pointCount <= 0) throw new Error('scan.error.no_stable_surface');
           scanLoadSession.current = key;
           setScanSnapshot(restored);
           selectMode('quality');
@@ -385,7 +385,9 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         catch (reason) {
           scanLoadSession.current = key;
           const message = reason instanceof Error ? reason.message : String(reason);
-          setScanStorageError(message);
+          setScanStorageError(TranslatedError.fromKey(message === 'scan.error.no_stable_surface'
+            ? 'scan.error.no_stable_surface'
+            : 'scan.error.restore_failed'));
           setScanStoragePhase('error');
           clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
           void clientDiagnostics.flush();
@@ -395,7 +397,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         if (cancelled || generation !== storageGeneration.current) return;
         scanLoadSession.current = key;
         const message = reason instanceof Error ? reason.message : String(reason);
-        setScanStorageError(message);
+        setScanStorageError(reason);
         setScanStoragePhase('error');
         void persistenceController.reconcile(objectId, sessionId, null);
         clientDiagnostics.warn('SCAN_RESULT_RESTORE_FAILED', { objectId, sessionId, error: message });
@@ -411,7 +413,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     if (intent === 'continue') {
       const durable = scanStoragePhase === 'saved' || scanStoragePhase === 'loaded';
       if (!durable || scanSnapshot === null || scanSnapshot.pointCount <= 0) {
-        setScanStorageError('No durable saved 3D scan is available to continue. Open or finish a scan first.');
+        setScanStorageError(TranslatedError.fromKey('scan.error.continue_unavailable'));
         return false;
       }
       continuationBase.current = scanSnapshot;
@@ -459,7 +461,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     if (scanIntent.current === 'continue') {
       const base = continuationBase.current;
       if (base === null) {
-        setScanStorageError('Continuation finished without its saved base; nothing was overwritten.');
+        setScanStorageError(TranslatedError.fromKey('scan.error.continue_base_missing'));
         setScanStoragePhase('error');
         clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', { objectId, reason: 'missing durable base' });
         void clientDiagnostics.flush();
@@ -470,7 +472,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       if (!merged.ok) {
         setScanSnapshot(base);
         setScanStoragePhase('loaded');
-        setScanStorageError(`Continuation NOT saved. ${merged.reason}`);
+        setScanStorageError(TranslatedError.fromKey('scan.error.continue_not_saved', { reason: merged.reason }));
         clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', {
           objectId,
           reason: merged.reason,
@@ -513,7 +515,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     void clientDiagnostics.flush();
 
     if (objectId === null) {
-      setScanStorageError('No object is selected; the completed scan exists only in browser memory.');
+      setScanStorageError(TranslatedError.fromKey('scan.error.no_object_selected'));
       setScanStoragePhase('error');
       return;
     }
@@ -524,7 +526,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
-      setScanStorageError(message);
+      setScanStorageError(TranslatedError.fromKey('scan.error.prepare_failed'));
       setScanStoragePhase('error');
       clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'encode', error: message });
       void clientDiagnostics.flush();
@@ -556,7 +558,9 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         if (generation !== storageGeneration.current) return;
         if (state?.scan !== 'saved') {
           const message = state?.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE;
-          setScanStorageError(`New scan is only in browser memory; previous SD scan was kept. ${message}`);
+          setScanStorageError(TranslatedError.fromKey('scan.storage.previous_kept', {
+            reason: new Error(message),
+          }));
           setScanStoragePhase('error');
           clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'transport', error: message });
           void clientDiagnostics.flush();
@@ -644,7 +648,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       (reason) => {
         if (generation !== storageGeneration.current) return;
         const message = reason instanceof Error ? reason.message : String(reason);
-        setScanStorageError(message);
+        setScanStorageError(reason);
         setScanStoragePhase('error');
         clientDiagnostics.warn('SCAN_RESULT_DELETE_FAILED', { objectId, sessionId: scanSessionId, error: message });
         void clientDiagnostics.flush();
@@ -709,7 +713,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       )}
 
       {!xrSessionActive && scanStorageError !== null && (
-        <div className="xr-runtime-error" role="alert">{scanStorageError === SCAN_STORAGE_BLOCKED_MESSAGE ? t('scan.storage.paused') : scanStorageError}</div>
+        <div className="xr-runtime-error" role="alert">{formatErrorText(locale, scanStorageError)}</div>
       )}
       {storageActionsDisabled && (
         <div className="xr-runtime-warning" role="status">{t('scan.storage.paused')}</div>

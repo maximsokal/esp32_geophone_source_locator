@@ -4,12 +4,8 @@
   "entries": {
     "app.title": {
       "en": "GeoLocator 3D",
-      "uk": ""
-    },
-    "power.low_battery_soon": {
-      "en": "LOW BATTERY - CONNECT USB SOON",
-      "uk": "",
-      "note": "Current TFT low-battery notice"
+      "uk": "GeoLocator 3D",
+      "note": "Product brand; intentionally identical in English and Ukrainian."
     }
   }
 }

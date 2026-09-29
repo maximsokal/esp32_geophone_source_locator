@@ -25,7 +25,7 @@ def write_fixture(root: Path) -> dict[str, dict]:
         }
         for namespace in NAMESPACES
     }
-    data["common"]["entries"]["app.title"] = {"en": "GeoLocator", "uk": ""}
+    data["common"]["entries"]["app.title"] = {"en": "GeoLocator", "uk": "GeoLocator"}
     for namespace, catalog in data.items():
         path = root / "i18n" / f"{namespace}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +233,16 @@ def test_check_detects_stale_files_without_writing(tmp_path):
     assert stale.read_bytes() == b"stale\n"
 
 
+def test_generator_refuses_to_generate_with_untranslated_keys(tmp_path, capsys):
+    data = write_fixture(tmp_path)
+    data["common"]["entries"]["app.title"]["uk"] = ""
+    save_fixture(tmp_path, data)
+
+    assert generator.main([], root=tmp_path) == 1
+    assert "untranslated keys: 1" in capsys.readouterr().err
+    assert not (tmp_path / "webui/src/i18n/catalog.en.gen.ts").exists()
+
+
 def test_check_normalizes_crlf_but_detects_content_changes(tmp_path):
     for source in (REPO_ROOT / "i18n").glob("*.json"):
         target = tmp_path / "i18n" / source.name
@@ -264,4 +274,70 @@ def test_repository_catalogs_are_current():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "untranslated keys:" in result.stdout
+    assert "untranslated keys: 0" in result.stdout
+
+
+def test_common_catalog_uk_values_are_nonempty_and_brand_is_explicitly_invariant():
+    catalog = json.loads((REPO_ROOT / "i18n" / "common.json").read_text(encoding="utf-8"))
+    for key, entry in catalog["entries"].items():
+        assert entry["uk"].strip() or entry["en"] == entry["uk"], key
+
+    assert catalog["entries"]["app.title"]["en"] == catalog["entries"]["app.title"]["uk"]
+
+
+NEW_TRANSLATION_KEYS = {
+    "web": (
+        "web.error_prefix",
+        "api.error_saved_session_required",
+        "api.error_request_timeout",
+        "api.error_request_failed",
+        "api.error_http",
+        "api.scan_save_timeout",
+        "api.scan_save_failed",
+        "api.scan_save_unaccepted",
+        "api.scan_load_timeout",
+        "api.scan_load_failed",
+        "api.scan_info_failed",
+        "console.error.object_store_unavailable",
+        "console.error.transition_failed",
+        "console.error.phone_gps_not_saved",
+        "console.error.recorder_failed",
+        "console.error.geolocation_unsupported",
+        "console.error.measurement_failed",
+        "console.error.status_unavailable",
+        "console.error.cache_timeout",
+        "console.error.transition_status_unavailable",
+        "console.error.transition_timeout",
+        "console.error.acquisition_unavailable",
+        "console.error.gps_unavailable",
+        "scan.error.no_stable_surface",
+        "scan.error.restore_failed",
+        "scan.error.prepare_failed",
+        "scan.error.continue_unavailable",
+        "scan.error.continue_base_missing",
+        "scan.error.continue_not_saved",
+        "scan.error.no_object_selected",
+        "scan.storage.preempted",
+        "calc.error.request_failed",
+        "xr.error.secure_context",
+        "xr.error.webxr_unavailable",
+        "xr.error.layer_unavailable",
+        "xr.error.webgl_unavailable",
+        "xr.error.gpu_depth_only",
+        "xr.error.cpu_depth_unavailable",
+        "xr.error.depth_api_unavailable",
+        "xr.error.depth_access_failed",
+    ),
+    "report": ("report.qr_too_long",),
+}
+
+
+def test_new_translation_keys_have_matching_en_uk_placeholders():
+    for namespace, keys in NEW_TRANSLATION_KEYS.items():
+        entries = json.loads((REPO_ROOT / "i18n" / f"{namespace}.json").read_text(encoding="utf-8"))["entries"]
+        for key in keys:
+            assert key in entries, f"missing {namespace} translation key {key}"
+            entry = entries[key]
+            assert set(generator.PLACEHOLDER_PATTERN.findall(entry["en"])) == set(
+                generator.PLACEHOLDER_PATTERN.findall(entry["uk"])
+            ), key

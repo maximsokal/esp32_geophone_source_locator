@@ -314,6 +314,10 @@ def main(argv: list[str] | None = None, *, root: Path | None = None) -> int:
         print(exc, file=sys.stderr)
         return 1
 
+    if untranslated:
+        print(f"untranslated keys: {untranslated}", file=sys.stderr)
+        return 1
+
     if args.check:
         stale = [
             relative.as_posix()

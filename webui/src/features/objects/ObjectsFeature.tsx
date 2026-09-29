@@ -7,7 +7,7 @@ import type {
   RecordingSessionCollection,
 } from '../../domain/device';
 import { activeObject, normalizeCableLength } from '../../domain/device';
-import { useLocale, useT } from '../../i18n';
+import { formatErrorText, useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 import {
   measurementControlLocked,
@@ -45,7 +45,7 @@ interface Props {
   onOpenScanner: (objectId: string, sessionId: string) => void;
 }
 
-type GpsMessage = { kind: 'requesting' } | { kind: 'saved'; accuracy: number } | { kind: 'error'; message: string };
+type GpsMessage = { kind: 'requesting' } | { kind: 'saved'; accuracy: number } | { kind: 'error'; message: unknown };
 
 function formatDuration(milliseconds: number | undefined): string {
   const seconds = Math.max(0, Math.floor((milliseconds ?? 0) / 1000));
@@ -231,7 +231,7 @@ export default function ObjectsFeature(props: Props) {
                     setGpsMessage({ kind: 'requesting' });
                     void props.onBindGps(selected.id)
                       .then((position) => setGpsMessage({ kind: 'saved', accuracy: position.accuracy_m }))
-                      .catch((reason) => setGpsMessage({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) }));
+                      .catch((reason: unknown) => setGpsMessage({ kind: 'error', message: reason }));
                   }}
                 >{t('objects.bind_gps')}</button>
               </div>
@@ -244,7 +244,7 @@ export default function ObjectsFeature(props: Props) {
                   <div><dt>{t('objects.source')}</dt><dd>{selected.location.source}</dd></div>
                 </dl>
               ) : <p>{t('objects.no_base_coordinate')}</p>}
-              {gpsMessage !== null && <small>{gpsMessage.kind === 'requesting' ? t('objects.gps_requesting') : gpsMessage.kind === 'saved' ? t('objects.gps_saved', { accuracy: formatNumber(locale, gpsMessage.accuracy, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : gpsMessage.message}</small>}
+              {gpsMessage !== null && <small>{gpsMessage.kind === 'requesting' ? t('objects.gps_requesting') : gpsMessage.kind === 'saved' ? t('objects.gps_saved', { accuracy: formatNumber(locale, gpsMessage.accuracy, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : formatErrorText(locale, gpsMessage.message)}</small>}
             </article>
 
             <article className="console-card">

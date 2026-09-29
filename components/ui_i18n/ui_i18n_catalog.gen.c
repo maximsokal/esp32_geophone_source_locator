@@ -130,7 +130,6 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "CRIT", /* power.critical */
     "FULL", /* power.full */
     "USB %us", /* power.grace */
-    "LOW BATTERY - CONNECT USB SOON", /* power.low_battery_soon */
     "OFF", /* power.off */
     "%d%%", /* power.percent */
     "USB", /* power.usb */
@@ -361,7 +360,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
 };
 
 static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
-    "", /* app.title */
+    "GeoLocator 3D", /* app.title */
     "ПЕРЕВІРТЕ КАРТУ, CS І ДРОТИ", /* boot.check_wiring */
     "НАТИСНІТЬ ЖИВЛЕННЯ ДЛЯ ВИМКНЕННЯ", /* boot.error_footer */
     "ПОМИЛКА ЗАПУСКУ", /* boot.error_title */
@@ -489,7 +488,6 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "КРИТ.", /* power.critical */
     "ПОВНА", /* power.full */
     "USB %uс", /* power.grace */
-    "", /* power.low_battery_soon */
     "ВИМК.", /* power.off */
     "%d%%", /* power.percent */
     "USB", /* power.usb */
