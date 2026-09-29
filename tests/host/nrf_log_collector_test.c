@@ -789,6 +789,7 @@ static void test_framing_faults_and_retries(void)
         CHECK(run_round_at_current_time(&s_fake).nodes_failed == 1U);
         CHECK(s_fake.status_writes[0] == (corrupt_cases[i].response_type == NRF_LOG_MESSAGE_STATUS ? 2U : 1U));
         CHECK(node_summary(&s_fake, 0U).stored == 0U);
+        s_fake.last_block_cursor[0] = UINT32_MAX;
         s_fake.fault = FAULT_NONE;
         (void)run_round(&s_fake); /* First round consumes the exponential backoff. */
         CHECK(run_round(&s_fake).nodes_succeeded == 1U);
@@ -877,11 +878,13 @@ static void test_capability_boot_and_paging(void)
     summary = node_summary(&s_fake, 0U);
     CHECK(summary.wire_gap_total != 0U);
     const uint32_t prior_boot = summary.boot_id;
+    const uint32_t wire_gaps_before_reboot = summary.wire_gap_total;
     CHECK(fake_init_ring(&s_fake, 0U, prior_boot + 1U) == ESP_OK);
     fake_append(&s_fake, 0U, 1U);
     (void)run_round(&s_fake);
     summary = node_summary(&s_fake, 0U);
     CHECK(summary.boot_id == prior_boot + 1U);
+    CHECK(summary.wire_gap_total == wire_gaps_before_reboot);
     CHECK(summary.wire_gap_total != 0U);
     nrf_log_node_page_t with_marker = node_page(&s_fake, 0U, false, 0U, 0U, 128U);
     bool marker_found = false;
