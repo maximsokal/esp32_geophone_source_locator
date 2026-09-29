@@ -223,6 +223,20 @@ static bool fuse_combinations(
 }
 
 
+static bool velocity_in_bounds(double velocity, const localization_velocity_bounds_t *bounds)
+{
+    if (bounds == NULL || !bounds->set) {
+        return true;
+    }
+    if (bounds->v_min_mps == bounds->v_max_mps) {
+        /* Microsecond pick quantization perturbs fixed-speed subset fits;
+         * the final travel-time refit still fixes the requested speed. */
+        return fabs(velocity - bounds->v_min_mps) <= 0.01 * bounds->v_min_mps;
+    }
+    return velocity >= bounds->v_min_mps && velocity <= bounds->v_max_mps;
+}
+
+
 esp_err_t localization_tdcas_solve(
     const localization_observation_t *observations,
     size_t observation_count,
@@ -236,6 +250,13 @@ esp_err_t localization_tdcas_solve(
         observation_count == 0U ||
         observation_count > LOCALIZATION_TDCAS_MAX_SENSORS
     ) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const localization_velocity_bounds_t *velocity_bounds =
+        config != NULL ? config->velocity_bounds : NULL;
+    const bool bounds_set = velocity_bounds != NULL && velocity_bounds->set;
+    if (bounds_set && localization_velocity_bounds_validate(velocity_bounds) != LOCALIZATION_VELOCITY_BOUNDS_VALID) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -255,6 +276,9 @@ esp_err_t localization_tdcas_solve(
     const size_t k = resolves_depth ? LOCALIZATION_TDCAS_MIN_SENSORS_3D : LOCALIZATION_TDCAS_MIN_SENSORS_PLANAR;
     if (observation_count < k) {
         result->status = LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS;
+        result->velocity_status = bounds_set
+            ? LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE
+            : LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
         return ESP_OK;
     }
 
@@ -336,6 +360,10 @@ esp_err_t localization_tdcas_solve(
         }
 
         ++result->combinations_valid;
+        if (bounds_set && !velocity_in_bounds(velocity, velocity_bounds)) {
+            ++result->combinations_out_of_range;
+            continue;
+        }
         if (candidate_count < TDCAS_MAX_COMBINATIONS) {
             uint32_t members = 0U;
             for (size_t i = 0U; i < k; ++i) {
@@ -386,11 +414,17 @@ esp_err_t localization_tdcas_solve(
     for (uint32_t bits = excluded; bits != 0U; bits &= bits - 1U) {
         --result->sensors_used;
     }
-    result->combinations_filtered = result->combinations_valid - (fused ? used : 0U);
+    const size_t in_range = result->combinations_valid - result->combinations_out_of_range;
+    result->combinations_filtered = in_range - (fused ? used : 0U);
     if (!fused) {
         result->status = result->combinations_valid > 0U
             ? LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION
             : LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
+        if (bounds_set) {
+            result->velocity_status = result->combinations_valid == 0U || in_range * 2U < result->combinations_valid
+                ? LOCALIZATION_VELOCITY_STATUS_INCONSISTENT
+                : LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
+        }
         return ESP_OK;
     }
 
@@ -405,27 +439,34 @@ esp_err_t localization_tdcas_solve(
     for (size_t i = 0U; i < observation_count; ++i) {
         distances[i] = vf_distance(result->position, positions[i]);
     }
-    vf_time_fit_t fit;
-    double velocity = location[3];
-    double t0 = 0.0;
-    double rms_s = 0.0;
-    if (
-        vf_fit_travel_times(times, distances, NULL, observation_count, 1.0, 0.0, -1.0, &fit) &&
-        fit.slowness_s_per_m > 0.0
-    ) {
-        velocity = 1.0 / fit.slowness_s_per_m;
-        t0 = fit.t0_s;
-        rms_s = fit.rms_s;
-    } else {
-        const double slowness = 1.0 / location[3];
-        (void)vf_fit_travel_times(times, distances, NULL, observation_count, 1.0, slowness, 0.0, &fit);
-        t0 = fit.t0_s;
-        rms_s = fit.rms_s;
+    vf_time_fit_t fit = { 0 };
+    bool refit_at_bound = false;
+    if (!vf_fit_travel_times_bounded(
+        times, distances, NULL, observation_count, 1.0, location[3],
+        velocity_bounds, &fit, &refit_at_bound
+    )) {
+        result->status = LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
+        result->velocity_status = bounds_set
+            ? LOCALIZATION_VELOCITY_STATUS_INCONSISTENT
+            : LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
+        return ESP_OK;
     }
+    const double velocity = 1.0 / fit.slowness_s_per_m;
 
     result->velocity_mps = velocity;
-    result->emission_time_us = first_us + (int64_t)llround(t0 * 1.0e6);
-    result->rms_residual_us = rms_s * 1.0e6;
+    result->emission_time_us = first_us + (int64_t)llround(fit.t0_s * 1.0e6);
+    result->rms_residual_us = fit.rms_s * 1.0e6;
     result->status = LOCALIZATION_TDCAS_SOLVED;
+    if (bounds_set) {
+        const bool inconsistent =
+            in_range * 2U < result->combinations_valid ||
+            (config->timing_uncertainty_us > 0.0 &&
+                result->rms_residual_us > 3.0 * config->timing_uncertainty_us);
+        result->velocity_status = inconsistent
+            ? LOCALIZATION_VELOCITY_STATUS_INCONSISTENT
+            : velocity_bounds->v_min_mps < velocity_bounds->v_max_mps && refit_at_bound
+                ? LOCALIZATION_VELOCITY_STATUS_AT_BOUND
+                : LOCALIZATION_VELOCITY_STATUS_OK;
+    }
     return ESP_OK;
 }

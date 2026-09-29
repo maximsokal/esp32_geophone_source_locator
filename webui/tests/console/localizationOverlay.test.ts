@@ -376,3 +376,41 @@ describe('unit conversion: geometry millimetres -> overlay metres', () => {
     expect(buildLocalizationOverlay([], notComputed, null).sensors).toHaveLength(0);
   });
 });
+
+/* MAX-301 S5: velocity-range verdicts in the overlay. */
+describe('velocity range in the overlay', () => {
+  it('never picks an inconsistent method as the default primary result', () => {
+    const inconsistent = run({ method_name: 'suea', computed_at_ms: 3000, velocity_status: 'inconsistent' });
+    const consistent = run({ method_name: 'psafuvs', computed_at_ms: 2000, velocity_status: 'ok' });
+    const model = buildLocalizationOverlay([inconsistent, consistent], geometry, null);
+    expect(model.sectors.map((sector) => sector.method)).toContain('suea');
+    expect(model.selectedMethod).toBe('psafuvs');
+    expect(model.sectors.find((sector) => sector.method === 'suea')?.velocityInconsistent).toBe(true);
+  });
+
+  it('selects nothing by default when every method is inconsistent, but keeps them listed', () => {
+    const model = buildLocalizationOverlay(
+      [run({ method_name: 'suea', velocity_status: 'inconsistent' })], geometry, null,
+    );
+    expect(model.sectors).toHaveLength(1);
+    expect(model.selectedMethod).toBeNull();
+  });
+
+  it('still lets the operator select an inconsistent method explicitly', () => {
+    const model = buildLocalizationOverlay(
+      [run({ method_name: 'suea', velocity_status: 'inconsistent' }), run({ method_name: 'tdcas' })],
+      geometry, 'suea',
+    );
+    expect(model.selectedMethod).toBe('suea');
+  });
+
+  it('converts the residual to a radius at the fastest speed of the range', () => {
+    const ranged = run({
+      rms_residual_us: 1000,
+      propagation_speed_mps: 300,
+      velocity_range: { v_min_mps: 150, v_max_mps: 1500, vp_vs_min: 0, vp_vs_max: 0, source: 'preset' },
+    });
+    expect(sectorRadius(ranged)).toEqual({ radiusM: 1.5, source: 'residual' });
+    expect(sectorRadius(run({ rms_residual_us: 1000, propagation_speed_mps: 300 })).radiusM).toBeCloseTo(0.3);
+  });
+});

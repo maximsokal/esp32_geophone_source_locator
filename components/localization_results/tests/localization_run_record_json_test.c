@@ -540,8 +540,133 @@ static void test_uncertainty_round_trips_and_stays_optional(void)
 }
 
 
+/* MAX-301 S4 (new behaviour): the range and method status round-trip in v5. */
+static void test_velocity_range_and_status_round_trip_in_v5(void)
+{
+    localization_run_record_t original = solved_record();
+    original.velocity_range_min_mps = 3000.0f;
+    original.velocity_range_max_mps = 4800.0f;
+    original.velocity_range_vp_vs_min = 1.55f;
+    original.velocity_range_vp_vs_max = 1.8f;
+    original.velocity_range_source = LOCALIZATION_RUN_VELOCITY_SOURCE_PRESET;
+    original.velocity_status = LOCALIZATION_RUN_VELOCITY_STATUS_AT_BOUND;
+
+    char *json = NULL;
+    assert(localization_run_record_to_json(&original, &json) == ESP_OK);
+    assert(strstr(json, "\"schema_version\":5") != NULL);
+    assert(strstr(json, "\"velocity_range\"") != NULL);
+    assert(strstr(json, "\"source\":\"preset\"") != NULL);
+    assert(strstr(json, "\"velocity_status\":\"at_bound\"") != NULL);
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.schema_version == 5U);
+    assert(parsed.velocity_range_min_mps == 3000.0f);
+    assert(parsed.velocity_range_max_mps == 4800.0f);
+    assert(fabsf(parsed.velocity_range_vp_vs_min - 1.55f) < 1e-6f);
+    assert(fabsf(parsed.velocity_range_vp_vs_max - 1.8f) < 1e-6f);
+    assert(parsed.velocity_range_source == LOCALIZATION_RUN_VELOCITY_SOURCE_PRESET);
+    assert(parsed.velocity_status == LOCALIZATION_RUN_VELOCITY_STATUS_AT_BOUND);
+    free(json);
+
+    /* No range and UNKNOWN status: nothing extra is written. */
+    localization_run_record_t plain = solved_record();
+    assert(localization_run_record_to_json(&plain, &json) == ESP_OK);
+    assert(strstr(json, "velocity_range") == NULL);
+    assert(strstr(json, "velocity_status") == NULL);
+    free(json);
+}
+
+
+/* MAX-301 S4 (compatibility: passes on old and new code): a v4 record reads,
+ * and its range/status stay UNKNOWN. */
+static void test_v4_record_reads_with_unknown_velocity_range(void)
+{
+    const char *v4 =
+        "{\"schema_version\":4,\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"computed_at_ms\":1,\"kind\":\"individual_method\",\"method_name\":\"suea\","
+        "\"method_version\":1,\"channel_mask_used\":15,\"channel_mask_rejected\":0,"
+        "\"dimensionality\":\"capable_3d\",\"geometry_computed_at_ms\":1,"
+        "\"propagation_model_name\":\"\",\"propagation_speed_mps\":400,"
+        "\"propagation_speed_uncertainty_mps\":250,\"confidence_score\":0.5,"
+        "\"solved\":true,\"failure_class\":\"none\",\"uncertainty_too_high\":false,"
+        "\"source_position\":{\"x_m\":1,\"y_m\":2,\"z_m\":-1},\"emission_time_us\":0,"
+        "\"rms_residual_us\":10,\"iterations\":0,\"converged\":false}";
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(v4, &parsed) == ESP_OK);
+    assert(parsed.schema_version == 4U);
+    assert(parsed.velocity_range_min_mps == 0.0f && parsed.velocity_range_max_mps == 0.0f);
+    assert(parsed.velocity_range_source == LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN);
+    assert(parsed.velocity_status == LOCALIZATION_RUN_VELOCITY_STATUS_UNKNOWN);
+}
+
+
+/* MAX-301 S4 (new behaviour): malformed range/status is rejected on both
+ * sides, never silently read as a narrower or unknown range. */
+static void test_malformed_velocity_range_is_rejected(void)
+{
+    localization_run_record_t bad = solved_record();
+    bad.velocity_range_min_mps = 4800.0f;
+    bad.velocity_range_max_mps = 3000.0f;          /* inverted */
+    bad.velocity_range_source = LOCALIZATION_RUN_VELOCITY_SOURCE_USER;
+    char *json = NULL;
+    assert(localization_run_record_to_json(&bad, &json) == ESP_ERR_INVALID_ARG);
+
+    bad = solved_record();
+    bad.velocity_status = 9U;                      /* not a known status */
+    assert(localization_run_record_to_json(&bad, &json) == ESP_ERR_INVALID_ARG);
+
+    bad = solved_record();
+    bad.velocity_range_min_mps = 100.0f;
+    bad.velocity_range_max_mps = 200.0f;
+    bad.velocity_range_vp_vs_min = 1.5f;           /* only one Vp/Vs end */
+    bad.velocity_range_source = LOCALIZATION_RUN_VELOCITY_SOURCE_USER;
+    assert(localization_run_record_to_json(&bad, &json) == ESP_ERR_INVALID_ARG);
+
+    localization_run_record_t good = solved_record();
+    good.velocity_range_min_mps = 100.0f;
+    good.velocity_range_max_mps = 200.0f;
+    good.velocity_range_source = LOCALIZATION_RUN_VELOCITY_SOURCE_USER;
+    assert(localization_run_record_to_json(&good, &json) == ESP_OK);
+    localization_run_record_t parsed;
+
+    char *tampered = malloc(strlen(json) + 16U);
+    assert(tampered != NULL);
+    const char *at = strstr(json, "\"user\"");
+    assert(at != NULL);
+    const size_t head = (size_t)(at - json);
+    memcpy(tampered, json, head);
+    strcpy(tampered + head, "\"guess\"");
+    strcat(tampered, at + strlen("\"user\""));
+    assert(localization_run_record_from_json(tampered, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(tampered);
+    free(json);
+}
+
+
+/* MAX-301 decision C (new behaviour): an inconsistent run is never primary. */
+static void test_inconsistent_run_is_not_a_primary_candidate(void)
+{
+    localization_run_record_t record = solved_record();
+    assert(localization_run_record_is_primary_candidate(&record));          /* UNKNOWN (v3/v4) */
+    record.velocity_status = LOCALIZATION_RUN_VELOCITY_STATUS_OK;
+    assert(localization_run_record_is_primary_candidate(&record));
+    record.velocity_status = LOCALIZATION_RUN_VELOCITY_STATUS_AT_BOUND;
+    assert(localization_run_record_is_primary_candidate(&record));          /* warned, still usable */
+    record.velocity_status = LOCALIZATION_RUN_VELOCITY_STATUS_INCONSISTENT;
+    assert(!localization_run_record_is_primary_candidate(&record));
+    localization_run_record_t rejected = rejected_record();
+    assert(!localization_run_record_is_primary_candidate(&rejected));
+    assert(!localization_run_record_is_primary_candidate(NULL));
+}
+
+
 int main(void)
 {
+    test_inconsistent_run_is_not_a_primary_candidate();
+    test_velocity_range_and_status_round_trip_in_v5();
+    test_v4_record_reads_with_unknown_velocity_range();
+    test_malformed_velocity_range_is_rejected();
     test_solved_record_round_trips();
     test_rejected_record_round_trips_with_reason();
     test_old_rejected_record_without_failure_class_reads_as_none();

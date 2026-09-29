@@ -4,6 +4,7 @@ import {
   saveCalcSettings,
   type CalcSettingsProfile,
   type CalcSettingsResponse,
+  type LocalizationVelocityRange,
   type SaveCalcSettingsPayload,
 } from '../../api/deviceApi';
 import { useLocale, useT, type I18nKey } from '../../i18n';
@@ -57,6 +58,21 @@ function numberValue(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** MAX-301: the stored velocity range, when the device reports one. */
+function velocityRangeOf(settings: CalcSettingsProfile | null | undefined): LocalizationVelocityRange | undefined {
+  const raw = (settings as { velocity_range?: unknown } | null | undefined)?.velocity_range;
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const range = raw as Partial<LocalizationVelocityRange>;
+  return typeof range.v_min_mps === 'number' && typeof range.v_max_mps === 'number'
+    ? range as LocalizationVelocityRange
+    : undefined;
+}
+
+/** Mirrors the firmware rule: 50 <= min <= max <= 8000 and max/min <= 10. */
+function velocityRangeValid(min: number | null, max: number | null): boolean {
+  return min !== null && max !== null && min >= 50 && max <= 8000 && min <= max && max / min <= 10;
+}
+
 function initialAdvanced(response: CalcSettingsResponse): Record<string, string> {
   const source = response.settings ?? response.standardProcessing;
   return {
@@ -106,12 +122,19 @@ export default function MaterialSettingsForm({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [convertedToCustom, setConvertedToCustom] = useState(false);
+  /* MAX-301: an explicit custom range; empty = let the device derive it. */
+  const [rangeMin, setRangeMin] = useState('');
+  const [rangeMax, setRangeMax] = useState('');
 
   const applyResponse = (next: CalcSettingsResponse): void => {
     setResponse(next);
     setMaterial(next.settings?.material ?? '');
     setSpeed(inputText(next.settings?.propagation_speed_mps));
     setUncertainty(inputText(next.settings?.propagation_speed_uncertainty_mps));
+    const storedRange = velocityRangeOf(next.settings);
+    const userRange = storedRange?.source === 'user' ? storedRange : undefined;
+    setRangeMin(inputText(userRange?.v_min_mps));
+    setRangeMax(inputText(userRange?.v_max_mps));
     setAdvanced(initialAdvanced(next));
     setConvertedToCustom(false);
     onSettingsLoaded?.(next.settings);
@@ -147,9 +170,11 @@ export default function MaterialSettingsForm({
     }
   };
 
-  const editMaterialValue = (field: 'speed' | 'uncertainty', value: string): void => {
+  const editMaterialValue = (field: 'speed' | 'uncertainty' | 'rangeMin' | 'rangeMax', value: string): void => {
     if (field === 'speed') setSpeed(value);
-    else setUncertainty(value);
+    else if (field === 'uncertainty') setUncertainty(value);
+    else if (field === 'rangeMin') setRangeMin(value);
+    else setRangeMax(value);
     if (material !== '' && material !== 'custom') {
       setMaterial('custom');
       setConvertedToCustom(true);
@@ -181,6 +206,12 @@ export default function MaterialSettingsForm({
       validation.push('workflow.material.validation.uncertainty');
     }
   }
+  const rangeMinValue = numberValue(rangeMin);
+  const rangeMaxValue = numberValue(rangeMax);
+  const rangeEntered = rangeMin.trim() !== '' || rangeMax.trim() !== '';
+  if (rangeEntered && !velocityRangeValid(rangeMinValue, rangeMaxValue)) {
+    validation.push('workflow.material.validation.range');
+  }
   if (response !== null && (sta === null || lta === null || sta <= 0 || lta <= sta)) {
     validation.push('workflow.material.validation.sta_lta');
   } else if (response !== null && (ratio === null || ratio <= 0 || ratio >= (lta as number) / (sta as number))) {
@@ -199,6 +230,15 @@ export default function MaterialSettingsForm({
       if (speedValue === null || uncertaintyValue === null) return;
       payload.propagation_speed_mps = speedValue;
       payload.propagation_speed_uncertainty_mps = uncertaintyValue;
+      if (rangeEntered && rangeMinValue !== null && rangeMaxValue !== null) {
+        payload.velocity_range = {
+          v_min_mps: rangeMinValue,
+          v_max_mps: rangeMaxValue,
+          vp_vs_min: 0,
+          vp_vs_max: 0,
+          source: 'user',
+        };
+      }
     }
     Object.assign(payload, changedAdvanced(advanced, baseline));
     setSaving(true);
@@ -233,6 +273,12 @@ export default function MaterialSettingsForm({
           speed: formatNumber(locale, settings.propagation_speed_mps),
           sigma: formatNumber(locale, settings.propagation_speed_uncertainty_mps),
         })}</p>
+        {velocityRangeOf(settings) !== undefined && (
+          <p>{t('workflow.material.range_current', {
+            min: formatNumber(locale, velocityRangeOf(settings)?.v_min_mps ?? 0),
+            max: formatNumber(locale, velocityRangeOf(settings)?.v_max_mps ?? 0),
+          })}</p>
+        )}
         <button type="button" className="secondary" onClick={() => setEditing(true)}>
           {t('workflow.material.change')}
         </button>
@@ -284,6 +330,34 @@ export default function MaterialSettingsForm({
                 disabled={loading || saving || material === ''}
                 value={uncertainty}
                 onChange={(event) => editMaterialValue('uncertainty', event.target.value)}
+              />
+            </label>
+            <label>
+              <span>{t('workflow.material.range_min')}</span>
+              <input
+                aria-label={t('workflow.material.range_min')}
+                type="number"
+                min="50"
+                max="8000"
+                step="any"
+                placeholder={t('workflow.material.range_auto')}
+                disabled={loading || saving || material === ''}
+                value={rangeMin}
+                onChange={(event) => editMaterialValue('rangeMin', event.target.value)}
+              />
+            </label>
+            <label>
+              <span>{t('workflow.material.range_max')}</span>
+              <input
+                aria-label={t('workflow.material.range_max')}
+                type="number"
+                min="50"
+                max="8000"
+                step="any"
+                placeholder={t('workflow.material.range_auto')}
+                disabled={loading || saving || material === ''}
+                value={rangeMax}
+                onChange={(event) => editMaterialValue('rangeMax', event.target.value)}
               />
             </label>
           </div>

@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "localization_velocity_bounds",
+      "sources": ["tests/host/localization_velocity_bounds_test.c"],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_vf_math_301",
+      "sources": [
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/tests/localization_vf_math_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_tdcas_301",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_tdcas.c",
+        "components/localization_velocity_free/tests/localization_tdcas_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_psafuvs_301",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_psafuvs.c",
+        "components/localization_velocity_free/tests/localization_psafuvs_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "localization_suea_301",
+      "sources": [
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_suea.c",
+        "components/localization_velocity_free/tests/localization_suea_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}

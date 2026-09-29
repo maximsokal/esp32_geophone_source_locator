@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "localization.h"
+#include "localization_velocity_bounds.h"
 
 /*
  * PSAFUVS -- MS/AE source location using arrival times of P and S waves
@@ -67,6 +68,10 @@ typedef struct
      * straight-ray equations cannot hold for it). */
     localization_ray_filter_t ray_filter;
 
+    /* NULL/unset preserves velocity-free behavior. */
+    const localization_velocity_bounds_t *velocity_bounds;
+    double timing_uncertainty_us;
+
 } localization_psafuvs_config_t;
 
 
@@ -112,6 +117,7 @@ typedef struct
     double rms_residual_us;
     uint8_t iterations;
     bool converged;
+    localization_velocity_status_t velocity_status;
 
 } localization_psafuvs_result_t;
 

@@ -29,6 +29,7 @@
         "components/workflow_service/include",
         "components/localization_job/include",
         "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
         "components/localization/include",
         "components/geophone_events/include"
       ],
@@ -86,6 +87,7 @@
         "components/storage_manager",
         "components/storage_manager/include",
         "components/localization_job/include",
+        "components/localization_velocity_free/include",
         "components/web_server"
       ],
       "defines": ["_POSIX_C_SOURCE=200809L"],

@@ -571,6 +571,50 @@ static void test_fusion_mapping_groups_picks_and_excludes_energy(void)
 }
 
 
+/* MAX-301 S3: the gate's slowest speed. SCALAR_DERIVED/unset keep the old
+ * speed - sigma bit for bit (compatibility); USER/PRESET ranges use v_min
+ * (new behaviour: the old code had no range input at all). */
+static void test_gate_min_speed_follows_the_range_source(void)
+{
+    localization_calculate_config_t config = {0};
+    config.propagation_speed_mps = 300.0;
+    config.propagation_speed_uncertainty_mps = 150.0;
+    assert(localization_calculate_gate_min_speed_mps(&config) == 150.0);   /* unset range */
+
+    config.velocity_range.bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 100.0f, .v_max_mps = 900.0f, .set = true,
+    };
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED;
+    assert(localization_calculate_gate_min_speed_mps(&config) == 150.0);   /* legacy rule kept */
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_UNKNOWN;
+    assert(localization_calculate_gate_min_speed_mps(&config) == 150.0);
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_USER;
+    assert(localization_calculate_gate_min_speed_mps(&config) == 100.0);
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET;
+    assert(localization_calculate_gate_min_speed_mps(&config) == 100.0);
+
+    /* 5 m apart, 40 ms apart, 2 ms tolerance: the legacy 150 m/s bound allows
+     * 35.3 ms and rejects the pair; a 100 m/s user range allows 52 ms. */
+    const localization_point3d_t positions[2] = { { 0.0, 0.0, 0.0 }, { 5.0, 0.0, 0.0 } };
+    const double arrival_s[2] = { 1.000, 1.040 };
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED;
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 2U, 0x3U, localization_calculate_gate_min_speed_mps(&config), 0.0, 0.002
+    ) != 0x3U);
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_USER;
+    assert(localization_calculate_consistent_pick_mask(
+        arrival_s, positions, 2U, 0x3U, localization_calculate_gate_min_speed_mps(&config), 0.0, 0.002
+    ) == 0x3U);
+
+    /* The legacy call (speed, sigma) and the helper path agree bit for bit. */
+    config.velocity_range.source = LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED;
+    assert(localization_calculate_consistent_pick_mask(arrival_s, positions, 2U, 0x3U, 300.0, 150.0, 0.002) ==
+           localization_calculate_consistent_pick_mask(
+               arrival_s, positions, 2U, 0x3U, localization_calculate_gate_min_speed_mps(&config), 0.0, 0.002));
+    assert(localization_calculate_gate_min_speed_mps(NULL) == 0.0);
+}
+
+
 /* MAX-209: four sensors 5 m apart at 300 m/s allow at most ~23.6 ms of
  * arrival difference across the diagonal. Channel 3 "arrived" 0.5 s after
  * the others (a footstep, not the event) and must be excluded. */
@@ -709,8 +753,11 @@ static void test_tdcas_adapter_reports_estimated_velocity_and_reasons(void)
     result.velocity_mps = 236.5;
     result.emission_time_us = 777;
     result.rms_residual_us = 10.0;
+    result.velocity_status = LOCALIZATION_VELOCITY_STATUS_AT_BOUND;
     localization_run_record_t record;
-    localization_calculate_tdcas_to_run_record(&context, &result, 0x3FU, 0xC0U, 2U, 10.0, &record);
+    localization_velocity_status_t velocity_status = LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
+    localization_calculate_tdcas_to_run_record(&context, &result, 0x3FU, 0xC0U, 2U, 10.0, &record, &velocity_status);
+    assert(velocity_status == LOCALIZATION_VELOCITY_STATUS_AT_BOUND);
     assert(record.solved);
     assert(strcmp(record.method_name, "tdcas") == 0);
     assert(record.kind == LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD);
@@ -726,16 +773,17 @@ static void test_tdcas_adapter_reports_estimated_velocity_and_reasons(void)
     result.status = LOCALIZATION_TDCAS_INSUFFICIENT_SENSORS;
     result.planar_layout = true;
     result.sensors_used = 4U;
-    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
+    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record, &velocity_status);
     assert(!record.solved);
     assert(strstr(record.rejection_reason, "needs 5") != NULL);
     assert(strstr(record.rejection_reason, "have 4") != NULL);
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     result.status = LOCALIZATION_TDCAS_NO_ALLOWED_COMBINATION;
-    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record);
+    localization_calculate_tdcas_to_run_record(&context, &result, 0xFU, 0U, 2U, 10.0, &record, &velocity_status);
     assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
-    localization_calculate_tdcas_to_run_record(&context, NULL, 0xFU, 0U, 2U, 10.0, &record);
+    localization_calculate_tdcas_to_run_record(&context, NULL, 0xFU, 0U, 2U, 10.0, &record, &velocity_status);
+    assert(velocity_status == LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE);
     assert(!record.solved && record.rejection_reason[0] != '\0');
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
 }
@@ -753,10 +801,13 @@ static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
     result.rms_residual_us = 0.0;
     result.iterations = 4U;
     result.converged = true;
+    result.velocity_status = LOCALIZATION_VELOCITY_STATUS_OK;
     localization_run_record_t record;
+    localization_velocity_status_t velocity_status = LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
     localization_calculate_psafuvs_to_run_record(
-        &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record
+        &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record, &velocity_status
     );
+    assert(velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
     assert(record.solved);
     assert(strcmp(record.method_name, "psafuvs") == 0);
     assert(record.estimated_p_velocity_mps == 320.0 && record.estimated_s_velocity_mps == 170.0);
@@ -766,8 +817,9 @@ static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
     /* Not attempted: the caller's reason is kept verbatim. */
     localization_calculate_psafuvs_to_run_record(
         &context, NULL, "S-wave picking not configured", LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
-        0U, 0xFU, 1U, 20.0, &record
+        0U, 0xFU, 1U, 20.0, &record, &velocity_status
     );
+    assert(velocity_status == LOCALIZATION_VELOCITY_STATUS_NOT_APPLICABLE);
     assert(!record.solved);
     assert(strcmp(record.rejection_reason, "S-wave picking not configured") == 0);
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
@@ -787,7 +839,7 @@ static void test_psafuvs_adapter_reports_both_velocities_and_reasons(void)
     for (size_t i = 0U; i < sizeof(statuses) / sizeof(statuses[0]); ++i) {
         result.status = statuses[i];
         localization_calculate_psafuvs_to_run_record(
-            &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record
+            &context, &result, NULL, LOCALIZATION_FAILURE_CLASS_INTERNAL, 0xFU, 0U, 1U, 20.0, &record, &velocity_status
         );
         assert(!record.solved && record.rejection_reason[0] != '\0');
         assert(record.estimated_p_velocity_mps == 0.0);
@@ -805,23 +857,26 @@ static void test_suea_adapter_and_redundancy(void)
     result.best_position = (localization_point3d_t) { 2.0, 1.0, -0.8 };
     result.best_residual_rms_us = 20.0;
     result.velocity_mps = 251.0;
+    result.velocity_status = LOCALIZATION_VELOCITY_STATUS_INCONSISTENT;
     localization_run_record_t record;
-    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record);
+    localization_velocity_status_t velocity_status = LOCALIZATION_VELOCITY_STATUS_UNKNOWN;
+    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record, &velocity_status);
+    assert(velocity_status == LOCALIZATION_VELOCITY_STATUS_INCONSISTENT);
     assert(record.solved && strcmp(record.method_name, "suea") == 0);
     assert(record.estimated_p_velocity_mps == 251.0);
     assert(nearly_equal(record.confidence_score, exp(-0.5), 1e-12));
 
     result.status = LOCALIZATION_SUEA_INSUFFICIENT_PICKS;
     result.pick_mask_unreachable = 0x2U;
-    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
+    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record, &velocity_status);
     assert(!record.solved && strstr(record.rejection_reason, "empty space") != NULL);
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
     result.status = LOCALIZATION_SUEA_INSUFFICIENT_PICKS;
     result.pick_mask_unreachable = 0U;
-    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record);
+    localization_calculate_suea_to_run_record(&context, &result, 0xFU, 0U, 1U, 20.0, &record, &velocity_status);
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN);
     result.status = LOCALIZATION_SUEA_NO_ALLOWED_CANDIDATE;
-    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record);
+    localization_calculate_suea_to_run_record(&context, &result, 0xDU, 0x2U, 1U, 20.0, &record, &velocity_status);
     assert(strstr(record.rejection_reason, "scan occupancy") != NULL);
     localization_calculate_test_assert_rejection_class(&record, LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS);
 
@@ -1384,6 +1439,7 @@ int main(void)
     test_analysis_window_respects_time_and_psram_at_supported_rates();
     test_fusion_mapping_groups_picks_and_excludes_energy();
     test_consistency_gate_rejects_physically_impossible_pick();
+    test_gate_min_speed_follows_the_range_source();
     test_xcorr_refines_relative_delay_to_sub_sample();
     test_fractional_arrival_time();
     test_geometry_computed_at_ms_takes_the_latest_computed_pod();

@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "localization.h"
+#include "localization_velocity_bounds.h"
 
 /*
  * TDCAS -- Three-Dimensional Comprehensive Analytical Solutions for
@@ -63,6 +64,10 @@ typedef struct
      * straight-ray equations cannot hold for it. */
     localization_ray_filter_t ray_filter;
 
+    /* NULL/unset preserves velocity-free behavior. */
+    const localization_velocity_bounds_t *velocity_bounds;
+    double timing_uncertainty_us;
+
 } localization_tdcas_config_t;
 
 
@@ -96,7 +101,8 @@ typedef struct
     uint32_t sensor_mask_obstructed; /* bit i: excluded by the ray filter */
     size_t combinations_total;
     size_t combinations_valid;
-    size_t combinations_filtered;    /* valid but not fused (filters) */
+    size_t combinations_filtered;    /* in-range valid but not fused (filters) */
+    size_t combinations_out_of_range;
 
     localization_point3d_t position;
 
@@ -112,6 +118,7 @@ typedef struct
     double velocity_scale_mps;
     int64_t emission_time_us;
     double rms_residual_us;
+    localization_velocity_status_t velocity_status;
 
 } localization_tdcas_result_t;
 

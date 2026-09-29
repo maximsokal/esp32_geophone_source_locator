@@ -271,13 +271,15 @@ static esp_err_t ui_workflow_load_session_result(
     const localization_run_record_t *source = NULL;
     for (size_t i = 0U; i < run_count; ++i) {
         const localization_run_record_t *candidate = &run_records[i];
-        if (!candidate->solved || (latest_picks != NULL && candidate->computed_at_ms != latest_picks->computed_at_ms)) continue;
+        if (!localization_run_record_is_primary_candidate(candidate) ||
+            (latest_picks != NULL && candidate->computed_at_ms != latest_picks->computed_at_ms)) continue;
         if (source == NULL || candidate->confidence_score > source->confidence_score) source = candidate;
     }
     if (source == NULL && latest_picks != NULL) {
         for (size_t i = 0U; i < run_count; ++i) {
             const localization_run_record_t *candidate = &run_records[i];
-            if (candidate->solved && (source == NULL || candidate->computed_at_ms > source->computed_at_ms)) source = candidate;
+            if (localization_run_record_is_primary_candidate(candidate) &&
+                (source == NULL || candidate->computed_at_ms > source->computed_at_ms)) source = candidate;
         }
     }
     if (source != NULL) {

@@ -20,6 +20,7 @@
         "components/workflow_service/include",
         "components/localization_job/include",
         "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
         "components/localization/include",
         "components/geophone_events/include",
         "nRF54L15/include"

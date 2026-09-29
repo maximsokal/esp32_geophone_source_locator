@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   fetchLocalizationRuns: vi.fn(),
   fetchScanInfo: vi.fn(),
   fetchDeviceStatus: vi.fn(),
+  sendControl: vi.fn(),
 }));
 
 vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
@@ -104,6 +105,7 @@ beforeEach(() => {
   api.fetchLocalizationRuns.mockReset().mockResolvedValue(runListing());
   api.fetchScanInfo.mockReset().mockResolvedValue({ present: false, bytes: 0 });
   api.fetchDeviceStatus.mockReset().mockResolvedValue({ recording_sessions: { sessions: [] } });
+  api.sendControl.mockReset().mockResolvedValue({ ok: false, action: 'calculate_source', error: 'test error' });
 });
 
 afterEach(() => {
@@ -253,6 +255,53 @@ it('prefills the manual calculate form from the saved object settings', async ()
   renderer.unmount();
 });
 
+async function calculatePanel(settings: CalcSettingsProfile): Promise<ReactTestRenderer> {
+  api.getCalcSettings.mockResolvedValueOnce(settingsResponse(settings));
+  return mount(createElement(LocalizationCalculatePanel, {
+    objectId: 'OBJ_0001',
+    sessionId: 'S000001',
+    busy: false,
+    onClose: () => undefined,
+  }));
+}
+
+async function submitCalculate(renderer: ReactTestRenderer): Promise<Record<string, unknown>> {
+  await act(async () => {
+    button(renderer, 'calc.calculate').props.onClick();
+    await Promise.resolve();
+  });
+  expect(api.sendControl).toHaveBeenCalledWith('calculate_source', expect.any(Object));
+  return api.sendControl.mock.calls[0][1] as Record<string, unknown>;
+}
+
+it('sends the saved preset id when the manual values are unchanged', async () => {
+  const renderer = await calculatePanel(profile());
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'concrete' });
+  renderer.unmount();
+});
+
+it('sends custom after a speed edit and restores the preset id when edited back', async () => {
+  const renderer = await calculatePanel(profile());
+  const speed = renderer.root.findByProps({ 'data-testid': 'manual-propagation-speed' });
+  await act(async () => speed.props.onChange({ target: { value: '4100' } }));
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'custom' });
+
+  api.sendControl.mockClear();
+  await act(async () => speed.props.onChange({ target: { value: '4000' } }));
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'concrete' });
+  renderer.unmount();
+});
+
+it('keeps a custom-material object custom in the calculate request', async () => {
+  const renderer = await calculatePanel(profile({
+    material: 'custom',
+    propagation_speed_mps: 4550,
+    propagation_speed_uncertainty_mps: 350,
+  }));
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'custom' });
+  renderer.unmount();
+});
+
 it('refreshes workflow status after saving so CALCULATE_SOURCES appears', async () => {
   const stopped = (ready: boolean): DeviceStatus => ({
     workflow: {
@@ -311,4 +360,66 @@ it('shows a run material name in the workflow result view', async () => {
     name: translate('en', 'workflow.material.name.brick_masonry'),
   }));
   renderer.unmount();
+});
+
+/* MAX-301 S5: an explicit velocity range. */
+describe('velocity range editor', () => {
+  it('saves a custom min/max as a user velocity range', async () => {
+    const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
+    await act(async () => { renderer.root.findByType('select').props.onChange({ target: { value: 'custom' } }); });
+    await act(async () => {
+      input(renderer, translate('en', 'calc.propagation_speed')).props.onChange({ target: { value: '400' } });
+      input(renderer, translate('en', 'calc.speed_uncertainty')).props.onChange({ target: { value: '200' } });
+      input(renderer, translate('en', 'workflow.material.range_min')).props.onChange({ target: { value: '150' } });
+      input(renderer, translate('en', 'workflow.material.range_max')).props.onChange({ target: { value: '1200' } });
+    });
+    await act(async () => {
+      button(renderer, 'workflow.material.save').props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.saveCalcSettings).toHaveBeenCalledWith('OBJ_0001', expect.objectContaining({
+      material: 'custom',
+      velocity_range: { v_min_mps: 150, v_max_mps: 1200, vp_vs_min: 0, vp_vs_max: 0, source: 'user' },
+    }));
+    renderer.unmount();
+  });
+
+  it('blocks saving a range wider than 10x or with one limit missing, in both languages', async () => {
+    await loadUkrainianCatalog();
+    const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
+    await act(async () => { renderer.root.findByType('select').props.onChange({ target: { value: 'custom' } }); });
+    await act(async () => {
+      input(renderer, translate('en', 'calc.propagation_speed')).props.onChange({ target: { value: '400' } });
+      input(renderer, translate('en', 'calc.speed_uncertainty')).props.onChange({ target: { value: '200' } });
+      input(renderer, translate('en', 'workflow.material.range_min')).props.onChange({ target: { value: '100' } });
+      input(renderer, translate('en', 'workflow.material.range_max')).props.onChange({ target: { value: '1500' } });
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'workflow.material.validation.range'));
+    await act(async () => {
+      input(renderer, translate('en', 'workflow.material.range_max')).props.onChange({ target: { value: '' } });
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'workflow.material.validation.range'));
+    expect(translate('uk', 'workflow.material.validation.range')).not.toBe(translate('en', 'workflow.material.validation.range'));
+    renderer.unmount();
+  });
+
+  it('sends a stored user range with the calculate request while speed and sigma are unchanged', async () => {
+    const userRange = { v_min_mps: 150, v_max_mps: 1200, vp_vs_min: 0, vp_vs_max: 0, source: 'user' };
+    const renderer = await calculatePanel(profile({
+      material: 'custom',
+      propagation_speed_mps: 400,
+      propagation_speed_uncertainty_mps: 200,
+      velocity_range: userRange,
+    } as unknown as Partial<CalcSettingsProfile>));
+    expect(await submitCalculate(renderer)).toMatchObject({ material: 'custom', velocity_range: userRange });
+    renderer.unmount();
+  });
+
+  it('lets the device derive the range for a preset object', async () => {
+    const renderer = await calculatePanel(profile());
+    expect(await submitCalculate(renderer)).not.toHaveProperty('velocity_range');
+    renderer.unmount();
+  });
 });

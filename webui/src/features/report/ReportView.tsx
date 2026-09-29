@@ -228,7 +228,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
             <tbody>
               {overlay.sectors.map((s) => (
                 <tr key={s.method}>
-                  <td>{s.method}{s.kind === 'joint_fusion' ? ` (${tr('report.joint')})` : ''}{s.emphasis === 'selected' ? ' *' : ''}</td>
+                  <td>{s.method}{s.kind === 'joint_fusion' ? ` (${tr('report.joint')})` : ''}{s.emphasis === 'selected' ? ' *' : ''}{s.velocityInconsistent ? ` (${tr('report.velocity_inconsistent')})` : ''}</td>
                   <td>{fmt(s.position.x_m, locale)} / {fmt(s.position.y_m, locale)} / {fmt(s.position.z_m, locale)}</td>
                   <td>{formatDistance(locale, s.radiusM)}{s.radiusSource === 'nominal' ? ` (${tr('report.nominal')})` : s.radiusSource === 'posterior' ? ` (${tr('report.two_sd')})` : ''}</td>
                   <td>{fmt(s.confidence, locale)}</td>

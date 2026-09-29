@@ -107,6 +107,58 @@ static bool failure_class_from_name(const char *name, localization_failure_class
 }
 
 
+/* MAX-301 (v5): names for the velocity range source and the method status. */
+static const char *const s_velocity_source_names[] = {
+    "unknown", "preset", "user", "scalar_derived", "measured_reserved",
+};
+static const char *const s_velocity_status_names[] = {
+    "unknown", "not_applicable", "ok", "at_bound", "inconsistent",
+};
+#define VELOCITY_NAME_COUNT(names) (sizeof(names) / sizeof((names)[0]))
+
+
+static bool velocity_name_index(
+    const char *const *names, size_t count, const char *name, uint8_t *index_out
+)
+{
+    if (name == NULL) return false;
+    for (size_t i = 0U; i < count; ++i) {
+        if (strcmp(names[i], name) == 0) {
+            *index_out = (uint8_t)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+
+/* No range (all zero, source UNKNOWN) is valid; a present range needs a
+ * known source, finite 0 < min <= max, and a Vp/Vs pair set together with
+ * 0 < min <= max. The calculate layer enforces the stricter policy limits. */
+static bool velocity_range_valid(const localization_run_record_t *record)
+{
+    if (
+        record->velocity_range_source >= VELOCITY_NAME_COUNT(s_velocity_source_names) ||
+        record->velocity_status >= VELOCITY_NAME_COUNT(s_velocity_status_names)
+    ) {
+        return false;
+    }
+    const float min = record->velocity_range_min_mps;
+    const float max = record->velocity_range_max_mps;
+    const float r_min = record->velocity_range_vp_vs_min;
+    const float r_max = record->velocity_range_vp_vs_max;
+    if (!isfinite(min) || !isfinite(max) || !isfinite(r_min) || !isfinite(r_max)) return false;
+    const bool has_range = min != 0.0f || max != 0.0f;
+    if (!has_range) {
+        return r_min == 0.0f && r_max == 0.0f &&
+            record->velocity_range_source == LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN;
+    }
+    if (!(min > 0.0f && min <= max)) return false;
+    if (r_min == 0.0f && r_max == 0.0f) return true;
+    return r_min > 0.0f && r_min <= r_max;
+}
+
+
 static bool point_finite(const localization_point3d_t *p)
 {
     return isfinite(p->x_m) && isfinite(p->y_m) && isfinite(p->z_m);
@@ -204,6 +256,10 @@ esp_err_t localization_run_record_to_json(
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (!velocity_range_valid(record)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (
         record->solved &&
         (
@@ -272,6 +328,25 @@ esp_err_t localization_run_record_to_json(
 
     if (ok && record->material[0] != '\0') {
         ok = cJSON_AddStringToObject(root, "material", record->material) != NULL;
+    }
+
+    /* MAX-301 (v5): written only when present, so a record without a range
+     * serializes exactly as before apart from its schema number. */
+    if (ok && (record->velocity_range_min_mps != 0.0f || record->velocity_range_max_mps != 0.0f)) {
+        cJSON *range = cJSON_AddObjectToObject(root, "velocity_range");
+        ok = range != NULL &&
+            cJSON_AddNumberToObject(range, "v_min_mps", record->velocity_range_min_mps) != NULL &&
+            cJSON_AddNumberToObject(range, "v_max_mps", record->velocity_range_max_mps) != NULL &&
+            cJSON_AddNumberToObject(range, "vp_vs_min", record->velocity_range_vp_vs_min) != NULL &&
+            cJSON_AddNumberToObject(range, "vp_vs_max", record->velocity_range_vp_vs_max) != NULL &&
+            cJSON_AddStringToObject(
+                range, "source", s_velocity_source_names[record->velocity_range_source]
+            ) != NULL;
+    }
+    if (ok && record->velocity_status != LOCALIZATION_RUN_VELOCITY_STATUS_UNKNOWN) {
+        ok = cJSON_AddStringToObject(
+            root, "velocity_status", s_velocity_status_names[record->velocity_status]
+        ) != NULL;
     }
 
     if (ok && record->analysis_window_truncated) {
@@ -417,6 +492,51 @@ static bool read_bool(
 }
 
 
+/* MAX-301 (v5): optional "velocity_range" object and "velocity_status"
+ * name. Absent -> the zeroed record stays UNKNOWN / no range. Present but
+ * malformed -> false (the whole record is rejected). */
+static bool read_velocity_range(const cJSON *root, localization_run_record_t *record)
+{
+    const cJSON *range = cJSON_GetObjectItemCaseSensitive(root, "velocity_range");
+    if (range != NULL) {
+        double min = 0.0;
+        double max = 0.0;
+        double r_min = 0.0;
+        double r_max = 0.0;
+        const cJSON *source = cJSON_GetObjectItemCaseSensitive(range, "source");
+        if (
+            !cJSON_IsObject(range) ||
+            !read_number(range, "v_min_mps", &min) ||
+            !read_number(range, "v_max_mps", &max) ||
+            !read_number(range, "vp_vs_min", &r_min) ||
+            !read_number(range, "vp_vs_max", &r_max) ||
+            !cJSON_IsString(source) ||
+            !velocity_name_index(
+                s_velocity_source_names, VELOCITY_NAME_COUNT(s_velocity_source_names),
+                source->valuestring, &record->velocity_range_source)
+        ) {
+            return false;
+        }
+        record->velocity_range_min_mps = (float)min;
+        record->velocity_range_max_mps = (float)max;
+        record->velocity_range_vp_vs_min = (float)r_min;
+        record->velocity_range_vp_vs_max = (float)r_max;
+    }
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "velocity_status");
+    if (status != NULL) {
+        if (
+            !cJSON_IsString(status) ||
+            !velocity_name_index(
+                s_velocity_status_names, VELOCITY_NAME_COUNT(s_velocity_status_names),
+                status->valuestring, &record->velocity_status)
+        ) {
+            return false;
+        }
+    }
+    return velocity_range_valid(record);
+}
+
+
 esp_err_t localization_run_record_from_json(
     const char *json,
     localization_run_record_t *record
@@ -442,8 +562,10 @@ esp_err_t localization_run_record_from_json(
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
+    /* Readable: v5 (current, MAX-301 velocity range), v4 and legacy v3. */
     if (
         (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION &&
+        (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_V4 &&
         (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY
     ) {
         cJSON_Delete(root);
@@ -545,7 +667,7 @@ esp_err_t localization_run_record_from_json(
     if (failure_class_item != NULL) {
         ok = ok && cJSON_IsString(failure_class_item) &&
             failure_class_from_name(failure_class_item->valuestring, &record->failure_class);
-    } else if ((uint32_t)schema_version == LOCALIZATION_RUN_SCHEMA_VERSION) {
+    } else if ((uint32_t)schema_version >= LOCALIZATION_RUN_SCHEMA_VERSION_V4) {
         ok = false;
     }
     const cJSON *uncertainty_too_high_item = cJSON_GetObjectItemCaseSensitive(root, "uncertainty_too_high");
@@ -579,6 +701,12 @@ esp_err_t localization_run_record_from_json(
         degrees_of_freedom = -1.0;
     }
     record->degrees_of_freedom = (int32_t)degrees_of_freedom;
+
+    /* MAX-301 (v5): optional; absent in v3/v4 records, which read as UNKNOWN. */
+    if (!read_velocity_range(root, record)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
 
     if (solved) {
         const cJSON *position =
@@ -661,7 +789,7 @@ esp_err_t localization_run_record_from_json(
             return ESP_ERR_INVALID_RESPONSE;
         }
         if (
-            (uint32_t)schema_version == LOCALIZATION_RUN_SCHEMA_VERSION &&
+            (uint32_t)schema_version >= LOCALIZATION_RUN_SCHEMA_VERSION_V4 &&
             record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE
         ) {
             cJSON_Delete(root);

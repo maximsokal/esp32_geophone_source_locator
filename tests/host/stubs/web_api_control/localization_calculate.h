@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "localization_velocity_bounds.h"
 
 #define LOCALIZATION_CALCULATE_STUB_MODEL_NAME_SIZE 32U
 
@@ -33,10 +34,26 @@ typedef struct
 
 } geophone_secondary_pick_config_t;
 
+typedef enum
+{
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_UNKNOWN = 0,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_USER,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_MEASURED_RESERVED
+} localization_velocity_range_source_t;
+
+typedef struct
+{
+    localization_velocity_bounds_t bounds;
+    localization_velocity_range_source_t source;
+} localization_velocity_range_t;
+
 typedef struct
 {
     double propagation_speed_mps;
     double propagation_speed_uncertainty_mps;
+    localization_velocity_range_t velocity_range;
     char propagation_model_name[LOCALIZATION_CALCULATE_STUB_MODEL_NAME_SIZE];
     char material[24];
     double timing_uncertainty_us;

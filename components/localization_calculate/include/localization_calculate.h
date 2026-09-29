@@ -1,11 +1,13 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
 #include "geophone_events.h"
 #include "localization_propagation_model.h"
+#include "localization_velocity_bounds.h"
 
 /*
  * MAX-168: "Calculate source" for one finalized, saved recording/session.
@@ -91,6 +93,21 @@ typedef void (*localization_calculate_progress_fn)(
     void *context
 );
 
+typedef enum
+{
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_UNKNOWN = 0,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_PRESET,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_USER,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_SCALAR_DERIVED,
+    LOCALIZATION_VELOCITY_RANGE_SOURCE_MEASURED_RESERVED
+} localization_velocity_range_source_t;
+
+typedef struct
+{
+    localization_velocity_bounds_t bounds;
+    localization_velocity_range_source_t source;
+} localization_velocity_range_t;
+
 
 typedef struct
 {
@@ -101,6 +118,10 @@ typedef struct
     /* Required (>= 0; 0 means "unknown", matching
      * localization_propagation_model_t's own convention). */
     double propagation_speed_uncertainty_mps;
+
+    /* Normalized velocity bounds and their origin; scalar fields above stay
+     * present for legacy settings and display. */
+    localization_velocity_range_t velocity_range;
 
     /* Optional caller label for the model that produced the two fields
      * above (e.g. "tap-calibrated 2026-09-20"); may be empty. */
@@ -175,6 +196,14 @@ typedef struct
     size_t timing_count;
     size_t methods_skipped_for_time;
     localization_recommendation_t recommendation;
+
+    /* In-memory velocity statuses; S4 adds run-record persistence. */
+    localization_velocity_status_t tdcas_velocity_status;
+    localization_velocity_status_t psafuvs_velocity_status;
+    localization_velocity_status_t suea_velocity_status;
+    localization_velocity_status_t tdcas_scan_velocity_status;
+    localization_velocity_status_t psafuvs_scan_velocity_status;
+    localization_velocity_status_t suea_scan_velocity_status;
 
 } localization_calculate_summary_t;
 

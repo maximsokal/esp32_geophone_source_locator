@@ -597,3 +597,73 @@ bool vf_fit_travel_times(
     fit->rms_s = sqrt(sum_sq / (double)used);
     return isfinite(t0) && isfinite(slowness) && isfinite(chi_square);
 }
+
+
+bool vf_fit_travel_times_bounded(
+    const double *arrival_s,
+    const double *path_m,
+    const double *weight,
+    size_t count,
+    double sigma_t_s,
+    double fallback_velocity_mps,
+    const localization_velocity_bounds_t *bounds,
+    vf_time_fit_t *fit,
+    bool *at_bound_out
+)
+{
+    if (at_bound_out != NULL) {
+        *at_bound_out = false;
+    }
+    if (fit == NULL || !(fallback_velocity_mps > 0.0) || !isfinite(fallback_velocity_mps)) {
+        return false;
+    }
+
+    const bool bounded = bounds != NULL && bounds->set;
+    if (bounded && localization_velocity_bounds_validate(bounds) != LOCALIZATION_VELOCITY_BOUNDS_VALID) {
+        return false;
+    }
+
+    vf_time_fit_t free_fit;
+    if (
+        vf_fit_travel_times(arrival_s, path_m, weight, count, sigma_t_s, 0.0, -1.0, &free_fit) &&
+        free_fit.slowness_s_per_m > 0.0
+    ) {
+        const double velocity = 1.0 / free_fit.slowness_s_per_m;
+        if (!bounded) {
+            *fit = free_fit;
+            return true;
+        }
+        if (
+            bounds->v_min_mps != bounds->v_max_mps &&
+            velocity >= bounds->v_min_mps && velocity <= bounds->v_max_mps
+        ) {
+            *fit = free_fit;
+            return true;
+        }
+
+        const double fixed_velocity = bounds->v_min_mps == bounds->v_max_mps
+            ? bounds->v_min_mps
+            : (velocity < bounds->v_min_mps ? bounds->v_min_mps : bounds->v_max_mps);
+        const bool fitted = vf_fit_travel_times(
+            arrival_s, path_m, weight, count, sigma_t_s, 1.0 / fixed_velocity, 0.0, fit
+        );
+        if (fitted && at_bound_out != NULL) {
+            *at_bound_out = true;
+        }
+        return fitted;
+    }
+
+    const double fixed_velocity = bounded
+        ? fmin(bounds->v_max_mps, fmax(bounds->v_min_mps, fallback_velocity_mps))
+        : fallback_velocity_mps;
+    const bool fitted = vf_fit_travel_times(
+        arrival_s, path_m, weight, count, sigma_t_s, 1.0 / fixed_velocity, 0.0, fit
+    );
+    if (
+        fitted && bounded && at_bound_out != NULL &&
+        (bounds->v_min_mps == bounds->v_max_mps || fixed_velocity != fallback_velocity_mps)
+    ) {
+        *at_bound_out = true;
+    }
+    return fitted;
+}

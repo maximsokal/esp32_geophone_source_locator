@@ -13,6 +13,7 @@
         "tests/host/stubs/workflow_service",
         "components/localization_job/include",
         "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
         "components/localization/include",
         "components/geophone_events/include"
       ],
@@ -37,6 +38,7 @@
         "components/workflow_service/include",
         "components/localization_job/include",
         "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
         "components/localization/include",
         "components/geophone_events/include"
       ],
@@ -61,6 +63,7 @@
         "components/storage_manager",
         "components/storage_manager/include",
         "components/localization_job/include",
+        "components/localization_velocity_free/include",
         "components/web_server"
       ],
       "defines": [
@@ -83,6 +86,7 @@
       "include_dirs": [
         "components/seismic_recorder/include",
         "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
         "tests/host/stubs/web_api_control",
         "tests/host/stubs/object_store_profile",
         "components/localization_job/include",

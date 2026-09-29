@@ -387,6 +387,38 @@ static localization_calculate_config_t default_test_config(void)
 }
 
 
+static void test_non_finite_velocity_is_rejected_before_io(void)
+{
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    config.propagation_speed_mps = INFINITY;
+    g_geometry_read_calls = 0U;
+    assert(localization_calculate_run("OBJ_0001", "S000001", &config, 1U, &summary) == ESP_ERR_INVALID_ARG);
+    assert(g_geometry_read_calls == 0U);
+
+    config = default_test_config();
+    config.propagation_speed_mps = NAN;
+    assert(localization_calculate_run("OBJ_0001", "S000001", &config, 1U, &summary) == ESP_ERR_INVALID_ARG);
+    assert(g_geometry_read_calls == 0U);
+
+    config = default_test_config();
+    config.propagation_speed_uncertainty_mps = NAN;
+    assert(localization_calculate_run("OBJ_0001", "S000001", &config, 1U, &summary) == ESP_ERR_INVALID_ARG);
+    assert(g_geometry_read_calls == 0U);
+
+    config = default_test_config();
+    config.velocity_range.bounds = (localization_velocity_bounds_t) {
+        .v_min_mps = 100.0f,
+        .v_max_mps = INFINITY,
+        .vp_vs_min = 1.5f,
+        .vp_vs_max = 2.0f,
+        .set = true,
+    };
+    assert(localization_calculate_run("OBJ_0001", "S000001", &config, 1U, &summary) == ESP_ERR_INVALID_ARG);
+    assert(g_geometry_read_calls == 0U);
+}
+
+
 static localization_calculate_config_t rate_fixture_config(uint32_t settings_rate_hz)
 {
     localization_calculate_config_t config = default_test_config();
@@ -1063,6 +1095,7 @@ static void test_unusable_scan_reports_constraint_not_applied(void)
 
 int main(void)
 {
+    test_non_finite_velocity_is_rejected_before_io();
     test_sample_windows_rescale_across_session_rates();
     test_run_revalidates_windows_against_session_rate();
     test_insufficient_dimensionality_writes_nothing();
